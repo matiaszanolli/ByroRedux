@@ -583,9 +583,15 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"PACK" => extract_records(&mut reader, end, b"PACK", &mut |fid, subs| {
                 index.packages.insert(fid, parse_pack(fid, subs));
             })?,
-            b"QUST" => extract_records(&mut reader, end, b"QUST", &mut |fid, subs| {
-                index.quests.insert(fid, parse_qust(fid, subs));
-            })?,
+            b"QUST" => {
+                // Stage CTDA params live in plugin-local FormID space; remap
+                // them to global here (#1666) so the condition evaluator can
+                // compare against entities' global FormIdComponents.
+                let qust_remap = reader.get_form_id_remap();
+                extract_records(&mut reader, end, b"QUST", &mut |fid, subs| {
+                    index.quests.insert(fid, parse_qust(fid, subs, &qust_remap));
+                })?;
+            }
             // DIAL tops a nested GRUP tree: a top-level GRUP labelled
             // "DIAL" containing DIAL records, each (often) followed by
             // a Topic Children sub-GRUP (group_type == 7) whose label
@@ -598,9 +604,15 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"MESG" => extract_records(&mut reader, end, b"MESG", &mut |fid, subs| {
                 index.messages.insert(fid, parse_mesg(fid, subs));
             })?,
-            b"PERK" => extract_records(&mut reader, end, b"PERK", &mut |fid, subs| {
-                index.perks.insert(fid, parse_perk(fid, subs));
-            })?,
+            b"PERK" => {
+                // Entry CTDA params are plugin-local FormIDs; remap to global
+                // (#1666) so `HasPerk` / `GetIsID` compare in the same space as
+                // entities' global FormIdComponents.
+                let perk_remap = reader.get_form_id_remap();
+                extract_records(&mut reader, end, b"PERK", &mut |fid, subs| {
+                    index.perks.insert(fid, parse_perk(fid, subs, &perk_remap));
+                })?;
+            }
             b"SPEL" => extract_records(&mut reader, end, b"SPEL", &mut |fid, subs| {
                 index.spells.insert(fid, parse_spel(fid, subs));
             })?,

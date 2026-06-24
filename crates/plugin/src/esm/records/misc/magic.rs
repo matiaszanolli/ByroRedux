@@ -1,7 +1,7 @@
 //! Magic / perks records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
-use super::super::condition::{parse_ctda, ConditionList};
+use super::super::condition::{parse_ctda, remap_condition_form_ids, ConditionList};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 use anyhow::Result;
@@ -273,7 +273,11 @@ enum PerkBlock {
     },
 }
 
-pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
+pub fn parse_perk(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> PerkRecord {
     let mut out = PerkRecord {
         form_id,
         ..Default::default()
@@ -432,7 +436,8 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord]) -> PerkRecord {
                     ref mut conditions, ..
                 } = &mut block
                 {
-                    if let Some(cond) = parse_ctda(sub) {
+                    if let Some(mut cond) = parse_ctda(sub) {
+                        remap_condition_form_ids(&mut cond, remap);
                         conditions.push(cond);
                     }
                 }
@@ -720,7 +725,7 @@ mod tests {
             sub(b"DESC", b"Increase any one S.P.E.C.I.A.L. by 1.\0"),
             sub(b"DATA", &[0x01]), // playable
         ];
-        let p = parse_perk(0xE5E5, &subs);
+        let p = parse_perk(0xE5E5, &subs, &None);
         assert_eq!(p.editor_id, "IntenseTraining");
         assert_eq!(p.perk_flags, 0x01);
         assert!(p.is_trait, "byte 0 = 0x01 → trait set");
@@ -734,7 +739,7 @@ mod tests {
             sub(b"EDID", b"Bloody Mess\0"),
             sub(b"DATA", &[0x00, 6, 1, 0x01, 0x00]),
         ];
-        let p = parse_perk(0xBADAu32, &subs);
+        let p = parse_perk(0xBADAu32, &subs, &None);
         assert!(!p.is_trait);
         assert_eq!(p.num_ranks, 1);
         assert!(p.playable);
@@ -755,7 +760,7 @@ mod tests {
             sub(b"DATA", &data),
             sub(b"PRKF", &[]),
         ];
-        let p = parse_perk(0xAAAAu32, &subs);
+        let p = parse_perk(0xAAAAu32, &subs, &None);
         assert_eq!(p.entries.len(), 1);
         let entry = &p.entries[0];
         assert_eq!(entry.rank, 1);
@@ -781,7 +786,7 @@ mod tests {
             sub(b"DATA", &0x000A_BC01u32.to_le_bytes()),
             sub(b"PRKF", &[]),
         ];
-        let p = parse_perk(0xBBBBu32, &subs);
+        let p = parse_perk(0xBBBBu32, &subs, &None);
         assert_eq!(p.entries.len(), 1);
         match &p.entries[0].body {
             PerkEntryBody::Ability { spell_form_id } => {
@@ -806,7 +811,7 @@ mod tests {
             sub(b"EPFD", &epfd),
             sub(b"PRKF", &[]),
         ];
-        let p = parse_perk(0xCCCCu32, &subs);
+        let p = parse_perk(0xCCCCu32, &subs, &None);
         assert_eq!(p.entries.len(), 1);
         match &p.entries[0].body {
             PerkEntryBody::EntryPoint {
@@ -837,7 +842,7 @@ mod tests {
             sub(b"DATA", &[0x10, 0x00, 0, 0]),
             sub(b"PRKF", &[]),
         ];
-        let p = parse_perk(0xDDDDu32, &subs);
+        let p = parse_perk(0xDDDDu32, &subs, &None);
         assert_eq!(p.entries.len(), 3);
         assert_eq!(p.entries[0].priority, 1);
         assert_eq!(p.entries[1].priority, 2);
@@ -859,7 +864,7 @@ mod tests {
             sub(b"DATA", &0x0000_BEEFu32.to_le_bytes()),
             // No PRKF, no PRKE-after either.
         ];
-        let p = parse_perk(0xEEEEu32, &subs);
+        let p = parse_perk(0xEEEEu32, &subs, &None);
         assert!(p.entries.is_empty());
     }
 
@@ -973,7 +978,7 @@ mod tests {
             sub(b"CTDA", &ctda),
             sub(b"PRKF", &[]),
         ];
-        let p = parse_perk(0xFFFF, &subs);
+        let p = parse_perk(0xFFFF, &subs, &None);
         assert_eq!(p.entries.len(), 1);
         assert_eq!(p.entries[0].conditions.len(), 1);
         assert_eq!(p.entries[0].conditions[0].function_index, 5);
@@ -988,7 +993,7 @@ mod tests {
             sub(b"EPFD", &epfd),
             sub(b"PRKF", &[]),
         ];
-        let p = parse_perk(0x1111, &subs);
+        let p = parse_perk(0x1111, &subs, &None);
         assert_eq!(p.entries.len(), 1);
         match &p.entries[0].body {
             PerkEntryBody::EntryPoint { function_data, .. } => {
@@ -1009,7 +1014,7 @@ mod tests {
             sub(b"EPFD", &epfd),
             sub(b"PRKF", &[]),
         ];
-        let p = parse_perk(0x2222, &subs);
+        let p = parse_perk(0x2222, &subs, &None);
         assert_eq!(p.entries.len(), 1);
         match &p.entries[0].body {
             PerkEntryBody::EntryPoint { function_data, .. } => {
@@ -1031,7 +1036,7 @@ mod tests {
             sub(b"EPFD", &epfd),
             sub(b"PRKF", &[]),
         ];
-        let p = parse_perk(0x3333, &subs);
+        let p = parse_perk(0x3333, &subs, &None);
         assert_eq!(p.entries.len(), 1);
         match &p.entries[0].body {
             PerkEntryBody::EntryPoint { function_data, .. } => {
@@ -1050,7 +1055,7 @@ mod tests {
             sub(b"EPFD", &epfd),
             sub(b"PRKF", &[]),
         ];
-        let p = parse_perk(0x4444, &subs);
+        let p = parse_perk(0x4444, &subs, &None);
         assert_eq!(p.entries.len(), 1);
         match &p.entries[0].body {
             PerkEntryBody::EntryPoint { function_data, .. } => {

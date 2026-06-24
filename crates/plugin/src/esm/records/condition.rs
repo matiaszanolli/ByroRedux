@@ -42,7 +42,7 @@
 //!   0 = ==, 1 = !=, 2 = >, 3 = >=, 4 = <, 5 = <=
 //! ```
 
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{FormIdRemap, SubRecord};
 
 /// Comparison operator applied to (function_result, comparand).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -309,6 +309,61 @@ pub fn parse_condition_list(subs: &[SubRecord]) -> ConditionList {
     subs.iter().filter_map(parse_ctda).collect()
 }
 
+/// Does `param_1` of the given condition function carry a FormID?
+///
+/// `parse_ctda` is deliberately decoupled from the function catalog, so it
+/// can't know which params are FormIDs vs literals. This is the minimal
+/// slice of catalog knowledge the remap pass needs: the M47.1 functions
+/// whose first parameter is a FormID (and so must be load-order remapped).
+/// `param_2` is a literal in every one of them (`GetStageDone`'s stage
+/// index), so only `param_1` is ever promoted. Indices mirror the
+/// `ConditionFunction` catalog in `byroredux_scripting::condition`.
+fn param1_is_form_id(function_index: u32) -> bool {
+    matches!(
+        function_index,
+        9   // GetActorValue   — AVIF FormID
+        | 36  // GetDistance    — target FormID
+        | 58  // GetStage       — quest FormID
+        | 59  // GetStageDone   — quest FormID (param_2 = stage, a literal)
+        | 60  // GetFactionRank — faction FormID
+        | 71  // GetIsID        — base FormID
+        | 99 // HasPerk        — perk FormID
+    )
+}
+
+/// Rewrite a condition's FormID-bearing fields from plugin-local space into
+/// global load-order space, using the owning plugin's [`FormIdRemap`].
+///
+/// CTDA params are parsed raw (`parse_ctda` is decoupled from the function
+/// catalog); this pass — run by each record walker that owns a `remap` —
+/// promotes them so the downstream evaluator (`byroredux_scripting`) can
+/// compare `param_1` directly against an entity's global `FormIdComponent`.
+/// Without it, `GetIsID` / `HasPerk` would test a plugin-local id against a
+/// global one — the multi-plugin false-positive landmine called out in #1666.
+///
+/// Always remaps `reference_form_id` (the `RunOn::Reference` target) and a
+/// `Use Global` comparand (a GLOB FormID); remaps `param_1` only for the
+/// [`param1_is_form_id`] catalog. Null (`0`) FormIDs are left untouched — a
+/// remap would otherwise compose them onto the owning plugin's top byte and
+/// fabricate a non-null id. A `None` remap (single standalone plugin / unit
+/// tests) is identity.
+pub fn remap_condition_form_ids(cond: &mut Condition, remap: &Option<FormIdRemap>) {
+    let Some(remap) = remap.as_ref() else {
+        return;
+    };
+    if cond.reference_form_id != 0 {
+        cond.reference_form_id = remap.remap(cond.reference_form_id);
+    }
+    if let ConditionValue::Global(fid) = cond.comparand {
+        if fid != 0 {
+            cond.comparand = ConditionValue::Global(remap.remap(fid));
+        }
+    }
+    if cond.param_1 != 0 && param1_is_form_id(cond.function_index) {
+        cond.param_1 = remap.remap(cond.param_1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,6 +579,80 @@ mod tests {
         assert!(list[1].or_next);
         assert_eq!(list[2].function_index, 71);
         assert!(!list[2].or_next);
+    }
+
+    // ── remap_condition_form_ids (#1666) ────────────────────────────────
+
+    #[test]
+    fn remap_promotes_param1_for_form_id_functions() {
+        // Plugin at global slot 2, master at slot 0. A self-referenced form
+        // (top byte == master count == 1) gets the plugin's own slot (2).
+        let remap = FormIdRemap::regular(2, vec![0]);
+        let mut cond = Condition {
+            function_index: 71, // GetIsID — param_1 is a FormID
+            param_1: 0x0100_0ABC,
+            ..Default::default()
+        };
+        remap_condition_form_ids(&mut cond, &Some(remap));
+        assert_eq!(cond.param_1, 0x0200_0ABC, "GetIsID param_1 promoted to slot 2");
+    }
+
+    #[test]
+    fn remap_skips_param1_for_non_form_id_functions() {
+        // A non-catalog function: param_1 is a literal, never remapped.
+        let remap = FormIdRemap::regular(2, vec![0]);
+        let mut cond = Condition {
+            function_index: 0xDEAD,
+            param_1: 0x0100_002A,
+            ..Default::default()
+        };
+        remap_condition_form_ids(&mut cond, &Some(remap));
+        assert_eq!(cond.param_1, 0x0100_002A, "non-form-id param_1 untouched");
+    }
+
+    #[test]
+    fn remap_leaves_param2_literal_untouched() {
+        // GetStageDone (59): param_1 is a quest FormID (remapped) but param_2
+        // is the stage index (a literal) — only param_1 is ever promoted.
+        let remap = FormIdRemap::regular(2, vec![0]);
+        let mut cond = Condition {
+            function_index: 59,
+            param_1: 0x0100_0001,
+            param_2: 0x0BAD_F00D, // stage index garbage-shaped value — a literal
+            ..Default::default()
+        };
+        remap_condition_form_ids(&mut cond, &Some(remap));
+        assert_eq!(cond.param_1, 0x0200_0001, "quest param_1 remapped");
+        assert_eq!(cond.param_2, 0x0BAD_F00D, "param_2 is a literal, untouched");
+    }
+
+    #[test]
+    fn remap_promotes_reference_and_global_comparand_but_not_null() {
+        let remap = FormIdRemap::regular(2, vec![0]);
+        let mut cond = Condition {
+            function_index: 71,
+            reference_form_id: 0x0100_0005,
+            comparand: ConditionValue::Global(0x0100_0006),
+            param_1: 0, // null param_1 — must stay null, not compose onto slot 2
+            ..Default::default()
+        };
+        remap_condition_form_ids(&mut cond, &Some(remap));
+        assert_eq!(cond.reference_form_id, 0x0200_0005);
+        assert_eq!(cond.comparand, ConditionValue::Global(0x0200_0006));
+        assert_eq!(cond.param_1, 0, "null param_1 left untouched");
+    }
+
+    #[test]
+    fn remap_none_is_identity() {
+        let mut cond = Condition {
+            function_index: 71,
+            param_1: 0x0100_0ABC,
+            reference_form_id: 0x0100_0005,
+            ..Default::default()
+        };
+        let before = cond;
+        remap_condition_form_ids(&mut cond, &None);
+        assert_eq!(cond, before, "no remap = identity");
     }
 
     #[test]

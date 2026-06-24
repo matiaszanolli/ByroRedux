@@ -32,7 +32,7 @@
 //! | 58    | GetStage       | `QuestStageState[param_1]`|
 //! | 60    | GetFactionRank | (factions — stub today)   |
 //! | 71    | GetIsID        | `FormIdComponent`         |
-//! | 99    | HasPerk        | (perk list — stub today)  |
+//! | 99    | HasPerk        | `PerkList`                |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
 //! function → safe-default" contract) and are logged at debug for
@@ -285,26 +285,49 @@ pub fn evaluate_function(
             -1.0
         }
         ConditionFunction::GetIsID => {
-            // BaseFormId ECS component not yet defined. FormIdComponent holds
-            // an interned FormId, not the raw u32 needed for direct comparison
-            // with param_1. Base-form tracking deferred.
-            log::trace!(
-                "M47.1: GetIsID(base={:08X}) — \
-                 base-FormID tracking on entities not yet plumbed",
-                condition.param_1,
-            );
-            let _ = entity;
-            0.0
+            // Test the Run-On entity's identity against `param_1`. The CTDA
+            // form-id remap (#1666, applied at parse time in the plugin crate)
+            // has already promoted `param_1` into global load-order space — the
+            // same space the entity's `FormIdComponent` resolves to via
+            // `FormIdPool` — so this is a direct, false-positive-free compare
+            // across multi-plugin loads (no lower-24-bits shortcut).
+            use byroredux_core::ecs::components::FormIdComponent;
+            use byroredux_core::form_id::FormIdPool;
+            let Some(fid_comp) = world.get::<FormIdComponent>(entity) else {
+                return 0.0;
+            };
+            let Some(pool) = world.try_resource::<FormIdPool>() else {
+                return 0.0;
+            };
+            // `local` carries the full global FormID — the cell loader stores
+            // the remapped placement/base id as the LocalFormId
+            // (references.rs), so `pair.local.0` is directly comparable.
+            match pool.resolve(fid_comp.0) {
+                Some(pair) if pair.local.0 == condition.param_1 => 1.0,
+                _ => 0.0,
+            }
         }
         ConditionFunction::HasPerk => {
-            // PerkList ECS component not yet defined.
-            log::trace!(
-                "M47.1: HasPerk(perk={:08X}) — \
-                 PerkList component not yet plumbed",
-                condition.param_1,
-            );
-            let _ = entity;
-            0.0
+            // 1.0 iff the Run-On actor's `PerkList` holds `param_1`. Same
+            // remap contract as GetIsID: `param_1` is global, and each perk
+            // FormId resolves through `FormIdPool` to its global FormIdPair.
+            use byroredux_core::ecs::components::PerkList;
+            use byroredux_core::form_id::FormIdPool;
+            let Some(perks) = world.get::<PerkList>(entity) else {
+                return 0.0;
+            };
+            let Some(pool) = world.try_resource::<FormIdPool>() else {
+                return 0.0;
+            };
+            let held = perks.0.iter().any(|&perk| {
+                pool.resolve(perk)
+                    .is_some_and(|pair| pair.local.0 == condition.param_1)
+            });
+            if held {
+                1.0
+            } else {
+                0.0
+            }
         }
         ConditionFunction::Unknown(index) => {
             log::trace!(
@@ -526,6 +549,79 @@ mod tests {
         // GetStage(0xAA) > 50 (false — actually 42)
         let list = vec![cond(58, ComparisonOp::Gt, 50.0, false).with_param_1(0xAA)];
         assert!(!evaluate(&list, &world, &ctx(0)));
+    }
+
+    // ── GetIsID (#1666) ─────────────────────────────────────────────────
+
+    #[test]
+    fn get_is_id_matches_entity_global_form_id() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+        let mut world = World::new();
+        let mut pool = FormIdPool::new();
+        // The cell loader stores the full global FormID as the LocalFormId,
+        // so `param_1` (also global, post-remap) compares directly.
+        let pair = FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV.esm"),
+            local: LocalFormId(0x0001_4D8A),
+        };
+        let fid = pool.intern(pair);
+        world.insert_resource(pool);
+        let actor = world.spawn();
+        world.insert(actor, FormIdComponent(fid));
+
+        // GetIsID(0x00014D8A) == 1 — matches the entity's id.
+        let list = vec![cond(71, ComparisonOp::Eq, 1.0, false).with_param_1(0x0001_4D8A)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+
+        // A different id → 0.
+        let list = vec![cond(71, ComparisonOp::Eq, 0.0, false).with_param_1(0x0001_9999)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    #[test]
+    fn get_is_id_zero_without_form_id_component() {
+        // No FormIdComponent (and no FormIdPool) → GetIsID returns 0.0.
+        let world = World::new();
+        let actor: EntityId = 7;
+        let list = vec![cond(71, ComparisonOp::Eq, 0.0, false).with_param_1(0x0001_4D8A)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    // ── HasPerk (#1667) ─────────────────────────────────────────────────
+
+    #[test]
+    fn has_perk_checks_actor_perk_list() {
+        use byroredux_core::ecs::components::PerkList;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+        let mut world = World::new();
+        let mut pool = FormIdPool::new();
+        let held = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(0x0005_8F80),
+        });
+        world.insert_resource(pool);
+        let actor = world.spawn();
+        world.insert(actor, PerkList::from_perks([held]));
+
+        // HasPerk(0x00058F80) == 1 — the actor holds it.
+        let list = vec![cond(99, ComparisonOp::Eq, 1.0, false).with_param_1(0x0005_8F80)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+
+        // HasPerk(0x00058F81) == 0 — not held.
+        let list = vec![cond(99, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F81)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    #[test]
+    fn has_perk_zero_without_perk_list() {
+        // No PerkList component → HasPerk returns 0.0.
+        let world = World::new();
+        let actor: EntityId = 3;
+        let list = vec![cond(99, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F80)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
     }
 
     // ── Helper: chainable param_1 setter for compact test construction ──

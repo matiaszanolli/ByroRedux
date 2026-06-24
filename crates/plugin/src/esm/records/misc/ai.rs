@@ -1,7 +1,7 @@
 //! AI / dialogue / quest / combat-style records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
-use super::super::condition::{parse_ctda, ConditionList};
+use super::super::condition::{parse_ctda, remap_condition_form_ids, ConditionList};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -145,7 +145,11 @@ enum QustBlock {
     Objective(QuestObjective),
 }
 
-pub fn parse_qust(form_id: u32, subs: &[SubRecord]) -> QustRecord {
+pub fn parse_qust(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> QustRecord {
     let mut out = QustRecord {
         form_id,
         ..Default::default()
@@ -256,7 +260,8 @@ pub fn parse_qust(form_id: u32, subs: &[SubRecord]) -> QustRecord {
             }
             b"CTDA" => {
                 if let QustBlock::Stage(stage) = &mut block {
-                    if let Some(cond) = parse_ctda(sub) {
+                    if let Some(mut cond) = parse_ctda(sub) {
+                        remap_condition_form_ids(&mut cond, remap);
                         stage.conditions.push(cond);
                     }
                 }
@@ -430,7 +435,8 @@ pub fn parse_info(
                 out.actor_form_id = remapped;
             }
             b"CTDA" => {
-                if let Some(cond) = parse_ctda(sub) {
+                if let Some(mut cond) = parse_ctda(sub) {
+                    remap_condition_form_ids(&mut cond, remap);
                     out.conditions.push(cond);
                 }
             }
@@ -688,7 +694,7 @@ mod tests {
             sub(b"SCRI", &0x0010_BEEFu32.to_le_bytes()),
             sub(b"DATA", &[0x05, 20]), // flags + priority
         ];
-        let q = parse_qust(0xB2B2, &subs);
+        let q = parse_qust(0xB2B2, &subs, &None);
         assert_eq!(q.editor_id, "MQ01");
         assert_eq!(q.full_name, "Main Quest");
         assert_eq!(q.script_ref, 0x0010_BEEF);
@@ -725,7 +731,7 @@ mod tests {
             sub(b"QSTA", &0x0010_F001u32.to_le_bytes()),
             sub(b"QSTA", &0x0010_F002u32.to_le_bytes()),
         ];
-        let q = parse_qust(0xDADAu32, &subs);
+        let q = parse_qust(0xDADAu32, &subs, &None);
 
         assert_eq!(q.editor_id, "DLC02");
         assert_eq!(q.full_name, "Honest Hearts");
@@ -766,7 +772,7 @@ mod tests {
             sub(b"NNAM", b"Find the Elder Scroll.\0"),
             sub(b"QSTA", &0x0001_AAAAu32.to_le_bytes()),
         ];
-        let q = parse_qust(0xEAEAu32, &subs);
+        let q = parse_qust(0xEAEAu32, &subs, &None);
         assert_eq!(q.objectives.len(), 1);
         assert_eq!(q.objectives[0].index, 10);
         assert_eq!(q.objectives[0].text, "Find the Elder Scroll.");
@@ -778,7 +784,7 @@ mod tests {
         // Identity-only quest with no INDX / QOBJ — stages and
         // objectives both empty, no panic.
         let subs = vec![sub(b"EDID", b"Tutorial\0"), sub(b"DATA", &[0, 0])];
-        let q = parse_qust(0xF00Fu32, &subs);
+        let q = parse_qust(0xF00Fu32, &subs, &None);
         assert!(q.stages.is_empty());
         assert!(q.objectives.is_empty());
         assert_eq!(q.start_up_stage, None);
@@ -793,7 +799,7 @@ mod tests {
             sub(b"QSTA", &0u32.to_le_bytes()),
             sub(b"QSTA", &0x0010_F001u32.to_le_bytes()),
         ];
-        let q = parse_qust(0xF11Fu32, &subs);
+        let q = parse_qust(0xF11Fu32, &subs, &None);
         assert_eq!(q.objectives.len(), 1);
         assert_eq!(q.objectives[0].target_refs, vec![0x0010_F001]);
     }
@@ -891,7 +897,7 @@ mod tests {
             sub(b"QSDT", &[0x01]),
             sub(b"CTDA", &ctda),
         ];
-        let q = parse_qust(0xABCD, &subs);
+        let q = parse_qust(0xABCD, &subs, &None);
         assert_eq!(q.stages.len(), 1);
         assert_eq!(q.stages[0].conditions.len(), 1);
         assert_eq!(q.stages[0].conditions[0].function_index, 9);
