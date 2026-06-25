@@ -139,8 +139,9 @@ Bethesda ragdoll on our solver (18-body Doc Mitchell verified). FO4/FO76/
 Starfield ragdolls stay blocked on the `BhkSystemBinary` blob decoder.
 **The Papyrus runtime** that executes the 1 257 parsed
 FO3 SCPT records is M47.2 — the event-hook (M47.0) + condition (M47.1)
-foundations ship, the transpiler does not yet. **Save/load** (M45) is
-unstarted. Weather transitions (fade between WTHR states) and cloud
+foundations ship, plus the `.pex` recognizer slice (Session 51); the full
+transpiler is deferred. **Save/load** (M45 + M45.1) shipped 2026-06-21.
+Weather transitions (fade between WTHR states) and cloud
 layers 2/3 closed in M33.1 (`2bfb622`).
 
 **Per-fragment normal mapping (2026-05-02).** Re-enabled and shipped:

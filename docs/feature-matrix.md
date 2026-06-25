@@ -136,7 +136,7 @@ Havok `.hkx` loader (M41.x, Tier 5).
 | ECS-native event hooks (M47.0) — `OnCellLoad`, `OnActivate`, `OnHit` | ✓ |
 | CTDA condition evaluation with OR-precedence (M47.1) | ✓ 7 functions |
 | `script.activate` console command wired | ✓ |
-| Full Papyrus transpiler (M47.2) | ✗ Foundation done; transpiler unstarted |
+| Full Papyrus transpiler (M47.2) | ✓ `.pex` recognizer slice (CFG→lift→control-flow→lower→short-circuit); full transpiler deferred |
 
 ---
 
@@ -172,8 +172,7 @@ Havok `.hkx` loader (M41.x, Tier 5).
 | Havok `.hkx` loader | FO4 humanoid actors; Starfield animation | M41.x (Tier 5) |
 | Terrain LOD (`.btr`/`.bto`) | Distant-object LOD; needed for exterior quality | M35 |
 | NPC behavior / AI packages | NPCs animate + navigate | M42 (Tier 7) |
-| Papyrus transpiler (M47.2) | Script execution on real content | M47.2 (Tier 3) |
-| Save / load (M45) | Game sessions persist | M45 (unstarted) |
+| Full Papyrus transpiler (M47.2) | Arbitrary script execution on real content (`.pex` recognizer slice shipped Session 51) | M47.2 (Tier 3) |
 | Full Scaleform menus | In-game UI | M48 / R4 decision |
 | UV scroll animated materials | Animated terminals / displays | audited, not prioritised |
 | Per-material footsteps (FOOT) | Correct surface audio | M44 follow-up |
