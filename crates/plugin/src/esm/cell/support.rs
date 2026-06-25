@@ -18,8 +18,9 @@ use crate::esm::reader::SubRecord;
 /// dispatches both consumers from the same `subs` slice.
 ///
 /// Returns `None` for records that carry neither a model path, a LIGH
-/// `DATA` chunk, nor an ADDN `DATA`/`DNAM` payload — those would
-/// produce an empty `StaticObject` that the cell loader ignores anyway.
+/// `DATA` (Skyrim/FO4) or `DAT2` (Starfield, #1567) light chunk, nor an
+/// ADDN `DATA`/`DNAM` payload — those would produce an empty
+/// `StaticObject` that the cell loader ignores anyway.
 pub(crate) fn build_static_object_from_subs(
     form_id: u32,
     record_type: &[u8; 4],
@@ -103,6 +104,64 @@ pub(crate) fn build_static_object_from_subs(
                 } else {
                     0.0
                 };
+                light_data = Some(LightData {
+                    radius,
+                    color: [r, g, b],
+                    flags,
+                    falloff_exponent,
+                    period_secs,
+                    intensity_amplitude,
+                    movement_amplitude,
+                    xpwr_form_id: None,
+                });
+            }
+            // Starfield LIGH light data (#1567). Starfield LIGH records
+            // carry no `DATA` and no top-level `MODL`; the light
+            // parameters live in a `DAT2` (76-byte) subrecord with a
+            // layout distinct from the Skyrim/FO4 `DATA` arm above.
+            // Without this arm every Starfield LIGH returned `None`, was
+            // never inserted into `cells.statics`, and the 656 Cydonia
+            // REFRs pointing at 62 LIGH forms missed at the static lookup
+            // and were silently skipped — the cell rendered markedly
+            // under-lit (only NIF-embedded lights + XCLL ambient survived).
+            //
+            // Byte layout verified against xEdit `wbDefinitionsSF1.pas`
+            // (`wbRecord(LIGH … wbStruct(DAT2, 'Data', [...]))`), NOT
+            // guessed — the offsets differ from Skyrim's `DATA`:
+            //   { 4} Float      Radius   (Skyrim `DATA` stores this as u32)
+            //   { 8} ByteColors Color    (RGBA; RGB at 8/9/10)
+            //   {12} UInt16     Flags    (Skyrim `DATA` stores u32)
+            //   {16} Float      Falloff Exponent
+            //   {28} Float      Flicker Period
+            //   {32} Float      Intensity Amplitude
+            //   {36} Float      Movement Amplitude
+            // (FOV / near-clip / PBR temperature+lumens / adaptive-light
+            // tail at 20..76 are parsed by xEdit but not yet consumed by
+            // our `LightData`.) Gating on the `DAT2` signature is itself
+            // the Starfield discriminator — Skyrim/FO4 LIGH use `DATA`, so
+            // the `DATA` arm above stays the FO4/Skyrim path untouched.
+            b"DAT2" if is_ligh && sub.data.len() >= 11 => {
+                let read_f32 = |off: usize| -> f32 {
+                    f32::from_le_bytes([
+                        sub.data[off],
+                        sub.data[off + 1],
+                        sub.data[off + 2],
+                        sub.data[off + 3],
+                    ])
+                };
+                let radius = read_f32(4);
+                let r = sub.data[8] as f32 / 255.0;
+                let g = sub.data[9] as f32 / 255.0;
+                let b = sub.data[10] as f32 / 255.0;
+                let flags = if sub.data.len() >= 14 {
+                    u16::from_le_bytes([sub.data[12], sub.data[13]]) as u32
+                } else {
+                    0
+                };
+                let falloff_exponent = if sub.data.len() >= 20 { read_f32(16) } else { 0.0 };
+                let period_secs = if sub.data.len() >= 32 { read_f32(28) } else { 0.0 };
+                let intensity_amplitude = if sub.data.len() >= 36 { read_f32(32) } else { 0.0 };
+                let movement_amplitude = if sub.data.len() >= 40 { read_f32(36) } else { 0.0 };
                 light_data = Some(LightData {
                     radius,
                     color: [r, g, b],
@@ -565,4 +624,99 @@ pub(crate) fn parse_mswp_group(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod ligh_dat2_tests {
+    use super::build_static_object_from_subs;
+    use crate::esm::reader::SubRecord;
+
+    fn sub(sig: &[u8; 4], data: Vec<u8>) -> SubRecord {
+        SubRecord {
+            sub_type: *sig,
+            data,
+        }
+    }
+
+    /// Build a 76-byte Starfield LIGH `DAT2` payload per the verified
+    /// xEdit `wbDefinitionsSF1.pas` layout, with caller-supplied
+    /// radius / color / flicker so the test pins the exact field offsets.
+    fn dat2_bytes(radius: f32, rgb: [u8; 3], flags: u16) -> Vec<u8> {
+        let mut d = vec![0u8; 76];
+        // { 0} Time (i32) — left zero.
+        d[4..8].copy_from_slice(&radius.to_le_bytes()); // { 4} Float Radius
+        d[8] = rgb[0]; // { 8} ByteColors Color: R
+        d[9] = rgb[1]; //          G
+        d[10] = rgb[2]; //         B
+        d[11] = 255; //  A (unused for color)
+        d[12..14].copy_from_slice(&flags.to_le_bytes()); // {12} U16 Flags
+        // {14} Unused(2)
+        d[16..20].copy_from_slice(&2.0f32.to_le_bytes()); // {16} Falloff Exponent
+        d[20..24].copy_from_slice(&90.0f32.to_le_bytes()); // {20} FOV
+        d[28..32].copy_from_slice(&1.5f32.to_le_bytes()); // {28} Flicker Period
+        d[32..36].copy_from_slice(&0.25f32.to_le_bytes()); // {32} Intensity Amplitude
+        d[36..40].copy_from_slice(&0.5f32.to_le_bytes()); // {36} Movement Amplitude
+        d
+    }
+
+    /// #1567 regression: a Starfield LIGH carrying a `DAT2` light chunk but
+    /// NO `MODL` and NO `DATA` must decode to a `StaticObject` with
+    /// `light_data` (color + radius from the verified offsets) — pre-fix it
+    /// returned `None` and the form was never indexed, dropping 656 Cydonia
+    /// lights.
+    #[test]
+    fn starfield_ligh_dat2_decodes_to_light_data() {
+        // Cydonia LIGH skeleton from the audit dump (000027BB), trimmed to
+        // the fields that matter: EDID + the top-level DAT2. No MODL/DATA.
+        let subs = vec![
+            sub(b"EDID", b"TestSconce\0".to_vec()),
+            sub(b"DAT2", dat2_bytes(512.0, [200, 150, 100], 0x0010)),
+        ];
+
+        let obj = build_static_object_from_subs(0x000027BB, b"LIGH", &subs)
+            .expect("Starfield LIGH with DAT2 must produce a StaticObject");
+
+        let ld = obj.light_data.expect("DAT2 must yield light_data");
+        assert_eq!(ld.radius, 512.0, "radius is a Float at DAT2 offset 4");
+        assert!((ld.color[0] - 200.0 / 255.0).abs() < 1e-6, "R at offset 8");
+        assert!((ld.color[1] - 150.0 / 255.0).abs() < 1e-6, "G at offset 9");
+        assert!((ld.color[2] - 100.0 / 255.0).abs() < 1e-6, "B at offset 10");
+        assert_eq!(ld.flags, 0x0010, "Flags is a U16 at offset 12");
+        assert_eq!(ld.falloff_exponent, 2.0, "Falloff Exponent at offset 16");
+        assert_eq!(ld.period_secs, 1.5, "Flicker Period at offset 28");
+        assert_eq!(ld.intensity_amplitude, 0.25, "Intensity Amplitude at offset 32");
+        assert_eq!(ld.movement_amplitude, 0.5, "Movement Amplitude at offset 36");
+        assert!(obj.model_path.is_empty(), "Starfield LIGH carries no MODL");
+    }
+
+    /// The Skyrim/FO4 `DATA`-layout LIGH path is untouched: a record with a
+    /// `DATA` chunk (radius as u32, not the Starfield float) still decodes,
+    /// proving the new arm is additive and gated on the `DAT2` signature.
+    #[test]
+    fn skyrim_ligh_data_path_still_decodes() {
+        // Skyrim DATA: { 4} u32 Radius=300, { 8..11} RGB, {12} u32 flags.
+        let mut data = vec![0u8; 32];
+        data[4..8].copy_from_slice(&300u32.to_le_bytes());
+        data[8] = 255;
+        data[9] = 200;
+        data[10] = 128;
+        let subs = vec![sub(b"DATA", data)];
+        let obj = build_static_object_from_subs(0x1, b"LIGH", &subs)
+            .expect("Skyrim LIGH DATA must still produce a StaticObject");
+        let ld = obj.light_data.expect("DATA must yield light_data");
+        assert_eq!(ld.radius, 300.0, "Skyrim radius is a u32 cast to f32");
+    }
+
+    /// A non-LIGH record carrying a `DAT2` (e.g. FO3/FNV AMMO weapon data)
+    /// must NOT be misread as light data — the arm is `is_ligh`-gated.
+    #[test]
+    fn non_ligh_dat2_is_not_treated_as_light() {
+        let subs = vec![sub(b"DAT2", dat2_bytes(512.0, [200, 150, 100], 0))];
+        // AMMO with only a DAT2 and no MODL → no light_data, no model → None.
+        let obj = build_static_object_from_subs(0x2, b"AMMO", &subs);
+        assert!(
+            obj.is_none() || obj.unwrap().light_data.is_none(),
+            "DAT2 on a non-LIGH record must not synthesize light_data"
+        );
+    }
 }
