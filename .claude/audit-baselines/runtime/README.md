@@ -44,6 +44,13 @@ skill's Phase 3 contract does not diff (`light.dump` surfaces only the
 directional sun — no per-point tally — and the draw count is the three-way
 `bench_draws_{cmds,batches,gpu_calls}` split, not a single total). See #1622.
 
+`bench_fps_p50` / `bench_fps_avg` are still stored (for the visibility Δ) but
+are **advisory, not gating** as of #1701 (RT-2): the headless `wall_fps` is an
+`xvfb-run` wall-clock number whose jitter dominates on small fast cells, so a
+move there is reported, never raised as a regression. Only the structural
+metrics gate. See `.claude/commands/audit-runtime/SKILL.md` §Phase 3 (the
+advisory note) + §Phase 4.
+
 See `.claude/commands/audit-runtime.md` §Phase 3 for the canonical metric
 list and direction rules.
 

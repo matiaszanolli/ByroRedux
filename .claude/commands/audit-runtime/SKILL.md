@@ -175,8 +175,8 @@ cannot diff its own baseline:
 | `skin_pool_live` | `.engine.log` last `skin=L/M+S` (`L`) | ≤ baseline |
 | `skin_pool_max` | `.engine.log` last `skin=L/M+S` (`M`) | exact match |
 | `skin_pool_overflow_attempts` | `.engine.log` last `skin=L/M+S` (`S`) | `== 0` (exact) |
-| `bench_fps_p50` | `bench:` `wall_fps` | ≥ baseline ×0.9 |
-| `bench_fps_avg` | `bench:` `wall_fps` | ≥ baseline ×0.9 |
+| `bench_fps_p50` | `bench:` `wall_fps` | **advisory** — report Δ, never gating (see note) |
+| `bench_fps_avg` | `bench:` `wall_fps` | **advisory** — report Δ, never gating (see note) |
 | `bench_draws_cmds` | `bench:` `draws=N/Mb/Kc` (`N`) | ≤ baseline ×1.1 |
 | `bench_draws_batches` | `bench:` `draws=N/Mb/Kc` (`M`) | ≤ baseline ×1.1 |
 | `bench_draws_gpu_calls` | `bench:` `draws=N/Mb/Kc` (`K`) | ≤ baseline ×1.1 |
@@ -195,6 +195,18 @@ Quirks of these scalars (don't fabricate around them):
   a per-point-light tally, so `light_count_directional` is effectively a
   constant 1 and there is no `light_count_point`.
 
+> **`bench_fps_*` is advisory, not gating (RT-2, #1701).** The engine's single
+> `wall_fps` is a headless wall-clock measurement under `xvfb-run`, where
+> Xvfb scheduling jitter dominates — especially on small, fast cells (Oblivion
+> `ICMarketDistrictTheGildedCarafe`: 701 entities, ~4 GPU calls, ~400 fps). Two
+> independent sweeps flagged a phantom fps "regression" there with every
+> structural metric unchanged: RT-2 (06-14) recommended demoting it, and the
+> 06-23 sweep (#1701, 411.8→352.3, −14.4 %) is the second data point. Report
+> the Δ for visibility, but **never raise a `bench_fps_*` move as a REGRESSION
+> finding** — only the structural metrics (textures, mesh-cache, skin pool,
+> entities, draw split) gate. For a real fps investigation, re-run 3× and
+> average (the engine emits one value, not a distribution).
+
 Write the extracted scalars to `/tmp/audit/runtime/<game>-<cell>.current.tsv`.
 
 ## Phase 4: Diff against baseline
@@ -207,12 +219,13 @@ Compare `/tmp/audit/runtime/<game>-<cell>.current.tsv` against
 - **`--regen` set** — overwrite baseline with current. NOT a finding; report as
   "BASELINE UPDATED".
 - **Metric regressed** (against its Phase 3 direction) — emit one finding per
-  metric, severity per magnitude (see `_audit-severity.md`):
+  metric, severity per magnitude (see `_audit-severity.md`). `bench_fps_*` is
+  **advisory** (see the Phase 3 note): list its Δ in the report table but never
+  emit it as a finding regardless of magnitude.
   - HIGH: `tex_missing_*` or `mesh_cache_failed_count` grew;
     `skin_pool_overflow_attempts` moved off `0` (any spill = at least one
     entity rendering in bind pose for lack of a slot — pin to #1284
-    `SkinSlotPool` cap + descriptor-pool fix, `a3c2836a`); OR `bench_fps_*`
-    dropped > 20 %.
+    `SkinSlotPool` cap + descriptor-pool fix, `a3c2836a`).
   - MEDIUM: any other count moved against direction.
   - LOW: count drift within ±5 % on a tolerance metric.
 
