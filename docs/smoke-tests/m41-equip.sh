@@ -64,6 +64,7 @@ run_cell () {
     local entities_floor="$1" ; shift
     local draws_floor="$1" ; shift
     local tex_miss_ceiling="$1" ; shift
+    local equip_floor="$1" ; shift
     local engine_log="$LOG_DIR/$label.engine.log"
     local dbg_log="$LOG_DIR/$label.dbg.log"
 
@@ -184,11 +185,36 @@ EOF
     : "${tex_miss:=0}"
 
     echo "smoke[$label]: Inventory=$inv_count entities, EquipmentSlots=$slots_count entities, tex.missing=$tex_miss unique"
-    if (( inv_count == 0 )); then
-        echo "smoke[$label]: WARN — zero entities have Inventory (NPCs not spawning, or component not registered)"
-    fi
-    if (( slots_count == 0 )); then
-        echo "smoke[$label]: WARN — zero entities have EquipmentSlots (LVLI dispatch may be silently empty)"
+    # Equip-signal floor (SK-D3-02). Pre-fix the equip counts were WARN-only,
+    # so a regression dropping ALL NPC gear still passed as long as the
+    # static-mesh floor held — the one test that exercises the full outfit
+    # chain couldn't catch a silent equip regression. When the caller gives a
+    # positive `equip_floor`, enforce it as a HARD floor on the real equip
+    # signals. Skyrim WhiterunBanneredMare authors 6 named residents — saadia,
+    # brenuin, mikael, sinmir, amaundmotierreend, hulda — each carrying both
+    # Inventory and EquipmentSlots, so its floor is 6. `equip_floor=0` keeps
+    # the legacy soft-warn for cells whose equipped-NPC count isn't yet a
+    # stable guard (FO4 humanoid actors are gated on the .hkx loader, M41.x).
+    if (( equip_floor > 0 )); then
+        if (( inv_count < equip_floor )); then
+            echo "smoke[$label]: HARD FAIL — Inventory=$inv_count entities < equip floor $equip_floor (NPC gear dropped?)"
+            hard_fail=1
+        else
+            echo "smoke[$label]: PASS — Inventory=$inv_count >= $equip_floor"
+        fi
+        if (( slots_count < equip_floor )); then
+            echo "smoke[$label]: HARD FAIL — EquipmentSlots=$slots_count entities < equip floor $equip_floor (LVLI dispatch empty / outfit regression?)"
+            hard_fail=1
+        else
+            echo "smoke[$label]: PASS — EquipmentSlots=$slots_count >= $equip_floor"
+        fi
+    else
+        if (( inv_count == 0 )); then
+            echo "smoke[$label]: WARN — zero entities have Inventory (NPCs not spawning, or component not registered)"
+        fi
+        if (( slots_count == 0 )); then
+            echo "smoke[$label]: WARN — zero entities have EquipmentSlots (LVLI dispatch may be silently empty)"
+        fi
     fi
     if (( tex_miss > tex_miss_ceiling )); then
         echo "smoke[$label]: WARN — tex.missing=$tex_miss > soft ceiling $tex_miss_ceiling (archive coverage gap?)"
@@ -218,7 +244,10 @@ skyrim_run () {
     # Soft tex.missing ceiling at 30 — Whiterun ships textures across
     # Textures0-7.bsa and the script now passes all of them, so any
     # remaining miss after the archive expansion is environment drift.
-    run_cell skyrim 1200 700 30 \
+    # equip_floor 6 — the named Bannered Mare residents (saadia, brenuin,
+    # mikael, sinmir, amaundmotierreend, hulda) must each spawn with both
+    # Inventory and EquipmentSlots, or the outfit chain regressed (SK-D3-02).
+    run_cell skyrim 1200 700 30 6 \
         --esm "$SKYRIM_DATA/Skyrim.esm" \
         --cell WhiterunBanneredMare \
         --bsa "$SKYRIM_DATA/Skyrim - Meshes0.bsa" \
@@ -263,7 +292,10 @@ fo4_run () {
     # Pre-archive-expansion the same cell reported 47 unique misses
     # (213× officeboxpapers01_d.dds dominating); post-expansion should
     # drop into the single digits.
-    run_cell fo4 5000 4000 20 \
+    # equip_floor 0 — FO4 humanoid-actor equip is gated on the .hkx loader
+    # (M41.x), so MedTekResearch01's equipped-NPC count isn't yet a stable
+    # guard; keep the equip signals as soft WARN until it is (SK-D3-02).
+    run_cell fo4 5000 4000 20 0 \
         --esm "$FO4_DATA/Fallout4.esm" \
         --cell MedTekResearch01 \
         --bsa "$FO4_DATA/Fallout4 - Meshes.ba2" \
