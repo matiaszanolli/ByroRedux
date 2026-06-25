@@ -12,6 +12,30 @@ use rapier3d::prelude::*;
 pub const PHYSICS_DT: f32 = 1.0 / 60.0;
 /// Cap on substeps per frame to prevent spiral-of-death.
 pub const MAX_SUBSTEPS: u32 = 5;
+/// Per-frame wall-clock budget (seconds) for physics catch-up substeps.
+///
+/// Anti-spiral guard for #1698. The fixed-timestep loop normally runs up
+/// to [`MAX_SUBSTEPS`] catch-up steps so simulated time keeps tracking
+/// wall time when rendering dips below 60 Hz. But on cell entry a *settle
+/// storm* — hundreds of clutter bodies waking at once to resolve authored
+/// spawn-interpenetration — makes each substep cost tens of ms over the
+/// awake island. Running the full 5-substep catch-up budget then makes
+/// the frame slow enough to demand 5 substeps *again* next frame: a stable
+/// ~7 fps plateau (Whiterun Dragonsreach, measured 144 ms/frame) that only
+/// clears ~28 s later when the bodies finally re-sleep.
+///
+/// Once the substeps run this frame have eaten this much wall-time, more
+/// catch-up is futile — physics already can't keep real-time, so each
+/// extra substep produces less simulated time than the wall-time it costs
+/// — and [`PhysicsWorld::step`] stops, forfeiting the remaining backlog
+/// (slight slow-motion) rather than collapsing the frame rate. Anchored to
+/// [`PHYSICS_DT`]: one sim-tick of wall-time is exactly that break-even
+/// point, so the common case (a handful of sub-millisecond substeps) never
+/// approaches it and steady-state behaviour is unchanged. This amortizes
+/// the same settle work across more, individually-cheap frames (the
+/// "amortize across frames" resolution the issue calls for) — Dragonsreach
+/// goes from a 7 fps plateau to a playable frame rate for the same ~28 s.
+pub const SUBSTEP_TIME_BUDGET: f32 = PHYSICS_DT;
 /// Bethesda units per metre (1 BU ≈ 1.428 cm). The whole simulation runs in
 /// BU, so Rapier's length-relative thresholds — sleep velocity, contact
 /// prediction distance, allowed penetration — must be told this scale via
@@ -49,6 +73,11 @@ pub struct PhysicsWorld {
     pub gravity: Vector<Real>,
     /// Seconds of unsimulated time left over from the last frame.
     pub accumulator: f32,
+    /// Per-frame wall-clock budget for catch-up substeps (seconds). See
+    /// [`SUBSTEP_TIME_BUDGET`] for the anti-spiral rationale (#1698).
+    /// Public so tests can force the cap (`0.0`) or disable it (a huge
+    /// value); production keeps the [`SUBSTEP_TIME_BUDGET`] default.
+    pub substep_time_budget: f32,
     /// One-shot "something changed, step at least once" flag. Set by any
     /// mutation that can introduce motion (body spawn, kinematic push,
     /// velocity set) via [`PhysicsWorld::wake`]. Cleared the next time the
@@ -90,6 +119,7 @@ impl PhysicsWorld {
             integration_parameters,
             gravity: Vector::new(0.0, -686.7, 0.0),
             accumulator: 0.0,
+            substep_time_budget: SUBSTEP_TIME_BUDGET,
             // Step once on the first frame so any bodies present at startup
             // settle / populate the island state.
             pending_wake: true,
@@ -233,6 +263,14 @@ impl PhysicsWorld {
     /// draining the accumulator. `frame_dt` is the wall-clock delta
     /// since the last call; anything above `MAX_SUBSTEPS * PHYSICS_DT`
     /// is dropped to avoid spiral-of-death on hitches.
+    ///
+    /// A second, finer guard caps the catch-up loop by *wall time*: once
+    /// the substeps run this frame have consumed [`SUBSTEP_TIME_BUDGET`],
+    /// the loop stops and forfeits the remaining backlog instead of
+    /// running the full 5-substep budget at tens-of-ms-per-substep settle
+    /// cost. At least one substep always runs (the check is after the
+    /// step), so a genuinely slow frame still advances the simulation.
+    /// See [`SUBSTEP_TIME_BUDGET`] (#1698).
     pub fn step(&mut self, frame_dt: f32) -> u32 {
         self.accumulator += frame_dt.max(0.0);
         let max_acc = MAX_SUBSTEPS as f32 * PHYSICS_DT;
@@ -265,6 +303,14 @@ impl PhysicsWorld {
         }
         self.pending_wake = false;
 
+        // Anti-spiral wall-clock budget (#1698). Time the catch-up loop so a
+        // settle storm can't pin the frame at the full 5-substep cost; once
+        // the substeps run this frame have eaten `substep_time_budget`, drop
+        // the rest of the backlog (slight slow-motion) rather than re-arming
+        // the same demand next frame. See `SUBSTEP_TIME_BUDGET`.
+        let budget = self.substep_time_budget.max(0.0);
+        let loop_start = std::time::Instant::now();
+
         let mut steps = 0u32;
         while self.accumulator >= PHYSICS_DT && steps < MAX_SUBSTEPS {
             self.pipeline.step(
@@ -292,6 +338,15 @@ impl PhysicsWorld {
             );
             self.accumulator -= PHYSICS_DT;
             steps += 1;
+            // Budget check AFTER the step so at least one substep always
+            // runs (a slow frame must still advance the sim). When physics
+            // has spent its per-frame wall-time, forfeit the leftover
+            // accumulator — catching up is futile once a single substep
+            // already costs more wall-time than the sim-time it produces.
+            if loop_start.elapsed().as_secs_f32() >= budget {
+                self.accumulator = 0.0;
+                break;
+            }
         }
         // Kill-plane. Clutter spawned without a floor beneath it (missing or
         // failed static collision under the placement) free-falls forever: it
@@ -672,6 +727,61 @@ mod tests {
         // A huge frame_dt shouldn't run more than MAX_SUBSTEPS steps.
         let steps = w.step(100.0);
         assert!(steps <= MAX_SUBSTEPS);
+    }
+
+    /// The default per-frame substep budget is one sim-tick of wall-time —
+    /// the break-even point past which catch-up substeps are futile (#1698).
+    #[test]
+    fn default_substep_budget_is_one_tick() {
+        let w = PhysicsWorld::new();
+        assert_eq!(w.substep_time_budget, SUBSTEP_TIME_BUDGET);
+        assert_eq!(SUBSTEP_TIME_BUDGET, PHYSICS_DT);
+    }
+
+    /// #1698 anti-spiral regression: with the wall-clock budget exhausted
+    /// (forced to 0), a frame whose backlog would otherwise demand the full
+    /// `MAX_SUBSTEPS` collapses to a single catch-up substep — the storm
+    /// settle is amortized across frames instead of pinning one frame at the
+    /// 5× cost. At least one substep still runs so the sim always advances.
+    #[test]
+    fn zero_budget_caps_settle_storm_to_one_substep() {
+        let mut w = PhysicsWorld::new();
+        w.substep_time_budget = 0.0; // force the anti-spiral cap
+
+        // An awake dynamic body so the catch-up loop actually runs.
+        let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
+        let h = w.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .position(iso_from_trs(Vec3::new(0.0, 1000.0, 0.0), Quat::IDENTITY))
+                .build(),
+        );
+        w.colliders
+            .insert_with_parent(ColliderBuilder::new(shape).build(), h, &mut w.bodies);
+
+        // A frame_dt large enough to fill the accumulator to the 5-substep cap.
+        let steps = w.step(100.0);
+        assert_eq!(
+            steps, 1,
+            "an exhausted wall-clock budget must collapse catch-up to one substep"
+        );
+        // Backlog is forfeited (slow-motion), not banked — the accumulator is
+        // drained so the next frame doesn't immediately demand 5 again.
+        assert_eq!(w.accumulator, 0.0, "budget-bail must drain the backlog");
+    }
+
+    /// The budget is a no-op in the common case: a cheap scene (sub-ms
+    /// substeps) with the budget effectively disabled runs the full
+    /// `MAX_SUBSTEPS` catch-up, so steady-state simulation speed is
+    /// unchanged by the #1698 guard.
+    #[test]
+    fn ample_budget_allows_full_catchup() {
+        let mut w = PhysicsWorld::new();
+        w.substep_time_budget = f32::INFINITY; // never trips
+        // Empty world still steps on the first frame (constructor arms
+        // `pending_wake`); cheap substeps all fit, so the accumulator cap is
+        // the only limit.
+        let steps = w.step(100.0);
+        assert_eq!(steps, MAX_SUBSTEPS, "ample budget must allow full catch-up");
     }
 
     /// Static-scene fast path: with nothing awake, `step` must skip the

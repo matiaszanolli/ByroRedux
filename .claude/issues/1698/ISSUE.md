@@ -50,3 +50,59 @@ Levers: (a) stop the free-falling controller body from waking the cell (floor-co
 for the player spawn), (b) keep spawn-interpenetrating clutter asleep (contact-skin / sleep
 threshold), (c) anti-spiral: don't run 5 substeps once a frame is already slow. (a)+(b) attack the
 root (awake-body count); (c) caps the 5× multiplier. Re-run the same bench to verify (fps gate).
+
+## FIX PROGRESS (2026-06-24/25 session)
+### Done — ragdoll half (commit 036a7788)
+Live NPC ragdoll bones were imported MO_SYS_DYNAMIC and free-simulated.
+Flipped to MotionType::Keyframed at NPC spawn (both spawn paths) → driven by
+push_kinematic from the animated GlobalTransform. Verified: 162 bones →
+kinematic, awake dynamics 480→325. Bethesda-correct; tests green.
+
+### Remaining — clutter half (RT-1b, separate root cause)
+Census (BYRO_PROFILE, Dragonsreach): total=1574 bodies → static=154,
+dynamic=1258, kinematic=162. Of 1258 dynamic clutter, ~325 are awake/falling;
+933 sleep fine. Static colliders EXIST (154) and their AABB
+(x[-2480,1712] y[-246,2160] z[-4368,384]) covers the character at
+(-1244,-232,-2895) — yet character + 325 clutter free-fall through.
+
+Hypotheses tested:
+- TUNNELING (fast ×70-gravity fall through thin trimesh) → tried
+  `ccd_enabled(true)` on dynamic newcomers: step EXPLODED 144ms→1400-3900ms
+  and awake stayed 325. DISPROVED — CCD has nothing to land on, so the bodies
+  genuinely lack a collider beneath them (coverage gap), not tunneling. CCD
+  reverted.
+- Conclusion: a SUBSET of furniture/surfaces the 325 clutter rest on produce
+  no static collider (933 others do). Likely FURN / specific STAT meshes whose
+  bhk (or synth-trimesh fallback) collision isn't materializing, OR clutter
+  spawn-snap above an uncovered surface. The character free-fall is a related
+  but separate KCC-vs-floor grounding bug (it's KinematicPositionBased, not a
+  dynamic body — CCD-on-dynamics wouldn't touch it).
+
+Next-session starting points: (1) identify which STAT/FURN base meshes under
+the 325 awake bodies lack colliders (log entity→base-form for awake fallers);
+(2) check the synth-trimesh fallback gate (base_layer==Architecture excludes
+FURN); (3) character KCC down-cast vs the existing floor collider.
+
+### Done — anti-spiral amortization (2026-06-24 session)
+Shipped lever (c) from the fix-direction list: a per-frame **wall-clock
+substep budget** in `PhysicsWorld::step` (`SUBSTEP_TIME_BUDGET = PHYSICS_DT`,
+the break-even point past which catch-up is futile). The fixed-timestep loop
+already *capped* the backlog at `MAX_SUBSTEPS=5` but still ran all 5 substeps
+× ~325 awake bodies (~29 ms each) every frame → a stable 144 ms/frame plateau.
+The budget stops the catch-up loop once this frame's substeps have eaten one
+sim-tick of wall-time and forfeits the rest of the backlog (slight
+slow-motion), so the same settle work amortizes across more, individually-
+cheap frames. At least one substep always runs (sim still advances). No-op in
+the common case (sub-ms substeps never approach the budget) → steady-state
+unchanged. 3 regression tests; full physics suite + workspace green.
+Expected effect: Dragonsreach bench window 7 fps → playable for the same
+~28 s storm. Does **not** restore the 321 fps baseline *during* the storm —
+that needs the awake-body count itself driven down (leads 1–3 below).
+
+Lead (2) DISPROVEN at code level this session: `RecordType::render_layer()`
+maps FURN → `RenderLayer::Architecture` (`crates/plugin/src/record.rs:288`),
+so the synth-trimesh gate at `spawn.rs:1078` already covers FURN. The
+coverage gap is elsewhere (lead 1: a subset of surfaces whose bhk parse or
+synth fallback silently produces no collider). Lead (3) is a separate
+character-grounding bug — the KCC body is kinematic, so it adds no solver
+cost; it is not part of the FPS collapse.
