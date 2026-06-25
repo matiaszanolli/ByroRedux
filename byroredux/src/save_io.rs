@@ -32,7 +32,7 @@ use byroredux_core::console::{CommandOutput, ConsoleCommand};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::World;
 use byroredux_core::math::Vec3;
-use byroredux_save::validate::validate_world;
+use byroredux_save::validate::{validate_world, ValidationError, ValidationKind};
 use byroredux_save::{disk, encode, save_world, SaveRegistry, Snapshot};
 
 /// The **mutable game-state** component columns a live load overlays onto
@@ -314,6 +314,43 @@ pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) {
 }
 
 /// `save [slot]` — validate, snapshot, and atomically write the world.
+/// Binary-side supplement to [`validate_world`]: every `FormIdComponent`'s
+/// session-local `FormId` handle must resolve to its stable `FormIdPair`
+/// through the live [`FormIdPool`].
+///
+/// The snapshot serializer resolves `FormId → FormIdPair` at save time and
+/// **silently drops** any handle that doesn't resolve — the entity reloads
+/// without its `FormIdComponent`, a lost cross-session reference (see
+/// `byroredux_save::registry`). `validate_world`'s docstring defers this
+/// cross-plugin check to the binary because the binary owns the
+/// `FormIdPool`; running it before the write turns that silent drop into a
+/// loud abort, the same defense-in-depth the core gates give. SAVE-D4-01.
+fn validate_form_ids(world: &World) -> Vec<ValidationError> {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::FormIdPool;
+
+    let mut errors = Vec::new();
+    let Some(q) = world.query::<FormIdComponent>() else {
+        return errors;
+    };
+    let pool = world.try_resource::<FormIdPool>();
+    for (entity, comp) in q.iter() {
+        let resolves = pool.as_ref().is_some_and(|p| p.resolve(comp.0).is_some());
+        if !resolves {
+            let detail = match pool.as_ref() {
+                Some(_) => format!("FormId handle {:?} doesn't resolve in FormIdPool", comp.0),
+                None => "carries a FormIdComponent but the world has no FormIdPool".to_string(),
+            };
+            errors.push(ValidationError {
+                entity,
+                kind: ValidationKind::FormId,
+                detail,
+            });
+        }
+    }
+    errors
+}
+
 pub struct SaveCommand;
 
 impl ConsoleCommand for SaveCommand {
@@ -340,8 +377,11 @@ impl ConsoleCommand for SaveCommand {
             },
         };
 
-        // Pre-save validation — refuse to persist a broken world.
-        let issues = validate_world(world);
+        // Pre-save validation — refuse to persist a broken world. Core
+        // referential-integrity gates plus the binary-only FormId-pool
+        // resolvability check (which needs the `FormIdPool` this crate owns).
+        let mut issues = validate_world(world);
+        issues.extend(validate_form_ids(world));
         if !issues.is_empty() {
             let mut lines = vec![format!(
                 "save ABORTED: {} referential-integrity issue(s) — refusing to write a poisoned save:",
@@ -711,6 +751,57 @@ mod tests {
         let e = world.spawn();
         world.insert(e, Transform::default());
         assert!(validate_world(&world).is_empty());
+    }
+
+    /// SAVE-D4-01 (SIBLING): a `FormIdComponent` whose handle doesn't
+    /// resolve in the live `FormIdPool` is rejected by the binary-side gate
+    /// before the write — otherwise the snapshot serializer silently drops
+    /// it and the entity reloads without its form id.
+    #[test]
+    fn unresolvable_form_id_is_rejected() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+
+        let mut world = World::new();
+        world.insert_resource(FormIdPool::new()); // empty — resolves nothing
+
+        // Mint a handle in a throwaway pool; the world's empty pool can't
+        // resolve it (an empty `to_pair` yields `None` for any index).
+        let stray = {
+            let mut tmp = FormIdPool::new();
+            tmp.intern(FormIdPair {
+                plugin: PluginId::from_filename("Test.esm"),
+                local: LocalFormId(0x07),
+            })
+        };
+
+        let e = world.spawn();
+        world.insert(e, FormIdComponent(stray));
+
+        let errors = validate_form_ids(&world);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, ValidationKind::FormId);
+        assert_eq!(errors[0].entity, e);
+    }
+
+    /// A resolvable handle (interned in the world's own pool) passes clean.
+    #[test]
+    fn resolvable_form_id_passes() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+
+        let mut world = World::new();
+        world.insert_resource(FormIdPool::new());
+        let fid = {
+            let mut pool = world.resource_mut::<FormIdPool>();
+            pool.intern(FormIdPair {
+                plugin: PluginId::from_filename("Test.esm"),
+                local: LocalFormId(0x07),
+            })
+        };
+        let e = world.spawn();
+        world.insert(e, FormIdComponent(fid));
+        assert!(validate_form_ids(&world).is_empty());
     }
 
     /// `save` then `load` (commands) round-trip through disk: the save

@@ -14,6 +14,7 @@
 
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::components::{Children, EquipmentSlots, Inventory, Parent};
+use byroredux_core::ecs::resources::ItemInstancePool;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 
@@ -37,6 +38,16 @@ pub enum ValidationKind {
     Equipment,
     /// An `AnimationPlayer.clip_handle` isn't in the clip registry.
     AnimationClip,
+    /// An `ItemStack.instance` id doesn't resolve to a live entry in the
+    /// per-world `ItemInstancePool` (a dangling per-instance reference).
+    ItemInstance,
+    /// A `FormIdComponent` handle doesn't resolve in the `FormIdPool`.
+    ///
+    /// Emitted only by the **binary-side** supplementary check (which owns
+    /// the `FormIdPool`), not by [`validate_world`]; the variant lives here
+    /// so the binary can reuse [`ValidationError`] for a uniform abort
+    /// message. See `byroredux::save_io::validate_form_ids`.
+    FormId,
     /// An entity reference points past `next_entity` (never spawned).
     DanglingEntity,
 }
@@ -53,6 +64,7 @@ pub fn validate_world(world: &World) -> Vec<ValidationError> {
     validate_hierarchy(world, next_entity, &mut errors);
     validate_equipment(world, &mut errors);
     validate_animation(world, next_entity, &mut errors);
+    validate_inventory_instances(world, &mut errors);
 
     errors
 }
@@ -185,5 +197,130 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
                 });
             }
         }
+    }
+}
+
+/// Every `ItemStack.instance` that is `Some(id)` must resolve to a live
+/// entry in the per-world [`ItemInstancePool`] (saved as a resource).
+///
+/// A dangling `ItemInstanceId` — the pool entry released while the stack
+/// referencing it survived, or an id past the pool's length — would pass
+/// the other gates, be written, and on load index a non-existent or wrong
+/// instance: the "persist an inconsistent reference" corruption tail the
+/// format exists to prevent. `instance == None` (the stackable common
+/// case) is always fine. A stack that references an instance while the
+/// world carries no pool at all is itself unresolvable, so it is flagged
+/// too. SAVE-D4-01.
+fn validate_inventory_instances(world: &World, errors: &mut Vec<ValidationError>) {
+    let Some(q_inv) = world.query::<Inventory>() else {
+        return;
+    };
+    let pool = world.try_resource::<ItemInstancePool>();
+
+    for (entity, inventory) in q_inv.iter() {
+        for (idx, stack) in inventory.items.iter().enumerate() {
+            let Some(instance) = stack.instance else {
+                continue;
+            };
+            let resolves = pool.as_ref().is_some_and(|p| p.get(instance).is_some());
+            if !resolves {
+                let detail = match pool.as_ref() {
+                    Some(_) => format!(
+                        "items[{idx}].instance {} not live in ItemInstancePool",
+                        instance.0
+                    ),
+                    None => format!(
+                        "items[{idx}].instance {} but world has no ItemInstancePool",
+                        instance.0
+                    ),
+                };
+                errors.push(ValidationError {
+                    entity,
+                    kind: ValidationKind::ItemInstance,
+                    detail,
+                });
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::ecs::components::{ItemInstanceId, ItemStack};
+    use byroredux_core::ecs::resources::ItemInstance;
+    use std::num::NonZeroU32;
+
+    fn instance_id(slot: u32) -> ItemInstanceId {
+        ItemInstanceId(NonZeroU32::new(slot).expect("test slot is non-zero"))
+    }
+
+    /// A stack with `instance == None` (the stackable common case) never
+    /// touches the pool, so it is clean even with no pool present.
+    #[test]
+    fn stackable_item_without_instance_is_clean() {
+        let mut world = World::new();
+        let e = world.spawn();
+        let mut inv = Inventory::new();
+        inv.push(ItemStack::new(0xDEAD, 99));
+        world.insert(e, inv);
+        assert!(validate_world(&world).is_empty());
+    }
+
+    /// A live instance id (allocated in the pool) resolves — clean.
+    #[test]
+    fn live_item_instance_passes() {
+        let mut world = World::new();
+        let mut pool = ItemInstancePool::new();
+        let id = pool.allocate(ItemInstance::default());
+        world.insert_resource(pool);
+
+        let e = world.spawn();
+        let mut inv = Inventory::new();
+        let mut stack = ItemStack::new(0xDEAD, 1);
+        stack.instance = Some(id);
+        inv.push(stack);
+        world.insert(e, inv);
+
+        assert!(validate_world(&world).is_empty(), "{:?}", validate_world(&world));
+    }
+
+    /// SAVE-D4-01 regression: a dangling `ItemInstanceId` (the pool entry
+    /// released — or never allocated — while the referencing stack
+    /// survived) is rejected by the gate rather than silently written and
+    /// indexing a non-existent instance on load.
+    #[test]
+    fn dangling_item_instance_is_rejected() {
+        let mut world = World::new();
+        world.insert_resource(ItemInstancePool::new()); // empty: only the sentinel
+
+        let e = world.spawn();
+        let mut inv = Inventory::new();
+        let mut stack = ItemStack::new(0xDEAD, 1);
+        stack.instance = Some(instance_id(42)); // never allocated
+        inv.push(stack);
+        world.insert(e, inv);
+
+        let errors = validate_world(&world);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, ValidationKind::ItemInstance);
+        assert_eq!(errors[0].entity, e);
+    }
+
+    /// An instance reference with no `ItemInstancePool` resource in the
+    /// world at all is also unresolvable — flagged, not silently passed.
+    #[test]
+    fn item_instance_without_pool_is_rejected() {
+        let mut world = World::new();
+        let e = world.spawn();
+        let mut inv = Inventory::new();
+        let mut stack = ItemStack::new(0xDEAD, 1);
+        stack.instance = Some(instance_id(1));
+        inv.push(stack);
+        world.insert(e, inv);
+
+        let errors = validate_world(&world);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, ValidationKind::ItemInstance);
     }
 }
