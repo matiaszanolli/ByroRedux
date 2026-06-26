@@ -82,7 +82,14 @@ impl SaveRegistry {
                 let Some(q) = world.query::<T>() else {
                     return Ok(serde_json::Value::Array(Vec::new()));
                 };
-                let rows: Vec<(u32, &T)> = q.iter().collect();
+                let mut rows: Vec<(u32, &T)> = q.iter().collect();
+                // SAVE-D1-01 — sparse storages iterate in insertion order,
+                // not entity order, so the same world could serialise a
+                // column's rows in a different sequence across runs and
+                // produce a different CRC. Sort by entity id for a
+                // reproducible byte stream (load is order-independent —
+                // `insert_batch` keys by the saved id).
+                rows.sort_by_key(|(entity, _)| *entity);
                 serde_json::to_value(&rows).map_err(|source| SaveError::Serde {
                     column: name.to_string(),
                     source,
@@ -194,6 +201,9 @@ impl SaveRegistry {
                         ),
                     }
                 }
+                // SAVE-D1-01 — reproducible CRC: sort by entity id (sparse
+                // iteration order isn't stable across runs).
+                rows.sort_by_key(|(entity, _)| *entity);
                 serde_json::to_value(&rows).map_err(|source| SaveError::Serde {
                     column: name.to_string(),
                     source,
@@ -207,7 +217,12 @@ impl SaveRegistry {
                     })?;
                 let n = rows.len();
                 let resolved: Vec<(u32, FormIdComponent)> = {
-                    let mut pool = world.resource_mut::<FormIdPool>();
+                    // SAVE-D2-02 — fail cleanly instead of panicking if the
+                    // pool isn't installed (e.g. a curated-resource restore
+                    // ordering bug); the driver surfaces the SaveError.
+                    let mut pool = world
+                        .try_resource_mut::<FormIdPool>()
+                        .ok_or(SaveError::MissingResource("FormIdPool"))?;
                     rows.into_iter()
                         .map(|(entity, pair)| (entity, FormIdComponent(pool.intern(pair))))
                         .collect()

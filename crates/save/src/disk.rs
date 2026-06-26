@@ -55,6 +55,16 @@ pub fn write_slot(dir: &Path, slot: u32, bytes: &[u8]) -> Result<PathBuf, SaveEr
     }
 
     fs::rename(&tmp_path, &final_path)?;
+
+    // SAVE-D3-01 — a successful `rename` isn't durable until the parent
+    // directory's own metadata is fsynced: a crash immediately after can
+    // otherwise lose the new directory entry (slot points at the old or no
+    // inode) even though we returned Ok. Opening a directory as a `File`
+    // and fsyncing it is a Unix capability; platforms that can't open a
+    // directory (Windows) journal the rename, so skip there.
+    if let Ok(dir_file) = fs::File::open(dir) {
+        dir_file.sync_all()?;
+    }
     Ok(final_path)
 }
 
@@ -78,6 +88,16 @@ pub fn list_slots(dir: &Path) -> Vec<u32> {
     };
     slots.sort_unstable();
     slots
+}
+
+/// Cursor for a resumed ring: one past the slot with the newest mtime, or
+/// `0` when no slots exist. Pure so the resume policy is unit-testable
+/// without touching the filesystem. SAVE-D3-02.
+fn cursor_after_newest(slots: &[(u32, std::time::SystemTime)], size: u32) -> u32 {
+    match slots.iter().max_by_key(|(_, mtime)| *mtime) {
+        Some((newest, _)) => (newest + 1) % size.max(1),
+        None => 0,
+    }
 }
 
 /// Extract `n` from `save_<n>.ess`, or `None` if the name doesn't match.
@@ -105,6 +125,37 @@ impl SaveRing {
         Self {
             size: size.max(1),
             cursor: 0,
+        }
+    }
+
+    /// Create a ring whose cursor resumes *past* the most-recently-written
+    /// slot on disk (SAVE-D3-02).
+    ///
+    /// The cursor is in-memory, so a plain [`new`](Self::new) restarts it at
+    /// 0 every launch — and if slot 0 held the newest save, the first
+    /// quicksave after a restart clobbers it. Scanning the slot files' mtimes
+    /// and starting one past the newest spreads the next write onto a fresh
+    /// slot instead, preserving the latest save the same way mid-session
+    /// round-robin already does.
+    pub fn resume(size: u32, dir: &Path) -> Self {
+        let size = size.max(1);
+        let slots: Vec<(u32, std::time::SystemTime)> = match fs::read_dir(dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let slot = parse_slot_filename(&e.file_name().to_string_lossy())?;
+                    if slot >= size {
+                        return None; // a slot from a larger former ring
+                    }
+                    let mtime = e.metadata().ok()?.modified().ok()?;
+                    Some((slot, mtime))
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        Self {
+            size,
+            cursor: cursor_after_newest(&slots, size),
         }
     }
 
@@ -144,6 +195,30 @@ mod tests {
         assert_eq!(ring.size(), 1);
         assert_eq!(ring.advance(), 0);
         assert_eq!(ring.advance(), 0);
+    }
+
+    #[test]
+    fn cursor_after_newest_points_past_latest_mtime() {
+        use std::time::{Duration, SystemTime};
+        let t = |s: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(s);
+        // Slot 1 is newest → resume one past it (slot 2): the next save lands
+        // on a fresh slot, not the just-written newest. SAVE-D3-02.
+        let slots = [(0u32, t(100)), (1, t(300)), (2, t(200))];
+        assert_eq!(cursor_after_newest(&slots, 3), 2);
+        // Newest is the last slot → wrap to 0 (the oldest), not clobber it.
+        let slots = [(0u32, t(100)), (2, t(300))];
+        assert_eq!(cursor_after_newest(&slots, 3), 0);
+        // No slots → start at 0.
+        assert_eq!(cursor_after_newest(&[], 3), 0);
+    }
+
+    #[test]
+    fn resume_on_empty_dir_starts_at_zero() {
+        let dir = std::env::temp_dir().join(format!("byro_save_resume_empty_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let ring = SaveRing::resume(3, &dir);
+        assert_eq!(ring.peek(), 0, "no slots on disk → cursor starts at 0");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

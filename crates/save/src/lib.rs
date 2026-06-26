@@ -80,6 +80,14 @@ pub enum SaveError {
     #[error("save schema fingerprint mismatch: file {file:#018x}, engine {engine:#018x}")]
     SchemaMismatch { file: u64, engine: u64 },
 
+    /// A load/apply closure needs a world resource that isn't installed
+    /// (e.g. the `FormIdComponent` load needs a `FormIdPool` to re-intern
+    /// stable pairs). Returned instead of panicking (SAVE-D2-02) so a
+    /// partial or mis-ordered restore fails cleanly rather than aborting
+    /// the process.
+    #[error("save load needs resource '{0}' but it isn't installed in the world")]
+    MissingResource(&'static str),
+
     /// I/O error reading or writing a save file on disk.
     #[error("save I/O error: {0}")]
     Io(#[from] std::io::Error),

@@ -126,10 +126,11 @@ impl Resource for SaveState {}
 
 impl SaveState {
     pub fn new(dir: PathBuf, ring_size: u32) -> Self {
-        Self {
-            dir,
-            ring: disk::SaveRing::new(ring_size),
-        }
+        // SAVE-D3-02 — resume the ring cursor past the newest on-disk slot so
+        // the first quicksave after a restart doesn't clobber the most-recent
+        // save (the cursor is in-memory and would otherwise restart at 0).
+        let ring = disk::SaveRing::resume(ring_size, &dir);
+        Self { dir, ring }
     }
 }
 
