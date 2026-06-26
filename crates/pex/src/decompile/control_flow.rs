@@ -18,15 +18,17 @@
 //! ([`super::lift`]) runs once over the result so each block's trailing
 //! comparison folds into the `If`/`While` condition placeholder.
 //!
-//! ## Known gap (intentional, for this commit)
+//! ## Short-circuit boolean handling
 //!
-//! Short-circuit boolean collapse (`rebuildBooleanOperators`) is **not yet
-//! ported**. `&&`-style conditions still reconstruct correctly — as nested
-//! `If`s — but `||`-style short-circuits (where the block before the false
-//! exit is *itself* conditional) are not folded and that block is skipped,
-//! matching the C++ control-flow pass run without its boolean pre-pass.
-//! The boolean pass lands in a following commit, validated against the
-//! decompiler fidelity gate.
+//! Short-circuit boolean collapse (`rebuildBooleanOperators`) **is ported**:
+//! [`super::lower`] runs it over the CFG + scopes *before* [`reconstruct`]
+//! (matching Champollion's two-pass order), so `&&`/`||` conditions are
+//! already folded into a single condition node by the time control flow is
+//! rebuilt here. The residual `else` branch below (a `last`-is-conditional
+//! block left unmerged and advanced past) only fires for the `||`-shapes the
+//! boolean pass declined to collapse — see SCR-D3-01/#1732 for that tail.
+//! (SCR-D3-02/#1738: this block previously claimed the boolean pass was
+//! unported.)
 
 use std::collections::BTreeMap;
 
