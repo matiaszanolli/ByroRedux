@@ -589,6 +589,30 @@ pub fn execute_pending_save_loads(
     let tex_provider = crate::asset_provider::build_texture_provider(&args);
     let mut mat_provider = crate::asset_provider::build_material_provider(&args);
 
+    // SAVE-D6-02 — pre-flight the reload BEFORE the destructive teardown.
+    // `unload_current_interior` + `drain_streaming_state` are irreversible;
+    // if the reload then fails (missing/corrupt ESM, renamed/absent cell
+    // editor id) the old `Err => return` left the engine in an empty world
+    // with the player stranded in the void. Both of those failure modes
+    // surface in `validate_cell_loadable` (parse + cell lookup, the same
+    // non-destructive prefix `load_cell_with_masters` runs first), so we can
+    // catch them here and KEEP the current cell instead. The on-disk save is
+    // untouched either way; this just preserves the live session.
+    if let Err(e) = crate::cell_loader::validate_cell_loadable(
+        &cell_ctx.masters,
+        &cell_ctx.esm_path,
+        &cell_ctx.cell_editor_id,
+    ) {
+        log::error!(
+            "save load ABORTED — cannot reload cell '{}'; keeping the current cell so the \
+             session isn't stranded in an empty world (the on-disk save is intact; relaunch \
+             to recover): {:#}",
+            cell_ctx.cell_editor_id,
+            e
+        );
+        return;
+    }
+
     // Tear down whatever's loaded, then reload the saved cell fresh.
     if streaming.is_some() {
         crate::streaming_helpers::drain_streaming_state(world, ctx, streaming);

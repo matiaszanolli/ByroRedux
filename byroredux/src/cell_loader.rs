@@ -109,7 +109,7 @@ pub(crate) use load::apply_interior_cell_lighting;
 #[allow(unused_imports)]
 pub(crate) use load::resolve_cell_lighting;
 #[allow(unused_imports)]
-pub use load::{load_cell_with_masters, CellLoadResult};
+pub use load::{load_cell_with_masters, validate_cell_loadable, CellLoadResult};
 #[allow(unused_imports)]
 pub(crate) use object_lod::{stream_object_lod_blocks, unload_object_lod_block, ObjectLodBlock};
 pub(crate) use partial::finish_partial_import;

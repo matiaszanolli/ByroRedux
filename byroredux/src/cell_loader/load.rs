@@ -121,6 +121,41 @@ pub(crate) fn stamp_cell_root(
 /// On unresolved REFR `base_form_id` lookups, the warning summary now
 /// names the missing plugin so the failure mode is diagnosable
 /// instead of silent. See M46.0 / #561.
+/// SAVE-D6-02 — non-destructive pre-flight for a live load.
+///
+/// Parses the plugin set and confirms `cell_editor_id` resolves, WITHOUT
+/// mutating any world or GPU state. Mirrors the first two phases of
+/// [`load_cell_with_masters`] (parse → cell lookup); those are exactly the
+/// two phases the live `load <slot>` failure modes hit (missing/corrupt
+/// ESM, renamed/absent cell editor id), and both are non-destructive in the
+/// full loader too. The caller runs this *before* tearing down the running
+/// cell, so a reload that can't succeed keeps the current cell instead of
+/// stranding the player in an empty world.
+///
+/// The full [`load_cell_with_masters`] re-parses (a few seconds, paid once
+/// per user-initiated load) — cheap insurance against an unrecoverable
+/// session. Returns `Ok(())` when the cell is loadable.
+pub fn validate_cell_loadable(
+    masters: &[String],
+    esm_path: &str,
+    cell_editor_id: &str,
+) -> anyhow::Result<()> {
+    let plugin_paths: Vec<&str> = masters
+        .iter()
+        .map(|s| s.as_str())
+        .chain(std::iter::once(esm_path))
+        .collect();
+    let (index, _load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
+    let cell_key = cell_editor_id.to_ascii_lowercase();
+    anyhow::ensure!(
+        index.cells.cells.contains_key(&cell_key),
+        "Cell '{}' not found among {} interior cells in the saved plugin set",
+        cell_editor_id,
+        index.cells.cells.len(),
+    );
+    Ok(())
+}
+
 #[tracing::instrument(
     name = "load_cell_with_masters",
     skip_all,
@@ -434,6 +469,22 @@ pub(crate) fn resolve_cell_lighting(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SAVE-D6-02 — the live-load pre-flight must FAIL (not panic) when the
+    /// saved plugin set can't be read, so the drain catches it BEFORE tearing
+    /// down the running cell and the player isn't stranded in the void. A
+    /// missing ESM is the cheapest reproduction of the "corrupt/missing ESM"
+    /// failure mode and needs no game data.
+    #[test]
+    fn validate_cell_loadable_errors_on_missing_esm() {
+        let err = validate_cell_loadable(&[], "/nonexistent/Missing.esm", "AnyCell")
+            .expect_err("a missing ESM must fail the pre-flight");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Missing.esm"),
+            "error should name the unreadable plugin: {msg}"
+        );
+    }
 
     /// Minimal FNV-shape interior lighting (no Skyrim+ / Starfield tail).
     fn interior_lighting() -> esm::cell::CellLighting {
