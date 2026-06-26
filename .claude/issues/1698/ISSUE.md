@@ -106,3 +106,18 @@ coverage gap is elsewhere (lead 1: a subset of surfaces whose bhk parse or
 synth fallback silently produces no collider). Lead (3) is a separate
 character-grounding bug — the KCC body is kinematic, so it adds no solver
 cost; it is not part of the FPS collapse.
+
+### Done — culprit-naming diagnostic (lead 1, later 2026-06-24 session)
+`crates/physics/src/sync.rs::dump_awake_fallers`, gated by the opt-in env
+flag `BYRO_PROFILE_FALLERS` (separate from `BYRO_PROFILE`), one-shot per
+process, pure logging. On the first frame with ≥16 awake dynamic bodies it
+dumps them sorted by most-negative vertical velocity — large `-vy` = free-
+falling with no collider beneath (the coverage gap); `vy≈0` = spawn-
+interpenetration jitter pile — each tagged with its entity's `RenderLayer`
+and stable local form id (resolved through `FormIdPool`). The form ids are
+the **entity→base-form** link lead 1 asks for: resolve them in xEdit to name
+the exact STAT/FURN/clutter whose collision isn't materializing. Unit-tested
+(`worst_fallers` sort/cap). **This is the instrument, not the cure** — it
+turns the next Dragonsreach runtime run (`BYRO_PROFILE_FALLERS=1 … --game
+skyrim_se --cell WhiterunDragonsreach`) into a root-cause-naming run; the
+actual collider fix lands once those form ids are known. Issue stays OPEN.

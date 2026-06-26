@@ -14,10 +14,13 @@
 //!    bodies only — static/keyframed are driven the other way).
 
 use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
-use byroredux_core::ecs::components::{GlobalTransform, Transform};
+use byroredux_core::ecs::components::{FormIdComponent, GlobalTransform, RenderLayer, Transform};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
+use byroredux_core::form_id::FormIdPool;
 use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder, RigidBodyType};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::components::RapierHandles;
 use crate::config::ContactConfig;
@@ -157,6 +160,130 @@ pub fn physics_sync_system(world: &World, dt: f32) {
             ms4.unwrap_or(0.0),
             awake_dyn,
             awake_kin,
+        );
+    }
+
+    // #1698 — opt-in awake-faller diagnostic (separate from BYRO_PROFILE so a
+    // root-cause run can name the clutter behind a cell-entry settle storm
+    // without the per-phase spam). Zero cost when the flag is unset.
+    if std::env::var_os("BYRO_PROFILE_FALLERS").is_some() {
+        dump_awake_fallers(world);
+    }
+}
+
+// ── #1698 awake-faller diagnostic ───────────────────────────────────────
+
+/// Only fire the dump once at least this many dynamic bodies are awake, so
+/// it captures a genuine cell-entry settle storm rather than incidental
+/// startup motion. Diagnostic trigger only — never affects simulation.
+const AWAKE_FALLER_DUMP_FLOOR: usize = 16;
+
+/// Process one-shot: the diagnostic dumps a single time so the 28 s storm
+/// doesn't flood the log every frame.
+static AWAKE_FALLERS_DUMPED: AtomicBool = AtomicBool::new(false);
+
+/// One awake dynamic body, resolved to its identifying ECS data.
+#[derive(Clone)]
+struct FallerEntry {
+    entity: String,
+    y: f32,
+    vy: f32,
+    /// Stable local form id (xEdit-resolvable), when the entity carries a
+    /// resolvable `FormIdComponent`.
+    form: Option<u32>,
+    /// `RenderLayer` label (`Clutter` / `Arch` / …), when present.
+    layer: Option<&'static str>,
+}
+
+/// Sort by most-negative vertical velocity (worst free-fallers first) and
+/// take the first `n`. A large negative `vy` ⇒ free-falling with no collider
+/// beneath it (the #1698 coverage gap); `vy ≈ 0` ⇒ jittering in a
+/// spawn-interpenetration pile. Pure, so it's unit-testable.
+fn worst_fallers(mut entries: Vec<FallerEntry>, n: usize) -> Vec<FallerEntry> {
+    entries.sort_by(|a, b| a.vy.partial_cmp(&b.vy).unwrap_or(std::cmp::Ordering::Equal));
+    entries.truncate(n);
+    entries
+}
+
+fn render_layer_label(l: RenderLayer) -> &'static str {
+    match l {
+        RenderLayer::Architecture => "Arch",
+        RenderLayer::Clutter => "Clutter",
+        RenderLayer::Actor => "Actor",
+        RenderLayer::Decal => "Decal",
+    }
+}
+
+/// #1698 — name the awake dynamic bodies behind a Dragonsreach-style
+/// settle storm. Implements the curated ISSUE.md's "log entity→base-form
+/// for awake fallers" next step: the form ids let a runtime session resolve
+/// the specific STAT/FURN/clutter whose bhk or synth-trimesh collision isn't
+/// materializing (the root-cause coverage gap the anti-spiral substep budget
+/// only mitigates). Gated by `BYRO_PROFILE_FALLERS`, one-shot, pure logging.
+fn dump_awake_fallers(world: &World) {
+    use rapier3d::prelude::RigidBodyHandle;
+
+    let pw = world.resource::<PhysicsWorld>();
+    let awake: Vec<RigidBodyHandle> = pw.islands.active_dynamic_bodies().to_vec();
+    if awake.len() < AWAKE_FALLER_DUMP_FLOOR {
+        return; // not a storm yet — don't consume the one-shot
+    }
+    if AWAKE_FALLERS_DUMPED.swap(true, Ordering::Relaxed) {
+        return; // already dumped once this process
+    }
+
+    // Invert RapierHandles (entity → body) into body → entity for lookup.
+    let mut body_to_entity: HashMap<RigidBodyHandle, EntityId> = HashMap::new();
+    if let Some(hq) = world.query::<RapierHandles>() {
+        for (entity, h) in hq.iter() {
+            body_to_entity.insert(h.body, entity);
+        }
+    }
+    let layer_q = world.query::<RenderLayer>();
+    let form_q = world.query::<FormIdComponent>();
+    let pool = world.try_resource::<FormIdPool>();
+
+    let mut entries: Vec<FallerEntry> = Vec::with_capacity(awake.len());
+    let (mut vy_min, mut vy_max) = (f32::INFINITY, f32::NEG_INFINITY);
+    for h in &awake {
+        let Some(body) = pw.bodies.get(*h) else { continue };
+        let vy = body.linvel().y;
+        vy_min = vy_min.min(vy);
+        vy_max = vy_max.max(vy);
+        let entity = body_to_entity.get(h).copied();
+        let layer = entity
+            .and_then(|e| layer_q.as_ref().and_then(|q| q.get(e).copied()))
+            .map(render_layer_label);
+        let form = entity.and_then(|e| {
+            let comp = form_q.as_ref()?.get(e)?;
+            pool.as_ref()?.resolve(comp.0).map(|pair| pair.local.0)
+        });
+        entries.push(FallerEntry {
+            entity: entity.map(|e| e.to_string()).unwrap_or_else(|| "?".into()),
+            y: body.translation().y,
+            vy,
+            form,
+            layer,
+        });
+    }
+
+    let total = entries.len();
+    let worst = worst_fallers(entries, 24);
+    log::warn!(
+        "#1698 awake-faller dump: {total} awake dynamic bodies, vy range [{vy_min:.0}, {vy_max:.0}] \
+         BU/s. Worst {} by downward velocity (large -vy = free-falling with no collider beneath; \
+         vy≈0 = spawn-interpenetration jitter pile). Resolve the form ids in xEdit to find the \
+         STAT/FURN/clutter whose collision isn't materializing:",
+        worst.len(),
+    );
+    for f in &worst {
+        log::warn!(
+            "  entity {} layer={} form={} y={:.0} vy={:.0}",
+            f.entity,
+            f.layer.unwrap_or("?"),
+            f.form.map(|id| format!("{id:#08X}")).unwrap_or_else(|| "?".into()),
+            f.y,
+            f.vy,
         );
     }
 }
@@ -465,5 +592,39 @@ fn pull_dynamic(world: &World) {
             t.translation = pos;
             t.rotation = rot;
         }
+    }
+}
+
+#[cfg(test)]
+mod faller_diag_tests {
+    use super::{worst_fallers, FallerEntry};
+
+    fn entry(vy: f32) -> FallerEntry {
+        FallerEntry {
+            entity: "e".into(),
+            y: 0.0,
+            vy,
+            form: None,
+            layer: None,
+        }
+    }
+
+    /// #1698 — the diagnostic surfaces the worst free-fallers first: entries
+    /// sort by most-negative vertical velocity, and `n` caps the dump size.
+    #[test]
+    fn worst_fallers_sorts_by_downward_velocity_and_caps() {
+        let entries = vec![entry(-10.0), entry(-700.0), entry(0.5), entry(-100.0)];
+        let worst = worst_fallers(entries, 2);
+        assert_eq!(worst.len(), 2, "capped to n");
+        assert_eq!(worst[0].vy, -700.0, "most-negative vy (fastest faller) first");
+        assert_eq!(worst[1].vy, -100.0);
+    }
+
+    /// Fewer entries than the cap returns them all, still sorted.
+    #[test]
+    fn worst_fallers_returns_all_when_under_cap() {
+        let worst = worst_fallers(vec![entry(0.0), entry(-50.0)], 10);
+        assert_eq!(worst.len(), 2);
+        assert_eq!(worst[0].vy, -50.0);
     }
 }
