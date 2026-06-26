@@ -133,6 +133,22 @@ use std::io::Cursor;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Silence floor in decibels for the linear→dB conversion — clamps
+/// non-positive / near-zero amplitudes so `log10` doesn't blow up.
+const SILENCE_DB: f32 = -60.0;
+
+/// Convert a linear gameplay volume (1.0 = "as authored", 0.5 = half-loud)
+/// to the decibel gain kira reasons in: `db = 20·log10(amplitude)`, clamped
+/// to [`SILENCE_DB`] for non-positive amplitudes. AUD-2026-06-23-01 — was
+/// inlined verbatim at three play sites.
+fn linear_volume_to_db(volume: f32) -> f32 {
+    if volume > 0.0001 {
+        20.0 * volume.log10()
+    } else {
+        SILENCE_DB
+    }
+}
+
 // Re-export the kira types downstream crates need so they can hold
 // `Arc<StaticSoundData>` (in `Resource`s, components, etc.) without
 // pulling kira as a direct dependency. The audio crate is the canon
@@ -435,11 +451,7 @@ impl AudioWorld {
         if let Some(existing) = self.music.as_mut() {
             existing.stop(fade);
         }
-        let db = if volume > 0.0001 {
-            20.0 * volume.log10()
-        } else {
-            -60.0
-        };
+        let db = linear_volume_to_db(volume);
         let configured = streaming_sound.volume(db).fade_in_tween(Some(fade));
         match mgr.play(configured) {
             Ok(handle) => {
@@ -802,11 +814,7 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
                 continue;
             }
         };
-        let db = if p.volume > 0.0001 {
-            20.0 * p.volume.log10()
-        } else {
-            -60.0
-        };
+        let db = linear_volume_to_db(p.volume);
         let sound = (*p.sound).clone().volume(db);
         let handle = match track.play(sound) {
             Ok(h) => h,
@@ -927,18 +935,11 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
                 continue;
             }
         };
-        // kira reasons about gain in decibels; gameplay reasons in
-        // linear amplitude (1.0 = "as authored", 0.5 = half-loud).
-        // Convert: db = 20 * log10(amplitude). Clamp to SILENCE
-        // (-60 dB) for non-positive volumes so log10 doesn't blow
-        // up. The underlying `Arc<[Frame]>` is reused — `volume()`
-        // returns a fresh `StaticSoundData` value with new settings,
-        // not new audio.
-        let db = if p.volume > 0.0001 {
-            20.0 * p.volume.log10()
-        } else {
-            -60.0
-        };
+        // kira reasons about gain in decibels; gameplay reasons in linear
+        // amplitude. `linear_volume_to_db` does the conversion + silence
+        // clamp. The underlying `Arc<[Frame]>` is reused — `volume()` returns
+        // a fresh `StaticSoundData` value with new settings, not new audio.
+        let db = linear_volume_to_db(p.volume);
         let mut sound = (*p.sound).clone().volume(db);
         if p.looping {
             // Phase 4: kira's `loop_region(..)` enables full-region

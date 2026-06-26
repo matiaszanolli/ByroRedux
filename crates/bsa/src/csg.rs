@@ -204,13 +204,14 @@ impl CsgArchive {
                     ),
                 ));
             }
+            // `local < chunk.len()` (checked above) and `remaining > 0` (loop
+            // guard), so `take >= 1` always — `remaining` strictly decreases
+            // and the loop terminates. (Removed a dead `take == 0` break,
+            // FO4-2026-06-23-L02 / #1735.)
             let take = remaining.min(chunk.len() - local);
             out.extend_from_slice(&chunk[local..local + take]);
             pos += take as u64;
             remaining -= take;
-            if take == 0 {
-                break;
-            }
         }
         Ok(out)
     }

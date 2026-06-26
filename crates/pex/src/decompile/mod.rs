@@ -63,6 +63,13 @@ pub enum DecompileError {
     #[error("failed to rebuild control flow in '{function}'")]
     ControlFlowFailed { function: String },
 
+    /// Control-flow reconstruction nested deeper than the recursion cap —
+    /// a malformed / adversarial `.pex` (SAFE-2026-06-23-02). Bounded so an
+    /// untrusted plugin can't blow the stack; the cap sits far above any
+    /// real Papyrus nesting depth.
+    #[error("control-flow reconstruction in '{function}' exceeded the recursion limit ({limit})")]
+    RecursionLimit { function: String, limit: usize },
+
     /// The `.pex` carried no object to decompile into a script.
     #[error(".pex has no object to decompile")]
     EmptyPex,

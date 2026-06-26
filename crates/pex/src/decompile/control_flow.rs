@@ -30,6 +30,12 @@
 
 use std::collections::BTreeMap;
 
+/// Recursion cap for [`Reconstructor::rebuild`] (SAFE-2026-06-23-02). Each
+/// nested `If`/`Else`/`While` body recurses once; real Papyrus nests a
+/// handful deep, so 1024 is far above any well-formed `.pex` while still
+/// bounding an adversarial / malformed one before it can overflow the stack.
+const MAX_REBUILD_DEPTH: usize = 1024;
+
 use super::cfg::{Cfg, END};
 use super::lift::rebuild_expression;
 use super::node::Node;
@@ -50,7 +56,7 @@ pub fn reconstruct(
     let entry = cfg.entry;
     let exit = cfg.exit;
     let mut r = Reconstructor { cfg, scopes, func_name: func_name.to_string() };
-    r.rebuild(entry, exit)
+    r.rebuild(entry, exit, 0)
 }
 
 struct Reconstructor {
@@ -82,7 +88,16 @@ impl Reconstructor {
 
     /// Rebuild the structured statements for the block range
     /// `[start, end)` (end is the stop-anchor block key, exclusive).
-    fn rebuild(&mut self, start: usize, end: usize) -> Result<Vec<Node>, DecompileError> {
+    ///
+    /// `depth` bounds nested-body recursion against a malformed / adversarial
+    /// `.pex` (SAFE-2026-06-23-02) — see [`MAX_REBUILD_DEPTH`].
+    fn rebuild(&mut self, start: usize, end: usize, depth: usize) -> Result<Vec<Node>, DecompileError> {
+        if depth > MAX_REBUILD_DEPTH {
+            return Err(DecompileError::RecursionLimit {
+                function: self.func_name.clone(),
+                limit: MAX_REBUILD_DEPTH,
+            });
+        }
         if end < start {
             return Err(self.fail());
         }
@@ -143,7 +158,7 @@ impl Reconstructor {
                     // While: the body's tail jumps back to the condition.
                     let (body_start, body_end) = (on_true, on_false);
                     result.extend(self.take_scope(current));
-                    let body = self.rebuild(body_start, body_end)?;
+                    let body = self.rebuild(body_start, body_end, depth + 1)?;
                     result.push(Node::while_node(condition, body));
                     jump_to = Some(body_end);
                 } else if !last.is_conditional() {
@@ -151,7 +166,7 @@ impl Reconstructor {
                         // Simple If.
                         let (body_start, body_end) = (on_true, on_false);
                         result.extend(self.take_scope(current));
-                        let body = self.rebuild(body_start, body_end)?;
+                        let body = self.rebuild(body_start, body_end, depth + 1)?;
                         result.push(Node::if_else(condition, body, Vec::new()));
                         jump_to = Some(body_end);
                     } else {
@@ -160,8 +175,8 @@ impl Reconstructor {
                         let else_start = on_false;
                         let end_else = last.next;
                         result.extend(self.take_scope(current));
-                        let if_body = self.rebuild(if_start, else_start)?;
-                        let else_body = self.rebuild(else_start, end_else)?;
+                        let if_body = self.rebuild(if_start, else_start, depth + 1)?;
+                        let else_body = self.rebuild(else_start, end_else, depth + 1)?;
                         result.push(Node::if_else(condition, if_body, else_body));
                         jump_to = Some(end_else);
                     }
@@ -205,6 +220,30 @@ mod tests {
     }
     fn local(n: &str, t: &str) -> TypedName {
         TypedName { name: n.to_string(), type_name: t.to_string() }
+    }
+
+    /// SAFE-2026-06-23-02 — an adversarial / malformed `.pex` that would nest
+    /// deeper than the cap is rejected with a `RecursionLimit` error rather
+    /// than overflowing the stack. The depth guard fires before any CFG
+    /// access, so a trivial reconstructor exercises it.
+    #[test]
+    fn rebuild_rejects_excessive_recursion_depth() {
+        let mut r = Reconstructor {
+            cfg: Cfg {
+                blocks: BTreeMap::new(),
+                entry: 0,
+                exit: 0,
+            },
+            scopes: BTreeMap::new(),
+            func_name: "Deep".to_string(),
+        };
+        let err = r
+            .rebuild(0, 0, MAX_REBUILD_DEPTH + 1)
+            .expect_err("over-deep recursion must error, not overflow");
+        assert!(
+            matches!(err, DecompileError::RecursionLimit { limit, .. } if limit == MAX_REBUILD_DEPTH),
+            "got {err:?}"
+        );
     }
 
     /// Full pipeline for a single function: cfg → lift → reconstruct.

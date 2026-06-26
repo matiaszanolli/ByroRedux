@@ -601,12 +601,13 @@ pub mod presets {
         }
     }
 
-    /// Generic glass — η = 1.45 (soda-lime / window glass authored
-    /// at the Hyperion-table edge of the typical glass range).
-    /// `roughness = 0.0` (perfectly smooth surface), `metallic = 0`.
-    /// Transmission `spec_trans = 1.0` is a Disney-BSDF extension
-    /// not yet plumbed into our GpuMaterial — left as a TODO for
-    /// when the transmission lobe lands (tracked by #1627; #1248 closed).
+    /// Generic glass — η = 1.45 (soda-lime / window glass authored at the
+    /// Hyperion-table edge of the typical glass range). `roughness = 0.0`
+    /// (perfectly smooth surface), `metalness = 0`. A reference preset (its
+    /// canonical values are pinned by the Hyperion-table + caustic-source
+    /// tests); `spec_trans = 1.0` is a Disney-BSDF transmission extension not
+    /// yet on `GpuMaterial`, so it renders as a smooth dielectric until that
+    /// lobe is plumbed in.
     pub fn glass() -> GpuMaterial {
         GpuMaterial {
             roughness: 0.0,
@@ -621,9 +622,9 @@ pub mod presets {
 
     /// Two-coat car paint. Hyperion table: base = green tint
     /// `(0.026, 0.147, 0.075)`, `roughness = 0.01`. Clearcoat
-    /// (`clearcoat = 1.0, clearcoat_gloss = 1.0` in Disney
-    /// 2012) is a Disney extension not yet on our GpuMaterial —
-    /// when it lands (#1627), this preset should set those alongside.
+    /// (`clearcoat = 1.0, clearcoat_gloss = 1.0` in Disney 2012) is a Disney
+    /// extension not yet on our GpuMaterial — when that lobe is plumbed in,
+    /// this preset should set those alongside.
     ///
     /// `base` argument lets the caller override the green default
     /// (Hyperion ships green as the demo colour; real car-paint

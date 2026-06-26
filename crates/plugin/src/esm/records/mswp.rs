@@ -38,7 +38,7 @@
 //! See audit FO4-DIM6-05 / #590.
 
 use crate::esm::reader::SubRecord;
-use crate::esm::records::common::{find_sub, read_string_sub, read_zstring};
+use crate::esm::records::common::{read_string_sub, read_zstring};
 
 /// One source → target swap entry inside an MSWP record.
 #[derive(Debug, Clone, PartialEq)]
@@ -123,9 +123,9 @@ pub fn parse_mswp(form_id: u32, subs: &[SubRecord]) -> MaterialSwapRecord {
                 }
             }
             _ => {
-                // EDID / FNAM are read above via `find_sub`; everything
-                // else (FULL, OBND, etc. — none observed in the vanilla
-                // corpus but mods can add them) is silently ignored.
+                // EDID / FNAM are handled by their own match arms above;
+                // everything else (FULL, OBND, etc. — none observed in the
+                // vanilla corpus but mods can add them) is silently ignored.
             }
         }
     }
@@ -142,16 +142,6 @@ pub fn parse_mswp(form_id: u32, subs: &[SubRecord]) -> MaterialSwapRecord {
         path_filter,
         swaps,
     }
-}
-
-/// Tiny convenience: read the FNAM filter from the sub-record list
-/// without parsing the rest of the record. Used by callers that only
-/// want to know if the swap applies to a given path (filter peek).
-#[allow(dead_code)] // Reserved for the FO4-DIM6-02 stage-2 cell-loader integration.
-pub(crate) fn peek_path_filter(subs: &[SubRecord]) -> Option<String> {
-    find_sub(subs, b"FNAM")
-        .map(read_zstring)
-        .filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]
