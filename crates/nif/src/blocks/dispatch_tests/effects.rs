@@ -284,6 +284,64 @@ fn oblivion_ni_texture_effect_roundtrip() {
     assert_eq!(stream.position(), bytes.len() as u64);
 }
 
+/// Regression test for #1240 / TD2-001: FO4 `NiTextureEffect` drops the
+/// `NiDynamicEffect` tail (Switch State + Affected Nodes) just like FO4
+/// `NiLight` (#721). This is the texture-effect twin of
+/// `fo4_point_light_skips_dynamic_effect_tail` — the case the #721 sweep
+/// MISSED and #1240 fixed ~500 commits later. Both subclasses now share
+/// `NiDynamicEffectData::parse` (base.rs), so this pins that the
+/// consolidation keeps the BSVER gate on the texture-effect path: a
+/// parser that over-reads the 5+ absent tail bytes lands
+/// `model_projection_matrix` on garbage and the end-of-block position
+/// assertion fails.
+#[test]
+fn fo4_ni_texture_effect_skips_dynamic_effect_tail() {
+    use crate::blocks::texture::NiTextureEffect;
+
+    let header = fo4_header();
+    let mut bytes = fo4_niavobject_bytes();
+    // No NiDynamicEffect tail on FO4+ (bsver >= 130): directly into
+    // model_projection_matrix after the NiAVObject base.
+    for row in [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+        for v in row {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    // model_projection_translation: (0, 0, 0)
+    for _ in 0..3 {
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    bytes.extend_from_slice(&2u32.to_le_bytes()); // texture_filtering = 2
+    // NO max_anisotropy at 20.2.0.7 (< 20.5.0.4)
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // texture_clamping = 0
+    bytes.extend_from_slice(&4u32.to_le_bytes()); // texture_type = 4 (env map)
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // coordinate_generation_type = 0
+    bytes.extend_from_slice(&17i32.to_le_bytes()); // source_texture_ref = 17
+    bytes.push(0u8); // enable_plane = 0
+    // plane: normal (0, 1, 0), constant 0.5
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0.5f32.to_le_bytes());
+    // NO ps2_l / ps2_k at 20.2.0.7 (> 10.2.0.0)
+
+    let expected_len = bytes.len();
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("NiTextureEffect", &mut stream, Some(bytes.len() as u32))
+        .expect("FO4 NiTextureEffect must dispatch and consume the stream cleanly");
+    let e = block.as_any().downcast_ref::<NiTextureEffect>().unwrap();
+    // Default switch_state=true / no affected nodes when the tail is gated off.
+    assert!(e.switch_state);
+    assert!(e.affected_nodes.is_empty());
+    // These read correctly only when the parser SKIPPED the FO4-dropped
+    // tail; pre-#1240 they land 5+ bytes early on garbage.
+    assert_eq!(e.texture_filtering, 2);
+    assert_eq!(e.texture_type, 4);
+    assert_eq!(e.source_texture_ref.index(), Some(17));
+    assert!((e.plane[3] - 0.5).abs() < 1e-6);
+    assert_eq!(stream.position(), expected_len as u64);
+}
+
 /// Regression test for issue #143: legacy particle modifier chain
 /// and NiParticleSystemController. These types ship in every
 /// Oblivion magic FX / fire / dust / blood mesh and hard-fail the

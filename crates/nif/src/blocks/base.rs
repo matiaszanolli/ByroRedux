@@ -161,6 +161,56 @@ impl NiAVObjectData {
     }
 }
 
+/// `NiDynamicEffect` base fields: `Switch State` + `Affected Nodes`.
+///
+/// Exactly two NIF blocks subclass `NiDynamicEffect` — `NiLight`
+/// (`light.rs`) and `NiTextureEffect` (`texture.rs`). Both read this
+/// identical tail immediately after the `NiAVObject` base. FO4
+/// (BSVER >= 130) reparents the subclasses straight onto `NiAVObject`
+/// and drops the plumbing: nif.xml lines 3499/3504 carry
+/// `vercond="#NI_BS_LT_FO4#"` on both fields.
+///
+/// History: the BSVER gate was fixed for `NiLight` under #721 but the
+/// byte-identical copy in `NiTextureEffect` was missed and only fixed
+/// ~500 commits later under #1240 — over-reading 5+ bytes of FO4 data
+/// the whole time. Consolidated here under #1750 / TD2-001 so the gate
+/// has a single home; the next change applies to both subclasses at once.
+#[derive(Debug, Clone)]
+pub struct NiDynamicEffectData {
+    /// Effect is applied to the scene when true. Defaults true (absent)
+    /// at BSVER >= 130.
+    pub switch_state: bool,
+    /// Subtree Ptr-hashes this effect affects (kept raw u32 — Gamebryo
+    /// stores Ptr-typed fields as hashes). Empty at BSVER >= 130.
+    pub affected_nodes: Vec<u32>,
+}
+
+impl NiDynamicEffectData {
+    /// Parse the `NiDynamicEffect` tail. MUST be called immediately after
+    /// [`NiAVObjectData::parse`]. Reads nothing (switch_state=true, no
+    /// affected nodes) when `bsver >= FALLOUT4`, matching nif.xml's
+    /// `#NI_BS_LT_FO4#` gate.
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let pre_fo4 = stream.bsver() < crate::version::bsver::FALLOUT4;
+        let switch_state = if pre_fo4 && stream.version() >= NifVersion::V10_1_0_106 {
+            stream.read_u8()? != 0
+        } else {
+            true
+        };
+        let affected_nodes = if pre_fo4 && stream.version() >= NifVersion::V10_1_0_0 {
+            // #981 — bulk-read affected-nodes u32 array.
+            let count = stream.read_u32_le()? as usize;
+            stream.read_u32_array(count)?
+        } else {
+            Vec::new()
+        };
+        Ok(Self {
+            switch_state,
+            affected_nodes,
+        })
+    }
+}
+
 /// BSShaderProperty base class fields (FO3/FNV era).
 ///
 /// Shared by BSShaderPPLightingProperty and BSShaderNoLightingProperty.

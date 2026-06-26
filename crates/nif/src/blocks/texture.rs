@@ -2,7 +2,7 @@
 //! NiPixelData — embedded pixel data (used by some Oblivion NIFs).
 //! NiTextureEffect — projected texture effect (env map, gobo, fog).
 
-use super::base::{NiAVObjectData, NiObjectNETData};
+use super::base::{NiAVObjectData, NiDynamicEffectData, NiObjectNETData};
 use super::traits::{HasAVObject, HasObjectNET};
 use super::NiObject;
 use crate::impl_ni_object;
@@ -885,30 +885,15 @@ impl NiTextureEffect {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let av = NiAVObjectData::parse(stream)?;
 
-        // NiDynamicEffect base fields — same version gates as NiLight.
-        // See crates/nif/src/blocks/light.rs for the full rationale.
-        //
-        // #1240 — mirror #721's BSVER < FALLOUT4 gate. FO4 reparented
-        // NiDynamicEffect's subclasses straight onto NiAVObject and
-        // dropped the dynamic-effect plumbing (Switch State + Affected
-        // Nodes are absent at BSVER ≥ 130). nif.xml lines 3499/3504
-        // carry `vercond="#NI_BS_LT_FO4#"` on both fields. NiLightBase
-        // got the fix under #721; NiTextureEffect was missed in the
-        // same sweep. The two are the only NiDynamicEffect subclasses
-        // in nif.xml (verified 2026-05-23), so this closes the gap.
-        let pre_fo4 = stream.bsver() < crate::version::bsver::FALLOUT4;
-        let switch_state = if pre_fo4 && stream.version() >= NifVersion::V10_1_0_106 {
-            stream.read_u8()? != 0
-        } else {
-            true
-        };
-        let affected_nodes = if pre_fo4 && stream.version() >= NifVersion::V10_1_0_0 {
-            // #981 — bulk-read affected-nodes u32 array.
-            let count = stream.read_u32_le()? as usize;
-            stream.read_u32_array(count)?
-        } else {
-            Vec::new()
-        };
+        // NiDynamicEffect base (Switch State + Affected Nodes), gated on
+        // bsver < FALLOUT4. Shared with NiLight via NiDynamicEffectData
+        // (base.rs) — the two are the only NiDynamicEffect subclasses in
+        // nif.xml (verified 2026-05-23). See base.rs for the #721/#1240
+        // divergent-fix history this consolidation (#1750) closes out.
+        let NiDynamicEffectData {
+            switch_state,
+            affected_nodes,
+        } = NiDynamicEffectData::parse(stream)?;
 
         let model_projection_matrix = stream.read_ni_matrix3()?;
         let p = stream.read_ni_point3()?;

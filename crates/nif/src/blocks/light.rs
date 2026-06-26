@@ -32,7 +32,7 @@
 //! mesh-embedded lights across FO4 / FO76 / Starfield Meshes archives
 //! through the outer `block_size`-driven recovery path.
 
-use super::base::NiAVObjectData;
+use super::base::{NiAVObjectData, NiDynamicEffectData};
 use super::traits::{HasAVObject, HasObjectNET};
 use super::NiObject;
 use crate::stream::NifStream;
@@ -61,28 +61,14 @@ impl NiLightBase {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let av = NiAVObjectData::parse(stream)?;
 
-        // NiDynamicEffect base — present only when bsver < crate::version::bsver::FALLOUT4 (FO4
-        // reparents NiLight directly onto NiAVObject, dropping both
-        // fields per nif.xml `vercond="#NI_BS_LT_FO4#"`). Pre-#721 the
-        // parser checked only the NIF version gate, so on FO4 / FO76 /
-        // Starfield (NIF 20.2.0.7, bsver >= crate::version::bsver::FALLOUT4) it consumed 5+ bytes
-        // of NiLight color data as `switch_state + affected_nodes`,
-        // throwing every mesh-embedded light through `block_size`
-        // recovery as NiUnknown.
-        let pre_fo4 = stream.bsver() < crate::version::bsver::FALLOUT4;
-        let switch_state = if pre_fo4 && stream.version() >= NifVersion::V10_1_0_106 {
-            stream.read_u8()? != 0
-        } else {
-            true
-        };
-
-        let affected_nodes = if pre_fo4 && stream.version() >= NifVersion::V10_1_0_0 {
-            // #981 — bulk-read affected-nodes u32 array.
-            let count = stream.read_u32_le()? as usize;
-            stream.read_u32_array(count)?
-        } else {
-            Vec::new()
-        };
+        // NiDynamicEffect base (Switch State + Affected Nodes), gated on
+        // bsver < FALLOUT4. Shared with NiTextureEffect — see
+        // NiDynamicEffectData in base.rs for the BSVER-gate rationale
+        // and the #721/#1240 history.
+        let NiDynamicEffectData {
+            switch_state,
+            affected_nodes,
+        } = NiDynamicEffectData::parse(stream)?;
 
         // NiLight scalar fields.
         let dimmer = stream.read_f32_le()?;
