@@ -89,6 +89,41 @@ pub struct RagdollSpec {
     pub constraints: Vec<RagdollConstraintSpec>,
 }
 
+/// #1540 — map a ragdoll body's collision shape to one safe to attach to a
+/// *dynamic* Rapier body.
+///
+/// A [`CollisionShape::TriMesh`] (possible when a bone hosts a
+/// `bhkPackedNiTriStripsShape` / compressed mesh rather than a primitive)
+/// is an open triangle soup with no well-defined enclosed volume, so
+/// Rapier's shape-derived inertia tensor is degenerate even after the
+/// `.mass()` override in [`build_ragdoll`] — the link can spin
+/// pathologically. Substitute a convex hull of the same vertices: a closed
+/// solid with a finite, non-degenerate inertia tensor that still bounds the
+/// authored geometry. [`collision_shape_to_parts`] already falls back to a
+/// tiny ball if the hull itself is degenerate (< 4 non-coplanar points), so
+/// the inertia is finite in every case. Vanilla FNV ragdoll bones author
+/// capsules/boxes so this rarely fires; it guards modded / creature
+/// skeletons. Primitives and convex hulls pass through unchanged; compounds
+/// recurse so a nested trimesh leaf is substituted too.
+///
+/// Only the dynamic *ragdoll* path uses this — static world colliders keep
+/// their trimeshes (they need no inertia), so `collision_shape_to_parts`
+/// stays untouched.
+fn ragdoll_dynamic_shape(shape: &CollisionShape) -> CollisionShape {
+    match shape {
+        CollisionShape::TriMesh { vertices, .. } => CollisionShape::ConvexHull {
+            vertices: vertices.clone(),
+        },
+        CollisionShape::Compound { children } => CollisionShape::Compound {
+            children: children
+                .iter()
+                .map(|(t, r, child)| (*t, *r, Box::new(ragdoll_dynamic_shape(child))))
+                .collect(),
+        },
+        other => other.clone(),
+    }
+}
+
 /// Build the ragdoll into `pw` and return the [`Ragdoll`] component for
 /// the actor. Creates one dynamic body + collider per spec body, orients
 /// the constraint graph into a tree, and inserts a multibody joint per
@@ -107,7 +142,11 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
             .build();
         let h = pw.bodies.insert(body);
 
-        let parts = collision_shape_to_parts(&b.shape, cfg);
+        // #1540 — substitute a convex hull for any TriMesh on this *dynamic*
+        // ragdoll body; a raw trimesh gives Rapier a degenerate inertia
+        // tensor even with the `.mass()` override below. See
+        // `ragdoll_dynamic_shape`.
+        let parts = collision_shape_to_parts(&ragdoll_dynamic_shape(&b.shape), cfg);
         let part_mass = b.mass.max(1e-3) / parts.len() as f32;
         let PhysicsWorld {
             ref mut bodies,
@@ -130,6 +169,27 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
     //    via BFS, handling a forest if the graph is disconnected. Back-edges
     //    (which would form a loop multibody can't represent) are dropped.
     let oriented = orient_tree(spec);
+
+    // #1539 — a humanoid ragdoll is a single pelvis-rooted tree. A spanning
+    // forest (>1 connected component) means an articulation edge was dropped
+    // upstream — e.g. an unsupported `Other` constraint dropped in
+    // `extract_ragdoll` (`crates/nif/src/import/collision.rs`) — so the
+    // disconnected limbs build here as independent free-floating multibodies
+    // that free-fall. Surface it rather than producing a broken ragdoll
+    // silently. A spanning forest over `n` bodies has `n - components` edges,
+    // so `components = bodies - edges`.
+    let components = spec.bodies.len().saturating_sub(oriented.len());
+    if components > 1 {
+        log::warn!(
+            "build_ragdoll: constraint graph is a forest — {components} disconnected \
+             components across {} bodies ({} joint edges; a single tree needs {}). \
+             Detached limbs will free-fall; an articulation constraint was likely \
+             dropped upstream (#1539).",
+            spec.bodies.len(),
+            oriented.len(),
+            spec.bodies.len().saturating_sub(1),
+        );
+    }
 
     // 3. Insert one multibody joint per tree edge (parent already in the
     //    multibody from BFS order; the root is the multibody base).
@@ -457,5 +517,93 @@ mod tests {
         };
         let edges = orient_tree(&spec);
         assert_eq!(edges.len(), 2, "3-body cycle → spanning tree of 2 edges");
+    }
+
+    /// #1539 — the forest-detection arithmetic `build_ragdoll` warns on: a
+    /// graph with a dropped articulation edge resolves to >1 connected
+    /// component, computed as `bodies - tree_edges`. A connected 3-chain is
+    /// one component; splitting the middle link (so two disjoint pieces
+    /// remain) is two.
+    #[test]
+    fn forest_is_detected_by_edge_deficit() {
+        // Connected: 3 bodies, 2 edges → 1 component (a single tree).
+        let connected = RagdollSpec {
+            bodies: vec![ball_body(1, 0.0, 0.0), ball_body(2, 50.0, 0.0), ball_body(3, 100.0, 0.0)],
+            constraints: vec![loose_ragdoll(0, 1), loose_ragdoll(1, 2)],
+        };
+        let comps = connected.bodies.len() - orient_tree(&connected).len();
+        assert_eq!(comps, 1, "a connected chain is a single tree");
+
+        // Fragmented: the sole link to body 2 is gone → {0-1} and {2}.
+        let forest = RagdollSpec {
+            bodies: vec![ball_body(1, 0.0, 0.0), ball_body(2, 50.0, 0.0), ball_body(3, 100.0, 0.0)],
+            constraints: vec![loose_ragdoll(0, 1)],
+        };
+        let comps = forest.bodies.len() - orient_tree(&forest).len();
+        assert_eq!(comps, 2, "a dropped sole-link edge surfaces as a forest");
+        assert!(comps > 1, "build_ragdoll warns when components > 1");
+    }
+
+    fn tetra(scale: f32) -> CollisionShape {
+        CollisionShape::TriMesh {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(scale, 0.0, 0.0),
+                Vec3::new(0.0, scale, 0.0),
+                Vec3::new(0.0, 0.0, scale),
+            ],
+            indices: vec![[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]],
+        }
+    }
+
+    /// #1540 — a `TriMesh` ragdoll-body shape is substituted with a convex
+    /// hull (closed solid → well-defined inertia); primitives and compounds
+    /// pass through, with nested trimesh leaves substituted.
+    #[test]
+    fn trimesh_ragdoll_shape_substituted_with_convex_hull() {
+        match ragdoll_dynamic_shape(&tetra(10.0)) {
+            CollisionShape::ConvexHull { vertices } => assert_eq!(vertices.len(), 4),
+            other => panic!("TriMesh must become ConvexHull, got {other:?}"),
+        }
+        // Primitives untouched.
+        assert!(matches!(
+            ragdoll_dynamic_shape(&CollisionShape::Ball { radius: 5.0 }),
+            CollisionShape::Ball { .. }
+        ));
+        // Compound recurses: a trimesh leaf inside a compound is substituted.
+        let compound = CollisionShape::Compound {
+            children: vec![(Vec3::ZERO, Quat::IDENTITY, Box::new(tetra(10.0)))],
+        };
+        match ragdoll_dynamic_shape(&compound) {
+            CollisionShape::Compound { children } => {
+                assert!(matches!(children[0].2.as_ref(), CollisionShape::ConvexHull { .. }));
+            }
+            other => panic!("Compound must stay a Compound, got {other:?}"),
+        }
+    }
+
+    /// #1540 — building a ragdoll body from a `TriMesh` shape yields a
+    /// finite, non-degenerate principal-inertia tensor (via the convex-hull
+    /// substitution), not the degenerate one a raw open trimesh would give.
+    #[test]
+    fn trimesh_ragdoll_body_has_finite_nondegenerate_inertia() {
+        let mut pw = PhysicsWorld::new();
+        let mut body = ball_body(1, 0.0, 0.0);
+        body.shape = tetra(20.0);
+        let spec = RagdollSpec {
+            bodies: vec![body],
+            constraints: vec![],
+        };
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        let h = rag.bodies[0].1;
+        let pi = pw.bodies[h].mass_properties().local_mprops.principal_inertia();
+        assert!(
+            pi.x.is_finite() && pi.y.is_finite() && pi.z.is_finite(),
+            "principal inertia must be finite: {pi:?}"
+        );
+        assert!(
+            pi.x > 0.0 && pi.y > 0.0 && pi.z > 0.0,
+            "principal inertia must be non-degenerate: {pi:?}"
+        );
     }
 }

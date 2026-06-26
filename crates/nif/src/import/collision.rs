@@ -358,16 +358,9 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
         let Some(c) = block.as_any().downcast_ref::<BhkConstraint>() else {
             continue;
         };
-        // A non-finite limit angle / pivot / axis (#1534) drops the joint —
-        // `[NaN, NaN]` limits handed to the Rapier solver destabilize it.
-        let kind = match &c.data {
-            BhkConstraintData::Ragdoll(r) => ragdoll_joint(r, scale),
-            BhkConstraintData::LimitedHinge(h) => limited_hinge_joint(h, scale),
-            BhkConstraintData::Other => continue,
-        };
-        let Some(kind) = kind else { continue };
         // Constraint entity refs point at the rigid-body blocks; remap to
-        // body-array indices. A ref to a body we skipped (no bone / shape
+        // body-array indices FIRST so a dropped joint can name the two bones
+        // it would have linked. A ref to a body we skipped (no bone / shape
         // failed) drops the joint gracefully.
         let (Some(body_a), Some(body_b)) = (
             c.entity_a.index().and_then(|i| block_to_body.get(&i).copied()),
@@ -378,6 +371,36 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
         if body_a == body_b {
             continue; // a joint must link two distinct bodies
         }
+        // A non-finite limit angle / pivot / axis (#1534) drops the joint —
+        // `[NaN, NaN]` limits handed to the Rapier solver destabilize it.
+        let kind = match &c.data {
+            BhkConstraintData::Ragdoll(r) => ragdoll_joint(r, scale),
+            BhkConstraintData::LimitedHinge(h) => limited_hinge_joint(h, scale),
+            // #1539 — `bhkHingeConstraint` / `bhkBallAndSocketConstraint` /
+            // `bhkPrismaticConstraint` / `bhkStiffSpringConstraint` all decode
+            // to `Other`. Dropping one that links two ragdoll bones silently
+            // disconnects the articulation: `orient_tree`
+            // (`crates/physics/src/ragdoll.rs`) then yields a forest and
+            // `build_ragdoll` builds the detached limb as an independent
+            // free-floating multibody that free-falls. Every other block-drop
+            // in this file logs (the FO4-NP / phantom arms `log::debug!`);
+            // this one warns — louder, because unlike those benign
+            // out-of-scope drops it can visibly break the ragdoll. (Long-term:
+            // map a limitless hinge to `LimitedHinge { min: -PI, max: PI }`.)
+            BhkConstraintData::Other => {
+                log::warn!(
+                    "extract_ragdoll: dropping unsupported constraint linking bones \
+                     '{a}' <-> '{b}' — decoded as Other (bhkHinge / bhkBallAndSocket / \
+                     bhkPrismatic / bhkStiffSpring not yet mapped to a canonical joint). \
+                     The ragdoll edge is lost; if it was the sole link to a limb, that \
+                     limb will detach and free-fall (#1539).",
+                    a = bodies[body_a].bone_name,
+                    b = bodies[body_b].bone_name,
+                );
+                continue;
+            }
+        };
+        let Some(kind) = kind else { continue };
         constraints.push(ImportedRagdollConstraint {
             body_a,
             body_b,
