@@ -222,11 +222,11 @@ leaks compound; denoiser/shader correctness is mostly visual.
 **Checklist**:
 - Reset-before-record, begin/end balanced (command buffer + render pass), AS build recorded outside the render pass, SVGF/compute after RP end and before composite, composite last (then egui, then optional screenshot copy).
 - Per-draw: depth bias for decals, pipeline/descriptor bind, push constants, indexed draw; batch coalescing groups draws by texture/descriptor.
-- Counter independence (regression guards): `DrawCommand` input count vs post-batch GPU draw count are separate metrics, both surfaced (#1258); blend-pipeline cache-hit fast path exists at the per-draw bind site (#1259); off-frustum draws skip `GpuInstance.flags` assembly without dropping state on frustum-border visible draws (#1260); cell-loader REFR spawn reads `SceneFlags` from the world resource, not a cached snapshot (#1235).
+- Counter independence (regression guards): `DrawCommand` input count vs post-batch GPU draw count are separate metrics, both surfaced (#1258); blend-pipeline cache-hit fast path exists at the per-draw bind site (#1259); off-frustum draws skip `GpuInstance.flags` assembly without dropping state on frustum-border visible draws (#1260); cell-loader REFR spawn attaches a per-entity `SceneFlags` from the NIF root `NiAVObject.flags` (`SceneFlags::from_nif(cached.root_flags)`) for parity with the loose-NIF loader (#1235).
 **Output**: `/tmp/audit/renderer/dim_12.md`
 
 #### Dimension 13: TAA (M37.5)
-**Entry points**: `crates/renderer/src/vulkan/taa.rs`, `crates/renderer/shaders/taa.comp`, jitter assembly in `byroredux/src/render/camera.rs`.
+**Entry points**: `crates/renderer/src/vulkan/taa.rs`, `crates/renderer/shaders/taa.comp`, Halton jitter assembly (`halton` fn + the `(jx, jy)` block in `draw_frame`) in `crates/renderer/src/vulkan/context/draw.rs`.
 **Checklist**:
 - Halton(2,3) jitter advances per frame (no seam), applied in NDC pixel units; un-jittered projection retained for motion-vector reconstruction.
 - Per-frame-in-flight history slot (no aliasing); reprojection samples motion with linear/dilated filter (point causes edge wobble); 3×3 YCoCg neighborhood clamp on the history sample; mesh-ID disocclusion discards stale history; first-frame / `should_force_history_reset` forces α = 1.0 with no garbage read.
