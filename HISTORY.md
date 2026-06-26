@@ -24,6 +24,63 @@ Commits hold that record.
 
 ---
 
+## Session 52 — Audit bug-bash: distant-object LOD, condition functions, M47.2 fragment lowerer  (2026-06-26, `70ea69e6..af359ed8`, 42 commits)
+
+Driven by the 2026-06-23 audit-suite run (`e2f8923e` bundles the suite summary +
+tech-debt reports). The session worked the findings — 53 issue refs across fixes,
+triage, and stale-doc corrections — while landing three real feature threads on
+top: distant-object LOD for the older games, four CTDA condition functions, and
+the M47.2 fragment lowerer (b2).
+
+- **Distant-object LOD (M35 / EXAL render side)** — implemented the
+  Oblivion/FO3/FNV `DistantLOD\*.lod` → `_far.nif` placement scheme (#1726), the
+  last `_far.nif` item on the M35 Remaining list; added a full-model-path fallback
+  for distant meshes (`10e531ae`); render real Oblivion distant-terrain LOD
+  textures and suppress the bogus synthesized LOD that masked them (#1745);
+  extended default exterior full-detail render distance to radius 12 (`a525e92c`).
+- **CTDA condition functions (M47.1 follow-through)** — turned four of the five
+  M47.1 trace-log stubs into real evaluators: GetDistance + GetFactionRank
+  (#1664/#1665), GetIsID + HasPerk (#1666/#1667); resolved CTDA Global comparands
+  through a new `Globals` World resource (#1668). Triaged #1661 (stale) and
+  re-scoped #1663 to the AV milestone.
+- **M47.2 scripting** — fragment lowerer b2 (effect table + quest-stage dispatch,
+  `9b375200`) on a new compositional guard-primitive engine that `quest_stage_gate`
+  now rides (`2d4c350d`); corpus-shape survey + recognizer-scaling design
+  (`1daa28dc`, `f2b07d30`); single-statement-body guard (#1719); drain
+  `OnTriggerEnterEvent` + sibling markers in event cleanup (#1727). PEX/parser
+  hardening: bound var-arg pre-allocation (#1710), guard statement-recursion depth
+  (#1712), recursion cap + dead-code/dup cleanup (#1729/#1704/#1735/#1709/#1627),
+  cell-loader + decompiler robustness (#1655/#1734/#1732, document #1711),
+  control_flow doc correction (#1738).
+- **Physics / ragdoll** — keyframe live NPC ragdoll bones instead of
+  free-simulating (#1698 partial) + bound physics catch-up substeps to a
+  wall-clock budget + awake-faller diagnostic naming the collider-gap culprits;
+  surface dropped ragdoll constraints + fix trimesh bone inertia (#1539/#1540);
+  stop applying `havok_scale` to `bhkNiTriStripsShape` collision geometry (#1744).
+- **Save/load durability (M45)** — pre-flight a live load before tearing down the
+  current cell (#1697); validate `ItemStack.instance` + FormId resolvability before
+  save (#1700); document + guard the `MUTABLE_DELTA_COLUMNS` delta-safe invariant
+  (#1720); exclude `AnimationPlayer`/`AnimationStack` from live load-apply deltas
+  (#1696); save durability + reproducibility + clean errors (#1702/#1706/#1708/#1716).
+- **Per-game ESM** — decode Starfield LIGH DAT2 light data (656 Cydonia lights,
+  #1567); FO3 36-byte XCLL warn + skip deleted-REFR tombstones (#1730/#1660); apply
+  the #1510 Starfield stub discriminator to `BSEffectShaderProperty` (#1721).
+- **Tech-debt / audit infra** — split `asset_provider.rs` (3405 LOC) into a
+  directory module (#1669); demote audit-runtime `bench_fps_*` from hard gate to
+  advisory (#1701); hard-fail the M41 equip smoke below a 6-NPC floor (#1560);
+  correct the feature-matrix M45 + M47.2 "unstarted" rows (#1699); persist
+  animation text-event scratch via `AnimScratch` (#1725); stale-doc corrections
+  (#1703/#1707/#1715/#1733/#1741, #1722 EXAL boundary, #1723 SCHR pad, #1724
+  NifImportRegistry).
+
+Net: tests 3118 → **3201** (+83); src/ LOC ~244 447 → ~249 069 (+~4 622); total
+LOC ~261 644 → ~267 236 (+~5 592); 53 issue refs closed/triaged. No bench delta —
+no GPU bench this session; bench-of-record `1c26bc25` now 375 commits stale
+(R6a-stale-15 still gating). Audit-suite bug-bash with three feature threads; no
+milestone fully closed (M35 `_far.nif` sub-item shipped).
+
+---
+
 ## Session 51 — M47.2 compiled-Papyrus pipeline (.pex decompiler + recognizer + triggers)  (2026-06-22, `65239fec..f1a00e89`)
 
 ROADMAP pick after M45/M45.1: M47.2 (full scripting runtime), unblocked by M30.2
