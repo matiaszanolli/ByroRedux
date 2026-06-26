@@ -76,6 +76,44 @@ fn parse_one_refr(record: &[u8]) -> PlacedRef {
     refs.remove(0)
 }
 
+/// SKY-D4-01 (#1660) — a REFR carrying the record-header Deleted flag (0x20)
+/// is a deletion tombstone (a DLC removing a base-master placement) and must
+/// place nothing; otherwise the deleted object over-renders.
+#[test]
+fn deleted_refr_tombstone_is_skipped() {
+    let mut sub_data = Vec::new();
+    sub_data.extend_from_slice(b"NAME");
+    sub_data.extend_from_slice(&4u16.to_le_bytes());
+    sub_data.extend_from_slice(&0xABCDu32.to_le_bytes());
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&24u16.to_le_bytes());
+    sub_data.extend_from_slice(&[0u8; 24]);
+
+    let mut record = Vec::new();
+    record.extend_from_slice(b"REFR");
+    record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    record.extend_from_slice(&0x0000_0020u32.to_le_bytes()); // Deleted flag (bit 5)
+    record.extend_from_slice(&0x9001u32.to_le_bytes());
+    record.extend_from_slice(&[0u8; 8]);
+    record.extend_from_slice(&sub_data);
+
+    let mut reader = EsmReader::new(&record);
+    let end = record.len();
+    let mut refs = Vec::new();
+    let mut land = None;
+    let mut navmeshes = Vec::new();
+    parse_refr_group(&mut reader, end, &mut refs, &mut land, &mut navmeshes).unwrap();
+    assert!(refs.is_empty(), "a Deleted-flagged REFR must place nothing");
+}
+
+/// Control for #1660 — the same REFR WITHOUT the Deleted flag still places,
+/// so the skip isn't over-aggressive.
+#[test]
+fn non_deleted_refr_still_places() {
+    let placed = parse_one_refr(&build_refr_with_subs(0xABCD, &[]));
+    assert_eq!(placed.base_form_id, 0xABCD);
+}
+
 /// Build a REFR record carrying a name + minimal DATA + a chosen
 /// subset of XOWN / XRNK / XGLB sub-records.
 fn build_refr_with_ownership(

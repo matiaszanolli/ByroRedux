@@ -44,11 +44,21 @@ use crate::esm::sub_reader::SubReader;
 ///     `wbStruct(XCLL,'Lighting')`, byte-verified against Starfield.esm.
 ///     The ~11 985 vanilla Starfield.esm cells all ship at exactly 108.
 const XCLL_SIZES_OBLIVION: &[usize] = &[28, 32, 36];
-const XCLL_SIZES_FALLOUT_ERA: &[usize] = &[28, 40]; // FO3 / FNV only
+// FO3 ships 36 bytes (dir_fade + fog_clip, NO fog_power); FNV adds the
+// 4-byte Fog Power tail for 40. Both share `GameKind::Fallout3NV`, so the
+// canonical set carries both — the size dispatch already parses 36 fine
+// (per-field gating below), 36 was just missing here and tripped a spurious
+// "lighting may be mis-computed" warn on every FO3 interior (D3-FO3-01).
+const XCLL_SIZES_FALLOUT_ERA: &[usize] = &[28, 36, 40];
 const XCLL_SIZES_SKYRIM: &[usize] = &[28, 92];
 const XCLL_SIZES_FALLOUT4: &[usize] = &[28, 92, 128, 136];
 const XCLL_SIZES_FALLOUT76: &[usize] = &[28, 136, 160];
 const XCLL_SIZES_STARFIELD: &[usize] = &[28, 108];
+
+/// Record-header `Deleted` flag (bit 5) — consistent TES4→Starfield. A REFR
+/// carrying it is a deletion tombstone (a plugin/DLC removing a base-master
+/// placement), not a thing to render. SKY-D4-01 / #1660.
+const RECORD_FLAG_DELETED: u32 = 0x0000_0020;
 
 /// Warn (at WARN level) when an XCLL sub-record size doesn't match the
 /// canonical size set for its plugin's game era. Doesn't change parse
@@ -100,11 +110,12 @@ mod xcll_gate_tests {
 
     #[test]
     fn fo3_fnv_xcll_sizes_pinned() {
-        // FO3 / FNV genuinely ship the 40-byte tail. FO4/FO76 used to be
-        // bucketed here too, but they are Creation-Engine descendants with a
-        // 92-byte+ body (split out below — see the render-bug investigation
-        // for HalluciGen01). Starfield left in #1291 (108-byte).
-        assert_eq!(xcll_canonical_sizes(GameKind::Fallout3NV), &[28, 40]);
+        // FO3 ships 36 (no Fog Power); FNV ships 40 (with it) — both under
+        // `Fallout3NV`, so both sizes are canonical (D3-FO3-01). FO4/FO76 used
+        // to be bucketed here too, but they are Creation-Engine descendants
+        // with a 92-byte+ body (split out below — see the render-bug
+        // investigation for HalluciGen01). Starfield left in #1291 (108-byte).
+        assert_eq!(xcll_canonical_sizes(GameKind::Fallout3NV), &[28, 36, 40]);
     }
 
     /// FO4 ships the Skyrim 92-byte body + an optional height-fog tail.
@@ -782,6 +793,15 @@ pub(crate) fn parse_refr_group(
             || &header.record_type == b"ACRE"
         {
             let subs = reader.read_sub_records(&header)?;
+            // SKY-D4-01 — a REFR/ACHR/ACRE with the record-header Deleted flag
+            // (0x20) is a tombstone: a plugin (often a DLC) removing a
+            // base-master placement. The load-order merge keeps it as the
+            // winning override, so without this skip the deleted placement
+            // still spawns and over-renders the object the plugin meant to
+            // delete. Consume the record (above) but place nothing.
+            if header.flags & RECORD_FLAG_DELETED != 0 {
+                continue;
+            }
             let mut base_form_id = 0u32;
             let mut position = [0.0f32; 3];
             let mut rotation = [0.0f32; 3];
