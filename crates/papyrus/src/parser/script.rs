@@ -620,15 +620,19 @@ impl Parser {
 
     // ── Recovery helper ────────────────────────────────────────────
 
-    /// Skip to the start of the next line after an error. Consumes
-    /// tokens until a Newline (inclusive) or EOF.
+    /// Skip to the start of the next line after an error. Consumes raw
+    /// tokens up to and including the next `Newline` (or EOF).
+    ///
+    /// SCR-D4-02: this used `peek()`/`advance()`, which skip Newlines — so the
+    /// `Newline` arm was dead and recovery ran to EOF, discarding the whole
+    /// rest of the file after one recoverable error. Walk *raw* tokens so the
+    /// line boundary is actually found and the next top-level item still
+    /// parses.
     fn skip_to_next_line(&mut self) {
-        while let Some(tok) = self.peek() {
+        while let Some((tok, _)) = self.advance_raw() {
             if matches!(tok, Token::Newline) {
-                self.advance().unwrap();
                 return;
             }
-            self.advance();
         }
     }
 }
@@ -661,6 +665,36 @@ mod tests {
         assert!(s.parent.is_none());
         assert!(s.flags.is_empty());
         assert!(s.body.is_empty());
+    }
+
+    /// SCR-D4-02 (#1734) — after a recoverable error in the FIRST top-level
+    /// item, recovery must resume at the next line so the SECOND item still
+    /// parses. Pre-fix `skip_to_next_line` walked to EOF and dropped it.
+    #[test]
+    fn recovers_at_next_line_after_first_item_errors() {
+        let src = "\
+ScriptName Foo
+
+Int Property = 5 Auto
+Int Property GoodProp = 5 Auto
+";
+        let (preprocessed, _map) = preprocess(src);
+        let (tokens, _errs) = lex(&preprocessed);
+        let mut parser = Parser::new(tokens);
+        let script = parser.parse_script().expect("header parses");
+
+        // The first item (`Int Property = …`, missing name) errored…
+        assert!(
+            !parser.errors().is_empty(),
+            "the malformed first item should have recovered an error"
+        );
+        // …and the second item still parsed (would be empty if recovery ran
+        // to EOF).
+        assert!(
+            !script.body.is_empty(),
+            "the second top-level item must parse after recovery, not be \
+             skipped to EOF"
+        );
     }
 
     #[test]

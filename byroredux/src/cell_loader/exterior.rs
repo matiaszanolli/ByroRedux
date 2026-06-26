@@ -94,11 +94,14 @@ pub fn build_exterior_world_context(
     let (record_index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
     let index = &record_index.cells;
 
-    // Find the best worldspace. Priority:
+    // Find the best worldspace. Priority (D4-1 / #1655 reordered 2↔3):
     //   1. Caller-supplied `--wrld <name>` (case-insensitive EDID match).
-    //   2. Preferred game-default list: WastelandNV (FNV), Wasteland
-    //      (FO3 Capital Wasteland), Tamriel (Oblivion), Skyrim (Skyrim).
-    //   3. Worldspace that actually contains the requested grid coord.
+    //   2. Worldspace that actually contains the requested grid coord — the
+    //      user asked for a specific `--grid`, so a worldspace holding it must
+    //      win over a hardcoded default.
+    //   3. Preferred game-default list: WastelandNV (FNV), Wasteland
+    //      (FO3 Capital Wasteland), Tamriel (Oblivion), Skyrim (Skyrim) —
+    //      fallback only when no worldspace contains the grid.
     //   4. Worldspace with the most cells (ultimate fallback).
     // Pre-fix the Wasteland EDID was missing, so `--esm Fallout3.esm
     // --grid 0,0` landed on the max-cells fallback and silently picked
@@ -117,18 +120,15 @@ pub fn build_exterior_world_context(
         }
         override_match
             .or_else(|| {
-                let preferred = ["wastelandnv", "wasteland", "tamriel", "skyrim"];
-                preferred
-                    .iter()
-                    .find(|&&name| index.exterior_cells.contains_key(name))
-                    .map(|s| s.to_string())
-            })
-            .or_else(|| {
-                // Prefer a worldspace that actually contains the
-                // requested grid coord over raw cell count. Protects
-                // multi-plugin loads where a DLC worldspace with many
-                // cells but no grid 0,0 would otherwise outvote the
-                // base game's Wasteland. See #444.
+                // D4-1 / #1655 — grid-containment runs BEFORE the preferred-
+                // default list: the user asked for a specific `--grid`, so the
+                // worldspace that actually contains that grid must win over the
+                // hardcoded base-game default. Pre-fix, a `--grid` into an FO3
+                // DLC worldspace (Anchorage / Point Lookout / Zeta) without
+                // `--wrld` silently landed on Capital Wasteland because the
+                // preferred list matched first. Also protects multi-plugin
+                // loads where a DLC worldspace with many cells but no grid 0,0
+                // would otherwise outvote the base game's Wasteland (#444).
                 let min_x = center_x.saturating_sub(radius);
                 let max_x = center_x.saturating_add(radius);
                 let min_y = center_y.saturating_sub(radius);
@@ -142,6 +142,15 @@ pub fn build_exterior_world_context(
                         })
                     })
                     .map(|(name, _)| name.clone())
+            })
+            .or_else(|| {
+                // Preferred base-game default — only when no worldspace
+                // contains the requested grid (e.g. a stray grid coord).
+                let preferred = ["wastelandnv", "wasteland", "tamriel", "skyrim"];
+                preferred
+                    .iter()
+                    .find(|&&name| index.exterior_cells.contains_key(name))
+                    .map(|s| s.to_string())
             })
             .or_else(|| {
                 index

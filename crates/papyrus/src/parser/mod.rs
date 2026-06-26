@@ -104,6 +104,21 @@ impl Parser {
         }
     }
 
+    /// Advance past the current token WITHOUT skipping newlines, returning it.
+    /// Unlike [`advance`](Self::advance) this can return (and consume) a
+    /// `Token::Newline`, which error recovery needs to find a line boundary
+    /// (SCR-D4-02).
+    pub fn advance_raw(&mut self) -> Option<(Token, Span)> {
+        if self.pos < self.tokens.len() {
+            let tok = self.tokens[self.pos].token.clone();
+            let span = self.tokens[self.pos].span;
+            self.pos += 1;
+            Some((tok, span))
+        } else {
+            None
+        }
+    }
+
     /// Skip all newline tokens at the current position.
     pub fn skip_newlines(&mut self) {
         while self.pos < self.tokens.len() && self.tokens[self.pos].token == Token::Newline {

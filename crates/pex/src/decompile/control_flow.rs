@@ -182,10 +182,18 @@ impl Reconstructor {
                         result.push(Node::if_else(condition, if_body, else_body));
                         jump_to = Some(end_else);
                     }
+                } else {
+                    // `last` is conditional — a `||` short-circuit the boolean
+                    // pre-pass (`super::lower`) declined to collapse (e.g. an
+                    // operand needing more than one statement). Falling through
+                    // here would advance past `current` WITHOUT draining its
+                    // scope (`take_scope` lives inside the arms above), silently
+                    // dropping the block's lifted guard + statements and
+                    // emitting a wrong-but-non-panicking AST. Fail closed so the
+                    // upstream recognizer cleanly declines this function rather
+                    // than matching a truncated body (SCR-D3-01 / #1732).
+                    return Err(self.fail());
                 }
-                // else: `last` is conditional — the short-circuit (||) case
-                // the boolean pass handles. Left unmerged, advance by one,
-                // matching the C++ control-flow pass without that pre-pass.
             } else {
                 // Unconditional block: splice its statements into the result.
                 result.extend(self.take_scope(current));
@@ -244,6 +252,44 @@ mod tests {
             .expect_err("over-deep recursion must error, not overflow");
         assert!(
             matches!(err, DecompileError::RecursionLimit { limit, .. } if limit == MAX_REBUILD_DEPTH),
+            "got {err:?}"
+        );
+    }
+
+    /// SCR-D3-01 (#1732) — when the block before the false exit is itself
+    /// conditional (a `||` short-circuit the boolean pre-pass declined to
+    /// collapse), `reconstruct` must fail closed (a clean `ControlFlowFailed`)
+    /// rather than silently dropping the block's lifted statements and
+    /// emitting a wrong-but-non-panicking AST.
+    #[test]
+    fn conditional_predecessor_fails_closed() {
+        use super::super::cfg::CodeBlock;
+        // Block 0 (conditional) whose false exit is 2; the block before
+        // instruction 1 (= exit-1) is block 1, also conditional → the branch
+        // under test.
+        let mut blocks = BTreeMap::new();
+        blocks.insert(
+            0,
+            CodeBlock { begin: 0, end: 0, next: 1, on_false: 2, condition: Some("c0".into()) },
+        );
+        blocks.insert(
+            1,
+            CodeBlock { begin: 1, end: 1, next: 2, on_false: 2, condition: Some("c1".into()) },
+        );
+        blocks.insert(
+            2,
+            CodeBlock { begin: 2, end: 2, next: END, on_false: END, condition: None },
+        );
+        let mut r = Reconstructor {
+            cfg: Cfg { blocks, entry: 0, exit: 2 },
+            scopes: BTreeMap::new(),
+            func_name: "OrGuard".to_string(),
+        };
+        let err = r
+            .rebuild(0, 2, 0)
+            .expect_err("a conditional predecessor must fail closed, not drop the block");
+        assert!(
+            matches!(err, DecompileError::ControlFlowFailed { .. }),
             "got {err:?}"
         );
     }

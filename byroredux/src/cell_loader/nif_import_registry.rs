@@ -107,6 +107,23 @@ pub(crate) struct CachedNifImport {
     /// `None` when absent. See #985 / #1594.
     pub(super) child_attach_connections:
         Option<byroredux_core::ecs::components::ChildAttachConnections>,
+    // SPT-NEW-03 / #1711 — route divergence, documented intentionally.
+    //
+    // `ImportedScene::bs_bound` (an OBND/BSBound-derived AABB) is deliberately
+    // NOT carried through this adapter, so cell-loaded NIFs do NOT get a
+    // `BSBound` ECS component — only the loose `--tree`/`--mesh` loader
+    // (`scene::nif_loader`) attaches one. This is not a correctness gap: the
+    // cell route's per-mesh `LocalBound` *sphere* (from `local_bound_center`/
+    // `local_bound_radius`) is the canonical bound used for culling/picking on
+    // both routes. `BSBound` currently has no functional consumer (only
+    // debug-server inspection), so threading the AABB through the ~7
+    // construction sites here (two of which — the streaming-partial path and
+    // the precombine path — never run a full import and so have no AABB to
+    // forward) buys nothing today. When an AABB-keyed consumer lands (e.g. a
+    // tight-bounds culler), add a `bs_bound: Option<([f32; 3], [f32; 3])>`
+    // field here mirroring `bsx_flags` and attach `BSBound` in `spawn.rs` for
+    // route parity. A future consumer keying off `BSBound` must not assume it
+    // exists on cell-loaded entities.
 }
 
 /// Process-lifetime cache of parsed-and-imported NIF scenes keyed by
