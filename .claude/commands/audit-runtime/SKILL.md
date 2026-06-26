@@ -254,7 +254,7 @@ Compare `/tmp/audit/runtime/<game>-<cell>.current.tsv` against
    - **Current**: 6 (+5)
    - **Suggested Fix**: re-run `tex.missing entities` to find the responsible
      REFRs; bisect against the last commit touching the resolution chain
-     (`byroredux/src/asset_provider.rs`) or the single NIFAL material boundary
+     (`byroredux/src/asset_provider/texture.rs`) or the single NIFAL material boundary
      (`byroredux/src/material_translate.rs` `translate_material` →
      `Material::resolve_pbr`, `crates/core/src/ecs/components/material.rs`). A
      dropped texture slot at that boundary surfaces here as a `tex.missing` bump.

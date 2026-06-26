@@ -160,7 +160,7 @@ benches refresh every `/session-close`.
 **Checklist**:
 - v105 header format; LZ4 block decompression via `lz4_flex::block` — verify against a known-good Skyrim mesh (e.g. sweetroll).
 - Hash table layout vs v104; folder record size; embedded-name flag; compressed-file flag priority (archive-level vs per-file — which wins on disagreement).
-- Full-archive extraction sweep: `Skyrim - Meshes0.bsa` + `Skyrim - Textures*.bsa` (through Textures8) all extract without error. **Zero-based sibling auto-load (`821a425b`)** — `asset_provider.rs::open_with_numeric_siblings` now auto-loads `<stem>2.bsa`..`<stem>9.bsa` siblings, so distant-LOD diffuse in `Textures7.bsa` and `.btr` meshes in `Textures8.bsa` drag in from a zero-based base archive; a regression that re-narrows sibling discovery starves M35 distant terrain of its LOD textures.
+- Full-archive extraction sweep: `Skyrim - Meshes0.bsa` + `Skyrim - Textures*.bsa` (through Textures8) all extract without error. **Zero-based sibling auto-load (`821a425b`)** — `asset_provider/archive.rs::open_with_numeric_siblings` now auto-loads `<stem>2.bsa`..`<stem>9.bsa` siblings, so distant-LOD diffuse in `Textures7.bsa` and `.btr` meshes in `Textures8.bsa` drag in from a zero-based base archive; a regression that re-narrows sibling discovery starves M35 distant terrain of its LOD textures.
 **Output**: `/tmp/audit/skyrim/dim_5.md`
 
 ### Dimension 6: Specialty Blocks + Real-Data Rendering

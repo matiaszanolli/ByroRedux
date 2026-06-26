@@ -29,7 +29,7 @@ the per-dimension entry points before launching.
 **Engine-side consumers** (Dimension 7 — outside the crate):
 `byroredux/src/systems/audio.rs` (`footstep_system` + `reverb_zone_system`),
 `byroredux/src/components.rs` (`FootstepEmitter` / `FootstepConfig` /
-`FootstepScratch`), and `byroredux/src/asset_provider.rs`
+`FootstepScratch`), and `byroredux/src/asset_provider/texture.rs`
 (`try_load_default_footstep` populates `FootstepConfig.default_sound`). These are
 the ONLY live callers of `play_oneshot` / `set_reverb_send_db`, so the crate-API
 audit is incomplete without them.
@@ -341,7 +341,7 @@ creation), `set_reverb_send_db`, `reverb_send_db`, both `with_send` sites
 **Entry points**: `byroredux/src/systems/audio.rs` — `footstep_system`,
 `reverb_zone_system`; `byroredux/src/components.rs` — `FootstepEmitter`,
 `FootstepConfig`, `FootstepScratch`; `byroredux/src/scene.rs` (camera opt-in);
-`byroredux/src/asset_provider.rs` — `try_load_default_footstep`
+`byroredux/src/asset_provider/texture.rs` — `try_load_default_footstep`
 **Why this dimension**: the M44 CRATE (Dims 1–6) is the producer of the
 `play_oneshot` / reverb API; the consumers that DRIVE it live outside the crate.
 `footstep_system` is the ONLY live `play_oneshot` caller; `reverb_zone_system` is
@@ -381,7 +381,7 @@ the ONLY `set_reverb_send_db` caller. Neither is covered by the crate dimensions
   `byroredux/src/scene.rs`. Verify the opt-in is component-driven (no hardcoded
   camera-entity assumption inside the system) so NPCs can carry `FootstepEmitter`
   under future REGN/AI work.
-- **`try_load_default_footstep`** (`byroredux/src/asset_provider.rs`): populates
+- **`try_load_default_footstep`** (`byroredux/src/asset_provider/texture.rs`): populates
   `FootstepConfig.default_sound` from `--sounds-bsa` (canonical FNV dirt-walk
   WAV), bypassing `SoundCache`. Verify it no-ops cleanly when the BSA / arg is
   absent (engine boots with footsteps off).

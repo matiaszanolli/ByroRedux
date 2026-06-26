@@ -105,7 +105,7 @@ over threshold).
   composite / overlay) or struct+new() vs Drop vs accessors. Vulkan-recording
   splits are render-pass-adjacent — see `feedback_speculative_vulkan_fixes.md`
   before proposing barrier/order changes.
-- `byroredux/src/asset_provider.rs` → BSA/BA2 resolution vs TextureProvider vs mesh extraction.
+- `byroredux/src/asset_provider/` → BSA/BA2 resolution vs TextureProvider vs mesh extraction.
 - `byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.
 - `byroredux/src/commands/` → console-command groups, already split per-domain (world_info / assets / view / scene / shared) under #1323; check the submodules stay cohesive, not re-bloated.
 - `crates/nif/src/blocks/particle.rs` → typed emitter/ctlr structs vs the opaque `NiPSysBlock` fallback vs grow/fade modifiers.

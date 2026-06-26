@@ -118,12 +118,12 @@ counts.
 **Subagent**: `renderer-specialist`
 **Entry points**: `crates/sfmaterial/src/reader.rs` (`ComponentDatabaseFile::parse`,
 `index_chunks`), `crates/sfmaterial/src/chunk.rs`, `string_table.rs`, `types.rs`,
-`value.rs`, `byroredux/src/asset_provider.rs` (`--materials-ba2` wiring)
+`value.rs`, `byroredux/src/asset_provider/material.rs` (`--materials-ba2` wiring)
 **Checklist**: `ComponentDatabaseFile::parse` consumes `materials\materialsbeta.cdb`
 extracted from `Starfield - Materials.ba2` via `--materials-ba2`. **#762** —
 guard `index_chunks` against the chunk-index regression already referenced in
 `asset_provider.rs`. **DLC/Creation CDB discovery by scanning (#1571, `8c99c50d`)** —
-`asset_provider.rs::discover_starfield_cdbs` scans each materials archive for
+`asset_provider/material.rs::discover_starfield_cdbs` scans each materials archive for
 **every** `materials\materialsbeta.cdb` AND DLC/Creation-namespaced
 `materials\creations\<plugin>\materialsbeta.cdb`, instead of extracting one
 hardcoded base path; a regression that re-hardcodes the single base path silently
@@ -261,7 +261,7 @@ slice (Cydonia's synthesized + bhk colliders): `BhkMultiSphereShape` +
 ### Dimension 9: BGSM/BGEM External Material Flow
 **Subagent**: `renderer-specialist`
 **Entry points**: `crates/bgsm/src/bgsm.rs` + `crates/bgsm/src/bgem.rs` (external
-parser), `byroredux/src/asset_provider.rs` (`merge_bgsm_into_mesh`),
+parser), `byroredux/src/asset_provider/material.rs` (`merge_bgsm_into_mesh`),
 `byroredux/src/cell_loader.rs` (`pack_bgsm_material_flags`)
 **Checklist**: The material-reference stub from `shader.rs` resolves to the
 external file — confirm the BGEM variant (`bgem.rs`) is handled distinctly from

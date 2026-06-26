@@ -59,7 +59,7 @@ those here.
   accessor (VMAD retained on ACTI/CONT/NPC/CREA base records).
 - `crates/plugin/src/esm/records/script_instance.rs` — `ScriptInstanceData` /
   `ScriptInstance` (decoded VMAD).
-- `byroredux/src/asset_provider.rs` — `build_script_provider` parses the
+- `byroredux/src/asset_provider/script.rs` — `build_script_provider` parses the
   repeatable `--scripts-bsa` flag; `extract_pex` resolves a VMAD script name
   to `.pex` bytes.
 
@@ -631,7 +631,7 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
 `attach_script_for_refr`, `trigger_volume_from_primitive`, the invisible-trigger
 REFR spawn path); `crates/plugin/src/esm/records/index.rs`
 (`base_record_script_instance`); `crates/plugin/src/esm/records/script_instance.rs`
-(`ScriptInstanceData`, `ScriptInstance`); `byroredux/src/asset_provider.rs`
+(`ScriptInstanceData`, `ScriptInstance`); `byroredux/src/asset_provider/script.rs`
 (`build_script_provider`, `extract_pex`, the `--scripts-bsa` parse);
 `crates/scripting/src/papyrus_demo/quest_advance.rs` (`quest_advance_system`,
 `QuestAdvanceOnActivate`).

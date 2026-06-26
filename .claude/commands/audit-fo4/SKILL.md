@@ -78,7 +78,7 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 
 ### Dimension 2: BGSM / BGEM Consumption + Metalness-from-Chromaticity (regression pin #1476)
 **Subagent**: `general-purpose`
-**Entry points**: `crates/bgsm/src/` (`lib`, `base`, `bgsm`, `bgem`, `reader`, `template`), `byroredux/src/asset_provider.rs` (`merge_bgsm_into_mesh`).
+**Entry points**: `crates/bgsm/src/` (`lib`, `base`, `bgsm`, `bgem`, `reader`, `template`), `byroredux/src/asset_provider/material.rs` (`merge_bgsm_into_mesh`).
 **Checklist**:
 - **Single data source** — `merge_bgsm_into_mesh` is the FO4 material merge: albedo/diffuse tint, specular, emissive, smoothness→roughness, translucency suite (#1147), model-space-normals bit, texture-slot paths. It runs **before** `translate_material`.
 - **Metalness from saturation, NOT luminance** (#1476, `08ed03be`) — for legacy spec-glossiness BGSMs (`leaf.pbr == false`, ~all vanilla architecture), metalness = `(max-min)/max` of `specular_color` (mult-invariant saturation): white spec `[1,1,1]` → 0 (concrete is dielectric), tinted spec → metallic. **Any reversion to luminance (`0.2126·r + …`) for the non-pbr branch is the #1476 regression — it makes vanilla concrete read chrome.** The luminance path is correct *only* for `leaf.pbr == true`.
