@@ -307,13 +307,16 @@ pub(crate) fn extract_material_info_from_refs(
             // #1592 — FO4 NIF shader-flag bits the BGSM merge can't see on
             // inline / modded content. `BSLightingShaderProperty` is shared
             // with Skyrim under a *different* bit vocabulary, so gate on
-            // `bsver >= FALLOUT4`: F4SF2 bit 25 (`Alpha_Test`) and bit 6
-            // (`Glow_Map`) mean other things on Skyrim, which routes
-            // alpha-test through `NiAlphaProperty` instead. These are a
-            // LOWER-priority source than the BGSM merge — vanilla FO4 leaves
-            // them unset and sources the same attributes from the `.bgsm`
-            // (authoritative); `asset_provider`'s BGSM merge OR-upgrades, so
-            // vanilla content is unchanged. See FO4-D5-MEDIUM-01.
+            // `bsver >= FALLOUT4`. Exactly two bits are OR'd into MaterialInfo
+            // here — F4SF1 bit 12 (`Model_Space_Normals`) and F4SF2 bit 25
+            // (`Alpha_Test`) — both of which mean other things on Skyrim
+            // (which routes alpha-test through `NiAlphaProperty` instead). The
+            // `Glow_Map` bit (F4SF2 bit 6) is NOT sourced here — glow comes
+            // from the texture-set / BGSM, not this flag (FO4-2026-06-23-L01).
+            // These are a LOWER-priority source than the BGSM merge — vanilla
+            // FO4 leaves them unset and sources the same attributes from the
+            // `.bgsm` (authoritative); `asset_provider`'s BGSM merge
+            // OR-upgrades, so vanilla content is unchanged. See FO4-D5-MEDIUM-01.
             if scene.bsver >= crate::version::bsver::FALLOUT4 {
                 use crate::shader_flags::bs_shader_crc32::{contains_any, MODELSPACENORMALS};
                 // Model-space normals — F4SF1 bit 12 (same position on

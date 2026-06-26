@@ -31,14 +31,17 @@
 //! verbatim. Findings in `docs/format-notes.md` describe only black-box
 //! observations from the corpus.
 //!
-//! ## Status — Phase 1.2 (recon scaffold)
+//! ## Status
 //!
-//! Today this crate ships only the version dispatch and the recon
-//! harness. The actual byte-level parser (Phase 1.3) lands once the
-//! recon results in `docs/format-notes.md` partition ≥95 % of the FNV
-//! corpus into sections. Below that threshold, the SpeedTree
-//! compatibility plan ships the placeholder fallback (a yaw-billboard
-//! quad keyed on the TREE record's ICON) instead.
+//! Ships the version dispatch ([`detect_variant`]), the TLV tag walker
+//! ([`parse_spt`] → [`SptScene`]), and the NIF-side import
+//! ([`import_spt_scene`]). The walker partitions the `.spt` container into
+//! its tagged sections; the import drives the placeholder fallback — a
+//! yaw-billboard quad keyed on the TREE record's ICON — so trees stay
+//! visible while a full byte-level geometry parser remains future work. The
+//! `recon` harness (feature `recon`) is the corpus-analysis tool behind
+//! `docs/format-notes.md` (SPT-NEW-02: this block previously claimed only the
+//! version dispatch + recon harness shipped).
 
 pub mod import;
 pub mod parser;

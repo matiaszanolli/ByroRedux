@@ -164,7 +164,12 @@ Havok `.hkx` loader (M41.x, Tier 5).
 
 ---
 
-## What Doesn't Work Yet (live gaps as of 2026-06-02)
+## What Doesn't Work Yet (live gaps as of 2026-06-25)
+
+<!-- TD3-002: Save/load (M45/M45.1) removed — shipped 2026-06-21. The M47.2
+     row below is the *full* transpiler, which is genuinely still deferred;
+     the `.pex` recognizer slice that shipped is annotated inline. -->
+
 
 | Gap | Blocking what | Milestone |
 |---|---|---|

@@ -31,7 +31,11 @@ pub enum BillboardMode {
     AlwaysFaceCenter = 3,
     /// Forward vector always points at camera center, non-minimized rotation.
     RigidFaceCenter = 4,
-    /// Rotate only around the billboard's local Z axis (stays in local X-Y plane).
+    /// Rotate only around the up axis. The NIF intent is the node's *local*
+    /// up (Z in Gamebryo's Z-up frame); the billboard system locks the
+    /// renderer's world up (Y — the same axis as Z-up's Z after the coordinate
+    /// convert for an untilted node) and ignores per-node tilt. Visually
+    /// identical for the grass/foliage this mode is authored on (SPT-NEW-04).
     BsRotateAboutUp = 5,
     /// Rotate only around the world up axis (BGSM variant).
     RotateAboutUp2 = 9,

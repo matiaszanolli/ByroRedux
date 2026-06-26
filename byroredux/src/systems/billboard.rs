@@ -122,10 +122,12 @@ fn compute_billboard_rotation(
             }
         }
         BillboardMode::BsRotateAboutUp => {
-            // Rotate only around the billboard's local Z axis (stays in
-            // its local X-Y plane). We don't have the local frame here,
-            // so fall back to the world-up lock — visually identical for
-            // grass/foliage where BsRotateAboutUp is typically used.
+            // NIF intent is rotation about the node's *local* up; we don't
+            // have the local frame here, so this locks the world up (Y) —
+            // identical to RotateAboutUp above and visually indistinguishable
+            // for the grass/foliage BsRotateAboutUp is authored on (SPT-NEW-04:
+            // the doc previously claimed a local-Z rotation the code never
+            // performs).
             let mut to_cam = cam_pos - billboard_pos;
             to_cam.y = 0.0;
             if to_cam.length_squared() < 1.0e-6 {
