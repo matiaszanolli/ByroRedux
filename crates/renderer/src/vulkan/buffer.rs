@@ -386,7 +386,17 @@ impl Drop for StagingGuard {
 /// mapping (UBOs, instance staging, bone palette staging) sees one
 /// flush per frame at most, so the wasted bytes per frame are
 /// O(num_mapped_buffers × 192) on the worst case ≈ a few KB.
-const NON_COHERENT_ATOM_SIZE: vk::DeviceSize = 256;
+///
+/// The 256 here is an *upper bound* on every real device, but rounding
+/// to it is only valid if the actual `nonCoherentAtomSize` never exceeds
+/// it — a smaller value over-aligns (safe), a larger value would
+/// under-align and silently corrupt the flushed range
+/// (VUID-VkMappedMemoryRange-size-01390). `device::create_logical_device`
+/// holds a `debug_assert!` against this constant so an exotic future
+/// device that reports a larger atom size fails loudly at init rather
+/// than under-flushing. Exported `pub(crate)` so that guard pins to this
+/// exact value instead of re-hardcoding 256. #1759 / TD7-002.
+pub(crate) const NON_COHERENT_ATOM_SIZE: vk::DeviceSize = 256;
 
 /// Compute a `(offset, size)` pair that fully covers `[offset, offset+size)`
 /// and satisfies `VkMappedMemoryRange` alignment requirements: offset rounded
@@ -1111,6 +1121,22 @@ mod tests {
         assert_ne!(sz, vk::WHOLE_SIZE);
         let (_, sz) = aligned_flush_range(1024 * 1024, 4096);
         assert_ne!(sz, vk::WHOLE_SIZE);
+    }
+
+    /// #1759 / TD7-002 — `aligned_flush_range` rounds with the bitmask trick
+    /// `offset & !(N-1)` / `(size + N-1) & !(N-1)`, which is only a correct
+    /// round-down / round-up when `N` is a power of two. Pin that invariant
+    /// on the constant so a future "round number" tweak (e.g. 192) that
+    /// breaks the masking can't ship silently. The companion device-create
+    /// `debug_assert!` (device.rs) pins the other half: every real device's
+    /// reported `nonCoherentAtomSize` stays `<=` this value.
+    #[test]
+    fn non_coherent_atom_size_is_power_of_two() {
+        assert!(
+            NON_COHERENT_ATOM_SIZE.is_power_of_two(),
+            "aligned_flush_range's `& !(N-1)` masking requires a power-of-two \
+             NON_COHERENT_ATOM_SIZE; got {NON_COHERENT_ATOM_SIZE}",
+        );
     }
 
     // ── StagingPool eviction policy tests (#99) ─────────────────────

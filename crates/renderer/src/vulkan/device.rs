@@ -554,6 +554,33 @@ pub fn create_logical_device(
             .context("Failed to create logical device")?
     };
 
+    // #1759 / TD7-002 — `buffer::aligned_flush_range` rounds non-coherent
+    // host-visible flush ranges up to a hardcoded `NON_COHERENT_ATOM_SIZE`
+    // (256) instead of the device-reported `nonCoherentAtomSize`. 256 is a
+    // conservative upper bound — every known GPU reports <= 256 (typically
+    // 64) — so over-aligning is safe. But a device reporting a LARGER atom
+    // size would make every flush under-align and silently corrupt the
+    // mapped range (VUID-VkMappedMemoryRange-size-01390). Pin the
+    // assumption at device-create time so such an exotic device trips here
+    // in debug builds rather than producing invisible GPU corruption. The
+    // query is `cfg(debug_assertions)`-gated so it costs nothing — and
+    // leaves no unused binding — in release. Promote to real
+    // `PhysicalDeviceLimits` plumbing if this ever fires.
+    #[cfg(debug_assertions)]
+    {
+        let atom = unsafe { instance.get_physical_device_properties(physical_device) }
+            .limits
+            .non_coherent_atom_size;
+        debug_assert!(
+            atom <= super::buffer::NON_COHERENT_ATOM_SIZE,
+            "device reports nonCoherentAtomSize={atom} > the {} the flush \
+             path aligns to; flushes would under-align. Plumb \
+             PhysicalDeviceLimits into buffer::aligned_flush_range. \
+             See buffer.rs NON_COHERENT_ATOM_SIZE / #1759.",
+            super::buffer::NON_COHERENT_ATOM_SIZE,
+        );
+    }
+
     let graphics_queue = unsafe { device.get_device_queue(indices.graphics, 0) };
     let present_queue = unsafe { device.get_device_queue(indices.present, 0) };
 
