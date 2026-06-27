@@ -47,7 +47,7 @@ closed by #699.)
 | **Depth of field** | ~ TAA-accumulated | Aperture disk jitter via TAA history; no explicit CoC pass |
 | **Disney BSDF** | ✓ FO4/Starfield/BGSM | `MAT_FLAG_PBR_BSDF`; subsurface/sheen/anisotropic |
 | **Glass RT refraction** | ✓ All games | `MATERIAL_KIND_GLASS` triggers RT refraction ray budget |
-| **Terrain LOD (M35)** | ✗ Not started | `.btr`/`.bto` parsers unwritten; distance LOD selection deferred |
+| **Terrain LOD (M35)** | ~ Partial | `.btr` (Skyrim+/FO4) + `.bto` + `_far.nif` (Oblivion/FO3/FNV) shipped; distance-based multi-band selection + `.btr` normal maps deferred |
 
 ### FO4 Precombined Geometry (M49 — closed 2026-06-02)
 
@@ -123,7 +123,7 @@ Havok `.hkx` loader (M41.x, Tier 5).
 | Kinematic character controller (gravity, collide-and-slide, jump, autostep) | ✓ |
 | NPC / creature physics | ✗ |
 | Weapon / item physics | ✗ |
-| Ragdoll (Havok constraint mapping) | ✗ |
+| Ragdoll (Havok constraint mapping) | ~ Classic constraint chain (Oblivion/FO3/FNV/Skyrim) on Rapier; FO4+ blocked on BhkSystemBinary |
 
 ---
 
@@ -175,7 +175,7 @@ Havok `.hkx` loader (M41.x, Tier 5).
 |---|---|---|
 | Oblivion exterior (TES4 worldspace + LAND) | Oblivion exterior render | M32.5 follow-up |
 | Havok `.hkx` loader | FO4 humanoid actors; Starfield animation | M41.x (Tier 5) |
-| Terrain LOD (`.btr`/`.bto`) | Distant-object LOD; needed for exterior quality | M35 |
+| Terrain LOD multi-band selection | distance-based 8/16/32 LOD-band selection + `.btr` normal maps (the `.btr`/`.bto`/`_far.nif` parsers ship) | M35 |
 | NPC behavior / AI packages | NPCs animate + navigate | M42 (Tier 7) |
 | Full Papyrus transpiler (M47.2) | Arbitrary script execution on real content (`.pex` recognizer slice shipped Session 51) | M47.2 (Tier 3) |
 | Full Scaleform menus | In-game UI | M48 / R4 decision |
