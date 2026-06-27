@@ -31,6 +31,17 @@ use byroredux_plugin::esm::records::script_instance::ScriptInstanceData;
 /// Recognizer chain, in priority order. Per-script recognizers come
 /// before the generic ones so a bespoke script isn't swallowed by a
 /// family match.
+///
+/// **Staged, not yet wired (SCR-D5-02 / #1739).** The quest-fragment
+/// lowerer [`effects::lower_fragment`] (+ `effects::EFFECT_PRIMITIVES`) is
+/// complete and unit-tested but has **no** entry in this table, so no
+/// decompiled quest-fragment `.pex` reaches it through the live boundary
+/// today — it is exercised only by its own tests. Wiring waits on the QUST
+/// `VMAD` fragment decoder that would feed each stage's `Fragment_NN` body
+/// into `lower_fragment`; until that lands the table is intentionally
+/// fragment-free (not an oversight). When it lands, add a
+/// `fragment::recognize` entry here and the end-to-end `.pex` →
+/// [`translate_script`] → effect-spawn test the issue calls for.
 const RECOGNIZERS: &[Recognizer] = &[
     // Per-script (long tail):
     recognizers::rumble::recognize,
