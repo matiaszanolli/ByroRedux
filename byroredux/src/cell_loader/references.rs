@@ -384,7 +384,10 @@ pub(super) fn load_references(
             let has_script = record_index.base_record_script(child_form_id).is_some()
                 || record_index
                     .base_record_script_instance(child_form_id)
-                    .is_some();
+                    .is_some()
+                // #1737 — a model-less REFR can be a trigger volume scripted
+                // purely by its OWN VMAD (no base-record script at all).
+                || placed_ref.script_instance.is_some();
             if !has_mesh && has_script {
                 if let Some(prim) = placed_ref.primitive.as_ref() {
                     if let Some(volume) =
@@ -394,7 +397,13 @@ pub(super) fn load_references(
                         world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
                         world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
                         world.insert(entity, volume);
-                        if attach_script_for_refr(world, entity, child_form_id, record_index) {
+                        if attach_script_for_refr(
+                            world,
+                            entity,
+                            child_form_id,
+                            record_index,
+                            placed_ref.script_instance.as_ref(),
+                        ) {
                             scripts_recognized += 1;
                         }
                         trigger_volumes += 1;
@@ -682,7 +691,13 @@ pub(super) fn load_references(
             // editor_id → ScriptRegistry → spawner; misses fall
             // through silently per Phase 2's "unregistered scripts are
             // common" contract. See docs/engine/m47-0-design.md.
-            if attach_script_for_refr(world, placement_root, child_form_id, record_index) {
+            if attach_script_for_refr(
+                world,
+                placement_root,
+                child_form_id,
+                record_index,
+                placed_ref.script_instance.as_ref(),
+            ) {
                 scripts_recognized += 1;
             }
         }
@@ -1442,15 +1457,18 @@ fn attach_script_for_refr(
     entity: byroredux_core::ecs::EntityId,
     base_form_id: u32,
     index: &esm::records::EsmIndex,
+    refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
 ) -> bool {
     // Two mutually-exclusive per-game attach paths converge here. A
     // record carries either a pre-Skyrim `SCRI` → SCPT (Obscript, the
     // M47.0 registry path) or a Skyrim+ `VMAD` inline Papyrus block (the
     // M47.2 decompile path), never both in vanilla content. Run both —
     // each no-ops for the wrong era — and emit one `OnCellLoadEvent` if
-    // either attached canonical behavior.
+    // either attached canonical behavior. `refr_script_instance` carries
+    // the placed reference's OWN VMAD (#1737), attached additively with
+    // the base record's by `attach_vmad_scripts`.
     let mut attached = attach_scpt_script(world, entity, base_form_id, index);
-    attached |= attach_vmad_scripts(world, entity, base_form_id, index);
+    attached |= attach_vmad_scripts(world, entity, base_form_id, index, refr_script_instance);
 
     if attached {
         // M47.0 Phase 5 — emit OnCellLoadEvent on the freshly-attached
@@ -1526,12 +1544,21 @@ fn attach_scpt_script(
     true
 }
 
-/// Skyrim+ path: for each script named in the base record's `VMAD`,
-/// fetch its compiled `.pex` from the script archive, decompile it, and
-/// run it through the recognizer chain
+/// Skyrim+ path: for each script named in the record's `VMAD`, fetch its
+/// compiled `.pex` from the script archive, decompile it, and run it
+/// through the recognizer chain
 /// ([`byroredux_scripting::translate_pex`]). A recognized script inserts
 /// its canonical ECS behavior; an unrecognized or missing one is a
 /// silent miss. Returns `true` when at least one script was recognized.
+///
+/// Two VMAD sources are processed **additively** (SCR-D7-01 / #1737):
+/// `refr_script_instance` is the placed reference's OWN `VMAD` (Skyrim+
+/// objectReference override scripts — a uniquely-scripted lever / quest
+/// item / activator), and the base record's `VMAD` is looked up from
+/// `index`. Both are attached, mirroring Bethesda's additive
+/// objectReference semantics; on a name collision the REFR's script wins
+/// (it is processed first and the base copy is skipped), so a placement
+/// can override a base script's binding without dropping the rest.
 ///
 /// `owning_quest` is `None` here: base-record-attached scripts (lever,
 /// door, trap activators; scripted containers / NPCs) bind their quest
@@ -1543,6 +1570,7 @@ fn attach_vmad_scripts(
     entity: byroredux_core::ecs::EntityId,
     base_form_id: u32,
     index: &esm::records::EsmIndex,
+    refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
 ) -> bool {
     // Fast-out before any per-REFR work when no `--scripts-bsa` was
     // supplied (the common case for mesh-only / FO3-FNV launches): no
@@ -1553,42 +1581,58 @@ fn attach_vmad_scripts(
     if !have_archive {
         return false;
     }
-    let Some(script_instance) = index.base_record_script_instance(base_form_id) else {
+    let base_script_instance = index.base_record_script_instance(base_form_id);
+    // Nothing to attach if neither the REFR nor its base record carries a
+    // VMAD. Pre-#1737 this returned on the base lookup alone, so a REFR
+    // with its own override VMAD over a script-less base attached nothing.
+    if base_script_instance.is_none() && refr_script_instance.is_none() {
         return false;
-    };
+    }
     let game = index.game;
     let mut any = false;
-    for script in &script_instance.scripts {
-        // Scope the provider borrow: extract the owned `.pex` bytes,
-        // then drop the resource read before the `&mut World` spawn.
-        let bytes = {
-            let provider = world.resource::<crate::asset_provider::ScriptProvider>();
-            provider.extract_pex(&script.name)
-        };
-        let Some(bytes) = bytes else {
-            log::trace!(
-                "M47.2: .pex '{}' not in script archive (base {base_form_id:08X})",
-                script.name,
-            );
-            continue;
-        };
-        // `script_instance` borrows `index` (not `world`), so it stays
-        // valid across the `&mut World` spawn below.
-        match byroredux_scripting::translate_pex(&bytes, game, Some(script_instance), None) {
-            Some(recognized) => {
-                log::debug!(
-                    "M47.2: recognized '{}' from .pex '{}' on base {base_form_id:08X} → entity {entity:?}",
-                    recognized.archetype,
-                    script.name,
-                );
-                (recognized.spawn)(world, entity);
-                any = true;
+    // REFR-own VMAD first so it wins name collisions; then the base record.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for script_instance in [refr_script_instance, base_script_instance]
+        .into_iter()
+        .flatten()
+    {
+        for script in &script_instance.scripts {
+            if !seen.insert(script.name.as_str()) {
+                // Same script name already attached from the REFR override —
+                // skip the base record's copy (REFR wins).
+                continue;
             }
-            None => {
+            // Scope the provider borrow: extract the owned `.pex` bytes,
+            // then drop the resource read before the `&mut World` spawn.
+            let bytes = {
+                let provider = world.resource::<crate::asset_provider::ScriptProvider>();
+                provider.extract_pex(&script.name)
+            };
+            let Some(bytes) = bytes else {
                 log::trace!(
-                    "M47.2: .pex '{}' decompiled but unrecognized (base {base_form_id:08X})",
+                    "M47.2: .pex '{}' not in script archive (base {base_form_id:08X})",
                     script.name,
                 );
+                continue;
+            };
+            // `script_instance` borrows `index` / the placed ref (not
+            // `world`), so it stays valid across the `&mut World` spawn.
+            match byroredux_scripting::translate_pex(&bytes, game, Some(script_instance), None) {
+                Some(recognized) => {
+                    log::debug!(
+                        "M47.2: recognized '{}' from .pex '{}' on base {base_form_id:08X} → entity {entity:?}",
+                        recognized.archetype,
+                        script.name,
+                    );
+                    (recognized.spawn)(world, entity);
+                    any = true;
+                }
+                None => {
+                    log::trace!(
+                        "M47.2: .pex '{}' decompiled but unrecognized (base {base_form_id:08X})",
+                        script.name,
+                    );
+                }
             }
         }
     }
@@ -1716,11 +1760,11 @@ mod tests {
         let entity = world.spawn();
 
         // No ScriptProvider resource at all.
-        assert!(!attach_vmad_scripts(&mut world, entity, 0x0000_1234, &index));
+        assert!(!attach_vmad_scripts(&mut world, entity, 0x0000_1234, &index, None));
 
         // An empty ScriptProvider (flag absent) → same clean miss.
         world.insert_resource(crate::asset_provider::build_script_provider(&[]));
-        assert!(!attach_vmad_scripts(&mut world, entity, 0x0000_1234, &index));
+        assert!(!attach_vmad_scripts(&mut world, entity, 0x0000_1234, &index, None));
     }
 
     /// `attach_script_for_refr` on a base form with no SCPT and no VMAD
@@ -1735,7 +1779,7 @@ mod tests {
         let index = esm::records::EsmIndex::default();
         let entity = world.spawn();
 
-        attach_script_for_refr(&mut world, entity, 0x0000_1234, &index);
+        attach_script_for_refr(&mut world, entity, 0x0000_1234, &index, None);
         assert!(
             !world.has::<byroredux_scripting::OnCellLoadEvent>(entity),
             "no script attached → no OnCellLoadEvent",

@@ -5,6 +5,7 @@
 //! static/object definitions for NIF paths.
 
 use super::reader::EsmReader;
+use super::records::script_instance::ScriptInstanceData;
 use anyhow::Result;
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use std::collections::HashMap;
@@ -433,6 +434,16 @@ pub struct PlacedRef {
     /// item is a crime even in a public cell. See `CellOwnership`
     /// docs and #692.
     pub ownership: Option<CellOwnership>,
+    /// Decoded `VMAD` on the placed reference ITSELF (Skyrim+ — the
+    /// objectReference Papyrus-attached data). `None` when the REFR has no
+    /// `VMAD`. Distinct from the base record's `VMAD`: this carries the
+    /// *override* scripts a uniquely-scripted placement adds (a quest
+    /// lever, a one-off activator). The cell loader attaches these
+    /// additively, alongside the base record's scripts. Pre-#1737 the REFR
+    /// walker only flagged presence and dropped the decoded scripts, so
+    /// this whole class of placed-reference scripting attached nothing.
+    /// See audit SCR-D7-01.
+    pub script_instance: Option<ScriptInstanceData>,
 }
 
 /// Per-slot texture swap from one `XTXR` sub-record — a TXST form ID

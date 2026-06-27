@@ -76,6 +76,45 @@ fn parse_one_refr(record: &[u8]) -> PlacedRef {
     refs.remove(0)
 }
 
+/// SCR-D7-01 (#1737) — a Skyrim+ placed reference can carry its OWN `VMAD`
+/// (the objectReference override scripts on a uniquely-scripted lever /
+/// quest item / activator). The REFR walker must decode it into
+/// `PlacedRef.script_instance` so the cell loader can attach those scripts
+/// additively with the base record's. Pre-fix the walker only flagged
+/// presence (`has_script`) and dropped the decoded scripts, so this whole
+/// class of placed-reference scripting attached nothing.
+#[test]
+fn refr_own_vmad_decodes_into_script_instance() {
+    // Minimal objectReference VMAD: version 5, objectFormat 2, one script
+    // "MyRefrScript" with zero properties.
+    let name = b"MyRefrScript";
+    let mut vmad = Vec::new();
+    vmad.extend_from_slice(&5i16.to_le_bytes()); // version
+    vmad.extend_from_slice(&2i16.to_le_bytes()); // object_format
+    vmad.extend_from_slice(&1u16.to_le_bytes()); // script_count
+    vmad.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    vmad.extend_from_slice(name);
+    vmad.push(0u8); // status (version >= 4)
+    vmad.extend_from_slice(&0u16.to_le_bytes()); // property_count
+
+    let record = build_refr_with_subs(0x0000_5678, &[(b"VMAD", vmad.as_slice())]);
+    let placed = parse_one_refr(&record);
+
+    let si = placed
+        .script_instance
+        .expect("REFR's own VMAD must decode into PlacedRef.script_instance");
+    assert_eq!(si.scripts.len(), 1, "the one REFR-own script");
+    assert_eq!(si.scripts[0].name, "MyRefrScript");
+}
+
+/// A REFR with no `VMAD` leaves `script_instance` `None` (so the additive
+/// attach path sees nothing extra and falls back to the base record alone).
+#[test]
+fn refr_without_vmad_leaves_script_instance_none() {
+    let record = build_refr_with_subs(0x0000_5678, &[]);
+    assert!(parse_one_refr(&record).script_instance.is_none());
+}
+
 /// SKY-D4-01 (#1660) — a REFR carrying the record-header Deleted flag (0x20)
 /// is a deletion tombstone (a DLC removing a base-master placement) and must
 /// place nothing; otherwise the deleted object over-renders.

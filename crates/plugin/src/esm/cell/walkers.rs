@@ -6,6 +6,7 @@ use super::helpers::{read_form_id, read_form_id_array, read_zstring};
 use super::*;
 use crate::esm::reader::GameKind;
 use crate::esm::records::common::read_lstring_or_zstring;
+use crate::esm::records::script_instance::ScriptInstanceData;
 use crate::esm::records::{parse_navm, NavmRecord};
 use crate::esm::sub_reader::SubReader;
 
@@ -824,12 +825,24 @@ pub(crate) fn parse_refr_group(
             let mut ownership_owner: Option<u32> = None;
             let mut ownership_rank: Option<i32> = None;
             let mut ownership_global: Option<u32> = None;
+            // SCR-D7-01 / #1737 — the REFR's own `VMAD` (Skyrim+
+            // objectReference override scripts), decoded so the cell loader
+            // can attach them additively with the base record's scripts.
+            let mut ref_script_instance: Option<ScriptInstanceData> = None;
 
             for sub in &subs {
                 let mut r = SubReader::new(&sub.data);
                 match &sub.sub_type {
                     b"NAME" => {
                         base_form_id = r.u32_or_default();
+                    }
+                    // VMAD on the placement itself — the same wire format as a
+                    // base record's VMAD (version / objectFormat / scriptCount
+                    // / scripts...). `ScriptInstanceData::parse` reads only that
+                    // prefix and tolerates any trailing objectReference
+                    // fragment data, so it is safe on untrusted REFR VMADs.
+                    b"VMAD" => {
+                        ref_script_instance = Some(ScriptInstanceData::parse(&sub.data));
                     }
                     b"DATA" if sub.data.len() >= 24 => {
                         // 6 floats: posX, posY, posZ, rotX, rotY, rotZ
@@ -1020,6 +1033,7 @@ pub(crate) fn parse_refr_group(
                     emissive_light_ref,
                     material_swap_ref,
                     ownership,
+                    script_instance: ref_script_instance,
                 });
             }
         } else if &header.record_type == b"LAND" {

@@ -32,6 +32,7 @@ fn placed_ref(form_id: u32) -> PlacedRef {
         emissive_light_ref: None,
         material_swap_ref: None,
         ownership: None,
+        script_instance: None,
     }
 }
 
