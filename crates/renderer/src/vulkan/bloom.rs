@@ -329,14 +329,14 @@ impl BloomPipeline {
         });
 
         // ── 4. Compute pipelines ──────────────────────────────────────
-        partial.downsample_pipeline = try_or_cleanup!(create_compute_pipeline(
+        partial.downsample_pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
             device,
             pipeline_cache,
             BLOOM_DOWNSAMPLE_COMP_SPV,
             partial.downsample_pipeline_layout,
             "bloom downsample",
         ));
-        partial.upsample_pipeline = try_or_cleanup!(create_compute_pipeline(
+        partial.upsample_pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
             device,
             pipeline_cache,
             BLOOM_UPSAMPLE_COMP_SPV,
@@ -981,50 +981,9 @@ fn create_mip(
     })
 }
 
-fn create_compute_pipeline(
-    device: &ash::Device,
-    pipeline_cache: vk::PipelineCache,
-    spv: &[u8],
-    layout: vk::PipelineLayout,
-    name: &str,
-) -> Result<vk::Pipeline> {
-    let shader_module = super::pipeline::load_shader_module(device, spv)?;
-    let stage = vk::PipelineShaderStageCreateInfo::default()
-        .stage(vk::ShaderStageFlags::COMPUTE)
-        .module(shader_module)
-        .name(c"main");
-    // SAFETY: trivial ash create call; `device`, `pipeline_cache`, `layout` and
-    // `shader_module` (created just above) are all live for the call.
-    let result = unsafe {
-        device
-            .create_compute_pipelines(
-                pipeline_cache,
-                &[vk::ComputePipelineCreateInfo::default()
-                    .stage(stage)
-                    .layout(layout)],
-                None,
-            )
-            .map_err(|(_, e)| e)
-            .with_context(|| format!("{name} compute pipeline"))
-    };
-    let pipeline = match result {
-        Ok(pipelines) => {
-            // SAFETY: `shader_module` was created by us above and not yet
-            // destroyed; the pipeline has been built so the module is no longer
-            // needed; device live.
-            unsafe { device.destroy_shader_module(shader_module, None) };
-            pipelines[0]
-        }
-        Err(e) => {
-            // SAFETY: `shader_module` was created by us above and not yet
-            // destroyed; pipeline creation failed so the module can be freed;
-            // device live.
-            unsafe { device.destroy_shader_module(shader_module, None) };
-            return Err(e);
-        }
-    };
-    Ok(pipeline)
-}
+// Bloom's compute-pipeline builder was promoted to
+// `pipeline::create_compute_pipeline` under #1751 (TD2-002) and is now shared
+// with ssao / volumetrics / skin_compute.
 
 // Bloom workgroup drift tests moved to shader_constants::tests after #1038
 // folded all shared constants into the build.rs codegen path. Canonical checks:

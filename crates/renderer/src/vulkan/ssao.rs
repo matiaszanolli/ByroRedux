@@ -329,44 +329,16 @@ impl SsaoPipeline {
                 .context("SSAO pipeline layout")
         });
 
-        // Compute pipeline.
-        let shader_module =
-            try_or_cleanup!(super::pipeline::load_shader_module(device, SSAO_COMP_SPV));
-        let stage = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(shader_module)
-            .name(c"main");
-        // SAFETY: `stage` references `shader_module` (just loaded above),
-        // `partial.pipeline_layout` (just created above). Pipeline cache
-        // is `vk::PipelineCache::null()` from VulkanContext on first call
-        // — valid.
-        partial.pipeline = match unsafe {
-            device
-                .create_compute_pipelines(
-                    pipeline_cache,
-                    &[vk::ComputePipelineCreateInfo::default()
-                        .stage(stage)
-                        .layout(partial.pipeline_layout)],
-                    None,
-                )
-                .map_err(|(_, e)| e)
-                .context("SSAO compute pipeline")
-        } {
-            Ok(pipelines) => {
-                // SAFETY: shader module is no longer needed once the
-                // compute pipeline has been created (Vulkan spec: the
-                // shader is copied into the pipeline at create time).
-                unsafe { device.destroy_shader_module(shader_module, None) };
-                pipelines[0]
-            }
-            Err(e) => {
-                // SAFETY: same as Ok branch above — shader module no
-                // longer referenced. Then cleanup-on-error for partial.
-                unsafe { device.destroy_shader_module(shader_module, None) };
-                unsafe { partial.destroy(device, allocator) };
-                return Err(e);
-            }
-        };
+        // Compute pipeline — the load-module → create → destroy-module dance
+        // lives in `pipeline::create_compute_pipeline` (#1751); `try_or_cleanup!`
+        // adds the partial-struct rollback on error.
+        partial.pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
+            device,
+            pipeline_cache,
+            SSAO_COMP_SPV,
+            partial.pipeline_layout,
+            "SSAO",
+        ));
 
         // Descriptor pool + sets — sizes derived from `bindings`
         // (#1030 / REN-D10-NEW-09).

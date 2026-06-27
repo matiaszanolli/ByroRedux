@@ -35,6 +35,60 @@ pub fn load_shader_module(device: &ash::Device, spv: &[u8]) -> Result<vk::Shader
     Ok(module)
 }
 
+/// Build a compute pipeline from SPIR-V: load the shader module, create the
+/// pipeline against `pipeline_cache` + `layout`, and destroy the module on
+/// BOTH the success and failure paths. Returns the pipeline, or an error
+/// tagged `"{name} compute pipeline"`.
+///
+/// Consolidates the load-module → create-pipeline → destroy-module dance
+/// that was re-inlined across bloom / ssao / volumetrics / skin_compute
+/// (#1751 / TD2-002). Each call site adds only its OWN resource rollback on
+/// the returned `Err` — the shader module is already freed here, so the only
+/// leak hazard (forgetting to destroy the module on the error path) lives in
+/// one place.
+pub(crate) fn create_compute_pipeline(
+    device: &ash::Device,
+    pipeline_cache: vk::PipelineCache,
+    spv: &[u8],
+    layout: vk::PipelineLayout,
+    name: &str,
+) -> Result<vk::Pipeline> {
+    let shader_module = load_shader_module(device, spv)?;
+    let stage = vk::PipelineShaderStageCreateInfo::default()
+        .stage(vk::ShaderStageFlags::COMPUTE)
+        .module(shader_module)
+        .name(c"main");
+    // SAFETY: trivial ash create call; `device`, `pipeline_cache`, `layout`
+    // and `shader_module` (created just above) are all live for the call.
+    let result = unsafe {
+        device
+            .create_compute_pipelines(
+                pipeline_cache,
+                &[vk::ComputePipelineCreateInfo::default()
+                    .stage(stage)
+                    .layout(layout)],
+                None,
+            )
+            .map_err(|(_, e)| e)
+            .with_context(|| format!("{name} compute pipeline"))
+    };
+    match result {
+        Ok(pipelines) => {
+            // SAFETY: `shader_module` was created by us above and not yet
+            // destroyed; the pipeline is built so the module is no longer
+            // needed (Vulkan copies it in at create time); device live.
+            unsafe { device.destroy_shader_module(shader_module, None) };
+            Ok(pipelines[0])
+        }
+        Err(e) => {
+            // SAFETY: same module, same liveness — free it on the error path
+            // too so no call site has to remember.
+            unsafe { device.destroy_shader_module(shader_module, None) };
+            Err(e)
+        }
+    }
+}
+
 /// Pipeline selection key for a single draw.
 ///
 /// The renderer keeps a single opaque pipeline (depth-write on, no blend)

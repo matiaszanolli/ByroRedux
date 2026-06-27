@@ -358,44 +358,16 @@ impl VolumetricsPipeline {
         });
 
         // ── 4. Compute pipeline ───────────────────────────────────────
-        let shader_module = try_or_cleanup!(super::pipeline::load_shader_module(
+        // load-module → create → destroy-module centralized in
+        // pipeline::create_compute_pipeline (#1751); try_or_cleanup! adds the
+        // partial-struct rollback on error.
+        partial.pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
             device,
-            VOLUMETRICS_INJECT_COMP_SPV
+            pipeline_cache,
+            VOLUMETRICS_INJECT_COMP_SPV,
+            partial.pipeline_layout,
+            "Volumetrics clear",
         ));
-        let stage = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(shader_module)
-            .name(c"main");
-        // SAFETY: `device` is live; `pipeline_cache`, `partial.pipeline_layout`
-        // and `stage.module` (loaded just above) are all live for the call.
-        partial.pipeline = match unsafe {
-            device
-                .create_compute_pipelines(
-                    pipeline_cache,
-                    &[vk::ComputePipelineCreateInfo::default()
-                        .stage(stage)
-                        .layout(partial.pipeline_layout)],
-                    None,
-                )
-                .map_err(|(_, e)| e)
-                .context("Volumetrics clear compute pipeline")
-        } {
-            Ok(pipelines) => {
-                // SAFETY: `shader_module` was created above by us, not yet destroyed,
-                // and is no longer needed once the pipeline is built; `device` is live.
-                unsafe { device.destroy_shader_module(shader_module, None) };
-                pipelines[0]
-            }
-            Err(e) => {
-                // SAFETY: `shader_module` was created above by us and not yet destroyed;
-                // `device` is live on this error-cleanup path.
-                unsafe { device.destroy_shader_module(shader_module, None) };
-                // SAFETY: cleanup on pipeline-creation failure; `partial` owns only
-                // objects created so far, none in flight; `device`/`allocator` are live.
-                unsafe { partial.destroy(device, allocator) };
-                return Err(e);
-            }
-        };
 
         // ── 5. Descriptor pool + sets ─────────────────────────────────
         // Pool sizes derived from `bindings` (#1030 / REN-D10-NEW-09).
@@ -524,44 +496,14 @@ impl VolumetricsPipeline {
         });
 
         // ── 9. Integration compute pipeline ───────────────────────────
-        let int_shader_module = try_or_cleanup!(super::pipeline::load_shader_module(
+        // Shared builder (#1751); try_or_cleanup! rolls back `partial` on error.
+        partial.integration_pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
             device,
-            VOLUMETRICS_INTEGRATE_COMP_SPV
+            pipeline_cache,
+            VOLUMETRICS_INTEGRATE_COMP_SPV,
+            partial.integration_pipeline_layout,
+            "Volumetrics integration",
         ));
-        let int_stage = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(int_shader_module)
-            .name(c"main");
-        // SAFETY: `device` is live; `pipeline_cache`, the integration pipeline
-        // layout, and `int_stage.module` (loaded above) are all live for the call.
-        partial.integration_pipeline = match unsafe {
-            device
-                .create_compute_pipelines(
-                    pipeline_cache,
-                    &[vk::ComputePipelineCreateInfo::default()
-                        .stage(int_stage)
-                        .layout(partial.integration_pipeline_layout)],
-                    None,
-                )
-                .map_err(|(_, e)| e)
-                .context("Volumetrics integration compute pipeline")
-        } {
-            Ok(pipelines) => {
-                // SAFETY: `int_shader_module` was created above by us, not yet destroyed,
-                // and no longer needed once the pipeline is built; `device` is live.
-                unsafe { device.destroy_shader_module(int_shader_module, None) };
-                pipelines[0]
-            }
-            Err(e) => {
-                // SAFETY: `int_shader_module` was created above by us and not yet
-                // destroyed; `device` is live on this error-cleanup path.
-                unsafe { device.destroy_shader_module(int_shader_module, None) };
-                // SAFETY: cleanup on pipeline-creation failure; `partial` owns only
-                // objects created so far, none in flight; `device`/`allocator` are live.
-                unsafe { partial.destroy(device, allocator) };
-                return Err(e);
-            }
-        };
 
         // ── 10. Integration descriptor pool + sets ────────────────────
         // Pool sizes derived from `int_bindings` (#1030 / REN-D10-NEW-09).

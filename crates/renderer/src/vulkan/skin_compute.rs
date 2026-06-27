@@ -314,34 +314,24 @@ impl SkinComputePipeline {
                 .context("create skin_compute pipeline layout")?
         };
 
-        // Compile the compute pipeline.
-        let shader_module = super::pipeline::load_shader_module(device, SKIN_VERTICES_COMP_SPV)?;
-        let pipeline_result = unsafe {
-            device.create_compute_pipelines(
-                pipeline_cache,
-                &[vk::ComputePipelineCreateInfo::default()
-                    .stage(
-                        vk::PipelineShaderStageCreateInfo::default()
-                            .stage(vk::ShaderStageFlags::COMPUTE)
-                            .module(shader_module)
-                            .name(c"main"),
-                    )
-                    .layout(pipeline_layout)],
-                None,
-            )
-        };
-        unsafe { device.destroy_shader_module(shader_module, None) };
-        let pipeline = match pipeline_result {
-            Ok(pipelines) => pipelines[0],
-            Err((_, e)) => {
-                // Roll back what we already created — the partial
-                // struct path used in cluster_cull is overkill for
-                // three resources; explicit cleanup is clearer here.
+        // Compile the compute pipeline. The load-module → create →
+        // destroy-module dance is shared via pipeline::create_compute_pipeline
+        // (#1751); skin_compute has no partial struct, so it rolls back its two
+        // layouts explicitly on error (covering both load and create failures).
+        let pipeline = match super::pipeline::create_compute_pipeline(
+            device,
+            pipeline_cache,
+            SKIN_VERTICES_COMP_SPV,
+            pipeline_layout,
+            "skin_compute",
+        ) {
+            Ok(p) => p,
+            Err(e) => {
                 unsafe {
                     device.destroy_pipeline_layout(pipeline_layout, None);
                     device.destroy_descriptor_set_layout(descriptor_set_layout, None);
                 }
-                return Err(e).context("create skin_compute pipeline");
+                return Err(e);
             }
         };
 
@@ -769,30 +759,21 @@ impl SkinPaletteComputePipeline {
                 .context("create skin_palette pipeline layout")?
         };
 
-        let shader_module = super::pipeline::load_shader_module(device, SKIN_PALETTE_COMP_SPV)?;
-        let pipeline_result = unsafe {
-            device.create_compute_pipelines(
-                pipeline_cache,
-                &[vk::ComputePipelineCreateInfo::default()
-                    .stage(
-                        vk::PipelineShaderStageCreateInfo::default()
-                            .stage(vk::ShaderStageFlags::COMPUTE)
-                            .module(shader_module)
-                            .name(c"main"),
-                    )
-                    .layout(pipeline_layout)],
-                None,
-            )
-        };
-        unsafe { device.destroy_shader_module(shader_module, None) };
-        let pipeline = match pipeline_result {
-            Ok(pipelines) => pipelines[0],
-            Err((_, e)) => {
+        // Shared builder (#1751); explicit two-layout rollback on error.
+        let pipeline = match super::pipeline::create_compute_pipeline(
+            device,
+            pipeline_cache,
+            SKIN_PALETTE_COMP_SPV,
+            pipeline_layout,
+            "skin_palette",
+        ) {
+            Ok(p) => p,
+            Err(e) => {
                 unsafe {
                     device.destroy_pipeline_layout(pipeline_layout, None);
                     device.destroy_descriptor_set_layout(descriptor_set_layout, None);
                 }
-                return Err(e).context("create skin_palette pipeline");
+                return Err(e);
             }
         };
 
