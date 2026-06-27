@@ -56,8 +56,7 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 // lockstep to the Rust `GpuMaterial` struct + the matching
 // `intern`/encoding sites; the size of this struct (300 B — was 260 B
 // post-#804, grew through the #1248–#1250 Disney BSDF additions) is
-// pinned by `gpu_material_size_is_260_bytes` on the Rust side (the test
-// name is historical / kept for grep continuity; it asserts 300).
+// pinned by `gpu_material_size_is_300_bytes` on the Rust side.
 struct GpuMaterial {
     // PBR scalars (vec4 #1)
     float roughness;
