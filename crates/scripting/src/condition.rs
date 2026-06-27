@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. M47.1 Phase 2 ships **6 representative functions** with
+//! lineage. M47.1 Phase 2 ships **7 representative functions** with
 //! their canonical FO3 / FNV / Skyrim indices:
 //!
 //! | Index | Function       | Reads                     |
@@ -30,6 +30,7 @@
 //! | 9     | GetActorValue  | `ActorStats[param_1.name]`|
 //! | 36    | GetDistance    | `GlobalTransform`         |
 //! | 58    | GetStage       | `QuestStageState[param_1]`|
+//! | 59    | GetStageDone   | `QuestStageState[param_1]`|
 //! | 60    | GetFactionRank | `FactionRanks`            |
 //! | 71    | GetIsID        | `FormIdComponent`         |
 //! | 99    | HasPerk        | `PerkList`                |
@@ -51,8 +52,10 @@ use byroredux_plugin::esm::records::condition::{Condition, ConditionList, Condit
 /// [`Self::Unknown`] which evaluates to `0.0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConditionFunction {
-    /// `GetActorValue(actor_value_name) → f32`. Reads
-    /// `param_1`-named stat from the Run-On's `ActorStats` component.
+    /// `GetActorValue(actor_value_name) → f32`. Intended to read the
+    /// `param_1`-named stat from the Run-On's `ActorStats` component;
+    /// currently returns 0.0 pending the AVIF-FormID→name resolver — the
+    /// one genuine stub left in this catalog (#1663).
     /// FO3 / FNV / Skyrim function index 9.
     GetActorValue,
     /// `GetDistance(target_form_id) → f32`. Squared-distance reduces
@@ -68,21 +71,20 @@ pub enum ConditionFunction {
     /// idempotency primitive for "this quest milestone has fired
     /// before." FO3 / FNV / Skyrim index 59.
     GetStageDone,
-    /// `GetFactionRank(faction_form_id) → f32`. Returns -1 when the
-    /// Run-On isn't in the faction; integer rank otherwise.
-    /// FO3 / FNV / Skyrim index 60. Stubbed today: always returns -1
-    /// (matches Bethesda's "not in faction" sentinel) until a
-    /// faction-membership component lands.
+    /// `GetFactionRank(faction_form_id) → f32`. Reads the Run-On actor's
+    /// `FactionRanks` component: the integer rank when the actor is in
+    /// the faction, else -1 (Bethesda's "not in faction" sentinel — also
+    /// returned when the actor carries no `FactionRanks`).
+    /// FO3 / FNV / Skyrim index 60.
     GetFactionRank,
     /// `GetIsID(base_form_id) → f32`. Returns 1.0 when the Run-On's
     /// `FormIdComponent` matches `param_1`, 0.0 otherwise. Common
     /// gate for "is this specific REFR?" checks. FO3 / FNV / Skyrim
     /// index 71.
     GetIsID,
-    /// `HasPerk(perk_form_id) → f32`. Returns 1.0 when the Run-On's
-    /// perk list contains `param_1`, 0.0 otherwise. Skyrim+ index 99.
-    /// Stubbed today: always returns 0.0 until a perk-list component
-    /// lands.
+    /// `HasPerk(perk_form_id) → f32`. Reads the Run-On actor's `PerkList`:
+    /// 1.0 when it contains `param_1`, 0.0 otherwise (also 0.0 when the
+    /// actor carries no `PerkList`). Skyrim+ index 99.
     HasPerk,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
