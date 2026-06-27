@@ -168,7 +168,7 @@ cannot diff its own baseline:
 
 | Metric | Source | Direction |
 |--------|--------|-----------|
-| `entities_total` | `bench:` `entities=` (or `stats` `Entities:`) | exact match |
+| `entities_total` | `bench:` `entities=` (or `stats` `Entities:`) | within ±2 % (tolerance — see note) |
 | `tex_missing_unique_paths` | `tex.missing` summary line | ≤ baseline |
 | `mesh_cache_failed_count` | `mesh.cache failed` summary | ≤ baseline |
 | `light_count_directional` | `light.dump` `CellLightingRes` (always 1 sun) | exact match |
@@ -206,6 +206,21 @@ Quirks of these scalars (don't fabricate around them):
 > finding** — only the structural metrics (textures, mesh-cache, skin pool,
 > entities, draw split) gate. For a real fps investigation, re-run 3× and
 > average (the engine emits one value, not a distribution).
+
+> **`entities_total` is a ±2 % tolerance metric, not exact (RT-3, #1705).**
+> It counts *all* ECS entities, including non-rendering bodies — collision-only
+> colliders, the ragdoll/character rig, markers — which drift up benignly as
+> collision/ragdoll/material work lands without changing what renders. Three
+> successive audits logged the same harmless creep (RT-2 06-14 fnv, RT-4 06-14
+> fo4, RT-3 06-23 fnv +102 / skyrim +5 / fo4 +10), and an *exact*-match gate
+> turns every such addition into a false diff that can mask a real regression in
+> the noise. The exact render-load contract is `bench_draws_cmds` (the `N` of the
+> draw split, gated `≤ baseline ×1.1`) — that is the "render_entities" half of
+> the RT-4 split suggestion; `entities_total` is the total-body half and only
+> gates when it moves **beyond ±2 %** in either direction. A drop past −2 % still
+> gates (entities failing to spawn is a real regression); within-band drift is a
+> clean pass, not a finding. Regenerate the baseline with `--regen` only when a
+> deliberate change moves it past the band.
 
 Write the extracted scalars to `/tmp/audit/runtime/<game>-<cell>.current.tsv`.
 

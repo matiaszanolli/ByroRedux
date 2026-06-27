@@ -1,5 +1,8 @@
 # regenerated: 2026-06-14 (BASELINE CREATED — first run, audit-runtime --game all)
 # NOTE: mesh_cache_failed_count=11 includes 2 corrupted control-char paths — see AUDIT_RUNTIME_2026-06-14 RT-3
+# entities_total: ±2% tolerance metric, not exact (#1705 / RT-3). Benign creep
+# from non-render bodies (collision/ragdoll/markers) is expected and within band;
+# bench_draws_cmds is the exact render-load contract. --regen if it leaves ±2%.
 entities_total	6044
 tex_missing_unique_paths	0
 mesh_cache_failed_count	11

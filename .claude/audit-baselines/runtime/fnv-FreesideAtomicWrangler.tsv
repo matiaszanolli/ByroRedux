@@ -1,5 +1,8 @@
 # regenerated: 2026-05-28 (post-#1284 step-2)
 # captured at frame ~240 via byro-dbg telemetry, MAX_TOTAL_BONES=196608
+# entities_total: ±2% tolerance metric, not exact (#1705 / RT-3). Benign creep
+# from non-render bodies (collision/ragdoll/markers) is expected and within band;
+# bench_draws_cmds is the exact render-load contract. --regen if it leaves ±2%.
 entities_total              9250
 tex_missing_unique_paths    1
 mesh_cache_failed_count     11
