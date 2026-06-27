@@ -92,6 +92,30 @@ pub fn write_uniform_buffer<'a>(
         .buffer_info(info)
 }
 
+/// `ACCELERATION_STRUCTURE_KHR` write — single TLAS, `descriptor_count = 1`.
+///
+/// The TLAS handle is carried in `accel` (a
+/// `WriteDescriptorSetAccelerationStructureKHR` the caller has already
+/// pointed at its `[tlas]` slice); the returned write borrows it via
+/// `push_next`, so `accel` and the slice it holds must outlive the write
+/// and stay alive through `update_descriptor_sets`. Consolidates the
+/// byte-identical per-frame `write_tlas` builders in the scene buffer,
+/// caustic, and volumetrics descriptor sets (#1752 / TD2-003) — only the
+/// destination set and binding differ between them.
+#[inline]
+pub fn write_acceleration_structure<'a>(
+    dst_set: vk::DescriptorSet,
+    binding: u32,
+    accel: &'a mut vk::WriteDescriptorSetAccelerationStructureKHR<'_>,
+) -> vk::WriteDescriptorSet<'a> {
+    vk::WriteDescriptorSet::default()
+        .dst_set(dst_set)
+        .dst_binding(binding)
+        .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+        .descriptor_count(1)
+        .push_next(accel)
+}
+
 // ── ImageSubresourceRange helpers ────────────────────────────────────
 
 /// `COLOR` aspect, mip 0, single mip, single array layer — the shape

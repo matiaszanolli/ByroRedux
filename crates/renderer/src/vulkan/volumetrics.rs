@@ -45,8 +45,8 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
-    image_barrier_undef_to_general, memory_barrier, write_storage_image, write_uniform_buffer,
-    DescriptorPoolBuilder,
+    image_barrier_undef_to_general, memory_barrier, write_acceleration_structure,
+    write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -1025,12 +1025,8 @@ impl VolumetricsPipeline {
         let accel_structs = [tlas];
         let mut accel_write = vk::WriteDescriptorSetAccelerationStructureKHR::default()
             .acceleration_structures(&accel_structs);
-        let write = vk::WriteDescriptorSet::default()
-            .dst_set(self.descriptor_sets[frame])
-            .dst_binding(2)
-            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-            .descriptor_count(1)
-            .push_next(&mut accel_write);
+        let write =
+            write_acceleration_structure(self.descriptor_sets[frame], 2, &mut accel_write);
         // SAFETY: the injection descriptor set for `frame` is live and not in use
         // by an in-flight frame (caller invokes write_tlas before this frame's
         // dispatch); `accel_structs`/`accel_write` outlive the call.

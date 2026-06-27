@@ -4,7 +4,9 @@
 //! `write_tlas` + `reset_ray_budget`.
 
 use super::super::allocator::SharedAllocator;
-use super::super::descriptors::{write_combined_image_sampler, write_storage_buffer};
+use super::super::descriptors::{
+    write_acceleration_structure, write_combined_image_sampler, write_storage_buffer,
+};
 use super::*;
 use anyhow::Result;
 use ash::vk;
@@ -157,12 +159,8 @@ impl super::buffers::SceneBuffers {
         let mut accel_write = vk::WriteDescriptorSetAccelerationStructureKHR::default()
             .acceleration_structures(&accel_structs);
 
-        let write = vk::WriteDescriptorSet::default()
-            .dst_set(self.descriptor_sets[frame_index])
-            .dst_binding(2)
-            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-            .descriptor_count(1)
-            .push_next(&mut accel_write);
+        let write =
+            write_acceleration_structure(self.descriptor_sets[frame_index], 2, &mut accel_write);
 
         unsafe {
             device.update_descriptor_sets(&[write], &[]);

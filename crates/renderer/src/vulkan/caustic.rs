@@ -43,7 +43,8 @@ use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
     image_barrier_undef_to_general, memory_barrier, write_combined_image_sampler,
-    write_storage_buffer, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
+    write_acceleration_structure, write_storage_buffer, write_storage_image, write_uniform_buffer,
+    DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -635,12 +636,8 @@ impl CausticPipeline {
         let accel_structs = [tlas];
         let mut accel_write = vk::WriteDescriptorSetAccelerationStructureKHR::default()
             .acceleration_structures(&accel_structs);
-        let write = vk::WriteDescriptorSet::default()
-            .dst_set(self.descriptor_sets[frame])
-            .dst_binding(6)
-            .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
-            .descriptor_count(1)
-            .push_next(&mut accel_write);
+        let write =
+            write_acceleration_structure(self.descriptor_sets[frame], 6, &mut accel_write);
         // SAFETY: `write` references `accel_write` (which carries the
         // caller-provided `tlas` handle, live for the call duration) and
         // `self.descriptor_sets[frame]` (live for `self`'s lifetime).

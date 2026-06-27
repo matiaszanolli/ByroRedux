@@ -37,7 +37,7 @@
 //!    populated (water planes are real instances — they reuse the
 //!    same per-instance model matrix the rest of the scene uses).
 
-use super::descriptors::DescriptorPoolBuilder;
+use super::descriptors::{write_storage_image, DescriptorPoolBuilder};
 use super::pipeline::load_shader_module;
 use crate::vertex::Vertex;
 use anyhow::{Context, Result};
@@ -369,11 +369,8 @@ impl WaterPipeline {
             let img_info = [vk::DescriptorImageInfo::default()
                 .image_view(view)
                 .image_layout(vk::ImageLayout::GENERAL)];
-            let write = vk::WriteDescriptorSet::default()
-                .dst_set(self.water_caustic_descriptor_sets[frame])
-                .dst_binding(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
-                .image_info(&img_info);
+            let write =
+                write_storage_image(self.water_caustic_descriptor_sets[frame], 0, &img_info);
             // SAFETY: descriptor set / binding / type all match the
             // layout declared above; image_info length == 1 ==
             // descriptor_count.
