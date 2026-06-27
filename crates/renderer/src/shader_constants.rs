@@ -75,6 +75,8 @@ mod tests {
             ("MAX_LIGHTS_PER_CLUSTER", format!("#define MAX_LIGHTS_PER_CLUSTER {MAX_LIGHTS_PER_CLUSTER}u")),
             ("VERTEX_STRIDE_FLOATS", format!("#define VERTEX_STRIDE_FLOATS {VERTEX_STRIDE_FLOATS}u")),
             ("MAX_BONES_PER_MESH", format!("#define MAX_BONES_PER_MESH {MAX_BONES_PER_MESH}u")),
+            // No `u` suffix — used in a `layout(local_size_x = …)` qualifier (#1758).
+            ("SKIN_WORKGROUP_SIZE", format!("#define SKIN_WORKGROUP_SIZE {SKIN_WORKGROUP_SIZE}")),
             ("MATERIAL_KIND_GLASS", format!("#define MATERIAL_KIND_GLASS {MATERIAL_KIND_GLASS}u")),
             ("MATERIAL_KIND_EFFECT_SHADER", format!("#define MATERIAL_KIND_EFFECT_SHADER {MATERIAL_KIND_EFFECT_SHADER}u")),
             ("MATERIAL_KIND_NO_LIGHTING", format!("#define MATERIAL_KIND_NO_LIGHTING {MATERIAL_KIND_NO_LIGHTING}u")),
@@ -141,6 +143,10 @@ mod tests {
             (
                 "skin_vertices.comp",
                 include_str!("../shaders/skin_vertices.comp"),
+            ),
+            (
+                "skin_palette.comp",
+                include_str!("../shaders/skin_palette.comp"),
             ),
             ("composite.frag", include_str!("../shaders/composite.frag")),
             (

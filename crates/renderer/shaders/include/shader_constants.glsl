@@ -23,6 +23,7 @@
 
 // Skinning
 #define MAX_BONES_PER_MESH 144u
+#define SKIN_WORKGROUP_SIZE 64
 
 // Material kind enum (`GpuMaterial.materialKind`).
 // Authoritative values: scene_buffer/constants.rs. #1401.

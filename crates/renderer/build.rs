@@ -84,6 +84,8 @@ fn main() {
 
     writeln!(out, "// Skinning").unwrap();
     writeln!(out, "#define MAX_BONES_PER_MESH {MAX_BONES_PER_MESH}u").unwrap();
+    // No `u` suffix — used in `layout(local_size_x = SKIN_WORKGROUP_SIZE)`.
+    writeln!(out, "#define SKIN_WORKGROUP_SIZE {SKIN_WORKGROUP_SIZE}").unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "// Material kind enum (`GpuMaterial.materialKind`).").unwrap();

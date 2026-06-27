@@ -32,9 +32,12 @@ const SKIN_VERTICES_COMP_SPV: &[u8] = include_bytes!("../../shaders/skin_vertice
 const SKIN_PALETTE_COMP_SPV: &[u8] = include_bytes!("../../shaders/skin_palette.comp.spv");
 
 /// Compute workgroup size (local_size_x in skin_vertices.comp +
-/// skin_palette.comp). Both shaders use the same 64-wide workgroup so
-/// the dispatch arithmetic and occupancy story stay aligned.
-const WORKGROUP_SIZE: u32 = 64;
+/// skin_palette.comp). Both shaders source this from the generated
+/// `SKIN_WORKGROUP_SIZE` define; re-exporting the same single-source-of-
+/// truth const here keeps the dispatch group-count math
+/// (`*.div_ceil(WORKGROUP_SIZE)`) pinned to the shader's `local_size_x`.
+/// #1758 / TD7-001.
+use crate::shader_constants::SKIN_WORKGROUP_SIZE as WORKGROUP_SIZE;
 
 /// Push constant payload — matches `skin_vertices.comp::PushConstants`.
 /// 12 bytes (3 × u32). std430 doesn't require 16-B block alignment when
@@ -1212,17 +1215,22 @@ mod tests {
         assert_eq!(std::mem::size_of::<SkinPalettePushConstants>(), 4);
     }
 
-    /// Both compute shaders must declare the same 64-wide workgroup as the
-    /// Rust-side `WORKGROUP_SIZE`, since the dispatch group-count math
+    /// Both compute shaders must source `local_size_x` from the generated
+    /// `SKIN_WORKGROUP_SIZE` define, since the dispatch group-count math
     /// (`vertex_count.div_ceil(WORKGROUP_SIZE)` at the vertex path,
     /// `bone_count.div_ceil(WORKGROUP_SIZE)` at the palette path) assumes
-    /// it. A shader edit that changed `local_size_x` without updating the
-    /// const would silently dispatch too many / too few workgroups. Pinned
-    /// by string-scan of BOTH GLSL sources — the vertex shader was
-    /// previously unpinned (#1319 / TD4-NEW-13).
+    /// it. Post-#1758 the value lives in one place
+    /// (`shader_constants_data.rs`): the Rust-side `WORKGROUP_SIZE` here
+    /// re-exports it, build.rs emits the matching `#define`, and both
+    /// shaders reference the define name — so the literal `64` no longer
+    /// appears in either GLSL source. This test pins that both sources use
+    /// the define (a hand-written `local_size_x = 64` would now be the
+    /// regression); the numeric value is value-pinned by
+    /// `shader_constants::tests::generated_header_contains_all_defines`.
+    /// The vertex shader was previously unpinned (#1319 / TD4-NEW-13).
     #[test]
     fn skin_palette_workgroup_size_matches_skin_vertices() {
-        let expected = format!("local_size_x = {}", WORKGROUP_SIZE);
+        let expected = "local_size_x = SKIN_WORKGROUP_SIZE";
         for (name, src) in [
             (
                 "skin_palette.comp",
@@ -1234,11 +1242,15 @@ mod tests {
             ),
         ] {
             assert!(
-                src.contains(&expected),
-                "{name} must declare `layout({expected})` to match the \
-                 Rust-side WORKGROUP_SIZE that drives its dispatch group count",
+                src.contains(expected),
+                "{name} must declare `layout({expected})` so its workgroup \
+                 width sources from the generated SKIN_WORKGROUP_SIZE define \
+                 that the Rust-side WORKGROUP_SIZE dispatch const re-exports",
             );
         }
+        // The Rust dispatch const is the same single source of truth the
+        // shaders compile against — re-export, not a parallel literal.
+        assert_eq!(WORKGROUP_SIZE, crate::shader_constants::SKIN_WORKGROUP_SIZE);
     }
 
     /// M29.5 numeric pin — the GPU compute shader and the CPU-side

@@ -37,9 +37,10 @@
 // output buffer is a complete drop-in replacement when Phase 3 wires
 // raster to read from it.
 
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = SKIN_WORKGROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 
-// VERTEX_STRIDE_FLOATS and MAX_BONES_PER_MESH from shader_constants.glsl.
+// VERTEX_STRIDE_FLOATS, MAX_BONES_PER_MESH and SKIN_WORKGROUP_SIZE from
+// shader_constants.glsl (generated from shader_constants_data.rs).
 
 // Bind-pose vertex SSBO (the shared geometry buffer; one mesh's
 // vertices live at `vertex_offset .. vertex_offset + vertex_count`).

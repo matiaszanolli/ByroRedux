@@ -42,6 +42,16 @@ pub const VERTEX_UV_OFFSET_FLOATS: u32 = 9;
 // for the vanilla-content survey that fixes this ceiling at 144 (FO76 prewardress = 133).
 pub const MAX_BONES_PER_MESH: u32 = 144;
 
+// Skin-compute workgroup width. Both `skin_vertices.comp` (1 invocation per
+// vertex) and `skin_palette.comp` (1 invocation per bone slot) run a 1D
+// 64-wide dispatch; the Rust dispatch group-count math in
+// `vulkan/skin_compute.rs` (`*.div_ceil(SKIN_WORKGROUP_SIZE)`) re-exports
+// this same const so the layout qualifier and the group count can't drift.
+// Distinct from `WORKGROUP_X = 8` (the 2D image-pass tile width) — skinning
+// is a flat 1D dispatch. Emitted with no `u` suffix so it works in the
+// `layout(local_size_x = SKIN_WORKGROUP_SIZE)` qualifier. #1758 / TD7-001.
+pub const SKIN_WORKGROUP_SIZE: u32 = 64;
+
 // Material kind enum (GpuMaterial.materialKind).
 // Authoritative Rust-side values live in `scene_buffer/constants.rs`. #1401.
 pub const MATERIAL_KIND_GLASS: u32 = 100;

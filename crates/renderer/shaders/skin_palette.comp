@@ -33,7 +33,7 @@
 // early-return so the dense MAX_TOTAL_BONES-wide output buffer can be
 // dispatched in one shot without touching unused tail slots.
 
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = SKIN_WORKGROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 
 // Per-frame bone world matrices (one mat4 per palette slot, dense layout
 // parallel to bind_inverses + the output palette). Filled CPU-side from
