@@ -14,7 +14,7 @@ use byroredux_core::ecs::world::World;
 use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 use byroredux_core::string::StringPool;
 use byroredux_save::validate::{validate_world, ValidationKind};
-use byroredux_save::{decode, encode, restore_world, save_world, SaveRegistry};
+use byroredux_save::{decode, encode, restore_world, save_world, SaveError, SaveRegistry};
 use glam::{Quat, Vec3};
 
 /// The curated game-state registry the test (and, later, the binary) uses.
@@ -382,5 +382,40 @@ fn anim_player_root_entity_not_clobbered_by_delta_apply() {
             Some(l_root),
             "excluding AnimationPlayer preserves the cell-owned fresh root_entity"
         );
+    }
+}
+
+/// SAVE-D2-02 — restoring a `FormIdComponent`-bearing save into a world that
+/// has **no** `FormIdPool` installed must fail with a typed
+/// `SaveError::MissingResource`, never panic.
+///
+/// The `FormIdComponent` load closure re-interns each saved `FormIdPair`
+/// through the destination's pool; if no pool is present it returns the typed
+/// error rather than `resource_mut`'s "Resource not found" panic, mirroring
+/// the defensive save side. The live engine always installs a pool (boot +
+/// cell reload), so this guards against a future restore-ordering bug or a
+/// refactor back to `resource_mut`. The source world here carries a real
+/// `FormIdComponent` (on the actor), so the column is non-empty and its load
+/// closure actually runs the pool lookup.
+#[test]
+fn form_id_restore_without_pool_errors_cleanly() {
+    let (src, _pair) = build_source_world();
+    let reg = registry();
+
+    let snapshot = save_world(&src, &reg).expect("save");
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).expect("encode");
+    let decoded = decode(&bytes, reg.schema_fingerprint()).expect("decode");
+
+    // Deliberately DO NOT install a FormIdPool on the destination. (Every
+    // other column loads first; FormIdComponent is registered last, so the
+    // failure is on its closure, not a setup gap.) `SaveError` doesn't derive
+    // `PartialEq`, so match the variant + payload directly.
+    let mut dst = World::new();
+    match restore_world(&mut dst, &reg, &decoded) {
+        Err(SaveError::MissingResource("FormIdPool")) => {}
+        other => panic!(
+            "expected Err(MissingResource(\"FormIdPool\")) restoring a \
+             FormIdComponent column without a pool, got {other:?}"
+        ),
     }
 }
