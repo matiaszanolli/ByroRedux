@@ -889,8 +889,11 @@ fn categories_table_row_count_pinned() {
     // Bumped 93 → 94 in #969 (OBL-D3-NEW-05: magic_effects_by_code —
     //   Oblivion-only 4-char-code → MGEF FormID secondary index for
     //   SPEL/ENCH/ALCH/INGR EFID resolution).
+    // Bumped 94 → 95 in #1773 (FNV-D4-NEW-01: trees — TREE typed map was
+    //   the lone populated map missing from `categories()`, so a TREE
+    //   category-wipe passed the parse-rate CI floor silently).
     // Bump in lockstep with the struct + `categories()` edits.
-    assert_eq!(EsmIndex::categories().len(), 94);
+    assert_eq!(EsmIndex::categories().len(), 95);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring
