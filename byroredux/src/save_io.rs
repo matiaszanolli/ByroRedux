@@ -988,4 +988,83 @@ mod tests {
         assert!(pose.character_mode);
         assert!((pose.yaw - 0.7).abs() < 1e-6);
     }
+
+    /// Source files that define the save-participating types registered in
+    /// [`build_save_registry`] — top-level columns AND the types nested
+    /// inside them (an `Inventory`'s `ItemStack`, an `AnimationStack`'s
+    /// `AnimationLayer`, the `FormIdPair` behind the form-id key column, …).
+    ///
+    /// KEEP IN LOCKSTEP with `build_save_registry`: registering a new saved
+    /// type (or nesting a new type inside a saved column) means adding its
+    /// defining file here so the SAVE-D2-01 guard below scans it.
+    /// Paths are relative to `CARGO_MANIFEST_DIR` (the `byroredux/` crate).
+    const SAVE_TYPE_SOURCES: &[&str] = &[
+        "../crates/core/src/ecs/packed.rs",               // Transform
+        "../crates/core/src/ecs/components/name.rs",      // Name
+        "../crates/core/src/ecs/components/hierarchy.rs", // Parent, Children
+        "../crates/core/src/ecs/components/inventory.rs", // Inventory, EquipmentSlots, ItemStack, InventoryIndex
+        "../crates/core/src/ecs/components/light.rs",     // LightSource, LightFlicker
+        "../crates/core/src/ecs/components/form_id.rs",   // FormIdComponent
+        "../crates/core/src/form_id.rs",                  // FormIdPair (the serialised key)
+        "../crates/core/src/animation/player.rs",         // AnimationPlayer
+        "../crates/core/src/animation/stack.rs",          // AnimationStack, AnimationLayer
+        "../crates/core/src/ecs/resources.rs",            // ItemInstancePool, ItemInstance
+        "../crates/scripting/src/timer.rs",               // ScriptTimer
+        "src/cell_loader/transition.rs",                  // CurrentCellContext
+        "src/save_io.rs",                                 // PlayerPose
+    ];
+
+    /// SAVE-D2-01 (#1714) — a save-participating struct must not gain a
+    /// `#[serde(default)]` field without a [`FORMAT_MAJOR`] bump.
+    ///
+    /// `schema_fingerprint` hashes column *type keys*, not field layout, so
+    /// an intra-type field change slips past it. serde's required-field
+    /// backstop only rejects an old save when the new field is *required*; a
+    /// `#[serde(default)]` field default-fills a missing column entry on an
+    /// old save, loading it **silently downgraded**. Until a versioned
+    /// migrator chain exists, the only safe shape change is a `FORMAT_MAJOR`
+    /// bump (which `decode` rejects across).
+    ///
+    /// This guard trips on the explicit-`#[serde(default)]` half of the
+    /// footgun. The new-`Option` half can't be caught statically (legitimate
+    /// `Option`s already exist in saved structs — e.g.
+    /// `EquipmentSlots::occupants`, `AnimationStack::root_entity`); it rides
+    /// the doc rule on [`byroredux_save::FORMAT_MAJOR`]. Static source scan,
+    /// mirroring the `texture.rs` / `draw.rs` `include_str!` ordering checks.
+    #[test]
+    fn serde_default_on_saved_struct_requires_format_major_bump() {
+        // Once a migrator chain governs evolution past v1, intra-type change
+        // is handled by migration rather than this blanket ban — let it pass.
+        if byroredux_save::FORMAT_MAJOR > 1 {
+            return;
+        }
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let mut offenders = Vec::new();
+        for rel in SAVE_TYPE_SOURCES {
+            let path = std::path::Path::new(manifest).join(rel);
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!(
+                    "SAVE-D2-01 guard can't read {} ({e}); a save-participating \
+                     type's file moved — update SAVE_TYPE_SOURCES.",
+                    path.display()
+                )
+            });
+            for (i, line) in src.lines().enumerate() {
+                // Match the attribute form only (`#[serde(default …)]`), so a
+                // comment / string mention of the attribute (this file has
+                // several) doesn't self-trip the scan.
+                if line.trim_start().starts_with("#[serde(default") {
+                    offenders.push(format!("{rel}:{}", i + 1));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "SAVE-D2-01 (#1714): `#[serde(default)]` on a save-participating \
+             struct masks an intra-type change at load — schema_fingerprint is \
+             type-key-only, so an old save loads silently default-filled. Bump \
+             byroredux_save::FORMAT_MAJOR (+ add a migrator) or drop the \
+             default. Offenders: {offenders:?}",
+        );
+    }
 }

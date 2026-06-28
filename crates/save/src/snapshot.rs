@@ -28,6 +28,27 @@ use crate::SaveError;
 /// Container magic bytes.
 pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// Incompatible-format version. Bumped only when old saves can't be read.
+///
+/// # SAVE-D2-01 invariant — intra-type shape changes need a MAJOR bump
+///
+/// [`SaveRegistry::schema_fingerprint`](crate::SaveRegistry::schema_fingerprint)
+/// is deliberately coarse: it hashes the ordered set of column *type keys*,
+/// not field layout, so it catches add/remove/rename of a *type* but **not**
+/// a field change *within* a saved type. The intended backstop for intra-type
+/// change is `serde_json::from_value` failing at load — but that only fires
+/// when the new field is *required*. A field added with `#[serde(default)]`,
+/// or as `Option<T>` (serde silently defaults a missing `Option` to `None`),
+/// loads an OLD save **silently default-filled** instead of rejecting it.
+///
+/// Until a versioned migrator chain exists, the only safe way to change the
+/// serialised shape of any save-participating struct — including types
+/// *nested* inside a saved column (e.g. an `Inventory` item, an
+/// `AnimationStack` layer) — is to bump `FORMAT_MAJOR` here, which `decode`
+/// rejects across. A `serde_default_on_saved_struct_requires_format_major_bump`
+/// guard test (in the binary's `save_io`, beside `build_save_registry`) trips
+/// on the `#[serde(default)]` half of this footgun; the new-`Option` half
+/// rides this doc rule (legitimate `Option`s — e.g. `AnimationStack::root_entity`
+/// — already exist, so it can't be caught statically). See #1714.
 pub const FORMAT_MAJOR: u16 = 1;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;

@@ -651,19 +651,27 @@ where
             }
         };
 
-        // Bind the MutexGuard, deref inside the call — `*queue.lock()`
-        // would release the guard end-of-statement (vk::Queue is Copy)
-        // before `queue_submit` ran, defeating VUID-vkQueueSubmit-queue-
-        // 00893 the Mutex was added to enforce. Mirrors the present-queue
-        // site at `context/draw.rs`. See CONC-D2-NEW-01 (audit 2026-05-16).
-        let q = queue.lock().expect("graphics queue lock poisoned");
-        device
-            .queue_submit(*q, &[submit_info], fence)
-            .context("submit one-time commands")?;
+        // VUID-vkQueueSubmit-queue-00893 requires external synchronisation
+        // of the queue for the *submit call only* — not the subsequent
+        // fence wait. Scope the guard to the submit so it's released before
+        // the (potentially long) GPU-execution wait; the fence + dedicated
+        // command buffer still guarantee completion. Holding it across the
+        // wait would serialize any future second graphics-queue thread for
+        // no benefit. Bind the MutexGuard (not `*queue.lock()`, which would
+        // release it end-of-statement since vk::Queue is Copy) so it
+        // actually spans the submit. See CONC-D1-01 (#1713), refining
+        // CONC-D2-NEW-01 (audit 2026-05-16). The reusable-`fence_guard`
+        // (below) deliberately stays held across the wait — the fence must
+        // not be reset/reused by another caller mid-wait.
+        {
+            let q = queue.lock().expect("graphics queue lock poisoned");
+            device
+                .queue_submit(*q, &[submit_info], fence)
+                .context("submit one-time commands")?;
+        }
         device
             .wait_for_fences(&[fence], true, u64::MAX)
             .context("wait for one-time commands")?;
-        drop(q);
         if owned {
             device.destroy_fence(fence, None);
         }
@@ -689,4 +697,49 @@ pub fn generate_checkerboard(width: u32, height: u32, cell_size: u32) -> Vec<u8>
         }
     }
     pixels
+}
+
+#[cfg(test)]
+mod one_time_lock_scope_tests {
+    /// CONC-D1-01 (#1713): `with_one_time_commands_inner` must release the
+    /// graphics-queue Mutex BEFORE `wait_for_fences`. VUID-vkQueueSubmit-
+    /// queue-00893 only requires external synchronisation of the queue for
+    /// the submit call itself; holding the guard across the GPU-execution
+    /// wait needlessly serializes any future second graphics-queue thread.
+    /// The fence + dedicated command buffer give the completion guarantee
+    /// without the lock.
+    ///
+    /// Static source check (no GPU device under `cargo test`), mirroring the
+    /// `draw.rs::draw_frame_guards_on_empty_framebuffers_before_acquire`
+    /// (#1211) precedent.
+    #[test]
+    fn queue_guard_released_before_one_time_fence_wait() {
+        let src = include_str!("texture.rs");
+        let lock_pos = src
+            .find("graphics queue lock poisoned")
+            .expect("one-time helper should lock the graphics queue");
+        let submit_pos = src
+            .find("submit one-time commands")
+            .expect("one-time helper should submit");
+        let wait_pos = src
+            .find("wait for one-time commands")
+            .expect("one-time helper should wait on the fence");
+        assert!(
+            lock_pos < submit_pos && submit_pos < wait_pos,
+            "expected lock -> submit -> wait ordering in with_one_time_commands_inner",
+        );
+        // The queue guard's scope must CLOSE between the submit and the
+        // wait — i.e. a block-closing brace sits in the gap — so the wait
+        // runs with the queue Mutex released. The pre-#1713 code had the
+        // submit and wait as sequential statements in one block (no brace
+        // between them) and would fail this check.
+        let between = &src[submit_pos..wait_pos];
+        assert!(
+            between.contains('}'),
+            "CONC-D1-01: the graphics-queue guard must be dropped (scope \
+             closed) BEFORE wait_for_fences in with_one_time_commands_inner \
+             — no scope close found between the submit and the wait, so the \
+             Mutex is still held across the GPU wait. (#1713)",
+        );
+    }
 }

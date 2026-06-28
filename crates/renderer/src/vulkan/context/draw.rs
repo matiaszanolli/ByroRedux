@@ -3524,18 +3524,16 @@ impl VulkanContext {
             // `submit_egui_frame` this iteration.
             if let Some(pass) = self.egui_pass.as_mut() {
                 if let Some((egui_ctx, output)) = self.egui_pending_output.take() {
-                    // Hold the guard across the entire dispatch call — `set_textures`
-                    // inside dispatch submits to the queue and requires the lock.
-                    // Mirrors the main queue_submit site (line ~3061).
-                    let queue_guard = self
-                        .graphics_queue
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
+                    // Pass the queue Mutex by reference: `dispatch` locks it
+                    // only around the internal `set_textures` upload, not
+                    // across tessellate + cmd_draw (which just record into
+                    // `cmd`). CONC-D1-01 (#1713) — the pre-fix code held this
+                    // guard across the entire dispatch call.
                     if let Err(e) = pass.dispatch(
                         crate::vulkan::egui_pass::EguiDispatchCtx {
                             device: &self.device,
                             cmd,
-                            queue: *queue_guard,
+                            queue: &self.graphics_queue,
                             upload_command_pool: self.transfer_pool,
                         },
                         img as u32,

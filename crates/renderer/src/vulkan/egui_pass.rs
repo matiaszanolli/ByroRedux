@@ -39,8 +39,12 @@ pub struct EguiDispatchCtx<'a> {
     pub device: &'a ash::Device,
     /// The current frame's command buffer (already recording).
     pub cmd: vk::CommandBuffer,
-    /// Graphics queue used for the synchronous egui texture upload.
-    pub queue: vk::Queue,
+    /// Graphics queue used for the synchronous egui texture upload. Passed
+    /// as the shared `Mutex` (not a bare handle) so `dispatch` can scope
+    /// the lock to just the `set_textures` submit — the tessellate +
+    /// cmd_draw steps only record into `cmd` and need no queue held.
+    /// CONC-D1-01 (#1713).
+    pub queue: &'a Mutex<vk::Queue>,
     /// Command pool the egui texture-upload one-shot buffer comes from.
     pub upload_command_pool: vk::CommandPool,
 }
@@ -167,9 +171,16 @@ impl EguiPass {
         // own one-shot command buffer on the supplied queue and
         // waits internally before returning, so the textures are
         // GPU-resident by the time cmd_draw reads them.
+        //
+        // CONC-D1-01 (#1713): scope the queue lock to just this upload.
+        // The submit+wait inside set_textures is one egui-ash-renderer
+        // call we can't split, so the lock necessarily spans its internal
+        // wait — but no wider. The tessellate + cmd_draw steps below only
+        // record into `cmd`, so they run with the queue released.
         if !output.textures_delta.set.is_empty() {
+            let q = queue.lock().unwrap_or_else(|e| e.into_inner());
             self.renderer
-                .set_textures(queue, upload_command_pool, &output.textures_delta.set)
+                .set_textures(*q, upload_command_pool, &output.textures_delta.set)
                 .map_err(|e| anyhow!("egui set_textures: {e:?}"))?;
         }
 
