@@ -178,3 +178,36 @@ fn empty_world_tick_is_safe() {
     // Tick twice, both should be no-ops.
     recurring_update_tick_system(&world, 0.016);
 }
+
+#[test]
+fn fires_when_driven_through_the_scheduler() {
+    // SCR-D6-NEW-02 (#1768): the defect was that `main.rs` registered the
+    // RecurringUpdate component/resource but never added
+    // `recurring_update_tick_system` to the scheduler, so subscriptions
+    // never counted down and `OnUpdateEvent` never fired in-engine. The
+    // unit tests above call the system directly; this one drives it through
+    // a real `Scheduler` in `Stage::Update` — exactly how `main.rs` now
+    // schedules it — and asserts the event fires after the interval, the
+    // behaviour the missing schedule entry silently disabled.
+    use byroredux_core::ecs::scheduler::{Scheduler, Stage};
+
+    let mut world = setup_world();
+    let e = world.spawn();
+    world.insert(e, RecurringUpdate::every(1.0));
+
+    let mut scheduler = Scheduler::new();
+    scheduler.add_exclusive(Stage::Update, recurring_update_tick_system);
+
+    // First frame: half the interval — no fire yet.
+    scheduler.run(&world, 0.6);
+    assert!(
+        !world.has::<OnUpdateEvent>(e),
+        "no fire before the 1.0s interval elapses",
+    );
+    // Second frame crosses the interval — the scheduled system must fire.
+    scheduler.run(&world, 0.6);
+    assert!(
+        world.has::<OnUpdateEvent>(e),
+        "a scheduler-driven tick must fire OnUpdateEvent after the interval",
+    );
+}

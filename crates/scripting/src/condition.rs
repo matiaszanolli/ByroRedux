@@ -407,7 +407,14 @@ pub fn evaluate(conditions: &ConditionList, world: &World, ctx: &ConditionContex
         }
         // `i` now points at the LAST condition of the block (its
         // `or_next` is false). Block = [block_start ..= i].
-        let block_end_inclusive = i;
+        //
+        // Clamp: if the FINAL condition has `or_next == true` (a
+        // malformed/truncated CTDA tail leaves the OR bit set), the inner
+        // loop walks `i` to `len`, which the inclusive range would index
+        // out of bounds. A trailing OR flag is meaningless (no `next`), so
+        // terminate the block at its last real member — `while i < len`
+        // guarantees `len >= 1`, so the subtraction can't underflow.
+        let block_end_inclusive = i.min(conditions.len() - 1);
         i += 1; // step past the block for next iteration
 
         // Evaluate the block. Single-condition blocks (no preceding
@@ -566,6 +573,38 @@ mod tests {
             cond(99999, ComparisonOp::Eq, 0.0, false), // D: true
         ];
         assert!(evaluate(&list, &world, &ctx(0)));
+    }
+
+    /// SCR-D6-NEW-01: a single condition whose `or_next` is set (a
+    /// malformed/truncated CTDA tail leaving the OR bit on the FINAL
+    /// member). The block-discovery loop walks the index to `len`; without
+    /// the clamp the inclusive range indexes one past the end and panics
+    /// when no earlier member short-circuits true. With the only member
+    /// false, evaluation must reach the clamp and return `false`, not panic.
+    #[test]
+    fn trailing_or_next_on_final_condition_does_not_panic() {
+        let world = World::new();
+        let list = vec![cond(99999, ComparisonOp::Ne, 0.0, true)]; // false, or_next
+        assert!(
+            !evaluate(&list, &world, &ctx(0)),
+            "a trailing or_next on the final condition must clamp, not panic",
+        );
+    }
+
+    /// SCR-D6-NEW-01, multi-member block: every OR member is false and the
+    /// LAST still carries `or_next`. The whole block is false, so the clamp
+    /// must be reached for all members (no short-circuit to mask the OOB).
+    #[test]
+    fn trailing_or_next_block_all_false_returns_false() {
+        let world = World::new();
+        let list = vec![
+            cond(99999, ComparisonOp::Ne, 0.0, true), // false, or_next
+            cond(99999, ComparisonOp::Ne, 0.0, true), // false, or_next (final → meaningless)
+        ];
+        assert!(
+            !evaluate(&list, &world, &ctx(0)),
+            "an all-false OR block ending in or_next must return false, not panic",
+        );
     }
 
     #[test]

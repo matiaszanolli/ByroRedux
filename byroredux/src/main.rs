@@ -719,6 +719,17 @@ impl App {
                 world,
             )
         }
+        // SCR-D6-NEW-02 (#1768) — the runtime scripting systems that were
+        // registered (component/resource) but never scheduled. Both ride
+        // the same exclusive-in-Update lane as the demo dispatchers above:
+        // exclusive registration holds the world serially, so the fragment
+        // system's resource-lock sequence never composes with a parallel
+        // neighbour. `quest_fragment_dispatch_system` is `&World`-only, so
+        // it needs the dt-dropping wrapper; `recurring_update_tick_system`
+        // already has the `(&World, f32)` shape and is added directly.
+        fn quest_fragment_dispatch(world: &World, _dt: f32) {
+            byroredux_scripting::quest_fragment_dispatch_system(world)
+        }
         fn dlc2_ttr4a_on_init_dispatch(world: &World, _dt: f32) {
             byroredux_scripting::papyrus_demo::dlc2_ttr4a::dlc2_ttr4a_on_init_system(world)
         }
@@ -741,7 +752,16 @@ impl App {
         // frame (before end-of-frame cleanup drains it).
         scheduler.add_exclusive(Stage::Update, trigger_detection_dispatch);
         scheduler.add_exclusive(Stage::Update, quest_advance_dispatch);
+        // Dispatch quest fragments right after the advance that emits the
+        // `QuestStageAdvanced` markers, before end-of-frame cleanup drains
+        // them (no-op until the QUST-VMAD fragment decoder lands, #1739).
+        scheduler.add_exclusive(Stage::Update, quest_fragment_dispatch);
         scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_init_dispatch);
+        // `recurring_update_tick_system` ticks `RecurringUpdate` and emits
+        // `OnUpdateEvent`. It sits between the demo's OnInit (which
+        // subscribes via `RegisterForUpdate`) and its OnUpdate consumer so
+        // a fired event is handled the same frame, before cleanup drains it.
+        scheduler.add_exclusive(Stage::Update, byroredux_scripting::recurring_update_tick_system);
         scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_update_dispatch);
         scheduler.add_exclusive(Stage::Update, mg07_on_load_dispatch);
         scheduler.add_exclusive(Stage::Update, mg07_on_activate_dispatch);
