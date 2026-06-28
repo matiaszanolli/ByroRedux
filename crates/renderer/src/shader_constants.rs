@@ -131,6 +131,19 @@ mod tests {
     }
 
     /// Verify all affected shaders include the shared header.
+    ///
+    /// #1780 (D14-LOW-01) — this allow-list MUST cover every shader that
+    /// consumes a generated macro from `shader_constants.glsl`; a shader
+    /// that drops the `#include` would otherwise compile against undefined
+    /// identifiers (`WORKGROUP_X`, `INSTANCE_FLAG_CAUSTIC_SOURCE`, …) and no
+    /// `cargo test` would catch it (the SPIR-V is pre-compiled). The list
+    /// previously omitted six header-including shaders — `caustic_splat.comp`
+    /// (uses `INSTANCE_FLAG_CAUSTIC_SOURCE` + `WORKGROUP_X/Y`), `water.frag`
+    /// (`WATER_*` + `CAUSTIC_FIXED_SCALE`), and the four compute passes whose
+    /// `local_size_x = WORKGROUP_X` qualifier reads the header
+    /// (`ssao.comp`, `svgf_atrous.comp`, `svgf_temporal.comp`, `taa.comp`).
+    /// Cross-check when adding a shader: `grep -L` the include across
+    /// `shaders/*.{comp,frag,vert}` and reconcile against this list.
     #[test]
     fn affected_shaders_include_constants_header() {
         for (shader, src) in [
@@ -165,6 +178,22 @@ mod tests {
                 "volumetrics_integrate.comp",
                 include_str!("../shaders/volumetrics_integrate.comp"),
             ),
+            // #1780 — previously-unlisted header consumers.
+            (
+                "caustic_splat.comp",
+                include_str!("../shaders/caustic_splat.comp"),
+            ),
+            ("water.frag", include_str!("../shaders/water.frag")),
+            ("ssao.comp", include_str!("../shaders/ssao.comp")),
+            (
+                "svgf_atrous.comp",
+                include_str!("../shaders/svgf_atrous.comp"),
+            ),
+            (
+                "svgf_temporal.comp",
+                include_str!("../shaders/svgf_temporal.comp"),
+            ),
+            ("taa.comp", include_str!("../shaders/taa.comp")),
         ] {
             assert!(
                 src.contains("#include \"include/shader_constants.glsl\""),
