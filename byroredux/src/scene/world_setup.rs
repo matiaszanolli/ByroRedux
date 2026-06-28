@@ -240,17 +240,18 @@ pub(crate) fn apply_worldspace_weather(
     // docs/engine/exal.md §9.
     use crate::systems::weather::{compute_sun_arc, DEFAULT_TOD_HOURS};
     let bootstrap_hour = initial_game_time().hour;
+    // #1339 / #1770 — capture the prior worldspace's sky-texture handles BEFORE
+    // either branch re-acquires (the WTHR path bumps a refcount per cloud/sun
+    // layer; the procedural fallback installs a texture-less sky). Released
+    // after the new `SkyParamsRes` is installed on BOTH branches, so handles
+    // shared with the new worldspace stay resident (acquire-new-then-release-
+    // old). Worldspace-scoped, survive per-cell unload (#1199); this re-acquire
+    // is the only release point. First call: `None`.
+    let prev_sky_textures = world
+        .try_resource::<SkyParamsRes>()
+        .map(|s| s.texture_indices());
     if let Some(ref wthr) = wctx.default_weather {
         let sun_dir = compute_sun_arc(bootstrap_hour, climate_tod_hours(wctx.climate.as_ref())).0;
-        // #1339 — capture the prior worldspace's sky-texture handles BEFORE
-        // the cloud/sun resolution below re-acquires (each bumps a refcount).
-        // Released after the new `SkyParamsRes` is installed, so handles
-        // shared with the new worldspace stay resident (acquire-new-then-
-        // release-old). Worldspace-scoped, survive per-cell unload (#1199);
-        // this re-acquire is the only release point. First call: `None`.
-        let prev_sky_textures = world
-            .try_resource::<SkyParamsRes>()
-            .map(|s| s.texture_indices());
         // Canonical day-slot lighting (EXAL boundary). The per-frame
         // `weather_system` then advances through the stored NAM0 table.
         let lighting = crate::env_translate::translate_exterior_cell_lighting(wthr, sun_dir);
@@ -359,6 +360,17 @@ pub(crate) fn apply_worldspace_weather(
         // synthetic test cell).
         let sun_dir = compute_sun_arc(bootstrap_hour, DEFAULT_TOD_HOURS).0;
         insert_procedural_fallback_resources(world, sun_dir);
+        // #1770 — the procedural fallback installs a texture-less sky, so it
+        // must release the prior worldspace's sky handles too. Without this, a
+        // transition into a climateless worldspace (corrupt/partial ESM, mod
+        // worldspace with no CLMT, synthetic cell) leaked up to 5 textures
+        // (4 cloud layers + CLMT sun sprite). Mirrors the WTHR branch's
+        // acquire-new-then-release-old; the procedural sky has all-zero indices
+        // so every prior unique handle correctly drops to 0 and frees.
+        let sky_fallback = ctx.texture_registry.fallback();
+        for handle in sky_textures_to_release(prev_sky_textures, sky_fallback) {
+            ctx.texture_registry.drop_texture(&ctx.device, handle);
+        }
     }
 }
 
@@ -679,5 +691,25 @@ mod tests {
     #[test]
     fn sky_release_all_absent_is_empty() {
         assert!(sky_textures_to_release(Some([0, 0, 0, 0, 0]), 99).is_empty());
+    }
+
+    /// #1770 — climateless-worldspace transition: the `else` (procedural
+    /// fallback) branch of `apply_worldspace_weather` installs a texture-less
+    /// sky, so NONE of the prior worldspace's handles are shared with the new
+    /// one and every real prior handle must be released. Pins the release set
+    /// the else-branch fix now drops (the branch previously released nothing,
+    /// leaking up to 5 textures per such transition). The GPU call site is a
+    /// structural mirror of the WTHR branch covered above.
+    #[test]
+    fn sky_release_climateless_transition_frees_all_real_handles() {
+        let fallback = 99u32;
+        let prev = Some([10, 11, 12, 13, 14]); // a fully-authored prior worldspace sky
+        let mut got = sky_textures_to_release(prev, fallback);
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec![10, 11, 12, 13, 14],
+            "a transition into a texture-less procedural sky must release every prior sky handle",
+        );
     }
 }
