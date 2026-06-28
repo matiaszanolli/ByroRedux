@@ -715,6 +715,21 @@ mod emitter_rate_tests {
             None
         );
     }
+
+    /// #1771 — an authored rate of exactly `0.0` is a ramp-up emitter's t=0
+    /// key, not "never emit". `sane()` must reject it to `None` so the caller
+    /// keeps the preset's spawn rate; returning `Some(0.0)` made the spawn
+    /// guard (`em.rate > 0.0`) kill the emitter for the whole clip. The `sane`
+    /// gate is shared by the keyed-first-key and constant-value branches, so
+    /// the constant-value scaffold exercises the exact same path.
+    #[test]
+    fn zero_rate_falls_back_to_preset() {
+        assert_eq!(
+            extract_emitter_rate(&scene_with_constant_rate(0.0)),
+            None,
+            "a 0.0 first-key/constant rate must fall back to the preset, not zero the emitter",
+        );
+    }
 }
 
 #[cfg(test)]

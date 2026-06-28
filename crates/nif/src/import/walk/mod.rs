@@ -759,7 +759,8 @@ pub(super) fn extract_emitter_params(
 /// `NiPSysEmitterCtlr`'s interpolator → `NiFloatData` first key value, or
 /// the `NiFloatInterpolator`'s constant value. Legacy fallback: the first
 /// `NiPSysEmitterCtlrData` birth-rate key. `None` when no controller is
-/// present (→ keep the preset's rate). Non-finite, negative, and
+/// present (→ keep the preset's rate). Non-finite, negative, exactly `0.0`
+/// (a ramp-up emitter's t=0 key → keep the preset rate, #1771), and
 /// `FLT_MAX`-sentinel (`>= 3.0e38`) values are rejected: the sentinel on
 /// `NiFloatInterpolator.value` is nif.xml's "use the keyed data" marker, so
 /// even when the keyed `data_ref` is NULL it must not leak through the
@@ -773,9 +774,15 @@ pub(super) fn extract_emitter_rate(scene: &NifScene) -> Option<f32> {
     use crate::blocks::particle::{NiPSysEmitterCtlr, NiPSysEmitterCtlrData};
 
     fn sane(r: f32) -> Option<f32> {
-        // `>= 3.0e38` matches the FLT_MAX-sentinel threshold used for shader
-        // rimlight/backlight (blocks/shader.rs, nif.xml convention).
-        (r.is_finite() && (0.0..3.0e38).contains(&r)).then_some(r)
+        // Reject non-finite, negative, the FLT_MAX sentinel (`>= 3.0e38`, the
+        // shader rimlight/backlight threshold + nif.xml's "use the keyed data"
+        // marker — blocks/shader.rs), AND an exact 0.0. A zero first-key is a
+        // ramp-up emitter (rate climbs from 0 over the clip — geyser/steam/
+        // ignition FX); taking it as a permanent-zero constant rate makes the
+        // spawn guard (`em.rate > 0.0`) kill the emitter for the whole clip, so
+        // fall back to the preset spawn rate instead (#1771). Rate-curve
+        // sampling over time is the fuller fix (#1402).
+        (r.is_finite() && 0.0 < r && r < 3.0e38).then_some(r)
     }
 
     // Modern: controller → NiFloatInterpolator → (keyed data | constant).
