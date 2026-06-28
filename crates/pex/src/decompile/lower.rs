@@ -263,7 +263,14 @@ fn build_handler(object: &Object, func: &PexFunction, name: &str) -> Result<Hand
     let params = lower_params(func);
     let flags = function_flags(func);
 
-    let is_event = (name.len() > 2 && name[..2].eq_ignore_ascii_case("on") && is_event_name(name))
+    // `name.get(..2)` is boundary-safe: `.pex` names are decoded with
+    // `from_utf8_lossy`, so an invalid Win-1252 byte becomes the 3-byte U+FFFD
+    // replacement char and a naive `name[..2]` would panic mid-char. `get`
+    // returns `None` when index 2 isn't a char boundary (or the name is short).
+    // `is_event_name` lowercases the whole name and binary-searches the engine
+    // event set, so it already rejects anything ≤ 2 chars — the old length
+    // guard was redundant.
+    let is_event = (name.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("on")) && is_event_name(name))
         || name.starts_with("::remote_");
     let display = name.strip_prefix("::remote_").unwrap_or(name);
 
@@ -499,6 +506,32 @@ mod tests {
             &f.body[0].node,
             Stmt::Return(Some(v)) if matches!(v.node, Expr::IntLit(7))
         ));
+    }
+
+    /// D3-NEW-01: a `.pex` function name whose first source byte was an
+    /// invalid Win-1252 byte decodes (via `from_utf8_lossy`) to a leading
+    /// 3-byte U+FFFD replacement char, so byte index 2 lands mid-char. The
+    /// old `name[..2]` byte-slice panicked there; the boundary-safe check
+    /// must classify the name cleanly (here a plain Function — U+FFFD… is
+    /// no engine event) and return `Ok`, never panic.
+    #[test]
+    fn non_ascii_function_name_classifies_without_panicking() {
+        let bad_name = format!("{}foo", String::from_utf8_lossy(&[0x81]));
+        assert!(
+            !bad_name.is_char_boundary(2),
+            "precondition: byte 2 is inside the leading U+FFFD char",
+        );
+        let func = PexFunction {
+            name: bad_name.clone(),
+            return_type_name: "None".into(),
+            instructions: vec![ins(OpCode::Return, vec![id("::NoneVar")])],
+            ..PexFunction::default()
+        };
+        let script = decompile_script(&pex_with_function(func)).expect("decompiles without panic");
+        let ScriptItem::Function(f) = &script.body[0].node else {
+            panic!("a non-event name must lower to a Function, not an Event");
+        };
+        assert_eq!(f.name.node.0, bad_name);
     }
 
     #[test]

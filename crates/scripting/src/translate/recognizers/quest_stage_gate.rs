@@ -221,11 +221,14 @@ fn peel_player_gate<'a>(
     (body, false)
 }
 
-/// Match a single guarded `If <GetStageDone-conjunction> … SetStage(Z) …`
+/// Match a single guarded `If <GetStageDone-conjunction> SetStage(Z) EndIf`
 /// statement (shapes 1/2). The condition must classify cleanly through the
-/// guard-primitive table and the `If` body must contain a `SetStage`;
-/// otherwise `None` (the caller then declines). `outer_player` carries a
-/// peeled outer player gate so it folds into the returned gate.
+/// guard-primitive table and the `If` body must be *exactly* one `SetStage`
+/// call — same exactly-one-statement invariant as shape 3 ([`single_set_stage`]).
+/// A guarded body with any sibling statement (before or after the advance)
+/// carries logic beyond the advance, so decline rather than emit and silently
+/// drop it. Otherwise `None` (the caller then declines). `outer_player`
+/// carries a peeled outer player gate so it folds into the returned gate.
 fn match_guarded_if(
     stmt: &Stmt,
     player_param: Option<&str>,
@@ -241,7 +244,7 @@ fn match_guarded_if(
     // (e.g. `GetStage() < N`, a `HasPerk`, an `||`) — recognizing it
     // as a plain AND-of-GetStageDone would change its behavior.
     let (conditions, quest_via, inner_player) = classify_if_condition(&condition.node, player_param)?;
-    let (target_stage, set_via) = find_set_stage(body)?;
+    let (target_stage, set_via) = single_set_stage(body)?;
     let quest_via = quest_via.unwrap_or_else(|| set_via.clone());
     // If both the predicate and the SetStage name a quest, they must
     // agree (a sane quest-gate script writes the quest it gates on).
@@ -306,18 +309,6 @@ fn single_set_stage(body: &[Spanned<Stmt>]) -> Option<(u16, QuestRef)> {
     let (object, args) = method_call(&e.node, "SetStage")?;
     let target = u16::try_from(int_arg(args, 0)?).ok()?;
     Some((target, quest_via(object)?))
-}
-
-/// Find the first `SetStage(Z)` statement in a body → `(Z, quest_via)`.
-fn find_set_stage(body: &[Spanned<Stmt>]) -> Option<(u16, QuestRef)> {
-    body.iter().find_map(|stmt| {
-        let Stmt::ExprStmt(e) = &stmt.node else {
-            return None;
-        };
-        let (object, args) = method_call(&e.node, "SetStage")?;
-        let target = u16::try_from(int_arg(args, 0)?).ok()?;
-        Some((target, quest_via(object)?))
-    })
 }
 
 #[cfg(test)]
@@ -794,6 +785,74 @@ mod tests {
         assert!(
             translate_script(&source, GameKind::Skyrim, Some(&instance), None).is_none(),
             "extra unmodeled statements must decline, not silently drop",
+        );
+    }
+
+    /// SCR-D5-NEW-01: the sibling lives *inside* the guarded `If`, AFTER the
+    /// advance. #1719 only closed the handler-body level; the guarded `If`
+    /// body must hold the same exactly-one-statement invariant, so a trailing
+    /// `Self.Disable()` must decline rather than emit and drop it.
+    #[test]
+    fn declines_guarded_inner_sibling_after() {
+        let src = "ScriptName InnerAfter extends ObjectReference\n\
+                   Quest Property MyQuest Auto\n\
+                   Event OnActivate(ObjectReference akActionRef)\n\
+                   If MyQuest.GetStageDone(10) == 1\n\
+                   MyQuest.SetStage(20)\n\
+                   Self.Disable()\n\
+                   EndIf\n\
+                   EndEvent\n";
+        let (script, _) = parse_script(src).expect("parses");
+        let source = ScriptSource::PapyrusSource(&script);
+        let instance = quest_property_instance("InnerAfter", 0x0000_8881);
+        assert!(
+            translate_script(&source, GameKind::Skyrim, Some(&instance), None).is_none(),
+            "a sibling inside the guarded If (after the advance) must decline",
+        );
+    }
+
+    /// SCR-D5-NEW-01, worse half: the sibling is *before* the advance. The
+    /// old `find_set_stage` scanned the whole inner body and would have
+    /// found the SetStage regardless, dropping the leading statement.
+    #[test]
+    fn declines_guarded_inner_sibling_before() {
+        let src = "ScriptName InnerBefore extends ObjectReference\n\
+                   Quest Property MyQuest Auto\n\
+                   Event OnActivate(ObjectReference akActionRef)\n\
+                   If MyQuest.GetStageDone(10) == 1\n\
+                   Self.Disable()\n\
+                   MyQuest.SetStage(20)\n\
+                   EndIf\n\
+                   EndEvent\n";
+        let (script, _) = parse_script(src).expect("parses");
+        let source = ScriptSource::PapyrusSource(&script);
+        let instance = quest_property_instance("InnerBefore", 0x0000_8882);
+        assert!(
+            translate_script(&source, GameKind::Skyrim, Some(&instance), None).is_none(),
+            "a sibling inside the guarded If (before the advance) must decline",
+        );
+    }
+
+    /// SCR-D5-NEW-01: the leak survives one nesting level deeper through a
+    /// peeled outer player gate — `If player / If guard / SetStage / sibling`.
+    #[test]
+    fn declines_player_gated_inner_sibling() {
+        let src = "ScriptName PlayerInner extends ObjectReference\n\
+                   Quest Property MyQuest Auto\n\
+                   Event OnActivate(ObjectReference akActionRef)\n\
+                   If akActionRef == Game.GetPlayer()\n\
+                   If MyQuest.GetStageDone(10) == 1\n\
+                   MyQuest.SetStage(20)\n\
+                   Self.Disable()\n\
+                   EndIf\n\
+                   EndIf\n\
+                   EndEvent\n";
+        let (script, _) = parse_script(src).expect("parses");
+        let source = ScriptSource::PapyrusSource(&script);
+        let instance = quest_property_instance("PlayerInner", 0x0000_8883);
+        assert!(
+            translate_script(&source, GameKind::Skyrim, Some(&instance), None).is_none(),
+            "a sibling inside a player-gated guarded If must decline",
         );
     }
 }
