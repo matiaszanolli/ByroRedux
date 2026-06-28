@@ -118,14 +118,46 @@ pub(crate) fn try_load_default_footstep(world: &mut byroredux_core::ecs::World, 
     log::info!("M44 Phase 3.5: footstep sound loaded from '{path}' ({CANONICAL})");
 }
 
+/// #1776 — the aggregate "requested but zero opened" check, pulled out pure so
+/// the guard is unit-testable. Returns one error line per archive kind that was
+/// requested on the CLI yet resolved to zero opened archives — the wrong-CWD /
+/// mistyped-path trap (bare `--bsa` names resolve against the current
+/// directory, not the `--esm` folder). A kind that wasn't requested at all (a
+/// loose-NIF run with no `--bsa`) is never flagged.
+fn missing_archive_errors(
+    mesh_requested: bool,
+    mesh_empty: bool,
+    textures_requested: bool,
+    textures_empty: bool,
+) -> Vec<&'static str> {
+    let mut errs = Vec::new();
+    if mesh_requested && mesh_empty {
+        errs.push(
+            "--bsa was specified but 0 mesh archives opened — check the path / CWD \
+             (bare names resolve against the current directory, not the --esm folder). \
+             The scene will load near-empty.",
+        );
+    }
+    if textures_requested && textures_empty {
+        errs.push(
+            "--textures-bsa was specified but 0 texture archives opened — check the \
+             path / CWD. Surfaces will render with placeholder textures.",
+        );
+    }
+    errs
+}
+
 /// Build a TextureProvider from CLI arguments.
 pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
     let mut provider = TextureProvider::new();
+    let mut mesh_requested = false;
+    let mut textures_requested = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--textures-bsa" => {
                 if let Some(path) = args.get(i + 1) {
+                    textures_requested = true;
                     open_with_numeric_siblings(path, "textures", &mut provider.texture_archives);
                     i += 2;
                     continue;
@@ -133,6 +165,7 @@ pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
             }
             "--bsa" => {
                 if let Some(path) = args.get(i + 1) {
+                    mesh_requested = true;
                     open_with_numeric_siblings(path, "mesh", &mut provider.mesh_archives);
                     i += 2;
                     continue;
@@ -141,6 +174,19 @@ pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
             _ => {}
         }
         i += 1;
+    }
+    // #1776 — `open_with_numeric_siblings` already warns per failed archive, but
+    // a run that requested archives yet opened NONE loads near-empty and prints
+    // a spurious bench FPS (~36 entities / ~1792 FPS) that reads as real data.
+    // Escalate the aggregate "0 opened despite a request" to a loud error so a
+    // misconfigured (wrong-CWD / mistyped) invocation is self-evident in the log.
+    for err in missing_archive_errors(
+        mesh_requested,
+        provider.mesh_archives.is_empty(),
+        textures_requested,
+        provider.texture_archives.is_empty(),
+    ) {
+        log::error!("{err}");
     }
     provider
 }
@@ -259,4 +305,27 @@ pub(crate) fn resolve_texture_with_clamp(
         log::debug!("Texture not found in archive: '{}'", tex_path);
     }
     ctx.texture_registry.fallback()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::missing_archive_errors;
+
+    /// #1776 — the aggregate guard must fire exactly for a kind that was
+    /// requested on the CLI yet opened zero archives (the wrong-CWD / mistyped
+    /// trap), and never for a kind that wasn't requested (a loose-NIF run).
+    #[test]
+    fn missing_archive_errors_fires_only_for_requested_empty_kinds() {
+        // --bsa given but nothing opened → one error.
+        assert_eq!(missing_archive_errors(true, true, false, false).len(), 1);
+        // both kinds requested + both empty → two errors.
+        assert_eq!(missing_archive_errors(true, true, true, true).len(), 2);
+        // requested AND opened (non-empty) → no error (the happy path).
+        assert!(missing_archive_errors(true, false, true, false).is_empty());
+        // not requested at all (loose-NIF run, no --bsa) → no error even though
+        // the provider is empty — the pre-#1776 behaviour for that case.
+        assert!(missing_archive_errors(false, true, false, true).is_empty());
+        // mixed: meshes opened, textures requested-but-empty → one error.
+        assert_eq!(missing_archive_errors(true, false, true, true).len(), 1);
+    }
 }
