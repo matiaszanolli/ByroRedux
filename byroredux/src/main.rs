@@ -466,7 +466,10 @@ impl Drop for App {
 }
 
 impl App {
-    fn new(debug_mode: bool, args: &[String]) -> Self {
+    /// Phase 1 of construction (#1670) — boot/config plumbing: build the
+    /// `World` and install every engine resource + pre-registered component
+    /// storage. Extracted verbatim from the former 581-LOC `App::new`.
+    fn build_world(debug_mode: bool, args: &[String]) -> World {
         let mut world = World::new();
 
         // Register built-in resources.
@@ -625,6 +628,14 @@ impl App {
         );
         world.insert_resource(script_registry);
 
+        world
+    }
+
+    /// Phase 2 of construction (#1670) — ECS system wiring: build the
+    /// `Scheduler` and register every stage's systems. Extracted verbatim
+    /// from the former 581-LOC `App::new` (no outer-`world` dependency — the
+    /// nested `fn …_dispatch(world: &World, …)` items take their own param).
+    fn build_scheduler() -> Scheduler {
         // Build the system schedule — stages run sequentially, systems
         // within each stage run in parallel via rayon. All parallel
         // systems declare their access via `add_to_with_access`
@@ -986,6 +997,14 @@ impl App {
         );
         scheduler.add_exclusive(Stage::Late, byroredux_scripting::event_cleanup_system);
 
+        scheduler
+    }
+
+    /// Phase 3 of construction (#1670) — post-build runtime registries: the
+    /// scheduler-derived resources (`SystemList`, access report) plus the
+    /// console-command and save registries. Reads the built `scheduler`
+    /// immutably; mutates `world`. Extracted verbatim from `App::new`.
+    fn install_runtime_registries(world: &mut World, scheduler: &Scheduler) {
         // #1394 — guard against silently re-introducing undeclared parallel
         // systems.  All parallel-batch entries must use add_to_with_access;
         // any future add_to() call will trip this in debug builds before
@@ -1043,6 +1062,13 @@ impl App {
         // `capture_player_pose` and rode along in the snapshot so `load`
         // restores the saved spot instead of the cell's default door.
         world.insert_resource(crate::save_io::PlayerPose::default());
+    }
+
+    fn new(debug_mode: bool, args: &[String]) -> Self {
+        // Three-phase construction (#1670) — see the helpers below.
+        let mut world = Self::build_world(debug_mode, args);
+        let mut scheduler = Self::build_scheduler();
+        Self::install_runtime_registries(&mut world, &scheduler);
 
         // Start debug server (feature-gated, zero cost when disabled).
         // The returned handle's Drop signals shutdown + joins the

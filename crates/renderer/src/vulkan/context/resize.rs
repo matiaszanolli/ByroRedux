@@ -18,7 +18,17 @@ use ash::vk;
 
 impl VulkanContext {
     /// Recreate the swapchain after a resize or suboptimal present.
-    pub fn recreate_swapchain(&mut self, window_size: [u32; 2]) -> Result<()> {
+    /// Phase 1 of resize (#1671) — swapchain handoff + depth + format-gated
+    /// render-pass / rasterization-pipeline rebuild. Captures the old surface
+    /// format, destroys the old framebuffers / depth / image views, creates
+    /// the new swapchain (atomic `oldSwapchain` handoff), recreates depth +
+    /// depth-history, and rebuilds the render pass + raster/UI/water pipelines
+    /// only when the surface format changed (#576). Extracted verbatim from
+    /// the former 761-LOC `recreate_swapchain`; every local it computes
+    /// (`old_swapchain_format` / `format_changed` / `old_image_views` /
+    /// `old_swapchain`) is consumed before this phase returns, so nothing
+    /// crosses into the later phases — they read the `self` state set here.
+    fn recreate_swapchain_core(&mut self, window_size: [u32; 2]) -> Result<()> {
         unsafe {
             self.device.device_wait_idle().context("device_wait_idle")?;
         }
@@ -297,6 +307,15 @@ impl VulkanContext {
             };
         }
 
+        Ok(())
+    }
+
+    /// Phase 2 of resize (#1671) — texture + SSAO descriptor rebind: refresh
+    /// the per-texture descriptor sets for the new swapchain image count, then
+    /// destroy+rebuild the SSAO pipeline (its descriptor sets referenced the
+    /// destroyed depth view) and rewrite the AO texture binding. Extracted
+    /// verbatim from `recreate_swapchain`; reads only `self` state.
+    fn recreate_texture_ssao_bindings(&mut self) -> Result<()> {
         // Recreate descriptor sets for existing textures (new swapchain image count).
         self.texture_registry
             .recreate_descriptor_sets(&self.device, self.swapchain_state.images.len() as u32)?;
@@ -360,6 +379,16 @@ impl VulkanContext {
             }
         }
 
+        Ok(())
+    }
+
+    /// Phase 3 of resize (#1671) — screen-sized pass recreation: G-buffer,
+    /// SVGF, ReSTIR reservoirs, caustics, bloom, composite, egui framebuffers,
+    /// TAA, main framebuffers, then per-image sync recreate + temporal-recovery
+    /// reset. Holds the tangled fresh-`vk::ImageView`-vector data flow that the
+    /// earlier phases don't touch (all such locals are created and consumed
+    /// within this phase). Extracted verbatim from `recreate_swapchain`.
+    fn recreate_screen_passes(&mut self) -> Result<()> {
         // Recreate G-buffer images FIRST (they're referenced by composite
         // descriptor sets, which we'll rewrite during composite recreation).
         if let Some(ref mut gbuffer) = self.gbuffer {
@@ -777,6 +806,18 @@ impl VulkanContext {
             self.swapchain_state.extent.width,
             self.swapchain_state.extent.height
         );
+        Ok(())
+    }
+
+    /// Recreate the swapchain and every extent-dependent GPU resource after a
+    /// window resize. Thin orchestrator over the three phases extracted under
+    /// #1671 (was a single 761-LOC function): each runs in sequence, and the
+    /// later phases read the `self` state the earlier ones wrote — no locals
+    /// cross a phase boundary, so the split is behaviour-identical.
+    pub fn recreate_swapchain(&mut self, window_size: [u32; 2]) -> Result<()> {
+        self.recreate_swapchain_core(window_size)?;
+        self.recreate_texture_ssao_bindings()?;
+        self.recreate_screen_passes()?;
         Ok(())
     }
 }
