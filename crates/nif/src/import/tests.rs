@@ -1043,6 +1043,7 @@ fn synthetic_particle_block(type_name: &str) -> Box<dyn crate::blocks::NiObject>
         "NiParticleSystem" | "NiMeshParticleSystem" | "NiParticles" | "BSStripParticleSystem" => {
             Box::new(crate::blocks::particle::NiParticleSystem {
                 original_type: type_name.to_string(),
+                transform: crate::types::NiTransform::default(),
                 modifier_refs: Vec::new(),
             })
         }

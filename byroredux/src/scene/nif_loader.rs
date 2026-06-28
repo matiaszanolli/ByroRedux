@@ -469,10 +469,11 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     // it doesn't carry per-emitter values — `NiPSysBlock` discards
     // every parsed field. We pick a heuristic ParticleEmitter preset
     // (torch_flame / smoke / magic_sparkles / generic flame fallback)
-    // by scanning the host node's name. Every emitter is attached
+    // by scanning the host node's name. Zero-offset emitters attach
     // directly to the host entity so the simulation sources its
-    // world-space spawn origin from the host's GlobalTransform. See
-    // #401 / audit OBL-D6-2.
+    // world-space spawn origin from the host's GlobalTransform; emitters
+    // with an authored local offset get a child entity carrying that
+    // offset (#1333). See #401 / audit OBL-D6-2.
     for emitter in &imported.particle_emitters {
         let Some(host_idx) = emitter.parent_node else {
             continue;
@@ -530,7 +531,38 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             emitter.emitter_rate,
             &emitter.force_fields,
         );
-        world.insert(host_entity, preset);
+
+        // #1333: when the particle block authored a non-zero local offset
+        // (relative to the host node), spawn a dedicated child entity
+        // carrying that local Transform so scene-graph propagation lands
+        // the emitter at host-world × block-local. The common vanilla case
+        // is identity (offset baked into the host node) — keep it on a
+        // zero-cost path by attaching the emitter straight to the host.
+        let identity_local = emitter.local_translation == [0.0, 0.0, 0.0]
+            && emitter.local_rotation == [0.0, 0.0, 0.0, 1.0]
+            && emitter.local_scale == 1.0;
+        let target_entity = if identity_local {
+            host_entity
+        } else {
+            let child = world.spawn();
+            let translation = Vec3::new(
+                emitter.local_translation[0],
+                emitter.local_translation[1],
+                emitter.local_translation[2],
+            );
+            let rotation = Quat::from_xyzw(
+                emitter.local_rotation[0],
+                emitter.local_rotation[1],
+                emitter.local_rotation[2],
+                emitter.local_rotation[3],
+            );
+            world.insert(child, Transform::new(translation, rotation, emitter.local_scale));
+            world.insert(child, GlobalTransform::IDENTITY);
+            world.insert(child, Parent(host_entity));
+            add_child(world, host_entity, child);
+            child
+        };
+        world.insert(target_entity, preset);
     }
 
     // Phase 3: Spawn mesh entities with parent links.

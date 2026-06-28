@@ -994,6 +994,14 @@ pub fn parse_multi_target_emitter_ctlr(stream: &mut NifStream) -> io::Result<NiP
 #[derive(Debug)]
 pub struct NiParticleSystem {
     pub original_type: String,
+    /// Local TRS (relative to the host `NiNode`) from the block's
+    /// `NiAVObjectData` base. Pre-#1333 this was parsed into `_av` and
+    /// dropped, so a particle block authored with a non-zero offset
+    /// (campfire smoke above the fire, FO4 steam stacks) spawned at the
+    /// host node origin. Both walkers now compose host-world × this to
+    /// anchor the emitter. (`NiParticles` carries the same base; the
+    /// field is harmless there.)
+    pub transform: crate::types::NiTransform,
     pub modifier_refs: Vec<BlockRef>,
 }
 
@@ -1004,7 +1012,10 @@ pub fn parse_particle_system(
     use super::base::NiAVObjectData;
     use crate::version::NifVersion;
 
-    let _av = NiAVObjectData::parse(stream)?;
+    // Retain the NiAVObjectData base (#1333): its `transform` is the
+    // block's local TRS relative to the host node. Previously dropped
+    // into `_av`, which silently zeroed any authored emitter offset.
+    let av = NiAVObjectData::parse(stream)?;
 
     // BS_GTE_SSE = BSVER >= 100 (Skyrim SE / FO4 / FO76 / Starfield).
     // On this path NiGeometry's structure is overridden for
@@ -1103,6 +1114,7 @@ pub fn parse_particle_system(
 
     Ok(NiParticleSystem {
         original_type: type_name.to_string(),
+        transform: av.transform,
         modifier_refs,
     })
 }
@@ -1390,7 +1402,7 @@ mod tests {
     /// Hand-build the byte sequence for a minimal FO4 NiParticleSystem
     /// with `num_modifiers` modifier refs. Layout follows nif.xml's
     /// BS_GTE_SSE branch — see [`parse_particle_system`].
-    fn build_fo4_particle_system_bytes(num_modifiers: u32) -> Vec<u8> {
+    fn build_fo4_particle_system_bytes(num_modifiers: u32, translation: [f32; 3]) -> Vec<u8> {
         let mut d = Vec::new();
 
         // ── NiObjectNETData ─────────────────────────────────────────
@@ -1400,9 +1412,8 @@ mod tests {
 
         // ── NiAVObject extension (bsver > crate::version::bsver::FLAGS_U32_THRESHOLD ⇒ flags=u32) ──────────
         d.extend_from_slice(&14u32.to_le_bytes()); // flags
-        for _ in 0..3 {
-            // translation
-            d.extend_from_slice(&0.0f32.to_le_bytes());
+        for v in translation {
+            d.extend_from_slice(&v.to_le_bytes());
         }
         for row in 0..3 {
             for col in 0..3 {
@@ -1454,7 +1465,7 @@ mod tests {
     #[test]
     fn parse_particle_system_fo4_consumes_full_block() {
         let header = make_header_fo4();
-        let bytes = build_fo4_particle_system_bytes(2);
+        let bytes = build_fo4_particle_system_bytes(2, [0.0; 3]);
 
         // 72 (NiAVObject) + 20 (BS_GTE_SSE NiGeo) + 8 (shader/alpha)
         // + 20 (vertex_desc + far/near + data ref) + 13 (world_space +
@@ -1476,6 +1487,30 @@ mod tests {
         assert_eq!(block.original_type, "NiParticleSystem");
     }
 
+    /// Regression: #1333 — the block's `NiAVObjectData` local transform
+    /// must survive parsing. Pre-fix it was read into `_av` and dropped,
+    /// so an emitter authored with a non-zero offset (campfire smoke
+    /// above the fire, FO4 steam stacks) spawned at the host node origin.
+    /// A non-zero translation on the wire must round-trip into
+    /// `NiParticleSystem.transform` for the walkers to compose.
+    #[test]
+    fn parse_particle_system_retains_local_transform() {
+        let header = make_header_fo4();
+        let bytes = build_fo4_particle_system_bytes(0, [1.5, -2.0, 3.25]);
+        let mut stream = NifStream::new(&bytes, &header);
+        let block = parse_particle_system(&mut stream, "NiParticleSystem")
+            .expect("FO4 NiParticleSystem should parse cleanly");
+        assert_eq!(
+            [
+                block.transform.translation.x,
+                block.transform.translation.y,
+                block.transform.translation.z,
+            ],
+            [1.5, -2.0, 3.25],
+            "local translation from the NiAVObjectData base must be retained (#1333)"
+        );
+    }
+
     /// Regression: a junk `num_modifiers` (here `u32::MAX`) must be
     /// rejected by the in-stream `check_alloc` gate before the loop
     /// can spin trying to read 16 GB of refs. Pre-#407 this would
@@ -1485,7 +1520,7 @@ mod tests {
     fn parse_particle_system_rejects_junk_num_modifiers() {
         let header = make_header_fo4();
         // Build a fixture with 0 trailing refs but a corrupt count.
-        let mut bytes = build_fo4_particle_system_bytes(0);
+        let mut bytes = build_fo4_particle_system_bytes(0, [0.0; 3]);
         // Overwrite the num_modifiers field. It sits 4 bytes before
         // the end (just after world_space).
         let nm_offset = bytes.len() - 4;

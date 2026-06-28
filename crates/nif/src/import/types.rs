@@ -1166,6 +1166,23 @@ pub struct ImportedParticleEmitter {
     /// `NiParticleSystemController` content, or no controller). See
     /// `docs/engine/nifal.md` — particles spawn-rate follow-up.
     pub emitter_rate: Option<f32>,
+    /// The particle block's own local translation (Y-up), relative to
+    /// the host node. Pre-#1333 the `NiParticleSystem`'s `NiAVObjectData`
+    /// base was parsed then dropped, so an emitter authored with a
+    /// non-zero offset (campfire smoke above the fire, FO4 steam stacks)
+    /// spawned at the host node origin. The scene builder anchors the
+    /// emitter at host-world × this local TRS. `[0, 0, 0]` for the
+    /// common vanilla case (offset already baked into the host node).
+    pub local_translation: [f32; 3],
+    /// The particle block's own local rotation (Y-up quaternion
+    /// `[x, y, z, w]`), relative to the host node. See
+    /// [`ImportedParticleEmitter::local_translation`]. Identity
+    /// (`[0, 0, 0, 1]`) when the block authored no rotation.
+    pub local_rotation: [f32; 4],
+    /// The particle block's own local uniform scale. `1.0` when the
+    /// block authored none. See
+    /// [`ImportedParticleEmitter::local_translation`].
+    pub local_scale: f32,
 }
 
 /// One authored force field, mirrored 1:1 from a

@@ -508,11 +508,19 @@ pub(super) fn walk_node_hierarchical(
         .as_any()
         .downcast_ref::<crate::blocks::particle::NiParticleSystem>()
     {
+        // Retain the block's own local TRS (#1333). The host node's
+        // world transform reaches us as the host entity's GlobalTransform
+        // in the scene builder; these fields carry the offset *within*
+        // that host so the emitter anchors at host-world × block-local
+        // instead of the host node origin.
         ctx.out
             .particle_emitters
             .push(crate::import::ImportedParticleEmitter {
                 parent_node: parent_node_idx,
                 original_type: ps.original_type.clone(),
+                local_translation: zup_point_to_yup(&ps.transform.translation),
+                local_rotation: zup_matrix_to_yup_quat(&ps.transform.rotation),
+                local_scale: ps.transform.scale,
                 color_curve: extract_first_color_curve(scene),
                 force_fields: collect_force_fields(scene, &ps.modifier_refs),
                 emitter_params: extract_emitter_params(scene),
@@ -1266,9 +1274,13 @@ pub(super) fn walk_node_particle_emitters_flat(
         .as_any()
         .downcast_ref::<crate::blocks::particle::NiParticleSystem>()
     {
-        let t = &parent_transform.translation;
+        // Compose the particle block's own local TRS onto the host-node
+        // world transform (#1333). Pre-fix only `parent_transform` (the
+        // host world) was used, zeroing any authored emitter offset —
+        // smoke spawned inside the fire instead of above it.
+        let world_transform = compose_transforms(parent_transform, &ps.transform);
         out.push(crate::import::ImportedParticleEmitterFlat {
-            local_position: zup_point_to_yup(t),
+            local_position: zup_point_to_yup(&world_transform.translation),
             host_name: parent_node_name,
             original_type: ps.original_type.clone(),
             color_curve: extract_first_color_curve(scene),

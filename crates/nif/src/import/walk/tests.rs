@@ -661,6 +661,122 @@ mod recursion_depth_tests {
 }
 
 #[cfg(test)]
+mod particle_local_transform_tests {
+    //! Regression for #1333: both particle-emitter walkers must compose
+    //! the `NiParticleSystem`'s own local TRS (from its `NiAVObjectData`
+    //! base) onto the host node, not just use the host's world transform.
+    //! Pre-fix the block's transform was parsed into `_av` and dropped, so
+    //! an emitter authored with a non-zero offset (campfire smoke above the
+    //! fire, FO4 steam stacks) spawned at the host node origin.
+    use super::super::*;
+    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+    use crate::blocks::node::NiNode;
+    use crate::blocks::particle::NiParticleSystem;
+    use crate::types::{BlockRef, NiPoint3, NiTransform};
+    use byroredux_core::string::StringPool;
+    use std::sync::Arc;
+
+    /// Host `NiNode` at identity world transform with one child.
+    fn host_node(child: u32) -> Box<dyn NiObject> {
+        Box::new(NiNode {
+            av: NiAVObjectData {
+                net: NiObjectNETData {
+                    name: Some(Arc::from("FireNode")),
+                    extra_data_refs: Vec::new(),
+                    controller_ref: BlockRef::NULL,
+                },
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: vec![BlockRef(child)],
+            effects: Vec::new(),
+        })
+    }
+
+    /// `NiParticleSystem` carrying a Z-up local translation offset.
+    fn particle_system(zup_translation: [f32; 3]) -> Box<dyn NiObject> {
+        let mut transform = NiTransform::default();
+        transform.translation = NiPoint3 {
+            x: zup_translation[0],
+            y: zup_translation[1],
+            z: zup_translation[2],
+        };
+        Box::new(NiParticleSystem {
+            original_type: "NiParticleSystem".to_string(),
+            transform,
+            modifier_refs: Vec::new(),
+        })
+    }
+
+    /// Scene: `[0]` host NiNode (identity) → child `[1]` NiParticleSystem
+    /// with a Z-up local offset of (10, 20, 30).
+    fn scene_with_offset_emitter() -> NifScene {
+        let mut scene = NifScene::default();
+        scene.blocks.push(host_node(1));
+        scene.blocks.push(particle_system([10.0, 20.0, 30.0]));
+        scene.root_index = Some(0);
+        scene
+    }
+
+    /// Flat walker (cell-loader path): `local_position` must include the
+    /// block's own offset, converted Z-up (10,20,30) → Y-up (10,30,-20).
+    /// Pre-#1333 this read (0,0,0) — the bare host node origin.
+    #[test]
+    fn flat_walker_composes_block_local_offset() {
+        let scene = scene_with_offset_emitter();
+        let mut out = Vec::new();
+        walk_node_particle_emitters_flat(&scene, 0, &NiTransform::default(), None, &mut out);
+        assert_eq!(
+            out.len(),
+            1,
+            "the NiParticleSystem child must surface one emitter"
+        );
+        assert_eq!(out[0].local_position, [10.0, 30.0, -20.0]);
+    }
+
+    /// Hierarchical walker (loose-NIF path): `local_translation` must carry
+    /// the block's own offset (Z-up → Y-up) so the scene builder anchors at
+    /// host-world × block-local. Pre-#1333 the field did not exist.
+    #[test]
+    fn hierarchical_walker_retains_block_local_offset() {
+        let scene = scene_with_offset_emitter();
+        let mut imported = ImportedScene {
+            nodes: Vec::new(),
+            meshes: Vec::new(),
+            particle_emitters: Vec::new(),
+            bsx_flags: None,
+            bs_bound: None,
+            attach_points: None,
+            child_attach_connections: None,
+            embedded_clip: None,
+            ragdoll: None,
+        };
+        let mut pool = StringPool::new();
+        let mut props_stack: Vec<BlockRef> = Vec::new();
+        let mut ctx = HierWalkCtx {
+            scene: &scene,
+            inherited_props: &mut props_stack,
+            out: &mut imported,
+            pool: &mut pool,
+            resolver: None,
+        };
+        walk_node_hierarchical(&mut ctx, 0, None, 0);
+        assert_eq!(
+            imported.particle_emitters.len(),
+            1,
+            "the NiParticleSystem child must surface one emitter"
+        );
+        let em = &imported.particle_emitters[0];
+        assert_eq!(em.parent_node, Some(0), "emitter must tag its host node");
+        assert_eq!(em.local_translation, [10.0, 30.0, -20.0]);
+        assert_eq!(em.local_rotation, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(em.local_scale, 1.0);
+    }
+}
+
+#[cfg(test)]
 mod emitter_rate_tests {
     //! Regression for #1364: `extract_emitter_rate`'s `sane()` gate must
     //! reject the `FLT_MAX` sentinel (`>= 3.0e38`). A
