@@ -39,6 +39,10 @@ pub fn apply_emitter_params(
     let size = p.initial_radius * p.base_scale.unwrap_or(1.0);
     preset.start_size = size;
     preset.end_size = size;
+    // #1775 — per-particle spawn-size spread, scaled by base_scale like the
+    // nominal size. Magnitude (negative authored spread is symmetric jitter);
+    // consumed at spawn as `start_size ± var/2`. 0.0 = no spread.
+    preset.start_size_variation = p.radius_variation.abs() * p.base_scale.unwrap_or(1.0);
 }
 
 /// NIFAL particles slice — the **single overlay boundary** that folds every
@@ -415,8 +419,14 @@ pub(crate) fn particle_system(world: &World, dt: f32) {
                 // handle the particle correctly on the very next tick.
                 let life = life.max(0.05);
 
+                // #1775 — per-particle spawn-size jitter (authored
+                // radius_variation × base_scale). Floored at 0 so a wide spread
+                // can't produce a negative (face-flipped) size; 0 = invisible,
+                // harmless. start_size_variation == 0 reproduces the prior
+                // constant-size spawn exactly.
+                let size = (em.start_size + (rng() - 0.5) * em.start_size_variation).max(0.0);
                 em.particles
-                    .push(world_pos, vel, life, em.start_color, em.start_size);
+                    .push(world_pos, vel, life, em.start_color, size);
             }
         }
     }
@@ -456,6 +466,7 @@ mod tests {
             initial_radius: 50.0,                // FNV oasis-smoke radius
             life_span: 1.33,
             life_span_variation: 0.67,
+            radius_variation: 0.0,
             base_scale: Some(0.15), // → authored size 7.5 (not raw 50)
         };
         apply_emitter_params(&mut preset, &authored);
@@ -497,6 +508,7 @@ mod tests {
             initial_radius: 50.0,
             life_span: 1.33,
             life_span_variation: 0.67,
+            radius_variation: 0.0,
             base_scale: Some(0.15), // → authored size 7.5
         };
         let fields = vec![ImportedParticleForceField::Gravity {
@@ -555,10 +567,41 @@ mod tests {
             initial_radius: 10.5, // Oblivion torch
             life_span: 1.5,
             life_span_variation: 0.0,
+            radius_variation: 0.0,
             base_scale: None,
         };
         apply_emitter_params(&mut preset, &authored);
         assert!((preset.start_size - 10.5).abs() < 1e-4);
+    }
+
+    /// #1775 — radius_variation is forwarded through ImportedEmitterParams and
+    /// consumed as start_size_variation, scaled by base_scale like the nominal
+    /// size. Pre-fix it was dropped at the ImportedEmitterParams handoff, so
+    /// every particle spawned at exactly start_size with no spread.
+    #[test]
+    fn apply_emitter_params_forwards_radius_variation_as_size_jitter() {
+        use byroredux_nif::import::ImportedEmitterParams;
+        let mut preset = ParticleEmitter::torch_flame();
+        let authored = ImportedEmitterParams {
+            speed: 20.0,
+            speed_variation: 10.0,
+            declination: 0.0,
+            declination_variation: 0.0,
+            initial_color: [1.0, 1.0, 1.0, 1.0],
+            initial_radius: 50.0,
+            life_span: 1.5,
+            life_span_variation: 0.0,
+            radius_variation: 8.0, // authored per-particle spread
+            base_scale: Some(0.15),
+        };
+        apply_emitter_params(&mut preset, &authored);
+        // size = 50 × 0.15 = 7.5; spread = 8 × 0.15 = 1.2
+        assert!((preset.start_size - 7.5).abs() < 1e-4);
+        assert!(
+            (preset.start_size_variation - 1.2).abs() < 1e-4,
+            "radius_variation must scale by base_scale into start_size_variation: {}",
+            preset.start_size_variation,
+        );
     }
 
     /// NIFAL-S7 / #1382: a non-finite `rate` must not spawn or poison the

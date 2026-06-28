@@ -723,6 +723,11 @@ pub(super) fn extract_emitter_params(
         && p.planar_angle.is_finite()
         && p.planar_angle_variation.is_finite()
         && p.initial_radius.is_finite()
+        // #1775 — radius_variation is now forwarded + consumed as per-particle
+        // size jitter, so it joins the finite sweep (a NaN/Inf spread would
+        // poison every spawned particle's start_size). Negative is tolerated:
+        // the consumer (apply_emitter_params) takes its magnitude.
+        && p.radius_variation.is_finite()
         && p.life_span.is_finite()
         && p.life_span_variation.is_finite();
     if !(all_finite && p.life_span > 0.0 && p.initial_radius >= 0.0) {
@@ -751,6 +756,7 @@ pub(super) fn extract_emitter_params(
         life_span: p.life_span,
         life_span_variation: p.life_span_variation,
         base_scale,
+        radius_variation: p.radius_variation,
     })
 }
 

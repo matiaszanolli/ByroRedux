@@ -1249,6 +1249,12 @@ pub struct ImportedEmitterParams {
     /// modelled (canonical size is a linear start→end lerp); only the
     /// authored magnitude `initial_radius × base_scale` is translated.
     pub base_scale: Option<f32>,
+    /// `NiPSysEmitter.radius_variation` — per-particle spawn-size spread in
+    /// world units (version-gated `>= 10.4.0.1`, satisfied by every retail
+    /// Bethesda title). Scaled by `base_scale` and consumed as
+    /// `ParticleEmitter.start_size_variation` at the overlay boundary; `0.0`
+    /// when the emitter authored no spread (#1775).
+    pub radius_variation: f32,
 }
 
 /// Flat-import variant of [`ImportedParticleEmitter`] used by the cell

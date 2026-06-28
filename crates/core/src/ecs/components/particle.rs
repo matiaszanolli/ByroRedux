@@ -247,6 +247,13 @@ pub struct ParticleEmitter {
     /// End size in world units. Renderer LERPs between `start_size` and
     /// `end_size` against `age / life`.
     pub end_size: f32,
+    /// Per-particle spawn-size jitter in world units (uniform
+    /// `[start_size - var/2, start_size + var/2)`, floored at 0). Mirrors
+    /// `speed_variation` / `life_variation`. Authored from
+    /// `NiPSysEmitter.radius_variation × base_scale` (#1775); `0.0` for the
+    /// heuristic presets (no authored spread). Only the spawn size is
+    /// jittered — `end_size` stays the emitter's nominal end size.
+    pub start_size_variation: f32,
     /// Texture path resolved from the parent NiTexturingProperty / shader
     /// (e.g. `"textures\\fx\\flame01.dds"`). The renderer looks this up
     /// in the [`crate::texture::FixedString`]-keyed texture registry.
@@ -299,6 +306,7 @@ impl Default for ParticleEmitter {
             dst_blend: 0, // ONE (Gamebryo enum) — true additive
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
+            start_size_variation: 0.0,
             particles: ParticleSoA::default(),
         }
     }
@@ -333,6 +341,7 @@ impl ParticleEmitter {
             dst_blend: 0, // ONE (Gamebryo enum) — true additive
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
+            start_size_variation: 0.0,
             particles: ParticleSoA::default(),
         }
     }
@@ -368,6 +377,7 @@ impl ParticleEmitter {
             dst_blend: 7, // ONE_MINUS_SRC_ALPHA — non-additive smoke
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
+            start_size_variation: 0.0,
             particles: ParticleSoA::default(),
         }
     }
@@ -405,6 +415,7 @@ impl ParticleEmitter {
             dst_blend: 0, // ONE (Gamebryo enum) — additive, glints against smoke
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
+            start_size_variation: 0.0,
             particles: ParticleSoA::default(),
         }
     }
@@ -432,6 +443,7 @@ impl ParticleEmitter {
             dst_blend: 0, // ONE (Gamebryo enum) — additive
             spawn_accumulator: 0.0,
             force_fields: Vec::new(),
+            start_size_variation: 0.0,
             particles: ParticleSoA::default(),
         }
     }
