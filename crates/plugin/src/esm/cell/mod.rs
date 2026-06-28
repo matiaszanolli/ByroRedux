@@ -944,10 +944,10 @@ pub struct EsmCellIndex {
 /// A Bethesda DLC override CELL is a *partial* record — it re-emits only the
 /// REFRs it adds or changes — so the whole-vec replacement this fixes
 /// dropped every base REFR the DLC didn't re-emit (#1546). Deleted-REFR
-/// tombstones (the 0x20 Deleted flag) aren't captured by the parser yet, so
-/// a DLC that *deletes* a base REFR leaves the base copy resident — a far
-/// smaller over-render than the catastrophic under-render of the stomp, and
-/// tracked separately. FormID `0` (legacy fixtures with no REFR identity) is
+/// tombstones (the 0x20 Deleted flag) are skipped at the REFR walk
+/// (`walkers.rs`, `RECORD_FLAG_DELETED`, resolved #1660), so a DLC that
+/// *deletes* a base REFR no longer leaves the base copy resident. FormID `0`
+/// (legacy fixtures with no REFR identity) is
 /// never keyed — those refs always append, so distinct unnamed refs can't
 /// collapse onto each other.
 fn merge_cell_references(base: &CellData, over: &mut CellData) {
