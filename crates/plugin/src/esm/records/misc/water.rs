@@ -132,9 +132,10 @@ fn u8_to_linear(byte: u8) -> f32 {
     byte as f32 / 255.0
 }
 
-/// Parse Oblivion / FO3 / FNV WATR.DATA. The 60-byte prefix layout
-/// is identical across these three games (per UESP +
-/// CK / GECK wiki cross-check):
+/// Parse Oblivion / FO3 / FNV WATR.DATA. The leading wind / wave /
+/// fog / reflectivity / fresnel prefix (offsets 0..36) is shared, but
+/// the RGBA colour block that follows is **not** at a fixed offset
+/// across games:
 ///
 /// ```text
 /// offset  size  field
@@ -148,14 +149,18 @@ fn u8_to_linear(byte: u8) -> f32 {
 /// 24      4     fresnel_amount     (f32)
 /// 28      4     fog_distance_near  (f32) — FNV/FO3
 /// 32      4     fog_distance_far   (f32)
-/// 36      4     shallow_color      (RGBA u8x4)
-/// 40      4     deep_color         (RGBA u8x4)
-/// 44      4     reflection_color   (RGBA u8x4)
+/// 36      …     colour block — offset is game-dependent (see below)
 /// ```
 ///
-/// Oblivion DATA omits the explicit fog distances (offsets 28..36) —
-/// `decode_data` falls back to defaults for any field whose source
-/// offset is past the buffer end.
+/// FO3/FNV ship WATR.DATA as either a 2-byte "Damage-only" stub or a
+/// full **186-byte** record. The 186-byte variant carries an extra
+/// fog-distance `f32` at offset 36, which pushes the RGBA colour block
+/// to **40 / 44 / 48** (verified against the real `PPurityWater01Murky`
+/// and `DupontFontWaterType` records, #1778). Oblivion's shorter DATA
+/// (and any record below 186 bytes) keeps the legacy **36 / 40 / 44**
+/// colour offsets. `decode_data` falls back to defaults for any field
+/// whose source offset is past the buffer end, so the 2-byte stub keeps
+/// all default colours.
 fn decode_data(data: &[u8]) -> WaterParams {
     let mut p = WaterParams::default();
     let mut r = SubReader::new(data);
@@ -185,25 +190,29 @@ fn decode_data(data: &[u8]) -> WaterParams {
     if let Ok(v) = r.f32() {
         p.fog_far = v.max(p.fog_near + 1.0);
     }
-    if data.len() >= 40 {
+    // The 186-byte FO3/FNV record has an extra fog-distance f32 at
+    // offset 36 that shifts the colour block 4 bytes forward (#1778);
+    // shorter records (Oblivion, the 2-byte stub) keep the legacy base.
+    let color_base = if data.len() >= 186 { 40 } else { 36 };
+    if data.len() >= color_base + 4 {
         p.shallow_color = [
-            u8_to_linear(data[36]),
-            u8_to_linear(data[37]),
-            u8_to_linear(data[38]),
+            u8_to_linear(data[color_base]),
+            u8_to_linear(data[color_base + 1]),
+            u8_to_linear(data[color_base + 2]),
         ];
     }
-    if data.len() >= 44 {
+    if data.len() >= color_base + 8 {
         p.deep_color = [
-            u8_to_linear(data[40]),
-            u8_to_linear(data[41]),
-            u8_to_linear(data[42]),
+            u8_to_linear(data[color_base + 4]),
+            u8_to_linear(data[color_base + 5]),
+            u8_to_linear(data[color_base + 6]),
         ];
     }
-    if data.len() >= 48 {
+    if data.len() >= color_base + 12 {
         p.reflection_color = [
-            u8_to_linear(data[44]),
-            u8_to_linear(data[45]),
-            u8_to_linear(data[46]),
+            u8_to_linear(data[color_base + 8]),
+            u8_to_linear(data[color_base + 9]),
+            u8_to_linear(data[color_base + 10]),
         ];
     }
     p
@@ -379,6 +388,36 @@ mod tests {
         assert!((w.params.deep_color[2] - (0x18 as f32 / 255.0)).abs() < 1e-6);
         assert_eq!(w.raw_data.len(), 48);
         assert!(w.raw_dnam.is_empty());
+    }
+
+    #[test]
+    fn parse_watr_186_byte_record_reads_colors_at_40_44_48() {
+        // Regression for #1778 — the real FO3/FNV 186-byte WATR.DATA
+        // carries an extra fog-distance f32 at offset 36, so the RGBA
+        // colour block sits at 40/44/48, NOT 36/40/44. Bytes mirror the
+        // real `PPurityWater01Murky` (Fallout3.esm) record.
+        let mut data = vec![0u8; 186];
+        // offset 36-39: the extra fog f32 (109.0) the legacy code mistook
+        // for the shallow colour — its low bytes are obvious garbage as RGB.
+        data[36..40].copy_from_slice(&109.0f32.to_le_bytes());
+        // offset 40/44/48: the real shallow / deep / reflection colours.
+        data[40..44].copy_from_slice(&[36, 47, 36, 0]); // shallow
+        data[44..48].copy_from_slice(&[13, 13, 11, 0]); // deep
+        data[48..52].copy_from_slice(&[41, 48, 46, 0]); // reflection
+
+        let w = parse_watr(0x00100000, &vec![sub(b"DATA", &data)]);
+        assert!((w.params.shallow_color[0] - 36.0 / 255.0).abs() < 1e-6);
+        assert!((w.params.shallow_color[1] - 47.0 / 255.0).abs() < 1e-6);
+        assert!((w.params.deep_color[2] - 11.0 / 255.0).abs() < 1e-6);
+        assert!((w.params.reflection_color[0] - 41.0 / 255.0).abs() < 1e-6);
+        assert!((w.params.reflection_color[2] - 46.0 / 255.0).abs() < 1e-6);
+        // Guard against the off-by-4 regression: reading shallow @36 would
+        // pick up the fog float's bytes (0x00,0x00,0xda → [0,0,218]), so a
+        // blue-channel of 218/255 here means the offset shift was lost.
+        assert!(
+            (w.params.shallow_color[2] - 218.0 / 255.0).abs() > 1e-3,
+            "shallow colour read from the fog f32 at offset 36 (off-by-4 regression)"
+        );
     }
 
     #[test]

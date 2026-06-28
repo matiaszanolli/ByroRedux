@@ -874,7 +874,11 @@ fn resolve_tri_strips_data_refs(
         }
     }
 
-    if all_verts.is_empty() {
+    // #1779 — drop the shape if any vertex is non-finite (corrupt/truncated
+    // NIF) so the synthesized-trimesh fallback fires instead of poisoning
+    // parry's broadphase with NaN AABB bounds, mirroring the primitive
+    // finite guards (#1409 / NIFAL-S4).
+    if all_verts.is_empty() || all_verts.iter().any(|v| !v.is_finite()) {
         return None;
     }
 
@@ -915,6 +919,12 @@ fn resolve_packed_mesh(
         .iter()
         .map(|t| [t.v0 as u32, t.v1 as u32, t.v2 as u32])
         .collect();
+
+    // #1779 — non-finite vertices (NaN/±Inf from a corrupt decode) would
+    // poison parry's broadphase; drop to the synth-trimesh fallback instead.
+    if vertices.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
 
     Some(CollisionShape::TriMesh { vertices, indices })
 }
@@ -1060,7 +1070,9 @@ fn resolve_compressed_mesh(
         }
     }
 
-    if all_verts.is_empty() {
+    // #1779 — same non-finite guard as the other TriMesh resolvers; a
+    // bad dequantized chunk vertex must not reach parry's broadphase.
+    if all_verts.is_empty() || all_verts.iter().any(|v| !v.is_finite()) {
         return None;
     }
 
@@ -1707,6 +1719,48 @@ mod cycle_tests {
             }
             other => panic!("expected TriMesh, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ni_tri_strips_shape_with_nonfinite_vertex_drops_to_fallback() {
+        // #1779 — a NaN/±Inf vertex from a corrupt or truncated NIF must NOT
+        // build a TriMesh (it would poison parry's broadphase with NaN AABB
+        // bounds); resolve_shape returns None so the synth-trimesh fallback
+        // fires, matching the primitive finite guards (#1409).
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkNiTriStripsShape {
+            material: 0,
+            radius: 0.0,
+            scale: [1.0, 1.0, 1.0, 1.0],
+            data_refs: vec![BlockRef(1u32)],
+            filters: Vec::new(),
+        }));
+        scene.blocks.push(tri_strips_data(
+            vec![
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: f32::NAN,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 0.0,
+                    y: f32::INFINITY,
+                    z: 0.0,
+                },
+            ],
+            vec![0, 1, 2],
+        ));
+        let mut visited = HashSet::new();
+        assert!(
+            resolve_shape(&scene, BlockRef(0u32), &mut visited).is_none(),
+            "non-finite TriMesh vertices must drop to the synth fallback, not build a TriMesh"
+        );
     }
 
     #[test]

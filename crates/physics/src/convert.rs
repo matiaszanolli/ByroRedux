@@ -154,7 +154,15 @@ fn flatten_to_parts(
             out.push((parent_iso, shape));
         }
         CollisionShape::TriMesh { vertices, indices } => {
-            if vertices.is_empty() || indices.is_empty() {
+            // #1779 — reject empty *or* non-finite meshes at the single choke
+            // point every TriMesh source passes through (incl. the synth
+            // fallback). A NaN/±Inf vertex makes `trimesh_with_flags` build a
+            // Qbvh with NaN AABB bounds, corrupting the broadphase; fall back
+            // to a tiny ball instead.
+            if vertices.is_empty()
+                || indices.is_empty()
+                || vertices.iter().any(|v| !v.is_finite())
+            {
                 out.push((parent_iso, SharedShape::ball(1e-3)));
                 return;
             }
@@ -390,6 +398,23 @@ mod tests {
         let parts = parts(&CollisionShape::TriMesh {
             vertices: vec![],
             indices: vec![],
+        });
+        assert_eq!(parts.len(), 1);
+        assert_eq!(shape_type_of(&parts, 0), ShapeType::Ball);
+    }
+
+    #[test]
+    fn nonfinite_trimesh_falls_back_to_ball_part() {
+        // #1779 — a non-finite vertex must not reach `trimesh_with_flags`
+        // (it would build a Qbvh with NaN AABB bounds); the choke point
+        // drops it to a tiny ball, same as the empty case.
+        let parts = parts(&CollisionShape::TriMesh {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(f32::NAN, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+            ],
+            indices: vec![[0, 1, 2]],
         });
         assert_eq!(parts.len(), 1);
         assert_eq!(shape_type_of(&parts, 0), ShapeType::Ball);
