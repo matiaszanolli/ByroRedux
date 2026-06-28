@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use byroredux_core::ecs::components::CollisionShape;
+use byroredux_core::ecs::components::{CollisionShape, RigidBodyData};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{EntityId, GlobalTransform, World};
@@ -28,7 +28,7 @@ use byroredux_nif::import::{ImportedJointKind, ImportedRagdoll};
 use byroredux_physics::ragdoll::body_pose;
 use byroredux_physics::{
     build_ragdoll, ContactConfig, PhysicsWorld, Ragdoll, RagdollBodySpec, RagdollConstraintSpec,
-    RagdollJointSpec, RagdollSpec,
+    RagdollJointSpec, RagdollSpec, RapierHandles,
 };
 
 /// Per-actor ragdoll blueprint, resolved at spawn against the loaded
@@ -234,6 +234,46 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
         .query_mut::<RagdollActive>()
         .ok_or("RagdollActive storage not registered")?
         .insert(actor, RagdollActive);
+
+    // 4. #1772 — tear down each ragdolled bone's pre-existing keyframed
+    //    collision body. At NPC spawn every ragdoll bone got a Keyframed
+    //    `RigidBodyData` → kinematic Rapier follower body (`RapierHandles`,
+    //    `keyframe_live_ragdoll_bones` + `physics_sync_system`). Left in place
+    //    after activation those bodies (a) collide with the dynamic ragdoll
+    //    bodies now occupying the same bones — kinematic-vs-dynamic contacts
+    //    that fight the multibody solver — and (b) get re-driven every frame by
+    //    `push_kinematic` chasing the writeback-updated `GlobalTransform`. Free
+    //    the Rapier body and drop BOTH `RigidBodyData` (else `collect_newcomers`
+    //    re-registers the bone next frame) and `RapierHandles`. The dynamic
+    //    ragdoll bodies are the bones' physics representation from here on.
+    //    Two-phase: collect handles under the read guard, then free + remove
+    //    after it drops (no read guard across the PhysicsWorld write lock).
+    let bone_handles: Vec<(EntityId, RapierHandles)> = match world.query::<RapierHandles>() {
+        Some(hq) => spec
+            .bodies
+            .iter()
+            .filter_map(|b| hq.get(b.entity).map(|h| (b.entity, *h)))
+            .collect(),
+        None => Vec::new(),
+    };
+    if !bone_handles.is_empty() {
+        {
+            let mut pw = world.resource_mut::<PhysicsWorld>();
+            for (_bone, h) in &bone_handles {
+                pw.remove_body(h.body);
+            }
+        }
+        if let Some(mut rbq) = world.query_mut::<RigidBodyData>() {
+            for (bone, _) in &bone_handles {
+                rbq.remove(*bone);
+            }
+        }
+        if let Some(mut hq) = world.query_mut::<RapierHandles>() {
+            for (bone, _) in &bone_handles {
+                hq.remove(*bone);
+            }
+        }
+    }
 
     Ok(n)
 }
@@ -466,6 +506,123 @@ mod tests {
             "bone rotation must round-trip: {:?} vs {:?}",
             gt.rotation,
             orig.rotation
+        );
+    }
+
+    /// #1772 — at NPC spawn each ragdoll bone carries a Keyframed
+    /// `RigidBodyData` that `physics_sync_system` registers as a kinematic
+    /// Rapier follower body. `activate_ragdoll` must tear those down: left in
+    /// place they collide with the dynamic ragdoll bodies now on the same
+    /// bones (kinematic-vs-dynamic contacts fight the solver) and keep being
+    /// driven by `push_kinematic`. Assert each bone's `RigidBodyData` +
+    /// `RapierHandles` are gone post-activation AND a re-run of
+    /// `physics_sync_system` does NOT re-register them (dropping `RigidBodyData`
+    /// is what stops `collect_newcomers` recreating the follower).
+    #[test]
+    fn activation_tears_down_keyframed_bone_bodies() {
+        use byroredux_core::ecs::components::MotionType;
+        use byroredux_physics::physics_sync_system;
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<CollisionShape>();
+        world.register::<RigidBodyData>();
+        world.register::<RapierHandles>();
+        world.register::<RagdollTemplate>();
+        world.register::<RagdollActive>();
+        world.register::<Ragdoll>();
+        world.insert_resource(PhysicsWorld::new());
+
+        let actor = world.spawn();
+        let mut bones = Vec::new();
+        for i in 0..3 {
+            let e = world.spawn();
+            world.insert(
+                e,
+                GlobalTransform {
+                    translation: Vec3::new(i as f32 * 50.0, 1000.0, 0.0),
+                    rotation: Quat::IDENTITY,
+                    scale: 1.0,
+                },
+            );
+            world.insert(e, CollisionShape::Ball { radius: 5.0 });
+            // Exactly what keyframe_live_ragdoll_bones leaves on each bone.
+            world.insert(
+                e,
+                RigidBodyData {
+                    motion_type: MotionType::Keyframed,
+                    ..Default::default()
+                },
+            );
+            bones.push(e);
+        }
+        // Phase 1 of the sim registers the keyframed follower bodies.
+        physics_sync_system(&world, PHYSICS_DT);
+        for &b in &bones {
+            assert!(
+                world.query::<RapierHandles>().unwrap().get(b).is_some(),
+                "each bone must register a kinematic follower body before activation",
+            );
+        }
+        assert_eq!(
+            world.resource::<PhysicsWorld>().body_count(),
+            3,
+            "3 keyframed follower bodies registered before activation",
+        );
+
+        let template = RagdollTemplate {
+            bodies: bones
+                .iter()
+                .map(|&bone| RagdollTemplateBody {
+                    bone,
+                    local_translation: Vec3::ZERO,
+                    local_rotation: Quat::IDENTITY,
+                    shape: CollisionShape::Ball { radius: 5.0 },
+                    mass: 4.0,
+                    linear_damping: 0.05,
+                    angular_damping: 0.05,
+                    friction: 0.5,
+                    restitution: 0.0,
+                })
+                .collect(),
+            constraints: Vec::new(),
+        };
+        world.insert(actor, template);
+
+        let n = activate_ragdoll(&world, actor).expect("activation should succeed");
+        assert_eq!(n, 3);
+
+        for &b in &bones {
+            assert!(
+                world.query::<RigidBodyData>().unwrap().get(b).is_none(),
+                "keyframed RigidBodyData must be removed on activation",
+            );
+            assert!(
+                world.query::<RapierHandles>().unwrap().get(b).is_none(),
+                "keyframed RapierHandles must be removed on activation",
+            );
+        }
+        // 3 keyframed followers freed; the 3 dynamic ragdoll bodies remain.
+        assert_eq!(
+            world.resource::<PhysicsWorld>().body_count(),
+            3,
+            "keyframed followers freed, only the 3 dynamic ragdoll bodies remain",
+        );
+
+        // Re-run Phase 1: a ragdolled bone must NOT re-register (RigidBodyData
+        // is gone, so it's no longer a collect_newcomers candidate).
+        physics_sync_system(&world, PHYSICS_DT);
+        for &b in &bones {
+            assert!(
+                world.query::<RapierHandles>().unwrap().get(b).is_none(),
+                "a ragdolled bone must not re-register a kinematic follower",
+            );
+        }
+        assert_eq!(
+            world.resource::<PhysicsWorld>().body_count(),
+            3,
+            "no keyframed follower re-registered after activation",
         );
     }
 
