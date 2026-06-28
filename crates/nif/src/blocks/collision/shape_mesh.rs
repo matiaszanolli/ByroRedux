@@ -14,6 +14,10 @@ use super::{read_havok_material, read_vec4};
 pub struct BhkNiTriStripsShape {
     pub material: u32,
     pub radius: f32,
+    /// Per-axis `Scale` Vector4 (nif.xml default `(1,1,1,0)`). Folded into the
+    /// resolved TriMesh at import (#1777), mirroring `BhkMeshShape`; identity on
+    /// the v10.0.1.x Oblivion strips shapes that omit the field.
+    pub scale: [f32; 4],
     pub data_refs: Vec<BlockRef>,
     pub filters: Vec<u32>,
 }
@@ -26,10 +30,14 @@ impl BhkNiTriStripsShape {
         let _grow_by = stream.read_u32_le()?;
         // Scale: nif.xml `since="10.1.0.0"` — absent on the rare
         // v10.0.1.x Oblivion strips shapes (#1337); reading it there
-        // over-read 16 bytes and cascaded the sizeless stream.
-        if stream.version().has_havok_strips_scale() {
-            let _scale = read_vec4(stream)?;
-        }
+        // over-read 16 bytes and cascaded the sizeless stream. Stored (#1777)
+        // so the authored per-axis scale folds into the resolved collision
+        // mesh instead of being dropped; identity when the field is absent.
+        let scale = if stream.version().has_havok_strips_scale() {
+            read_vec4(stream)?
+        } else {
+            [1.0, 1.0, 1.0, 1.0]
+        };
         let num_data = stream.read_u32_le()?;
         let mut data_refs = stream.allocate_vec(num_data)?;
         for _ in 0..num_data {
@@ -41,6 +49,7 @@ impl BhkNiTriStripsShape {
         Ok(Self {
             material,
             radius,
+            scale,
             data_refs,
             filters,
         })

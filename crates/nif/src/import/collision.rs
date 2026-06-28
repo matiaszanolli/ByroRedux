@@ -738,23 +738,22 @@ fn resolve_shape_inner(
     // Mesh shape (Oblivion 10.0.1.0 only) — references NiTriStripsData just
     // like BhkNiTriStripsShape, plus a per-axis Scale vector. Dispatched at
     // blocks/mod.rs but had no resolve arm pre-#1361 → the authored collision
-    // silently dropped. The Scale folds in alongside the uniform havok_scale;
-    // a degenerate/unset scale vector falls back to identity rather than
-    // collapsing the mesh to a point (which would render as empty → None).
+    // silently dropped. The Scale folds in (NiTriStripsData geometry is not
+    // havok-scaled, #1744); a degenerate/unset scale vector falls back to
+    // identity rather than collapsing the mesh to a point (which would render
+    // as empty → None).
     if let Some(s) = block.as_any().downcast_ref::<BhkMeshShape>() {
-        let extra = if s.scale[..3].iter().all(|c| c.is_finite() && *c != 0.0) {
-            [s.scale[0], s.scale[1], s.scale[2]]
-        } else {
-            [1.0, 1.0, 1.0]
-        };
-        return resolve_tri_strips_data_refs(scene, &s.data_refs, extra);
+        return resolve_tri_strips_data_refs(scene, &s.data_refs, per_axis_scale(&s.scale));
     }
 
-    // Packed tri strips mesh collision.
+    // Packed tri strips mesh collision. The packed data is authored in Havok
+    // units (so `havok_scale` applies), and the shape carries its own per-axis
+    // Scale on top — folded here (#1777); pre-fix only `havok_scale` was passed
+    // and the authored per-axis scale was silently dropped.
     if let Some(s) = block.as_any().downcast_ref::<BhkPackedNiTriStripsShape>() {
         let data_idx = s.data_ref.index()?;
         let data = scene.get_as::<HkPackedNiTriStripsData>(data_idx)?;
-        return resolve_packed_mesh(data, scale);
+        return resolve_packed_mesh(data, scale, per_axis_scale(&s.scale));
     }
 
     // Compressed mesh (Skyrim+) — resolve via data ref.
@@ -791,17 +790,35 @@ fn resolve_shape_inner(
     None
 }
 
+/// Per-axis multiplier from a shape's authored `Scale` Vector4, falling back to
+/// identity when any of the first three components is non-finite or zero — a
+/// degenerate/unset scale would otherwise collapse the mesh to a plane or point
+/// and render as empty geometry. Shared by every NiTriStrips-family shape that
+/// folds an authored scale (`bhkMeshShape`, `bhkNiTriStripsShape`,
+/// `bhkPackedNiTriStripsShape`); the guard originated with `bhkMeshShape` (#1361)
+/// and was generalised when the sibling drops were folded (#1777).
+fn per_axis_scale(scale: &[f32; 4]) -> [f32; 3] {
+    if scale[..3].iter().all(|c| c.is_finite() && *c != 0.0) {
+        [scale[0], scale[1], scale[2]]
+    } else {
+        [1.0, 1.0, 1.0]
+    }
+}
+
 /// Convert bhkNiTriStripsShape into a TriMesh by merging all referenced NiTriStripsData.
 fn resolve_tri_strips_collision(
     scene: &NifScene,
     shape: &BhkNiTriStripsShape,
 ) -> Option<CollisionShape> {
-    resolve_tri_strips_data_refs(scene, &shape.data_refs, [1.0, 1.0, 1.0])
+    // #1777 — fold the shape's authored per-axis Scale (was dropped pre-fix),
+    // exactly like the sibling `bhkMeshShape`. Identity in vanilla content, so
+    // no behaviour change there; correct for non-identity authored scales.
+    resolve_tri_strips_data_refs(scene, &shape.data_refs, per_axis_scale(&shape.scale))
 }
 
 /// Merge the `NiTriStripsData` referenced by `data_refs` into a single TriMesh.
-/// `extra_scale` is a per-axis multiplier: `bhkNiTriStripsShape` passes identity,
-/// while `bhkMeshShape` passes its authored per-axis Scale vector.
+/// `extra_scale` is the shape's authored per-axis Scale (identity when unset);
+/// `bhkNiTriStripsShape` and `bhkMeshShape` both pass it via `per_axis_scale`.
 ///
 /// #1744 — these vertices are NOT scaled by `havok_scale`. `bhkNiTriStripsShape`
 /// / `bhkMeshShape` "use NiTriStripsData for geometry storage" (nif.xml) — the
@@ -867,8 +884,16 @@ fn resolve_tri_strips_data_refs(
     })
 }
 
-/// Convert hkPackedNiTriStripsData into a TriMesh.
-fn resolve_packed_mesh(data: &HkPackedNiTriStripsData, scale: f32) -> Option<CollisionShape> {
+/// Convert hkPackedNiTriStripsData into a TriMesh. `havok_scale` is the world
+/// Havok→engine scale (the packed data is authored in Havok units); `extra_scale`
+/// is the shape's own authored per-axis Scale (#1777), applied in the shape's
+/// local Havok frame before the Z-up→Y-up swap (a uniform `havok_scale` commutes
+/// with the swap, so it is applied after).
+fn resolve_packed_mesh(
+    data: &HkPackedNiTriStripsData,
+    havok_scale: f32,
+    extra_scale: [f32; 3],
+) -> Option<CollisionShape> {
     if data.vertices.is_empty() {
         return None;
     }
@@ -876,7 +901,13 @@ fn resolve_packed_mesh(data: &HkPackedNiTriStripsData, scale: f32) -> Option<Col
     let vertices: Vec<Vec3> = data
         .vertices
         .iter()
-        .map(|v| havok_to_engine(v[0], v[1], v[2]) * scale)
+        .map(|v| {
+            havok_to_engine(
+                v[0] * extra_scale[0],
+                v[1] * extra_scale[1],
+                v[2] * extra_scale[2],
+            ) * havok_scale
+        })
         .collect();
 
     let indices: Vec<[u32; 3]> = data
@@ -1240,7 +1271,8 @@ mod cycle_tests {
     use super::*;
     use crate::blocks::collision::{
         BhkAabbPhantom, BhkConvexListShape, BhkConvexSweepShape, BhkListShape, BhkMeshShape,
-        BhkMultiSphereShape, BhkNiTriStripsShape, BhkSimpleShapePhantom, BhkSphereShape,
+        BhkMultiSphereShape, BhkNiTriStripsShape, BhkPackedNiTriStripsShape, BhkSimpleShapePhantom,
+        BhkSphereShape, HkPackedNiTriStripsData, PackedTriangle,
     };
     use crate::blocks::tri_shape::NiTriStripsData;
     use crate::blocks::NiObject;
@@ -1636,6 +1668,7 @@ mod cycle_tests {
         scene.blocks.push(Box::new(BhkNiTriStripsShape {
             material: 0,
             radius: 0.0,
+            scale: [1.0, 1.0, 1.0, 1.0],
             data_refs: vec![BlockRef(1u32)],
             filters: Vec::new(),
         }));
@@ -1673,6 +1706,134 @@ mod cycle_tests {
                 );
             }
             other => panic!("expected TriMesh, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ni_tri_strips_shape_folds_per_axis_scale() {
+        // #1777 — bhkNiTriStripsShape's authored per-axis Scale must fold in,
+        // exactly like the sibling bhkMeshShape, and was dropped pre-fix. Like
+        // bhkMeshShape the NiTriStripsData geometry is NOT havok-scaled (#1744),
+        // so havok_scale=7 here must leave the per-axis-scaled result untouched.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 7.0;
+        scene.blocks.push(Box::new(BhkNiTriStripsShape {
+            material: 0,
+            radius: 0.0,
+            scale: [2.0, 3.0, 5.0, 0.0],
+            data_refs: vec![BlockRef(1u32)],
+            filters: Vec::new(),
+        }));
+        scene.blocks.push(tri_strips_data(
+            vec![
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+                NiPoint3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ],
+            vec![0, 1, 2],
+        ));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::TriMesh { vertices, .. }) => {
+                // (1,1,1) × scale(2,3,5) = (2,3,5) in havok space; havok_to_engine
+                // (x,z,-y) = (2,5,-3). havok_scale (7) must NOT inflate it.
+                let v = vertices[1];
+                assert!(
+                    (v.x - 2.0).abs() < 1e-5
+                        && (v.y - 5.0).abs() < 1e-5
+                        && (v.z + 3.0).abs() < 1e-5,
+                    "per-axis scale not folded (or havok_scale leaked); got {v:?}"
+                );
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn packed_tristrips_shape_folds_per_axis_scale_and_havok_scale() {
+        // #1777 — bhkPackedNiTriStripsShape's authored per-axis Scale was parsed
+        // and stored but never read at resolve; only havok_scale was applied.
+        // The packed data IS in Havok units, so BOTH the per-axis Scale and the
+        // uniform havok_scale must apply (unlike the NiTriStripsData family).
+        let mut scene = NifScene::default();
+        scene.havok_scale = 10.0;
+        scene.blocks.push(Box::new(BhkPackedNiTriStripsShape {
+            sub_shapes: Vec::new(),
+            data_ref: BlockRef(1u32),
+            scale: [2.0, 3.0, 5.0, 0.0],
+        }));
+        scene.blocks.push(Box::new(HkPackedNiTriStripsData {
+            triangles: vec![PackedTriangle {
+                v0: 0,
+                v1: 1,
+                v2: 2,
+                welding_info: 0,
+                normal: None,
+            }],
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [1.0, 0.0, 0.0]],
+        }));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::TriMesh { vertices, indices }) => {
+                assert_eq!(indices.len(), 1, "one triangle");
+                // (1,1,1) × scale(2,3,5) = (2,3,5); havok_to_engine (x,z,-y) =
+                // (2,5,-3); × havok_scale(10) = (20,50,-30).
+                let v = vertices[1];
+                assert!(
+                    (v.x - 20.0).abs() < 1e-4
+                        && (v.y - 50.0).abs() < 1e-4
+                        && (v.z + 30.0).abs() < 1e-4,
+                    "packed per-axis scale × havok_scale not applied; got {v:?}"
+                );
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn packed_tristrips_degenerate_scale_falls_back_to_identity() {
+        // A zero/non-finite authored Scale must NOT collapse the mesh — the
+        // per_axis_scale guard falls back to identity (only havok_scale applies).
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkPackedNiTriStripsShape {
+            sub_shapes: Vec::new(),
+            data_ref: BlockRef(1u32),
+            scale: [0.0, 0.0, 0.0, 0.0], // degenerate → identity
+        }));
+        scene.blocks.push(Box::new(HkPackedNiTriStripsData {
+            triangles: vec![PackedTriangle {
+                v0: 0,
+                v1: 1,
+                v2: 2,
+                welding_info: 0,
+                normal: None,
+            }],
+            vertices: vec![[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
+        }));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::TriMesh { vertices, .. }) => {
+                // identity fallback: (4,0,0) → havok_to_engine (4,0,0), not (0,0,0).
+                let v = vertices[1];
+                assert!(
+                    (v.x - 4.0).abs() < 1e-5,
+                    "degenerate scale must fall back to identity, not collapse; got {v:?}"
+                );
+            }
+            other => panic!("expected TriMesh (identity fallback), got {other:?}"),
         }
     }
 
