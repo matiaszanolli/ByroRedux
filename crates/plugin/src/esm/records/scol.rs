@@ -129,7 +129,10 @@ pub struct ScolRecord {
 /// (OBND, MODT, FLTR format variants, PTRN, MODS) are ignored —
 /// the renderer / cell loader only needs EDID / MODL / ONAM-DATA.
 /// FULL is preserved for editor-mode display (see `ScolRecord::full_name`).
-/// Wire format is FO4-and-later; earlier games don't emit SCOL.
+/// SCOL is FO3/FNV and FO4+ (byte-identical 28-byte DATA layout, see the
+/// module doc); Oblivion/Skyrim don't emit SCOL. FalloutNV.esm ships 98 SCOL
+/// bases referenced by 1084 REFRs — the #1538 dispatch gate
+/// (`is_fo4_plus || Fallout3NV`) must keep parsing them.
 pub fn parse_scol(form_id: u32, subs: &[SubRecord]) -> ScolRecord {
     // EDID + FULL + MODL via shared helper. FULL is lstring-aware per
     // #816. TD3-203 / #1113.
