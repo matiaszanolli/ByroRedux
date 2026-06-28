@@ -452,6 +452,12 @@ impl EsmIndex {
             ("ammo_effects", |s| s.ammo_effects.len()),
             ("debris", |s| s.debris.len()),
             ("grasses", |s| s.grasses.len()),
+            // #1773 / FNV-D4-NEW-01 — TREE is dispatched into `index.trees`
+            // (mod.rs `parse_tree`) but was the lone populated typed map
+            // missing from this table, so it never counted toward `total()`
+            // and a TREE category-wipe passed the parse-rate CI floor silently.
+            // FNV ships 3; FO3/Oblivion ship many more (SpeedTree content).
+            ("trees", |s| s.trees.len()),
             ("imagespace_modifiers", |s| s.imagespace_modifiers.len()),
             ("load_screens", |s| s.load_screens.len()),
             ("load_screen_types", |s| s.load_screen_types.len()),
@@ -762,6 +768,27 @@ mod tests {
         );
         idx.npcs.insert(0x000A_0009, unscripted);
         assert!(idx.base_record_script(0x000A_0009).is_none());
+    }
+
+    /// #1773 / FNV-D4-NEW-01 — the `trees` typed map must be counted by
+    /// `categories()` (→ `total()` / `category_breakdown()`). It was the lone
+    /// populated typed map missing from the table, so a TREE category-wipe
+    /// passed the parse-rate CI floor silently (the #817 failure mode).
+    #[test]
+    fn trees_are_counted_in_total_and_breakdown() {
+        use crate::esm::records::parse_tree;
+        let mut idx = EsmIndex::default();
+        let before = idx.total();
+        idx.trees.insert(0x000C_0001, parse_tree(0x000C_0001, &[]));
+        assert_eq!(
+            idx.total(),
+            before + 1,
+            "an inserted TREE must increment total()",
+        );
+        assert!(
+            idx.category_breakdown().contains("trees"),
+            "category_breakdown() must list the trees category",
+        );
     }
 
     #[test]
