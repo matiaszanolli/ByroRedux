@@ -264,8 +264,9 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
         let x = read_f32_le(bytes, off)?;
         let y = read_f32_le(bytes, off + 4)?;
         let z = read_f32_le(bytes, off + 8)?;
-        // Z-up → Y-up: (x, z, -y).
-        positions.push([x, z, -y]);
+        // Z-up → Y-up: (x, z, -y). Routed through the canonical helper
+        // so the flip stays confined to the coord module (#1753).
+        positions.push(byroredux_core::math::coord::zup_to_yup_pos([x, y, z]));
         if has_tangents {
             bitangent_x = Some(read_f32_le(bytes, off + 12)?);
         }
@@ -287,8 +288,8 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
             let nx = byte_to_normal(*bytes.get(off)?);
             let ny = byte_to_normal(*bytes.get(off + 1)?);
             let nz = byte_to_normal(*bytes.get(off + 2)?);
-            // Z-up → Y-up: (x, z, -y).
-            normals.push([nx, nz, -ny]);
+            // Z-up → Y-up: (x, z, -y) via the canonical helper (#1753).
+            normals.push(byroredux_core::math::coord::zup_to_yup_pos([nx, ny, nz]));
             normal_zup = Some([nx, ny, nz]);
             bitangent_y = Some(byte_to_normal(*bytes.get(off + 3)?));
             off += 4;
@@ -375,9 +376,10 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
             normal_zup,
         ) {
             let sign = crate::types::bitangent_sign(n, [bx, by, bz], t_xyz);
-            // Z-up → Y-up on the bitangent triplet (xyz). Sign passes
-            // through unchanged.
-            tangents.push([bx, bz, -by, sign]);
+            // Z-up → Y-up on the bitangent triplet (xyz) via the
+            // canonical helper. Sign passes through unchanged (#1753).
+            let [tx, ty, tz] = byroredux_core::math::coord::zup_to_yup_pos([bx, by, bz]);
+            tangents.push([tx, ty, tz, sign]);
         }
 
         // Trailing padding (vertex_size - off) bytes — silently absorbed.

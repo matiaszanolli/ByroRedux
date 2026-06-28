@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use byroredux_core::ecs::{GlobalTransform, MeshHandle, TextureHandle, Transform, World};
-use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
 use byroredux_plugin::esm;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
@@ -344,21 +344,23 @@ pub(super) fn spawn_terrain_mesh(
         for col in 0..GRID {
             let idx = row * GRID + col;
 
-            // World-space position (Z-up → Y-up conversion).
+            // World-space position (Z-up → Y-up conversion via the
+            // canonical helper, #1753).
             let bx = origin_x + col as f32 * SPACING;
             let by = origin_y + row as f32 * SPACING;
             let bz = land.heights[idx];
-            let position = [bx, bz, -by];
+            let position = zup_to_yup_pos([bx, by, bz]);
 
             // Normal: VNML bytes are unsigned 0–255, center at 128 = zero.
-            // Bethesda Z-up: X, Y, Z → convert to Y-up: (nx, nz, -ny).
+            // Bethesda Z-up → Y-up via the canonical helper; per-component
+            // normalise commutes with the axis swap (#1753).
             let normal = if let Some(ref nml) = land.normals {
                 let ni = idx * 3;
                 let nx = (nml[ni] as f32 - 128.0) / 127.0;
                 let ny = (nml[ni + 1] as f32 - 128.0) / 127.0;
                 let nz = (nml[ni + 2] as f32 - 128.0) / 127.0;
                 let len = (nx * nx + nz * nz + ny * ny).sqrt().max(0.001);
-                [nx / len, nz / len, -ny / len]
+                zup_to_yup_pos([nx / len, ny / len, nz / len])
             } else {
                 [0.0, 1.0, 0.0]
             };

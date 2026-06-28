@@ -85,11 +85,13 @@ pub fn extract_tangents_from_extra_data(
             // After the swap, our `t_yup` is ∂P/∂U (read from
             // Bethesda's bitangent half) and `b_yup` is ∂P/∂V
             // (read from Bethesda's tangent half).
-            let t_yup = [bethesda_bx, bethesda_bz, -bethesda_by];
-            let b_yup = [bethesda_tx, bethesda_tz, -bethesda_ty];
+            let t_yup =
+                byroredux_core::math::coord::zup_to_yup_pos([bethesda_bx, bethesda_by, bethesda_bz]);
+            let b_yup =
+                byroredux_core::math::coord::zup_to_yup_pos([bethesda_tx, bethesda_ty, bethesda_tz]);
 
             // Normal in Y-up — use the matching vertex normal.
-            let n_yup = [n_zup.x, n_zup.z, -n_zup.y];
+            let n_yup = byroredux_core::math::coord::zup_to_yup_pos([n_zup.x, n_zup.y, n_zup.z]);
 
             // Bitangent sign: sign(dot(B, cross(N, T))). With T = ∂P/∂U
             // and B = ∂P/∂V on a standard right-handed UV winding the
@@ -251,7 +253,7 @@ pub fn synthesize_tangents(
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let n_zup = normals_zup[i];
-        let n_yup = [n_zup.x, n_zup.z, -n_zup.y];
+        let n_yup = byroredux_core::math::coord::zup_to_yup_pos([n_zup.x, n_zup.y, n_zup.z]);
 
         // #786 — store `tangent = ∂P/∂U` (standard Lengyel
         // convention), inverting nifly's Bethesda-convention swap
