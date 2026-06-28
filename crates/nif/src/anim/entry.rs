@@ -90,6 +90,138 @@ pub fn clip_has_data(clip: &AnimationClip) -> bool {
         || !clip.texture_flip_channels.is_empty()
 }
 
+// Resolve a block's NiObjectNET view (name + controller_ref). Covers
+// every block type the import pipeline cares about — adding a new
+// block kind with its own embedded-controller chain is a one-line
+// downcast addition here. Free helper for `import_embedded_animations` (#1673).
+fn net_of(block: &dyn crate::NiObject) -> Option<&crate::blocks::base::NiObjectNETData> {
+    use crate::blocks::base::NiAVObjectData;
+    use crate::blocks::light::{NiAmbientLight, NiDirectionalLight, NiPointLight, NiSpotLight};
+    use crate::blocks::node::{NiCamera, NiNode};
+    use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
+    let any = block.as_any();
+    if let Some(n) = any.downcast_ref::<NiNode>() {
+        return Some(&n.av.net);
+    }
+    if let Some(t) = any.downcast_ref::<NiTriShape>() {
+        return Some(&t.av.net);
+    }
+    if let Some(t) = any.downcast_ref::<BsTriShape>() {
+        return Some(&t.av.net);
+    }
+    if let Some(c) = any.downcast_ref::<NiCamera>() {
+        return Some(&c.av.net);
+    }
+    // Property blocks that carry embedded controllers (material color,
+    // shader float/color). Using a macro would save lines but every
+    // block here has a `.net` field reachable at a distinct path.
+    if let Some(b) = any.downcast_ref::<crate::blocks::properties::NiMaterialProperty>() {
+        return Some(&b.net);
+    }
+    if let Some(b) = any.downcast_ref::<crate::blocks::properties::NiTexturingProperty>() {
+        return Some(&b.net);
+    }
+    if let Some(b) = any.downcast_ref::<crate::blocks::shader::BSLightingShaderProperty>() {
+        return Some(&b.net);
+    }
+    if let Some(b) = any.downcast_ref::<crate::blocks::shader::BSEffectShaderProperty>() {
+        return Some(&b.net);
+    }
+    // #983 — NiLight subtypes carry their controller chain on
+    // the NiObjectNET inside `NiLightBase.av.net`. Walking it
+    // surfaces the four `NiLight*Controller` types into the
+    // embedded clip so torches / lanterns / plasma weapons get
+    // their authored flicker / dim / pulse instead of emitting
+    // constant light.
+    if let Some(l) = any.downcast_ref::<NiPointLight>() {
+        return Some(&l.base.av.net);
+    }
+    if let Some(l) = any.downcast_ref::<NiSpotLight>() {
+        return Some(&l.point.base.av.net);
+    }
+    if let Some(l) = any.downcast_ref::<NiAmbientLight>() {
+        return Some(&l.base.av.net);
+    }
+    if let Some(l) = any.downcast_ref::<NiDirectionalLight>() {
+        return Some(&l.base.av.net);
+    }
+    let _ = NiAVObjectData::parse; // keep the import path alive for future block types
+    None
+}
+
+// Follow the `next_controller_ref` chain from `controller_ref` head,
+// invoking `visit` once per controller block. Returns on chain
+// termination (BlockRef::NULL) or on the first missing block.
+// Free helper for `import_embedded_animations` (#1673).
+fn walk_controller_chain(
+    scene: &NifScene,
+    head: crate::types::BlockRef,
+    mut visit: impl FnMut(usize, &dyn crate::NiObject),
+) {
+    use crate::blocks::controller::{
+        BsShaderController, NiFlipController, NiLightColorController, NiLightFloatController,
+        NiMaterialColorController, NiSingleInterpController, NiTextureTransformController,
+    };
+    use crate::types::BlockRef;
+    let mut cur = head;
+    let mut hops = 0u32;
+    while let Some(idx) = cur.index() {
+        let Some(block) = scene.blocks.get(idx) else {
+            break;
+        };
+        visit(idx, block.as_ref());
+
+        // Advance via NiTimeControllerBase.next_controller_ref. Every
+        // NIF controller inherits NiTimeControllerBase, but the field
+        // lives at block-specific offsets — dispatch per known type.
+        let any = block.as_any();
+        cur = if let Some(c) = any.downcast_ref::<NiSingleInterpController>() {
+            c.base.next_controller_ref
+        } else if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
+            c.base.next_controller_ref
+        } else if let Some(c) = any.downcast_ref::<NiFlipController>() {
+            // NiFlipController : NiFloatInterpController : NiSingleInterpController.
+            // Two `.base` hops to reach NiTimeControllerBase.
+            c.base.base.next_controller_ref
+        } else if let Some(c) = any.downcast_ref::<BsShaderController>() {
+            c.base.base.next_controller_ref
+        } else if let Some(c) = any.downcast_ref::<NiMaterialColorController>() {
+            c.base.next_controller_ref
+        } else if let Some(c) = any.downcast_ref::<crate::blocks::controller::NiUVController>() {
+            c.base.next_controller_ref
+        } else if let Some(c) = any.downcast_ref::<NiGeomMorpherController>() {
+            c.base.next_controller_ref
+        } else if let Some(c) = any.downcast_ref::<NiLightColorController>() {
+            // #983 — NiLightColorController inherits
+            // NiPoint3InterpController which is a
+            // NiSingleInterpController pass-through. The
+            // next_controller_ref sits on its
+            // NiTimeControllerBase (one `.base` hop).
+            c.base.next_controller_ref
+        } else if let Some(c) = any.downcast_ref::<NiLightFloatController>() {
+            // #983 — NiLightFloatController is the typed alias
+            // covering Dimmer / Intensity / Radius. It's a
+            // NiSingleInterpController + type_name tag; the
+            // chain advance is two hops (`.base.base`) to
+            // reach NiTimeControllerBase.
+            c.base.base.next_controller_ref
+        } else {
+            // Unknown chain node — stop rather than infinite-loop.
+            BlockRef::NULL
+        };
+        // Cycle guard: Bethesda controllers don't normally form cycles,
+        // but malformed files could. Bound the walk at 64 hops.
+        hops += 1;
+        if hops >= 64 {
+            log::warn!(
+                "Embedded controller chain exceeded 64 hops at block {} — stopping",
+                idx
+            );
+            break;
+        }
+    }
+}
+
 /// Import mesh-embedded animation controllers into a single looping
 /// `AnimationClip`. See #261.
 ///
@@ -114,138 +246,10 @@ pub fn clip_has_data(clip: &AnimationClip) -> bool {
 /// `NiFlipController`, `NiLight*Controller`). Unsupported types are skipped
 /// with a debug-log.
 pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
-    use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
     use crate::blocks::controller::{
         BsShaderController, NiFlipController, NiLightColorController, NiLightFloatController,
         NiMaterialColorController, NiSingleInterpController, NiTextureTransformController,
     };
-    use crate::blocks::light::{NiAmbientLight, NiDirectionalLight, NiPointLight, NiSpotLight};
-    use crate::blocks::node::{NiCamera, NiNode};
-    use crate::blocks::tri_shape::{BsTriShape, NiTriShape};
-    use crate::types::BlockRef;
-
-    // Resolve a block's NiObjectNET view (name + controller_ref). Covers
-    // every block type the import pipeline cares about — adding a new
-    // block kind with its own embedded-controller chain is a one-line
-    // downcast addition here.
-    fn net_of(block: &dyn crate::NiObject) -> Option<&NiObjectNETData> {
-        let any = block.as_any();
-        if let Some(n) = any.downcast_ref::<NiNode>() {
-            return Some(&n.av.net);
-        }
-        if let Some(t) = any.downcast_ref::<NiTriShape>() {
-            return Some(&t.av.net);
-        }
-        if let Some(t) = any.downcast_ref::<BsTriShape>() {
-            return Some(&t.av.net);
-        }
-        if let Some(c) = any.downcast_ref::<NiCamera>() {
-            return Some(&c.av.net);
-        }
-        // Property blocks that carry embedded controllers (material color,
-        // shader float/color). Using a macro would save lines but every
-        // block here has a `.net` field reachable at a distinct path.
-        if let Some(b) = any.downcast_ref::<crate::blocks::properties::NiMaterialProperty>() {
-            return Some(&b.net);
-        }
-        if let Some(b) = any.downcast_ref::<crate::blocks::properties::NiTexturingProperty>() {
-            return Some(&b.net);
-        }
-        if let Some(b) = any.downcast_ref::<crate::blocks::shader::BSLightingShaderProperty>() {
-            return Some(&b.net);
-        }
-        if let Some(b) = any.downcast_ref::<crate::blocks::shader::BSEffectShaderProperty>() {
-            return Some(&b.net);
-        }
-        // #983 — NiLight subtypes carry their controller chain on
-        // the NiObjectNET inside `NiLightBase.av.net`. Walking it
-        // surfaces the four `NiLight*Controller` types into the
-        // embedded clip so torches / lanterns / plasma weapons get
-        // their authored flicker / dim / pulse instead of emitting
-        // constant light.
-        if let Some(l) = any.downcast_ref::<NiPointLight>() {
-            return Some(&l.base.av.net);
-        }
-        if let Some(l) = any.downcast_ref::<NiSpotLight>() {
-            return Some(&l.point.base.av.net);
-        }
-        if let Some(l) = any.downcast_ref::<NiAmbientLight>() {
-            return Some(&l.base.av.net);
-        }
-        if let Some(l) = any.downcast_ref::<NiDirectionalLight>() {
-            return Some(&l.base.av.net);
-        }
-        let _ = NiAVObjectData::parse; // keep the import path alive for future block types
-        None
-    }
-
-    // Follow the `next_controller_ref` chain from `controller_ref` head,
-    // invoking `visit` once per controller block. Returns on chain
-    // termination (BlockRef::NULL) or on the first missing block.
-    fn walk_controller_chain(
-        scene: &NifScene,
-        head: BlockRef,
-        mut visit: impl FnMut(usize, &dyn crate::NiObject),
-    ) {
-        let mut cur = head;
-        let mut hops = 0u32;
-        while let Some(idx) = cur.index() {
-            let Some(block) = scene.blocks.get(idx) else {
-                break;
-            };
-            visit(idx, block.as_ref());
-
-            // Advance via NiTimeControllerBase.next_controller_ref. Every
-            // NIF controller inherits NiTimeControllerBase, but the field
-            // lives at block-specific offsets — dispatch per known type.
-            let any = block.as_any();
-            cur = if let Some(c) = any.downcast_ref::<NiSingleInterpController>() {
-                c.base.next_controller_ref
-            } else if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
-                c.base.next_controller_ref
-            } else if let Some(c) = any.downcast_ref::<NiFlipController>() {
-                // NiFlipController : NiFloatInterpController : NiSingleInterpController.
-                // Two `.base` hops to reach NiTimeControllerBase.
-                c.base.base.next_controller_ref
-            } else if let Some(c) = any.downcast_ref::<BsShaderController>() {
-                c.base.base.next_controller_ref
-            } else if let Some(c) = any.downcast_ref::<NiMaterialColorController>() {
-                c.base.next_controller_ref
-            } else if let Some(c) = any.downcast_ref::<crate::blocks::controller::NiUVController>()
-            {
-                c.base.next_controller_ref
-            } else if let Some(c) = any.downcast_ref::<NiGeomMorpherController>() {
-                c.base.next_controller_ref
-            } else if let Some(c) = any.downcast_ref::<NiLightColorController>() {
-                // #983 — NiLightColorController inherits
-                // NiPoint3InterpController which is a
-                // NiSingleInterpController pass-through. The
-                // next_controller_ref sits on its
-                // NiTimeControllerBase (one `.base` hop).
-                c.base.next_controller_ref
-            } else if let Some(c) = any.downcast_ref::<NiLightFloatController>() {
-                // #983 — NiLightFloatController is the typed alias
-                // covering Dimmer / Intensity / Radius. It's a
-                // NiSingleInterpController + type_name tag; the
-                // chain advance is two hops (`.base.base`) to
-                // reach NiTimeControllerBase.
-                c.base.base.next_controller_ref
-            } else {
-                // Unknown chain node — stop rather than infinite-loop.
-                BlockRef::NULL
-            };
-            // Cycle guard: Bethesda controllers don't normally form cycles,
-            // but malformed files could. Bound the walk at 64 hops.
-            hops += 1;
-            if hops >= 64 {
-                log::warn!(
-                    "Embedded controller chain exceeded 64 hops at block {} — stopping",
-                    idx
-                );
-                break;
-            }
-        }
-    }
 
     let mut clip = AnimationClip {
         name: "embedded".to_string(),

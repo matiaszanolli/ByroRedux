@@ -200,6 +200,28 @@ pub fn parse_nif(data: &[u8]) -> io::Result<NifScene> {
 
 /// Parse a NIF file with options (e.g., skip animation blocks).
 pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result<NifScene> {
+    // Three-phase parse (#1672) — header / block dispatch / post-link.
+    let (header, block_data_offset) = parse_header(data)?;
+    let dispatched = dispatch_blocks(data, block_data_offset, &header, options)?;
+    Ok(finalize_scene(dispatched, &header, options))
+}
+
+/// Outputs of the block-dispatch phase ([`dispatch_blocks`]) handed to the
+/// post-link phase ([`finalize_scene`]): the parsed blocks plus the recovery
+/// telemetry the latter folds into the [`NifScene`]. Extracted under #1672.
+struct DispatchedBlocks {
+    blocks: Vec<Box<dyn NiObject>>,
+    truncated: bool,
+    dropped_block_count: usize,
+    recovered_blocks: usize,
+    drift_histogram: std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
+    stubbed_drift_histogram:
+        std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
+}
+
+/// Phase 1 (#1672) — parse and validate the NIF header. Rejects big-endian
+/// (console) files. Extracted verbatim from `parse_nif_with_options`.
+fn parse_header(data: &[u8]) -> io::Result<(NifHeader, usize)> {
     // Phase 1: Parse header
     let (header, block_data_offset) = NifHeader::parse(data)?;
     log::debug!(
@@ -218,9 +240,22 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         ));
     }
 
+    Ok((header, block_data_offset))
+}
+
+/// Phase 2 (#1672) — walk the block table, dispatching each block to its
+/// parser and recovering (NiUnknown) or realigning (header size table) on a
+/// short/long read. Returns the parsed blocks plus the recovery telemetry the
+/// post-link phase folds into the scene. Extracted verbatim.
+fn dispatch_blocks(
+    data: &[u8],
+    block_data_offset: usize,
+    header: &NifHeader,
+    options: &ParseOptions,
+) -> io::Result<DispatchedBlocks> {
     // Phase 2: Parse blocks
     let block_data = &data[block_data_offset..];
-    let mut stream = NifStream::new(block_data, &header);
+    let mut stream = NifStream::new(block_data, header);
     // #388: bound `num_blocks` against the remaining stream so a header
     // u32 that drifted past validation can't trip a 16-bytes-per-slot
     // multi-GB allocation. Each block consumes at least one byte
@@ -706,6 +741,33 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         );
     }
 
+    Ok(DispatchedBlocks {
+        blocks,
+        truncated,
+        dropped_block_count,
+        recovered_blocks,
+        drift_histogram,
+        stubbed_drift_histogram,
+    })
+}
+
+/// Phase 3 (#1672) — post-link: pick the scene root, convert the per-parse
+/// drift histograms to their deterministic `BTreeMap` surface, build the
+/// `NifScene`, and run the opt-in dangling-ref walk. Extracted verbatim.
+fn finalize_scene(
+    dispatched: DispatchedBlocks,
+    header: &NifHeader,
+    options: &ParseOptions,
+) -> NifScene {
+    let DispatchedBlocks {
+        blocks,
+        truncated,
+        dropped_block_count,
+        recovered_blocks,
+        drift_histogram,
+        stubbed_drift_histogram,
+    } = dispatched;
+
     // Phase 3: Identify root. Root is typically the first NiNode (or
     // any of its specialised Bethesda subclasses: BSTreeNode, NiSwitchNode,
     // BSMultiBoundNode, etc. — see `is_ni_node_subclass`). When the
@@ -763,7 +825,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         link_errors: 0,
         drift_histogram: scene_drift_histogram,
         stubbed_drift_histogram: scene_stubbed_drift_histogram,
-        havok_scale: havok_scale_for(&header),
+        havok_scale: havok_scale_for(header),
         bsver: header.user_version_2,
     };
     // Opt-in dangling-ref walk (#892). Off by default; debug builds,
@@ -785,7 +847,7 @@ pub fn parse_nif_with_options(data: &[u8], options: &ParseOptions) -> io::Result
         }
         scene.link_errors = errors.len();
     }
-    Ok(scene)
+    scene
 }
 
 /// Return `true` when `block_type_name` is `NiNode` or any specialised
