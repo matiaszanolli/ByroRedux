@@ -1411,24 +1411,34 @@ pub struct VulkanContext {
     pub entry: ash::Entry,
 }
 
+/// Foundational Vulkan handles built by [`VulkanContext::build_core_device`]
+/// — the first init phase. Destructured back into locals by `new()` so the
+/// rest of the constructor reads unchanged. See #1749.
+struct CoreDevice {
+    entry: ash::Entry,
+    vk_instance: ash::Instance,
+    debug_messenger: Option<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT)>,
+    surface_loader: ash::khr::surface::Instance,
+    vk_surface: vk::SurfaceKHR,
+    physical_device: vk::PhysicalDevice,
+    queue_indices: QueueFamilyIndices,
+    device_caps: device::DeviceCapabilities,
+    depth_format: vk::Format,
+    device: ash::Device,
+    graphics_queue: Arc<Mutex<vk::Queue>>,
+    present_queue: Arc<Mutex<vk::Queue>>,
+    gpu_allocator: SharedAllocator,
+}
+
 impl VulkanContext {
-    /// Full Vulkan initialization chain:
-    /// 1. Load Vulkan entry points
-    /// 2. Create instance + validation layers
-    /// 3. Set up debug messenger
-    /// 4. Create surface
-    /// 5. Pick physical device
-    /// 6. Create logical device + queues
-    /// 7. Create swapchain
-    /// 8. Create render pass
-    /// 9. Create framebuffers
-    /// 10. Create command pool + command buffers
-    /// 11. Create synchronization objects
-    pub fn new(
+    /// Init phase 1 (#1749): load the loader, create the instance + debug
+    /// messenger + surface, pick the physical device, build the logical
+    /// device + queues, and create the GPU allocator. Body moved verbatim
+    /// from `new()`.
+    fn build_core_device(
         display_handle: RawDisplayHandle,
         window_handle: RawWindowHandle,
-        window_size: [u32; 2],
-    ) -> Result<Self> {
+    ) -> Result<CoreDevice> {
         // 1. Entry
         // SAFETY: Loads the Vulkan shared library (libvulkan.so / vulkan-1.dll).
         // Must be called before any other Vulkan function. The Entry must
@@ -1483,6 +1493,56 @@ impl VulkanContext {
             physical_device,
             device_caps.ray_query_supported,
         )?;
+
+        Ok(CoreDevice {
+            entry,
+            vk_instance,
+            debug_messenger,
+            surface_loader,
+            vk_surface,
+            physical_device,
+            queue_indices,
+            device_caps,
+            depth_format,
+            device,
+            graphics_queue,
+            present_queue,
+            gpu_allocator,
+        })
+    }
+
+    /// Full Vulkan initialization chain:
+    /// 1. Load Vulkan entry points
+    /// 2. Create instance + validation layers
+    /// 3. Set up debug messenger
+    /// 4. Create surface
+    /// 5. Pick physical device
+    /// 6. Create logical device + queues
+    /// 7. Create swapchain
+    /// 8. Create render pass
+    /// 9. Create framebuffers
+    /// 10. Create command pool + command buffers
+    /// 11. Create synchronization objects
+    pub fn new(
+        display_handle: RawDisplayHandle,
+        window_handle: RawWindowHandle,
+        window_size: [u32; 2],
+    ) -> Result<Self> {
+        let CoreDevice {
+            entry,
+            vk_instance,
+            debug_messenger,
+            surface_loader,
+            vk_surface,
+            physical_device,
+            queue_indices,
+            device_caps,
+            depth_format,
+            device,
+            graphics_queue,
+            present_queue,
+            gpu_allocator,
+        } = Self::build_core_device(display_handle, window_handle)?;
 
         // 8. Swapchain
         let swapchain_state = swapchain::create_swapchain(
