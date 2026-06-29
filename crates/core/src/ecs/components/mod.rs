@@ -1,5 +1,6 @@
 //! Built-in engine components.
 
+pub mod actor_values;
 pub mod animated;
 pub mod attach_points;
 pub mod billboard;
@@ -28,6 +29,7 @@ pub mod transform;
 pub mod water;
 pub mod world_bound;
 
+pub use actor_values::{ActorValue, ActorValues};
 pub use animated::{
     AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
     AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,

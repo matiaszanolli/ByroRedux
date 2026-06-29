@@ -27,7 +27,7 @@
 //!
 //! | Index | Function       | Reads                     |
 //! |-------|----------------|---------------------------|
-//! | 9     | GetActorValue  | `ActorStats[param_1.name]`|
+//! | 9     | GetActorValue  | `ActorValues[param_1]`    |
 //! | 36    | GetDistance    | `GlobalTransform`         |
 //! | 58    | GetStage       | `QuestStageState[param_1]`|
 //! | 59    | GetStageDone   | `QuestStageState[param_1]`|
@@ -52,10 +52,10 @@ use byroredux_plugin::esm::records::condition::{Condition, ConditionList, Condit
 /// [`Self::Unknown`] which evaluates to `0.0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConditionFunction {
-    /// `GetActorValue(actor_value_name) → f32`. Intended to read the
-    /// `param_1`-named stat from the Run-On's `ActorStats` component;
-    /// currently returns 0.0 pending the AVIF-FormID→name resolver — the
-    /// one genuine stub left in this catalog (#1663).
+    /// `GetActorValue(avif_form_id) → f32`. Reads the Run-On's composed value
+    /// for the `param_1` actor value from its `ActorValues` component
+    /// (base + permanent + temporary − damage), or 0.0 when the actor carries
+    /// no such value (#1663). `param_1` is the global-space AVIF FormID.
     /// FO3 / FNV / Skyrim function index 9.
     GetActorValue,
     /// `GetDistance(target_form_id) → f32`. Squared-distance reduces
@@ -246,15 +246,18 @@ pub fn evaluate_function(
 ) -> f32 {
     match function {
         ConditionFunction::GetActorValue => {
-            // param_1 is an AVIF FormID; ActorStats is keyed by string name.
-            // AVIF→name resolver deferred to M47.1 follow-up.
-            log::trace!(
-                "M47.1: GetActorValue(param_1={:08X}) — \
-                 AVIF→ActorStats key resolver deferred",
-                condition.param_1,
-            );
-            let _ = entity;
-            0.0
+            // GetActorValue(avif_form_id) → the Run-On actor's composed value
+            // for that actor value (base + permanent + temporary − damage), or
+            // 0.0 when the actor carries no `ActorValues` (or hasn't that value
+            // set — Bethesda's absent-AV default). `param_1` is the AVIF FormID,
+            // already promoted to global load-order space at parse time
+            // (function 9 is in the CTDA form-id-param list, #1666), the same
+            // space `ActorValues` is keyed in — a direct lookup, no FormIdPool
+            // hop (the key IS the AV's id, not the actor's identity). #1663.
+            use byroredux_core::ecs::components::ActorValues;
+            world
+                .get::<ActorValues>(entity)
+                .map_or(0.0, |av| av.current(condition.param_1))
         }
         ConditionFunction::GetDistance => {
             // GetDistance(target_form_id) → ‖subject − target‖ in world units.
@@ -697,6 +700,49 @@ mod tests {
         let world = World::new();
         let actor: EntityId = 3;
         let list = vec![cond(99, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F80)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    // ── GetActorValue (#1663) ───────────────────────────────────────────
+
+    #[test]
+    fn get_actor_value_reads_composed_value() {
+        use byroredux_core::ecs::components::ActorValues;
+        // Stand-in global-space AVIF FormIDs (real ids come from
+        // `EsmIndex::actor_values`; the evaluator keys on whatever `param_1`
+        // resolves to).
+        const AV_HEALTH: u32 = 0x0000_02C9;
+        const AV_SNEAK: u32 = 0x0000_02E1;
+
+        let mut world = World::new();
+        let actor = world.spawn();
+        let mut av = ActorValues::new();
+        av.set_base(AV_HEALTH, 100.0);
+        av.mod_permanent(AV_HEALTH, 20.0); // +20 perk
+        av.apply_damage(AV_HEALTH, 30.0); // −30 damage → current 90
+        world.insert(actor, av);
+
+        // GetActorValue(Health) == 90 (the composed value, not the base).
+        let list = vec![cond(9, ComparisonOp::Eq, 90.0, false).with_param_1(AV_HEALTH)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+
+        // GetActorValue(Health) > 50 — a typical gate passes on the composite.
+        let list = vec![cond(9, ComparisonOp::Gt, 50.0, false).with_param_1(AV_HEALTH)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+
+        // An actor value the actor doesn't carry composes to 0.0.
+        let list = vec![cond(9, ComparisonOp::Eq, 0.0, false).with_param_1(AV_SNEAK)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    #[test]
+    fn get_actor_value_zero_without_component() {
+        // No `ActorValues` component on the Run-On → GetActorValue returns 0.0
+        // (the honest absent-data default — now a real component miss, not a
+        // hardcoded stub).
+        let world = World::new();
+        let actor: EntityId = 7;
+        let list = vec![cond(9, ComparisonOp::Eq, 0.0, false).with_param_1(0x0000_02C9)];
         assert!(evaluate(&list, &world, &ctx(actor)));
     }
 
