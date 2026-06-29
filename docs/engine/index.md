@@ -18,6 +18,7 @@ built, where the code lives, and what guarantees it makes.
 | [EXAL — Exterior Abstraction Layer](exal.md) | byroredux, renderer | NIFAL mirror for outdoor rendering: terrain, sky, sun, weather, water, LOD |
 | [PHYSAL — Physics Abstraction Layer](physal.md) | nif, physics, byroredux | Per-game Havok → one canonical articulated-physics spec → solver; ragdolls (Oblivion/FO3/FNV/Skyrim), double-ended (source game + backing solver) |
 | [WATAL — Water Abstraction Layer](watal.md) | byroredux, renderer, physics | Per-game WATR/water → one canonical water state → render **and** solver; Skyrim-modelled, dumber games translate up; double-ended (render + physics); buoyancy/flow/swim/drown |
+| [CHARAL — Character Abstraction Layer](charal.md) | core, plugin, byroredux | Per-game character **ruleset** (attributes/skills/perks/leveling) → one canonical character state (`ActorValues` + `CharacterLevel` + `Perks` + `Background`); 3 families (Fallout SPECIAL+XP, TES skills→level, Starfield mix); translates *rules*, not just data |
 | [Archives (BSA + BA2 + CSG)](archives.md) | bsa | BSA v103/104/105, BA2 v1/2/3/7/8 GNRL + DX10, FO4 `.csg` precombined geometry |
 | [Plugin Loading](plugin-loading.md) | plugin, core | `PluginManifest`, `DataStore`, `DependencyResolver`, Form ID system, ESM parser, conflict resolution |
 | [ESM Records](esm-records.md) | plugin | Cell loading, items, NPCs, factions, leveled lists |

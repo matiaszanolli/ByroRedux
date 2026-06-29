@@ -264,6 +264,30 @@ pub struct NpcRecord {
     ///     `0x0200` Script, `0x0400` Def Pack List — parsed and
     ///     stored for the dispatcher; inventory is the first consumer.
     pub template_flags: u16,
+    /// FO4+ `PRPS` "Properties" — the actor's actor values stored as
+    /// `(AVIF FormID, value)` pairs (8 bytes each on the wire; xEdit
+    /// `wbObjectProperty`). SPECIAL is here as the Strength..Luck AVIF
+    /// FormID + its value, alongside any other authored AV overrides.
+    /// These are *already* the [`ActorValues::from_pairs`] shape — the
+    /// FO4 arm of `derive_npc_actor_values` returns them verbatim. FormIDs
+    /// are in the record's source-plugin space (identity-correct for
+    /// single-plugin loads; shares the multi-plugin remap gap with
+    /// `factions` / `class_form_id`). Empty for pre-FO4 games and for FO4
+    /// NPCs that inherit all stats from `RACE`/template. Gated on
+    /// [`GameKind::uses_actor_value_properties`].
+    ///
+    /// [`ActorValues::from_pairs`]: byroredux_core::ecs::components::ActorValues::from_pairs
+    pub actor_value_props: Vec<(u32, f32)>,
+    /// FO4+ `DNAM` baked `Calculated Health` (u16 @ 0). The engine stores
+    /// an NPC's derived Health precomputed — NPCs do **not** run the
+    /// player END/level curve (which is why the wiki Health formula is
+    /// "player only"). `0` = absent (no live NPC has 0 base Health, so the
+    /// sentinel is unambiguous and avoids an `Option` discriminant).
+    pub calculated_health: u16,
+    /// FO4+ `DNAM` baked `Calculated Action Points` (u16 @ 2). Same
+    /// precomputed-derived treatment as [`Self::calculated_health`];
+    /// `0` = absent.
+    pub calculated_action_points: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -472,6 +496,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
     // one site.
     let captures_fo4_face = game.uses_prebaked_facegen();
     let captures_runtime_facegen = game.has_runtime_facegen_recipe();
+    let captures_av_props = game.uses_actor_value_properties();
     // EDID / FULL / MODL / VMAD shared with every named record — drain
     // them through the helper so the per-record loop below only carries
     // NPC-specific subrecords. TD3-203 / #1113.
@@ -499,6 +524,9 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
         runtime_facegen: None,
         template_form_id: 0,
         template_flags: 0,
+        actor_value_props: Vec::new(),
+        calculated_health: 0,
+        calculated_action_points: 0,
     };
     // FMRI and FMRS are collected separately and zipped after the walk
     // since they appear alternating on the wire and we don't want to
@@ -699,6 +727,32 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             b"PNAM" if captures_fo4_face && sub.data.len() >= 4 => {
                 face.head_parts
                     .push(SubReader::new(&sub.data).u32_or_default());
+            }
+            // ── FO4+ actor-value model (PRPS properties + baked DNAM) ──
+            // PRPS "Properties": an array of (AVIF FormID, f32) pairs —
+            // SPECIAL plus any authored AV overrides. Already the
+            // `ActorValues::from_pairs` shape, so the FO4 arm of
+            // `derive_npc_actor_values` returns them verbatim. 8 bytes per
+            // entry (u32 FormID + f32 value); `chunks_exact` drops a
+            // malformed trailing partial rather than panicking cell load.
+            b"PRPS" if captures_av_props => {
+                record.actor_value_props.reserve(sub.data.len() / 8);
+                for chunk in sub.data.chunks_exact(8) {
+                    let avif = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    let value = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+                    record.actor_value_props.push((avif, value));
+                }
+            }
+            // DNAM (FO4+): 8-byte struct whose head is two u16 baked
+            // derived stats — Calculated Health @ 0, Calculated Action
+            // Points @ 2 (xEdit NPC_ definition). NPCs ship these
+            // precomputed instead of running the player derived-stat
+            // curves. The length guard reads only the verified 4-byte
+            // prefix; the far-model-distance / geared-up tail is ignored.
+            b"DNAM" if captures_av_props && sub.data.len() >= 4 => {
+                let mut r = SubReader::new(&sub.data);
+                record.calculated_health = r.u16_or_default();
+                record.calculated_action_points = r.u16_or_default();
             }
             _ => {}
         }
@@ -1482,6 +1536,44 @@ mod tests {
         let subs = vec![sub(b"EDID", b"PlainSettler\0")];
         let n = parse_npc(0x603, &subs, GameKind::Fallout4);
         assert!(n.face_morphs.is_none());
+    }
+
+    /// FO4 `PRPS` decodes to `(AVIF FormID, value)` pairs (8 bytes each)
+    /// and `DNAM`'s leading two u16 are the baked Calculated Health /
+    /// Action Points — the whole CHARAL FO4 NPC-stat decode in one record.
+    #[test]
+    fn npc_fo4_decodes_prps_pairs_and_dnam_baked_stats() {
+        let mut prps = Vec::new();
+        prps.extend_from_slice(&0x0000_02A0u32.to_le_bytes()); // Strength AVIF
+        prps.extend_from_slice(&7.0f32.to_le_bytes());
+        prps.extend_from_slice(&0x0000_02A6u32.to_le_bytes()); // Luck AVIF
+        prps.extend_from_slice(&5.0f32.to_le_bytes());
+        let mut dnam = Vec::new();
+        dnam.extend_from_slice(&240u16.to_le_bytes()); // Calculated Health
+        dnam.extend_from_slice(&90u16.to_le_bytes()); // Calculated Action Points
+        dnam.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // far-dist + geared + unused
+        let subs = vec![
+            sub(b"EDID", b"Fo4Npc\0"),
+            sub(b"PRPS", &prps),
+            sub(b"DNAM", &dnam),
+        ];
+        let n = parse_npc(0x610, &subs, GameKind::Fallout4);
+        assert_eq!(n.actor_value_props, vec![(0x2A0, 7.0), (0x2A6, 5.0)]);
+        assert_eq!(n.calculated_health, 240);
+        assert_eq!(n.calculated_action_points, 90);
+    }
+
+    /// The FO4 AV-property arms are gated on `uses_actor_value_properties`
+    /// (FO4+ only). An FNV NPC carrying a stray `DNAM` must NOT be read as
+    /// FO4 calculated stats — FNV `NPC_` `DNAM` is a different layout, and
+    /// FNV has no `PRPS`. Guards the predicate gate against drift.
+    #[test]
+    fn npc_fnv_ignores_fo4_av_property_arms() {
+        let subs = vec![sub(b"EDID", b"FnvNpc\0"), sub(b"DNAM", &[0xFF; 8])];
+        let n = parse_npc(0x611, &subs, GameKind::Fallout3NV);
+        assert!(n.actor_value_props.is_empty());
+        assert_eq!(n.calculated_health, 0);
+        assert_eq!(n.calculated_action_points, 0);
     }
 
     /// Mismatched FMRI/FMRS counts truncate to the shorter array

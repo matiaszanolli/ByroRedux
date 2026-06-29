@@ -1,4 +1,5 @@
 pub mod animation;
+pub mod character;
 pub mod console;
 pub mod ecs;
 pub mod form_id;

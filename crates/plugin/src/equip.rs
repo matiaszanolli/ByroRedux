@@ -802,6 +802,7 @@ mod tests {
             runtime_facegen: None,
             template_form_id: 0,
             template_flags: 0,
+            ..Default::default()
         }
     }
 

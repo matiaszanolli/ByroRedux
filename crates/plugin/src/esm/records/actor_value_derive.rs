@@ -1,9 +1,17 @@
-//! FNV / FO3 NPC actor-value derivation (#1663 population).
+//! NPC actor-value population (#1663 FNV/FO3 + CHARAL FO4).
 //!
-//! Computes an NPC's SPECIAL attributes and base skill values from its
-//! class, per the documented GECK auto-calculate model, and resolves each
-//! to its `AVIF` FormID so the result can populate an `ActorValues`
-//! component the `GetActorValue` condition reads.
+//! Produces the `(AVIF FormID, value)` pairs that seed an `ActorValues`
+//! component the `GetActorValue` condition reads. Two per-game mechanisms
+//! converge on the same output shape:
+//!
+//! - **FNV / FO3 (auto-calc):** computes SPECIAL + base skills from the
+//!   NPC's class, per the documented GECK auto-calculate model, and
+//!   resolves each to its `AVIF` FormID (the original #1663 path, below).
+//! - **FO4+ (stored):** FO4 stores actor values rather than deriving them
+//!   — the `NPC_` `PRPS` property array already *is* `(AVIF FormID, value)`
+//!   pairs, with baked `Calculated Health`/`Action Points` in `DNAM`. The
+//!   stored path returns those verbatim (see CHARAL §"NPC SPECIAL storage",
+//!   `docs/engine/charal-fo4-ruleset.md`).
 //!
 //! ## Model (cited)
 //!
@@ -95,18 +103,60 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
         + (SKILL_LUCK_MULT * f32::from(luck)).ceil()
 }
 
-/// Derive an FNV/FO3 NPC's `(AVIF FormID, value)` actor-value pairs from
-/// its class's base SPECIAL. Returns the 7 SPECIAL plus every skill whose
-/// `AVIF` resolves in `index`. Empty when the game isn't FNV/FO3, the NPC
-/// has no class, or the class wasn't parsed.
+/// Derive an NPC's `(AVIF FormID, value)` actor-value pairs for the
+/// [`ActorValues::from_pairs`] population. The mechanism is per-game:
+///
+/// - **FO4+** (`uses_actor_value_properties`): actor values are *stored*,
+///   not derived — the `PRPS` property pairs are the SPECIAL + overrides
+///   verbatim, plus the baked `DNAM` Calculated Health / Action Points.
+///   See [`derive_stored_actor_values`].
+/// - **FNV / FO3**: actor values are *auto-calculated* from the NPC's
+///   class base SPECIAL (the documented GECK model) — the 7 SPECIAL plus
+///   every skill whose `AVIF` resolves. See [`derive_autocalc_actor_values`].
+///
+/// Empty for every other game (Oblivion / Skyrim — not yet modelled), an
+/// FO4 NPC with no `PRPS`, or an FNV NPC whose class wasn't parsed.
+///
+/// [`ActorValues::from_pairs`]: byroredux_core::ecs::components::ActorValues::from_pairs
 pub fn derive_npc_actor_values(
     npc: &NpcRecord,
     index: &EsmIndex,
     game: GameKind,
 ) -> Vec<(u32, f32)> {
-    if !matches!(game, GameKind::Fallout3NV) {
-        return Vec::new();
+    if game.uses_actor_value_properties() {
+        derive_stored_actor_values(npc, index)
+    } else if matches!(game, GameKind::Fallout3NV) {
+        derive_autocalc_actor_values(npc, index)
+    } else {
+        Vec::new()
     }
+}
+
+/// FO4+ stored actor values: the `PRPS` `(AVIF FormID, value)` pairs
+/// verbatim (SPECIAL + overrides — already in the right space and shape)
+/// plus the baked `DNAM` derived stats resolved to their AVIF FormIDs. The
+/// Health / Action Points lookups resolve-or-skip, matching the auto-calc
+/// path's contract for an index missing an `AVIF`. One allocation; the
+/// `PRPS` slice is `memcpy`'d, the ≤2 baked stats pushed.
+fn derive_stored_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
+    let mut out = Vec::with_capacity(npc.actor_value_props.len() + 2);
+    out.extend_from_slice(&npc.actor_value_props);
+    for (avif_editor_id, baked) in [
+        ("Health", npc.calculated_health),
+        ("ActionPoints", npc.calculated_action_points),
+    ] {
+        if baked > 0 {
+            if let Some(fid) = index.actor_value_form_id(avif_editor_id) {
+                out.push((fid, f32::from(baked)));
+            }
+        }
+    }
+    out
+}
+
+/// FNV / FO3 auto-calc: SPECIAL = the NPC's class base attributes, skills
+/// derived via the GECK formula (`base_skill`). The #1663 reference path.
+fn derive_autocalc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
     let Some(class) = index.classes.get(&npc.class_form_id) else {
         return Vec::new();
     };
@@ -228,7 +278,44 @@ mod tests {
         let index = fnv_index_with_class(0x2000, [5; 7]);
         // NPC referencing an unparsed class → empty.
         assert!(derive_npc_actor_values(&npc_with_class(0x9999), &index, GameKind::Fallout3NV).is_empty());
-        // Right NPC, wrong game → empty (FNV/FO3 model only).
+        // Right NPC, not-yet-modelled game → empty (Skyrim has neither the
+        // FNV auto-calc class model nor the FO4 PRPS property model).
         assert!(derive_npc_actor_values(&npc_with_class(0x2000), &index, GameKind::Skyrim).is_empty());
+    }
+
+    #[test]
+    fn fo4_stored_returns_prps_verbatim_plus_baked_derived() {
+        // FO4 stores AVs: PRPS pairs pass through unchanged; the baked
+        // DNAM Health/AP resolve via their AVIF EditorIDs.
+        let mut index = EsmIndex::default();
+        index.actor_values.insert(0x900, avif(0x900, "Health"));
+        index.actor_values.insert(0x901, avif(0x901, "ActionPoints"));
+
+        let npc = NpcRecord {
+            actor_value_props: vec![(0x2A0, 7.0), (0x2A6, 5.0)], // Strength 7, Luck 5
+            calculated_health: 240,
+            calculated_action_points: 90,
+            ..Default::default()
+        };
+        let pairs = derive_npc_actor_values(&npc, &index, GameKind::Fallout4);
+
+        assert!(pairs.contains(&(0x2A0, 7.0)), "Strength prop passthrough");
+        assert!(pairs.contains(&(0x2A6, 5.0)), "Luck prop passthrough");
+        assert!(pairs.contains(&(0x900, 240.0)), "Calculated Health → Health AVIF");
+        assert!(pairs.contains(&(0x901, 90.0)), "Calculated AP → ActionPoints AVIF");
+        assert_eq!(pairs.len(), 4, "2 PRPS + 2 baked derived");
+    }
+
+    #[test]
+    fn fo4_zero_baked_stats_skipped_and_no_class_needed() {
+        // 0 = absent: no Health/AP appended. And FO4 needs no class record
+        // (unlike the FNV auto-calc path) — PRPS alone populates.
+        let index = EsmIndex::default(); // no AVIF needed for PRPS passthrough
+        let npc = NpcRecord {
+            actor_value_props: vec![(0x2A0, 7.0)],
+            ..Default::default()
+        };
+        let pairs = derive_npc_actor_values(&npc, &index, GameKind::Fallout4);
+        assert_eq!(pairs, vec![(0x2A0, 7.0)]);
     }
 }

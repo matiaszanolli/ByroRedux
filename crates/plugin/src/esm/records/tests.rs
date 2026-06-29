@@ -796,6 +796,7 @@ fn esm_index_total_counts_all_categories() {
             runtime_facegen: None,
             template_form_id: 0,
             template_flags: 0,
+            ..Default::default()
         },
     );
     assert_eq!(idx.total(), 2);

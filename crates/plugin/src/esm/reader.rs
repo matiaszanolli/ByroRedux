@@ -205,6 +205,23 @@ impl GameKind {
             Self::Skyrim | Self::Fallout4 | Self::Fallout76 | Self::Starfield,
         )
     }
+
+    /// True when an actor stores its actor values (SPECIAL + overrides)
+    /// as a `PRPS` "Properties" array of `(AVIF FormID, f32)` pairs and
+    /// ships baked derived stats (`Calculated Health` / `Calculated
+    /// Action Points`) in an 8-byte `DNAM` — the Creation-Engine actor
+    /// model introduced in FO4 and carried forward to FO76 / Starfield.
+    ///
+    /// **Distinct from [`uses_prebaked_facegen`]**, which also matches
+    /// Skyrim: Skyrim predates the AVIF-FormID property model and stores
+    /// NPC stats differently, so this predicate excludes it. The `PRPS`
+    /// `(AVIF, value)` wire format is verified against the xEdit FO4
+    /// `NPC_` definition; FO76 / Starfield share the model by lineage
+    /// (the leading `Calculated Health`/`AP` u16 prefix of `DNAM` is the
+    /// stable head — confirm the tail when those games are exercised).
+    pub fn uses_actor_value_properties(self) -> bool {
+        matches!(self, Self::Fallout4 | Self::Fallout76 | Self::Starfield)
+    }
 }
 
 /// Binary reader for ESM/ESP files.
