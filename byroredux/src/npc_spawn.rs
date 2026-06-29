@@ -102,6 +102,66 @@ fn stamp_actor_values(
     );
 }
 
+/// Stamp the CHARAL structural components — [`CharacterLevel`],
+/// [`Background`], and [`Perks`] — on the NPC's placement root. Level +
+/// race/class come from every game's `NPC_`; perks from FO4+ `PRKR`.
+/// Complements [`stamp_actor_values`] (the numeric substrate): together they
+/// land the full canonical character state an actor carries at spawn.
+fn stamp_character_components(world: &mut World, placement_root: EntityId, npc: &NpcRecord) {
+    use byroredux_core::character::{Background, CharacterLevel, PerkRank, Perks};
+    // Level: the NPC's base level (clamped non-negative). NPCs carry no XP.
+    world.insert(
+        placement_root,
+        CharacterLevel {
+            level: npc.level.max(0) as u16,
+            xp: 0,
+        },
+    );
+    // Provenance: race + class (0 = none), reused by runtime leveling.
+    world.insert(
+        placement_root,
+        Background {
+            race_form_id: npc.race_form_id,
+            class_form_id: npc.class_form_id,
+        },
+    );
+    // Perks (FO4+ `PRKR`) — skip the component entirely when the NPC has none.
+    if !npc.perks.is_empty() {
+        world.insert(
+            placement_root,
+            Perks {
+                entries: npc
+                    .perks
+                    .iter()
+                    .map(|&(perk_form_id, rank)| PerkRank { perk_form_id, rank })
+                    .collect(),
+            },
+        );
+    }
+}
+
+/// Build the per-game [`CharacterRuleset`](byroredux_core::character::CharacterRuleset)
+/// from the parsed AVIF set — resolving each derived formula's input/output
+/// EditorIDs through `index`. `None` for games CHARAL doesn't model yet
+/// (Oblivion / Skyrim / FO76 / Starfield).
+///
+/// `GameKind::Fallout3NV` covers **both** FO3 and FNV; the *actor-general*
+/// derived stats (Carry Weight / Melee Damage / Crit Chance / Unarmed Damage —
+/// the only ones a non-player consumer computes) are identical between them,
+/// so it resolves to the FNV ruleset. The FO3↔FNV-divergent *player* Health/AP
+/// would need master-name disambiguation — deferred with the player actor.
+pub fn build_character_ruleset(
+    game: GameKind,
+    index: &EsmIndex,
+) -> Option<byroredux_core::character::CharacterRuleset> {
+    let resolve = |editor_id: &str| index.actor_value_form_id(editor_id);
+    Some(match game {
+        GameKind::Fallout4 => byroredux_core::character::fallout4_ruleset(resolve),
+        GameKind::Fallout3NV => byroredux_core::character::falloutnv_ruleset(resolve),
+        _ => return None,
+    })
+}
+
 /// #1698 — keyframe a live NPC's ragdoll bones.
 ///
 /// Skyrim (and FO3/FNV/Oblivion) author each skeleton ragdoll bone's bhk body
@@ -509,6 +569,7 @@ pub fn spawn_npc_entity(
     }
     stamp_faction_ranks(world, placement_root, npc);
     stamp_actor_values(world, placement_root, npc, index, game);
+    stamp_character_components(world, placement_root, npc);
 
     // 2. Skeleton. Owns the per-bone entities the body / head will
     //    skin against.
@@ -1303,6 +1364,7 @@ pub fn spawn_prebaked_npc_entity(
     }
     stamp_faction_ranks(world, placement_root, npc);
     stamp_actor_values(world, placement_root, npc, index, game);
+    stamp_character_components(world, placement_root, npc);
 
     // 2. Equip state — built from the NPC record + ESM index alone
     //    so it lands on the placement root **before** any archive
@@ -1700,6 +1762,7 @@ mod tests {
             runtime_facegen: None,
             template_form_id: 0,
             template_flags: 0,
+            ..Default::default()
         }
     }
 

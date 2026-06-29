@@ -254,10 +254,30 @@ pub fn evaluate_function(
             // (function 9 is in the CTDA form-id-param list, #1666), the same
             // space `ActorValues` is keyed in — a direct lookup, no FormIdPool
             // hop (the key IS the AV's id, not the actor's identity). #1663.
+            use byroredux_core::character::{CharacterLevel, CharacterRuleset, DerivedScope};
             use byroredux_core::ecs::components::ActorValues;
-            world
-                .get::<ActorValues>(entity)
-                .map_or(0.0, |av| av.current(condition.param_1))
+            let Some(avs) = world.get::<ActorValues>(entity) else {
+                return 0.0; // no `ActorValues` → absent-AV default
+            };
+            // A carried value wins — populated SPECIAL/skills, baked FO4
+            // Health/AP, perk/effect modifiers.
+            if avs.get(condition.param_1).is_some() {
+                return avs.current(condition.param_1);
+            }
+            // Absent → if this game *derives* the stat actor-generally (Carry
+            // Weight / Melee Damage / Crit Chance / Unarmed Damage from
+            // SPECIAL/skills), compute it from the per-game `CharacterRuleset`.
+            // Player-only stats (Health/AP) stay at the absent default for an
+            // arbitrary actor — NPCs bake them, the player isn't modelled yet.
+            if let Some(rs) = world.try_resource::<CharacterRuleset>() {
+                if let Some(formula) = rs.derived_formula(condition.param_1) {
+                    if formula.scope == DerivedScope::ActorGeneral {
+                        let level = world.get::<CharacterLevel>(entity).map_or(0, |l| l.level);
+                        return formula.eval(&avs, level);
+                    }
+                }
+            }
+            0.0
         }
         ConditionFunction::GetDistance => {
             // GetDistance(target_form_id) → ‖subject − target‖ in world units.
@@ -733,6 +753,37 @@ mod tests {
         // An actor value the actor doesn't carry composes to 0.0.
         let list = vec![cond(9, ComparisonOp::Eq, 0.0, false).with_param_1(AV_SNEAK)];
         assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    #[test]
+    fn get_actor_value_derives_actor_general_stat_from_ruleset() {
+        use byroredux_core::character::fallout4_ruleset;
+        use byroredux_core::ecs::components::ActorValues;
+
+        // Stand-in AVIF FormIDs the FO4 ruleset resolves against.
+        let resolve = |id: &str| match id {
+            "Strength" => Some(0x05u32),
+            "Endurance" => Some(0x07),
+            "Agility" => Some(0x0A),
+            "CarryWeight" => Some(0x2D1),
+            "Health" => Some(0x2C9),
+            "ActionPoints" => Some(0x2D0),
+            "MeleeDamage" => Some(0x2D2),
+            _ => None,
+        };
+        let mut world = World::new();
+        world.insert_resource(fallout4_ruleset(resolve));
+        let actor = world.spawn();
+        // Carries Strength 7, but NOT Carry Weight or Health.
+        world.insert(actor, ActorValues::from_pairs([(0x05, 7.0)]));
+
+        // Carry Weight is actor-general → derived on demand: 200 + 10·7 = 270.
+        let list = vec![cond(9, ComparisonOp::Eq, 270.0, false).with_param_1(0x2D1)];
+        assert!(evaluate(&list, &world, &ctx(actor)), "Carry Weight derived from SPECIAL");
+
+        // Health is player-only → NOT computed for an NPC; absent default 0.
+        let list = vec![cond(9, ComparisonOp::Eq, 0.0, false).with_param_1(0x2C9)];
+        assert!(evaluate(&list, &world, &ctx(actor)), "Health stays 0 (player-only)");
     }
 
     #[test]

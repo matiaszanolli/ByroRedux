@@ -288,6 +288,12 @@ pub struct NpcRecord {
     /// precomputed-derived treatment as [`Self::calculated_health`];
     /// `0` = absent.
     pub calculated_action_points: u16,
+    /// FO4+ `PRKR` perks — `(PERK FormID, rank)` pairs. Each `PRKR`
+    /// sub-record is 5 bytes (u32 FormID + u8 rank; xEdit `NPC_`); a
+    /// `PRKZ` count precedes them but is a benign hint we skip. Populates a
+    /// `Perks` component at spawn. Empty for pre-FO4 NPCs. Gated on
+    /// [`GameKind::uses_actor_value_properties`].
+    pub perks: Vec<(u32, u8)>,
 }
 
 #[derive(Debug, Clone)]
@@ -527,6 +533,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
         actor_value_props: Vec::new(),
         calculated_health: 0,
         calculated_action_points: 0,
+        perks: Vec::new(),
     };
     // FMRI and FMRS are collected separately and zipped after the walk
     // since they appear alternating on the wire and we don't want to
@@ -753,6 +760,13 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
                 let mut r = SubReader::new(&sub.data);
                 record.calculated_health = r.u16_or_default();
                 record.calculated_action_points = r.u16_or_default();
+            }
+            // PRKR (FO4+): one sub-record per perk — { PERK FormID u32,
+            // rank u8 } = 5 bytes (xEdit NPC_). The preceding PRKZ count is
+            // a benign hint, not read. Populates a `Perks` component at spawn.
+            b"PRKR" if captures_av_props && sub.data.len() >= 5 => {
+                let perk = SubReader::new(&sub.data).u32_or_default();
+                record.perks.push((perk, sub.data[4]));
             }
             _ => {}
         }
@@ -1552,15 +1566,23 @@ mod tests {
         dnam.extend_from_slice(&240u16.to_le_bytes()); // Calculated Health
         dnam.extend_from_slice(&90u16.to_le_bytes()); // Calculated Action Points
         dnam.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // far-dist + geared + unused
+        // Two PRKR perks: { PERK FormID u32, rank u8 } = 5 bytes each.
+        let mut prkr_a = 0x0001_D245u32.to_le_bytes().to_vec();
+        prkr_a.push(1);
+        let mut prkr_b = 0x0001_D246u32.to_le_bytes().to_vec();
+        prkr_b.push(3);
         let subs = vec![
             sub(b"EDID", b"Fo4Npc\0"),
             sub(b"PRPS", &prps),
             sub(b"DNAM", &dnam),
+            sub(b"PRKR", &prkr_a),
+            sub(b"PRKR", &prkr_b),
         ];
         let n = parse_npc(0x610, &subs, GameKind::Fallout4);
         assert_eq!(n.actor_value_props, vec![(0x2A0, 7.0), (0x2A6, 5.0)]);
         assert_eq!(n.calculated_health, 240);
         assert_eq!(n.calculated_action_points, 90);
+        assert_eq!(n.perks, vec![(0x1_D245, 1), (0x1_D246, 3)]);
     }
 
     /// The FO4 AV-property arms are gated on `uses_actor_value_properties`
@@ -1569,11 +1591,16 @@ mod tests {
     /// FNV has no `PRPS`. Guards the predicate gate against drift.
     #[test]
     fn npc_fnv_ignores_fo4_av_property_arms() {
-        let subs = vec![sub(b"EDID", b"FnvNpc\0"), sub(b"DNAM", &[0xFF; 8])];
+        let subs = vec![
+            sub(b"EDID", b"FnvNpc\0"),
+            sub(b"DNAM", &[0xFF; 8]),
+            sub(b"PRKR", &[0xFF; 5]),
+        ];
         let n = parse_npc(0x611, &subs, GameKind::Fallout3NV);
         assert!(n.actor_value_props.is_empty());
         assert_eq!(n.calculated_health, 0);
         assert_eq!(n.calculated_action_points, 0);
+        assert!(n.perks.is_empty(), "PRKR gated off for FNV");
     }
 
     /// Mismatched FMRI/FMRS counts truncate to the shorter array

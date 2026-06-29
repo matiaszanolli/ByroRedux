@@ -43,8 +43,14 @@ impl CharacterRuleset {
     /// FormID is AUTHORED.
     #[must_use]
     pub fn with_derived(mut self, output_avif: u32, formula: DerivedStatFormula) -> Self {
-        self.derived.push((output_avif, formula));
+        self.push_derived(output_avif, formula);
         self
+    }
+
+    /// Register a derived-stat formula in place — the conditional /
+    /// resolve-or-skip form used by the per-game builders ([`super::fallout`]).
+    pub fn push_derived(&mut self, output_avif: u32, formula: DerivedStatFormula) {
+        self.derived.push((output_avif, formula));
     }
 
     /// The formula producing `output_avif`, if this game derives that stat.

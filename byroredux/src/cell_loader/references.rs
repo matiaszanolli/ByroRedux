@@ -94,6 +94,17 @@ pub(super) fn load_references(
     absorbed_refs: &std::collections::HashSet<u32>,
 ) -> RefLoadResult {
     let mut entity_count = 0;
+    // CHARAL: build the per-game derived-stat ruleset once (idempotent across
+    // cells) so `GetActorValue` can compute actor-general derived stats (Carry
+    // Weight, Melee Damage, …) for actors that don't carry the value directly.
+    if world
+        .try_resource::<byroredux_core::character::CharacterRuleset>()
+        .is_none()
+    {
+        if let Some(rs) = crate::npc_spawn::build_character_ruleset(game, record_index) {
+            world.insert_resource(rs);
+        }
+    }
     // Number of mesh-bearing entities (those that receive a
     // `MeshHandle` insert in `spawn_placed_instances`). Distinct from
     // Process-lifetime cache of parsed-and-imported NIF scene data

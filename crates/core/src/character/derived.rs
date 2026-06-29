@@ -98,6 +98,25 @@ pub enum DerivedOutput {
     Multiplier,
 }
 
+/// Which actors a formula applies to.
+///
+/// `fAVD`-prefixed stats (Carry Weight, Melee Damage) derive identically for
+/// every actor; Health and Action Points are flagged "player only" by the
+/// wiki — NPCs ship *baked* values (FO4 `DNAM`) or derive them on a different
+/// path, so the player formula must **not** be applied to them. A consumer
+/// that computes a derived stat for an arbitrary entity checks this before
+/// trusting the result. (Fits in `DerivedStatFormula`'s existing padding —
+/// the struct stays 32 bytes.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum DerivedScope {
+    /// Applies to any actor.
+    #[default]
+    ActorGeneral,
+    /// Applies only to the player character.
+    PlayerOnly,
+}
+
 /// A per-game derived-stat formula: `round(bias + cₐ·A + c_b·B + cross·A·B)`
 /// clamped to `cap`. Fixed 32-byte `Copy` layout — see the module docs.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -120,6 +139,9 @@ pub struct DerivedStatFormula {
     pub round: RoundMode,
     /// Absolute value vs multiplier.
     pub kind: DerivedOutput,
+    /// Player-only vs actor-general (see [`DerivedScope`]). Free — fits in
+    /// the struct's alignment padding.
+    pub scope: DerivedScope,
 }
 
 impl DerivedStatFormula {
@@ -136,6 +158,7 @@ impl DerivedStatFormula {
             cap: f32::INFINITY,
             round: RoundMode::None,
             kind: DerivedOutput::Absolute,
+            scope: DerivedScope::ActorGeneral,
         }
     }
 
@@ -159,6 +182,7 @@ impl DerivedStatFormula {
             cap: f32::INFINITY,
             round: RoundMode::None,
             kind: DerivedOutput::Absolute,
+            scope: DerivedScope::ActorGeneral,
         }
     }
 
@@ -183,6 +207,13 @@ impl DerivedStatFormula {
     /// Mark the output a multiplier (chainable) — Melee Damage, XP mult.
     pub const fn as_multiplier(mut self) -> Self {
         self.kind = DerivedOutput::Multiplier;
+        self
+    }
+
+    /// Mark the formula player-only (chainable) — Health, Action Points
+    /// (NPCs ship baked values / derive differently).
+    pub const fn player_only(mut self) -> Self {
+        self.scope = DerivedScope::PlayerOnly;
         self
     }
 
@@ -229,10 +260,16 @@ mod tests {
 
     #[test]
     fn formula_is_thirty_two_bytes_and_copy() {
-        // Efficiency guard: fixed layout, half a cache line, no heap.
+        // Efficiency guard: fixed layout, half a cache line, no heap — the
+        // round/kind/scope u8 flags ride the alignment padding, so adding
+        // `scope` kept it at 32 bytes.
         assert_eq!(std::mem::size_of::<DerivedStatFormula>(), 32);
         fn assert_copy<T: Copy>() {}
         assert_copy::<DerivedStatFormula>();
+        // Scope defaults to actor-general; `player_only` flips it.
+        let f = DerivedStatFormula::affine(DerivedInput::LEVEL, 1.0, 0.0);
+        assert_eq!(f.scope, DerivedScope::ActorGeneral);
+        assert_eq!(f.player_only().scope, DerivedScope::PlayerOnly);
     }
 
     #[test]

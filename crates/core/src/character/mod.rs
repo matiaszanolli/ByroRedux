@@ -24,10 +24,12 @@
 
 pub mod components;
 pub mod derived;
+pub mod fallout;
 pub mod leveling;
 pub mod ruleset;
 
 pub use components::{Background, CharacterLevel, PerkRank, Perks};
-pub use derived::{DerivedInput, DerivedOutput, DerivedStatFormula, RoundMode};
+pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
+pub use fallout::{fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset};
 pub use leveling::{LevelReward, LevelingModel};
 pub use ruleset::CharacterRuleset;
