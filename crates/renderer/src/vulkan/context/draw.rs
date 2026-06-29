@@ -776,6 +776,1219 @@ impl VulkanContext {
     /// Record and submit a frame.
     ///
     /// All per-frame inputs are bundled in [`FrameInputs`].
+    /// Record the main geometry render pass into the open per-frame
+    /// command buffer (#1748). Extracted verbatim from `draw_frame` — the
+    /// single `unsafe` scope, barrier order, and recording order are
+    /// unchanged. Runs between the bulk pre-render barrier and
+    /// `copy_depth_to_history` / `record_post_passes`.
+    fn record_geometry_pass(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        render_pass_begin: &vk::RenderPassBeginInfo,
+        batches: &[DrawBatch],
+        draw_commands: &[DrawCommand],
+        water_commands: &[WaterDrawCommand],
+        ui_instance_idx: Option<u32>,
+    ) {
+        // SAFETY: `cmd` is recording (begin_command_buffer succeeded above) and `framebuffers[frame]` / `render_pass` / pipeline layout + descriptor sets / global VB+IB are all live for this frame. `cmd_begin_render_pass` opens the pass; viewport/scissor/cull/depth dynamic state is set before any draw; all binds use the GRAPHICS bind point with the matching `pipeline_layout`; `cmd` is recorded by this thread only and `end_command_buffer` closes it. The fence wait at frame start guarantees no in-flight frame is still using this buffer or its bound resources.
+        unsafe {
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_main_render_start(&self.device, cmd, frame);
+            }
+            self.device
+                .cmd_begin_render_pass(cmd, &render_pass_begin, vk::SubpassContents::INLINE);
+
+            // No unconditional pipeline bind here — the batch loop below
+            // initializes `last_pipeline_key` to a sentinel Blended value
+            // so the first real batch always rebinds to its own pipeline,
+            // and the UI overlay rebinds `pipeline_ui` regardless. An
+            // opaque bind at this point would always be discarded. #507.
+
+            // Dynamic viewport + scissor.
+            let viewports = [vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: self.swapchain_state.extent.width as f32,
+                height: self.swapchain_state.extent.height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            }];
+            self.device.cmd_set_viewport(cmd, 0, &viewports);
+
+            let scissors = [vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: self.swapchain_state.extent,
+            }];
+            self.device.cmd_set_scissor(cmd, 0, &scissors);
+
+            // Bind the bindless texture descriptor set (set 0) — once per frame.
+            let texture_set = self.texture_registry.descriptor_set(frame);
+            self.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[texture_set],
+                &[],
+            );
+
+            // Bind the scene descriptor set (set 1) — once per frame.
+            let scene_set = self.scene_buffers.descriptor_set(frame);
+            self.device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                1,
+                &[scene_set],
+                &[],
+            );
+
+            // ── Draw loop ─────────────────────────────────────────────
+            //
+            // Two paths depending on what the device supports:
+            //
+            // 1. **Multi-draw indirect** (#309) — when the device
+            //    exposes `multiDrawIndirect` (universally supported on
+            //    desktop Vulkan 1.0+) and the global VB/IB is bound,
+            //    we group consecutive batches sharing
+            //    `(pipeline_key, render_layer)` into one
+            //    `cmd_draw_indexed_indirect` call reading N
+            //    `VkDrawIndexedIndirectCommand` entries from the
+            //    per-frame indirect buffer. Pipeline / depth-bias
+            //    state transitions still split groups (necessary —
+            //    dynamic state changes between draws).
+            //
+            // 2. **Per-batch fallback** — used when the device doesn't
+            //    expose `multiDrawIndirect` or when the global VB/IB
+            //    isn't bound (e.g. the spinning-cube demo before the
+            //    scene SSBO is built). One `cmd_draw_indexed` per
+            //    batch, same behavior as pre-#309.
+            //
+            // The indirect buffer has already been filled + flushed
+            // above when `gpu_instances.upload_instances(...)` ran —
+            // see the `indirect_draws` build-up where each batch
+            // pushes one `VkDrawIndexedIndirectCommand` entry.
+            let mut last_pipeline_key = PipelineKey::Blended {
+                src: u8::MAX,
+                dst: u8::MAX,
+                wireframe: false,
+            };
+            // `Option` so the first batch always emits an explicit
+            // `cmd_set_depth_bias` rather than relying on the
+            // pipeline-default-zero matching the bias of the first
+            // batch's layer (brittle when the first batch is, say, a
+            // decal).
+            let mut last_render_layer: Option<byroredux_core::ecs::components::RenderLayer> = None;
+            // #398 — extended dynamic depth state. Vulkan requires the
+            // dynamic state to be set BEFORE any draw call when the
+            // pipeline declares the corresponding `vk::DynamicState`.
+            // Initialise with the Gamebryo runtime defaults so the
+            // first batch's "did this change?" check sees a sensible
+            // baseline. Sentinel `last_z_function = u8::MAX` forces an
+            // explicit set on the first batch regardless of value.
+            let mut last_z_test = true;
+            let mut last_z_write = true;
+            let mut last_z_function: u8 = u8::MAX;
+            // CULL_MODE is declared dynamic on EVERY draw-loop pipeline
+            // (see `pipeline.rs::dynamic_states` for both the opaque and
+            // blend variants — the "must be dynamic on every pipeline"
+            // invariant lives there with full justification). The
+            // helper below fires `cmd_set_cull_mode` only when the
+            // tracked last value disagrees with the desired one.
+            //
+            // `Option<…>` with `None` sentinel (#912 / REN-D5-NEW-03):
+            // the first batch's `set_cull` fires unconditionally
+            // (None != Some(any)), so the pre-#912 unconditional
+            // `cmd_set_cull_mode(BACK)` before the draw loop is no
+            // longer needed. That pre-emit was wasted whenever the
+            // first batch wanted NONE (two-sided vegetation/foliage
+            // on exterior cells) — it issued BACK and then the
+            // per-batch helper immediately overrode it with NONE.
+            let mut last_cull_mode: Option<vk::CullModeFlags> = None;
+            // #664 — per-mesh-fallback VB/IB bind cache. Only consulted
+            // on the `global_bound == false` path (early-startup or any
+            // future failure mode). The two-sided alpha-blend split at
+            // line ~1442 calls `dispatch_direct` twice for the same
+            // batch, so without this cache the per-mesh fallback issued
+            // two redundant binds per split batch. `u32::MAX` is the
+            // never-bound sentinel — `MeshHandle` is `u32` and 0 is a
+            // valid handle.
+            let mut last_bound_mesh_handle: u32 = u32::MAX;
+
+            // Pre-loop depth state initialization — only the two fields whose
+            // per-batch trackers use a real sentinel (not a "force-first" value):
+            //
+            //   depth_test/write: `last_z_test = true`, `last_z_write = true`.
+            //   When the first batch also wants true, the per-batch check skips
+            //   (`true != true` is false) — without this pre-loop set, those
+            //   dynamic states would never fire on a pure-opaque-first frame.
+            //
+            //   depth_bias and depth_compare_op are NOT pre-set here:
+            //   - depth_bias: `last_render_layer = None` ⇒ the per-batch
+            //     `set_cull_and_bias` helper fires unconditionally on the first
+            //     batch, covering the Vulkan "must be set before first draw"
+            //     requirement. The pre-set was pure waste (#955 / REN-D5-NEW-04).
+            //   - depth_compare_op: `last_z_function = u8::MAX` ⇒ the first batch
+            //     always fires `cmd_set_depth_compare_op` since u8::MAX matches no
+            //     real Gamebryo compare op (#955). Mirrors `#912` / REN-D5-NEW-03
+            //     which removed the redundant pre-set for `cmd_set_cull_mode`.
+            self.device.cmd_set_depth_test_enable(cmd, true);
+            self.device.cmd_set_depth_write_enable(cmd, true);
+            // #912 / REN-D5-NEW-03 — pre-#912 this issued
+            // `cmd_set_cull_mode(BACK)` unconditionally. The per-batch
+            // `set_cull` helper now covers the "must be set before
+            // first draw" Vulkan requirement: the first batch's call
+            // fires (`last_cull_mode == None`) and the helper updates
+            // the tracking. Removing the unconditional set saves one
+            // wasted state change per frame whenever the first batch
+            // wants NONE (exterior cells often start with two-sided
+            // vegetation / foliage).
+
+            // Bind the global geometry buffer once for all scene draws.
+            // Each batch uses global_index_offset / global_vertex_offset
+            // to index into this single buffer, eliminating per-mesh
+            // vertex/index buffer rebinding (~200 rebinds/frame → 1). #294.
+            let global_bound = if let (Some(gvb), Some(gib)) = (
+                self.mesh_registry.global_vertex_buffer.as_ref(),
+                self.mesh_registry.global_index_buffer.as_ref(),
+            ) {
+                self.device
+                    .cmd_bind_vertex_buffers(cmd, 0, &[gvb.buffer], &[0]);
+                self.device
+                    .cmd_bind_index_buffer(cmd, gib.buffer, 0, vk::IndexType::UINT32);
+                true
+            } else {
+                false
+            };
+
+            let use_indirect = global_bound && self.device_caps.multi_draw_indirect_supported;
+            let indirect_buffer = self.scene_buffers.indirect_buffer(frame);
+            let indirect_stride = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32;
+
+            // Precompute indirect-buffer state for batch `i`. Returns
+            // `(pipe, render_layer)` — consecutive batches sharing the
+            // tuple form one indirect group. `render_layer` covers the
+            // depth-bias state-change boundary that pre-#renderlayer
+            // was split between `is_decal` and `needs_depth_bias` —
+            // the per-layer ladder makes this a single key slot.
+            // #1581 / F1 — the indirect-merge key is `group_state` (module
+            // fn, unit-tested): it must include EVERY dynamic state set once
+            // from the group leader, or the leader's state wrongly applies to
+            // the whole merged group.
+
+            // #1258 / PERF-D3-NEW-03 — snapshot post-merge batch count.
+            // Surfaced via `DebugStats::batch_count` and the `stats`
+            // command so the next perf audit can distinguish "12k
+            // DrawCommands" (input to the batcher) from "200 batches"
+            // (actual GPU draw upper bound) from "20 indirect calls"
+            // (post-grouping; bumped in the branches below).
+            self.last_draw_call_stats.batch_count = batches.len() as u32;
+
+            let mut i = 0;
+            while i < batches.len() {
+                let batch = &batches[i];
+
+                // Switch pipeline when rendering mode changes.
+                // Two-sided rendering uses dynamic `cmd_set_cull_mode`
+                // (issued elsewhere in the draw loop based on
+                // `draw_cmd.two_sided`), not a separate pipeline (#930).
+                if batch.pipeline_key != last_pipeline_key {
+                    let pipe = match batch.pipeline_key {
+                        PipelineKey::Opaque { wireframe: false } => self.pipeline,
+                        // Wireframe falls back to FILL on devices
+                        // without `fillModeNonSolid`. #869.
+                        PipelineKey::Opaque { wireframe: true } => {
+                            self.pipeline_wireframe.unwrap_or(self.pipeline)
+                        }
+                        PipelineKey::Blended {
+                            src,
+                            dst,
+                            wireframe,
+                        } => {
+                            // Always present after the pre-population
+                            // pass above. If creation failed earlier we
+                            // fall back to the opaque pipeline rather
+                            // than skipping the draw entirely — better
+                            // a wrong-blend visible mesh than a vanished
+                            // one. See #392.
+                            let wireframe =
+                                wireframe && self.device_caps.fill_mode_non_solid_supported;
+                            *self
+                                .blend_pipeline_cache
+                                .get(&(src, dst, wireframe))
+                                .unwrap_or(&self.pipeline)
+                        }
+                    };
+                    self.device
+                        .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
+                    last_pipeline_key = batch.pipeline_key;
+                }
+
+                // #renderlayer — per-layer depth bias from
+                // `RenderLayer::depth_bias()`. The Vulkan formula is
+                //   bias = constant_factor × r + slope_factor × |max_dz/dxy|
+                // where `r` is the smallest representable depth at the
+                // fragment (≈ 2⁻²⁴ ≈ 6e-8 for D32_SFLOAT around mid-
+                // depth). The `Decal` anchor (-64, -2) lifts coplanar
+                // overlays into the ~4e-6 normalised-depth range
+                // (Bethesda D3D scale for decal polygon offset);
+                // `Architecture` is zero (the surfaces other layers
+                // sit on top of); `Clutter` and `Actor` are
+                // intermediate. Per-layer table is the single source
+                // of truth — modifying it does NOT require touching
+                // this site.
+                if last_render_layer != Some(batch.render_layer) {
+                    let (bias_const, clamp, bias_slope) = batch.render_layer.depth_bias();
+                    self.device
+                        .cmd_set_depth_bias(cmd, bias_const, clamp, bias_slope);
+                    last_render_layer = Some(batch.render_layer);
+                }
+
+                // #398 — extended dynamic depth state. Emit only on
+                // change so consecutive batches sharing depth state pay
+                // zero state-change cost. Sky domes / viewmodels / glow
+                // halos that author `z_write=0` now actually skip the
+                // depth write instead of z-fighting world geometry.
+                if batch.z_test != last_z_test {
+                    self.device.cmd_set_depth_test_enable(cmd, batch.z_test);
+                    last_z_test = batch.z_test;
+                }
+                if batch.z_write != last_z_write {
+                    self.device.cmd_set_depth_write_enable(cmd, batch.z_write);
+                    last_z_write = batch.z_write;
+                }
+                if batch.z_function != last_z_function {
+                    self.device
+                        .cmd_set_depth_compare_op(cmd, gamebryo_to_vk_compare_op(batch.z_function));
+                    last_z_function = batch.z_function;
+                }
+
+                // Classify the batch's cull-mode requirement.
+                //
+                // Every pipeline declares CULL_MODE as dynamic (so the
+                // state persists across pipeline transitions — per
+                // Vulkan spec a bind to a pipeline without the dynamic
+                // state would invalidate prior cmd_set_cull_mode), so
+                // we must emit the target cull per-batch even for
+                // opaque draws. The per-batch cost is a single u32
+                // host command.
+                //
+                // Two-sided alpha-blend batches are rendered in two
+                // passes — FRONT cull first (draws back faces, which
+                // write depth), then BACK cull (draws front faces,
+                // which blend on top). Without the split, a single
+                // CULL_NONE draw would put front and back triangles in
+                // arbitrary index order; TAA subpixel jitter then
+                // flips the depth winner per frame, producing
+                // cross-hatch moiré on glass. See Phase 1 of Tier C
+                // glass plan + `docs/issues/glass-investigation/`.
+                let is_blend = matches!(batch.pipeline_key, PipelineKey::Blended { .. });
+                let two_sided = batch.two_sided;
+                let needs_split = is_blend && two_sided;
+                // Opaque & single-sided-blend cull target — used by
+                // every branch below except the split two-sided blend.
+                let default_cull = if two_sided {
+                    vk::CullModeFlags::NONE
+                } else {
+                    vk::CullModeFlags::BACK
+                };
+
+                let set_cull = |target: vk::CullModeFlags, last: &mut Option<vk::CullModeFlags>| {
+                    if *last != Some(target) {
+                        self.device.cmd_set_cull_mode(cmd, target);
+                        *last = Some(target);
+                    }
+                };
+
+                // Dispatch helper — one direct draw of `batch`. Factored
+                // so we can call it twice for the two-sided alpha-blend
+                // split without duplicating the global-bound / per-mesh
+                // fallback paths.
+                //
+                // #664 — `last_bound` threads through so the per-mesh
+                // fallback elides VB/IB rebinds when consecutive
+                // dispatches share `mesh_handle` (the two-sided
+                // alpha-blend split is the dominant case).
+                let dispatch_direct = |this: &Self, last_bound: &mut u32| {
+                    if global_bound {
+                        this.device.cmd_draw_indexed(
+                            cmd,
+                            batch.index_count,
+                            batch.instance_count,
+                            batch.global_index_offset,
+                            batch.global_vertex_offset,
+                            batch.first_instance,
+                        );
+                    } else {
+                        // Per-mesh fallback (global SSBO not bound this frame).
+                        // A global-only scene mesh (distant terrain LOD, #1370)
+                        // carries no per-mesh buffers — skip it; it draws via
+                        // the global buffer once `rebuild_geometry_ssbo` runs
+                        // (≤1-frame distant pop-in, invisible).
+                        let Some(mesh) = this.mesh_registry.get(batch.mesh_handle) else {
+                            return;
+                        };
+                        let (Some(vb), Some(ib)) =
+                            (mesh.vertex_buffer.as_ref(), mesh.index_buffer.as_ref())
+                        else {
+                            return;
+                        };
+                        if batch.mesh_handle != *last_bound {
+                            this.device
+                                .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
+                            this.device.cmd_bind_index_buffer(
+                                cmd,
+                                ib.buffer,
+                                0,
+                                vk::IndexType::UINT32,
+                            );
+                            *last_bound = batch.mesh_handle;
+                        }
+                        this.device.cmd_draw_indexed(
+                            cmd,
+                            batch.index_count,
+                            batch.instance_count,
+                            0,
+                            0,
+                            batch.first_instance,
+                        );
+                    }
+                };
+
+                if needs_split {
+                    // Two-sided alpha-blend: back faces first, then
+                    // front faces. Fall out of indirect grouping —
+                    // two-sided blend batches must draw each mesh
+                    // back+front adjacently, which
+                    // `cmd_draw_indexed_indirect` over a group can't
+                    // express without interleaving meshes.
+                    set_cull(vk::CullModeFlags::FRONT, &mut last_cull_mode);
+                    dispatch_direct(self, &mut last_bound_mesh_handle);
+                    set_cull(vk::CullModeFlags::BACK, &mut last_cull_mode);
+                    dispatch_direct(self, &mut last_bound_mesh_handle);
+                    // #1258 — two-sided split emits 2 direct draws.
+                    self.last_draw_call_stats.indirect_call_count += 2;
+                    i += 1;
+                } else if use_indirect {
+                    set_cull(default_cull, &mut last_cull_mode);
+                    // Gather consecutive batches that share the current
+                    // `(pipeline_key, render_layer)` tuple — each one is
+                    // already represented in the indirect buffer as one
+                    // VkDrawIndexedIndirectCommand. A single
+                    // `cmd_draw_indexed_indirect` call dispatches all N.
+                    //
+                    // Two-sided blend batches are excluded above (`needs_split`
+                    // draws them directly) and can't reach this branch.
+                    // `group_state` now captures two_sided + depth state, so a
+                    // group is homogeneous in every leader-set dynamic state —
+                    // the leader's cull/depth applies correctly to all of it.
+                    let key = group_state(batch);
+                    let mut end = i + 1;
+                    while end < batches.len() && group_state(&batches[end]) == key {
+                        end += 1;
+                    }
+                    let group_size = (end - i) as u32;
+                    let byte_offset = (i * indirect_stride as usize) as vk::DeviceSize;
+                    self.device.cmd_draw_indexed_indirect(
+                        cmd,
+                        indirect_buffer,
+                        byte_offset,
+                        group_size,
+                        indirect_stride,
+                    );
+                    // #1258 — one indirect call dispatches `group_size`
+                    // batches; surfaced grouping ratio = batch_count /
+                    // indirect_call_count.
+                    self.last_draw_call_stats.indirect_call_count += 1;
+                    i = end;
+                } else {
+                    // Direct-draw fallback: global VB/IB bound or
+                    // per-mesh fallback inside `dispatch_direct`.
+                    set_cull(default_cull, &mut last_cull_mode);
+                    dispatch_direct(self, &mut last_bound_mesh_handle);
+                    // #1258 — direct fallback emits 1 draw per batch.
+                    self.last_draw_call_stats.indirect_call_count += 1;
+                    i += 1;
+                }
+            }
+
+            // ── Water surfaces ────────────────────────────────────────
+            //
+            // After all opaque + alpha-blend triangle batches have
+            // submitted but before the UI overlay, render every
+            // `WaterPlane` ECS entity through the dedicated water
+            // pipeline. Each `WaterDrawCommand` carries its own push
+            // constants (material + flow + time); the bound set 0 +
+            // set 1 from the triangle path stay compatible because
+            // the water pipeline layout uses the same set layouts.
+            //
+            // State note: the last opaque/blend pipeline already left
+            // depth-test on and depth-write off (blend pipelines
+            // disable depth-write). We still re-issue the dynamic
+            // state defensively — if a frame somehow has only opaque
+            // geometry preceding the water, depth-write would be ON
+            // and water would corrupt the depth buffer.
+            //
+            // Cull mode: water pipeline declares it DYNAMIC (#1071 /
+            // F-WAT-11) — the caller is now required to emit
+            // `cmd_set_cull_mode(NONE)` before the draw. Done explicitly
+            // below regardless of the per-batch coalescing helper's
+            // `last_cull_mode` state because water is rendered through
+            // a separate, water-specific dispatch loop that doesn't
+            // route through the main per-batch helper.
+            // #1561 — water.frag traces RT rays (TLAS at set=1 binding=2)
+            // with no `sceneFlags.x` runtime guard, so the water draw must not
+            // run when RT isn't live: on a non-RT device binding 2 is absent
+            // from the bound layout (`self.water` is also `None` there), and
+            // even on RT hardware a frame whose TLAS wasn't written would trace
+            // a stale/unwritten structure. Gate on the same
+            // `ray_query_supported && tlas_written[frame]` signal that drives
+            // `rt_flag`/`sceneFlags.x` everywhere else (the shader-side
+            // `sceneFlags.x < 0.5` early-out — mirroring caustic_splat.comp —
+            // remains a follow-up needing RenderDoc/non-RT verification).
+            let rt_live =
+                self.device_caps.ray_query_supported && self.scene_buffers.tlas_written[frame];
+            if !water_commands.is_empty() && rt_live {
+                // #1026 / F-WAT-05 — pin the no-resort contract right
+                // before consuming `wc.instance_index`. The app's
+                // render code records the position into `draw_commands`
+                // at emit time; any future re-sort between that emit
+                // and this consumer would silently desync the recorded
+                // index from the actual SSBO slot. The assertion
+                // compiles out in release builds (the forward-compat
+                // trap is documented next to the sort site in
+                // `byroredux/src/render.rs`).
+                debug_assert!(
+                    super::super::water::water_commands_match_draw_slots(
+                        water_commands,
+                        draw_commands,
+                    ),
+                    "WaterDrawCommand instance_index desynced from draw_commands — \
+                     was draw_commands re-sorted after the water emit? See #1026 / F-WAT-05.",
+                );
+                if let Some(ref water) = self.water {
+                    self.device.cmd_set_depth_test_enable(cmd, true);
+                    self.device.cmd_set_depth_write_enable(cmd, false);
+                    self.device
+                        .cmd_set_depth_compare_op(cmd, vk::CompareOp::LESS_OR_EQUAL);
+                    // #1071 / F-WAT-11 — water pipeline declares CULL_MODE dynamic.
+                    // Emit the runtime override here so the draw uses NONE (water
+                    // surfaces are visible from above and below the camera plane).
+                    self.device.cmd_set_cull_mode(cmd, vk::CullModeFlags::NONE);
+                    for wc in water_commands {
+                        if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
+                            let vb = mesh
+                                .vertex_buffer
+                                .as_ref()
+                                .expect("water mesh requires a per-mesh vertex buffer");
+                            let ib = mesh
+                                .index_buffer
+                                .as_ref()
+                                .expect("water mesh requires a per-mesh index buffer");
+                            self.device
+                                .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
+                            self.device.cmd_bind_index_buffer(
+                                cmd,
+                                ib.buffer,
+                                0,
+                                vk::IndexType::UINT32,
+                            );
+                            water.record_draw(
+                                &self.device,
+                                cmd,
+                                &wc.push,
+                                mesh.index_count,
+                                wc.instance_index,
+                                frame, // #1255 — selects set 2 per-FIF water-caustic descriptor
+                                self.texture_registry.descriptor_set(frame), // #1258 — set 0
+                                self.scene_buffers.descriptor_set(frame), // #1258 — set 1
+                            );
+                        }
+                    }
+                }
+            }
+
+            // UI overlay: draw a fullscreen quad with the Ruffle-rendered texture.
+            // The UI instance was appended to gpu_instances before the bulk upload,
+            // so it's already in the SSBO with a proper flush.
+            //
+            // CONTRACT (#663). Defensive `cmd_set_*` calls below cover
+            // every state in `UI_PIPELINE_DYNAMIC_STATES` so the UI
+            // overlay is decoupled from whatever dynamic-state values
+            // the last main-batch pipeline left set. Depth / cull /
+            // depth-bias state on `pipeline_ui` is STATIC and applied
+            // by the pipeline bind itself — no `cmd_set_*` is legal
+            // for those (validation would reject it). If you grow
+            // `UI_PIPELINE_DYNAMIC_STATES`, the const assertion below
+            // fires and you must add the matching `cmd_set_*` here
+            // before the draw.
+            if let (Some(idx), Some(ui_quad)) = (ui_instance_idx, self.ui_quad_handle) {
+                if let Some(mesh) = self.mesh_registry.get(ui_quad) {
+                    use super::super::pipeline::UI_PIPELINE_DYNAMIC_STATES;
+                    const _UI_OVERLAY_DEFENSIVE_STATE_INVARIANT: () = {
+                        // Update the explicit cmd_set_* calls below to cover
+                        // every state in this list when the count changes.
+                        assert!(
+                            UI_PIPELINE_DYNAMIC_STATES.len() == 2,
+                            "UI overlay path covers VIEWPORT + SCISSOR only — \
+                             extend it before growing UI_PIPELINE_DYNAMIC_STATES",
+                        );
+                    };
+                    self.device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.pipeline_ui,
+                    );
+                    // Defensive re-set of dynamic viewport/scissor after the
+                    // UI pipeline bind (#133). The opaque/blend pipelines
+                    // all declare both as VK_DYNAMIC_STATE, so the state set
+                    // at the start of the render pass is inherited —
+                    // today. A future UI variant that rendered at a
+                    // different extent (e.g. scaled Scaleform overlay on
+                    // a non-native resolution) would silently use the
+                    // inherited values. Cheap two-command insurance.
+                    //
+                    // REN-D5-NEW-04 (audit 2026-05-09) flagged this as
+                    // "redundant" because the values match the
+                    // inherited ones every frame today. Keeping the
+                    // re-set is intentional — the alternative is to
+                    // gate it on "does this UI variant change extent"
+                    // which moves a one-liner of pre-bind state into
+                    // a per-variant capability check, more code than
+                    // the two `cmd_set_*` calls cost. The audit
+                    // recommendation is acknowledged + declined.
+                    let viewports = [vk::Viewport {
+                        x: 0.0,
+                        y: 0.0,
+                        width: self.swapchain_state.extent.width as f32,
+                        height: self.swapchain_state.extent.height as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                    }];
+                    self.device.cmd_set_viewport(cmd, 0, &viewports);
+                    let scissors = [vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: self.swapchain_state.extent,
+                    }];
+                    self.device.cmd_set_scissor(cmd, 0, &scissors);
+                    let vb = mesh
+                        .vertex_buffer
+                        .as_ref()
+                        .expect("UI mesh requires a per-mesh vertex buffer");
+                    let ib = mesh
+                        .index_buffer
+                        .as_ref()
+                        .expect("UI mesh requires a per-mesh index buffer");
+                    self.device
+                        .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
+                    self.device
+                        .cmd_bind_index_buffer(cmd, ib.buffer, 0, vk::IndexType::UINT32);
+                    self.device
+                        .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, idx);
+                }
+            }
+
+            self.device.cmd_end_render_pass(cmd);
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_main_render_end(&self.device, cmd, frame);
+            }
+        }
+    }
+
+    /// Record the M29 GPU pre-skin + per-skinned-entity BLAS refit into the
+    /// open per-frame command buffer (#1748). Extracted verbatim from
+    /// `draw_frame` — runs after the bone-palette upload and before the
+    /// TLAS build, which picks up the freshly-refit BLAS via `self`. The
+    /// internal `unsafe` scopes, barriers, and recording order are unchanged.
+    fn record_skinned_blas_refit(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        draw_commands: &[DrawCommand],
+        pose_dirty: &std::collections::HashSet<EntityId>,
+    ) {
+        // ── M29 Phase 2: GPU pre-skin + per-skinned-entity BLAS refit ─
+        //
+        // Runs AFTER bone palette upload (compute reads it) and BEFORE
+        // TLAS build (TLAS picks up the freshly-refit BLAS, zero-lag
+        // RT). For each draw with `bone_offset != 0`:
+        //   - First sight: synchronous compute prime + synchronous BLAS
+        //     BUILD (with `ALLOW_UPDATE`) via two one-time command
+        //     buffers. Brief stall on the very first frame an NPC
+        //     appears; M40 cell streaming will eventually preload.
+        //   - Steady state: dispatch compute into the frame cmd buffer,
+        //     barrier (COMPUTE_WRITE → AS_BUILD_INPUT_READ), then
+        //     refit the per-entity BLAS (UPDATE mode, src == dst).
+        //     Final AS_BUILD_WRITE → AS_BUILD_INPUT_READ barrier hands
+        //     fresh BLAS to TLAS below.
+        //
+        // #661 / SY-4 / #1436 (VKC-007): AS-build INPUT reads (the skinned
+        // vertex output fed to the BLAS build) use `SHADER_READ` at the
+        // AS_BUILD stage — the access the Vulkan spec assigns to build inputs.
+        // Reading an acceleration STRUCTURE — a BLAS during the TLAS build, or
+        // the TLAS during a ray query — is the separate
+        // `ACCELERATION_STRUCTURE_READ_KHR`, retained on those barriers.
+        // The earlier `ACCELERATION_STRUCTURE_READ_KHR`-for-inputs form was a
+        // sync1 shortcut on the assumption the two flags were aliased;
+        // synchronization validation disproved it (a compute/copy→build RAW
+        // hazard on the input buffer), so input barriers now carry SHADER_READ.
+        //
+        // Skips entirely when `skin_compute` / `accel_manager` are None
+        // (no RT) or no draws are skinned.
+        let skin_t0 = Instant::now();
+        if let (Some(skin_pipeline), Some(ref mut accel)) =
+            (self.skin_compute.as_ref(), self.accel_manager.as_mut())
+        {
+            if let Some(ref alloc) = self.allocator {
+                // Sub-block: limit borrow scope on `mesh_registry` /
+                // `scene_buffers`. Skin-chain reads are immutable
+                // through this block.
+                let global_vert_buf = self
+                    .mesh_registry
+                    .global_vertex_buffer
+                    .as_ref()
+                    .map(|b| (b.buffer, b.size));
+                let bone_buffer = self
+                    .scene_buffers
+                    .bone_buffers()
+                    .get(frame)
+                    .map(|b| b.buffer);
+                let bone_buffer_size = self.scene_buffers.bone_buffer_size();
+
+                if let (Some((input_buffer, input_size)), Some(bone_buf)) =
+                    (global_vert_buf, bone_buffer)
+                {
+                    // Walk draw_commands once — collect unique skinned
+                    // entities + their per-mesh metadata. Multiple
+                    // draws of the same entity (rare; instanced rendering
+                    // would hit this) coalesce on entity_id.
+                    //
+                    // #1133 / PERF-D7-NEW-01 — `mem::take` from the
+                    // `skin_*_scratch` cluster on `self`, drop the
+                    // amortized capacity back at the end of the
+                    // skinned block (line ~911). Matches the pattern
+                    // documented at `context/mod.rs::Per-frame scratch
+                    // cluster`.
+                    let mut seen = std::mem::take(&mut self.skin_dispatch_seen_scratch);
+                    seen.clear();
+                    let mut dispatches = std::mem::take(&mut self.skin_dispatches_scratch);
+                    dispatches.clear();
+                    for dc in draw_commands.iter() {
+                        if dc.bone_offset == 0 {
+                            continue;
+                        }
+                        if !seen.insert(dc.entity_id) {
+                            continue;
+                        }
+                        let Some(mesh) = self.mesh_registry.get(dc.mesh_handle) else {
+                            continue;
+                        };
+                        let push = super::super::skin_compute::SkinPushConstants {
+                            vertex_offset: mesh.global_vertex_offset,
+                            vertex_count: mesh.vertex_count,
+                            bone_offset: dc.bone_offset,
+                        };
+                        dispatches.push((
+                            dc.entity_id,
+                            push,
+                            mesh.index_buffer
+                                .as_ref()
+                                .expect("skinned mesh requires a per-mesh index buffer")
+                                .buffer,
+                            mesh.index_count,
+                            mesh.vertex_count,
+                        ));
+                    }
+                    self.last_skin_coverage_frame.dispatches_total = dispatches.len() as u32;
+
+                    // First-sight setup: for each entity that doesn't
+                    // yet have a SkinSlot OR a skinned BLAS, create
+                    // the slot (CPU-only) and queue the BLAS BUILD
+                    // onto the per-frame `cmd` via the batched on-cmd
+                    // builder below. The steady-state compute dispatch
+                    // (further down) serves as the prime for the
+                    // newly-allocated slot — it writes the current
+                    // pose into the slot's output buffer before the
+                    // COMPUTE→AS_BUILD barrier, so the queued BUILD
+                    // reads valid vertex data.
+                    //
+                    // #679 / AS-8-9 — also re-enter this path for
+                    // entities whose BLAS has refit too many times
+                    // and degraded BVH traversal quality. Drop the
+                    // stale BLAS first; the partition below then
+                    // sees `needs_blas = true` and queues a fresh
+                    // BUILD against the next compute output. The
+                    // slot's output buffer is preserved (compute
+                    // keeps streaming poses through it), so only the
+                    // BLAS object itself is replaced.
+                    //
+                    // #911 / REN-D5-NEW-02 — Pre-fix this loop paid
+                    // 2 fence-waits per first-sight entity (one-time
+                    // submit for compute prime + one-time submit for
+                    // sync BLAS BUILD), stalling `draw_frame` by
+                    // 2 × N queue waits on multi-NPC spawn frames.
+                    // The on-cmd batched builder eliminates both
+                    // host waits — every first-sight BUILD now
+                    // submits as part of the per-frame command
+                    // buffer that already carries the steady-state
+                    // compute dispatch, scratch-serialise barriers,
+                    // refit loop and TLAS build. Two-pass scratch
+                    // sizing inside
+                    // `build_skinned_blas_batched_on_cmd` keeps the
+                    // shared `blas_scratch_buffer` device address
+                    // stable across every recorded build in the
+                    // batch (the failure mode of the naive
+                    // "record N back-to-back, each inline-resizing
+                    // scratch" path).
+                    // #1133 — sibling scratch; same lifetime as `seen` /
+                    // `dispatches`. Replaced back into self at end of block.
+                    let mut first_sight_builds =
+                        std::mem::take(&mut self.skin_first_sight_builds_scratch);
+                    first_sight_builds.clear();
+                    for &(entity_id, _push, idx_buffer, idx_count, vertex_count) in &dispatches {
+                        let mut needs_slot = !self.skin_slots.contains_key(&entity_id);
+
+                        // #1297 / #1298 (DIM12-A-01) — reconcile an existing
+                        // slot's allocated capacity against the live mesh
+                        // vertex_count. If the entity's mesh_handle was remapped
+                        // to a different-vertex-count mesh, the slot's output
+                        // buffer (sized at create_slot time) is mis-sized, and
+                        // the compute dispatch — bounded only by
+                        // `push.vertex_count`, not the slot capacity — would
+                        // write past the buffer (OOB). Destroy + recreate the
+                        // slot and drop the now-stale paired skinned BLAS so
+                        // `create_slot` re-allocs to the new size. Immediate
+                        // destroy is safe here: the wait-on-both-in-flight-
+                        // fences at the top of `draw_frame` (line ~234) has
+                        // retired every command buffer referencing this slot's
+                        // buffer. Symmetric with the BLAS-side
+                        // `validate_refit_counts` guard.
+                        if !needs_slot {
+                            let stale_vc = self
+                                .skin_slots
+                                .get(&entity_id)
+                                .map(|s| s.vertex_count())
+                                .filter(|&slot_vc| {
+                                    super::super::skin_compute::skin_slot_capacity_stale(
+                                        slot_vc,
+                                        vertex_count,
+                                    )
+                                });
+                            if let Some(slot_vc) = stale_vc {
+                                log::info!(
+                                    "skin_compute slot for entity {entity_id} sized {slot_vc} verts \
+                                     but mesh now has {vertex_count} (mesh remap) — recreating slot \
+                                     to avoid OOB compute write (#1298)"
+                                );
+                                if let Some(slot) = self.skin_slots.remove(&entity_id) {
+                                    skin_pipeline.destroy_slot(&self.device, alloc, slot);
+                                }
+                                accel.drop_skinned_blas(entity_id);
+                                needs_slot = true;
+                            }
+                        }
+
+                        if accel.should_rebuild_skinned_blas(entity_id) {
+                            log::info!(
+                                "skin_compute BLAS rebuild for entity {entity_id} — \
+                                 refit chain reached {} frames, dropping for fresh BUILD (#679)",
+                                accel
+                                    .skinned_blas_entry(entity_id)
+                                    .map(|e| e.refit_count)
+                                    .unwrap_or(0),
+                            );
+                            accel.drop_skinned_blas(entity_id);
+                        }
+                        let needs_blas = accel.skinned_blas_entry(entity_id).is_none();
+                        if !needs_slot && !needs_blas {
+                            continue;
+                        }
+                        // Skip retry on entities whose previous attempt
+                        // failed — `failed_skin_slots` is cleared on any
+                        // LRU eviction (capacity opened), so a real change
+                        // in pool occupancy un-suppresses the retry
+                        // naturally. Pre-#900 the failure path re-fired
+                        // `create_slot` every frame and re-logged the
+                        // WARN, observed at 58 WARN / 300 frames on
+                        // post-M41-EQUIP Prospector. The suppression
+                        // happens *before* the attempt counter so the
+                        // coverage gauge reports "real attempts made this
+                        // frame" rather than "entities the loop visited."
+                        if needs_slot && self.failed_skin_slots.contains(&entity_id) {
+                            continue;
+                        }
+                        self.last_skin_coverage_frame.first_sight_attempted += 1;
+                        if needs_slot {
+                            match skin_pipeline.create_slot(&self.device, alloc, vertex_count) {
+                                Ok(slot) => {
+                                    self.skin_slots.insert(entity_id, slot);
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "skin_compute create_slot failed for entity {entity_id}: {e} \
+                                         — skinned RT shadow disabled for this entity (raster unaffected)"
+                                    );
+                                    self.failed_skin_slots.insert(entity_id);
+                                    continue;
+                                }
+                            }
+                        }
+                        if needs_blas {
+                            let Some(slot) = self.skin_slots.get(&entity_id) else {
+                                continue;
+                            };
+                            first_sight_builds.push((
+                                entity_id,
+                                slot.output_buffer.buffer,
+                                vertex_count,
+                                idx_buffer,
+                                idx_count,
+                            ));
+                        } else {
+                            // Slot was missing but BLAS already existed —
+                            // structurally impossible today (slot+BLAS are
+                            // paired on insert and slot eviction also drops
+                            // the BLAS). Counted as a successful first-sight
+                            // pass so the coverage gauge stays sound if a
+                            // future refactor decouples the pair.
+                            self.last_skin_coverage_frame.first_sight_succeeded += 1;
+                        }
+                    }
+
+                    // Per-frame steady-state: dispatch compute for
+                    // every registered skinned slot (refresh output
+                    // buffer with current pose), then barrier, then
+                    // refit BLAS.
+                    //
+                    // #1195 / PERF-DIM7-01 — dispatch is gated on the
+                    // per-entity pose-dirty bit. Idle skinned entities
+                    // (no bone movement since the previous frame) skip
+                    // the GPU dispatch entirely; the output buffer
+                    // already holds last frame's pose and the BLAS
+                    // already references it.
+                    //
+                    // Safety: the skip path is gated on
+                    // `slot.has_populated_output` — first-sight slots
+                    // (output buffer uninitialised) MUST dispatch
+                    // unconditionally, otherwise the BLAS would refit
+                    // against garbage memory. The flag is set true the
+                    // first time we actually dispatch for the slot.
+                    // The LRU bump happens on the skip path too so
+                    // quiescent slots aren't reaped by the eviction
+                    // sweep.
+                    if !dispatches.is_empty() {
+                        // #1194 — bracket the skin compute dispatch
+                        // loop. START sits before the per-entity
+                        // dispatches; END sits after the loop body
+                        // (before the COMPUTE→AS_BUILD barrier so
+                        // the bracket measures only the dispatches
+                        // themselves, not the barrier transition cost
+                        // which lands inside the BLAS refit window).
+                        if let Some(ref mut timers) = self.gpu_timers {
+                            timers.cmd_skin_dispatch_start(&self.device, cmd, frame);
+                        }
+                        // SAFETY: `cmd` is recording; `skin_pipeline`, each `slot`'s descriptors, and the global vertex / bone input buffers are live for this frame. Each `dispatch` binds the compute pipeline + slot set at the COMPUTE bind point; the loop records sequentially with no concurrent use of `cmd`.
+                        unsafe {
+                            for &(entity_id, push, _, _, _) in &dispatches {
+                                let Some(slot) = self.skin_slots.get_mut(&entity_id) else {
+                                    continue;
+                                };
+                                // #643 / MEM-2-1 — bump LRU first
+                                // (before the skip gate) so the
+                                // eviction sweep below sees this
+                                // entity as "active this frame" even
+                                // when the dispatch is skipped.
+                                slot.last_used_frame = self.frame_counter as u64;
+
+                                // #1195 / PERF-DIM7-01 — skip the
+                                // dispatch when the entity's pose is
+                                // unchanged AND the output buffer is
+                                // already populated. First-sight slots
+                                // always fall through to the dispatch
+                                // below (their `has_populated_output`
+                                // is still false).
+                                let is_dirty = pose_dirty.contains(&entity_id);
+                                if slot.has_populated_output && !is_dirty {
+                                    self.last_skin_coverage_frame.dispatches_skipped += 1;
+                                    continue;
+                                }
+                                skin_pipeline.dispatch(
+                                    &self.device,
+                                    cmd,
+                                    slot,
+                                    frame,
+                                    super::super::skin_compute::SkinDispatchBuffers {
+                                        input_buffer,
+                                        input_buffer_size: input_size,
+                                        bone_buffer: bone_buf,
+                                        bone_buffer_size,
+                                    },
+                                    push,
+                                );
+                                // Flip the "populated" bit on the
+                                // first successful dispatch so the
+                                // next-frame skip gate can fire.
+                                slot.has_populated_output = true;
+                            }
+                        }
+                        // #1194 — END of skin compute dispatch bracket
+                        // (before the COMPUTE→AS_BUILD barrier).
+                        if let Some(ref mut timers) = self.gpu_timers {
+                            timers.cmd_skin_dispatch_end(&self.device, cmd, frame);
+                        }
+                        // SAFETY: `cmd` is recording. The COMPUTE_SHADER_WRITE -> AS_BUILD_READ barrier sequences the skin outputs before they are read as BLAS build inputs; the first-sight builds and refits share `blas_scratch_buffer` and self-emit AS_WRITE->AS_WRITE scratch-serialize barriers between builds; the closing AS_BUILD_WRITE -> AS_BUILD_READ barrier hands refit results to the TLAS build below.
+                        unsafe {
+                            // Compute writes (skinned vertex output
+                            // buffers) → AS build input reads. Covers
+                            // both the first-sight BUILD batch below
+                            // and the refit loop further down — both
+                            // read the freshly-written output buffers
+                            // as BLAS-build vertex input.
+                            // COMPUTE_SHADER → ACCELERATION_STRUCTURE_BUILD_KHR.
+                            // Skinned vertex output is a BLAS-build INPUT, so the
+                            // dst access is SHADER_READ (the spec's build-input
+                            // access), NOT ACCELERATION_STRUCTURE_READ. #1436.
+                            memory_barrier(
+                                &self.device,
+                                cmd,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::AccessFlags::SHADER_WRITE,
+                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                                vk::AccessFlags::SHADER_READ,
+                            );
+                            // #911 — first-sight BLAS BUILDs piggyback
+                            // on the per-frame `cmd` rather than each
+                            // paying a host fence-wait. The compute
+                            // dispatch above served as the prime for
+                            // every newly-allocated slot in
+                            // `first_sight_builds`; the
+                            // COMPUTE→AS_BUILD barrier just emitted
+                            // hands those writes to the build inputs.
+                            // The helper queries every entity's
+                            // `build_scratch_size`, grows
+                            // `blas_scratch_buffer` ONCE to the max
+                            // demand of the batch, then records each
+                            // build with an internal scratch-serialise
+                            // barrier (`AS_WRITE→AS_WRITE`) between
+                            // iterations so the shared scratch is
+                            // safely sequenced. The first refit
+                            // iteration below emits its own
+                            // scratch-serialise barrier as well
+                            // (#983 / REN-D8-NEW-15), covering the
+                            // BUILD-batch → first-refit transition.
+                            if !first_sight_builds.is_empty() {
+                                let results = accel.build_skinned_blas_batched_on_cmd(
+                                    &self.device,
+                                    alloc,
+                                    cmd,
+                                    &first_sight_builds,
+                                );
+                                for (entity_id, result) in results {
+                                    match result {
+                                        Ok(()) => {
+                                            self.last_skin_coverage_frame.first_sight_succeeded +=
+                                                1;
+                                        }
+                                        Err(e) => {
+                                            log::warn!(
+                                                "skin_compute first-sight BLAS build failed for entity {entity_id}: {e}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            // Each `refit_skinned_blas` call shares
+                            // `blas_scratch_buffer` with every other
+                            // refit in this loop AND with any BUILD
+                            // that ran earlier this frame — the
+                            // first-sight batch above (same `cmd`,
+                            // post-#911) and any `build_blas_batched`
+                            // cell-load (separate submission). Vulkan
+                            // spec on `scratchData` requires an
+                            // AS_WRITE → AS_WRITE serialise barrier
+                            // between every pair of AS-builds that
+                            // share scratch, regardless of submission
+                            // boundary (the host fence-wait is a
+                            // host-side dependency only and does NOT
+                            // establish device-side memory ordering
+                            // for the next submission). Emitting the
+                            // barrier before EVERY iteration covers
+                            // both refit→refit (#642), the
+                            // cross-submission BUILD→first-refit case
+                            // (#644 / MEM-2-2), and the same-cmd
+                            // BUILD-batch→first-refit case introduced
+                            // by #911 (the batched on-cmd builder
+                            // leaves an AS_WRITE in flight). The
+                            // redundant first-iteration barrier is
+                            // essentially free when the cmd has no
+                            // prior AS-build — same-stage
+                            // AS_WRITE↔AS_WRITE on a queue with no
+                            // in-flight build work.
+                            // #1194 — bracket the skinned-BLAS refit loop.
+                            // START is just before the loop body; END
+                            // is right after the AS_BUILD→AS_BUILD
+                            // barrier closes the refit window.
+                            if let Some(ref mut timers) = self.gpu_timers {
+                                timers.cmd_blas_refit_start(&self.device, cmd, frame);
+                            }
+                            for &(entity_id, _, idx_buffer, idx_count, vertex_count) in &dispatches
+                            {
+                                let Some(slot) = self.skin_slots.get(&entity_id) else {
+                                    continue;
+                                };
+                                // #1196 / PERF-DIM7-02 — paired refit
+                                // gate. Same predicate as the dispatch
+                                // skip above: if the entity's pose was
+                                // unchanged this frame AND the slot
+                                // already has a populated output AND a
+                                // live BLAS, skip the refit. The BLAS
+                                // still references the same output
+                                // buffer; nothing changed underneath
+                                // it. First-sight entities (populated
+                                // output just set true above OR BLAS
+                                // freshly built this frame via
+                                // `first_sight_builds`) fall through
+                                // to the refit unconditionally — `accel`
+                                // checks for an existing BLAS internally
+                                // and the first-sight BUILD already
+                                // covered them anyway. The skip uses
+                                // the same `pose_dirty` set so the two
+                                // decisions can't diverge — the "split
+                                // decisions are the trap" warning from
+                                // the audit.
+                                let is_dirty = pose_dirty.contains(&entity_id);
+                                if slot.has_populated_output
+                                    && !is_dirty
+                                    && accel.has_skinned_blas(entity_id)
+                                {
+                                    // Skip path mirrors the dispatch
+                                    // skip — counts via `dispatches_skipped`
+                                    // is the dispatch's responsibility;
+                                    // refit just falls through silently.
+                                    continue;
+                                }
+                                // Past the slot gate → coverage counts a
+                                // real refit attempt. Entities without a
+                                // slot land in `slots_failed` instead.
+                                self.last_skin_coverage_frame.refits_attempted += 1;
+                                // Scratch-serialize barrier is now self-emitted at the
+                                // top of refit_skinned_blas (blas_skinned.rs:555, #983).
+                                // Removed the redundant caller-side emit (#1095 / REN-D12-002).
+                                match accel.refit_skinned_blas(
+                                    &self.device,
+                                    cmd,
+                                    entity_id,
+                                    crate::vulkan::acceleration::SkinnedBlasGeometry {
+                                        vertex_buffer: slot.output_buffer.buffer,
+                                        vertex_count,
+                                        index_buffer: idx_buffer,
+                                        index_count: idx_count,
+                                    },
+                                ) {
+                                    Ok(()) => {
+                                        self.last_skin_coverage_frame.refits_succeeded += 1;
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "skin_compute BLAS refit failed for entity {entity_id}: {e}"
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                            // BLAS refit writes → TLAS build reads.
+                            // ACCELERATION_STRUCTURE_BUILD_KHR → ACCELERATION_STRUCTURE_BUILD_KHR
+                            memory_barrier(
+                                &self.device,
+                                cmd,
+                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                                vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                                vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                            );
+                        }
+                        // #1194 — END of skinned-BLAS refit bracket
+                        // (after the AS_BUILD→AS_BUILD barrier).
+                        if let Some(ref mut timers) = self.gpu_timers {
+                            timers.cmd_blas_refit_end(&self.device, cmd, frame);
+                        }
+                    }
+
+                    // #1133 — return the skin-path scratches to `self`.
+                    // Same shape as the gpu_instances / batches replace
+                    // at the end of build_render_data → SSBO upload.
+                    self.skin_dispatch_seen_scratch = seen;
+                    self.skin_dispatches_scratch = dispatches;
+                    self.skin_first_sight_builds_scratch = first_sight_builds;
+
+                    // #643 / MEM-2-1 — drop SkinSlots (and the matching
+                    // skinned BLAS) for entities whose `last_used_frame`
+                    // trails the current draw by more than
+                    // `MAX_FRAMES_IN_FLIGHT` frames. Mirrors
+                    // `evict_unused_blas`'s LRU pattern: the threshold
+                    // guarantees no in-flight command buffer still
+                    // references the descriptor sets / output buffer /
+                    // BLAS, so synchronous destroy is safe — no
+                    // deferred-destroy queue needed.
+                    //
+                    // Pre-fix the `skin_slots` HashMap and the
+                    // `skinned_blas` map only ever had entries
+                    // *inserted* (draw.rs first-sight loop) or *drained
+                    // wholesale on Drop* (context/mod.rs). On long
+                    // sessions that streamed through several
+                    // worldspaces, every NPC ever rendered stayed
+                    // resident; the FREE_DESCRIPTOR_SET pool would
+                    // exhaust well before the player's exterior
+                    // population caught up.
+                    let min_idle = MAX_FRAMES_IN_FLIGHT as u64 + 1;
+                    let now = self.frame_counter as u64;
+                    // #1003 — drain `pending_skin_unload_victims` populated by
+                    // `cell_loader::unload_cell`. These entities have been
+                    // despawned; their slots and per-skinned BLAS must be
+                    // released NOW (post-fence-wait, so no in-flight
+                    // command buffer still references the output buffer).
+                    let mut evictees: Vec<EntityId> =
+                        std::mem::take(&mut self.pending_skin_unload_victims);
+                    // Continue with the regular eviction filter for entries
+                    // that aged out via the idle policy (the original path
+                    // that protects against entity-still-alive-but-not-
+                    // drawn scenarios — camera moved off-screen, etc.).
+                    evictees.extend(self.skin_slots.iter().filter_map(|(&eid, slot)| {
+                        super::super::skin_compute::should_evict_skin_slot(
+                            slot.last_used_frame,
+                            now,
+                            min_idle,
+                        )
+                        .then_some(eid)
+                    }));
+                    if !evictees.is_empty() {
+                        log::debug!(
+                            "skin_slots eviction: dropping {} idle SkinSlot(s) and matching skinned BLAS",
+                            evictees.len()
+                        );
+                        for eid in evictees {
+                            if let Some(slot) = self.skin_slots.remove(&eid) {
+                                skin_pipeline.destroy_slot(&self.device, alloc, slot);
+                            }
+                            accel.drop_skinned_blas(eid);
+                        }
+                        // Capacity opened up — un-suppress retry on every
+                        // entity that previously failed. Cheap (the set
+                        // caps at `skinned_count - SKIN_MAX_SLOTS`, zero
+                        // on healthy scenes) and correct: each cleared
+                        // entry will retry once next frame; if its
+                        // retry succeeds, it allocates a slot, otherwise
+                        // it re-enters the cache via the failure path.
+                        // See #900.
+                        self.failed_skin_slots.clear();
+                    }
+                }
+            }
+        }
+        let _skin_chain_ns = skin_t0.elapsed().as_nanos() as u64;
+    }
+
     pub fn draw_frame(&mut self, inputs: FrameInputs) -> Result<bool> {
         let FrameInputs {
             clear_color,
@@ -1519,585 +2732,7 @@ impl VulkanContext {
             }
         }
 
-        // ── M29 Phase 2: GPU pre-skin + per-skinned-entity BLAS refit ─
-        //
-        // Runs AFTER bone palette upload (compute reads it) and BEFORE
-        // TLAS build (TLAS picks up the freshly-refit BLAS, zero-lag
-        // RT). For each draw with `bone_offset != 0`:
-        //   - First sight: synchronous compute prime + synchronous BLAS
-        //     BUILD (with `ALLOW_UPDATE`) via two one-time command
-        //     buffers. Brief stall on the very first frame an NPC
-        //     appears; M40 cell streaming will eventually preload.
-        //   - Steady state: dispatch compute into the frame cmd buffer,
-        //     barrier (COMPUTE_WRITE → AS_BUILD_INPUT_READ), then
-        //     refit the per-entity BLAS (UPDATE mode, src == dst).
-        //     Final AS_BUILD_WRITE → AS_BUILD_INPUT_READ barrier hands
-        //     fresh BLAS to TLAS below.
-        //
-        // #661 / SY-4 / #1436 (VKC-007): AS-build INPUT reads (the skinned
-        // vertex output fed to the BLAS build) use `SHADER_READ` at the
-        // AS_BUILD stage — the access the Vulkan spec assigns to build inputs.
-        // Reading an acceleration STRUCTURE — a BLAS during the TLAS build, or
-        // the TLAS during a ray query — is the separate
-        // `ACCELERATION_STRUCTURE_READ_KHR`, retained on those barriers.
-        // The earlier `ACCELERATION_STRUCTURE_READ_KHR`-for-inputs form was a
-        // sync1 shortcut on the assumption the two flags were aliased;
-        // synchronization validation disproved it (a compute/copy→build RAW
-        // hazard on the input buffer), so input barriers now carry SHADER_READ.
-        //
-        // Skips entirely when `skin_compute` / `accel_manager` are None
-        // (no RT) or no draws are skinned.
-        let skin_t0 = Instant::now();
-        if let (Some(skin_pipeline), Some(ref mut accel)) =
-            (self.skin_compute.as_ref(), self.accel_manager.as_mut())
-        {
-            if let Some(ref alloc) = self.allocator {
-                // Sub-block: limit borrow scope on `mesh_registry` /
-                // `scene_buffers`. Skin-chain reads are immutable
-                // through this block.
-                let global_vert_buf = self
-                    .mesh_registry
-                    .global_vertex_buffer
-                    .as_ref()
-                    .map(|b| (b.buffer, b.size));
-                let bone_buffer = self
-                    .scene_buffers
-                    .bone_buffers()
-                    .get(frame)
-                    .map(|b| b.buffer);
-                let bone_buffer_size = self.scene_buffers.bone_buffer_size();
-
-                if let (Some((input_buffer, input_size)), Some(bone_buf)) =
-                    (global_vert_buf, bone_buffer)
-                {
-                    // Walk draw_commands once — collect unique skinned
-                    // entities + their per-mesh metadata. Multiple
-                    // draws of the same entity (rare; instanced rendering
-                    // would hit this) coalesce on entity_id.
-                    //
-                    // #1133 / PERF-D7-NEW-01 — `mem::take` from the
-                    // `skin_*_scratch` cluster on `self`, drop the
-                    // amortized capacity back at the end of the
-                    // skinned block (line ~911). Matches the pattern
-                    // documented at `context/mod.rs::Per-frame scratch
-                    // cluster`.
-                    let mut seen = std::mem::take(&mut self.skin_dispatch_seen_scratch);
-                    seen.clear();
-                    let mut dispatches = std::mem::take(&mut self.skin_dispatches_scratch);
-                    dispatches.clear();
-                    for dc in draw_commands.iter() {
-                        if dc.bone_offset == 0 {
-                            continue;
-                        }
-                        if !seen.insert(dc.entity_id) {
-                            continue;
-                        }
-                        let Some(mesh) = self.mesh_registry.get(dc.mesh_handle) else {
-                            continue;
-                        };
-                        let push = super::super::skin_compute::SkinPushConstants {
-                            vertex_offset: mesh.global_vertex_offset,
-                            vertex_count: mesh.vertex_count,
-                            bone_offset: dc.bone_offset,
-                        };
-                        dispatches.push((
-                            dc.entity_id,
-                            push,
-                            mesh.index_buffer
-                                .as_ref()
-                                .expect("skinned mesh requires a per-mesh index buffer")
-                                .buffer,
-                            mesh.index_count,
-                            mesh.vertex_count,
-                        ));
-                    }
-                    self.last_skin_coverage_frame.dispatches_total = dispatches.len() as u32;
-
-                    // First-sight setup: for each entity that doesn't
-                    // yet have a SkinSlot OR a skinned BLAS, create
-                    // the slot (CPU-only) and queue the BLAS BUILD
-                    // onto the per-frame `cmd` via the batched on-cmd
-                    // builder below. The steady-state compute dispatch
-                    // (further down) serves as the prime for the
-                    // newly-allocated slot — it writes the current
-                    // pose into the slot's output buffer before the
-                    // COMPUTE→AS_BUILD barrier, so the queued BUILD
-                    // reads valid vertex data.
-                    //
-                    // #679 / AS-8-9 — also re-enter this path for
-                    // entities whose BLAS has refit too many times
-                    // and degraded BVH traversal quality. Drop the
-                    // stale BLAS first; the partition below then
-                    // sees `needs_blas = true` and queues a fresh
-                    // BUILD against the next compute output. The
-                    // slot's output buffer is preserved (compute
-                    // keeps streaming poses through it), so only the
-                    // BLAS object itself is replaced.
-                    //
-                    // #911 / REN-D5-NEW-02 — Pre-fix this loop paid
-                    // 2 fence-waits per first-sight entity (one-time
-                    // submit for compute prime + one-time submit for
-                    // sync BLAS BUILD), stalling `draw_frame` by
-                    // 2 × N queue waits on multi-NPC spawn frames.
-                    // The on-cmd batched builder eliminates both
-                    // host waits — every first-sight BUILD now
-                    // submits as part of the per-frame command
-                    // buffer that already carries the steady-state
-                    // compute dispatch, scratch-serialise barriers,
-                    // refit loop and TLAS build. Two-pass scratch
-                    // sizing inside
-                    // `build_skinned_blas_batched_on_cmd` keeps the
-                    // shared `blas_scratch_buffer` device address
-                    // stable across every recorded build in the
-                    // batch (the failure mode of the naive
-                    // "record N back-to-back, each inline-resizing
-                    // scratch" path).
-                    // #1133 — sibling scratch; same lifetime as `seen` /
-                    // `dispatches`. Replaced back into self at end of block.
-                    let mut first_sight_builds =
-                        std::mem::take(&mut self.skin_first_sight_builds_scratch);
-                    first_sight_builds.clear();
-                    for &(entity_id, _push, idx_buffer, idx_count, vertex_count) in &dispatches {
-                        let mut needs_slot = !self.skin_slots.contains_key(&entity_id);
-
-                        // #1297 / #1298 (DIM12-A-01) — reconcile an existing
-                        // slot's allocated capacity against the live mesh
-                        // vertex_count. If the entity's mesh_handle was remapped
-                        // to a different-vertex-count mesh, the slot's output
-                        // buffer (sized at create_slot time) is mis-sized, and
-                        // the compute dispatch — bounded only by
-                        // `push.vertex_count`, not the slot capacity — would
-                        // write past the buffer (OOB). Destroy + recreate the
-                        // slot and drop the now-stale paired skinned BLAS so
-                        // `create_slot` re-allocs to the new size. Immediate
-                        // destroy is safe here: the wait-on-both-in-flight-
-                        // fences at the top of `draw_frame` (line ~234) has
-                        // retired every command buffer referencing this slot's
-                        // buffer. Symmetric with the BLAS-side
-                        // `validate_refit_counts` guard.
-                        if !needs_slot {
-                            let stale_vc = self
-                                .skin_slots
-                                .get(&entity_id)
-                                .map(|s| s.vertex_count())
-                                .filter(|&slot_vc| {
-                                    super::super::skin_compute::skin_slot_capacity_stale(
-                                        slot_vc,
-                                        vertex_count,
-                                    )
-                                });
-                            if let Some(slot_vc) = stale_vc {
-                                log::info!(
-                                    "skin_compute slot for entity {entity_id} sized {slot_vc} verts \
-                                     but mesh now has {vertex_count} (mesh remap) — recreating slot \
-                                     to avoid OOB compute write (#1298)"
-                                );
-                                if let Some(slot) = self.skin_slots.remove(&entity_id) {
-                                    skin_pipeline.destroy_slot(&self.device, alloc, slot);
-                                }
-                                accel.drop_skinned_blas(entity_id);
-                                needs_slot = true;
-                            }
-                        }
-
-                        if accel.should_rebuild_skinned_blas(entity_id) {
-                            log::info!(
-                                "skin_compute BLAS rebuild for entity {entity_id} — \
-                                 refit chain reached {} frames, dropping for fresh BUILD (#679)",
-                                accel
-                                    .skinned_blas_entry(entity_id)
-                                    .map(|e| e.refit_count)
-                                    .unwrap_or(0),
-                            );
-                            accel.drop_skinned_blas(entity_id);
-                        }
-                        let needs_blas = accel.skinned_blas_entry(entity_id).is_none();
-                        if !needs_slot && !needs_blas {
-                            continue;
-                        }
-                        // Skip retry on entities whose previous attempt
-                        // failed — `failed_skin_slots` is cleared on any
-                        // LRU eviction (capacity opened), so a real change
-                        // in pool occupancy un-suppresses the retry
-                        // naturally. Pre-#900 the failure path re-fired
-                        // `create_slot` every frame and re-logged the
-                        // WARN, observed at 58 WARN / 300 frames on
-                        // post-M41-EQUIP Prospector. The suppression
-                        // happens *before* the attempt counter so the
-                        // coverage gauge reports "real attempts made this
-                        // frame" rather than "entities the loop visited."
-                        if needs_slot && self.failed_skin_slots.contains(&entity_id) {
-                            continue;
-                        }
-                        self.last_skin_coverage_frame.first_sight_attempted += 1;
-                        if needs_slot {
-                            match skin_pipeline.create_slot(&self.device, alloc, vertex_count) {
-                                Ok(slot) => {
-                                    self.skin_slots.insert(entity_id, slot);
-                                }
-                                Err(e) => {
-                                    log::warn!(
-                                        "skin_compute create_slot failed for entity {entity_id}: {e} \
-                                         — skinned RT shadow disabled for this entity (raster unaffected)"
-                                    );
-                                    self.failed_skin_slots.insert(entity_id);
-                                    continue;
-                                }
-                            }
-                        }
-                        if needs_blas {
-                            let Some(slot) = self.skin_slots.get(&entity_id) else {
-                                continue;
-                            };
-                            first_sight_builds.push((
-                                entity_id,
-                                slot.output_buffer.buffer,
-                                vertex_count,
-                                idx_buffer,
-                                idx_count,
-                            ));
-                        } else {
-                            // Slot was missing but BLAS already existed —
-                            // structurally impossible today (slot+BLAS are
-                            // paired on insert and slot eviction also drops
-                            // the BLAS). Counted as a successful first-sight
-                            // pass so the coverage gauge stays sound if a
-                            // future refactor decouples the pair.
-                            self.last_skin_coverage_frame.first_sight_succeeded += 1;
-                        }
-                    }
-
-                    // Per-frame steady-state: dispatch compute for
-                    // every registered skinned slot (refresh output
-                    // buffer with current pose), then barrier, then
-                    // refit BLAS.
-                    //
-                    // #1195 / PERF-DIM7-01 — dispatch is gated on the
-                    // per-entity pose-dirty bit. Idle skinned entities
-                    // (no bone movement since the previous frame) skip
-                    // the GPU dispatch entirely; the output buffer
-                    // already holds last frame's pose and the BLAS
-                    // already references it.
-                    //
-                    // Safety: the skip path is gated on
-                    // `slot.has_populated_output` — first-sight slots
-                    // (output buffer uninitialised) MUST dispatch
-                    // unconditionally, otherwise the BLAS would refit
-                    // against garbage memory. The flag is set true the
-                    // first time we actually dispatch for the slot.
-                    // The LRU bump happens on the skip path too so
-                    // quiescent slots aren't reaped by the eviction
-                    // sweep.
-                    if !dispatches.is_empty() {
-                        // #1194 — bracket the skin compute dispatch
-                        // loop. START sits before the per-entity
-                        // dispatches; END sits after the loop body
-                        // (before the COMPUTE→AS_BUILD barrier so
-                        // the bracket measures only the dispatches
-                        // themselves, not the barrier transition cost
-                        // which lands inside the BLAS refit window).
-                        if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_skin_dispatch_start(&self.device, cmd, frame);
-                        }
-                        // SAFETY: `cmd` is recording; `skin_pipeline`, each `slot`'s descriptors, and the global vertex / bone input buffers are live for this frame. Each `dispatch` binds the compute pipeline + slot set at the COMPUTE bind point; the loop records sequentially with no concurrent use of `cmd`.
-                        unsafe {
-                            for &(entity_id, push, _, _, _) in &dispatches {
-                                let Some(slot) = self.skin_slots.get_mut(&entity_id) else {
-                                    continue;
-                                };
-                                // #643 / MEM-2-1 — bump LRU first
-                                // (before the skip gate) so the
-                                // eviction sweep below sees this
-                                // entity as "active this frame" even
-                                // when the dispatch is skipped.
-                                slot.last_used_frame = self.frame_counter as u64;
-
-                                // #1195 / PERF-DIM7-01 — skip the
-                                // dispatch when the entity's pose is
-                                // unchanged AND the output buffer is
-                                // already populated. First-sight slots
-                                // always fall through to the dispatch
-                                // below (their `has_populated_output`
-                                // is still false).
-                                let is_dirty = pose_dirty.contains(&entity_id);
-                                if slot.has_populated_output && !is_dirty {
-                                    self.last_skin_coverage_frame.dispatches_skipped += 1;
-                                    continue;
-                                }
-                                skin_pipeline.dispatch(
-                                    &self.device,
-                                    cmd,
-                                    slot,
-                                    frame,
-                                    super::super::skin_compute::SkinDispatchBuffers {
-                                        input_buffer,
-                                        input_buffer_size: input_size,
-                                        bone_buffer: bone_buf,
-                                        bone_buffer_size,
-                                    },
-                                    push,
-                                );
-                                // Flip the "populated" bit on the
-                                // first successful dispatch so the
-                                // next-frame skip gate can fire.
-                                slot.has_populated_output = true;
-                            }
-                        }
-                        // #1194 — END of skin compute dispatch bracket
-                        // (before the COMPUTE→AS_BUILD barrier).
-                        if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_skin_dispatch_end(&self.device, cmd, frame);
-                        }
-                        // SAFETY: `cmd` is recording. The COMPUTE_SHADER_WRITE -> AS_BUILD_READ barrier sequences the skin outputs before they are read as BLAS build inputs; the first-sight builds and refits share `blas_scratch_buffer` and self-emit AS_WRITE->AS_WRITE scratch-serialize barriers between builds; the closing AS_BUILD_WRITE -> AS_BUILD_READ barrier hands refit results to the TLAS build below.
-                        unsafe {
-                            // Compute writes (skinned vertex output
-                            // buffers) → AS build input reads. Covers
-                            // both the first-sight BUILD batch below
-                            // and the refit loop further down — both
-                            // read the freshly-written output buffers
-                            // as BLAS-build vertex input.
-                            // COMPUTE_SHADER → ACCELERATION_STRUCTURE_BUILD_KHR.
-                            // Skinned vertex output is a BLAS-build INPUT, so the
-                            // dst access is SHADER_READ (the spec's build-input
-                            // access), NOT ACCELERATION_STRUCTURE_READ. #1436.
-                            memory_barrier(
-                                &self.device,
-                                cmd,
-                                vk::PipelineStageFlags::COMPUTE_SHADER,
-                                vk::AccessFlags::SHADER_WRITE,
-                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                                vk::AccessFlags::SHADER_READ,
-                            );
-                            // #911 — first-sight BLAS BUILDs piggyback
-                            // on the per-frame `cmd` rather than each
-                            // paying a host fence-wait. The compute
-                            // dispatch above served as the prime for
-                            // every newly-allocated slot in
-                            // `first_sight_builds`; the
-                            // COMPUTE→AS_BUILD barrier just emitted
-                            // hands those writes to the build inputs.
-                            // The helper queries every entity's
-                            // `build_scratch_size`, grows
-                            // `blas_scratch_buffer` ONCE to the max
-                            // demand of the batch, then records each
-                            // build with an internal scratch-serialise
-                            // barrier (`AS_WRITE→AS_WRITE`) between
-                            // iterations so the shared scratch is
-                            // safely sequenced. The first refit
-                            // iteration below emits its own
-                            // scratch-serialise barrier as well
-                            // (#983 / REN-D8-NEW-15), covering the
-                            // BUILD-batch → first-refit transition.
-                            if !first_sight_builds.is_empty() {
-                                let results = accel.build_skinned_blas_batched_on_cmd(
-                                    &self.device,
-                                    alloc,
-                                    cmd,
-                                    &first_sight_builds,
-                                );
-                                for (entity_id, result) in results {
-                                    match result {
-                                        Ok(()) => {
-                                            self.last_skin_coverage_frame.first_sight_succeeded +=
-                                                1;
-                                        }
-                                        Err(e) => {
-                                            log::warn!(
-                                                "skin_compute first-sight BLAS build failed for entity {entity_id}: {e}"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            // Each `refit_skinned_blas` call shares
-                            // `blas_scratch_buffer` with every other
-                            // refit in this loop AND with any BUILD
-                            // that ran earlier this frame — the
-                            // first-sight batch above (same `cmd`,
-                            // post-#911) and any `build_blas_batched`
-                            // cell-load (separate submission). Vulkan
-                            // spec on `scratchData` requires an
-                            // AS_WRITE → AS_WRITE serialise barrier
-                            // between every pair of AS-builds that
-                            // share scratch, regardless of submission
-                            // boundary (the host fence-wait is a
-                            // host-side dependency only and does NOT
-                            // establish device-side memory ordering
-                            // for the next submission). Emitting the
-                            // barrier before EVERY iteration covers
-                            // both refit→refit (#642), the
-                            // cross-submission BUILD→first-refit case
-                            // (#644 / MEM-2-2), and the same-cmd
-                            // BUILD-batch→first-refit case introduced
-                            // by #911 (the batched on-cmd builder
-                            // leaves an AS_WRITE in flight). The
-                            // redundant first-iteration barrier is
-                            // essentially free when the cmd has no
-                            // prior AS-build — same-stage
-                            // AS_WRITE↔AS_WRITE on a queue with no
-                            // in-flight build work.
-                            // #1194 — bracket the skinned-BLAS refit loop.
-                            // START is just before the loop body; END
-                            // is right after the AS_BUILD→AS_BUILD
-                            // barrier closes the refit window.
-                            if let Some(ref mut timers) = self.gpu_timers {
-                                timers.cmd_blas_refit_start(&self.device, cmd, frame);
-                            }
-                            for &(entity_id, _, idx_buffer, idx_count, vertex_count) in &dispatches
-                            {
-                                let Some(slot) = self.skin_slots.get(&entity_id) else {
-                                    continue;
-                                };
-                                // #1196 / PERF-DIM7-02 — paired refit
-                                // gate. Same predicate as the dispatch
-                                // skip above: if the entity's pose was
-                                // unchanged this frame AND the slot
-                                // already has a populated output AND a
-                                // live BLAS, skip the refit. The BLAS
-                                // still references the same output
-                                // buffer; nothing changed underneath
-                                // it. First-sight entities (populated
-                                // output just set true above OR BLAS
-                                // freshly built this frame via
-                                // `first_sight_builds`) fall through
-                                // to the refit unconditionally — `accel`
-                                // checks for an existing BLAS internally
-                                // and the first-sight BUILD already
-                                // covered them anyway. The skip uses
-                                // the same `pose_dirty` set so the two
-                                // decisions can't diverge — the "split
-                                // decisions are the trap" warning from
-                                // the audit.
-                                let is_dirty = pose_dirty.contains(&entity_id);
-                                if slot.has_populated_output
-                                    && !is_dirty
-                                    && accel.has_skinned_blas(entity_id)
-                                {
-                                    // Skip path mirrors the dispatch
-                                    // skip — counts via `dispatches_skipped`
-                                    // is the dispatch's responsibility;
-                                    // refit just falls through silently.
-                                    continue;
-                                }
-                                // Past the slot gate → coverage counts a
-                                // real refit attempt. Entities without a
-                                // slot land in `slots_failed` instead.
-                                self.last_skin_coverage_frame.refits_attempted += 1;
-                                // Scratch-serialize barrier is now self-emitted at the
-                                // top of refit_skinned_blas (blas_skinned.rs:555, #983).
-                                // Removed the redundant caller-side emit (#1095 / REN-D12-002).
-                                match accel.refit_skinned_blas(
-                                    &self.device,
-                                    cmd,
-                                    entity_id,
-                                    crate::vulkan::acceleration::SkinnedBlasGeometry {
-                                        vertex_buffer: slot.output_buffer.buffer,
-                                        vertex_count,
-                                        index_buffer: idx_buffer,
-                                        index_count: idx_count,
-                                    },
-                                ) {
-                                    Ok(()) => {
-                                        self.last_skin_coverage_frame.refits_succeeded += 1;
-                                    }
-                                    Err(e) => {
-                                        log::warn!(
-                                            "skin_compute BLAS refit failed for entity {entity_id}: {e}"
-                                        );
-                                        continue;
-                                    }
-                                }
-                            }
-                            // BLAS refit writes → TLAS build reads.
-                            // ACCELERATION_STRUCTURE_BUILD_KHR → ACCELERATION_STRUCTURE_BUILD_KHR
-                            memory_barrier(
-                                &self.device,
-                                cmd,
-                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                                vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                                vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
-                            );
-                        }
-                        // #1194 — END of skinned-BLAS refit bracket
-                        // (after the AS_BUILD→AS_BUILD barrier).
-                        if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_blas_refit_end(&self.device, cmd, frame);
-                        }
-                    }
-
-                    // #1133 — return the skin-path scratches to `self`.
-                    // Same shape as the gpu_instances / batches replace
-                    // at the end of build_render_data → SSBO upload.
-                    self.skin_dispatch_seen_scratch = seen;
-                    self.skin_dispatches_scratch = dispatches;
-                    self.skin_first_sight_builds_scratch = first_sight_builds;
-
-                    // #643 / MEM-2-1 — drop SkinSlots (and the matching
-                    // skinned BLAS) for entities whose `last_used_frame`
-                    // trails the current draw by more than
-                    // `MAX_FRAMES_IN_FLIGHT` frames. Mirrors
-                    // `evict_unused_blas`'s LRU pattern: the threshold
-                    // guarantees no in-flight command buffer still
-                    // references the descriptor sets / output buffer /
-                    // BLAS, so synchronous destroy is safe — no
-                    // deferred-destroy queue needed.
-                    //
-                    // Pre-fix the `skin_slots` HashMap and the
-                    // `skinned_blas` map only ever had entries
-                    // *inserted* (draw.rs first-sight loop) or *drained
-                    // wholesale on Drop* (context/mod.rs). On long
-                    // sessions that streamed through several
-                    // worldspaces, every NPC ever rendered stayed
-                    // resident; the FREE_DESCRIPTOR_SET pool would
-                    // exhaust well before the player's exterior
-                    // population caught up.
-                    let min_idle = MAX_FRAMES_IN_FLIGHT as u64 + 1;
-                    let now = self.frame_counter as u64;
-                    // #1003 — drain `pending_skin_unload_victims` populated by
-                    // `cell_loader::unload_cell`. These entities have been
-                    // despawned; their slots and per-skinned BLAS must be
-                    // released NOW (post-fence-wait, so no in-flight
-                    // command buffer still references the output buffer).
-                    let mut evictees: Vec<EntityId> =
-                        std::mem::take(&mut self.pending_skin_unload_victims);
-                    // Continue with the regular eviction filter for entries
-                    // that aged out via the idle policy (the original path
-                    // that protects against entity-still-alive-but-not-
-                    // drawn scenarios — camera moved off-screen, etc.).
-                    evictees.extend(self.skin_slots.iter().filter_map(|(&eid, slot)| {
-                        super::super::skin_compute::should_evict_skin_slot(
-                            slot.last_used_frame,
-                            now,
-                            min_idle,
-                        )
-                        .then_some(eid)
-                    }));
-                    if !evictees.is_empty() {
-                        log::debug!(
-                            "skin_slots eviction: dropping {} idle SkinSlot(s) and matching skinned BLAS",
-                            evictees.len()
-                        );
-                        for eid in evictees {
-                            if let Some(slot) = self.skin_slots.remove(&eid) {
-                                skin_pipeline.destroy_slot(&self.device, alloc, slot);
-                            }
-                            accel.drop_skinned_blas(eid);
-                        }
-                        // Capacity opened up — un-suppress retry on every
-                        // entity that previously failed. Cheap (the set
-                        // caps at `skinned_count - SKIN_MAX_SLOTS`, zero
-                        // on healthy scenes) and correct: each cleared
-                        // entry will retry once next frame; if its
-                        // retry succeeds, it allocates a slot, otherwise
-                        // it re-enters the cache via the failure path.
-                        // See #900.
-                        self.failed_skin_slots.clear();
-                    }
-                }
-            }
-        }
-        let _skin_chain_ns = skin_t0.elapsed().as_nanos() as u64;
+        self.record_skinned_blas_refit(cmd, frame, draw_commands, pose_dirty);
 
         // ── TLAS build (relocated from top of frame) ─────────────────
         // Picks up just-refit per-skinned-entity BLAS via the
@@ -2882,608 +3517,21 @@ impl VulkanContext {
         }
 
         let cmd_t0 = Instant::now();
-        // SAFETY: `cmd` is recording (begin_command_buffer succeeded above) and `framebuffers[frame]` / `render_pass` / pipeline layout + descriptor sets / global VB+IB are all live for this frame. `cmd_begin_render_pass` opens the pass; viewport/scissor/cull/depth dynamic state is set before any draw; all binds use the GRAPHICS bind point with the matching `pipeline_layout`; `cmd` is recorded by this thread only and `end_command_buffer` closes it. The fence wait at frame start guarantees no in-flight frame is still using this buffer or its bound resources.
+        self.record_geometry_pass(
+            cmd,
+            frame,
+            &render_pass_begin,
+            &batches,
+            draw_commands,
+            water_commands,
+            ui_instance_idx,
+        );
+        // SAFETY: tail of the per-frame command buffer — depth-history
+        // snapshot, post/denoise/composite chain, egui overlay, screenshot
+        // copy, and `end_command_buffer`. Each call documents its own
+        // recording-order contract; this is the same single `unsafe` scope
+        // `draw_frame` opened before the geometry pass was extracted (#1748).
         unsafe {
-            if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_main_render_start(&self.device, cmd, frame);
-            }
-            self.device
-                .cmd_begin_render_pass(cmd, &render_pass_begin, vk::SubpassContents::INLINE);
-
-            // No unconditional pipeline bind here — the batch loop below
-            // initializes `last_pipeline_key` to a sentinel Blended value
-            // so the first real batch always rebinds to its own pipeline,
-            // and the UI overlay rebinds `pipeline_ui` regardless. An
-            // opaque bind at this point would always be discarded. #507.
-
-            // Dynamic viewport + scissor.
-            let viewports = [vk::Viewport {
-                x: 0.0,
-                y: 0.0,
-                width: self.swapchain_state.extent.width as f32,
-                height: self.swapchain_state.extent.height as f32,
-                min_depth: 0.0,
-                max_depth: 1.0,
-            }];
-            self.device.cmd_set_viewport(cmd, 0, &viewports);
-
-            let scissors = [vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: self.swapchain_state.extent,
-            }];
-            self.device.cmd_set_scissor(cmd, 0, &scissors);
-
-            // Bind the bindless texture descriptor set (set 0) — once per frame.
-            let texture_set = self.texture_registry.descriptor_set(frame);
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
-                0,
-                &[texture_set],
-                &[],
-            );
-
-            // Bind the scene descriptor set (set 1) — once per frame.
-            let scene_set = self.scene_buffers.descriptor_set(frame);
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
-                1,
-                &[scene_set],
-                &[],
-            );
-
-            // ── Draw loop ─────────────────────────────────────────────
-            //
-            // Two paths depending on what the device supports:
-            //
-            // 1. **Multi-draw indirect** (#309) — when the device
-            //    exposes `multiDrawIndirect` (universally supported on
-            //    desktop Vulkan 1.0+) and the global VB/IB is bound,
-            //    we group consecutive batches sharing
-            //    `(pipeline_key, render_layer)` into one
-            //    `cmd_draw_indexed_indirect` call reading N
-            //    `VkDrawIndexedIndirectCommand` entries from the
-            //    per-frame indirect buffer. Pipeline / depth-bias
-            //    state transitions still split groups (necessary —
-            //    dynamic state changes between draws).
-            //
-            // 2. **Per-batch fallback** — used when the device doesn't
-            //    expose `multiDrawIndirect` or when the global VB/IB
-            //    isn't bound (e.g. the spinning-cube demo before the
-            //    scene SSBO is built). One `cmd_draw_indexed` per
-            //    batch, same behavior as pre-#309.
-            //
-            // The indirect buffer has already been filled + flushed
-            // above when `gpu_instances.upload_instances(...)` ran —
-            // see the `indirect_draws` build-up where each batch
-            // pushes one `VkDrawIndexedIndirectCommand` entry.
-            let mut last_pipeline_key = PipelineKey::Blended {
-                src: u8::MAX,
-                dst: u8::MAX,
-                wireframe: false,
-            };
-            // `Option` so the first batch always emits an explicit
-            // `cmd_set_depth_bias` rather than relying on the
-            // pipeline-default-zero matching the bias of the first
-            // batch's layer (brittle when the first batch is, say, a
-            // decal).
-            let mut last_render_layer: Option<byroredux_core::ecs::components::RenderLayer> = None;
-            // #398 — extended dynamic depth state. Vulkan requires the
-            // dynamic state to be set BEFORE any draw call when the
-            // pipeline declares the corresponding `vk::DynamicState`.
-            // Initialise with the Gamebryo runtime defaults so the
-            // first batch's "did this change?" check sees a sensible
-            // baseline. Sentinel `last_z_function = u8::MAX` forces an
-            // explicit set on the first batch regardless of value.
-            let mut last_z_test = true;
-            let mut last_z_write = true;
-            let mut last_z_function: u8 = u8::MAX;
-            // CULL_MODE is declared dynamic on EVERY draw-loop pipeline
-            // (see `pipeline.rs::dynamic_states` for both the opaque and
-            // blend variants — the "must be dynamic on every pipeline"
-            // invariant lives there with full justification). The
-            // helper below fires `cmd_set_cull_mode` only when the
-            // tracked last value disagrees with the desired one.
-            //
-            // `Option<…>` with `None` sentinel (#912 / REN-D5-NEW-03):
-            // the first batch's `set_cull` fires unconditionally
-            // (None != Some(any)), so the pre-#912 unconditional
-            // `cmd_set_cull_mode(BACK)` before the draw loop is no
-            // longer needed. That pre-emit was wasted whenever the
-            // first batch wanted NONE (two-sided vegetation/foliage
-            // on exterior cells) — it issued BACK and then the
-            // per-batch helper immediately overrode it with NONE.
-            let mut last_cull_mode: Option<vk::CullModeFlags> = None;
-            // #664 — per-mesh-fallback VB/IB bind cache. Only consulted
-            // on the `global_bound == false` path (early-startup or any
-            // future failure mode). The two-sided alpha-blend split at
-            // line ~1442 calls `dispatch_direct` twice for the same
-            // batch, so without this cache the per-mesh fallback issued
-            // two redundant binds per split batch. `u32::MAX` is the
-            // never-bound sentinel — `MeshHandle` is `u32` and 0 is a
-            // valid handle.
-            let mut last_bound_mesh_handle: u32 = u32::MAX;
-
-            // Pre-loop depth state initialization — only the two fields whose
-            // per-batch trackers use a real sentinel (not a "force-first" value):
-            //
-            //   depth_test/write: `last_z_test = true`, `last_z_write = true`.
-            //   When the first batch also wants true, the per-batch check skips
-            //   (`true != true` is false) — without this pre-loop set, those
-            //   dynamic states would never fire on a pure-opaque-first frame.
-            //
-            //   depth_bias and depth_compare_op are NOT pre-set here:
-            //   - depth_bias: `last_render_layer = None` ⇒ the per-batch
-            //     `set_cull_and_bias` helper fires unconditionally on the first
-            //     batch, covering the Vulkan "must be set before first draw"
-            //     requirement. The pre-set was pure waste (#955 / REN-D5-NEW-04).
-            //   - depth_compare_op: `last_z_function = u8::MAX` ⇒ the first batch
-            //     always fires `cmd_set_depth_compare_op` since u8::MAX matches no
-            //     real Gamebryo compare op (#955). Mirrors `#912` / REN-D5-NEW-03
-            //     which removed the redundant pre-set for `cmd_set_cull_mode`.
-            self.device.cmd_set_depth_test_enable(cmd, true);
-            self.device.cmd_set_depth_write_enable(cmd, true);
-            // #912 / REN-D5-NEW-03 — pre-#912 this issued
-            // `cmd_set_cull_mode(BACK)` unconditionally. The per-batch
-            // `set_cull` helper now covers the "must be set before
-            // first draw" Vulkan requirement: the first batch's call
-            // fires (`last_cull_mode == None`) and the helper updates
-            // the tracking. Removing the unconditional set saves one
-            // wasted state change per frame whenever the first batch
-            // wants NONE (exterior cells often start with two-sided
-            // vegetation / foliage).
-
-            // Bind the global geometry buffer once for all scene draws.
-            // Each batch uses global_index_offset / global_vertex_offset
-            // to index into this single buffer, eliminating per-mesh
-            // vertex/index buffer rebinding (~200 rebinds/frame → 1). #294.
-            let global_bound = if let (Some(gvb), Some(gib)) = (
-                self.mesh_registry.global_vertex_buffer.as_ref(),
-                self.mesh_registry.global_index_buffer.as_ref(),
-            ) {
-                self.device
-                    .cmd_bind_vertex_buffers(cmd, 0, &[gvb.buffer], &[0]);
-                self.device
-                    .cmd_bind_index_buffer(cmd, gib.buffer, 0, vk::IndexType::UINT32);
-                true
-            } else {
-                false
-            };
-
-            let use_indirect = global_bound && self.device_caps.multi_draw_indirect_supported;
-            let indirect_buffer = self.scene_buffers.indirect_buffer(frame);
-            let indirect_stride = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32;
-
-            // Precompute indirect-buffer state for batch `i`. Returns
-            // `(pipe, render_layer)` — consecutive batches sharing the
-            // tuple form one indirect group. `render_layer` covers the
-            // depth-bias state-change boundary that pre-#renderlayer
-            // was split between `is_decal` and `needs_depth_bias` —
-            // the per-layer ladder makes this a single key slot.
-            // #1581 / F1 — the indirect-merge key is `group_state` (module
-            // fn, unit-tested): it must include EVERY dynamic state set once
-            // from the group leader, or the leader's state wrongly applies to
-            // the whole merged group.
-
-            // #1258 / PERF-D3-NEW-03 — snapshot post-merge batch count.
-            // Surfaced via `DebugStats::batch_count` and the `stats`
-            // command so the next perf audit can distinguish "12k
-            // DrawCommands" (input to the batcher) from "200 batches"
-            // (actual GPU draw upper bound) from "20 indirect calls"
-            // (post-grouping; bumped in the branches below).
-            self.last_draw_call_stats.batch_count = batches.len() as u32;
-
-            let mut i = 0;
-            while i < batches.len() {
-                let batch = &batches[i];
-
-                // Switch pipeline when rendering mode changes.
-                // Two-sided rendering uses dynamic `cmd_set_cull_mode`
-                // (issued elsewhere in the draw loop based on
-                // `draw_cmd.two_sided`), not a separate pipeline (#930).
-                if batch.pipeline_key != last_pipeline_key {
-                    let pipe = match batch.pipeline_key {
-                        PipelineKey::Opaque { wireframe: false } => self.pipeline,
-                        // Wireframe falls back to FILL on devices
-                        // without `fillModeNonSolid`. #869.
-                        PipelineKey::Opaque { wireframe: true } => {
-                            self.pipeline_wireframe.unwrap_or(self.pipeline)
-                        }
-                        PipelineKey::Blended {
-                            src,
-                            dst,
-                            wireframe,
-                        } => {
-                            // Always present after the pre-population
-                            // pass above. If creation failed earlier we
-                            // fall back to the opaque pipeline rather
-                            // than skipping the draw entirely — better
-                            // a wrong-blend visible mesh than a vanished
-                            // one. See #392.
-                            let wireframe =
-                                wireframe && self.device_caps.fill_mode_non_solid_supported;
-                            *self
-                                .blend_pipeline_cache
-                                .get(&(src, dst, wireframe))
-                                .unwrap_or(&self.pipeline)
-                        }
-                    };
-                    self.device
-                        .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
-                    last_pipeline_key = batch.pipeline_key;
-                }
-
-                // #renderlayer — per-layer depth bias from
-                // `RenderLayer::depth_bias()`. The Vulkan formula is
-                //   bias = constant_factor × r + slope_factor × |max_dz/dxy|
-                // where `r` is the smallest representable depth at the
-                // fragment (≈ 2⁻²⁴ ≈ 6e-8 for D32_SFLOAT around mid-
-                // depth). The `Decal` anchor (-64, -2) lifts coplanar
-                // overlays into the ~4e-6 normalised-depth range
-                // (Bethesda D3D scale for decal polygon offset);
-                // `Architecture` is zero (the surfaces other layers
-                // sit on top of); `Clutter` and `Actor` are
-                // intermediate. Per-layer table is the single source
-                // of truth — modifying it does NOT require touching
-                // this site.
-                if last_render_layer != Some(batch.render_layer) {
-                    let (bias_const, clamp, bias_slope) = batch.render_layer.depth_bias();
-                    self.device
-                        .cmd_set_depth_bias(cmd, bias_const, clamp, bias_slope);
-                    last_render_layer = Some(batch.render_layer);
-                }
-
-                // #398 — extended dynamic depth state. Emit only on
-                // change so consecutive batches sharing depth state pay
-                // zero state-change cost. Sky domes / viewmodels / glow
-                // halos that author `z_write=0` now actually skip the
-                // depth write instead of z-fighting world geometry.
-                if batch.z_test != last_z_test {
-                    self.device.cmd_set_depth_test_enable(cmd, batch.z_test);
-                    last_z_test = batch.z_test;
-                }
-                if batch.z_write != last_z_write {
-                    self.device.cmd_set_depth_write_enable(cmd, batch.z_write);
-                    last_z_write = batch.z_write;
-                }
-                if batch.z_function != last_z_function {
-                    self.device
-                        .cmd_set_depth_compare_op(cmd, gamebryo_to_vk_compare_op(batch.z_function));
-                    last_z_function = batch.z_function;
-                }
-
-                // Classify the batch's cull-mode requirement.
-                //
-                // Every pipeline declares CULL_MODE as dynamic (so the
-                // state persists across pipeline transitions — per
-                // Vulkan spec a bind to a pipeline without the dynamic
-                // state would invalidate prior cmd_set_cull_mode), so
-                // we must emit the target cull per-batch even for
-                // opaque draws. The per-batch cost is a single u32
-                // host command.
-                //
-                // Two-sided alpha-blend batches are rendered in two
-                // passes — FRONT cull first (draws back faces, which
-                // write depth), then BACK cull (draws front faces,
-                // which blend on top). Without the split, a single
-                // CULL_NONE draw would put front and back triangles in
-                // arbitrary index order; TAA subpixel jitter then
-                // flips the depth winner per frame, producing
-                // cross-hatch moiré on glass. See Phase 1 of Tier C
-                // glass plan + `docs/issues/glass-investigation/`.
-                let is_blend = matches!(batch.pipeline_key, PipelineKey::Blended { .. });
-                let two_sided = batch.two_sided;
-                let needs_split = is_blend && two_sided;
-                // Opaque & single-sided-blend cull target — used by
-                // every branch below except the split two-sided blend.
-                let default_cull = if two_sided {
-                    vk::CullModeFlags::NONE
-                } else {
-                    vk::CullModeFlags::BACK
-                };
-
-                let set_cull = |target: vk::CullModeFlags, last: &mut Option<vk::CullModeFlags>| {
-                    if *last != Some(target) {
-                        self.device.cmd_set_cull_mode(cmd, target);
-                        *last = Some(target);
-                    }
-                };
-
-                // Dispatch helper — one direct draw of `batch`. Factored
-                // so we can call it twice for the two-sided alpha-blend
-                // split without duplicating the global-bound / per-mesh
-                // fallback paths.
-                //
-                // #664 — `last_bound` threads through so the per-mesh
-                // fallback elides VB/IB rebinds when consecutive
-                // dispatches share `mesh_handle` (the two-sided
-                // alpha-blend split is the dominant case).
-                let dispatch_direct = |this: &Self, last_bound: &mut u32| {
-                    if global_bound {
-                        this.device.cmd_draw_indexed(
-                            cmd,
-                            batch.index_count,
-                            batch.instance_count,
-                            batch.global_index_offset,
-                            batch.global_vertex_offset,
-                            batch.first_instance,
-                        );
-                    } else {
-                        // Per-mesh fallback (global SSBO not bound this frame).
-                        // A global-only scene mesh (distant terrain LOD, #1370)
-                        // carries no per-mesh buffers — skip it; it draws via
-                        // the global buffer once `rebuild_geometry_ssbo` runs
-                        // (≤1-frame distant pop-in, invisible).
-                        let Some(mesh) = this.mesh_registry.get(batch.mesh_handle) else {
-                            return;
-                        };
-                        let (Some(vb), Some(ib)) =
-                            (mesh.vertex_buffer.as_ref(), mesh.index_buffer.as_ref())
-                        else {
-                            return;
-                        };
-                        if batch.mesh_handle != *last_bound {
-                            this.device
-                                .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
-                            this.device.cmd_bind_index_buffer(
-                                cmd,
-                                ib.buffer,
-                                0,
-                                vk::IndexType::UINT32,
-                            );
-                            *last_bound = batch.mesh_handle;
-                        }
-                        this.device.cmd_draw_indexed(
-                            cmd,
-                            batch.index_count,
-                            batch.instance_count,
-                            0,
-                            0,
-                            batch.first_instance,
-                        );
-                    }
-                };
-
-                if needs_split {
-                    // Two-sided alpha-blend: back faces first, then
-                    // front faces. Fall out of indirect grouping —
-                    // two-sided blend batches must draw each mesh
-                    // back+front adjacently, which
-                    // `cmd_draw_indexed_indirect` over a group can't
-                    // express without interleaving meshes.
-                    set_cull(vk::CullModeFlags::FRONT, &mut last_cull_mode);
-                    dispatch_direct(self, &mut last_bound_mesh_handle);
-                    set_cull(vk::CullModeFlags::BACK, &mut last_cull_mode);
-                    dispatch_direct(self, &mut last_bound_mesh_handle);
-                    // #1258 — two-sided split emits 2 direct draws.
-                    self.last_draw_call_stats.indirect_call_count += 2;
-                    i += 1;
-                } else if use_indirect {
-                    set_cull(default_cull, &mut last_cull_mode);
-                    // Gather consecutive batches that share the current
-                    // `(pipeline_key, render_layer)` tuple — each one is
-                    // already represented in the indirect buffer as one
-                    // VkDrawIndexedIndirectCommand. A single
-                    // `cmd_draw_indexed_indirect` call dispatches all N.
-                    //
-                    // Two-sided blend batches are excluded above (`needs_split`
-                    // draws them directly) and can't reach this branch.
-                    // `group_state` now captures two_sided + depth state, so a
-                    // group is homogeneous in every leader-set dynamic state —
-                    // the leader's cull/depth applies correctly to all of it.
-                    let key = group_state(batch);
-                    let mut end = i + 1;
-                    while end < batches.len() && group_state(&batches[end]) == key {
-                        end += 1;
-                    }
-                    let group_size = (end - i) as u32;
-                    let byte_offset = (i * indirect_stride as usize) as vk::DeviceSize;
-                    self.device.cmd_draw_indexed_indirect(
-                        cmd,
-                        indirect_buffer,
-                        byte_offset,
-                        group_size,
-                        indirect_stride,
-                    );
-                    // #1258 — one indirect call dispatches `group_size`
-                    // batches; surfaced grouping ratio = batch_count /
-                    // indirect_call_count.
-                    self.last_draw_call_stats.indirect_call_count += 1;
-                    i = end;
-                } else {
-                    // Direct-draw fallback: global VB/IB bound or
-                    // per-mesh fallback inside `dispatch_direct`.
-                    set_cull(default_cull, &mut last_cull_mode);
-                    dispatch_direct(self, &mut last_bound_mesh_handle);
-                    // #1258 — direct fallback emits 1 draw per batch.
-                    self.last_draw_call_stats.indirect_call_count += 1;
-                    i += 1;
-                }
-            }
-
-            // ── Water surfaces ────────────────────────────────────────
-            //
-            // After all opaque + alpha-blend triangle batches have
-            // submitted but before the UI overlay, render every
-            // `WaterPlane` ECS entity through the dedicated water
-            // pipeline. Each `WaterDrawCommand` carries its own push
-            // constants (material + flow + time); the bound set 0 +
-            // set 1 from the triangle path stay compatible because
-            // the water pipeline layout uses the same set layouts.
-            //
-            // State note: the last opaque/blend pipeline already left
-            // depth-test on and depth-write off (blend pipelines
-            // disable depth-write). We still re-issue the dynamic
-            // state defensively — if a frame somehow has only opaque
-            // geometry preceding the water, depth-write would be ON
-            // and water would corrupt the depth buffer.
-            //
-            // Cull mode: water pipeline declares it DYNAMIC (#1071 /
-            // F-WAT-11) — the caller is now required to emit
-            // `cmd_set_cull_mode(NONE)` before the draw. Done explicitly
-            // below regardless of the per-batch coalescing helper's
-            // `last_cull_mode` state because water is rendered through
-            // a separate, water-specific dispatch loop that doesn't
-            // route through the main per-batch helper.
-            // #1561 — water.frag traces RT rays (TLAS at set=1 binding=2)
-            // with no `sceneFlags.x` runtime guard, so the water draw must not
-            // run when RT isn't live: on a non-RT device binding 2 is absent
-            // from the bound layout (`self.water` is also `None` there), and
-            // even on RT hardware a frame whose TLAS wasn't written would trace
-            // a stale/unwritten structure. Gate on the same
-            // `ray_query_supported && tlas_written[frame]` signal that drives
-            // `rt_flag`/`sceneFlags.x` everywhere else (the shader-side
-            // `sceneFlags.x < 0.5` early-out — mirroring caustic_splat.comp —
-            // remains a follow-up needing RenderDoc/non-RT verification).
-            let rt_live =
-                self.device_caps.ray_query_supported && self.scene_buffers.tlas_written[frame];
-            if !water_commands.is_empty() && rt_live {
-                // #1026 / F-WAT-05 — pin the no-resort contract right
-                // before consuming `wc.instance_index`. The app's
-                // render code records the position into `draw_commands`
-                // at emit time; any future re-sort between that emit
-                // and this consumer would silently desync the recorded
-                // index from the actual SSBO slot. The assertion
-                // compiles out in release builds (the forward-compat
-                // trap is documented next to the sort site in
-                // `byroredux/src/render.rs`).
-                debug_assert!(
-                    super::super::water::water_commands_match_draw_slots(
-                        water_commands,
-                        draw_commands,
-                    ),
-                    "WaterDrawCommand instance_index desynced from draw_commands — \
-                     was draw_commands re-sorted after the water emit? See #1026 / F-WAT-05.",
-                );
-                if let Some(ref water) = self.water {
-                    self.device.cmd_set_depth_test_enable(cmd, true);
-                    self.device.cmd_set_depth_write_enable(cmd, false);
-                    self.device
-                        .cmd_set_depth_compare_op(cmd, vk::CompareOp::LESS_OR_EQUAL);
-                    // #1071 / F-WAT-11 — water pipeline declares CULL_MODE dynamic.
-                    // Emit the runtime override here so the draw uses NONE (water
-                    // surfaces are visible from above and below the camera plane).
-                    self.device.cmd_set_cull_mode(cmd, vk::CullModeFlags::NONE);
-                    for wc in water_commands {
-                        if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
-                            let vb = mesh
-                                .vertex_buffer
-                                .as_ref()
-                                .expect("water mesh requires a per-mesh vertex buffer");
-                            let ib = mesh
-                                .index_buffer
-                                .as_ref()
-                                .expect("water mesh requires a per-mesh index buffer");
-                            self.device
-                                .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
-                            self.device.cmd_bind_index_buffer(
-                                cmd,
-                                ib.buffer,
-                                0,
-                                vk::IndexType::UINT32,
-                            );
-                            water.record_draw(
-                                &self.device,
-                                cmd,
-                                &wc.push,
-                                mesh.index_count,
-                                wc.instance_index,
-                                frame, // #1255 — selects set 2 per-FIF water-caustic descriptor
-                                self.texture_registry.descriptor_set(frame), // #1258 — set 0
-                                self.scene_buffers.descriptor_set(frame), // #1258 — set 1
-                            );
-                        }
-                    }
-                }
-            }
-
-            // UI overlay: draw a fullscreen quad with the Ruffle-rendered texture.
-            // The UI instance was appended to gpu_instances before the bulk upload,
-            // so it's already in the SSBO with a proper flush.
-            //
-            // CONTRACT (#663). Defensive `cmd_set_*` calls below cover
-            // every state in `UI_PIPELINE_DYNAMIC_STATES` so the UI
-            // overlay is decoupled from whatever dynamic-state values
-            // the last main-batch pipeline left set. Depth / cull /
-            // depth-bias state on `pipeline_ui` is STATIC and applied
-            // by the pipeline bind itself — no `cmd_set_*` is legal
-            // for those (validation would reject it). If you grow
-            // `UI_PIPELINE_DYNAMIC_STATES`, the const assertion below
-            // fires and you must add the matching `cmd_set_*` here
-            // before the draw.
-            if let (Some(idx), Some(ui_quad)) = (ui_instance_idx, self.ui_quad_handle) {
-                if let Some(mesh) = self.mesh_registry.get(ui_quad) {
-                    use super::super::pipeline::UI_PIPELINE_DYNAMIC_STATES;
-                    const _UI_OVERLAY_DEFENSIVE_STATE_INVARIANT: () = {
-                        // Update the explicit cmd_set_* calls below to cover
-                        // every state in this list when the count changes.
-                        assert!(
-                            UI_PIPELINE_DYNAMIC_STATES.len() == 2,
-                            "UI overlay path covers VIEWPORT + SCISSOR only — \
-                             extend it before growing UI_PIPELINE_DYNAMIC_STATES",
-                        );
-                    };
-                    self.device.cmd_bind_pipeline(
-                        cmd,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        self.pipeline_ui,
-                    );
-                    // Defensive re-set of dynamic viewport/scissor after the
-                    // UI pipeline bind (#133). The opaque/blend pipelines
-                    // all declare both as VK_DYNAMIC_STATE, so the state set
-                    // at the start of the render pass is inherited —
-                    // today. A future UI variant that rendered at a
-                    // different extent (e.g. scaled Scaleform overlay on
-                    // a non-native resolution) would silently use the
-                    // inherited values. Cheap two-command insurance.
-                    //
-                    // REN-D5-NEW-04 (audit 2026-05-09) flagged this as
-                    // "redundant" because the values match the
-                    // inherited ones every frame today. Keeping the
-                    // re-set is intentional — the alternative is to
-                    // gate it on "does this UI variant change extent"
-                    // which moves a one-liner of pre-bind state into
-                    // a per-variant capability check, more code than
-                    // the two `cmd_set_*` calls cost. The audit
-                    // recommendation is acknowledged + declined.
-                    let viewports = [vk::Viewport {
-                        x: 0.0,
-                        y: 0.0,
-                        width: self.swapchain_state.extent.width as f32,
-                        height: self.swapchain_state.extent.height as f32,
-                        min_depth: 0.0,
-                        max_depth: 1.0,
-                    }];
-                    self.device.cmd_set_viewport(cmd, 0, &viewports);
-                    let scissors = [vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: self.swapchain_state.extent,
-                    }];
-                    self.device.cmd_set_scissor(cmd, 0, &scissors);
-                    let vb = mesh
-                        .vertex_buffer
-                        .as_ref()
-                        .expect("UI mesh requires a per-mesh vertex buffer");
-                    let ib = mesh
-                        .index_buffer
-                        .as_ref()
-                        .expect("UI mesh requires a per-mesh index buffer");
-                    self.device
-                        .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
-                    self.device
-                        .cmd_bind_index_buffer(cmd, ib.buffer, 0, vk::IndexType::UINT32);
-                    self.device
-                        .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, idx);
-                }
-            }
-
-            self.device.cmd_end_render_pass(cmd);
-            if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_main_render_end(&self.device, cmd, frame);
-            }
 
             // Soft-particle depth fade: snapshot this frame's opaque depth
             // into the sampleable history image so next frame's effect-shader
