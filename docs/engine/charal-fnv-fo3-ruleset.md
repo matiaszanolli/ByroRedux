@@ -120,6 +120,22 @@ locked SPECIAL, skills + governing, auto-calc base, tag + Skill Rate, XP curve a
 caps, **the FNV / FO3 ruleset is fully spec'd** — the second complete Fallout ruleset
 alongside FO4.
 
+### Boundary — defensive stats (DT / DR) are equipment AVs, *not* derived
+
+Damage Threshold (FNV) and Damage Resistance (FO3/FNV/FO4) are "derived statistics" in
+the wiki sense but are **governed by armor**, base value **0** — they carry **no
+SPECIAL/skill formula**, so they are **not** `derived`-table entries. In CHARAL they are
+plain actor values: base `0`, value supplied by equipped armor + perks through the
+[`ActorValues`] `permanent_mod` layer. The damage-reduction maths (DR % first, then DT
+subtraction, floored at 20 % of incoming; FO4 adds per-damage-type reduction curves for
+poison / rad / explosive / power-attack / VATS-crit) is a downstream **combat** system
+that *consumes* the AV — not part of the character ruleset. The boundary is clean:
+**SPECIAL/skill-governed → `DerivedStatFormula`; equipment/perk-modified →
+`permanent_mod`.** The DR infobox makes it explicit — **"governed by: None", base 0**
+across FO1/2/FO3/FNV/FO4. Sources: fandom *Damage Threshold* + *Damage Resistance*.
+
+[`ActorValues`]: ../../crates/core/src/ecs/components/actor_values.rs
+
 ## XP / level curve — LOCKED
 
 ```
@@ -133,6 +149,15 @@ Source: fandom *Level*. Steeper than FO4's `75·L+125`, fitting the hard caps. S
 add-ons, +5 each). **Perk cadence:** FO3 = 1 perk **every level**; FNV = 1 perk
 **every other level** (well-known; not on the pages pulled so far — mark for a citing
 pass).
+
+**Level-up reward:** modify **skills** (the Skill Rate points above) + gain a perk on
+the cadence — and crucially **SPECIAL is *fixed* after chargen**: FO3/FNV grant **no**
+SPECIAL point at level-up (only the Intense Training perk raises one). This is the key
+`LevelReward` contrast with FO4, where a level grants **+1 SPECIAL *or* a perk**. Source:
+fandom *Level* ("Level up": *"modify skills but not primary statistics … also gain
+special perks"*). So `LevelReward` for FO3/FNV = `SkillPoints { base: 10, int_mult: 1.0
+(FO3) / 0.5 (FNV), perk_cadence: 1 (FO3) / 2 (FNV) }`, SPECIAL immutable; FO4 =
+`SpecialOrPerk`.
 
 ## NPC stat storage — NOTE (distinct from FO4)
 

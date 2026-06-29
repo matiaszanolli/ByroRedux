@@ -7,15 +7,27 @@
 //! `docs/engine/charal-fo4-ruleset.md` / `charal-fnv-fo3-ruleset.md`.
 //!
 //! The numeric substrate is [`crate::ecs::components::ActorValues`] (shipped
-//! with #1663). This module adds the *rules* layered over it:
+//! with #1663). This module adds the *rules* and *structure* layered over it:
 //!
 //! * [`derived`] — [`DerivedStatFormula`], the fixed-layout bilinear formula
 //!   every Bethesda derived stat (Health, AP, Carry Weight, …) reduces to.
+//! * [`leveling`] — [`LevelingModel`] + [`LevelReward`]: the XP curve and
+//!   per-level reward (FO4 SPECIAL-or-perk vs FO3/FNV skill points).
+//! * [`ruleset`] — [`CharacterRuleset`], the per-game `Resource` bundling the
+//!   derived-formula table + leveling model.
+//! * [`components`] — [`CharacterLevel`] / [`Perks`] / [`Background`], the
+//!   structural per-actor ECS components.
 //!
-//! Still to land (per CHARAL §8): `CharacterRuleset` (the per-game formula +
-//! leveling tables), `LevelingModel`, and the `CharacterLevel` / `Perks` /
-//! `Background` components.
+//! Per-game **population** lives at the parser boundary (FO4 `PRPS`/`DNAM`,
+//! FNV/FO3 class auto-calc) in `byroredux_plugin`; this crate holds the
+//! game-agnostic canonical types those boundaries feed.
 
+pub mod components;
 pub mod derived;
+pub mod leveling;
+pub mod ruleset;
 
+pub use components::{Background, CharacterLevel, PerkRank, Perks};
 pub use derived::{DerivedInput, DerivedOutput, DerivedStatFormula, RoundMode};
+pub use leveling::{LevelReward, LevelingModel};
+pub use ruleset::CharacterRuleset;
