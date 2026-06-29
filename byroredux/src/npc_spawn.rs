@@ -80,6 +80,28 @@ fn stamp_faction_ranks(world: &mut World, placement_root: EntityId, npc: &NpcRec
     );
 }
 
+/// Stamp an [`ActorValues`] component on the NPC's placement root, derived
+/// from its class's base SPECIAL via the documented FNV/FO3 auto-calc model,
+/// so the M47.1 `GetActorValue` condition reads real values (#1663). No-op
+/// when the derivation yields nothing — a non-FNV/FO3 game, an NPC with no
+/// (parsed) class, or an index whose `AVIF` records don't resolve.
+fn stamp_actor_values(
+    world: &mut World,
+    placement_root: EntityId,
+    npc: &NpcRecord,
+    index: &EsmIndex,
+    game: GameKind,
+) {
+    let pairs = byroredux_plugin::esm::records::derive_npc_actor_values(npc, index, game);
+    if pairs.is_empty() {
+        return;
+    }
+    world.insert(
+        placement_root,
+        byroredux_core::ecs::components::ActorValues::from_pairs(pairs),
+    );
+}
+
 /// #1698 — keyframe a live NPC's ragdoll bones.
 ///
 /// Skyrim (and FO3/FNV/Oblivion) author each skeleton ragdoll bone's bhk body
@@ -486,6 +508,7 @@ pub fn spawn_npc_entity(
         world.insert(placement_root, Name(sym));
     }
     stamp_faction_ranks(world, placement_root, npc);
+    stamp_actor_values(world, placement_root, npc, index, game);
 
     // 2. Skeleton. Owns the per-bone entities the body / head will
     //    skin against.
@@ -1279,6 +1302,7 @@ pub fn spawn_prebaked_npc_entity(
         world.insert(placement_root, Name(sym));
     }
     stamp_faction_ranks(world, placement_root, npc);
+    stamp_actor_values(world, placement_root, npc, index, game);
 
     // 2. Equip state — built from the NPC record + ESM index alone
     //    so it lands on the placement root **before** any archive

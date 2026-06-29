@@ -505,6 +505,24 @@ impl EsmIndex {
         Self::categories().iter().map(|(_, f)| f(self)).sum()
     }
 
+    /// Resolve an actor value's global FormID by its `AVIF` EditorID
+    /// (case-insensitive), or `None` when no such `AVIF` was parsed.
+    ///
+    /// Used to key `ActorValues` by the standard SPECIAL / skill actor
+    /// values during NPC stat population (#1663) — the EditorIDs are the
+    /// GECK names (`"Strength"`, `"Sneak"`, `"Guns"`, …). The returned
+    /// FormID is in the index's load-order space, the same space a
+    /// remapped CTDA `param_1` (and therefore `GetActorValue`) compares
+    /// against. Linear over `actor_values` (~100 records) — cheap enough
+    /// to call per-stat at spawn; cache the handful of standard ids on the
+    /// caller if a hot path ever needs it.
+    pub fn actor_value_form_id(&self, editor_id: &str) -> Option<u32> {
+        self.actor_values
+            .values()
+            .find(|avif| avif.editor_id.eq_ignore_ascii_case(editor_id))
+            .map(|avif| avif.form_id)
+    }
+
     /// Format the per-category breakdown as a single line — used by the
     /// `parse_esm_with_load_order` end-of-parse log. Drives off
     /// [`categories`] so the line stays in lockstep with [`total`]. See

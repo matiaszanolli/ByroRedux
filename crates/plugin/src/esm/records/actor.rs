@@ -164,7 +164,7 @@ impl NpcFaceGenRecipe {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NpcRecord {
     pub form_id: u32,
     pub editor_id: String,
@@ -388,25 +388,26 @@ pub struct GenderedAttributes {
     pub luck: u8,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ClassRecord {
     pub form_id: u32,
     pub editor_id: String,
     pub full_name: String,
     pub description: String,
-    /// 7 attribute weights (Strength, Perception, Endurance, Charisma,
-    /// Intelligence, Agility, Luck) — order varies per game.
+    /// 7 base SPECIAL attribute values (Strength, Perception, Endurance,
+    /// Charisma, Intelligence, Agility, Luck), each 0–10.
     ///
-    /// **Game layout split (#968):** the FNV-era 35-byte DATA layout
-    /// encodes 4 × u32 tag skill form IDs + flags + services + trainer
-    /// data + 7 × u8 attribute weights. Oblivion's 52-byte DATA has a
-    /// completely different shape (2 × u32 primary attributes +
-    /// specialization + 7 × u32 major skills + flags + services +
-    /// trainer + 2 B pad) — `attribute_weights` is left at `[0; 7]`
-    /// for Oblivion-tagged records since the field is FNV-shaped.
-    /// Use [`Self::primary_attributes`] + [`Self::specialization`] on
-    /// Oblivion records instead.
-    pub attribute_weights: [u8; 7],
+    /// FNV/FO3 source: the **`ATTR` subrecord** (fopdoc `CLAS`) — one
+    /// 7-byte struct on FNV, seven single-byte `ATTR` subrecords on FO3
+    /// (same order). These are **absolute base attributes, not weights**:
+    /// an auto-calc NPC adopts its class's base attributes as its SPECIAL,
+    /// from which skills derive (#1663). The FNV `DATA` subrecord carries
+    /// only the tag skills + flags/services (28 bytes, no attributes) —
+    /// the pre-#1663 reader looked for them at `DATA[28..35]`, a layout
+    /// that never matched real 28-byte FNV `DATA`. `[0; 7]` on Oblivion
+    /// (which uses [`Self::primary_attributes`] + [`Self::specialization`])
+    /// and whenever no `ATTR` is present.
+    pub base_attributes: [u8; 7],
     /// Tag skill form IDs from FNV DATA. Empty on Oblivion (see
     /// [`Self::major_skills`] for the analogous field).
     pub tag_skills: Vec<u32>,
@@ -931,7 +932,7 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
         editor_id: common.editor_id,
         full_name: common.full_name,
         description: String::new(),
-        attribute_weights: [0u8; 7],
+        base_attributes: [0u8; 7],
         tag_skills: Vec::new(),
         primary_attributes: None,
         specialization: None,
@@ -940,6 +941,10 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
     };
 
     let is_oblivion = matches!(game, GameKind::Oblivion);
+    // FO3 splits the 7 base attributes across 7 single-byte `ATTR`
+    // subrecords; this tracks the next slot to fill so they accumulate in
+    // order. FNV's one 7-byte `ATTR` fills all 7 in a single pass.
+    let mut attr_idx = 0usize;
 
     for sub in subs {
         match &sub.sub_type {
@@ -978,13 +983,18 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
                 }
                 record.flags_oblivion = r.u32().ok();
             }
-            // DATA layout (FNV CLAS — 35 bytes): tag1..tag4 (4 × u32
-            // form), flags (u32), services (u32), trainer skill (i8),
-            // trainer level (u8), teaches level (u8), teaches max
-            // (u8), then 7 attribute weights (u8). Pre-#968 this arm
-            // ran for ALL games and read garbage from Oblivion's
-            // wider 52-byte layout.
-            b"DATA" if !is_oblivion && sub.data.len() >= 35 => {
+            // DATA layout (FNV/FO3 CLAS — 28 bytes, fopdoc `CLAS`):
+            // tag1..tag4 (4 × i32 skill enum), flags (u32), buys/sells +
+            // services (u32), teaches (i8), max training level (u8),
+            // unused (2 B). Only the 4 tag skills are read here. The base
+            // SPECIAL attributes are NOT in DATA — they're in the separate
+            // `ATTR` subrecord (below). Pre-#1663 this arm gated on `>= 35`
+            // and read 7 attribute bytes from `DATA[28..35]`, a layout that
+            // never matched real 28-byte FNV `DATA` (so it silently no-op'd
+            // on real content). Gate at `>= 16` — all we consume is the tag
+            // block. Stays `!is_oblivion`-gated so the wider Oblivion DATA
+            // routes to its own arm above.
+            b"DATA" if !is_oblivion && sub.data.len() >= 16 => {
                 let mut r = SubReader::new(&sub.data);
                 for _ in 0..4 {
                     if let Ok(f) = r.u32() {
@@ -993,11 +1003,20 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
                         }
                     }
                 }
-                // Skip flags + services + skill/level/teaches bytes (4 + 4 + 4 = 12).
-                // Attribute weights start at offset 28 (cursor sits at 16 after the 4 × u32 tag block).
-                r.skip_or_eof(12);
-                for i in 0..7 {
-                    record.attribute_weights[i] = r.u8_or_default();
+            }
+            // ATTR subrecord (FNV/FO3 CLAS, fopdoc): the 7 base SPECIAL
+            // attributes (Str, Per, End, Cha, Int, Agi, Luck), each a u8.
+            // FNV ships one 7-byte struct; FO3 ships 7 single-byte `ATTR`
+            // subrecords. Folding both: append every byte into the next
+            // open slot until the 7 are filled (a 7-byte struct fills them
+            // in one pass; seven 1-byte records fill one each). Oblivion's
+            // race-style `ATTR` is handled in `parse_race`, not here.
+            b"ATTR" if !is_oblivion => {
+                for &byte in sub.data.iter() {
+                    if attr_idx < record.base_attributes.len() {
+                        record.base_attributes[attr_idx] = byte;
+                        attr_idx += 1;
+                    }
                 }
             }
             _ => {}
@@ -1826,37 +1845,56 @@ mod tests {
         assert_eq!(c.flags_oblivion, Some(0x01));
         // FNV-shape fields stay empty on Oblivion.
         assert!(c.tag_skills.is_empty());
-        assert_eq!(c.attribute_weights, [0u8; 7]);
+        assert_eq!(c.base_attributes, [0u8; 7]);
     }
 
-    /// SIBLING gate (audit completeness check) — FNV-tagged CLAS hits
-    /// the 35-byte arm, NOT the Oblivion 52-byte arm. Even if the
-    /// payload happens to be 52 bytes (shouldn't be in real FNV
-    /// content, but defensive), the game gate routes correctly.
+    /// FNV CLAS (fopdoc layout): tag skills come from the 28-byte `DATA`
+    /// block; the 7 base SPECIAL attributes come from the separate `ATTR`
+    /// subrecord — NOT appended to `DATA` (the pre-#1663 assumption). The
+    /// game gate keeps it off the Oblivion 52-byte arm.
     #[test]
-    fn clas_fnv_path_unchanged() {
-        let mut data = Vec::with_capacity(35);
-        // 4 × u32 tag skill form IDs
+    fn clas_fnv_tag_skills_and_attr_special() {
+        // 28-byte DATA: 4 × i32 tag skills + flags + services + teaches
+        // (i8) + max-training (u8) + 2 unused. No attributes here.
+        let mut data = Vec::with_capacity(28);
         data.extend_from_slice(&0xC0DE_0001u32.to_le_bytes());
         data.extend_from_slice(&0xC0DE_0002u32.to_le_bytes());
-        data.extend_from_slice(&0u32.to_le_bytes()); // (filtered by !=0)
+        data.extend_from_slice(&0u32.to_le_bytes()); // (filtered by != 0)
         data.extend_from_slice(&0xC0DE_0003u32.to_le_bytes());
-        // flags + services + skill/level/teaches/max (16 + 4 = 20 bytes)
-        data.extend_from_slice(&0u32.to_le_bytes());
-        data.extend_from_slice(&0u32.to_le_bytes());
-        data.extend_from_slice(&[0u8; 4]);
-        // 7 attribute weights
-        data.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7]);
-        assert_eq!(data.len(), 35);
-        let subs = vec![sub(b"EDID", b"NCRTrooper\0"), sub(b"DATA", &data)];
+        data.extend_from_slice(&0u32.to_le_bytes()); // flags
+        data.extend_from_slice(&0u32.to_le_bytes()); // buys/sells + services
+        data.extend_from_slice(&[0u8; 4]); // teaches + max + 2 unused
+        assert_eq!(data.len(), 28);
+        // ATTR: one 7-byte struct (Str, Per, End, Cha, Int, Agi, Luck).
+        let attr = [1u8, 2, 3, 4, 5, 6, 7];
+        let subs = vec![
+            sub(b"EDID", b"NCRTrooper\0"),
+            sub(b"DATA", &data),
+            sub(b"ATTR", &attr),
+        ];
         let c = parse_clas(0x600, &subs, GameKind::Fallout3NV);
         assert_eq!(c.tag_skills, vec![0xC0DE_0001, 0xC0DE_0002, 0xC0DE_0003]);
-        assert_eq!(c.attribute_weights, [1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(c.base_attributes, [1, 2, 3, 4, 5, 6, 7]);
         // Oblivion-only fields stay None.
         assert!(c.primary_attributes.is_none());
         assert!(c.specialization.is_none());
         assert!(c.major_skills.is_empty());
         assert!(c.flags_oblivion.is_none());
+    }
+
+    /// FO3 splits the 7 base attributes across 7 single-byte `ATTR`
+    /// subrecords; they must accumulate in order into `base_attributes`.
+    #[test]
+    fn clas_fo3_split_attr_subrecords_accumulate() {
+        let mut data = Vec::with_capacity(28);
+        data.extend_from_slice(&0u32.to_le_bytes()); // tag1 (filtered)
+        data.extend_from_slice(&[0u8; 24]); // remaining DATA
+        let mut subs = vec![sub(b"EDID", b"FO3Class\0"), sub(b"DATA", &data)];
+        for v in [5u8, 6, 7, 4, 8, 6, 5] {
+            subs.push(sub(b"ATTR", &[v]));
+        }
+        let c = parse_clas(0x601, &subs, GameKind::Fallout3NV);
+        assert_eq!(c.base_attributes, [5, 6, 7, 4, 8, 6, 5]);
     }
 
     /// Boundary: a malformed Oblivion CLAS with < 52-byte DATA must

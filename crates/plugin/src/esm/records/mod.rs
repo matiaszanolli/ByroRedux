@@ -13,6 +13,7 @@
 //! `parse_esm_cells` (now a thin wrapper over `parse_esm`).
 
 pub mod actor;
+pub mod actor_value_derive;
 pub mod climate;
 pub mod common;
 pub mod condition;
@@ -38,6 +39,7 @@ pub use outfit::{parse_otft, OtftRecord};
 pub use pkin::{parse_pkin, PkinRecord};
 pub use scol::{parse_scol, ScolPart, ScolPlacement, ScolRecord};
 
+pub use actor_value_derive::derive_npc_actor_values;
 pub use actor::{
     parse_clas, parse_fact, parse_npc, parse_race, ClassRecord, FactionMembership, FactionRecord,
     FactionRelation, NpcInventoryEntry, NpcRecord, RaceRecord,
