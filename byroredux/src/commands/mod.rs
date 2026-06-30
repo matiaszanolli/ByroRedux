@@ -15,6 +15,7 @@
 //! - [`scene`] — scene / lighting / material / script state
 //!   (`light.*`, `door.teleport`, `script.activate`, `mat.*`, `ragdoll`)
 
+mod actor_value;
 mod assets;
 mod condition;
 mod scene;
@@ -22,6 +23,7 @@ mod shared;
 mod view;
 mod world_info;
 
+use actor_value::*;
 use assets::*;
 use condition::*;
 use scene::*;
@@ -33,6 +35,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(HelpCommand);
     registry.register(CondCommand);
+    registry.register(SetAvCommand);
+    registry.register(ModAvCommand);
     registry.register(StatsCommand);
     registry.register(EntitiesCommand);
     registry.register(SystemsCommand);

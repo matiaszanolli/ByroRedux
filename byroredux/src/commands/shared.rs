@@ -62,6 +62,31 @@ pub(crate) fn look_at_yaw_pitch(from: Vec3, to: Vec3) -> (f32, f32) {
 pub(crate) fn short(name: &str) -> &str {
     name.rsplit("::").next().unwrap_or(name)
 }
+
+/// Resolve a console entity token: `.` → the current [`SelectedRef`] selection
+/// (set by `prid`), otherwise a decimal [`EntityId`]. Shared by the
+/// actor-state commands (`cond`, `setav`, `modav`).
+pub(crate) fn resolve_console_entity(world: &World, tok: &str) -> Result<EntityId, String> {
+    if tok == "." {
+        return match world.try_resource::<SelectedRef>() {
+            Some(sel) => sel
+                .0
+                .ok_or_else(|| "no selection — `prid <id>` first".to_string()),
+            None => Err("SelectedRef resource not present".to_string()),
+        };
+    }
+    tok.parse::<EntityId>()
+        .map_err(|_| format!("bad entity `{tok}` (decimal id or `.`)"))
+}
+
+/// Parse a decimal or `0x`-hex `u32` console argument (FormIDs are hex).
+pub(crate) fn parse_console_u32(tok: &str) -> Option<u32> {
+    if let Some(hex) = tok.strip_prefix("0x").or_else(|| tok.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).ok()
+    } else {
+        tok.parse::<u32>().ok()
+    }
+}
 /// Pure formatter — kept separate from the command impl so the test
 /// can drive it without standing up a `ConsoleCommand` dispatcher.
 pub(crate) fn format_skin_dump(world: &World, entity: u32, skin: &SkinnedMesh) -> Vec<String> {

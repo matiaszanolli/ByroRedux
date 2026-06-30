@@ -41,9 +41,9 @@ impl ConsoleCommand for CondCommand {
             return CommandOutput::error("cond: missing function name (try `cond list`)");
         };
 
-        let entity = match resolve_entity(world, entity_tok) {
+        let entity = match resolve_console_entity(world, entity_tok) {
             Ok(e) => e,
-            Err(msg) => return CommandOutput::error(msg),
+            Err(msg) => return CommandOutput::error(format!("cond: {msg}")),
         };
 
         let Some(func) = ConditionFunction::from_name(func_name) else {
@@ -79,30 +79,13 @@ impl ConsoleCommand for CondCommand {
     }
 }
 
-/// `.` → the `SelectedRef` selection; otherwise a decimal `EntityId`.
-fn resolve_entity(world: &World, tok: &str) -> Result<EntityId, String> {
-    if tok == "." {
-        return match world.try_resource::<SelectedRef>() {
-            Some(sel) => sel
-                .0
-                .ok_or_else(|| "cond: no selection — `prid <id>` first".to_string()),
-            None => Err("cond: SelectedRef resource not present".to_string()),
-        };
-    }
-    tok.parse::<EntityId>()
-        .map_err(|_| format!("cond: bad entity `{tok}` (decimal id or `.`)"))
-}
-
-/// Parse an optional decimal-or-`0x`-hex `u32`; absent → `0`. `Err` carries the
-/// offending token for the error message.
+/// Parse an optional `u32` param (decimal or `0x`-hex); absent → `0`. `Err`
+/// carries the offending token for the error message.
 fn parse_opt_u32(tok: Option<&str>) -> Result<u32, String> {
-    let Some(t) = tok else { return Ok(0) };
-    let parsed = if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        u32::from_str_radix(hex, 16)
-    } else {
-        t.parse::<u32>()
-    };
-    parsed.map_err(|_| t.to_string())
+    match tok {
+        None => Ok(0),
+        Some(t) => parse_console_u32(t).ok_or_else(|| t.to_string()),
+    }
 }
 
 fn catalog_output() -> CommandOutput {
