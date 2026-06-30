@@ -194,6 +194,22 @@ reuse it — MW/OB class governs the per-level attribute multipliers; FNV class 
 skills drive per-level skill growth. Without this, leveling would have to re-find
 the class record at every level-up.
 
+### 4.5 `FactionReputation` — **NEW, BUILT** (reputation-family storage)
+
+```rust
+pub struct FactionReputation { entries: Vec<FactionStanding> }  // FactionStanding { faction, fame: u16, infamy: u16 }
+```
+
+The storage half of the **reputation family** ([`character::reputation`]): per-faction
+Fame/Infamy, both **monotonic** (FNV reputation never drops — `add_fame`/`add_infamy`
+saturate; `reset` zeroes for the scripted NCR/Legion/disguise exceptions).
+`standing(faction, &thresholds)` bridges the stored pair to the `ReputationStanding`
+4×4 classifier. **Karma needs no component** — it is already an `ActorValues` entry, so
+the reputation family's two instances split cleanly: Karma rides the AV substrate,
+faction Reputation gets this dedicated component (FO4 companion *affinity* will be a
+third, per-companion variant). Player-scoped in practice; a component so it rides the
+ECS/save machinery like the rest of CHARAL.
+
 ---
 
 ## 5. The per-game ruleset (the data the user provides)

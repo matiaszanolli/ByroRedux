@@ -34,7 +34,9 @@ pub mod reputation;
 pub mod resistance;
 pub mod ruleset;
 
-pub use components::{Background, CharacterLevel, PerkRank, Perks};
+pub use components::{
+    Background, CharacterLevel, FactionReputation, FactionStanding, PerkRank, Perks,
+};
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
 pub use fallout::{fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset};
 pub use leveling::{LevelReward, LevelingModel};
