@@ -264,6 +264,33 @@ user-provided tables or cited research (§9).
 - **No Vulkan / render changes.** Like every sibling layer, CHARAL is pure ECS +
   parse; nothing touches the render pass or pipeline.
 
+### 7.1 Companion / non-player progression (source: fandom *Companion*)
+
+A companion is just an NPC, so its **stats land in the same canonical `ActorValues`** —
+but the page confirms its *progression strategy* differs from the player's XP curve, and
+that difference is exactly a `LevelingModel` variant, not a new component:
+
+- **FO3 / FNV / FO4 — *scale-to-leader*.** Companion stats scale off the **player's**
+  level (FO3 capped, *Broken Steel* lifts to 30; FO4 uncapped), not their own XP. This
+  is a distinct leveling strategy — `LevelReward`/`LevelingModel` gains a `ScaleToLeader`
+  arm whose "level" input is the player's, with the actual per-level numbers coming from
+  the NPC's level-list / template records, not a hardcoded curve.
+- **FO4 *affinity* is ANOTHER reputation-family instance.** Per-companion approval moves
+  up/down with player actions and at **max** unlocks a permanent companion perk. That is
+  the same `{ AV + band classifier → effect }` shape as Karma — but **scoped to one
+  relationship** (one affinity AV per companion) rather than world-wide. Reinforces the
+  reputation family ([[charal-fnv-fo3-ruleset]] Karma section): Karma = global 1-axis,
+  FNV Reputation = per-faction 2-axis (Fame/Infamy), FO4 affinity = per-companion 1-axis.
+  The perk-at-threshold reward is scripting/quest data, as always.
+- **FO76 has no traditional companions** (C.A.M.P. allies) — out of scope for now.
+- **FO1 / FO2 companion mechanics** (no leveling / fixed "stage" model-swap, the
+  200-byte/5-record truncation bug) are **out of scope** — those are the isometric
+  pre-Gamebryo engine, not a ByroRedux target. Recorded only so the taxonomy is complete.
+
+The takeaway for CHARAL: companions need **no new canonical type** — they reuse
+`ActorValues` + (eventually) an affinity reputation AV; only the *leveling strategy* enum
+grows a `ScaleToLeader` arm.
+
 ---
 
 ## 8. Rollout order

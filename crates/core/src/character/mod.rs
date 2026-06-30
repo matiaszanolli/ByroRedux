@@ -15,6 +15,8 @@
 //!   per-level reward (FO4 SPECIAL-or-perk vs FO3/FNV skill points).
 //! * [`ruleset`] — [`CharacterRuleset`], the per-game `Resource` bundling the
 //!   derived-formula table + leveling model.
+//! * [`reputation`] — the reputation family: [`KarmaBand`] (FO3/FNV Karma) +
+//!   [`ReputationStanding`] (FNV Fame/Infamy 4×4 grid) classifiers.
 //! * [`components`] — [`CharacterLevel`] / [`Perks`] / [`Background`], the
 //!   structural per-actor ECS components.
 //!
@@ -26,10 +28,15 @@ pub mod components;
 pub mod derived;
 pub mod fallout;
 pub mod leveling;
+pub mod reputation;
 pub mod ruleset;
 
 pub use components::{Background, CharacterLevel, PerkRank, Perks};
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
 pub use fallout::{fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset};
 pub use leveling::{LevelReward, LevelingModel};
+pub use reputation::{
+    clamp_karma, karma_band, reputation_bump_points, FactionRepThresholds, KarmaBand,
+    ReputationSentiment, ReputationStanding, REPUTATION_BUMP_POINTS,
+};
 pub use ruleset::CharacterRuleset;

@@ -167,3 +167,150 @@ computed from class base attributes (the #1663 path). This is the FO3/FNV analog
 FO4's "read PRPS / read DNAM Calculated Health" — different wire format, same idea
 (stored-or-computed). Full byte layout: a follow-up when wiring FO3/FNV NPC derived
 stats.
+
+## Karma — LOCKED (new category: signed, clamped, event-driven reputation AV)
+
+Source: fandom *Karma (Fallout 3)* + *Karma (Fallout: New Vegas)*. **Karma is a stored
+ActorValue**, not derived — both pages confirm `player.getav karma`, so it occupies an
+AVIF FormID like any SPECIAL or skill. It is the first CHARAL stat that is **signed**,
+**clamped at both ends**, and **mutated by world events** (quests/actions) rather than by
+a formula. No `END`-style input; the engine just adds/subtracts and re-clamps.
+
+```
+karma   : signed int, starts 0, clamped to [-1000, +1000]   (FO3 == FNV, identical)
+```
+
+**FO3 and FNV are mechanically IDENTICAL here** — same 2000-point linear scale, same 0
+start, **bit-for-bit identical band cut points**. The *only* delta is the title strings
+(cosmetic, below). So the Karma band table is a **single shared canonical constant**
+across the Fallout family, not a per-game one.
+
+**Five bands (threshold table), shared FO3 == FNV cut points:**
+
+| Band       | Range            |
+|------------|------------------|
+| Very Good  | +750 … +1000     |
+| Good       | +250 … +749      |
+| Neutral    | −249 … +249      |
+| Evil       | −250 … −749      |
+| Very Evil  | −1000 … −750     |
+
+The bands are the gameplay-load-bearing part: condition functions (`GetIsKarmaType` /
+the `[Karma]`-tagged speech checks, companion-recruitment gates — Clover/Jericho need
+Evil, Cross/Fawkes need Good, RL-3/Butch neutral) test **which band** the value falls
+in, not the raw number. So CHARAL needs a `karma_band(value) -> KarmaBand` classifier
+backed by an ordered `[(lower_bound, band)]` table — a *reputation* analog of the
+derived-stat table, but a pure lookup (no SPECIAL inputs).
+
+**Karma titles** (the 30-row × {Good/Neutral/Bad} string grid — FO3 "Vault Guardian" …
+"Messiah", FNV "Samaritan" … "Messiah") are **UI cosmetic only**: title-row = a
+character-level bracket, column = the band above. They drive no gameplay (HUD/Pip-Boy
+display string), so CHARAL records them as presentation data, not ruleset logic. The
+grids differ per-game (different strings, FNV caps rows at "30+", FO3 needs *Broken
+Steel* past row 20) — but since they're cosmetic, that per-game difference is a string
+table, not ruleset logic.
+
+**FNV companion gating is softer than FO3** — FNV recruits no companion *by* Karma band
+(FO3 hard-gated Clover/Jericho=Evil, Cross/Fawkes=Good). The one FNV case (Cass leaving
+at Karma ≤ −250 after warnings at −100/−150) is **scripted dialogue keyed off raw Karma
+thresholds**, i.e. condition/quest data — reinforcing that band→effect lives in the
+scripting layer, not CHARAL.
+
+**Point grants are game-data, not engine rules** — every "+50 quest good act / −100 kill
+non-evil / ±1000 Megaton" entry is authored on the quest/script/perk record (a Reward or
+script `RewardKarma`), so it flows through the *scripting* runtime, **not** a
+`DerivedStatFormula`. CHARAL owns only: the AV slot, the clamp bounds (`fKarmaMod*` /
+`iKarma*` GMSTs — to be GMST-sourced), and the band classifier.
+
+**Design impact:** Karma generalises CHARAL beyond "stat = base+mods or derived". It adds
+a **reputation family** = `{ clamped signed AV + ordered band table }`. Clamp/band bounds
+are AUTHORED (GMST), the band→effect wiring is condition/quest data.
+
+**FNV Reputation is a DISTINCT sub-shape — correction to an earlier assumption.** The FNV
+page states Fame and Infamy "cannot be lost (which can lead to a 'Mixed' reputation)",
+whereas Karma moves both ways. So FNV per-faction Reputation is **NOT** a single signed
+clamped AV like Karma — it is **two independent *monotonic* (non-decreasing) accumulators
+per faction** (Fame AV + Infamy AV), and the faction standing band is a **2-D
+classification of the (Fame, Infamy) pair** (Mixed = both high). That is a *second*
+reputation sub-family:
+
+- **Karma** = 1 signed clamped AV → 1-D band lookup.
+- **FNV Reputation** = (Fame, Infamy) monotonic pair per faction → 2-D band lookup;
+  "Mixed" is the diagonal cell that Karma's single axis cannot express.
+
+Both still belong to the reputation *family* (an AV + a band classifier, effects in the
+scripting layer), but the classifier arity differs. Full spec below.
+
+## FNV Reputation — LOCKED (the 2-axis reputation variant)
+
+Source: fandom *Fallout: New Vegas reputations*. Confirms the 2-axis monotonic model and
+gives every constant.
+
+**Two AVs per faction, both monotonic (offset-only):** Fame (console **1**) + Infamy
+(console **0**). `player.addreputation <factionFormID> <0|1> <editorInt>` adds points;
+neither pool can decrease (only be out-weighed). Resets (NCR/Legion/Freeside story beats,
+faction-armor *temporary* disguise) are scripted exceptions, not a decrement op.
+
+**Condition functions** (mirror Karma's `GetIsKarmaType`): `GetReputation` = raw pool
+value; **`GetReputationThreshold`** = the Range 0–3 band. Gameplay/dialogue reads the
+**threshold**, not the raw value (the page even documents a vanilla bug where Mick/Ralph's
+discount script wrongly used `GetReputation` instead of `GetReputationThreshold`). So the
+band classifier is the gameplay-load-bearing output, exactly as with Karma.
+
+**Bump-magnitude lookup — ENGINE-SUPPLIED shared constant.** The editor stores a 1–5
+"bump type"; the engine maps it to points via a fixed non-linear table:
+
+| Editor int | 1 | 2 | 3 | 4 | 5 |
+|------------|---|---|---|---|---|
+| Points     | 1 | 2 | 4 | 7 | 12 |
+
+(Very Minor → Very Major.) `addreputation … 5` adds 12. This `[_,1,2,4,7,12]` table is a
+single shared constant, not per-faction.
+
+**Per-faction threshold arrays — AUTHORED.** Each axis (Fame *and* Infamy, independently)
+crosses Range 0→1→2→3 at these per-faction minimums (one array, applied to both axes):
+
+| Faction / Settlement | R0 | R1 | R2 | R3 |
+|----------------------|----|----|----|----|
+| Boomers              | 0  | 8  | 25 | 50 |
+| Brotherhood of Steel | 0  | 3  | 10 | 20 |
+| Caesar's Legion      | 0  | 15 | 50 | 100|
+| Followers of the Apocalypse | 0 | 8 | 25 | 50 |
+| Great Khans          | 0  | 5  | 15 | 30 |
+| Powder Gangers       | 0  | 5  | 15 | 50 |
+| NCR                  | 0  | 12 | 40 | 80 |
+| White Glove Society  | 0  | 2  | 5  | 10 |
+| Freeside             | 0  | 11 | 35 | 70 |
+| Goodsprings          | 0  | 3  | 8  | 15 |
+| Novac                | 0  | 3  | 10 | 20 |
+| Primm                | 0  | 5  | 15 | 30 |
+| The Strip            | 0  | 6  | 20 | 40 |
+
+These are per-faction AUTHORED data (live on the faction's record in the ESM; hardcode
+only as a fallback, GMST/record-source them like the rest of CHARAL).
+
+**Title = a 4×4 canonical grid** of (Fame range × Infamy range) → 16 standing titles
+(shared across all factions; positive=green, mixed=black, negative=red):
+
+| Infamy ↓ \ Fame → | 0 | 1 | 2 | 3 |
+|-------------------|---|---|---|---|
+| **0** | Neutral | Accepted | Liked | Idolized |
+| **1** | Shunned | Mixed | Smiling Troublemaker | Good-Natured Rascal |
+| **2** | Hated | Sneering Punk | Unpredictable | Dark Hero |
+| **3** | Vilified | Merciful Thug | Soft-Hearted Devil | Wild Child |
+
+"Mixed" is the (1,1) diagonal cell — the standing a single signed axis (Karma) cannot
+express, which is exactly why Reputation needs two axes.
+
+**CHARAL model for the reputation family (now fully general):**
+
+| Instance        | Scope          | Axes | Classifier       | Decrement? |
+|-----------------|----------------|------|------------------|------------|
+| Karma           | global         | 1 (signed) | 1-D band     | yes (clamped ±1000) |
+| FNV Reputation  | per-faction    | 2 (Fame,Infamy) | 4×4 grid | no (monotonic, offset-only) |
+| FO4 affinity    | per-companion  | 1 (signed) | threshold→perk | yes |
+
+All three reduce to `{ one-or-two AVs + a band/grid classifier }`, with point grants and
+band→effect wiring in the scripting/quest layer. CHARAL owns the AV slot(s), the
+threshold/grid data (AUTHORED per-faction, shared grid), and the classifier — never the
+effects. The `[_,1,2,4,7,12]` bump table is the one engine-supplied numeric constant.
