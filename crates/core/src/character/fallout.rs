@@ -16,6 +16,7 @@
 
 use super::derived::{DerivedInput, DerivedStatFormula};
 use super::leveling::LevelingModel;
+use super::resistance::Affliction;
 use super::ruleset::CharacterRuleset;
 
 #[inline]
@@ -25,7 +26,7 @@ fn av(form_id: u32) -> DerivedInput {
 
 const LEVEL: DerivedInput = DerivedInput::LEVEL;
 
-/// The four derived stats shared verbatim by FO3 and FNV (all actor-general).
+/// The six derived stats shared verbatim by FO3 and FNV (all actor-general).
 fn add_fnv_fo3_shared<F: Fn(&str) -> Option<u32>>(rs: &mut CharacterRuleset, resolve: &F) {
     let strength = resolve("Strength");
     // Carry Weight = 150 + 10·STR.
@@ -43,6 +44,17 @@ fn add_fnv_fo3_shared<F: Fn(&str) -> Option<u32>>(rs: &mut CharacterRuleset, res
     // Unarmed Damage = ceil((10 + Unarmed)/20) = ceil(0.5 + 0.05·Unarmed).
     if let (Some(out), Some(u)) = (resolve("UnarmedDamage"), resolve("Unarmed")) {
         rs.push_derived(out, DerivedStatFormula::affine(av(u), 0.05, 0.5).ceiled());
+    }
+    // Affliction-family resistances — FO3/FNV derived percentages
+    // `(governing − 1)·k` (Radiation k=2 cap 85 %, Poison k=5 uncapped). The
+    // coefficients live in the `Affliction` descriptors (single source); armor
+    // / chems / perks layer on via the AV mods, not the base formula.
+    for aff in Affliction::ALL {
+        if let (Some(out), Some(gov)) =
+            (resolve(aff.resist_editor_id), resolve(aff.governing_editor_id))
+        {
+            rs.push_derived(out, aff.fo3_fnv_resistance_formula(gov));
+        }
     }
 }
 
@@ -146,6 +158,8 @@ mod tests {
             "MeleeDamage" => 0x2D2,
             "CritChance" => 0x2D3,
             "UnarmedDamage" => 0x2D4,
+            "RadResist" => 0x2D5,
+            "PoisonResist" => 0x2D6,
             _ => return None,
         })
     }
@@ -167,8 +181,8 @@ mod tests {
     fn fnv_and_fo3_share_skill_stats_but_differ_on_health_ap() {
         let fnv = falloutnv_ruleset(full);
         let fo3 = fallout3_ruleset(full);
-        assert_eq!(fnv.derived_len(), 6);
-        assert_eq!(fo3.derived_len(), 6);
+        assert_eq!(fnv.derived_len(), 8);
+        assert_eq!(fo3.derived_len(), 8);
         let avs = ActorValues::from_pairs([
             (0x07, 5.0), // END
             (0x0A, 5.0), // AGI
@@ -176,6 +190,16 @@ mod tests {
             (0x0B, 5.0), // Luck
             (0x2C, 90.0), // Unarmed skill
         ]);
+        // Radiation Resistance = (END−1)·2 → (5−1)·2 = 8 %, identical FO3==FNV.
+        assert_eq!(fo3.derived_value(0x2D5, &avs, 1), Some(8.0));
+        assert_eq!(fnv.derived_value(0x2D5, &avs, 1), Some(8.0));
+        // The 85 % cap clamps at high Endurance: (50−1)·2 = 98 → 85.
+        let high_end = ActorValues::from_pairs([(0x07, 50.0)]);
+        assert_eq!(fnv.derived_value(0x2D5, &high_end, 1), Some(85.0));
+        // Poison Resistance = (END−1)·5 → (5−1)·5 = 20 %, the RadResist twin
+        // (uncapped — no documented FO3/FNV cap, so it keeps scaling).
+        assert_eq!(fo3.derived_value(0x2D6, &avs, 1), Some(20.0));
+        assert_eq!(fnv.derived_value(0x2D6, &high_end, 1), Some(245.0)); // (50−1)·5
         // Health: FO3 90+100+10 = 200; FNV 95+100+5 = 200 (different formulas, same here).
         assert_eq!(fo3.derived_value(0x2C9, &avs, 1), Some(200.0));
         assert_eq!(fnv.derived_value(0x2C9, &avs, 1), Some(200.0));

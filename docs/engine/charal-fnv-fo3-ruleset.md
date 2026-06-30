@@ -37,7 +37,16 @@ Governing SPECIAL (per `actor_value_derive.rs::SKILLS`, geckwiki *SPECIAL*):
 
 **Skill base (auto-calc), BUILT:** `skill = 2 + 2·governing + ceil(Luck/2)`
 (geckwiki *Derived Skill Settings*; `fAVDSkillBase=2`, `…PrimaryBonusMult=2`,
-`…LuckBonusMult=0.5`). Worked: END 5 + Luck 5 → Unarmed 15.
+`…LuckBonusMult=0.5`). Worked: END 5 + Luck 5 → Unarmed 15. Re-confirmed by the
+*Speech (FNV)* page (CHA 5 + Luck 5 → Speech 15), same formula.
+
+**Skill *checks* are consumer-side, not ruleset data** — FNV changed them from FO3's
+probabilistic "% chance" to a **deterministic threshold**: a dialogue option unlocks iff
+`skill ≥ required` (100% success, can't save-scum). That is exactly a `GetActorValue
+(skill) ≥ N` condition on the dialogue/quest record — the **already-wired** GetActorValue
+path ([[condition_system]], #1663), no new CHARAL machinery. The per-check thresholds
+(15/20/25/… on each NPC) are quest data, not ruleset. So CHARAL produces the skill AV;
+the scripting/condition layer consumes it — same boundary as Karma/Reputation effects.
 
 ## Skill progression (PLAYER) — LOCKED
 
@@ -79,6 +88,8 @@ base + tag it's the **complete player skill model** for FO3/FNV.
 | Critical Chance | Luck | `Luck × 1%` (cap 10%) | `Luck × 1%` (Luck>10 inert) | **LOCKED** (`critchance` AV) |
 | Melee Damage | STR | `STR × 0.5` | `STR × 0.5` | **LOCKED** (additive bonus) |
 | Unarmed Damage | **Unarmed skill** | `ceil((10 + Unarmed)/20)` | same | **LOCKED** (skill-governed) |
+| Radiation Resistance | END | `(END−1)·2` (cap 85%) | `(END−1)·2` (cap 85%) | **LOCKED** (actor-general, `RadResist` AV) |
+| Poison Resistance | END | `(END−1)·5` (uncapped) | `(END−1)·5` (uncapped) | **LOCKED** (actor-general, hidden, `PoisonResist` AV) |
 
 Health: `fAVDHealthLevelMult` = **10** (FO3) / **5** (FNV); base **90 → 100**. Player
 formulas (NPCs derive separately). Source: fandom *Hit Points*.
@@ -108,6 +119,30 @@ Melee Damage: `STR × 0.5` — an **additive** bonus to Melee Weapon damage (VAT
 base before STR is added; Unarmed has its own stat above). Cross-game arc: FO1/2
 `STR − 5` → FO3/FNV `STR × 0.5` (both additive) → FO4 `1 + STR/10` (multiplier). Source:
 fandom *Melee Damage*.
+
+Radiation Resistance: `(Endurance − 1)·2 = 2·END − 2`, **identical FO3==FNV**, capped at
+**85 %** (both). Worked: END 5 → 8 %. A `RadResist` derived AV expressed as a percentage
+(0–85) — actor-general (governed purely by END, no player-only flag). Armor / Rad-X /
+perks add on top via the AV mod layers, *not* the base formula: the **Rad Resistance
+perk** = +25 % (FNV, 1 rank) → `permanent_mod`; **Rad-X (FNV)** = `(25 + Medicine/2) %`
+(→ 75 % at Medicine 100) → `temporary_mod`, and note its magnitude is itself a small
+derived formula **chaining off the Medicine *skill*** (same skill-chain shape as Unarmed
+Damage). FO1/2 used `END·2` (out of scope). This is the **resistance half** of the
+radiation *affliction family* — the `Rads` pool AV + the poisoning threshold→SPECIAL-
+penalty band are the other half (pending the *Radiation poisoning* page). Source: fandom
+*Radiation Resistance*.
+
+Poison Resistance: `(Endurance − 1)·5 = 5·END − 5`, **identical FO3==FNV**, the
+**Radiation-Resistance twin** — same `(END−1)·k` shape, coefficient **5** instead of 2.
+Worked: END 5 → 20 %. **No documented FO3/FNV cap** (so the formula is left uncapped —
+don't invent one; FO1/2's 75/95 % caps are out of scope). A **hidden** `PoisonResist`
+derived AV (FO3/FNV don't surface it on the Pip-Boy), actor-general. Boosters (Snakeater
+/ Tribal Wisdom / gecko-backed armor / antivenoms) layer via the AV mods, not the base
+formula. The *poison affliction* mirror of radiation: poison damage also applies a
+**temporary SPECIAL debuff** (explicit on the FO4 page), so the same `{pool damage +
+resistance AV + SPECIAL-penalty via temporary_mod}` affliction shape covers both — two
+members now, confirming it's a reusable family, not a radiation one-off. Source: fandom
+*Poison Resistance*.
 
 Action Points: `65 + 2·AGI` (FO3, cap 85) / `65 + 3·AGI` (FNV, cap 95) — same
 `fAVDActionPoints{Base,Mult}` GMST family as FO4 (`60 + 10·AGI`) and FO76

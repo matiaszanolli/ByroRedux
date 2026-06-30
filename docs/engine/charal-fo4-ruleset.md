@@ -193,6 +193,33 @@ Melee Damage). The remaining governance rows (VATS, persuasion, barter, settler 
 hacking, sneak, XP-mult, crit, sprint-AP-drain) are gameplay-system inputs or
 storage-TBD modifiers, not blockers for the `derived` table.
 
+### Radiation Resistance — NOT a SPECIAL-derived stat (FO4 re-architecture)
+
+Source: fandom *Radiation Resistance*. **FO4 dropped the Endurance derivation** — its
+initial value is **0** (FO3/FNV used `(END−1)·2`). Rad Resistance is now a **flat
+additive `RadResist` AV** fed entirely by armor / chems / perks (Hazmat +1000, full
+power armor +1050, Rad Resistant perk +10/level), and damage is reduced by the **same
+non-linear curve as FO4 Damage Resistance & Energy Resistance** — *not* a
+`DerivedStatFormula`. The rule of thumb on the page: when `rads/s == RadResist`, you take
+half damage; higher/lower resistance scales damage non-linearly (two empirical sample
+tables given, not a closed form). So FO4 RadResist is **not** a CHARAL derived formula —
+it's a plain resistance AV (base + mods) consumed by FO4's shared resistance function,
+whose closed form is the FO4 damage-resist GMST formula (source later, alongside DR/ER).
+This is the FO4 face of the *affliction family*'s resistance half; FO3/FNV keep the
+END-derived percentage (`charal-fnv-fo3-ruleset.md`). The Rad-X / armor / perk additions
+are the actor-value mod layers, identical in spirit to FO3/FNV but on a flat (not %)
+scale.
+
+**Poison Resistance — same re-architecture** (source: fandom *Poison Resistance*). FO4
+dropped its `(END−1)·5` FO3/FNV derivation too; `PoisonResist` is now a flat additive AV
+(Med-X +250, Poisoner's-mod armor +25/piece, max +125). Crucially the page **confirms
+the affliction shape explicitly**: poison damage "stacks and it is usually accompanied by
+a debuff to SPECIAL attributes" — i.e. the affliction's effect is a **temporary SPECIAL
+penalty** (→ `temporary_mod`), exactly the `{pool damage + resistance AV + SPECIAL-
+penalty}` model. Radiation + Poison are now **two members** of the affliction family, so
+it's a reusable pattern (not a radiation one-off); both go flat-additive-AV in FO4 and
+END-derived-% in FO3/FNV.
+
 ## Perk chart — COMPLETE (7 / 7 SPECIAL columns, 70 perks)
 
 **Structure** (confirmed by the Strength column): each SPECIAL has **10 perks**,

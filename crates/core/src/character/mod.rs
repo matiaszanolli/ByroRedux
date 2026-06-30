@@ -17,6 +17,8 @@
 //!   derived-formula table + leveling model.
 //! * [`reputation`] — the reputation family: [`KarmaBand`] (FO3/FNV Karma) +
 //!   [`ReputationStanding`] (FNV Fame/Infamy 4×4 grid) classifiers.
+//! * [`resistance`] — the affliction family: [`Affliction`] descriptors
+//!   (radiation / poison resistance derivation) + the damage-multiplier model.
 //! * [`components`] — [`CharacterLevel`] / [`Perks`] / [`Background`], the
 //!   structural per-actor ECS components.
 //!
@@ -29,6 +31,7 @@ pub mod derived;
 pub mod fallout;
 pub mod leveling;
 pub mod reputation;
+pub mod resistance;
 pub mod ruleset;
 
 pub use components::{Background, CharacterLevel, PerkRank, Perks};
@@ -39,4 +42,5 @@ pub use reputation::{
     clamp_karma, karma_band, reputation_bump_points, FactionRepThresholds, KarmaBand,
     ReputationSentiment, ReputationStanding, REPUTATION_BUMP_POINTS,
 };
+pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
