@@ -284,7 +284,12 @@ gives every constant.
 **Two AVs per faction, both monotonic (offset-only):** Fame (console **1**) + Infamy
 (console **0**). `player.addreputation <factionFormID> <0|1> <editorInt>` adds points;
 neither pool can decrease (only be out-weighed). Resets (NCR/Legion/Freeside story beats,
-faction-armor *temporary* disguise) are scripted exceptions, not a decrement op.
+faction-armor *temporary* disguise) are scripted exceptions, not a decrement op. **Each
+axis caps at 100** in normal play (`addreputation` "maxes out at … 100" — *Gamebryo
+console commands*; = the steepest vanilla Range-3, Caesar's Legion). `removereputation`
+/ `setreputation` exist but are **console-only admin** overrides, not gameplay (gameplay
+accrual stays monotonic). Captured as `REPUTATION_AXIS_MAX = 100`; `add_fame`/`add_infamy`
+clamp to it.
 
 **Condition functions** (mirror Karma's `GetIsKarmaType`): `GetReputation` = raw pool
 value; **`GetReputationThreshold`** = the Range 0–3 band. Gameplay/dialogue reads the
@@ -322,7 +327,12 @@ crosses Range 0→1→2→3 at these per-faction minimums (one array, applied to
 | The Strip            | 0  | 6  | 20 | 40 |
 
 These are per-faction AUTHORED data (live on the faction's record in the ESM; hardcode
-only as a fallback, GMST/record-source them like the rest of CHARAL).
+only as a fallback, GMST/record-source them like the rest of CHARAL). The **canonical
+FalloutNV.esm faction FormIDs** are now captured (*Gamebryo console commands*) and the
+fallback table is keyed by them — `reputation::fnv_faction_thresholds::{BY_FORM_ID,
+thresholds_for(form_id)}` — e.g. Boomers `000FFAE8`, NCR `000F43DE`, Legion `000F43DD`,
+BoS `0011E662`. So the reference thresholds resolve by canonical identity until the live
+faction-record path lands.
 
 **Title = a 4×4 canonical grid** of (Fame range × Infamy range) → 16 standing titles
 (shared across all factions; positive=green, mixed=black, negative=red):

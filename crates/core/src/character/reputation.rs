@@ -122,6 +122,12 @@ pub const fn reputation_bump_points(editor_int: u8) -> u8 {
     }
 }
 
+/// The per-axis gameplay maximum for Fame **and** Infamy. `addreputation`
+/// "maxes out at its normal maximum value of 100" (fandom *Gamebryo console
+/// commands*), matching the steepest vanilla Range-3 threshold (Caesar's
+/// Legion = 100). Both axes saturate here in normal play.
+pub const REPUTATION_AXIS_MAX: u16 = 100;
+
 /// Per-faction Range-0→3 cut points for **one** Fame or Infamy axis (Range 0
 /// is always `0`, so only the three positive thresholds are stored). Applied
 /// independently to both axes of a faction. `u16` is ample — the largest
@@ -181,6 +187,35 @@ pub mod fnv_faction_thresholds {
     pub const NOVAC: FactionRepThresholds = FactionRepThresholds::new(3, 10, 20);
     pub const PRIMM: FactionRepThresholds = FactionRepThresholds::new(5, 15, 30);
     pub const THE_STRIP: FactionRepThresholds = FactionRepThresholds::new(6, 20, 40);
+
+    /// `(FalloutNV.esm base FormID, thresholds)` for every vanilla faction /
+    /// settlement — reference/fallback keyed by canonical identity (the
+    /// authoritative source remains the parsed faction record, load-order
+    /// -resolved). FormIDs from fandom *Gamebryo console commands*. The
+    /// threshold values reference the named constants above (single source).
+    pub const BY_FORM_ID: [(u32, FactionRepThresholds); 13] = [
+        (0x000F_FAE8, BOOMERS),
+        (0x0011_E662, BROTHERHOOD_OF_STEEL),
+        (0x000F_43DD, CAESARS_LEGION),
+        (0x0012_4AD1, FOLLOWERS_OF_THE_APOCALYPSE),
+        (0x0011_989B, GREAT_KHANS),
+        (0x0015_58E6, POWDER_GANGERS),
+        (0x000F_43DE, NCR),
+        (0x0011_6F16, WHITE_GLOVE_SOCIETY),
+        (0x0012_9A7A, FREESIDE),
+        (0x0010_4C22, GOODSPRINGS),
+        (0x0012_9A79, NOVAC),
+        (0x000F_2406, PRIMM),
+        (0x0011_8F61, THE_STRIP),
+    ];
+
+    /// Vanilla thresholds for a faction by its FalloutNV.esm base FormID.
+    pub fn thresholds_for(form_id: u32) -> Option<FactionRepThresholds> {
+        BY_FORM_ID
+            .iter()
+            .find(|(id, _)| *id == form_id)
+            .map(|(_, t)| *t)
+    }
 }
 
 /// The overall sentiment of a [`ReputationStanding`] (the wiki's green / black
@@ -396,6 +431,25 @@ mod tests {
         for s in [Neutral, Mixed, Unpredictable, DarkHero, SoftHeartedDevil, WildChild] {
             assert_eq!(s.sentiment(), ReputationSentiment::Mixed, "{}", s.name());
         }
+    }
+
+    #[test]
+    fn faction_thresholds_resolve_by_form_id() {
+        // The 13 vanilla factions are keyed by their FalloutNV.esm FormID, and
+        // each maps to its named threshold constant (single source).
+        assert_eq!(fac::BY_FORM_ID.len(), 13);
+        assert_eq!(
+            fac::thresholds_for(0x000F_43DD), // Caesar's Legion
+            Some(fac::CAESARS_LEGION)
+        );
+        assert_eq!(
+            fac::thresholds_for(0x000F_FAE8), // Boomers
+            Some(fac::BOOMERS)
+        );
+        assert_eq!(fac::thresholds_for(0xDEAD_BEEF), None, "unknown faction");
+        // The per-axis cap matches the steepest vanilla Range-3 (Legion = 100).
+        assert_eq!(REPUTATION_AXIS_MAX, 100);
+        assert_eq!(fac::CAESARS_LEGION.r3, REPUTATION_AXIS_MAX);
     }
 
     #[test]

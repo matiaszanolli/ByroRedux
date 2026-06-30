@@ -5,7 +5,9 @@
 //! storage — only actors carry them. (Defined here, with the rest of CHARAL,
 //! mirroring how `AnimationPlayer` lives in the `animation` module.)
 
-use crate::character::reputation::{FactionRepThresholds, ReputationStanding};
+use crate::character::reputation::{
+    FactionRepThresholds, ReputationStanding, REPUTATION_AXIS_MAX,
+};
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
 
@@ -159,18 +161,20 @@ impl FactionReputation {
         self.find(faction_form_id).map_or(0, |f| f.infamy)
     }
 
-    /// Add Fame (monotonic — saturating, never decreases). `points` is the
-    /// already-resolved bump magnitude (see
+    /// Add Fame (monotonic — never decreases, clamped to the per-axis gameplay
+    /// max [`REPUTATION_AXIS_MAX`] of 100). `points` is the already-resolved
+    /// bump magnitude (see
     /// [`reputation_bump_points`](super::reputation::reputation_bump_points)).
     pub fn add_fame(&mut self, faction_form_id: u32, points: u16) {
         let e = self.entry_mut(faction_form_id);
-        e.fame = e.fame.saturating_add(points);
+        e.fame = e.fame.saturating_add(points).min(REPUTATION_AXIS_MAX);
     }
 
-    /// Add Infamy (monotonic — saturating, never decreases).
+    /// Add Infamy (monotonic — never decreases, clamped to
+    /// [`REPUTATION_AXIS_MAX`]).
     pub fn add_infamy(&mut self, faction_form_id: u32, points: u16) {
         let e = self.entry_mut(faction_form_id);
-        e.infamy = e.infamy.saturating_add(points);
+        e.infamy = e.infamy.saturating_add(points).min(REPUTATION_AXIS_MAX);
     }
 
     /// Zero both axes for a faction — the scripted-reset exception (NCR/Legion
@@ -261,9 +265,9 @@ mod tests {
         // (Fame 2, Infamy 1) → Smiling Troublemaker.
         assert_eq!(rep.standing(F, &BOS), ReputationStanding::SmilingTroublemaker);
 
-        // Monotonic: adding never lowers; saturating at u16::MAX.
+        // Monotonic: adding never lowers; clamps at the per-axis max of 100.
         rep.add_fame(F, u16::MAX);
-        assert_eq!(rep.fame(F), u16::MAX);
+        assert_eq!(rep.fame(F), 100);
 
         // Scripted reset zeroes both axes → back to Neutral.
         rep.reset(F);
