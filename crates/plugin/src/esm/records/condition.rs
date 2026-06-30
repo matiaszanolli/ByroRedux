@@ -326,6 +326,8 @@ fn param1_is_form_id(function_index: u32) -> bool {
         | 14  // GetActorValue — AVIF FormID
         | 58  // GetStage      — quest FormID
         | 59  // GetStageDone  — quest FormID (param_2 = stage, a literal)
+        | 68  // GetIsClass    — CLAS FormID
+        | 69  // GetIsRace     — RACE FormID
         | 72  // GetIsID       — base FormID
         | 73  // GetFactionRank — faction FormID
         | 448 | 449 // HasPerk — perk FormID (448 Skyrim, 449 FO3/FNV)

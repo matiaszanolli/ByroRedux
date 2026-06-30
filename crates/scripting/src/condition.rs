@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **9 functions** at their canonical CTDA
+//! lineage. This catalog ships **13 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -33,9 +33,13 @@
 //! | 14    | GetActorValue          | `ActorValues[param_1]`      |
 //! | 58    | GetStage               | `QuestStageState[param_1]`  |
 //! | 59    | GetStageDone           | `QuestStageState[param_1]`  |
+//! | 68    | GetIsClass             | `Background.class_form_id`  |
+//! | 69    | GetIsRace              | `Background.race_form_id`   |
 //! | 72    | GetIsID                | `FormIdComponent`           |
 //! | 73    | GetFactionRank         | `FactionRanks`              |
+//! | 80    | GetLevel               | `CharacterLevel`            |
 //! | 449   | HasPerk (448 on Skyrim)| `PerkList`                  |
+//! | 533   | GetXPForNextLevel      | `CharacterRuleset` leveling |
 //! | 573   | GetReputation          | `FactionReputation` (FNV)   |
 //! | 575   | GetReputationThreshold | `FactionReputation` + bands |
 //!
@@ -81,6 +85,23 @@ pub enum ConditionFunction {
     /// returned when the actor carries no `FactionRanks`).
     /// FO3 / FNV / Skyrim index **73**.
     GetFactionRank,
+    /// `GetLevel → f32`. The Run-On actor's character level from its
+    /// `CharacterLevel` component (0.0 when absent). No parameter.
+    /// FO3 / FNV / Skyrim index **80**.
+    GetLevel,
+    /// `GetXPForNextLevel → f32`. The experience required for the actor's
+    /// next level, from the per-game `CharacterRuleset`'s `LevelingModel`
+    /// (`xp_to_next(level)`); 0.0 without the ruleset resource. No parameter.
+    /// The first runtime consumer of the leveling model. FNV index **533**.
+    GetXPForNextLevel,
+    /// `GetIsClass(class_form_id) → f32`. 1.0 when the Run-On actor's
+    /// `Background.class_form_id` matches `param_1` (a `CLAS` FormID), else
+    /// 0.0 (also 0.0 without `Background`). FO3 / FNV / Skyrim index **68**.
+    GetIsClass,
+    /// `GetIsRace(race_form_id) → f32`. 1.0 when the Run-On actor's
+    /// `Background.race_form_id` matches `param_1` (a `RACE` FormID), else
+    /// 0.0 (also 0.0 without `Background`). FO3 / FNV / Skyrim index **69**.
+    GetIsRace,
     /// `GetIsID(base_form_id) → f32`. Returns 1.0 when the Run-On's
     /// `FormIdComponent` matches `param_1`, 0.0 otherwise. Common
     /// gate for "is this specific REFR?" checks. FO3 / FNV / Skyrim
@@ -123,9 +144,13 @@ impl ConditionFunction {
             14 => Self::GetActorValue,
             58 => Self::GetStage,
             59 => Self::GetStageDone,
+            68 => Self::GetIsClass,
+            69 => Self::GetIsRace,
             72 => Self::GetIsID,
             73 => Self::GetFactionRank,
+            80 => Self::GetLevel,
             448 | 449 => Self::HasPerk,
+            533 => Self::GetXPForNextLevel,
             573 => Self::GetReputation,
             575 => Self::GetReputationThreshold,
             other => Self::Unknown(other),
@@ -367,6 +392,52 @@ pub fn evaluate_function(
                 .get::<FactionRanks>(entity)
                 .and_then(|f| f.rank(condition.param_1))
                 .map_or(-1.0, |rank| rank as f32)
+        }
+        ConditionFunction::GetLevel => {
+            // GetLevel → the Run-On actor's character level (0.0 when the
+            // actor carries no `CharacterLevel`).
+            use byroredux_core::character::CharacterLevel;
+            world
+                .get::<CharacterLevel>(entity)
+                .map_or(0.0, |l| f32::from(l.level))
+        }
+        ConditionFunction::GetXPForNextLevel => {
+            // GetXPForNextLevel → XP required for the actor's next level, from
+            // the per-game `LevelingModel` in the `CharacterRuleset` resource.
+            // 0.0 without the ruleset (the leveling curve is game-supplied).
+            use byroredux_core::character::{CharacterLevel, CharacterRuleset};
+            let Some(rs) = world.try_resource::<CharacterRuleset>() else {
+                return 0.0;
+            };
+            let level = world.get::<CharacterLevel>(entity).map_or(0, |l| l.level);
+            rs.leveling.xp_to_next(level)
+        }
+        ConditionFunction::GetIsClass => {
+            // GetIsClass(class_form_id) → 1.0 iff the actor's `Background.class`
+            // matches `param_1` (a remapped `CLAS` FormID). Compared in the
+            // actor's stored space — identity-equal to a remapped `param_1` in
+            // single-plugin loads, same contract as `GetFactionRank`.
+            use byroredux_core::character::Background;
+            world.get::<Background>(entity).map_or(0.0, |b| {
+                if b.class_form_id == condition.param_1 {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+        }
+        ConditionFunction::GetIsRace => {
+            // GetIsRace(race_form_id) → 1.0 iff the actor's `Background.race`
+            // matches `param_1` (a remapped `RACE` FormID). Same space contract
+            // as `GetIsClass`.
+            use byroredux_core::character::Background;
+            world.get::<Background>(entity).map_or(0.0, |b| {
+                if b.race_form_id == condition.param_1 {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
         }
         ConditionFunction::GetIsID => {
             // Test the Run-On entity's identity against `param_1`. The CTDA
@@ -781,6 +852,78 @@ mod tests {
         let actor: EntityId = 3;
         let list = vec![cond(449, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F80)];
         assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    // ── GetLevel / GetIsClass / GetIsRace / GetXPForNextLevel (CHARAL) ──
+
+    #[test]
+    fn get_level_reads_character_level() {
+        use byroredux_core::character::CharacterLevel;
+        let mut world = World::new();
+        let actor = world.spawn();
+        world.insert(actor, CharacterLevel { level: 12, xp: 40 });
+        // GetLevel == 12.
+        let list = vec![cond(80, ComparisonOp::Eq, 12.0, false)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+        // Absent component → 0.
+        let bare: EntityId = 9;
+        let list = vec![cond(80, ComparisonOp::Eq, 0.0, false)];
+        assert!(evaluate(&list, &world, &ctx(bare)));
+    }
+
+    #[test]
+    fn get_is_class_and_race_match_background() {
+        use byroredux_core::character::Background;
+        const RACE: u32 = 0x0004_4C07;
+        const CLASS: u32 = 0x0001_38B9;
+        let mut world = World::new();
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            Background {
+                race_form_id: RACE,
+                class_form_id: CLASS,
+            },
+        );
+        // GetIsRace(RACE) == 1, wrong race == 0.
+        assert!(evaluate(
+            &vec![cond(69, ComparisonOp::Eq, 1.0, false).with_param_1(RACE)],
+            &world,
+            &ctx(actor)
+        ));
+        assert!(evaluate(
+            &vec![cond(69, ComparisonOp::Eq, 0.0, false).with_param_1(0x9999)],
+            &world,
+            &ctx(actor)
+        ));
+        // GetIsClass(CLASS) == 1.
+        assert!(evaluate(
+            &vec![cond(68, ComparisonOp::Eq, 1.0, false).with_param_1(CLASS)],
+            &world,
+            &ctx(actor)
+        ));
+        // No Background → 0.
+        assert!(evaluate(
+            &vec![cond(68, ComparisonOp::Eq, 0.0, false).with_param_1(CLASS)],
+            &world,
+            &ctx(123)
+        ));
+    }
+
+    #[test]
+    fn get_xp_for_next_level_uses_leveling_model() {
+        use byroredux_core::character::{CharacterLevel, CharacterRuleset, LevelingModel};
+        let mut world = World::new();
+        // FNV curve: xp_to_next(L) = 150·L + 50 → L10 = 1550.
+        world.insert_resource(CharacterRuleset::new(LevelingModel::FNV));
+        let actor = world.spawn();
+        world.insert(actor, CharacterLevel { level: 10, xp: 0 });
+        let list = vec![cond(533, ComparisonOp::Eq, 1550.0, false)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+        // No ruleset resource → 0.0.
+        let bare = World::new();
+        let list = vec![cond(533, ComparisonOp::Eq, 0.0, false)];
+        assert!(evaluate(&list, &bare, &ctx(1)));
     }
 
     // ── GetReputation / GetReputationThreshold (FNV, indices 573 / 575) ──
