@@ -222,6 +222,29 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
   from the `dev-4.1.6` branch; no code is copied — only the documented format
   knowledge. Without two decades of that reverse-engineering effort, parsing
   Bethesda's plugin formats correctly would not be tractable.
+- [**The Fallout Wiki (Nukapedia)**](https://fallout.fandom.com) — the
+  community's encyclopedia of Fallout game mechanics. ByroRedux's character
+  and combat layers are built against its documented per-game values: the
+  derived-stat formulas behind the CHARAL character layer (e.g. FNV Action Points
+  `65 + 3·Agility` capped at 95, FO3 `65 + 2·Agility` capped at 85,
+  FO4 `60 + 10·Agility`), the V.A.T.S. ruleset (95% hit cap, per-game crit
+  bonus, AP costs), and the FNV combat-damage chain. Pages are read via the
+  MediaWiki `api.php` (raw wikitext); content is CC BY-SA — only documented
+  facts and numeric values inform the engine, no article text is reproduced.
+- [**GECKwiki**](https://geckwiki.com) — the community reference for the
+  Creation Kit / GECK and Gamebryo engine internals. ByroRedux's accuracy
+  model draws on its Fallout: New Vegas *Gun Spread Formula* and the
+  `fSpread*` / `fVATS*` game settings with their defaults (e.g.
+  `fVATSMaxChance` 95, `fWobbleToSkillConversion` 0.5, `fMinGunSpreadValue`
+  0.01). Used as documented format/behavior knowledge only — no code copied.
+- [**The Elder Scrolls Wiki**](https://elderscrolls.fandom.com) — the
+  community's encyclopedia of Elder Scrolls game mechanics, and the TES-side
+  counterpart to the Fallout Wiki for the CHARAL character layer. ByroRedux's
+  TES rule family is built against its documented values: Skyrim's base
+  100 Health/Magicka/Stamina with the +10-per-level pick, and Oblivion's
+  eight-attribute system with skill-governed level-up modifiers (+1…+5).
+  Read via the MediaWiki `api.php`; content is CC BY-SA — only documented
+  facts and numeric values inform the engine, no article text is reproduced.
 - [**Ruffle**](https://ruffle.rs) — the open-source Flash Player emulator.
   ByroRedux's UI layer embeds Ruffle to render the Scaleform/SWF menus
   Bethesda shipped with every Creation Engine title.

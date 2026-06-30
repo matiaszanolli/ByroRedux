@@ -26,6 +26,7 @@
 //! FNV/FO3 class auto-calc) in `byroredux_plugin`; this crate holds the
 //! game-agnostic canonical types those boundaries feed.
 
+pub mod attribute;
 pub mod components;
 pub mod derived;
 pub mod fallout;
@@ -34,6 +35,7 @@ pub mod reputation;
 pub mod resistance;
 pub mod ruleset;
 
+pub use attribute::{Attribute, AttributeSet};
 pub use components::{
     Background, CharacterLevel, FactionReputation, FactionStanding, PerkRank, Perks,
 };

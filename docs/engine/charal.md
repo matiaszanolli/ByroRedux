@@ -219,13 +219,22 @@ One `CharacterRuleset` Resource per loaded game, assembled at load from **AUTHOR
 
 ```rust
 pub struct CharacterRuleset {
-    attributes: Vec<AvifId>,            // 7 SPECIAL | 8 TES attrs | none
+    attributes: AttributeSet,           // 7 SPECIAL | 8 TES attrs | none  (shipped)
     skills:     Vec<SkillDef>,          // { avif, governing: Option<AvifId> }
     derived:    Vec<DerivedStatFormula>,// Health / AP / CarryWeight / Magicka / … = f(attrs, level)
     skill_calc: SkillDerivation,        // base / attr-mult / luck-mult  (from GMST)
     leveling:   LevelingModel,          // XpCurve { … } | SkillUse { … } | SkillXp { … }
 }
 ```
+
+`AttributeSet` (shipped — `crates/core/src/character/attribute.rs`) is the per-game
+**roster** over a canonical [`Attribute`] union (the lineage-wide set: Strength /
+Endurance / Intelligence / Agility / Luck shared, Perception+Charisma Fallout-only,
+Willpower+Speed+Personality TES-only). Membership is ENGINE-SUPPLIED per family
+(`AttributeSet::FALLOUT` / `TES_CLASSIC` / `SKYRIM` / `STARFIELD` const rosters);
+each attribute's AVIF FormID stays AUTHORED, produced on demand by
+`AttributeSet::resolve(editor_id → form_id)` so the canonical identity travels with
+the number and the consumer never branches on game.
 
 The user-provided per-game **data tables**, by family — each slots directly into
 the struct above; **the canonical runtime never changes**:

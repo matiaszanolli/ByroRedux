@@ -6,6 +6,7 @@
 //! tables, never a branch in the consumer (the CHARAL doctrine,
 //! `docs/engine/charal.md`).
 
+use super::attribute::AttributeSet;
 use super::derived::DerivedStatFormula;
 use super::leveling::LevelingModel;
 use crate::ecs::components::ActorValues;
@@ -20,6 +21,10 @@ use crate::ecs::resource::Resource;
 /// pointer-chase) and footprint at that N — and it stays cache-resident.
 #[derive(Debug, Clone)]
 pub struct CharacterRuleset {
+    /// The game's primary-attribute roster — 7 SPECIAL (Fallout), 8 (TES
+    /// classic) or none (Skyrim / Starfield). ENGINE-SUPPLIED membership; the
+    /// AVIF FormIDs each resolves to stay AUTHORED.
+    pub attributes: AttributeSet,
     /// `(output AVIF FormID, formula)` — the stat each formula produces and
     /// how to compute it from base AVs + level.
     derived: Vec<(u32, DerivedStatFormula)>,
@@ -28,13 +33,23 @@ pub struct CharacterRuleset {
 }
 
 impl CharacterRuleset {
-    /// An empty ruleset with the given leveling model; populate the derived
+    /// An empty ruleset with the given leveling model and no attribute roster;
+    /// attach one with [`Self::with_attributes`] and populate the derived
     /// table with [`Self::with_derived`].
     pub fn new(leveling: LevelingModel) -> Self {
         Self {
+            attributes: AttributeSet::default(),
             derived: Vec::new(),
             leveling,
         }
+    }
+
+    /// Set the primary-attribute roster (builder style) — the per-game seam
+    /// picks the canonical [`AttributeSet`] for its family.
+    #[must_use]
+    pub fn with_attributes(mut self, attributes: AttributeSet) -> Self {
+        self.attributes = attributes;
+        self
     }
 
     /// Register a derived-stat formula producing `output_avif` (builder

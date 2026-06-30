@@ -14,6 +14,7 @@
 //! or derive them differently; Carry Weight / Melee Damage / Critical Chance
 //! / Unarmed Damage are actor-general.
 
+use super::attribute::AttributeSet;
 use super::derived::{DerivedInput, DerivedStatFormula};
 use super::leveling::LevelingModel;
 use super::resistance::Affliction;
@@ -61,7 +62,7 @@ fn add_fnv_fo3_shared<F: Fn(&str) -> Option<u32>>(rs: &mut CharacterRuleset, res
 /// FO4 — SPECIAL-only (no skills). Health/AP player-only (NPCs ship baked
 /// `DNAM`); Carry Weight / Melee Damage actor-general.
 pub fn fallout4_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
-    let mut rs = CharacterRuleset::new(LevelingModel::FO4);
+    let mut rs = CharacterRuleset::new(LevelingModel::FO4).with_attributes(AttributeSet::FALLOUT);
     let strength = resolve("Strength");
     // Health = floor(77.5 + 4.5·END + 2.5·L + 0.5·L·END).
     if let (Some(out), Some(e)) = (resolve("Health"), resolve("Endurance")) {
@@ -96,7 +97,7 @@ pub fn fallout4_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
 /// FO3 — Health `90 + 20·END + 10·L` (player), AP `65 + 2·AGI` cap 85
 /// (player), + the shared skill-based stats.
 pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
-    let mut rs = CharacterRuleset::new(LevelingModel::FO3);
+    let mut rs = CharacterRuleset::new(LevelingModel::FO3).with_attributes(AttributeSet::FALLOUT);
     if let (Some(out), Some(e)) = (resolve("Health"), resolve("Endurance")) {
         rs.push_derived(
             out,
@@ -118,7 +119,7 @@ pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
 /// FNV — Health `95 + 20·END + 5·L` (player), AP `65 + 3·AGI` cap 95
 /// (player), + the shared skill-based stats.
 pub fn falloutnv_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
-    let mut rs = CharacterRuleset::new(LevelingModel::FNV);
+    let mut rs = CharacterRuleset::new(LevelingModel::FNV).with_attributes(AttributeSet::FALLOUT);
     if let (Some(out), Some(e)) = (resolve("Health"), resolve("Endurance")) {
         rs.push_derived(
             out,
