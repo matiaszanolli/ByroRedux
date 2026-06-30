@@ -22,18 +22,22 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. M47.1 Phase 2 ships **7 representative functions** with
-//! their canonical FO3 / FNV / Skyrim indices:
+//! lineage. This catalog ships **9 functions** at their canonical CTDA
+//! function indices, verified against TES5Edit `wbDefinitions*.pas`
+//! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
+//! for every shared function):
 //!
-//! | Index | Function       | Reads                     |
-//! |-------|----------------|---------------------------|
-//! | 9     | GetActorValue  | `ActorValues[param_1]`    |
-//! | 36    | GetDistance    | `GlobalTransform`         |
-//! | 58    | GetStage       | `QuestStageState[param_1]`|
-//! | 59    | GetStageDone   | `QuestStageState[param_1]`|
-//! | 60    | GetFactionRank | `FactionRanks`            |
-//! | 71    | GetIsID        | `FormIdComponent`         |
-//! | 99    | HasPerk        | `PerkList`                |
+//! | Index | Function               | Reads                       |
+//! |-------|------------------------|-----------------------------|
+//! | 1     | GetDistance            | `GlobalTransform`           |
+//! | 14    | GetActorValue          | `ActorValues[param_1]`      |
+//! | 58    | GetStage               | `QuestStageState[param_1]`  |
+//! | 59    | GetStageDone           | `QuestStageState[param_1]`  |
+//! | 72    | GetIsID                | `FormIdComponent`           |
+//! | 73    | GetFactionRank         | `FactionRanks`              |
+//! | 449   | HasPerk (448 on Skyrim)| `PerkList`                  |
+//! | 573   | GetReputation          | `FactionReputation` (FNV)   |
+//! | 575   | GetReputationThreshold | `FactionReputation` + bands |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
 //! function → safe-default" contract) and are logged at debug for
@@ -56,10 +60,10 @@ pub enum ConditionFunction {
     /// for the `param_1` actor value from its `ActorValues` component
     /// (base + permanent + temporary − damage), or 0.0 when the actor carries
     /// no such value (#1663). `param_1` is the global-space AVIF FormID.
-    /// FO3 / FNV / Skyrim function index 9.
+    /// FO3 / FNV / Skyrim function index **14**.
     GetActorValue,
     /// `GetDistance(target_form_id) → f32`. Squared-distance reduces
-    /// to a single sqrt at evaluation time. FO3 / FNV / Skyrim index 36.
+    /// to a single sqrt at evaluation time. FO3 / FNV / Skyrim index **1**.
     GetDistance,
     /// `GetStage(quest_form_id) → f32`. Looks up the current stage
     /// for `param_1` quest in the `QuestStageState` resource.
@@ -75,17 +79,30 @@ pub enum ConditionFunction {
     /// `FactionRanks` component: the integer rank when the actor is in
     /// the faction, else -1 (Bethesda's "not in faction" sentinel — also
     /// returned when the actor carries no `FactionRanks`).
-    /// FO3 / FNV / Skyrim index 60.
+    /// FO3 / FNV / Skyrim index **73**.
     GetFactionRank,
     /// `GetIsID(base_form_id) → f32`. Returns 1.0 when the Run-On's
     /// `FormIdComponent` matches `param_1`, 0.0 otherwise. Common
     /// gate for "is this specific REFR?" checks. FO3 / FNV / Skyrim
-    /// index 71.
+    /// index **72**.
     GetIsID,
     /// `HasPerk(perk_form_id) → f32`. Reads the Run-On actor's `PerkList`:
     /// 1.0 when it contains `param_1`, 0.0 otherwise (also 0.0 when the
-    /// actor carries no `PerkList`). Skyrim+ index 99.
+    /// actor carries no `PerkList`). Index **449** (FO3 / FNV), **448**
+    /// (Skyrim) — both map here.
     HasPerk,
+    /// `GetReputation(reputation_form_id, axis) → f32`. The Run-On actor's
+    /// raw Fame/Infamy with `param_1` (a FNV `REPU` FormID) from its
+    /// `FactionReputation` component; `param_2` selects the axis
+    /// (`1` = Fame, else Infamy — the console convention), 0.0 if unknown.
+    /// **FNV-only**, function index **573**.
+    GetReputation,
+    /// `GetReputationThreshold(reputation_form_id, axis) → f32`. The Range
+    /// `0..=3` band the actor's Fame/Infamy (axis per `param_2`) falls into,
+    /// per the faction's thresholds — the gameplay-load-bearing reputation
+    /// output (the wiki notes vanilla scripts that wrongly read the raw value
+    /// instead). **FNV-only**, function index **575**.
+    GetReputationThreshold,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
     /// header doc-comment).
@@ -96,14 +113,21 @@ impl ConditionFunction {
     /// Map a raw u32 function index to a typed variant. Indices
     /// outside the catalog fall through to [`Self::Unknown`].
     pub fn from_index(index: u32) -> Self {
+        // Indices are the CTDA function index xEdit stores (and `parse_ctda`
+        // reads from bytes 8–11) — verified against TES5Edit `wbDefinitions*.pas`
+        // (FO3 == FNV for all shared functions). HasPerk is the one game-variant
+        // (448 Skyrim, 449 FO3/FNV); both map to the same behaviour. Reputation
+        // (573/575) is FNV-only.
         match index {
-            9 => Self::GetActorValue,
-            36 => Self::GetDistance,
+            1 => Self::GetDistance,
+            14 => Self::GetActorValue,
             58 => Self::GetStage,
             59 => Self::GetStageDone,
-            60 => Self::GetFactionRank,
-            71 => Self::GetIsID,
-            99 => Self::HasPerk,
+            72 => Self::GetIsID,
+            73 => Self::GetFactionRank,
+            448 | 449 => Self::HasPerk,
+            573 => Self::GetReputation,
+            575 => Self::GetReputationThreshold,
             other => Self::Unknown(other),
         }
     }
@@ -251,7 +275,7 @@ pub fn evaluate_function(
             // 0.0 when the actor carries no `ActorValues` (or hasn't that value
             // set — Bethesda's absent-AV default). `param_1` is the AVIF FormID,
             // already promoted to global load-order space at parse time
-            // (function 9 is in the CTDA form-id-param list, #1666), the same
+            // (function 14 is in the CTDA form-id-param list, #1666), the same
             // space `ActorValues` is keyed in — a direct lookup, no FormIdPool
             // hop (the key IS the AV's id, not the actor's identity). #1663.
             use byroredux_core::character::{CharacterLevel, CharacterRuleset, DerivedScope};
@@ -388,6 +412,42 @@ pub fn evaluate_function(
             } else {
                 0.0
             }
+        }
+        ConditionFunction::GetReputation => {
+            // GetReputation(repu_form_id, axis) → the Run-On actor's raw
+            // Fame/Infamy with `param_1`. `param_2` is the axis selector
+            // (Bethesda console convention: 1 = Fame, 0 = Infamy). 0.0 when the
+            // actor carries no `FactionReputation` or the faction is unknown.
+            // `param_1` is the global-space `REPU` FormID (#1666 remap).
+            use byroredux_core::character::FactionReputation;
+            let Some(rep) = world.get::<FactionReputation>(entity) else {
+                return 0.0;
+            };
+            let points = if condition.param_2 == 1 {
+                rep.fame(condition.param_1)
+            } else {
+                rep.infamy(condition.param_1)
+            };
+            f32::from(points)
+        }
+        ConditionFunction::GetReputationThreshold => {
+            // GetReputationThreshold(repu_form_id, axis) → the Range 0..=3 band
+            // the chosen axis falls into for `param_1`'s thresholds. Uses the
+            // vanilla FNV threshold table as the fallback source until the live
+            // faction/REPU record path supplies per-faction thresholds; an
+            // unknown faction yields Range 0 (the safe "Neutral" default).
+            use byroredux_core::character::reputation::fnv_faction_thresholds;
+            use byroredux_core::character::FactionReputation;
+            let Some(rep) = world.get::<FactionReputation>(entity) else {
+                return 0.0;
+            };
+            let points = if condition.param_2 == 1 {
+                rep.fame(condition.param_1)
+            } else {
+                rep.infamy(condition.param_1)
+            };
+            fnv_faction_thresholds::thresholds_for(condition.param_1)
+                .map_or(0.0, |t| f32::from(t.range(u32::from(points))))
         }
         ConditionFunction::Unknown(index) => {
             log::trace!(
@@ -671,11 +731,11 @@ mod tests {
         world.insert(actor, FormIdComponent(fid));
 
         // GetIsID(0x00014D8A) == 1 — matches the entity's id.
-        let list = vec![cond(71, ComparisonOp::Eq, 1.0, false).with_param_1(0x0001_4D8A)];
+        let list = vec![cond(72, ComparisonOp::Eq, 1.0, false).with_param_1(0x0001_4D8A)];
         assert!(evaluate(&list, &world, &ctx(actor)));
 
         // A different id → 0.
-        let list = vec![cond(71, ComparisonOp::Eq, 0.0, false).with_param_1(0x0001_9999)];
+        let list = vec![cond(72, ComparisonOp::Eq, 0.0, false).with_param_1(0x0001_9999)];
         assert!(evaluate(&list, &world, &ctx(actor)));
     }
 
@@ -684,7 +744,7 @@ mod tests {
         // No FormIdComponent (and no FormIdPool) → GetIsID returns 0.0.
         let world = World::new();
         let actor: EntityId = 7;
-        let list = vec![cond(71, ComparisonOp::Eq, 0.0, false).with_param_1(0x0001_4D8A)];
+        let list = vec![cond(72, ComparisonOp::Eq, 0.0, false).with_param_1(0x0001_4D8A)];
         assert!(evaluate(&list, &world, &ctx(actor)));
     }
 
@@ -706,11 +766,11 @@ mod tests {
         world.insert(actor, PerkList::from_perks([held]));
 
         // HasPerk(0x00058F80) == 1 — the actor holds it.
-        let list = vec![cond(99, ComparisonOp::Eq, 1.0, false).with_param_1(0x0005_8F80)];
+        let list = vec![cond(449, ComparisonOp::Eq, 1.0, false).with_param_1(0x0005_8F80)];
         assert!(evaluate(&list, &world, &ctx(actor)));
 
         // HasPerk(0x00058F81) == 0 — not held.
-        let list = vec![cond(99, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F81)];
+        let list = vec![cond(449, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F81)];
         assert!(evaluate(&list, &world, &ctx(actor)));
     }
 
@@ -719,7 +779,78 @@ mod tests {
         // No PerkList component → HasPerk returns 0.0.
         let world = World::new();
         let actor: EntityId = 3;
-        let list = vec![cond(99, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F80)];
+        let list = vec![cond(449, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F80)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    // ── GetReputation / GetReputationThreshold (FNV, indices 573 / 575) ──
+
+    #[test]
+    fn get_reputation_reads_fame_and_infamy_by_axis() {
+        use byroredux_core::character::FactionReputation;
+        // Boomers — the vanilla FNV REPU FormID (top byte 00 = master slot).
+        const BOOMERS: u32 = 0x000F_FAE8;
+
+        let mut world = World::new();
+        let actor = world.spawn();
+        let mut rep = FactionReputation::default();
+        rep.add_fame(BOOMERS, 30);
+        rep.add_infamy(BOOMERS, 8);
+        world.insert(actor, rep);
+
+        // GetReputation(Boomers, axis=1=Fame) == 30.
+        let list = vec![cond(573, ComparisonOp::Eq, 30.0, false)
+            .with_param_1(BOOMERS)
+            .with_param_2(1)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+        // axis=0=Infamy == 8.
+        let list = vec![cond(573, ComparisonOp::Eq, 8.0, false)
+            .with_param_1(BOOMERS)
+            .with_param_2(0)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    #[test]
+    fn get_reputation_threshold_classifies_range() {
+        use byroredux_core::character::FactionReputation;
+        const BOOMERS: u32 = 0x000F_FAE8; // thresholds 0 / 8 / 25 / 50
+
+        let mut world = World::new();
+        let actor = world.spawn();
+        let mut rep = FactionReputation::default();
+        rep.add_fame(BOOMERS, 30); // 30 ≥ 25 → Range 2
+        world.insert(actor, rep);
+
+        // GetReputationThreshold(Boomers, Fame) == 2.
+        let list = vec![cond(575, ComparisonOp::Eq, 2.0, false)
+            .with_param_1(BOOMERS)
+            .with_param_2(1)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+        // Infamy 0 → Range 0.
+        let list = vec![cond(575, ComparisonOp::Eq, 0.0, false)
+            .with_param_1(BOOMERS)
+            .with_param_2(0)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    #[test]
+    fn get_reputation_zero_without_component_or_unknown_faction() {
+        use byroredux_core::character::FactionReputation;
+        // No FactionReputation component → 0.0.
+        let world = World::new();
+        let actor: EntityId = 7;
+        let list = vec![cond(573, ComparisonOp::Eq, 0.0, false)
+            .with_param_1(0x000F_FAE8)
+            .with_param_2(1)];
+        assert!(evaluate(&list, &world, &ctx(actor)));
+
+        // Component present but faction has no captured thresholds → Range 0.
+        let mut world = World::new();
+        let actor = world.spawn();
+        world.insert(actor, FactionReputation::default());
+        let list = vec![cond(575, ComparisonOp::Eq, 0.0, false)
+            .with_param_1(0xDEAD_BEEF)
+            .with_param_2(1)];
         assert!(evaluate(&list, &world, &ctx(actor)));
     }
 
@@ -743,15 +874,15 @@ mod tests {
         world.insert(actor, av);
 
         // GetActorValue(Health) == 90 (the composed value, not the base).
-        let list = vec![cond(9, ComparisonOp::Eq, 90.0, false).with_param_1(AV_HEALTH)];
+        let list = vec![cond(14, ComparisonOp::Eq, 90.0, false).with_param_1(AV_HEALTH)];
         assert!(evaluate(&list, &world, &ctx(actor)));
 
         // GetActorValue(Health) > 50 — a typical gate passes on the composite.
-        let list = vec![cond(9, ComparisonOp::Gt, 50.0, false).with_param_1(AV_HEALTH)];
+        let list = vec![cond(14, ComparisonOp::Gt, 50.0, false).with_param_1(AV_HEALTH)];
         assert!(evaluate(&list, &world, &ctx(actor)));
 
         // An actor value the actor doesn't carry composes to 0.0.
-        let list = vec![cond(9, ComparisonOp::Eq, 0.0, false).with_param_1(AV_SNEAK)];
+        let list = vec![cond(14, ComparisonOp::Eq, 0.0, false).with_param_1(AV_SNEAK)];
         assert!(evaluate(&list, &world, &ctx(actor)));
     }
 
@@ -778,11 +909,11 @@ mod tests {
         world.insert(actor, ActorValues::from_pairs([(0x05, 7.0)]));
 
         // Carry Weight is actor-general → derived on demand: 200 + 10·7 = 270.
-        let list = vec![cond(9, ComparisonOp::Eq, 270.0, false).with_param_1(0x2D1)];
+        let list = vec![cond(14, ComparisonOp::Eq, 270.0, false).with_param_1(0x2D1)];
         assert!(evaluate(&list, &world, &ctx(actor)), "Carry Weight derived from SPECIAL");
 
         // Health is player-only → NOT computed for an NPC; absent default 0.
-        let list = vec![cond(9, ComparisonOp::Eq, 0.0, false).with_param_1(0x2C9)];
+        let list = vec![cond(14, ComparisonOp::Eq, 0.0, false).with_param_1(0x2C9)];
         assert!(evaluate(&list, &world, &ctx(actor)), "Health stays 0 (player-only)");
     }
 
@@ -793,7 +924,7 @@ mod tests {
         // hardcoded stub).
         let world = World::new();
         let actor: EntityId = 7;
-        let list = vec![cond(9, ComparisonOp::Eq, 0.0, false).with_param_1(0x0000_02C9)];
+        let list = vec![cond(14, ComparisonOp::Eq, 0.0, false).with_param_1(0x0000_02C9)];
         assert!(evaluate(&list, &world, &ctx(actor)));
     }
 
@@ -828,12 +959,12 @@ mod tests {
         );
 
         // GetDistance(0x000159E2) < 10 → 5.0 < 10 → true.
-        let mut lt = cond(36, ComparisonOp::Lt, 10.0, false).with_param_1(0x0001_59E2);
+        let mut lt = cond(1, ComparisonOp::Lt, 10.0, false).with_param_1(0x0001_59E2);
         lt.comparand = ConditionValue::Literal(10.0);
         assert!(evaluate(&vec![lt], &world, &ctx(subject)));
 
         // GetDistance(0x000159E2) < 4 → 5.0 < 4 → false.
-        let lt = cond(36, ComparisonOp::Lt, 4.0, false).with_param_1(0x0001_59E2);
+        let lt = cond(1, ComparisonOp::Lt, 4.0, false).with_param_1(0x0001_59E2);
         assert!(!evaluate(&vec![lt], &world, &ctx(subject)));
     }
 
@@ -853,7 +984,7 @@ mod tests {
 
         // No entity carries 0x000159E2 → distance is f32::MAX, so a
         // proximity gate `GetDistance < 100` fails.
-        let lt = cond(36, ComparisonOp::Lt, 100.0, false).with_param_1(0x0001_59E2);
+        let lt = cond(1, ComparisonOp::Lt, 100.0, false).with_param_1(0x0001_59E2);
         assert!(!evaluate(&vec![lt], &world, &ctx(subject)));
     }
 
@@ -871,11 +1002,11 @@ mod tests {
         );
 
         // GetFactionRank(0x000138B8) == 2.
-        let eq = cond(60, ComparisonOp::Eq, 2.0, false).with_param_1(0x0001_38B8);
+        let eq = cond(73, ComparisonOp::Eq, 2.0, false).with_param_1(0x0001_38B8);
         assert!(evaluate(&vec![eq], &world, &ctx(actor)));
 
         // GetFactionRank(non-member) == -1.
-        let eq = cond(60, ComparisonOp::Eq, -1.0, false).with_param_1(0x0009_9999);
+        let eq = cond(73, ComparisonOp::Eq, -1.0, false).with_param_1(0x0009_9999);
         assert!(evaluate(&vec![eq], &world, &ctx(actor)));
     }
 
@@ -884,7 +1015,7 @@ mod tests {
         // No FactionRanks component → -1.0 (not-in-faction sentinel).
         let world = World::new();
         let actor: EntityId = 4;
-        let eq = cond(60, ComparisonOp::Eq, -1.0, false).with_param_1(0x0001_38B8);
+        let eq = cond(73, ComparisonOp::Eq, -1.0, false).with_param_1(0x0001_38B8);
         assert!(evaluate(&vec![eq], &world, &ctx(actor)));
     }
 
@@ -937,10 +1068,15 @@ mod tests {
 
     trait CondBuilder {
         fn with_param_1(self, p: u32) -> Self;
+        fn with_param_2(self, p: u32) -> Self;
     }
     impl CondBuilder for Condition {
         fn with_param_1(mut self, p: u32) -> Self {
             self.param_1 = p;
+            self
+        }
+        fn with_param_2(mut self, p: u32) -> Self {
+            self.param_2 = p;
             self
         }
     }

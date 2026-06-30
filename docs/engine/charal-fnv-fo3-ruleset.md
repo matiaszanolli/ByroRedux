@@ -291,11 +291,17 @@ console commands*; = the steepest vanilla Range-3, Caesar's Legion). `removerepu
 accrual stays monotonic). Captured as `REPUTATION_AXIS_MAX = 100`; `add_fame`/`add_infamy`
 clamp to it.
 
-**Condition functions** (mirror Karma's `GetIsKarmaType`): `GetReputation` = raw pool
-value; **`GetReputationThreshold`** = the Range 0–3 band. Gameplay/dialogue reads the
-**threshold**, not the raw value (the page even documents a vanilla bug where Mick/Ralph's
-discount script wrongly used `GetReputation` instead of `GetReputationThreshold`). So the
-band classifier is the gameplay-load-bearing output, exactly as with Karma.
+**Condition functions — WIRED** (CTDA indices verified against TES5Edit
+`wbDefinitionsFNV.pas`): `GetReputation` (**573**) = raw pool value; `GetReputationPct`
+(**574**); **`GetReputationThreshold`** (**575**) = the Range 0–3 band. All take
+`param_1` = the `REPU` FormID (`ptReputation` — reputation is its own REPU record, not the
+FACT faction) and `param_2` = axis (1=Fame, 0=Infamy). Gameplay/dialogue reads the
+**threshold**, not the raw value (the wiki documents a vanilla bug where Mick/Ralph's
+discount script wrongly used `GetReputation` instead of `GetReputationThreshold`). 573 +
+575 are now wired in `scripting/condition.rs` against the `FactionReputation` component
+(574 deferred). **Karma has NO dedicated condition function** — there is no
+`GetIsKarmaType`; karma is read through plain `GetActorValue` on the `karma` AV (consistent
+with `getav karma`), so the band classifier is for UI/companion-gate logic, not a CTDA fn.
 
 **Bump-magnitude lookup — ENGINE-SUPPLIED shared constant.** The editor stores a 1–5
 "bump type"; the engine maps it to points via a fixed non-linear table:

@@ -319,15 +319,18 @@ pub fn parse_condition_list(subs: &[SubRecord]) -> ConditionList {
 /// index), so only `param_1` is ever promoted. Indices mirror the
 /// `ConditionFunction` catalog in `byroredux_scripting::condition`.
 fn param1_is_form_id(function_index: u32) -> bool {
+    // CTDA function indices per TES5Edit `wbDefinitions*.pas` (FO3 == FNV).
     matches!(
         function_index,
-        9   // GetActorValue   — AVIF FormID
-        | 36  // GetDistance    — target FormID
-        | 58  // GetStage       — quest FormID
-        | 59  // GetStageDone   — quest FormID (param_2 = stage, a literal)
-        | 60  // GetFactionRank — faction FormID
-        | 71  // GetIsID        — base FormID
-        | 99 // HasPerk        — perk FormID
+        1   // GetDistance    — target FormID
+        | 14  // GetActorValue — AVIF FormID
+        | 58  // GetStage      — quest FormID
+        | 59  // GetStageDone  — quest FormID (param_2 = stage, a literal)
+        | 72  // GetIsID       — base FormID
+        | 73  // GetFactionRank — faction FormID
+        | 448 | 449 // HasPerk — perk FormID (448 Skyrim, 449 FO3/FNV)
+        | 573 // GetReputation — REPU FormID (param_2 = axis, a literal)
+        | 575 // GetReputationThreshold — REPU FormID (param_2 = axis)
     )
 }
 
@@ -589,7 +592,7 @@ mod tests {
         // (top byte == master count == 1) gets the plugin's own slot (2).
         let remap = FormIdRemap::regular(2, vec![0]);
         let mut cond = Condition {
-            function_index: 71, // GetIsID — param_1 is a FormID
+            function_index: 72, // GetIsID — param_1 is a FormID
             param_1: 0x0100_0ABC,
             ..Default::default()
         };
@@ -630,7 +633,7 @@ mod tests {
     fn remap_promotes_reference_and_global_comparand_but_not_null() {
         let remap = FormIdRemap::regular(2, vec![0]);
         let mut cond = Condition {
-            function_index: 71,
+            function_index: 72,
             reference_form_id: 0x0100_0005,
             comparand: ConditionValue::Global(0x0100_0006),
             param_1: 0, // null param_1 — must stay null, not compose onto slot 2
@@ -645,7 +648,7 @@ mod tests {
     #[test]
     fn remap_none_is_identity() {
         let mut cond = Condition {
-            function_index: 71,
+            function_index: 72,
             param_1: 0x0100_0ABC,
             reference_form_id: 0x0100_0005,
             ..Default::default()

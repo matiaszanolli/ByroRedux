@@ -213,6 +213,15 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
   written directly against nifxml's block definitions, version gates, and
   field conditions. Without that community reverse-engineering effort,
   supporting seven Gamebryo/Creation-era games would not be tractable.
+- [**xEdit / TES5Edit**](https://github.com/TES5Edit/TES5Edit) — ElminsterAU
+  and the xEdit team's record-definition database (`wbDefinitions*.pas`) is
+  ByroRedux's authoritative reference for the binary layout of ESM/ESP
+  records across the lineage: NPC_ SPECIAL/perk storage (`PRPS`/`DNAM`/`PRKR`),
+  the per-game CTDA condition-function index tables (e.g. FNV `GetActorValue`
+  14, `GetReputation` 573), and `REPU`/faction structures. Definitions read
+  from the `dev-4.1.6` branch; no code is copied — only the documented format
+  knowledge. Without two decades of that reverse-engineering effort, parsing
+  Bethesda's plugin formats correctly would not be tractable.
 - [**Ruffle**](https://ruffle.rs) — the open-source Flash Player emulator.
   ByroRedux's UI layer embeds Ruffle to render the Scaleform/SWF menus
   Bethesda shipped with every Creation Engine title.
