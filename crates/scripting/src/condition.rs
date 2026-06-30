@@ -156,6 +156,53 @@ impl ConditionFunction {
             other => Self::Unknown(other),
         }
     }
+
+    /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
+    /// debug console enumerates and resolves names against.
+    pub const CATALOG: [ConditionFunction; 13] = [
+        Self::GetDistance,
+        Self::GetActorValue,
+        Self::GetStage,
+        Self::GetStageDone,
+        Self::GetIsClass,
+        Self::GetIsRace,
+        Self::GetIsID,
+        Self::GetFactionRank,
+        Self::GetLevel,
+        Self::HasPerk,
+        Self::GetXPForNextLevel,
+        Self::GetReputation,
+        Self::GetReputationThreshold,
+    ];
+
+    /// The canonical xEdit function name (for console listing / parsing).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::GetDistance => "GetDistance",
+            Self::GetActorValue => "GetActorValue",
+            Self::GetStage => "GetStage",
+            Self::GetStageDone => "GetStageDone",
+            Self::GetIsClass => "GetIsClass",
+            Self::GetIsRace => "GetIsRace",
+            Self::GetIsID => "GetIsID",
+            Self::GetFactionRank => "GetFactionRank",
+            Self::GetLevel => "GetLevel",
+            Self::HasPerk => "HasPerk",
+            Self::GetXPForNextLevel => "GetXPForNextLevel",
+            Self::GetReputation => "GetReputation",
+            Self::GetReputationThreshold => "GetReputationThreshold",
+            Self::Unknown(_) => "Unknown",
+        }
+    }
+
+    /// Resolve a function by its canonical name (case-insensitive). `None` for
+    /// names outside [`CATALOG`](Self::CATALOG).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::CATALOG
+            .iter()
+            .copied()
+            .find(|f| f.name().eq_ignore_ascii_case(name))
+    }
 }
 
 /// Per-evaluation context — the abstract Run-On targets a CTDA may
@@ -852,6 +899,26 @@ mod tests {
         let actor: EntityId = 3;
         let list = vec![cond(449, ComparisonOp::Eq, 0.0, false).with_param_1(0x0005_8F80)];
         assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    #[test]
+    fn catalog_names_round_trip_and_match_indices() {
+        // Every catalog entry resolves by name (case-insensitively) back to
+        // itself, and no entry is `Unknown`.
+        for f in ConditionFunction::CATALOG {
+            assert_ne!(f.name(), "Unknown");
+            assert_eq!(ConditionFunction::from_name(f.name()), Some(f));
+            assert_eq!(
+                ConditionFunction::from_name(&f.name().to_lowercase()),
+                Some(f)
+            );
+        }
+        assert_eq!(ConditionFunction::from_name("nope"), None);
+        // The console-facing name maps to the same variant `from_index` yields.
+        assert_eq!(
+            ConditionFunction::from_name("GetReputationThreshold"),
+            Some(ConditionFunction::from_index(575))
+        );
     }
 
     // ── GetLevel / GetIsClass / GetIsRace / GetXPForNextLevel (CHARAL) ──

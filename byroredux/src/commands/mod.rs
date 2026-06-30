@@ -16,12 +16,14 @@
 //!   (`light.*`, `door.teleport`, `script.activate`, `mat.*`, `ragdoll`)
 
 mod assets;
+mod condition;
 mod scene;
 mod shared;
 mod view;
 mod world_info;
 
 use assets::*;
+use condition::*;
 use scene::*;
 use shared::*;
 use view::*;
@@ -30,6 +32,7 @@ use world_info::*;
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(HelpCommand);
+    registry.register(CondCommand);
     registry.register(StatsCommand);
     registry.register(EntitiesCommand);
     registry.register(SystemsCommand);
