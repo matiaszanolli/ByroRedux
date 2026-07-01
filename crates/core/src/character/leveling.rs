@@ -56,6 +56,20 @@ pub enum LevelingModel {
         major_skill_ups_per_level: u8,
         level_cap: u16,
     },
+    /// Skyrim — a character-XP system fed by skill advancement. Raising a
+    /// skill to rank `R` grants `R · xp_per_skill_rank` character XP; a level
+    /// needs `xp_mult · level + xp_base` XP. Each level grants a perk and
+    /// `pool_pick_gain` points into a chosen Health / Magicka / Stamina pool.
+    /// `level_cap` `0` = uncapped (bounded by skills reaching 100). Sourced:
+    /// UESP *Skyrim:Leveling* (`fXPLevelUpBase`/`fXPLevelUpMult`/
+    /// `fXPPerSkillRank`).
+    SkillXp {
+        xp_base: f32,
+        xp_mult: f32,
+        xp_per_skill_rank: f32,
+        pool_pick_gain: f32,
+        level_cap: u16,
+    },
 }
 
 impl LevelingModel {
@@ -99,13 +113,52 @@ impl LevelingModel {
         level_cap: 0,
     };
 
-    /// XP required to advance from `level` to `level + 1` (`xp_a·L + xp_b`).
-    /// `0.0` for skill-use games (TES has no XP-to-next).
+    /// Skyrim — `25·L + 75` XP per level, `1` character XP per skill rank
+    /// gained, +10 to a chosen Health/Magicka/Stamina + a perk each level, no
+    /// hard cap.
+    pub const SKYRIM: Self = Self::SkillXp {
+        xp_base: 75.0,
+        xp_mult: 25.0,
+        xp_per_skill_rank: 1.0,
+        pool_pick_gain: 10.0,
+        level_cap: 0,
+    };
+
+    /// XP required to advance from `level` to `level + 1`. Fallout:
+    /// `xp_a·L + xp_b`; Skyrim: `xp_mult·L + xp_base`. `0.0` for the
+    /// skill-use (classic TES) model, which has no XP-to-next.
     #[inline]
     pub fn xp_to_next(&self, level: u16) -> f32 {
         match self {
             Self::XpCurve { xp_a, xp_b, .. } => xp_a * f32::from(level) + xp_b,
+            Self::SkillXp {
+                xp_base, xp_mult, ..
+            } => xp_mult * f32::from(level) + xp_base,
             Self::SkillUse { .. } => 0.0,
+        }
+    }
+
+    /// Character XP awarded for raising a skill to rank `skill_level`
+    /// (`skill_level · xp_per_skill_rank`). `Some` only for the Skyrim
+    /// skill-XP model; `None` for Fallout (XP comes from kills/quests) and
+    /// classic TES (no XP).
+    #[inline]
+    pub fn xp_from_skill_rank(&self, skill_level: u16) -> Option<f32> {
+        match self {
+            Self::SkillXp {
+                xp_per_skill_rank, ..
+            } => Some(f32::from(skill_level) * xp_per_skill_rank),
+            _ => None,
+        }
+    }
+
+    /// Points added to the chosen Health/Magicka/Stamina pool at each level-up
+    /// (Skyrim: 10). `None` for models without the pool-pick reward.
+    #[inline]
+    pub fn pool_pick_gain(&self) -> Option<f32> {
+        match self {
+            Self::SkillXp { pool_pick_gain, .. } => Some(*pool_pick_gain),
+            _ => None,
         }
     }
 
@@ -126,9 +179,9 @@ impl LevelingModel {
 
     /// Whether reaching `level` (a level-up, so `level >= 2`) offers a perk.
     /// FO4 offers the SPECIAL-or-perk choice at every level; FO3/FNV on their
-    /// cadence; skill-use games (TES) have no perks. The cadence phase (which
-    /// exact levels) is the simple modulo; refine per game if a citing pass
-    /// pins an offset.
+    /// cadence; Skyrim grants a perk every level; classic-TES skill-use games
+    /// have no perks. The cadence phase (which exact levels) is the simple
+    /// modulo; refine per game if a citing pass pins an offset.
     #[inline]
     pub fn grants_perk_at(&self, level: u16) -> bool {
         match self {
@@ -140,6 +193,7 @@ impl LevelingModel {
                 reward: LevelReward::SkillPoints { perk_cadence, .. },
                 ..
             } => *perk_cadence != 0 && level.is_multiple_of(u16::from(*perk_cadence)),
+            Self::SkillXp { .. } => true,
             Self::SkillUse { .. } => false,
         }
     }
@@ -149,7 +203,9 @@ impl LevelingModel {
     #[inline]
     pub fn level_cap(&self) -> u16 {
         match self {
-            Self::XpCurve { level_cap, .. } | Self::SkillUse { level_cap, .. } => *level_cap,
+            Self::XpCurve { level_cap, .. }
+            | Self::SkillUse { level_cap, .. }
+            | Self::SkillXp { level_cap, .. } => *level_cap,
         }
     }
 }
@@ -216,6 +272,24 @@ mod tests {
         assert_eq!(LevelingModel::FNV.level_cap(), 30);
         assert_eq!(LevelingModel::FO4.level_cap(), 0);
         assert_eq!(LevelingModel::OBLIVION.level_cap(), 0);
+        assert_eq!(LevelingModel::SKYRIM.level_cap(), 0);
+    }
+
+    #[test]
+    fn skyrim_skill_xp_matches_uesp() {
+        let sky = LevelingModel::SKYRIM;
+        // XP to next level = 25·L + 75 → L1 = 100, L10 = 325.
+        assert_eq!(sky.xp_to_next(1), 100.0);
+        assert_eq!(sky.xp_to_next(10), 325.0);
+        // Character XP from raising a skill to rank 50 = 50 · 1.
+        assert_eq!(sky.xp_from_skill_rank(50), Some(50.0));
+        // +10 to a chosen pool + a perk every level; no skill points.
+        assert_eq!(sky.pool_pick_gain(), Some(10.0));
+        assert!(sky.grants_perk_at(2));
+        assert_eq!(sky.skill_points(10), None);
+        // The skill-XP methods are Skyrim-only.
+        assert_eq!(LevelingModel::FO3.xp_from_skill_rank(50), None);
+        assert_eq!(LevelingModel::OBLIVION.pool_pick_gain(), None);
     }
 
     #[test]

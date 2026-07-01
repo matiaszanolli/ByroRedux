@@ -254,10 +254,17 @@ from the ES Wiki, Fatigue from UESP). All player-scoped. Fatigue's four-attribut
 exceeds the two-input `DerivedStatFormula`, so it ships as **four affine rows** summed by
 `derived_value` — the resolved shape of the multi-row generalisation (`push_derived` doc).
 
-`LevelingModel` is now an **enum** (`XpCurve { xp_a, xp_b, level_cap, reward } | SkillUse
-{ major_skill_ups_per_level, level_cap }`) — Fallout on `XpCurve` (FO3/FO4/FNV consts),
-Oblivion on `SkillUse` (`OBLIVION` = 10 major-skill-ups/level, uncapped; UESP-sourced).
-Skyrim's per-skill-XP model is the future `SkillXp` variant. **`oblivion_ruleset(resolve)`
+`LevelingModel` is now an **enum** with all three shapes: `XpCurve { xp_a, xp_b, level_cap,
+reward }` (Fallout — FO3/FO4/FNV consts), `SkillUse { major_skill_ups_per_level, level_cap }`
+(Oblivion — `OBLIVION` = 10 major-skill-ups/level), and `SkillXp { xp_base, xp_mult,
+xp_per_skill_rank, pool_pick_gain, level_cap }` (Skyrim — `SKYRIM` = 25·L+75 XP, 1 XP/skill
+rank, +10 pool pick + perk/level; UESP-sourced). Skyrim helpers: `xp_from_skill_rank`,
+`pool_pick_gain`. **`skyrim_ruleset(resolve)`** assembles TES V: empty `AttributeSet::SKYRIM`
+(no attributes) + the 18 ungoverned `SkillSet::SKYRIM` skills + `LevelingModel::SKYRIM`, with
+an **empty derived table** (Health/Magicka/Stamina aren't attribute-derived — they start at
+`SKYRIM_POOL_BASE` 100 and grow only by the level pick). Archery/Speech use their CK internal
+AV names (`Marksman`/`Speechcraft`); resolution is verified at load (resolve-or-skip).
+**`oblivion_ruleset(resolve)`
 now assembles the full TES ruleset end-to-end** — `AttributeSet::TES_CLASSIC` +
 `SkillSet::OBLIVION` + `LevelingModel::OBLIVION` + the three derived pools, resolve-or-skip
 like the Fallout builders. The level-up leveling-efficiency mechanics are shipped too:

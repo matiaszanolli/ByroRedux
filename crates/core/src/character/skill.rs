@@ -46,6 +46,15 @@ impl SkillDef {
             governing: Some(governing),
         }
     }
+
+    /// An ungoverned skill (Skyrim — attributes were removed, so skills carry
+    /// their own XP and no governing attribute).
+    const fn ungoverned(editor_id: &'static str) -> Self {
+        Self {
+            editor_id,
+            governing: None,
+        }
+    }
 }
 
 /// A resolved skill — its AUTHORED skill AVIF FormID paired with the AUTHORED
@@ -102,6 +111,40 @@ impl SkillSet {
             // Stealth — Personality
             SkillDef::governed("Mercantile", Attribute::Personality),
             SkillDef::governed("Speechcraft", Attribute::Personality),
+        ],
+    };
+
+    /// Skyrim (TES V) — the 18 skills, all **ungoverned** (attributes were
+    /// removed; skills carry their own XP and drive character leveling). Six
+    /// per specialization (Combat / Magic / Stealth). EditorIDs are the CK
+    /// internal ActorValue names, which differ from the display names for two
+    /// skills retained from earlier engines: Archery = `Marksman`, Speech =
+    /// `Speechcraft`. Resolution against the parsed AVIF set is verified at
+    /// load (resolve-or-skip), so any casing/name drift degrades gracefully.
+    /// Source: Elder Scrolls Wiki / UESP *Skyrim:Skills*.
+    pub const SKYRIM: Self = Self {
+        skills: &[
+            // Combat
+            SkillDef::ungoverned("OneHanded"),
+            SkillDef::ungoverned("TwoHanded"),
+            SkillDef::ungoverned("Marksman"), // Archery
+            SkillDef::ungoverned("Block"),
+            SkillDef::ungoverned("Smithing"),
+            SkillDef::ungoverned("HeavyArmor"),
+            // Magic
+            SkillDef::ungoverned("Alteration"),
+            SkillDef::ungoverned("Conjuration"),
+            SkillDef::ungoverned("Destruction"),
+            SkillDef::ungoverned("Illusion"),
+            SkillDef::ungoverned("Restoration"),
+            SkillDef::ungoverned("Enchanting"),
+            // Stealth
+            SkillDef::ungoverned("LightArmor"),
+            SkillDef::ungoverned("Sneak"),
+            SkillDef::ungoverned("Lockpicking"),
+            SkillDef::ungoverned("Pickpocket"),
+            SkillDef::ungoverned("Speechcraft"), // Speech
+            SkillDef::ungoverned("Alchemy"),
         ],
     };
 
@@ -250,5 +293,22 @@ mod tests {
         assert_eq!(SkillSet::NONE.len(), 0);
         assert!(SkillSet::NONE.is_empty());
         assert!(SkillSet::default().is_empty());
+    }
+
+    #[test]
+    fn skyrim_has_eighteen_ungoverned_skills() {
+        assert_eq!(SkillSet::SKYRIM.len(), 18);
+        for s in SkillSet::SKYRIM.skills() {
+            assert!(s.governing.is_none(), "{} should be ungoverned", s.editor_id);
+        }
+        // The two renamed-internal skills resolve by CK name.
+        assert!(SkillSet::SKYRIM.get("Marksman").is_some()); // Archery
+        assert!(SkillSet::SKYRIM.get("Speechcraft").is_some()); // Speech
+        assert_eq!(SkillSet::SKYRIM.governing("OneHanded"), None);
+        // No duplicate editor ids.
+        let mut ids: Vec<_> = SkillSet::SKYRIM.skills().iter().map(|s| s.editor_id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 18);
     }
 }
