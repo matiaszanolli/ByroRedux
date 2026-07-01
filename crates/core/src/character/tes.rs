@@ -24,7 +24,11 @@
 //! — see [`oblivion_fatigue_formulas`]. The rows are uncapped/unrounded so the
 //! sum is the true total.
 
+use super::attribute::AttributeSet;
 use super::derived::{DerivedInput, DerivedStatFormula};
+use super::leveling::LevelingModel;
+use super::ruleset::CharacterRuleset;
+use super::skill::SkillSet;
 
 /// Oblivion Health = `2 × Endurance` (starting/base pool; per-level accrual is
 /// a leveling concern). Player-scoped, matching the Fallout convention where
@@ -56,13 +60,54 @@ pub fn oblivion_fatigue_formulas(
     agility_av: u32,
     endurance_av: u32,
 ) -> [DerivedStatFormula; 4] {
-    let term = |av: u32| DerivedStatFormula::affine(DerivedInput::actor_value(av), 1.0, 0.0).player_only();
+    let term =
+        |av: u32| DerivedStatFormula::affine(DerivedInput::actor_value(av), 1.0, 0.0).player_only();
     [
         term(strength_av),
         term(willpower_av),
         term(agility_av),
         term(endurance_av),
     ]
+}
+
+/// Oblivion (TES IV) [`CharacterRuleset`] builder (CHARAL).
+///
+/// Assembles the family's canonical pieces: the 8-attribute roster
+/// ([`AttributeSet::TES_CLASSIC`]), the 21-skill roster + governing map
+/// ([`SkillSet::OBLIVION`]), the skill-use leveling model
+/// ([`LevelingModel::OBLIVION`]), and the three derived pools (Health / Magicka
+/// / Fatigue). Inputs/outputs are resolved through `resolve` (EditorID →
+/// FormID) with the same resolve-or-skip contract as the Fallout builders
+/// ([`super::fallout`]) — a pool whose EditorIDs don't resolve is simply
+/// omitted. Pre-AVIF Oblivion supplies a resolver mapping these EditorIDs to
+/// its legacy engine actor-value indices at the parser boundary.
+#[must_use]
+pub fn oblivion_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
+    let mut rs = CharacterRuleset::new(LevelingModel::OBLIVION)
+        .with_attributes(AttributeSet::TES_CLASSIC)
+        .with_skills(SkillSet::OBLIVION);
+
+    // Health = 2·Endurance.
+    if let (Some(out), Some(end)) = (resolve("Health"), resolve("Endurance")) {
+        rs.push_derived(out, oblivion_health_formula(end));
+    }
+    // Magicka = 2·Intelligence.
+    if let (Some(out), Some(int)) = (resolve("Magicka"), resolve("Intelligence")) {
+        rs.push_derived(out, oblivion_magicka_formula(int));
+    }
+    // Fatigue = Strength + Willpower + Agility + Endurance (four summed rows).
+    if let (Some(out), Some(s), Some(w), Some(a), Some(e)) = (
+        resolve("Fatigue"),
+        resolve("Strength"),
+        resolve("Willpower"),
+        resolve("Agility"),
+        resolve("Endurance"),
+    ) {
+        for row in oblivion_fatigue_formulas(s, w, a, e) {
+            rs.push_derived(out, row);
+        }
+    }
+    rs
 }
 
 #[cfg(test)]
@@ -102,7 +147,7 @@ mod tests {
         const FATIGUE: u32 = 0x2E0; // stand-in output id
 
         // Register the four Fatigue rows under one output id.
-        let mut rs = CharacterRuleset::new(LevelingModel::default());
+        let mut rs = CharacterRuleset::new(LevelingModel::OBLIVION);
         for f in oblivion_fatigue_formulas(STR, WIL, AGI, END) {
             rs.push_derived(FATIGUE, f);
         }
@@ -112,5 +157,68 @@ mod tests {
         assert_eq!(rs.derived_value(FATIGUE, &avs, 1), Some(150.0));
         // A stat with no rows is still None.
         assert_eq!(rs.derived_value(0xDEAD, &avs, 1), None);
+    }
+
+    #[test]
+    fn oblivion_ruleset_assembles_and_evaluates_end_to_end() {
+        use crate::character::{AttributeSet, LevelingModel, SkillSet};
+        use super::oblivion_ruleset;
+
+        // Resolver: the pool outputs + the attribute inputs the builder asks
+        // for (what the Oblivion loader supplies from legacy AV indices).
+        // Non-zero ids throughout: FormID 0 is the null form and also
+        // `DerivedInput::UNUSED`, so a real AV never resolves to it.
+        let resolve = |id: &str| -> Option<u32> {
+            Some(match id {
+                "Strength" => 0x1F,
+                "Intelligence" => 0x20,
+                "Willpower" => 0x21,
+                "Agility" => 0x22,
+                "Endurance" => 0x23,
+                "Health" => 0x90,
+                "Magicka" => 0x92,
+                "Fatigue" => 0x93,
+                _ => return None,
+            })
+        };
+        let rs = oblivion_ruleset(resolve);
+
+        // Canonical rosters travel with the ruleset.
+        assert_eq!(rs.attributes, AttributeSet::TES_CLASSIC);
+        assert_eq!(rs.skills, SkillSet::OBLIVION);
+        assert_eq!(rs.leveling, LevelingModel::OBLIVION);
+
+        let avs = ActorValues::from_pairs([
+            (0x1F, 40.0), // STR
+            (0x20, 50.0), // INT
+            (0x21, 30.0), // WIL
+            (0x22, 35.0), // AGI
+            (0x23, 45.0), // END
+        ]);
+        assert_eq!(rs.derived_value(0x90, &avs, 1), Some(90.0)); // Health 2·END
+        assert_eq!(rs.derived_value(0x92, &avs, 1), Some(100.0)); // Magicka 2·INT
+        assert_eq!(rs.derived_value(0x93, &avs, 1), Some(150.0)); // Fatigue STR+WIL+AGI+END
+    }
+
+    #[test]
+    fn oblivion_ruleset_skips_unresolved_pools() {
+        use super::oblivion_ruleset;
+        // Resolver knows the attributes but NOT the Magicka output id.
+        let resolve = |id: &str| -> Option<u32> {
+            Some(match id {
+                "Strength" => 0x00,
+                "Intelligence" => 0x01,
+                "Willpower" => 0x02,
+                "Agility" => 0x03,
+                "Endurance" => 0x05,
+                "Health" => 0x90,
+                // "Magicka" and "Fatigue" intentionally absent.
+                _ => return None,
+            })
+        };
+        let rs = oblivion_ruleset(resolve);
+        let avs = ActorValues::from_pairs([(0x01, 50.0), (0x05, 45.0)]);
+        assert_eq!(rs.derived_value(0x90, &avs, 1), Some(90.0)); // Health present
+        assert_eq!(rs.derived_value(0x92, &avs, 1), None); // Magicka skipped
     }
 }

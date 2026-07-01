@@ -1,13 +1,26 @@
 //! Per-game leveling model (CHARAL).
 //!
-//! All three Fallout games share one XP-to-next-level shape — `a·L + b` —
-//! so a game's leveling rules reduce to four numbers (`a`, `b`, cap) plus a
-//! [`LevelReward`] variant. The reward is the real per-game seam: FO4 spends
-//! a single point on **+1 SPECIAL or a perk**, while FO3/FNV grant
-//! **skill points + a perk on a cadence** and leave SPECIAL fixed. Sourced
-//! in `docs/engine/charal-fo4-ruleset.md` + `charal-fnv-fo3-ruleset.md`.
+//! Bethesda's lineage advances characters two fundamentally different ways, so
+//! [`LevelingModel`] is an **enum** over those shapes (the seam is which shape,
+//! plus its data):
+//!
+//! * [`LevelingModel::XpCurve`] — **Fallout**. All three FO games share one
+//!   XP-to-next shape `xp_a·L + xp_b`, so a game reduces to two curve numbers,
+//!   a cap, and a [`LevelReward`] (the FO seam: FO4 spends a point on **+1
+//!   SPECIAL or a perk**, FO3/FNV grant **skill points + a perk on a
+//!   cadence**). Sourced in `docs/engine/charal-fo4-ruleset.md` +
+//!   `charal-fnv-fo3-ruleset.md`.
+//! * [`LevelingModel::SkillUse`] — **classic Elder Scrolls** (Morrowind /
+//!   Oblivion). No XP: a level becomes available once a fixed number of
+//!   increases accumulate in the character's *major* skills (Oblivion: 10).
+//!   The level-up attribute bonuses are the deferred leveling-efficiency
+//!   mechanic (`docs/engine/charal.md` §5), not modelled here. Sourced: UESP
+//!   *Oblivion:Leveling*.
+//!
+//! Skyrim's per-skill-XP model (`SkillXp`) is a future third variant.
 
-/// What a single level-up grants — the per-game progression seam.
+/// What a single level-up grants in the [`LevelingModel::XpCurve`] (Fallout)
+/// model — the per-game progression seam.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum LevelReward {
     /// FO4 / FO76: one point per level, spent on **+1 SPECIAL or one perk
@@ -23,24 +36,31 @@ pub enum LevelReward {
     },
 }
 
-/// A game's leveling rules: the linear XP curve, the hard cap, and the
-/// per-level reward. `Copy` and tiny — held inline by
+/// A game's leveling rules. `Copy` and tiny — held inline by
 /// [`super::CharacterRuleset`].
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct LevelingModel {
-    /// XP to advance `L → L+1` = `xp_a·L + xp_b`.
-    pub xp_a: f32,
-    pub xp_b: f32,
-    /// Base-game hard level cap (`0` = uncapped, e.g. FO4). Add-ons raise it
-    /// (FO3 20→30, FNV 30→50); the loader bumps this when DLC is present.
-    pub level_cap: u16,
-    /// Per-level reward.
-    pub reward: LevelReward,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LevelingModel {
+    /// Fallout — an XP-to-next curve `xp_a·L + xp_b`, a hard `level_cap`
+    /// (`0` = uncapped; add-ons raise it), and a per-level [`LevelReward`].
+    XpCurve {
+        xp_a: f32,
+        xp_b: f32,
+        level_cap: u16,
+        reward: LevelReward,
+    },
+    /// Classic Elder Scrolls — a level unlocks once
+    /// `major_skill_ups_per_level` increases land in the character's major
+    /// skills (Oblivion: 10). `level_cap` `0` = uncapped (Oblivion has no hard
+    /// engine cap; level is bounded by attribute maxing).
+    SkillUse {
+        major_skill_ups_per_level: u8,
+        level_cap: u16,
+    },
 }
 
 impl LevelingModel {
     /// FO4 — `75·L + 125`, +1 SPECIAL or a perk per level, no hard cap.
-    pub const FO4: Self = Self {
+    pub const FO4: Self = Self::XpCurve {
         xp_a: 75.0,
         xp_b: 125.0,
         level_cap: 0,
@@ -49,7 +69,7 @@ impl LevelingModel {
 
     /// FO3 — `150·L + 50`, `10 + INT` skill points + a perk every level,
     /// cap 20 (30 with *Broken Steel*).
-    pub const FO3: Self = Self {
+    pub const FO3: Self = Self::XpCurve {
         xp_a: 150.0,
         xp_b: 50.0,
         level_cap: 20,
@@ -62,7 +82,7 @@ impl LevelingModel {
 
     /// FNV — same curve as FO3, `10 + INT/2` skill points (0.5 carries on
     /// odd INT) + a perk every other level, cap 30 (50 with all add-ons).
-    pub const FNV: Self = Self {
+    pub const FNV: Self = Self::XpCurve {
         xp_a: 150.0,
         xp_b: 50.0,
         level_cap: 30,
@@ -73,37 +93,63 @@ impl LevelingModel {
         },
     };
 
+    /// Oblivion — level up after 10 major-skill increases; no hard cap.
+    pub const OBLIVION: Self = Self::SkillUse {
+        major_skill_ups_per_level: 10,
+        level_cap: 0,
+    };
+
     /// XP required to advance from `level` to `level + 1` (`xp_a·L + xp_b`).
+    /// `0.0` for skill-use games (TES has no XP-to-next).
     #[inline]
     pub fn xp_to_next(&self, level: u16) -> f32 {
-        self.xp_a * f32::from(level) + self.xp_b
+        match self {
+            Self::XpCurve { xp_a, xp_b, .. } => xp_a * f32::from(level) + xp_b,
+            Self::SkillUse { .. } => 0.0,
+        }
     }
 
     /// Skill points granted at a level-up for the given Intelligence, or
-    /// `None` when the game awards none (FO4). The 0.5 carry for odd INT in
-    /// FNV is the caller's concern (accumulate the fractional part across
-    /// levels); this returns the exact per-level amount.
+    /// `None` when the game awards none (FO4, or any skill-use game). The 0.5
+    /// carry for odd INT in FNV is the caller's concern (accumulate the
+    /// fractional part across levels); this returns the exact per-level amount.
     #[inline]
     pub fn skill_points(&self, intelligence: u8) -> Option<f32> {
-        match self.reward {
-            LevelReward::SkillPoints { base, int_mult, .. } => {
-                Some(base + int_mult * f32::from(intelligence))
-            }
-            LevelReward::SpecialOrPerk => None,
+        match self {
+            Self::XpCurve {
+                reward: LevelReward::SkillPoints { base, int_mult, .. },
+                ..
+            } => Some(base + int_mult * f32::from(intelligence)),
+            _ => None,
         }
     }
 
     /// Whether reaching `level` (a level-up, so `level >= 2`) offers a perk.
-    /// FO4 offers the SPECIAL-or-perk choice at every level. The cadence
-    /// phase (which exact levels) is the simple modulo; refine per game if a
-    /// citing pass pins an offset.
+    /// FO4 offers the SPECIAL-or-perk choice at every level; FO3/FNV on their
+    /// cadence; skill-use games (TES) have no perks. The cadence phase (which
+    /// exact levels) is the simple modulo; refine per game if a citing pass
+    /// pins an offset.
     #[inline]
     pub fn grants_perk_at(&self, level: u16) -> bool {
-        match self.reward {
-            LevelReward::SpecialOrPerk => true,
-            LevelReward::SkillPoints { perk_cadence, .. } => {
-                perk_cadence != 0 && level % u16::from(perk_cadence) == 0
-            }
+        match self {
+            Self::XpCurve {
+                reward: LevelReward::SpecialOrPerk,
+                ..
+            } => true,
+            Self::XpCurve {
+                reward: LevelReward::SkillPoints { perk_cadence, .. },
+                ..
+            } => *perk_cadence != 0 && level.is_multiple_of(u16::from(*perk_cadence)),
+            Self::SkillUse { .. } => false,
+        }
+    }
+
+    /// The base-game hard level cap (`0` = uncapped). Add-ons raise it; the
+    /// loader bumps it when DLC is present.
+    #[inline]
+    pub fn level_cap(&self) -> u16 {
+        match self {
+            Self::XpCurve { level_cap, .. } | Self::SkillUse { level_cap, .. } => *level_cap,
         }
     }
 }
@@ -122,6 +168,8 @@ mod tests {
         assert_eq!(LevelingModel::FO3.xp_to_next(1), 200.0);
         assert_eq!(LevelingModel::FNV.xp_to_next(2), 350.0);
         assert_eq!(LevelingModel::FO3.xp_to_next(5), 800.0);
+        // Oblivion (skill-use) has no XP curve.
+        assert_eq!(LevelingModel::OBLIVION.xp_to_next(10), 0.0);
     }
 
     #[test]
@@ -132,8 +180,9 @@ mod tests {
         // FNV: 10 + INT/2 → INT 10 = 15, INT 9 = 14.5 (carry is caller's job).
         assert_eq!(LevelingModel::FNV.skill_points(10), Some(15.0));
         assert_eq!(LevelingModel::FNV.skill_points(9), Some(14.5));
-        // FO4 grants no skill points.
+        // FO4 and Oblivion grant no skill points.
         assert_eq!(LevelingModel::FO4.skill_points(10), None);
+        assert_eq!(LevelingModel::OBLIVION.skill_points(10), None);
     }
 
     #[test]
@@ -143,13 +192,37 @@ mod tests {
         assert!(LevelingModel::FNV.grants_perk_at(4));
         assert!(!LevelingModel::FNV.grants_perk_at(3));
         assert!(LevelingModel::FO4.grants_perk_at(7));
+        // Oblivion has no perks.
+        assert!(!LevelingModel::OBLIVION.grants_perk_at(5));
+    }
+
+    #[test]
+    fn oblivion_levels_by_ten_major_skill_ups() {
+        match LevelingModel::OBLIVION {
+            LevelingModel::SkillUse {
+                major_skill_ups_per_level,
+                level_cap,
+            } => {
+                assert_eq!(major_skill_ups_per_level, 10);
+                assert_eq!(level_cap, 0);
+            }
+            _ => panic!("Oblivion should be a skill-use model"),
+        }
+    }
+
+    #[test]
+    fn level_caps_per_game() {
+        assert_eq!(LevelingModel::FO3.level_cap(), 20);
+        assert_eq!(LevelingModel::FNV.level_cap(), 30);
+        assert_eq!(LevelingModel::FO4.level_cap(), 0);
+        assert_eq!(LevelingModel::OBLIVION.level_cap(), 0);
     }
 
     #[test]
     fn leveling_model_is_copy_and_small() {
         fn assert_copy<T: Copy>() {}
         assert_copy::<LevelingModel>();
-        // 2 f32 + u16 + (enum: tag + 2 f32 + u8) — comfortably under a cache line.
-        assert!(std::mem::size_of::<LevelingModel>() <= 24);
+        // Enum tag + widest variant (XpCurve) — stays within half a cache line.
+        assert!(std::mem::size_of::<LevelingModel>() <= 32);
     }
 }

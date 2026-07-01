@@ -253,9 +253,15 @@ TES derived pools (shipped — `crates/core/src/character/tes.rs`):
 from the ES Wiki, Fatigue from UESP). All player-scoped. Fatigue's four-attribute sum
 exceeds the two-input `DerivedStatFormula`, so it ships as **four affine rows** summed by
 `derived_value` — the resolved shape of the multi-row generalisation (`push_derived` doc).
-**One fork remains, not guessed:** **TES leveling** is skill-use-driven (major-skill-ups →
-level), but `LevelingModel` is XP-curve-shaped — it needs a `SkillUse` variant before an
-`oblivion_ruleset` builder can assemble attributes + skills + pools + leveling.
+
+`LevelingModel` is now an **enum** (`XpCurve { xp_a, xp_b, level_cap, reward } | SkillUse
+{ major_skill_ups_per_level, level_cap }`) — Fallout on `XpCurve` (FO3/FO4/FNV consts),
+Oblivion on `SkillUse` (`OBLIVION` = 10 major-skill-ups/level, uncapped; UESP-sourced).
+Skyrim's per-skill-XP model is the future `SkillXp` variant. **`oblivion_ruleset(resolve)`
+now assembles the full TES ruleset end-to-end** — `AttributeSet::TES_CLASSIC` +
+`SkillSet::OBLIVION` + `LevelingModel::OBLIVION` + the three derived pools, resolve-or-skip
+like the Fallout builders. The level-up attribute-bonus multiplier (skill-ups → +1…+5) is
+still the deferred leveling-efficiency mechanic (§5).
 
 The user-provided per-game **data tables**, by family — each slots directly into
 the struct above; **the canonical runtime never changes**:

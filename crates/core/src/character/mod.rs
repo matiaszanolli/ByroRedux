@@ -11,8 +11,9 @@
 //!
 //! * [`derived`] — [`DerivedStatFormula`], the fixed-layout bilinear formula
 //!   every Bethesda derived stat (Health, AP, Carry Weight, …) reduces to.
-//! * [`leveling`] — [`LevelingModel`] + [`LevelReward`]: the XP curve and
-//!   per-level reward (FO4 SPECIAL-or-perk vs FO3/FNV skill points).
+//! * [`leveling`] — [`LevelingModel`] (enum) + [`LevelReward`]: the FO
+//!   XP-curve + reward (FO4 SPECIAL-or-perk vs FO3/FNV skill points) vs the
+//!   TES skill-use model (Oblivion: 10 major-skill-ups → level).
 //! * [`ruleset`] — [`CharacterRuleset`], the per-game `Resource` bundling the
 //!   derived-formula table + leveling model.
 //! * [`reputation`] — the reputation family: [`KarmaBand`] (FO3/FNV Karma) +
@@ -51,4 +52,6 @@ pub use reputation::{
 pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
 pub use skill::{ResolvedSkill, SkillDef, SkillSet};
-pub use tes::{oblivion_fatigue_formulas, oblivion_health_formula, oblivion_magicka_formula};
+pub use tes::{
+    oblivion_fatigue_formulas, oblivion_health_formula, oblivion_magicka_formula, oblivion_ruleset,
+};
