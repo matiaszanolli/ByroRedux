@@ -220,7 +220,7 @@ One `CharacterRuleset` Resource per loaded game, assembled at load from **AUTHOR
 ```rust
 pub struct CharacterRuleset {
     attributes: AttributeSet,           // 7 SPECIAL | 8 TES attrs | none  (shipped)
-    skills:     Vec<SkillDef>,          // { avif, governing: Option<AvifId> }
+    skills:     SkillSet,               // roster + governing-attr map  (shipped; Oblivion 21)
     derived:    Vec<DerivedStatFormula>,// Health / AP / CarryWeight / Magicka / … = f(attrs, level)
     skill_calc: SkillDerivation,        // base / attr-mult / luck-mult  (from GMST)
     leveling:   LevelingModel,          // XpCurve { … } | SkillUse { … } | SkillXp { … }
@@ -235,6 +235,17 @@ Willpower+Speed+Personality TES-only). Membership is ENGINE-SUPPLIED per family
 each attribute's AVIF FormID stays AUTHORED, produced on demand by
 `AttributeSet::resolve(editor_id → form_id)` so the canonical identity travels with
 the number and the consumer never branches on game.
+
+`SkillSet` (shipped — `crates/core/src/character/skill.rs`) is the parallel skill
+roster: `SkillDef { editor_id, governing: Option<Attribute> }` × the game's skills.
+Skills are EditorID-keyed (large, game-specific — no union enum), but the **governing
+attribute is canonical** ([`Attribute`]), so the skill→attribute map reads
+game-agnostically. `SkillSet::OBLIVION` ships (21 skills, governing map sourced from
+the Elder Scrolls Wiki — Luck governs none); `SkillSet::NONE` covers FO4/FO76.
+`resolve()` pairs each skill's AUTHORED AVIF id with its governor's id, degrading an
+unresolved governor to `None` rather than dropping the skill. **Pending:** a
+`FALLOUT_FO3_FNV` set unifying the population-boundary skill→SPECIAL table
+(`actor_value_derive.rs`); Skyrim's 18 ungoverned skills; Morrowind's 27.
 
 The user-provided per-game **data tables**, by family — each slots directly into
 the struct above; **the canonical runtime never changes**:

@@ -34,6 +34,7 @@ pub mod leveling;
 pub mod reputation;
 pub mod resistance;
 pub mod ruleset;
+pub mod skill;
 
 pub use attribute::{Attribute, AttributeSet};
 pub use components::{
@@ -48,3 +49,4 @@ pub use reputation::{
 };
 pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
+pub use skill::{ResolvedSkill, SkillDef, SkillSet};

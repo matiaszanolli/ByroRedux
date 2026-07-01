@@ -13,6 +13,15 @@
 //! [`player_only`](DerivedStatFormula::player_only) — NPCs ship baked values
 //! or derive them differently; Carry Weight / Melee Damage / Critical Chance
 //! / Unarmed Damage are actor-general.
+//!
+//! These builders attach the [`AttributeSet::FALLOUT`] SPECIAL roster but
+//! **not** a canonical [`super::skill::SkillSet`] yet: the FO3/FNV skill →
+//! governing-SPECIAL map currently lives at the population boundary
+//! (`crates/plugin/.../actor_value_derive.rs`, used for auto-calc base
+//! values). Promoting that into a `SkillSet::FALLOUT_FO3_FNV` const here — so
+//! the population path consumes the canonical roster instead of its own table
+//! — is a follow-up; until then FO3/FNV rulesets carry the default empty skill
+//! roster. (FO4/FO76 genuinely have no skills.)
 
 use super::attribute::AttributeSet;
 use super::derived::{DerivedInput, DerivedStatFormula};

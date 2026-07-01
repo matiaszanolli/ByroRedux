@@ -9,6 +9,7 @@
 use super::attribute::AttributeSet;
 use super::derived::DerivedStatFormula;
 use super::leveling::LevelingModel;
+use super::skill::SkillSet;
 use crate::ecs::components::ActorValues;
 use crate::ecs::resource::Resource;
 
@@ -25,6 +26,9 @@ pub struct CharacterRuleset {
     /// classic) or none (Skyrim / Starfield). ENGINE-SUPPLIED membership; the
     /// AVIF FormIDs each resolves to stay AUTHORED.
     pub attributes: AttributeSet,
+    /// The game's skill roster + governing-attribute map — 21 (Oblivion),
+    /// 18 ungoverned (Skyrim), or none (FO4 / FO76). ENGINE-SUPPLIED.
+    pub skills: SkillSet,
     /// `(output AVIF FormID, formula)` — the stat each formula produces and
     /// how to compute it from base AVs + level.
     derived: Vec<(u32, DerivedStatFormula)>,
@@ -39,6 +43,7 @@ impl CharacterRuleset {
     pub fn new(leveling: LevelingModel) -> Self {
         Self {
             attributes: AttributeSet::default(),
+            skills: SkillSet::default(),
             derived: Vec::new(),
             leveling,
         }
@@ -49,6 +54,14 @@ impl CharacterRuleset {
     #[must_use]
     pub fn with_attributes(mut self, attributes: AttributeSet) -> Self {
         self.attributes = attributes;
+        self
+    }
+
+    /// Set the skill roster + governing-attribute map (builder style) — the
+    /// per-game seam picks the canonical [`SkillSet`] for its family.
+    #[must_use]
+    pub fn with_skills(mut self, skills: SkillSet) -> Self {
+        self.skills = skills;
         self
     }
 
