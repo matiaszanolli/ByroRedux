@@ -35,6 +35,7 @@ pub mod reputation;
 pub mod resistance;
 pub mod ruleset;
 pub mod skill;
+pub mod tes;
 
 pub use attribute::{Attribute, AttributeSet};
 pub use components::{
@@ -50,3 +51,4 @@ pub use reputation::{
 pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
 pub use skill::{ResolvedSkill, SkillDef, SkillSet};
+pub use tes::{oblivion_fatigue_formulas, oblivion_health_formula, oblivion_magicka_formula};

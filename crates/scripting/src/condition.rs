@@ -366,10 +366,15 @@ pub fn evaluate_function(
             // Player-only stats (Health/AP) stay at the absent default for an
             // arbitrary actor — NPCs bake them, the player isn't modelled yet.
             if let Some(rs) = world.try_resource::<CharacterRuleset>() {
+                // Scope from the first row; value is the sum of all rows for
+                // this stat (multi-row stats like TES Fatigue — see
+                // `CharacterRuleset::derived_value`).
                 if let Some(formula) = rs.derived_formula(condition.param_1) {
                     if formula.scope == DerivedScope::ActorGeneral {
                         let level = world.get::<CharacterLevel>(entity).map_or(0, |l| l.level);
-                        return formula.eval(&avs, level);
+                        return rs
+                            .derived_value(condition.param_1, &avs, level)
+                            .unwrap_or(0.0);
                     }
                 }
             }

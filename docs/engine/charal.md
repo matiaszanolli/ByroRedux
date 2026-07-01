@@ -247,6 +247,16 @@ unresolved governor to `None` rather than dropping the skill. **Pending:** a
 `FALLOUT_FO3_FNV` set unifying the population-boundary skill→SPECIAL table
 (`actor_value_derive.rs`); Skyrim's 18 ungoverned skills; Morrowind's 27.
 
+TES derived pools (shipped — `crates/core/src/character/tes.rs`):
+`oblivion_health_formula` = 2×Endurance, `oblivion_magicka_formula` = 2×Intelligence,
+`oblivion_fatigue_formulas` = Strength+Willpower+Agility+Endurance (sourced; Health/Magicka
+from the ES Wiki, Fatigue from UESP). All player-scoped. Fatigue's four-attribute sum
+exceeds the two-input `DerivedStatFormula`, so it ships as **four affine rows** summed by
+`derived_value` — the resolved shape of the multi-row generalisation (`push_derived` doc).
+**One fork remains, not guessed:** **TES leveling** is skill-use-driven (major-skill-ups →
+level), but `LevelingModel` is XP-curve-shaped — it needs a `SkillUse` variant before an
+`oblivion_ruleset` builder can assemble attributes + skills + pools + leveling.
+
 The user-provided per-game **data tables**, by family — each slots directly into
 the struct above; **the canonical runtime never changes**:
 

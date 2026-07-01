@@ -77,11 +77,22 @@ impl CharacterRuleset {
 
     /// Register a derived-stat formula in place — the conditional /
     /// resolve-or-skip form used by the per-game builders ([`super::fallout`]).
+    ///
+    /// A stat may be registered as **several rows** with the same
+    /// `output_avif`; [`Self::derived_value`] sums them. This is how
+    /// multi-attribute stats that exceed the two-input [`DerivedStatFormula`]
+    /// layout are expressed (e.g. Oblivion Fatigue = STR + WIL + AGI + END, as
+    /// four affine rows). Multi-row stats must use **uncapped, unrounded,
+    /// absolute** rows — per-row caps/rounding would apply before the sum, not
+    /// to the total.
     pub fn push_derived(&mut self, output_avif: u32, formula: DerivedStatFormula) {
         self.derived.push((output_avif, formula));
     }
 
-    /// The formula producing `output_avif`, if this game derives that stat.
+    /// The **first** formula row producing `output_avif`, if this game derives
+    /// that stat. For a multi-row stat this is only one contribution — read
+    /// metadata (scope) here, but take the value from [`Self::derived_value`],
+    /// which sums every row.
     #[inline]
     pub fn derived_formula(&self, output_avif: u32) -> Option<&DerivedStatFormula> {
         self.derived
@@ -90,14 +101,22 @@ impl CharacterRuleset {
             .map(|(_, f)| f)
     }
 
-    /// Compute derived stat `output_avif` for an actor — evaluate its formula
-    /// against the actor's base AVs + level. `None` when no formula produces
-    /// that stat (it's an authored / equipment AV, e.g. Damage Resistance —
-    /// read it from [`ActorValues`] directly instead).
+    /// Compute derived stat `output_avif` for an actor — the **sum** of every
+    /// registered row producing it, each evaluated against the actor's base
+    /// AVs + level. Single-row stats (the common case) sum to that one row.
+    /// `None` when no row produces the stat (it's an authored / equipment AV,
+    /// e.g. Damage Resistance — read it from [`ActorValues`] directly instead).
     #[inline]
     pub fn derived_value(&self, output_avif: u32, avs: &ActorValues, level: u16) -> Option<f32> {
-        self.derived_formula(output_avif)
-            .map(|f| f.eval(avs, level))
+        let mut sum = 0.0;
+        let mut found = false;
+        for (id, f) in &self.derived {
+            if *id == output_avif {
+                sum += f.eval(avs, level);
+                found = true;
+            }
+        }
+        found.then_some(sum)
     }
 
     /// Number of derived stats this game computes.
