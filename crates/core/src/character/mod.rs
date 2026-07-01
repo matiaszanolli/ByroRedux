@@ -54,5 +54,5 @@ pub use ruleset::CharacterRuleset;
 pub use skill::{ResolvedSkill, SkillDef, SkillSet};
 pub use tes::{
     oblivion_attribute_bonus, oblivion_fatigue_formulas, oblivion_health_formula,
-    oblivion_magicka_formula, oblivion_ruleset,
+    oblivion_health_gain_per_level, oblivion_magicka_formula, oblivion_ruleset,
 };

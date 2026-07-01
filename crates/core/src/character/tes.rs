@@ -141,6 +141,28 @@ pub fn oblivion_attribute_bonus(governed_skill_ups: u16) -> u8 {
     }
 }
 
+/// Oblivion **per-level Health gain** — the stateful half of the Health pool
+/// (leveling-efficiency mechanic, `docs/engine/charal.md` §5).
+///
+/// Health starts at `2 × Endurance` ([`oblivion_health_formula`]) and then, at
+/// **each level-up**, permanently gains **10 % of the current Endurance**
+/// (UESP *Oblivion:Leveling* — "10 HP if your Endurance is at 100"). Because it
+/// accrues on the Endurance *at each level* and is stored, it is
+/// path-dependent — a per-level event, not a stateless derived formula. This is
+/// why maximising Endurance early matters: every level compounds it.
+///
+/// Returned as an exact `f32` (`0.1 × endurance`); integer HP rounding is the
+/// leveling system's concern, as with [`LevelingModel::skill_points`].
+///
+/// **Scope:** this is *classic* Oblivion (2006, Gamebryo — ByroRedux's
+/// target). The live UESP *Oblivion:Health* page now documents the 2024
+/// *Oblivion Remastered* (UE5) formula (Strength + `Endurance × 0.6666 × 2`);
+/// that engine is out of scope — do not adopt it here.
+#[must_use]
+pub fn oblivion_health_gain_per_level(endurance: u16) -> f32 {
+    0.1 * f32::from(endurance)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +313,27 @@ mod tests {
         assert_eq!(agi_ups, 6);
         assert_eq!(oblivion_attribute_bonus(str_ups), 3); // 5 → +3
         assert_eq!(oblivion_attribute_bonus(agi_ups), 3); // 6 → +3
+    }
+
+    #[test]
+    fn health_gain_per_level_is_ten_percent_of_endurance() {
+        use super::oblivion_health_gain_per_level;
+        assert_eq!(oblivion_health_gain_per_level(100), 10.0); // UESP anchor
+        assert_eq!(oblivion_health_gain_per_level(45), 4.5); // fractional — caller rounds
+        assert_eq!(oblivion_health_gain_per_level(0), 0.0);
+    }
+
+    #[test]
+    fn health_base_plus_accrual_composes() {
+        use super::{oblivion_health_formula, oblivion_health_gain_per_level};
+        // Constant Endurance 50: base 2·50 = 100, then +5/level.
+        let base = {
+            let f = oblivion_health_formula(END);
+            f.eval(&ActorValues::from_pairs([(END, 50.0)]), 1)
+        };
+        assert_eq!(base, 100.0);
+        // Reaching level 3 accrues two per-level gains (levels 2 and 3).
+        let total = base + 2.0 * oblivion_health_gain_per_level(50);
+        assert_eq!(total, 110.0);
     }
 }

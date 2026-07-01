@@ -260,10 +260,13 @@ Oblivion on `SkillUse` (`OBLIVION` = 10 major-skill-ups/level, uncapped; UESP-so
 Skyrim's per-skill-XP model is the future `SkillXp` variant. **`oblivion_ruleset(resolve)`
 now assembles the full TES ruleset end-to-end** — `AttributeSet::TES_CLASSIC` +
 `SkillSet::OBLIVION` + `LevelingModel::OBLIVION` + the three derived pools, resolve-or-skip
-like the Fallout builders. The level-up attribute-bonus multiplier is shipped too —
+like the Fallout builders. The level-up leveling-efficiency mechanics are shipped too:
 `oblivion_attribute_bonus(governed_skill_ups)` → +1/+2/+3/+4/+5 by the UESP tier table
-(0 / 1–4 / 5–7 / 8–9 / 10+), capped, no roll-over. Health's per-level accrual
-(10 % of Endurance) is the remaining deferred leveling-efficiency detail.
+(0 / 1–4 / 5–7 / 8–9 / 10+), capped, no roll-over; and
+`oblivion_health_gain_per_level(endurance)` = 10 % of Endurance accrued (and stored) each
+level (path-dependent, so a per-level event, not a stateless formula). **Classic Oblivion
+(2006 Gamebryo) only** — the live UESP *Oblivion:Health* page now documents the 2024 UE5
+*Remastered* formula, which is out of scope. **Oblivion is now CHARAL-complete** end-to-end.
 
 The user-provided per-game **data tables**, by family — each slots directly into
 the struct above; **the canonical runtime never changes**:
