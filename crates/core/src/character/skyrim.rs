@@ -26,6 +26,48 @@ use super::skill::SkillSet;
 /// *Health/Magicka/Stamina (Skyrim)*.
 pub const SKYRIM_POOL_BASE: f32 = 100.0;
 
+/// Default `fSkillUseCurve` — the global exponent in the Skyrim skill-XP
+/// cost curve (UESP *Skyrim:Leveling*). Per-skill `SkillImproveMult` /
+/// `SkillImproveOffset` are AUTHORED (each skill's AVIF record).
+pub const SKYRIM_SKILL_USE_CURVE: f32 = 1.95;
+
+/// Skyrim skill-XP required to advance a skill **from `current_level` to the
+/// next** — the skill-internal half of the [`LevelingModel::SkillXp`] model
+/// (§5 procedural leveling strategy).
+///
+/// `cost = improve_mult · current_level^use_curve + improve_offset`
+///
+/// `improve_mult` / `improve_offset` are the skill's AUTHORED AVIF values
+/// (e.g. Lockpicking 0.25 / 300); `use_curve` is [`SKYRIM_SKILL_USE_CURVE`].
+/// Source: UESP *Skyrim:Leveling* (Lockpicking 15→16 = `0.25·15^1.95 + 300`
+/// ≈ 349.13). Distinct from [`LevelingModel::xp_from_skill_rank`], which is
+/// the *character* XP a rank-up feeds into the level bar.
+#[must_use]
+pub fn skyrim_skill_xp_to_next(
+    current_level: u16,
+    improve_mult: f32,
+    improve_offset: f32,
+    use_curve: f32,
+) -> f32 {
+    improve_mult * f32::from(current_level).powf(use_curve) + improve_offset
+}
+
+/// Cumulative Skyrim skill-XP to raise a skill **from `from_level` to
+/// `to_level`** — the sum of the per-step [`skyrim_skill_xp_to_next`] costs
+/// for each intermediate level. `0.0` if `to_level <= from_level`.
+#[must_use]
+pub fn skyrim_skill_xp_between(
+    from_level: u16,
+    to_level: u16,
+    improve_mult: f32,
+    improve_offset: f32,
+    use_curve: f32,
+) -> f32 {
+    (from_level..to_level)
+        .map(|l| skyrim_skill_xp_to_next(l, improve_mult, improve_offset, use_curve))
+        .sum()
+}
+
 /// Skyrim (TES V) [`CharacterRuleset`] builder.
 ///
 /// Assembles the empty attribute roster ([`AttributeSet::SKYRIM`]), the 18
@@ -63,5 +105,30 @@ mod tests {
         // A pool maxed via picks: base 100 + 10 per level chosen into it.
         let after_5_picks = SKYRIM_POOL_BASE + 5.0 * LM::SKYRIM.pool_pick_gain().unwrap();
         assert_eq!(after_5_picks, 150.0);
+    }
+
+    #[test]
+    fn skill_xp_cost_matches_uesp_lockpicking() {
+        // Lockpicking (mult 0.25, offset 300), curve 1.95.
+        let c = SKYRIM_SKILL_USE_CURVE;
+        // 15 → 16: 0.25·15^1.95 + 300 ≈ 349.13.
+        let step = skyrim_skill_xp_to_next(15, 0.25, 300.0, c);
+        assert!((step - 349.13).abs() < 0.5, "15→16 was {step}");
+        // Cumulative 15 → 20 ≈ 1815.5.
+        let cum = skyrim_skill_xp_between(15, 20, 0.25, 300.0, c);
+        assert!((cum - 1815.54).abs() < 2.0, "15→20 was {cum}");
+        // Empty / inverted range is zero.
+        assert_eq!(skyrim_skill_xp_between(20, 15, 0.25, 300.0, c), 0.0);
+        assert_eq!(skyrim_skill_xp_between(15, 15, 0.25, 300.0, c), 0.0);
+    }
+
+    #[test]
+    fn skill_xp_between_is_sum_of_steps() {
+        let c = SKYRIM_SKILL_USE_CURVE;
+        let (m, o) = (0.5, 200.0);
+        let manual: f32 = (15..18)
+            .map(|l| skyrim_skill_xp_to_next(l, m, o, c))
+            .sum();
+        assert_eq!(skyrim_skill_xp_between(15, 18, m, o, c), manual);
     }
 }

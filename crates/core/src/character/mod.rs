@@ -53,7 +53,10 @@ pub use reputation::{
 pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
 pub use skill::{ResolvedSkill, SkillDef, SkillSet};
-pub use skyrim::{skyrim_ruleset, SKYRIM_POOL_BASE};
+pub use skyrim::{
+    skyrim_ruleset, skyrim_skill_xp_between, skyrim_skill_xp_to_next, SKYRIM_POOL_BASE,
+    SKYRIM_SKILL_USE_CURVE,
+};
 pub use tes::{
     oblivion_attribute_bonus, oblivion_fatigue_formulas, oblivion_health_formula,
     oblivion_health_gain_per_level, oblivion_magicka_formula, oblivion_ruleset,

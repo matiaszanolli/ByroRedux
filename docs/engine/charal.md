@@ -143,8 +143,8 @@ is parsed from its own data**, not engine-hardcoded:
 | Derived-skill constants (`fAVDSkillBase`, `…PrimaryBonusMult`, `…LuckBonusMult`) | **AUTHORED** — `GMST` game settings | values known; read as **hardcoded constants today**, should read from parsed `GMST` (§8.4) |
 | XP / level curve (`iXPBase`, `iXPLevelUpBase`, …) | **AUTHORED** — `GMST` | pending |
 | Perk gates (required SPECIAL / level / rank) | **AUTHORED** — `PERK` conditions | pending |
-| **Skill → governing attribute** map | **ENGINE-SUPPLIED** — not in any single record; per-game engine knowledge | the user-provided table; FNV/FO3 table shipped |
-| **Procedural leveling strategy** (MW/OB attribute-multiplier from skill-ups; Skyrim skill-XP curve) | **ENGINE-SUPPLIED** — irreducibly procedural | a small per-family strategy, pending |
+| **Skill → governing attribute** map | **ENGINE-SUPPLIED** — not in any single record; per-game engine knowledge | canonical `SkillSet` rosters shipped (OBLIVION / SKYRIM / FALLOUT_FO3_FNV); FNV/FO3 population consumes it |
+| **Procedural leveling strategy** (OB attribute-multiplier from skill-ups; Skyrim skill-XP curve) | **ENGINE-SUPPLIED** — irreducibly procedural | shipped: `oblivion_attribute_bonus` (+1…+5), `skyrim_skill_xp_to_next` / `_between` (`fSkillUseCurve` 1.95); Morrowind out of scope |
 
 So CHARAL's "ruleset" = **(a) AUTHORED**, parsed from `GMST`/`AVIF`/`CLAS`/`RACE`/
 `PERK`, **+ (b) ENGINE-SUPPLIED**, the governing-attribute maps and leveling
