@@ -24,6 +24,48 @@ Commits hold that record.
 
 ---
 
+## Session 53 — CHARAL character abstraction layer + audit bug-bash  (2026-07-01, `8d653b48..d6d46c27`, 61 commits)
+
+Two threads. The feature thread stood up **CHARAL** — the Character Abstraction
+Layer, the canonical attributes / skills / perks / leveling / derived-stat tier
+that per-game rulesets translate into — from its design doc to a working,
+per-game-assemblable implementation. Underneath ran a broad audit/tech-debt
+bug-bash (~35 `#17xx` refs) carried over from the 2026-06-23 audit-suite run.
+
+- **CHARAL foundation** — new `crates/core/src/character/` tier: design doc +
+  index (`e6b5474f`), `CharacterLevel`/`Perks`/`Background` + `LevelingModel`
+  (`be3e69d7`), `CharacterRuleset` + `DerivedStatFormula` with the Fallout
+  builders (`b4ee7bfe`), the reputation family (Karma + FNV Fame/Infamy grid,
+  `6476c15a`/`79371213`/`d354e610`), and the affliction/resistance model
+  (`0f6f0771`). Substrate: production `ActorValues` + `GetActorValue` (#1663,
+  `49d3745a`) and FNV/FO3 auto-calc NPC population (`fad3890b`).
+- **CHARAL per-game rulesets** — `AttributeSet` canonical attribute union +
+  rosters (`41222b60`); `SkillSet` + governing-attribute map (`1a54e40a`); TES
+  derived pools Health/Magicka/Fatigue (`2b9147ae`); `LevelingModel` promoted to
+  an enum with `SkillUse` (Oblivion) + `SkillXp` (Skyrim) variants and per-game
+  builders (`33cb81ed`/`0eba1152`); leveling-efficiency procedurals —
+  `oblivion_attribute_bonus` (+1…+5, `7b1d7758`), `oblivion_health_gain_per_level`
+  (`5891eb70`), Skyrim skill-XP curve (`d6d46c27`); Fallout FO3/FNV skill roster
+  unified as the single source the population path consumes (`283cc447`). All
+  wiki/UESP-sourced (Fallout/GECK/Elder Scrolls wikis credited in README).
+  Oblivion + Skyrim assemble end-to-end; Morrowind out of scope.
+- **Condition functions** — GetLevel / GetXPForNextLevel / GetIsClass / GetIsRace
+  (`206ad4c9`), GetReputation / GetReputationThreshold (`1a69e2be`), + `condition`
+  and actor-value console commands (`e9aece79`/`34f16c3e`).
+- **Audit bug-bash (#1746–#1781)** — NIFAL collision (bhkPackedNiTriStripsShape
+  per-axis scale #1777, NiParticleSystem local transform #1333); Vulkan hot-path
+  refactors (draw_frame/App::new/recreate_swapchain/build_core_device splits
+  #1748/#1670/#1671/#1749, pipeline+descriptor helper routing #1750/#1751/#1752);
+  WATR colour offsets #1778; per-REFR VMAD override scripts #1737; save-durability
+  + decompiler hardening #1713/#1714/#1765/#1766; ragdoll/sky correctness
+  #1770/#1771/#1772; a large stale-doc/lockstep sweep (#1754–#1760, #1773–#1776,
+  #1780, #1781). Three audit reports added (NIFAL, runtime+scripting, tech-debt).
+
+Net: tests 3201 → **3327** (+126); src/ LOC +~9 814 (249 069 → 258 883); no bench
+change — bench-of-record `1c26bc25` now 437 commits stale (R6a-stale-15 gating).
+
+---
+
 ## Session 52 — Audit bug-bash: distant-object LOD, condition functions, M47.2 fragment lowerer  (2026-06-26, `70ea69e6..af359ed8`, 42 commits)
 
 Driven by the 2026-06-23 audit-suite run (`e2f8923e` bundles the suite summary +
