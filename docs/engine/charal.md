@@ -243,9 +243,13 @@ attribute is canonical** ([`Attribute`]), so the skill→attribute map reads
 game-agnostically. `SkillSet::OBLIVION` ships (21 skills, governing map sourced from
 the Elder Scrolls Wiki — Luck governs none); `SkillSet::NONE` covers FO4/FO76.
 `resolve()` pairs each skill's AUTHORED AVIF id with its governor's id, degrading an
-unresolved governor to `None` rather than dropping the skill. **Pending:** a
-`FALLOUT_FO3_FNV` set unifying the population-boundary skill→SPECIAL table
-(`actor_value_derive.rs`); Skyrim's 18 ungoverned skills; Morrowind's 27.
+unresolved governor to `None` rather than dropping the skill. Shipped rosters:
+`SkillSet::OBLIVION` (21 governed), `SkillSet::SKYRIM` (18 ungoverned),
+`SkillSet::FALLOUT_FO3_FNV` (15 = FO3 ∪ FNV, SPECIAL-governed) and `SkillSet::NONE`
+(FO4/FO76). The Fallout set is the **single source** of the auto-calc governing map —
+the FNV/FO3 population path (`actor_value_derive.rs`) consumes it (mapping each governor
+to its class-attribute index via the shared `SPECIAL` order) instead of a local table.
+Morrowind's 27 skills are out of scope (not in the compat list).
 
 TES derived pools (shipped — `crates/core/src/character/tes.rs`):
 `oblivion_health_formula` = 2×Endurance, `oblivion_magicka_formula` = 2×Intelligence,

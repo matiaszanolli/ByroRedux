@@ -56,6 +56,7 @@
 use super::actor::NpcRecord;
 use super::index::EsmIndex;
 use crate::esm::reader::GameKind;
+use byroredux_core::character::{Attribute, SkillSet};
 
 /// The 7 SPECIAL attributes, in `ATTR`/`ClassRecord::base_attributes`
 /// order, paired with their `AVIF` EditorID.
@@ -69,27 +70,13 @@ const SPECIAL: [&str; 7] = [
     "Luck",
 ];
 
-/// `(AVIF EditorID, governing-SPECIAL index into [`SPECIAL`])` for every
-/// FNV + FO3 skill. Indices: 0=Str, 1=Per, 2=End, 3=Cha, 4=Int, 5=Agi.
-/// (Luck governs no skill directly — it contributes the `ceil(Luck/2)`
-/// term to all of them.)
-const SKILLS: [(&str, usize); 15] = [
-    ("Barter", 3),        // Charisma
-    ("EnergyWeapons", 1), // Perception
-    ("Explosives", 1),    // Perception
-    ("Guns", 5),          // Agility (FNV)
-    ("Lockpick", 1),      // Perception
-    ("Medicine", 4),      // Intelligence
-    ("MeleeWeapons", 0),  // Strength
-    ("Repair", 4),        // Intelligence
-    ("Science", 4),       // Intelligence
-    ("Sneak", 5),         // Agility
-    ("Speech", 3),        // Charisma
-    ("Survival", 2),      // Endurance (FNV)
-    ("Unarmed", 2),       // Endurance
-    ("SmallGuns", 5),     // Agility (FO3)
-    ("BigGuns", 2),       // Endurance (FO3)
-];
+/// The governing SPECIAL's index into [`SPECIAL`] / `class.base_attributes`
+/// for a canonical [`Attribute`]. `None` for a non-SPECIAL attribute (never
+/// happens for a Fallout skill governor). The [`SPECIAL`] editor-id order is
+/// the ATTR order, so a position search yields the class-attribute index.
+fn special_index(attr: Attribute) -> Option<usize> {
+    SPECIAL.iter().position(|id| *id == attr.editor_id())
+}
 
 // Derived-skill game-setting defaults (geckwiki Derived Skill Settings).
 const SKILL_BASE: f32 = 2.0; // fAVDSkill<name>Base
@@ -163,14 +150,22 @@ fn derive_autocalc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, 
     let special = class.base_attributes;
     let luck = special[6];
 
-    let mut out = Vec::with_capacity(SPECIAL.len() + SKILLS.len());
+    let skills = SkillSet::FALLOUT_FO3_FNV;
+    let mut out = Vec::with_capacity(SPECIAL.len() + skills.len());
     for (i, editor_id) in SPECIAL.iter().enumerate() {
         if let Some(fid) = index.actor_value_form_id(editor_id) {
             out.push((fid, f32::from(special[i])));
         }
     }
-    for (editor_id, gov) in SKILLS {
-        if let Some(fid) = index.actor_value_form_id(editor_id) {
+    // Governing SPECIAL per skill comes from the canonical CHARAL roster —
+    // the single source (no local duplicate). Luck governs no skill, so every
+    // Fallout skill maps to a SPECIAL index; the `and_then` is total in
+    // practice and simply skips any future ungoverned entry.
+    for skill in skills.skills() {
+        let Some(gov) = skill.governing.and_then(special_index) else {
+            continue;
+        };
+        if let Some(fid) = index.actor_value_form_id(skill.editor_id) {
             out.push((fid, base_skill(special[gov], luck)));
         }
     }

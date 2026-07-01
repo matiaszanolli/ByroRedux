@@ -148,6 +148,33 @@ impl SkillSet {
         ],
     };
 
+    /// Fallout 3 + New Vegas — the **union** of both games' 13 skills (15
+    /// total, resolve-or-skip picks each game's subset: FO3 has SmallGuns /
+    /// BigGuns, FNV replaces them with Guns / Survival). Each governed by a
+    /// SPECIAL attribute — the auto-calc governing map (GECK), the single
+    /// source consumed by the FNV/FO3 population path
+    /// (`crates/plugin/.../actor_value_derive.rs`). Luck governs no skill
+    /// directly (it adds the `ceil(Luck/2)` term to every skill's base).
+    pub const FALLOUT_FO3_FNV: Self = Self {
+        skills: &[
+            SkillDef::governed("Barter", Attribute::Charisma),
+            SkillDef::governed("EnergyWeapons", Attribute::Perception),
+            SkillDef::governed("Explosives", Attribute::Perception),
+            SkillDef::governed("Guns", Attribute::Agility), // FNV
+            SkillDef::governed("Lockpick", Attribute::Perception),
+            SkillDef::governed("Medicine", Attribute::Intelligence),
+            SkillDef::governed("MeleeWeapons", Attribute::Strength),
+            SkillDef::governed("Repair", Attribute::Intelligence),
+            SkillDef::governed("Science", Attribute::Intelligence),
+            SkillDef::governed("Sneak", Attribute::Agility),
+            SkillDef::governed("Speech", Attribute::Charisma),
+            SkillDef::governed("Survival", Attribute::Endurance), // FNV
+            SkillDef::governed("Unarmed", Attribute::Endurance),
+            SkillDef::governed("SmallGuns", Attribute::Agility), // FO3
+            SkillDef::governed("BigGuns", Attribute::Endurance), // FO3
+        ],
+    };
+
     /// No skills (FO4 / FO76 — perks replace skills).
     pub const NONE: Self = Self { skills: &[] };
 
@@ -310,5 +337,23 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), 18);
+    }
+
+    #[test]
+    fn fallout_skill_governors_are_special_attributes() {
+        use crate::character::AttributeSet;
+        let fo = SkillSet::FALLOUT_FO3_FNV;
+        assert_eq!(fo.len(), 15); // FO3 ∪ FNV
+        // Spot-check the governing map (GECK auto-calc).
+        assert_eq!(fo.governing("Barter"), Some(Attribute::Charisma));
+        assert_eq!(fo.governing("Guns"), Some(Attribute::Agility)); // FNV
+        assert_eq!(fo.governing("BigGuns"), Some(Attribute::Endurance)); // FO3
+        assert_eq!(fo.governing("MeleeWeapons"), Some(Attribute::Strength));
+        // Every governor is a Fallout SPECIAL attribute; Luck governs none.
+        for s in fo.skills() {
+            let g = s.governing.expect("governed");
+            assert!(AttributeSet::FALLOUT.contains(g), "{} → non-SPECIAL", s.editor_id);
+            assert_ne!(g, Attribute::Luck, "{} claims Luck governor", s.editor_id);
+        }
     }
 }

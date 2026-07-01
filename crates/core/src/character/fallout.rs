@@ -14,20 +14,18 @@
 //! or derive them differently; Carry Weight / Melee Damage / Critical Chance
 //! / Unarmed Damage are actor-general.
 //!
-//! These builders attach the [`AttributeSet::FALLOUT`] SPECIAL roster but
-//! **not** a canonical [`super::skill::SkillSet`] yet: the FO3/FNV skill →
-//! governing-SPECIAL map currently lives at the population boundary
-//! (`crates/plugin/.../actor_value_derive.rs`, used for auto-calc base
-//! values). Promoting that into a `SkillSet::FALLOUT_FO3_FNV` const here — so
-//! the population path consumes the canonical roster instead of its own table
-//! — is a follow-up; until then FO3/FNV rulesets carry the default empty skill
-//! roster. (FO4/FO76 genuinely have no skills.)
+//! FO3/FNV attach both the [`AttributeSet::FALLOUT`] SPECIAL roster and the
+//! canonical [`SkillSet::FALLOUT_FO3_FNV`] skill roster + governing-SPECIAL
+//! map — the single source the population path
+//! (`crates/plugin/.../actor_value_derive.rs`) now consumes for auto-calc base
+//! values. FO4/FO76 genuinely have no skills, so they keep the empty roster.
 
 use super::attribute::AttributeSet;
 use super::derived::{DerivedInput, DerivedStatFormula};
 use super::leveling::LevelingModel;
 use super::resistance::Affliction;
 use super::ruleset::CharacterRuleset;
+use super::skill::SkillSet;
 
 #[inline]
 fn av(form_id: u32) -> DerivedInput {
@@ -106,7 +104,9 @@ pub fn fallout4_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
 /// FO3 — Health `90 + 20·END + 10·L` (player), AP `65 + 2·AGI` cap 85
 /// (player), + the shared skill-based stats.
 pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
-    let mut rs = CharacterRuleset::new(LevelingModel::FO3).with_attributes(AttributeSet::FALLOUT);
+    let mut rs = CharacterRuleset::new(LevelingModel::FO3)
+        .with_attributes(AttributeSet::FALLOUT)
+        .with_skills(SkillSet::FALLOUT_FO3_FNV);
     if let (Some(out), Some(e)) = (resolve("Health"), resolve("Endurance")) {
         rs.push_derived(
             out,
@@ -128,7 +128,9 @@ pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
 /// FNV — Health `95 + 20·END + 5·L` (player), AP `65 + 3·AGI` cap 95
 /// (player), + the shared skill-based stats.
 pub fn falloutnv_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
-    let mut rs = CharacterRuleset::new(LevelingModel::FNV).with_attributes(AttributeSet::FALLOUT);
+    let mut rs = CharacterRuleset::new(LevelingModel::FNV)
+        .with_attributes(AttributeSet::FALLOUT)
+        .with_skills(SkillSet::FALLOUT_FO3_FNV);
     if let (Some(out), Some(e)) = (resolve("Health"), resolve("Endurance")) {
         rs.push_derived(
             out,
@@ -220,6 +222,20 @@ mod tests {
         assert_eq!(fnv.derived_value(0x2D4, &avs, 1), Some(5.0));
         assert_eq!(fo3.derived_value(0x2D4, &avs, 1), Some(5.0));
         assert!((fo3.derived_value(0x2D3, &avs, 1).unwrap() - 0.05).abs() < 1e-6);
+    }
+
+    #[test]
+    fn skill_and_attribute_rosters_travel_with_the_ruleset() {
+        use crate::character::{AttributeSet, SkillSet};
+        for build in [falloutnv_ruleset, fallout3_ruleset] {
+            let rs = build(full);
+            assert_eq!(rs.attributes, AttributeSet::FALLOUT);
+            assert_eq!(rs.skills, SkillSet::FALLOUT_FO3_FNV);
+        }
+        // FO4 has SPECIAL but no skills (perks replace them).
+        let fo4 = fallout4_ruleset(full);
+        assert_eq!(fo4.attributes, AttributeSet::FALLOUT);
+        assert!(fo4.skills.is_empty());
     }
 
     #[test]
