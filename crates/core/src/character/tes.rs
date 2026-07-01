@@ -110,6 +110,37 @@ pub fn oblivion_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
     rs
 }
 
+/// Oblivion level-up **attribute bonus** — the classic-TES leveling-efficiency
+/// mechanic (`docs/engine/charal.md` §5).
+///
+/// When the character gains a level they may raise up to three attributes; the
+/// bonus each raised attribute receives is tiered by how many increases landed
+/// in that attribute's *governed* skills since the previous level (the
+/// skill→attribute map is [`SkillSet::OBLIVION`]). Tiers, UESP
+/// *Oblivion:Leveling*:
+///
+/// | governed skill-ups | bonus |
+/// |--------------------|-------|
+/// | 0                  | +1    |
+/// | 1–4                | +2    |
+/// | 5–7                | +3    |
+/// | 8–9                | +4    |
+/// | 10+                | +5    |
+///
+/// Capped at +5; surplus skill-ups past 10 do **not** roll over to the next
+/// level. `governed_skill_ups` is the count for one attribute; the caller
+/// tallies increases per governing attribute (via [`SkillSet::governing`]).
+#[must_use]
+pub fn oblivion_attribute_bonus(governed_skill_ups: u16) -> u8 {
+    match governed_skill_ups {
+        0 => 1,
+        1..=4 => 2,
+        5..=7 => 3,
+        8..=9 => 4,
+        _ => 5,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +251,45 @@ mod tests {
         let avs = ActorValues::from_pairs([(0x01, 50.0), (0x05, 45.0)]);
         assert_eq!(rs.derived_value(0x90, &avs, 1), Some(90.0)); // Health present
         assert_eq!(rs.derived_value(0x92, &avs, 1), None); // Magicka skipped
+    }
+
+    #[test]
+    fn attribute_bonus_tiers_match_uesp() {
+        use super::oblivion_attribute_bonus;
+        assert_eq!(oblivion_attribute_bonus(0), 1);
+        // 1–4 → +2
+        assert_eq!(oblivion_attribute_bonus(1), 2);
+        assert_eq!(oblivion_attribute_bonus(4), 2);
+        // 5–7 → +3
+        assert_eq!(oblivion_attribute_bonus(5), 3);
+        assert_eq!(oblivion_attribute_bonus(7), 3);
+        // 8–9 → +4
+        assert_eq!(oblivion_attribute_bonus(8), 4);
+        assert_eq!(oblivion_attribute_bonus(9), 4);
+        // 10+ → +5, capped (no roll-over)
+        assert_eq!(oblivion_attribute_bonus(10), 5);
+        assert_eq!(oblivion_attribute_bonus(30), 5);
+    }
+
+    #[test]
+    fn attribute_bonus_composes_with_the_governing_map() {
+        use super::oblivion_attribute_bonus;
+        use crate::character::SkillSet;
+        // Tally skill-ups per governing attribute, then derive each bonus.
+        // Say the character raised Blade ×3 and Blunt ×2 (both Strength) and
+        // Sneak ×6 (Agility) this level.
+        let mut str_ups = 0u16;
+        let mut agi_ups = 0u16;
+        for (skill, count) in [("Blade", 3u16), ("Blunt", 2), ("Sneak", 6)] {
+            match SkillSet::OBLIVION.governing(skill) {
+                Some(crate::character::Attribute::Strength) => str_ups += count,
+                Some(crate::character::Attribute::Agility) => agi_ups += count,
+                _ => {}
+            }
+        }
+        assert_eq!(str_ups, 5);
+        assert_eq!(agi_ups, 6);
+        assert_eq!(oblivion_attribute_bonus(str_ups), 3); // 5 → +3
+        assert_eq!(oblivion_attribute_bonus(agi_ups), 3); // 6 → +3
     }
 }
