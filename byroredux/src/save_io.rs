@@ -32,7 +32,9 @@ use byroredux_core::console::{CommandOutput, ConsoleCommand};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::World;
 use byroredux_core::math::Vec3;
-use byroredux_save::validate::{validate_world, ValidationError, ValidationKind};
+use byroredux_save::validate::{
+    log_validation_warnings, validate_world, ValidationError, ValidationKind,
+};
 use byroredux_save::{disk, encode, save_world, SaveRegistry, Snapshot};
 
 /// The **mutable game-state** component columns a live load overlays onto
@@ -671,6 +673,19 @@ pub fn execute_pending_save_loads(
         ),
         Err(e) => log::error!("save load: delta apply failed: {e}"),
     }
+
+    // #1844 / SAVE-01 — mirror the save path's `validate_world` +
+    // `validate_form_ids` pairing (see `SaveCommand::execute` above) as a
+    // post-load diagnostic. A save written before a given validation
+    // rule existed, or a hand-edited-but-CRC-valid file, would otherwise
+    // overlay a referentially broken world with no warning. Diagnostic
+    // only — a load can't cleanly fall back to the previous cell.
+    let mut issues = validate_world(world);
+    issues.extend(validate_form_ids(world));
+    log_validation_warnings(
+        &format!("save load: cell '{}'", cell_ctx.cell_editor_id),
+        &issues,
+    );
 
     // M45.1 refinement — put the player back where they saved, on top of
     // the reloaded cell (which spawns the player at the default door).

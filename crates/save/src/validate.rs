@@ -69,6 +69,39 @@ pub fn validate_world(world: &World) -> Vec<ValidationError> {
     errors
 }
 
+/// Log a post-load validation pass at WARN, truncated to the first 20
+/// issues. Shared by every load path that runs [`validate_world`] as a
+/// diagnostic rather than a save-time abort gate (#1844 / SAVE-01):
+/// unlike the save path, a load can't cleanly fall back to the previous
+/// world, so the minimum viable response to a corrupt-but-decodable save
+/// (older engine, hand-edited file with a still-valid CRC) is a loud
+/// diagnostic, not silence. No-op when `issues` is empty.
+///
+/// `context` is a short caller-supplied label (e.g. `"restore_world"` or
+/// `"save load: cell 'X'"`) prefixed onto the summary line so the log
+/// makes clear which load path and target produced the warning.
+pub fn log_validation_warnings(context: &str, issues: &[ValidationError]) {
+    if issues.is_empty() {
+        return;
+    }
+    log::warn!(
+        "{context}: loaded with {} referential-integrity issue(s) (save may predate a \
+         validation rule, or was hand-edited):",
+        issues.len()
+    );
+    for issue in issues.iter().take(20) {
+        log::warn!(
+            "  [{:?}] entity {}: {}",
+            issue.kind,
+            issue.entity,
+            issue.detail
+        );
+    }
+    if issues.len() > 20 {
+        log::warn!("  … and {} more", issues.len() - 20);
+    }
+}
+
 /// `Parent` ⇄ `Children` must agree, and neither may point past
 /// `next_entity` (an id that was never spawned).
 fn validate_hierarchy(world: &World, next_entity: EntityId, errors: &mut Vec<ValidationError>) {

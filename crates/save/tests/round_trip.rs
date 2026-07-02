@@ -479,3 +479,56 @@ fn form_id_restore_without_pool_errors_cleanly() {
         ),
     }
 }
+
+/// #1844 / SAVE-01 — the save path (`SaveCommand::execute`, binary-side)
+/// refuses to write a referentially broken world. This proves the load
+/// path's matching half: `restore_world` neither aborts nor silently
+/// repairs a referentially broken but structurally decodable snapshot —
+/// the exact shape of a save written by an older engine (before a given
+/// validation rule existed) or a hand-edited-but-CRC-valid file.
+///
+/// The registry/encode/decode round trip has no validation gate of its
+/// own (only `SaveCommand::execute` calls `validate_world` before
+/// `save_world`), so calling `save_world` directly on an already-broken
+/// World — bypassing that gate — is exactly how such a file would have
+/// been produced.
+#[test]
+fn restore_world_does_not_abort_on_referentially_broken_snapshot() {
+    let mut broken = World::new();
+    broken.insert_resource(StringPool::new());
+    broken.insert_resource(FormIdPool::new());
+    let e = broken.spawn();
+    // Dangling hierarchy edge: Parent points at an id that was never
+    // spawned. `validate_hierarchy` flags this as `DanglingEntity`.
+    broken.insert(e, Parent(999));
+
+    let reg = registry();
+    let snapshot = save_world(&broken, &reg).expect("save_world doesn't validate");
+    assert!(
+        !validate_world(&broken).is_empty(),
+        "test setup must actually be broken"
+    );
+
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).expect("encode");
+    let decoded = decode(&bytes, reg.schema_fingerprint()).expect("decode");
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).expect(
+        "restore_world must not abort on a referentially broken snapshot — \
+         a load can't cleanly fall back to a previous world, so this is \
+         diagnostic-only (see log_validation_warnings)",
+    );
+
+    // The corruption survived the load unmodified — restore_world only
+    // warns, it doesn't repair or reject. This is the same
+    // `validate_world` call `restore_world` runs internally to produce
+    // its WARN log, so a non-empty result here proves that diagnostic
+    // would have fired.
+    let issues = validate_world(&dst);
+    assert!(
+        !issues.is_empty(),
+        "the dangling Parent must still be present post-load"
+    );
+    assert_eq!(issues[0].kind, ValidationKind::DanglingEntity);
+}

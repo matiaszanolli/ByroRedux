@@ -16,6 +16,7 @@ use byroredux_core::string::StringPool;
 
 use crate::registry::SaveRegistry;
 use crate::snapshot::Snapshot;
+use crate::validate::{log_validation_warnings, validate_world};
 use crate::SaveError;
 
 /// Capture the live world into a [`Snapshot`].
@@ -93,6 +94,16 @@ pub fn restore_world(
             load(world, value.clone())?;
         }
     }
+
+    // #1844 / SAVE-01 — the save path (binary-side `SaveCommand::execute`)
+    // validates before writing; this repopulation had no matching check
+    // on the way in. A save written before a given validation rule
+    // existed, or a file hand-edited to keep a valid CRC, would load a
+    // referentially broken world unchecked. Diagnostic only, not an
+    // abort — `restore_world` has already cleared the world by this
+    // point, so there's no previous state to fall back to.
+    log_validation_warnings("restore_world", &validate_world(world));
+
     Ok(())
 }
 
