@@ -9,6 +9,7 @@ use super::predicates::{
     scratch_should_shrink, tlas_instance_should_shrink, tlas_scratch_should_shrink,
 };
 use super::AccelerationManager;
+use crate::deferred_destroy::DEFAULT_COUNTDOWN;
 use ash::vk;
 
 impl AccelerationManager {
@@ -18,11 +19,7 @@ impl AccelerationManager {
     /// [`scratch_should_shrink`] for the threshold).
     ///
     /// Call at cell-unload boundaries — **not** from inside a BLAS
-    /// build path. The method assumes no BLAS build is in flight (the
-    /// shared scratch buffer is only referenced during one-time build
-    /// command buffers that the per-build fence already waits on, but
-    /// we also don't recreate it mid-build because that would invalidate
-    /// a live device address).
+    /// build path.
     ///
     /// Per-frame TLAS `scratch_buffers[i]` are NOT touched here: they
     /// can be in flight on the GPU at this point and dropping them
@@ -32,13 +29,22 @@ impl AccelerationManager {
     ///
     /// # Safety
     ///
-    /// - Caller must guarantee no BLAS build command buffer is
-    ///   currently referencing `blas_scratch_buffer`. The two build
-    ///   paths use one-time command buffers with synchronous fence
-    ///   waits, so any call site that is NOT inside a BLAS build is
-    ///   safe by construction.
     /// - The `device` and `allocator` must be the same ones that
     ///   allocated the current scratch buffer.
+    ///
+    /// Retiring the *old* `blas_scratch_buffer` itself does NOT require
+    /// "no BLAS build in flight": this method runs from the streaming
+    /// path (`unload_cell`), which can execute in `about_to_wait` while
+    /// the previously-submitted frame's skinned-BLAS refit / first-
+    /// sight build is still executing on the GPU and referencing the
+    /// old scratch buffer's device address. The premise that "any call
+    /// site not inside a BLAS build is safe by construction" was true
+    /// pre-M29 (#911) but is false since skinned-BLAS refit/build
+    /// capture the scratch address into the *per-frame* command
+    /// buffer. Fixed by routing the retired buffer through
+    /// `pending_destroy_scratch` (deferred, `MAX_FRAMES_IN_FLIGHT`
+    /// countdown) below instead of destroying it immediately. See
+    /// #1782 / CONC-D1-01.
     pub unsafe fn shrink_blas_scratch_to_fit(
         &mut self,
         device: &ash::Device,
@@ -61,12 +67,14 @@ impl AccelerationManager {
             // No BLAS survives — drop the scratch entirely. Next build
             // will allocate fresh (via `scratch_needs_growth`'s None
             // arm) at whatever the new build's peak is.
-            if let Some(mut old) = self.blas_scratch_buffer.take() {
-                old.destroy(device, allocator);
+            //
+            // #1782: deferred, not immediate — see this fn's doc.
+            if let Some(old) = self.blas_scratch_buffer.take() {
                 log::debug!(
                     "BLAS scratch dropped: {:.1} MB → 0 (no BLAS survives)",
                     current as f64 / (1024.0 * 1024.0),
                 );
+                self.pending_destroy_scratch.push(old, DEFAULT_COUNTDOWN);
             }
             return;
         }
@@ -77,8 +85,9 @@ impl AccelerationManager {
 
         // Reallocate to the current peak size. A future build that
         // exceeds the new capacity will grow via `scratch_needs_growth`.
-        if let Some(mut old) = self.blas_scratch_buffer.take() {
-            old.destroy(device, allocator);
+        // #1782: deferred, not immediate — see this fn's doc.
+        if let Some(old) = self.blas_scratch_buffer.take() {
+            self.pending_destroy_scratch.push(old, DEFAULT_COUNTDOWN);
         }
         match GpuBuffer::create_device_local_uninit(
             device,

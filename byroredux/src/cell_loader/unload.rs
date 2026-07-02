@@ -122,13 +122,20 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         // across the process lifetime; a single peek at an 80–200 MB
         // scratch mesh (FO4 LOD terrain, Skyrim draugr skeletons,
         // Starfield `Saturn.nif`) permanently pins that much
-        // DEVICE_LOCAL VRAM. Cell unload is a safe boundary — no BLAS
-        // builds are in flight here — so shrink the scratch to the
-        // new post-drop peak. SAFETY: we're on the main thread and no
-        // BLAS build command buffer is currently referencing the
-        // shared scratch (builds run synchronously through fenced
-        // one-time command buffers). Skip when the allocator hasn't
-        // been initialised yet (headless / pre-init test paths).
+        // DEVICE_LOCAL VRAM. Shrink to the new post-drop peak here.
+        // SAFETY: `device`/`allocator` are the same ones that
+        // allocated the current scratch buffer — the only precondition
+        // `shrink_blas_scratch_to_fit` has left. Retiring the *old*
+        // scratch buffer no longer requires "no BLAS build in flight":
+        // this call site runs from `step_streaming` (`about_to_wait`),
+        // where a just-submitted frame's skinned-BLAS refit/first-
+        // sight build can still be executing on the GPU against the
+        // old scratch address. That race is now closed by routing the
+        // retired buffer through `pending_destroy_scratch`
+        // (deferred, `MAX_FRAMES_IN_FLIGHT` countdown) instead of an
+        // immediate free. See #1782 / CONC-D1-01. Skip when the
+        // allocator hasn't been initialised yet (headless / pre-init
+        // test paths).
         if let Some(allocator) = ctx.allocator.as_ref() {
             unsafe {
                 accel.shrink_blas_scratch_to_fit(&ctx.device, allocator);

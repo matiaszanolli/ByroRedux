@@ -68,8 +68,9 @@ impl AccelerationManager {
     }
 
     /// Drain and destroy BLAS entries whose defer countdown has reached
-    /// zero. Call once per frame alongside
-    /// `MeshRegistry::tick_deferred_destroy`.
+    /// zero, and retired `blas_scratch_buffer` allocations
+    /// (`pending_destroy_scratch`, #1782) alongside them. Call once per
+    /// frame alongside `MeshRegistry::tick_deferred_destroy`.
     pub fn tick_deferred_destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         // Split borrow so the closure can capture `&accel_loader`
         // while the tick borrows `&mut pending_destroy_blas`.
@@ -85,6 +86,9 @@ impl AccelerationManager {
                 accel_loader.destroy_acceleration_structure(entry.accel, None);
             }
             entry.buffer.destroy(device, allocator);
+        });
+        self.pending_destroy_scratch.tick(|mut buf| {
+            buf.destroy(device, allocator);
         });
     }
 
@@ -124,6 +128,12 @@ impl AccelerationManager {
             }
             entry.buffer.destroy(device, allocator);
         });
+        // SAFETY: same precondition as above — the caller's preceding
+        // `device_wait_idle` covers any in-flight command buffer that
+        // captured a retired scratch buffer's device address (#1782).
+        self.pending_destroy_scratch.drain(|mut buf| {
+            buf.destroy(device, allocator);
+        });
     }
 
     /// Number of entries currently waiting in `pending_destroy_blas`.
@@ -131,6 +141,14 @@ impl AccelerationManager {
     /// telemetry — the count must reach zero after a drain. See #732.
     pub fn pending_destroy_blas_count(&self) -> usize {
         self.pending_destroy_blas.len()
+    }
+
+    /// Number of retired scratch buffers currently waiting in
+    /// `pending_destroy_scratch`. Surfaced for the deferred-destroy
+    /// regression test and shutdown telemetry — the count must reach
+    /// zero after a drain. See #1782.
+    pub fn pending_destroy_scratch_count(&self) -> usize {
+        self.pending_destroy_scratch.len()
     }
 
     /// Build a BLAS for a mesh. Call after uploading the mesh to GPU.
@@ -283,8 +301,18 @@ impl AccelerationManager {
             );
 
             if need_new_scratch {
-                if let Some(mut old) = self.blas_scratch_buffer.take() {
-                    old.destroy(device, allocator);
+                // #1782 — do NOT destroy `old` immediately. This is the
+                // single-shot build path, called during cell load, but
+                // `blas_scratch_buffer` is shared with the per-frame
+                // skinned-BLAS refit/first-sight-build paths, whose
+                // command buffer may still be in flight on the GPU
+                // (recorded before this call, submitted, not yet
+                // fenced) and referencing `old`'s device address as
+                // build scratch. Route through the deferred-destroy
+                // queue so the free waits out `MAX_FRAMES_IN_FLIGHT`
+                // frames instead of racing the GPU.
+                if let Some(old) = self.blas_scratch_buffer.take() {
+                    self.pending_destroy_scratch.push(old, DEFAULT_COUNTDOWN);
                 }
                 self.blas_scratch_buffer = Some(GpuBuffer::create_device_local_uninit(
                     device,
@@ -686,8 +714,15 @@ impl AccelerationManager {
         );
 
         if need_new_scratch {
-            if let Some(mut old) = self.blas_scratch_buffer.take() {
-                old.destroy(device, allocator);
+            // #1782 — see the matching comment in `build_blas` above.
+            // This is the M40 streaming hot path (called from
+            // `step_streaming` in `about_to_wait`), the exact window
+            // where the previously-submitted frame's skinned-BLAS
+            // refit/first-sight command buffer may still be executing
+            // on the GPU and referencing `old`'s scratch device
+            // address. Deferred-destroy, not immediate.
+            if let Some(old) = self.blas_scratch_buffer.take() {
+                self.pending_destroy_scratch.push(old, DEFAULT_COUNTDOWN);
             }
             self.blas_scratch_buffer = Some(GpuBuffer::create_device_local_uninit(
                 device,

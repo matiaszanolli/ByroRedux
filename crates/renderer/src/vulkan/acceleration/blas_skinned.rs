@@ -210,6 +210,19 @@ impl AccelerationManager {
             scratch_size,
         );
         if need_new_scratch {
+            // SAFETY / not a #1782 sibling: unlike the immediate-destroy
+            // bug fixed in `blas_static::build_blas`/`build_blas_batched`
+            // and `memory::shrink_blas_scratch_to_fit` (which run from
+            // `step_streaming` in `about_to_wait`, while a just-
+            // submitted frame may still be executing), this call site
+            // runs from `record_skinned_blas_refit`, itself called from
+            // `draw_frame` AFTER that frame's own `wait_for_fences`. Any
+            // command buffer that could reference the *old* scratch
+            // buffer's device address (this same frame-in-flight slot's
+            // previous recording) has therefore already retired. Do NOT
+            // "fix" this site by copying the deferred-destroy pattern —
+            // it would just add a needless one-frame delay to a
+            // genuinely safe immediate free.
             if let Some(mut old) = self.blas_scratch_buffer.take() {
                 old.destroy(device, allocator);
             }

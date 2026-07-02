@@ -156,6 +156,23 @@ pub struct AccelerationManager {
     /// in `MAX_FRAMES_IN_FLIGHT` frames; when it hits zero the underlying
     /// `VkAccelerationStructureKHR` + buffer are finally destroyed. See #372.
     pub(super) pending_destroy_blas: DeferredDestroyQueue<BlasEntry>,
+    /// Retired `blas_scratch_buffer` allocations awaiting a
+    /// `MAX_FRAMES_IN_FLIGHT` countdown before destruction. The shared
+    /// scratch buffer is grow-only-replaced (a new, larger allocation
+    /// swaps in) from three sites — [`blas_static::build_blas`],
+    /// [`blas_static::build_blas_batched`], and
+    /// [`memory::shrink_blas_scratch_to_fit`] — the last two of which
+    /// run from `step_streaming` (`about_to_wait`), a window where the
+    /// previously-submitted frame may still be executing on the GPU
+    /// and recording a skinned-BLAS refit/first-sight build whose
+    /// scratch device address was captured from the *old* buffer at
+    /// record time. Immediately `vkDestroyBuffer`-ing the old buffer
+    /// there was a GPU use-after-free (CONC-D1-01 / #1782, sibling gap
+    /// left by the #1449 fix, which only covered `BlasEntry`
+    /// destruction). Ticked/drained alongside `pending_destroy_blas`
+    /// in [`blas_static::tick_deferred_destroy`] /
+    /// [`blas_static::drain_pending_destroys`].
+    pub(super) pending_destroy_scratch: DeferredDestroyQueue<GpuBuffer>,
     /// Monotonic counter bumped whenever the `blas_entries` map mutates
     /// (add via `build_blas` / `build_blas_batched`, remove via
     /// `drop_blas` / `evict_unused_blas`). Each [`TlasState`] caches
@@ -228,6 +245,7 @@ impl AccelerationManager {
             static_blas_bytes: 0,
             blas_budget_bytes,
             pending_destroy_blas: DeferredDestroyQueue::new(),
+            pending_destroy_scratch: DeferredDestroyQueue::new(),
             blas_map_generation: 0,
             skinned_blas: std::collections::HashMap::new(),
             scratch_align,
