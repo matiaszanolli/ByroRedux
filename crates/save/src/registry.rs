@@ -45,6 +45,18 @@ struct Entry {
     /// resources and for the form-id key column (which IS the identity,
     /// not a delta).
     apply: Option<ApplyFn>,
+    /// Set only by [`SaveRegistry::register_form_id_component`] — the
+    /// single column [`SaveRegistry::form_id_column`] reads to build the
+    /// live-load `old → live` entity remap.
+    ///
+    /// Previously `form_id_column()` inferred this column by
+    /// `apply.is_none()`, which is also true for every resource and
+    /// coincidentally true for the one component that has it today —
+    /// structural coincidence, not an assertion. A second `apply: None`
+    /// component would have made the inference pick whichever entry
+    /// happened to come first, silently mis-keying the entire remap. See
+    /// #1845 / SAVE-02.
+    is_form_id: bool,
 }
 
 /// Registry of every component/resource type that participates in a save.
@@ -126,6 +138,7 @@ impl SaveRegistry {
                     Ok(n)
                 },
             )),
+            is_form_id: false,
         });
         self
     }
@@ -163,6 +176,7 @@ impl SaveRegistry {
             // Resources aren't entity-keyed, so they have no remap-apply
             // form — `apply_deltas` restores them wholesale via `load`.
             apply: None,
+            is_form_id: false,
         });
         self
     }
@@ -183,6 +197,19 @@ impl SaveRegistry {
     pub fn register_form_id_component(&mut self, name: &'static str) -> &mut Self {
         use byroredux_core::ecs::components::FormIdComponent;
         use byroredux_core::form_id::{FormIdPair, FormIdPool};
+
+        // #1845 / SAVE-02 — at most one form-id column may ever be
+        // registered: `form_id_column()` returns the first match, so a
+        // second one would silently mis-key the entire live-load remap
+        // with no compile-time or test guard. This runs once at startup
+        // (`build_save_registry`), so failing loudly here is free
+        // insurance against exactly that class of bug.
+        assert!(
+            !self.components.iter().any(|e| e.is_form_id),
+            "SaveRegistry: a form-id column is already registered; \
+             register_form_id_component must be called at most once \
+             (a second call would silently mis-key the live-load remap)"
+        );
 
         self.components.push(Entry {
             name,
@@ -234,6 +261,7 @@ impl SaveRegistry {
             // the remap; it's never re-applied as a delta (a reloaded
             // cell already carries its own FormIdComponents).
             apply: None,
+            is_form_id: true,
         });
         self
     }
@@ -287,10 +315,9 @@ impl SaveRegistry {
     /// the column the delta-apply path reads to build its `old → live`
     /// entity remap. (At most one is expected.)
     pub(crate) fn form_id_column(&self) -> Option<&'static str> {
-        // The form-id entry is the one component with `apply: None`.
         self.components
             .iter()
-            .find(|e| e.apply.is_none())
+            .find(|e| e.is_form_id)
             .map(|e| e.name)
     }
 }
@@ -315,5 +342,47 @@ impl Hasher for FnvHasher {
             self.0 ^= b as u64;
             self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::ecs::components::Transform;
+
+    /// Regression for #1845 / SAVE-02: `form_id_column()` must resolve
+    /// the column registered via `register_form_id_component`, keyed off
+    /// the explicit `is_form_id` flag — not "the one component with
+    /// `apply: None`" (the pre-fix heuristic). A normal component
+    /// registration in the mix must not confuse it.
+    #[test]
+    fn form_id_column_resolves_the_flagged_entry() {
+        let mut r = SaveRegistry::new();
+        r.register_component::<Transform>("Transform")
+            .register_form_id_component("FormIdComponent");
+        assert_eq!(r.form_id_column(), Some("FormIdComponent"));
+    }
+
+    /// `form_id_column()` returns `None` when no form-id column was ever
+    /// registered — the pre-fix heuristic would have wrongly matched the
+    /// first `apply: None` entry it found (any resource, since
+    /// `register_resource` always sets `apply: None`).
+    #[test]
+    fn form_id_column_is_none_without_registration() {
+        let mut r = SaveRegistry::new();
+        r.register_component::<Transform>("Transform");
+        assert_eq!(r.form_id_column(), None);
+    }
+
+    /// A second `register_form_id_component` call must be rejected
+    /// loudly at registration time (#1845) rather than silently letting
+    /// `form_id_column()` pick whichever one happens to come first and
+    /// mis-key the entire live-load remap.
+    #[test]
+    #[should_panic(expected = "form-id column is already registered")]
+    fn registering_a_second_form_id_column_panics() {
+        let mut r = SaveRegistry::new();
+        r.register_form_id_component("FormIdComponent")
+            .register_form_id_component("AnotherFormIdColumn");
     }
 }
