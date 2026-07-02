@@ -477,29 +477,39 @@ impl MaterialProvider {
 /// non-empty value for any given field wins. BGEM has no inheritance
 /// (the format carries no `root_material_path`) so we read the single
 /// parsed file. Returns `true` when any field was filled.
-/// Translate a BGSM/BGEM GL-style blend factor into the Gamebryo
-/// `NiAlphaProperty` enum the renderer speaks.
+/// Narrow a BGSM/BGEM `src_blend`/`dst_blend` value to the `u8` the
+/// Gamebryo `NiAlphaProperty` blend-factor field (and
+/// [`gamebryo_to_vk_blend_factor`](byroredux_renderer)) expects.
 ///
-/// BGSM/BGEM store `src_blend`/`dst_blend` as a GL-style enum
-/// (`Zero=0, One=1, SrcColor=2, …, SrcAlpha=6, InvSrcAlpha=7, …` — see
-/// `byroredux_bgsm::AlphaBlendMode`), whereas the renderer's
-/// [`gamebryo_to_vk_blend_factor`](byroredux_renderer) reads the
-/// Gamebryo nibble (`ONE=0, ZERO=1`, then 2..=10 share the D3D
-/// ordering). The two tables differ **only** at 0 and 1 — `Zero` and
-/// `One` are swapped — so swap 0↔1 and pass everything else through.
+/// **No translation happens here** — `src_blend`/`dst_blend` are
+/// already Gamebryo-native values (`ONE=0, ZERO=1, DST_COLOR=4,
+/// SRC_ALPHA=6, ONE_MINUS_SRC_ALPHA=7, …`, the same scale
+/// `gamebryo_to_vk_blend_factor` reads), re-derived directly from the
+/// reference implementation
+/// (`Material-Editor:BaseMaterialFile.cs::ConvertAlphaBlendMode`):
+/// `Standard = (src=6,dst=7)`, `Additive = (src=6,dst=0)`,
+/// `Multiplicative = (src=4,dst=1)`. Feeding those straight through
+/// `gamebryo_to_vk_blend_factor` already produces the correct blend
+/// state for all three.
 ///
-/// Without this, an additive effect/glow BGEM card (`(One, One)` =
-/// `(1, 1)`) forwards verbatim and the renderer reads `(ZERO, ZERO)`,
-/// so the surface contributes nothing and renders invisible (#1651).
-/// This is the material-path twin of the particle-preset fix in #1649:
-/// the renderer speaks one blend enum, and foreign enums are translated
-/// here at the parser→`Material` boundary, never forwarded raw.
-pub(crate) fn gl_to_gamebryo_blend(gl: u32) -> u8 {
-    match gl {
-        0 => 1, // GL Zero → Gamebryo ZERO
-        1 => 0, // GL One  → Gamebryo ONE
-        other => other as u8,
-    }
+/// This function used to be named `gl_to_gamebryo_blend` and swap
+/// `0↔1` on the premise that these fields were a "GL-style enum"
+/// inverted from the Gamebryo nibble. That premise was false (no such
+/// GL-style enum appears anywhere in the reference source — real GL
+/// blend enums are large hex constants like `GL_SRC_ALPHA = 0x0302`,
+/// not small integers). The swap (#1651) fixed its motivating case (an
+/// additive BGEM rendering invisible) only by accident — the fixture
+/// used to justify it was a synthetic `(function=2, src=1, dst=1)`
+/// tuple the reference parser never actually emits — and broke the two
+/// real modes that touch `0`/`1`: Additive's `dst=0` swapped to `1`
+/// (`ZERO`, killing the additive accumulation) and Multiplicative's
+/// `dst=1` swapped to `0` (`ONE`, leaking the destination through).
+/// Standard's `(6,7)` pair is a fixed point of the swap, which is why
+/// the regression went unnoticed. Renamed on the #1823 fix so the name
+/// no longer implies a translation direction that doesn't exist — a
+/// future reader should not "restore" the swap.
+pub(crate) fn bgsm_blend_to_gamebryo(raw: u32) -> u8 {
+    raw as u8
 }
 
 pub(crate) fn merge_bgsm_into_mesh(
@@ -926,15 +936,16 @@ pub(crate) fn merge_bgsm_into_mesh(
             // intentionally does NOT clear an already-set blend — a leaf
             // that opts out shouldn't erase a parent's blend authoring.
             //
-            // BGSM `src_blend` / `dst_blend` are a GL-style enum
-            // (`Zero=0, One=1, …`) — the Gamebryo nibble the renderer
-            // speaks swaps 0↔1 (`ONE=0, ZERO=1`). Translate at this
-            // parser→Material boundary via `gl_to_gamebryo_blend` so the
-            // renderer never sees a foreign enum (#1651).
+            // BGSM `src_blend` / `dst_blend` are already Gamebryo-native
+            // values — `bgsm_blend_to_gamebryo` just narrows the `u32`
+            // to the `u8` the renderer's blend-factor field expects, no
+            // translation. See its doc for why (#1823, regression of a
+            // wrong #1651 fix that assumed a GL-style enum requiring a
+            // swap).
             if !set_blend && bgsm.base.alpha_blend_mode.function > 0 {
                 mesh.has_alpha = true;
-                mesh.src_blend_mode = gl_to_gamebryo_blend(bgsm.base.alpha_blend_mode.src_blend);
-                mesh.dst_blend_mode = gl_to_gamebryo_blend(bgsm.base.alpha_blend_mode.dst_blend);
+                mesh.src_blend_mode = bgsm_blend_to_gamebryo(bgsm.base.alpha_blend_mode.src_blend);
+                mesh.dst_blend_mode = bgsm_blend_to_gamebryo(bgsm.base.alpha_blend_mode.dst_blend);
                 set_blend = true;
                 touched = true;
             }
@@ -1029,8 +1040,8 @@ pub(crate) fn merge_bgsm_into_mesh(
         // BGEM has no inheritance so no child-first guard needed.
         if bgem.base.alpha_blend_mode.function > 0 {
             mesh.has_alpha = true;
-            mesh.src_blend_mode = gl_to_gamebryo_blend(bgem.base.alpha_blend_mode.src_blend);
-            mesh.dst_blend_mode = gl_to_gamebryo_blend(bgem.base.alpha_blend_mode.dst_blend);
+            mesh.src_blend_mode = bgsm_blend_to_gamebryo(bgem.base.alpha_blend_mode.src_blend);
+            mesh.dst_blend_mode = bgsm_blend_to_gamebryo(bgem.base.alpha_blend_mode.dst_blend);
         }
         // #1280 sub-step 3b — forward BGEM `glass_enabled` so the
         // spawn-time classifier in `helpers::classify_glass_into_material`

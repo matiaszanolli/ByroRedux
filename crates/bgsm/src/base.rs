@@ -41,10 +41,23 @@ impl MaskWriteFlags {
 /// decode exactly what CreationKit wrote; the common "Standard" mode
 /// is `(1, 6, 7)` meaning `function=1, src_blend=6, dst_blend=7`.
 ///
-/// Values from UESP + the reference source:
-/// - `function`: 0 = None, 1 = Standard, 2 = Additive, 3 = Multiplicative.
-/// - `src_blend` / `dst_blend`: GL-style enum (Zero=0, One=1,
-///   SrcColor=2, SrcAlpha=6, InvSrcAlpha=7, ...).
+/// Values re-derived directly from the reference implementation
+/// (`Material-Editor:BaseMaterialFile.cs::ConvertAlphaBlendMode`) —
+/// **not** from UESP, whose "GL-style enum" description does not match
+/// what the reference parser actually emits (see #1823, regression of
+/// the #1651 fix that trusted that description):
+/// - `function` is only ever `0` (Unknown/None) or `1` (every real
+///   mode) — it never takes `2` or `3`. The mode is distinguished by
+///   the `(src_blend, dst_blend)` pair, not by `function`:
+///   `None = (0,0,0)`, `Standard = (1,6,7)`, `Additive = (1,6,0)`,
+///   `Multiplicative = (1,4,1)`.
+/// - `src_blend` / `dst_blend` are **already** the same small-integer
+///   scale the renderer's Gamebryo `NiAlphaProperty` blend-factor
+///   table speaks (`gamebryo_to_vk_blend_factor` in
+///   `byroredux_renderer::vulkan::pipeline`: `0=ONE, 1=ZERO, 4=DST_COLOR,
+///   6=SRC_ALPHA, 7=ONE_MINUS_SRC_ALPHA`) — not a GL enum requiring
+///   translation. Real GL blend enums are large hex constants
+///   (`GL_SRC_ALPHA = 0x0302`), which these values are not.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AlphaBlendMode {
     pub function: u8,

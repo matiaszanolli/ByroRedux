@@ -397,6 +397,7 @@ name = "byroredux"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ash",
  "byroredux-audio",
  "byroredux-bgsm",
  "byroredux-bsa",

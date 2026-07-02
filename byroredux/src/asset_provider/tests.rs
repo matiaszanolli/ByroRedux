@@ -830,25 +830,36 @@ fn bgsm_merge_phase1_flags_honor_child_first_chain() {
 /// no refraction, wrong tint). Pins:
 ///   1. `function > 0` → `has_alpha = true` + blend factors copied
 ///   2. `function == 0` (None) → no override (NIF-side value wins)
+///
+/// The three real `(function, src, dst)` tuples below are taken
+/// directly from the reference implementation's
+/// `ConvertAlphaBlendMode` (`Material-Editor:BaseMaterialFile.cs:363-387`),
+/// not invented — see #1823, which replaced this test's prior
+/// synthetic `(function=2, src=1, dst=1)` Additive fixture (a tuple
+/// the reference parser never actually emits) that had masked the
+/// #1651 blend-swap regression.
 #[test]
 fn bgsm_merge_forwards_alpha_blend_mode() {
+    use ash::vk;
     use byroredux_bgsm::AlphaBlendMode;
-    // Mirror the prod merge's three writes for the alpha-blend block,
-    // including the #1651 GL→Gamebryo blend-factor translation.
+    use byroredux_renderer::vulkan::pipeline::gamebryo_to_vk_blend_factor;
+
+    // Mirror the prod merge's three writes for the alpha-blend block.
+    // `bgsm_blend_to_gamebryo` is a narrowing cast, not a translation
+    // (#1823) — `src_blend`/`dst_blend` are already Gamebryo-native.
     fn apply(bgsm: &BgsmFile, has_alpha: &mut bool, src: &mut u8, dst: &mut u8) {
         if bgsm.base.alpha_blend_mode.function > 0 {
             *has_alpha = true;
-            *src = gl_to_gamebryo_blend(bgsm.base.alpha_blend_mode.src_blend);
-            *dst = gl_to_gamebryo_blend(bgsm.base.alpha_blend_mode.dst_blend);
+            *src = bgsm_blend_to_gamebryo(bgsm.base.alpha_blend_mode.src_blend);
+            *dst = bgsm_blend_to_gamebryo(bgsm.base.alpha_blend_mode.dst_blend);
         }
     }
-    // Case 1: standard alpha-blend (function=1, src=6 SrcAlpha,
-    // dst=7 InvSrcAlpha) — Institute glass case. 6/7 coincide
-    // between the GL and Gamebryo tables, so the translation is a
-    // no-op here.
+
+    // Case 1: Standard (function=1, src=6, dst=7) — Institute glass
+    // case. Must produce (SRC_ALPHA, ONE_MINUS_SRC_ALPHA).
     let mut has_alpha = false;
-    let mut src = 6u8;
-    let mut dst = 7u8;
+    let mut src = 0u8;
+    let mut dst = 0u8;
     let mut bgsm = BgsmFile::default();
     bgsm.base.alpha_blend_mode = AlphaBlendMode {
         function: 1,
@@ -859,28 +870,62 @@ fn bgsm_merge_forwards_alpha_blend_mode() {
     assert!(has_alpha, "function=1 (Standard) must set has_alpha");
     assert_eq!(src, 6);
     assert_eq!(dst, 7);
+    assert_eq!(gamebryo_to_vk_blend_factor(src), vk::BlendFactor::SRC_ALPHA);
+    assert_eq!(
+        gamebryo_to_vk_blend_factor(dst),
+        vk::BlendFactor::ONE_MINUS_SRC_ALPHA
+    );
 
-    // Case 2: additive blend (function=2) with GL One/One factors —
-    // common on FO4 effect / glow card BGEMs. #1651: the GL `(One,
-    // One)` = `(1, 1)` must translate to the Gamebryo `(ONE, ONE)` =
-    // `(0, 0)` the renderer's `gamebryo_to_vk_blend_factor` reads as
-    // additive accumulation. Forwarding `(1, 1)` raw would mean
-    // Gamebryo `(ZERO, ZERO)` and the surface would render invisible.
+    // Case 2: Additive (function=1, src=6, dst=0) — the real reference
+    // tuple for FO4 effect/glow-card BGEMs. Must produce
+    // (SRC_ALPHA, ONE) — additive accumulation. #1651's swap turned
+    // dst=0 into 1 (ZERO), corrupting this to an alpha-weighted
+    // opaque overwrite instead of additive.
     let mut has_alpha = false;
-    let mut src = 6u8;
-    let mut dst = 7u8;
+    let mut src = 0u8;
+    let mut dst = 0u8;
     let mut bgsm = BgsmFile::default();
     bgsm.base.alpha_blend_mode = AlphaBlendMode {
-        function: 2,
-        src_blend: 1,
+        function: 1,
+        src_blend: 6,
+        dst_blend: 0,
+    };
+    apply(&bgsm, &mut has_alpha, &mut src, &mut dst);
+    assert!(has_alpha);
+    assert_eq!(src, 6);
+    assert_eq!(dst, 0);
+    assert_eq!(gamebryo_to_vk_blend_factor(src), vk::BlendFactor::SRC_ALPHA);
+    assert_eq!(
+        gamebryo_to_vk_blend_factor(dst),
+        vk::BlendFactor::ONE,
+        "Additive dst must resolve to ONE for accumulation"
+    );
+
+    // Case 3: Multiplicative (function=1, src=4, dst=1) — the real
+    // reference tuple. Must produce (DST_COLOR, ZERO) — dst *= src.
+    // #1651's swap turned dst=1 into 0 (ONE), leaking the destination
+    // through instead of multiplying it out.
+    let mut has_alpha = false;
+    let mut src = 0u8;
+    let mut dst = 0u8;
+    let mut bgsm = BgsmFile::default();
+    bgsm.base.alpha_blend_mode = AlphaBlendMode {
+        function: 1,
+        src_blend: 4,
         dst_blend: 1,
     };
     apply(&bgsm, &mut has_alpha, &mut src, &mut dst);
     assert!(has_alpha);
-    assert_eq!(src, 0, "GL One (1) → Gamebryo ONE (0)");
-    assert_eq!(dst, 0, "GL One (1) → Gamebryo ONE (0) = additive dst");
+    assert_eq!(src, 4);
+    assert_eq!(dst, 1);
+    assert_eq!(gamebryo_to_vk_blend_factor(src), vk::BlendFactor::DST_COLOR);
+    assert_eq!(
+        gamebryo_to_vk_blend_factor(dst),
+        vk::BlendFactor::ZERO,
+        "Multiplicative dst must resolve to ZERO so it doesn't leak through"
+    );
 
-    // Case 3: function=0 (None) — the BGSM explicitly says "no
+    // Case 4: function=0 (None) — the BGSM explicitly says "no
     // blend." Don't flip has_alpha. Caller's `set_blend` guard
     // then also prevents a subsequent parent from re-triggering.
     let mut has_alpha = false;
@@ -894,19 +939,22 @@ fn bgsm_merge_forwards_alpha_blend_mode() {
     assert_eq!(dst, 7);
 }
 
-/// #1651 — the GL→Gamebryo blend-factor translation swaps **only**
-/// `Zero`/`One` (0↔1); every other factor (the shared D3D ordering,
-/// 2..=10) passes through unchanged. Shared by the BGSM and BGEM
-/// merge branches, so this pins the contract for both.
+/// #1823 — `bgsm_blend_to_gamebryo` performs no translation, only a
+/// `u32 -> u8` narrowing cast. Pins the identity contract across the
+/// full valid range (0..=10), specifically including `0`/`1` — the
+/// #1651 regression swapped exactly those two, which corrupted the
+/// real Additive (`dst=0`) and Multiplicative (`dst=1`) blend modes
+/// (see `bgsm_merge_forwards_alpha_blend_mode`). Shared by the BGSM
+/// and BGEM merge branches, so this pins the contract for both.
 #[test]
-fn gl_to_gamebryo_blend_swaps_only_zero_and_one() {
-    assert_eq!(gl_to_gamebryo_blend(0), 1, "GL Zero → Gamebryo ZERO");
-    assert_eq!(gl_to_gamebryo_blend(1), 0, "GL One → Gamebryo ONE");
-    // SrcColor / SrcAlpha / InvSrcAlpha / SrcAlphaSaturate coincide.
-    assert_eq!(gl_to_gamebryo_blend(2), 2);
-    assert_eq!(gl_to_gamebryo_blend(6), 6);
-    assert_eq!(gl_to_gamebryo_blend(7), 7);
-    assert_eq!(gl_to_gamebryo_blend(10), 10);
+fn bgsm_blend_to_gamebryo_is_identity_narrowing() {
+    for v in 0u32..=10 {
+        assert_eq!(
+            bgsm_blend_to_gamebryo(v),
+            v as u8,
+            "must pass {v} through unchanged, no 0/1 swap"
+        );
+    }
 }
 
 /// Companion regression for the SIBLING half of #1076 — BGEM also

@@ -66,6 +66,13 @@ toml = { workspace = true }
 # `--screenshot` CLI flag. See README in `tests/golden/` for the
 # regenerate-baseline workflow.
 image = { workspace = true }
+# Test-only: `asset_provider::tests::bgsm_merge_forwards_alpha_blend_mode`
+# (#1823) asserts the BGSM blend-factor merge against
+# `byroredux_renderer::vulkan::pipeline::gamebryo_to_vk_blend_factor`'s
+# actual `vk::BlendFactor` output, not just the intermediate Gamebryo
+# byte — already a pinned workspace dependency via byroredux-renderer,
+# just not previously wired directly into this crate.
+ash = { workspace = true }
 # Phase 5 of the debug-UI plan — the game-profile loader's
 # merge-shipped-with-user test writes two on-disk TOML files and
 # round-trips them through the loader. Keep dev-scoped so release
