@@ -125,6 +125,32 @@ pub struct FormIdPair {
     pub local: LocalFormId,
 }
 
+/// Reserved `FormIdPair` for the player character body — the one entity
+/// in the engine with no corresponding plugin-authored record, so it
+/// can't get a `FormIdPair` the normal way (deriving from a legacy
+/// filename or a native plugin's declared UUID).
+///
+/// `PluginId::from_filename`'s UUID v5 derivation can never produce
+/// `u128::MAX`: RFC 4122 fixes the version nibble to `0101` and the
+/// variant bits to `10`, so at least two bits of every v5 UUID are
+/// never `1`. A native plugin manifest could in principle declare this
+/// exact UUID, but that would require deliberately colliding with a
+/// reserved engine sentinel — not a real-world risk.
+///
+/// Attaching a `FormIdComponent` built from this pair to the player
+/// body (see `byroredux::scene::setup_scene`) makes the player a normal
+/// remappable entity for the M45.1 live-load `old -> live` remap
+/// (`build_form_id_remap` in `byroredux-save`) — the same mechanism
+/// every NPC's `FormIdComponent` already uses. Without it, any
+/// persistable component landing on the player body (inventory,
+/// equipment, actor values) is captured to disk but silently dropped on
+/// every live load, because `build_form_id_remap` has no pair to match
+/// it against. See #1846 / SAVE-03.
+pub const PLAYER_FORM_ID_PAIR: FormIdPair = FormIdPair {
+    plugin: PluginId(u128::MAX),
+    local: LocalFormId(1),
+};
+
 // ── Runtime interning pool ──────────────────────────────────────────────
 
 /// Maps [`FormIdPair`] ↔ [`FormId`]. Same pattern as

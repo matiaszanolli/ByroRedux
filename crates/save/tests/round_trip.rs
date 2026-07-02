@@ -303,6 +303,66 @@ fn delta_apply_reroutes_by_form_id_after_cell_reload() {
     assert_eq!(inv.items[0].base_form_id, 0xCAFE);
 }
 
+/// #1846 / SAVE-03 — the player character body must carry a
+/// `FormIdComponent` built from the reserved `PLAYER_FORM_ID_PAIR` so it
+/// is a normal remappable entity for the live-load delta-apply path,
+/// exactly like any NPC's `FormIdComponent`. Before the fix the player
+/// body had no form id at all: `build_form_id_remap` had no pair to
+/// match it against, so any saved delta targeting the player (inventory,
+/// equipment) was silently dropped by `apply_deltas`'s `filter_map` on
+/// every live load — the single worst data-loss class for a save
+/// system, arriving invisibly. This test would fail pre-fix (the
+/// `remap.get(&saved_player)` lookup would be `None` and 0 rows would
+/// apply).
+#[test]
+fn player_body_inventory_survives_live_load() {
+    use byroredux_core::form_id::PLAYER_FORM_ID_PAIR;
+    use byroredux_save::{apply_deltas, build_form_id_remap};
+
+    // ── "Saved session": the player, given a sword mid-session. ──
+    let mut saved_world = World::new();
+    saved_world.insert_resource(StringPool::new());
+    saved_world.insert_resource(FormIdPool::new());
+    let saved_player = saved_world.spawn();
+    let mut inv = Inventory::new();
+    inv.push(ItemStack::new(0xBEEF, 1));
+    saved_world.insert(saved_player, inv);
+    let fid = saved_world
+        .resource_mut::<FormIdPool>()
+        .intern(PLAYER_FORM_ID_PAIR);
+    saved_world.insert(saved_player, FormIdComponent(fid));
+
+    let reg = registry();
+    let snapshot = save_world(&saved_world, &reg).unwrap();
+
+    // ── "Reloaded cell": the player respawns at a DIFFERENT entity id,
+    //    with no inventory yet — same as any post-reload player spawn.
+    //    `scene::setup_scene` attaches the same PLAYER_FORM_ID_PAIR. ──
+    let mut live = World::new();
+    live.insert_resource(FormIdPool::new());
+    let _other_entity = live.spawn(); // shifts the player off id 0
+    let live_player = live.spawn();
+    let fid = live
+        .resource_mut::<FormIdPool>()
+        .intern(PLAYER_FORM_ID_PAIR);
+    live.insert(live_player, FormIdComponent(fid));
+
+    let remap = build_form_id_remap(&live, &reg, &snapshot);
+    assert_eq!(
+        remap.get(&saved_player),
+        Some(&live_player),
+        "the player's stable form id must resolve saved → live across the reload"
+    );
+
+    let applied = apply_deltas(&mut live, &reg, &snapshot, &remap, &["Inventory"]).unwrap();
+    assert_eq!(applied, 1, "the saved player Inventory delta must apply");
+
+    let qi = live.query::<Inventory>().unwrap();
+    let (e, inv) = qi.iter().next().unwrap();
+    assert_eq!(e, live_player, "inventory landed on the live player entity");
+    assert_eq!(inv.items[0].base_form_id, 0xBEEF, "the saved item survived the live load");
+}
+
 /// #1696 — `apply_deltas` remaps each row's entity *key* (saved id → live id)
 /// but moves the component *value* verbatim. `AnimationPlayer.root_entity` is
 /// an `Option<EntityId>` holding a *saved-session* id; overlaying it would

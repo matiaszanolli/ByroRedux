@@ -708,6 +708,22 @@ pub(crate) fn setup_scene(
                 angular_damping: 0.0,
             },
         );
+        // #1846 / SAVE-03 — attach a FormIdComponent built from the
+        // reserved player sentinel pair so the player body is a normal
+        // remappable entity for the M45.1 live-load `old -> live` remap
+        // (`build_form_id_remap`), the same mechanism every NPC's
+        // FormIdComponent already uses. Without this, any persistable
+        // component landing on the player body (inventory, equipment,
+        // actor values) is captured to disk but silently dropped on
+        // every live load — the remap has no pair to match it against.
+        {
+            use byroredux_core::ecs::components::FormIdComponent;
+            use byroredux_core::form_id::{FormIdPool, PLAYER_FORM_ID_PAIR};
+            let fid = world
+                .resource_mut::<FormIdPool>()
+                .intern(PLAYER_FORM_ID_PAIR);
+            world.insert(body, FormIdComponent(fid));
+        }
         world.insert_resource(crate::systems::PlayerEntity(Some(body)));
         // M47.0 — the scripting crate's papyrus_demo systems
         // (rumble_on_activate, quest_advance, mg07_door,
