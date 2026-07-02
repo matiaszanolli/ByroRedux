@@ -190,6 +190,18 @@ pub fn build_form_id_remap(
 /// caller's `MUTABLE_DELTA_COLUMNS` (#1696). Unknown column names and columns
 /// absent from the snapshot are skipped. Returns the total rows applied across
 /// columns.
+///
+/// This overlay is **additive-only** — it can update or insert a row via
+/// `ApplyFn`, never remove one. The reloaded cell respawns every REFR
+/// authored in the ESM regardless of what happened to it during the saved
+/// session. There is currently no enable/disable/delete persistence
+/// mechanism to overlay in the first place (no `Disabled`/`Deleted` marker
+/// component exists), so this is a latent gap, not an active bug: nothing
+/// regresses today. It becomes a real reference-break the moment such a
+/// component and its "which REFRs were disabled/deleted this session" set
+/// land — at that point the drain needs a companion despawn/hide pass run
+/// after this function, keyed the same way (`remap`), before it can be
+/// persisted. See #1847 / SAVE-04.
 pub fn apply_deltas(
     world: &mut World,
     registry: &SaveRegistry,
