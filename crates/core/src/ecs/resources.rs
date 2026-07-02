@@ -722,6 +722,13 @@ pub struct SkinSlotPool {
     /// by the renderer to gate skin compute dispatch + skinned-BLAS
     /// refit. #1195 / PERF-DIM7-01, paired with #1196 / PERF-DIM7-02.
     pose_dirty: std::collections::HashSet<super::storage::EntityId>,
+    /// Pre-image of `last_pose_hash` for every entity `try_mark_pose_dirty`
+    /// committed dirty *this frame*, keyed by entity. `None` means the
+    /// entity had no prior hash (first-sight). Cleared by `clear_pose_dirty`
+    /// at the start of the next frame's hashing pass; drained by
+    /// `rollback_pending_pose_commits` when the renderer discovers the
+    /// commit was premature. #1796 / D6-02.
+    rollback_pose_hash: std::collections::HashMap<super::storage::EntityId, Option<u64>>,
     /// Monotonic cumulative count of over-cap `allocate()` **calls**
     /// (i.e. calls that returned `None`) since construction — **not** a
     /// distinct-entity count. An over-cap entity is never inserted into
@@ -755,6 +762,7 @@ impl SkinSlotPool {
             overflow_warned: false,
             last_pose_hash: std::collections::HashMap::new(),
             pose_dirty: std::collections::HashSet::new(),
+            rollback_pose_hash: std::collections::HashMap::new(),
             overflow_attempt_count: 0,
         }
     }
@@ -890,6 +898,10 @@ impl SkinSlotPool {
             // hygiene — keeps the map bounded to live entities).
             self.last_pose_hash.remove(&entity);
             self.pose_dirty.remove(&entity);
+            // #1796 / D6-02 — same eviction hygiene for the rollback
+            // pre-image map; an evicted entity's pending rollback (if
+            // any) is moot once its slot is reclaimed.
+            self.rollback_pose_hash.remove(&entity);
         }
 
         // #1379 — Contract the issued range: if the highest slots are now
@@ -946,24 +958,65 @@ impl SkinSlotPool {
     ///
     /// First-sight (no prior hash) always returns `true`. Idle bone
     /// poses converge to "not dirty" on the second consecutive frame.
+    ///
+    /// #1796 / D6-02 — this commits `last_pose_hash` (the dirty-gate
+    /// baseline) at CPU pose-build time, which runs *before* `draw_frame`
+    /// — and therefore before it's known whether the frame will actually
+    /// reach the skin dispatch section (`draw_frame` has two early-return
+    /// guards ahead of it: empty framebuffers, `ERROR_OUT_OF_DATE_KHR`).
+    /// The pre-image of every commit made this frame is stashed in
+    /// `rollback_pose_hash` so the caller can undo it via
+    /// [`rollback_pending_pose_commits`](Self::rollback_pending_pose_commits)
+    /// if `draw_frame` bails before dispatching.
     pub fn try_mark_pose_dirty(&mut self, entity: super::storage::EntityId, new_hash: u64) -> bool {
-        let dirty = match self.last_pose_hash.get(&entity) {
-            Some(&old) => old != new_hash,
+        let old = self.last_pose_hash.get(&entity).copied();
+        let dirty = match old {
+            Some(old) => old != new_hash,
             None => true,
         };
         if dirty {
+            self.rollback_pose_hash.entry(entity).or_insert(old);
             self.last_pose_hash.insert(entity, new_hash);
             self.pose_dirty.insert(entity);
         }
         dirty
     }
 
-    /// Clear the dirty set; called at the start of each frame before
-    /// `build_skinned_palettes` repopulates it. Leaves
-    /// [`last_pose_hash`](Self::last_pose_hash) intact so the next
-    /// frame's hash comparison still has a baseline. #1195.
+    /// Clear the dirty set (and the pending rollback pre-images); called
+    /// at the start of each frame before `build_skinned_palettes`
+    /// repopulates it. Leaves [`last_pose_hash`](Self::last_pose_hash)
+    /// intact so the next frame's hash comparison still has a baseline.
+    /// #1195.
     pub fn clear_pose_dirty(&mut self) {
         self.pose_dirty.clear();
+        self.rollback_pose_hash.clear();
+    }
+
+    /// Undo every `last_pose_hash` commit made by `try_mark_pose_dirty`
+    /// since the last `clear_pose_dirty` — i.e. this frame's commits.
+    ///
+    /// Call this when the renderer reports it did not reach the skin
+    /// dispatch section this frame (`VulkanContext::skin_dispatch_ran ==
+    /// false`): the CPU-side hash pass already ran and advanced the
+    /// baseline before `draw_frame` was even called, so without this
+    /// rollback an unchanged pose on the *next* frame would read "not
+    /// dirty" against a baseline the GPU never actually dispatched
+    /// against. #1796 / D6-02.
+    ///
+    /// First-sight commits (pre-image `None`) roll back to "never
+    /// hashed" by removing the entry outright, preserving the
+    /// always-dirty first-sight invariant.
+    pub fn rollback_pending_pose_commits(&mut self) {
+        for (entity, old) in self.rollback_pose_hash.drain() {
+            match old {
+                Some(old) => {
+                    self.last_pose_hash.insert(entity, old);
+                }
+                None => {
+                    self.last_pose_hash.remove(&entity);
+                }
+            }
+        }
     }
 
     /// Read-only view of the per-frame dirty entity set. The renderer
@@ -1297,6 +1350,72 @@ mod skin_slot_pool_tests {
         assert!(
             pool.try_mark_pose_dirty(7, 0xCAFE),
             "re-allocated entity must hit first-sight dirty after sweep"
+        );
+    }
+
+    // ── #1796 / D6-02 — rollback on an aborted skin dispatch ──────
+
+    #[test]
+    fn rollback_restores_prior_hash_so_next_frame_stays_dirty() {
+        // Steady state: entity 1 has a committed baseline (H1). Frame N
+        // computes H2 (pose moved) → committed dirty. `draw_frame` then
+        // bails (simulated: caller calls rollback instead of letting the
+        // commit stand). Frame N+1's pose is unchanged from N (still H2)
+        // — the gate must still read dirty, because H2 was never actually
+        // dispatched against.
+        let mut pool = SkinSlotPool::new(5);
+        let _ = pool.try_mark_pose_dirty(1, 0xAAAA); // H1, first-sight
+        pool.clear_pose_dirty();
+
+        let dirty = pool.try_mark_pose_dirty(1, 0xBBBB); // H2
+        assert!(dirty, "pose change must report dirty");
+        pool.rollback_pending_pose_commits(); // simulate an early-return draw_frame
+
+        pool.clear_pose_dirty();
+        let dirty_again = pool.try_mark_pose_dirty(1, 0xBBBB); // still H2, unchanged since N
+        assert!(
+            dirty_again,
+            "rolled-back commit must leave H1 as the baseline, so an \
+             unchanged-since-N pose (H2) still compares dirty against it"
+        );
+    }
+
+    #[test]
+    fn rollback_of_first_sight_restores_always_dirty_invariant() {
+        // First-sight entity whose only commit gets rolled back must go
+        // back to "never hashed" — not accidentally treated as if H1 IS
+        // the baseline (which would wrongly report "not dirty" next
+        // frame for the same first pose, before it was ever dispatched).
+        let mut pool = SkinSlotPool::new(5);
+        let dirty = pool.try_mark_pose_dirty(1, 0xCAFE);
+        assert!(dirty);
+        pool.rollback_pending_pose_commits();
+
+        pool.clear_pose_dirty();
+        let dirty_again = pool.try_mark_pose_dirty(1, 0xCAFE);
+        assert!(
+            dirty_again,
+            "rolled-back first-sight commit must still read dirty on retry"
+        );
+    }
+
+    #[test]
+    fn rollback_is_a_no_op_when_nothing_pending() {
+        // A frame that reaches the dispatch section normally must not
+        // have its committed baseline disturbed if `rollback_pending_
+        // pose_commits` is (incorrectly) called after `clear_pose_dirty`
+        // already ran — i.e. rollback only ever undoes the *current*
+        // frame's commits, never a prior committed frame's.
+        let mut pool = SkinSlotPool::new(5);
+        let _ = pool.try_mark_pose_dirty(1, 0xCAFE);
+        pool.clear_pose_dirty(); // this frame's dispatch succeeded; commit stands
+
+        pool.rollback_pending_pose_commits(); // nothing pending — must be inert
+        pool.clear_pose_dirty();
+        assert!(
+            !pool.try_mark_pose_dirty(1, 0xCAFE),
+            "committed baseline from a successful frame must survive an \
+             unrelated later rollback call"
         );
     }
 }

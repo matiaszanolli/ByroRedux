@@ -1436,6 +1436,14 @@ impl VulkanContext {
         //
         // Skips entirely when `skin_compute` / `accel_manager` are None
         // (no RT) or no draws are skinned.
+        //
+        // #1796 / D6-02 — reaching this function at all proves `draw_frame`
+        // got past both early-return guards, so the CPU-side pose hash
+        // commit made earlier this frame (in `build_render_data`, before
+        // `draw_frame` was even called) is safe to keep. Set unconditionally,
+        // before the `Some`/`Some` gate below, since the absence of RT /
+        // skin_compute means there's no dispatch to protect either way.
+        self.skin_dispatch_ran = true;
         let skin_t0 = Instant::now();
         if let (Some(skin_pipeline), Some(ref mut accel)) =
             (self.skin_compute.as_ref(), self.accel_manager.as_mut())
@@ -2013,6 +2021,9 @@ impl VulkanContext {
             underwater,
             pose_dirty,
         } = inputs;
+        // #1796 / D6-02 — reset before either early-return guard below so
+        // a bailed frame reads `false`; see the field doc on `skin_dispatch_ran`.
+        self.skin_dispatch_ran = false;
         // #1211 / REN-SAFETY — skip the frame when the main framebuffers
         // Vec is empty. `recreate_swapchain` destroys framebuffers up
         // front and only rebuilds them at the end (`resize.rs:564`);
@@ -4170,6 +4181,59 @@ mod framebuffers_empty_guard_tests {
              semaphore is left signal-pending without a paired wait, \
              tripping VUID-vkAcquireNextImageKHR-semaphore-01779 on \
              the next acquire. (#1211)"
+        );
+    }
+}
+
+/// Regression for #1796 / D6-02. `skin_dispatch_ran` must be reset
+/// `false` before both of `draw_frame`'s early-return guards (empty
+/// framebuffers, `ERROR_OUT_OF_DATE_KHR`) and only flipped `true` once
+/// `record_skinned_blas_refit` — the function that actually reads
+/// `pose_dirty` and gates the skin compute dispatch — runs. A live
+/// mocked `VulkanContext` test is impractical for the same reason as
+/// `framebuffers_empty_guard_tests` above (70+ Vulkan-loader fields, no
+/// safe defaults); a static source assertion pins the ordering instead.
+#[cfg(test)]
+mod skin_dispatch_ran_ordering_tests {
+    #[test]
+    fn skin_dispatch_ran_is_reset_before_both_early_return_guards() {
+        let src = include_str!("draw.rs");
+
+        let reset_pos = src
+            .find("self.skin_dispatch_ran = false;")
+            .expect("draw_frame must reset skin_dispatch_ran to false (#1796)");
+        let fb_guard_pos = src
+            .find("if self.framebuffers.is_empty() {")
+            .expect("draw_frame must guard on empty framebuffers (#1211)");
+        let oode_guard_pos = src
+            .find("Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Ok(true),")
+            .expect("draw_frame must guard on ERROR_OUT_OF_DATE_KHR");
+        // `record_skinned_blas_refit` (which sets the flag true) is
+        // defined textually EARLIER in the file than `draw_frame` — so
+        // the assertion anchors on draw_frame's *call site* for that
+        // function, mirroring how the sibling test above anchors on the
+        // `wait_for_fences` / `acquire_next_image` call sites rather
+        // than callee bodies.
+        let call_site_pos = src
+            .find("self.record_skinned_blas_refit(")
+            .expect("draw_frame must call record_skinned_blas_refit (#1796)");
+
+        assert!(
+            reset_pos < fb_guard_pos,
+            "skin_dispatch_ran reset must come BEFORE the empty-framebuffers \
+             guard, or that early return would leave the flag from the \
+             previous frame's outcome instead of reporting its own. (#1796)"
+        );
+        assert!(
+            reset_pos < oode_guard_pos,
+            "skin_dispatch_ran reset must come BEFORE the \
+             ERROR_OUT_OF_DATE_KHR guard, for the same reason. (#1796)"
+        );
+        assert!(
+            fb_guard_pos < call_site_pos && oode_guard_pos < call_site_pos,
+            "record_skinned_blas_refit (which sets skin_dispatch_ran true) \
+             must be called AFTER both early-return guards — calling it any \
+             earlier would defeat the rollback signal entirely. (#1796)"
         );
     }
 }

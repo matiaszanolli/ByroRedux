@@ -1827,6 +1827,18 @@ impl App {
                 pose_dirty: self.skin_slot_pool.pose_dirty(),
             }) {
                 Ok(needs_recreate) => {
+                    // #1796 / D6-02 — `draw_frame`'s two early-return guards
+                    // (empty framebuffers, `ERROR_OUT_OF_DATE_KHR`) return
+                    // through this same `Ok` arm, indistinguishable from a
+                    // frame that actually reached the skin dispatch section.
+                    // The CPU-side pose hash commit already ran (in
+                    // `build_render_data`, before `ctx.draw_frame` was
+                    // called), so an early return here means that commit
+                    // needs undoing or the next frame's dirty gate reads
+                    // "clean" against a dispatch that never happened.
+                    if !ctx.skin_dispatch_ran {
+                        self.skin_slot_pool.rollback_pending_pose_commits();
+                    }
                     let last_draw_stats = ctx.last_draw_call_stats;
                     world_resource_set::<DebugStats>(&self.world, |s| {
                         s.batch_count = last_draw_stats.batch_count;

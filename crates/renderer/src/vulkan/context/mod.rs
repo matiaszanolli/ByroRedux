@@ -1216,6 +1216,18 @@ pub struct VulkanContext {
     /// Reset at the top of `draw_frame`; populated after the batch
     /// merge + indirect-grouping passes.
     pub last_draw_call_stats: DrawCallStats,
+    /// #1796 / D6-02 — set `false` at the top of every `draw_frame` call,
+    /// flipped `true` only once `record_skinned_blas_refit` actually runs
+    /// (i.e. `draw_frame` got past both early-return guards: the empty-
+    /// framebuffers check and `ERROR_OUT_OF_DATE_KHR`). The CPU-side pose
+    /// hash commit (`SkinSlotPool::try_mark_pose_dirty`, called from
+    /// `build_render_data` *before* `draw_frame`) runs unconditionally,
+    /// so an early return leaves the dirty-gate baseline advanced past a
+    /// dispatch that never happened. The caller checks this flag after
+    /// `draw_frame` returns and calls `SkinSlotPool::
+    /// rollback_pending_pose_commits` when it reads `false`, undoing the
+    /// premature commit so the next frame's comparison stays honest.
+    pub skin_dispatch_ran: bool,
     pub ssao: Option<SsaoPipeline>,
     pub composite: Option<CompositePipeline>,
     pub gbuffer: Option<GBuffer>,
@@ -2430,6 +2442,7 @@ impl VulkanContext {
             pending_skin_unload_victims: Vec::new(),
             last_skin_coverage_frame: super::skin_compute::SkinCoverageFrame::default(),
             last_draw_call_stats: DrawCallStats::default(),
+            skin_dispatch_ran: false,
             ssao,
             composite,
             gbuffer,
