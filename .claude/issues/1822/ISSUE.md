@@ -1,0 +1,24 @@
+# SPT-NEW-07: MaybeStringElseBare (tag 13005) can misparse a bare 13005 sitting immediately before the geometry tail as a length-prefixed string
+
+**Issue**: https://github.com/matiaszanolli/ByroRedux/issues/1822
+**Source report**: docs/audits/AUDIT_SPEEDTREE_2026-07-02.md
+**Labels**: low, import-pipeline, bug
+
+- **Severity**: LOW
+- **Dimension**: Walker Byte-Accounting
+- **Location**: `crates/spt/src/parser.rs:84-120` (the `MaybeStringElseBare` arm)
+- **Status**: NEW
+
+**Description**: The `MaybeStringElseBare` disambiguation (added for #999) works by: consume the tag's u32, peek the NEXT u32, and if that next value is a known dictionary tag treat the entry as `Bare`, otherwise read a length-prefixed string. The Bare classification therefore depends on the value following 13005 being an in-range known tag. If a bare 13005 is the last parameter entry and is immediately followed by the binary geometry tail (an out-of-range u32, e.g. a 14000-band value or raw geometry bytes), the peek sees a non-tag value, `next_is_known_tag` is `false`, and the walker takes the String branch — calling `read_string_lp()` which reads that tail u32 as a byte length and consumes that many bytes of the geometry tail as a bogus string. Crucially the walker's tail-detection guard (`parser.rs:69`, the out-of-range peek check) runs before `dispatch_tag` on the current tag, but it never re-checks the value after 13005 has been consumed — so the tail sentinel that would normally stop the walker is instead swallowed as string-payload length. The entry is pushed to `scene.entries` with no `unknown_tags` diagnostic, so the corpus harness would score such a file as "clean" even though it desynced.
+
+**Evidence**: Trace of `parser.rs:102-114`: `let _ = stream.read_u32_le()?` consumes the 13005 tag; `peek_u32_le()` reads the value at the tail boundary; for an out-of-range tail value `next_is_known_tag == false` → `SptValue::String(stream.read_string_lp()?)`. `read_string_lp` caps at 64 KiB but a typical tail u32 (e.g. `768` or `14007`) is well under the cap, so it does not `Err` — it reads `len` tail bytes and succeeds. `TAG_MIN..=TAG_MAX` is `100..=13999` (confirmed at `parser.rs:35,38`); a tail value like `768` falls inside this range but resolves to `SptTagKind::Unknown` via `dispatch_tag`, so `next_is_known_tag` is still `false` and the String branch is taken. Live corpus run shows 0 such misparses today: in all 113 Oblivion files the bare 13005 is followed by a known tag (that is exactly why the 109 bare files are clean and the 4 outliers carry a real curve string), so this is a latent gap, not an active corpus regression. The existing guard `tag_13005_at_eof_does_not_panic` only covers the EOF-immediately-after case (peek returns `None` → `false`, then `read_string_lp` `UnexpectedEof`s cleanly); it does not cover 13005 followed by a non-EOF out-of-range tail value.
+
+**Impact**: Defense-in-depth only at present (no vanilla file triggers it). If a mod-authored or DLC `.spt` ever emits a bare 13005 directly before the geometry tail, the walker would consume a slab of the tail as a garbage string, mis-set `tail_offset` past the real tail start, and silently drop any remaining parameter entries — while still reporting a clean parse. The placeholder billboard still renders (the import ignores curve strings), so no crash and no `Err` out of the cell loader; the practical damage is a wrong `tail_offset` / lost trailing parameters, which only matters once the Phase 2 geometry-tail decoder consumes `tail_offset`.
+
+**Related**: SPT-D1-01 / #999 (introduced the `MaybeStringElseBare` arm); the `parser.rs` doc comment at :95-101 already acknowledges the inverse pathological case (a string length coinciding with a dictionary tag value misparsing as Bare) but not this tail-swallow direction.
+
+**Suggested Fix**: In the `MaybeStringElseBare` String branch, before reading the string, gate on the peeked value being a plausible length rather than a tail sentinel — e.g. only take the String branch when the peeked value is `< remaining_bytes` and below a sane string-length ceiling (the corpus max is ~525 B; the 64 KiB cap is far too loose to distinguish a curve length from a tail u32). Alternatively, require the bytes read as a string to be printable-ASCII (BezierSpline blobs always are) and fall back to `Bare` + `tail_offset` when they aren't. Add a regression fixture: bare 13005 immediately followed by an out-of-range tail u32 must resolve as `Bare` with `tail_offset` at the 13005 successor, not consume the tail as a string.
+
+## Completeness Checks
+- [ ] **SIBLING**: Check other `MaybeStringElseBare`-style bimodal-tag disambiguations (if any are added later) for the same tail-swallow direction
+- [ ] **TESTS**: New fixture — bare 13005 immediately followed by an out-of-range tail u32 resolves as `Bare` with `tail_offset` at the 13005 successor, not consumed as a string
