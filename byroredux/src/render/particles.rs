@@ -27,6 +27,25 @@ use byroredux_renderer::MaterialTable;
 
 use super::f32_sortable_u32;
 
+/// Quantization step count for the particle color fade (#1795 / D2-NEW-02).
+///
+/// `material_hash` hashes `emissive_color`/`emissive_mult` at raw f32 bit
+/// precision with no tolerance, so a continuous `age/life` fade produces a
+/// distinct hash — and therefore a fresh `GpuMaterial` upload — for nearly
+/// every live particle every frame, inverting the ~97% dedup-hit rate the
+/// #781 fast path assumes. Snapping the fade parameter to 32 steps before
+/// the color LERP collapses same-emitter particles onto ≤32 materials; the
+/// banding is imperceptible on additive billboards.
+const COLOR_FADE_STEPS: f32 = 32.0;
+
+/// Snap a `0.0..=1.0` fade parameter to [`COLOR_FADE_STEPS`] discrete
+/// steps, so distinct particles at nearly-identical ages collapse onto
+/// the same quantized value and therefore the same `material_hash`.
+/// #1795 / D2-NEW-02.
+fn quantize_fade(t: f32) -> f32 {
+    (t * COLOR_FADE_STEPS).round() / COLOR_FADE_STEPS
+}
+
 /// Emit one DrawCommand per live particle into `draw_commands`.
 ///
 /// Skipped entirely when `particle_quad_handle == None` (no unit-quad
@@ -72,13 +91,18 @@ pub(super) fn emit_particles(
             // LERP color and size against age/life so particles
             // fade out smoothly and grow/shrink as configured.
             let t = (em.particles.ages[i] / em.particles.lifes[i]).clamp(0.0, 1.0);
+            // #1795 / D2-NEW-02 — quantize only the color's fade parameter
+            // (not `t` itself, which still drives a smooth size LERP below)
+            // so same-emitter particles collapse onto a handful of
+            // `material_hash` values instead of one per particle per frame.
+            let color_t = quantize_fade(t);
             let start_c = em.start_color;
             let end_c = em.end_color;
             let color = [
-                start_c[0] + (end_c[0] - start_c[0]) * t,
-                start_c[1] + (end_c[1] - start_c[1]) * t,
-                start_c[2] + (end_c[2] - start_c[2]) * t,
-                start_c[3] + (end_c[3] - start_c[3]) * t,
+                start_c[0] + (end_c[0] - start_c[0]) * color_t,
+                start_c[1] + (end_c[1] - start_c[1]) * color_t,
+                start_c[2] + (end_c[2] - start_c[2]) * color_t,
+                start_c[3] + (end_c[3] - start_c[3]) * color_t,
             ];
             let size = em.start_size + (em.end_size - em.start_size) * t;
 
@@ -209,5 +233,62 @@ pub(super) fn emit_particles(
                 material_table.intern_by_hash(cmd.material_hash(), || cmd.to_gpu_material());
             draw_commands.push(cmd);
         }
+    }
+}
+
+#[cfg(test)]
+mod quantize_fade_tests {
+    use super::{quantize_fade, COLOR_FADE_STEPS};
+
+    #[test]
+    fn snaps_nearby_values_to_the_same_step() {
+        // Two ages one frame apart at ~60fps differ by a tiny fraction
+        // of `t`; both must quantize to the same step so their
+        // `material_hash` collides and dedup fires. #1795 / D2-NEW-02.
+        let a = quantize_fade(0.500);
+        let b = quantize_fade(0.503);
+        assert_eq!(
+            a, b,
+            "nearby fade values within the same quantization bucket must \
+             produce an identical result so material_hash collides"
+        );
+    }
+
+    #[test]
+    fn distinguishes_values_a_full_step_apart() {
+        let step = 1.0 / COLOR_FADE_STEPS;
+        let a = quantize_fade(0.0);
+        let b = quantize_fade(step * 1.5);
+        assert_ne!(
+            a, b,
+            "values more than half a step apart must land in different \
+             buckets — the fade must still visibly progress"
+        );
+    }
+
+    #[test]
+    fn endpoints_are_stable() {
+        assert_eq!(quantize_fade(0.0), 0.0);
+        assert_eq!(quantize_fade(1.0), 1.0);
+    }
+
+    #[test]
+    fn output_has_at_most_step_count_plus_one_distinct_values() {
+        // Sweep the full input domain in fine increments and assert the
+        // output only ever takes one of COLOR_FADE_STEPS + 1 values
+        // (0..=COLOR_FADE_STEPS inclusive) — this is the actual dedup
+        // guarantee the fix provides.
+        let mut seen = std::collections::HashSet::new();
+        let mut t = 0.0f32;
+        while t <= 1.0 {
+            seen.insert(quantize_fade(t).to_bits());
+            t += 0.001;
+        }
+        assert!(
+            seen.len() <= COLOR_FADE_STEPS as usize + 1,
+            "expected at most {} distinct quantized values, got {}",
+            COLOR_FADE_STEPS as usize + 1,
+            seen.len()
+        );
     }
 }
