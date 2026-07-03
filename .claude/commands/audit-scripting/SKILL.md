@@ -75,12 +75,12 @@ those here.
 - The crate module docstrings: `crates/pex/src/lib.rs`,
   `crates/pex/src/decompile/mod.rs`, `crates/scripting/src/translate/mod.rs`.
 
-**Doc-rot to flag (a finding in itself)**: `docs/feature-matrix.md` "Scripting
-(M47)" section LAGS the code — line ~139 says *"Full Papyrus transpiler (M47.2)
-— ✗ Foundation done; transpiler unstarted"* and line ~175 lists the transpiler
-as pending. The `.pex` decompiler, the recognizer chain, the corpus survey, and
-the engine attach path have all shipped (Sessions 50–51). Treat the matrix as a
-**floor, not a ceiling**, and report the stale rows as LOW documentation findings.
+**Doc-rot check**: `docs/feature-matrix.md:139` was already corrected (independent
+of this skill) to reflect the shipped `.pex` recognizer slice; only line ~175
+("What Doesn't Work Yet") still lists the *full* transpiler as deferred, which
+remains accurate (the recognizer chain is a targeted slice, not a general
+transpiler). Do not re-flag line 139 as stale — verify it still reads correctly
+before reporting any doc-rot here.
 
 **Corpus / fidelity instruments (point findings here, do not re-derive)**:
 - `crates/pex/examples/pex_corpus_smoke.rs` — runs `byroredux_pex::parse` +
@@ -221,11 +221,13 @@ lifecycle, and the engine wiring.
 - **No partial `Pex` escapes**: `lib.rs` claims the reader "never returns a
   half-built `Pex`". Confirm `read_binary` is all-or-`Err` (no `Ok` with a
   truncated `objects` Vec on a mid-object EOF).
-- Regression guards: `parses_a_handbuilt_fo4_pex`, `rejects_bad_magic`,
+- Regression guards: `parses_a_handbuilt_fo4_pex`, `parses_a_handbuilt_skyrim_be_pex`,
+  `parses_a_handbuilt_starfield_pex_with_guards`, `rejects_bad_magic`,
   `rejects_truncation` (`crates/pex/src/lib.rs`); `metadata_matches_champollion`
-  (`crates/pex/src/opcode.rs`). Note the hand-built writer only exercises the FO4
-  (LE) dialect — flag the absence of a Skyrim-BE and a Starfield-guards round-trip
-  as a MEDIUM coverage gap on an untrusted-input parser.
+  (`crates/pex/src/opcode.rs`). FO4/LE, Skyrim/BE, and Starfield-guards dialects
+  all round-trip via `PexWriter::new_be()` + the two new tests (#1728) — the
+  prior MEDIUM coverage gap (hand-built writer only exercising FO4/LE) is closed;
+  a future writer regression that drops the BE or guards path re-opens it.
 **Output**: `/tmp/audit/scripting/dim_1.md`
 
 ### Dimension 2: Decompiler — CFG Construction & Opcode→Node Lift (highest bug density)
@@ -379,6 +381,14 @@ lifecycle, and the engine wiring.
   parses) every `.pex` and counts panics/`Err` as failures. The README/docs claim
   26640/26641 — confirm the harness's `decompile_script` call is inside the
   success/failure tally and that a panic isn't caught-and-counted-as-success.
+- **Recursion-depth caps**: both `control_flow.rs::Reconstructor::rebuild` and
+  `boolean.rs::BoolPass::rebuild` thread a `depth` param capped at
+  `MAX_REBUILD_DEPTH = 1024`, erroring `DecompileError::RecursionLimit` rather
+  than overflowing the stack (control-flow: pre-existing #1729; boolean: #1815/
+  SCR-D2-01, fixed by `7fdb694b`). Verify both still cap — a "cleanup" that drops
+  the boolean-pass thread regresses #1815. Regression guards: the
+  `rebuild_rejects_excessive_recursion_depth` test exists in **both**
+  `control_flow.rs` and `boolean.rs` (same name, distinct files/tests).
 - Regression guards: `simple_if_reconstructs`, `if_else_reconstructs_both_branches`,
   `while_loop_reconstructs`, `nested_and_becomes_nested_ifs`,
   `straight_line_has_no_control_flow_nodes` (`crates/pex/src/decompile/control_flow.rs`);
@@ -409,12 +419,14 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
   balanced on every return path including the error path (a missed decrement
   would falsely cap legitimate sibling expressions); (b) ALL recursive expression
   entry funnels through `parse_expr_bp` (no direct `parse_expr_bp_inner` recursion
-  that bypasses the gate); (c) the *statement* parser (`stmt.rs`) and the *script*
-  item parser (`script.rs`) have their own depth exposure — deeply nested
-  `If`/`While` blocks recurse in `stmt.rs`; confirm there's a guard or that the
-  block nesting is bounded by the same `expr_depth` (it isn't — flag deeply
-  nested *statements* as a residual stack-overflow vector if no separate guard
-  exists). Untrusted-Input: Yes.
+  that bypasses the gate); (c) the *statement* parser (`stmt.rs`) has its own
+  guard: `stmt_depth`/`MAX_STMT_DEPTH = 256` (#1712) mirrors `expr_depth` and
+  caps nested `If`/`While` block recursion — verify it still resets between
+  top-level calls and rejects pathological nesting (guards:
+  `stmt_depth_cap_rejects_pathological_nested_if`,
+  `stmt_depth_cap_rejects_pathological_nested_while`,
+  `stmt_depth_cap_accepts_legitimate_nesting`,
+  `stmt_depth_resets_between_top_level_calls`). Untrusted-Input: Yes.
 - **Operator precedence + associativity (`ast.rs` `BinaryOp::precedence`)**:
   Or=1, And=2, comparisons=3, Add/Sub/StrCat=4, Mul/Div/Mod=5; unary=6, cast=7,
   postfix=8. Left-associativity hinges on the Pratt loop's `op_prec <= min_bp →
@@ -504,10 +516,13 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
   declines, never defaults to form-id 0.
 - **`quest_stage_gate` cross-check**: when the condition's quest and the
   `SetStage` target's quest disagree, the recognizer declines (don't advance the
-  wrong quest). Verify `recognizes_da10_and_reproduces_hand_builder` actually
-  asserts byte-equality against the hand-built `papyrus_demo` component (the
-  fidelity gate) — that test is the `.psc`-vs-decompiled-`.pex` parity proof for
-  this recognizer.
+  wrong quest). Verify `recognizes_da10_and_reproduces_hand_builder` (`.psc`-side,
+  `quest_stage_gate.rs`) and `da10_pex_reproduces_hand_builder_byte_for_byte`
+  (`.pex`-side, `crates/scripting/tests/pex_recognize_e2e.rs`, `#[ignore]`-gated
+  on Skyrim SE game data, #1740) both assert byte-equality against
+  `da10_main_door(...)` — together they are the full `.psc`-vs-`.pex` fidelity
+  gate for this recognizer (the `.psc`-side test alone never touches
+  `decompile_script`).
 - **`rumble` per-script recognizer**: matches script name `defaultRumbleOnActivate`
   (case-insensitive) and extracts 5 auto-property float/bool initial values with
   `.psc` defaults; declines a non-literal property value and a different script
@@ -517,11 +532,16 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
   catalog; unknown → `CanonicalEvent::Unknown` (a safe long-tail bucket, not an
   error). Verify the case-insensitive match and that `Unknown` callers treat it as
   "no consumer", never as a wildcard match.
-- **`translate_pex` clean-`None` on bad bytes**: `byroredux_pex::parse` /
-  `decompile_script` errors → `log::debug` + `return None` (never a panic
+- **`translate_pex` clean-`None` on bad bytes AND on panic**: `byroredux_pex::parse` /
+  `decompile_script` `Err` → `log::debug` + `return None` (never a panic
   escaping into the cell loader). Guards: `translate_pex_on_empty_bytes_is_a_clean_none`,
   `translate_pex_on_garbage_bytes_is_a_clean_none`,
-  `translate_pex_on_truncated_after_magic_is_a_clean_none`.
+  `translate_pex_on_truncated_after_magic_is_a_clean_none`. A `decompile_script`
+  **panic** is also caught via `catch_unwind` (`crates/scripting/src/translate/mod.rs`,
+  #1816/SCR-D5-NEW-02) and degraded to the same `None` — verify the wrap is
+  still present, not removed by a future refactor (no corpus `.pex` or
+  characterized input currently triggers it — this is a safety net, not an
+  active-bug regression test).
 - Regression guards: `unrecognized_script_is_a_silent_miss` (`crates/scripting/src/translate/mod.rs`);
   `split_and_flattens_conjunction_keeps_disjunction_whole`, `unmodeled_atom_declines`,
   `stage_done_primitive_binds_holes`, `player_gate_primitive_matches_both_orders`
@@ -711,9 +731,9 @@ dimensions covers it.
      robustness verdict** (can a hostile/corrupt `.pex` or `.psc` panic, OOB, or
      OOM the cell loader — MUST be NO). **The 99.996% decompile-rate claim
      verdict** (is the corpus-smoke harness measuring what it claims). **The
-     `.psc`-vs-`.pex` fidelity-gate verdict** (does `recognizes_da10_and_reproduces_
-     hand_builder` actually pin byte-equality). Explicitly call out the
-     `docs/feature-matrix.md` "transpiler unstarted" doc-rot.
+     `.psc`-vs-`.pex` fidelity-gate verdict** (do `recognizes_da10_and_reproduces_
+     hand_builder` AND `da10_pex_reproduces_hand_builder_byte_for_byte` (#1740)
+     both actually pin byte-equality).
    - **Decompiler Soundness Matrix** — per pass (reader / cfg / lift+copy-prop /
      boolean / control-flow / lower): bounds-safe? terminates? total (no panic)?
      fidelity-tested? — with the two documented Champollion departures (no

@@ -52,6 +52,7 @@ Dimensions are ordered by current FNV risk: the layers most likely to silently b
 - `NifImportRegistry` Arc cache (`byroredux/src/cell_loader/nif_import_registry.rs::CachedNifImport`) prevents duplicate parsing across cells.
 - **Cell unload hygiene (regression guard)**: `byroredux/src/cell_loader/unload.rs` must drop BLAS per freed mesh handle and release physics bodies. **#1520 (`34c7a218`): Rapier bodies/colliders are released on unload** — verify the unload path frees them (covered by `byroredux/src/cell_loader/rapier_release_tests.rs`); a leak here compounds per cell-streaming cycle. Also check the `inventory_release_tests.rs` / `unload_skin_cleanup_tests.rs` siblings.
 - M38 water — `byroredux/src/cell_loader/water.rs` spawns `WaterPlane` per cell; `byroredux/src/systems/water.rs::submersion_system` writes camera submersion state on entry.
+- `_far.nif` distant-object LOD (#1726/#1745, Session 52) — verify the placement scheme + real LOD textures still resolve on FNV's WastelandNV exterior grid; entry points `cell_loader/object_lod.rs`, `cell_loader/placement_lod.rs`.
 **Output**: `/tmp/audit/fnv/dim_1.md`
 
 ### Dimension 2: NIFAL Canonical Translation — FNV Slice
@@ -121,7 +122,8 @@ Dimensions are ordered by current FNV risk: the layers most likely to silently b
 **Subagent**: `legacy-specialist`
 **Entry points**: `byroredux/src/ragdoll.rs`, `crates/nif/src/import/collision.rs` (ragdoll + constraint decode), `crates/nif/src/blocks/collision/`, `docs/engine/physal.md`
 **Checklist**: FNV is the *reference realization* for PHYSAL slice 1 (the classic bhk chain — `0a0bc3ce` / `2c21a470`, 2026-06-14). Newly shipped, so audit for correctness, not just regression.
-- The importer hands `ImportedRagdoll` (bone *names* + `ImportedJointKind`); `ragdoll.rs::activate_ragdoll` resolves it against the skeleton's `GlobalTransform`, and `ragdoll_writeback_system` writes solver results back to bone transforms. Verify name resolution doesn't silently drop a joint on a real FNV creature/NPC skeleton.
+- The importer hands `ImportedRagdoll` (bone *names* + `ImportedJointKind`); `ragdoll.rs::activate_ragdoll` resolves it against the skeleton's `GlobalTransform`, and `ragdoll_writeback_system` writes solver results back to bone transforms.
+- **Silent-drop regression guards (#1718/#1539/#1540/#1772, the D7 audit-guard family)**: `template_from_imported` (`ragdoll.rs`) warns on dropped bodies/constraints by bone-name miss (#1718, `ffe9a816`); `extract_ragdoll` (`collision.rs`) warns on dropped non-Ragdoll/LimitedHinge constraint kinds (#1539); trimesh bone inertia no longer degenerate (#1540); keyframed bone-follower bodies are torn down on ragdoll activation, not left double-simulating (#1772, `da4a849d`). Confirm all four still hold on a real FNV skeleton with divergent bone naming.
 - Per PHYSAL, the *only* per-game seam is the constraint CInfo decode — confirm no per-game branch leaked into `ragdoll.rs` or the solver bridge (`crates/physics/`).
 - FNV's dominant constraint form is a `bhkMalleableConstraint` wrapping a Ragdoll (see `docs/engine/physal.md` §FO3/FNV) — confirm that decode path in `crates/nif/src/blocks/collision/constraints.rs` + `ragdoll.rs` survives and produces a jointed body, not a single rigid blob.
 - Writeback must not corrupt the skinned bone palette feeding the GPU skin path (cross-check Dimension 6).

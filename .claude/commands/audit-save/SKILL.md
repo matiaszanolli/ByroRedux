@@ -79,10 +79,10 @@ the crate; the crate audit is incomplete without it):
   load path uses `apply_deltas` overlay, NOT `restore_world` — two divergent
   restore code paths.
 
-**Doc-rot to flag (KNOWN, confirm + report)**: `docs/feature-matrix.md` line ~176
-still reads `Save / load (M45) | … | M45 (unstarted)`. M45 + M45.1 shipped (crate,
-console commands, live load, player-pose restore). Treat the matrix as a floor;
-report the stale "unstarted" row as a LOW documentation finding.
+**Doc-rot check**: `docs/feature-matrix.md:169` already carries an explicit
+`TD3-002` comment noting Save/load (M45/M45.1) shipped 2026-06-21 — the
+"unstarted" row is gone. Do not re-flag this as doc-rot; confirm it still reads
+correctly before reporting anything here.
 
 ## Parameters (from $ARGUMENTS)
 
@@ -145,7 +145,9 @@ gone. Data-Loss Class = silent-drop.
   silently lost. Verify every mutable column in `build_save_registry` appears in
   `MUTABLE_DELTA_COLUMNS` (or is deliberately structural/identity: `Name`,
   `Parent`, `Children`, the form-id key). Flag any registered-but-not-overlaid
-  mutable column as HIGH (silent-drop on load).
+  mutable column as HIGH (silent-drop on load). Guard: `delta_columns_carry_only_session_stable_fields`
+  (#1720, `47dad578`) tripwires any future addition to `MUTABLE_DELTA_COLUMNS`
+  against embedding a `FixedString`/`EntityId`/session-local handle.
 - **Determinism.** `Snapshot.components` / `.resources` are `BTreeMap` (sorted
   keys) and `save_world` skips empty columns / null resources. Confirm the CRC is
   reproducible at equal state: column ROW order comes from `World::query` iteration
@@ -167,13 +169,12 @@ gone. Data-Loss Class = silent-drop.
   points at the wrong symbol = CRITICAL corruption-on-load. Confirm against
   `crates/core/src/string/mod.rs`.
 - **Empty-column omission vs. delete-on-load.** `save_world` omits empty columns;
-  `restore_world` only `load`s columns present in the snapshot. Confirm a
-  component that legitimately went to ZERO rows between saves doesn't resurrect
-  stale rows on the NEXT load (it can't via `restore_world` because
-  `clear_entities` runs first — but the live `apply_deltas` path does NOT clear,
-  it overlays. Verify the live path can't leave orphaned rows from the reloaded
-  cell that the save intended to be gone). Data-Loss Class = corruption-on-load if
-  it can.
+  `restore_world` only `load`s columns present in the snapshot. The live overlay
+  is additive-only (can insert/update, never remove) — documented at
+  `apply_deltas` (#1847/SAVE-04, `cec3b9ab`). Confirmed **inert today** (no
+  enable/disable/delete persistence exists to leak orphaned rows). Re-flag only
+  once such a component lands without the promised companion despawn/hide pass —
+  until then this is DEFERRED-DOCUMENTED, not a live finding.
 **Output**: `/tmp/audit/save/dim_1.md`
 
 ### Dimension 2: Registry & (De)serialization Fidelity
@@ -195,21 +196,26 @@ closures, `schema_fingerprint`, `form_id_column`, `FnvHasher`.
   reality and that an intra-type field change is caught at load by
   `serde_json::from_value` failing (a `SaveError::Serde`, not a silent
   default-fill). The danger case: a field ADDED with `#[serde(default)]` would
-  load OLD saves silently — verify no save-participating struct carries
-  `#[serde(default)]`/`Option` in a way that masks data loss across versions.
+  load OLD saves silently. A guard test, `serde_default_on_saved_struct_requires_format_major_bump`
+  (`byroredux/src/save_io.rs`, #1714, `806ba7af`), source-scans every
+  save-participating type (top-level + nested: `ItemStack`, `AnimationLayer`,
+  `FormIdPair`, …) for a newly-added `#[serde(default)]` while `FORMAT_MAJOR == 1`.
+  The `Option`-widening half is still uncaught statically (legitimate `Option`s
+  already exist) — verify this residual is still documented, not silently
+  dropped.
 - **Fingerprint stability across builds.** `FnvHasher` is hand-rolled
   specifically because `DefaultHasher` is unspecified across std versions. Verify
   the FNV constants (`0xcbf2_9ce4_8422_2325` offset basis, `0x100_0000_01b3`
   prime) are the canonical 64-bit FNV-1a values and that the hash depends ONLY on
   registered names + order — not on any address/TypeId (which would vary per run
   and reject every save).
-- **`form_id_column` fragility.** `form_id_column()` returns the first component
-  with `apply: None`. Today only `register_form_id_component` sets `apply: None`
-  on a component (resources are a separate `Vec`). If ANY future
-  `register_component` variant ships with `apply: None`, `form_id_column` returns
-  the WRONG column and the entire live-load remap silently mis-keys → every delta
-  drops or lands on the wrong entity. Flag this heuristic as a HIGH latent trap;
-  recommend keying off an explicit `is_form_id` flag.
+- **`form_id_column` (regression guard, #1845, `326fcb44`).** `form_id_column()`
+  is keyed off an explicit `Entry::is_form_id` flag (not the old `apply.is_none()`
+  heuristic), with a registration-time assert against a second form-id column.
+  Guard: `form_id_column_resolves_the_flagged_entry`. Verify a future
+  `register_*` variant can't silently reintroduce the old
+  first-`apply:None`-wins heuristic (that pre-fix behavior would let any future
+  `apply: None` component hijack the live-load remap key).
 - **FormId handle vs. pair.** `register_form_id_component` saves the stable
   `FormIdPair` (resolved through `FormIdPool`), NOT the session-local `FormId`
   handle. Save skips (with WARN) any handle that doesn't resolve in the pool;
@@ -289,19 +295,19 @@ the gate actually exists, runs before write, and covers the references that matt
   — a validation that runs but doesn't block the write is theatre (HIGH: the
   corruption-tail defense is a no-op). Confirm there is NO alternate save path that
   bypasses the gate.
-- **Coverage vs. claim.** `validate_world` checks exactly THREE reference classes:
-  Hierarchy (`Parent`⇄`Children` bidirectional agreement + dangling-id), Equipment
-  (`EquipmentSlots` occupant indexes a live `Inventory` row), Animation
-  (`AnimationPlayer.clip_handle` resolves in `AnimationClipRegistry`,
-  `root_entity` is spawned). Enumerate every OTHER inter-entity/inter-resource
-  reference in the saved type set (e.g. `ItemInstancePool` ids referenced by
-  `Inventory`, FormId resolvability, any `EntityId` field in a saved component) and
-  flag references the gate does NOT cover as MEDIUM defense-in-depth gaps (the gate
-  claims to prevent the corruption tail; an unchecked reference class is a hole in
-  that claim). The docstring explicitly DEFERS cross-plugin FormId-resolves to the
-  binary — verify the binary actually layers that check (`SaveCommand` only calls
-  the core `validate_world`; if no binary-side FormId-resolve check exists, the
-  deferred check is MISSING, not deferred → MEDIUM).
+- **Coverage vs. claim (regression guard, #1700, `380ea4c4`).** `validate_world`
+  now checks FOUR reference classes — Hierarchy (`Parent`⇄`Children` bidirectional
+  agreement + dangling-id), Equipment (`EquipmentSlots` occupant indexes a live
+  `Inventory` row), Animation (`AnimationPlayer.clip_handle` resolves in
+  `AnimationClipRegistry`, `root_entity` is spawned), and ItemInstance
+  (`validate_inventory_instances` — `Inventory` rows resolve against
+  `ItemInstancePool`) — plus a FIFTH the binary layers on top:
+  `validate_form_ids` (`byroredux/src/save_io.rs`) checks cross-plugin FormId
+  resolvability, run in `SaveCommand::execute` before every save. Verify all
+  five still run pre-write. Regression: 6 tests split core/binary (dangling/
+  no-pool rejected, resolvable passes). Enumerate any newly-added inter-entity
+  reference type not yet covered by one of these five as a MEDIUM
+  defense-in-depth gap.
 - **Dangling-id semantics.** `validate_hierarchy` / `validate_animation` flag any
   referenced id `>= next_entity` as `DanglingEntity`. Verify this catches
   never-spawned ids but does NOT false-positive on legitimately sparse-but-spawned
@@ -313,13 +319,15 @@ the gate actually exists, runs before write, and covers the references that matt
   per-occupant is O(equip×inv) but correct; flag the None-Inventory and
   out-of-bounds cases produce distinct errors. An off-by-one (`>` vs `>=`) here
   passes a save that loads an out-of-bounds equip → corruption-on-load.
-- **Validation runs on SAVE only, not LOAD.** `decode` validates the CONTAINER
-  (magic/CRC/version/schema) but `restore_world`/`apply_deltas` do NOT re-run
-  `validate_world` on the loaded data. A save written by an OLDER engine (before a
-  validation rule existed) or hand-edited within a valid CRC could load a
-  referentially broken world. Flag the absent load-side validation as MEDIUM
-  defense-in-depth (the corruption-tail thesis is symmetric; loading unvalidated
-  data re-introduces it).
+- **Load-side validation (regression guard, #1844, `dc89ff68`).** `decode`
+  validates the CONTAINER (magic/CRC/version/schema); `log_validation_warnings`
+  now ALSO re-runs `validate_world`(+`validate_form_ids`) post-load, wired into
+  both `restore_world` (`crates/save/src/driver.rs`) and
+  `execute_pending_save_loads` (`byroredux/src/save_io.rs`, right after
+  `apply_deltas`) — diagnostic-only (WARN-log, no abort; a load can't cleanly
+  revert). Verify it stays diagnostic-only and covers both restore paths.
+  Regression: the `round_trip.rs` test proving `restore_world` neither aborts
+  nor silently repairs broken-but-decodable data.
 **Output**: `/tmp/audit/save/dim_4.md`
 
 ### Dimension 5: Frame-Boundary Capture & Off-Frame Apply
@@ -397,21 +405,31 @@ ordering (~line 2300).
   reloaded cell (record removed from a plugin, or cell content changed) is dropped
   with the delta lost — flag whether this is logged so a silently-vanished moved
   object is diagnosable (MEDIUM; data-loss class = reference-break, but arguably
-  correct behaviour — the target no longer exists).
+  correct behaviour — the target no longer exists). The player body itself now
+  carries a reserved `FormIdComponent` (`PLAYER_FORM_ID_PAIR`, #1846, `91b8c5df`,
+  `crates/core/src/form_id.rs`, attached at spawn in `byroredux/src/scene.rs`) so
+  it participates in this remap like any NPC instead of being invisible to it —
+  verify it stays attached at spawn.
 - **Idempotency.** A `load` is `apply_deltas` OVERLAY onto a freshly reloaded
   cell. Loading the SAME slot twice must yield the same world (the teardown +
   reload resets to a clean cell each time). Verify the teardown is unconditional
   (`if streaming.is_some()` drain + `unload_current_interior` always) so a second
   load doesn't stack deltas on a world that already has the first load's deltas.
-- **Cell-resolve failure.** If `load_cell_with_masters` errors,
-  `execute_pending_save_loads` logs + RETURNS — but it has ALREADY torn down the
-  current cell. Verify this leaves the engine in a defined empty-cell state, not a
-  half-loaded one (the teardown ran, the reload failed → no cell). Flag the
-  "destructive teardown before a load that can fail" as MEDIUM (a corrupt/missing
-  ESM on a `load` strands the player in the void with no recovery). Confirm the
-  snapshot's `CurrentCellContext` is re-validated (it was already verified present
-  by `LoadCommand`, but `execute_pending_save_loads` re-reads it and errors if it
+- **Cell-resolve failure (regression guard, #1697, `3043ffdc`).**
+  `validate_cell_loadable` runs a non-destructive pre-flight (parse + cell-lookup,
+  `byroredux/src/cell_loader/load.rs`) BEFORE teardown in
+  `execute_pending_save_loads`, covering the two named failure modes
+  (missing/corrupt ESM, unresolvable cell id) — the current cell survives on
+  either. Residual: a failure *after* cell-resolve (mid spawn/GPU-setup) still
+  tears down first; that narrower window remains MEDIUM. Confirm the snapshot's
+  `CurrentCellContext` is re-validated (it was already verified present by
+  `LoadCommand`, but `execute_pending_save_loads` re-reads it and errors if it
   vanished — a defensive double-check; confirm it's there).
+- **`AnimationPlayer`/`AnimationStack` exclusion (regression guard, #1696, `92f8f663`).**
+  Deliberately excluded from `MUTABLE_DELTA_COLUMNS` — the reloaded cell owns
+  their post-spawn state instead of overlaying a stale saved
+  `root_entity`/`clip_handle`. Verify they stay excluded; regression test in
+  `crates/save/tests/round_trip.rs` asserts both the hazard and the fix.
 - **Player-pose restore correctness.** `apply_player_pose`: yaw/pitch always go to
   `InputState` (the source of truth both camera modes rebuild rotation from — a
   saved `Transform.rotation` alone wouldn't survive a tick). Character mode +
@@ -449,7 +467,6 @@ ordering (~line 2300).
      write / ring / validation gate / off-frame load) — for each claim, state
      CODE-CONFIRMED or DRIFTED. Findings count by severity AND by Data-Loss Class
      (silent-drop / corruption-on-load / irrecoverable-write / reference-break).
-     Explicitly call out the `docs/feature-matrix.md` "M45 (unstarted)" doc-rot.
    - **Data-Loss Class Matrix** — each finding × class × dimension, so the reader
      sees the silent-drop / corruption surface at a glance.
    - **Completeness Ledger** — the two parallel lists (`build_save_registry`

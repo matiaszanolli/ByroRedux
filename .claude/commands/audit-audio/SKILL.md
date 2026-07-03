@@ -75,16 +75,22 @@ interior/exterior only), raycast occlusion attenuation.
 1. Parse `$ARGUMENTS` for `--focus`, `--depth`
 2. `mkdir -p /tmp/audit/audio`
 3. Fetch dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/audio/issues.json`
-4. **A prior audio report exists**: `docs/audits/AUDIT_AUDIO_2026-05-05.md`. Read it
-   first — most of its findings (#843–#859) are CLOSED and now live as regression
-   guards in `crates/audio/src/tests.rs` + `byroredux/src/systems/audio.rs`. A
-   re-flag of any of those is a regression claim, not a new finding; verify the
-   guard is gone before reporting.
+4. **Read the most recent `docs/audits/AUDIT_AUDIO_*.md` report** (sort by date —
+   do not hardcode a filename here, it rots every cycle). As of this writing the
+   latest is `_2026-07-02.md`, superseding `_2026-05-05.md`, `_2026-06-14.md`, and
+   `_2026-06-23.md`. Most of the original report's findings (#843–#859) are CLOSED
+   and now live as regression guards in `crates/audio/src/tests.rs` +
+   `byroredux/src/systems/audio.rs`. A re-flag of any of those is a regression
+   claim, not a new finding; verify the guard is gone before reporting.
 5. Read the `crates/audio/src/lib.rs` module docstring to confirm Phases 1–6 are
    shipped vs. inferred. If the docstring drifts from the user-visible API,
-   that's a finding in itself (note: the docstring at the `SoundCache` block
-   names a stale helper `resolve_footstep_sound`; the live fn is
-   `try_load_default_footstep` — confirm and treat doc-rot as LOW).
+   that's a finding in itself (note: the docstring's function name
+   (`try_load_default_footstep`) is already correct post-#1615, but it still
+   cites the file as *byroredux/src/asset_provider.rs* — a pre-Session-34 path
+   that no longer exists; the live location is
+   `byroredux/src/asset_provider/texture.rs::try_load_default_footstep`.
+   This path drift is tracked as AUD-2026-07-02-01, still open as of the latest
+   report — confirm and treat as LOW doc-rot).
 
 ## Phase 2: Launch Dimension Agents
 
@@ -408,7 +414,7 @@ the ONLY `set_reverb_send_db` caller. Neither is covered by the crate dimensions
      `reverb_zone_system`) vs pending (3.5b FOOT, REGN, MUSC routing, occlusion).
      Note the MUSC parse→play gap explicitly (FormIDs parsed, no `play_music`
      caller). Findings count by severity. Headless-mode boot status (MUST be PASS).
-     Delta vs the prior report `docs/audits/AUDIT_AUDIO_2026-05-05.md` (which of
+     Delta vs the most recent prior `docs/audits/AUDIT_AUDIO_*.md` report (which of
      #843–#859 are now regression-guarded).
    - **Lifecycle Invariant Matrix** — Field-drop order × verified/drifted;
      per-handle owner; sticky-listener; despawn-truncation guards.

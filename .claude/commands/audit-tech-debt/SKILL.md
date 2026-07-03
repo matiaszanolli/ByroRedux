@@ -75,7 +75,7 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    `unimplemented!/todo!()` is currently **0** (the engine prefers explicit
    fallbacks over panics — a fresh `todo!()` is therefore notable), `#[ignore]`
    runs in the low-hundreds (mostly Vulkan/smoke gating, not debt), and the
-   >2000-LOC set is ~6 files (Dim 1).
+   >2000-LOC set is ~7 files (Dim 1).
 
 ## Phase 2: Dimension Agents
 
@@ -109,6 +109,9 @@ over threshold).
 - `byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.
 - `byroredux/src/commands/` → console-command groups, already split per-domain (world_info / assets / view / scene / shared) under #1323; check the submodules stay cohesive, not re-bloated.
 - `crates/nif/src/blocks/particle.rs` → typed emitter/ctlr structs vs the opaque `NiPSysBlock` fallback vs grow/fade modifiers.
+- `crates/nif/src/import/collision.rs` → split per bhk shape family (primitive/compound/mesh/compressed), mirroring `crates/nif/src/blocks/collision/`.
+- `crates/core/src/ecs/resources.rs` → split per resource domain (rendering/world/audio/scripting).
+- `crates/plugin/src/esm/records/actor.rs` → split per NPC_ data-group (13 groups).
 
 **Also flag**: functions >200 LOC (propose extraction); match arms >50 cases
 (want a lookup table); nesting depth >5 (state-machine extraction); a `mod.rs` /

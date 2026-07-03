@@ -29,6 +29,10 @@ gh issue list --repo matiaszanolli/ByroRedux --state closed --label bug \
 With `--issues`, fetch those numbers directly (`gh issue view <N> --repo
 matiaszanolli/ByroRedux --json number,title,body,closedAt,labels`) instead.
 
+> Default `--label bug` structurally misses closed issues carrying only the
+> `documentation` label (e.g. #1818, a doc-rot fix) — pass
+> `--label bug,documentation` to include doc-rot regressions in the discovery pass.
+
 For each issue, pull out:
 - **Number + title** — the regression handle.
 - **File references** — backtick-quoted paths in the body (`crates/nif/...`).
@@ -43,15 +47,17 @@ For each issue, pull out:
 > net for fixes that landed as proactive refactors and were never an issue at
 > all — run them every time regardless of which issues Step 1 surfaced.
 >
-> **Fresh verification candidates (Session 49–51 fix wave).** Recently-closed,
-> high-churn fixes worth an explicit `--issues` pass while they're still warm:
-> #1590 (FO4 precombine resolved by owning plugin), #1592 (FO4 model-space-normals
-> + alpha-test shader flags), #1594 (FO4 BSConnectPoint attach graph), #1606
-> (Starfield BSLightingShaderProperty tail), #1650 (Oblivion 16-byte ACBS), #1651
-> (BGSM/BGEM GL→Gamebryo blend factors), #1652 (bhk motion_type canonical Havok
-> enum), #1656 (unload-walk ExtraTextureMaps coverage), #1658 (prebaked equip TPLT
-> inventory inheritance). Several touch the import→material boundary that **Step 4**
-> already pins — cross-check there.
+> **Fresh verification candidates (recent decompiler-safety + LC wave).**
+> Recently-closed, high-churn fixes worth an explicit `--issues` pass while
+> they're still warm: #1815 (decompiler recursion-depth cap in the boolean-collapse
+> pass), #1816 (`translate_pex` missing `catch_unwind`), #1728 (Skyrim-BE/Starfield
+> round-trip test for the `.pex` reader), #1740 (DA10 `.pex` byte-equality parity
+> test), #1731 (VWD record-header flag parse + expose), #1718 (ragdoll
+> bone/constraint-drop telemetry on bone-name miss). Note **#1651** (BGSM/BGEM
+> GL→Gamebryo blend factors) was itself a WRONG fix — its premise was disproven and
+> reverted by **#1823**; don't re-verify #1651 as if it still holds. Several of
+> these touch the import→material boundary that **Step 4** already pins —
+> cross-check there.
 
 ## Step 2 — Locate each fix and its guard
 

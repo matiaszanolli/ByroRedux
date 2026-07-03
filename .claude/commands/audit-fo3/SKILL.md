@@ -110,6 +110,10 @@ for the severity scale (including the NIFAL canonical-translation rows).
 - **Exterior is WIRED** (ROADMAP: "Exterior wired; fresh GPU bench pending"). Capital Wasteland is a distinct WRLD form ID — audit `cell_loader/exterior.rs` + `crates/plugin/src/esm/cell/wrld.rs` for any FNV-hardcoded worldspace name, origin coord, or default grid that would mis-place FO3 exterior cells. The open item is a fresh GPU bench (R6a-stale-15), not a missing feature.
 - No FNV-only branch in the shared cell loader. WTHR→CLMT→WTHR resolution and FO3 CLMT sun-position curves resolve through the shared weather path.
 - `CachedNifImport` Arc cache prevents duplicate parsing; no leak across FO3 unload/load cycles.
+- `_far.nif` distant-object LOD (#1726/#1745, Session 52) — verify the
+  Oblivion/FO3/FNV placement scheme + real LOD textures resolve on FO3's
+  Capital Wasteland exteriors; entry points `cell_loader/object_lod.rs`,
+  `cell_loader/placement_lod.rs`.
 **Output**: `/tmp/audit/fo3/dim_4.md`
 
 ### Dimension 5: FO3 Collision Import (Havok → CollisionShape)

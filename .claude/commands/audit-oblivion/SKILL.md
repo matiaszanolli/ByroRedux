@@ -33,15 +33,16 @@ BS202 / 20.x and never touch these bands; a regression here is **silent and
 Oblivion-only**. The v10.x stride-drift family (#1506 NiInterpController /
 NiQuatTransform, #1507 NiPSysData + emitter, #1508 NiBlendInterpolator +
 ControlledBlock, #1509 NiGeomMorpherController `bsver > 9` gate) is **resolved**
-as of 2026-06-13; Oblivion-Meshes went from 56 truncated → ~10. This audit
-treats that family as a **regression-guard set**, not open work.
+as of 2026-06-13; Oblivion-Meshes went from 56 truncated → 6 (further reduced by
+`#1543`/`#1544`, regenerated baseline #1611). This audit treats that family as a
+**regression-guard set**, not open work.
 
 | Aspect            | Current state (verify, don't trust this table blindly)              |
 |-------------------|--------------------------------------------------------------------|
 | NIF format        | v20.0.0.5 retail + v10.x NetImmerse tail (both sizeless)            |
 | BSA format        | v103 — opens AND extracts cleanly across all vanilla archives (regression guard, #699) |
 | ESM parser        | **Live** — `crates/plugin/src/esm/` with `parse_esm_cells` walker + ~25 record types, several with Oblivion-specific decode branches. NOT a stub (the per-game *legacy/tes4.rs* stub was removed under #390). |
-| Parse rate        | See ROADMAP.md Oblivion compat-matrix row (drifts after each sweep; do NOT hardcode a number here). Post-v10.x-family: ~10 residual NetImmerse truncations + 1 corrupt-by-design hard-fail (`#698` closed). |
+| Parse rate        | See ROADMAP.md Oblivion compat-matrix row (drifts after each sweep; do NOT hardcode a number here). Post-v10.x-family + `#1543`/`#1544`: 6 residual NetImmerse truncations (checked-in `oblivion_truncations.tsv` baseline, `#1611`) + 1 corrupt-by-design hard-fail (`#698` closed). |
 | Cell loading      | Interior renders end-to-end (Anvil Heinrich Oaken Halls). Exterior blocked on TES4 worldspace + LAND wiring (same shape FO3 was — *not* BSA v103) |
 | Reference data    | `/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/`           |
 
@@ -259,9 +260,11 @@ Oblivion-specific slice.
   current ROADMAP Oblivion row AND the checked-in Oblivion baseline in
   `per_block_baselines.rs`. Any `unknown` growth or `parsed` shrinkage is a
   regression.
-- Run `recovery_trace` to enumerate the residual truncated files (~10 NetImmerse
-  v10.x after the family fix). Confirm they're the expected NetImmerse tail and
-  the single corrupt-by-design hard-fail, not new drift.
+- Run `recovery_trace` to enumerate the residual truncated files (6 NetImmerse
+  v10.x markers — `marker_arrow`/`divine`/`map`/`radius`/`temple`/`travel` —
+  per the checked-in `oblivion_truncations.tsv` baseline, `#1611`, post-`#1543`/
+  `#1544`). Confirm they're the expected NetImmerse tail and the single
+  corrupt-by-design hard-fail, not new drift.
 - Cross-check the block-type histogram for any new types appearing since the last
   sweep.
 - Pick 3 representative interior meshes (Anvil Heinrich Oaken Halls chandelier, a
@@ -287,6 +290,10 @@ Oblivion-specific slice.
   full-archive sweeps)?
 - Any 100%-parse NIFs that would still render wrong (legacy particle emitters
   that parse but don't route to the renderer — cross-check Dim 4)?
+- `_far.nif` distant-object LOD (#1726/#1745, Session 52) — verify the
+  Oblivion/FO3/FNV placement scheme + real LOD textures still resolve on
+  Oblivion exteriors; entry points `cell_loader/object_lod.rs`,
+  `cell_loader/placement_lod.rs`.
 **Output**: `/tmp/audit/oblivion/dim_7.md`
 
 ## Phase 3: Merge

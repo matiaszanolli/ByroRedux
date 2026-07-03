@@ -94,11 +94,17 @@ gate) — that's intentional, not a drop.
 1. `mkdir -p /tmp/audit/speedtree`
 2. Dedup query (per `_audit-common.md`):
    `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels --search "speedtree OR spt OR TREE" > /tmp/audit/speedtree/issues.json`
-3. Read the prior report `docs/audits/AUDIT_SPEEDTREE_2026-05-13.md` —
-   its findings SPT-D4-01/02/03/04, SPT-D5-01/02, SPT-D2-01, SPT-D3-01,
-   SPT-D1-01 are all **closed** (#994/#995/#996/#997/#998/#999/#1000/#1001/#1002).
-   Treat them as **regression guards**, not open items; only re-flag if a
-   guard has actually broken.
+3. Read the **most recent** `docs/audits/AUDIT_SPEEDTREE_*.md` report (sort by
+   date — do not hardcode a filename here, it rots every cycle). As of this
+   writing the latest is `_2026-07-02.md`, superseding `_2026-05-13.md`,
+   `_2026-06-14.md`, and `_2026-06-23.md`; the `_2026-07-01.md`/`_2026-07-02.md`
+   pair carries still-unfiled findings (SPT-NEW-01 dead-code `detect_variant`,
+   SPT-NEW-06 format-notes byte-align, SPT-NEW-07 `MaybeStringElseBare` misparse
+   risk) worth checking before re-deriving from scratch. Findings SPT-D4-01/02/03/04,
+   SPT-D5-01/02, SPT-D2-01, SPT-D3-01, SPT-D1-01 are all **closed**
+   (#994/#995/#996/#997/#998/#999/#1000/#1001/#1002). Treat closed findings as
+   **regression guards**, not open items; only re-flag if a guard has actually
+   broken.
 4. `deep` only — corpus + recon harness:
    - corpus location: `Fallout - Meshes.bsa` (FNV/FO3), `Oblivion - Meshes.bsa`.
    - acceptance run: `BYROREDUX_FNV_DATA=… cargo test -p byroredux-spt --release --test parse_real_spt -- --ignored --nocapture` (and `_FO3_DATA` / `_OBL_DATA`).
@@ -279,12 +285,16 @@ the `spawn.rs` call site), `crates/core/src/ecs/components/material.rs`
 - The placeholder is canonicalised at the **single** `translate_material`
   boundary — no parallel "spt material" path that bypasses it (the `--tree`
   loose route and the cell route must both land here via `spawn.rs`).
-- Non-PBR defaults survive translation: `is_pbr: false`,
-  `metalness_override: None`, `roughness_override: None`,
-  `from_bgsm: false` (#1076/#1077). `resolve_pbr` must fill the canonical
-  `metalness`/`roughness` f32 from the non-PBR keyword path, never promote
-  the billboard to metallic-roughness. SpeedTree never resolves a
-  BGSM/BGEM (#1241/#1353) — guard that import-side PBR plumbing
+- Non-PBR defaults survive translation: `is_pbr: false`, `from_bgsm: false`
+  (#1076/#1077); `metalness_override: Some(0.0)` / `roughness_override: Some(0.85)`
+  — explicit foliage defaults set at import (#1819/SPT-NEW-05,
+  `placeholder_billboard_mesh` in `crates/spt/src/import/mod.rs`), NOT `None`.
+  A regression to `None` re-opens the keyword-classifier substring collision
+  (Boxwood→wood, Elderberry→glass). Guard:
+  `placeholder_billboard_sets_foliage_pbr_overrides_regardless_of_texture_path`.
+  `resolve_pbr` must fill the canonical `metalness`/`roughness` f32 from the
+  non-PBR keyword path, never promote the billboard to metallic-roughness.
+  SpeedTree never resolves a BGSM/BGEM (#1241/#1353) — guard that import-side PBR plumbing
   (a82366e9-style) left the billboard non-PBR.
 - `emissive_source: EmissiveSource::None` (#1280) holds — a tree billboard
   must not pick up an emissive lobe.

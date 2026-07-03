@@ -81,7 +81,6 @@ Risk is the *floor* severity for an un-disproven finding in that area.
 | `crates/bgsm/src/**` (FO4+ BGSM/BGEM) | `/audit-fo4`, `/audit-nifal` | MEDIUM |
 | `crates/facegen/src/**` | per-game `/audit-<game>` | MEDIUM |
 | `crates/debug-ui/src/**`, `crates/renderer/src/vulkan/egui_pass.rs` (egui overlay → touches `draw_frame`) | `/audit-renderer`, `/audit-concurrency` | MEDIUM |
-| `crates/papyrus/src/**`, `crates/scripting/src/**` | `/audit-tech-debt` (no dedicated skill) | MEDIUM |
 | `**/tests/**`, `**/*_tests.rs`, `byroredux/tests/golden_frames.rs` | `/audit-regression` | LOW |
 | `*.md`, `docs/**` | `/audit-tech-debt` (doc rot) | LOW |
 

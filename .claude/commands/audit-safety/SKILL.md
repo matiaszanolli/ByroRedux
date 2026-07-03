@@ -100,7 +100,7 @@ Vulkan-spec compliance, then the narrower regression-guard surfaces.
   `byroredux/src/cell_loader/rapier_release_tests.rs`. Verify the release path is
   still wired and the test still asserts emptiness post-unload.
 - **Deferred-destroy drain** (`crates/renderer/src/deferred_destroy.rs`,
-  `DeferredDestroyQueue<T>` shared by mesh + BLAS + texture + skin compute):
+  `DeferredDestroyQueue<T>` shared by mesh + BLAS + BLAS-scratch buffer (#1782) + texture + skin compute):
   objects are destroyed only after the in-flight fence clears (#418 moved the tick
   after fence wait; #732 added an explicit shutdown drain). Verify the tick still
   runs **after** fence wait in `context/draw.rs` and the shutdown sweep drains the

@@ -164,16 +164,22 @@ table, §5 LOD, §7 rollout status).
   correctly in the parser tier or as canonical `Option` sentinels — not leaks.)
 - **Canonical `Option` sentinels are not leaks**: `WeatherDataRes::skyrim_dalc_per_tod` =
   `None` on FNV/FO3/Oblivion, `default_water_height` = `None`, encode real game distinctions.
-- **LOD — the largest open gap**: distant **object** LOD has a first cut (Skyrim/FO4 baked
+- **LOD — status**: distant **object** LOD has a first cut (Skyrim/FO4 baked
   `.bto` quads via `byroredux/src/cell_loader/object_lod.rs::stream_object_lod_blocks`,
   spawned as `IsLodTerrain`, live-verified on Tamriel). Distant **terrain** now prefers the
   prebaked `.btr` mesh on Skyrim+/FO4 (M35, #1685 — `byroredux/src/cell_loader/terrain_lod_btr.rs::spawn_btr_block`,
   dispatched from `cell_loader/terrain_lod.rs`), falling back to heightmap synthesis for older
-  games and missing `.btr` blocks. The Oblivion/FO3/FNV placement scheme (`DistantLOD\*.lod` →
-  `_far.nif`) is still **unimplemented**.
+  games and missing `.btr` blocks. The Oblivion/FO3/FNV `DistantLOD\*.lod` → `_far.nif`
+  placement scheme is now consumed via `PlacementLodProvider`
+  (`byroredux/src/cell_loader/placement_lod.rs`, #1726) — do not re-flag it as
+  unimplemented; `docs/engine/exal.md` §5 is the coverage source of truth for
+  what (if anything) remains open here (e.g. WRLD NAM3/NAM4 LOD-water + OFST
+  table, a separate open item).
   Per `exal.md` §5.4: runtime LOD is asset-driven — neither NIF LOD nodes nor STAT `MNAM`
-  unblock it; the **VWD / "Has Distant LOD" record-header flag** (to cull full models) is the
-  small parser gap. Findings here are real coverage gaps, not premise errors.
+  unblock it. The **VWD / "Has Distant LOD" record-header flag** is now parsed and exposed
+  (`RecordHeader::is_visible_when_distant()`, #1731) but has zero consumers — wiring it
+  into the object-LOD spawn path to actually cull full models is the remaining gap, not
+  the parse itself. Findings here are real coverage gaps, not premise errors.
 - **Sun model (regression guard)**: the canonical sun inputs are `tod_hours` +
   `weather::SUN_SOUTH_TILT` (engine-defined; `exal.md` §9 Q1 verified **no** authored
   latitude field exists in CLMT/WRLD — `#1019`'s "read a latitude field" premise is false).

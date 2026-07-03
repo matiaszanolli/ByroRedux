@@ -105,6 +105,12 @@ path; the importer must NOT prepend `meshes\` (regression-guarded by
 `head == "geometries\\"` is left untouched). Without this the Cydonia spawn rate
 collapses. **#1209** — iterate every LOD slot, not `meshes.first()` (a `None`
 short-circuit when LOD 0 was external despite later internal slots).
+**#1828/#1829 (`ba728882`)** — both the Stage A `find_map` and the Stage B
+external-`.mesh` loop must also skip a slot whose body is the `scale<=0`
+sentinel (empty `vertices`/`triangles`) even when it parses `Ok`/matches
+`Internal` first — accepting a sentinel-first slot silently drops the whole
+BSGeometry. A regression re-accepting the first `Internal` match or first
+`Ok(...)` parse without the emptiness check reintroduces this.
 **#1203** — skin chain resolved via `BSSkin::Instance` + `BSSkin::BoneData`.
 **#1232** — empty/zero-length tangent blobs route through
 `synthesize_tangents_yup` (Mikkelsen); verify the fallback is reached and
@@ -157,6 +163,11 @@ silently dropped REFRs (moved subrecord size, new XCLL field) or a base record
 placeholder. Cross-check the per-record-type breakdown for new Starfield-only
 base types (GBFM/GBFT/PNDT/STDT/BIOM) showing up where a real parser is missing;
 note frequency, don't re-report the known GBFM stub gap.
+**#1567 (`0d9ee07f`)** — Starfield `LIGH` records carry no `MODL`/`DATA`, only a
+component-block `DAT2` payload; `build_static_object_from_subs` must decode it
+(test: `starfield_ligh_dat2_decodes_to_light_data`) or every REFR pointing at a
+LIGH misses at the static lookup and drops silently (656 Cydonia lights
+pre-fix). Regression guard for this dimension's resolve-rate baseline.
 **Output**: `/tmp/audit/starfield/dim_4.md`
 
 ### Dimension 5: ESM + Cell Bring-up Regression Surface
