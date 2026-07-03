@@ -372,3 +372,26 @@ pub const DBG_DISABLE_RESTIR: u32 = 0x8000;
 /// motion" restart noise. Set this bit to A/B temporal-only ReSTIR against the
 /// full spatiotemporal path in one live session.
 pub const DBG_DISABLE_SPATIAL: u32 = 0x10000;
+
+/// #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot WRS
+/// reservoir arrays (`resLight[16]` / `resWSel[16]`) that `DBG_DISABLE_RESTIR`
+/// A/Bs against. `DBG_DISABLE_RESTIR` is a RUNTIME bit read from a uniform, so
+/// even on the ~100% of production frames that take the ReSTIR path and never
+/// touch those arrays, the compiler still had to budget their per-invocation
+/// register / local-memory footprint — the declaration + init loop ran
+/// unconditionally, ahead of the runtime `useRestir` branch that gated
+/// everything else about them. glslangValidator's preprocessor, unlike the
+/// runtime branch, can actually eliminate dead code — but only if the
+/// legacy-WRS source text is behind a `#if`, not an `if` on a uniform value.
+///
+/// `0` (default): the legacy WRS arm — declarations, streaming writes, and
+/// pass-2 shadow-ray reads — is preprocessed OUT of `triangle.frag` entirely.
+/// `useRestir` collapses to `rtEnabled` (no `dbgFlags` read for this bit) and
+/// `DBG_DISABLE_RESTIR` becomes a no-op bit in this build.
+///
+/// `1`: restores the pre-fix behavior verbatim — the legacy arrays exist and
+/// `DBG_DISABLE_RESTIR` again live-toggles between the two paths at runtime.
+/// Flip this to `1` and recompile `triangle.frag` to A/B; per the mechanism
+/// #1758 established for `SKIN_WORKGROUP_SIZE`, that A/B now costs a shader
+/// recompile instead of a per-frame register tax on every production build.
+pub const ENABLE_LEGACY_WRS: u32 = 0;

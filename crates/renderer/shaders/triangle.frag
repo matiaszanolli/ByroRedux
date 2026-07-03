@@ -1964,12 +1964,24 @@ void main() {
         //     ~33% of lights per pixel; the 16-reservoir set
         //     samples every light at 16/12 oversample.
         float shadowFade = 1.0 - smoothstep(8000.0, 12000.0, worldDist);
-        const uint NUM_RESERVOIRS = 16;
         // Cap per-reservoir unbiasing weight to tame fireflies when a
         // dim light is sampled in a cluster dominated by bright ones.
         // 64× matches the ratio of a dim fill light to a hero light.
+        // Shared by both the ReSTIR finalize path and the legacy WRS
+        // pass 2 below, so it stays outside the ENABLE_LEGACY_WRS gate.
         const float RESERVOIR_W_CLAMP = 64.0;
 
+#if ENABLE_LEGACY_WRS
+        // #1799 / PERF-D5-NEW-01 — legacy 16-slot WRS reservoir storage,
+        // preprocessed out entirely when ENABLE_LEGACY_WRS == 0 (the
+        // default). With `useRestir` permanently true in that build,
+        // nothing ever reads these arrays — but a RUNTIME-only branch
+        // (the pre-fix `dbgFlags`-driven `useRestir`) couldn't stop the
+        // compiler from still budgeting their per-invocation register /
+        // local-memory footprint on every frame, including the ~100%
+        // that take the ReSTIR path. See ENABLE_LEGACY_WRS's doc comment
+        // in shader_constants_data.rs.
+        const uint NUM_RESERVOIRS = 16;
         // #1369 — resRadiance[NUM_RESERVOIRS] retired. Pass 2 recomputes
         // each selected light's shadowable radiance via
         // shadowableLightRadiance() instead of caching a vec3 per slot,
@@ -1981,6 +1993,7 @@ void main() {
             resLight[s] = 0xFFFFFFFFu;
             resWSel[s] = 0.0;
         }
+#endif
         float resFrameSeed = cameraPos.w;
 
         // ── ReSTIR-DI temporal reuse (Bitterli 2020) ────────────────────
@@ -1994,8 +2007,15 @@ void main() {
         // Energy: additive single-sample RIS estimator, W = wSum/(M·pHat),
         // pHat = luminance(shadowableRadiance) — expectation equals the
         // legacy subtractive Σ radiance_i·V_i. The legacy WRS path is kept
-        // verbatim below (gated) for live A/B via `0x8000`.
+        // verbatim below (gated) for live A/B via `0x8000`, when
+        // ENABLE_LEGACY_WRS == 1 (#1799 / PERF-D5-NEW-01).
+#if ENABLE_LEGACY_WRS
         bool useRestir = rtEnabled && (dbgFlags & DBG_DISABLE_RESTIR) == 0u;
+#else
+        // No legacy arm compiled into this build — DBG_DISABLE_RESTIR is
+        // a no-op bit here.
+        bool useRestir = rtEnabled;
+#endif
         const float RESTIR_LUMA_X = 0.2126;
         const float RESTIR_LUMA_Y = 0.7152;
         const float RESTIR_LUMA_Z = 0.0722;
@@ -2234,7 +2254,9 @@ void main() {
                         restirY = i;
                         restirPHat = w_i;
                     }
-                } else {
+                }
+#if ENABLE_LEGACY_WRS
+                else {
                     resWSum += w_i;
                     // Independent reservoir streams via per-slot noise offset.
                     // With probability w_i / resWSum, replace the selection.
@@ -2249,6 +2271,7 @@ void main() {
                         }
                     }
                 }
+#endif
             }
         }
 
@@ -2548,8 +2571,13 @@ void main() {
             rc.pad0 = uintBitsToFloat(
                 packSnorm2x16(octEncode(normalize(fragNormalEffective))));
             reservoirsCurr[pixelIdx] = rc;
-        } else {
+        }
+#if ENABLE_LEGACY_WRS
+        else {
         // ── Pass 2: shadow rays for sampled reservoirs ─────────────
+        // #1799 / PERF-D5-NEW-01 — this whole arm (and the resLight /
+        // resWSel storage it reads) is preprocessed out when
+        // ENABLE_LEGACY_WRS == 0 (the default).
         //
         // For each reservoir with a valid selection, cast a shadow ray
         // to the chosen light and subtract its weighted contribution
@@ -2671,6 +2699,7 @@ void main() {
             }
         }
         } // end legacy WRS pass-2 (else of useRestir)
+#endif
     }
 
     // ── 1-bounce RT ambient GI ──────────────────────────────────────

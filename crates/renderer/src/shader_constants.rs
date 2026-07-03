@@ -481,4 +481,48 @@ mod tests {
         assert_eq!(MAT_FLAG_EFFECT_LI_SHIFT, material_flag::EFFECT_LI_SHIFT);
         // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
     }
+
+    /// #1799 / PERF-D5-NEW-01 — the shipped default must keep the legacy
+    /// WRS arm preprocessed OUT of `triangle.frag`. Flipping this back to
+    /// `1` (e.g. to A/B) is a deliberate, source-controlled, recompile-
+    /// required action; it must never silently become the shipped default.
+    #[test]
+    fn legacy_wrs_arm_defaults_to_disabled() {
+        assert_eq!(
+            ENABLE_LEGACY_WRS, 0,
+            "ENABLE_LEGACY_WRS must default to 0 (compiled out) — flipping \
+             it to 1 re-enables the per-frame register/local-memory cost \
+             this issue exists to eliminate"
+        );
+    }
+
+    /// #1799 / PERF-D5-NEW-01 — the legacy 16-slot WRS reservoir arrays
+    /// (`resLight`/`resWSel`) must be declared strictly inside an
+    /// `#if ENABLE_LEGACY_WRS` / `#endif` block, not merely read/written
+    /// behind a runtime `if`. A runtime-only guard around the *usage*
+    /// doesn't stop the compiler from still declaring — and therefore
+    /// budgeting the per-invocation register / local-memory footprint
+    /// of — the arrays on every frame, including the ~100% of production
+    /// frames that take the ReSTIR path and never touch them.
+    #[test]
+    fn triangle_frag_legacy_wrs_arrays_are_compile_time_gated() {
+        let src = include_str!("../shaders/triangle.frag");
+
+        let gate_pos = src
+            .find("#if ENABLE_LEGACY_WRS")
+            .expect("triangle.frag must have an ENABLE_LEGACY_WRS compile-time gate");
+        let decl_pos = src
+            .find("uint  resLight[NUM_RESERVOIRS];")
+            .expect("triangle.frag must declare the legacy resLight reservoir array");
+        let endif_pos = src[gate_pos..]
+            .find("#endif")
+            .map(|i| gate_pos + i)
+            .expect("the ENABLE_LEGACY_WRS gate must be closed with #endif");
+
+        assert!(
+            gate_pos < decl_pos && decl_pos < endif_pos,
+            "resLight[NUM_RESERVOIRS] must be declared strictly inside the \
+             FIRST #if ENABLE_LEGACY_WRS / #endif block (#1799 / PERF-D5-NEW-01)"
+        );
+    }
 }

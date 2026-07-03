@@ -339,6 +339,29 @@ fn main() {
         "#define DBG_DISABLE_SPATIAL {DBG_DISABLE_SPATIAL}u"
     )
     .unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(
+        out,
+        "// #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "// WRS reservoir arrays. 0 (default): preprocessed out of"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "// triangle.frag entirely. 1: restores the pre-fix always-compiled"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "// behavior for A/B against ReSTIR (requires a shader recompile)."
+    )
+    .unwrap();
+    writeln!(out, "#define ENABLE_LEGACY_WRS {ENABLE_LEGACY_WRS}").unwrap();
 
     let out_path = Path::new("shaders/include/shader_constants.glsl");
     if let Some(parent) = out_path.parent() {

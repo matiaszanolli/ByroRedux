@@ -105,3 +105,9 @@
 #define DBG_DISABLE_ATROUS 16384u
 #define DBG_DISABLE_RESTIR 32768u
 #define DBG_DISABLE_SPATIAL 65536u
+
+// #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot
+// WRS reservoir arrays. 0 (default): preprocessed out of
+// triangle.frag entirely. 1: restores the pre-fix always-compiled
+// behavior for A/B against ReSTIR (requires a shader recompile).
+#define ENABLE_LEGACY_WRS 0
