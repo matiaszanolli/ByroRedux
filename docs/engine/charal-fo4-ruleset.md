@@ -38,9 +38,9 @@ own citable source before it enters the computed `derived` table (CHARAL §6).
 | V.A.T.S. weapon accuracy | Perception | `≈ +3.167 pp / PER` (cap 95 %) | **LOCKED** (approx, empirical) |
 | Health | Endurance + level | `77.5 + END·4.5 + Lvl·2.5 + Lvl·END/2` | **LOCKED** (player — §below) |
 | Sprint AP drain | Endurance | `(1.05 − 0.05·END) × 12` AP/s | **LOCKED** (§below) |
-| Dialogue persuasion success | Charisma | — | PENDING |
-| Barter prices | Charisma | — | PENDING |
-| Max settlement population | Charisma | — | PENDING |
+| Dialogue persuasion success | Charisma | `CHR·15% − DifficultyMod`, clamped [5,100]% | **LOCKED** (§below) |
+| Barter prices | Charisma | `Buy = 3.50 − CHR·0.15` (floor 1.2); `Sell = 1/Buy` (ceil 0.8) | **LOCKED** (§below) |
+| Max settlement population | Charisma | `10 + CHR` | **LOCKED** (§below) |
 | Experience-point multiplier | Intelligence | `×(1 + 0.03·INT)` *(multiplier)* | **LOCKED** (§below) |
 | Hacking (dud-word reduction) | Intelligence | — | PENDING |
 | Action Points | Agility | `60 + 10·AGI` (`fAVDActionPoints{Base,Mult}`) | **LOCKED** (§below) |
@@ -59,8 +59,11 @@ Routing of these once the coefficients arrive:
   **table-based** (hits-to-fill-meter per Luck value), not a clean formula — stays a
   gameplay-system input.
 - **Gameplay-system inputs** (consume the SPECIAL AVs but live in their own systems,
-  not the `derived` table): persuasion, barter, settler cap, hacking, sneak detection
-  (unresolvable per source). V.A.T.S. accuracy and pickpocket chance now have locked
+  not the `derived` table): persuasion (per-check difficulty offset applied at use
+  time), barter (reciprocal-pair shape, not affine/bilinear), hacking, sneak detection
+  (unresolvable per source). Settlement population cap (`10+CHR`) fits the `derived`
+  table shape but is a settlement-system value, not a per-actor AV — same routing
+  class as VATS accuracy. V.A.T.S. accuracy and pickpocket chance now have locked
   per-point coefficients (table above).
 
 ### Health — LOCKED (player formula)
@@ -185,6 +188,48 @@ AV). **Sneak detection likelihood**, by contrast, is a genuine dead end: the sam
 page states Agility is "used in an unknown formula" for it — the wiki itself doesn't
 know, so this isn't worth re-querying (§9 no-guessing scope: nothing to cite).
 
+### Max Settlement Population — LOCKED (source: Charisma (FO4) page, 2026-07-03)
+
+```
+MaxPopulation = 10 + Charisma
+```
+
+Clean affine, `derived`-table-shaped — but the output feeds the settlement system,
+not a per-actor AV, so it stays a gameplay-system input rather than joining
+Health/AP/CarryWeight in the actual `derived` table (§6 scopes `derived` to
+per-actor `ActorValues`).
+
+### Dialogue Persuasion — LOCKED (source: Charisma (FO4) page, 2026-07-03)
+
+```
+SuccessChance = Charisma × 15% − DifficultyModifier      # clamped [5%, 100%]
+```
+
+Difficulty modifiers are fixed per check tier: Yellow `−35%`, Orange `−50%`, Red
+`−65%` (CHR 11+ = guaranteed pass on a Red check with no other modifiers). Each rank
+of Lady Killer/Black Widow adds a flat `+10%` if the dialogue target is the opposite
+gender. The Charisma term itself is a clean affine (`CHR × 15`), but the **check
+difficulty offset is supplied at the call site**, not part of the SPECIAL-derived
+formula — same shape as V.A.T.S. accuracy (a per-point coefficient consumed by a
+system that adds its own situational modifier). Routes as a gameplay-system input,
+not the `derived` table.
+
+### Barter Prices — LOCKED (source: Charisma (FO4) page, 2026-07-03)
+
+```
+BuyingPriceModifier  = 3.50 − Charisma × 0.15     # floored at 1.2
+SellingPriceModifier = 1 / BuyingPriceModifier     # ceiled at 0.8
+```
+
+Item price = innate value × the applicable modifier (before perk/discount
+multipliers, which stack multiplicatively on top — Cap Collector, Junktown Vendor,
+Barter bobblehead, friend discounts). **Selling is the reciprocal of Buying**, not an
+independent affine formula — a genuinely new *shape* `DerivedStatFormula` doesn't
+have (affine/bilinear only); modeling both as one reciprocal pair (compute Buying,
+derive Selling) rather than two independent rows is the fitting representation if
+this ever enters the canonical table. Both clamp independently (Buying ≥ 1.2, Selling
+≤ 0.8) — CHR 16+ hits both clamps simultaneously (Buying 1.2 flat, Selling 0.8 flat).
+
 ### Carry Weight — LOCKED (actor-general)
 
 ```
@@ -260,7 +305,28 @@ a debuff to SPECIAL attributes" — i.e. the affliction's effect is a **temporar
 penalty** (→ `temporary_mod`), exactly the `{pool damage + resistance AV + SPECIAL-
 penalty}` model. Radiation + Poison are now **two members** of the affliction family, so
 it's a reusable pattern (not a radiation one-off); both go flat-additive-AV in FO4 and
-END-derived-% in FO3/FNV.
+END-derived-% in FO3/FNV. **The pool/threshold mechanism itself is now BUILT and
+game-agnostic** (`crates/core/src/character/affliction.rs`, 2026-07-03) — one
+`AfflictionTable`/`AfflictionStatus` pair serves Radiation, Poison, Disease (FO76), or
+any future member identically; only the per-game threshold *numbers* differ, and
+those are still unsourced for all three (no shipped table yet).
+
+**Addiction — confirms the pattern, but stays OUT of CHARAL's derived-stat scope**
+(source: fandom *Addiction*, 2026-07-03). Every game (FO1→FO76) has a per-item
+addiction-chance roll (e.g. FO4 Jet 25%, Buffout 25–35%, X-cell 35%) that, once
+triggered, applies a **fixed SPECIAL penalty table** until cured (FO4: Alcohol
+`CHR−1,AGI−1`; Buffout `STR−1,END−1`; X-cell `ALL SPECIAL −1`; full per-chem table on
+the page) — the same `temporary_mod` mechanism as the Radiation/Poison affliction
+family, so it's a **4th confirmation of the pattern**, not a new one. It does **not**
+add a CHARAL derived-stat formula, though: addiction chance and its penalty are
+**per-item constants**, not a function of any SPECIAL attribute — there is no
+`Endurance → AddictionResist` formula the way there is for Rad/Poison/Disease
+Resistance. This routes entirely to the consumable/status-effect (scripting) layer,
+same out-of-scope bucket as perk effects (CHARAL §7) — CHARAL's only touchpoint is
+that `temporary_mod` is the general mechanism, already established. Chem Resistant
+(FO4, Endurance-gated perk) reduces addiction *chance* by a flat 50%/immune per rank
+— confirms the existing FO4 Endurance perk-chart row (Chem Resistant, `charal-fo4-
+ruleset.md` perk table) rather than adding new data.
 
 ## Perk chart — COMPLETE (7 / 7 SPECIAL columns, 70 perks)
 

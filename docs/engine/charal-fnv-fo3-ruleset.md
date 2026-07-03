@@ -131,8 +131,12 @@ perk** = +25 % (FNV, 1 rank) → `permanent_mod`; **Rad-X (FNV)** = `(25 + Medic
 derived formula **chaining off the Medicine *skill*** (same skill-chain shape as Unarmed
 Damage). FO1/2 used `END·2` (out of scope). This is the **resistance half** of the
 radiation *affliction family* — the `Rads` pool AV + the poisoning threshold→SPECIAL-
-penalty band are the other half (pending the *Radiation poisoning* page). Source: fandom
-*Radiation Resistance*.
+penalty band are the other half. **The mechanism for that other half is now BUILT**
+(`crates/core/src/character/affliction.rs`, 2026-07-03: `AfflictionTable` +
+`AfflictionStatus` + `reevaluate_affliction`/`affliction_tick_system` — see
+`charal.md` §4.6); the actual FO3/FNV Rads pool→penalty threshold *numbers* are still
+pending the *Radiation poisoning* page — no shipped table exists yet, mechanism-only.
+Source: fandom *Radiation Resistance*.
 
 Poison Resistance: `(Endurance − 1)·5 = 5·END − 5`, **identical FO3==FNV**, the
 **Radiation-Resistance twin** — same `(END−1)·k` shape, coefficient **5** instead of 2.

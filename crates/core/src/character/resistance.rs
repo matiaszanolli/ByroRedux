@@ -1,12 +1,14 @@
 //! Resistance / affliction family (CHARAL).
 //!
 //! Environmental afflictions — **radiation**, **poison** — share one shape: a
-//! **resistance actor value** that cuts incoming affliction damage, plus (the
-//! still-unscaffolded half, pending per-game pool/threshold data) a damage
-//! *pool* and a threshold band that debuffs SPECIAL via `temporary_mod`. This
-//! module owns the **resistance half**: the per-affliction [`Affliction`]
-//! descriptor (its resistance AV + how that AV derives in FO3/FNV) and the
-//! percentage damage-reduction interpretation [`damage_multiplier`].
+//! **resistance actor value** that cuts incoming affliction damage, plus a
+//! damage *pool* and a threshold band that debuffs SPECIAL via
+//! `temporary_mod`. This module owns the **resistance half**: the
+//! per-affliction [`Affliction`] descriptor (its resistance AV + how that AV
+//! derives in FO3/FNV) and the percentage damage-reduction interpretation
+//! [`damage_multiplier`]. [`super::affliction`] owns the **pool/threshold
+//! half** (the mechanism); the per-game **threshold numbers** themselves are
+//! still PENDING (no citable source yet — see that module's docs).
 //!
 //! It mirrors [`super::reputation`] — the other "actor value + classifier"
 //! family. There the AV is Karma/Fame and the classifier is a *band*; here the

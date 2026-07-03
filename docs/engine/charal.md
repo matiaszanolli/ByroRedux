@@ -210,6 +210,32 @@ faction Reputation gets this dedicated component (FO4 companion *affinity* will 
 third, per-companion variant). Player-scoped in practice; a component so it rides the
 ECS/save machinery like the rest of CHARAL.
 
+### 4.6 `AfflictionStatus` — **NEW, BUILT** (affliction-family pool/threshold mechanism)
+
+```rust
+pub struct AfflictionTable { pool_avif: u32, bands: Vec<AfflictionBand> }  // AfflictionBand { min_pool: f32, penalties: Vec<AvPenalty> }
+pub struct AfflictionStatus { entries: Vec<ActiveAffliction> }             // ActiveAffliction { pool_avif: u32, band: Option<usize> }
+```
+
+The **pool/threshold half** of the affliction family (§0 — Radiation, Poison, Disease,
+…; [`character::resistance`] owns the resistance-percentage half). The pool itself
+needs no new storage — it's the existing `ActorValue::damage` layer on whatever AV
+represents it (Rads, a poison total, …), read via `AfflictionTable::pool_value`, not
+`ActorValues::current` (which subtracts damage — the pool *is* the damage).
+`AfflictionStatus` is the missing piece: `ActorValues::mod_temporary` is a bare
+additive delta with no expiration, so a threshold-crossing tick needs to remember
+which band it last applied to reverse *exactly* that delta before applying a new one.
+`reevaluate_affliction` does the diff (idempotent within a band, correct across
+escalation and cure); `affliction_tick_system` drives it over every actor that opts in
+(carries `AfflictionStatus` alongside `ActorValues` — untracked actors are untouched).
+
+**Mechanism BUILT, thresholds still PENDING.** No shipped `AfflictionTable` exists —
+the per-game pool/threshold numbers (what Rads level triggers which SPECIAL penalty)
+have no citable source yet (§9). The mechanism is proven with stand-in data
+(`crates/core/src/character/affliction.rs` tests); wiring — stamping
+`AfflictionStatus` at spawn, registering the tick system, populating real tables —
+waits on that data.
+
 ---
 
 ## 5. The per-game ruleset (the data the user provides)

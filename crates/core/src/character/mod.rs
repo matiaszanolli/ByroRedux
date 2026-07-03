@@ -18,8 +18,13 @@
 //!   derived-formula table + leveling model.
 //! * [`reputation`] — the reputation family: [`KarmaBand`] (FO3/FNV Karma) +
 //!   [`ReputationStanding`] (FNV Fame/Infamy 4×4 grid) classifiers.
-//! * [`resistance`] — the affliction family: [`Affliction`] descriptors
-//!   (radiation / poison resistance derivation) + the damage-multiplier model.
+//! * [`resistance`] — the affliction family's resistance half:
+//!   [`Affliction`] descriptors (radiation / poison resistance derivation) +
+//!   the damage-multiplier model.
+//! * [`affliction`] — the affliction family's pool/threshold half:
+//!   [`AfflictionTable`] (pool → threshold band → SPECIAL penalty) +
+//!   [`AfflictionStatus`] (per-actor active-band memory) +
+//!   [`affliction_tick_system`] (the diff-and-reapply driver).
 //! * [`components`] — [`CharacterLevel`] / [`Perks`] / [`Background`], the
 //!   structural per-actor ECS components.
 //!
@@ -27,6 +32,7 @@
 //! FNV/FO3 class auto-calc) in `byroredux_plugin`; this crate holds the
 //! game-agnostic canonical types those boundaries feed.
 
+pub mod affliction;
 pub mod attribute;
 pub mod components;
 pub mod derived;
@@ -39,6 +45,10 @@ pub mod skill;
 pub mod skyrim;
 pub mod tes;
 
+pub use affliction::{
+    affliction_tick_system, reevaluate_affliction, ActiveAffliction, AfflictionBand,
+    AfflictionStatus, AfflictionTable, AvPenalty,
+};
 pub use attribute::{Attribute, AttributeSet};
 pub use components::{
     Background, CharacterLevel, FactionReputation, FactionStanding, PerkRank, Perks,
