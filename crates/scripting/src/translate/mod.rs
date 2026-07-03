@@ -80,8 +80,9 @@ pub fn translate_script(
 /// parses to (via [`byroredux_pex`]) and runs it through the same
 /// [`translate_script`] recognizer chain — so a compiled script and its
 /// source decompile to one canonical behavior. A `.pex` that fails to
-/// parse or decompile is a silent `None` (logged at debug), treated like
-/// any other recognizer miss.
+/// parse or decompile — including a decompiler panic (SCR-D5-NEW-02 /
+/// #1816) — is a silent `None` (logged at debug), treated like any other
+/// recognizer miss.
 ///
 /// The decompiled `Script` is owned locally; the returned [`Recognized`]
 /// captures only owned constants, so it outlives the borrow.
@@ -98,10 +99,20 @@ pub fn translate_pex(
             return None;
         }
     };
-    let script = match byroredux_pex::decompile::decompile_script(&pex) {
-        Ok(s) => s,
-        Err(e) => {
+    // SCR-D5-NEW-02 / #1816: the decompiler carries internal invariant
+    // `.expect()`s that a hostile/corrupt `.pex` can trip; catch that panic
+    // here the same way `pex_corpus_smoke` does, rather than letting it
+    // escape through `attach_vmad_scripts` and abort cell load.
+    let script = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        byroredux_pex::decompile::decompile_script(&pex)
+    })) {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
             log::debug!("translate_pex: decompile failed: {e}");
+            return None;
+        }
+        Err(_) => {
+            log::debug!("translate_pex: decompile panicked");
             return None;
         }
     };
