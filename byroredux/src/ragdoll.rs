@@ -84,8 +84,14 @@ pub fn template_from_imported(
 ) -> Option<RagdollTemplate> {
     let mut bodies = Vec::with_capacity(imported.bodies.len());
     let mut old_to_new: Vec<Option<usize>> = vec![None; imported.bodies.len()];
+    // #1718 / FNV-D7-01 — collect dropped-body bone names so a skeleton
+    // whose bone naming diverges from the ragdoll's authored names (variant
+    // skeleton, renamed bone, importer canonicalisation mismatch) leaves a
+    // breadcrumb instead of silently degrading/vanishing.
+    let mut dropped_bones: Vec<&Arc<str>> = Vec::new();
     for (i, b) in imported.bodies.iter().enumerate() {
         let Some(&bone) = skel_map.get(&b.bone_name) else {
+            dropped_bones.push(&b.bone_name);
             continue;
         };
         old_to_new[i] = Some(bodies.len());
@@ -101,12 +107,25 @@ pub fn template_from_imported(
             restitution: b.restitution,
         });
     }
+    if !dropped_bones.is_empty() {
+        log::warn!(
+            "template_from_imported: {} ragdoll body/bodies dropped — bone name(s) not found \
+             in skeleton: {:?}",
+            dropped_bones.len(),
+            dropped_bones,
+        );
+    }
     if bodies.len() < 2 {
         return None;
     }
     let mut constraints = Vec::new();
+    let mut dropped_constraint_bones: Vec<(&Arc<str>, &Arc<str>)> = Vec::new();
     for c in &imported.constraints {
         let (Some(a), Some(b)) = (old_to_new[c.body_a], old_to_new[c.body_b]) else {
+            dropped_constraint_bones.push((
+                &imported.bodies[c.body_a].bone_name,
+                &imported.bodies[c.body_b].bone_name,
+            ));
             continue;
         };
         constraints.push(RagdollTemplateConstraint {
@@ -114,6 +133,21 @@ pub fn template_from_imported(
             body_b: b,
             joint: joint_from_imported(&c.kind),
         });
+    }
+    if !dropped_constraint_bones.is_empty() {
+        // Mirrors the sibling drop-site diagnostic in
+        // `crates/nif/src/import/collision.rs::extract_ragdoll` (#1539) —
+        // same "dropping ... linking bones 'a' <-> 'b'" phrasing so both
+        // ragdoll-fragmentation drop sites read as one unified telemetry
+        // stream.
+        for (a, b) in &dropped_constraint_bones {
+            log::warn!(
+                "template_from_imported: dropping constraint linking bones '{a}' <-> '{b}' \
+                 — endpoint body's bone name was not found in the skeleton. The ragdoll edge \
+                 is lost; if it was the sole link to a limb, that limb will detach and \
+                 free-fall (#1718).",
+            );
+        }
     }
     if constraints.is_empty() {
         return None;
@@ -634,5 +668,140 @@ mod tests {
             .unwrap()
             .translation
             .y
+    }
+
+    // ── #1718 / FNV-D7-01 — dropped-bone ragdoll telemetry ──────────────
+    //
+    // `template_from_imported` now warns when a body's bone name doesn't
+    // resolve against the skeleton, and when a constraint's endpoint
+    // references such a dropped body. These tests pin the *functional*
+    // drop/remap behaviour the warns are attached to (no log-capture
+    // harness exists in this codebase, matching the untested sibling
+    // warn at `crates/nif/src/import/collision.rs::extract_ragdoll` /
+    // #1539) — a regression in the drop logic itself would surface here.
+
+    use byroredux_nif::import::{ImportedRagdollBody, ImportedRagdollConstraint};
+
+    fn body(bone_name: &str) -> ImportedRagdollBody {
+        ImportedRagdollBody {
+            bone_name: Arc::from(bone_name),
+            mass: 1.0,
+            linear_damping: 0.05,
+            angular_damping: 0.05,
+            friction: 0.5,
+            restitution: 0.0,
+            shape: CollisionShape::Ball { radius: 5.0 },
+            translation: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+        }
+    }
+
+    fn hinge_constraint(body_a: usize, body_b: usize) -> ImportedRagdollConstraint {
+        ImportedRagdollConstraint {
+            body_a,
+            body_b,
+            kind: ImportedJointKind::LimitedHinge {
+                axis_a: Vec3::X,
+                pivot_a: Vec3::ZERO,
+                axis_b: Vec3::X,
+                pivot_b: Vec3::ZERO,
+                min_angle: -1.0,
+                max_angle: 1.0,
+            },
+        }
+    }
+
+    /// Baseline: every bone resolves — all bodies and constraints survive.
+    #[test]
+    fn all_bones_resolve_yields_full_template() {
+        let mut world = World::new();
+        let spine = world.spawn();
+        let head = world.spawn();
+        let mut skel_map = HashMap::new();
+        skel_map.insert(Arc::<str>::from("Spine"), spine);
+        skel_map.insert(Arc::<str>::from("Head"), head);
+
+        let imported = ImportedRagdoll {
+            bodies: vec![body("Spine"), body("Head")],
+            constraints: vec![hinge_constraint(0, 1)],
+        };
+        let template =
+            template_from_imported(&imported, &skel_map).expect("both bones resolve");
+        assert_eq!(template.bodies.len(), 2);
+        assert_eq!(template.constraints.len(), 1);
+        assert_eq!(template.bodies[0].bone, spine);
+        assert_eq!(template.bodies[1].bone, head);
+    }
+
+    /// One body's bone name is absent from the skeleton map (renamed bone /
+    /// variant skeleton / importer canonicalisation mismatch). It must be
+    /// dropped, remaining bodies remap correctly, and any constraint that
+    /// referenced the dropped body is also dropped — without panicking.
+    #[test]
+    fn dropped_bone_excludes_body_and_dependent_constraint_but_keeps_the_rest() {
+        let mut world = World::new();
+        let spine = world.spawn();
+        let head = world.spawn();
+        // No entry for "LFoot" — simulates a bone-name mismatch.
+        let mut skel_map = HashMap::new();
+        skel_map.insert(Arc::<str>::from("Spine"), spine);
+        skel_map.insert(Arc::<str>::from("Head"), head);
+
+        let imported = ImportedRagdoll {
+            bodies: vec![body("Spine"), body("LFoot"), body("Head")],
+            constraints: vec![
+                // Spine <-> LFoot: LFoot is dropped, so this must vanish too.
+                hinge_constraint(0, 1),
+                // Spine <-> Head: both resolve, must survive.
+                hinge_constraint(0, 2),
+            ],
+        };
+        let template = template_from_imported(&imported, &skel_map)
+            .expect("2 of 3 bones resolve, 1 of 2 constraints survives");
+        assert_eq!(template.bodies.len(), 2, "LFoot body must be dropped");
+        assert_eq!(
+            template.constraints.len(),
+            1,
+            "the constraint referencing the dropped LFoot body must be dropped"
+        );
+        // Remaining indices must remap to the surviving Spine/Head bodies,
+        // not the original (now-invalid) 0/2 indices into `imported.bodies`.
+        assert_eq!(template.bodies[template.constraints[0].body_a].bone, spine);
+        assert_eq!(template.bodies[template.constraints[0].body_b].bone, head);
+    }
+
+    /// Fewer than 2 surviving bodies returns `None` (matches the documented
+    /// contract) rather than a degenerate single-body template.
+    #[test]
+    fn single_surviving_body_returns_none() {
+        let mut world = World::new();
+        let spine = world.spawn();
+        let mut skel_map = HashMap::new();
+        skel_map.insert(Arc::<str>::from("Spine"), spine);
+
+        let imported = ImportedRagdoll {
+            bodies: vec![body("Spine"), body("Unknown1"), body("Unknown2")],
+            constraints: vec![hinge_constraint(0, 1)],
+        };
+        assert!(template_from_imported(&imported, &skel_map).is_none());
+    }
+
+    /// 2+ bodies survive but every constraint referenced a dropped body —
+    /// no articulation survives, so this must return `None` too.
+    #[test]
+    fn surviving_bodies_with_no_surviving_constraints_returns_none() {
+        let mut world = World::new();
+        let spine = world.spawn();
+        let head = world.spawn();
+        let mut skel_map = HashMap::new();
+        skel_map.insert(Arc::<str>::from("Spine"), spine);
+        skel_map.insert(Arc::<str>::from("Head"), head);
+
+        let imported = ImportedRagdoll {
+            bodies: vec![body("Spine"), body("Head"), body("LFoot")],
+            // The only constraint links Spine (0) to the dropped LFoot (2).
+            constraints: vec![hinge_constraint(0, 2)],
+        };
+        assert!(template_from_imported(&imported, &skel_map).is_none());
     }
 }
