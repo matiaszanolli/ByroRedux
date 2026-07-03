@@ -1759,6 +1759,14 @@ impl App {
             let pending = self.skin_slot_pool.drain_pending(
                 byroredux_renderer::vulkan::scene_buffer::MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME,
             );
+            // #1791 / D6-01 — mirror of `pending_with_data`'s (slot, entity)
+            // pairs, kept alive so a `draw_frame` early return (see the
+            // `skin_dispatch_ran` check below) can requeue exactly what was
+            // about to be uploaded. Deliberately NOT the raw `pending` drain:
+            // an entry filtered out here (its `SkinnedMesh` is already gone)
+            // must stay dropped, not come back through the requeue path.
+            let mut pending_for_requeue: Vec<(u32, byroredux_core::ecs::EntityId)> =
+                Vec::with_capacity(pending.len());
             let pending_with_data: Vec<(u32, Vec<[[f32; 4]; 4]>)> = pending
                 .into_iter()
                 .filter_map(|(slot, entity)| {
@@ -1779,6 +1787,7 @@ impl App {
                                     [0.0, 0.0, 0.0, 1.0],
                                 ],
                             );
+                            pending_for_requeue.push((slot, entity));
                             (slot, padded)
                         })
                 })
@@ -1836,8 +1845,25 @@ impl App {
                     // called), so an early return here means that commit
                     // needs undoing or the next frame's dirty gate reads
                     // "clean" against a dispatch that never happened.
+                    //
+                    // #1791 / D6-01 — the same two early-return guards also
+                    // precede the `bind_inverses` SSBO upload (draw.rs
+                    // ~2654-2676), which sits strictly before the
+                    // `record_skinned_blas_refit` call that flips
+                    // `skin_dispatch_ran` true — so this flag is exactly the
+                    // right signal for both bugs. `pending` was already
+                    // irrevocably drained from the pool above (before this
+                    // call), so an early return here means those first-sight
+                    // `bind_inverses` were about to be lost for good: the
+                    // slot stays resident in `entity_to_slot` (never
+                    // re-queued by `allocate`), so the persistent SSBO
+                    // region for it is never written, corrupting the
+                    // entity's skinning palette for its remaining lifetime
+                    // in the cell.
                     if !ctx.skin_dispatch_ran {
                         self.skin_slot_pool.rollback_pending_pose_commits();
+                        self.skin_slot_pool
+                            .requeue_pending(std::mem::take(&mut pending_for_requeue));
                     }
                     let last_draw_stats = ctx.last_draw_call_stats;
                     world_resource_set::<DebugStats>(&self.world, |s| {

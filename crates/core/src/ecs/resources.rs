@@ -860,6 +860,31 @@ impl SkinSlotPool {
         self.pending_uploads.drain(..n).collect()
     }
 
+    /// Undo a `drain_pending` whose upload didn't happen. #1791 / D6-01
+    /// — `drain_pending` is called before `draw_frame`, and `draw_frame`
+    /// has early-return paths (empty framebuffers, swapchain out-of-
+    /// date) preceding the actual `bind_inverses` SSBO write. Without
+    /// this, a drained-but-unwritten entry is simply lost: the slot
+    /// stays resident in `entity_to_slot` (so `allocate` never re-queues
+    /// it), but the persistent SSBO region for that slot is never
+    /// written, permanently corrupting the entity's skinning palette.
+    ///
+    /// Prepends `entries` so they're the first candidates drained next
+    /// frame — they were already overdue once. Caller supplies exactly
+    /// the entries that were actually about to be uploaded (i.e. that
+    /// survived any caller-side filtering of `drain_pending`'s output),
+    /// not the raw drain — an entry the caller already decided to drop
+    /// permanently (e.g. its `SkinnedMesh` component is gone) must not
+    /// come back through this path.
+    pub fn requeue_pending(&mut self, entries: Vec<(u32, super::storage::EntityId)>) {
+        if entries.is_empty() {
+            return;
+        }
+        let mut merged = entries;
+        merged.append(&mut self.pending_uploads);
+        self.pending_uploads = merged;
+    }
+
     /// Sweep entities idle for ≥ `min_idle` frames; return their slot
     /// IDs to the free-list. Returns the freed slot IDs (caller can
     /// log / telemetry if desired).
@@ -1243,6 +1268,72 @@ mod skin_slot_pool_tests {
         assert_eq!(
             combined, all_seen_slots,
             "every allocated entity must surface in some drain (#1192)"
+        );
+    }
+
+    // ── #1791 / D6-01 — requeue on an unwritten drain ─────────────
+
+    #[test]
+    fn requeue_pending_restores_entries_for_the_next_drain() {
+        // Simulates a `draw_frame` early return: the caller drained
+        // entries but never actually wrote them to the SSBO, so it
+        // requeues. The next drain must see them again — otherwise the
+        // slot stays resident in `entity_to_slot` (per `allocate`'s
+        // early-return-with-existing-slot path) while the persistent
+        // SSBO region is never written, permanently corrupting that
+        // entity's skinning palette.
+        let mut pool = SkinSlotPool::new(5);
+        let _ = pool.allocate(1, 0);
+        let _ = pool.allocate(2, 0);
+        let drained = pool.drain_pending(usize::MAX);
+        assert_eq!(drained.len(), 2, "both first-sight entities are pending");
+
+        assert!(
+            pool.drain_pending(usize::MAX).is_empty(),
+            "already drained — nothing left before requeue"
+        );
+
+        pool.requeue_pending(drained.clone());
+        let redrained: std::collections::HashSet<_> =
+            pool.drain_pending(usize::MAX).into_iter().collect();
+        assert_eq!(
+            redrained,
+            drained.into_iter().collect(),
+            "requeued entries must reappear on the next drain, unchanged"
+        );
+    }
+
+    #[test]
+    fn requeue_pending_is_a_no_op_for_an_empty_list() {
+        // A caller that reaches the requeue call with nothing to
+        // requeue (e.g. every drained entry was filtered out because
+        // its SkinnedMesh was already gone) must not disturb whatever
+        // is already queued.
+        let mut pool = SkinSlotPool::new(5);
+        let _ = pool.allocate(1, 0);
+        pool.requeue_pending(Vec::new());
+        assert_eq!(
+            pool.drain_pending(usize::MAX).len(),
+            1,
+            "requeueing an empty list must not touch the existing queue"
+        );
+    }
+
+    #[test]
+    fn requeue_pending_entries_drain_before_newly_queued_ones() {
+        // Requeued entries were already overdue once; they should be
+        // the first candidates drained next frame, ahead of anything
+        // that queued up normally in the meantime.
+        let mut pool = SkinSlotPool::new(5);
+        let _ = pool.allocate(1, 0); // queued first, then "lost" to a bad frame
+        let lost = pool.drain_pending(usize::MAX);
+        pool.requeue_pending(lost.clone());
+        let _ = pool.allocate(2, 0); // queues normally afterward
+
+        let first = pool.drain_pending(1);
+        assert_eq!(
+            first, lost,
+            "the requeued (overdue) entry must drain before the freshly queued one"
         );
     }
 
