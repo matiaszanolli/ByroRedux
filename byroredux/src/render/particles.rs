@@ -20,7 +20,7 @@
 //! (src=SRC_ALPHA=6, dst=ONE=0) per ParticleEmitter defaults; per-emitter
 //! overrides ride through the existing pipeline cache from #392.
 
-use byroredux_core::ecs::{GlobalTransform, ParticleEmitter, RenderLayer, World};
+use byroredux_core::ecs::{ParticleEmitter, RenderLayer, World};
 use byroredux_core::math::{Mat4, Quat, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
@@ -64,14 +64,10 @@ pub(super) fn emit_particles(
     let Some(particle_mesh) = particle_quad_handle else {
         return;
     };
-    let (Some(gtq), Some(eq)) = (
-        world.query::<GlobalTransform>(),
-        world.query::<ParticleEmitter>(),
-    ) else {
+    let Some(eq) = world.query::<ParticleEmitter>() else {
         return;
     };
     for (entity, em) in eq.iter() {
-        let _ = gtq.get(entity); // transform sampled by the system at spawn
         if em.particles.is_empty() {
             continue;
         }
