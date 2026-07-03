@@ -33,6 +33,36 @@ fires. Exceeding `MAX_MATERIALS` silently reuses material slot 0.
 
 ---
 
+## ReSTIR Reservoirs
+
+[`restir.rs`](../../crates/renderer/src/vulkan/restir.rs) — screen-sized,
+double-buffered (`MAX_FRAMES_IN_FLIGHT` = 2) STORAGE buffers for ReSTIR-DI
+temporal reservoir reuse (Session 49 denoiser overhaul). Unlike every other
+entry on this page, size scales with **swapchain resolution**, not a fixed
+constant — recreated on every resize.
+
+Formula: `width × height × RESERVOIR_STRIDE` bytes per FIF slot
+(`RESERVOIR_STRIDE` = 32 B, one [`Reservoir`] per pixel).
+
+| Resolution | Per-slot | × 2 FIF |
+|---|---|---|
+| 1920×1080 | 66.4 MB | **132.7 MB** |
+| 2560×1440 | 118.0 MB | **235.9 MB** |
+| 3840×2160 | 265.4 MB | **530.8 MB** |
+
+This was the largest single VRAM addition of the denoiser overhaul (PERF-D5-NEW-04
+/ #1814) — at 4K it is over 13% of the ~4 GB engine budget target below — but
+had no ledger entry here and no attributing telemetry until #1814 added a
+`log::info!` at both `ReservoirBuffers::new` and `recreate_on_resize` reporting
+the computed size.
+
+No leak: create-once + recreate-on-resize with a fenced destroy
+(`recreate_swapchain` waits both frames-in-flight before dropping the old
+buffers). Stale reservoir contents across a resize are harmless — the
+final visibility ray re-validates every shaded sample.
+
+---
+
 ## Acceleration Structures (BLAS / TLAS)
 
 [`acceleration/constants.rs`](../../crates/renderer/src/vulkan/acceleration/constants.rs)
@@ -188,12 +218,13 @@ the fence slot is complete before the tick runs (#418).
 |---|---|---|
 | G-buffer (6 attachments × 2 FIF) | ~22 MB | ~45 MB (4K) |
 | Scene SSBOs | ~140 MB | ~140 MB |
+| ReSTIR reservoirs (2 FIF) | ~133 MB (1080p) | ~531 MB (4K) |
 | Vertex / index pools | ~200 MB | ~1.6 GB cap |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.1 GB** | **< 4 GB target** |
+| **Estimated total** | **~1.25 GB** | **< 4 GB target** |
 
 The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
 they are design targets. The RTX 4070 Ti (12 GB) has headroom for all

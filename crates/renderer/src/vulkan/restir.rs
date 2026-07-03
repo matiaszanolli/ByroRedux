@@ -58,6 +58,20 @@ impl ReservoirBuffers {
                 vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
         }
+        // PERF-D5-NEW-04 / #1814 — this is the largest single VRAM
+        // addition of the Session 49 denoiser overhaul (~127 MB at
+        // 1080p, ~236 MB at 1440p, ~531 MB at 4K across both FIF
+        // slots) and had no attributing telemetry anywhere; see
+        // docs/engine/memory-budget.md's "ReSTIR Reservoirs" section.
+        log::info!(
+            "ReSTIR reservoir buffers created: {}x{}, {:.1} MB/slot × {} slots = {:.1} MB total",
+            width,
+            height,
+            Self::byte_size(width, height) as f64 / (1024.0 * 1024.0),
+            MAX_FRAMES_IN_FLIGHT,
+            (Self::byte_size(width, height) * MAX_FRAMES_IN_FLIGHT as vk::DeviceSize) as f64
+                / (1024.0 * 1024.0),
+        );
         Ok(Self {
             buffers,
             width,
@@ -113,6 +127,19 @@ impl ReservoirBuffers {
                 vk::BufferUsageFlags::STORAGE_BUFFER,
             )?);
         }
+        // PERF-D5-NEW-04 / #1814 — same telemetry as `new()`; a resize
+        // is exactly when this footprint changes, so it's the other
+        // point where under-tracked VRAM growth would otherwise go
+        // unnoticed.
+        log::info!(
+            "ReSTIR reservoir buffers recreated: {}x{}, {:.1} MB/slot × {} slots = {:.1} MB total",
+            width,
+            height,
+            Self::byte_size(width, height) as f64 / (1024.0 * 1024.0),
+            MAX_FRAMES_IN_FLIGHT,
+            (Self::byte_size(width, height) * MAX_FRAMES_IN_FLIGHT as vk::DeviceSize) as f64
+                / (1024.0 * 1024.0),
+        );
         Ok(())
     }
 
@@ -149,6 +176,36 @@ mod tests {
         assert!(MAX_FRAMES_IN_FLIGHT >= 2);
         for f in 0..MAX_FRAMES_IN_FLIGHT {
             assert_ne!(f, (f + 1) % MAX_FRAMES_IN_FLIGHT);
+        }
+    }
+
+    /// PERF-D5-NEW-04 / #1814 — pins the exact per-resolution byte totals
+    /// documented in docs/engine/memory-budget.md's "ReSTIR Reservoirs"
+    /// section against the live `RESERVOIR_STRIDE` / `MAX_FRAMES_IN_FLIGHT`
+    /// constants. If either constant changes, this fails as the nudge to
+    /// update the doc's table alongside the code (the whole point of the
+    /// fix — the doc had silently drifted out of existence before #1814).
+    #[test]
+    fn byte_size_matches_documented_memory_budget_figures() {
+        // (width, height, expected per-slot MB, expected 2-FIF total MB)
+        // MB here is decimal (bytes / 1_000_000), matching every other
+        // entry in memory-budget.md.
+        let cases = [
+            (1920u32, 1080u32, 66.4, 132.7),
+            (2560, 1440, 118.0, 235.9),
+            (3840, 2160, 265.4, 530.8),
+        ];
+        for (w, h, expected_per_slot_mb, expected_total_mb) in cases {
+            let per_slot = ReservoirBuffers::byte_size(w, h) as f64 / 1_000_000.0;
+            let total = per_slot * MAX_FRAMES_IN_FLIGHT as f64;
+            assert!(
+                (per_slot - expected_per_slot_mb).abs() < 0.1,
+                "{w}x{h}: per-slot {per_slot:.1} MB != documented {expected_per_slot_mb} MB"
+            );
+            assert!(
+                (total - expected_total_mb).abs() < 0.1,
+                "{w}x{h}: total {total:.1} MB != documented {expected_total_mb} MB"
+            );
         }
     }
 }
