@@ -429,14 +429,31 @@ that difference is exactly a `LevelingModel` variant, not a new component:
   Karma = global 1-axis, FNV Reputation = per-faction 2-axis (Fame/Infamy), FO4
   affinity = per-companion 1-axis with the richest sourced formula of the three. The
   perk-at-threshold reward is scripting/quest data, as always.
+- **Starfield *affinity* is a FOURTH reputation-family instance** (source:
+  `starfieldwiki.net` *Starfield:Affinity*, 2026-07-04, `charal-starfield-ruleset.md`).
+  Same per-companion `{ score + band/gate classifier }` shape as FO4's Affinity, but
+  two structurally new wrinkles neither FO4 nor Karma/Reputation have: (1) a **5-way**
+  reaction taxonomy (`loves/likes/indifferent/dislikes/hates`, vs. FO4's 4-reaction ×
+  size-multiplier scheme) plus a hidden 6th `WantsToTalk` state worth a flat `+1`; (2)
+  **dual-gated** narrative unlocks — 8 "Story Gate" tiers at flat `+100` affinity
+  increments (100/200/…/800) each ALSO requiring a **minimum real-world wall-clock
+  time** elapsed since the previous gate (30 min for gate 1, 1 hour for gates 2–8) —
+  no other reputation-family instance gates on real time, only in-fiction state. Exact
+  per-reaction point deltas are **PENDING** — the source page transcludes a
+  `{{Conversation Key (affinity)}}` template for the numbers that wasn't expanded in
+  the fetched wikitext. Confirms the family taxonomy holds at 4 instances now: Karma
+  (global 1-axis) / FNV Reputation (per-faction 2-axis) / FO4 Affinity (per-companion
+  1-axis, richest sourced accrual formula) / Starfield Affinity (per-companion 1-axis,
+  richest *gating* mechanism — score AND real time).
 - **FO76 has no traditional companions** (C.A.M.P. allies) — out of scope for now.
 - **FO1 / FO2 companion mechanics** (no leveling / fixed "stage" model-swap, the
   200-byte/5-record truncation bug) are **out of scope** — those are the isometric
   pre-Gamebryo engine, not a ByroRedux target. Recorded only so the taxonomy is complete.
 
-The takeaway for CHARAL: companions need **no new canonical type** — they reuse
-`ActorValues` + (eventually) an affinity reputation AV; only the *leveling strategy* enum
-grows a `ScaleToLeader` arm.
+The takeaway for CHARAL: companions need **no new canonical type or `LevelingModel`
+arm** — scale-to-leader reuses the existing caller-supplied `level` parameter (§7.1
+above), and every reputation-family instance found so far (Karma / FNV Reputation /
+FO4 Affinity / Starfield Affinity) is classifiers-over-`ActorValues`, not a new type.
 
 ---
 

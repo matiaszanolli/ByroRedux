@@ -293,6 +293,36 @@ components + systems. See [Scripting Architecture](scripting.md) for the full ma
 (101 script types, 136 events). Roadmap entries: M30.2, M47.0, M47.2 in
 [ROADMAP.md](../../ROADMAP.md).
 
+## Open research — Starfield Papyrus grammar extensions
+
+Source: `starfieldwiki.net/wiki/Starfield_Mod:Papyrus_-_New_Features`, 2026-07-04
+(pasted by the user — this wiki is Cloudflare-blocked for direct fetch, see
+`charal-starfield-ruleset.md`). Page is explicitly marked **WIP** and gives only
+3 named features with no grammar detail — nothing here is LOCKED, no guessing
+([[feedback_no_guessing]]):
+
+- **Guards — "critical path single-thread protection".** No equivalent exists
+  in the current AST/parser at all — sounds like a new statement/block form
+  (mutex-style critical section), plausibly relevant because Starfield's engine
+  is more multithreaded than Skyrim/FO4's Papyrus VM, but the actual syntax is
+  unknown. Needs the dedicated feature page (not yet fetched).
+- **Structs — "almost first-class user-defined data structures".** Structs
+  already exist in this parser (FO4+, `Struct` AST node, §Papyrus Grammar
+  Summary above) — this description implies Starfield extends them further
+  (candidates: structs as function parameter/return types, nested structs),
+  but which extension isn't specified on this stub page. Not a from-scratch
+  feature; a possible widening of an existing one.
+- **Imports — "import namespaces as well as attributes from other scripts".**
+  The current grammar only supports whole-script import
+  (`import ::= "Import" qualified_ident NEWLINE`, §Papyrus Grammar Summary).
+  "Attributes from other scripts" implies a partial/selective import form not
+  currently representable — a real grammar gap if confirmed, but no concrete
+  syntax given yet.
+
+Not actioning any of these without the actual per-feature grammar pages (the
+stub page links out to dedicated sub-articles per feature that weren't
+fetched this session).
+
 ## References
 
 - [Papyrus Introduction](https://falloutck.uesp.net/wiki/Papyrus_Introduction)
