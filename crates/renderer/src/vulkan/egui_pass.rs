@@ -128,6 +128,8 @@ impl EguiPass {
         extent: vk::Extent2D,
     ) -> Result<()> {
         for fb in self.framebuffers.drain(..) {
+            // SAFETY: swapchain recreation only runs after `device_wait_idle`,
+            // so no command buffer can still reference `fb`.
             unsafe { device.destroy_framebuffer(fb, None) };
         }
         self.framebuffers = create_framebuffers(device, self.render_pass, image_views, extent)?;
@@ -201,6 +203,9 @@ impl EguiPass {
                     offset: vk::Offset2D::default(),
                     extent: self.extent,
                 });
+            // SAFETY: `cmd` is the caller's currently-recording command
+            // buffer (per this method's doc comment); `rp_begin` references
+            // `self.render_pass` / `self.framebuffers` which are both live.
             unsafe {
                 device.cmd_begin_render_pass(cmd, &rp_begin, vk::SubpassContents::INLINE);
             }
@@ -217,6 +222,9 @@ impl EguiPass {
                 .renderer
                 .cmd_draw(cmd, self.extent, output.pixels_per_point, &primitives)
                 .map_err(|e| anyhow!("egui cmd_draw: {e:?}"));
+            // SAFETY: matches the `cmd_begin_render_pass` above on the same
+            // `cmd` — see the INVARIANT comment: always balanced even when
+            // `cmd_draw` errors, so the buffer never ends inside an open RP.
             unsafe { device.cmd_end_render_pass(cmd) };
             draw_result?;
         }
@@ -242,6 +250,9 @@ impl EguiPass {
             let drained = std::mem::take(&mut self.pending_free);
             let _ = self.renderer.free_textures(&drained);
         }
+        // SAFETY: caller contract (called from `VulkanContext::drop` in
+        // reverse-construction order) guarantees the device is idle and no
+        // command buffer references these framebuffers or the render pass.
         for fb in self.framebuffers.drain(..) {
             unsafe { device.destroy_framebuffer(fb, None) };
         }
@@ -316,6 +327,9 @@ fn create_render_pass(
         .subpasses(&subpasses)
         .dependencies(&dependencies);
 
+    // SAFETY: `device` is live; `info` (with its `attachments` /
+    // `subpasses` / `dependencies` slices) is fully populated above and
+    // outlives this call.
     let rp = unsafe {
         device
             .create_render_pass(&info, None)
@@ -339,6 +353,9 @@ fn create_framebuffers(
             .width(extent.width)
             .height(extent.height)
             .layers(1);
+        // SAFETY: `device` is live; `info` references `render_pass` (caller-
+        // supplied, live) and `attachments` (this loop iteration's `view`,
+        // live for the call's duration).
         let fb = unsafe {
             device
                 .create_framebuffer(&info, None)

@@ -291,6 +291,8 @@ impl SkinComputePipeline {
         )
         .expect("skin_compute layout drifted against skin_vertices.comp");
 
+        // SAFETY: `device` is live; the create-info borrows only
+        // `bindings`, which outlives this call.
         let descriptor_set_layout = unsafe {
             device
                 .create_descriptor_set_layout(
@@ -306,6 +308,8 @@ impl SkinComputePipeline {
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .offset(0)
             .size(PUSH_CONSTANTS_SIZE);
+        // SAFETY: `device` is live; `descriptor_set_layout` was just
+        // created above and outlives this call.
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(
@@ -330,6 +334,9 @@ impl SkinComputePipeline {
         ) {
             Ok(p) => p,
             Err(e) => {
+                // SAFETY: pipeline creation failed, so neither layout is
+                // referenced by any pipeline or in-flight command buffer —
+                // both were just created above in this same constructor.
                 unsafe {
                     device.destroy_pipeline_layout(pipeline_layout, None);
                     device.destroy_descriptor_set_layout(descriptor_set_layout, None);
@@ -428,6 +435,9 @@ impl SkinComputePipeline {
         // (C3-10 leak-on-drop pattern), so the natural-Drop pass on the
         // `output_buffer` local does NOT free the device-local memory.
         let layouts = [self.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        // SAFETY: `self.descriptor_pool` is live and was sized (at
+        // pipeline construction) for `max_slots * MAX_FRAMES_IN_FLIGHT`
+        // sets; this allocates `MAX_FRAMES_IN_FLIGHT` of them.
         let allocated = match unsafe {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
@@ -476,6 +486,10 @@ impl SkinComputePipeline {
         allocator: &SharedAllocator,
         mut slot: SkinSlot,
     ) {
+        // SAFETY: caller contract (this method's doc comment) guarantees
+        // `slot`'s output buffer — and by extension its descriptor sets —
+        // isn't referenced by an in-flight command buffer; `self.descriptor_pool`
+        // is live and was created with FREE_DESCRIPTOR_SET.
         unsafe {
             // Free the descriptor sets back to the pool. Required
             // because the pool was created with FREE_DESCRIPTOR_SET;
@@ -738,6 +752,8 @@ impl SkinPaletteComputePipeline {
         )
         .expect("skin_palette layout drifted against skin_palette.comp");
 
+        // SAFETY: `device` is live; the create-info borrows only
+        // `bindings`, which outlives this call.
         let descriptor_set_layout = unsafe {
             device
                 .create_descriptor_set_layout(
@@ -751,6 +767,8 @@ impl SkinPaletteComputePipeline {
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .offset(0)
             .size(SKIN_PALETTE_PUSH_CONSTANTS_SIZE);
+        // SAFETY: `device` is live; `descriptor_set_layout` was just
+        // created above and outlives this call.
         let pipeline_layout = unsafe {
             device
                 .create_pipeline_layout(
@@ -772,6 +790,9 @@ impl SkinPaletteComputePipeline {
         ) {
             Ok(p) => p,
             Err(e) => {
+                // SAFETY: pipeline creation failed, so neither layout is
+                // referenced by any pipeline or in-flight command buffer —
+                // both were just created above in this same constructor.
                 unsafe {
                     device.destroy_pipeline_layout(pipeline_layout, None);
                     device.destroy_descriptor_set_layout(descriptor_set_layout, None);
@@ -791,6 +812,8 @@ impl SkinPaletteComputePipeline {
             .build(device, "create skin_palette descriptor pool")?;
 
         let layouts = [descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        // SAFETY: `descriptor_pool` was just created above with capacity
+        // for exactly `pool_total` (== `MAX_FRAMES_IN_FLIGHT`) sets.
         let allocated = unsafe {
             device
                 .allocate_descriptor_sets(

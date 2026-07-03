@@ -83,6 +83,10 @@ impl ClusterCullPipeline {
                 match $expr {
                     Ok(v) => v,
                     Err(e) => {
+                        // SAFETY: `partial` is still under construction — no
+                        // handle in it has been submitted to any queue, so
+                        // `destroy`'s "not in use by an in-flight command
+                        // buffer" contract holds trivially.
                         unsafe { partial.destroy(device, allocator) };
                         return Err(e.into());
                     }
@@ -144,6 +148,8 @@ impl ClusterCullPipeline {
             &[],
         )
         .expect("cluster_cull layout drifted against cluster_cull.comp (see #427)");
+        // SAFETY: `device` is live; the create-info borrows only `bindings`,
+        // which outlives this call.
         partial.descriptor_set_layout = try_or_cleanup!(unsafe {
             device
                 .create_descriptor_set_layout(
@@ -153,6 +159,8 @@ impl ClusterCullPipeline {
                 .context("Failed to create cluster cull descriptor set layout")
         });
 
+        // SAFETY: `device` is live; `partial.descriptor_set_layout` was just
+        // created above and outlives this call.
         partial.pipeline_layout = try_or_cleanup!(unsafe {
             device
                 .create_pipeline_layout(
@@ -169,6 +177,9 @@ impl ClusterCullPipeline {
             CLUSTER_CULL_COMP_SPV
         ));
 
+        // SAFETY: `device` is live; `shader_module` was just loaded above
+        // and `partial.pipeline_layout` was just created above — both
+        // outlive this call.
         partial.pipeline = match unsafe {
             device
                 .create_compute_pipelines(
@@ -187,11 +198,18 @@ impl ClusterCullPipeline {
                 .context("Failed to create cluster cull compute pipeline")
         } {
             Ok(pipelines) => {
+                // SAFETY: `shader_module` is no longer needed once the
+                // pipeline that consumed it is created — Vulkan permits
+                // destroying it immediately after pipeline creation.
                 unsafe { device.destroy_shader_module(shader_module, None) };
                 pipelines[0]
             }
             Err(e) => {
+                // SAFETY: same as the success arm above — the module is
+                // unused whether pipeline creation succeeded or failed.
                 unsafe { device.destroy_shader_module(shader_module, None) };
+                // SAFETY: `partial` is still under construction — see the
+                // `try_or_cleanup!` macro's SAFETY note above.
                 unsafe { partial.destroy(device, allocator) };
                 return Err(e);
             }
@@ -207,6 +225,8 @@ impl ClusterCullPipeline {
         .build(device, "Failed to create cluster cull descriptor pool"));
 
         let layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        // SAFETY: `partial.descriptor_pool` was just created above with
+        // capacity for exactly `layouts.len()` sets of `descriptor_set_layout`.
         partial.descriptor_sets = try_or_cleanup!(unsafe {
             device
                 .allocate_descriptor_sets(
@@ -246,6 +266,9 @@ impl ClusterCullPipeline {
                 write_storage_buffer(set, 2, &grid_info),
                 write_storage_buffer(set, 3, &index_info),
             ];
+            // SAFETY: `partial` is still under construction — `set` was
+            // just allocated above and isn't yet referenced by any command
+            // buffer, so no in-flight submission can race this write.
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 

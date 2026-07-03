@@ -221,6 +221,8 @@ impl VulkanContext {
             .usage(vk::BufferUsageFlags::TRANSFER_DST)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
+        // SAFETY: `self.device` is live; `buffer_info` is a fully-populated
+        // `BufferCreateInfo` with no dangling `p_next` chain.
         let buffer = unsafe {
             match self.device.create_buffer(&buffer_info, None) {
                 Ok(b) => b,
@@ -231,6 +233,7 @@ impl VulkanContext {
             }
         };
 
+        // SAFETY: `buffer` was just created above by this same device.
         let requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
 
         let allocation = {
@@ -245,12 +248,18 @@ impl VulkanContext {
                 Ok(a) => a,
                 Err(e) => {
                     log::warn!("Screenshot staging allocation failed: {e}");
+                    // SAFETY: `buffer` was just created above, has no bound
+                    // memory yet, and is not referenced by any command buffer.
                     unsafe { self.device.destroy_buffer(buffer, None) };
                     return;
                 }
             }
         };
 
+        // SAFETY: `buffer` was just created and `allocation` was just
+        // allocated above by the same device/allocator pair; on bind
+        // failure the buffer is unbound and unreferenced, so destroying it
+        // (after returning its memory to the allocator) is sound.
         unsafe {
             if let Err(e) =
                 self.device
@@ -269,6 +278,11 @@ impl VulkanContext {
 
     pub(super) fn destroy_screenshot_staging(&mut self) {
         if let Some((buffer, allocation, _)) = self.screenshot_staging.take() {
+            // SAFETY: callers are the resize path in `ensure_screenshot_staging`
+            // (only reached between frames, before any copy is recorded
+            // against the new-sized buffer) and shutdown teardown (after
+            // `device_wait_idle`) — in both cases no command buffer can
+            // still reference `buffer`.
             unsafe { self.device.destroy_buffer(buffer, None) };
             if let Some(ref alloc) = self.allocator {
                 let mut allocator = alloc.lock().unwrap();

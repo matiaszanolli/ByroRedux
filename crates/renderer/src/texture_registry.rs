@@ -294,6 +294,9 @@ impl TextureRegistry {
             .bindings(std::slice::from_ref(&binding))
             .push_next(&mut binding_flags_info);
 
+        // SAFETY: `device` is a live logical device (constructor precondition);
+        // `layout_info` + `binding_flags_info` are valid structs built above,
+        // and the `push_next` chain outlives this call.
         let descriptor_set_layout = unsafe {
             device
                 .create_descriptor_set_layout(&layout_info, None)
@@ -310,6 +313,9 @@ impl TextureRegistry {
             .pool_sizes(std::slice::from_ref(&pool_size))
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
 
+        // SAFETY: `device` is live; `pool_info` sizes cover exactly
+        // `MAX_FRAMES_IN_FLIGHT` sets of `max_textures` samplers each,
+        // matching the allocation below.
         let descriptor_pool = unsafe {
             device
                 .create_descriptor_pool(&pool_info, None)
@@ -321,6 +327,8 @@ impl TextureRegistry {
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(descriptor_pool)
             .set_layouts(&layouts);
+        // SAFETY: `descriptor_pool` was just created above with capacity for
+        // exactly `layouts.len()` sets of `descriptor_set_layout`.
         let bindless_sets = unsafe {
             device
                 .allocate_descriptor_sets(&alloc_info)
@@ -357,6 +365,8 @@ impl TextureRegistry {
                 .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
                 .min_lod(0.0)
                 .max_lod(16.0);
+            // SAFETY: `device` is live; `info` is a fully-populated
+            // `SamplerCreateInfo` with no dangling `p_next` chain.
             unsafe {
                 device
                     .create_sampler(&info, None)
@@ -1141,6 +1151,9 @@ impl TextureRegistry {
                     .image_info(std::slice::from_ref(&image_infos[i]))
             })
             .collect();
+        // SAFETY: caller contract (see doc comment above) guarantees the
+        // caller already waited on `slot`'s fence, so no in-flight command
+        // buffer references `set` right now; `image_infos` outlives `writes`.
         unsafe {
             device.update_descriptor_sets(&writes, &[]);
         }
@@ -1171,6 +1184,9 @@ impl TextureRegistry {
             .dst_array_element(handle)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .image_info(std::slice::from_ref(&image_info));
+        // SAFETY: `self.current_slot` is being recorded by the CPU right
+        // now (see the comment above) — no submitted command buffer can be
+        // reading `bindless_sets[self.current_slot]` concurrently.
         unsafe {
             device.update_descriptor_sets(&[write], &[]);
         }
@@ -1274,7 +1290,10 @@ impl TextureRegistry {
         device: &ash::Device,
         _new_swapchain_image_count: u32,
     ) -> Result<()> {
-        // Destroy old pool (frees all sets implicitly).
+        // SAFETY: caller contract (swapchain recreation only runs after
+        // `device_wait_idle`) guarantees no command buffer is still
+        // referencing `self.descriptor_pool`'s sets. Destroying the pool
+        // implicitly frees all sets allocated from it.
         unsafe {
             device.destroy_descriptor_pool(self.descriptor_pool, None);
         }
@@ -1288,6 +1307,7 @@ impl TextureRegistry {
             .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
             .pool_sizes(std::slice::from_ref(&pool_size))
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
+        // SAFETY: `device` is live; sizes mirror `new()`'s pool exactly.
         self.descriptor_pool = unsafe {
             device
                 .create_descriptor_pool(&pool_info, None)
@@ -1298,6 +1318,8 @@ impl TextureRegistry {
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(self.descriptor_pool)
             .set_layouts(&layouts);
+        // SAFETY: `self.descriptor_pool` was just created above with
+        // capacity for exactly `layouts.len()` sets of `descriptor_set_layout`.
         self.bindless_sets = unsafe {
             device
                 .allocate_descriptor_sets(&alloc_info)
@@ -1372,6 +1394,11 @@ impl TextureRegistry {
             pool.destroy();
         }
 
+        // SAFETY: caller contract (`destroy()` runs only during shutdown,
+        // after `device_wait_idle`) guarantees none of these handles are
+        // referenced by any in-flight command buffer. `self.samplers`
+        // holds 4 distinct handles (`shared_sampler` aliases `samplers[0]`,
+        // not a separate handle), so the loop destroys each exactly once.
         unsafe {
             // #610 — destroy every clamp-mode sampler. `shared_sampler`
             // aliases `samplers[0]` so iterating the array covers it
