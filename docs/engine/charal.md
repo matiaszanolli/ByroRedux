@@ -480,10 +480,19 @@ follows the smoke-test pattern).
   Skyrim's per-skill gameplay-system formulas (Pickpocket/Speech/Lockpicking/
   Sneak/Light Armor/Alchemy so far, `charal-skyrim-ruleset.md`) is a bonus, not
   a blocker — none of it is required for the core ruleset above.
-- **Starfield skill-category ruleset + leveling curve.** **Blocked on source**:
-  confirmed 2026-07-04 that UESP has no Starfield namespace (checked via the
-  MediaWiki `siprop=namespaces` API directly — only Morrowind/Oblivion/Skyrim
-  exist there), so this needs a different wiki entirely, not a UESP sweep.
+- **Starfield skill-category ruleset + leveling curve.** UESP has no Starfield
+  namespace (confirmed 2026-07-04 via its MediaWiki `siprop=namespaces` API —
+  only Morrowind/Oblivion/Skyrim exist there); sourced instead from
+  `starfield.fandom.com` (`charal-starfield-ruleset.md`, new doc). **Roster
+  closed**: 82 skills, 5 categories × 4 tiers (Physical/Social/Combat/Science/
+  Tech × Novice/Advanced/Expert/Master), no governing attribute (Starfield has
+  none). Leveling is a **third, new shape** — not skill-use (MW/OB) or
+  skill-XP (Skyrim): level-up grants Skill Points, spent on per-skill ranks
+  (1–4), each rank-up gated by a discrete challenge, with higher tiers also
+  gated by a **minimum same-category Skill Point spend**. **Still PENDING**:
+  the character XP/level curve itself, and the exact category-spend
+  thresholds per tier — both block a `LevelingModel::STARFIELD` /
+  `SkillSet::STARFIELD` build.
 - **FNV per-level tag-skill growth.** Still undocumented in any citable source
   (deferred at #1663 — see [[actor_value_population]]); pin against the engine
   before claiming tag-skill correctness.
