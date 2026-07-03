@@ -95,8 +95,10 @@ Health: `fAVDHealthLevelMult` = **10** (FO3) / **5** (FNV); base **90 → 100**.
 formulas (NPCs derive separately). Source: fandom *Hit Points*.
 
 Carry Weight: `fAVDCarryWeight{Base=150, Mult=10}` — actor-general (NPCs/companions
-too), same GMST family as FO4 (`Base=200`) and FO76 (`Mult=5`); FO4 only raised the
-base. Source: fandom *Carry Weight*.
+too), same GMST family as FO4 (`Base=200, Mult=10`) and FO76 (`Base=150, Mult=5` —
+full formula `150 + 5·STR`, confirmed directly on re-fetch 2026-07-03, not just the
+mult); FO4 only raised the base, FO76 only lowered the mult. Source: fandom *Carry
+Weight*.
 
 Critical Chance: base `Luck × 1%` is the `critchance` AV; the per-hit crit is
 `base × weapon Critical Multiplier` (+15 % in VATS) — the weapon multiplier is a combat

@@ -37,14 +37,15 @@ own citable source before it enters the computed `derived` table (CHARAL §6).
 | Melee Damage | Strength | `×(1 + STR/10)` *(multiplier)* | **LOCKED** (§below) |
 | V.A.T.S. weapon accuracy | Perception | `≈ +3.167 pp / PER` (cap 95 %) | **LOCKED** (approx, empirical) |
 | Health | Endurance + level | `77.5 + END·4.5 + Lvl·2.5 + Lvl·END/2` | **LOCKED** (player — §below) |
-| Sprint AP drain | Endurance | — | PENDING |
+| Sprint AP drain | Endurance | `(1.05 − 0.05·END) × 12` AP/s | **LOCKED** (§below) |
 | Dialogue persuasion success | Charisma | — | PENDING |
 | Barter prices | Charisma | — | PENDING |
 | Max settlement population | Charisma | — | PENDING |
 | Experience-point multiplier | Intelligence | `×(1 + 0.03·INT)` *(multiplier)* | **LOCKED** (§below) |
 | Hacking (dud-word reduction) | Intelligence | — | PENDING |
 | Action Points | Agility | `60 + 10·AGI` (`fAVDActionPoints{Base,Mult}`) | **LOCKED** (§below) |
-| Sneak | Agility | — | PENDING |
+| Pickpocket chance | Agility | `+1 pp / AGI` *(additive)* | **LOCKED** (§below) |
+| Sneak detection | Agility | — | **DEAD END** — source itself says "unknown formula" |
 | Critical Hit recharge rate | Luck | — | PENDING |
 
 Routing of these once the coefficients arrive:
@@ -58,8 +59,9 @@ Routing of these once the coefficients arrive:
   **table-based** (hits-to-fill-meter per Luck value), not a clean formula — stays a
   gameplay-system input.
 - **Gameplay-system inputs** (consume the SPECIAL AVs but live in their own systems,
-  not the `derived` table): persuasion, barter, settler cap, hacking, sneak. V.A.T.S.
-  accuracy now has an approximate per-PER coefficient (table above).
+  not the `derived` table): persuasion, barter, settler cap, hacking, sneak detection
+  (unresolvable per source). V.A.T.S. accuracy and pickpocket chance now have locked
+  per-point coefficients (table above).
 
 ### Health — LOCKED (player formula)
 
@@ -104,13 +106,18 @@ The `floor` costs ≤1 HP only when END and L are both even; otherwise exact.
 | FO3 | `90 + END·20 + Level·10` | END 5, L1 → 200 |
 | FNV | `100 + END·20 + (Level−1)·5` | END 5, L1 → 200; END 10, L30 → 445 |
 | FO4 | `77.5 + END·4.5 + Level·2.5 + Lvl·END/2` | END 2, L2 → 93.5 |
-| FO76 | `245 + 5·END` | END 15 → 320 (max; END starts at 1) |
+| FO76 | `250 + 5·END` | END 15 → 325 (base cap; END starts at 1) |
 
 This is direct evidence for CHARAL §3 (**ruleset is AUTHORED via GMST**): the page
 names `fAVDHealthLevelMult` changing **10 → 5** between FO3 and FNV, and the base
 changing **90 → 100** — i.e. the Health constants are per-game `GMST` values, not a
-hardcoded curve. FNV also re-anchors the level term to `(Level − 1)`. The FO4 / FO76
-constants are presumably the same GMST family (names not given on this page).
+hardcoded curve. FNV also re-anchors the level term to `(Level − 1)`. The FO4
+constant follows the same shape (see §below); **FO76's is now directly sourced**
+(corrected from an earlier `245 + 5·END` guess — the *Fallout 76 SPECIAL* page's own
+math block gives `250 + 5·Endurance`, no level term at all: FO76 Health is
+**not** level-scaled, unlike FO3/FNV/FO4). FO76 also introduces a distinct
+**level-XP curve**, `XP_to_next(L) = 160·L − 120` (same `a·L+b` shape as the other
+three, own constants) — see `docs/engine/charal-fo76-ruleset.md`.
 
 > Out of scope: the page's "behind the scenes" quote (`5 + 2·INT` skill points/level,
 > `3 + END/2` HP/level) is **Fallout 1/2** (pre-Gamebryo) — it does **not** resolve
@@ -133,15 +140,50 @@ AP/second = (18 + 3·Agility) / 5 = 3 + 3·(Agility + 1)/5
 ```
 
 (AGI 0 → 3.6/s = 6 % of 60; AGI 5 → 6.6/s = 6 % of 110 ✓.) Sprinting depletes AP at
-an **Endurance**-dependent rate — the "sprint AP drain" governance row, no formula
-given (PENDING).
+an **Endurance**-dependent rate — now **LOCKED** (source: the Endurance (FO4) page):
+
+```
+ActionPointsPerSecond = (1.05 − 0.05·Endurance) × 12
+```
+
+Named GMSTs: `fSprintActionPointsDrainMult = 12.0`, `fSprintActionPointsEndBase =
+1.05`, `fSprintActionPointsEndMult = −0.05` — another AUTHORED-GMST confirmation
+(CHARAL §3/rollout item 6). Worked: END 1 → 12 AP/s (the "default" drain); END 10 →
+6.6 AP/s; **END 21 zeroes the drain** (no sprint AP cost, no duration limit) — the
+formula is unbounded below zero, so the consumer must clamp at 0, not the formula
+itself. Rank 3 of the Moving Target perk changes the ×12 multiplier to ×6 (perk
+modifies the GMST-equivalent constant, not the Endurance term) — that 0-drain
+threshold stays 21 regardless. This is a **multiplier-rate** output (AP/sec, not an
+absolute AV), so it routes with XP-multiplier/Melee-Damage as an applied-at-use-time
+value, not a stored derived AV.
 
 - **Cross-game:** FO4 multiplies the Agility bonus by **×10**; FO3/FNV use **×2 or
   ×3** (the page notes the multiplier difference but not the FO3/FNV base) — PENDING
   for their rulesets.
-- **Application caveat:** AP is a player / V.A.T.S. resource, so the Health §'s
-  "no player-actor entity yet" gate applies equally — locked data, application
-  deferred.
+- **Application caveat:** AP (and its sprint-drain rate) is a player / V.A.T.S.
+  resource, so the Health §'s "no player-actor entity yet" gate applies equally —
+  locked data, application deferred.
+
+**Independently re-confirmed 2026-07-03** on the Agility (FO4) page itself — same
+`AP = 60 + 10·AGI` and same `AP/second = (18 + 3·AGI)/5` formulas, same two GMST
+names — this is the page CHARAL cites as *the* Agility source (§ table above), now
+directly read rather than inferred.
+
+### Pickpocket chance — LOCKED (source: Agility (FO4) page, 2026-07-03)
+
+```
+PickpocketChance = base + 1 pp × Agility
+```
+
+"Each point adds 1% directly to the player's pickpocketing chance" — a flat additive
+per-point bonus, distinct from the (Luck-governed) **Pickpocket** perk's `+25%→×2`
+multiplier already in the perk chart (row 274). No GMST name given, no base value
+given (base pickpocket chance lives elsewhere — target-guard-perception-driven, not
+SPECIAL-derived). Routes as a gameplay-system input like persuasion/barter, not the
+`derived` table (it's a percentage bonus into an existing system, not a standalone
+AV). **Sneak detection likelihood**, by contrast, is a genuine dead end: the same
+page states Agility is "used in an unknown formula" for it — the wiki itself doesn't
+know, so this isn't worth re-querying (§9 no-guessing scope: nothing to cite).
 
 ### Carry Weight — LOCKED (actor-general)
 
