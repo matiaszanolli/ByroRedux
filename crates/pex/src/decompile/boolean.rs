@@ -33,6 +33,14 @@ use super::node::{Node, NodeKind, SYNTH_IP};
 use super::DecompileError;
 use crate::model::Value;
 
+/// Recursion cap for [`BoolPass::rebuild`] (SCR-D2-01 / #1815), mirroring
+/// `control_flow::MAX_REBUILD_DEPTH` (SAFE-2026-06-23-02). This pass runs on
+/// the same untrusted CFG one step before the control-flow pass, so it needs
+/// the same bound: real Papyrus nests `&&`/`||` a handful deep, so 1024 is
+/// far above any well-formed `.pex` while still stopping an adversarial one
+/// from overflowing the stack.
+const MAX_REBUILD_DEPTH: usize = 1024;
+
 /// Collapse `&&`/`||` short-circuits across a function's CFG + per-block
 /// scopes, in place. No-op for a bodyless function.
 pub fn rebuild_boolean_operators(
@@ -44,7 +52,7 @@ pub fn rebuild_boolean_operators(
         return Ok(());
     }
     let (entry, exit) = (cfg.entry, cfg.exit);
-    BoolPass { cfg, scopes, func_name }.rebuild(entry, exit)
+    BoolPass { cfg, scopes, func_name }.rebuild(entry, exit, 0)
 }
 
 struct BoolPass<'a> {
@@ -107,7 +115,15 @@ fn combine(left: Node, op: &str, right: Node, cond: &str) -> Node {
 }
 
 impl BoolPass<'_> {
-    fn rebuild(&mut self, start: usize, end: usize) -> Result<(), DecompileError> {
+    /// `depth` bounds nested short-circuit recursion against a malformed /
+    /// adversarial `.pex` (SCR-D2-01 / #1815) — see [`MAX_REBUILD_DEPTH`].
+    fn rebuild(&mut self, start: usize, end: usize, depth: usize) -> Result<(), DecompileError> {
+        if depth > MAX_REBUILD_DEPTH {
+            return Err(DecompileError::RecursionLimit {
+                function: self.func_name.to_string(),
+                limit: MAX_REBUILD_DEPTH,
+            });
+        }
         let mut it = start;
         while it != end {
             let current = it;
@@ -124,11 +140,11 @@ impl BoolPass<'_> {
                         let end_plus_1 = block.end + 1;
                         if block.on_true() == end_plus_1 {
                             // Potential `&&`: true edge falls through.
-                            self.rebuild(block.on_true(), block.on_false)?;
+                            self.rebuild(block.on_true(), block.on_false, depth + 1)?;
                             reprocess = self.collapse(current, &cond, BoolOp::And)?;
                         } else if block.on_false == end_plus_1 {
                             // Potential `||`: false edge falls through.
-                            self.rebuild(block.on_false, block.on_true())?;
+                            self.rebuild(block.on_false, block.on_true(), depth + 1)?;
                             reprocess = self.collapse(current, &cond, BoolOp::Or)?;
                         }
                     }
@@ -364,5 +380,24 @@ mod tests {
         };
         let tree = decompile(f);
         assert_eq!(child_ifs(&tree), 0);
+    }
+
+    /// SCR-D2-01 (#1815) — an adversarial / malformed `.pex` that would nest
+    /// short-circuit operands deeper than the cap is rejected with a
+    /// `RecursionLimit` error rather than overflowing the stack. Mirrors
+    /// `control_flow::rebuild_rejects_excessive_recursion_depth`: the depth
+    /// guard fires before any CFG access, so a trivial pass exercises it.
+    #[test]
+    fn rebuild_rejects_excessive_recursion_depth() {
+        let mut cfg = Cfg { blocks: BTreeMap::new(), entry: 0, exit: 0 };
+        let mut scopes = BTreeMap::new();
+        let mut pass = BoolPass { cfg: &mut cfg, scopes: &mut scopes, func_name: "Deep" };
+        let err = pass
+            .rebuild(0, 0, MAX_REBUILD_DEPTH + 1)
+            .expect_err("over-deep recursion must error, not overflow");
+        assert!(
+            matches!(err, DecompileError::RecursionLimit { limit, .. } if limit == MAX_REBUILD_DEPTH),
+            "got {err:?}"
+        );
     }
 }
