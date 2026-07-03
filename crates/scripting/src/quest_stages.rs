@@ -46,6 +46,7 @@ use std::collections::{HashMap, HashSet};
 /// spaces (item, NPC, cell) when M47.2's transpiler emits typed
 /// quest references from Papyrus `Quest Property X Auto`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuestFormId(pub u32);
 
 /// Runtime state of every active quest, keyed by FormID.
@@ -62,6 +63,7 @@ pub struct QuestFormId(pub u32);
 /// plugins" (Skyrim ships ~360 quests + ~340 DLC; eager init would
 /// allocate ~30 KB of map entries the player will never visit).
 #[derive(Debug, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuestStageState {
     quests: HashMap<QuestFormId, QuestStageData>,
 }
@@ -83,6 +85,7 @@ impl Resource for QuestStageState {}
 /// requires per-stage history, not just "current". Bethesda's
 /// runtime carries the same shape.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuestStageData {
     pub current_stage: u16,
     pub stages_done: HashSet<u16>,
@@ -173,6 +176,7 @@ impl QuestStageState {
 /// at its introduction) — it ships so the fragment lowerer has a stable,
 /// tested target, and stage/objective causality is observable.
 #[derive(Debug, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuestObjectiveState {
     quests: HashMap<QuestFormId, HashMap<u16, ObjectiveStatus>>,
 }
@@ -184,6 +188,7 @@ impl Resource for QuestObjectiveState {}
 /// content but stored independently (the runtime never enforces it — it
 /// mirrors whatever the fragment set, matching Bethesda's store).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ObjectiveStatus {
     /// `SetObjectiveDisplayed(idx, true/false)` — visible in the journal.
     pub displayed: bool,

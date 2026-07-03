@@ -160,6 +160,7 @@ pub fn build_save_registry() -> SaveRegistry {
         Children, EquipmentSlots, Inventory, LightFlicker, LightSource, Name, Parent, Transform,
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
+    use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
     use byroredux_scripting::ScriptTimer;
 
     use crate::cell_loader::CurrentCellContext;
@@ -183,7 +184,15 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<CurrentCellContext>("CurrentCellContext")
         // M45.1 refinement — where the player was standing + looking, so
         // `load` restores the pose instead of the cell's default spawn.
-        .register_resource::<PlayerPose>("PlayerPose");
+        .register_resource::<PlayerPose>("PlayerPose")
+        // #1862 / SAVE-07 — quest stage/objective progress is live gameplay
+        // state (Papyrus `SetStage`/`GetStage`/`GetStageDone` and
+        // `SetObjectiveDisplayed`/`SetObjectiveCompleted`/`SetObjectiveFailed`),
+        // mutated every frame by real recognizer-emitted scripts
+        // (quest_advance, dlc2_ttr4a, mg07_door). Pre-fix it silently reverted
+        // to default on every save/load.
+        .register_resource::<QuestStageState>("QuestStageState")
+        .register_resource::<QuestObjectiveState>("QuestObjectiveState");
     r
 }
 
@@ -1004,6 +1013,65 @@ mod tests {
         assert!((pose.yaw - 0.7).abs() < 1e-6);
     }
 
+    /// #1862 / SAVE-07 — `QuestStageState` and `QuestObjectiveState` are
+    /// live gameplay state (Papyrus `SetStage`/`GetStageDone` and
+    /// `SetObjectiveDisplayed`/`SetObjectiveCompleted`/`SetObjectiveFailed`),
+    /// mutated every frame by real recognizer-emitted scripts. Pre-fix
+    /// neither type carried a `Serialize`/`Deserialize` derive and neither
+    /// was registered in `build_save_registry`, so both silently reverted
+    /// to default on every save/load. This pins the round trip through the
+    /// same snapshot → encode → decode → restore_resources pipeline the
+    /// live M45.1 overlay load uses.
+    #[test]
+    fn quest_stage_and_objective_state_survive_snapshot_round_trip() {
+        use byroredux_scripting::quest_stages::{QuestFormId, QuestObjectiveState, QuestStageState};
+
+        let reg = build_save_registry();
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        world.insert_resource(FormIdPool::new());
+
+        let quest = QuestFormId(0x0002_2f08); // the real DA10 quest FormID
+        let mut stages = QuestStageState::default();
+        stages.set_stage(quest, 37);
+        stages.set_stage(quest, 40);
+        world.insert_resource(stages);
+
+        let mut objectives = QuestObjectiveState::default();
+        objectives.set_displayed(quest, 10, true);
+        objectives.set_completed(quest, 10, true);
+        world.insert_resource(objectives);
+
+        let snap = save_world(&world, &reg).unwrap();
+        let bytes = encode(&snap, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+        // Full restore_world path (loose/test load).
+        let mut restored_world = World::new();
+        byroredux_save::restore_world(&mut restored_world, &reg, &decoded).unwrap();
+        let restored_stages = restored_world.resource::<QuestStageState>();
+        assert_eq!(restored_stages.get_stage(quest), 40);
+        assert!(restored_stages.get_stage_done(quest, 37));
+        assert!(restored_stages.get_stage_done(quest, 40));
+        assert!(!restored_stages.get_stage_done(quest, 20), "never-visited stage stays false");
+
+        let restored_objectives = restored_world.resource::<QuestObjectiveState>();
+        let status = restored_objectives.get(quest, 10);
+        assert!(status.displayed);
+        assert!(status.completed);
+        assert!(!status.failed);
+
+        // Live M45.1 overlay path (restore_resources — resource-only, no
+        // entity clear/respawn).
+        let mut overlay_world = World::new();
+        overlay_world.insert_resource(StringPool::new());
+        overlay_world.insert_resource(FormIdPool::new());
+        byroredux_save::restore_resources(&mut overlay_world, &reg, &decoded).unwrap();
+        let overlay_stages = overlay_world.resource::<QuestStageState>();
+        assert_eq!(overlay_stages.get_stage(quest), 40);
+        assert!(overlay_stages.get_stage_done(quest, 37));
+    }
+
     /// Source files that define the save-participating types registered in
     /// [`build_save_registry`] — top-level columns AND the types nested
     /// inside them (an `Inventory`'s `ItemStack`, an `AnimationStack`'s
@@ -1025,6 +1093,7 @@ mod tests {
         "../crates/core/src/animation/stack.rs",          // AnimationStack, AnimationLayer
         "../crates/core/src/ecs/resources.rs",            // ItemInstancePool, ItemInstance
         "../crates/scripting/src/timer.rs",               // ScriptTimer
+        "../crates/scripting/src/quest_stages.rs",        // QuestStageState, QuestObjectiveState + nested types
         "src/cell_loader/transition.rs",                  // CurrentCellContext
         "src/save_io.rs",                                 // PlayerPose
     ];
