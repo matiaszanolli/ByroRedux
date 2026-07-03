@@ -10,8 +10,8 @@ use super::super::descriptors::memory_barrier;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::constants::{BATCH_EVICTION_CHECK_INTERVAL, STATIC_BLAS_FLAGS};
 use super::predicates::{
-    align_scratch_address, scratch_alignment_padding, scratch_needs_growth, should_evict_mid_batch,
-    submit_one_time,
+    align_scratch_address, blas_over_budget, scratch_alignment_padding, scratch_needs_growth,
+    should_evict_mid_batch, submit_one_time,
 };
 use super::types::BlasEntry;
 use super::AccelerationManager;
@@ -186,8 +186,12 @@ impl AccelerationManager {
         // SAFETY: `device` + `allocator` are live for this call; evicted
         // entries are gated to idle >= MAX_FRAMES_IN_FLIGHT + 1, so no
         // in-flight command buffer or TLAS build references them.
+        //
+        // #1792 — `pending_bytes = 0`: this single-shot path hasn't sized
+        // its own result buffer yet at this point, so it has nothing to
+        // report as pending on top of the already-committed total.
         unsafe {
-            self.evict_unused_blas(device, allocator);
+            self.evict_unused_blas(device, allocator, 0);
         }
 
         let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
@@ -557,8 +561,11 @@ impl AccelerationManager {
         // for this batch are not yet in `blas_entries`, and eviction only
         // frees entries past the idle threshold, so no in-flight build is
         // aliased.
+        //
+        // #1792 — `pending_bytes = 0`: nothing in this batch has been
+        // sized yet at this point (the loop below hasn't run).
         unsafe {
-            self.evict_unused_blas(device, allocator);
+            self.evict_unused_blas(device, allocator, 0);
         }
 
         // Running sum of `acceleration_structure_size` across the Phase 1
@@ -589,8 +596,18 @@ impl AccelerationManager {
                 // so `evict_unused_blas` cannot touch them — it only
                 // frees entries in `blas_entries` that are past the
                 // idle threshold.
+                //
+                // #1792 / PERF-D3-NEW-01 — pass the real `pending_bytes`
+                // accumulated so far this batch. Before this fix the
+                // callee's own budget gate only ever saw the pre-batch
+                // committed total (`static_blas_bytes`), so on a fresh
+                // load (`static_blas_bytes == 0`) it early-returned and
+                // evicted nothing no matter how large this batch's
+                // already-allocated result buffers had grown — the
+                // trigger above fired, but the callee it called was
+                // structurally blind to the very bytes that triggered it.
                 unsafe {
-                    self.evict_unused_blas(device, allocator);
+                    self.evict_unused_blas(device, allocator, pending_bytes);
                 }
             }
 
@@ -1100,7 +1117,9 @@ impl AccelerationManager {
         Ok(count)
     }
 
-    /// Evict unused BLAS entries when static BLAS memory exceeds the budget.
+    /// Evict unused BLAS entries when static BLAS memory (plus any
+    /// caller-known `pending_bytes` not yet committed to
+    /// `static_blas_bytes`) exceeds the budget.
     ///
     /// Entries unused for more than `min_idle_frames` frames are candidates.
     /// Eviction is LRU — the least recently used entries are reclaimed first.
@@ -1108,6 +1127,27 @@ impl AccelerationManager {
     /// The budget compare uses `static_blas_bytes`, NOT `total_blas_bytes`,
     /// because skinned per-entity BLAS aren't eviction candidates (see
     /// `static_blas_bytes` doc on the struct field for details / #920).
+    ///
+    /// #1792 / PERF-D3-NEW-01 — `pending_bytes` lets a mid-batch caller
+    /// (`build_blas_batched`'s per-iteration `should_evict_mid_batch`
+    /// check) report the sum of `acceleration_structure_size` already
+    /// committed to result buffers *this batch* but not yet folded into
+    /// `static_blas_bytes` (that only happens in the batch's Phase 7,
+    /// after every result buffer is already allocated). Without it, this
+    /// gate and the loop break below only ever saw the committed-before-
+    /// this-batch total — on a fresh load (`static_blas_bytes == 0`) a
+    /// single oversized batch sailed straight past the budget with zero
+    /// intervening eviction, deferred until the *next* cell load. Callers
+    /// with no batch context (the per-frame `draw.rs` call, the two
+    /// pre-batch calls before any result buffer in this batch has been
+    /// sized) pass `0`, preserving prior behavior exactly.
+    ///
+    /// The budget line here stays the real 100% (`static_blas_bytes +
+    /// pending_bytes <= blas_budget_bytes`), NOT `should_evict_mid_batch`'s
+    /// 90% early-warning line — that 90% only decides *when to bother
+    /// checking* (amortized every `BATCH_EVICTION_CHECK_INTERVAL`
+    /// iterations); how much this function actually reclaims is still
+    /// governed by the same 100% target the per-frame call already used.
     ///
     /// Like [`drop_blas`](Self::drop_blas), eviction routes the
     /// `VkAccelerationStructureKHR` + backing buffer through
@@ -1138,7 +1178,12 @@ impl AccelerationManager {
     /// deferred-destroy queue guarantees it. The `unsafe` marker is retained
     /// only for call-site signature stability; this body performs no unsafe
     /// operation now that the destroy is deferred.)
-    pub unsafe fn evict_unused_blas(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+    pub unsafe fn evict_unused_blas(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        pending_bytes: vk::DeviceSize,
+    ) {
         // The GPU free is now deferred (see the loop body), so this function no
         // longer touches `device`/`allocator` directly — `tick_deferred_destroy`
         // does. The params are retained so the call sites
@@ -1147,7 +1192,7 @@ impl AccelerationManager {
         // follow-up once a non-`unsafe` signature is threaded through callers.
         let _ = (device, allocator);
 
-        if self.static_blas_bytes <= self.blas_budget_bytes {
+        if !blas_over_budget(self.static_blas_bytes, pending_bytes, self.blas_budget_bytes) {
             return;
         }
 
@@ -1188,7 +1233,7 @@ impl AccelerationManager {
         let mut evicted = 0usize;
         let mut freed = 0u64;
         for (idx, _, _size) in candidates {
-            if self.static_blas_bytes <= self.blas_budget_bytes {
+            if !blas_over_budget(self.static_blas_bytes, pending_bytes, self.blas_budget_bytes) {
                 break;
             }
             if let Some(entry) = self.blas_entries[idx].take() {

@@ -448,6 +448,47 @@ fn evict_predicate_uses_static_bytes_not_total_post_920() {
     );
 }
 
+/// #1792 / PERF-D3-NEW-01 — `evict_unused_blas`'s actual reclaim gate
+/// must account for a mid-batch caller's `pending_bytes`, not just the
+/// pre-batch committed `static_blas_bytes`. Pre-fix, on a fresh cell
+/// load (`static_blas_bytes == 0`) a batch could grow arbitrarily large
+/// mid-loop and this gate would still read "under budget" — the fix
+/// this predicate backs is what makes `should_evict_mid_batch`'s
+/// trigger (tested above) actually consequential.
+#[test]
+fn blas_over_budget_accounts_for_pending_bytes() {
+    let budget: vk::DeviceSize = 1_000_000_000; // 1 GB
+
+    // The exact failure mode: fresh load, nothing committed yet, but a
+    // huge batch has already sized 1.2 GB of result buffers this batch.
+    assert!(
+        blas_over_budget(0, 1_200_000_000, budget),
+        "zero committed but 1.2 GB pending must read over-budget — this \
+         is the case the pre-fix gate (static_blas_bytes alone) missed \
+         entirely on a fresh load"
+    );
+
+    // Committed alone already over budget (the pre-existing, always-
+    // worked case) — pending_bytes = 0 must not mask it.
+    assert!(blas_over_budget(1_200_000_000, 0, budget));
+
+    // Committed + pending combine to cross the line even though neither
+    // alone would.
+    assert!(blas_over_budget(600_000_000, 500_000_000, budget));
+
+    // Under budget on both counts — must not fire.
+    assert!(!blas_over_budget(400_000_000, 100_000_000, budget));
+
+    // Exactly at the 100% line (not over) — the loop break / gate use
+    // `>`, matching the pre-fix `static_blas_bytes <= budget` early
+    // return, so exactly-at-budget must NOT be "over".
+    assert!(!blas_over_budget(budget, 0, budget));
+    assert!(blas_over_budget(budget, 1, budget));
+
+    // Saturating-add guards against overflow from a bogus caller.
+    let _ = blas_over_budget(u64::MAX / 2, u64::MAX / 2, budget);
+}
+
 /// Regression: #300 — when `needs_full_rebuild` is set, the
 /// per-instance address zip-compare must be skipped (the call is
 /// going to BUILD regardless, so paying O(N) is pure waste).

@@ -389,6 +389,32 @@ pub(super) fn should_evict_mid_batch(
     projected.saturating_mul(10) >= budget_bytes.saturating_mul(9)
 }
 
+/// `evict_unused_blas`'s actual reclaim target: the real 100% budget
+/// line, in contrast to [`should_evict_mid_batch`]'s 90% early-warning
+/// line. `pending_bytes` is the caller's own not-yet-committed
+/// allocations this batch (0 for callers with no batch in flight).
+///
+/// #1792 / PERF-D3-NEW-01 — before this predicate existed,
+/// `evict_unused_blas`'s early-return gate and per-candidate loop break
+/// both compared `static_blas_bytes` alone against `budget_bytes`,
+/// blind to a batch's own in-flight `pending_bytes` (which
+/// `should_evict_mid_batch` already accounts for when deciding whether
+/// to trigger the call in the first place). On a fresh cell load
+/// (`static_blas_bytes == 0`) that left the callee structurally unable
+/// to ever evict mid-batch — the trigger could fire, but the function it
+/// called was still comparing the pre-batch total, which was never over
+/// budget on its own. Pulled into a named predicate (mirroring
+/// `should_evict_mid_batch`) so both call sites inside
+/// `evict_unused_blas` share one definition and the unit test can pin
+/// the threshold math without a live Vulkan device.
+pub(super) fn blas_over_budget(
+    static_blas_bytes: vk::DeviceSize,
+    pending_bytes: vk::DeviceSize,
+    budget_bytes: vk::DeviceSize,
+) -> bool {
+    static_blas_bytes.saturating_add(pending_bytes) > budget_bytes
+}
+
 /// Decide whether a `DrawCommand` should emit a TLAS instance.
 ///
 /// Two-axis gate (#516 + #1024):

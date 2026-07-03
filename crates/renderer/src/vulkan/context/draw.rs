@@ -2815,7 +2815,9 @@ impl VulkanContext {
                                 }
                             }
                         }
-                        accel.evict_unused_blas(&self.device, alloc);
+                        // #1792 — `pending_bytes = 0`: no in-flight batch
+                        // context at this per-frame call site.
+                        accel.evict_unused_blas(&self.device, alloc, 0);
                     }
                 }
             }
