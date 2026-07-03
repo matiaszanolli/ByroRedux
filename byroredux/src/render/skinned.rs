@@ -51,9 +51,18 @@ const IDENTITY_4X4: [[f32; 4]; 4] = [
 ///
 /// On exit:
 /// - `bone_world_out` is sized to `(pool.max_used_slot() + 1) × MAX_BONES_PER_MESH`
-///   and contains: slot 0 = identity (caller-seeded), allocated slots
-///   filled with per-bone world matrices, unused slots filled with
-///   identity (padded by this fn).
+///   and contains: slot 0 = identity (caller-seeded); each live entity's
+///   own `0..skin.bones.len()` range holds this frame's fresh matrices.
+///   Everything else — a slot's padding tail beyond its occupant's own
+///   bone count, and any slot not currently allocated — holds
+///   WHATEVER WAS THERE BEFORE (identity on first growth into that
+///   range, stale data from a prior occupant after slot reuse, never
+///   touched again after that). #1794 / PERF-D4-NEW-01 — this fn no
+///   longer re-identity-fills that territory every frame; it's safe
+///   because nothing ever reads it: a vertex's bone-weight index is
+///   bounded by its own mesh's bone count at import time, so it
+///   structurally cannot reach a reused or unallocated slot's stale
+///   content.
 /// - `skin_offsets[entity] = slot_id × MAX_BONES_PER_MESH` for every
 ///   `SkinnedMesh` entity that successfully allocated a slot.
 /// - `pool.pending_uploads` contains entries for entities whose slots
@@ -126,12 +135,17 @@ pub(super) fn build_skinned_palettes(
     }
 
     // Pass 2: resize bone_world_out to cover slots 0..=max_used_slot
-    // and fill every slot with identity (caller seeded slot 0 already;
-    // we fill from current length up to the required size).
+    // (caller seeded slot 0 already). #1794 / PERF-D4-NEW-01 — always
+    // call `resize`, not just when growing: `Vec::resize` truncates
+    // in-place (no fill, no rewrite of retained elements) when
+    // `required_slots` is below the current length, which is exactly
+    // what lets `bone_world` track the pool's actual high-water mark
+    // frame to frame now that the caller no longer clears it first. On
+    // growth, `resize` only identity-fills the newly added tail — the
+    // retained portion (every slot that was already allocated) is left
+    // completely untouched, whatever it held last frame.
     let required_slots = (pool.max_used_slot() as usize + 1) * MAX_BONES_PER_MESH;
-    if bone_world_out.len() < required_slots {
-        bone_world_out.resize(required_slots, IDENTITY_4X4);
-    }
+    bone_world_out.resize(required_slots, IDENTITY_4X4);
 
     // Pass 3: write per-entity bone_world ranges. Skipping `take`
     // costs O(MAX_BONES_PER_MESH) per entity but the alternative
@@ -166,15 +180,19 @@ pub(super) fn build_skinned_palettes(
             };
             bone_world_out[start + i] = world_mat.to_cols_array_2d();
         }
-        // Pad any per-mesh tail (when skin.bones.len() < MBPM) with
-        // identity. The resize already filled with identity, so this
-        // is a no-op; the `end` binding above is kept for clarity.
+        // #1794 / PERF-D4-NEW-01 — the per-mesh tail (when
+        // skin.bones.len() < MBPM) is deliberately left untouched here,
+        // not re-identity-padded every frame. See `build_skinned_
+        // palettes`'s doc comment: nothing ever reads it (a vertex's
+        // bone-weight index is bounded by its own mesh's bone count at
+        // import time), so whatever it holds — identity from first
+        // growth, or stale data from a prior slot occupant — is inert.
         let _ = end;
 
         // #1195 / PERF-DIM7-01 — hash exactly the per-entity slice
         // we just wrote. Using `end` (which clamps to the actual bone
         // count) instead of `start + MBPM` avoids hashing the
-        // identity-padded tail; per-entity hash stays stable across
+        // padded tail; per-entity hash stays stable across
         // frames as long as the actual bone matrices don't change.
         let hash = pose_hash(&bone_world_out[start..end]);
         let _dirty = pool.try_mark_pose_dirty(entity, hash);
@@ -243,5 +261,124 @@ mod pose_hash_tests {
         // well-defined hash that's stable across frames.
         let h = pose_hash(&[]);
         assert_eq!(h, 0xcbf29ce484222325);
+    }
+}
+
+#[cfg(test)]
+mod build_skinned_palettes_tests {
+    //! #1794 / PERF-D4-NEW-01 — regression coverage for dropping the
+    //! per-frame `bone_world.clear()` + full-identity-refill. The
+    //! caller (`render::mod::build_render_data`) no longer clears
+    //! `bone_world` before calling in; these tests exercise
+    //! `build_skinned_palettes` the same way, across multiple
+    //! simulated frames on the SAME buffer.
+    use super::*;
+    use byroredux_core::math::{Mat4, Quat, Vec3};
+
+    fn spawn_skinned(world: &mut World, bone_pos: Vec3) -> EntityId {
+        let bone = world.spawn();
+        world.insert(bone, GlobalTransform::new(bone_pos, Quat::IDENTITY, 1.0));
+        let mesh = world.spawn();
+        world.insert(
+            mesh,
+            SkinnedMesh::new_with_global(
+                None,
+                vec![Some(bone)],
+                vec![Mat4::IDENTITY],
+                Mat4::IDENTITY,
+            ),
+        );
+        mesh
+    }
+
+    #[test]
+    fn steady_state_overwrites_the_used_slot_without_a_prior_clear() {
+        let mut world = World::new();
+        let mut pool = SkinSlotPool::new(10);
+        let mut bone_world = vec![IDENTITY_4X4]; // caller-seeded slot 0, as build_render_data does
+        let mut skin_offsets = HashMap::new();
+
+        let mesh = spawn_skinned(&mut world, Vec3::new(1.0, 0.0, 0.0));
+        build_skinned_palettes(&world, 0, &mut bone_world, &mut skin_offsets, &mut pool);
+        let slot_offset = *skin_offsets.get(&mesh).unwrap() as usize;
+        assert_eq!(bone_world[slot_offset][3][0], 1.0);
+
+        // Move the bone and re-run for "frame 1" on the SAME bone_world
+        // buffer, with no clear() in between (the caller no longer does
+        // that). The used slot must still pick up the fresh pose.
+        let bone = world.get::<SkinnedMesh>(mesh).unwrap().bones[0].unwrap();
+        world.insert(
+            bone,
+            GlobalTransform::new(Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        build_skinned_palettes(&world, 1, &mut bone_world, &mut skin_offsets, &mut pool);
+        assert_eq!(
+            bone_world[slot_offset][3][0], 5.0,
+            "steady-state overwrite must pick up the new pose even without a prior clear"
+        );
+    }
+
+    #[test]
+    fn padding_tail_beyond_bone_count_is_left_untouched_across_frames() {
+        // The core claim of the fix: nothing reads a slot's padding
+        // tail (beyond its occupant's own bone count), so
+        // build_skinned_palettes must not spend time rewriting it
+        // every frame. Poke a sentinel into the tail and confirm a
+        // second call leaves it exactly as-is.
+        let mut world = World::new();
+        let mut pool = SkinSlotPool::new(10);
+        let mut bone_world = vec![IDENTITY_4X4];
+        let mut skin_offsets = HashMap::new();
+
+        let mesh = spawn_skinned(&mut world, Vec3::ZERO); // 1 bone → tail is [1..MBPM)
+        build_skinned_palettes(&world, 0, &mut bone_world, &mut skin_offsets, &mut pool);
+        let slot_offset = *skin_offsets.get(&mesh).unwrap() as usize;
+
+        let sentinel = [[9.0; 4]; 4];
+        bone_world[slot_offset + 1] = sentinel;
+
+        build_skinned_palettes(&world, 1, &mut bone_world, &mut skin_offsets, &mut pool);
+
+        assert_eq!(
+            bone_world[slot_offset + 1],
+            sentinel,
+            "the padding tail beyond an entity's own bone count must not be \
+             rewritten every frame — nothing ever reads it"
+        );
+        // The entity's own (used) slot must still be correct.
+        assert_eq!(bone_world[slot_offset][3][0], 0.0);
+    }
+
+    #[test]
+    fn resize_grows_then_shrinks_to_the_exact_required_length() {
+        let mut world = World::new();
+        let mut pool = SkinSlotPool::new(10);
+        let mut bone_world = vec![IDENTITY_4X4];
+        let mut skin_offsets = HashMap::new();
+
+        // Frame 0: one entity allocates slot 1 — required_slots grows
+        // to 2 * MBPM.
+        let mesh = spawn_skinned(&mut world, Vec3::ZERO);
+        build_skinned_palettes(&world, 0, &mut bone_world, &mut skin_offsets, &mut pool);
+        assert_eq!(bone_world.len(), 2 * MAX_BONES_PER_MESH);
+
+        // Despawn + sweep so the pool's high-water mark contracts back
+        // down (min_idle = 0 evicts anything not seen as of frame 1000).
+        world.despawn(mesh);
+        skin_offsets.clear();
+        let freed = pool.sweep(1000, 0);
+        assert_eq!(freed.len(), 1, "the only allocated slot must be reclaimed");
+
+        // Frame 1000: no live skinned entities again — required_slots
+        // must shrink back down, not stay at the frame-0 high-water mark.
+        // (The `SkinnedMesh` storage still exists — this entity was
+        // spawned into it earlier — so the query isn't `None`, unlike
+        // an empty World that never registered the component at all.)
+        build_skinned_palettes(&world, 1000, &mut bone_world, &mut skin_offsets, &mut pool);
+        assert_eq!(
+            bone_world.len(),
+            MAX_BONES_PER_MESH,
+            "resize must truncate back down once the pool's high-water mark contracts"
+        );
     }
 }

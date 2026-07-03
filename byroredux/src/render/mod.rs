@@ -305,7 +305,6 @@ pub(crate) fn build_render_data(
     draw_commands.clear();
     water_commands.clear();
     gpu_lights.clear();
-    bone_world.clear();
     skin_offsets.clear();
     // R1 Phase 2 — clear the material table so the per-frame dedup
     // starts from scratch. `intern` calls below populate it as the
@@ -325,7 +324,29 @@ pub(crate) fn build_render_data(
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ];
-    bone_world.push(IDENTITY_4X4);
+    // #1794 / PERF-D4-NEW-01 — `bone_world` deliberately does NOT
+    // `.clear()` like the other scratch buffers above. It used to, then
+    // got unconditionally re-grown from empty every frame in
+    // `build_skinned_palettes`'s Pass 2, which wrote a full
+    // MAX_BONES_PER_MESH-stride identity fill for every allocated slot
+    // — including the portion each entity's Pass 3 write was about to
+    // overwrite anyway, and the per-mesh padding tail beyond
+    // `skin.bones.len()`, which nothing ever reads once the slot has
+    // been filled once (a vertex's bone-weight index is bounded by its
+    // OWN mesh's bone count at import time, so it structurally can't
+    // reach a stale or reused slot's padding tail — same invariant
+    // `upload_bone_worlds`'s doc comment already relies on for
+    // never-referenced whole slots). Keeping the array's content
+    // across frames and letting Pass 2's `resize` grow-or-shrink
+    // in place means steady-state frames (same entities, same slots)
+    // pay zero identity-fill cost — `resize` only touches genuinely
+    // NEW tail elements when the pool's high-water mark grows, and
+    // TRUNCATES (no fill at all) when it shrinks.
+    if bone_world.is_empty() {
+        bone_world.push(IDENTITY_4X4);
+    } else {
+        bone_world[0] = IDENTITY_4X4;
+    }
 
     // `BYRO_PROFILE=1` breaks the per-frame render-data build into its
     // phases (skinned palettes / static-mesh main loop / particles / draw

@@ -173,6 +173,18 @@ impl super::buffers::SceneBuffers {
     /// stale data — the skin_palette dispatch writes their palettes,
     /// but no entity references them, so the staleness is invisible.
     ///
+    /// #1794 / PERF-D4-NEW-01 — this byte count (and the single
+    /// `cmd_copy_buffer` in [`record_bone_world_copy`] it drives) still
+    /// covers the FULL `MAX_BONES_PER_MESH`-wide stride for every
+    /// allocated slot, most of which is padding tail beyond that
+    /// entity's own bone count. The CPU-side fill cost of that padding
+    /// was fixed (`build_skinned_palettes` no longer re-identity-fills
+    /// it every frame), but narrowing this staging memcpy + GPU copy to
+    /// only each slot's real `skin.bones.len()` prefix needs per-slot
+    /// bone-count data plumbed across the byroredux/renderer crate
+    /// boundary (into `FrameInputs`) that doesn't exist yet — left as
+    /// the remaining two-thirds of the issue's "three-fold" cost.
+    ///
     /// Records the byte-count into `bone_input_upload_bytes[frame]`
     /// for [`record_bone_world_copy`] to consume.
     pub fn upload_bone_worlds(
