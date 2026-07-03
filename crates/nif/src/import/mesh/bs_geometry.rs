@@ -29,9 +29,17 @@ pub fn extract_bs_geometry(
         // slot — `meshes.first()` was a #982 short-circuit that silently
         // returned `None` when LOD 0 was `External` despite later LODs
         // being `Internal` (#1209). Matches the Stage-B iteration.
+        //
+        // SF2-02 / #1829: a slot's body can itself be the `scale<=0`
+        // sentinel (empty `vertices`/`triangles`) — skip those so a
+        // sentinel-first slot order doesn't hide a later populated slot.
         shape.meshes.iter().find_map(|m| match &m.kind {
-            BSGeometryMeshKind::Internal { mesh_data } => Some(mesh_data.as_ref()),
-            BSGeometryMeshKind::External { .. } => None,
+            BSGeometryMeshKind::Internal { mesh_data }
+                if !mesh_data.vertices.is_empty() && !mesh_data.triangles.is_empty() =>
+            {
+                Some(mesh_data.as_ref())
+            }
+            _ => None,
         })?
     } else {
         // Stage B: external `.mesh` companion file. Try each LOD slot until
@@ -57,8 +65,21 @@ pub fn extract_bs_geometry(
                 if let Some(bytes) = resolver.resolve(&canonical) {
                     match BSGeometryMeshData::parse_from_bytes(&bytes) {
                         Ok(data) => {
-                            found = Some(data);
-                            break;
+                            // SF2-01 / #1828: a slot can parse `Ok` yet be
+                            // the `scale<=0` sentinel (empty
+                            // vertices/triangles) — keep iterating so a
+                            // sentinel-first slot order doesn't hide a
+                            // later populated slot.
+                            if !data.vertices.is_empty() && !data.triangles.is_empty() {
+                                found = Some(data);
+                                break;
+                            }
+                            log::debug!(
+                                "BSGeometry external mesh '{}' (canonical '{}') \
+                                 parsed empty (sentinel slot); trying next LOD",
+                                mesh_name,
+                                canonical
+                            );
                         }
                         Err(e) => {
                             log::debug!(
