@@ -80,7 +80,7 @@ use super::PlayerEntity;
 use crate::condition::{evaluate as evaluate_condition_list, ConditionContext};
 use crate::events::{ActivateEvent, OnTriggerEnterEvent};
 use byroredux_core::ecs::storage::EntityId;
-use crate::quest_stages::{QuestFormId, QuestStageAdvanced, QuestStageState};
+use crate::quest_stages::{QuestFormId, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::world::World;
@@ -193,7 +193,7 @@ pub fn da10_main_door(owning_quest: QuestFormId) -> QuestAdvanceOnActivate {
 /// the ECS world. Sibling to [`super::register`].
 pub fn register(world: &mut World) {
     world.register::<QuestAdvanceOnActivate>();
-    world.register::<QuestStageAdvanced>();
+    world.register::<QuestStageAdvancedBatch>();
 }
 
 /// Translation of the `OnActivate` / `OnTriggerEnter` event-handler body.
@@ -322,12 +322,16 @@ pub fn quest_advance_system(world: &World) {
     // M47.0 surface). The marker carries enough context that the
     // future consumer can demux by `quest` regardless of where it
     // lands.
-    let Some(mut q) = world.query_mut::<QuestStageAdvanced>() else {
+    //
+    // #1864 / SCR-D7-NEW-01 — insert the whole batch ONCE. `advances_emitted`
+    // can hold >1 event whenever two different scripted doors/triggers fire
+    // in the same tick; looping `insert()` onto this one shared sink entity
+    // would silently collapse every advance but the last (SparseSetStorage
+    // overwrites in place on a repeat insert to the same entity).
+    let Some(mut q) = world.query_mut::<QuestStageAdvancedBatch>() else {
         return;
     };
-    for ev in advances_emitted {
-        q.insert(player_entity, ev);
-    }
+    q.insert(player_entity, QuestStageAdvancedBatch(advances_emitted));
 }
 
 #[cfg(test)]

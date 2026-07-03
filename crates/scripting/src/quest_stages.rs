@@ -244,9 +244,8 @@ impl QuestObjectiveState {
     }
 }
 
-/// Marker event emitted by [`QuestStageState::set_stage`]-driven
-/// systems whenever a quest advances. Attached to a designated
-/// "quest events" entity (set up at world init); consumed by:
+/// One quest-stage advance, produced by a [`QuestStageState::set_stage`]-driven
+/// system. Consumed by:
 ///
 /// - The (future) stage-fragment dispatcher (M47.0).
 /// - The (future) quest journal UI updater.
@@ -254,14 +253,8 @@ impl QuestObjectiveState {
 ///   surface (which will lower to marker-component subscriptions
 ///   when M47.2 lands).
 ///
-/// Multiple advances in a frame stack: each `set_stage` call that
-/// emits an advance event adds a fresh marker. Cleanup at end of
-/// frame via [`crate::event_cleanup_system`].
-///
-/// **Today**, the event is unused — no consumer subsystems exist.
-/// It ships in the R5 follow-up so the M47.0 wiring has a stable
-/// contract to consume; pinning it now keeps stage-advance causality
-/// observable in tests + debug-server inspection.
+/// Plain data — not a [`Component`] itself. See [`QuestStageAdvancedBatch`]
+/// for how a frame's advances reach the ECS.
 #[derive(Debug, Clone, Copy)]
 pub struct QuestStageAdvanced {
     pub quest: QuestFormId,
@@ -269,7 +262,26 @@ pub struct QuestStageAdvanced {
     pub new_stage: u16,
 }
 
-impl Component for QuestStageAdvanced {
+/// A frame's worth of [`QuestStageAdvanced`] events, attached once to a
+/// designated "quest events" entity (set up at world init).
+///
+/// #1864 / SCR-D7-NEW-01 — `SparseSetStorage` allows exactly one component
+/// instance per entity, overwriting in place on a repeat insert
+/// (`crates/core/src/ecs/sparse_set.rs`). Both live producers
+/// (`quest_advance_system`'s phase 3, `quest_fragment_dispatch_system`'s
+/// cascade re-emission) can legitimately produce more than one advance in a
+/// single system call — e.g. two independently-recognized quest-advance
+/// REFRs firing in the same tick — and both write onto the same shared
+/// sink entity (there is no per-source entity for global quest state).
+/// Looping `insert()` once per event onto that one entity silently
+/// collapsed every advance but the last. Batching every same-frame advance
+/// into one `Vec`-wrapping component, inserted exactly once, fixes this
+/// while keeping the existing per-frame marker + cleanup lifecycle
+/// ([`crate::event_cleanup_system`]) unchanged.
+#[derive(Debug, Clone, Default)]
+pub struct QuestStageAdvancedBatch(pub Vec<QuestStageAdvanced>);
+
+impl Component for QuestStageAdvancedBatch {
     type Storage = SparseSetStorage<Self>;
 }
 

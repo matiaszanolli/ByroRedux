@@ -5,12 +5,12 @@
 //! the [`crate::events::ActivateEvent`] marker + the
 //! [`crate::quest_stages::QuestStageState`] resource — the system
 //! reads one, writes the other, and emits a
-//! [`crate::quest_stages::QuestStageAdvanced`] marker.
+//! [`crate::quest_stages::QuestStageAdvancedBatch`].
 
 use super::*;
 use crate::events::{ActivateEvent, OnTriggerEnterEvent};
 use crate::papyrus_demo::PlayerEntity;
-use crate::quest_stages::{QuestFormId, QuestStageAdvanced, QuestStageState};
+use crate::quest_stages::{QuestFormId, QuestStageAdvancedBatch, QuestStageState};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 
@@ -62,8 +62,8 @@ fn da10_no_advance_when_required_stage_not_done() {
     assert_eq!(stage_state.get_stage(DA10_QUEST_FORM_ID), 0);
     assert!(!stage_state.get_stage_done(DA10_QUEST_FORM_ID, 40));
     drop(stage_state);
-    // No QuestStageAdvanced emitted.
-    assert!(!world.has::<QuestStageAdvanced>(player));
+    // No QuestStageAdvancedBatch emitted.
+    assert!(!world.has::<QuestStageAdvancedBatch>(player));
 }
 
 /// Required stage done, forbidden stage NOT done → predicates
@@ -89,9 +89,11 @@ fn da10_advances_when_stage_37_done_and_stage_40_not_done() {
     drop(stage_state);
     // Marker event emitted on the player entity with the right
     // pre-image / post-image.
-    let ev = world
-        .get::<QuestStageAdvanced>(player)
-        .expect("QuestStageAdvanced marker must land on player");
+    let batch = world
+        .get::<QuestStageAdvancedBatch>(player)
+        .expect("QuestStageAdvancedBatch must land on player");
+    assert_eq!(batch.0.len(), 1);
+    let ev = batch.0[0];
     assert_eq!(ev.quest, DA10_QUEST_FORM_ID);
     assert_eq!(ev.previous_stage, 37);
     assert_eq!(ev.new_stage, 40);
@@ -110,9 +112,9 @@ fn da10_idempotent_when_target_stage_already_done() {
         stage_state.set_stage(DA10_QUEST_FORM_ID, 40);
     }
     // Clear the marker the second set_stage emitted in setup.
-    if world.has::<QuestStageAdvanced>(player) {
+    if world.has::<QuestStageAdvancedBatch>(player) {
         world
-            .query_mut::<QuestStageAdvanced>()
+            .query_mut::<QuestStageAdvancedBatch>()
             .unwrap()
             .remove(player);
     }
@@ -127,7 +129,7 @@ fn da10_idempotent_when_target_stage_already_done() {
     assert!(stage_state.get_stage_done(DA10_QUEST_FORM_ID, 40));
     drop(stage_state);
     // No new marker emitted.
-    assert!(!world.has::<QuestStageAdvanced>(player));
+    assert!(!world.has::<QuestStageAdvancedBatch>(player));
 }
 
 // ── Activator gate ────────────────────────────────────────────
@@ -352,25 +354,20 @@ fn separate_quests_do_not_alias_stage_state() {
 // ── Two doors, one quest ─────────────────────────────────────
 
 /// If two REFRs both carry the DA10 component (e.g., the door is
-/// duplicated into a "fallback" mesh during the quest), the FIRST
-/// activation advances the quest, and subsequent activations are
-/// guarded by the `forbid_done: [40]` idempotency. Pins that the
-/// system processes all events in one pass but the second event
-/// sees the already-advanced state.
+/// duplicated into a "fallback" mesh during the quest), both
+/// activations pass the predicate in the same pass (the system reads
+/// `stage_state` once per pass, so both see the SAME pre-pass state)
+/// and both call `SetStage(40)` — the second is the no-op the Papyrus
+/// idempotency idiom would also produce.
 ///
-/// Note: today the system reads stage_state once per pass — so
-/// within a single system invocation both activations see the
-/// SAME (pre-pass) stage_state. Both pass the predicate. Both
-/// write SetStage(40). The second write is the no-op the Papyrus
-/// `SetStage` idempotency idiom would also produce
-/// (current_stage already 40 → re-set is a write of the same
-/// value). Both emit QuestStageAdvanced markers but the second
-/// has `previous_stage == 40` (the within-pass intermediate
-/// value), exposing the same-frame collision.
-///
-/// Test exists primarily to document this edge case for the
-/// M47.0 fragment dispatcher — fragments must be idempotent
-/// across same-frame duplicate advances.
+/// #1864 / SCR-D7-NEW-01 — pre-fix, both advances were written onto the
+/// same shared sink entity via a single-instance `SparseSetStorage`
+/// component, so the second `insert()` silently overwrote the first and
+/// only one marker ever survived to end-of-frame consumers. Both must
+/// now be observable: the batch carries 2 entries, the first with
+/// `previous_stage == 37` and the second with `previous_stage == 40`
+/// (the within-pass intermediate value) — exposing the same-frame
+/// collision as data instead of erasing it.
 #[test]
 fn two_doors_same_quest_advance_in_one_pass() {
     let (mut world, player, door) = setup_da10_world();
@@ -388,12 +385,19 @@ fn two_doors_same_quest_advance_in_one_pass() {
     let stage_state = world.resource::<QuestStageState>();
     assert_eq!(stage_state.get_stage(DA10_QUEST_FORM_ID), 40);
     assert!(stage_state.get_stage_done(DA10_QUEST_FORM_ID, 40));
-    // The marker collapsed to one — the SparseSet stores the most
-    // recent insert under the same key. Documented behaviour, not
-    // a bug — the cleanup-pass approach to events doesn't naturally
-    // accumulate, which is fine because stage-advances are
-    // idempotent.
-    let ev = world.get::<QuestStageAdvanced>(player).unwrap();
-    assert_eq!(ev.quest, DA10_QUEST_FORM_ID);
-    assert_eq!(ev.new_stage, 40);
+    drop(stage_state);
+    // Both same-frame advances must survive — neither is lost to the
+    // other overwriting the shared sink.
+    let batch = world.get::<QuestStageAdvancedBatch>(player).unwrap();
+    assert_eq!(
+        batch.0.len(),
+        2,
+        "both same-frame advances must be observable, not collapsed to one"
+    );
+    assert_eq!(batch.0[0].quest, DA10_QUEST_FORM_ID);
+    assert_eq!(batch.0[0].previous_stage, 37);
+    assert_eq!(batch.0[0].new_stage, 40);
+    assert_eq!(batch.0[1].quest, DA10_QUEST_FORM_ID);
+    assert_eq!(batch.0[1].previous_stage, 40);
+    assert_eq!(batch.0[1].new_stage, 40);
 }

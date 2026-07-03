@@ -10,7 +10,7 @@ use crate::events::{
 };
 use crate::papyrus_demo::mg07_door::UiMessageCommand;
 use crate::papyrus_demo::{CameraShakeCommand, ControllerRumbleCommand};
-use crate::quest_stages::QuestStageAdvanced;
+use crate::quest_stages::QuestStageAdvancedBatch;
 use crate::recurring_update::OnUpdateEvent;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
@@ -34,7 +34,7 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
     drain_component::<AnimationTextKeyEvents>(world);
     // R5 prototype additions — all transient-by-design markers.
     drain_component::<OnUpdateEvent>(world);
-    drain_component::<QuestStageAdvanced>(world);
+    drain_component::<QuestStageAdvancedBatch>(world);
     drain_component::<CameraShakeCommand>(world);
     drain_component::<ControllerRumbleCommand>(world);
     drain_component::<UiMessageCommand>(world);

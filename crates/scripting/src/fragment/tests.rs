@@ -4,7 +4,9 @@
 
 use super::*;
 use crate::papyrus_demo::PlayerEntity;
-use crate::quest_stages::{QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageState};
+use crate::quest_stages::{
+    QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
+};
 use crate::translate::compose::QuestRef;
 use crate::translate::effects::Effect;
 use byroredux_core::ecs::world::World;
@@ -22,18 +24,31 @@ fn fixture() -> World {
     world
 }
 
-/// Place a `QuestStageAdvanced` marker (the signal `quest_advance_system`
-/// would emit) on the player entity, the sink the dispatcher reads.
+/// Place a single-entry `QuestStageAdvancedBatch` (the signal
+/// `quest_advance_system` would emit) on the player entity, the sink the
+/// dispatcher reads.
 fn emit_advance(world: &World, quest: QuestFormId, new_stage: u16) {
+    emit_advances(world, &[(quest, new_stage)]);
+}
+
+/// #1864 / SCR-D7-NEW-01 — place a batch carrying every `(quest, new_stage)`
+/// pair given, exactly like `quest_advance_system`'s phase 3 does for
+/// multiple same-frame advances.
+fn emit_advances(world: &World, advances: &[(QuestFormId, u16)]) {
     let player = world.resource::<PlayerEntity>().0;
-    let mut q = world.query_mut::<QuestStageAdvanced>().unwrap();
+    let mut q = world.query_mut::<QuestStageAdvancedBatch>().unwrap();
     q.insert(
         player,
-        QuestStageAdvanced {
-            quest,
-            previous_stage: 0,
-            new_stage,
-        },
+        QuestStageAdvancedBatch(
+            advances
+                .iter()
+                .map(|&(quest, new_stage)| QuestStageAdvanced {
+                    quest,
+                    previous_stage: 0,
+                    new_stage,
+                })
+                .collect(),
+        ),
     );
 }
 
@@ -221,4 +236,54 @@ fn dispatch_ignores_stage_without_a_fragment() {
     quest_fragment_dispatch_system(&world);
     // Stage 10's fragment must NOT have run (we never reached stage 10).
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 15);
+}
+
+/// #1864 / SCR-D7-NEW-01 — two independently-recognized quest-advance REFRs
+/// firing in the same tick must both be observable, not silently collapsed
+/// to the last one written onto the shared sink entity. Emits a single
+/// batch carrying advances for two DIFFERENT quests (mirroring
+/// `quest_advance_system` phase 3's real-world trigger) and asserts the
+/// dispatcher runs BOTH quests' fragments.
+#[test]
+fn two_same_frame_advances_for_different_quests_are_both_observed() {
+    const Q2: QuestFormId = QuestFormId(0x0002_2222);
+
+    let world = fixture();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::SetObjectiveCompleted {
+                quest: QuestRef::SelfRef,
+                objective: 1,
+                completed: true,
+            }],
+        );
+        frags.insert(
+            Q2,
+            20,
+            vec![Effect::SetObjectiveCompleted {
+                quest: QuestRef::SelfRef,
+                objective: 2,
+                completed: true,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    world.resource_mut::<QuestStageState>().set_stage(Q2, 20);
+    // ONE batch, two advances — exactly what quest_advance_system emits
+    // when two different scripted doors/triggers fire in the same frame.
+    emit_advances(&world, &[(Q, 10), (Q2, 20)]);
+    quest_fragment_dispatch_system(&world);
+
+    let objectives = world.resource::<QuestObjectiveState>();
+    assert!(
+        objectives.get(Q, 1).completed,
+        "the FIRST same-frame advance must not be lost"
+    );
+    assert!(
+        objectives.get(Q2, 2).completed,
+        "the SECOND same-frame advance must not be lost"
+    );
 }

@@ -39,7 +39,9 @@ use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::script_instance::ScriptInstanceData;
 
-use crate::quest_stages::{QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageState};
+use crate::quest_stages::{
+    QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
+};
 use crate::translate::compose::QuestRef;
 use crate::translate::effects::Effect;
 
@@ -175,11 +177,15 @@ pub fn register(world: &mut World) {
 /// skipped. The resource is empty until the QUST-fragment decoder lands,
 /// making this a safe no-op at runtime today.
 pub fn quest_fragment_dispatch_system(world: &World) {
-    // Snapshot the stage advances this frame.
+    // Snapshot the stage advances this frame. #1864 / SCR-D7-NEW-01 — a
+    // batch can hold >1 advance from the same frame; iterate every entry,
+    // not just the sink entity's single (pre-fix) marker value.
     let mut queue: Vec<(QuestFormId, u16)> = Vec::new();
-    if let Some(markers) = world.query::<QuestStageAdvanced>() {
-        for (_entity, ev) in markers.iter() {
-            queue.push((ev.quest, ev.new_stage));
+    if let Some(markers) = world.query::<QuestStageAdvancedBatch>() {
+        for (_entity, batch) in markers.iter() {
+            for ev in &batch.0 {
+                queue.push((ev.quest, ev.new_stage));
+            }
         }
     }
     if queue.is_empty() {
@@ -229,14 +235,17 @@ pub fn quest_fragment_dispatch_system(world: &World) {
     // Emit markers for the chained advances so other consumers (journal
     // UI, further-frame dispatch) observe them. Co-opts the same
     // player-entity sink quest_advance_system uses.
+    //
+    // #1864 / SCR-D7-NEW-01 — insert the whole batch ONCE. A single
+    // `apply_effects` call (let alone the whole cascade) can produce >1
+    // chained advance; looping `insert()` onto this one shared sink entity
+    // would silently collapse every advance but the last.
     if chained.is_empty() {
         return;
     }
     let player_entity = world.resource::<crate::papyrus_demo::PlayerEntity>().0;
-    if let Some(mut q) = world.query_mut::<QuestStageAdvanced>() {
-        for adv in chained {
-            q.insert(player_entity, adv);
-        }
+    if let Some(mut q) = world.query_mut::<QuestStageAdvancedBatch>() {
+        q.insert(player_entity, QuestStageAdvancedBatch(chained));
     }
 }
 
