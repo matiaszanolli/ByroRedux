@@ -152,6 +152,17 @@ pub(super) fn load_references(
     // ~1 932 statics, Goodsprings exterior similar.
     let mut npc_spawned: u32 = 0;
     let mut npc_spawned_sample: Vec<u32> = Vec::with_capacity(8);
+    // #1798 / D7-NEW-01 — the interior transition path (unlike the
+    // exterior streaming path's `MAX_CELLS_SPAWNED_PER_FRAME` budget)
+    // has no per-frame or per-NPC spawn budget, and until now no timing
+    // existed to even show the cost. `spawn_npc_entity` /
+    // `spawn_prebaked_npc_entity` make ~28 synchronous NIF-load call
+    // sites per actor, so an NPC-dense interior cell can pay a large,
+    // unmeasured stall in one synchronous frame. Accumulate wall time
+    // spent in the two NPC-spawn call sites so the cost is visible in
+    // the end-of-cell summary before investing in the larger chunked-
+    // spawn-budget rewrite the issue's full suggested fix describes.
+    let mut npc_spawn_wall = std::time::Duration::ZERO;
     // M47.2 — script-attach telemetry for the per-cell summary: how many
     // REFRs got canonical behavior from the recognizer chain, and how many
     // invisible trigger volumes were spawned. Both surface in the summary
@@ -316,6 +327,7 @@ pub(super) fn load_references(
                 bounds_max = bounds_max.max(ref_pos);
                 if game.has_runtime_facegen_recipe() {
                     let race = races.get(&npc.race_form_id);
+                    let spawn_t0 = std::time::Instant::now();
                     let spawned = crate::npc_spawn::spawn_npc_entity(
                         world,
                         ctx,
@@ -330,6 +342,7 @@ pub(super) fn load_references(
                         ref_scale,
                         record_index,
                     );
+                    npc_spawn_wall += spawn_t0.elapsed();
                     if spawned.is_some() {
                         npc_spawned += 1;
                         if npc_spawned_sample.len() < 8
@@ -351,6 +364,7 @@ pub(super) fn load_references(
                     // FaceGen NIF, just diagnosable from the log.
                     let plugin =
                         load_order::plugin_for_form_id(child_form_id, load_order).unwrap_or("");
+                    let spawn_t0 = std::time::Instant::now();
                     let spawned = crate::npc_spawn::spawn_prebaked_npc_entity(
                         world,
                         ctx,
@@ -364,6 +378,7 @@ pub(super) fn load_references(
                         ref_scale,
                         record_index,
                     );
+                    npc_spawn_wall += spawn_t0.elapsed();
                     if spawned.is_some() {
                         npc_spawned += 1;
                         if npc_spawned_sample.len() < 8
@@ -830,11 +845,12 @@ pub(super) fn load_references(
             "pre-baked-FaceGen"
         };
         log::info!(
-            "  {} NPCs spawned via {} path (sample: {}{})",
+            "  {} NPCs spawned via {} path (sample: {}{}), {:.1}ms wall in spawn calls",
             npc_spawned,
             path_label,
             sample_str,
             trunc,
+            npc_spawn_wall.as_secs_f64() * 1000.0,
         );
     }
     if npc_pending > 0 {
@@ -1867,5 +1883,59 @@ mod tests {
             "SPT placeholder must flag the placement root as a yaw-billboard",
         );
         assert_eq!(cached.meshes.len(), 1, "single placeholder quad");
+    }
+
+    /// #1798 / D7-NEW-01 — `load_references` has no live-Vulkan-context
+    /// / ESM-fixture-free unit-test surface (it needs a real
+    /// `VulkanContext`, BSA-backed `TextureProvider`, and parsed ESM
+    /// indices), so a live call-through test is impractical here — the
+    /// same constraint documented on `draw_frame_guards_on_empty_
+    /// framebuffers_before_acquire` in the renderer crate. A static
+    /// source assertion instead pins that both NPC dispatch call sites
+    /// are wrapped in the `npc_spawn_wall` timing this fix added, so a
+    /// future refactor can't silently drop the only visibility this
+    /// loop has into its own per-NPC spawn cost.
+    #[test]
+    fn npc_spawn_call_sites_are_wall_clock_timed() {
+        let full_src = include_str!("references.rs");
+        // Slice off `mod tests` itself — this test's own source text
+        // contains the literal strings it's searching for, which would
+        // otherwise self-match and inflate the counts.
+        let src = &full_src[..full_src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("references.rs must have a #[cfg(test)] mod tests block")];
+
+        let runtime_facegen_pos = src
+            .find("crate::npc_spawn::spawn_npc_entity(")
+            .expect("load_references must call spawn_npc_entity");
+        let prebaked_facegen_pos = src
+            .find("crate::npc_spawn::spawn_prebaked_npc_entity(")
+            .expect("load_references must call spawn_prebaked_npc_entity");
+
+        let timer_starts: Vec<_> = src.match_indices("let spawn_t0 = std::time::Instant::now();").collect();
+        assert_eq!(
+            timer_starts.len(),
+            2,
+            "expected exactly one spawn_t0 timer per NPC dispatch arm (runtime-FaceGen \
+             and pre-baked-FaceGen); #1798 / D7-NEW-01"
+        );
+        assert!(
+            timer_starts.iter().any(|&(pos, _)| pos < runtime_facegen_pos),
+            "runtime-FaceGen dispatch (spawn_npc_entity) must be preceded by a spawn_t0 timer"
+        );
+        assert!(
+            timer_starts.iter().any(|&(pos, _)| pos < prebaked_facegen_pos),
+            "pre-baked-FaceGen dispatch (spawn_prebaked_npc_entity) must be preceded by a spawn_t0 timer"
+        );
+        assert!(
+            src.contains("npc_spawn_wall +="),
+            "each timed dispatch must accumulate into npc_spawn_wall"
+        );
+        assert!(
+            src.contains("{:.1}ms wall in spawn calls"),
+            "the accumulated NPC-spawn wall time must be surfaced in the \
+             end-of-cell summary log, or the cost stays invisible (the exact \
+             gap #1798 reports)"
+        );
     }
 }
