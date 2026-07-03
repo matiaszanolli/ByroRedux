@@ -138,15 +138,17 @@ pub(super) fn collect_static_mesh_draws(
     let no_cull = std::env::var_os("BYRO_NO_CULL").is_some();
     if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
-            // #1377: hoist the GlobalTransform presence gate to the top —
+            // #1377 / D2-NEW-04 (#1805): single lookup instead of a
+            // presence probe here plus a second `tq.get(entity)` later —
             // entities without a GT (recently spawned, partially loaded,
             // or missing a Transform component) are rare but previously
             // paid two SparseSet gets (vis_q + wb_q) before reaching this
             // check. Probing GT first short-circuits the expensive sibling
-            // lookups for the skip case.
-            if tq.get(entity).is_none() {
+            // lookups for the skip case; binding `transform` here removes
+            // the redundant re-fetch below.
+            let Some(transform) = tq.get(entity) else {
                 continue;
-            }
+            };
 
             // Skip entities hidden by animation.
             let visible = vis_q
@@ -155,6 +157,20 @@ pub(super) fn collect_static_mesh_draws(
                 .map(|v| v.0)
                 .unwrap_or(true);
             if !visible {
+                continue;
+            }
+
+            // FX-decoration skip — PERF-D3-NEW-02 / #1136. Hoisted to
+            // immediately after the visibility gate (D2-NEW-04 / #1805):
+            // pre-fix this fired only after the frustum test below and
+            // ~12 optional-component gets in the block that follows, all
+            // wasted work for FX entities (crossed glow quads, god rays —
+            // sprite-billboard bloom-halo fakes) that are always skipped.
+            // The classification (texture-path substring scan over 6
+            // needles) is precomputed at spawn time and stored as an
+            // `IsFxMesh` marker so this hot path is one component-lookup
+            // instead of 6 byte-windowed substring scans per draw per frame.
+            if fx_q.as_ref().is_some_and(|q| q.get(entity).is_some()) {
                 continue;
             }
 
@@ -172,7 +188,7 @@ pub(super) fn collect_static_mesh_draws(
                     _ => true,
                 };
 
-            if let Some(transform) = tq.get(entity) {
+            {
                 let tex_handle = tex_q
                     .as_ref()
                     .and_then(|q| q.get(entity))
@@ -266,20 +282,6 @@ pub(super) fn collect_static_mesh_draws(
 
                 // Material data + PBR classification.
                 let mat = mat_q.as_ref().and_then(|q| q.get(entity));
-
-                // Skip Gamebryo effect meshes (crossed glow quads, god rays).
-                // These are sprite-billboard fakes for bloom halos — in a RT
-                // renderer the actual point light already provides illumination
-                // and these quads just render as blown-out white surfaces.
-                // FX-decoration skip — PERF-D3-NEW-02 / #1136. The
-                // classification (texture-path substring scan over 6
-                // needles) is precomputed at spawn time and stored as
-                // an `IsFxMesh` marker so this hot path is one
-                // component-lookup instead of 6 byte-windowed substring
-                // scans per draw per frame.
-                if fx_q.as_ref().is_some_and(|q| q.get(entity).is_some()) {
-                    continue;
-                }
 
                 let (
                     // #1480 — roughness is the canonical resolve-once value
