@@ -2,7 +2,7 @@
 //!
 //! Skyrim broke from the classic Elder Scrolls shape modelled in
 //! [`super::tes`]: it dropped attributes entirely, so there are **no
-//! attribute-derived pools**. The three primary stats — Health, Magicka,
+//! attribute-derived** pools. The three primary stats — Health, Magicka,
 //! Stamina — each start at [`SKYRIM_POOL_BASE`] (100) and grow only by the
 //! player's per-level pick (`+10` to one, carried by
 //! [`LevelingModel::SKYRIM`](super::leveling::LevelingModel)); they are stored
@@ -12,11 +12,15 @@
 //!
 //! Sourced: Elder Scrolls Wiki *Health/Magicka/Stamina (Skyrim)* (base 100,
 //! +10/level) and UESP *Skyrim:Leveling* (the XP formulae). The ruleset
-//! therefore carries an **empty derived table** and the empty
-//! [`AttributeSet::SKYRIM`] roster — the 18 ungoverned skills
-//! ([`SkillSet::SKYRIM`]) and the leveling model are the substance.
+//! carries the empty [`AttributeSet::SKYRIM`] roster, the 18 ungoverned skills
+//! ([`SkillSet::SKYRIM`]), and the leveling model — plus one **skill-derived**
+//! entry in the derived table (below), the first non-attribute-derived stat
+//! CHARAL has populated for any game: Skyrim has no attributes to derive off
+//! at all, but `DerivedStatFormula`'s `DerivedInput` already accepts any AVIF,
+//! including a skill.
 
 use super::attribute::AttributeSet;
+use super::derived::{DerivedInput, DerivedStatFormula};
 use super::leveling::LevelingModel;
 use super::ruleset::CharacterRuleset;
 use super::skill::SkillSet;
@@ -68,21 +72,48 @@ pub fn skyrim_skill_xp_between(
         .sum()
 }
 
+/// Light Armor's per-skill-point Armor Rating bonus for the **player**
+/// (`1 + 0.004·LightArmor`). Source: UESP *Skyrim:Light Armor*
+/// (`charal-skyrim-ruleset.md`). NPCs use a distinct, higher constant
+/// (`0.015`) not modelled here — see [`skyrim_ruleset`].
+pub const LIGHT_ARMOR_RATING_COEFF: f32 = 0.004;
+
 /// Skyrim (TES V) [`CharacterRuleset`] builder.
 ///
 /// Assembles the empty attribute roster ([`AttributeSet::SKYRIM`]), the 18
 /// ungoverned skills ([`SkillSet::SKYRIM`]), and the skill-XP leveling model
-/// ([`LevelingModel::SKYRIM`]). There are no attribute-derived pools, so the
-/// derived table stays empty — Health/Magicka/Stamina start at
-/// [`SKYRIM_POOL_BASE`] and advance via the level-up pick. The `resolve`
-/// parameter is accepted for signature parity with the other family builders
-/// (and future use, e.g. resolving skill AVIF ids for population); nothing is
-/// resolved today.
+/// ([`LevelingModel::SKYRIM`]). There are no attribute-derived pools — Health/
+/// Magicka/Stamina start at [`SKYRIM_POOL_BASE`] and advance via the level-up
+/// pick — but the derived table isn't empty: **Light Armor's Armor Rating
+/// multiplier** (`1 + 0.004·LightArmor`, [`LIGHT_ARMOR_RATING_COEFF`]) is
+/// skill-derived rather than attribute-derived, sourced from UESP
+/// *Skyrim:Light Armor*. It's [`player_only`](DerivedStatFormula::player_only)
+/// because the source gives a distinct, higher NPC constant (`0.015`) this
+/// builder doesn't model — same "NPCs derive differently" reasoning
+/// `fallout.rs` already applies to Health/Action Points.
+///
+/// `resolve` maps an EditorID to its AVIF FormID (`EsmIndex::actor_value_form_id`
+/// once wired to the loader); a stat whose EditorID doesn't resolve is
+/// skipped, same resolve-or-skip contract as the Fallout builders.
 #[must_use]
-pub fn skyrim_ruleset<F: Fn(&str) -> Option<u32>>(_resolve: F) -> CharacterRuleset {
-    CharacterRuleset::new(LevelingModel::SKYRIM)
+pub fn skyrim_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
+    let mut rs = CharacterRuleset::new(LevelingModel::SKYRIM)
         .with_attributes(AttributeSet::SKYRIM)
-        .with_skills(SkillSet::SKYRIM)
+        .with_skills(SkillSet::SKYRIM);
+    // Armor Rating ×(1 + 0.004·LightArmor), player-only (NPCs use 0.015).
+    if let (Some(out), Some(la)) = (resolve("DamageResist"), resolve("LightArmor")) {
+        rs.push_derived(
+            out,
+            DerivedStatFormula::affine(
+                DerivedInput::actor_value(la),
+                LIGHT_ARMOR_RATING_COEFF,
+                1.0,
+            )
+            .as_multiplier()
+            .player_only(),
+        );
+    }
+    rs
 }
 
 #[cfg(test)]
@@ -92,11 +123,49 @@ mod tests {
 
     #[test]
     fn skyrim_ruleset_has_no_attributes_and_eighteen_skills() {
+        // A resolver that never resolves: no AVIF ids, so the Light Armor
+        // derived entry is skipped too (resolve-or-skip contract).
         let rs = skyrim_ruleset(|_| None);
         assert!(rs.attributes.is_empty(), "Skyrim has no attributes");
         assert_eq!(rs.skills.len(), 18);
         assert_eq!(rs.leveling, LM::SKYRIM);
-        assert_eq!(rs.derived_len(), 0, "no attribute-derived pools in Skyrim");
+        assert_eq!(rs.derived_len(), 0, "unresolved AVIFs mean nothing populates");
+    }
+
+    fn full(id: &str) -> Option<u32> {
+        Some(match id {
+            "DamageResist" => 0x100,
+            "LightArmor" => 0x101,
+            _ => return None,
+        })
+    }
+
+    #[test]
+    fn light_armor_rating_bonus_matches_uesp() {
+        use crate::character::DerivedScope;
+        use crate::ecs::components::ActorValues;
+
+        let rs = skyrim_ruleset(full);
+        assert_eq!(rs.derived_len(), 1, "Light Armor Rating multiplier");
+        // ×(1 + 0.004·LightArmor). Skill 50 → 1.20×.
+        let avs = ActorValues::from_pairs([(0x101, 50.0)]);
+        let mult = rs.derived_value(0x100, &avs, 1).unwrap();
+        assert!((mult - 1.20).abs() < 1e-6, "got {mult}");
+        assert_eq!(
+            rs.derived_formula(0x100).unwrap().scope,
+            DerivedScope::PlayerOnly,
+            "NPCs use a different constant (0.015), not modelled here"
+        );
+    }
+
+    #[test]
+    fn light_armor_rating_bonus_skipped_when_unresolved() {
+        let partial = |id: &str| match id {
+            "LightArmor" => None,
+            other => full(other),
+        };
+        let rs = skyrim_ruleset(partial);
+        assert_eq!(rs.derived_len(), 0, "missing skill AVIF skips the entry");
     }
 
     #[test]

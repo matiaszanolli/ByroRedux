@@ -459,21 +459,41 @@ FO4 Affinity / Starfield Affinity) is classifiers-over-`ActorValues`, not a new 
 
 ## 8. Rollout order
 
+**Corrected against current code, 2026-07-04** ([[feedback_audit_findings]] —
+this list had drifted stale; items 3-5 and 7 read as not-started when the
+ruleset/derived-stat machinery underneath them has actually shipped for a
+while). Struck-through items are done; the remaining two are genuinely open.
+
 1. ~~Fallout numeric substrate — `ActorValues`~~ — shipped (#1663).
 2. ~~FNV/FO3 population — SPECIAL→skills auto-calc~~ — shipped (#1663, `fad3890b`).
    The reference realisation (§3 AUTHORED model, `derive_npc_actor_values`).
-3. **FO4 population (STARTING POINT)** — SPECIAL from its storage (the open
-   research item §9) + the derived-stat formulas + perk-gate population. No skills.
-4. **Canonical model** — add `CharacterLevel` / `Perks` / `Background`; introduce
-   the `CharacterRuleset` Resource; generalise `derive_npc_actor_values` from one
-   FNV function into the per-game ruleset module set.
-5. **Derived-stat deriver** — the computed-derived helper (§6) + the per-game
-   formula tables.
-6. **GMST sourcing** — replace the hardcoded `fAVDSkill*` constants with values
-   read from parsed `GMST` records (§3), closing the last AUTHORED gap.
-7. **TES family** — attribute/skill ruleset; the skill-use leveling strategy
-   (MW/OB) and skill-XP strategy (Skyrim).
-8. **Starfield** — skill-category ruleset; background → starting skills.
+3. ~~**FO4 `CharacterRuleset` builder**~~ — shipped: `fallout4_ruleset()`
+   (`crates/core/src/character/fallout.rs`), SPECIAL roster + Health/Action
+   Points/Carry Weight/Melee Damage derived formulas, 4 tests green. **What's
+   still open** is narrower than this item's original framing: **FO4 NPC
+   *population*** — resolving actual per-NPC SPECIAL values from ESM storage
+   (PRPS property pairs vs. `RACE`/template inheritance vs. both, §9) — is
+   unstarted, plus perk-gate population. The ruleset/formula half this item
+   was named for is done; only the ESM-reading half remains.
+4. ~~**Canonical model**~~ — shipped: `CharacterLevel` / `Perks` / `Background`
+   components (`character/components.rs`), `CharacterRuleset` is a real
+   `Resource` (`impl Resource for CharacterRuleset`, `ruleset.rs:128`).
+5. ~~**Derived-stat deriver**~~ — shipped: `DerivedStatFormula` (`derived.rs`)
+   + per-game formula tables for FO3/FNV/FO4 (`fallout.rs`) and Oblivion/Skyrim
+   (`tes.rs`/`skyrim.rs`).
+6. **GMST sourcing** — still open. GMST record *parsing* exists
+   (`crates/plugin/src/esm/records/global.rs`), but
+   `actor_value_derive.rs`'s skill-base constants (`SKILL_BASE`,
+   `SKILL_ATTR_MULT`, `SKILL_LUCK_MULT` — the `fAVDSkill*` GMSTs) are still
+   hardcoded `f32` literals, not read from a parsed `GMST` lookup. The last
+   real AUTHORED gap.
+7. ~~**TES family**~~ — shipped for Oblivion (`tes.rs`) and Skyrim
+   (`skyrim.rs`); Morrowind stays out of scope (not in the compat list).
+8. **Starfield** — roster closed 2026-07-04 (`charal-starfield-ruleset.md`:
+   82 skills, 5 categories × 4 tiers, no attributes), but the XP/level curve
+   and category-spend thresholds are still PENDING (§9), so
+   `SkillSet::STARFIELD` / `LevelingModel::STARFIELD` / `starfield_ruleset()`
+   are not yet buildable. Still open.
 
 Each phase ships independently behind `cargo test` (pure derivation + ruleset unit
 tests; no Vulkan, no game data required for the unit layer — real-data validation

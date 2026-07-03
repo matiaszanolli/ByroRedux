@@ -201,7 +201,7 @@ variant would be a second, parallel formula (different shape per the muffle
 note above), not a drop-in reuse. Flagging as a build candidate if/when the
 Visual/skill-factor gap closes, not building speculatively ahead of that.
 
-## Light Armor Rating Bonus — LOCKED, first Skyrim skill-derived multiplier candidate
+## Light Armor Rating Bonus — LOCKED, BUILT (player only)
 
 Source: UESP *Skyrim:Light Armor*, 2026-07-04.
 ```
@@ -211,15 +211,25 @@ ArmorRatingMultiplier = 1 + 0.015 × LightArmorSkill    (NPC — distinct, highe
 Structurally different from every other Skyrim finding so far: it's a clean
 affine **multiplier** output driven by a **skill** AV, not an attribute (Skyrim
 has none) — the shape `DerivedStatFormula` already supports (`DerivedInput`
-takes any AVIF FormID, not just attributes), just never yet populated for
-Skyrim because `skyrim_ruleset()`'s empty `derived` table was reasoned about
-in terms of **attribute**-derived pools only (see `skyrim.rs` module doc: "no
-attribute-derived pools"), not skill-derived multipliers — this is a
-genuinely new category, not a contradiction of what's already built. A real
-candidate to populate Skyrim's `derived` table for the first time, but holding
-off on code until Heavy Armor's matching constant is also sourced (expected to
-exist by symmetry, unconfirmed) so both land together rather than one skill at
-a time.
+takes any AVIF FormID, not just attributes). **Built 2026-07-04** in
+`skyrim_ruleset()` (`crates/core/src/character/skyrim.rs`,
+`LIGHT_ARMOR_RATING_COEFF`) — the first entry in Skyrim's previously-empty
+derived table, and the first skill-derived (not attribute-derived) entry
+anywhere in CHARAL. Marked `player_only` (`DerivedScope::PlayerOnly`) because
+NPCs use the distinct `0.015` constant, not modelled — same "NPCs derive
+differently" pattern `fallout.rs` already applies to Health/Action Points; a
+future NPC-scoped variant would need its own formula entry, not a scope flip.
+Resolves against `"DamageResist"` (the CK/AVIF editor ID for the Armor Rating
+AV) and `"LightArmor"` (confirmed against `SkillSet::SKYRIM` in `skill.rs`) —
+`"DamageResist"` is standard Bethesda-modding knowledge, not independently
+re-verified against a parsed AVIF set this session; the resolve-or-skip
+contract means a wrong EditorID just skips the entry rather than breaking
+anything. 2 new tests (`light_armor_rating_bonus_matches_uesp`,
+`_skipped_when_unresolved`), core 508 green, workspace green, 0 new clippy
+warnings.
+
+Heavy Armor's presumed-symmetric constant is still unsourced — if it turns up
+later it lands as its own entry, not a blocker for this one anymore.
 
 Also on this page, not skill-derived (equipped-weight-derived, applies
 regardless of armor skill): **movement speed penalty** = `min(15%, TotalEquippedWeight × 3/23)` —
