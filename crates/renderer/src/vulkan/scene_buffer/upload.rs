@@ -23,6 +23,13 @@ impl super::buffers::SceneBuffers {
         lights: &[GpuLight],
     ) -> Result<()> {
         let count = lights.len().min(MAX_LIGHTS);
+        if lights.len() > MAX_LIGHTS {
+            log::warn!(
+                "Light SSBO overflow: {} lights submitted, capped at {} — excess lights silently dropped in storage-iteration order (no proximity priority). PERF-D4-NEW-02 / #1808",
+                lights.len(),
+                MAX_LIGHTS,
+            );
+        }
         let header = LightHeader {
             count: count as u32,
             _pad: [0; 3],
