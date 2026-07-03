@@ -1091,7 +1091,7 @@ mod tests {
         "../crates/core/src/form_id.rs",                  // FormIdPair (the serialised key)
         "../crates/core/src/animation/player.rs",         // AnimationPlayer
         "../crates/core/src/animation/stack.rs",          // AnimationStack, AnimationLayer
-        "../crates/core/src/ecs/resources.rs",            // ItemInstancePool, ItemInstance
+        "../crates/core/src/ecs/resources/mod.rs",        // ItemInstancePool, ItemInstance
         "../crates/scripting/src/timer.rs",               // ScriptTimer
         "../crates/scripting/src/quest_stages.rs",        // QuestStageState, QuestObjectiveState + nested types
         "src/cell_loader/transition.rs",                  // CurrentCellContext
