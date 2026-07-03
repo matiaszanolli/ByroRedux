@@ -90,6 +90,7 @@ base + tag it's the **complete player skill model** for FO3/FNV.
 | Unarmed Damage | **Unarmed skill** | `ceil((10 + Unarmed)/20)` | same | **LOCKED** (skill-governed) |
 | Radiation Resistance | END | `(END−1)·2` (cap 85%) | `(END−1)·2` (cap 85%) | **LOCKED** (actor-general, `RadResist` AV) |
 | Poison Resistance | END | `(END−1)·5` (uncapped) | `(END−1)·5` (uncapped) | **LOCKED** (actor-general, hidden, `PoisonResist` AV) |
+| Pickpocket chance | **Sneak skill** | `floor(40+0.6·Sneak−ceil(V/2)−0.6·TargetSneak)`, clamped [5,85]% | same (FNV shares FO3's engine) | **LOCKED** (§below, gameplay input) |
 
 Health: `fAVDHealthLevelMult` = **10** (FO3) / **5** (FNV); base **90 → 100**. Player
 formulas (NPCs derive separately). Source: fandom *Hit Points*.
@@ -116,6 +117,67 @@ bare-fist damage; VATS doesn't double the bonus. Source: fandom *Unarmed Damage*
 > *input* must be any AVIF id (attribute **or** skill), and a deriver must resolve the
 > skill layer before the stats that depend on it. Adds to the FO4-derived
 > kind {Absolute, Multiplier} + scope {player, actor-general} refinements.
+
+Pickpocket chance (source: fandom *Sneak (Fallout 3)*, 2026-07-03):
+
+```
+SuccessChance = floor(40 + 0.6·PlayerSneak − ceil(ItemValue/2) − 0.6·TargetSneak)
+              clamped [5%, 85%]
+```
+
+A **third confirmed skill-chained derivation** alongside Unarmed Damage (← Unarmed
+skill) and the auto-calc base itself — this one takes **two** Sneak-skill inputs
+(attacker's and the target NPC's) plus a per-transaction `ItemValue` that isn't an
+actor value at all (the item's condition-adjusted price). That third input is why this
+doesn't fit `DerivedStatFormula`'s two-input shape even before the `ceil` sub-term —
+it routes as a gameplay-system input (the pickpocketing subsystem), same bucket as
+FO4's persuasion/barter (`charal-fo4-ruleset.md`), not the `derived` table. Sourced
+from a GECK-wiki-cited community breakdown, not a wiki-editorialized approximation —
+cap floor/ceiling (5%/85%) explicitly stated, independent of Stealth Boy or any other
+modifier (those apply to Sneak itself upstream, not this formula). **Confirmed
+identical in FNV** (source: fandom *Sneak (Fallout: New Vegas)*, 2026-07-03, same
+citation) — FNV explicitly inherits FO3's pickpocket math unchanged.
+
+### Sneak Detection (FNV) — LOCKED, but an AI/stealth subsystem, not a CHARAL stat
+
+Source: fandom *Sneak (Fallout: New Vegas)*, 2026-07-03. Unlike FO4/FO76 (both wikis
+say the detection formula is "unknown"), the shared FO3/NV GECK engine's detection
+math has been fully reverse-engineered:
+
+```
+Detection = Attenuation·(Sound + Visual + DetectorSkill/2) − TargetSkill/2 − 35
+TargetSkill = SneakSkill + 5·(TargetLevel − DetectorLevel)
+                + max(50 − 10·TargetLevel, 0) − Armor        # 0 if not sneaking
+DetectorSkill = (10 + 8·Perception) × DetectorState           # 0.8 / 1.2 / 1 by AI state
+Attenuation = ((MaxDist − distance) / MaxDist)²                # MaxDist 2500 in / 5000 out
+```
+
+`Detection < −20` = undetected, `−20..0` = suspicious, `> 0` = detected. `Sound` and
+`Visual` fold in movement/weapon-noise level, light level + night-eye, and armor
+class (heavy/medium/light); `TargetSkill` is FNV's addition over FO3 — it's the first
+confirmed instance of a Bethesda formula reading **both actors' levels**, not just the
+subject's SPECIAL/skills.
+
+**Why this stays out of CHARAL**: it's governed by the Sneak **skill** (which CHARAL
+already produces), but consumes ~10 non-AV, non-CHARAL inputs (distance, indoor/
+outdoor, per-weapon noise rating, light level, movement state, AI alert state, the
+*other* actor's level) that belong to the perception/AI subsystem, not character
+progression. Recording it here only so "Sneak detection formula" isn't re-queried
+later expecting a CHARAL-shaped answer — it's real and sourced, just one layer
+downstream of what CHARAL owns (same boundary as V.A.T.S. accuracy / persuasion /
+barter, just with far more non-CHARAL inputs).
+
+**Math BUILT 2026-07-03** (`crates/core/src/stealth.rs`, new top-level `stealth`
+module — deliberately a sibling of `character`, not inside it, per the boundary
+above): `DetectionInputs` + `detection_score()` is a direct, tested transcription of
+the formula (16 tests — structural/monotonicity checks, since the source gives no
+worked numeric example for the full formula, unlike most CHARAL rows). **Math only,
+no ECS wiring** — no ROADMAP milestone exists yet to consume it (M42 "AI packages",
+the natural consumer for an alert-state tick system, is Tier 7 and blocked on `PACK`
+record parsing, #446; no line-of-sight/vision system, sneak/crouch flag, or AI
+alert-state component exist in the engine today). Mirrors how the CHARAL affliction
+mechanism (`crates/core/src/character/affliction.rs`) was built ahead of its
+threshold data: the reusable, correct piece lands now; ECS wiring waits for M42.
 
 Melee Damage: `STR × 0.5` — an **additive** bonus to Melee Weapon damage (VATS doubles
 base before STR is added; Unarmed has its own stat above). Cross-game arc: FO1/2
