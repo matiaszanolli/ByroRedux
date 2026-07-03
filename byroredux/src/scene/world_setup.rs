@@ -609,6 +609,12 @@ pub(crate) fn stream_initial_radius(
         state.radius_load,
         &mut state.lod_blocks,
     );
+    // #1866 / LC0703-01 — gate on `radius_unload`, not `radius_load`: full
+    // cells stay resident through `radius_load + 1` under the streaming
+    // hysteresis band, so gating on `radius_load` let a LOD quad/cell load
+    // one cell early and z-fight a still-resident full model. Terrain LOD's
+    // hole-mask above keeps using `radius_load` unchanged (tracked
+    // separately).
     // Distant object LOD (Skyrim+/FO4 `.bto`) — no-op on other games.
     cell_loader::stream_object_lod_blocks(
         world,
@@ -616,7 +622,7 @@ pub(crate) fn stream_initial_radius(
         lod_tex.as_ref(),
         wctx.as_ref(),
         (cx, cy),
-        state.radius_load,
+        state.radius_unload,
         &mut state.object_lod_blocks,
     );
     // Distant object LOD (Oblivion/FO3/FNV `DistantLOD\*.lod` → `_far.nif`) —
@@ -627,7 +633,7 @@ pub(crate) fn stream_initial_radius(
         lod_tex.as_ref(),
         wctx.as_ref(),
         (cx, cy),
-        state.radius_load,
+        state.radius_unload,
         &mut state.placement_lod_blocks,
     );
 

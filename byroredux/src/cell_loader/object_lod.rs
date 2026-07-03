@@ -89,12 +89,54 @@ fn quad_min_chebyshev(qx: i32, qy: i32, level: i32, player: (i32, i32)) -> i32 {
     (player.0 - nx).abs().max((player.1 - ny).abs())
 }
 
+/// Quads whose `.bto` should be resident this frame: level-aligned, within
+/// [`OBJECT_LOD_RADIUS_CELLS`] of the player, and **entirely** beyond
+/// `max_full_cell_radius` (every cell the quad covers has
+/// `quad_min_chebyshev > max_full_cell_radius`). Mirrors
+/// [`super::placement_lod::placement_lod_cells_in_radius`], but per-quad
+/// rather than per-cell.
+///
+/// `max_full_cell_radius` **must** be the caller's `radius_unload` — see
+/// [`stream_object_lod_blocks`] (#1866 / LC0703-01).
+fn object_lod_quads_in_radius(
+    player: (i32, i32),
+    max_full_cell_radius: i32,
+    level: i32,
+) -> Vec<(i32, i32)> {
+    let mut quads = Vec::new();
+    let rq = OBJECT_LOD_RADIUS_CELLS / level + 1;
+    let (pqx, pqy) = quad_origin(player.0, player.1, level);
+    for dj in -rq..=rq {
+        for di in -rq..=rq {
+            let qx = pqx + di * level;
+            let qy = pqy + dj * level;
+            let d = quad_min_chebyshev(qx, qy, level, player);
+            if d > max_full_cell_radius && d <= OBJECT_LOD_RADIUS_CELLS {
+                quads.push((qx, qy));
+            }
+        }
+    }
+    quads
+}
+
 /// Stream the distant **object** LOD ring around the player (Skyrim+/FO4).
 /// Mirrors [`super::terrain_lod::stream_lod_blocks`]: quads entering the ring
 /// load their `.bto`, quads leaving unload. A quad loads only when it is
-/// **entirely outside** the full-detail ring (`full_radius_load`), so the
-/// baked LOD never overlaps a resident full model (the runtime half of the
-/// VWD rule — proper full-model culling at the boundary is a follow-up).
+/// **entirely outside** `max_full_cell_radius`, so the baked LOD never
+/// overlaps a resident full model (the runtime half of the VWD rule; proper
+/// per-record full-model culling at the boundary is a further follow-up,
+/// #1866).
+///
+/// `max_full_cell_radius` **must** be the caller's cell-streaming
+/// `radius_unload`, not `radius_load` — #1866 / LC0703-01. Full cells load at
+/// `radius_load` but only unload past `radius_unload` (`radius_load + 1`,
+/// the streaming hysteresis band that prevents load/unload thrash at the
+/// boundary — see `streaming.rs`), so a cell at exactly `radius_load + 1`
+/// can still hold a resident full REFR. Gating this ring on `radius_load`
+/// let a quad covering that cell become LOD-eligible while the full model
+/// was still there, producing full-model/LOD z-fighting in that one-cell
+/// band. Gating on `radius_unload` instead means a quad only loads once
+/// every cell it covers is provably beyond any possible full-cell residency.
 ///
 /// No-op for Oblivion / FO3 / FNV — those ship the `DistantLOD\*.lod` +
 /// `_far.nif` placement scheme, not `.bto` (EXAL §5; a separate module).
@@ -104,7 +146,7 @@ pub(crate) fn stream_object_lod_blocks(
     tex_provider: &TextureProvider,
     wctx: &ExteriorWorldContext,
     player_grid: (i32, i32),
-    full_radius_load: i32,
+    max_full_cell_radius: i32,
     blocks: &mut HashMap<(i32, i32), ObjectLodBlock>,
 ) {
     if !matches!(
@@ -114,22 +156,10 @@ pub(crate) fn stream_object_lod_blocks(
         return;
     }
     let level = OBJECT_LOD_LEVEL;
-
-    // Desired quads: level-aligned, within the object-LOD cell radius, and
-    // entirely beyond the full-detail ring.
-    let mut desired: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
-    let rq = OBJECT_LOD_RADIUS_CELLS / level + 1;
-    let (pqx, pqy) = quad_origin(player_grid.0, player_grid.1, level);
-    for dj in -rq..=rq {
-        for di in -rq..=rq {
-            let qx = pqx + di * level;
-            let qy = pqy + dj * level;
-            let d = quad_min_chebyshev(qx, qy, level, player_grid);
-            if d > full_radius_load && d <= OBJECT_LOD_RADIUS_CELLS {
-                desired.insert((qx, qy));
-            }
-        }
-    }
+    let desired: std::collections::HashSet<(i32, i32)> =
+        object_lod_quads_in_radius(player_grid, max_full_cell_radius, level)
+            .into_iter()
+            .collect();
 
     let mut spawned = 0usize;
     let mut unloaded = 0usize;
@@ -365,6 +395,39 @@ pub(crate) fn bto_archive_path(worldspace_key: &str, level: i32, qx: i32, qy: i3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1866 / LC0703-01 — a quad whose nearest cell sits exactly at the
+    /// streaming hysteresis boundary (`radius_load + 1 == radius_unload`)
+    /// must NOT be desired when gated on `radius_unload`, even though the
+    /// pre-fix code (gating on `radius_load`) would have included it —
+    /// that one-cell band is exactly where a full REFR can still be
+    /// resident (unload only fires past `radius_unload`), so loading LOD
+    /// there would z-fight it.
+    #[test]
+    fn ring_excludes_hysteresis_band_when_gated_on_radius_unload() {
+        let radius_load = 5;
+        let radius_unload = radius_load + 1; // streaming.rs's hysteresis rule
+        let level = 1; // 1×1 quads so "nearest cell distance" is exact
+        let player = (0, 0);
+
+        // Buggy pre-fix behaviour: gating on radius_load includes the
+        // hysteresis-band cell (distance == radius_unload == 6).
+        let buggy = object_lod_quads_in_radius(player, radius_load, level);
+        assert!(
+            buggy.contains(&(6, 0)),
+            "sanity: radius_load gating must reproduce the pre-fix bug"
+        );
+
+        // Fixed behaviour: gating on radius_unload excludes it.
+        let fixed = object_lod_quads_in_radius(player, radius_unload, level);
+        assert!(
+            !fixed.contains(&(6, 0)),
+            "a cell at exactly radius_load+1 can still hold a resident full \
+             REFR under the load/unload hysteresis band — LOD must not load there"
+        );
+        // A cell safely beyond the hysteresis band still loads.
+        assert!(fixed.contains(&(7, 0)));
+    }
 
     #[test]
     fn quad_origin_snaps_to_level_multiples() {
