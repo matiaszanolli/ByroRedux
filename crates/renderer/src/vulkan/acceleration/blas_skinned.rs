@@ -616,6 +616,23 @@ impl AccelerationManager {
     /// Stateless (the `&self` is for discoverability — the helper does
     /// not touch any field). Caller emits this between iterations of a
     /// build loop, **not** before the first iteration. See #642.
+    ///
+    /// #1797 / D6-03 — every call site shares the single
+    /// `blas_scratch_buffer` allocation, so this barrier fully
+    /// serializes N dirty skinned entities' builds/refits within a
+    /// frame; small per-body-part BVHs (5-15K triangles) individually
+    /// underutilize the GPU, so the serialization plus per-barrier
+    /// AS-stage drain is a real throughput ceiling on moving-crowd
+    /// frames (idle crowds are already gated out by #1195/#1196). The
+    /// audit's suggested fix — sub-allocate scratch into K round-robin
+    /// slots so only every K-th pair needs the barrier — is NOT applied
+    /// here: it would need to re-derive the cross-submission /
+    /// cross-call synchronization reasoning that #642 / #644 / #983 /
+    /// #1095 / #1140 / #1300 built up over several bugs, for an
+    /// unmeasured payoff. Quantify with the existing #1194 hooks first
+    /// (`skin.coverage` console command → `gpu_skin_blas_refit_ms` vs
+    /// `refits_attempted`, captured on a moving-crowd bench scene)
+    /// before spending that risk budget.
     pub fn record_scratch_serialize_barrier(&self, device: &ash::Device, cmd: vk::CommandBuffer) {
         // AS_BUILD_KHR → AS_BUILD_KHR (WRITE → WRITE: scratch serialise between
         // skinned-BLAS build iterations). SAFETY: `cmd` is a recording command
