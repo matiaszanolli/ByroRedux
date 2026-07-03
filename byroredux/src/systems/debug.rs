@@ -29,6 +29,21 @@ pub(crate) fn spin_system(world: &World, dt: f32) {
 /// §0 (the "near water" device-loss was a TDR, not a water fault).
 const SLOW_FRAME_WARN_MS: f32 = 200.0;
 
+/// Did this frame cross a whole-wall-clock-second boundary? `total` is
+/// `TotalTime` AFTER this frame's `dt` was added; `prev = total - dt` is
+/// what it was last frame. Shared by every once-per-second diagnostic
+/// cadence: `log_stats_system`'s summary line below, and `about_to_wait`'s
+/// `meshes_in_use` / `textures_in_use` dedup-walk throttle (PERF-D1-NEW-01
+/// / #1801) — both want "roughly 1 Hz" rather than a frame-count modulo
+/// that drifts with framerate. Note this is a per-*wall-clock*-second
+/// cadence, not per-frame: from a fresh `TotalTime` start it doesn't fire
+/// until `total` first reaches 1.0, same as it always has for
+/// `log_stats_system`'s first summary line.
+pub(crate) fn crosses_one_second_boundary(total: f32, dt: f32) -> bool {
+    let prev = total - dt;
+    prev < 0.0 || total.floor() != prev.floor()
+}
+
 /// Format the per-pass GPU timer breakdown from [`SkinCoverageStats`] (the
 /// canonical landing pad for every `GpuPerFrameTimers` bracket, #1194).
 /// Values lag the live frame by `MAX_FRAMES_IN_FLIGHT` (≈2 frames) — so on
@@ -79,7 +94,6 @@ fn cpu_breakdown(t: &CpuFrameTimings) -> String {
 pub(crate) fn log_stats_system(world: &World, _dt: f32) {
     let total = world.resource::<TotalTime>().0;
     let dt = world.resource::<DeltaTime>().0;
-    let prev = total - dt;
 
     let stats = world.resource::<DebugStats>();
     // GPU per-pass timers live on `SkinCoverageStats` (absent on the
@@ -111,7 +125,7 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
         );
     }
 
-    if prev < 0.0 || total.floor() != prev.floor() {
+    if crosses_one_second_boundary(total, dt) {
         // #1258 — `draws=N/Mb/Kc` = N input DrawCommands / M post-merge
         // batches / K actual GPU calls. Pre-fix this was a single `draws=N`
         // that read like a GPU call count but stored the batcher input.
@@ -140,5 +154,64 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
         if let Some(ref cpu) = cpu {
             log::info!(target: "engine::stats", "cpu_ms: {cpu}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The very first frame from a fresh `TotalTime` start (`total ==
+    /// dt`, so `prev == 0.0`) does NOT cross a boundary — matches
+    /// `log_stats_system`'s existing behavior of not printing its first
+    /// summary line until wall-clock time actually reaches 1.0s.
+    #[test]
+    fn first_frame_does_not_refresh() {
+        assert!(!crosses_one_second_boundary(0.1, 0.1));
+    }
+
+    /// Mid-second: two frames that don't cross a whole-second boundary
+    /// must not refresh.
+    #[test]
+    fn same_second_does_not_refresh() {
+        assert!(!crosses_one_second_boundary(1.2, 0.1));
+        assert!(!crosses_one_second_boundary(1.9, 0.05));
+    }
+
+    /// Crossing from e.g. 0.95s to 1.02s must refresh exactly once, on
+    /// the frame that lands past the boundary.
+    #[test]
+    fn crossing_a_second_boundary_refreshes() {
+        assert!(crosses_one_second_boundary(1.02, 0.07));
+    }
+
+    /// A frame landing exactly ON a whole second must refresh (matches
+    /// `log_stats_system`'s pre-existing `!=` comparison semantics).
+    #[test]
+    fn landing_exactly_on_the_boundary_refreshes() {
+        assert!(crosses_one_second_boundary(2.0, 0.03));
+    }
+
+    /// PERF-D1-NEW-01 / #1801 — over many frames at a plausible
+    /// variable-dt cadence, the boundary must fire exactly once per
+    /// whole second crossed, not zero and not more than once (which
+    /// would defeat the point of throttling to ~1 Hz).
+    #[test]
+    fn fires_once_per_second_over_many_frames() {
+        let mut total = 0.0f32;
+        let dt = 1.0 / 63.0; // an irregular frame time, not a clean divisor
+        let mut refresh_count = 0u32;
+        let seconds_to_simulate = 5;
+        while total < seconds_to_simulate as f32 {
+            let new_total = total + dt;
+            if crosses_one_second_boundary(new_total, dt) {
+                refresh_count += 1;
+            }
+            total = new_total;
+        }
+        assert_eq!(
+            refresh_count, seconds_to_simulate,
+            "expected exactly one refresh per whole second crossed"
+        );
     }
 }

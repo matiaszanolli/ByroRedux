@@ -2306,10 +2306,22 @@ impl ApplicationHandler for App {
         // the last live consumer shows up as `registry > in_use`. Done
         // in two scopes because the queries need an immutable world
         // borrow that can't coexist with `resource_mut::<DebugStats>`.
-        let (meshes_in_use, textures_in_use) = {
+        //
+        // PERF-D1-NEW-01 / #1801 — this walk used to run unconditionally
+        // every frame, but both consumers (the `stats` console command
+        // and the debug-server entity evaluator) are on-demand, not
+        // per-frame; `log_stats_system` doesn't print these fields
+        // either. Throttled to the same once-per-wall-clock-second
+        // boundary `log_stats_system` already uses for its own summary
+        // line, so a console/debug-server read is at most ~1 second
+        // stale — indistinguishable from before for a human operator,
+        // for a cost paid once/second instead of every frame.
+        let total = self.world.resource::<byroredux_core::ecs::TotalTime>().0;
+        let should_refresh_handle_counts = crate::systems::crosses_one_second_boundary(total, dt);
+        if should_refresh_handle_counts {
             // #1584 — reuse persistent scratch sets (clear() keeps the
-            // allocation, drops the contents) so this per-frame dedup walk
-            // does zero steady-state heap allocations.
+            // allocation, drops the contents) so this dedup walk does
+            // zero steady-state heap allocations.
             self.in_use_mesh_scratch.clear();
             if let Some(q) = self.world.query::<byroredux_core::ecs::MeshHandle>() {
                 for (_, h) in q.iter() {
@@ -2326,17 +2338,17 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            (
-                self.in_use_mesh_scratch.len() as u32,
-                self.in_use_tex_scratch.len() as u32,
-            )
-        };
+        }
         {
             let mut stats = self.world.resource_mut::<DebugStats>();
             stats.push_frame_time(dt);
             stats.entity_count = self.world.next_entity_id();
-            stats.meshes_in_use = meshes_in_use;
-            stats.textures_in_use = textures_in_use;
+            // Off-cadence frames keep the previous values (still fresh to
+            // within ~1 second) rather than stale-to-zero.
+            if should_refresh_handle_counts {
+                stats.meshes_in_use = self.in_use_mesh_scratch.len() as u32;
+                stats.textures_in_use = self.in_use_tex_scratch.len() as u32;
+            }
             if let Some(ref ctx) = self.renderer {
                 stats.mesh_count = ctx.mesh_registry.len() as u32;
                 stats.texture_count = ctx.texture_registry.len() as u32;
