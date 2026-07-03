@@ -27,7 +27,7 @@ orchestrates the whole thing — Session 36 split the original 2 992-line
 flat `cell_loader.rs` into a submodule directory (see
 [`cell_loader.rs`](../../byroredux/src/cell_loader.rs) for the module
 table and the shared flag-packers). The asset providers at
-[`byroredux/src/asset_provider.rs`](../../byroredux/src/asset_provider.rs)
+[`byroredux/src/asset_provider/`](../../byroredux/src/asset_provider/mod.rs)
 hold the open BSA / BA2 archives and expose a small `extract()` /
 `extract_mesh()` API plus a separate `MaterialProvider` for BGSM/BGEM
 resolution.
@@ -47,10 +47,10 @@ cargo run -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior \
 
 ### 1. Open the archives (CLI parse)
 
-[`build_texture_provider()`](../../byroredux/src/asset_provider.rs) walks
+[`build_texture_provider()`](../../byroredux/src/asset_provider/texture.rs) walks
 the CLI args and opens every `--bsa` (mesh) / `--textures-bsa` (texture)
 path. Each path is opened by
-[`Archive::open()`](../../byroredux/src/asset_provider.rs), which
+[`Archive::open()`](../../byroredux/src/asset_provider/archive.rs), which
 **auto-detects BSA vs BA2 from the 4-byte file magic** (`BTDX` → BA2,
 otherwise BSA) — there is no separate `--ba2` flag; a `.ba2` passed to
 `--bsa` / `--textures-bsa` opens correctly. Mesh archives go into
@@ -59,7 +59,7 @@ otherwise BSA) — there is no separate `--ba2` flag; a `.ba2` passed to
 order, so multiple archives layer naturally.
 
 BGSM/BGEM material archives are opened separately by
-[`build_material_provider()`](../../byroredux/src/asset_provider.rs) from
+[`build_material_provider()`](../../byroredux/src/asset_provider/material.rs) from
 repeated `--materials-ba2 <path>` flags (see step 9.5). The main binary
 also auto-appends a `--materials-ba2` for each of the selected game
 entry's `default_materials_bsas` (e.g. `Fallout4 - Materials.ba2` /
@@ -67,7 +67,7 @@ entry's `default_materials_bsas` (e.g. `Fallout4 - Materials.ba2` /
 
 #### Numeric-suffix sibling auto-load
 
-[`open_with_numeric_siblings()`](../../byroredux/src/asset_provider.rs)
+[`open_with_numeric_siblings()`](../../byroredux/src/asset_provider/archive.rs)
 runs after each explicit open: when the path ends in an unsuffixed
 `.bsa` / `.ba2` (no digit immediately before the extension), the loader
 scans the same directory for `<stem>2.*` … `<stem>9.*` and opens each
@@ -97,7 +97,7 @@ bits.
 
 Both BSA and BA2 archives are now first-class in the runtime
 `TextureProvider` via the internal
-[`Archive`](../../byroredux/src/asset_provider.rs) enum (`Bsa` / `Ba2`);
+[`Archive`](../../byroredux/src/asset_provider/archive.rs) enum (`Bsa` / `Ba2`);
 the separate `MeshArchive` test helper at
 [`crates/nif/tests/common/mod.rs`](../../crates/nif/tests/common/mod.rs)
 predates that unification and is now test-only infrastructure for
@@ -192,8 +192,8 @@ and imported **once for the whole process**; subsequent placements (in
 this cell or any later cell) reuse the `CachedNifImport` entry. The
 registry tracks per-cell touch keys so `unload_cell` can release entries
 that no streamed-in cell still references. On a registry miss the loader
-calls [`extract_mesh()`](../../byroredux/src/asset_provider.rs), whose
-[`normalize_mesh_path()`](../../byroredux/src/asset_provider.rs) prepends
+calls [`extract_mesh()`](../../byroredux/src/asset_provider/texture.rs), whose
+[`normalize_mesh_path()`](../../byroredux/src/asset_provider/archive.rs) prepends
 the `meshes\` root segment when the authored `MODL` omits it (RACE /
 NPC_ / ARMO records author relative to `meshes\`; the BSA stores the full
 prefix).
@@ -272,7 +272,7 @@ per-step breakdown.
 
 When `ImportedMesh.material_path` points at a `.bgsm` / `.bgem`
 (`.mat` for Starfield), the loader calls
-[`merge_bgsm_into_mesh()`](../../byroredux/src/asset_provider.rs)
+[`merge_bgsm_into_mesh()`](../../byroredux/src/asset_provider/material.rs)
 against the `MaterialProvider`. NIF fields take precedence — only empty
 slots are filled from the resolved material:
 
@@ -334,7 +334,7 @@ mesh.
 ### 12. Texture lookup and upload
 
 Each populated path slot resolves through
-[`resolve_texture()`](../../byroredux/src/asset_provider.rs) (or
+[`resolve_texture()`](../../byroredux/src/asset_provider/texture.rs) (or
 `resolve_texture_with_clamp()` for decals / non-default clamp modes) into
 the texture registry. Cache hit → reuse the descriptor set; cache miss →
 extract DDS bytes from the provider, decode the header, upload the pixel
@@ -345,7 +345,7 @@ texture; the normal / dark / greyscale-LUT slots only attach their
 shader's "handle != fallback" gate stays meaningful).
 
 `extract()` runs the path through
-[`normalize_texture_path()`](../../byroredux/src/asset_provider.rs) first:
+[`normalize_texture_path()`](../../byroredux/src/asset_provider/archive.rs) first:
 it strips a leading `data\` segment (FO4 FaceGen `BSShaderTextureSet`
 paths author this form, F1.1 / 2026-05-26) and prepends `textures\` when
 the authored WTHR / CLMT / LTEX path is relative to the textures root
@@ -491,7 +491,7 @@ smoke run:
   ~21 `#[ignore]`d per-game integration sweeps walking the vanilla NIF
   corpus end-to-end)
 - **BGSM/BGEM merge + path normalisation** →
-  [`asset_provider.rs`](../../byroredux/src/asset_provider.rs)'s own
+  [`asset_provider/tests.rs`](../../byroredux/src/asset_provider/tests.rs)'s
   `#[cfg(test)]` module (`normalize_material_path_*`,
   `build_material_provider_*`)
 - **Material translation** → exercised through the cell-loader and

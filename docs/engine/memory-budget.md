@@ -146,7 +146,7 @@ reside in `MeshRegistry` and are keyed separately.
 
 ## Material / BGSM Cache
 
-[`byroredux/src/asset_provider.rs`](../../byroredux/src/asset_provider.rs)
+[`byroredux/src/asset_provider/material.rs`](../../byroredux/src/asset_provider/material.rs)
 
 | Constant | Value | Eviction |
 |---|---|---|
