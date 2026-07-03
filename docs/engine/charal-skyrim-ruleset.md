@@ -231,6 +231,54 @@ warnings.
 Heavy Armor's presumed-symmetric constant is still unsourced — if it turns up
 later it lands as its own entry, not a blocker for this one anymore.
 
+## Armor Rating / Damage Reduction — full formula LOCKED, confirms the built coefficient, most of it out of scope
+
+Source: UESP *Skyrim:Armor*, 2026-07-04. Gives the **complete** per-item armor
+formula that the Light Armor coefficient above is only one term of —
+independently confirms both constants built above exactly, and closes the
+Heavy Armor symmetry question along the way:
+
+```
+ItemArmorRating = CEILING[ (BaseRating + ItemQuality) × (1 + 0.4×(Skill+SkillEffect)/100) ]
+                 × (1 + UnisonPerk) × (1 + MatchingSet) × (1 + ArmorPerk)
+
+DisplayedArmorRating = Σ ItemArmorRating (worn pieces) + ArmorEffects
+
+DamageReduction% = DisplayedArmorRating × 0.12 + 3.00 × PiecesWorn   [hidden +3%/piece, incl. shield]
+                    capped at 80%
+
+PhysicalDurabilityMultiplier = 100 / (100 − DamageReduction%)        [×5 at the 80% cap]
+```
+`UnisonPerk` = Custom Fit (light) / Well Fitted (heavy); `ArmorPerk` = Agile
+Defender (light) / Juggernaut (heavy) — the same perk-pair-per-armor-type
+shape already seen in `charal-skyrim-ruleset.md`'s Light Armor perk tree.
+**For NPCs the skill coefficient is `1.5` instead of `0.4`, and Custom Fit is
+`1.25² = 1.5625` instead of `1.25`** — the `0.4/100 = 0.004` and `1.5/100 =
+0.015` here are the **exact same constants** already built into
+`LIGHT_ARMOR_RATING_COEFF` (skyrim.rs) and its documented NPC counterpart
+above, independently confirmed by a second source. **Heavy Armor uses the
+identical `0.4`/`1.5` coefficients** — the formula is generic over armor type,
+so there's no separate "Heavy Armor constant" to wait for; the presumed
+symmetry above is now confirmed, not just presumed.
+
+**Why the rest stays out of `DerivedStatFormula` / uncoded:** `ItemArmorRating`
+sums over **individually-tempered worn items** (Smithing's `ItemQuality` is a
+per-item state, not a character AV) with a `CEILING` and three multiplicative
+perk gates, then `DamageReduction%` additionally needs the **count of pieces
+worn** — none of this is expressible as a function of a fixed 1-2 actor-value
+inputs the way `DerivedStatFormula` models Health/Carry Weight/this coefficient.
+It's a genuine equipment/combat-system calculation (iterate worn items, sum,
+convert to a capped percentage), same "real formula, wrong layer for CHARAL's
+per-AV derived table" bucket as the full Alchemy potion-strength formula.
+`LIGHT_ARMOR_RATING_COEFF` in `skyrim.rs` remains a correct, useful, but
+**partial** piece of this larger picture — the per-item skill-scaling term
+only, confirmed correct by this page, not a complete Armor Rating pipeline.
+A `DamageReduction%`/durability-multiplier calculator would be a standalone
+function (worn-item iteration + the capped percentage formula above), same
+shape as `stealth.rs` — real and buildable, but belongs in a combat/equipment
+module, not `character/`, and not attempted without being asked given no such
+module exists yet.
+
 Also on this page, not skill-derived (equipped-weight-derived, applies
 regardless of armor skill): **movement speed penalty** = `min(15%, TotalEquippedWeight × 3/23)` —
 a universal encumbrance mechanic, not part of the Light Armor governance
@@ -257,3 +305,36 @@ output isn't even an actor stat modifier (like Pickpocket chance or Barter
 price) — it's the potency of a **crafted item** (a potion/poison), which then
 separately affects whoever consumes it. Firmly a crafting-system formula, not
 a derived stat or even a gameplay-system consumer of an actor's own stats.
+
+## Enchanting effect strength — LOCKED, crafting-system output, genuinely different formula shape
+
+Source: UESP *Skyrim:Enchanting Effects*, 2026-07-04. Third crafting-system
+skill-multiplier found this session (after Alchemy, Light/Heavy Armor), but
+this one **breaks the affine pattern**:
+```
+NetMagnitude = BaseMagnitude × SoulMultiplier × SkillMultiplier
+             × (1+PotionEffect) × (1+EnchanterPerk) × (1+SpecificPerkMod) × (1+SeekerOfSorcery)
+             , floored
+
+SkillMultiplier = 1 + (Skill/100) × (Skill/100 − 0.14) / 3.4     ← QUADRATIC in Skill, not affine
+```
+At Skill=100: `1 + 1×0.86/3.4 = 1.2529` — matches the source's own worked
+claim ("100 skill points grants ~25.29%"). This is the **first quadratic
+skill-derived term found in CHARAL research** — every other skill-multiplier
+this session (Alchemy `1+0.005·Skill`, Armor `1+0.004·Skill`) was a clean
+affine line; Enchanting's curve accelerates at high skill instead. Worth
+remembering if a future audit assumes "skill multipliers are always affine" —
+they aren't, universally.
+
+`SoulMultiplier` is a discrete table (Grand ×1, Greater ×2/3, Common ×1/3,
+Lesser ×1/6, Petty ×1/12) keyed by soul-gem size, not a continuous formula.
+Weapon enchantments additionally have a **Charges Per Use** formula
+(`3×(BaseCost×Magnitude/MaxMagnitude)^1.1×(1−√(Skill/200))`) governing uses
+before recharge — another skill term, this one under a square root, a third
+distinct shape. Soul charge capacities are a matching discrete table (Grand
+3000 → Petty 250).
+
+Same routing as Alchemy: output lands on a **crafted item** (an enchanted
+weapon/armor piece), not an actor stat — firmly a crafting-system formula, not
+a CHARAL derived stat or even a gameplay-system consumer of the actor's own
+stats. Documented for the formula-shape diversity, not as a build candidate.
