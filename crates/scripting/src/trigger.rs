@@ -48,12 +48,21 @@ pub struct TriggerVolume {
     /// Box orientation (the REFR's placed rotation). Identity for spheres.
     pub rotation: Quat,
     pub shape: TriggerShape,
-    /// Edge-trigger state: was the player inside on the previous tick?
-    /// Seeded `true` for a player that loads *already inside* the volume
-    /// so a quest trigger the player is standing on at cell entry doesn't
-    /// fire spuriously on frame 1 — it fires on the next genuine entry.
-    /// The cell loader seeds this from the player's spawn position.
-    pub occupant_inside: bool,
+    /// Edge-trigger state: was the player inside on the previous tick this
+    /// volume was checked? `None` until [`trigger_detection_system`] has
+    /// evaluated it at least once — every volume is spawned with `None`
+    /// (see the cell loader's `trigger_volume_from_primitive`), so the
+    /// very first tick a volume exists for silently seeds this from
+    /// whatever the player's actual position is that frame, WITHOUT
+    /// emitting an enter event. This is what makes the seed correct
+    /// whether the volume was just loaded on initial cell entry, a
+    /// door-walk transition, or exterior streaming step-in: none of
+    /// those call sites need to know the player's position, because
+    /// "no prior tick to compare against" and "player loaded already
+    /// standing inside" collapse to the same case — SCR-D6-NEW-02 /
+    /// #1817. Fixes #1742-adjacent load-time false positives without
+    /// threading player position through every `TriggerVolume` spawn site.
+    pub occupant_inside: Option<bool>,
 }
 
 impl TriggerVolume {
@@ -113,10 +122,18 @@ pub fn trigger_detection_system(world: &World) {
         };
         for (entity, vol) in vols.iter_mut() {
             let inside = vol.contains(player_pos);
-            if inside && !vol.occupant_inside {
-                entered.push(entity);
+            // SCR-D6-NEW-02 / #1817 — `None` means this volume has never
+            // been checked before (just spawned, this tick). Seed the
+            // state silently instead of comparing against a synthetic
+            // "was outside" default — a player who loads already standing
+            // inside the volume must not see a spurious enter on its
+            // first tick.
+            if let Some(was_inside) = vol.occupant_inside {
+                if inside && !was_inside {
+                    entered.push(entity);
+                }
             }
-            vol.occupant_inside = inside;
+            vol.occupant_inside = Some(inside);
         }
     }
 
@@ -146,13 +163,17 @@ mod tests {
     use byroredux_core::ecs::components::{GlobalTransform, Transform};
     use byroredux_core::ecs::world::World;
 
+    /// Builds an already-primed volume (known outside on the previous
+    /// tick) — the steady-state shape most tests below want. Tests
+    /// exercising the fresh-spawn seeding behavior construct
+    /// `TriggerVolume` directly with `occupant_inside: None`.
     fn axis_box(center: Vec3, half: Vec3) -> TriggerVolume {
         TriggerVolume {
             center,
             half_extents: half,
             rotation: Quat::IDENTITY,
             shape: TriggerShape::Box,
-            occupant_inside: false,
+            occupant_inside: Some(false),
         }
     }
 
@@ -177,7 +198,7 @@ mod tests {
             half_extents: Vec3::new(1.0, 1.0, 1.0),
             rotation: rot,
             shape: TriggerShape::Box,
-            occupant_inside: false,
+            occupant_inside: Some(false),
         };
         // Along the box-local X (rotated), a diagonal world point lands
         // inside; the same distance along world X is past the corner.
@@ -194,7 +215,7 @@ mod tests {
             half_extents: Vec3::new(2.0, 0.0, 0.0), // radius 2
             rotation: Quat::IDENTITY,
             shape: TriggerShape::Sphere,
-            occupant_inside: false,
+            occupant_inside: Some(false),
         };
         assert!(v.contains(Vec3::new(5.0, 1.9, 0.0)));
         assert!(!v.contains(Vec3::new(5.0, 2.1, 0.0)));
@@ -237,14 +258,81 @@ mod tests {
 
     #[test]
     fn edge_triggered_not_level_triggered() {
-        // Player starts inside but the volume is pre-seeded occupied
-        // (loaded already standing in it): no spurious frame-1 fire.
+        // Steady state: the volume was already known-occupied on the
+        // previous tick (not a fresh spawn — see the None-sentinel tests
+        // below for that case) and the player is still inside: no re-fire.
         let mut vol = axis_box(Vec3::ZERO, Vec3::splat(1.0));
-        vol.occupant_inside = true;
+        vol.occupant_inside = Some(true);
         let (_w, _t, fired) = run_once(Vec3::ZERO, vol);
         assert!(
             !fired,
             "a volume already occupied must not re-fire while still inside",
+        );
+    }
+
+    /// SCR-D6-NEW-02 / #1817 — a freshly-spawned volume (`occupant_inside:
+    /// None`, exactly what the cell loader's `trigger_volume_from_primitive`
+    /// produces) with the player already standing inside must NOT fire on
+    /// its very first detection tick — that first tick only seeds the
+    /// state. This is the actual load-already-inside bug: pre-fix, spawning
+    /// with a bare `false` made this indistinguishable from "known outside,
+    /// player just crossed in," firing a spurious enter.
+    #[test]
+    fn fresh_spawn_seeds_silently_even_when_player_already_inside() {
+        let vol = TriggerVolume {
+            center: Vec3::ZERO,
+            half_extents: Vec3::splat(1.0),
+            rotation: Quat::IDENTITY,
+            shape: TriggerShape::Box,
+            occupant_inside: None,
+        };
+        let (_w, _t, fired) = run_once(Vec3::ZERO, vol);
+        assert!(
+            !fired,
+            "a volume's first-ever detection tick must seed occupant_inside, \
+             not fire — a player loading already inside a trigger volume \
+             must not see a spurious OnTriggerEnter (#1817)"
+        );
+    }
+
+    /// Counterpart: a freshly-spawned volume with the player OUTSIDE also
+    /// doesn't fire on the seed tick (nothing surprising there), but the
+    /// subsequent genuine crossing still fires normally — the seed doesn't
+    /// permanently wedge the volume into a non-firing state.
+    #[test]
+    fn fresh_spawn_still_fires_on_a_later_genuine_crossing() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let player = world.spawn();
+        let outside = Vec3::new(10.0, 0.0, 0.0);
+        world.insert(player, Transform::from_translation(outside));
+        world.insert(player, GlobalTransform::new(outside, Quat::IDENTITY, 1.0));
+        world.insert_resource(PlayerEntity(player));
+        let trigger = world.spawn();
+        world.insert(
+            trigger,
+            TriggerVolume {
+                center: Vec3::ZERO,
+                half_extents: Vec3::splat(1.0),
+                rotation: Quat::IDENTITY,
+                shape: TriggerShape::Box,
+                occupant_inside: None,
+            },
+        );
+
+        // Seed tick — player outside, nothing fires.
+        trigger_detection_system(&world);
+        assert!(!world.has::<OnTriggerEnterEvent>(trigger));
+
+        // Genuine crossing — must fire.
+        {
+            let mut q = world.query_mut::<GlobalTransform>().unwrap();
+            q.get_mut(player).unwrap().translation = Vec3::ZERO;
+        }
+        trigger_detection_system(&world);
+        assert!(
+            world.has::<OnTriggerEnterEvent>(trigger),
+            "a later genuine crossing must still fire after the seed tick"
         );
     }
 

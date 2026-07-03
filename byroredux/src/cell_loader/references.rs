@@ -1473,7 +1473,13 @@ fn trigger_volume_from_primitive(
         half_extents,
         rotation,
         shape,
-        occupant_inside: false,
+        // SCR-D6-NEW-02 / #1817 — `None`, not `false`. `false` is
+        // indistinguishable from "known outside, primed" to
+        // `trigger_detection_system`; a player who loads already
+        // standing inside this volume would see a spurious
+        // `OnTriggerEnterEvent` on frame 1. `None` lets the detection
+        // system's first tick seed the real state silently instead.
+        occupant_inside: None,
     })
 }
 
