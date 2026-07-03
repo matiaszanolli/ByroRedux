@@ -1,4 +1,4 @@
-# regenerated: 2026-06-14 (BASELINE CREATED — first run, audit-runtime --game all)
+# regenerated: 2026-07-03 (BASELINE UPDATED — RT-1 / #1863, bench_draws_gpu_calls 3→4 stale-value housekeeping)
 entities_total	701
 tex_missing_unique_paths	0
 mesh_cache_failed_count	0
@@ -6,8 +6,8 @@ light_count_directional	1
 skin_pool_live	3
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	411.8
-bench_fps_avg	411.8
+bench_fps_p50	323.4
+bench_fps_avg	323.4
 bench_draws_cmds	324
-bench_draws_batches	30
-bench_draws_gpu_calls	3
+bench_draws_batches	27
+bench_draws_gpu_calls	4
