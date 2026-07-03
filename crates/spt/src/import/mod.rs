@@ -330,8 +330,17 @@ fn placeholder_billboard_mesh(
         model_space_normals: false,
         from_bgsm: false,
         bgem_glass: false,
-        metalness_override: None,
-        roughness_override: None,
+        // #1819 / SPT-NEW-05 — classify at import like every NIF path,
+        // instead of leaving both `None` and falling through to
+        // `classify_pbr_keyword`'s texture-path substring classifier.
+        // Leaf billboard textures collide with unrelated keyword
+        // buckets (e.g. "ShrubBoxwoodLeaves" contains "wood" → WOOD;
+        // "ShrubGenericElderberryLeaves" contains "ic"+"e" across a
+        // word seam → GLASS, crossing the RT-reflection roughness
+        // gate). Foliage is matte and non-metallic — matches the
+        // classifier's own no-keyword-match default.
+        metalness_override: Some(0.0),
+        roughness_override: Some(0.85),
         // #1147 Phase 2b — translucency suite (zero default; SpeedTree
         // is BGSM-free).
         translucency_subsurface_color: [0.0; 3],
@@ -524,6 +533,41 @@ mod tests {
             Some("textures/treeicon.dds"),
             "TREE.ICON override wins over .spt tag 4003",
         );
+    }
+
+    /// #1819 / SPT-NEW-05 — the placeholder billboard must classify PBR
+    /// at import time (matching every NIF path) rather than leaving both
+    /// overrides `None` and falling through to `classify_pbr_keyword`'s
+    /// texture-path substring classifier. Pre-fix, leaf texture paths
+    /// that happen to contain unrelated keyword substrings (WOOD, GLASS,
+    /// …) were mis-tagged — e.g. "ShrubBoxwoodLeaves" contains "wood",
+    /// and "ShrubGenericElderberryLeaves" contains "ic"+"e" across the
+    /// "generIC ElderberrY" word seam, tripping the GLASS arm
+    /// (roughness 0.1) and crossing the RT-reflection gate (< 0.6).
+    #[test]
+    fn placeholder_billboard_sets_foliage_pbr_overrides_regardless_of_texture_path() {
+        let mut pool = StringPool::new();
+        for leaf_path in [
+            "textures/plants/shrubboxwoodleaves01.dds",
+            "textures/plants/shrubgenericelderberryleavesfa01.dds",
+            "textures/plants/genericleaf.dds",
+        ] {
+            let scene = scene_with_tag(4003, SptValue::String(leaf_path.to_string()));
+            let params = SptImportParams::default();
+            let imported = import_spt_scene(&scene, &params, &mut pool);
+            let mesh = &imported.meshes[0];
+            assert_eq!(
+                mesh.metalness_override,
+                Some(0.0),
+                "leaf path {leaf_path:?} must not classify metallic"
+            );
+            assert_eq!(
+                mesh.roughness_override,
+                Some(0.85),
+                "leaf path {leaf_path:?} must use the matte foliage default, \
+                 not a keyword-collision classification (WOOD=0.7, GLASS=0.1)"
+            );
+        }
     }
 
     #[test]
