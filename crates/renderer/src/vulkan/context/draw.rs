@@ -221,6 +221,23 @@ pub(super) fn group_state(
     )
 }
 
+/// Whether a batch needs the two-pass (FRONT-cull then BACK-cull)
+/// two-sided alpha-blend split (#1804 / D2-NEW-03).
+///
+/// The split exists so back faces write depth before front faces blend
+/// on top, stabilizing TAA's depth-winner pick on order-dependent
+/// volumetric glass. That rationale requires depth writes: with
+/// `z_write == false` (particles are currently the only such batches,
+/// see `byroredux/src/render/particles.rs`) neither pass writes depth,
+/// so splitting buys nothing — the FRONT-cull pass rasterizes ~nothing
+/// for camera-facing billboards while still shading the whole instanced
+/// batch. Gating on `z_write` removes that dead pass without touching
+/// the depth-writing glass case the split was built for.
+pub(super) fn needs_two_sided_blend_split(b: &DrawBatch) -> bool {
+    let is_blend = matches!(b.pipeline_key, PipelineKey::Blended { .. });
+    is_blend && b.two_sided && b.z_write
+}
+
 /// All per-frame inputs consumed by [`VulkanContext::draw_frame`].
 ///
 /// Groups the (formerly 22) loose `draw_frame` arguments into one struct so
@@ -1083,9 +1100,8 @@ impl VulkanContext {
                 // flips the depth winner per frame, producing
                 // cross-hatch moiré on glass. See Phase 1 of Tier C
                 // glass plan + `docs/issues/glass-investigation/`.
-                let is_blend = matches!(batch.pipeline_key, PipelineKey::Blended { .. });
                 let two_sided = batch.two_sided;
-                let needs_split = is_blend && two_sided;
+                let needs_split = needs_two_sided_blend_split(batch);
                 // Opaque & single-sided-blend cull target — used by
                 // every branch below except the split two-sided blend.
                 let default_cull = if two_sided {
@@ -4327,5 +4343,69 @@ mod group_state_tests {
         let mut decal = batch();
         decal.render_layer = RenderLayer::Decal;
         assert_ne!(group_state(&base), group_state(&decal));
+    }
+}
+
+#[cfg(test)]
+mod needs_two_sided_blend_split_tests {
+    //! #1804 / D2-NEW-03 — the two-sided alpha-blend split must only run
+    //! when the batch actually writes depth. Particles are `two_sided +
+    //! alpha-blend` but `z_write: false`
+    //! (`byroredux/src/render/particles.rs`); pre-fix they still hit the
+    //! split and paid for a FRONT-cull pass that rasterizes ~nothing for
+    //! camera-facing billboards.
+    use super::*;
+    use byroredux_core::ecs::components::RenderLayer;
+
+    fn blended_two_sided_batch(z_write: bool) -> DrawBatch {
+        DrawBatch {
+            mesh_handle: 1,
+            pipeline_key: PipelineKey::Blended {
+                src: 6,
+                dst: 0,
+                wireframe: false,
+            },
+            two_sided: true,
+            render_layer: RenderLayer::Clutter,
+            first_instance: 0,
+            instance_count: 1,
+            index_count: 3,
+            global_index_offset: 0,
+            global_vertex_offset: 0,
+            z_test: true,
+            z_write,
+            z_function: 3,
+        }
+    }
+
+    /// Depth-writing two-sided blend (order-dependent glass) still splits.
+    #[test]
+    fn splits_when_blended_two_sided_and_z_write() {
+        assert!(needs_two_sided_blend_split(&blended_two_sided_batch(true)));
+    }
+
+    /// `z_write: false` (the particle case) must NOT split — neither pass
+    /// writes depth, so the FRONT-cull pass is dead work.
+    #[test]
+    fn does_not_split_when_z_write_false() {
+        assert!(!needs_two_sided_blend_split(&blended_two_sided_batch(
+            false
+        )));
+    }
+
+    /// Single-sided blend never splits, regardless of z_write.
+    #[test]
+    fn does_not_split_when_not_two_sided() {
+        let mut b = blended_two_sided_batch(true);
+        b.two_sided = false;
+        assert!(!needs_two_sided_blend_split(&b));
+    }
+
+    /// Opaque batches never split, even if (nonsensically) two_sided.
+    #[test]
+    fn does_not_split_when_opaque() {
+        let mut b = blended_two_sided_batch(true);
+        b.pipeline_key = PipelineKey::Opaque { wireframe: false };
+        assert!(!needs_two_sided_blend_split(&b));
     }
 }
