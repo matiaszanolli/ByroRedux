@@ -18,6 +18,14 @@ use std::io::Read;
 /// Record flag: data is zlib-compressed.
 const FLAG_COMPRESSED: u32 = 0x00040000;
 
+/// Record flag: "Visible When Distant" / "Has Distant LOD" (#1731 /
+/// LC-D7-02). Not to be confused with the deleted-REFR tombstone flag
+/// `0x20` (SKY-D4-01 / #1660) — a different bit on the same `flags` field.
+/// `pub` (unlike [`FLAG_COMPRESSED`]) so downstream LOD-spawn consumers
+/// (`docs/engine/exal.md` §5.4, LC-D7-01) can reference it by name instead
+/// of a magic number.
+pub const FLAG_VISIBLE_WHEN_DISTANT: u32 = 0x00010000;
+
 /// ESM format variant — determines record / group header size.
 ///
 /// The two surviving layouts across the Bethesda lineage:
@@ -364,6 +372,18 @@ pub struct RecordHeader {
     pub data_size: u32,
     pub flags: u32,
     pub form_id: u32,
+}
+
+impl RecordHeader {
+    /// "Visible When Distant" / "Has Distant LOD" (#1731 / LC-D7-02).
+    /// Signals the base record should cull its full-resolution model once
+    /// a distant-LOD stand-in (Skyrim+/FO4 `.bto`, or Oblivion/FO3/FNV
+    /// `DistantLOD` placement) is shown for it, and marks it LOD-eligible
+    /// in the first place. See `crates/plugin/src/esm/reader.rs::FLAG_VISIBLE_WHEN_DISTANT`
+    /// and `docs/engine/exal.md` §5.4.
+    pub fn is_visible_when_distant(&self) -> bool {
+        self.flags & FLAG_VISIBLE_WHEN_DISTANT != 0
+    }
 }
 
 /// Parsed group header (GRUP).
@@ -1538,5 +1558,70 @@ mod tests {
         let header = reader.read_record_header().unwrap();
         let result = reader.read_sub_records(&header);
         assert!(result.is_err(), "data_size < 4 must return Err, got Ok");
+    }
+
+    // ── VWD / "Has Distant LOD" flag (#1731 / LC-D7-02) ─────────────────
+    //
+    // The record-header flag decoder only ever masked FLAG_COMPRESSED; the
+    // 0x00010000 "Visible When Distant" bit was stored in `header.flags`
+    // (never dropped) but had no named constant or accessor. These tests
+    // pin that the flag now surfaces via `RecordHeader::is_visible_when_distant`.
+
+    /// Build a bare synthetic record header (no sub-records) with the given
+    /// raw `flags` value — enough to exercise `read_record_header` without
+    /// a full record body.
+    fn build_record_header_with_flags(typ: &[u8; 4], flags: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(typ);
+        buf.extend_from_slice(&0u32.to_le_bytes()); // data_size
+        buf.extend_from_slice(&flags.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // form_id
+        buf.extend_from_slice(&[0u8; 8]); // Tes5Plus trailing metadata
+        buf
+    }
+
+    #[test]
+    fn vwd_flag_is_surfaced_when_set() {
+        let data = build_record_header_with_flags(b"STAT", FLAG_VISIBLE_WHEN_DISTANT);
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        let header = reader.read_record_header().unwrap();
+        assert!(
+            header.is_visible_when_distant(),
+            "FLAG_VISIBLE_WHEN_DISTANT (0x00010000) must be surfaced on the header"
+        );
+    }
+
+    #[test]
+    fn vwd_flag_is_false_when_unset() {
+        let data = build_record_header_with_flags(b"STAT", 0);
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        let header = reader.read_record_header().unwrap();
+        assert!(!header.is_visible_when_distant());
+    }
+
+    /// The deleted-REFR tombstone bit (`0x20`, SKY-D4-01 / #1660) is a
+    /// different bit on the same `flags` field — must not be confused with
+    /// VWD (`0x00010000`).
+    #[test]
+    fn vwd_flag_is_distinct_from_deleted_refr_flag() {
+        let data = build_record_header_with_flags(b"REFR", 0x20);
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        let header = reader.read_record_header().unwrap();
+        assert!(
+            !header.is_visible_when_distant(),
+            "the deleted-REFR flag (0x20) must not be mistaken for VWD (0x00010000)"
+        );
+    }
+
+    /// Both flags can be set simultaneously without interfering with each
+    /// other — they occupy distinct bits.
+    #[test]
+    fn vwd_flag_coexists_with_compressed_flag() {
+        let data =
+            build_record_header_with_flags(b"STAT", FLAG_VISIBLE_WHEN_DISTANT | FLAG_COMPRESSED);
+        let mut reader = EsmReader::with_variant(&data, EsmVariant::Tes5Plus);
+        let header = reader.read_record_header().unwrap();
+        assert!(header.is_visible_when_distant());
+        assert_ne!(header.flags & FLAG_COMPRESSED, 0);
     }
 }
