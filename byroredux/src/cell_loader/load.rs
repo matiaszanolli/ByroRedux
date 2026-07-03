@@ -70,6 +70,27 @@ pub(crate) fn apply_interior_cell_lighting(world: &mut World, lighting: &esm::ce
     );
 }
 
+/// Surface parsed `GLOB` runtime values as the `Globals` `World` resource,
+/// but only when it isn't already present (#1668, #1865 / SCR-D6-NEW-03).
+///
+/// Shared by every cell-load entry point (this module's interior path and
+/// [`super::exterior::load_one_exterior_cell`]) so they can't drift back
+/// into disagreement. Rebuilding unconditionally on every load would
+/// silently discard any runtime `Globals::set` mutation the moment another
+/// cell loads afterward — dormant today (no production writer exists yet)
+/// but a landmine for the pending `SetGlobalValue` Papyrus writer.
+pub(crate) fn ensure_globals_resource(
+    world: &mut World,
+    records: &std::collections::HashMap<u32, byroredux_plugin::esm::records::GlobalRecord>,
+) {
+    if world
+        .try_resource::<byroredux_scripting::globals::Globals>()
+        .is_none()
+    {
+        world.insert_resource(byroredux_scripting::globals::Globals::from_records(records));
+    }
+}
+
 pub(crate) fn stamp_cell_root(
     world: &mut World,
     cell_root: EntityId,
@@ -373,9 +394,7 @@ pub fn load_cell_with_masters(
     // resolve. Keyed in global load-order space (EsmIndex remaps record
     // FormIDs at parse), matching the comparand's remapped space. Built
     // before the `index.cells` move below — `globals` is a sibling field.
-    world.insert_resource(byroredux_scripting::globals::Globals::from_records(
-        &index.globals,
-    ));
+    ensure_globals_resource(world, &index.globals);
 
     // M40 Phase 2 Stage 1 — surface the parsed cell index as a World
     // resource so `&World` readers (door.teleport console command,
@@ -483,6 +502,50 @@ mod tests {
         assert!(
             msg.contains("Missing.esm"),
             "error should name the unreadable plugin: {msg}"
+        );
+    }
+
+    /// #1865 / SCR-D6-NEW-03 — `ensure_globals_resource` must guard on
+    /// `is_none()`, mirroring `exterior.rs`'s exterior-streaming guard,
+    /// so a runtime `Globals::set` mutation survives a second cell load
+    /// (e.g. an interior-to-interior door transition) rather than being
+    /// silently reset back to the ESM-parsed default. Pre-fix, `load.rs`'s
+    /// interior path called `insert_resource` unconditionally.
+    #[test]
+    fn ensure_globals_resource_preserves_runtime_mutation_across_reload() {
+        use byroredux_plugin::esm::records::global::SettingValue;
+        use byroredux_plugin::esm::records::GlobalRecord;
+        use byroredux_scripting::globals::Globals;
+        use std::collections::HashMap;
+
+        let mut records = HashMap::new();
+        records.insert(
+            0x1000,
+            GlobalRecord {
+                form_id: 0x1000,
+                editor_id: "GameHour".to_string(),
+                value: SettingValue::Float(8.0),
+            },
+        );
+
+        let mut world = World::new();
+
+        // First "load": no resource present yet, so it's built from records.
+        ensure_globals_resource(&mut world, &records);
+        assert_eq!(world.resource::<Globals>().get(0x1000), Some(8.0));
+
+        // A Papyrus SetGlobalValue-style runtime write.
+        world.resource_mut::<Globals>().set(0x1000, 23.5);
+        assert_eq!(world.resource::<Globals>().get(0x1000), Some(23.5));
+
+        // Second "load" (simulates an interior-to-interior transition) with
+        // the SAME static records — must NOT clobber the runtime mutation.
+        ensure_globals_resource(&mut world, &records);
+        assert_eq!(
+            world.resource::<Globals>().get(0x1000),
+            Some(23.5),
+            "a second cell load must preserve the runtime Globals::set mutation, \
+             not reset it back to the ESM-parsed default"
         );
     }
 

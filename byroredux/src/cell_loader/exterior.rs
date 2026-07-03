@@ -269,14 +269,7 @@ pub fn load_one_exterior_cell(
     // CTDA "Use Global" comparands resolve. The exterior path streams many
     // cells from one `record_index`; build the lean `Globals` map only when
     // it isn't already present rather than rebuilding it each cell.
-    if world
-        .try_resource::<byroredux_scripting::globals::Globals>()
-        .is_none()
-    {
-        world.insert_resource(byroredux_scripting::globals::Globals::from_records(
-            &wctx.record_index.globals,
-        ));
-    }
+    super::load::ensure_globals_resource(world, &wctx.record_index.globals);
 
     let index = &wctx.record_index.cells;
     let Some(cells_map) = index.exterior_cells.get(&wctx.worldspace_key) else {
