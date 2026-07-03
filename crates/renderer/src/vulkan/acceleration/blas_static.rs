@@ -460,6 +460,35 @@ impl AccelerationManager {
         // build_blas_batched calls during initial cell loads (M40 streaming).
         // Without this bump, every entry looks idle=0 and the BLAS budget
         // is unenforced across loading bursts.
+        //
+        // #1793 / PERF-D3-NEW-02 — this same per-call bump is also the
+        // cause of a DIFFERENT bug: a synchronous multi-cell burst (e.g.
+        // `--grid` radius 3 = 49 calls before the first real frame) means
+        // cell #1's entries are stamped with an early `frame_counter`
+        // value, then cell #49's call bumps the SAME shared counter 48
+        // more times before the first post-burst `build_tlas` measures
+        // idle-ness — aging cell #1's brand-new, not-yet-drawn entries by
+        // 48 "ticks" that represent OTHER cells loading, not real elapsed
+        // frames. `build_tlas` does re-stamp `last_used_frame` for any
+        // entry actually referenced by a `DrawCommand` that frame, but a
+        // streaming look-ahead BLAS with no draw command yet (built for a
+        // cell that isn't in view but was eagerly pre-built) has nothing
+        // to protect it and can become a false LRU-eviction victim before
+        // it's ever drawn once.
+        //
+        // Not fixed here: doing so correctly needs a burst-boundary signal
+        // from the caller (there's no single call site — exterior grid
+        // loads, interior loads, `scene/nif_loader.rs`, and `cornell.rs`
+        // each independently loop over `build_blas_batched` calls) so a
+        // "just-loaded, not-yet-real-frame-measured" entry can be told
+        // apart from a genuinely-idle one, without weakening the
+        // "unenforced across loading bursts" property this same bump
+        // exists for (a naive removal of the per-call bump reintroduces
+        // THAT bug). Deferred pending a `--grid` + low-VRAM-budget repro
+        // to validate a fix against — this is CPU bookkeeping only (no
+        // crash risk), but the failure mode (false eviction of a mesh
+        // that was never actually stale) has bitten this exact subsystem
+        // via subtle counter-semantics bugs before (#920, #1449).
         self.frame_counter = self.frame_counter.wrapping_add(1);
 
         let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;

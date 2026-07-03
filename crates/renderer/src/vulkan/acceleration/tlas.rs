@@ -149,6 +149,26 @@ impl AccelerationManager {
             } else {
                 let mesh_handle = draw_cmd.mesh_handle as usize;
                 let Some(Some(blas)) = self.blas_entries.get_mut(mesh_handle) else {
+                    // #1793 / PERF-D3-NEW-02 — no recovery path: once a
+                    // rigid mesh's BLAS is evicted (budget pressure) it
+                    // stays missing forever. `build_blas_batched` is only
+                    // invoked from cell-load / scene-load sites, never
+                    // per-frame, so there's nothing here that can lazily
+                    // rebuild it (unlike the skinned first-sight path,
+                    // which has an on-cmd batched builder designed for
+                    // exactly this). Building that recovery path isn't a
+                    // small addition: `build_blas_batched` is a blocking
+                    // `submit_one_time` builder (cell-load API shape), not
+                    // an on-cmd recorder safe to call mid-`draw_frame` —
+                    // it would need a genuinely new on-cmd static-BLAS
+                    // build primitive, mirroring
+                    // `build_skinned_blas_batched_on_cmd`, not a queue
+                    // bolted onto the existing one. Deferred pending a
+                    // scene that actually exercises budget eviction
+                    // (unreachable on the 12 GB dev card with vanilla
+                    // content) to validate against — this mesh keeps
+                    // rasterizing but silently vanishes from shadows /
+                    // reflections / GI until its cell unloads and reloads.
                     missing_rigid_blas += 1;
                     if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
                         missing_samples
