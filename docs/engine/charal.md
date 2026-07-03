@@ -473,8 +473,17 @@ follows the smoke-test pattern).
 - **Per-game derived-stat formulas.** Health / AP / Carry Weight / Melee Damage /
   Magicka / Stamina as functions of attributes + level — one citable formula per
   game (FO4 first).
-- **TES / Starfield skill → governing-attribute maps + leveling curves.** The
-  user-provided public data (§5).
+- **TES skill → governing-attribute maps + leveling curves** — **mostly closed**:
+  Oblivion (`SkillSet::OBLIVION`, `LevelingModel::OBLIVION`, `tes.rs`) and
+  Skyrim (`SkillSet::SKYRIM`, `LevelingModel::SKYRIM`, `skyrim.rs`) both ship;
+  Morrowind stays out of scope (not in the compat list). Ongoing UESP sweep of
+  Skyrim's per-skill gameplay-system formulas (Pickpocket/Speech/Lockpicking/
+  Sneak/Light Armor/Alchemy so far, `charal-skyrim-ruleset.md`) is a bonus, not
+  a blocker — none of it is required for the core ruleset above.
+- **Starfield skill-category ruleset + leveling curve.** **Blocked on source**:
+  confirmed 2026-07-04 that UESP has no Starfield namespace (checked via the
+  MediaWiki `siprop=namespaces` API directly — only Morrowind/Oblivion/Skyrim
+  exist there), so this needs a different wiki entirely, not a UESP sweep.
 - **FNV per-level tag-skill growth.** Still undocumented in any citable source
   (deferred at #1663 — see [[actor_value_population]]); pin against the engine
   before claiming tag-skill correctness.

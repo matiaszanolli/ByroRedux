@@ -117,3 +117,133 @@ computing it live.
 
 Same routing as the checks above: Speech AV is a CHARAL output, this pricing
 formula is a downstream gameplay-system consumer, not a derived stat itself.
+
+## Lockpicking — LOCKED (community-derived, not named GMSTs), gameplay-system input
+
+Source: UESP *Skyrim:Lockpicking*, 2026-07-04. Weaker sourcing tier than
+Pickpocket/Speech above — the page labels this "as it is currently understood"
+(community reverse-engineering, no named GMSTs cited), so treat the constants
+as good-but-unofficial.
+
+```
+SweetSpotDeg     = 60 × 2^(−LockDifficulty) × (0.82 + 0.6·Level/100) × MatchingPerk × (1 + Enchantment + Potion)
+PartialPickDeg   = (26 − 4·LockDifficulty) × (0.775 + 1.5·Level/100)     [one zone each side of the sweet spot]
+
+LockDifficulty = 1(Novice)..5(Master)
+MatchingPerk   = 1.75 + 0.25·LockDifficulty   if the tier-matching perk is unlocked, else 1
+Enchantment    = sum of equipped Fortify Lockpicking magnitude (0.5 = +50%)
+Potion         = active Fortify Lockpicking potion magnitude
+```
+
+Lockpick durability decays only while "struggling" (pick held outside both the
+sweet spot and partial-pick zones); time-to-break is skill- and
+difficulty-gated:
+```
+BaseBreakTime(DifficultyTier) = 2.00s Novice / 1.00s Apprentice / 0.75s Adept / 0.50s Expert / 0.25s Master
+BreakTime = BaseBreakTime × (1 + 0.5·Level/100)      [level 100 → 1.5× base]
+```
+Same "skill AV in, minigame-timing formula out" shape as the sneak-detection
+and pickpocket formulas — Lockpicking AV is a CHARAL output, this minigame
+tuning is a downstream consumer, not a derived stat itself.
+
+## Sneak Detection (Skyrim) — LOCKED (Sound/Distance halves), PENDING (Visual/skill halves) — out of CHARAL scope
+
+Source: UESP *Skyrim:Sneak*, 2026-07-04. A **second engine's** full stealth
+detection formula — same "real, sourced, one layer downstream of CHARAL"
+bucket as the FNV formula already built in `crates/core/src/stealth.rs`
+(see `charal-fnv-fo3-ruleset.md`), not a candidate for the `derived` table.
+
+```
+DetectionValue = fSneakBaseValue
+               + (SoundFactor + VisualFactor + NoticerSkillFactor) × DistanceAttenuation
+               + (NoticerSkillFactor − SneakerSkillFactor)
+```
+The wiki's own formula has `NoticerSkillFactor` appearing twice (once inside
+the attenuated sum, once again unattenuated against `SneakerSkillFactor`) —
+transcribed as given, flagged as a possible source-page redundancy rather than
+silently "fixed," since neither `VisualFactor` nor either `SkillFactor` term is
+decomposed numerically on this page (see PENDING below).
+
+**Fully locked** (named GMSTs):
+```
+fSneakBaseValue = −15
+DistanceAttenuation = (1 − distance/fSneakMaxDistance)^fSneakDistanceAttenuationExponent
+                    = (1 − distance/2500)^2                        [fSneakMaxDistance=2500, exponent=2]
+
+SoundFactor = (Movement + Action) × (1 if Sneaker has LoS to Noticer else fSneakSoundLosMult=0.3)
+  Movement = (fSneakEquippedWeightBase + fSneakEquippedWeightMult·ArmorWeight) × (fSneakRunningMult if running) × Muffle
+           = (12 + 0.5·ArmorWeight) × (2 if running) × Muffle      [Base=12, WeightMult=0.5, RunningMult=2]
+  Action   = ActionSound × fSneakActionMult = ActionSound × 2
+```
+`Muffle` = 1 − magic-effect magnitude (Muffled Movement perk = 0.5 muffle i.e.
+50% noise reduction; Silence perk = 0.0 muffle i.e. silent). **Sneak skill
+itself does NOT reduce Sound or Visual factor — the wiki is explicit that it
+only reduces the Noticer's skill factor term**, the inverse framing from FNV
+(where `TargetSkill` reads the *sneaking* actor's own Sneak AV directly). Worth
+remembering as a real per-engine formula-shape difference, not just different
+constants.
+
+**PENDING** — `VisualFactor` (light-level/LOS-cone dependent, described
+qualitatively only: brighter light increases it, equipped-spell glow adds to
+it, enchantment aura does not) and both `NoticerSkillFactor`/
+`SneakerSkillFactor` (not decomposed to a formula on this page) have no
+citable numeric form yet — no guessing, [[feedback_no_guessing]].
+
+Sneak attacks: flat, perk-gated damage multipliers by weapon type (Unarmed/Bow
+×2, Two-handed ×2, Sword/Mace/Axe ×3 → ×6 with Backstab, Dagger ×3 → ×6 with
+Backstab → ×15 with Assassin's Blade, doubled again by 4 specific Dark
+Brotherhood gloves) — a perk-effect table, not a derived-stat formula, same
+bucket as every other perk-damage-multiplier table already captured.
+
+Not wired into `stealth.rs` — that module's `DetectionInputs`/`detection_score`
+is FNV-specific by construction (its own doc comment says so); a Skyrim
+variant would be a second, parallel formula (different shape per the muffle
+note above), not a drop-in reuse. Flagging as a build candidate if/when the
+Visual/skill-factor gap closes, not building speculatively ahead of that.
+
+## Light Armor Rating Bonus — LOCKED, first Skyrim skill-derived multiplier candidate
+
+Source: UESP *Skyrim:Light Armor*, 2026-07-04.
+```
+ArmorRatingMultiplier = 1 + 0.004 × LightArmorSkill    (player)
+ArmorRatingMultiplier = 1 + 0.015 × LightArmorSkill    (NPC — distinct, higher, constant)
+```
+Structurally different from every other Skyrim finding so far: it's a clean
+affine **multiplier** output driven by a **skill** AV, not an attribute (Skyrim
+has none) — the shape `DerivedStatFormula` already supports (`DerivedInput`
+takes any AVIF FormID, not just attributes), just never yet populated for
+Skyrim because `skyrim_ruleset()`'s empty `derived` table was reasoned about
+in terms of **attribute**-derived pools only (see `skyrim.rs` module doc: "no
+attribute-derived pools"), not skill-derived multipliers — this is a
+genuinely new category, not a contradiction of what's already built. A real
+candidate to populate Skyrim's `derived` table for the first time, but holding
+off on code until Heavy Armor's matching constant is also sourced (expected to
+exist by symmetry, unconfirmed) so both land together rather than one skill at
+a time.
+
+Also on this page, not skill-derived (equipped-weight-derived, applies
+regardless of armor skill): **movement speed penalty** = `min(15%, TotalEquippedWeight × 3/23)` —
+a universal encumbrance mechanic, not part of the Light Armor governance
+graph, noted here only because it appeared on the same page.
+
+## Alchemy potion/poison strength — LOCKED, crafting-system output (not an actor stat)
+
+Source: UESP *Skyrim:Alchemy* "Formula" section, 2026-07-04. Named GMSTs
+`fAlchemyIngredientInitMult=4`, `fAlchemySkillFactor=1.5`:
+```
+Result = fAlchemyIngredientInitMult × BaseMag × SkillMult
+        × AlchemistPerk[1.0–2.0] × BenefactorPerk[1.25] × PhysicianPerk[1.25]
+        × PoisonerPerk[1.25] × SumOfEnchantments[≥1.0] × SeekerOfShadows[1.1]
+
+SkillMult = 1 + (fAlchemySkillFactor − 1) × Skill/100 = 1 + 0.005·Skill
+
+If Result < BaseMag, Result = BaseMag (magnitude floor).
+```
+Same "clean affine SkillMult term" shape as Light Armor's `1+0.004·Skill`
+Armor Rating bonus above — second confirmation that Skyrim's
+skill-drives-a-multiplier pattern is a real recurring shape, not a one-off.
+**Routed further out of CHARAL scope than every other finding so far**: the
+output isn't even an actor stat modifier (like Pickpocket chance or Barter
+price) — it's the potency of a **crafted item** (a potion/poison), which then
+separately affects whoever consumes it. Firmly a crafting-system formula, not
+a derived stat or even a gameplay-system consumer of an actor's own stats.
