@@ -495,3 +495,59 @@ fn mixed_in_raster_and_rt_only_partition_is_stable() {
         vec![1, 4, 3, 2]
     );
 }
+
+// ── D2-NEW-05 / #1806 — wireframe is a PipelineKey axis, so the sort
+// key must cluster by it too, or a wireframe draw lands mid-run among
+// fill draws and forces an extra `cmd_bind_pipeline` per flip.
+
+/// Two draws identical in every other field must sort into different
+/// clusters when only `wireframe` differs — otherwise the sort key
+/// can't tell `PipelineKey::Opaque { wireframe: true }` apart from
+/// `PipelineKey::Opaque { wireframe: false }` and the batch-merge pass
+/// would try to extend a batch across the pipeline-bind boundary.
+#[test]
+fn wireframe_flag_changes_the_sort_key() {
+    let fill = cmd(false, false, false);
+    let mut wire = cmd(false, false, false);
+    wire.wireframe = true;
+    assert_ne!(
+        draw_sort_key(&fill),
+        draw_sort_key(&wire),
+        "wireframe must be a distinguishing sort-key axis (D2-NEW-05 / #1806)"
+    );
+}
+
+/// Regression for #1806: same-mesh draws that alternate `wireframe`
+/// true/false must sort into two contiguous runs (all wireframe first
+/// or all fill first — either is fine, as long as they aren't
+/// interleaved), matching the same batch-clustering property the
+/// existing additive/mesh tests pin for the other `PipelineKey` axes.
+/// Pre-fix, `draw_sort_key` never read `cmd.wireframe`, so these would
+/// interleave in whatever order the other fields (all tied here)
+/// happened to break ties.
+#[test]
+fn wireframe_and_fill_draws_of_same_mesh_do_not_interleave() {
+    let mut cmds = Vec::new();
+    for i in 0..6u32 {
+        let mut c = cmd(false, false, false);
+        c.mesh_handle = 42;
+        c.wireframe = (i % 2) == 0;
+        c.entity_id = i;
+        cmds.push(c);
+    }
+    cmds.sort_by_key(draw_sort_key);
+
+    let flags: Vec<bool> = cmds.iter().map(|c| c.wireframe).collect();
+    // Find the boundary and assert everything before it shares one
+    // value and everything after shares the other — i.e. exactly one
+    // run per wireframe value, never more.
+    let first = flags[0];
+    let boundary = flags.iter().position(|&w| w != first).unwrap_or(flags.len());
+    assert!(
+        flags[boundary..].iter().all(|&w| w != first),
+        "wireframe={} and wireframe={} draws must not interleave; got {:?}",
+        first,
+        !first,
+        flags,
+    );
+}

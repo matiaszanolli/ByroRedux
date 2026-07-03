@@ -37,10 +37,21 @@ fn f32_sortable_u32(value: f32) -> u32 {
     }
 }
 
-/// Pack per-draw depth state into a single u8 so consecutive same-state
-/// draws cluster: bit 0 = z_test, bit 1 = z_write, bits 4-7 = z_function.
+/// Pack per-draw depth state (plus the wireframe pipeline-bind boundary)
+/// into a single u8 so consecutive same-state draws cluster: bit 0 =
+/// z_test, bit 1 = z_write, bit 2 = wireframe, bits 4-7 = z_function.
+///
+/// D2-NEW-05 (#1806): `wireframe` folded into this slot's spare bit 2 —
+/// #869 made it a `PipelineKey` axis (`Opaque { wireframe }` /
+/// `Blended { .., wireframe }`), a pipeline-bind boundary the sort key
+/// must respect the same way it already respects blend factors and
+/// depth state, or a wireframe draw interleaved among fill draws would
+/// split an otherwise-contiguous batch and force extra binds.
 fn pack_depth_state(cmd: &DrawCommand) -> u8 {
-    (cmd.z_test as u8) | ((cmd.z_write as u8) << 1) | ((cmd.z_function & 0x0F) << 4)
+    (cmd.z_test as u8)
+        | ((cmd.z_write as u8) << 1)
+        | ((cmd.wireframe as u8) << 2)
+        | ((cmd.z_function & 0x0F) << 4)
 }
 
 /// Apply the optional `BYRO_FOG_NEAR` / `BYRO_FOG_FAR` distance overrides
@@ -177,6 +188,12 @@ fn compute_directional_upload(
 ///                   order-independent → slot 6 = mesh, slot 8 = sort_depth,
 ///                   so same-mesh particles stay contiguous and instance-
 ///                   batch (#1649).
+///
+/// D2-NEW-05 (#1806): every `depth_state` slot above (6 for Opaque, 7 for
+/// Transparent) also carries the `wireframe` pipeline-bind boundary,
+/// packed into `pack_depth_state`'s spare bit 2 — see that function's
+/// doc comment. Without it a wireframe draw could land mid-run among
+/// fill draws of the same mesh/depth state and split the batch.
 ///
 /// Slot 2 widened from `is_decal as u8` to `render_layer as u8`
 /// (#renderlayer): same shape, but consecutive same-layer draws now
