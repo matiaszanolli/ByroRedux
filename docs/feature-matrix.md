@@ -134,7 +134,7 @@ Havok `.hkx` loader (M41.x, Tier 5).
 | ESM SCPT record parse (FO3/FNV, 1 257 records) | ✓ |
 | Papyrus `.psc` → full AST (M30.2) | ✓ |
 | ECS-native event hooks (M47.0) — `OnCellLoad`, `OnActivate`, `OnHit` | ✓ |
-| CTDA condition evaluation with OR-precedence (M47.1) | ✓ 7 functions |
+| CTDA condition evaluation with OR-precedence (M47.1) | ✓ 13 functions |
 | `script.activate` console command wired | ✓ |
 | Full Papyrus transpiler (M47.2) | ✓ `.pex` recognizer slice (CFG→lift→control-flow→lower→short-circuit); full transpiler deferred |
 
