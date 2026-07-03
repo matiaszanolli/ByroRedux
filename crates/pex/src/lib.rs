@@ -76,21 +76,41 @@ mod tests {
     use super::*;
 
     /// A tiny hand-built `.pex` writer, just enough to exercise the reader
-    /// end-to-end. Little-endian (FO4 dialect). Mirrors the on-disk layout
-    /// field-for-field so the round-trip pins the reader's read order.
+    /// end-to-end. Mirrors the on-disk layout field-for-field so the
+    /// round-trip pins the reader's read order. `big_endian` selects the
+    /// Skyrim dialect (BE magic + BE multi-byte fields); the magic itself is
+    /// always written little-endian regardless (the reader's `u32_opt(true)`
+    /// decodes it that way before endianness is known — see `read_header`).
     struct PexWriter {
         buf: Vec<u8>,
         strings: Vec<String>,
+        big_endian: bool,
     }
 
     impl PexWriter {
         fn new() -> Self {
-            Self { buf: Vec::new(), strings: Vec::new() }
+            Self { buf: Vec::new(), strings: Vec::new(), big_endian: false }
+        }
+        fn new_be() -> Self {
+            Self { buf: Vec::new(), strings: Vec::new(), big_endian: true }
         }
         fn u8(&mut self, v: u8) { self.buf.push(v); }
-        fn u16(&mut self, v: u16) { self.buf.extend_from_slice(&v.to_le_bytes()); }
-        fn u32(&mut self, v: u32) { self.buf.extend_from_slice(&v.to_le_bytes()); }
-        fn i64(&mut self, v: i64) { self.buf.extend_from_slice(&v.to_le_bytes()); }
+        fn u16(&mut self, v: u16) {
+            let b = if self.big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
+            self.buf.extend_from_slice(&b);
+        }
+        fn u32(&mut self, v: u32) {
+            let b = if self.big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
+            self.buf.extend_from_slice(&b);
+        }
+        fn i64(&mut self, v: i64) {
+            let b = if self.big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
+            self.buf.extend_from_slice(&b);
+        }
+        /// Magic is always little-endian on disk regardless of dialect.
+        fn magic(&mut self, v: u32) {
+            self.buf.extend_from_slice(&v.to_le_bytes());
+        }
         fn string(&mut self, s: &str) {
             self.u16(s.len() as u16);
             self.buf.extend_from_slice(s.as_bytes());
@@ -124,7 +144,7 @@ mod tests {
         }
 
         // ── header (magic written LE) ──
-        w.u32(0xFA57_C0DE);
+        w.magic(0xFA57_C0DE);
         w.u8(3); // major
         w.u8(2); // minor
         w.u16(0); // game_id (FO4)
@@ -255,6 +275,192 @@ mod tests {
         assert_eq!(call.args.len(), 3);
         assert_eq!(call.args[0].as_identifier(), Some("Bar"));
         assert_eq!(call.var_args, vec![Value::Bool(true)]);
+    }
+
+    /// #1728 / SCR-D1-02 — build a one-object Skyrim `.pex`: big-endian
+    /// magic + all multi-byte fields BE, and the original-Skyrim object
+    /// layout (no const-flag byte, no struct infos, no guards — those are
+    /// FO4+/Starfield additions gated on `script_type.is_skyrim()` /
+    /// `== ScriptType::Starfield` in `reader.rs::read_objects`).
+    fn build_sample_skyrim_be() -> Vec<u8> {
+        let mut w = PexWriter::new_be();
+        for s in ["Foo", "Actor", "MyProp", "Int", "OnActivate", "None"] {
+            w.intern(s);
+        }
+
+        // ── header (magic written LE even in the BE dialect) ──
+        w.magic(0xDEC0_57FA);
+        w.u8(3); // major
+        w.u8(2); // minor
+        w.u16(0); // game_id (irrelevant for Skyrim — endian alone selects it)
+        w.i64(1_700_000_000); // compilation time
+        w.string("Foo.psc");
+        w.string("user");
+        w.string("computer");
+
+        // ── string table ──
+        let table = w.strings.clone();
+        w.u16(table.len() as u16);
+        for s in &table {
+            w.string(s);
+        }
+
+        w.u8(0); // debug info: absent
+        w.u16(0); // user flags: none
+
+        // ── objects: 1 ──
+        w.u16(1);
+        w.sidx("Foo"); // name
+        w.u32(0); // size (ignored)
+        w.sidx("Actor"); // parent
+        w.sidx("None"); // doc string
+        // NO const_flag byte on Skyrim.
+        w.u32(0); // user flags
+        w.sidx("None"); // auto-state name
+        // NO struct_infos count on Skyrim.
+        // variables: 1, NO const_flag byte per variable on Skyrim.
+        w.u16(1);
+        w.sidx("MyProp");
+        w.sidx("Int");
+        w.u32(0); // user flags
+        w.u8(3); // Value tag = Integer
+        w.u32(7i32 as u32); // default value = 7
+        // NO guards on Skyrim.
+        // properties: 0
+        w.u16(0);
+        // states: 1 (default state) with one no-op function
+        w.u16(1);
+        w.sidx("None"); // state name
+        w.u16(1); // function count
+        w.sidx("OnActivate");
+        w.sidx("None"); // return type
+        w.sidx("None"); // doc
+        w.u32(0); // user flags
+        w.u8(0); // flags
+        w.u16(0); // params: 0
+        w.u16(0); // locals: 0
+        w.u16(0); // instructions: 0
+
+        w.buf
+    }
+
+    #[test]
+    fn parses_a_handbuilt_skyrim_be_pex() {
+        let bytes = build_sample_skyrim_be();
+        let pex = parse(&bytes).expect("BE sample .pex parses");
+
+        assert_eq!(pex.script_type, ScriptType::Skyrim);
+        assert_eq!(pex.header.major_version, 3);
+        assert_eq!(pex.header.source_file_name, "Foo.psc");
+        assert!(!pex.debug_info.present);
+
+        let obj = pex.main_object().expect("one object");
+        assert_eq!(obj.name, "Foo");
+        assert_eq!(obj.parent_class_name, "Actor");
+        assert_eq!(obj.const_flag, 0, "Skyrim has no const-flag field, reader defaults to 0");
+        assert!(obj.struct_infos.is_empty(), "Skyrim has no struct infos");
+        assert!(obj.guards.is_empty(), "Skyrim has no guards");
+
+        assert_eq!(obj.variables.len(), 1);
+        let var = &obj.variables[0];
+        assert_eq!(var.name, "MyProp");
+        assert_eq!(var.default_value, Value::Integer(7));
+        assert_eq!(var.const_flag, 0, "Skyrim variables have no const-flag field");
+
+        let func = &obj.states[0].functions[0];
+        assert_eq!(func.name, "OnActivate");
+        assert!(func.instructions.is_empty());
+    }
+
+    /// #1728 / SCR-D1-02 — build a one-object Starfield `.pex`: LE magic +
+    /// `game_id == 4`, exercising the fields Starfield adds on top of the
+    /// FO4 layout: per-object `const_flag`, `struct_infos`, per-variable
+    /// `const_flag`, and the Starfield-only `guards` list.
+    fn build_sample_starfield_with_guards() -> Vec<u8> {
+        let mut w = PexWriter::new();
+        for s in ["Foo", "ScriptObject", "MyProp", "Int", "OnInit", "None", "SomeGuard"] {
+            w.intern(s);
+        }
+
+        w.magic(0xFA57_C0DE);
+        w.u8(3); // major
+        w.u8(2); // minor
+        w.u16(4); // game_id (Starfield)
+        w.i64(1_700_000_000);
+        w.string("Foo.psc");
+        w.string("user");
+        w.string("computer");
+
+        let table = w.strings.clone();
+        w.u16(table.len() as u16);
+        for s in &table {
+            w.string(s);
+        }
+
+        w.u8(0); // debug info: absent
+        w.u16(0); // user flags: none
+
+        // ── objects: 1 ──
+        w.u16(1);
+        w.sidx("Foo");
+        w.u32(0); // size
+        w.sidx("ScriptObject");
+        w.sidx("None");
+        w.u8(1); // const_flag (FO4+/Starfield field)
+        w.u32(0); // user flags
+        w.sidx("None"); // auto-state name
+        w.u16(0); // struct_infos: 0
+        // variables: 1, WITH const_flag byte per variable.
+        w.u16(1);
+        w.sidx("MyProp");
+        w.sidx("Int");
+        w.u32(0); // user flags
+        w.u8(3); // Value tag = Integer
+        w.u32(9i32 as u32); // default value = 9
+        w.u8(1); // const_flag
+        // guards: 1 (Starfield-only)
+        w.u16(1);
+        w.sidx("SomeGuard");
+        // properties: 0
+        w.u16(0);
+        // states: 1 with one no-op function
+        w.u16(1);
+        w.sidx("None");
+        w.u16(1);
+        w.sidx("OnInit");
+        w.sidx("None");
+        w.sidx("None");
+        w.u32(0);
+        w.u8(0);
+        w.u16(0); // params: 0
+        w.u16(0); // locals: 0
+        w.u16(0); // instructions: 0
+
+        w.buf
+    }
+
+    #[test]
+    fn parses_a_handbuilt_starfield_pex_with_guards() {
+        let bytes = build_sample_starfield_with_guards();
+        let pex = parse(&bytes).expect("Starfield sample .pex parses");
+
+        assert_eq!(pex.script_type, ScriptType::Starfield);
+
+        let obj = pex.main_object().expect("one object");
+        assert_eq!(obj.name, "Foo");
+        assert_eq!(obj.const_flag, 1, "Starfield reads the const_flag byte");
+        assert!(obj.struct_infos.is_empty(), "0 struct infos, but the count field was read");
+
+        assert_eq!(obj.variables.len(), 1);
+        let var = &obj.variables[0];
+        assert_eq!(var.default_value, Value::Integer(9));
+        assert_eq!(var.const_flag, 1, "Starfield variables carry a const_flag byte");
+
+        assert_eq!(obj.guards.len(), 1, "Starfield-only guards list");
+        assert_eq!(obj.guards[0].name, "SomeGuard");
+
+        let func = &obj.states[0].functions[0];
+        assert_eq!(func.name, "OnInit");
     }
 
     #[test]
