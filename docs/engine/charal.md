@@ -365,17 +365,70 @@ but the page confirms its *progression strategy* differs from the player's XP cu
 that difference is exactly a `LevelingModel` variant, not a new component:
 
 - **FO3 / FNV / FO4 — *scale-to-leader*.** Companion stats scale off the **player's**
-  level (FO3 capped, *Broken Steel* lifts to 30; FO4 uncapped), not their own XP. This
-  is a distinct leveling strategy — `LevelReward`/`LevelingModel` gains a `ScaleToLeader`
-  arm whose "level" input is the player's, with the actual per-level numbers coming from
-  the NPC's level-list / template records, not a hardcoded curve.
-- **FO4 *affinity* is ANOTHER reputation-family instance.** Per-companion approval moves
-  up/down with player actions and at **max** unlocks a permanent companion perk. That is
-  the same `{ AV + band classifier → effect }` shape as Karma — but **scoped to one
-  relationship** (one affinity AV per companion) rather than world-wide. Reinforces the
-  reputation family ([[charal-fnv-fo3-ruleset]] Karma section): Karma = global 1-axis,
-  FNV Reputation = per-faction 2-axis (Fame/Infamy), FO4 affinity = per-companion 1-axis.
-  The perk-at-threshold reward is scripting/quest data, as always.
+  level, not their own XP. **Correction to the original prediction below** (verify-
+  against-code discipline, [[feedback_audit_findings]]): this does **NOT** need a new
+  `LevelingModel::ScaleToLeader` arm at all. `CharacterRuleset::derived_value(avif, avs,
+  level)` already takes `level` as a **caller-supplied parameter**, not something it
+  reads off the target's own `CharacterLevel` — so a companion's Health formula is
+  already expressible as an ordinary `DerivedStatFormula::affine(DerivedInput::LEVEL,
+  …)`, evaluated by passing the **player's** level instead of the companion's own. The
+  existing mechanism covers this; nothing new to build. **Confirmed with a real closed
+  formula** (source: fandom *Fallout 4 companions*, 2026-07-03 — supersedes the FO3 page's
+  "just level-list snapshots, no formula" read): FO4 gives an exact linear form,
+  `HP = Base + 5·(PlayerLevel − Anchor)`, per companion —
+  Cait/Danse/Deacon/Hancock/MacCready/Piper/Preston/X6-88 = `135 + 5·PlayerLevel`
+  (Base 185, Anchor 10), Codsworth `145+5·PL` (195/10), Nick Valentine `175+5·PL`
+  (225/10), Strong `195+5·PL` (245/10), **Dogmeat anchors at level 1, not 10**:
+  `145+5·PlayerLevel` (Base 150). Verified: Cait at PL 10 → 135+50=185 ✓; PL 20 →
+  235 = 185+(20−10)·5 ✓. **Curie is the exception** — flat HP (440 Miss Nanny / 670
+  Synth body), not level-scaled at all; robot companions (Ada/Automatron) are
+  "Variable" (player-customized, no formula). FO3's original "just snapshots" read
+  was premature — the shape was there, FO3's own page just didn't decompose it into
+  `base + slope·(level−anchor)` the way FO4's does. Per-companion population (the
+  FormIDs behind each Base/Anchor pair) is content data for when NPC population reaches
+  named companions, not a new mechanism.
+- **XP-award-on-companion-kill rule confirmed cross-game** (source: fandom *Fallout 4
+  companions*, 2026-07-03): FO4 restates FO3's rule ("companions... do not automatically
+  reward XP... [player needs] around 20%–30% of total HP dealt... before the companion
+  deals the killing blow") — same mechanic, but FO4's own page gives a **fuzzier range**
+  (20–30%) versus FO3's precise 30%, so this doesn't sharpen the number, just confirms
+  the family is real across both games. Still the same "XP-award trigger, not an XP-curve
+  or reward-shape concern" gap noted at FO3 — `LevelingModel` has no home for "when/how
+  much XP a kill grants" yet.
+- **FNV *Nerve* — a new Charisma-governed, cross-actor buff formula** (source: fandom
+  *Fallout: New Vegas companions*, 2026-07-03): `CompanionBonus = 5% × PlayerCharisma`,
+  applied to **both** a companion's damage output and Damage Threshold (CHA 10 → +50%;
+  CHA 1 → +5%). Structurally new for CHARAL: it's SPECIAL-governed (Charisma) but the
+  *output* lands on a **different actor** (the companion), not the player who owns the
+  stat — same "gameplay-system input" bucket as FO4's settlement-population/persuasion
+  rows (Charisma-driven, not a per-actor derived AV), but the first one that's a
+  cross-actor party buff rather than a self-effect. **Shipped-bug caveat, load-bearing
+  for compat accuracy**: the wiki flags this section `{{Bugged}}` — in the actual FNV
+  build, only the **damage** half of Nerve ever applies; the DT half is dead code. If
+  this is ever implemented, that's a genuine "intended formula" vs. "what players
+  actually experienced" fork to decide explicitly (same category of question as any
+  other engine bug ByroRedux has had to choose to replicate or fix) — not decided here.
+- **FO4 *affinity* is ANOTHER reputation-family instance — now BUILT** (source: fandom
+  *Affinity*, 2026-07-03; `crates/core/src/character/reputation.rs`, 6 new tests,
+  core 503 green). Per-companion approval moves up/down with player actions and at
+  **max** unlocks a permanent companion perk — the same `{ AV + band classifier →
+  effect }` shape as Karma, but **scoped to one relationship** (one affinity AV per
+  companion) rather than world-wide, and **asymmetric**: clamps to `[-1000, +1100]`
+  (not Karma's symmetric `±1000`), 7 bands (Hatred/Disdain/Neutral/Friend/Admiration/
+  Confidant/Idolize) at thresholds `-500/0/250/500/750/1000`. Unlike Karma, the source
+  gives a **fully specified accrual formula** straight from the decompiled
+  `CompanionActorScript.psc` (`TryToModAffinity`), not just wiki prose: reactions are
+  `±15` (like/dislike) or `±35` (love/hate), scaled by a `CA_Size_{Small,Normal,Large}`
+  multiplier (`0.5/1/1.5`); passive following grants `40 − 0.033·current_affinity`
+  every in-game 10 minutes (self-limiting, verified against 5 worked examples on the
+  source page, e.g. 500 affinity → +23.5). `AffinityBand`/`affinity_band`/
+  `clamp_affinity`/`AffinityReaction`/`AffinityReactionSize`/`affinity_reaction_delta`/
+  `affinity_passive_gain` are classifiers/pure-functions only (mirroring Karma) — no
+  per-actor storage yet (same as Karma/Reputation, waits on the player entity + a
+  per-companion `AffinityStanding`-shaped component). Confirms the family taxonomy:
+  Karma = global 1-axis, FNV Reputation = per-faction 2-axis (Fame/Infamy), FO4
+  affinity = per-companion 1-axis with the richest sourced formula of the three. The
+  perk-at-threshold reward is scripting/quest data, as always.
 - **FO76 has no traditional companions** (C.A.M.P. allies) — out of scope for now.
 - **FO1 / FO2 companion mechanics** (no leveling / fixed "stage" model-swap, the
   200-byte/5-record truncation bug) are **out of scope** — those are the isometric

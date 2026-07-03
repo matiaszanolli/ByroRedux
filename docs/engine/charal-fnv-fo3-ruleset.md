@@ -138,6 +138,16 @@ modifier (those apply to Sneak itself upstream, not this formula). **Confirmed
 identical in FNV** (source: fandom *Sneak (Fallout: New Vegas)*, 2026-07-03, same
 citation) — FNV explicitly inherits FO3's pickpocket math unchanged.
 
+**`ItemValue` itself resolved** (source: fandom *Equipment condition*, 2026-07-03):
+`DisplayedValue = floor(BaseValue × Condition^1.5)`, where `Condition = CurrentHP /
+MaxHP ∈ [0,1]`. This is the exact quantity the pickpocket formula's `ItemValue` term
+reads — a condition-scaled item price, not the item's flat base value (explaining the
+wiki's own worked example: a 225-cap pistol at 50% HP displays as 79 caps, not 112).
+This formula, and the rest of that page (weapon-damage/armor-DR degradation curves,
+per-shot condition decay rates), is **equipment/item-system data, not a character
+stat** — same "confirmed real, deliberately not CHARAL's" treatment as Sneak
+Detection above, recorded only to close out what `ItemValue` means.
+
 ### Sneak Detection (FNV) — LOCKED, but an AI/stealth subsystem, not a CHARAL stat
 
 Source: fandom *Sneak (Fallout: New Vegas)*, 2026-07-03. Unlike FO4/FO76 (both wikis

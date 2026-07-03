@@ -14,9 +14,9 @@
 //!
 //! | Instance       | Scope          | Axes               | Classifier   |
 //! |----------------|----------------|--------------------|--------------|
-//! | Karma          | global         | 1 signed, clamped  | 1-D band     |
-//! | FNV Reputation | per-faction    | 2 (Fame, Infamy)   | 4×4 grid     |
-//! | FO4 affinity   | per-companion  | 1 signed           | threshold    |
+//! | Karma          | global         | 1 signed, clamped [-1000,1000] | 1-D band (5) |
+//! | FNV Reputation | per-faction    | 2 (Fame, Infamy)               | 4×4 grid     |
+//! | FO4 affinity   | per-companion  | 1 signed, clamped [-1000,1100] | 1-D band (7) |
 //!
 //! ## Efficiency
 //!
@@ -216,6 +216,147 @@ pub mod fnv_faction_thresholds {
             .find(|(id, _)| *id == form_id)
             .map(|(_, t)| *t)
     }
+}
+
+// ---------------------------------------------------------------------------
+// FO4 Affinity — the third reputation-family instance: per-companion, 1-axis,
+// asymmetric bounds, threshold-banded like Karma but with its own scale and
+// (unlike Karma) a fully specified accrual/decay formula straight from the
+// decompiled `CompanionActorScript.psc` (`TryToModAffinity`), not just wiki
+// prose. Source: fandom *Affinity*, 2026-07-03.
+// ---------------------------------------------------------------------------
+
+/// Affinity's inclusive value bounds. **Asymmetric**, unlike Karma: floors at
+/// `-1000` (Hatred — permanent departure), caps at `+1100` (100 past the
+/// `+1000` "Idolize" threshold, i.e. a fixed buffer above max band rather than
+/// a round number).
+pub const AFFINITY_MIN: i32 = -1000;
+/// See [`AFFINITY_MIN`].
+pub const AFFINITY_MAX: i32 = 1100;
+
+/// The seven Affinity bands, ordered Hatred → Idolize so comparisons work
+/// directly. `repr(i8)` keeps it one byte, mirroring [`KarmaBand`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[repr(i8)]
+pub enum AffinityBand {
+    Hatred = -3,
+    Disdain = -2,
+    #[default]
+    Neutral = 0,
+    Friend = 1,
+    Admiration = 2,
+    Confidant = 3,
+    Idolize = 4,
+}
+
+impl AffinityBand {
+    /// The wiki's relationship name for this band.
+    pub const fn name(self) -> &'static str {
+        match self {
+            AffinityBand::Hatred => "Hatred",
+            AffinityBand::Disdain => "Disdain",
+            AffinityBand::Neutral => "Neutral",
+            AffinityBand::Friend => "Friend",
+            AffinityBand::Admiration => "Admiration",
+            AffinityBand::Confidant => "Confidant",
+            AffinityBand::Idolize => "Infatuation",
+        }
+    }
+}
+
+/// Classify a raw Affinity value into its band. Thresholds: `1000` Idolize,
+/// `750` Confidant, `500` Admiration, `250` Friend, `0` Neutral, `-500`
+/// Disdain, below that Hatred.
+#[inline]
+pub const fn affinity_band(value: i32) -> AffinityBand {
+    if value >= 1000 {
+        AffinityBand::Idolize
+    } else if value >= 750 {
+        AffinityBand::Confidant
+    } else if value >= 500 {
+        AffinityBand::Admiration
+    } else if value >= 250 {
+        AffinityBand::Friend
+    } else if value >= 0 {
+        AffinityBand::Neutral
+    } else if value >= -500 {
+        AffinityBand::Disdain
+    } else {
+        AffinityBand::Hatred
+    }
+}
+
+/// Clamp a raw Affinity value to `[AFFINITY_MIN, AFFINITY_MAX]`.
+#[inline]
+pub const fn clamp_affinity(value: i32) -> i32 {
+    if value < AFFINITY_MIN {
+        AFFINITY_MIN
+    } else if value > AFFINITY_MAX {
+        AFFINITY_MAX
+    } else {
+        value
+    }
+}
+
+/// A companion's reaction to a player action/dialogue choice — the four
+/// discrete deltas `TryToModAffinity` applies before the size scalar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AffinityReaction {
+    Liked,
+    Loved,
+    Disliked,
+    Hated,
+}
+
+impl AffinityReaction {
+    /// The base delta before the [`AffinityReactionSize`] scalar.
+    #[inline]
+    const fn base_delta(self) -> f32 {
+        match self {
+            AffinityReaction::Liked => 15.0,
+            AffinityReaction::Loved => 35.0,
+            AffinityReaction::Disliked => -15.0,
+            AffinityReaction::Hated => -35.0,
+        }
+    }
+}
+
+/// The `CA_Size_*` scalar `TryToModAffinity` multiplies a reaction by. Most
+/// repeatable actions (weapon modding, lockpicking, …) are `Small`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AffinityReactionSize {
+    Small,
+    Normal,
+    Large,
+}
+
+impl AffinityReactionSize {
+    #[inline]
+    const fn scalar(self) -> f32 {
+        match self {
+            AffinityReactionSize::Small => 0.5,
+            AffinityReactionSize::Normal => 1.0,
+            AffinityReactionSize::Large => 1.5,
+        }
+    }
+}
+
+/// The signed Affinity delta for one reaction at a given size — direct
+/// transcription of `TryToModAffinity`.
+#[inline]
+pub fn affinity_reaction_delta(reaction: AffinityReaction, size: AffinityReactionSize) -> f32 {
+    reaction.base_delta() * size.scalar()
+}
+
+/// The passive per-tick Affinity gain from a companion simply following the
+/// player, awarded every in-game 10-minute period (gated on ≥1 XP earned
+/// during it — combat-system concern, not modelled here). Self-limiting: the
+/// bonus shrinks as Affinity rises, though it never reaches zero within
+/// Affinity's actual `[-1000, 1100]` range (worst case, at the `1100` cap,
+/// is still `+3.7`).
+#[inline]
+pub fn affinity_passive_gain(current_affinity: f32) -> f32 {
+    40.0 - 0.033 * current_affinity
 }
 
 /// The overall sentiment of a [`ReputationStanding`] (the wiki's green / black
@@ -464,6 +605,80 @@ mod tests {
             ReputationStanding::classify(50, 50, &fac::BROTHERHOOD_OF_STEEL),
             ReputationStanding::WildChild
         );
+    }
+
+    #[test]
+    fn affinity_bands_at_exact_boundaries() {
+        assert_eq!(affinity_band(1100), AffinityBand::Idolize);
+        assert_eq!(affinity_band(1000), AffinityBand::Idolize);
+        assert_eq!(affinity_band(999), AffinityBand::Confidant);
+        assert_eq!(affinity_band(750), AffinityBand::Confidant);
+        assert_eq!(affinity_band(749), AffinityBand::Admiration);
+        assert_eq!(affinity_band(500), AffinityBand::Admiration);
+        assert_eq!(affinity_band(499), AffinityBand::Friend);
+        assert_eq!(affinity_band(250), AffinityBand::Friend);
+        assert_eq!(affinity_band(249), AffinityBand::Neutral);
+        assert_eq!(affinity_band(0), AffinityBand::Neutral);
+        assert_eq!(affinity_band(-1), AffinityBand::Disdain);
+        assert_eq!(affinity_band(-500), AffinityBand::Disdain);
+        assert_eq!(affinity_band(-501), AffinityBand::Hatred);
+        assert_eq!(affinity_band(-1000), AffinityBand::Hatred);
+    }
+
+    #[test]
+    fn affinity_band_is_ordered_and_one_byte() {
+        assert!(AffinityBand::Idolize > AffinityBand::Confidant);
+        assert!(AffinityBand::Hatred < AffinityBand::Disdain);
+        assert_eq!(std::mem::size_of::<AffinityBand>(), 1);
+        assert_eq!(AffinityBand::default(), AffinityBand::Neutral);
+    }
+
+    #[test]
+    fn affinity_clamps_to_its_asymmetric_bounds() {
+        assert_eq!(clamp_affinity(5000), AFFINITY_MAX);
+        assert_eq!(clamp_affinity(-5000), AFFINITY_MIN);
+        assert_eq!(clamp_affinity(123), 123);
+        assert_eq!(AFFINITY_MIN, -1000);
+        assert_eq!(AFFINITY_MAX, 1100);
+    }
+
+    #[test]
+    fn affinity_reaction_deltas_match_the_decompiled_script() {
+        use AffinityReaction::*;
+        use AffinityReactionSize::*;
+        // Base (Normal-size) deltas.
+        assert_eq!(affinity_reaction_delta(Liked, Normal), 15.0);
+        assert_eq!(affinity_reaction_delta(Loved, Normal), 35.0);
+        assert_eq!(affinity_reaction_delta(Disliked, Normal), -15.0);
+        assert_eq!(affinity_reaction_delta(Hated, Normal), -35.0);
+        // Small-size repeatable actions (weapon modding, lockpicking, …):
+        // wiki-stated 7.5 for a like, 17.5 for a love.
+        assert_eq!(affinity_reaction_delta(Liked, Small), 7.5);
+        assert_eq!(affinity_reaction_delta(Loved, Small), 17.5);
+        // Large scales the other direction.
+        assert_eq!(affinity_reaction_delta(Liked, Large), 22.5);
+        assert_eq!(affinity_reaction_delta(Hated, Large), -52.5);
+    }
+
+    #[test]
+    fn affinity_passive_gain_matches_the_wiki_worked_examples() {
+        // 40 − 0.033·affinity, checked at every value the source page gives.
+        assert!((affinity_passive_gain(100.0) - 36.7).abs() < 1e-6);
+        assert!((affinity_passive_gain(250.0) - 31.75).abs() < 1e-6);
+        assert!((affinity_passive_gain(500.0) - 23.5).abs() < 1e-6);
+        assert!((affinity_passive_gain(750.0) - 15.25).abs() < 1e-6);
+        // The page rounds 7.33 down to "+7" for display; we keep the float.
+        assert!((affinity_passive_gain(990.0) - 7.33).abs() < 1e-2);
+        // Never goes negative within Affinity's actual range, even at the cap.
+        assert!(affinity_passive_gain(AFFINITY_MAX as f32) > 0.0);
+    }
+
+    #[test]
+    fn affinity_types_are_compact() {
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<AffinityBand>();
+        assert_copy::<AffinityReaction>();
+        assert_copy::<AffinityReactionSize>();
     }
 
     #[test]

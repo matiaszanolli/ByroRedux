@@ -57,8 +57,10 @@ pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula,
 pub use fallout::{fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset};
 pub use leveling::{LevelReward, LevelingModel};
 pub use reputation::{
-    clamp_karma, karma_band, reputation_bump_points, FactionRepThresholds, KarmaBand,
-    ReputationSentiment, ReputationStanding, REPUTATION_BUMP_POINTS,
+    affinity_band, affinity_passive_gain, affinity_reaction_delta, clamp_affinity, clamp_karma,
+    karma_band, reputation_bump_points, AffinityBand, AffinityReaction, AffinityReactionSize,
+    FactionRepThresholds, KarmaBand, ReputationSentiment, ReputationStanding,
+    REPUTATION_BUMP_POINTS,
 };
 pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
