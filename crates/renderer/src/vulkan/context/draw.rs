@@ -1570,6 +1570,12 @@ impl VulkanContext {
                     let mut first_sight_builds =
                         std::mem::take(&mut self.skin_first_sight_builds_scratch);
                     first_sight_builds.clear();
+                    // D6-05 / #1812 — sibling scratch tracking entities
+                    // whose BLAS gets a fresh BUILD this frame, so the
+                    // refit loop below can skip the redundant UPDATE.
+                    let mut built_this_frame =
+                        std::mem::take(&mut self.skin_built_this_frame_scratch);
+                    built_this_frame.clear();
                     for &(entity_id, _push, idx_buffer, idx_count, vertex_count) in &dispatches {
                         let mut needs_slot = !self.skin_slots.contains_key(&entity_id);
 
@@ -1813,6 +1819,20 @@ impl VulkanContext {
                                         Ok(()) => {
                                             self.last_skin_coverage_frame.first_sight_succeeded +=
                                                 1;
+                                            // D6-05 / #1812 — mark this
+                                            // entity so the refit loop
+                                            // below skips it: the BUILD
+                                            // just recorded already
+                                            // produced a complete BLAS
+                                            // from the exact same vertex
+                                            // data a refit would re-read.
+                                            // A failed build does NOT get
+                                            // marked — it leaves no BLAS
+                                            // behind, so the refit's own
+                                            // `accel.has_skinned_blas`
+                                            // check still governs that
+                                            // entity unchanged.
+                                            built_this_frame.insert(entity_id);
                                         }
                                         Err(e) => {
                                             log::warn!(
@@ -1869,22 +1889,25 @@ impl VulkanContext {
                                 // live BLAS, skip the refit. The BLAS
                                 // still references the same output
                                 // buffer; nothing changed underneath
-                                // it. First-sight entities (populated
-                                // output just set true above OR BLAS
-                                // freshly built this frame via
-                                // `first_sight_builds`) fall through
-                                // to the refit unconditionally — `accel`
-                                // checks for an existing BLAS internally
-                                // and the first-sight BUILD already
-                                // covered them anyway. The skip uses
-                                // the same `pose_dirty` set so the two
-                                // decisions can't diverge — the "split
-                                // decisions are the trap" warning from
-                                // the audit.
+                                // it. The skip uses the same
+                                // `pose_dirty` set so the two decisions
+                                // can't diverge — the "split decisions
+                                // are the trap" warning from the audit.
+                                //
+                                // D6-05 / #1812 — first-sight entities
+                                // are always dirty, so the predicate
+                                // above alone can't catch them; they
+                                // used to fall through to a full UPDATE
+                                // against the exact vertex data their
+                                // BUILD (above, same `cmd`) just
+                                // consumed — pure wasted work, not a
+                                // correctness requirement. Skip them via
+                                // `built_this_frame` instead.
                                 let is_dirty = pose_dirty.contains(&entity_id);
-                                if slot.has_populated_output
-                                    && !is_dirty
-                                    && accel.has_skinned_blas(entity_id)
+                                if built_this_frame.contains(&entity_id)
+                                    || (slot.has_populated_output
+                                        && !is_dirty
+                                        && accel.has_skinned_blas(entity_id))
                                 {
                                     // Skip path mirrors the dispatch
                                     // skip — counts via `dispatches_skipped`
@@ -1945,6 +1968,7 @@ impl VulkanContext {
                     self.skin_dispatch_seen_scratch = seen;
                     self.skin_dispatches_scratch = dispatches;
                     self.skin_first_sight_builds_scratch = first_sight_builds;
+                    self.skin_built_this_frame_scratch = built_this_frame;
 
                     // #643 / MEM-2-1 — drop SkinSlots (and the matching
                     // skinned BLAS) for entities whose `last_used_frame`
@@ -4252,6 +4276,53 @@ mod skin_dispatch_ran_ordering_tests {
             "record_skinned_blas_refit (which sets skin_dispatch_ran true) \
              must be called AFTER both early-return guards — calling it any \
              earlier would defeat the rollback signal entirely. (#1796)"
+        );
+    }
+}
+
+// D6-05 / #1812 — first-sight entities must skip the redundant
+// post-BUILD refit. The refit loop lives deep inside `draw_frame`'s
+// live-Vulkan-device path, so (mirroring `skin_dispatch_ran_ordering_tests`
+// above) this pins the fix at the source level rather than exercising it
+// end-to-end.
+#[cfg(test)]
+mod skin_built_this_frame_skip_tests {
+    #[test]
+    fn built_entities_are_marked_only_on_successful_build_and_skip_the_refit() {
+        let src = include_str!("draw.rs");
+
+        let insert_pos = src
+            .find("built_this_frame.insert(entity_id);")
+            .expect("draw_frame must mark successfully-built entities in built_this_frame (#1812)");
+        let ok_arm_pos = src
+            .find("Ok(()) => {\n                                            self.last_skin_coverage_frame.first_sight_succeeded")
+            .expect("the first-sight build result match must have an Ok(()) arm");
+        let err_arm_pos = src
+            .find("Err(e) => {\n                                            log::warn!(\n                                                \"skin_compute first-sight BLAS build failed")
+            .expect("the first-sight build result match must have an Err(e) arm");
+        assert!(
+            ok_arm_pos < insert_pos && insert_pos < err_arm_pos,
+            "built_this_frame.insert must happen inside the Ok(()) arm only — a \
+             failed build leaves no BLAS behind, so it must not be marked as \
+             built (#1812)"
+        );
+
+        let refit_gate_pos = src
+            .find("if built_this_frame.contains(&entity_id)")
+            .expect("the skinned-BLAS refit loop must gate on built_this_frame (#1812)");
+        let refits_attempted_pos = src
+            .find("self.last_skin_coverage_frame.refits_attempted += 1;")
+            .expect("the refit loop must count attempted refits");
+        assert!(
+            insert_pos < refit_gate_pos,
+            "built_this_frame must be populated by the build-results loop before \
+             the refit loop reads it"
+        );
+        assert!(
+            refit_gate_pos < refits_attempted_pos,
+            "the built_this_frame gate must precede the refits_attempted counter \
+             so a freshly-built entity's skip doesn't inflate spawn-frame \
+             telemetry (#1812)"
         );
     }
 }

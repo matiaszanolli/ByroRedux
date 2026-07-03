@@ -1069,6 +1069,15 @@ pub struct VulkanContext {
         vk::Buffer,
         u32,
     )>,
+    /// Sibling of `skin_first_sight_builds_scratch` — entities whose
+    /// skinned BLAS was just BUILT (not refit) on `cmd` this frame
+    /// (D6-05 / #1812). The refit loop right below the build batch
+    /// skips these entirely: a full UPDATE against the identical
+    /// vertex data the BUILD consumed moments earlier in the same
+    /// command buffer is pure wasted work, not a correctness
+    /// requirement — `accel`'s BLAS entry is already complete after
+    /// the BUILD.
+    skin_built_this_frame_scratch: std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
 
     // ── Screenshot capture ──────────────────────────────────────────
     screenshot_requested: Arc<AtomicBool>,
@@ -2492,6 +2501,7 @@ impl VulkanContext {
             skin_dispatch_seen_scratch: std::collections::HashSet::new(),
             skin_dispatches_scratch: Vec::new(),
             skin_first_sight_builds_scratch: Vec::new(),
+            skin_built_this_frame_scratch: std::collections::HashSet::new(),
             screenshot_requested: Arc::new(AtomicBool::new(false)),
             screenshot_result: Arc::new(Mutex::new(None)),
             screenshot_generation: Arc::new(AtomicU64::new(0)),
@@ -2710,6 +2720,12 @@ impl VulkanContext {
                 vk::Buffer,
                 u32,
             )>(),
+        });
+        rows.push(ScratchRow {
+            name: "skin_built_this_frame_scratch",
+            len: self.skin_built_this_frame_scratch.len(),
+            capacity: self.skin_built_this_frame_scratch.capacity(),
+            elem_size_bytes: size_of::<byroredux_core::ecs::storage::EntityId>(),
         });
         if let Some(accel) = &self.accel_manager {
             let (len, capacity) = accel.tlas_instances_scratch_telemetry();
