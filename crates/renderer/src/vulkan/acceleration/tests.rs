@@ -1322,6 +1322,61 @@ fn scratch_barrier_required_across_submission_despite_fence_wait() {
     );
 }
 
+// ── #1790 / SAFE-2026-07-02-01 — scratch-serialize barrier must carry
+// AS_READ, not just AS_WRITE, on its dst mask ─────────────────────────
+//
+// `requires_scratch_serialize_barrier_before` above pins WHETHER a
+// barrier is required; it says nothing about which access bits the
+// real `record_scratch_serialize_barrier` emits. `refit_skinned_blas`
+// records an UPDATE build (`src == dst == entry.accel`), which per spec
+// READS `srcAccelerationStructure`. On a first-sight frame the same
+// command buffer records a fresh BUILD (WRITE) immediately before the
+// refit loop, with only this barrier between them — a dst mask of
+// AS_WRITE alone never makes that BUILD's write visible to the refit's
+// READ, a same-command-buffer RAW hazard confirmed by the validation
+// layer on real hardware (10 occurrences / first-sight skinned NPC on
+// an FNV interior-cell run before this fix).
+//
+// A live call-through test needs a real `ash::Device` + recording
+// command buffer (no safe mock exists for `vkCmdPipelineBarrier2`), so
+// — mirroring the `draw_frame` early-return guard tests in
+// `context/draw.rs` — a static source assertion pins the actual emitted
+// mask instead.
+#[test]
+fn scratch_serialize_barrier_dst_mask_includes_as_read() {
+    let src = include_str!("blas_skinned.rs");
+
+    let fn_start = src
+        .find("pub fn record_scratch_serialize_barrier(")
+        .expect("record_scratch_serialize_barrier must exist");
+    // Slice to just this function's body (next `pub fn` at the same
+    // indent level, or EOF) so the assertion can't accidentally match
+    // an unrelated barrier call elsewhere in the file.
+    let fn_body_start = src[fn_start..]
+        .find('{')
+        .map(|i| fn_start + i)
+        .expect("function must have a body");
+    let fn_end = src[fn_body_start..]
+        .find("\n    }")
+        .map(|i| fn_body_start + i)
+        .expect("function body must close");
+    let fn_body = &src[fn_body_start..fn_end];
+
+    assert!(
+        fn_body.contains("vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR"),
+        "record_scratch_serialize_barrier must still carry AS_WRITE (the \
+         original scratch-WAW requirement, #642 / #1140)"
+    );
+    assert!(
+        fn_body.contains("vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR"),
+        "record_scratch_serialize_barrier's dst access mask must ALSO carry \
+         AS_READ — a same-cmd first-sight BUILD → UPDATE-refit sequence \
+         needs the BUILD's write made visible to the refit's \
+         srcAccelerationStructure read, or it's a RAW hazard \
+         (#1790 / SAFE-2026-07-02-01)"
+    );
+}
+
 // ── #1144 / SAFE-D1-NEW-02 — BUILD flag composition pins ─────────────
 //
 // `UPDATABLE_AS_FLAGS` and `SKINNED_BLAS_FLAGS` are bit-set composites

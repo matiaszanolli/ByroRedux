@@ -382,16 +382,19 @@ impl AccelerationManager {
     /// `cmd` must be a recording command buffer; `vertex_buffer` must
     /// already have the COMPUTE_SHADER_WRITE → AS_BUILD_INPUT_READ
     /// barrier in place. The shared `blas_scratch_buffer` serialise
-    /// barrier (`AS_WRITE → AS_WRITE`) is emitted as the first
-    /// statement of this function (see the body comment at the
+    /// barrier (`AS_WRITE → AS_WRITE | AS_READ` — the dst mask carries
+    /// both since #1790 / SAFE-2026-07-02-01, covering this UPDATE
+    /// build's own `srcAccelerationStructure` read on a same-cmd
+    /// first-sight frame) is emitted as the first statement of this
+    /// function (see the body comment at the
     /// `record_scratch_serialize_barrier` call below).
     ///
     /// Before #983 / REN-D8-NEW-15 (audit 2026-05-11) this barrier was
     /// a caller-side precondition — documented but unenforced — so the
     /// next refactor adding a 2nd refit call site could have silently
     /// dropped it. The self-emit makes the precondition load-bearing
-    /// in code rather than docstring. The barrier is idempotent
-    /// (`MEMORY_READ | MEMORY_WRITE → MEMORY_READ | MEMORY_WRITE`), so
+    /// in code rather than docstring. The barrier is idempotent (a
+    /// redundant re-emission of the same access masks is harmless), so
     /// any redundant caller-side emission stays harmless. See #644 /
     /// MEM-2-2 for the original landing.
     pub unsafe fn refit_skinned_blas(
@@ -613,6 +616,21 @@ impl AccelerationManager {
     /// requires `ACCELERATION_STRUCTURE_WRITE → ACCELERATION_STRUCTURE_WRITE`
     /// at `ACCELERATION_STRUCTURE_BUILD_KHR` stage between such calls.
     ///
+    /// #1790 / SAFE-2026-07-02-01 — the dst mask ALSO carries
+    /// `ACCELERATION_STRUCTURE_READ_KHR`, not just `_WRITE_KHR`. An
+    /// UPDATE-mode build (`refit_skinned_blas`, `src == dst == entry.accel`)
+    /// **reads** `srcAccelerationStructure` per spec. On a first-sight
+    /// frame the same command buffer records the fresh BUILD (writes
+    /// the AS) immediately before the refit loop, with only this
+    /// barrier between them — a WRITE-only dst mask never makes the
+    /// BUILD's write visible to the refit's READ, a same-command-buffer
+    /// RAW hazard (confirmed by the validation layer on real hardware:
+    /// `VkCmdBuildAccelerationStructuresKHR` READ_AFTER_WRITE). The
+    /// cross-frame case was already covered by the closing
+    /// `AS_WRITE → AS_READ` barrier in `draw.rs` after the refit loop;
+    /// this gap was specific to the same-submission first-sight
+    /// adjacency introduced by #911.
+    ///
     /// Stateless (the `&self` is for discoverability — the helper does
     /// not touch any field). Caller emits this between iterations of a
     /// build loop, **not** before the first iteration. See #642.
@@ -634,9 +652,12 @@ impl AccelerationManager {
     /// `refits_attempted`, captured on a moving-crowd bench scene)
     /// before spending that risk budget.
     pub fn record_scratch_serialize_barrier(&self, device: &ash::Device, cmd: vk::CommandBuffer) {
-        // AS_BUILD_KHR → AS_BUILD_KHR (WRITE → WRITE: scratch serialise between
-        // skinned-BLAS build iterations). SAFETY: `cmd` is a recording command
-        // buffer the caller owns; the barrier touches only AS-build state.
+        // AS_BUILD_KHR → AS_BUILD_KHR (WRITE → WRITE | READ: scratch serialise
+        // between skinned-BLAS build iterations, PLUS making a same-cmd
+        // first-sight BUILD's write visible to the immediately-following
+        // UPDATE refit's srcAccelerationStructure read — #1790 /
+        // SAFE-2026-07-02-01). SAFETY: `cmd` is a recording command buffer
+        // the caller owns; the barrier touches only AS-build state.
         unsafe {
             memory_barrier(
                 device,
@@ -644,7 +665,8 @@ impl AccelerationManager {
                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
                 vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+                vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR
+                    | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
             );
         }
     }
