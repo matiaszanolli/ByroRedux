@@ -61,15 +61,31 @@ pub const LIGHT_RANGE_EXTENSION: f32 = 2.0;
 /// sentinel value.
 pub const FALLOFF_EXPONENT_DEFAULT: f32 = 1.0;
 
+/// PERF-D5-NEW-02 / #1800 — cheap CPU-side "how much does this light
+/// matter for one-bounce GI" proxy: sum of the light's RGB channels
+/// (already scaled by `dimmer × intensity` at translation time) times
+/// its effective range. Not physically exact — it has no idea where any
+/// given GI hit point actually is — but it's a stable, frame-wide
+/// ordering that favors bright, far-reaching lights over dim or
+/// tightly-clamped ones, which is exactly what `giHitIrradiance`'s fixed
+/// `GI_HIT_LIGHT_CAP`-sized prefix scan needs to be biased toward.
+fn gi_priority_score(light: &byroredux_renderer::GpuLight) -> f32 {
+    let [r, g, b, _] = light.color_type;
+    let radius = light.position_radius[3];
+    (r + g + b) * radius
+}
+
 /// Collect both the cell directional light and all placed point lights
 /// into `gpu_lights`, appending — the caller is responsible for
 /// clearing the Vec before invoking.
 ///
 /// **Order matters** for the renderer's per-frame upload contract:
-/// directional first (slot 0 if present), then point lights. The
-/// shader-side cluster builder doesn't care about ordering, but the
-/// once-per-session info log below references the first three slots,
-/// so a re-order would change diagnostic output.
+/// directional first (slot 0 if present), then point lights sorted by
+/// descending [`gi_priority_score`] (#1800 — see the sort call below for
+/// why). The shader-side cluster builder doesn't care about ordering
+/// (it indexes lights by ID from its own per-cluster lists), but
+/// `giHitIrradiance`'s fixed-prefix GI scan does, and the once-per-session
+/// info log below references the first three slots post-sort.
 pub(super) fn collect_lights(world: &World, gpu_lights: &mut Vec<byroredux_renderer::GpuLight>) {
     // Cell directional light. For interior cells the XCLL directional
     // acts as a subtle fill light (not a physical sun), so we scale it
@@ -106,6 +122,14 @@ pub(super) fn collect_lights(world: &World, gpu_lights: &mut Vec<byroredux_rende
             params: [0.0, 0.0, 0.0, 0.0],
         });
     }
+
+    // PERF-D5-NEW-02 / #1800 — `giHitIrradiance` (lighting.glsl) only
+    // scans the first `GI_HIT_LIGHT_CAP` (8) entries of this array in
+    // upload order for the one-bounce GI shadow-ray pass; the
+    // directional light (if present) is always exactly one entry and
+    // always pushed first, so everything from here on is the
+    // point-light suffix that needs priority-sorting below.
+    let directional_count = gpu_lights.len();
 
     // Placed point lights from LIGH records. Read-only — no write
     // needed on either component. Previously used query_2_mut (#290 P4-04).
@@ -158,6 +182,29 @@ pub(super) fn collect_lights(world: &World, gpu_lights: &mut Vec<byroredux_rende
             }
         }
     }
+
+    // PERF-D5-NEW-02 / #1800 — the one-bounce GI hit-irradiance pass
+    // (`giHitIrradiance` in lighting.glsl) evaluates only the first
+    // `GI_HIT_LIGHT_CAP` entries of this same array, in whatever order
+    // they land here — the shader has no per-hit-point light selection,
+    // it just walks a fixed prefix. Left as arbitrary ECS sparse-set
+    // iteration order, that prefix has nothing to do with which lights
+    // actually matter for GI: a cell with, say, 20 point lights would
+    // permanently exclude 12 of them from the bounce term (and could
+    // flicker across cell reloads as ECS iteration order shuffles which
+    // 8 "win"), while still paying up to 8 shadow-ray traces against
+    // lights that might be nowhere near the hit point.
+    //
+    // Sorting the point-light suffix once per frame by descending
+    // `gi_priority_score` (a cheap CPU-side "intensity × radius" proxy)
+    // makes "first 8" approximate "8 most influential" scene-wide,
+    // without touching the shader's per-hit ray-query logic or the
+    // primary-fragment path's clustered culling (which indexes lights
+    // by ID from its own per-cluster lists and doesn't care about array
+    // order). The directional light, if present, is never part of this
+    // sort — it stays pinned at index 0.
+    gpu_lights[directional_count..]
+        .sort_by(|a, b| gi_priority_score(b).total_cmp(&gi_priority_score(a)));
 
     // Log light count once per session.
     {
@@ -393,6 +440,160 @@ mod interior_sun_gate_tests {
             "directional must come from CellLightingRes — SkyParamsRes \
              alone must NOT conjure a sun light. {} lights pushed.",
             lights.len()
+        );
+    }
+}
+
+/// PERF-D5-NEW-02 / #1800 — `giHitIrradiance` (lighting.glsl) only scans
+/// the first `GI_HIT_LIGHT_CAP` entries of the uploaded light array;
+/// `collect_lights` must order the point-light suffix by descending
+/// [`gi_priority_score`] so that fixed prefix approximates "the most
+/// influential lights" rather than arbitrary ECS iteration order.
+#[cfg(test)]
+mod gi_light_priority_tests {
+    use super::*;
+    use byroredux_core::ecs::LightSource;
+
+    #[test]
+    fn priority_score_favors_brighter_and_farther_reaching_lights() {
+        let dim_small = byroredux_renderer::GpuLight {
+            position_radius: [0.0, 0.0, 0.0, 100.0],
+            color_type: [0.05, 0.05, 0.05, 0.0],
+            direction_angle: [0.0; 4],
+            params: [1.0, 0.0, 0.0, 0.0],
+        };
+        let bright_large = byroredux_renderer::GpuLight {
+            position_radius: [0.0, 0.0, 0.0, 1000.0],
+            color_type: [0.9, 0.8, 0.7, 0.0],
+            direction_angle: [0.0; 4],
+            params: [1.0, 0.0, 0.0, 0.0],
+        };
+        assert!(
+            gi_priority_score(&bright_large) > gi_priority_score(&dim_small),
+            "a bright, far-reaching light must score higher than a dim, \
+             tightly-clamped one"
+        );
+    }
+
+    /// Same brightness, different radius: the farther-reaching light
+    /// must win — it's a better candidate for illuminating an arbitrary
+    /// GI hit point.
+    #[test]
+    fn priority_score_orders_by_radius_at_equal_brightness() {
+        let near = byroredux_renderer::GpuLight {
+            position_radius: [0.0, 0.0, 0.0, 200.0],
+            color_type: [0.5, 0.5, 0.5, 0.0],
+            direction_angle: [0.0; 4],
+            params: [1.0, 0.0, 0.0, 0.0],
+        };
+        let far = byroredux_renderer::GpuLight {
+            position_radius: [0.0, 0.0, 0.0, 800.0],
+            color_type: [0.5, 0.5, 0.5, 0.0],
+            direction_angle: [0.0; 4],
+            params: [1.0, 0.0, 0.0, 0.0],
+        };
+        assert!(gi_priority_score(&far) > gi_priority_score(&near));
+    }
+
+    fn spawn_point_light(world: &mut World, pos: [f32; 3], color: [f32; 3], radius: f32) {
+        let e = world.spawn();
+        world.insert(
+            e,
+            GlobalTransform::new(
+                byroredux_core::math::Vec3::new(pos[0], pos[1], pos[2]),
+                byroredux_core::math::Quat::IDENTITY,
+                1.0,
+            ),
+        );
+        world.insert(
+            e,
+            LightSource {
+                radius,
+                color,
+                ..Default::default()
+            },
+        );
+    }
+
+    /// Integration-level regression: three point lights inserted in an
+    /// order that (pre-fix) would have survived verbatim as ECS
+    /// iteration order — dimmest first, brightest last — must come out
+    /// of `collect_lights` sorted brightest/farthest-reaching first.
+    /// This is the exact bug: pre-fix, `giHitIrradiance`'s fixed 8-light
+    /// prefix would have hit the dim light first and the bright one last
+    /// (or not at all, in a >8-light cell), regardless of which one
+    /// actually matters for GI.
+    #[test]
+    fn collect_lights_sorts_point_lights_brightest_first() {
+        let mut world = World::new();
+        // Insertion order: dim, medium, bright — deliberately the
+        // opposite of the desired output order.
+        spawn_point_light(&mut world, [0.0, 0.0, 0.0], [0.05, 0.05, 0.05], 100.0);
+        spawn_point_light(&mut world, [10.0, 0.0, 0.0], [0.4, 0.4, 0.4], 400.0);
+        spawn_point_light(&mut world, [20.0, 0.0, 0.0], [0.9, 0.9, 0.9], 900.0);
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights);
+
+        assert_eq!(lights.len(), 3, "all three point lights must be collected");
+        let scores: Vec<f32> = lights.iter().map(gi_priority_score).collect();
+        assert!(
+            scores.windows(2).all(|w| w[0] >= w[1]),
+            "point lights must be sorted by descending gi_priority_score, got {scores:?}"
+        );
+        // The brightest/farthest-reaching light (authored radius 900,
+        // color 0.9 — effective range = 900 * LIGHT_RANGE_EXTENSION)
+        // must land first — inside GI_HIT_LIGHT_CAP even in a cell with
+        // more lights than the cap.
+        let expected_effective_range = 900.0 * super::LIGHT_RANGE_EXTENSION;
+        assert!(
+            (lights[0].position_radius[3] - expected_effective_range).abs() < 1e-3,
+            "brightest light must sort first, got effective range {} (expected {})",
+            lights[0].position_radius[3],
+            expected_effective_range,
+        );
+    }
+
+    /// The directional light must stay pinned at index 0 regardless of
+    /// how bright the point lights are — it is never part of the
+    /// priority sort (see the doc comment on the sort call site).
+    #[test]
+    fn directional_light_stays_pinned_at_index_zero() {
+        use crate::components::CellLightingRes;
+
+        let mut world = World::new();
+        world.insert_resource(CellLightingRes {
+            ambient: [0.1, 0.1, 0.1],
+            directional_color: [0.8, 0.7, 0.5],
+            directional_dir: [0.0, -1.0, 0.0],
+            is_interior: false,
+            fog_color: [0.05, 0.06, 0.08],
+            fog_near: 64.0,
+            fog_far: 4000.0,
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
+        });
+        // A point light far brighter than the directional fill.
+        spawn_point_light(&mut world, [5.0, 0.0, 0.0], [1.0, 1.0, 1.0], 5000.0);
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights);
+
+        assert_eq!(lights.len(), 2);
+        assert!(
+            (lights[0].color_type[3] - 2.0).abs() < 1e-6,
+            "index 0 must always be the directional (type 2.0), regardless \
+             of point-light brightness — got type {}",
+            lights[0].color_type[3]
         );
     }
 }

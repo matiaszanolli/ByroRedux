@@ -173,6 +173,17 @@ vec3 shadowableLightRadiance(
 // count is capped (`GI_HIT_LIGHT_CAP`) so dense cells can't explode the
 // per-hit cost. Returns radiance in the same units the primary direct
 // path uses, so the bounce energy matches.
+//
+// PERF-D5-NEW-02 / #1800 — this walks a FIXED prefix of the `lights[]`
+// array (upload order), not a per-hit-point selection like the primary
+// path's clustered culling. `collect_lights` (byroredux/src/render/
+// lights.rs) sorts the point-light suffix by descending
+// `gi_priority_score` before upload specifically so this fixed prefix
+// approximates "the most influential lights scene-wide" instead of
+// "whatever ECS iteration order produced." Still an approximation (no
+// idea where `p` actually is) — the per-light `dist > radius` skip below
+// is what keeps genuinely out-of-range lights from contributing, same
+// as before.
 vec3 giHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
     vec3 e = vec3(0.0);
     uint count = min(lightCount, GI_HIT_LIGHT_CAP);
