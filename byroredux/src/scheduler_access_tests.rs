@@ -1,13 +1,13 @@
-//! Static source-assertion tests for scheduler `Access` declaration
-//! completeness (AUDIT_CONCURRENCY_2026-07-02, #1785 / #1787).
+//! Static source-assertion tests for scheduler construction correctness
+//! (AUDIT_CONCURRENCY_2026-07-02, #1785 / #1787 / #1788).
 //!
-//! These can't be live-tested: the declarations live inline in `App::new`'s
-//! scheduler construction, which needs a live window + Vulkan context to
-//! run. Instead each test greps the actual `main.rs` source for the exact
-//! `.reads::<T>()` / `.writes::<T>()` call the fix added, so a future edit
-//! that drops one back out of the declaration (while the system body still
-//! touches it) fails the build instead of silently regressing the "UNION
-//! across all paths" invariant these declarations promise.
+//! These can't be live-tested: the declarations and construction order live
+//! inline in `App::new`'s scheduler construction, which needs a live window
+//! + Vulkan context to run. Instead each test greps the actual `main.rs`
+//! source for the exact call the fix added or reordered, so a future edit
+//! that drops a declaration back out (while the system body still touches
+//! it) or reverts a call order fails the build instead of silently
+//! regressing the invariant.
 
 const MAIN_RS: &str = include_str!("main.rs");
 
@@ -70,5 +70,34 @@ fn contact_config_read_is_declared_on_both_physics_systems() {
          + player_controller_system), found {count} — see \
          crates/physics/src/sync.rs::register_newcomers and \
          byroredux/src/systems/character.rs",
+    );
+}
+
+/// #1788 / CONC-D4-02 — `debug_server::start` must run before
+/// `install_runtime_registries` in `App::new`: the former adds
+/// `DebugDrainSystem` to the scheduler via `add_exclusive`, and the
+/// latter snapshots `SystemList`/`SchedulerAccessReport` from the
+/// scheduler as it stands at that point. Snapshotting first silently
+/// dropped the drain system from the `systems` / `sys.accesses` console
+/// output on every debug-mode launch — `debug_server::start`'s own doc
+/// comment already states this precondition ("Call this after all
+/// systems have been added to the scheduler").
+#[test]
+fn debug_server_start_runs_before_runtime_registries_snapshot() {
+    let start_call = "byroredux_debug_server::start(&mut scheduler, debug_port)";
+    let snapshot_call = "Self::install_runtime_registries(&mut world, &scheduler);";
+
+    let start_pos = MAIN_RS
+        .find(start_call)
+        .unwrap_or_else(|| panic!("`{start_call}` not found in main.rs — App::new changed shape"));
+    let snapshot_pos = MAIN_RS.find(snapshot_call).unwrap_or_else(|| {
+        panic!("`{snapshot_call}` not found in main.rs — App::new changed shape")
+    });
+
+    assert!(
+        start_pos < snapshot_pos,
+        "debug_server::start (byte {start_pos}) must appear before \
+         install_runtime_registries (byte {snapshot_pos}) in App::new, or \
+         DebugDrainSystem is silently omitted from `systems`/`sys.accesses`",
     );
 }

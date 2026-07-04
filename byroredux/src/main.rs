@@ -1103,12 +1103,23 @@ impl App {
         // Three-phase construction (#1670) — see the helpers below.
         let mut world = Self::build_world(debug_mode, args);
         let mut scheduler = Self::build_scheduler();
-        Self::install_runtime_registries(&mut world, &scheduler);
 
         // Start debug server (feature-gated, zero cost when disabled).
         // The returned handle's Drop signals shutdown + joins the
         // listener thread; stash it on App so natural teardown is tidy
         // (#855 / C6-NEW-02).
+        //
+        // #1788 / CONC-D4-02 — this must run BEFORE
+        // `install_runtime_registries` below: `debug_server::start` adds
+        // `DebugDrainSystem` to the scheduler via `add_exclusive`, and
+        // `install_runtime_registries` snapshots `SystemList` /
+        // `SchedulerAccessReport` from the scheduler as it stands at
+        // that point. Snapshotting first (the pre-fix order) silently
+        // dropped the drain system from both the `systems` and
+        // `sys.accesses` console command output on every debug-mode
+        // launch — `debug_server::start`'s own doc comment already
+        // states this precondition ("Call this after all systems have
+        // been added to the scheduler").
         #[cfg(feature = "debug-server")]
         let debug_server = {
             let debug_port: u16 = std::env::var("BYRO_DEBUG_PORT")
@@ -1117,6 +1128,8 @@ impl App {
                 .unwrap_or(9876);
             Some(byroredux_debug_server::start(&mut scheduler, debug_port))
         };
+
+        Self::install_runtime_registries(&mut world, &scheduler);
 
         Self {
             window: None,
