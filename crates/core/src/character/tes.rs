@@ -27,6 +27,7 @@
 use super::attribute::AttributeSet;
 use super::derived::{DerivedInput, DerivedStatFormula};
 use super::leveling::LevelingModel;
+use super::regen::PoolRegenConfig;
 use super::ruleset::CharacterRuleset;
 use super::skill::SkillSet;
 
@@ -147,6 +148,20 @@ pub fn oblivion_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
         );
     }
     rs
+}
+
+/// Resolve Oblivion's [`PoolRegenConfig`] (Fatigue/Willpower/Magicka AVIF
+/// ids) for [`super::regen::pool_regen_tick_system`]. `None` if any of the
+/// three EditorIDs don't resolve — same resolve-or-skip contract as
+/// [`oblivion_ruleset`], and the tick system already no-ops cleanly when the
+/// resource is simply absent.
+#[must_use]
+pub fn oblivion_pool_regen_config<F: Fn(&str) -> Option<u32>>(resolve: F) -> Option<PoolRegenConfig> {
+    Some(PoolRegenConfig {
+        fatigue_avif: resolve("Fatigue")?,
+        magicka_avif: resolve("Magicka")?,
+        willpower_avif: resolve("Willpower")?,
+    })
 }
 
 /// Oblivion level-up **attribute bonus** — the classic-TES leveling-efficiency

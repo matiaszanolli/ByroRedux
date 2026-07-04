@@ -773,6 +773,14 @@ impl App {
         // subscribes via `RegisterForUpdate`) and its OnUpdate consumer so
         // a fired event is handled the same frame, before cleanup drains it.
         scheduler.add_exclusive(Stage::Update, byroredux_scripting::recurring_update_tick_system);
+        // CHARAL pool regen (Fatigue/Magicka) — a fixed 60 Hz tick decoupled
+        // from the variable frame rate, mirroring `physics_sync_system`'s
+        // accumulator (`crates/core/src/character/regen.rs`). No-ops today:
+        // `PoolRegenConfig` is only inserted once a game's live `CharacterRuleset`
+        // wiring reaches Oblivion (`build_character_ruleset` currently returns
+        // `None` for it, per `npc_spawn.rs`) — registered now so the tick is
+        // already live the moment that wiring lands.
+        scheduler.add_exclusive(Stage::Update, byroredux_core::character::pool_regen_tick_system);
         scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_update_dispatch);
         scheduler.add_exclusive(Stage::Update, mg07_on_load_dispatch);
         scheduler.add_exclusive(Stage::Update, mg07_on_activate_dispatch);

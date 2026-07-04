@@ -370,7 +370,7 @@ GMSTs (`fPerkSneakAttackMelee*Mult`, `fDamagePowerAttack*Bonus`); armor
 these by name once GMST parsing lands (CHARAL §8 item 6), not re-hardcode the
 numeric constants captured here.
 
-## Fatigue — base pool cross-checked (already BUILT), regen formula + Remastered divergence new
+## Fatigue — base pool cross-checked (already BUILT), regen formula now BUILT too, Remastered divergence recorded
 
 Source: UESP *Oblivion:Fatigue*, 2026-07-04. The base pool formula —
 `Fatigue = Strength + Willpower + Agility + Endurance` — is **already BUILT**
@@ -393,10 +393,29 @@ authored at `0.0` — another "the hook is there, the coefficient is zero"
 case. Architecturally this is **not** a `DerivedStatFormula` row at all — it
 is a per-second *rate*, consumed by a tick system (mirroring the affliction
 mechanism's `affliction_tick_system`, not the on-demand `derived_value`
-model). No such tick/regen system exists yet for any pool (Health/Magicka/
-Fatigue all lack regen in the engine today) — recording this as the first
-concrete number for that future system, not routing it into the existing
-derived-stat table.
+model).
+
+**BUILT 2026-07-04** — the new `crates/core/src/character/regen.rs` module
+(the first CHARAL system needing a **fixed 60 Hz tick** decoupled from the
+variable frame rate, since regen rates are stated "per real-time second," not
+per-frame): `PoolRegenAccumulator` (a `Resource`, one global fixed-step clock
+mirroring `crates/physics::PhysicsWorld`'s own accumulator — the only other
+fixed-timestep precedent in the engine) drains a variable `frame_dt` into
+`POOL_REGEN_DT = 1/60` increments, capped at `MAX_REGEN_SUBSTEPS` (8) so a
+hitch/load stall can't dump an unbounded batch of regen into one frame; the
+constant `FATIGUE_REGEN_PER_SEC = 10.0` is applied via `ActorValues::restore`
+(which already floors damage at `0.0`, so no separate max-pool clamp is
+needed). `pool_regen_tick_system(world, frame_dt)` is registered in
+`byroredux/src/main.rs`'s `Stage::Update` (`add_exclusive`, same lane as
+`recurring_update_tick_system`) — it no-ops today because `PoolRegenConfig`
+(the per-game resolved AVIF ids, built by the new
+`oblivion_pool_regen_config` in `tes.rs`) isn't inserted anywhere yet:
+Oblivion's live `CharacterRuleset` wiring hasn't landed
+(`build_character_ruleset` in `npc_spawn.rs` still returns `None` for it), so
+the tick is wired and tested but has no live consumer to act on until that
+larger rollout milestone lands. 5 new tests (formula match, 60 Hz tick
+counting, fractional-time carry-over across frames, substep cap, and a
+full ECS integration test proving both Fatigue and Magicka regen end-to-end).
 
 **2. Oblivion Remastered ships a wholesale-different Fatigue model — a
 *second* confirmed "remaster patches original mechanical math" instance**
@@ -465,9 +484,10 @@ one row being `affine(STR, 0.6666)` and the other `bilinear(END, LEVEL,
 c_END=1.2332, cross=0.1)` instead of 2 (or 4) plain affine rows. Confirms the
 row-sum pattern generalizes to mixed affine+bilinear rows, not just uniform
 affine ones. Remastered `HealthRegen = (END×0.34/100) + 0.16`, ×7.5 out of
-combat — same "new per-second rate, no tick-consumer exists yet" bucket as
-Remastered FatigueRegen; a second data point for that same future system, not
-a second gap.
+combat — same "new per-second rate" bucket as Remastered FatigueRegen, but
+Remastered itself is out of scope (see the compat-target note at Fatigue
+above), so neither this nor vanilla Health (which has no regen at all) has
+anything to wire into the now-BUILT `regen.rs` tick system.
 
 **Also surfaced, not investigated further**: Oblivion has its **own native
 Fame/Infamy** stats (this page: too much Infamy locks out certain Wayshrine/
@@ -483,7 +503,7 @@ repaired via Armorer skill) reconfirms the already-established "equipment
 condition is item-system data, not CHARAL" boundary — no new formula, same
 routing as FO3/FNV's `ItemValue`.
 
-## Magicka — base formula cross-checked; the third and most interesting regen policy; first quadratic formula found
+## Magicka — base formula cross-checked; the third and most interesting regen policy (now BUILT); first quadratic formula found
 
 Source: UESP *Oblivion:Magicka*, 2026-07-04. Base pool `Magicka = Intelligence
 + Intelligence×fPCBaseMagickaMult(1.0) = 2×Intelligence` matches the already-
@@ -506,9 +526,16 @@ than reading a raw attribute alone; higher-Magicka characters regen faster in
 absolute terms at the same relative rate. Confirms "don't generalize one
 pool's regen behavior to the others" (flagged provisionally at the Health
 entry) is now a **fully evidenced three-way split**, not a guess from one
-data point. Still the same "rate for a future tick-consumer, not a
-`derived_value` row" bucket as the other two pools' regen formulas — no code
-yet for any of the three.
+data point.
+
+**BUILT 2026-07-04** alongside Fatigue regen, same `crates/core/src/
+character/regen.rs` module and `pool_regen_tick_system`:
+`magicka_regen_per_sec(willpower, max_magicka, stunted)` reads `MaxMagicka`
+by calling `CharacterRuleset::derived_value` inside the tick system (chaining
+through the already-built `2×Intelligence` formula live, per-actor, per
+tick) rather than requiring a separately-tracked `MaxMagicka` AV — the first
+CHARAL system to read a derived value as another system's *input* at
+runtime, not just at formula-definition time.
 
 **Stunted Magicka is a binary gate on this formula**, not a formula itself:
 the Atronach birthsign, the *Astral Vapors* disease (cross-references the
@@ -519,6 +546,10 @@ listed as one of the two Oblivion diseases with escalating/special behavior),
 and one Shivering Isles item all set a flag that **zeroes regen entirely**
 regardless of Willpower/MaxMagicka. A status-effect boolean multiplying the
 regen formula to 0, same shape as a `temporary_mod` gate elsewhere in CHARAL.
+`magicka_regen_per_sec`'s `stunted` parameter makes the *formula* complete,
+but no status-effect component exists anywhere in the engine yet to carry
+this flag, so `pool_regen_tick_system` always passes `false` today — a known,
+documented gap (module docs in `regen.rs`), not a silent omission.
 
 **Oblivion Remastered's MagickaRegen is the first confirmed quadratic
 formula in the whole Fallout+Oblivion corpus** (Skyrim's Enchanting

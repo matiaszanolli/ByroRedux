@@ -25,6 +25,11 @@
 //!   [`AfflictionTable`] (pool → threshold band → SPECIAL penalty) +
 //!   [`AfflictionStatus`] (per-actor active-band memory) +
 //!   [`affliction_tick_system`] (the diff-and-reapply driver).
+//! * [`regen`] — pool regeneration (Fatigue/Magicka), the first CHARAL system
+//!   needing a **fixed 60 Hz tick** decoupled from the frame rate:
+//!   [`PoolRegenAccumulator`] (the fixed-step clock, mirrors
+//!   `crates/physics`'s accumulator) + [`PoolRegenConfig`] (per-game resolved
+//!   AVIF ids) + [`pool_regen_tick_system`] (the driver).
 //! * [`components`] — [`CharacterLevel`] / [`Perks`] / [`Background`], the
 //!   structural per-actor ECS components.
 //!
@@ -38,6 +43,7 @@ pub mod components;
 pub mod derived;
 pub mod fallout;
 pub mod leveling;
+pub mod regen;
 pub mod reputation;
 pub mod resistance;
 pub mod ruleset;
@@ -56,6 +62,10 @@ pub use components::{
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
 pub use fallout::{fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset};
 pub use leveling::{LevelReward, LevelingModel};
+pub use regen::{
+    magicka_regen_per_sec, pool_regen_tick_system, PoolRegenAccumulator, PoolRegenConfig,
+    FATIGUE_REGEN_PER_SEC, MAGICKA_REGEN_BASE, MAGICKA_REGEN_WILLPOWER_COEFF, POOL_REGEN_DT,
+};
 pub use reputation::{
     affinity_band, affinity_passive_gain, affinity_reaction_delta, clamp_affinity, clamp_karma,
     karma_band, reputation_bump_points, AffinityBand, AffinityReaction, AffinityReactionSize,
@@ -71,5 +81,6 @@ pub use skyrim::{
 };
 pub use tes::{
     oblivion_attribute_bonus, oblivion_fatigue_formulas, oblivion_health_formula,
-    oblivion_health_gain_per_level, oblivion_magicka_formula, oblivion_ruleset,
+    oblivion_health_gain_per_level, oblivion_magicka_formula, oblivion_pool_regen_config,
+    oblivion_ruleset,
 };
