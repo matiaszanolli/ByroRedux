@@ -266,8 +266,10 @@ impl AccelerationManager {
         // `draw_frame`); on shutdown the renderer skips the next draw,
         // so any entry whose countdown was still > 0 would leak its
         // VkAccelerationStructureKHR + GpuBuffer. The parent Drop's
-        // `device_wait_idle` (`context/mod.rs:1300`) already covers
-        // any in-flight command-buffer reference, so it is safe to
+        // `device_wait_idle` (`context/mod.rs::Drop::drop`; #1789 /
+        // CONC-D6-01 — cited by name, not line number, since this is
+        // `destroy()`'s only call site) already covers any in-flight
+        // command-buffer reference, so it is safe to
         // destroy these immediately regardless of the residual
         // countdown. Same drain shape as `tick_deferred_destroy`
         // above, minus the countdown branch. Sibling fixes already
@@ -307,9 +309,11 @@ impl AccelerationManager {
         // routes through `pending_destroy_blas` so the
         // `MAX_FRAMES_IN_FLIGHT` countdown lets a still-flight refit
         // finish), but is no longer a correctness requirement: the
-        // parent `device_wait_idle` (`context/mod.rs:1859` /
-        // `context/mod.rs:2093`) already settles every in-flight
-        // command-buffer reference, so destruction here is safe.
+        // parent `device_wait_idle` (`context/mod.rs::Drop::drop`;
+        // #1789 / CONC-D6-01 — `destroy()`'s only call site, cited by
+        // name rather than line number) already settles every
+        // in-flight command-buffer reference, so destruction here is
+        // safe.
         // SAFETY: caller of `destroy()` (unsafe fn) guarantees no
         // command buffer is still referencing these resources — every
         // production caller pairs the call with `device_wait_idle`.
