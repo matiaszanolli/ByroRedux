@@ -368,7 +368,14 @@ pub(crate) fn build_render_data(
     // `BYRO_PROFILE=1` breaks the per-frame render-data build into its
     // phases (skinned palettes / static-mesh main loop / particles / draw
     // sort / lights) so the dominant cost is localized without guessing.
-    let profile = std::env::var_os("BYRO_PROFILE").is_some();
+    // PERF-D1-NEW-02 / #1802 — cached via `OnceLock` so the hot path
+    // doesn't `getenv` per frame, mirroring `apply_fog_overrides`. Env
+    // vars can't change mid-process, so caching is semantics-preserving.
+    let profile = {
+        use std::sync::OnceLock;
+        static PROFILE: OnceLock<bool> = OnceLock::new();
+        *PROFILE.get_or_init(|| std::env::var_os("BYRO_PROFILE").is_some())
+    };
     let mark = |on: bool| on.then(std::time::Instant::now);
     let took =
         |s: Option<std::time::Instant>| s.map_or(0.0, |i| i.elapsed().as_secs_f32() * 1000.0);
@@ -608,6 +615,8 @@ mod bone_palette_overflow_tests;
 mod directional_upload_tests;
 #[cfg(test)]
 mod draw_sort_key_tests;
+#[cfg(test)]
+mod env_var_cache_tests;
 #[cfg(test)]
 mod fog_curve_propagation_tests;
 #[cfg(test)]

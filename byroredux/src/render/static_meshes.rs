@@ -134,8 +134,15 @@ pub(super) fn collect_static_mesh_draws(
     // static visible (skips the frustum cull) to test whether the
     // "polygons come and go as I move" fragmentation is the under-counted
     // per-sub-mesh `WorldBound.radius` (#1294 trap) culling composite
-    // architecture at frustum edges. Off by default; read once per frame.
-    let no_cull = std::env::var_os("BYRO_NO_CULL").is_some();
+    // architecture at frustum edges. Off by default.
+    // PERF-D1-NEW-02 / #1802 — cached via `OnceLock` so the hot path
+    // doesn't `getenv` per frame, mirroring `apply_fog_overrides`. Env
+    // vars can't change mid-process, so caching is semantics-preserving.
+    let no_cull = {
+        use std::sync::OnceLock;
+        static NO_CULL: OnceLock<bool> = OnceLock::new();
+        *NO_CULL.get_or_init(|| std::env::var_os("BYRO_NO_CULL").is_some())
+    };
     if let (Some(tq), Some(mq)) = (tq, mq) {
         for (entity, mesh) in mq.iter() {
             // #1377 / D2-NEW-04 (#1805): single lookup instead of a
