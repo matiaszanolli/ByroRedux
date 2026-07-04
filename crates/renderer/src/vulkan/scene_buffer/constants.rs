@@ -7,7 +7,7 @@
 use ash::vk;
 
 /// Maximum lights we can upload per frame. The SSBO is pre-allocated to this size.
-/// 512 lights × 48 bytes = 24 KB per frame — trivial.
+/// 512 lights × 64 bytes = 32 KB per frame — trivial.
 pub(super) const MAX_LIGHTS: usize = 512;
 
 /// Maximum bones we can upload per frame across all skinned meshes.

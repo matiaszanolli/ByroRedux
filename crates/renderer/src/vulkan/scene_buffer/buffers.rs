@@ -110,7 +110,7 @@ pub struct SceneBuffers {
     /// is unconditional. See #878 / DIM8-01.
     pub(super) last_uploaded_material_hash: [Option<u64>; MAX_FRAMES_IN_FLIGHT],
     /// Sibling dirty-gate for [`SceneBuffers::upload_instances`] —
-    /// MedTek ships ~530 KB/frame of GpuInstance data, static
+    /// MedTek ships ~805 KB/frame of GpuInstance data, static
     /// interiors recompute the same byte-identical slice each frame.
     /// See #1134 / PERF-D8-NEW-01 and #878 for the template.
     pub(super) last_uploaded_instance_hash: [Option<u64>; MAX_FRAMES_IN_FLIGHT],
