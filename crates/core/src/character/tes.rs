@@ -46,6 +46,21 @@ pub fn oblivion_magicka_formula(intelligence_av: u32) -> DerivedStatFormula {
     DerivedStatFormula::affine(DerivedInput::actor_value(intelligence_av), 2.0, 0.0).player_only()
 }
 
+/// Oblivion per-piece Armor Rating's skill-driven multiplier
+/// (`0.35 + 0.0065·ArmorSkill`). Source: UESP *Oblivion:The Complete Damage
+/// Formula* — `PieceArmorRating = BaseArmorRating × (0.35 + 0.0065 ×
+/// OpponentArmorSkill) × (ArmorHealth / MaxArmorHealth)`. CHARAL owns only
+/// the skill-driven multiplier; `BaseArmorRating` (per-piece content) and the
+/// condition ratio are equipment-layer inputs the combat system supplies, and
+/// the `Σ pieces, capped at 85` summation is a downstream combat concern, not
+/// part of this per-skill formula (`docs/engine/charal-oblivion-ruleset.md`).
+/// The source gives one shared coefficient for "whichever armor skill governs
+/// the piece" — applied identically to both Light Armor and Heavy Armor below,
+/// not a per-type constant.
+pub const ARMOR_RATING_SKILL_COEFF: f32 = 0.0065;
+/// Armor Rating multiplier's bias term — see [`ARMOR_RATING_SKILL_COEFF`].
+pub const ARMOR_RATING_SKILL_BIAS: f32 = 0.35;
+
 /// Oblivion Fatigue = `Strength + Willpower + Agility + Endurance` (UESP).
 ///
 /// Returned as the four affine rows (coefficient 1.0 each, uncapped,
@@ -106,6 +121,30 @@ pub fn oblivion_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
         for row in oblivion_fatigue_formulas(s, w, a, e) {
             rs.push_derived(out, row);
         }
+    }
+    // Armor Rating multiplier ×(0.35 + 0.0065·ArmorSkill), one row per armor
+    // skill — actor-general (the source doesn't distinguish player/NPC here).
+    if let (Some(out), Some(la)) = (resolve("LightArmorRating"), resolve("LightArmor")) {
+        rs.push_derived(
+            out,
+            DerivedStatFormula::affine(
+                DerivedInput::actor_value(la),
+                ARMOR_RATING_SKILL_COEFF,
+                ARMOR_RATING_SKILL_BIAS,
+            )
+            .as_multiplier(),
+        );
+    }
+    if let (Some(out), Some(ha)) = (resolve("HeavyArmorRating"), resolve("HeavyArmor")) {
+        rs.push_derived(
+            out,
+            DerivedStatFormula::affine(
+                DerivedInput::actor_value(ha),
+                ARMOR_RATING_SKILL_COEFF,
+                ARMOR_RATING_SKILL_BIAS,
+            )
+            .as_multiplier(),
+        );
     }
     rs
 }
@@ -231,6 +270,10 @@ mod tests {
                 "Health" => 0x90,
                 "Magicka" => 0x92,
                 "Fatigue" => 0x93,
+                "LightArmor" => 0x24,
+                "HeavyArmor" => 0x25,
+                "LightArmorRating" => 0x94,
+                "HeavyArmorRating" => 0x95,
                 _ => return None,
             })
         };
@@ -247,10 +290,15 @@ mod tests {
             (0x21, 30.0), // WIL
             (0x22, 35.0), // AGI
             (0x23, 45.0), // END
+            (0x24, 50.0), // Light Armor skill
+            (0x25, 20.0), // Heavy Armor skill
         ]);
         assert_eq!(rs.derived_value(0x90, &avs, 1), Some(90.0)); // Health 2·END
         assert_eq!(rs.derived_value(0x92, &avs, 1), Some(100.0)); // Magicka 2·INT
         assert_eq!(rs.derived_value(0x93, &avs, 1), Some(150.0)); // Fatigue STR+WIL+AGI+END
+        // Armor Rating multiplier: 0.35+0.0065·skill. Light 50 → 0.675; Heavy 20 → 0.48.
+        assert!((rs.derived_value(0x94, &avs, 1).unwrap() - 0.675).abs() < 1e-6);
+        assert!((rs.derived_value(0x95, &avs, 1).unwrap() - 0.48).abs() < 1e-6);
     }
 
     #[test]

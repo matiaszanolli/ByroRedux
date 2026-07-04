@@ -197,7 +197,7 @@ ActorValue output — same "skill AV in, mechanic-formula out" routing as
 Lockpicking/Sneak Detection in `charal-skyrim-ruleset.md`. Documented for
 completeness, not a CHARAL build target.
 
-## Melee weapon damage (Blade/Blunt) — first real bilinear (attribute × skill) multiplier, shared across weapon-type skills
+## Melee weapon damage (Blade/Blunt) — BUILT — first real bilinear (attribute × skill) multiplier, shared across weapon-type skills
 
 Source: UESP *Oblivion:Blunt* + *Oblivion:Blade*, 2026-07-04, both "Skill Benefits":
 
@@ -238,12 +238,23 @@ with another governing stat. It's also the first weapon-damage formula found
 that reads BOTH inputs multiplicatively (FO3/FNV Melee Damage is `STR×0.5`
 additive, single-input; FO4's is `×(1+STR/10)`, single-input multiplier) —
 Oblivion's is the first to need genuine `DerivedScope::Multiplier` +
-two-input `bilinear` at once. Not yet built (Oblivion's derived-stat table in
-code is still just `oblivion_health_formula` + attribute bonus; this is a new
-row, not a formula-shape gap). Still open: Marksman (Agility-governed, per
-`SkillSet::OBLIVION`) and Hand-to-Hand — the latter is the likelier divergence
-point, since FO3/FNV's Unarmed Damage is skill-chained rather than a weapon-
-damage multiplier, so Oblivion's unarmed math may not fit this shared shape.
+two-input `bilinear` at once — though **not** via `DerivedStatFormula` itself
+in the end (see below).
+
+**BUILT 2026-07-04** as `oblivion_weapon_damage_multiplier` in the new
+`crates/core/src/combat.rs` module (sibling of `crate::stealth`, not under
+`character/`) rather than as a `DerivedStatFormula` row: the formula needs
+the Luck-chained `modified_skill()` (below) folded in first, and
+`DerivedStatFormula`'s `DerivedInput` reads a raw stored AV, not a computed
+intermediate — so this is combat-time function composition, the same
+"reusable piece built ahead of its consumer system" pattern already used for
+`stealth::detection_score` (no attack-resolution system exists yet to wire
+it into). 6 tests (bias-term cross-check against this doc's own hand-
+expansion, Luck monotonicity, the `[0,100]` input clamp UESP states
+explicitly). Marksman uses the identical function (Agility in place of
+Strength — no separate code, same shared shape now confirmed by both source
+pages and the implementation). Hand-to-Hand is genuinely divergent — see the
+Complete Damage Formula section below, also now BUILT.
 
 Both Blade and Blunt increase by a flat **+0.5 XP per hit on a living target**
 (inanimate targets in training rooms grant nothing) — same constant on both
@@ -256,7 +267,7 @@ accumulation model, already the documented Oblivion leveling mechanism), not
 a flat character-XP grant, so it's a reconfirmation of the existing skill-use
 leveling model rather than a new gap.
 
-## The Complete Damage Formula — closes Marksman/Hand-to-Hand, adds Luck-chained skill + a new Armor Rating candidate
+## The Complete Damage Formula — closes Marksman/Hand-to-Hand, adds Luck-chained skill + Armor Rating — all now BUILT
 
 Source: UESP *Oblivion:The Complete Damage Formula*, 2026-07-04 — the page
 Blade/Blunt both point to for "more information." Confirms the Blade/Blunt
@@ -279,9 +290,10 @@ shape: `ModifiedSkill` is itself a plain two-input **affine** formula
 (`bias=−20, c_Skill=1, c_Luck=0.4`, no cross term) that **chains** into the
 existing bilinear, exactly the same "derivation chains" pattern already
 established for FO3/FNV's Unarmed Damage (← Unarmed skill ← SPECIAL) — just
-one hop longer. Confirms CHARAL's chain-of-`DerivedStatFormula` model scales
-to 3+ governing stats without new machinery, only two hops of the existing
-two-input shape.
+one hop longer. **BUILT** as `combat::modified_skill(skill, luck)` — a plain
+function rather than a `DerivedStatFormula` row, since it's evaluated at
+combat/haggling time against transient skill values, not stored `ActorValues`
+(see the module docs in `crates/core/src/combat.rs`).
 
 **2. Hand-to-Hand confirmed divergent, as predicted** — and simpler:
 ```
@@ -295,10 +307,17 @@ STR or Skill term at all, unlike Blade/Blunt/Marksman's three-term shape.
 2-hop chain) — the deepest confirmed derivation chain found yet (Luck+Skill →
 ModifiedSkill → Health_Damage → Fatigue_Damage, 3 hops). Both still route as
 combat-system math (damage output, not a stored AV), same boundary as every
-other weapon-damage formula here.
+other weapon-damage formula here. **BUILT** as
+`combat::oblivion_hand_to_hand_damage(strength, skill, luck) -> (health,
+fatigue)`, alongside the weapon-damage multiplier above (3 tests: the
+worked-zero and worked-max cases, plus a chain-invariant test asserting
+`fatigue == 1 + 0.5·health` for arbitrary inputs). Unlike the weapon-damage
+multiplier, the `[0,100]` input clamp is **not** applied here — UESP states
+that clamp only in the Weapon Damage section, not Hand-to-Hand, so the
+implementation doesn't assume it (no-guessing).
 
-**3. A new Armor-skill-governed Armor Rating candidate — directly comparable
-to Skyrim's built `LIGHT_ARMOR_RATING_COEFF`.** Per-piece:
+**3. An Armor-skill-governed Armor Rating candidate — directly comparable
+to Skyrim's built `LIGHT_ARMOR_RATING_COEFF`, now built the same way.** Per-piece:
 ```
 PieceArmorRating = BaseArmorRating × (0.35 + 0.0065 × ArmorSkill) × (ArmorHealth / MaxArmorHealth)
 CombinedArmorRating = Σ pieces, capped at 85
@@ -311,9 +330,16 @@ this a **cross-game-confirmed pattern**: both TES games have an
 armor-skill-driven `DerivedStatFormula::affine` term feeding armor rating,
 just Oblivion's additionally multiplies by armor condition (equipment-layer
 input, same boundary as weapon condition above) and sums per-piece before the
-85-point cap. Not yet built — Oblivion's derived table has no armor-rating
-entry at all today (only Health + attribute bonus), so unlike Skyrim's this
-is a genuinely new row, not a refinement.
+85-point cap (the cap and per-piece sum stay a combat-layer concern, not
+part of this formula). **BUILT 2026-07-04** — unlike the weapon-damage
+formulas above, this one *does* fit `DerivedStatFormula` cleanly (single-
+input affine, no Luck term), so it's wired the same way as Skyrim's Light
+Armor Rating: `ARMOR_RATING_SKILL_COEFF`/`ARMOR_RATING_SKILL_BIAS` in
+`crates/core/src/character/tes.rs`, two rows in `oblivion_ruleset()` (one
+each for `LightArmor`→`LightArmorRating` and `HeavyArmor`→
+`HeavyArmorRating`, both `Multiplier`-kind, `ActorGeneral` scope since the
+source doesn't distinguish player/NPC here unlike Skyrim's). Test asserts
+both worked values (Light 50 → 0.675, Heavy 20 → 0.48).
 
 **4. Sneak/power-attack multipliers, weapon condition, spell resistance** —
 all confirmed real but out of CHARAL scope, same "skill AV in, combat-formula
@@ -383,12 +409,15 @@ Melee damage is no longer modified by Fatigue at all in Remastered.
 A genuine ruleset fork, not a visual-only remaster delta: different governing
 attributes (2 of 4, reweighted 1:2 Agility:Willpower), a fundamentally
 different regen shape (rate now scales with Agility, not flat), and the
-Fatigue→damage coupling deleted outright. Sharpens the "which patch level is
-the compat target" question already flagged at Acrobatics into a concrete
-choice CHARAL will eventually need to make explicit (a `LevelingModel`/
-`CharacterRuleset` variant per patch, or "vanilla only, Remastered out of
-scope") — not resolved here, just now backed by two independent data points
-instead of one.
+Fatigue→damage coupling deleted outright. **The "which patch level is the
+compat target" question raised here and at Acrobatics is already answered
+in code**, not actually open: `oblivion_health_gain_per_level`'s doc comment
+(`crates/core/src/character/tes.rs`) explicitly states classic Oblivion
+(2006, Gamebryo — ByroRedux's target) is in scope and Remastered's diverging
+formulas are not adopted; `crates/core/src/combat.rs` states the same. Every
+Remastered variant recorded in this doc (Fatigue/Health/Magicka regen,
+Acrobatics fall damage) is captured for completeness and cross-game context,
+not as a live fork decision.
 
 **3. Confirms the fatigue/damage ratio is genuinely uncapped** (refines the
 Complete Damage Formula entry above, doesn't contradict it): "if your current
