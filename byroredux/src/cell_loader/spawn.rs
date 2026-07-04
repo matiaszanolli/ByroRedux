@@ -258,10 +258,19 @@ pub(super) fn spawn_placed_instances(
     // FormIdPool intern is a single write-lock per REFR; for cell loads
     // measuring at 800–1000 REFRs (Megaton / Diamond City), the cost is
     // dominated by the StringPool intern (#882) one level above this.
-    if let Some(pair) = placement_form_id_pair {
+    //
+    // #1698 — cached here (not just inserted) so the standalone bhk
+    // collision entities spawned below can carry the same form id. Those
+    // entities are NOT children of `placement_root`'s render mesh (they're
+    // spawned bare from `cached.collisions`, see the loop's own comment),
+    // so without this they're otherwise unresolvable to their source REFR
+    // — the runtime `dump_awake_fallers` diagnostic could only ever print
+    // `form=? layer=?` for any awake dynamic clutter body.
+    let placement_fid = placement_form_id_pair.map(|pair| {
         let fid = world.resource_mut::<FormIdPool>().intern(pair);
         world.insert(placement_root, FormIdComponent(fid));
-    }
+        fid
+    });
     // M40 Phase 2 Stage 1 — XTEL portal plumbing. When the REFR carries
     // a teleport destination, stamp a `DoorTeleport` component on the
     // placement root so the console command + future F-key activate
@@ -491,6 +500,28 @@ pub(super) fn spawn_placed_instances(
         );
         world.insert(entity, shape);
         world.insert(entity, coll.body.clone());
+        // #1698 — tag this collision entity with its source REFR's form id
+        // and content-class so a runtime diagnostic (`dump_awake_fallers`)
+        // can resolve WHICH placement an awake/free-falling dynamic body
+        // belongs to. Pre-fix these entities carried neither — structurally
+        // unresolvable to anything a user could act on.
+        //
+        // Deliberately `PhysicsSourceForm`, NOT `FormIdComponent`: this
+        // entity isn't parented to `placement_root` (its `Transform` is
+        // already world-composed above, not NIF-local — adding `Parent`
+        // would either double-transform it under propagation, or (without
+        // the matching `Children` bookkeeping `add_child` provides) orphan
+        // it from propagation entirely and freeze its `GlobalTransform`).
+        // Reusing `FormIdComponent` here would also make
+        // `World::find_by_form_id` ambiguous: a compound bhk shape can
+        // spawn several of these per REFR, all sharing the placement's
+        // form id, and that lookup returns the first match — it must stay
+        // resolvable to the actual placement root, not an arbitrary
+        // collision proxy.
+        if let Some(fid) = placement_fid {
+            world.insert(entity, byroredux_core::ecs::components::PhysicsSourceForm(fid));
+        }
+        world.insert(entity, base_layer);
     }
 
     // #882 / CELL-PERF-05 — single StringPool lock acquisition for the

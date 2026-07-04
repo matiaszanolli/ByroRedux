@@ -650,6 +650,41 @@ fn find_by_form_id_no_components() {
     assert!(world.find_by_form_id(fid).is_none());
 }
 
+/// #1698 — `PhysicsSourceForm` (the diagnostic-only backlink standalone
+/// bhk-collision entities carry) must NOT be visible to `find_by_form_id`.
+/// That lookup backs console `prid` / Papyrus `ObjectReference` resolution
+/// and assumes at most one canonical entity per form id; if a physics
+/// proxy entity showed up here it could shadow the actual placement root.
+#[test]
+fn find_by_form_id_ignores_physics_source_form() {
+    use crate::ecs::components::PhysicsSourceForm;
+
+    let mut world = World::new();
+    world.insert_resource(FormIdPool::new());
+
+    let pair = FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(0x0E283F),
+    };
+    let fid = world.resource_mut::<FormIdPool>().intern(pair);
+
+    // Placement root: the canonical entity, carries FormIdComponent.
+    let placement_root = world.spawn();
+    world.insert(placement_root, FormIdComponent(fid));
+
+    // A standalone bhk-collision proxy sharing the same form id, but
+    // tagged with the diagnostic-only backlink instead.
+    let collision_proxy = world.spawn();
+    world.insert(collision_proxy, PhysicsSourceForm(fid));
+
+    assert_eq!(
+        world.find_by_form_id(fid),
+        Some(placement_root),
+        "find_by_form_id must resolve to the FormIdComponent-carrying \
+         placement root, never the PhysicsSourceForm-tagged proxy"
+    );
+}
+
 #[test]
 fn form_id_pool_as_world_resource() {
     let mut world = World::new();

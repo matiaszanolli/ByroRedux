@@ -14,7 +14,9 @@
 //!    bodies only — static/keyframed are driven the other way).
 
 use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
-use byroredux_core::ecs::components::{FormIdComponent, GlobalTransform, RenderLayer, Transform};
+use byroredux_core::ecs::components::{
+    FormIdComponent, GlobalTransform, PhysicsSourceForm, RenderLayer, Transform,
+};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use byroredux_core::form_id::FormIdPool;
@@ -205,6 +207,18 @@ fn worst_fallers(mut entries: Vec<FallerEntry>, n: usize) -> Vec<FallerEntry> {
     entries
 }
 
+/// #1698 — pick the `FormId` to resolve for one awake body: prefer a
+/// `FormIdComponent` the entity happens to carry directly (e.g. a future
+/// physics-on-render-entity path) over the diagnostic-only
+/// `PhysicsSourceForm` backlink that today's bhk-collision spawn path
+/// attaches instead. Pure, so it's unit-testable without a live `World`.
+fn resolve_source_form(
+    direct: Option<byroredux_core::form_id::FormId>,
+    backlink: Option<byroredux_core::form_id::FormId>,
+) -> Option<byroredux_core::form_id::FormId> {
+    direct.or(backlink)
+}
+
 fn render_layer_label(l: RenderLayer) -> &'static str {
     match l {
         RenderLayer::Architecture => "Arch",
@@ -241,6 +255,14 @@ fn dump_awake_fallers(world: &World) {
     }
     let layer_q = world.query::<RenderLayer>();
     let form_q = world.query::<FormIdComponent>();
+    // #1698 — bhk-collision physics entities (`cell_loader::spawn`'s
+    // standalone collision spawn loop) aren't the REFR's `FormIdComponent`-
+    // carrying placement root; they carry `PhysicsSourceForm` instead (see
+    // that component's doc for why `FormIdComponent` itself isn't reused
+    // here). Prefer `FormIdComponent` when an entity happens to carry it
+    // directly (e.g. a future physics-on-render-entity path), else fall
+    // back to the source backlink.
+    let physics_source_q = world.query::<PhysicsSourceForm>();
     let pool = world.try_resource::<FormIdPool>();
 
     let mut entries: Vec<FallerEntry> = Vec::with_capacity(awake.len());
@@ -255,8 +277,13 @@ fn dump_awake_fallers(world: &World) {
             .and_then(|e| layer_q.as_ref().and_then(|q| q.get(e).copied()))
             .map(render_layer_label);
         let form = entity.and_then(|e| {
-            let comp = form_q.as_ref()?.get(e)?;
-            pool.as_ref()?.resolve(comp.0).map(|pair| pair.local.0)
+            let direct = form_q.as_ref().and_then(|q| q.get(e).copied()).map(|c| c.0);
+            let backlink = physics_source_q
+                .as_ref()
+                .and_then(|q| q.get(e).copied())
+                .map(|c| c.0);
+            let fid = resolve_source_form(direct, backlink)?;
+            pool.as_ref()?.resolve(fid).map(|pair| pair.local.0)
         });
         entries.push(FallerEntry {
             entity: entity.map(|e| e.to_string()).unwrap_or_else(|| "?".into()),
@@ -597,7 +624,8 @@ fn pull_dynamic(world: &World) {
 
 #[cfg(test)]
 mod faller_diag_tests {
-    use super::{worst_fallers, FallerEntry};
+    use super::{resolve_source_form, worst_fallers, FallerEntry};
+    use byroredux_core::form_id::{FormId, FormIdPair, FormIdPool, LocalFormId, PluginId};
 
     fn entry(vy: f32) -> FallerEntry {
         FallerEntry {
@@ -626,5 +654,42 @@ mod faller_diag_tests {
         let worst = worst_fallers(vec![entry(0.0), entry(-50.0)], 10);
         assert_eq!(worst.len(), 2);
         assert_eq!(worst[0].vy, -50.0);
+    }
+
+    fn fid(local: u32) -> FormId {
+        let mut pool = FormIdPool::new();
+        pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(local),
+        })
+    }
+
+    /// #1698 — the standalone bhk-collision entities this diagnostic exists
+    /// for carry ONLY the `PhysicsSourceForm` backlink (no `FormIdComponent`
+    /// — see that component's doc for why). The fallback must still resolve.
+    #[test]
+    fn falls_back_to_physics_source_form_when_no_direct_form_id() {
+        let backlink = fid(0x0E283F);
+        assert_eq!(resolve_source_form(None, Some(backlink)), Some(backlink));
+    }
+
+    /// A future path might attach `FormIdComponent` directly to a physics
+    /// entity (e.g. physics registered on the render entity itself) — that
+    /// must win over any stale/coincidental backlink.
+    #[test]
+    fn prefers_direct_form_id_over_backlink() {
+        let direct = fid(0x000014);
+        let backlink = fid(0x0E283F);
+        assert_eq!(
+            resolve_source_form(Some(direct), Some(backlink)),
+            Some(direct)
+        );
+    }
+
+    /// Neither present (an unresolvable physics entity, e.g. a ragdoll bone)
+    /// must resolve to `None`, not panic or fabricate an id.
+    #[test]
+    fn resolves_to_none_when_neither_present() {
+        assert_eq!(resolve_source_form(None, None), None);
     }
 }

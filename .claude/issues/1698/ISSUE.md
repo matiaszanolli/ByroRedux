@@ -83,6 +83,71 @@ the 325 awake bodies lack colliders (log entity→base-form for awake fallers);
 (2) check the synth-trimesh fallback gate (base_layer==Architecture excludes
 FURN); (3) character KCC down-cast vs the existing floor collider.
 
+## FIX PROGRESS (2026-07-04 session) — diagnostic now actually names culprits
+Root cause of the "instrument, not cure" gap: `dump_awake_fallers` printed
+`layer=? form=?` for every entry because the standalone bhk-collision
+entities spawned by `cell_loader::spawn`'s "Spawn collision entities from
+NiNode collision data" loop (`spawn.rs:462-517`) carried NEITHER
+`FormIdComponent` NOR `RenderLayer` — they're bare entities decoupled from
+the placement's render hierarchy (own `Transform`/`GlobalTransform`/
+`CollisionShape`/`RigidBodyData` only), so both queries always missed.
+
+Fix: attach `base_layer` (`RenderLayer`) directly, plus a NEW dedicated
+diagnostic-only component `PhysicsSourceForm(FormId)` (crates/core/src/ecs/
+components/physics_source.rs) carrying the placement's form id.
+Deliberately NOT `FormIdComponent`: that backs `World::find_by_form_id`
+(console `prid` / Papyrus `ObjectReference` resolution), which returns the
+*first* match and assumes one canonical entity per form id — a compound bhk
+shape spawns several collision entities per REFR, all sharing its form id,
+so reusing `FormIdComponent` would make that lookup ambiguous (verified via
+a new regression test, `find_by_form_id_ignores_physics_source_form`).
+Also did NOT add `Parent(placement_root)`: these entities' `Transform` is
+already world-composed (`ref_rot * (ref_scale * nif_pos) + ref_pos`), not
+NIF-local like real hierarchy children — adding `Parent` without the
+matching `add_child`-driven `Children` bookkeeping would silently orphan
+the entity from `transform_propagation_system` (root-detection excludes
+anything with a `Parent`, but it'd never be BFS-reachable either), freezing
+`GlobalTransform` forever; going through `add_child` instead would double-
+transform it. Neither is worth the risk for a diagnostic-only need.
+
+`dump_awake_fallers` now prefers `FormIdComponent` (direct) and falls back
+to `PhysicsSourceForm` (the new backlink) — pure resolution logic extracted
+into `resolve_source_form`, unit-tested (3 cases: prefers direct, falls
+back, both-absent → None).
+
+**Verified live** (`BYRO_PROFILE_FALLERS=1 ... --game skyrim_se --cell
+WhiterunDragonsreach --bench-frames 240 --bench-hold`, RTX 4070 Ti): the
+dump now resolves real form ids, e.g.:
+```
+entity 2081 layer=Arch    form=0x02FDC4 y=1040 vy=-112
+entity 5526 layer=Clutter form=0x0E283F y=495  vy=-69
+entity 5598 layer=Clutter form=0x0E284D y=536  vy=-28
+... (24 total, all Clutter except entity 2081/Arch)
+```
+Bench window is also now measurably better than the original report — the
+prior session's anti-spiral substep budget (already shipped) brings this
+run to `wall_fps=32.6` (vs the original 8.7 fps baseline; the HIGH-severity
+FPS-collapse crisis is substantially mitigated even before the coverage gap
+itself is fixed).
+
+Tried resolving these form ids via `cargo run -p byroredux-plugin --example
+probe_form -- Skyrim.esm <ids>` — that example's index only covers a handful
+of record categories (STAT/NPC_/CONT/ITEM/LVLI/LVLN/ACTI/PROJ/EXPL/CREA) and
+came back "NOT FOUND" for all of them, meaning they're categories it doesn't
+track (likely FURN or a MISC/clutter type not yet in that probe tool's
+index). Resolving the exact EDID/record type needs either xEdit (not
+available in this environment) or extending `probe_form`'s category list —
+left as the next concrete step.
+
+**Next-session starting points**: (1) extend `probe_form.rs` (or a similar
+lookup) to cover FURN/MISC and resolve these 16 form ids to their EDID/mesh
+path; (2) once named, check whether their `.nif` bhk collision data fails
+to parse or the synth-trimesh fallback gate excludes them; (3) character KCC
+grounding (entity 2081/Arch, vy=-112, the largest faller) is likely the
+separate player-spawn grounding bug noted in the prior session, not
+clutter — worth confirming its form id resolves to the expected static
+floor collider.
+
 ### Done — anti-spiral amortization (2026-06-24 session)
 Shipped lever (c) from the fix-direction list: a per-frame **wall-clock
 substep budget** in `PhysicsWorld::step` (`SUBSTEP_TIME_BUDGET = PHYSICS_DT`,

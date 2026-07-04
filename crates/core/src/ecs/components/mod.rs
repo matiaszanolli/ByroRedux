@@ -21,6 +21,7 @@ pub mod mesh;
 pub mod name;
 pub mod particle;
 pub mod perk_list;
+pub mod physics_source;
 pub mod render_layer;
 pub mod scene_flags;
 pub mod skinned_mesh;
@@ -59,6 +60,7 @@ pub use mesh::MeshHandle;
 pub use name::Name;
 pub use particle::{EmitterShape, ParticleEmitter, ParticleForceField, ParticleSoA};
 pub use perk_list::PerkList;
+pub use physics_source::PhysicsSourceForm;
 pub use render_layer::{
     escalate_small_static_to_clutter, render_layer_with_decal_escalation, RenderLayer,
     SMALL_STATIC_RADIUS_UNITS,
