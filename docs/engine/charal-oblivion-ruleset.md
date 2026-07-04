@@ -75,3 +75,124 @@ formula. No numeric infection-chance formula given here either (same PENDING
 gap as Skyrim). **Two-game-confirmed now**: Disease is a fixed-effect status
 table in both TES games covered so far, Vampirism is the one with real
 pool-like math — the divide holds cross-game, not just within Skyrim.
+
+## Enchanting — the Enchant SKILL has no functional role at all, unlike Skyrim's quadratic multiplier
+
+Source: UESP *Oblivion:Enchanting*, 2026-07-04, fetched right after Skyrim's
+Enchanting page (`charal-skyrim-ruleset.md`) for direct comparison. The
+contrast is sharp and well-supported: **the word "skill" never appears in
+connection with enchantment magnitude, cost, or recharging anywhere on this
+page.** The full formula is:
+```
+EffectMagnitude = BaseCost × ConstantEffectEnchantmentFactor × SoulLevel + fMagicCEEnchantMagOffset
+ConstantEffectEnchantmentFactor = (Power − 5) / SoulGemNumber / BaseCost
+EnchantmentCost = EffectMagnitude × BarterFactor
+
+SoulGemNumber: Petty=1, Lesser=2, Common=3, Greater=4, Grand=5
+fMagicCEEnchantMagOffset = 5.0 (default GMST)
+```
+Every input is either a spell-effect constant (`BaseCost`, `Power`,
+`BarterFactor` — properties of the *effect*, from the Spell Effects page) or
+the **soul gem's** size (`SoulLevel`/`SoulGemNumber`) — **never the player's
+Enchant skill**. Recharging (via gold payment, Varla Stones, or Soul
+Trapping) is likewise entirely item/gold-based, no skill term anywhere.
+
+**This is the sharpest cross-game divergence found in the whole Enchanting/
+Alchemy/Armor skill-multiplier investigation this session.** Skyrim's
+Enchanting has a central, quadratic skill-derived `SkillMultiplier =
+1+(Skill/100)×(Skill/100−0.14)/3.4` term (`charal-skyrim-ruleset.md`);
+Oblivion's Enchant skill — despite being a full skill in `SkillSet::OBLIVION`
+governed by an attribute, with its own trainers, skill books, and presumably
+level-up progression like any other Oblivion skill — **contributes nothing
+measurable to the system it's named after**, at least per what's documented
+on this page. This is a genuine "Oblivion vs. Skyrim system redesign"
+finding, not a documentation gap on either page's part (both pages are
+otherwise formula-dense and precise) — Bethesda restructured what a skill
+called "Enchanting" actually *does* between the two games. Worth remembering
+before assuming any Oblivion skill has a Skyrim-style smooth multiplier just
+because the same-named skill does in Skyrim.
+
+**Refinement from *Oblivion:Soul Trap*, 2026-07-04**: confirms directly,
+in the source's own words, that "your Mysticism skill does **not** determine
+the strength of souls that you can trap" — the captured soul's strength is
+purely a property of the creature/NPC killed (a fixed table: Petty 150 →
+Grand/Black 1600), matched against soul gem capacity, no skill term
+anywhere. But magic skills in Oblivion aren't *entirely* inert the way
+Enchanting first looked: "increased Mysticism skill will allow you access to
+Soul Trap spells of longer duration, and will allow you to cast the spells
+for less Magicka cost." So the real shape is: **magic skills gate spell-tier
+*access* and reduce **casting** Magicka cost** (a universal per-school
+mechanic, not specific to Soul Trap) — **but never scale the magnitude or
+success of the effect itself**. This is a more precise statement of the
+Enchanting finding above, not a contradiction: Enchant/Mysticism genuinely
+don't scale *outcomes* (enchantment magnitude, soul-capture strength), they
+gate *access* and *casting cost* instead — the opposite emphasis from
+Skyrim, where Enchanting's `SkillMultiplier` scales the outcome directly.
+Also surfaces a new **PENDING** item mirroring the still-open Skyrim thread:
+Oblivion has its own generic "spell Magicka cost decreases with skill"
+mechanic, formula not sourced here — presumably on an Oblivion Magic
+Overview / Spellmaking page, not fetched this session.
+
+## Magic school spell cost — LOCKED, closes the PENDING thread above, clean affine (unlike Skyrim's quadratic)
+
+Source: UESP *Oblivion:Illusion*, 2026-07-04 — "Skill Benefits" section:
+```
+Cost = BaseCost × (1.4 − 0.012 × Skill)      (Skill capped at 100 — no further reduction past it)
+```
+At Skill 0: ×1.4 (140% of base — casting is *more* expensive than
+`BaseCost` at zero skill); at Skill 100: ×0.2 (20% of base, the floor).
+
+**Cross-confirmed on a second school**: UESP *Oblivion:Destruction*,
+2026-07-04, gives the **identical** equation verbatim (`Cost = BaseCost *
+(1.4 - 0.012 * Min(Skill, 100))`) under the same "Skill Benefits" heading.
+Same bias, same coefficient, same cap — not just the same template wording.
+This closes the generality caveat from the Illusion finding: it's now a
+**two-school-confirmed single game-wide mechanic**, not a coincidence of
+shared wiki-template phrasing. Treat it as the formula for all 6 Oblivion
+magic schools (Destruction, Restoration, Alteration, Conjuration, Mysticism,
+Illusion), each reading its own governing skill.
+
+**Clean affine — a genuine contrast with Skyrim's Enchanting `SkillMultiplier`
+(quadratic, `1+(Skill/100)×(Skill/100−0.14)/3.4`)**, closing the loop opened
+by the Soul Trap page: Oblivion's magic-school cost-reduction mechanic is a
+straight line in skill, not a curve. Two data points isn't enough to call a
+universal "Oblivion is affine, Skyrim is quadratic" rule, but it's a real,
+sourced contrast worth keeping distinct rather than assuming either
+game's shape carries over to the other.
+
+Skill-gated spell-tier access (Novice/Apprentice/Journeyman/Expert/Master —
+same 5-tier structure as every other Oblivion skill) and a flat 3 XP per
+successful cast are standard patterns already established elsewhere, not
+new. Not a CHARAL derived stat (spell-casting economy, not a character AV),
+same routing as every other magic-cost/persuasion/barter formula this
+session — documented for completeness, not a build target.
+
+## Acrobatics — jump height (clean, uncapped) + fall damage (buggy, near-useless in original)
+
+Source: UESP *Oblivion:Acrobatics*, 2026-07-04, "Skill Benefits" section:
+```
+JumpHeight = 64 + AcrobaticsSkill
+FinalDamage = BaseDamage × (1.25 − AcrobaticsSkill / 10000)
+```
+`JumpHeight` is clean affine (bias 64, coeff 1) and — notably — **not capped
+at Skill 100**: Acrobatics is one of only 3 Oblivion skills (with Athletics
+and Speechcraft) that keeps paying off when fortified past 100, up to an
+internal cap of Skill 255. Luck has no bearing on this formula, also called
+out explicitly by the source (a rare "we checked and it's NOT an input"
+confirmation worth keeping as a negative data point).
+
+`FinalDamage` is UESP-documented as **bugged**: at Skill 100 it only
+reduces fall damage by ~1%, because the fall-damage-scaling GMST
+(`fJumpFallSkillMult`) was tuned wrong at ship (a value of `-1.0` would have
+let Skill 125+ negate fall damage entirely; the shipped value doesn't).
+Notable: *Oblivion Remastered* is documented as fixing this — at Skill 100
+it reduces fall damage by ~62.5%, i.e. the remaster patched original-game
+mechanical math, not just visuals/engine — a rare instance worth flagging
+since most remaster deltas encountered this session have been purely
+cosmetic (Mastery Perk re-shuffling elsewhere in this same page is a
+different, non-buggy Remastered rebalance, not a fix).
+
+Both formulas govern jump physics / fall-damage mitigation, not an
+ActorValue output — same "skill AV in, mechanic-formula out" routing as
+Lockpicking/Sneak Detection in `charal-skyrim-ruleset.md`. Documented for
+completeness, not a CHARAL build target.
