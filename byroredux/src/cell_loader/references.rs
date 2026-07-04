@@ -1798,6 +1798,72 @@ mod tests {
         assert_eq!(v.half_extents.x, 45.0); // 15 * 3
     }
 
+    /// #1742 / SCR-D7-02 — the audit flagged (verify-not-confirmed) that
+    /// `half_extents` is permuted z-up→y-up (`[x, z, y]`) while `rotation`
+    /// passes through verbatim, and worried the two might not be in the
+    /// same frame for a non-axis-aligned trigger box.
+    ///
+    /// They ARE the same frame. `rotation` here is exactly
+    /// `euler_zup_to_quat_yup_refr`'s output — the same conversion every
+    /// other REFR placement in this loader uses — derived specifically so
+    /// it rotates y-up-frame vectors consistently with `zup_to_yup_pos`'s
+    /// position conversion. This test proves it end-to-end without
+    /// leaning on that self-consistency: it rotates a point in the box's
+    /// OWN z-up local frame (on the z-up +Y face — `bounds[1]`, one of the
+    /// two permuted axes) using Bethesda's independently-implemented
+    /// clockwise convention, converts the ROTATED point to y-up via the
+    /// canonical `zup_to_yup_pos` (not via `rotation`, and not via
+    /// anything `trigger_volume_from_primitive` touches), and checks
+    /// `TriggerVolume::contains` classifies points just inside/outside
+    /// that rotated face correctly. Deliberately probes `bounds[1]`
+    /// (z-up Y), not `bounds[0]` (z-up X, untouched by the permutation) —
+    /// a swapped `[x, z, y]` → `[x, y, z]` regression wouldn't move this
+    /// axis and this test would falsely pass.
+    #[test]
+    fn rotated_box_trigger_composes_rotation_in_same_frame_as_permuted_extents() {
+        use std::f32::consts::FRAC_PI_2;
+
+        // z-up: x=10, y=20 (the axis under test), z=30.
+        let prim = esm::cell::PrimitiveBounds {
+            bounds: [10.0, 20.0, 30.0],
+            color: [0.0; 3],
+            unknown: 0.0,
+            shape_type: 1, // Box
+        };
+        let center = Vec3::ZERO;
+        // A pure 90° yaw (Bethesda's "rz" Euler component) — same helper,
+        // same shipping mode (1 = CW+ZYX), as every other placed REFR.
+        let ref_rot = euler_zup_to_quat_yup_refr(0.0, 0.0, FRAC_PI_2);
+        let v = trigger_volume_from_primitive(&prim, center, ref_rot, 1.0)
+            .expect("box primitive yields a volume");
+
+        // Bethesda's clockwise rotation about z-up's Z axis, applied
+        // directly to a z-up local point — independent of `ref_rot`.
+        let cw_rotate_zup_by_z = |p: Vec3, theta: f32| {
+            let (s, c) = theta.sin_cos();
+            Vec3::new(p.x * c + p.y * s, -p.x * s + p.y * c, p.z)
+        };
+        let just_inside_zup = cw_rotate_zup_by_z(Vec3::new(0.0, 19.9, 0.0), FRAC_PI_2);
+        let just_outside_zup = cw_rotate_zup_by_z(Vec3::new(0.0, 20.1, 0.0), FRAC_PI_2);
+        let just_inside_world = Vec3::from_array(byroredux_core::math::coord::zup_to_yup_pos(
+            just_inside_zup.to_array(),
+        ));
+        let just_outside_world = Vec3::from_array(byroredux_core::math::coord::zup_to_yup_pos(
+            just_outside_zup.to_array(),
+        ));
+
+        assert!(
+            v.contains(just_inside_world),
+            "a point 0.1 units inside the box's rotated z-up +Y face must test \
+             inside (just_inside_world = {just_inside_world:?})"
+        );
+        assert!(
+            !v.contains(just_outside_world),
+            "a point 0.1 units outside the same rotated face must test outside \
+             (just_outside_world = {just_outside_world:?})"
+        );
+    }
+
     /// Non-containment shapes (line / portal / plane) don't become
     /// trigger volumes — they're not solids a point can be inside.
     #[test]
