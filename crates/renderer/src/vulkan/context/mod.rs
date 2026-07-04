@@ -926,6 +926,31 @@ fn parse_render_debug_flags_env() -> u32 {
     }
 }
 
+/// #1783 / CONC-D2-01 — decide whether `skin_compute` should be forced
+/// off given whether `skin_palette` initialised successfully.
+///
+/// `skin_palette` is the SOLE producer of the bone-palette SSBO
+/// (`create_device_local_uninit` — never zero-filled); `skin_compute`'s
+/// `skin_vertices.comp` dispatch and its consumers (`record_skinned_
+/// blas_refit`'s refit chain, the raster inline-skinning read) all READ
+/// that buffer. If `skin_palette` failed to initialise while
+/// `skin_compute` succeeded (a partial init failure — mid-init OOM or
+/// pipeline-cache corruption), every `skin_compute.is_some()` consumer
+/// gate would run against a buffer nothing ever wrote. Forcing
+/// `skin_compute` to `None` here makes every existing
+/// `skin_compute.is_some()` check an implicit `skin_palette.is_some()`
+/// check too, without touching each consumer site individually.
+///
+/// Pure and generic over the pipeline type so the coupling logic is
+/// unit-testable without a live Vulkan device.
+fn couple_skin_compute_to_palette<T>(skin_compute: Option<T>, skin_palette_ok: bool) -> Option<T> {
+    if skin_palette_ok {
+        skin_compute
+    } else {
+        None
+    }
+}
+
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
@@ -1815,7 +1840,7 @@ impl VulkanContext {
         // = 32` skinned meshes — same ceiling the bone-palette upload
         // path enforces in `build_render_data`. Buffer bindings are
         // deferred to per-dispatch (cell-transition robustness).
-        let skin_compute = if device_caps.ray_query_supported {
+        let mut skin_compute = if device_caps.ray_query_supported {
             // See module-level `SKIN_MAX_SLOTS` const for the rationale.
             match super::skin_compute::SkinComputePipeline::new(
                 &device,
@@ -1857,6 +1882,9 @@ impl VulkanContext {
         } else {
             None
         };
+        // #1783 / CONC-D2-01 — couple the two pipelines. See
+        // `couple_skin_compute_to_palette`'s doc for the full rationale.
+        skin_compute = couple_skin_compute_to_palette(skin_compute, skin_palette.is_some());
 
         // #1194 — per-pass GPU timer. Best-effort: failure to create
         // the query pools (driver lacks timestamp_compute_and_graphics,
@@ -3370,5 +3398,55 @@ mod draw_command_tests {
             "hit path must skip factory in release; calls jumped to {}",
             calls.get(),
         );
+    }
+}
+
+/// Regression for #1783 / CONC-D2-01. `couple_skin_compute_to_palette` is
+/// the fault-injection seam for the two-pipeline coupling: a live Vulkan
+/// device is needed to actually exercise `SkinComputePipeline::new` /
+/// `SkinPaletteComputePipeline::new` failing, but the coupling DECISION
+/// itself is pure and fully covered here.
+#[cfg(test)]
+mod skin_pipeline_coupling_tests {
+    use super::couple_skin_compute_to_palette;
+
+    /// The bug this issue is about: `skin_palette` failed to initialise
+    /// while `skin_compute` succeeded. Must force `skin_compute` off too,
+    /// so every `skin_compute.is_some()` consumer gate
+    /// (`record_skinned_blas_refit`'s refit dispatch chain) is skipped —
+    /// otherwise it would dispatch against the never-written palette SSBO.
+    #[test]
+    fn palette_failure_forces_compute_off_even_if_compute_succeeded() {
+        let skin_compute = Some(42u32); // stand-in for SkinComputePipeline
+        assert_eq!(couple_skin_compute_to_palette(skin_compute, false), None);
+    }
+
+    /// Both pipelines up (the common RT-capable path) — `skin_compute`
+    /// must pass through unchanged.
+    #[test]
+    fn both_present_leaves_compute_untouched() {
+        let skin_compute = Some(42u32);
+        assert_eq!(
+            couple_skin_compute_to_palette(skin_compute, true),
+            Some(42u32)
+        );
+    }
+
+    /// RT unsupported (both `None` before this call) — stays `None`, not
+    /// a regression of the existing "no RT" behavior.
+    #[test]
+    fn both_absent_stays_none() {
+        let skin_compute: Option<u32> = None;
+        assert_eq!(couple_skin_compute_to_palette(skin_compute, false), None);
+    }
+
+    /// Degenerate case the real call site never produces (construction
+    /// always gates both pipelines on the same `device_caps.ray_query_
+    /// supported`, so `skin_compute = None, skin_palette_ok = true`
+    /// shouldn't occur) — still must not panic or fabricate a value.
+    #[test]
+    fn compute_absent_but_palette_ok_stays_none() {
+        let skin_compute: Option<u32> = None;
+        assert_eq!(couple_skin_compute_to_palette(skin_compute, true), None);
     }
 }
