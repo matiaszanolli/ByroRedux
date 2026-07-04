@@ -29,6 +29,19 @@
 //!   yet (the wiki gives empirical sample tables only). That curve is
 //!   deliberately **not** modelled here (no-guessing). FO4 resistance is just a
 //!   plain AV until the closed form is sourced.
+//! * **Skyrim — a genuinely different shape, NOT this family's mechanism.**
+//!   Disease is **not** a pool/threshold system at all: each disease is a
+//!   discrete binary status (present or absent) carrying a *fixed* flat
+//!   percentage penalty (e.g. "picking locks 25% harder"), not an
+//!   accumulating damage pool crossing bands. Survival Mode adds a 3-rung
+//!   escalation ladder (Normal → Severe → Crippling after 24h untreated) with
+//!   fixed per-rung percentages — a discrete state machine gated by elapsed
+//!   time, not [`super::affliction`]'s continuous pool/threshold diff.
+//!   Resistance is a flat immunity percentage (Argonian/Bosmer 50 %,
+//!   werewolf/vampire 100 %), not an Endurance-derived formula. **Do not
+//!   reuse [`super::affliction::AfflictionTable`] for Skyrim disease** without
+//!   redesigning it — the mechanisms don't match. Source: UESP
+//!   *Skyrim:Disease*, `charal-skyrim-ruleset.md`.
 
 use super::derived::{DerivedInput, DerivedStatFormula};
 

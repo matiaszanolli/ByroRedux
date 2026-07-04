@@ -441,10 +441,25 @@ that difference is exactly a `LevelingModel` variant, not a new component:
   no other reputation-family instance gates on real time, only in-fiction state. Exact
   per-reaction point deltas are **PENDING** — the source page transcludes a
   `{{Conversation Key (affinity)}}` template for the numbers that wasn't expanded in
-  the fetched wikitext. Confirms the family taxonomy holds at 4 instances now: Karma
-  (global 1-axis) / FNV Reputation (per-faction 2-axis) / FO4 Affinity (per-companion
+  the fetched wikitext.
+- **Skyrim *Relationship Rank* is a FIFTH reputation-family instance — the coarsest
+  and least CHARAL-connected one** (source: UESP *Skyrim:Disposition*, 2026-07-04,
+  `charal-skyrim-ruleset.md`). A discrete 9-value scale (`Archnemesis…Lover`, -4..+4),
+  changed **only** by quest/favor-scripted rank-sets (`=1`, `0→1`, `min 1`, `=-1` —
+  target/floor/ceiling operations, not additive deltas), each rank gating a "theft
+  threshold" (max item value takeable without triggering theft: Friend 25 / Confidant
+  50 / Ally 100 / Lover 500). The architecturally important part: this is **explicitly
+  decoupled from Speechcraft** ("cannot be affected by performing speechcraft" — a
+  genuine break from earlier TES Disposition models) and has **zero skill/attribute
+  influence of any kind** — the first reputation-family instance with no connection to
+  CHARAL's AV substrate at all. Confirms Skyrim's Persuade/Intimidate/Bribe checks
+  (`charal-skyrim-ruleset.md`) are one-off dialogue gates with no accumulating
+  reputation consequence, fully separate from this rank.
+- Family taxonomy now stands at **5 instances**: Karma (global 1-axis, AV-native) /
+  FNV Reputation (per-faction 2-axis, Fame/Infamy) / FO4 Affinity (per-companion
   1-axis, richest sourced accrual formula) / Starfield Affinity (per-companion 1-axis,
-  richest *gating* mechanism — score AND real time).
+  richest *gating* mechanism — score AND real time) / Skyrim Relationship Rank
+  (per-NPC, discrete 9-value, zero skill/AV connection — quest-scripted only).
 - **FO76 has no traditional companions** (C.A.M.P. allies) — out of scope for now.
 - **FO1 / FO2 companion mechanics** (no leveling / fixed "stage" model-swap, the
   200-byte/5-record truncation bug) are **out of scope** — those are the isometric
