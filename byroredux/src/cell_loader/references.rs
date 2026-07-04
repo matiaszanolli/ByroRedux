@@ -27,6 +27,11 @@ use super::spawn::{light_radius_or_default, spawn_placed_instances};
 
 pub(super) struct RefLoadResult {
     pub(super) entity_count: usize,
+    /// The cell's chosen spawn point — the first door's own placement if the
+    /// cell has one (a guaranteed walkable threshold), else the bounding-box
+    /// centroid of every placed REFR, else world origin for an empty cell.
+    /// See the `door_pos` local in [`load_references`] for the precedence
+    /// rationale.
     pub(super) center: Vec3,
 }
 
@@ -123,6 +128,16 @@ pub(super) fn load_references(
     };
     let mut bounds_min = Vec3::splat(f32::INFINITY);
     let mut bounds_max = Vec3::splat(f32::NEG_INFINITY);
+    // First door REFR's own placement in THIS cell (not its XTEL
+    // destination) — a strictly better spawn-point candidate than the raw
+    // bounding-box centroid below. A door is always placed on a walkable
+    // threshold; the centroid of every placed REFR (statics, NPCs, invisible
+    // trigger volumes, far-flung markers) has no such guarantee and can land
+    // inside a wall, a stairwell void, or genuinely outside the interior
+    // shell for L-shaped/multi-wing cells — the reported "spawns at random
+    // points, sometimes outside the interior" bug. See the `center` doc
+    // comment on `RefLoadResult`/`CellLoadResult`.
+    let mut door_pos: Option<Vec3> = None;
 
     let mut stat_miss = 0u32;
     let mut stat_hit = 0u32;
@@ -272,6 +287,16 @@ pub(super) fn load_references(
             placed_ref.rotation[2],
         );
         let outer_scale = placed_ref.scale;
+
+        // A REFR carrying an XTEL payload is a door — remember the FIRST
+        // one's own placement as the spawn-point candidate (see the
+        // `door_pos` declaration above). Deliberately the first in load
+        // order, not "the" entrance — this loader has no notion of which
+        // door the player narratively used, so any door in this cell is a
+        // guaranteed-walkable improvement over the bounding-box centroid.
+        if door_pos.is_none() && placed_ref.teleport.is_some() {
+            door_pos = Some(outer_pos);
+        }
 
         // Build per-REFR texture overlay once. Shared across every
         // synthetic SCOL child — FO4 REFRs that overlay textures at the
@@ -729,8 +754,18 @@ pub(super) fn load_references(
         }
     }
 
-    let center = (bounds_min + bounds_max) * 0.5;
+    let bbox_center = (bounds_min + bounds_max) * 0.5;
     let dims = bounds_max - bounds_min;
+    // Spawn-point precedence: first door in this cell (walkable threshold,
+    // guaranteed) > bounding-box centroid (best-effort, can land inside
+    // geometry or outside the shell) > world origin (empty cell — no
+    // placements accumulated into bounds at all, matching vanilla `coc`'s
+    // local-origin fallback when nothing else applies).
+    let center = door_pos.unwrap_or(if bbox_center.x.is_finite() {
+        bbox_center
+    } else {
+        Vec3::ZERO
+    });
     // #1495 / REN2-10 — fail loud in debug if this cell's geometry sits
     // beyond the RT absolute-space f32 precision ceiling (see
     // `RT_ABSOLUTE_PRECISION_CEILING`). Never fires on vanilla content;
@@ -800,11 +835,12 @@ pub(super) fn load_references(
         stat_miss,
     );
     log::info!(
-        "  Bounds: min=[{:.0},{:.0},{:.0}] max=[{:.0},{:.0},{:.0}] size=[{:.0},{:.0},{:.0}] center=[{:.0},{:.0},{:.0}]",
+        "  Bounds: min=[{:.0},{:.0},{:.0}] max=[{:.0},{:.0},{:.0}] size=[{:.0},{:.0},{:.0}] spawn=[{:.0},{:.0},{:.0}]{}",
         bounds_min.x, bounds_min.y, bounds_min.z,
         bounds_max.x, bounds_max.y, bounds_max.z,
         dims.x, dims.y, dims.z,
         center.x, center.y, center.z,
+        if door_pos.is_some() { " (door)" } else { " (bbox centroid fallback)" },
     );
     if scripts_recognized > 0 || trigger_volumes > 0 {
         // M47.2 — the recognizer chain attached canonical ECS behavior to

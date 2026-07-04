@@ -24,7 +24,12 @@ use super::water;
 pub struct CellLoadResult {
     pub cell_name: String,
     pub entity_count: usize,
-    /// Bounding box center of all placed objects (Y-up, for camera positioning).
+    /// Chosen spawn point (Y-up), used for initial camera/player
+    /// positioning. Prefers the cell's first door's own placement — a
+    /// guaranteed walkable threshold — over the bounding-box centroid of
+    /// every placed REFR, which has no such guarantee and could land inside
+    /// a wall, a stairwell void, or outside the interior shell entirely for
+    /// L-shaped/multi-wing cells. See `references::load_references`.
     pub center: Vec3,
     /// Interior cell lighting (ambient + directional).
     pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
