@@ -143,6 +143,30 @@ fn is_caustic_source(cmd: &DrawCommand) -> bool {
     false
 }
 
+/// D6-04 / #1811 — advance `VulkanContext::clean_skin_frames` for one
+/// frame. Any dirty signal (a pose changed, or a first-sight
+/// `bind_inverses` upload is pending) resets the streak to `0`;
+/// otherwise it grows by one. Extracted as a pure function so the
+/// counter arithmetic is unit-testable without a live `VulkanContext`.
+fn next_clean_skin_frames(current: u32, skin_state_dirty: bool) -> u32 {
+    if skin_state_dirty {
+        0
+    } else {
+        current.saturating_add(1)
+    }
+}
+
+/// D6-04 / #1811 — `true` once `clean_skin_frames` has grown past
+/// `MAX_FRAMES_IN_FLIGHT`, meaning every per-frame `bone_world` buffer
+/// copy has already seen today's (unchanged) content at least once. At
+/// that point the bone_world upload, its device copy, and the
+/// `skin_palette.comp` dispatch are all redundant until the next dirty
+/// frame. Mirrors the `MAX_FRAMES_IN_FLIGHT + 1` safety margin used by
+/// `SkinSlotPool::sweep`'s `min_idle` threshold.
+fn should_skip_skin_gpu_refresh(clean_skin_frames: u32) -> bool {
+    clean_skin_frames >= MAX_FRAMES_IN_FLIGHT as u32 + 1
+}
+
 /// A batch of instances sharing the same mesh + pipeline state.
 /// Drawn with a single `cmd_draw_indexed` call.
 ///
@@ -2671,6 +2695,19 @@ impl VulkanContext {
         self.prev_view_proj = *vp;
         self.prev_render_origin = [render_origin.x, render_origin.y, render_origin.z];
 
+        // D6-04 / #1811 — track how many consecutive frames had no
+        // skinned-pose change and no pending first-sight bind_inverses
+        // upload. Any dirty signal resets the streak so the forthcoming
+        // upload/copy/dispatch trio (below) always runs at least once
+        // per change, and for the next `MAX_FRAMES_IN_FLIGHT` frames
+        // after that so every per-frame `bone_world` buffer copy sees
+        // the fresh value at least once (same safety margin as the
+        // `MAX_FRAMES_IN_FLIGHT + 1` sweep threshold in
+        // `SkinSlotPool::sweep` / `build_skinned_palettes`).
+        let skin_state_dirty = !pose_dirty.is_empty() || !bind_inverse_pending_uploads.is_empty();
+        self.clean_skin_frames = next_clean_skin_frames(self.clean_skin_frames, skin_state_dirty);
+        let skip_skin_gpu_refresh = should_skip_skin_gpu_refresh(self.clean_skin_frames);
+
         // M29.5/M29.6 — upload bone_world (per-frame) and any pending
         // first-sight bind_inverses (write-once persistent SSBO). The
         // skin_palette dispatch below reads both:
@@ -2678,13 +2715,20 @@ impl VulkanContext {
         //   - bind_inverses from the persistent DEVICE_LOCAL SSBO
         // and writes the existing palette SSBO that raster +
         // skin_vertices.comp consume.
-        if !bone_world.is_empty() {
+        //
+        // D6-04 / #1811 — skipped entirely once `skip_skin_gpu_refresh`
+        // is true: every live frame-in-flight buffer already holds
+        // today's (unchanged) bone_world content, so the staging
+        // memcpy + device copy would just rewrite identical bytes.
+        if !skip_skin_gpu_refresh {
+            if !bone_world.is_empty() {
+                self.scene_buffers
+                    .upload_bone_worlds(&self.device, frame, bone_world)
+                    .unwrap_or_else(|e| log::warn!("Failed to upload bone_world: {e}"));
+            }
             self.scene_buffers
-                .upload_bone_worlds(&self.device, frame, bone_world)
-                .unwrap_or_else(|e| log::warn!("Failed to upload bone_world: {e}"));
+                .record_bone_world_copy(&self.device, cmd, frame);
         }
-        self.scene_buffers
-            .record_bone_world_copy(&self.device, cmd, frame);
 
         // M29.6 — drain pending bind_inverses first-sight uploads.
         // Two-stage: write into HOST_VISIBLE staging, then record
@@ -2734,7 +2778,11 @@ impl VulkanContext {
             // never gets shaded (no entity points there).
             let bone_count =
                 (bone_byte_size as usize / std::mem::size_of::<[[f32; 4]; 4]>()) as u32;
-            if bone_count > 0 {
+            // D6-04 / #1811 — also skip once `skip_skin_gpu_refresh` is
+            // true: the palette buffer already holds the correct output
+            // for today's (unchanged) bone_world + bind_inverses, so a
+            // full-range recompute would just rewrite identical data.
+            if bone_count > 0 && !skip_skin_gpu_refresh {
                 let bone_world_buf = self.scene_buffers.bone_world_buffers()[frame].buffer;
                 let bind_inverse_buf = self.scene_buffers.bind_inverses_persistent().buffer;
                 let bind_inverse_size = self.scene_buffers.bone_buffer_size();
@@ -4277,6 +4325,60 @@ mod skin_dispatch_ran_ordering_tests {
              must be called AFTER both early-return guards — calling it any \
              earlier would defeat the rollback signal entirely. (#1796)"
         );
+    }
+}
+
+/// Regression for D6-04 / #1811. `next_clean_skin_frames` /
+/// `should_skip_skin_gpu_refresh` gate the bone_world upload + device
+/// copy + `skin_palette.comp` dispatch so they don't re-run every frame
+/// once a scene's skinned poses have gone quiet. Both are pure, so
+/// (unlike the rest of `draw_frame`) they're directly unit-testable.
+#[cfg(test)]
+mod clean_skin_frames_tests {
+    use super::{next_clean_skin_frames, should_skip_skin_gpu_refresh};
+
+    #[test]
+    fn dirty_frame_resets_the_streak() {
+        assert_eq!(next_clean_skin_frames(9, true), 0);
+    }
+
+    #[test]
+    fn clean_frame_grows_the_streak() {
+        assert_eq!(next_clean_skin_frames(0, false), 1);
+        assert_eq!(next_clean_skin_frames(1, false), 2);
+    }
+
+    #[test]
+    fn streak_saturates_instead_of_overflowing() {
+        assert_eq!(next_clean_skin_frames(u32::MAX, false), u32::MAX);
+    }
+
+    #[test]
+    fn refresh_is_not_skipped_within_max_frames_in_flight_of_a_dirty_frame() {
+        // MAX_FRAMES_IN_FLIGHT == 2 (crates/renderer/src/vulkan/sync.rs).
+        // A dirty frame itself (streak 0) and the next
+        // MAX_FRAMES_IN_FLIGHT frames after it (streak 1, 2) must all
+        // still refresh — every live frame-in-flight bone_world buffer
+        // needs to see the fresh value at least once before it's safe
+        // to stop.
+        for streak in 0..=super::MAX_FRAMES_IN_FLIGHT as u32 {
+            assert!(
+                !should_skip_skin_gpu_refresh(streak),
+                "streak {streak} must still refresh — not every frame-in-flight \
+                 buffer has seen the current value yet"
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_is_skipped_once_every_buffer_has_seen_the_current_value() {
+        let threshold = super::MAX_FRAMES_IN_FLIGHT as u32 + 1;
+        assert!(
+            should_skip_skin_gpu_refresh(threshold),
+            "streak {threshold} must skip — every frame-in-flight buffer has \
+             already been refreshed with the unchanged current value"
+        );
+        assert!(should_skip_skin_gpu_refresh(threshold + 5));
     }
 }
 

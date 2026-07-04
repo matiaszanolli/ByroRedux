@@ -1237,6 +1237,15 @@ pub struct VulkanContext {
     /// rollback_pending_pose_commits` when it reads `false`, undoing the
     /// premature commit so the next frame's comparison stays honest.
     pub skin_dispatch_ran: bool,
+    /// D6-04 / #1811 — consecutive frames where no skinned entity's pose
+    /// changed and no `bind_inverses` upload was pending. Reset to `0` on
+    /// any dirty frame; once it exceeds `MAX_FRAMES_IN_FLIGHT`, every
+    /// per-frame `bone_world` buffer copy has already been refreshed with
+    /// today's (unchanged) values at least once, so the bone_world upload,
+    /// its device copy, and the `skin_palette.comp` dispatch are all safe
+    /// to skip until the next dirty frame. See `draw_frame`'s bone_world
+    /// upload section for the read side.
+    pub clean_skin_frames: u32,
     pub ssao: Option<SsaoPipeline>,
     pub composite: Option<CompositePipeline>,
     pub gbuffer: Option<GBuffer>,
@@ -2452,6 +2461,7 @@ impl VulkanContext {
             last_skin_coverage_frame: super::skin_compute::SkinCoverageFrame::default(),
             last_draw_call_stats: DrawCallStats::default(),
             skin_dispatch_ran: false,
+            clean_skin_frames: 0,
             ssao,
             composite,
             gbuffer,
