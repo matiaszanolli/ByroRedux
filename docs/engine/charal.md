@@ -461,11 +461,36 @@ that difference is exactly a `LevelingModel` variant, not a new component:
   CHARAL's AV substrate at all. Confirms Skyrim's Persuade/Intimidate/Bribe checks
   (`charal-skyrim-ruleset.md`) are one-off dialogue gates with no accumulating
   reputation consequence, fully separate from this rank.
-- Family taxonomy now stands at **5 instances**: Karma (global 1-axis, AV-native) /
+- **Oblivion *Disposition* is a SIXTH reputation-family instance — the richest
+  and most compositional one, and Skyrim Relationship Rank's actual predecessor**
+  (source: UESP *Oblivion:Disposition*, 2026-07-04, `charal-oblivion-ruleset.md`).
+  Confirms the prediction made when Skyrim's write-up called out "older TES games'
+  Disposition stat": Oblivion's IS that stat. Structurally distinct from every other
+  instance — not a single ledger/pool, but a **running sum of ~7 independent
+  additive contributors**: NPC's own Personality (base) + a cross-actor Personality-
+  differential term (`+floor(Δ/4)` if player's Personality is higher, an asymmetric
+  `−ceil(Δ/4)` if lower — same "don't assume symmetry" lesson as Karma's ±249/−250
+  band) + race-reaction table + per-faction-rank bonuses (AUTHORED, e.g. Thieves
+  Guild +3/rank … Dark Brotherhood +31/rank) + a capped Fame bonus (`+3/10 Fame`, cap
+  +20) + an Infamy term whose **sign is flipped by a third character's own attribute**
+  (a new `Responsibility` NPC stat: high-Responsibility NPCs lose disposition fast
+  from Infamy, very-low-Responsibility ones *gain* disposition from it instead,
+  both capped ±20) + flat per-crime-type witnessed penalties. Doesn't fit the
+  existing `{1-2 AVs + band/grid classifier}` reputation shape at all — closer in
+  spirit to the Fatigue/Health "N-row-sum" pattern (§ derived-stat entries) than to
+  Karma's single clamped ledger, since several of its terms are themselves small
+  formulas, not flat constants. Two items left genuinely PENDING (not guessed):
+  the Speechcraft-minigame's skill→disposition-cap curve (one example point only,
+  no general formula stated) and Bribery cost/efficacy (deferred to a separate,
+  unfetched CS-wiki page). Not built — no per-NPC Disposition storage exists yet.
+- Family taxonomy now stands at **6 instances**: Karma (global 1-axis, AV-native) /
   FNV Reputation (per-faction 2-axis, Fame/Infamy) / FO4 Affinity (per-companion
   1-axis, richest sourced accrual formula) / Starfield Affinity (per-companion 1-axis,
   richest *gating* mechanism — score AND real time) / Skyrim Relationship Rank
-  (per-NPC, discrete 9-value, zero skill/AV connection — quest-scripted only).
+  (per-NPC, discrete 9-value, zero skill/AV connection — quest-scripted only) /
+  Oblivion Disposition (per-NPC, continuous, richest *compositional* shape — N summed
+  contributor terms, several formula-shaped themselves, and Skyrim Relationship
+  Rank's own predecessor).
 - **FO76 has no traditional companions** (C.A.M.P. allies) — out of scope for now.
 - **FO1 / FO2 companion mechanics** (no leveling / fixed "stage" model-swap, the
   200-byte/5-record truncation bug) are **out of scope** — those are the isometric

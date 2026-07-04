@@ -453,3 +453,271 @@ Equipment health/durability (percentage-of-max display, degrades on hit,
 repaired via Armorer skill) reconfirms the already-established "equipment
 condition is item-system data, not CHARAL" boundary — no new formula, same
 routing as FO3/FNV's `ItemValue`.
+
+## Magicka — base formula cross-checked; the third and most interesting regen policy; first quadratic formula found
+
+Source: UESP *Oblivion:Magicka*, 2026-07-04. Base pool `Magicka = Intelligence
++ Intelligence×fPCBaseMagickaMult(1.0) = 2×Intelligence` matches the already-
+BUILT `oblivion_magicka_formula` exactly — third and last of the three base
+pools now cross-checked against shipped code, all matching (Health/Fatigue
+above).
+
+**Magicka's regen policy is the third distinct shape found across the three
+pools** — completing a pattern worth stating plainly now that all three are
+known: **Fatigue regens at a flat rate** (Endurance coefficient ships at
+literal 0), **Health does not regen at all** in vanilla, and **Magicka
+regens via a real attribute-driven formula**:
+```
+MagickaRegen = (Willpower × 0.02 + 0.75) × (MaxMagicka / 100)
+```
+Willpower-governed (an affine term) additionally **scaled by the character's
+own MaxMagicka** — the first regen formula that chains through another
+derived stat (`MaxMagicka = 2×Intelligence`, itself already built) rather
+than reading a raw attribute alone; higher-Magicka characters regen faster in
+absolute terms at the same relative rate. Confirms "don't generalize one
+pool's regen behavior to the others" (flagged provisionally at the Health
+entry) is now a **fully evidenced three-way split**, not a guess from one
+data point. Still the same "rate for a future tick-consumer, not a
+`derived_value` row" bucket as the other two pools' regen formulas — no code
+yet for any of the three.
+
+**Stunted Magicka is a binary gate on this formula**, not a formula itself:
+the Atronach birthsign, the *Astral Vapors* disease (cross-references the
+Disease section above — a disease *can* apply a stat-system status effect,
+not just flat attribute drains as previously characterized there; worth a
+mental amendment, not a doc correction, since Astral Vapors was already
+listed as one of the two Oblivion diseases with escalating/special behavior),
+and one Shivering Isles item all set a flag that **zeroes regen entirely**
+regardless of Willpower/MaxMagicka. A status-effect boolean multiplying the
+regen formula to 0, same shape as a `temporary_mod` gate elsewhere in CHARAL.
+
+**Oblivion Remastered's MagickaRegen is the first confirmed quadratic
+formula in the whole Fallout+Oblivion corpus** (Skyrim's Enchanting
+`SkillMultiplier`, noted earlier, was the only other quadratic found, and
+that's a different game/system):
+```
+MagickaRegen = 0.0003×Willpower² + 0.015×Willpower
+```
+No longer scaled by MaxMagicka at all (a real mechanical simplification, not
+just a rebalance — third Remastered-diverges-from-vanilla regen formula found
+this session, after Fatigue and Health). Architecturally this needs **no new
+`DerivedStatFormula` shape**: a single-variable quadratic is just `bilinear`
+with **both inputs aliased to the same AVIF** (Willpower for both `A` and
+`B`), `cross=0.0003` doing the squaring, `coeff_a=0.015` (or split across
+`coeff_a`/`coeff_b` since they'd be redundant when A≡B), `coeff_b=0`. Worth
+recording as a confirmed encoding trick, not a gap — the two-input struct
+already covers this case for free.
+
+Race/birthsign Magicka bonuses (Breton +50, High Elf +100; Mage +50,
+Apprentice +100 w/ permanent Weakness to Magic, Atronach +150 w/ permanent
+Stunted Magicka) are flat chargen-time AUTHORED bonuses, same bucket as every
+other race/class bonus table found so far — not a new CHARAL formula, just
+data for the `Background`/chargen population path.
+
+## Movement — first ATTRIBUTE-driven (not skill-driven) physics formula, plus a concrete Athletics/Armor cross-check
+
+Source: UESP *Oblivion:Movement Formulas*, 2026-07-04. Same routing as
+Acrobatics/Sneak Detection/Lockpicking above — "AV in, physics-formula out,"
+not a CHARAL derived stat — but worth capturing precisely since it's the
+**first movement formula governed by an *attribute*** (Speed) rather than a
+skill, and it independently corroborates two things noted only in passing
+earlier in this doc.
+
+```
+BaseSpeed = 90 + (130−90) × Speed/100          # clean affine, Speed attribute, uncapped past 100
+LandSpeed = EncumbranceMod × WeaponMod × BaseSpeed × SneakMod × MoveTypeMod
+```
+
+`BaseSpeed` is clean affine on the **Speed attribute** — Oblivion's first
+movement (or indeed any) formula found so far driven by an attribute alone
+with no skill or Luck term, and (like Acrobatics' JumpHeight) explicitly
+**uncapped past Speed 100**, continuing to scale linearly with Fortify Speed
+effects.
+
+**Running speed cross-confirms the "Athletics scales past 100" claim with
+real numbers** (Acrobatics section above flagged Athletics as one of only 3
+skills — with Acrobatics and Speechcraft — that keeps paying off past Skill
+100, but hadn't yet seen Athletics' own formula):
+```
+MoveTypeModifier(running) = 3 + 1 × Athletics/100     # up to 4× BaseSpeed at Athletics 100, uncapped beyond
+```
+Swimming has two more Athletics-scaled variants (walk/run) with smaller
+multipliers (0.02, 0.1) — same shape, lower stakes, not reproduced in full
+here.
+
+**Armor mastery perks reach into encumbrance, extending the already-noted
+weapon-mastery-perk pattern to armor skills**: Light Armor Expert zeroes
+worn-Light-Armor weight from the speed penalty entirely (`0.0` multiplier);
+Heavy Armor Expert halves it, Heavy Armor Master zeroes it too (UESP's own
+aside: "this actually means you run *faster* than in cloth" at Master Heavy
+Armor — a vanilla balance oddity, not a bug, worth keeping as flavor). Same
+"skill-tier unlocks a perk" shape as Blade/Blunt's Mastery Perks, now
+confirmed for Light/Heavy Armor too — armor skills gate a *physics* modifier
+here, distinct from the Armor Rating *combat* formula found via the Complete
+Damage Formula page.
+
+**Two explicit negative data points**, same "worth recording what's NOT an
+input" discipline as Acrobatics/Luck: (1) **Fatigue does not affect movement
+speed at all** — draining Fatigue reduces damage dealt, never movement, and
+the page notes there is no game-settings-only way to add a fatigue-based
+movement penalty (would need per-actor scripting). (2) **Strength does not
+offset encumbrance's speed penalty** — only worn weight (mediated by Armor
+skill mastery perks above) matters; a strong character in heavy armor is
+exactly as slowed as a weak one. Both are real, cited absences, not
+oversights — useful for anyone tempted to wire Strength or Fatigue into a
+future movement-speed consumer system.
+
+Creature and Flying speed reuse the identical `Min + (Max−Min)×Speed/100`
+shape with different constants (Creature 5–300, Flying 5–300) — confirms the
+formula *shape* (not just the vanilla player constants) is a shared engine
+mechanism, monster/flying data is content not a new formula.
+
+## Commerce — third confirmed use of the Luck-chained `ModifiedSkill`, a Disposition reputation-family candidate, and a third mastery-tier-perk instance
+
+Source: UESP *Oblivion:Commerce*, 2026-07-04.
+
+**Haggling acceptance is a cross-actor formula, and the THIRD confirmed use
+of `ModifiedSkill = Skill + 0.4×(Luck−50)`** (after weapon-rating and Hand-
+to-Hand damage on the Complete Damage Formula page — this is now clearly a
+*general-purpose* "effective skill" quantity reused across combat AND
+economy systems, not a combat-specific one-off):
+```
+Value = 0.5×floor(0.4×(Disposition−10)/4)
+      + (100 + min(PlayerModifiedSkill,100) − min(MerchantModifiedSkill,100)) / 10
+      − SliderPosition × 0.55
+```
+Trade accepted iff `Value ≥ 0`. Reads **both actors' Mercantile skill**
+(Luck-chained via `ModifiedSkill`, each capped at 100 before the difference),
+the merchant's **Disposition** toward the player, and a player-chosen
+`SliderPosition` (UI input, not an AV — same non-AV-input shape as FO3/FNV's
+`ItemValue` in the pickpocket formula). Same "reads two actors' state at
+once" shape already seen in FNV's Sneak Detection and Oblivion's own Nerve-
+style companion buffs (well, Fallout's) — Bethesda repeats this cross-actor
+pattern across very different systems (stealth, dialogue persuasion now
+confirmed generalizes to trade too). Routed as a gameplay-system (commerce)
+input, not a `derived`-table row — same boundary as every other persuasion/
+barter formula found across every game so far.
+
+**Disposition itself is a new reputation-family candidate, not yet spec'd.**
+This page treats it as a stored, per-NPC, roughly 0–100+ continuous AV
+(explicitly "capped at 100" for haggling purposes) that the player raises via
+Speechcraft/gifts/etc. — this is presumably the **exact "older TES games'
+Disposition stat"** that `charal-skyrim-ruleset.md`'s Relationship Rank
+write-up already says Skyrim explicitly broke away from ("no longer visible…
+cannot be affected by performing speechcraft"). That means Oblivion's own
+Disposition is likely the **missing predecessor** in the reputation-family
+lineage (Oblivion Disposition → Skyrim Relationship Rank), continuous where
+Skyrim's replacement is a discrete 9-value rank — but this page gives no
+formula for Disposition's own gain/decay/base value, only its role as an
+*input* elsewhere. Flagged as an open research thread (a future *Oblivion:
+Disposition* fetch), not assumed to share Skyrim's or FNV's shape.
+
+**Skill training cost is a clean, simple, previously-uncaptured formula**:
+`TrainingCost = 10 × CurrentSkillLevel` — one of the few explicitly
+*non-negotiable* prices (with houses, horses, repairs, recharging, beds,
+enchanting/spellmaking). A genuinely new tiny affine formula, single-skill-
+input, no attribute/Luck term at all.
+
+**Mercantile mastery is a THIRD confirmed skill-tier-unlocks-a-perk
+instance** (after Blade/Blunt weapon Mastery Perks and Light/Heavy Armor's
+movement-encumbrance perks): reaching **100 Mercantile** (base skill only,
+Fortify doesn't count) removes the merchant markup entirely — buy and sell
+both land at exactly 100% of base price. Separately, **Expert Mercantile**
+unlocks a one-time "invest 500 gold" action per shop (raises that shop's
+available trading gold by 500), and **Master Mercantile** adds a flat +500
+gold to *every* shop automatically (stacking with player investment for
++1000 in an invested shop) — notably, this Master-tier bonus explicitly
+**does** apply even via a temporary Fortify Mercantile spell pushing skill
+into Expert range (an explicit exception called out on the page, contrasting
+with "unlike all other Fortify Skill spells"). All perk-tier gates, gameplay-
+system data (shop economy), not a CHARAL derived stat — but the third
+data point confirming Oblivion's "skill mastery tier ⇒ discrete unlocked
+behavior" pattern is a shared, recurring shape across weapon/armor/economy
+skills alike.
+
+## Disposition — closes the reputation-family research thread from Commerce; a genuinely new composite shape
+
+Source: UESP *Oblivion:Disposition*, 2026-07-04 — the fetch flagged as an
+open thread at the end of the Commerce section above. Confirms the
+prediction: this **is** the "older TES games' Disposition stat" that
+`charal-skyrim-ruleset.md`'s Relationship Rank write-up says Skyrim
+explicitly broke away from — Oblivion's predecessor, now spec'd. But it's
+structurally **richer** than every other reputation-family instance found so
+far (Karma's 1 signed AV, FNV Reputation's 2-axis monotonic pair, FO4
+Affinity's 1 signed AV) — Disposition is a **composite score summed from
+~7 independent sources**, not a single ledger:
+
+```
+Disposition = NpcPersonality
+            + PersonalityDifferential(PlayerPersonality, NpcPersonality)
+            + RaceReaction + FactionReaction(rank) + FameBonus + InfamyEffect
+            + CircumstantialMods (weapon drawn, witnessed crime)
+```
+
+**1. Base + cross-actor Personality differential — a genuinely new
+attribute-driven, cross-actor formula.** Base disposition equals the NPC's
+own **Personality** score (an attribute governing an *opinion* stat directly,
+not through a skill — new for this investigation). Modified by the
+player-vs-NPC Personality gap:
+```
+if PlayerPersonality ≥ NpcPersonality: differential = +floor((Player−Npc)/4)
+else:                                   differential = −ceil((Npc−Player)/4)
+```
+(derived from the page's own worked examples: NPC 40 / Player 39 → −1
+`(ceil(1/4)=1)`; Player 35 → −2 `(ceil(5/4)=2)` — asymmetric-around-equal,
+same "don't assume symmetry" caution Karma's ±249/−250 band boundary already
+taught). **Personality keeps paying off past 100** for this purpose ("this
+benefit applies to Personality increases past 100") — a fourth confirmed
+"scales past 100" Oblivion stat, joining Acrobatics/Athletics/Speechcraft
+(skills) and Speed (attribute, movement) with Personality (attribute,
+disposition).
+
+**2. Race + Faction reactions — AUTHORED per-pair/per-rank tables**, same
+bucket as FNV's per-faction reputation-threshold arrays: race reactions are
+a race×race modifier table (not enumerated here); faction reactions scale
+**per rank attained**, with per-faction rates given as examples (Thieves
+Guild +3/rank, Fighters Guild +10/rank, Mages Guild +20/rank, Dark
+Brotherhood +31/rank) — AUTHORED content, not an engine constant, matching
+the "per-faction thresholds are authored, the *shape* is engine-supplied"
+split already established for FNV Reputation.
+
+**3. Fame/Infamy effect — introduces a brand-new NPC attribute,
+`Responsibility`, gating how Infamy lands.** Fame is simple and monotonic:
+`+3 disposition per 10 Fame`, capped at **+20** (reached at 67 Fame) — clean
+affine, capped, same shape as every other Fame-consuming formula. **Infamy is
+gated by the witnessing NPC's own `Responsibility` score** (0–100, not
+previously seen in this investigation): high-Responsibility NPCs (100) lose
+disposition fast (`~1 point per 2 Infamy`); low-Responsibility NPCs (25) lose
+it slowly (`~1 per 16`); **very low Responsibility (10) NPCs *gain*
+disposition from Infamy instead** — the sign of the Infamy term flips
+depending on a *third character's* attribute, not the actor's own. Both
+directions capped at ±20. This is a new formula shape for this corpus:
+**a per-NPC attribute (Responsibility) that doesn't scale a formula's
+magnitude, it can flip the formula's *sign***.
+
+**4. Crime-witnessed disposition penalties — a per-crime-type flat/linear
+table**: Assault −10, Trespass −20, Pickpocket −25, Murder −50, Stealing
+`−0.5 × stolen gold value` (the only non-flat entry — linear in loot value,
+uncapped as stated). Doubled if the crime is committed directly against the
+witnessing NPC vs. witnessed against a third party. AUTHORED gameplay-event
+data, same bucket as FO3/FNV's Karma point-grant table (quest/event-driven,
+not a derived formula).
+
+**5. Two genuinely PENDING items, not guessed**: the Speechcraft-minigame
+disposition **ceiling** is skill-dependent (one example given: cap 79 at
+Speechcraft 50) but no closed formula is stated on this page for the general
+skill→cap relationship — left PENDING, same discipline as Lockpicking's
+force-lock chance. Bribery cost/efficacy is explicitly deferred to a
+separate CS-wiki *Bribery* page (not fetched this session) — also PENDING.
+
+**Design implication for CHARAL's reputation-family model**: Disposition
+doesn't fit the existing `{1-2 AVs + band/grid classifier}` shape at all —
+it's a **running sum of independently-computed additive terms**, several of
+which (the Personality differential, the Responsibility-gated Infamy flip)
+are themselves small formulas, not flat constants. If Oblivion Disposition is
+ever built, it likely wants a small ordered pipeline of contributor
+functions summed into one AV, closer in spirit to the Fatigue/Health
+"N-row-sum" pattern than to Karma's single clamped ledger — worth keeping in
+mind as a structurally distinct 6th reputation-family member, not force-fit
+into the existing classifier shape. Not built — no per-NPC Disposition
+storage or any of these contributor formulas exist in the engine yet.
