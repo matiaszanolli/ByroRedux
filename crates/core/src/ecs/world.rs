@@ -268,9 +268,10 @@ impl World {
     /// For holding references across multiple component types, use
     /// [`query`](Self::query) / [`query_mut`](Self::query_mut) instead.
     ///
-    /// # Panics (debug only)
-    /// The `lock_tracker` panics if a conflicting lock on `T`
-    /// (specifically an already-held `QueryWrite<T>` on the same
+    /// # Panics
+    /// The `lock_tracker`'s same-thread reentrancy check is always on
+    /// (debug and release builds) and panics if a conflicting lock on
+    /// `T` (specifically an already-held `QueryWrite<T>` on the same
     /// thread) would cause a deadlock. Drop the offending guard
     /// before calling.
     pub fn get<T: Component>(&self, entity: EntityId) -> Option<ComponentRef<'_, T>> {
@@ -308,18 +309,19 @@ impl World {
 
     /// Check if an entity has a specific component.
     ///
-    /// # Panics (debug only)
+    /// # Panics
     /// Inherits the `lock_tracker` panic contract from `query<T>`:
-    /// debug builds panic if a conflicting lock on `T` is already
-    /// held on the same thread.
+    /// always panics (debug and release builds) if a conflicting lock
+    /// on `T` is already held on the same thread.
     pub fn has<T: Component>(&self, entity: EntityId) -> bool {
         self.query::<T>().is_some_and(|q| q.contains(entity))
     }
 
     /// Returns the number of entities that have component `T`.
     ///
-    /// # Panics (debug only)
-    /// Inherits the `lock_tracker` panic contract from `query<T>`.
+    /// # Panics
+    /// Inherits the `lock_tracker` panic contract from `query<T>` —
+    /// always on (debug and release builds), not debug-only.
     pub fn count<T: Component>(&self) -> usize {
         self.query::<T>().map_or(0, |q| q.len())
     }
@@ -371,13 +373,15 @@ impl World {
     /// (storage was never created). Use `register::<T>()` during
     /// setup if you need guaranteed access.
     ///
-    /// # Panics (debug only)
-    /// The `lock_tracker` (enabled in debug builds) panics if a
-    /// conflicting lock on `T` — specifically, any already-held
-    /// `QueryWrite<T>` on the same thread — would cause a deadlock.
-    /// Drop the offending guard before calling. Release builds do
-    /// not enforce the check (production hot paths get a zero-cost
-    /// no-op).
+    /// # Panics
+    /// The `lock_tracker`'s same-thread reentrancy check is always on
+    /// (debug AND release builds — only the separate cross-thread
+    /// lock-order graph in [`lock_tracker`](super::lock_tracker) is
+    /// debug-only) and panics if a conflicting lock on `T` —
+    /// specifically, any already-held `QueryWrite<T>` on the same
+    /// thread — would cause a deadlock. Drop the offending guard
+    /// before calling. The release-build cost is a thread-local
+    /// `HashMap` probe per acquisition, not a no-op.
     pub fn query<T: Component>(&self) -> Option<QueryRead<'_, T>> {
         let type_id = TypeId::of::<T>();
         let lock = self.storages.get(&type_id)?;
@@ -392,10 +396,11 @@ impl World {
     /// Returns `None` if no entity has ever had this component.
     /// Only one `QueryWrite` can exist per component type at a time.
     ///
-    /// # Panics (debug only)
-    /// The `lock_tracker` panics if a conflicting lock on `T`
-    /// (a read or write guard) is already held on the same thread.
-    /// Drop the offending guard before calling.
+    /// # Panics
+    /// The `lock_tracker`'s same-thread reentrancy check is always on
+    /// (debug and release builds) and panics if a conflicting lock on
+    /// `T` (a read or write guard) is already held on the same
+    /// thread. Drop the offending guard before calling.
     pub fn query_mut<T: Component>(&self) -> Option<QueryWrite<'_, T>> {
         let type_id = TypeId::of::<T>();
         let lock = self.storages.get(&type_id)?;
@@ -417,10 +422,12 @@ impl World {
     /// # Panics
     /// Always panics if `A` and `B` are the same type (would deadlock).
     ///
-    /// In debug builds, the `lock_tracker` additionally panics if a
-    /// conflicting lock on `A` or `B` is already held on the same
-    /// thread, or if the ordered lock graph detects a cross-thread
-    /// ABBA risk (#313). Drop any offending guard before calling.
+    /// The `lock_tracker`'s same-thread reentrancy check is always on
+    /// (debug and release builds) and panics if a conflicting lock on
+    /// `A` or `B` is already held on the same thread. In debug builds
+    /// only, it additionally panics if the ordered lock graph detects
+    /// a cross-thread ABBA risk (#313). Drop any offending guard
+    /// before calling.
     pub fn query_2_mut<A: Component, B: Component>(
         &self,
     ) -> Option<(QueryRead<'_, A>, QueryWrite<'_, B>)> {
@@ -483,10 +490,12 @@ impl World {
     /// # Panics
     /// Always panics if `A` and `B` are the same type (would deadlock).
     ///
-    /// In debug builds, the `lock_tracker` additionally panics if a
-    /// conflicting lock on `A` or `B` is already held on the same
-    /// thread, or if the ordered lock graph detects a cross-thread
-    /// ABBA risk (#313). Drop any offending guard before calling.
+    /// The `lock_tracker`'s same-thread reentrancy check is always on
+    /// (debug and release builds) and panics if a conflicting lock on
+    /// `A` or `B` is already held on the same thread. In debug builds
+    /// only, it additionally panics if the ordered lock graph detects
+    /// a cross-thread ABBA risk (#313). Drop any offending guard
+    /// before calling.
     pub fn query_2_mut_mut<A: Component, B: Component>(
         &self,
     ) -> Option<(QueryWrite<'_, A>, QueryWrite<'_, B>)> {
@@ -566,7 +575,8 @@ impl World {
     /// Panics if the resource was never inserted. The panic message
     /// includes the type name for easy debugging.
     ///
-    /// In debug builds the `lock_tracker` additionally panics if a
+    /// The `lock_tracker`'s same-thread reentrancy check is always on
+    /// (debug and release builds) and additionally panics if a
     /// conflicting lock on `R` is already held on the same thread.
     /// Use `try_resource` if you need a graceful miss.
     pub fn resource<R: Resource>(&self) -> ResourceRead<'_, R> {
@@ -591,7 +601,8 @@ impl World {
     /// Panics if the resource was never inserted. The panic message
     /// includes the type name for easy debugging.
     ///
-    /// In debug builds the `lock_tracker` additionally panics if a
+    /// The `lock_tracker`'s same-thread reentrancy check is always on
+    /// (debug and release builds) and additionally panics if a
     /// conflicting lock on `R` (read or write) is already held on the
     /// same thread. Use `try_resource_mut` if you need a graceful miss.
     pub fn resource_mut<R: Resource>(&self) -> ResourceWrite<'_, R> {
@@ -619,10 +630,11 @@ impl World {
     /// Always panics if `A` and `B` are the same type (would deadlock),
     /// or if either resource was never inserted.
     ///
-    /// In debug builds the `lock_tracker` additionally panics if a
+    /// The `lock_tracker`'s same-thread reentrancy check is always on
+    /// (debug and release builds) and additionally panics if a
     /// conflicting lock on `A` or `B` is already held on the same
-    /// thread, or if the ordered lock graph detects a cross-thread
-    /// ABBA risk (#313).
+    /// thread. In debug builds only, it further panics if the ordered
+    /// lock graph detects a cross-thread ABBA risk (#313).
     pub fn resource_2_mut<A: Resource, B: Resource>(
         &self,
     ) -> (ResourceWrite<'_, A>, ResourceWrite<'_, B>) {
@@ -684,11 +696,12 @@ impl World {
 
     /// Try to read a resource, returning `None` if it doesn't exist.
     ///
-    /// # Panics (debug only)
-    /// The `lock_tracker` panics if a conflicting lock on `R` is
-    /// already held on the same thread. The `try_` prefix is about
-    /// existence, not re-entrancy — drop the offending guard before
-    /// calling.
+    /// # Panics
+    /// The `lock_tracker`'s same-thread reentrancy check is always on
+    /// (debug and release builds) and panics if a conflicting lock on
+    /// `R` is already held on the same thread. The `try_` prefix is
+    /// about existence, not re-entrancy — drop the offending guard
+    /// before calling.
     pub fn try_resource<R: Resource>(&self) -> Option<ResourceRead<'_, R>> {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id)?;
@@ -702,9 +715,10 @@ impl World {
 
     /// Try to write a resource, returning `None` if it doesn't exist.
     ///
-    /// # Panics (debug only)
-    /// The `lock_tracker` panics if a conflicting lock on `R` (read
-    /// or write) is already held on the same thread.
+    /// # Panics
+    /// The `lock_tracker`'s same-thread reentrancy check is always on
+    /// (debug and release builds) and panics if a conflicting lock on
+    /// `R` (read or write) is already held on the same thread.
     pub fn try_resource_mut<R: Resource>(&self) -> Option<ResourceWrite<'_, R>> {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id)?;
@@ -731,10 +745,11 @@ impl World {
     /// # Panics
     /// Always panics if `A` and `B` are the same type (would deadlock).
     ///
-    /// In debug builds the `lock_tracker` additionally panics if a
+    /// The `lock_tracker`'s same-thread reentrancy check is always on
+    /// (debug and release builds) and additionally panics if a
     /// conflicting lock on `A` or `B` is already held on the same
-    /// thread, or if the ordered lock graph detects a cross-thread
-    /// ABBA risk (#313).
+    /// thread. In debug builds only, it further panics if the ordered
+    /// lock graph detects a cross-thread ABBA risk (#313).
     pub fn try_resource_2_mut<A: Resource, B: Resource>(
         &self,
     ) -> Option<(ResourceWrite<'_, A>, ResourceWrite<'_, B>)> {
