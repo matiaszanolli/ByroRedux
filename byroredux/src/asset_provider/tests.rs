@@ -1623,6 +1623,40 @@ fn merge_skips_mat_path_when_cdb_absent() {
     assert!(!mesh.is_pbr, ".mat path without CDB must NOT flip is_pbr");
 }
 
+/// SF3-02 / #1831 — a `.mat` path with no CDB loaded gets the
+/// CDB-specific diagnostic, naming the actual degradation instead of
+/// the generic "unsupported format" message.
+#[test]
+fn unresolved_material_warning_names_missing_cdb_for_mat_path() {
+    let msg = unresolved_material_warning("materials/modded.mat", false);
+    assert!(
+        msg.contains("no CDB is loaded/parsed"),
+        "expected the CDB-specific diagnostic, got: {msg}"
+    );
+    assert!(msg.contains("--materials-ba2"));
+}
+
+/// A `.mat` path is only reachable in this arm when the CDB IS present
+/// but nonetheless useless here (defence in depth) — must fall back to
+/// the generic message rather than falsely blaming a present CDB.
+#[test]
+fn unresolved_material_warning_falls_back_when_cdb_present() {
+    let msg = unresolved_material_warning("materials/modded.mat", true);
+    assert!(
+        msg.contains("unsupported format"),
+        "expected the generic diagnostic when a CDB is loaded, got: {msg}"
+    );
+}
+
+/// A non-`.mat` unrecognised extension always gets the generic message,
+/// regardless of CDB state — the CDB-specific wording is `.mat`-only.
+#[test]
+fn unresolved_material_warning_generic_for_non_mat_path() {
+    let msg = unresolved_material_warning("materials/weird.xyz", false);
+    assert!(msg.contains("unsupported format"));
+    assert!(!msg.contains("CDB"));
+}
+
 /// A `.bgsm` path must NOT enter the Starfield arm even when the
 /// CDB is loaded — the FO4 BGSM dispatch wins, preserving
 /// spec-glossiness translation.

@@ -512,6 +512,26 @@ pub(crate) fn bgsm_blend_to_gamebryo(raw: u32) -> u8 {
     raw as u8
 }
 
+/// SF3-02 / #1831 — chooses the diagnostic message for a material path
+/// that fell through to the unknown-format arm of [`merge_bgsm_into_mesh`].
+/// A `.mat` path only reaches that arm when no Starfield CDB is loaded
+/// (the CDB-presence gate short-circuits it otherwise), which is a
+/// distinct, more actionable cause than "unrecognised extension" — name
+/// it explicitly so it doesn't read as generic per-mesh spam disconnected
+/// from the CDB load failure logged far earlier.
+pub(crate) fn unresolved_material_warning(path: &str, has_starfield_cdb: bool) -> String {
+    if path.ends_with(".mat") && !has_starfield_cdb {
+        format!(
+            "material path '{path}' is a Starfield .mat but no CDB is loaded/parsed \
+             — check --materials-ba2 and CDB version; mesh will use NIF defaults"
+        )
+    } else {
+        format!(
+            "material path '{path}' is not a .bgsm/.bgem — unsupported format (Starfield .mat?); mesh will use NIF defaults"
+        )
+    }
+}
+
 pub(crate) fn merge_bgsm_into_mesh(
     mesh: &mut ImportedMesh,
     provider: &mut MaterialProvider,
@@ -1081,6 +1101,16 @@ pub(crate) fn merge_bgsm_into_mesh(
         // SF-D3-01's suffix gate now correctly routes here. The .mat format
         // is not yet parsed (tracked in SF-D6-03). Log once per path so the
         // absence of material data is visible without spamming every frame.
+        //
+        // A `.mat` path only falls through to this generic arm when the
+        // CDB-presence gate above (`has_starfield_cdb`) found no CDB
+        // loaded — that's a real degradation (e.g. a future patch bumps
+        // CDB fileVersion past the #1569 pins, or `--materials-ba2` was
+        // omitted) already logged once, far earlier, in
+        // `load_starfield_cdb`. SF3-02 / #1831 — name that cause
+        // explicitly instead of the generic "unsupported format" message,
+        // so an operator sees one clear degradation line rather than
+        // per-mesh spam disconnected from the upstream CDB failure.
         static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
             std::sync::OnceLock::new();
         let mut set = WARNED
@@ -1088,10 +1118,7 @@ pub(crate) fn merge_bgsm_into_mesh(
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if set.insert(path.to_owned()) {
-            log::warn!(
-                "material path '{}' is not a .bgsm/.bgem — unsupported format (Starfield .mat?); mesh will use NIF defaults",
-                path
-            );
+            log::warn!("{}", unresolved_material_warning(&path, provider.has_starfield_cdb()));
         }
         return false;
     }
