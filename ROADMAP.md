@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-07-01 (Session 53 closeout — tests 3327, +126; src/ LOC +~9 814; bench-of-record now 437 commits stale, see staleness caveat below). Session 53 stood up **CHARAL** — the Character Abstraction Layer, the canonical attributes / skills / perks / leveling / derived-stat tier that per-game rulesets translate into — end-to-end for Fallout FO3/FNV/FO4 + Oblivion + Skyrim: canonical `AttributeSet` / `SkillSet` rosters + governing maps, per-game leveling models (XP-curve / skill-use / skill-XP), TES derived pools (Health/Magicka/Fatigue), and the procedural leveling-efficiency strategies (`oblivion_attribute_bonus`, Skyrim `fSkillUseCurve`), all wiki/UESP-sourced (design doc `docs/engine/charal.md`). Plus NPC ActorValue population (#1663), six new CTDA condition functions, and a broad audit bug-bash (~35 #17xx refs: NIFAL collision, Vulkan hot-path refactors, WATR offsets, save/decompiler hardening, a large stale-doc sweep). See [HISTORY.md](HISTORY.md) Session 53.
+**Last verified**: 2026-07-04 (Session 54 closeout — tests 3431, +104; src/ LOC +~4 813; bench-of-record now 501 commits stale, see staleness caveat below). Session 54 extended **CHARAL** with three new gameplay-mechanism families — `AfflictionTable`/`AfflictionStatus` pool/threshold model, a stealth-detection module, and a companion `Affinity` system (clamping + reaction tiers, later dual-gated for Starfield) — plus per-game ruleset docs for Oblivion, Starfield, and FO76, and two new Skyrim `DerivedStatFormula` entries (Light Armor Rating, Carry Weight). The Carry Weight formula surfaced a real base-vs-current reading gap in `DerivedStatFormula`, resolved additively via `.a_from_base()`/`.b_from_base()` with zero behavior change to existing formulas. Tail end of Session 53's `#17xx`–`#1869` audit bug-bash (BLAS/TLAS lifecycle, save referential-integrity, decompiler hardening) also landed in this commit range. See [HISTORY.md](HISTORY.md) Session 54.
 **Bench-of-record** (R6a-stale-14 refresh, HEAD `1c26bc25`, 2026-06-03,
 wall-clock bench, 300 frames, RTX 4070 Ti, run from each game's `Data/`
 directory — see Repro-command CWD note below):
@@ -28,7 +28,7 @@ Whiterun (control, authored bhk collision) improved +10% FPS — attributable to
 
 **Repro-command CWD note:** bare `--bsa` / `--textures-bsa` / `--materials-ba2` names resolve against CWD, not the `--esm` folder. Run each bench with CWD set to that game's `Data/` directory. Run from elsewhere → archives silently fail → scene loads near-empty (Prospector: 36 entities / 3 meshes / spurious ~1792 FPS).
 
-**Staleness (2026-07-01, Session 53):** bench-of-record is now **437 commits stale**. The intervening sessions landed heavy RT hot-path work — Session 47's Cornell glass / GI / caustics + camera-relative render origin, and Session 49's **RT denoiser overhaul** (#1662: multi-scatter energy compensation, SVGF à-trous spatial pass, ReSTIR-DI temporal direct-shadow reservoirs, PCG-hash sampling) — so these numbers badly predate the churn. R6a-stale-15 (a fresh 300-frame three-scene GPU bench) gates any current FPS claim.
+**Staleness (2026-07-04, Session 54):** bench-of-record is now **501 commits stale**. The intervening sessions landed heavy RT hot-path work — Session 47's Cornell glass / GI / caustics + camera-relative render origin, and Session 49's **RT denoiser overhaul** (#1662: multi-scatter energy compensation, SVGF à-trous spatial pass, ReSTIR-DI temporal direct-shadow reservoirs, PCG-hash sampling) — so these numbers badly predate the churn. Session 54 itself was pure CHARAL gameplay-logic/docs work plus small-blast-radius audit fixes, not renderer hot-path — no new drift risk added, but the gap is not closing either. R6a-stale-15 (a fresh 300-frame three-scene GPU bench) gates any current FPS claim.
 
 ---
 
@@ -723,16 +723,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-07-01 (Session 53 closeout). Last `/session-close` verification was 2026-07-01 (Session 53).
+Ground-truth as of 2026-07-04 (Session 54 closeout). Last `/session-close` verification was 2026-07-04 (Session 54).
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~258 883 (Session 53 measure) |
-| Rust total lines (all `.rs`, excl. `target/`) | ~273 687 (updated 2026-07-01)  |
-| Source files (`.rs`, excl. `target/`)   | 644 total · 606 outside `tests/` dirs |
+| Rust source lines (`src/` dirs)         | ~263 696 (Session 54 measure) |
+| Rust total lines (all `.rs`, excl. `target/`) | ~278 668 (updated 2026-07-04)  |
+| Source files (`.rs`, excl. `target/`)   | 650 total · 612 outside `tests/` dirs |
 | Workspace members                       | 23 (21 crates + `byroredux` binary + `tools/byro-dbg`) |
-| Tests (last reported by ROADMAP)        | **3327 passing** (Session 53 closeout, 2026-07-01). +126 vs Session 52. |
-| Open issue directories                  | 1615 (`.claude/issues/`)     |
+| Tests (last reported by ROADMAP)        | **3431 passing** (Session 54 closeout, 2026-07-04). +104 vs Session 53. |
+| Open issue directories                  | 1725 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE / FO4 (FO4 both base mesh archives, 159 866 NIFs, 2026-06-14); Oblivion 99.93% (2026-06-15 sweep, post-#1543/#1544), FO76 97.34%, Starfield 99.64% aggregate (2026-07-03 sweep; see compat matrix for per-archive breakdown). Recoverable 100% on all except Oblivion 99.99%. Sweep dates: Oblivion 2026-06-15, FO4 2026-06-14, Starfield 2026-07-03; others unrefreshed since the original integration sweep. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

@@ -24,6 +24,62 @@ Commits hold that record.
 
 ---
 
+## Session 54 — CHARAL new mechanism families (affliction/stealth/affinity) + per-game ruleset extensions + audit bug-bash  (2026-07-04, `1b4e8e84..8ec1f0aa`, 63 commits)
+
+Continued the CHARAL research/build cadence from Session 53: a long stretch
+of UESP/Fandom wiki fetches (Skyrim, Oblivion, Starfield, FO76) fed three
+brand-new gameplay-mechanism modules and several ruleset-doc extensions,
+run alongside the tail of Session 53's `#17xx`/`#18xx` audit bug-bash
+(BLAS/TLAS lifecycle correctness, save referential-integrity, decompiler
+hardening) that carried into this session's commit range.
+
+- **CHARAL new mechanism families** — `AfflictionTable`/`AfflictionStatus`
+  pool/threshold model (`91fc25da`) for Fallout Radiation/Poison, later
+  confirmed to also fit Vampirism's monotonic hours-since-feeding pool across
+  both Oblivion and Skyrim (cross-game pattern, not built as a system yet);
+  a stealth-detection module (`9df3c2f2`) wired into `byroredux-core`; a
+  companion `Affinity` system with clamping + reaction-tier mechanics
+  (`8a67d7d9`), later extended for Starfield's dual-gated (score + real
+  elapsed time) variant.
+- **CHARAL per-game ruleset docs** — new `charal-oblivion-ruleset.md` and
+  `charal-starfield-ruleset.md` (`3d79cf7b`/`d4c13921`); FO76 ruleset doc
+  (`b6a2e31e`); Skyrim doc extended with Lockpicking/Sneak Detection
+  (`8b1297b4`), full Armor Rating/Damage Reduction (`ef594d9f`), Starfield
+  affinity + a Papyrus-grammar-extensions note (`53e05497`), and Oblivion
+  doc extended with disease/enchanting/vampirism cross-game comparisons plus
+  Acrobatics jump/fall-damage formulas (`406ec6fb`/`8ec1f0aa`).
+- **Two new Skyrim `DerivedStatFormula` entries** — Light Armor Rating
+  multiplier, the first skill-derived entry in the Skyrim table
+  (`7a42ddd8`); Carry Weight (`250 + 0.5×BaseStamina`, `c0bea64c`), which
+  surfaced a real architecture gap (Carry Weight must read Stamina's *base*
+  layer only, ignoring Fortify Stamina, but `DerivedInput::read()` always
+  called `current()`) — resolved additively with `.a_from_base()`/
+  `.b_from_base()` builder methods packed into the struct's existing spare
+  padding byte, zero behavior change to any pre-existing formula, `size_of`
+  still exactly 32 bytes.
+- **Audit bug-bash tail (`#1717`–`#1869`)** — BLAS/TLAS lifecycle
+  correctness (scratch-buffer destruction timing #1782, mid-batch eviction
+  byte accounting #1792, skinned-BLAS scratch barrier AS_READ bit #1790,
+  first-sight bind-inverse requeue #1791, redundant post-BUILD refit skip
+  #1812); render correctness (GI light sort-by-influence #1800, FO4
+  Additive/Multiplicative blend-factor fix #1823, particle color-fade
+  quantization #1795, two-sided blend/z_write gating #1804); save/world
+  referential integrity (load-time validation #1844, stable player-body
+  form id for live load #1846, explicit form_id_column flag #1845,
+  QuestStageState/QuestObjectiveState save registration #1862, batched
+  QuestStageAdvanced events #1864); PEX decompiler hardening (recursion
+  depth cap #1815, panic containment #1816, sentinel BSGeometry mesh-slot
+  iteration #1828/#1829); a `SkinSlotPool` module split out of
+  `resources.rs` (#1869, 2077 → 1210/875 LOC); two new audit-report bundles
+  (Starfield compat + tech-debt, comprehensive July 3 sweep).
+
+Net: tests 3327 → **3431** (+104); src/ LOC 258 883 → **263 696** (+4 813);
+total LOC 273 687 → **278 668** (+4 981); no bench-relevant renderer
+hot-path change this session — bench-of-record `1c26bc25` now **501**
+commits stale (R6a-stale-15 still gating any current FPS claim).
+
+---
+
 ## Session 53 — CHARAL character abstraction layer + audit bug-bash  (2026-07-01, `8d653b48..d6d46c27`, 61 commits)
 
 Two threads. The feature thread stood up **CHARAL** — the Character Abstraction
