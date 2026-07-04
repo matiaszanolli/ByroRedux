@@ -78,19 +78,36 @@ pub fn skyrim_skill_xp_between(
 /// (`0.015`) not modelled here — see [`skyrim_ruleset`].
 pub const LIGHT_ARMOR_RATING_COEFF: f32 = 0.004;
 
+/// Carry Weight's per-point-of-base-Stamina coefficient (`250 +
+/// 0.5·BaseStamina`). Source: UESP *Skyrim:Carry Weight*
+/// (`charal-skyrim-ruleset.md`) — every Stamina level-up pick adds `+10`
+/// Stamina and `+5` Carry Weight together (`300 + 5n` vs. `100 + 10n`),
+/// which reduces to this coefficient.
+pub const CARRY_WEIGHT_STAMINA_COEFF: f32 = 0.5;
+/// Carry Weight's bias term — see [`CARRY_WEIGHT_STAMINA_COEFF`].
+pub const CARRY_WEIGHT_BIAS: f32 = 250.0;
+
 /// Skyrim (TES V) [`CharacterRuleset`] builder.
 ///
 /// Assembles the empty attribute roster ([`AttributeSet::SKYRIM`]), the 18
 /// ungoverned skills ([`SkillSet::SKYRIM`]), and the skill-XP leveling model
 /// ([`LevelingModel::SKYRIM`]). There are no attribute-derived pools — Health/
-/// Magicka/Stamina start at [`SKYRIM_POOL_BASE`] and advance via the level-up
-/// pick — but the derived table isn't empty: **Light Armor's Armor Rating
-/// multiplier** (`1 + 0.004·LightArmor`, [`LIGHT_ARMOR_RATING_COEFF`]) is
-/// skill-derived rather than attribute-derived, sourced from UESP
-/// *Skyrim:Light Armor*. It's [`player_only`](DerivedStatFormula::player_only)
-/// because the source gives a distinct, higher NPC constant (`0.015`) this
-/// builder doesn't model — same "NPCs derive differently" reasoning
-/// `fallout.rs` already applies to Health/Action Points.
+/// Magicka start at [`SKYRIM_POOL_BASE`] and advance via the level-up pick —
+/// but the derived table has two entries:
+/// - **Light Armor's Armor Rating multiplier** (`1 + 0.004·LightArmor`,
+///   [`LIGHT_ARMOR_RATING_COEFF`]) is skill-derived rather than
+///   attribute-derived, sourced from UESP *Skyrim:Light Armor*. It's
+///   [`player_only`](DerivedStatFormula::player_only) because the source
+///   gives a distinct, higher NPC constant (`0.015`) this builder doesn't
+///   model — same "NPCs derive differently" reasoning `fallout.rs` already
+///   applies to Health/Action Points.
+/// - **Carry Weight** (`250 + 0.5·BaseStamina`, [`CARRY_WEIGHT_BIAS`] /
+///   [`CARRY_WEIGHT_STAMINA_COEFF`]) derives off Stamina's **base** layer
+///   only ([`DerivedStatFormula::a_from_base`]) — the source states
+///   temporary Stamina changes (Fortify Stamina) do **not** affect Carry
+///   Weight, unlike FO4 Health, which is confirmed to rescale dynamically
+///   off *current* Endurance. Actor-general (NPCs derive Carry Weight the
+///   same way, unlike Health/Action Points).
 ///
 /// `resolve` maps an EditorID to its AVIF FormID (`EsmIndex::actor_value_form_id`
 /// once wired to the loader); a stat whose EditorID doesn't resolve is
@@ -111,6 +128,18 @@ pub fn skyrim_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRulese
             )
             .as_multiplier()
             .player_only(),
+        );
+    }
+    // Carry Weight = 250 + 0.5·BaseStamina (base only — excludes Fortify Stamina).
+    if let (Some(out), Some(stamina)) = (resolve("CarryWeight"), resolve("Stamina")) {
+        rs.push_derived(
+            out,
+            DerivedStatFormula::affine(
+                DerivedInput::actor_value(stamina),
+                CARRY_WEIGHT_STAMINA_COEFF,
+                CARRY_WEIGHT_BIAS,
+            )
+            .a_from_base(),
         );
     }
     rs
@@ -136,6 +165,8 @@ mod tests {
         Some(match id {
             "DamageResist" => 0x100,
             "LightArmor" => 0x101,
+            "CarryWeight" => 0x102,
+            "Stamina" => 0x103,
             _ => return None,
         })
     }
@@ -146,7 +177,7 @@ mod tests {
         use crate::ecs::components::ActorValues;
 
         let rs = skyrim_ruleset(full);
-        assert_eq!(rs.derived_len(), 1, "Light Armor Rating multiplier");
+        assert_eq!(rs.derived_len(), 2, "Light Armor + Carry Weight");
         // ×(1 + 0.004·LightArmor). Skill 50 → 1.20×.
         let avs = ActorValues::from_pairs([(0x101, 50.0)]);
         let mult = rs.derived_value(0x100, &avs, 1).unwrap();
@@ -165,7 +196,38 @@ mod tests {
             other => full(other),
         };
         let rs = skyrim_ruleset(partial);
-        assert_eq!(rs.derived_len(), 0, "missing skill AVIF skips the entry");
+        assert_eq!(rs.derived_len(), 1, "only Carry Weight resolves");
+    }
+
+    #[test]
+    fn carry_weight_matches_uesp_and_ignores_temporary_stamina() {
+        use crate::ecs::components::ActorValues;
+
+        let rs = skyrim_ruleset(full);
+        // 250 + 0.5·BaseStamina. 0 picks (Stamina 100) → 300; 1 pick (110) → 305.
+        let base = ActorValues::from_pairs([(0x103, 100.0)]);
+        assert_eq!(rs.derived_value(0x102, &base, 1), Some(300.0));
+        let one_pick = ActorValues::from_pairs([(0x103, 110.0)]);
+        assert_eq!(rs.derived_value(0x102, &one_pick, 1), Some(305.0));
+
+        // A Fortify Stamina potion (temporary_mod) must not move Carry Weight.
+        let mut fortified = ActorValues::from_pairs([(0x103, 100.0)]);
+        fortified.mod_temporary(0x103, 50.0);
+        assert_eq!(
+            rs.derived_value(0x102, &fortified, 1),
+            Some(300.0),
+            "temporary Stamina must not affect Carry Weight"
+        );
+    }
+
+    #[test]
+    fn carry_weight_skipped_when_unresolved() {
+        let partial = |id: &str| match id {
+            "Stamina" => None,
+            other => full(other),
+        };
+        let rs = skyrim_ruleset(partial);
+        assert_eq!(rs.derived_len(), 1, "only Light Armor resolves");
     }
 
     #[test]

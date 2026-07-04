@@ -641,3 +641,70 @@ is also gated off this same rank via NPC faction, not a separate stat.
 Not built — no per-NPC relationship storage or quest-scripting-trigger system
 exists yet; same "real family member, no consumer" reasoning as the rest of
 the reputation family before their own components got built.
+
+## Carry Weight — LOCKED, clean formula, but exposes a real `DerivedStatFormula` reading-model gap
+
+Source: UESP *Skyrim:Carry Weight*, 2026-07-04. Base Carry Weight is 300
+(150 in Survival Mode); each level-up pick into Stamina adds **both** +10 to
+the Stamina pool **and** +5 to Carry Weight simultaneously (the two pool
+picks — Health/Magicka/Stamina — aren't independent of Carry Weight the way
+they looked from `skyrim.rs` alone). Since every Stamina pick contributes
+`+10` Stamina and `+5` Carry Weight together, Carry Weight is a clean linear
+function of the Stamina pool:
+```
+CarryWeight = 250 + 0.5 × BaseStamina
+  (derived from: CarryWeight = 300 + 5n, BaseStamina = 100 + 10n  ⟹  n = (BaseStamina−100)/10)
+```
+Verified against the page's own numbers: 0 picks → BaseStamina 100 →
+250+0.5×100 = 300 ✓; 1 pick → BaseStamina 110 → 250+0.5×110 = 305 = 300+5 ✓.
+
+**This is a real, clean, buildable absolute derived stat — the first
+candidate for Skyrim's `derived` table that isn't a multiplier — but it
+exposes a genuine gap in `DerivedStatFormula`'s reading model.** The source
+is explicit: "Carry Weight is only controlled by your base Stamina, and
+therefore **temporary changes to Stamina, such as Fortify Stamina, do not
+have any effect** on Carry Weight." `DerivedInput::read()` (`derived.rs`)
+unconditionally calls `ActorValues::current(avif)`, which folds
+`base + permanent_mod + temporary_mod − damage` — there is **no way today**
+to derive off an AV's `base` component alone. Building this naively with the
+existing `DerivedStatFormula::affine` would let a Fortify Stamina potion
+incorrectly inflate Carry Weight, directly contradicting the sourced
+behavior. `ActorValue.base` is a public field (`ecs/components/
+actor_values.rs`) and `ActorValues::get(avif)` already exposes the raw
+layered entry, so the data is reachable — `DerivedInput` just has no variant
+that reads it instead of `current()`.
+
+**Audited the existing formulas before touching the struct** (per
+[[feedback_audit_findings]] — verify before extending shared code). Checked
+`charal-fo4-ruleset.md`/`charal-fnv-fo3-ruleset.md` for any source-text
+statement on whether temporary attribute buffs (e.g. Fortify Endurance)
+affect each already-built stat:
+- **FO4 Health is explicitly confirmed correct as-is**: its own doc quotes
+  the source directly — "health rescales **dynamically** with any Endurance
+  / level change — there is no permanent/temporary split for player HP." So
+  `current()` is the *right* read for FO4 Health, not a bug.
+- **Everything else is genuinely unaudited, not confirmed either way**: FO3/
+  FNV Health/AP, and every game's Carry Weight/Melee Damage/Critical Chance/
+  Unarmed Damage/Radiation/Poison Resistance, have no source-text statement
+  on this question recorded in either doc. Not claiming these are wrong —
+  no citation says so — but `DerivedInput::read()`'s "always read `current()`"
+  behavior was verified for exactly one formula and simply assumed for the
+  rest. Recorded as a standing open item, not a proven defect.
+
+Given only Skyrim Carry Weight has a **positive, sourced** requirement for
+base-only reading, and nothing else is confirmed to need it, the safe move
+was additive: `DerivedStatFormula` gained chainable `.a_from_base()` /
+`.b_from_base()` methods (packed into the struct's one spare padding byte —
+`base_reads: u8`, two bits — so `size_of::<DerivedStatFormula>()` stays
+exactly 32 bytes, still enforced by `formula_is_thirty_two_bytes_and_copy`),
+with **zero behavior change** to any of the 9+ already-built formulas (they
+never call the new methods, so `base_reads` defaults to 0 = `current()`,
+unchanged). **Built 2026-07-04**: `derived.rs` (the reading-mode plumbing +
+`a_from_base_ignores_temporary_mods` test) and `skyrim_ruleset()`
+(`CARRY_WEIGHT_BIAS=250.0`, `CARRY_WEIGHT_STAMINA_COEFF=0.5`, resolves
+`"CarryWeight"`/`"Stamina"`). 4 new tests total (2 in `derived.rs`, 2 in
+`skyrim.rs`, one of which proves a Fortify Stamina `temporary_mod` does NOT
+move Carry Weight); core suite 511 green (up from 508), workspace green,
+0 new clippy warnings. Skyrim's `derived` table now has 2 entries: Light
+Armor Rating (multiplier, player-only) and Carry Weight (absolute,
+actor-general, base-Stamina-derived).

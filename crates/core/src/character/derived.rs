@@ -59,12 +59,16 @@ impl DerivedInput {
         Self(avif_form_id)
     }
 
-    /// Resolve to a numeric value against the actor's state.
+    /// Resolve to a numeric value against the actor's state. `use_base`
+    /// reads the AV's `base` layer only (excludes permanent/temporary mods
+    /// and damage) — e.g. Skyrim Carry Weight, which explicitly excludes
+    /// Fortify Stamina; every other derived stat reads `current()`.
     #[inline]
-    fn read(self, avs: &ActorValues, level: u16) -> f32 {
+    fn read(self, avs: &ActorValues, level: u16, use_base: bool) -> f32 {
         match self.0 {
             0 => 0.0,
             u32::MAX => f32::from(level),
+            avif if use_base => avs.get(avif).map_or(0.0, |v| v.base),
             avif => avs.current(avif),
         }
     }
@@ -142,7 +146,15 @@ pub struct DerivedStatFormula {
     /// Player-only vs actor-general (see [`DerivedScope`]). Free — fits in
     /// the struct's alignment padding.
     pub scope: DerivedScope,
+    /// Bit 0 / bit 1: read input `a` / `b` from its AV's `base` layer
+    /// instead of `current()` (see [`Self::a_from_base`]). The struct's last
+    /// spare padding byte — adding this kept the size at 32 bytes exactly
+    /// (see `formula_is_thirty_two_bytes_and_copy`).
+    base_reads: u8,
 }
+
+const READ_A_FROM_BASE: u8 = 0b01;
+const READ_B_FROM_BASE: u8 = 0b10;
 
 impl DerivedStatFormula {
     /// `bias + coeff·input` — the common single-input affine stat
@@ -159,6 +171,7 @@ impl DerivedStatFormula {
             round: RoundMode::None,
             kind: DerivedOutput::Absolute,
             scope: DerivedScope::ActorGeneral,
+            base_reads: 0,
         }
     }
 
@@ -183,6 +196,7 @@ impl DerivedStatFormula {
             round: RoundMode::None,
             kind: DerivedOutput::Absolute,
             scope: DerivedScope::ActorGeneral,
+            base_reads: 0,
         }
     }
 
@@ -217,6 +231,28 @@ impl DerivedStatFormula {
         self
     }
 
+    /// Read input `a` from its AV's `base` layer only, excluding permanent/
+    /// temporary modifiers and damage (chainable) — Skyrim Carry Weight,
+    /// which the source states explicitly excludes Fortify Stamina. Every
+    /// other derived stat built so far reads `current()` (the default);
+    /// FO4 Health is confirmed correct doing so ("health rescales
+    /// dynamically with any Endurance / level change — no permanent/
+    /// temporary split for player HP", `charal-fo4-ruleset.md`). The rest
+    /// are unaudited on this question but not known to be wrong — this
+    /// method exists because Skyrim Carry Weight positively needs it, not
+    /// because anything else was found broken.
+    pub const fn a_from_base(mut self) -> Self {
+        self.base_reads |= READ_A_FROM_BASE;
+        self
+    }
+
+    /// Read input `b` from its AV's `base` layer only (chainable) — see
+    /// [`Self::a_from_base`].
+    pub const fn b_from_base(mut self) -> Self {
+        self.base_reads |= READ_B_FROM_BASE;
+        self
+    }
+
     /// Evaluate against an actor's [`ActorValues`] + level. Reads each input
     /// (AV by FormID, or the level), folds the bilinear expression, rounds,
     /// then clamps to `cap`. Inputs absent from `avs` read `0.0` (the
@@ -224,8 +260,8 @@ impl DerivedStatFormula {
     /// gracefully rather than panicking.
     #[inline]
     pub fn eval(&self, avs: &ActorValues, level: u16) -> f32 {
-        let a = self.a.read(avs, level);
-        let b = self.b.read(avs, level);
+        let a = self.a.read(avs, level, self.base_reads & READ_A_FROM_BASE != 0);
+        let b = self.b.read(avs, level, self.base_reads & READ_B_FROM_BASE != 0);
         let raw = self.bias + self.coeff_a * a + self.coeff_b * b + self.cross * a * b;
         let rounded = match self.round {
             RoundMode::None => raw,
@@ -337,6 +373,25 @@ mod tests {
         // FO4 XP multiplier: ×(1 + 0.03·INT). INT 10 → 1.30×.
         let xp = DerivedStatFormula::affine(av(0x09), 0.03, 1.0).as_multiplier();
         assert!((xp.eval(&avs(&[(0x09, 10.0)]), 1) - 1.30).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_from_base_ignores_temporary_mods() {
+        // Skyrim Carry Weight: 250 + 0.5·BaseStamina, explicitly excluding
+        // Fortify Stamina (a temporary_mod).
+        let carry_weight = DerivedStatFormula::affine(av(0x30), 0.5, 250.0).a_from_base();
+        let mut stamina_100 = avs(&[(0x30, 100.0)]);
+        assert_eq!(carry_weight.eval(&stamina_100, 1), 300.0);
+        // A Fortify Stamina potion (+50 temporary) must NOT move Carry Weight.
+        stamina_100.mod_temporary(0x30, 50.0);
+        assert_eq!(
+            carry_weight.eval(&stamina_100, 1),
+            300.0,
+            "temporary Stamina must not affect base-derived Carry Weight"
+        );
+        // But an ordinary (current()-reading) formula on the same AV DOES move.
+        let hypothetical_current_reader = DerivedStatFormula::affine(av(0x30), 0.5, 250.0);
+        assert_eq!(hypothetical_current_reader.eval(&stamina_100, 1), 325.0);
     }
 
     #[test]
