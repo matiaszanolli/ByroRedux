@@ -585,28 +585,54 @@ the current entry is `Bare`; otherwise consume `u32` length + raw
 bytes as a `String`. Robust against observed vanilla (the 104-byte
 curve length doesn't coincide with any dictionary tag).
 
-### Open: 14000-band tail tags in the 4 outliers
+### Open: tag `768` bail in the 4 outliers (corrected 2026-07-04, #1821)
 
 After the #999 fix, the same 4 files decode 28 more entries each but
-then bail again at value `768` (offsets 4507 / 5641 / 5946 / 6211).
-Byte-level inspection shows these bytes are *not* a 768-tag — they're
-part of a sequence of (tag, u32) pairs in the **14000–14008** range,
-sitting beyond the current `TAG_MAX = 13999`:
+then bail again — the walker reads tag `768` (offsets 4507 / 5641 /
+5946 / 6211) and stops, since `768` is in-range (`TAG_MIN..=TAG_MAX`)
+but not in `dispatch_tag`'s dictionary, so it's recorded into
+`unknown_tags` rather than misparsed.
+
+An earlier version of this note dismissed `768` as a mis-decode,
+claiming the real read at that point was tag `14007` (out of the then
+`TAG_MAX = 13999` range) at a hand-picked hex offset 3 bytes earlier.
+That was wrong — reproduced against the live corpus
+(`shrubms14boxwood.spt`, `Oblivion - Meshes.bsa`) via `spt_walk`:
 
 ```text
-4504: B7 36 00 00 = 14007  (out of TAG_MAX range)
-4508: 03 00 00 00 = 3      (presumed u32 payload)
-4512: B8 36 00 00 = 14008
-4516: 01 00 00 00 = 1      (presumed u32 payload)
-4520: D0 32 00 00 = 13008  (known FixedBytes(11))
-...
+  off   4488  tag 13012  U32(0)
+  off   4496  tag 13013  Fixed(7 bytes)
+unknown_tags = [(768, 4507)]
+tail_offset  = 4507
 ```
 
-Without a `spt_transitions` re-run that extends the tag-range search
-into 14000+, we can't classify these confidently. Follow-up: re-run
-the recon harness with `TAG_MAX = 16000`, observe the modal
-payload-distance for each new tag, extend `dispatch_tag`. Expected
-to push Oblivion clean-rate from 96.46 % to 100 %.
+The walker's own byte accounting explains this exactly — no mis-decode
+involved. Tag `13013` (`FixedBytes(7)`) consumes 4 (tag) + 7 (payload)
+= 11 bytes starting at 4496, landing the cursor at 4507:
+
+```text
+4496: d5 32 00 00              tag u32 = 13013
+4500: cc cc 4c 3d               payload bytes 0-3 (f32 ≈ 0.05)
+4504: b7 36                     payload bytes 4-5 (u16 = 0x36b7 = 14007)
+4506: 00                        payload byte 6    (u8 = 0)
+4507: 00 03 00 00               next tag u32 = 0x0300 = 768  ← walker bails here
+```
+
+The `14007` value the earlier note keyed off is real — it's the
+trailing `u16` field inside tag `13013`'s own 7-byte payload (bytes
+4504-4505), not a tag the walker ever reads as one. Eyeballing a hex
+dump 3 bytes ahead of the walker's actual cursor is what produced the
+false "14000-band" pattern; there is no evidence of any tag beyond
+`TAG_MAX` here, and raising `TAG_MAX` would not touch this bail at
+all — `768` is already inside `TAG_MIN..=TAG_MAX`.
+
+Follow-up, corrected: this is an in-range, undictionaried tag (or
+geometry-tail noise that happens to fall in `TAG_MIN..=TAG_MAX` by
+chance — not yet distinguished). A `spt_transitions` pass focused on
+what follows tag `13013` across the full corpus (not a `TAG_MAX` bump)
+would tell us which. Non-blocking: the placeholder fallback already
+covers these 4 trees and Oblivion remains above the 95 % acceptance
+gate.
 
 Tracked here rather than as a dedicated issue — the placeholder
 fallback already covers these 4 trees today, and Oblivion is well
