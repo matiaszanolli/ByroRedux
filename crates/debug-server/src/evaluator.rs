@@ -410,6 +410,8 @@ fn eval_walk_entity(world: &World, root: u32, max_depth: u32) -> DebugResponse {
 fn eval_request(world: &World, registry: &ComponentRegistry, expr: &str) -> DebugResponse {
     let first_word = expr.split_whitespace().next().unwrap_or("");
     if !first_word.is_empty() {
+        // CONC-D3-04 / #1786 — `reg` stays held (read) across `execute`;
+        // see the lock contract on `ConsoleCommand::execute`.
         if let Some(reg) = world.try_resource::<CommandRegistry>() {
             if reg.list().iter().any(|(name, _)| *name == first_word) {
                 let output = reg.execute(world, expr);

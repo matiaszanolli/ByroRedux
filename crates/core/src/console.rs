@@ -39,6 +39,19 @@ pub trait ConsoleCommand: Send + Sync {
     fn description(&self) -> &str;
 
     /// Execute the command. `args` is the remainder after the command name.
+    ///
+    /// # Lock contract (CONC-D3-04 / #1786)
+    ///
+    /// All three dispatch sites (`crates/debug-server/src/evaluator.rs`,
+    /// `byroredux/src/main.rs` ×2) hold a `ResourceRead<CommandRegistry>`
+    /// guard for the duration of this call — structurally unavoidable,
+    /// since the registry owns the boxed `ConsoleCommand` trait objects
+    /// being invoked. **Implementations must never acquire
+    /// `CommandRegistry` mutably** (`world.resource_mut::<CommandRegistry>()`
+    /// or `try_resource_mut`) — the always-on lock tracker treats that as a
+    /// same-thread read-then-write deadlock and panics (release included).
+    /// A read-only re-acquire (as `HelpCommand` does to list commands) is
+    /// fine — read-read reentry is permitted.
     fn execute(&self, world: &World, args: &str) -> CommandOutput;
 }
 
@@ -201,5 +214,40 @@ mod tests {
         let world = World::new();
         let output = registry.execute(&world, "   ");
         assert!(output.lines[0].contains("Available commands"));
+    }
+
+    struct EvilCommand;
+
+    impl ConsoleCommand for EvilCommand {
+        fn name(&self) -> &str {
+            "evil"
+        }
+        fn description(&self) -> &str {
+            "violates the CommandRegistry read-guard contract"
+        }
+        fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+            // CONC-D3-04 / #1786 — a command must never acquire
+            // `CommandRegistry` mutably: every dispatch site already holds
+            // a read guard on it for the duration of `execute`.
+            let _write = world.resource_mut::<CommandRegistry>();
+            CommandOutput::line("unreachable")
+        }
+    }
+
+    /// Pins the `ConsoleCommand::execute` lock contract (CONC-D3-04 /
+    /// #1786): a command that acquires `CommandRegistry` mutably while
+    /// being dispatched panics via the always-on lock tracker, mirroring
+    /// the read-guard-held-across-execute shape of the three real
+    /// dispatch sites (`evaluator.rs` / `main.rs` ×2).
+    #[test]
+    #[should_panic(expected = "ECS deadlock detected")]
+    fn command_may_not_acquire_registry_mutably_mid_dispatch() {
+        let mut world = World::new();
+        let mut registry = CommandRegistry::new();
+        registry.register(EvilCommand);
+        world.insert_resource(registry);
+
+        let reg = world.resource::<CommandRegistry>();
+        let _ = reg.execute(&world, "evil");
     }
 }

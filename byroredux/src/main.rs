@@ -28,6 +28,8 @@ mod render;
 mod save_io;
 mod scene;
 mod scene_import_cache;
+#[cfg(test)]
+mod scheduler_access_tests;
 mod sf_smoke;
 mod streaming;
 mod streaming_helpers;
@@ -265,6 +267,8 @@ fn main() -> Result<()> {
         let registry = build_command_registry();
         world.insert_resource(SystemList(Vec::new()));
         world.insert_resource(registry);
+        // CONC-D3-04 / #1786 — `reg` stays held (read) across `execute`;
+        // see the lock contract on `ConsoleCommand::execute`.
         let reg = world.resource::<CommandRegistry>();
         let output = reg.execute(&world, input);
         drop(reg);
@@ -662,6 +666,11 @@ impl App {
                 .reads_resource::<InputState>()
                 .reads_resource::<byroredux_physics::PhysicsWorld>()
                 .writes_resource::<byroredux_physics::PhysicsWorld>()
+                // #1787 / CONC-D4-01 — the character controller snapshots
+                // `ContactConfig::kcc_offset_bu` once per tick
+                // (systems/character.rs); read-only, declared for the same
+                // reason as the `physics_sync_system` sibling gap.
+                .reads_resource::<byroredux_physics::ContactConfig>()
                 .reads::<byroredux_physics::CharacterController>()
                 .writes::<byroredux_physics::CharacterController>()
                 .reads::<byroredux_physics::RapierHandles>()
@@ -809,7 +818,10 @@ impl App {
                 .writes::<byroredux_core::animation::RootMotionDelta>()
                 .writes::<byroredux_core::ecs::AnimatedVisibility>()
                 .writes::<byroredux_core::ecs::AnimatedDiffuseColor>()
+                .writes::<byroredux_core::ecs::AnimatedAmbientColor>()
+                .writes::<byroredux_core::ecs::AnimatedSpecularColor>()
                 .writes::<byroredux_core::ecs::AnimatedEmissiveColor>()
+                .writes::<byroredux_core::ecs::AnimatedShaderColor>()
                 .writes::<byroredux_core::ecs::AnimatedAlpha>()
                 .writes::<byroredux_core::ecs::AnimatedUvTransform>()
                 .writes::<byroredux_core::ecs::AnimatedShaderFloat>()
@@ -901,6 +913,12 @@ impl App {
                 // WATAL Phase 2 — the buoyancy phase reads the engine water
                 // constants resource (declaration completeness; read-only).
                 .reads_resource::<byroredux_physics::PhysicsWaterConstants>()
+                // #1787 / CONC-D4-01 — `register_newcomers` snapshots
+                // `ContactConfig` once per batch (kcc_offset_bu / trimesh
+                // flags); read-only, but must be declared so a future
+                // parallel system that writes it is caught by the
+                // conflict analyzer instead of silently racing.
+                .reads_resource::<byroredux_physics::ContactConfig>()
                 .reads::<byroredux_core::ecs::components::CollisionShape>()
                 .reads::<byroredux_core::ecs::components::RigidBodyData>()
                 .reads::<byroredux_core::ecs::GlobalTransform>()
@@ -912,7 +930,16 @@ impl App {
                 .reads::<byroredux_core::ecs::components::water::WaterPlane>()
                 .reads::<byroredux_core::ecs::components::water::WaterVolume>()
                 .reads::<byroredux_core::ecs::components::water::WaterFlow>()
-                .writes::<byroredux_core::ecs::components::water::WaterContact>(),
+                .writes::<byroredux_core::ecs::components::water::WaterContact>()
+                // #1787 / CONC-D4-01 — the #1698 `BYRO_PROFILE_FALLERS`
+                // opt-in diagnostic (`dump_awake_fallers`) reads these
+                // three, gated behind an env var + one-shot AtomicBool but
+                // still part of the system's true read surface — the
+                // analyzer can't see the runtime gate.
+                .reads::<byroredux_core::ecs::components::RenderLayer>()
+                .reads::<byroredux_core::ecs::components::FormIdComponent>()
+                .reads::<byroredux_core::ecs::components::PhysicsSourceForm>()
+                .reads_resource::<byroredux_core::form_id::FormIdPool>(),
         );
         // M28.5 — camera follow runs in Stage::Late, AFTER
         // `physics_sync_system` has settled the kinematic body's
@@ -2752,6 +2779,8 @@ fn apply_debug_ui_outputs(
     // `&mut DebugUiState` borrow `push_console_line` needs.
     let mut response_lines: Vec<String> = Vec::new();
     for expr in outputs.console_evals {
+        // CONC-D3-04 / #1786 — `reg` stays held (read) across `execute`;
+        // see the lock contract on `ConsoleCommand::execute`.
         if let Some(reg) = world.try_resource::<CommandRegistry>() {
             let output = reg.execute(world, &expr);
             log::info!("debug-ui console: {} → {}", expr, output.lines.join(" | "));

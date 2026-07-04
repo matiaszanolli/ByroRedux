@@ -14,6 +14,11 @@ impl ConsoleCommand for HelpCommand {
         "List all available commands"
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        // CONC-D3-04 / #1786 — re-enters the same `CommandRegistry` lock
+        // the dispatcher already holds read-only for the duration of this
+        // call. Read-read reentry is permitted by the always-on lock
+        // tracker; this must stay a read (`resource`, never `resource_mut`)
+        // per the contract on `ConsoleCommand::execute`.
         let registry = world.resource::<CommandRegistry>();
         let mut lines = vec!["Available commands:".to_string()];
         for (name, desc) in registry.list() {
