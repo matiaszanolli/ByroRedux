@@ -178,7 +178,17 @@ pub(super) fn parse_import_and_merge(
         .unwrap_or(false);
     if is_spt {
         let scene = match byroredux_spt::parse_spt(data) {
-            Ok(s) => s,
+            Ok(s) => {
+                // #1820 / SPT-NEW-01 — mirrors the logged sanity check in
+                // cell_loader::parse_and_import_spt; see that call site's
+                // comment for why this is a diagnostic, not a dispatch input.
+                log::debug!(
+                    "Parsed SPT '{}': variant={}",
+                    label,
+                    byroredux_spt::detect_variant(data).tag(),
+                );
+                s
+            }
             Err(e) => {
                 log::error!("Failed to parse SPT '{}': {}", label, e);
                 return None;

@@ -1345,11 +1345,20 @@ fn parse_and_import_spt(
 ) -> Option<Arc<CachedNifImport>> {
     let scene = match byroredux_spt::parse_spt(spt_data) {
         Ok(s) => {
+            // #1820 / SPT-NEW-01 — logged sanity check, not a dispatch
+            // input: `detect_variant` had zero production callers, which
+            // read as a live per-game hook while actually being inert
+            // (the placeholder importer below is variant-agnostic).
+            // Logging it here gives the Phase 2 geometry-tail decoder a
+            // corpus trail to consult once it needs Oblivion-vs-FO3/FNV
+            // body disambiguation, without changing today's behaviour.
+            let variant = byroredux_spt::detect_variant(spt_data);
             log::debug!(
-                "Parsed SPT '{}': {} entries, tail at offset {}",
+                "Parsed SPT '{}': {} entries, tail at offset {}, variant={}",
                 label,
                 s.entries.len(),
                 s.tail_offset,
+                variant.tag(),
             );
             if !s.unknown_tags.is_empty() {
                 log::debug!(
@@ -1991,6 +2000,26 @@ mod tests {
             "SPT placeholder must flag the placement root as a yaw-billboard",
         );
         assert_eq!(cached.meshes.len(), 1, "single placeholder quad");
+    }
+
+    /// #1820 / SPT-NEW-01 — pins the logged sanity check
+    /// `parse_and_import_spt` now computes via `detect_variant`. The
+    /// call itself can't be observed without a log-capturing dependency
+    /// (none exists in this workspace), so this asserts the value the
+    /// production code path would log for the same fixture bytes
+    /// `parse_and_import_spt_surfaces_billboard_mode_on_cache_entry`
+    /// exercises above — a vanilla `__IdvSpt_02_`-prefixed stream
+    /// resolves to `V5Fnv` per `detect_variant`'s documented default.
+    #[test]
+    fn minimal_spt_fixture_detects_as_v5fnv_variant() {
+        let bytes = minimal_spt_bytes();
+        assert_eq!(
+            byroredux_spt::detect_variant(&bytes),
+            byroredux_spt::SpeedTreeVariant::V5Fnv,
+            "the same bytes parse_and_import_spt's logged sanity check \
+             receives must resolve to V5Fnv, matching MAGIC_HEAD's \
+             documented default",
+        );
     }
 
     /// #1798 / D7-NEW-01 — `load_references` has no live-Vulkan-context
