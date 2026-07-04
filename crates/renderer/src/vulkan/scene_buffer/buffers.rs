@@ -121,6 +121,12 @@ pub struct SceneBuffers {
     /// `(pipeline_key, is_decal)` into one indirect draw call reading
     /// a contiguous range of this buffer. See #309.
     pub(super) indirect_buffers: Vec<GpuBuffer>,
+    /// Sibling dirty-gate for [`SceneBuffers::upload_indirect_draws`] —
+    /// the indirect command list is derived from the same per-frame
+    /// batches as instances and materials, so it's byte-identical under
+    /// the same "static interior" conditions those two already exploit.
+    /// See #1809 / PERF-D4-NEW-03 and #1134 / #878 for the template.
+    pub(super) last_uploaded_indirect_hash: [Option<u64>; MAX_FRAMES_IN_FLIGHT],
     /// Single DEVICE_LOCAL SSBO holding `MAX_TERRAIN_TILES`
     /// `GpuTerrainTile` entries. Rewritten only at cell transitions
     /// via [`SceneBuffers::upload_terrain_tiles`] — a staging copy
@@ -813,6 +819,7 @@ impl SceneBuffers {
             tlas_written: vec![false; MAX_FRAMES_IN_FLIGHT],
             last_uploaded_material_hash: [None; MAX_FRAMES_IN_FLIGHT],
             last_uploaded_instance_hash: [None; MAX_FRAMES_IN_FLIGHT],
+            last_uploaded_indirect_hash: [None; MAX_FRAMES_IN_FLIGHT],
         })
     }
 }

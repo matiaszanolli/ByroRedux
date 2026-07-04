@@ -9,7 +9,7 @@ use byroredux_core::ecs::components::MAX_BONES_PER_MESH;
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::buffers::LightHeader;
-use super::descriptors::{hash_instance_slice, hash_material_slice};
+use super::descriptors::{hash_indirect_slice, hash_instance_slice, hash_material_slice};
 use super::*;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -627,6 +627,20 @@ impl super::buffers::SceneBuffers {
         if count == 0 {
             return Ok(());
         }
+
+        // #1809 / PERF-D4-NEW-03 — dirty-gate via content hash, mirror
+        // of #1134's upload_instances / #878's upload_materials gates.
+        // The indirect list is derived from the same per-frame batches
+        // as instances and materials, so it's byte-identical under the
+        // exact same "static interior" conditions those two already
+        // skip the copy + flush for. Hash is computed over the clamped
+        // prefix actually written, so an overflow that drops trailing
+        // commands still re-uploads when the kept prefix changes.
+        let hash = hash_indirect_slice(&draws[..count]);
+        if self.last_uploaded_indirect_hash[frame_index] == Some(hash) {
+            return Ok(());
+        }
+
         let buf = &mut self.indirect_buffers[frame_index];
         let mapped = buf.mapped_slice_mut()?;
         let byte_size = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() * count;
@@ -641,7 +655,12 @@ impl super::buffers::SceneBuffers {
             );
         }
         // F8 (#1587) — flush only the written byte range, not the full allocation.
-        buf.flush_range(device, 0, byte_size as vk::DeviceSize)
+        buf.flush_range(device, 0, byte_size as vk::DeviceSize)?;
+        // Stamp the hash AFTER a successful flush — a flush failure
+        // leaves the buffer in an indeterminate state, so we want the
+        // next call to re-upload rather than skip.
+        self.last_uploaded_indirect_hash[frame_index] = Some(hash);
+        Ok(())
     }
 
     /// Return the `VkBuffer` handle for the current frame's indirect

@@ -310,3 +310,26 @@ pub(super) fn hash_instance_slice(instances: &[super::gpu_types::GpuInstance]) -
     hasher.write(bytes);
     hasher.finish()
 }
+
+/// Sibling of [`hash_instance_slice`] / [`hash_material_slice`] for the
+/// [`SceneBuffers::upload_indirect_draws`] dirty-gate (#1809 /
+/// PERF-D4-NEW-03). The indirect command list is derived from the same
+/// per-frame batches as instances and materials, so it's byte-identical
+/// under the exact same "static interior" conditions those two gates
+/// already exploit — this closes the one sibling that was still
+/// unconditionally `copy_nonoverlapping` + `flush_range`'d every frame.
+///
+/// `VkDrawIndexedIndirectCommand` is a Vulkan-spec `#[repr(C)]` struct of
+/// five `u32`/`i32` fields (20 B, no padding — all 4-byte-aligned), so
+/// the raw byte-slice cast is sound for the same reason
+/// `hash_material_slice`'s is.
+pub(super) fn hash_indirect_slice(draws: &[ash::vk::DrawIndexedIndirectCommand]) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = rustc_hash::FxHasher::default();
+    let byte_size = std::mem::size_of_val(draws);
+    // SAFETY: see hash_material_slice — same invariant on the producer
+    // side; `VkDrawIndexedIndirectCommand` has no implicit padding.
+    let bytes: &[u8] = unsafe { std::slice::from_raw_parts(draws.as_ptr() as *const u8, byte_size) };
+    hasher.write(bytes);
+    hasher.finish()
+}

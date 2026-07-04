@@ -30,6 +30,8 @@ pub use gpu_types::{GpuCamera, GpuDalcCube, GpuInstance, GpuLight, GpuTerrainTil
 #[cfg(test)]
 mod gpu_instance_layout_tests;
 #[cfg(test)]
+mod indirect_hash_tests;
+#[cfg(test)]
 mod instance_hash_tests;
 #[cfg(test)]
 mod light_overflow_tests;
