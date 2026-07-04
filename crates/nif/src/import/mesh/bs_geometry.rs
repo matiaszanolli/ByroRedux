@@ -23,7 +23,11 @@ pub fn extract_bs_geometry(
     use crate::blocks::bs_geometry::{BSGeometryMeshData, BSGeometryMeshKind};
 
     // Try each LOD slot in order; use the first one that yields geometry.
+    // Also carry the selected slot's `tri_size`/`num_verts` hints through so
+    // they can be cross-checked against the resolved body below (SF2-03 /
+    // #1830) regardless of which stage resolved it.
     let mesh_data_owned: Option<BSGeometryMeshData>;
+    let hint: (u32, u32); // (tri_size, num_verts)
     let mesh_data: &BSGeometryMeshData = if shape.has_internal_geom_data() {
         // Stage A: inline geometry embedded in the NIF. Iterate every LOD
         // slot — `meshes.first()` was a #982 short-circuit that silently
@@ -33,14 +37,16 @@ pub fn extract_bs_geometry(
         // SF2-02 / #1829: a slot's body can itself be the `scale<=0`
         // sentinel (empty `vertices`/`triangles`) — skip those so a
         // sentinel-first slot order doesn't hide a later populated slot.
-        shape.meshes.iter().find_map(|m| match &m.kind {
+        let (tri_size, num_verts, data) = shape.meshes.iter().find_map(|m| match &m.kind {
             BSGeometryMeshKind::Internal { mesh_data }
                 if !mesh_data.vertices.is_empty() && !mesh_data.triangles.is_empty() =>
             {
-                Some(mesh_data.as_ref())
+                Some((m.tri_size, m.num_verts, mesh_data.as_ref()))
             }
             _ => None,
-        })?
+        })?;
+        hint = (tri_size, num_verts);
+        data
     } else {
         // Stage B: external `.mesh` companion file. Try each LOD slot until
         // one resolves. When no resolver is provided, skip external geometry.
@@ -71,7 +77,7 @@ pub fn extract_bs_geometry(
                             // sentinel-first slot order doesn't hide a
                             // later populated slot.
                             if !data.vertices.is_empty() && !data.triangles.is_empty() {
-                                found = Some(data);
+                                found = Some((m.tri_size, m.num_verts, data));
                                 break;
                             }
                             log::debug!(
@@ -94,12 +100,38 @@ pub fn extract_bs_geometry(
                 }
             }
         }
-        mesh_data_owned = found;
-        mesh_data_owned.as_ref()?
+        let (tri_size, num_verts, data) = found?;
+        hint = (tri_size, num_verts);
+        mesh_data_owned = Some(data);
+        mesh_data_owned.as_ref().unwrap()
     };
 
     if mesh_data.vertices.is_empty() || mesh_data.triangles.is_empty() {
         return None;
+    }
+
+    // SF2-03 / #1830 — cross-check the NIF-level `tri_size`/`num_verts`
+    // hints (always present regardless of internal/external) against the
+    // body that actually resolved. A mismatch is a strong signal of a
+    // wrong-file resolve (hash collision, stale archive) or a truncated
+    // companion — not fatal (the resolved body still renders), but worth
+    // surfacing during bring-up rather than leaving it undiagnosable.
+    if let Some(mismatch) = bs_geometry_hint_mismatch(
+        hint.0,
+        hint.1,
+        mesh_data.vertices.len() as u32,
+        mesh_data.triangles.len() as u32,
+    ) {
+        log::debug!(
+            "BSGeometry '{}' hint/body mismatch: num_verts hint={} resolved={}, \
+             tri_size hint={} resolved={} — possible wrong-file resolve \
+             (hash collision / stale archive) or truncated companion",
+            shape.av.net.name.as_deref().unwrap_or("<unnamed>"),
+            mismatch.num_verts_hint,
+            mismatch.num_verts_resolved,
+            mismatch.tri_size_hint,
+            mismatch.tri_size_resolved,
+        );
     }
 
     // Positions are already Y-up (decoded by the BSGeometryMeshData parser).
@@ -344,4 +376,40 @@ pub fn extract_bs_geometry_local(
     resolver: Option<&dyn MeshResolver>,
 ) -> Option<ImportedMesh> {
     extract_bs_geometry(scene, shape, &shape.av.transform, pool, resolver)
+}
+
+/// Reported when [`bs_geometry_hint_mismatch`] finds the NIF-level
+/// `BSGeometryMesh` hints disagree with the resolved mesh body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BsGeometryHintMismatch {
+    pub num_verts_hint: u32,
+    pub num_verts_resolved: u32,
+    pub tri_size_hint: u32,
+    pub tri_size_resolved: u32,
+}
+
+/// SF2-03 / #1830 — cross-checks a `BSGeometryMesh` slot's `tri_size` /
+/// `num_verts` hints against the vertex/triangle counts of the body that
+/// actually resolved for it (either the inline `BSGeometryMeshData` or the
+/// parsed external `.mesh` companion). Returns `None` when they agree.
+///
+/// `tri_size` is a byte-size hint over the triangle-index stream, which is
+/// always 3 `u16` indices per triangle (6 bytes) — see
+/// `BSGeometryMeshData::parse`'s `n_tri_indices` read.
+pub(crate) fn bs_geometry_hint_mismatch(
+    tri_size_hint: u32,
+    num_verts_hint: u32,
+    resolved_verts: u32,
+    resolved_tri_count: u32,
+) -> Option<BsGeometryHintMismatch> {
+    let tri_size_resolved = resolved_tri_count.saturating_mul(6);
+    if num_verts_hint == resolved_verts && tri_size_hint == tri_size_resolved {
+        return None;
+    }
+    Some(BsGeometryHintMismatch {
+        num_verts_hint,
+        num_verts_resolved: resolved_verts,
+        tri_size_hint,
+        tri_size_resolved,
+    })
 }
