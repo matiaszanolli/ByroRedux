@@ -148,6 +148,71 @@ per-shot condition decay rates), is **equipment/item-system data, not a characte
 stat** — same "confirmed real, deliberately not CHARAL's" treatment as Sneak
 Detection above, recorded only to close out what `ItemValue` means.
 
+### Lockpick skill (FNV) — deterministic threshold gate + skill-XP reward, force-lock chance PENDING
+
+Source: fandom *Lockpick (Fallout: New Vegas)* + *Lock (Fallout: New Vegas)*, 2026-07-04.
+Auto-calc base reconfirms the standard formula (`2 + 2·Perception + ceil(Luck/2)`, worked
+PER 5 + Luck 5 → 15) and Skill Rate (`10 + INT/2`, `+2` Educated) — no new numbers there,
+just a second cross-confirmation. Two genuinely new items:
+
+**Lock difficulty is a 5-tier deterministic gate**, same "skill ≥ required, no roll"
+shape already established for dialogue checks (§ above), keyed off Lockpick specifically:
+
+| Difficulty | Required Lockpick | XP reward |
+|---|---|---|
+| Very Easy | 0 | 20 |
+| Easy | 25 | 30 |
+| Average | 50 | 40 |
+| Hard | 75 | 50 |
+| Very Hard | 100 | 60 |
+
+The **XP reward column is new**: a second confirmed instance of the "XP-award trigger"
+gap already flagged in `charal.md` §7.1 (there: companion-assisted kills need the player
+to deal ≥30% of the damage) — this one grants flat XP on a **successful skill-gated
+action** (opening the lock), not a kill at all. `LevelingModel` still has no home for
+either shape; recording this here so the eventual XP-award-trigger design has two real
+data points instead of one.
+
+**Force-lock chance is explicitly gated by Lockpick + difficulty but the closed formula
+is NOT given** on either page ("the probability of success for this action depends on
+the Lockpick skill and the difficulty of the lock" — no numbers). Per [[feedback_no_guessing]],
+left as **PENDING**, not derived from the pick-difficulty table by inference — a genuine
+open item, distinct from the picking-minigame path (which is skill-gated access only, no
+roll once the gate passes) and from Skyrim/FO3's *Sneak Detection* "real formula, wrong
+layer" cases (this one has no formula captured at all yet, wrong-layer doesn't apply).
+
+### Survival skill — consumable effect multiplier (FNV) — LOCKED, fourth skill-chained formula
+
+Source: fandom *Survival (Fallout: New Vegas)*, 2026-07-04. Survival's base value
+already matches the general auto-calc formula (`2 + 2·END + ceil(Luck/2)`, worked
+END 5 + Luck 5 → 15) — confirming the skill row above. The new capture is Survival's
+*consumer-side effect*, which is itself a formula, not just a governed AV:
+
+```
+|Effect| = floor(|Base| × (1 + Survival/50))
+```
+
+Applies at **consumption time** (not craft time) to every stat delta a food/drink item
+carries — HP/stat gain *and* the Hardcore-mode Dehydration/Starvation/Sleep deltas —
+up to a **3×** multiplier at Survival 100. It does **not** touch a food's Radiation. This
+is a **fourth** confirmed skill-chained derivation alongside Unarmed Damage (← Unarmed),
+Pickpocket chance (← Sneak), and Rad-X potency (← Medicine, noted above) — same shape:
+`DerivedStatFormula`-style scaling gated behind a skill AV, but applied to a *per-item*
+base rather than a fixed stat, so it's a gameplay-system (consumables) input, not a
+`derived`-table row — same boundary reasoning as Pickpocket chance.
+
+**Why this matters for CHARAL beyond a skill footnote**: Dehydration, Starvation, and
+Sleep (the three Hardcore-mode meters) are **undocumented in CHARAL until now** and are
+exactly the shape of **§4.6's affliction family** ([[charal_character_layer]],
+`crates/core/src/character/affliction.rs`) — a monotonic pool AV with threshold-gated
+penalty bands (Rads/poison's sibling, not a new mechanism). Hardcore mode is therefore
+**three more `AfflictionTable` instances** on the existing mechanism, gated behind a
+single game-mode flag (Hardcore on/off), rather than new machinery — mechanism-built,
+thresholds/bands still PENDING (no *Dehydration*/*Starvation*/*Resting* page pulled
+yet). The Survival multiplier above is the **input-scaling layer** that feeds pool
+deltas before they hit those bands, same relationship Rad-X's Medicine-scaled potency
+has to the Radiation pool.
+
 ### Sneak Detection (FNV) — LOCKED, but an AI/stealth subsystem, not a CHARAL stat
 
 Source: fandom *Sneak (Fallout: New Vegas)*, 2026-07-03. Unlike FO4/FO76 (both wikis

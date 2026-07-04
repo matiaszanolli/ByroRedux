@@ -395,6 +395,12 @@ that difference is exactly a `LevelingModel` variant, not a new component:
   the family is real across both games. Still the same "XP-award trigger, not an XP-curve
   or reward-shape concern" gap noted at FO3 — `LevelingModel` has no home for "when/how
   much XP a kill grants" yet.
+- **Second XP-award-trigger instance found, non-kill this time** (source: fandom *Lock
+  (Fallout: New Vegas)*, 2026-07-04): FNV Lockpicking grants flat XP per successful pick,
+  scaled by lock difficulty (Very Easy 20 → Very Hard 60, see
+  `charal-fnv-fo3-ruleset.md`). Confirms the gap above is a **general** "skill-gated
+  action success grants XP" shape, not a kill-specific one — `LevelingModel` needs a home
+  for both eventually, still nothing built.
 - **FNV *Nerve* — a new Charisma-governed, cross-actor buff formula** (source: fandom
   *Fallout: New Vegas companions*, 2026-07-03): `CompanionBonus = 5% × PlayerCharisma`,
   applied to **both** a companion's damage output and Damage Threshold (CHA 10 → +50%;

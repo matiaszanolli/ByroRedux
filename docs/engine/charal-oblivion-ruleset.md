@@ -196,3 +196,260 @@ Both formulas govern jump physics / fall-damage mitigation, not an
 ActorValue output — same "skill AV in, mechanic-formula out" routing as
 Lockpicking/Sneak Detection in `charal-skyrim-ruleset.md`. Documented for
 completeness, not a CHARAL build target.
+
+## Melee weapon damage (Blade/Blunt) — first real bilinear (attribute × skill) multiplier, shared across weapon-type skills
+
+Source: UESP *Oblivion:Blunt* + *Oblivion:Blade*, 2026-07-04, both "Skill Benefits":
+
+```
+Damage = BaseWeaponDamage × 0.5 × (0.75 + Strength × 0.005) × (0.2 + WeaponSkill × 0.015)
+```
+
+**Byte-for-byte identical formula and constants on both pages** — Blade's page
+gives the exact same `0.75`/`0.005`/`0.2`/`0.015` with `BladeSkill` swapped in
+for `BluntSkill`, confirming this is a **shared weapon-type-skill damage
+shape**, not a Blunt-specific one (governing skill is the only per-weapon-type
+variable — `WeaponSkill` above stands for whichever of Blade/Blunt governs the
+equipped weapon). Cross-check target for the remaining two weapon skills
+(Marksman, Hand-to-Hand) still open — Hand-to-Hand in particular is a likely
+divergence point, since FO3/FNV's Unarmed Damage is skill-chained rather than
+a weapon-damage multiplier (see below).
+
+Two multiplicative affine factors — a Strength-driven factor and a Blunt-
+skill-driven factor — expand cleanly into `DerivedStatFormula::bilinear`'s
+`bias + cₐ·A + c_b·B + cross·A·B` shape once the `0.5` and `BaseWeaponDamage`
+scalars are pulled out (the per-weapon scalar stays a combat-layer input, same
+boundary as FO3/FNV's DR/DT — CHARAL owns the STR/skill-driven *multiplier*,
+not the per-weapon base):
+
+```
+Multiplier = 0.5 × (0.75 + 0.005·STR) × (0.2 + 0.015·Blunt)
+           = 0.075 + 0.0005·STR + 0.005625·Blunt + 0.0000375·STR·Blunt
+```
+
+(bias `0.075`, `c_STR = 0.0005`, `c_Blunt = 0.005625`, `cross = 0.0000375` —
+the exact `DerivedStatFormula::bilinear` argument order once a `Multiplier`
+scope is wired for two-skill-input formulas.)
+
+This is the **first confirmed real-data instance of a bilinear formula
+crossing an attribute with a *weapon-type skill*** — every bilinear formula
+found so far (FO4/FO3/FNV Health) crossed an attribute with **Level**, not
+with another governing stat. It's also the first weapon-damage formula found
+that reads BOTH inputs multiplicatively (FO3/FNV Melee Damage is `STR×0.5`
+additive, single-input; FO4's is `×(1+STR/10)`, single-input multiplier) —
+Oblivion's is the first to need genuine `DerivedScope::Multiplier` +
+two-input `bilinear` at once. Not yet built (Oblivion's derived-stat table in
+code is still just `oblivion_health_formula` + attribute bonus; this is a new
+row, not a formula-shape gap). Still open: Marksman (Agility-governed, per
+`SkillSet::OBLIVION`) and Hand-to-Hand — the latter is the likelier divergence
+point, since FO3/FNV's Unarmed Damage is skill-chained rather than a weapon-
+damage multiplier, so Oblivion's unarmed math may not fit this shared shape.
+
+Both Blade and Blunt increase by a flat **+0.5 XP per hit on a living target**
+(inanimate targets in training rooms grant nothing) — same constant on both
+pages, reinforcing the shared-shape reading above. This is a **third**
+instance of the "skill/character progresses on in-fiction action, not just
+level-up allocation" family, alongside FO3/FNV's Skill Rate and FNV's
+Lockpicking XP-per-success reward (`charal-fnv-fo3-ruleset.md`) — Oblivion's
+variant increases the **skill itself** directly (major/minor skill-use
+accumulation model, already the documented Oblivion leveling mechanism), not
+a flat character-XP grant, so it's a reconfirmation of the existing skill-use
+leveling model rather than a new gap.
+
+## The Complete Damage Formula — closes Marksman/Hand-to-Hand, adds Luck-chained skill + a new Armor Rating candidate
+
+Source: UESP *Oblivion:The Complete Damage Formula*, 2026-07-04 — the page
+Blade/Blunt both point to for "more information." Confirms the Blade/Blunt
+formula exactly (full-condition weapon: `(WeaponHealth/BaseWeaponHealth+1)/4
+= (1+1)/4 = 0.5`, matching the `×0.5` constant already recorded) and **also
+covers Marksman** (`Attribute` = Agility for bows, same shape, `WeaponRating`
+= Bow WR + Arrow WR) — so all three ranged/melee weapon skills (Blade, Blunt,
+Marksman) now confirmed to share one bilinear damage shape. Several new
+pieces:
+
+**1. `ModifiedSkill` — Luck chains into combat-time skill, not just chargen.**
+`ModifiedSkill = Skill + 0.4×(Luck−50)`. This is a *second* Luck-chained
+formula (after the base-skill auto-calc pattern) but a structurally different
+one: it modifies the skill value used **at combat time**, not the stored
+skill AV itself — Skill/Fortify/Damage/Absorb-Skill effects and Luck's own
+magical modifiers all fold in first. Substituting into `WeaponRating` turns
+the two-input bilinear into an effectively **three-governing-stat** formula
+(Attribute, Skill, Luck) — but this does NOT need a new `DerivedStatFormula`
+shape: `ModifiedSkill` is itself a plain two-input **affine** formula
+(`bias=−20, c_Skill=1, c_Luck=0.4`, no cross term) that **chains** into the
+existing bilinear, exactly the same "derivation chains" pattern already
+established for FO3/FNV's Unarmed Damage (← Unarmed skill ← SPECIAL) — just
+one hop longer. Confirms CHARAL's chain-of-`DerivedStatFormula` model scales
+to 3+ governing stats without new machinery, only two hops of the existing
+two-input shape.
+
+**2. Hand-to-Hand confirmed divergent, as predicted** — and simpler:
+```
+Health_Damage = 1 + 10.5 × (Strength/100) × (ModifiedSkill/100)
+Fatigue_Damage = 1 + 0.5 × Health_Damage
+```
+A **pure cross-term bilinear** (`bias=1, c_Strength=0, c_Skill=0, cross=0.00105`,
+using the same Luck-adjusted `ModifiedSkill` as above) — no separate additive
+STR or Skill term at all, unlike Blade/Blunt/Marksman's three-term shape.
+`Fatigue_Damage` chains a THIRD time off `Health_Damage` (itself already a
+2-hop chain) — the deepest confirmed derivation chain found yet (Luck+Skill →
+ModifiedSkill → Health_Damage → Fatigue_Damage, 3 hops). Both still route as
+combat-system math (damage output, not a stored AV), same boundary as every
+other weapon-damage formula here.
+
+**3. A new Armor-skill-governed Armor Rating candidate — directly comparable
+to Skyrim's built `LIGHT_ARMOR_RATING_COEFF`.** Per-piece:
+```
+PieceArmorRating = BaseArmorRating × (0.35 + 0.0065 × ArmorSkill) × (ArmorHealth / MaxArmorHealth)
+CombinedArmorRating = Σ pieces, capped at 85
+DamageReduction = (100 − CombinedArmorRating) / 100     (1 if attacker sneak-undetected + Master Sneak perk)
+```
+`ArmorSkill` is whichever of Light Armor / Heavy Armor governs the piece —
+same "the wearer's own armor-type skill scales their own defense" shape as
+Skyrim's Light Armor Rating multiplier (`charal-skyrim-ruleset.md`), making
+this a **cross-game-confirmed pattern**: both TES games have an
+armor-skill-driven `DerivedStatFormula::affine` term feeding armor rating,
+just Oblivion's additionally multiplies by armor condition (equipment-layer
+input, same boundary as weapon condition above) and sums per-piece before the
+85-point cap. Not yet built — Oblivion's derived table has no armor-rating
+entry at all today (only Health + attribute bonus), so unlike Skyrim's this
+is a genuinely new row, not a refinement.
+
+**4. Sneak/power-attack multipliers, weapon condition, spell resistance** —
+all confirmed real but out of CHARAL scope, same "skill AV in, combat-formula
+out" routing as Sneak Detection/Lockpicking elsewhere in this doc:
+SneakMultiplier is a **step function** on Sneak skill (0–24 → 4× one-handed/
+2× bows; 25+ → 6×/3×, flat — does not scale further past the single
+threshold, unlike the pickpocket/detection formulas' continuous curves) that
+only applies while undetected-sneaking, never stacking with
+PowerAttackMultiplier (2.5×, or 3× for an Apprentice-plus Standing power
+attack — cross-confirms the Blade/Blunt mastery-perk tables verbatim, no new
+numbers). Weapon condition contributes `(0.5 + WeaponHealth/BaseWeaponHealth
+× 0.5)` — equipment-system data, same boundary as FNV's `ItemValue`
+condition-decay finding. Spell damage magnitude is scaled by
+`(100−MagicResistance+MagicWeakness)/100` (elemental effects get an
+additional, separate resistance/weakness ratio) — MagicResistance/Weakness
+are AVs CHARAL could own the *slot* for, but the consuming formula is the
+spell-system's, not a derived character stat.
+
+**5. GMST names now captured for the whole weapon-damage pipeline** (AUTHORED,
+not hardcoded, per the WATAL/CHARAL split): `fDamageWeaponMult=0.5`,
+`fDamageStrengthBase=0.75`/`fDamageStrengthMult=0.5`,
+`fDamageSkillBase=0.2`/`fDamageSkillMult=1.5`,
+`fDamageWeaponConditionBase/Mult=0.5/0.5`; Hand-to-Hand's own family
+`fHandHealthMin=1`/`fHandHealthMax=15`/`fHandDamageStrengthMult=0.75`/
+`fHandDamageSkillMult=1`/`fHandFatigueDamageMult=0.5`; sneak/power-attack
+GMSTs (`fPerkSneakAttackMelee*Mult`, `fDamagePowerAttack*Bonus`); armor
+(`fMaxArmorRating=85`). All future formula rows built for Oblivion should read
+these by name once GMST parsing lands (CHARAL §8 item 6), not re-hardcode the
+numeric constants captured here.
+
+## Fatigue — base pool cross-checked (already BUILT), regen formula + Remastered divergence new
+
+Source: UESP *Oblivion:Fatigue*, 2026-07-04. The base pool formula —
+`Fatigue = Strength + Willpower + Agility + Endurance` — is **already BUILT**
+(`crates/core/src/character/tes.rs::oblivion_fatigue_formulas`, landed
+2026-07-01, `2b9147ae`), as four affine rows summed under one output id
+(the four-attribute sum exceeds `DerivedStatFormula`'s two-input shape, so
+it's expressed as 4 rows rather than 1 — already documented in that module's
+own doc comment). This fetch is a **direct cross-check against the shipped
+code**: the wiki's plain sum matches exactly, no discrepancy. Two new items
+this page adds beyond what's built:
+
+**1. FatigueRegen — a new formula-shape gap, not a derived-stat gap.**
+```
+FatigueRegen = Endurance × fFatigueReturnMult(0.0) + fFatigueReturnBase(10.0)
+             = flat 10/sec in vanilla (the Endurance term ships at coefficient 0)
+```
+Notable in the same way Oblivion's Enchant skill having zero functional role
+was notable: the GMST *exists* (Endurance could scale regen) but ships
+authored at `0.0` — another "the hook is there, the coefficient is zero"
+case. Architecturally this is **not** a `DerivedStatFormula` row at all — it
+is a per-second *rate*, consumed by a tick system (mirroring the affliction
+mechanism's `affliction_tick_system`, not the on-demand `derived_value`
+model). No such tick/regen system exists yet for any pool (Health/Magicka/
+Fatigue all lack regen in the engine today) — recording this as the first
+concrete number for that future system, not routing it into the existing
+derived-stat table.
+
+**2. Oblivion Remastered ships a wholesale-different Fatigue model — a
+*second* confirmed "remaster patches original mechanical math" instance**
+(after Acrobatics fall-damage, above):
+```
+Fatigue      = (Agility×0.3333 + Willpower×0.6666) × 4.0    (drops STR + END entirely)
+FatigueRegen = (Agility × 8.0/100) + 12.0, ×1.5 out of combat, 2s post-action delay
+Melee damage is no longer modified by Fatigue at all in Remastered.
+```
+A genuine ruleset fork, not a visual-only remaster delta: different governing
+attributes (2 of 4, reweighted 1:2 Agility:Willpower), a fundamentally
+different regen shape (rate now scales with Agility, not flat), and the
+Fatigue→damage coupling deleted outright. Sharpens the "which patch level is
+the compat target" question already flagged at Acrobatics into a concrete
+choice CHARAL will eventually need to make explicit (a `LevelingModel`/
+`CharacterRuleset` variant per patch, or "vanilla only, Remastered out of
+scope") — not resolved here, just now backed by two independent data points
+instead of one.
+
+**3. Confirms the fatigue/damage ratio is genuinely uncapped** (refines the
+Complete Damage Formula entry above, doesn't contradict it): "if your current
+Fatigue is higher than your normal maximum... you'll do more damage" — the
+`(Fatigue/MaxFatigue+1)/2` term is explicitly *not* clamped to 1, so
+Fortify Fatigue effects pushing current above max keep paying off past the
+nominal ceiling. A real, sourced confirmation of the earlier "combat-system
+consumer" formula's edge behavior, not a new formula.
+
+## Health — both built formulas cross-checked; vanilla has ZERO passive regen; Remastered's is a 3-input cross-term formula
+
+Source: UESP *Oblivion:Health*, 2026-07-04. Both already-BUILT pieces
+cross-check exactly: base pool `2×Endurance`
+(`oblivion_health_formula`) and per-level accrual `0.1×Endurance` rounded down
+by the caller (`oblivion_health_gain_per_level`, landed alongside Fatigue on
+2026-07-01) — the page's own worked table (Endurance 98 at level-up → +9,
+`floor(9.8)`) matches the shipped `0.1×endurance` formula bit for bit. No
+code changes; this is a pure verification pass.
+
+**Vanilla Oblivion Health has NO passive regeneration at all** — a genuine
+cross-stat contrast worth keeping straight: the page's regen paragraph
+("passively regenerates every second... 6 second delay") is explicitly
+`{{OBR}}`-tagged (Oblivion-Remastered-only), and the "Original Oblivion"
+section never mentions passive regen — health only changes via the per-level
+accrual above, explicit Restore/Absorb Health effects, resting, or fast
+travel. This differs from vanilla **Fatigue**, which *does* regen passively
+(flat 10/sec, `charal-oblivion-ruleset.md` above) — so "each pool has its own
+regen policy" is now a confirmed fact, not an assumption; don't generalize
+one pool's regen behavior to the others without a citation.
+
+**Oblivion Remastered's Health formula is a new 3-input, cross-term shape**:
+```
+Health = Strength×0.3333×2 + Endurance×0.6666×2 + Endurance×0.1×(Level−1)
+       = 0.6666·STR + 1.2332·END + 0.1·END·Level
+```
+Unlike vanilla (level-independent base + separate per-level accrual side
+mechanic), Remastered folds level directly into one formula that "always uses
+current attributes... no longer a permanent penalty to not leveling
+Endurance." This is a 3-input formula (STR, END, Level) with a cross term
+only between two of the three (END×Level) — it does **not** fit a single
+`DerivedStatFormula::bilinear` row (which holds exactly 2 inputs + 1 cross),
+but decomposes cleanly into **2 summed rows**, the same "N-row-sum under one
+output id" pattern already used for vanilla Fatigue's 4-row sum — just with
+one row being `affine(STR, 0.6666)` and the other `bilinear(END, LEVEL,
+c_END=1.2332, cross=0.1)` instead of 2 (or 4) plain affine rows. Confirms the
+row-sum pattern generalizes to mixed affine+bilinear rows, not just uniform
+affine ones. Remastered `HealthRegen = (END×0.34/100) + 0.16`, ×7.5 out of
+combat — same "new per-second rate, no tick-consumer exists yet" bucket as
+Remastered FatigueRegen; a second data point for that same future system, not
+a second gap.
+
+**Also surfaced, not investigated further**: Oblivion has its **own native
+Fame/Infamy** stats (this page: too much Infamy locks out certain Wayshrine/
+altar healing) — distinct from FNV's same-named Fame/Infamy reputation system
+already built in `charal-fnv-fo3-ruleset.md`. No formula or mechanism captured
+yet (this page only uses it as a gating example); flagged as an open research
+thread for a future fetch (*Oblivion:Fame* / *Oblivion:Infamy*), not assumed
+to share FNV's 2-axis monotonic model just because the names match — Karma
+vs. FNV-Reputation earlier in this same investigation is the standing
+reminder that same-named stats can have different shapes across games.
+Equipment health/durability (percentage-of-max display, degrades on hit,
+repaired via Armorer skill) reconfirms the already-established "equipment
+condition is item-system data, not CHARAL" boundary — no new formula, same
+routing as FO3/FNV's `ItemValue`.
