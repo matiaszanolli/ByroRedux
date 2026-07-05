@@ -676,8 +676,9 @@ void main() {
     // (2026-05-27).
     //
     // Unlike the additive EFFECT_SHADER path above, this preserves the
-    // authored blend / depth state: the alpha-test discard already ran
-    // (~line 1100) and the opaque/alpha-blend pipeline is chosen per-draw
+    // authored blend / depth state: the per-instance alpha-test `discard`
+    // already ran above (well upstream of this return), and the
+    // opaque/alpha-blend pipeline is chosen per-draw
     // from the `INSTANCE_FLAG_ALPHA_BLEND` bit, so opaque screens stay
     // opaque (depth-write on) and alpha decals stay blended. `texColor.a`
     // already has the material alpha baked in upstream. Vertex-color

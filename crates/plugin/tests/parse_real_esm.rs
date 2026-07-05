@@ -618,9 +618,14 @@ fn parse_rate_fo3_esm() {
         index.trees.len(),
     );
 
-    // Primary baseline from AUDIT_FO3_2026-04-19.md — 18,007 records
-    // observed on the GOTY master; FO3_TOTAL_FLOOR sits slightly below
-    // to absorb future patch drift without masking regressions.
+    // `index.total()` sums the ~95 typed category maps (index.rs::total),
+    // a subset of the file's structured records — NOT the raw record count.
+    // Observed 2026-04 on the GOTY master: 31,101; FO3_TOTAL_FLOOR (30,000)
+    // sits just below it to absorb patch drift without masking regressions.
+    // (The stale "18,007 records" from AUDIT_FO3_2026-04-19 predates the
+    // #446/#447 category additions — see the FO3_TOTAL_FLOOR const doc.)
+    // Distinct from the *file* baseline re-verified 2026-05-26: 44,657 total
+    // = 37,459 structured + 7,198 NAVM.
     assert!(
         index.total() >= FO3_TOTAL_FLOOR,
         "FO3 total {} < audit baseline {}",

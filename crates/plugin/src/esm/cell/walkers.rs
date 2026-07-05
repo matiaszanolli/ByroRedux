@@ -935,13 +935,27 @@ pub(crate) fn parse_refr_group(
                     b"XRDS" => {
                         radius_override = r.f32().ok();
                     }
-                    // XATO — alternate TXST form ID. 4 bytes. When this
-                    // REFR places a base mesh whose textures should be
-                    // swapped for another TXST (the 140 MNAM-only vanilla
-                    // FO4 TXSTs land here), the cell loader resolves
-                    // this against `EsmCellIndex.texture_sets` and
+                    // XATO — alternate TXST form ID (FO4 alt-texture
+                    // overlay). 4 bytes. When present, the cell loader
+                    // resolves it against `EsmCellIndex.texture_sets` and
                     // overlays the 8 slot paths + MNAM onto the spawned
                     // mesh. See audit FO4-DIM6-02 / #584.
+                    //
+                    // PROVENANCE CAVEAT (FO3-D3-001 / #1887): the
+                    // alt-TXST reading is from #584's captured FO4 data,
+                    // NOT confirmed against openmw — which tags REFR XATO
+                    // `// FONV` and *skips* it, decoding it for no game.
+                    // On FONV, XATO is the Activation-Prompt subrecord
+                    // (grouped with SCRV/SCVR/SLSD script-vars), a string,
+                    // not a FormID. FO3 REFRs never carry XATO. Because
+                    // this arm is not game-gated (parse_refr_group has no
+                    // GameKind), an FNV REFR's XATO has its first 4 bytes
+                    // read as a spurious FormID → near-certain
+                    // `texture_sets` miss → inert empty overlay (no visual
+                    // effect, one wasted alloc). A behavioural game-gate to
+                    // FO4+ is deferred: it needs GameKind threaded through
+                    // parse_refr_group and the FO4 overlay fixtures
+                    // re-validated. Same caveat applies to XTNM/XTXR below.
                     b"XATO" => {
                         alt_texture_ref = r.u32().ok();
                     }
