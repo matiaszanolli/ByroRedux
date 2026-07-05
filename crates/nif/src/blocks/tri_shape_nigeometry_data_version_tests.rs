@@ -336,3 +336,60 @@ fn nitristripsdata_at_10_0_1_2_no_has_points_bool() {
     );
     assert_eq!(result.unwrap().strips.len(), 0);
 }
+
+/// Regression: #1838 / NIF-D2-01 — the material-CRC gate must read the
+/// file's raw BSVER, not the routed `NifVariant`. On a hybrid header
+/// `(version=20.2.0.7, user_version=11, bsver=50)` the variant detects
+/// as `Unknown` (bsver 50 is outside every game's fan-out), so
+/// `variant().has_material_crc()` returns `false` — yet nif.xml gates
+/// the CRC purely on `#BSVER# #GT# 34`, and bsver 50 > 34 authors it.
+/// The #1277 refactor briefly reverted this site back to the variant
+/// helper; this test trips red if that happens again (the 4-byte CRC
+/// would be left unconsumed and the stream would end 4 bytes short).
+#[test]
+fn nigeometry_data_reads_material_crc_on_hybrid_unknown_bsver_over_34() {
+    let header = NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 11,
+        user_version_2: 50, // Unknown variant, but bsver > 34 → CRC authored
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    };
+    // Sanity: this exact tuple is the `Unknown` corner the fix targets,
+    // and the variant helper disagrees with the spec-correct raw bsver.
+    let variant = crate::version::NifVariant::detect(header.version, 11, 50);
+    assert_eq!(variant, crate::version::NifVariant::Unknown);
+    assert!(!variant.has_material_crc(), "helper misfires on Unknown");
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&0i32.to_le_bytes()); // group_id (>= 10.1.0.114)
+    data.extend_from_slice(&0u16.to_le_bytes()); // num_vertices = 0
+    data.push(0u8); // keep_flags
+    data.push(0u8); // compress_flags
+    data.push(0u8); // has_vertices = false
+    data.extend_from_slice(&0u16.to_le_bytes()); // data_flags = 0
+    data.extend_from_slice(&0u32.to_le_bytes()); // material_crc (bsver > 34)
+    data.push(0u8); // has_normals = false
+    for _ in 0..4 {
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // bounding sphere
+    }
+    data.push(0u8); // has_vertex_colors = false
+    data.extend_from_slice(&0u16.to_le_bytes()); // consistency_flags
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // additional_data_ref
+
+    let mut stream = crate::stream::NifStream::new(&data, &header);
+    let _ = parse_geometry_data_base(&mut stream)
+        .expect("hybrid-header NiGeometryData should parse");
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "bsver 50 > 34 must consume the 4-byte material CRC (raw-bsver gate); \
+         a revert to variant().has_material_crc() leaves it unread"
+    );
+}

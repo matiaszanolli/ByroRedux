@@ -1292,3 +1292,52 @@ fn bs_tri_shape_unused_w_slot_does_not_pollute_tangents() {
          skipped (not silently captured)"
     );
 }
+
+/// Regression: #1838 / NIF-D2-01 — `NiTriShape` must read its trailing
+/// `shader_property_ref` + `alpha_property_ref` off the file's raw
+/// BSVER, not the routed `NifVariant`. nif.xml gates these on
+/// `#BS_GT_FO3#` (`bsver > 34`); on a hybrid `(20.2.0.7, uv=11,
+/// bsver=50)` header the variant is `Unknown` so
+/// `variant().has_shader_alpha_refs()` returns `false` even though the
+/// two refs ARE authored. The 97-byte SSE body fixture already carries
+/// both refs — with the raw-bsver gate the parse consumes all 97 B; a
+/// revert to the variant helper drops the two refs and ends 8 B short.
+#[test]
+fn ni_tri_shape_reads_shader_alpha_refs_on_hybrid_unknown_bsver_over_34() {
+    let header = NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 11,
+        user_version_2: 50, // Unknown variant, bsver > 34 → refs authored
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    };
+    let variant = crate::version::NifVariant::detect(header.version, 11, 50);
+    assert_eq!(variant, crate::version::NifVariant::Unknown);
+    assert!(
+        !variant.has_shader_alpha_refs(),
+        "helper misfires on the Unknown corner"
+    );
+
+    // The SSE fixture layout is bsver-invariant here: bsver 50 gives u32
+    // flags (>26), no properties list (<=34 false), and a dirty_flag +
+    // the two refs at v20.2.0.7 — identical to the 97 B SSE body.
+    let bytes = minimal_sse_ni_tri_shape_bytes();
+    assert_eq!(bytes.len(), 97);
+
+    let mut stream = crate::stream::NifStream::new(&bytes, &header);
+    let block = parse_block("NiTriShape", &mut stream, Some(bytes.len() as u32))
+        .expect("hybrid-header NiTriShape should dispatch + parse");
+    assert_eq!(block.block_type_name(), "NiTriShape");
+    assert_eq!(
+        stream.position() as usize,
+        bytes.len(),
+        "bsver 50 > 34 must consume both shader/alpha refs (raw-bsver gate); \
+         a revert to variant().has_shader_alpha_refs() ends 8 bytes short"
+    );
+}

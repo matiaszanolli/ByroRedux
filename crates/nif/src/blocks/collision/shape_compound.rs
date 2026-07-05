@@ -123,8 +123,12 @@ impl BhkMoppBvTreeShape {
         } else {
             [0.0; 4]
         };
-        // Build Type: only for BSVER > 34 (Skyrim+; FO3/FNV is 34)
-        if stream.variant().has_shader_alpha_refs() {
+        // Build Type: only for BSVER > 34 (Skyrim+; FO3/FNV is 34).
+        // nif.xml gates this on `#BS_GT_FO3#` (pure BSVER), so read the
+        // file's bsver directly — a `variant()` helper misfires on the
+        // 35..=82 `Unknown` corner and (per #1511) answers a collision-era
+        // question with a NiGeometry shader-refs helper. See #1839.
+        if stream.bsver() > crate::version::bsver::FO3_FNV {
             let _build_type = stream.read_u8()?;
         }
         let mopp_data = stream.read_bytes(data_size)?;

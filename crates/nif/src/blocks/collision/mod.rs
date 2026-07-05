@@ -109,3 +109,5 @@ mod bhk_ragdoll_tests;
 mod bhk_rigid_body_tests;
 #[cfg(test)]
 mod hk_packed_ni_tri_strips_data_tests;
+#[cfg(test)]
+mod shape_compound_tests;

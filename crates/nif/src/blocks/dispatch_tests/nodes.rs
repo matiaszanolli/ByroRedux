@@ -734,4 +734,76 @@ fn fo76_bs_distant_object_instanced_node_root_recognised_by_is_ni_node_subclass(
     assert!(crate::is_ni_node_subclass("BSDistantObjectInstancedNode"));
 }
 
+/// Regression: #1839 / NIF-D2-02 — `BSMultiBoundNode.Culling Mode` must be
+/// gated on the file's raw BSVER (nif.xml `#BS_GTE_SKY#`, `bsver >= 83`),
+/// not on `variant().has_culling_mode()`. On a hybrid `(20.2.0.7, uv=11,
+/// bsver=90)` header the variant detects as `Unknown`, so the helper
+/// returns `false` even though `bsver 90 >= 83` authors the field. With the
+/// raw-bsver gate the 4-byte `culling_mode` is consumed; a revert to the
+/// helper drops it (default 0) and the stream ends 4 bytes short.
+#[test]
+fn bs_multi_bound_node_reads_culling_mode_on_hybrid_unknown_bsver_ge_83() {
+    use crate::blocks::node::BsMultiBoundNode;
+    use crate::version::NifVariant;
+
+    let header = NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 11,
+        user_version_2: 90, // Unknown variant, bsver >= 83 → culling_mode authored
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    };
+    let variant = NifVariant::detect(header.version, 11, 90);
+    assert_eq!(variant, NifVariant::Unknown);
+    assert!(
+        !variant.has_culling_mode(),
+        "helper misfires on the Unknown corner"
+    );
+
+    // Skyrim-era NiNode body (bsver 90): indexed name, u32 flags, no
+    // properties list (bsver > 34), effects list present (bsver < 130).
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // NiObjectNET name index
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // NiAVObject flags (u32)
+    bytes.extend_from_slice(&0.0f32.to_le_bytes()); // translation x
+    bytes.extend_from_slice(&0.0f32.to_le_bytes()); // translation y
+    bytes.extend_from_slice(&0.0f32.to_le_bytes()); // translation z
+    for row in [[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+        for v in row {
+            bytes.extend_from_slice(&v.to_le_bytes()); // rotation 3x3 identity
+        }
+    }
+    bytes.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+    // properties list omitted (bsver 90 > 34)
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // NiNode children count
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // NiNode effects count
+    bytes.extend_from_slice(&42i32.to_le_bytes()); // multi_bound_ref
+    bytes.extend_from_slice(&7u32.to_le_bytes()); // culling_mode (bsver >= 83)
+    let expected_len = bytes.len();
+
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("BSMultiBoundNode", &mut stream, Some(bytes.len() as u32))
+        .expect("hybrid-header BSMultiBoundNode should dispatch + parse");
+    let node = block
+        .as_any()
+        .downcast_ref::<BsMultiBoundNode>()
+        .expect("BSMultiBoundNode did not downcast");
+    assert_eq!(node.multi_bound_ref.index(), Some(42));
+    assert_eq!(
+        node.culling_mode, 7,
+        "bsver 90 >= 83 must read culling_mode (raw-bsver gate); \
+         a revert to variant().has_culling_mode() leaves it 0"
+    );
+    assert_eq!(stream.position() as usize, expected_len);
+}
+
 // ── #936 / NIF-D5-NEW-01 — NiBSplineComp{Float,Point3}Interpolator ──

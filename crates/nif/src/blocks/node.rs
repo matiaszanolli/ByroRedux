@@ -253,8 +253,10 @@ impl BsMultiBoundNode {
         let base = NiNode::parse(stream)?;
         let multi_bound_ref = stream.read_block_ref()?;
         // culling_mode is Skyrim+ only (BSVER >= 83). FO3/FNV (bsver=34)
-        // stops after the multi_bound_ref.
-        let culling_mode = if stream.variant().has_culling_mode() {
+        // stops after the multi_bound_ref. nif.xml gates on `#BS_GTE_SKY#`
+        // (pure BSVER), so read the file's bsver directly — a `variant()`
+        // helper misfires on the 35..=82 `Unknown` corner. See #1839.
+        let culling_mode = if stream.bsver() >= crate::version::bsver::SKYRIM_LE {
             stream.read_u32_le()?
         } else {
             0
