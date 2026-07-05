@@ -196,7 +196,7 @@ in full against xEdit SF1 `wbStruct(XCLL,'Lighting')` (the old #1293
 (`crates/core/src/ecs/components/scene_flags.rs`) attached at spawn;
 **#1295** `DoorTeleport` stamped from REFR XTEL; **#1212/#1213/#1214**
 `FormIdComponent` / `LocalBound` / `BSXFlags` at spawn; **#1284** `SkinSlotPool`
-ceiling raise (`crates/core/src/ecs/resources.rs`) for Cydonia's skinned density.
+ceiling raise (`crates/core/src/ecs/resources/skin_slot_pool.rs`) for Cydonia's skinned density.
 Also confirm synthesized colliders carry `IsCollisionOnly` (`components.rs`) so
 they stay out of the BLAS (R6a-stale-13/14 collider-cost fix, see ROADMAP).
 **Output**: `/tmp/audit/starfield/dim_5.md`

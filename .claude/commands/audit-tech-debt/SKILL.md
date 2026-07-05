@@ -110,7 +110,7 @@ over threshold).
 - `byroredux/src/commands/` → console-command groups, already split per-domain (world_info / assets / view / scene / shared) under #1323; check the submodules stay cohesive, not re-bloated.
 - `crates/nif/src/blocks/particle.rs` → typed emitter/ctlr structs vs the opaque `NiPSysBlock` fallback vs grow/fade modifiers.
 - `crates/nif/src/import/collision.rs` → split per bhk shape family (primitive/compound/mesh/compressed), mirroring `crates/nif/src/blocks/collision/`.
-- `crates/core/src/ecs/resources.rs` → split per resource domain (rendering/world/audio/scripting).
+- `crates/core/src/ecs/resources/mod.rs` → partially split already (`SkinSlotPool` extracted to `skin_slot_pool.rs` under #1869; `mod.rs` now 1210 LOC, under threshold). Split further per resource domain (rendering/world/audio/scripting) only if it re-bloats.
 - `crates/plugin/src/esm/records/actor.rs` → split per NPC_ data-group (13 groups).
 
 **Also flag**: functions >200 LOC (propose extraction); match arms >50 cases
@@ -163,12 +163,13 @@ sweep for content rot the gate cannot see:
   method `Material::resolve_pbr`; `metalness`/`roughness` are plain resolved `f32`.
   (This overlaps Dim 8 — report material doc rot under Dim 3.)
 - ROADMAP.md milestones marked "in progress" whose issues are all closed (or vice versa) — cross-check `git log` / `gh issue`.
-- **`docs/feature-matrix.md` lags shipped milestones** (known doc-rot target). Its
-  "Save / load (M45)" row still reads "unstarted" and "Full Papyrus transpiler
-  (M47.2)" reads "transpiler unstarted", but M45 + M45.1 (`crates/save/`) and the
-  M47.2 compiled-`.pex` recognizer slice (`crates/pex/`, `crates/scripting/`) all
-  shipped (`git log --grep M45`, `--grep M47.2`). Flag each lagging row; the matrix
-  is a status floor, not a record of what exists.
+- **`docs/feature-matrix.md` — re-check each milestone row against shipped code**
+  (`git log --grep M45`, `--grep M47.2`, …). The known M45/M47.2 lag was fixed on
+  2026-06-21 (the Save/load row was removed, the M47.2 row now reads "✓ `.pex`
+  recognizer slice … full transpiler deferred"), so those are clean — but the
+  matrix is a *status floor, not a record of what exists*, so any future
+  milestone can drift the same way. Flag any row whose status contradicts the
+  crate that implements it.
 - HISTORY.md entries referencing later-reverted work.
 - README.md command examples whose flags/paths changed.
 - `docs/legacy/` references to Gamebryo source paths that moved.
