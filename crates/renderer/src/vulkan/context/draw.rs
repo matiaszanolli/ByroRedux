@@ -2695,6 +2695,29 @@ impl VulkanContext {
         self.prev_view_proj = *vp;
         self.prev_render_origin = [render_origin.x, render_origin.y, render_origin.z];
 
+        // #1874 diagnostic — ghosted diagonal double-image investigation.
+        // Cheap, stateless (uses only locals already computed above) trace
+        // of the exact values Dim 10 reasoned about statically: the
+        // render-origin/view-proj delta this frame carries and whether a
+        // discontinuity-recovery window is active. Enable via
+        // `RUST_LOG=byroredux_renderer::vulkan::context::draw=trace` to
+        // correlate a live repro's cell-transition frame against these
+        // numbers instead of guessing from static analysis alone. Safe to
+        // leave in — trace level, zero new state, filtered out by default.
+        log::trace!(
+            "camera frame={} static={} svgf_recovery_frames={} render_origin_delta=({:.3},{:.3},{:.3}) vp_max_abs_delta={:.6}",
+            self.frame_counter,
+            camera_static,
+            self.svgf_recovery_frames,
+            render_origin.x - self.prev_render_origin[0],
+            render_origin.y - self.prev_render_origin[1],
+            render_origin.z - self.prev_render_origin[2],
+            vp.iter()
+                .zip(self.prev_view_proj.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max),
+        );
+
         // D6-04 / #1811 — track how many consecutive frames had no
         // skinned-pose change and no pending first-sight bind_inverses
         // upload. Any dirty signal resets the streak so the forthcoming
