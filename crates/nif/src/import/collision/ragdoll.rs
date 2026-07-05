@@ -94,6 +94,30 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
     let mut constraints = Vec::new();
     for block in scene.blocks.iter() {
         let Some(c) = block.as_any().downcast_ref::<BhkConstraint>() else {
+            // #1850 — a `bhkBreakableConstraint` decodes into its OWN struct
+            // (`BhkBreakableConstraint`), never a `BhkConstraint`, so it falls
+            // through here. Its `wrapped_type` can be a real articulation joint
+            // (7 Ragdoll / 2 LimitedHinge), but the parser discards the wrapped
+            // CInfo geometry (`stream.skip` — `constraints.rs`), so the inner
+            // joint can't be rebuilt from what we retain. At minimum make the
+            // dropped edge LOUD (mirroring the #1539 `Other` arm below) instead
+            // of vanishing silently: a breakable-wrapped limb link that detaches
+            // and free-falls is then diagnosable from the log.
+            if let Some(bc) = block.as_any().downcast_ref::<BhkBreakableConstraint>() {
+                if let Some((bone_a, bone_b)) =
+                    breakable_dropped_edge(bc, &block_to_body, &bodies)
+                {
+                    log::warn!(
+                        "extract_ragdoll: dropping bhkBreakableConstraint \
+                         (wrapped_type={wt}) linking bones '{bone_a}' <-> '{bone_b}' — \
+                         breakable-wrapped constraints are not yet mapped to a canonical \
+                         joint (the wrapped CInfo geometry is discarded at parse time). \
+                         The ragdoll edge is lost; if it was the sole link to a limb, that \
+                         limb will detach and free-fall (#1850).",
+                        wt = bc.wrapped_type,
+                    );
+                }
+            }
             continue;
         };
         // Constraint entity refs point at the rigid-body blocks; remap to
@@ -157,6 +181,26 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
         bodies,
         constraints,
     })
+}
+
+/// #1850 — decide whether a `bhkBreakableConstraint` that the joint loop is
+/// about to drop actually bridges two distinct ragdoll bodies (i.e. is a real
+/// lost articulation edge worth warning about). Returns the two host bone
+/// names when it does; `None` when either entity isn't a mapped ragdoll body
+/// (constraint to a non-skeletal body / a body we skipped) or both entities
+/// map to the same body (not an inter-limb edge). Pure so the drop is unit-
+/// testable without a logger — the caller `log::warn!`s the returned names.
+fn breakable_dropped_edge<'a>(
+    bc: &BhkBreakableConstraint,
+    block_to_body: &HashMap<usize, usize>,
+    bodies: &'a [ImportedRagdollBody],
+) -> Option<(&'a str, &'a str)> {
+    let body_a = bc.entity_a.index().and_then(|i| block_to_body.get(&i).copied())?;
+    let body_b = bc.entity_b.index().and_then(|i| block_to_body.get(&i).copied())?;
+    if body_a == body_b {
+        return None;
+    }
+    Some((bodies[body_a].bone_name.as_ref(), bodies[body_b].bone_name.as_ref()))
 }
 
 /// Map each `BhkRigidBody` block index → the name of the bone NiNode that
@@ -236,13 +280,13 @@ mod ragdoll_extract_tests {
     use super::super::extract_collision;
     use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
     use crate::blocks::collision::{
-        BhkCollisionObject, BhkConstraint, BhkConstraintData, BhkRigidBody, BhkSphereShape,
-        RagdollCInfo,
+        BhkBreakableConstraint, BhkCollisionObject, BhkConstraint, BhkConstraintData, BhkRigidBody,
+        BhkSphereShape, RagdollCInfo,
     };
     use crate::blocks::node::NiNode;
     use crate::blocks::NiObject;
     use crate::types::{BlockRef, NiTransform};
-    use byroredux_core::ecs::components::collision::MotionType;
+    use byroredux_core::ecs::components::collision::{CollisionShape, MotionType};
 
     fn bone(name: &str, collision_ref: usize) -> Box<dyn NiObject> {
         Box::new(NiNode {
@@ -524,6 +568,96 @@ mod ragdoll_extract_tests {
         scene.blocks.push(sphere(1.0));
         scene.blocks.push(ragdoll_constraint(2, 6, 10.0));
         assert!(extract_ragdoll(&scene).is_some());
+    }
+
+    // ── #1850 — bhkBreakableConstraint is invisible to the joint loop ──
+
+    fn breakable_constraint(entity_a: usize, entity_b: usize, wrapped_type: u32) -> BhkBreakableConstraint {
+        BhkBreakableConstraint {
+            entity_a: BlockRef(entity_a as u32),
+            entity_b: BlockRef(entity_b as u32),
+            priority: 1,
+            wrapped_type,
+            threshold: 100.0,
+            remove_when_broken: true,
+        }
+    }
+
+    fn body_named(name: &str) -> ImportedRagdollBody {
+        ImportedRagdollBody {
+            bone_name: Arc::from(name),
+            mass: 5.0,
+            linear_damping: 0.1,
+            angular_damping: 0.05,
+            friction: 0.3,
+            restitution: 0.4,
+            shape: CollisionShape::Ball { radius: 1.0 },
+            translation: Vec3::ZERO,
+            rotation: byroredux_core::math::Quat::IDENTITY,
+        }
+    }
+
+    /// The `breakable_dropped_edge` helper (which drives the #1850 warn) names
+    /// the two host bones when a `bhkBreakableConstraint` bridges two distinct
+    /// ragdoll bodies — a wrapped Ragdoll(7)/LimitedHinge(2) that would
+    /// otherwise vanish silently. It reports `None` when the edge isn't a real
+    /// inter-limb link (self-loop or a ref to an unmapped body).
+    #[test]
+    fn breakable_dropped_edge_names_the_two_bones() {
+        let bodies = vec![body_named("Bip01 Pelvis"), body_named("Bip01 Spine")];
+        // block idx 2 → body 0, block idx 6 → body 1 (mirrors the remap in
+        // `extract_ragdoll`).
+        let block_to_body: HashMap<usize, usize> = [(2, 0), (6, 1)].into_iter().collect();
+
+        // wrapped Ragdoll linking the two distinct bodies → a real dropped edge.
+        let bc = breakable_constraint(2, 6, 7);
+        assert_eq!(
+            breakable_dropped_edge(&bc, &block_to_body, &bodies),
+            Some(("Bip01 Pelvis", "Bip01 Spine")),
+        );
+        // wrapped LimitedHinge is equally a real edge.
+        let hinge = breakable_constraint(6, 2, 2);
+        assert_eq!(
+            breakable_dropped_edge(&hinge, &block_to_body, &bodies),
+            Some(("Bip01 Spine", "Bip01 Pelvis")),
+        );
+        // self-loop (both entities map to the same body) → not an inter-limb edge.
+        let self_loop = breakable_constraint(2, 2, 7);
+        assert_eq!(breakable_dropped_edge(&self_loop, &block_to_body, &bodies), None);
+        // ref to an unmapped body (block 99 was never collected) → dropped quietly.
+        let dangling = breakable_constraint(2, 99, 7);
+        assert_eq!(breakable_dropped_edge(&dangling, &block_to_body, &bodies), None);
+    }
+
+    /// End-to-end: a 2-body scene whose only articulation link is a
+    /// `bhkBreakableConstraint` (not a `BhkConstraint`) yields NO surfaced
+    /// joint — the wrapped CInfo geometry is discarded at parse, so the edge
+    /// can't be rebuilt and the ragdoll collapses (`constraints.is_empty()` →
+    /// `None`). Pre-#1850 this dropped silently; now the loop routes the block
+    /// through `breakable_dropped_edge` + a `log::warn!` so the loss is
+    /// diagnosable. Guards against a future change silently fabricating a
+    /// bogus joint from the geometry-less breakable block.
+    #[test]
+    fn breakable_wrapped_ragdoll_is_dropped_not_surfaced() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(bone("Bip01 Pelvis", 1)); // [0]
+        scene.blocks.push(coll_obj(2)); // [1]
+        scene.blocks.push(rigid_body(3)); // [2]
+        scene.blocks.push(sphere(1.0)); // [3]
+        scene.blocks.push(bone("Bip01 Spine", 5)); // [4]
+        scene.blocks.push(coll_obj(6)); // [5]
+        scene.blocks.push(rigid_body(7)); // [6]
+        scene.blocks.push(sphere(1.0)); // [7]
+        scene
+            .blocks
+            .push(Box::new(breakable_constraint(2, 6, 7))); // [8] wrapped Ragdoll
+
+        assert!(
+            extract_ragdoll(&scene).is_none(),
+            "a breakable-wrapped joint carries no rebuildable geometry — the edge \
+             is dropped (loudly, #1850), not surfaced as a fabricated joint",
+        );
     }
 
     /// #1832/#1874 — a `BhkRigidBody` authored with a Dynamic-family

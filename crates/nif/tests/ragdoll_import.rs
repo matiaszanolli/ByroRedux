@@ -83,6 +83,41 @@ fn assert_structural(game: Game, ragdoll: &ImportedRagdoll) {
     );
 }
 
+/// Data-backed count floor for the vanilla humanoid skeleton. Every
+/// classic-chain game ships an 18-body / 17-joint `_male`/character
+/// articulation — measured 2026-07-05 across Oblivion (10 Ragdoll +
+/// 7 LimitedHinge), FNV (9 + 8), and Skyrim SE (9 + 8). Assert AT the
+/// measured count with `>=` (not `==`) so:
+///   - a silent joint-drop regression (the #1850 breakable-constraint path,
+///     an `Other`-decode regression, or a finite-guard slip) shrinks
+///     `constraints.len()` below the floor and trips the test — the exact
+///     protection FNV-D7-03 (#1851) asks for, now extended to Oblivion +
+///     Skyrim (the sibling arms that previously had no count pin at all);
+///   - a future parser improvement that surfaces MORE joints (e.g. rebuilding
+///     the breakable-wrapped inner joint per #1850) does NOT false-fail, which
+///     a brittle `==` pin would.
+/// A floor with slack *below* the measured value (e.g. `>= 16`) would let a
+/// single-joint drop pass, defeating the purpose — so the floor sits exactly
+/// at the measured count.
+fn assert_reference_counts(
+    game: Game,
+    ragdoll: &ImportedRagdoll,
+    min_bodies: usize,
+    min_joints: usize,
+) {
+    assert!(
+        ragdoll.bodies.len() >= min_bodies,
+        "{game:?}: expected >= {min_bodies} ragdoll bodies (measured reference), got {}",
+        ragdoll.bodies.len(),
+    );
+    assert!(
+        ragdoll.constraints.len() >= min_joints,
+        "{game:?}: expected >= {min_joints} joints (measured reference), got {} — \
+         a shrink below the measured floor signals a silent joint drop",
+        ragdoll.constraints.len(),
+    );
+}
+
 #[test]
 #[ignore]
 fn fnv_humanoid_skeleton_threads_ragdoll() {
@@ -95,8 +130,7 @@ fn fnv_humanoid_skeleton_threads_ragdoll() {
 
     // FNV is the measured reference: vanilla _male skeleton is 18 capsule
     // bodies, 17 joints, with elbows/knees as LimitedHinge.
-    assert_eq!(ragdoll.bodies.len(), 18, "FNV: expected 18 ragdoll bodies");
-    assert_eq!(ragdoll.constraints.len(), 17, "FNV: expected 17 joints");
+    assert_reference_counts(Game::FalloutNV, &ragdoll, 18, 17);
     let hinges = ragdoll
         .constraints
         .iter()
@@ -124,6 +158,10 @@ fn oblivion_humanoid_skeleton_threads_ragdoll() {
         return;
     };
     assert_structural(Game::Oblivion, &ragdoll);
+    // Measured reference (2026-07-05): 18 bodies, 17 joints (10 Ragdoll +
+    // 7 LimitedHinge). Pins the Oblivion arm against a silent joint drop —
+    // the sibling gap FNV-D7-03 (#1851) flagged.
+    assert_reference_counts(Game::Oblivion, &ragdoll, 18, 17);
 }
 
 #[test]
@@ -138,4 +176,67 @@ fn skyrim_humanoid_skeleton_threads_ragdoll() {
         return;
     };
     assert_structural(Game::SkyrimSE, &ragdoll);
+    // Measured reference (2026-07-05): 18 bodies, 17 joints (9 Ragdoll +
+    // 8 LimitedHinge). Pins the Skyrim arm against a silent joint drop —
+    // the sibling gap FNV-D7-03 (#1851) flagged.
+    assert_reference_counts(Game::SkyrimSE, &ragdoll, 18, 17);
+}
+
+// ── #1851 — CI-runnable pins for `assert_reference_counts` itself ──────
+// These need no game data: they prove the measured-count floor actually
+// trips on a dropped joint (and doesn't false-fail on a healthy or larger
+// graph), so the real-data arms above are guarding what they claim to.
+
+use byroredux_core::ecs::components::collision::CollisionShape;
+use byroredux_core::math::{Quat, Vec3};
+use byroredux_nif::import::{ImportedRagdollBody, ImportedRagdollConstraint};
+
+/// Synthetic ragdoll with `n_bodies` trivial bodies + `n_joints` trivial
+/// LimitedHinge joints — only the `.len()`s matter to the floor.
+fn synthetic_ragdoll(n_bodies: usize, n_joints: usize) -> ImportedRagdoll {
+    let bodies = (0..n_bodies)
+        .map(|i| ImportedRagdollBody {
+            bone_name: format!("Bone{i}").into(),
+            mass: 1.0,
+            linear_damping: 0.0,
+            angular_damping: 0.0,
+            friction: 0.0,
+            restitution: 0.0,
+            shape: CollisionShape::Ball { radius: 1.0 },
+            translation: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+        })
+        .collect();
+    let constraints = (0..n_joints)
+        .map(|i| ImportedRagdollConstraint {
+            body_a: i,
+            body_b: i + 1,
+            kind: ImportedJointKind::LimitedHinge {
+                axis_a: Vec3::ZERO,
+                pivot_a: Vec3::ZERO,
+                axis_b: Vec3::ZERO,
+                pivot_b: Vec3::ZERO,
+                min_angle: 0.0,
+                max_angle: 0.0,
+            },
+        })
+        .collect();
+    ImportedRagdoll { bodies, constraints }
+}
+
+/// The floor passes exactly at the measured count and on any larger graph
+/// (e.g. a future #1850 improvement surfacing an extra joint).
+#[test]
+fn reference_floor_passes_at_and_above_measured_count() {
+    assert_reference_counts(Game::FalloutNV, &synthetic_ragdoll(18, 17), 18, 17);
+    assert_reference_counts(Game::FalloutNV, &synthetic_ragdoll(19, 18), 18, 17);
+}
+
+/// The floor trips the moment a joint is dropped below the measured count —
+/// the exact silent-regression FNV-D7-03 (#1851) exists to catch.
+#[test]
+#[should_panic(expected = "silent joint drop")]
+fn reference_floor_trips_on_a_dropped_joint() {
+    // 18 bodies but only 16 joints (one silently dropped) → below the floor.
+    assert_reference_counts(Game::FalloutNV, &synthetic_ragdoll(18, 16), 18, 17);
 }
