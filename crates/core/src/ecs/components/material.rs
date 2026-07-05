@@ -397,6 +397,16 @@ pub struct PbrClassifierInputs<'a> {
     /// on non-keyword surfaces (desks, doors, panels) that otherwise
     /// fall to metalness=0. Default `[1.0; 3]` → specular luminance 1.0.
     pub specular_color: [f32; 3],
+    /// Whether `specular_color` was actually authored by a bound
+    /// `NiMaterialProperty` / `BSLightingShaderProperty`, as opposed to
+    /// sitting at `MaterialInfo`'s unauthored `[1.0; 3]` struct default.
+    /// A `BSShaderPPLightingProperty`-only mesh (no co-bound
+    /// `NiMaterialProperty`) authors `env_map_scale` but never touches
+    /// `specular_color` — without this flag the env-map arm below reads
+    /// the default's luminance (1.0) as "authored white specular" and
+    /// chromes decorative FO3/FNV flyers/posters that never had a real
+    /// specular tint. See REN-2026-07-04-M01 / #1873.
+    pub specular_authored: bool,
     /// Whether the surface ships a dedicated specular/gloss MAP (Oblivion
     /// `NiTexturingProperty` slot 3 / FO4 BGSM smooth-spec). Its presence is
     /// the authored signal that the surface has real per-pixel shine; absent,
@@ -546,10 +556,22 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
     // intent — an env_map_scale-authored surface that already earned
     // a lower roughness (e.g. scale=3.0 → 0.4) keeps it.
     if inputs.env_map_scale > 0.3 {
+        let base_roughness = (1.0 - inputs.env_map_scale * 0.2).clamp(0.35, 0.8);
+        if !inputs.specular_authored {
+            // No bound NiMaterialProperty/BSLightingShaderProperty —
+            // `specular_color` is still the unauthored `[1,1,1]` struct
+            // default, not a real Gamebryo specular tint. Reading its
+            // luminance here would chrome every PPLighting-only
+            // decorative surface (flyers, posters). Treat as dielectric;
+            // the base_roughness ceiling already stays >= 0.35.
+            return PbrMaterial {
+                roughness: base_roughness,
+                metalness: 0.0,
+            };
+        }
         let [sr, sg, sb] = inputs.specular_color;
         let spec_lum = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
         let metalness = ((spec_lum - 0.5) * 0.8).clamp(0.0, 0.4);
-        let base_roughness = (1.0 - inputs.env_map_scale * 0.2).clamp(0.35, 0.8);
         // spec_lum > 0.6 → metallic tier → roughness ceiling 0.55 (< RT threshold 0.6)
         // spec_lum ≤ 0.6 → dielectric tier → roughness ceiling 0.8 (no RT reflection)
         let roughness_ceiling = if spec_lum > 0.6 { 0.55_f32 } else { 0.8_f32 };
@@ -643,6 +665,13 @@ impl Material {
                 env_map_scale: self.env_map_scale,
                 has_normal_map: self.normal_map.is_some(),
                 specular_color: self.specular_color,
+                // This backstop path (real content is pre-classified at
+                // NIF import via `classify_legacy_pbr`, or via BGSM,
+                // both of which leave metalness/roughness non-NaN) has
+                // no way to know whether `specular_color` was ever
+                // authored on this `Material` — assume not, matching
+                // the conservative default in `classify_legacy_pbr`.
+                specular_authored: false,
                 has_gloss_map: self.gloss_map.is_some(),
             });
             if self.metalness.is_nan() {
@@ -687,6 +716,7 @@ mod tests {
             env_map_scale: m.env_map_scale,
             has_normal_map: m.normal_map.is_some(),
             specular_color: m.specular_color,
+            specular_authored: false,
             has_gloss_map: m.gloss_map.is_some(),
         })
     }
@@ -698,6 +728,7 @@ mod tests {
             env_map_scale: m.env_map_scale,
             has_normal_map: m.normal_map.is_some(),
             specular_color: specular,
+            specular_authored: true,
             has_gloss_map: m.gloss_map.is_some(),
         })
     }
@@ -831,6 +862,7 @@ mod tests {
             env_map_scale: 1.0, // neutral FNV default
             has_normal_map: true,
             specular_color: [0.25; 3], // cloth: dark/grey specular → dielectric
+            specular_authored: true,
             has_gloss_map: false,
         });
         assert!(
@@ -866,6 +898,7 @@ mod tests {
                 env_map_scale: 1.0,
                 has_normal_map: false,
                 specular_color: [0.9; 3],
+                specular_authored: true,
                 has_gloss_map: false,
             });
             assert!(
@@ -901,6 +934,7 @@ mod tests {
                 env_map_scale: 1.0,
                 has_normal_map: false,
                 specular_color: [0.9; 3],
+                specular_authored: true,
                 has_gloss_map: false,
             });
             assert!(

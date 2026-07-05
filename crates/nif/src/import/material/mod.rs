@@ -1049,6 +1049,12 @@ impl MaterialInfo {
                 env_map_scale: self.env_map_scale,
                 has_normal_map: self.normal_map.is_some(),
                 specular_color: self.specular_color,
+                // `has_material_data` is set true only by the
+                // NiMaterialProperty / BSLightingShaderProperty walker
+                // arms, the only ones that populate `specular_color` —
+                // exactly the "was specular actually authored" signal
+                // the classifier needs. See REN-2026-07-04-M01 / #1873.
+                specular_authored: self.has_material_data,
                 has_gloss_map: self.gloss_map.is_some(),
             },
         )
