@@ -260,7 +260,7 @@ safety facet — NaN/inf scalars reaching the GPU, unbounded allocation.*
   EVERY renderer-bound `Material` producer runs `resolve_pbr()` or constructs
   already-finite values (the `static_meshes.rs` fallback constructs finite defaults
   directly — confirm it still does).
-- Collision translate (`crates/nif/src/import/collision.rs`, covers
+- Collision translate (`crates/nif/src/import/collision/mod.rs`, covers
   `BhkMultiSphereShape` + `BhkConvexListShape`): emitted half-extents / radii /
   sphere centers must be finite and bounded — a NaN/inf shape param propagates into
   the physics solver and the BLAS build.

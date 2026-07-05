@@ -139,7 +139,7 @@ After NIFAL canonical-translation changes — the single `ImportedMesh` → `Mat
 boundary (`byroredux/src/material_translate.rs`), `Material::resolve_pbr`
 (`crates/core/src/ecs/components/material.rs`, metalness/roughness are plain `f32`),
 typed particle emitter blocks, and collision-shape translation
-(`crates/nif/src/import/collision.rs`). Spec: `docs/engine/nifal.md`. `/audit-nifal`
+(`crates/nif/src/import/collision/mod.rs`). Spec: `docs/engine/nifal.md`. `/audit-nifal`
 owns the full canonical-translation tier (9 dimensions); this preset is the
 cross-cutting regression sweep around it:
 1. `/audit-nifal`

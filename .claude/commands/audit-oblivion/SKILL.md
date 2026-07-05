@@ -124,7 +124,7 @@ Dimensions are ordered by Oblivion-specific risk: NIF version handling first
   NiKeyframeController, NiSequenceStreamHelper, NiBillboardNode + NiNode
   subclasses, NiLight hierarchy, NiUVController, NiCamera, NiTextureEffect, the
   legacy particle stack, the BSShader*Property aliases.
-- **Collision import** (`crates/nif/src/import/collision.rs`): `BhkMultiSphereShape`
+- **Collision import** (`crates/nif/src/import/collision/mod.rs`): `BhkMultiSphereShape`
   and `BhkConvexListShape` translate into `CollisionShape` (the former to
   `Ball`/`Compound`, the latter to `ConvexHull`/`Compound`) via
   `resolve_shape_inner` in the `extract_collision` chain — they must not fall

@@ -37,7 +37,7 @@ from `crates/spt/src/lib.rs`: `parse_spt`, `import_spt_scene`,
 an entry point.)
 
 **Cross-cuts** (the wiring that actually invokes the crate):
-- `byroredux/src/cell_loader/references.rs` — the production route. An
+- `byroredux/src/cell_loader/references/mod.rs` — the production route. An
   `is_spt` extension check (`model_path … eq_ignore_ascii_case("spt")`)
   dispatches to `parse_and_import_spt`, which looks up the matching TREE
   record from `record_index.trees` and threads its metadata into
@@ -187,7 +187,7 @@ dictionary desyncs every subsequent read.
   documented — drifting it silently into pitch would tilt every tree.
 
 ### Dimension 3: TREE → Billboard Wiring
-**Entry points**: `byroredux/src/cell_loader/references.rs`
+**Entry points**: `byroredux/src/cell_loader/references/mod.rs`
 (`is_spt` dispatch, `parse_and_import_spt`),
 `byroredux/src/cell_loader/spawn.rs` (`placement_root_billboard` →
 `Billboard::new`), `crates/plugin/src/esm/records/tree.rs` (`parse_tree`,

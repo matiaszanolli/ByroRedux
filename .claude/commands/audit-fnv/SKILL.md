@@ -57,7 +57,7 @@ Dimensions are ordered by current FNV risk: the layers most likely to silently b
 
 ### Dimension 2: NIFAL Canonical Translation — FNV Slice
 **Subagent**: `legacy-specialist`
-**Entry points**: `byroredux/src/material_translate.rs`, `crates/core/src/ecs/components/material.rs`, `crates/nif/src/import/collision.rs`, `docs/engine/nifal.md`
+**Entry points**: `byroredux/src/material_translate.rs`, `crates/core/src/ecs/components/material.rs`, `crates/nif/src/import/collision/mod.rs`, `docs/engine/nifal.md`
 **Checklist**: FNV is the reference content for this boundary, so it must be exercised here first.
 - `material_translate.rs::translate_material` is the **single** `ImportedMesh → Material` boundary — no second per-game material path may exist.
 - FNV materials land with `Material::metalness` / `roughness` as **plain resolved `f32`** (`material.rs`), not `Option`. `Material::resolve_pbr` (→ `classify_pbr_keyword`) runs **once** at translation — there must be no per-draw keyword scan in `byroredux/src/render/static_meshes.rs` (the old render-time `Material::classify_pbr` is deleted).
@@ -120,7 +120,7 @@ Dimensions are ordered by current FNV risk: the layers most likely to silently b
 
 ### Dimension 7: PHYSAL Ragdoll — FNV Reference Slice
 **Subagent**: `legacy-specialist`
-**Entry points**: `byroredux/src/ragdoll.rs`, `crates/nif/src/import/collision.rs` (ragdoll + constraint decode), `crates/nif/src/blocks/collision/`, `docs/engine/physal.md`
+**Entry points**: `byroredux/src/ragdoll.rs`, `crates/nif/src/import/collision/mod.rs` (ragdoll + constraint decode), `crates/nif/src/blocks/collision/`, `docs/engine/physal.md`
 **Checklist**: FNV is the *reference realization* for PHYSAL slice 1 (the classic bhk chain — `0a0bc3ce` / `2c21a470`, 2026-06-14). Newly shipped, so audit for correctness, not just regression.
 - The importer hands `ImportedRagdoll` (bone *names* + `ImportedJointKind`); `ragdoll.rs::activate_ragdoll` resolves it against the skeleton's `GlobalTransform`, and `ragdoll_writeback_system` writes solver results back to bone transforms.
 - **Silent-drop regression guards (#1718/#1539/#1540/#1772, the D7 audit-guard family)**: `template_from_imported` (`ragdoll.rs`) warns on dropped bodies/constraints by bone-name miss (#1718, `ffe9a816`); `extract_ragdoll` (`collision.rs`) warns on dropped non-Ragdoll/LimitedHinge constraint kinds (#1539); trimesh bone inertia no longer degenerate (#1540); keyframed bone-follower bodies are torn down on ragdoll activation, not left double-simulating (#1772, `da4a849d`). Confirm all four still hold on a real FNV skeleton with divergent bone naming.

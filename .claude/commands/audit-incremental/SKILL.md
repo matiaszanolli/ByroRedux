@@ -63,7 +63,7 @@ Risk is the *floor* severity for an un-disproven finding in that area.
 | `crates/core/src/ecs/**` | `/audit-ecs`, `/audit-concurrency` | HIGH |
 | `crates/nif/src/blocks/**`, `crates/nif/src/import/**`, `crates/nif/src/anim/**` | `/audit-nif`; per-game `/audit-<game>` | HIGH |
 | `crates/bsa/src/**` (BSA / BA2 / CSG) | `/audit-nif` (archive feed), per-game `/audit-<game>` | HIGH |
-| `byroredux/src/material_translate.rs`, `crates/core/src/ecs/components/material.rs`, `crates/nif/src/import/collision.rs` (NIFAL boundary) | `/audit-nifal` | HIGH |
+| `byroredux/src/material_translate.rs`, `crates/core/src/ecs/components/material.rs`, `crates/nif/src/import/collision/mod.rs` (NIFAL boundary) | `/audit-nifal` | HIGH |
 | `byroredux/src/env_translate.rs` (EXAL boundary) | `/audit-nifal` (mirror), `/audit-renderer` | MEDIUM |
 | `byroredux/src/ragdoll.rs`, `crates/physics/src/**` (PHYSAL / Rapier bridge) | `/audit-safety`, per-game `/audit-<game>` | MEDIUM |
 | `crates/spt/src/**`, `byroredux/src/cell_loader/refr.rs` (.spt route) | `/audit-speedtree` | MEDIUM |
@@ -157,7 +157,7 @@ without the others:
   (`byroredux/src/systems/particle.rs`: `apply_emitter_params`). Audit all three.
 - **Collision shape:** a new `Bhk*Shape` parser
   (`crates/nif/src/blocks/collision/`) is also a translation surface —
-  `crates/nif/src/import/collision.rs` must map it to `CollisionShape`,
+  `crates/nif/src/import/collision/mod.rs` must map it to `CollisionShape`,
   or it is silently dropped (MEDIUM floor; HIGH if it removes visible
   game content). PHYSAL now consumes ragdoll constraints, so a collision
   diff can ripple into `byroredux/src/ragdoll.rs` + `crates/physics/`.

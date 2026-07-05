@@ -194,7 +194,7 @@ leaks compound; denoiser/shader correctness is mostly visual.
 **Output**: `/tmp/audit/renderer/dim_9.md`
 
 #### Dimension 10: Camera-relative render origin & f32 precision (#1495/#1496)
-**Entry points**: `crates/renderer/src/vulkan/scene_buffer/gpu_types.rs` (`GpuCamera.render_origin`), `byroredux/src/render/camera.rs`, `crates/renderer/shaders/triangle.vert` / `triangle.frag`, `byroredux/src/cell_loader/references.rs` (`RT_ABSOLUTE_PRECISION_CEILING`). Spec: shader-pipeline.md "Coordinate Spaces & Precision".
+**Entry points**: `crates/renderer/src/vulkan/scene_buffer/gpu_types.rs` (`GpuCamera.render_origin`), `byroredux/src/render/camera.rs`, `crates/renderer/shaders/triangle.vert` / `triangle.frag`, `byroredux/src/cell_loader/references/mod.rs` (`RT_ABSOLUTE_PRECISION_CEILING`). Spec: shader-pipeline.md "Coordinate Spaces & Precision".
 **Severity floor**: a path mixing the two conventions = HIGH (large-world precision corruption).
 **Checklist**:
 - **Two conventions, never mixed.** Raster runs render-origin-**relative** (`viewProj × worldPos_rel` keeps full f32 at large offsets); RT stays **absolute** (TLAS transforms, skinned BLAS, ray origins/lighting/fog reconstructed as `worldPos_rel + render_origin`).

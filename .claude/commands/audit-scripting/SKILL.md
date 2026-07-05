@@ -51,7 +51,7 @@ those here.
   scripts: `crates/scripting/src/papyrus_demo/`.
 
 **Engine-side wiring** (Dimension 7 — outside the crates):
-- `byroredux/src/cell_loader/references.rs` — `attach_vmad_scripts` /
+- `byroredux/src/cell_loader/references/mod.rs` — `attach_vmad_scripts` /
   `attach_script_for_refr` call `byroredux_scripting::translate_pex`; the
   `trigger_volume_from_primitive` builder spawns invisible `TriggerVolume`
   REFRs from `XPRM` primitives.
@@ -647,7 +647,7 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
 **Output**: `/tmp/audit/scripting/dim_6.md`
 
 ### Dimension 7: Engine Attach Path & Trigger-Volume Wiring (engine-side)
-**Entry points**: `byroredux/src/cell_loader/references.rs` (`attach_vmad_scripts`,
+**Entry points**: `byroredux/src/cell_loader/references/mod.rs` (`attach_vmad_scripts`,
 `attach_script_for_refr`, `trigger_volume_from_primitive`, the invisible-trigger
 REFR spawn path); `crates/plugin/src/esm/records/index.rs`
 (`base_record_script_instance`); `crates/plugin/src/esm/records/script_instance.rs`

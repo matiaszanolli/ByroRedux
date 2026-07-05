@@ -104,7 +104,7 @@ for the severity scale (including the NIFAL canonical-translation rows).
 
 ### Dimension 4: FO3 Cell Loading End-to-End (interior + exterior)
 **Subagent**: `general-purpose`
-**Entry points**: `byroredux/src/cell_loader/{load,unload,exterior,references,spawn}.rs`, `byroredux/src/scene/{nif_loader,world_setup}.rs`
+**Entry points**: `byroredux/src/cell_loader/{load,unload,exterior,references/mod,spawn}.rs`, `byroredux/src/scene/{nif_loader,world_setup}.rs`
 **Checklist**:
 - FO3 interior loads via the SAME `--esm Fallout3.esm --cell <id>` CLI as FNV. Megaton parse-side baseline: **929 REFRs** (down from 1609 pre-NIF-expand; #455+, cell-loader stale-comment cleanup #822 / `ca6be24`). Any audit citing 1609 references pre-expand stats — confirm against current `cell_loader/*.rs` comments first.
 - **Exterior is WIRED** (ROADMAP: "Exterior wired; fresh GPU bench pending"). Capital Wasteland is a distinct WRLD form ID — audit `cell_loader/exterior.rs` + `crates/plugin/src/esm/cell/wrld.rs` for any FNV-hardcoded worldspace name, origin coord, or default grid that would mis-place FO3 exterior cells. The open item is a fresh GPU bench (R6a-stale-15), not a missing feature.
@@ -118,7 +118,7 @@ for the severity scale (including the NIFAL canonical-translation rows).
 
 ### Dimension 5: FO3 Collision Import (Havok → CollisionShape)
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/import/collision.rs` (`extract_collision`, `examine_collision_kind`, `resolve_shape`, `CollisionAuthoring`)
+**Entry points**: `crates/nif/src/import/collision/mod.rs` (`extract_collision`, `examine_collision_kind`, `resolve_shape`, `CollisionAuthoring`)
 **Checklist**:
 - FO3 Havok content is no longer merely skipped via `block_size` — `extract_collision` walks `bhk*CollisionObject` → `BhkRigidBody` → shape into `CollisionShape` + `RigidBodyData`. `examine_collision_kind` must classify FO3 chains as `CollisionAuthoring::Classic` (BSVER 34, legacy side), not `NewPhysicsStub` / `Phantom` / `Unrecognised` — a misclassified discriminator silently drops the rigid body.
 - **#1277 / `9c6096aa`**: `BhkMultiSphereShape` (→ sphere path) and `BhkConvexListShape` (→ `CollisionShape::Compound`, mirroring `BhkListShape`) now translate — they were dropped before. FO3 uses these in static/clutter collision; confirm FO3 meshes carrying them yield a non-`None` `extract_collision`, not a discarded shape.

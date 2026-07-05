@@ -194,7 +194,7 @@ single-boundary violation (a second construction site that can diverge the paths
 
 ### Dimension 6: Collision — every parsed bhk*Shape resolves to a CollisionShape (no silent drop)
 **Entry points**:
-- `crates/nif/src/import/collision.rs` — `resolve_shape` / `resolve_shape_inner` (recursive bhk-shape → `CollisionShape`); `CollisionShape` / `RigidBodyData` / `MotionType` are `byroredux_core::ecs::components::collision` types (the canonical tier). Havok→engine transform + per-game `havok_scale` (`scene.havok_scale`, ×7.0 TES4/FO3/FNV, ×69.99 Skyrim+/FO4) applied uniformly. Recursion depth is bounded (#1385) and non-finite floats guarded (#1409).
+- `crates/nif/src/import/collision/mod.rs` — `resolve_shape` / `resolve_shape_inner` (recursive bhk-shape → `CollisionShape`); `CollisionShape` / `RigidBodyData` / `MotionType` are `byroredux_core::ecs::components::collision` types (the canonical tier). Havok→engine transform + per-game `havok_scale` (`scene.havok_scale`, ×7.0 TES4/FO3/FNV, ×69.99 Skyrim+/FO4) applied uniformly. Recursion depth is bounded (#1385) and non-finite floats guarded (#1409).
 
 **Checklist** (`no-leak` — "parsed for byte-correctness then dropped at the unsupported-shape fallback" is the prime leak class):
 - Every parsed `bhk*Shape` variant is handled (resolved to a `CollisionShape`, delegated, folded into a `Compound`, or explicitly parked with a documented reason) in `resolve_shape_inner`. **As of #1334 there are 16 shape arms** (count `downcast_ref::<Bhk*Shape>` arms, excluding the `BhkCollisionObject`/`BhkNPCollisionObject`/`BhkPCollisionObject`/`BhkRigidBody`/`BhkConstraint` arms which are objects, not shapes): `BhkSphereShape`, `BhkPlaneShape`, `BhkMultiSphereShape`, `BhkBoxShape`, `BhkCapsuleShape`, `BhkCylinderShape`, `BhkConvexVerticesShape`, `BhkMoppBvTreeShape`, `BhkConvexSweepShape`, `BhkListShape`, `BhkConvexListShape`, `BhkTransformShape`, `BhkNiTriStripsShape`, `BhkMeshShape`, `BhkPackedNiTriStripsShape`, `BhkCompressedMeshShape`. `BhkPlaneShape` (`#1334`) is the one deliberate exception — it returns `None` (no half-space `CollisionShape` variant yet; the trimesh fallback renders the correct ground surface anyway), documented at its arm, not a leak. A parsed `*Shape` block type with NO resolve arm at all (falls through to the unsupported-shape fallback) silently vanishes the authored collision — that is a leak finding. (Cross-check the live arm count against the parsed-shape set in `crates/nif/src/blocks/collision/` — the audit is the diff.)
@@ -205,7 +205,7 @@ single-boundary violation (a second construction site that can diverge the paths
 - **`BhkMultiSphereShape`** → `Compound` of `Ball` children at each sphere's scaled center (single centred sphere unwraps to a plain `Ball`). Pre-fix fell through the fallback (#9c6096aa).
 - **`BhkConvexListShape`** → `Compound` of resolved convex sub-shapes (mirrors `BhkListShape`; FO3/FNV/Skyrim destructibles + debris). Pre-fix dropped silently (#9c6096aa).
 - **`BhkConvexSweepShape`** (delegates to its inner `shape_ref`) and **`BhkMeshShape`** (resolves tri-strip data with per-axis scale) → added #1360/#1361. A revert is a `no-leak` regression.
-- **Documented limitations (NOT leaks)** — confirm they stay documented in the table at the top of `import/collision.rs`, and do NOT report them as leaks:
+- **Documented limitations (NOT leaks)** — confirm they stay documented in the table at the top of `import/collision/mod.rs`, and do NOT report them as leaks:
   - `BhkNPCollisionObject` (FO4/FO76/Starfield Havok-serialised `BhkSystemBinary` blob) — decoder is a separate project; consumer falls back to `cell_loader/spawn.rs::synthesize_static_trimesh` for Architecture meshes.
   - `BhkPCollisionObject` phantoms (Skyrim+ trigger volumes) — need a `TriggerVolume` ECS path, not a rigid body. The `is::<BhkNPCollisionObject>` / `is::<BhkPCollisionObject>` discriminators let the trimesh fallback distinguish the two — verify they're intact.
 **Output**: `/tmp/audit/nifal/dim_6.md`
@@ -213,7 +213,7 @@ single-boundary violation (a second construction site that can diverge the paths
 ### Dimension 7: Animation / controllers — single NIF→AnimationClip boundary (surveyed converged 2026-06-02)
 **Entry points**:
 - Parser/import: `crates/nif/src/anim/entry.rs::import_kf` (KF sequences) + `import_embedded_animations` (mesh-embedded controllers); both funnel through one set of `extract_*_channel_at` cores in `crates/nif/src/anim/`.
-- **The boundary**: `byroredux/src/anim_convert.rs::convert_nif_clip` — the single NIF→core `AnimationClip` translation (multiple callers — `npc_spawn.rs`, `cell_loader/references.rs` + `partial.rs`, `scene.rs` + `scene/nif_loader.rs`, `systems/animation.rs` — all route through this one fn; multiple callers of one boundary is correct, not a single-boundary violation).
+- **The boundary**: `byroredux/src/anim_convert.rs::convert_nif_clip` — the single NIF→core `AnimationClip` translation (multiple callers — `npc_spawn.rs`, `cell_loader/references/mod.rs` + `partial.rs`, `scene.rs` + `scene/nif_loader.rs`, `systems/animation.rs` — all route through this one fn; multiple callers of one boundary is correct, not a single-boundary violation).
 - Canonical type: ECS `AnimationClip` (`crates/core/src/animation/`).
 
 **Checklist** (`no-leak` / `no-fabrication`):

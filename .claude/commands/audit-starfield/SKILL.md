@@ -266,7 +266,7 @@ for SF content. NIFAL particle slice reaching SF NIFs: typed `NiPSysEmitter` /
 → `apply_emitter_params` (`byroredux/src/systems/particle.rs`). NIFAL collision
 slice (Cydonia's synthesized + bhk colliders): `BhkMultiSphereShape` +
 `BhkConvexListShape` translate to `CollisionShape` in
-`crates/nif/src/import/collision.rs`.
+`crates/nif/src/import/collision/mod.rs`.
 **Output**: `/tmp/audit/starfield/dim_8.md`
 
 ### Dimension 9: BGSM/BGEM External Material Flow

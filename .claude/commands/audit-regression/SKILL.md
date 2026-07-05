@@ -117,7 +117,7 @@ run regardless of Step 1's window. A FAIL here is still reported as a regression
   to opaque `NiPSysBlock` shows up as zero-sized emitters or clobbered colors.
 - **Collision shape coverage.** `BhkMultiSphereShape` + `BhkConvexListShape`
   must still translate to a `CollisionShape` in
-  `crates/nif/src/import/collision.rs` (they were previously dropped to `None`).
+  `crates/nif/src/import/collision/mod.rs` (they were previously dropped to `None`).
 
 **Disney BSDF + GPU struct contracts** (recent shader wave):
 

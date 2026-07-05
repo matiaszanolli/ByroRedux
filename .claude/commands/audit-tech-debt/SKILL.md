@@ -109,7 +109,7 @@ over threshold).
 - `byroredux/src/main.rs` → App/ApplicationHandler event loop vs system registration vs boot/config.
 - `byroredux/src/commands/` → console-command groups, already split per-domain (world_info / assets / view / scene / shared) under #1323; check the submodules stay cohesive, not re-bloated.
 - `crates/nif/src/blocks/particle.rs` → typed emitter/ctlr structs vs the opaque `NiPSysBlock` fallback vs grow/fade modifiers.
-- `crates/nif/src/import/collision.rs` → split per bhk shape family (primitive/compound/mesh/compressed), mirroring `crates/nif/src/blocks/collision/`.
+- `crates/nif/src/import/collision/mod.rs` → split per bhk shape family (primitive/compound/mesh/compressed), mirroring `crates/nif/src/blocks/collision/`.
 - `crates/core/src/ecs/resources/mod.rs` → partially split already (`SkinSlotPool` extracted to `skin_slot_pool.rs` under #1869; `mod.rs` now 1210 LOC, under threshold). Split further per resource domain (rendering/world/audio/scripting) only if it re-bloats.
 - `crates/plugin/src/esm/records/actor.rs` → split per NPC_ data-group (13 groups).
 

@@ -121,7 +121,7 @@ The classic-chain slice landed 2026-06-14. Reference: `docs/engine/physal.md` (Â
   `parse_oblivion` / `parse_fo3` arms) read only the **common subset** (era-only fields like
   FO3+ motors / `Perp Axis In B1` are decoded-or-zeroed, never reaching canonical). Byte
   advancement is asserted per era in `crates/nif/src/blocks/collision/bhk_constraint_tests.rs`.
-- **Extract is already game-agnostic**: `crates/nif/src/import/collision.rs::extract_ragdoll`
+- **Extract is already game-agnostic**: `crates/nif/src/import/collision/mod.rs::extract_ragdoll`
   switches on `BhkConstraintData`, never on game; emits `ImportedRagdoll` in Y-up,
   `havok_scale`-applied units. A `game ==` branch creeping in here is a finding.
 - **One translate, one build**: `byroredux/src/ragdoll.rs::template_from_imported` (bone-name

@@ -100,7 +100,7 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 
 ### Dimension 4: NIF BSVER 130 + Half-Float Vertices + FO4 Collision
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs`, `crates/nif/src/import/mesh/bs_tri_shape.rs`, `crates/nif/src/import/mesh/bs_geometry.rs`, `crates/nif/src/import/collision.rs`.
+**Entry points**: `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs`, `crates/nif/src/import/mesh/bs_tri_shape.rs`, `crates/nif/src/import/mesh/bs_geometry.rs`, `crates/nif/src/import/collision/mod.rs`.
 **Checklist**:
 - VF_FULL_PRECISION resolution (default-half unless set); half-float decode matches IEEE 754 binary16 incl. denormals/NaN.
 - BSSubIndexTriShape segment data walked (FO4 actors lean on it); skinned bone indices/weights honor packed layout.
@@ -144,7 +144,7 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 
 ### Dimension 8: FO4 Cell Load End-to-End (SCOL/PKIN Expansion)
 **Subagent**: `general-purpose`
-**Entry points**: `byroredux/src/cell_loader/refr.rs` (`expand_scol_placements`, `expand_pkin_placements`), `byroredux/src/cell_loader/references.rs` (wires the expanders), `byroredux/src/cell_loader/exterior.rs` (Phase-3a).
+**Entry points**: `byroredux/src/cell_loader/refr.rs` (`expand_scol_placements`, `expand_pkin_placements`), `byroredux/src/cell_loader/references/mod.rs` (wires the expanders), `byroredux/src/cell_loader/exterior.rs` (Phase-3a).
 **Checklist**:
 - `expand_scol_placements` / `expand_pkin_placements` turn a prefab/packin into per-instance synthetic REFRs with composed transform (parent × child), recursion bounded by `MAX_PKIN_DEPTH = 4` (shared, #1180 / #1182; vanilla has zero nesting, the cap guards modded cross-recursion). `references.rs` fires the first matching expander and composes placements.
 - Tests: `cell_loader/scol_expansion_tests.rs`, `cell_loader/pkin_expansion_tests.rs`.
