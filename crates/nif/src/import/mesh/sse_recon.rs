@@ -213,12 +213,20 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
     let mut uvs = Vec::with_capacity(num_vertices);
     let mut colors = Vec::with_capacity(num_vertices);
     let is_skinned = vertex_attrs & VF_SKINNED != 0;
-    // Match nif.xml `BSVertexDataSSE` / `BSVertexData` (`(#ARG# #BITAND# 0x11)
-    // == 0x11`) and the inline `bs_tri_shape.rs` decoder: the tangent quad is
-    // gated on VF_TANGENTS alone (VF_VERTEX is the outer precondition); NORMALS
-    // (0x8) is not part of the spec predicate. Pre-fix the extra `&& VF_NORMALS`
-    // diverged from both. See #1559.
+    // Two distinct nif.xml `BSVertexDataSSE` predicates, matching the inline
+    // `bs_tri_shape.rs` decoder (which gates them separately):
+    //   - `Bitangent X` (position trailing slot): `(#ARG# #BITAND# 0x11) == 0x11`
+    //     — VF_VERTEX && VF_TANGENTS. Gated by `has_tangents`.
+    //   - `Tangent` + `Bitangent Z` quad: `(#ARG# #BITAND# 0x18) == 0x18`
+    //     — VF_NORMALS && VF_TANGENTS. Gated by `has_tangent_quad`.
+    // #1559 collapsed both onto `has_tangents`, dropping the `&& VF_NORMALS`
+    // term for the quad; a VF_TANGENTS-without-VF_NORMALS descriptor then
+    // over-read the 4-byte quad the layout never wrote, misaligning the
+    // colors / skin / eye reads after it. No shipped Skyrim mesh hits this
+    // (tangent space requires a normal, so both gates agree on real content) —
+    // the split just keeps the stride exact for malformed/synthetic input.
     let has_tangents = vertex_attrs & VF_TANGENTS != 0;
+    let has_tangent_quad = has_tangents && vertex_attrs & VF_NORMALS != 0;
     let mut bone_weights: Vec<[f32; 4]> = if is_skinned {
         Vec::with_capacity(num_vertices)
     } else {
@@ -229,7 +237,7 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
     } else {
         Vec::new()
     };
-    let mut tangents: Vec<[f32; 4]> = if has_tangents {
+    let mut tangents: Vec<[f32; 4]> = if has_tangent_quad {
         Vec::with_capacity(num_vertices)
     } else {
         Vec::new()
@@ -300,7 +308,7 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
         // halves so the assembler below can stitch the bitangent
         // triplet (∂P/∂U → our tangent slot) and derive the sign from
         // the on-disk tangent triplet (∂P/∂V).
-        if has_tangents {
+        if has_tangent_quad {
             tangent_xyz = Some([
                 byte_to_normal(*bytes.get(off)?),
                 byte_to_normal(*bytes.get(off + 1)?),

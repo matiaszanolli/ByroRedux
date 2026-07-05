@@ -286,17 +286,14 @@ fn resolve_inherited_inventory_inner<'a>(
 /// in-place so the caller can build a mixed flat list across multiple
 /// initial seeds without intermediate allocations.
 ///
-/// **Determinism.** This picks the *highest-level entry whose level ≤
-/// actor_level* (the LVLI flag-bit-0-unset Bethesda default for
-/// "single-entry pick"). Vanilla outfits rarely set LVLI flag bit 0;
-/// when they do, the deterministic pick still produces stable output
-/// per-actor without needing a seeded RNG. The "calculate for each
-/// item" flag (bit 1) is also unimplemented today — multi-pick LVLIs
-/// land all eligible entries, which over-equips slightly compared to
-/// Bethesda's runtime but is the safer-than-skipping default for a
-/// rendering audit. Both gaps are signalled in the docstring rather
-/// than producing a runtime warn — the audit-test workflow is the one
-/// that benefits from the ceiling.
+/// **Determinism.** The default (LVLI "calculate for each item" flag,
+/// bit 1 / value `0x02`, unset) single-picks the *highest-level entry
+/// whose level ≤ actor_level* — stable output per-actor without a seeded
+/// RNG. When that flag IS set the resolver multi-picks: every eligible
+/// entry is expanded, which over-equips slightly compared to Bethesda's
+/// per-item runtime roll but is the safer-than-skipping default for a
+/// rendering audit. Vanilla outfits rarely set the flag. Both branches
+/// are implemented (see the `multi_pick` split below).
 ///
 /// **`chance_none`.** Treated as 0 (always produce a result) for the
 /// same render-audit reason. A future RNG-driven dispatch can opt in
@@ -344,12 +341,12 @@ fn expand_leveled_inner(
         return;
     };
 
-    // Filter entries by `level <= actor_level`. Pick the highest-level
-    // eligible entry (the Bethesda default). Bethesda LVLI flag bit 1
-    // ("calculate for each item") would multi-pick; we land all
-    // eligible entries instead — over-equips slightly vs the runtime
-    // but safer than skipping for the render-audit use case the
-    // resolver targets today.
+    // Filter entries by `level <= actor_level`, then branch on the LVLI
+    // "calculate for each item" flag (bit 1, `0x02`) below: set → multi-pick
+    // (expand every eligible entry — over-equips slightly vs Bethesda's
+    // per-item runtime roll but safe for the render-audit use case); unset →
+    // single-pick the highest-level eligible entry (the Bethesda default),
+    // stable across reloads with no RNG.
     let eligible: Vec<&_> = lvli
         .entries
         .iter()

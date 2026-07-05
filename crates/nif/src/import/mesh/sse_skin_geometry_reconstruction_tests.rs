@@ -597,3 +597,46 @@ fn decode_sse_packed_buffer_truncated_stride_returns_none_no_panic() {
         "truncated normal stride must fail-soft to None, not panic"
     );
 }
+
+/// Regression: SKY-D1-001 (#1878, regression of #1559) — the `Tangent` +
+/// `Bitangent Z` quad is gated on nif.xml `(ARG & 0x18) == 0x18`
+/// (VF_NORMALS && VF_TANGENTS), NOT on VF_TANGENTS alone. A descriptor with
+/// VF_TANGENTS set and VF_NORMALS clear does not carry the 4-byte tangent
+/// quad; reading it (the #1559 bug) over-reads the stride and misaligns the
+/// colors/skin/eye reads after it. This pins the byte alignment: with the
+/// correct 0x18 gate the color at off 16 decodes; with the buggy VF_TANGENTS
+/// gate the color read runs one quad past the sub-slice and fails to None.
+#[test]
+fn decode_sse_packed_buffer_tangents_without_normals_keeps_stride_aligned() {
+    // VF_VERTEX (0x001) | VF_TANGENTS (0x010) | VF_VERTEX_COLORS (0x020) = 0x031;
+    // NO VF_NORMALS. Layout: position block (12 B pos + 4 B bitangent_x = 16 B),
+    // no UV, no normal, no tangent quad (VF_NORMALS clear), then 4 B colors = 20 B.
+    let vertex_size: u32 = 20;
+    let vertex_desc: u64 = (0x031u64 << 44) | ((vertex_size as u64 / 4) & 0xF);
+
+    let mut raw = Vec::with_capacity(vertex_size as usize);
+    raw.extend_from_slice(&1.0f32.to_le_bytes()); // pos.x
+    raw.extend_from_slice(&2.0f32.to_le_bytes()); // pos.y
+    raw.extend_from_slice(&3.0f32.to_le_bytes()); // pos.z
+    raw.extend_from_slice(&0.5f32.to_le_bytes()); // bitangent_x (VF_TANGENTS slot)
+    raw.extend_from_slice(&[255u8, 128, 64, 255]); // colors at off 16 (only if stride is right)
+    assert_eq!(raw.len(), vertex_size as usize);
+
+    let buffer = SseSkinGlobalBuffer {
+        vertex_desc,
+        vertex_size,
+        raw_bytes: raw,
+    };
+    let decoded = super::decode_sse_packed_buffer(&buffer)
+        .expect("VF_TANGENTS-without-VF_NORMALS must decode: the tangent quad is absent (0x18)");
+    assert_eq!(decoded.colors.len(), 1);
+    let [r, g, b, a] = decoded.colors[0];
+    // Color read landed on off 16 (correct), not off 20 (buggy over-read → OOB → None).
+    assert!((r - 1.0).abs() < 1e-6, "r = {r}");
+    assert!((g - 128.0 / 255.0).abs() < 1e-6, "g = {g}");
+    assert!((b - 64.0 / 255.0).abs() < 1e-6, "b = {b}");
+    assert!((a - 1.0).abs() < 1e-6, "a = {a}");
+    // No normal → no assembled tangent (the assembler needs normal_zup); the
+    // stride fix is about byte alignment, not producing a tangent here.
+    assert!(decoded.tangents.is_empty());
+}

@@ -293,9 +293,10 @@ pub(crate) fn extract_material_info_from_refs(
             ) {
                 info.two_sided = true;
             }
-            // Skyrim+/FO4 decal path — flags2 bit 21 is `Cloud_LOD` on
-            // Skyrim / `Anisotropic_Lighting` on FO4, NOT a decal bit.
-            // See #414.
+            // Skyrim+/FO4 decal path — flags2 bit 21 is `Anisotropic_Lighting`
+            // on Skyrim AND FO4 (nif.xml SkyrimShaderPropertyFlags2 /
+            // Fallout4ShaderPropertyFlags2 bit 21), NOT a decal bit. Skyrim
+            // `Cloud_LOD` is the separate bit 20. See #414 / #1879.
             if is_decal_from_modern_shader_flags(
                 shader.shader_flags_1,
                 shader.shader_flags_2,

@@ -91,9 +91,15 @@ pub mod skyrim_slsf2 {
     pub const DOUBLE_SIDED: u32 = 0x0000_0010;
     /// Bit 17 — `Weapon_Blood`. Blood decals on weapons specifically.
     pub const WEAPON_BLOOD: u32 = 0x0002_0000;
-    /// Bit 21 — `Cloud_LOD` on Skyrim (NOT `Alpha_Decal` — that
-    /// is FO3/FNV-only).
-    pub const CLOUD_LOD: u32 = 0x0020_0000;
+    /// Bit 20 — `Cloud_LOD`. Per nif.xml `SkyrimShaderPropertyFlags2`
+    /// bit 20.
+    pub const CLOUD_LOD: u32 = 0x0010_0000;
+    /// Bit 21 — `Anisotropic_Lighting`. Per nif.xml
+    /// `SkyrimShaderPropertyFlags2` bit 21 — the SAME semantic and value
+    /// as `fo4_slsf2::ANISOTROPIC_LIGHTING`, and NOT `Alpha_Decal` (that
+    /// is the FO3/FNV `BSShaderFlags2` meaning of this bit). The legacy
+    /// decal helper must not test bit 21 on a Skyrim+/FO4 property. See #414.
+    pub const ANISOTROPIC_LIGHTING: u32 = 0x0020_0000;
     /// Bit 30 — `Effect_Lighting`. Scene-lit `BSEffectShaderProperty`
     /// surface — receives directional light instead of rendering
     /// purely additive. See #890 / SK-D4-NEW-04.
@@ -327,13 +333,13 @@ mod tests {
     }
 
     #[test]
-    fn fo3nv_f2_alpha_decal_and_skyrim_f2_cloud_lod_collide() {
-        // Two different semantics on the same bit across games — the
-        // collision is exactly why callers must know which property
-        // type they're holding. `is_decal_from_shader_flags` in the
-        // import pipeline guards this by only being called on FO3/FNV
-        // `BSShader*Property` paths.
-        assert_eq!(fo3nv_f2::ALPHA_DECAL, skyrim_slsf2::CLOUD_LOD);
+    fn fo3nv_f2_alpha_decal_and_skyrim_f2_anisotropic_collide() {
+        // Bit 21 (0x0020_0000) carries two different semantics across game
+        // eras: `Alpha_Decal` on FO3/FNV `BSShaderFlags2`, `Anisotropic_Lighting`
+        // on Skyrim/FO4 modern properties. The collision is exactly why callers
+        // must know which property type they're holding — `is_decal_from_shader_flags`
+        // guards this by only being called on FO3/FNV `BSShader*Property` paths.
+        assert_eq!(fo3nv_f2::ALPHA_DECAL, skyrim_slsf2::ANISOTROPIC_LIGHTING);
     }
 
     #[test]
@@ -354,15 +360,20 @@ mod tests {
         assert_eq!(fo4_slsf1::DYNAMIC_DECAL, fo3nv_f1::DYNAMIC_DECAL);
     }
 
-    /// #414 — THREE different semantics on bit 21 of the second flag
-    /// word across games. A legacy decal helper that tests this bit on
-    /// a Skyrim+ / FO4 property reads an unrelated render-path flag and
-    /// misclassifies the mesh as a decal.
+    /// #414 / SKY-D2-001 (#1879) — bit 21 of the second flag word carries
+    /// TWO semantics across game eras, both at value 0x0020_0000: `Alpha_Decal`
+    /// on FO3/FNV, `Anisotropic_Lighting` on Skyrim AND FO4 (per nif.xml
+    /// `SkyrimShaderPropertyFlags2` / `Fallout4ShaderPropertyFlags2` bit 21).
+    /// A legacy decal helper that tests this bit on a Skyrim+/FO4 property
+    /// reads Anisotropic_Lighting and misclassifies the mesh as a decal.
+    /// (Skyrim `Cloud_LOD` is bit 20, 0x0010_0000 — a separate flag.)
     #[test]
-    fn f2_bit_21_has_three_distinct_semantics_across_games() {
+    fn f2_bit_21_alpha_decal_legacy_vs_anisotropic_modern() {
         assert_eq!(fo3nv_f2::ALPHA_DECAL, 0x0020_0000);
-        assert_eq!(skyrim_slsf2::CLOUD_LOD, 0x0020_0000);
+        assert_eq!(skyrim_slsf2::ANISOTROPIC_LIGHTING, 0x0020_0000);
         assert_eq!(fo4_slsf2::ANISOTROPIC_LIGHTING, 0x0020_0000);
+        // Skyrim Cloud_LOD is the DIFFERENT bit 20.
+        assert_eq!(skyrim_slsf2::CLOUD_LOD, 0x0010_0000);
     }
 
     /// #414 — Double_Sided lives at the same bit on Skyrim and FO4 F2.
