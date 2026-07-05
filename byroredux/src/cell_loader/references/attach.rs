@@ -1,0 +1,360 @@
+//! Per-REFR ECS component attach helpers — attach-points / child-attach
+//! connections, trigger volumes, script fragments, and light flicker. Split
+//! out of the original `cell_loader/references.rs` (#1877).
+
+//! Per-cell reference loading: walk PlacedRefs, expand PKIN/SCOL
+//! containers, parse NIFs/SPTs through the registry cache, and dispatch
+//! to `spawn_placed_instances` for actual entity creation.
+//!
+//! The bulk of cell load time lives here — parsing NIFs (cache miss
+//! path), expanding container placements, resolving base records,
+//! and committing the per-cell NifImportRegistry deltas.
+
+use byroredux_core::ecs::{
+    LightFlicker, World, LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE,
+    LIGHT_FLAG_PULSE_SLOW,
+};
+use byroredux_core::math::{Quat, Vec3};
+use byroredux_plugin::esm;
+
+/// Intern an [`ImportedAttachPoint`] list into the `AttachPoints` ECS
+/// component (#985 / #1594). Attach-point names + parent-bone tags become
+/// `FixedString` handles so the equip-time `AttachPoints::find` lookup is an
+/// integer compare. Transforms arrive already Y-up from the extractor.
+pub(crate) fn attach_points_component(
+    imported: &[byroredux_nif::import::ImportedAttachPoint],
+    pool: &mut byroredux_core::string::StringPool,
+) -> byroredux_core::ecs::components::AttachPoints {
+    use byroredux_core::ecs::components::{AttachPoint, AttachPoints};
+    AttachPoints {
+        points: imported
+            .iter()
+            .map(|p| AttachPoint {
+                name: pool.intern(p.name.as_str()),
+                // Empty `parent` → anchored on the host mesh root, not a bone.
+                parent_bone: (!p.parent.is_empty()).then(|| pool.intern(p.parent.as_str())),
+                translation: p.translation,
+                rotation: p.rotation,
+                scale: p.scale,
+            })
+            .collect(),
+    }
+}
+
+/// Intern an [`ImportedChildAttachConnections`] into the
+/// `ChildAttachConnections` ECS component (#985 / #1594).
+pub(crate) fn child_attach_connections_component(
+    imported: &byroredux_nif::import::ImportedChildAttachConnections,
+    pool: &mut byroredux_core::string::StringPool,
+) -> byroredux_core::ecs::components::ChildAttachConnections {
+    byroredux_core::ecs::components::ChildAttachConnections {
+        connect_names: imported
+            .point_names
+            .iter()
+            .map(|n| pool.intern(n.as_str()))
+            .collect(),
+        skinned: imported.skinned,
+    }
+}
+
+/// M47.0 Phase 3b — attach script-state components to a freshly-spawned
+/// REFR's placement root. Three-stage lookup:
+///
+/// 1. `EsmIndex::base_record_script(base_form_id)` → SCPT form_id (or
+///    `None` if the base record has no script).
+/// 2. `EsmIndex.scripts.get(&script_form_id)` → `ScriptRecord` (or
+///    `None` if the cross-ref dangled — a real data issue, but
+///    survivable; logged at debug).
+/// 3. `ScriptRegistry.lookup(&script.editor_id)` → spawn fn (or
+///    `None` if M47.0 doesn't yet ship a handler for this script —
+///    by far the most common miss path, ~1 256 / 1 257 vanilla FO3
+///    scripts unregistered as of Phase 2).
+///
+/// Fall-through on every `None` is silent — see Phase 2 contract: M47.0
+/// only ships hand-translated equivalents for ~5 R5-prototype scripts;
+/// every other SCPT in vanilla content correctly reaches a "no spawner
+/// registered" leaf and contributes nothing observable.
+///
+/// The function takes `&mut World` because the spawner mutates it (each
+/// spawner does `query_mut::<…>().insert(entity, …)`). The
+/// `ScriptRegistry` resource borrow is scoped tightly so the spawner
+/// can re-borrow World freely.
+/// Build a world-space [`TriggerVolume`](byroredux_scripting::TriggerVolume)
+/// from a REFR's `XPRM` primitive + placement. `None` for non-containment
+/// shapes (line / portal / plane).
+///
+/// `XPRM` bounds are Bethesda **z-up half-extents** — the Creation Kit
+/// Primitive convention, consistent with `bhkBoxShape::aabb_half_extents`
+/// and the `XMBO` half-extent bound. Permute to engine y-up (the position
+/// swap is `[x, z, -y]`; extents are magnitudes, so the sign drops) and
+/// bake the REFR scale in, since the volume is stored in world space. For
+/// a sphere, `bounds[0]` is the radius (carried in `half_extents.x`).
+pub(super) fn trigger_volume_from_primitive(
+    prim: &esm::cell::PrimitiveBounds,
+    center: Vec3,
+    rotation: Quat,
+    scale: f32,
+) -> Option<byroredux_scripting::TriggerVolume> {
+    use byroredux_scripting::{TriggerShape, TriggerVolume};
+    let shape = match prim.shape_type {
+        1 => TriggerShape::Box,
+        3 => TriggerShape::Sphere,
+        _ => return None,
+    };
+    let half_extents = Vec3::new(
+        prim.bounds[0].abs() * scale,
+        prim.bounds[2].abs() * scale,
+        prim.bounds[1].abs() * scale,
+    );
+    Some(TriggerVolume {
+        center,
+        half_extents,
+        rotation,
+        shape,
+        // SCR-D6-NEW-02 / #1817 — `None`, not `false`. `false` is
+        // indistinguishable from "known outside, primed" to
+        // `trigger_detection_system`; a player who loads already
+        // standing inside this volume would see a spurious
+        // `OnTriggerEnterEvent` on frame 1. `None` lets the detection
+        // system's first tick seed the real state silently instead.
+        occupant_inside: None,
+    })
+}
+
+/// Returns `true` when canonical behavior attached (either per-game arm
+/// recognized the script) — the cell loader counts these for its summary.
+pub(super) fn attach_script_for_refr(
+    world: &mut byroredux_core::ecs::world::World,
+    entity: byroredux_core::ecs::EntityId,
+    base_form_id: u32,
+    index: &esm::records::EsmIndex,
+    refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
+) -> bool {
+    // Two mutually-exclusive per-game attach paths converge here. A
+    // record carries either a pre-Skyrim `SCRI` → SCPT (Obscript, the
+    // M47.0 registry path) or a Skyrim+ `VMAD` inline Papyrus block (the
+    // M47.2 decompile path), never both in vanilla content. Run both —
+    // each no-ops for the wrong era — and emit one `OnCellLoadEvent` if
+    // either attached canonical behavior. `refr_script_instance` carries
+    // the placed reference's OWN VMAD (#1737), attached additively with
+    // the base record's by `attach_vmad_scripts`.
+    let mut attached = attach_scpt_script(world, entity, base_form_id, index);
+    attached |= attach_vmad_scripts(world, entity, base_form_id, index, refr_script_instance);
+
+    if attached {
+        // M47.0 Phase 5 — emit OnCellLoadEvent on the freshly-attached
+        // entity so the script's first-tick init hook fires on the same
+        // frame the cell loads. Mirrors Papyrus `OnLoad` semantics. The
+        // marker is drained by `event_cleanup_system` at end-of-frame,
+        // so each script sees exactly one OnCellLoad per cell entry.
+        if let Some(mut q) = world.query_mut::<byroredux_scripting::OnCellLoadEvent>() {
+            q.insert(entity, byroredux_scripting::OnCellLoadEvent);
+        }
+    }
+    attached
+}
+
+/// FO3 / FNV / Oblivion path: resolve the base record's `SCRI` form id
+/// to its SCPT editor id, look up a hand-written M47.0 spawner in the
+/// [`ScriptRegistry`], and run it. Returns `true` when a spawner ran.
+fn attach_scpt_script(
+    world: &mut byroredux_core::ecs::world::World,
+    entity: byroredux_core::ecs::EntityId,
+    base_form_id: u32,
+    index: &esm::records::EsmIndex,
+) -> bool {
+    let Some(script_form_id) = index.base_record_script(base_form_id) else {
+        return false;
+    };
+    let Some(script) = index.scripts.get(&script_form_id) else {
+        // SCPT cross-ref dangled. Pre-#443 the SCPT records weren't
+        // parsed at all; post-#443 the index is populated, so a miss
+        // here is genuinely a broken plugin / parser bug rather than
+        // a missing-consumer story.
+        log::debug!(
+            "M47.0: SCRI {script_form_id:08X} on base {base_form_id:08X} not in index.scripts (dangling cross-ref)",
+        );
+        return false;
+    };
+    // Scope the registry borrow tightly — the spawn fn that comes back
+    // is a function pointer (Copy), so we can drop the borrow before
+    // invoking the spawner with `&mut World`.
+    let spawn_fn = {
+        let Some(registry) = world.try_resource::<byroredux_scripting::ScriptRegistry>() else {
+            // Engine init didn't insert the registry — a programming
+            // error. Log loudly the first time per process so the
+            // misconfiguration surfaces during cell load instead of
+            // silently disabling every script in the engine.
+            log::error!(
+                "M47.0: ScriptRegistry resource missing — \
+                 byroredux_scripting::register and ScriptRegistry init \
+                 must run before cell load. Script attach disabled."
+            );
+            return false;
+        };
+        registry.lookup(&script.editor_id)
+    };
+    let Some(spawn_fn) = spawn_fn else {
+        // Most common miss path: a real SCPT with no Phase-2 handler.
+        // log::trace! so it's available with `--RUST_LOG=trace` for
+        // debugging without polluting INFO/DEBUG-level logs (a 1 200-
+        // REFR cell load would emit ~1 200 misses).
+        log::trace!(
+            "M47.0: no spawner registered for SCPT editor_id '{}' (form {:08X})",
+            script.editor_id,
+            script_form_id,
+        );
+        return false;
+    };
+    spawn_fn(world, entity);
+    log::debug!(
+        "M47.0: attached script '{}' (SCPT {:08X}) to entity {entity:?} via base {base_form_id:08X}",
+        script.editor_id,
+        script_form_id,
+    );
+    true
+}
+
+/// Skyrim+ path: for each script named in the record's `VMAD`, fetch its
+/// compiled `.pex` from the script archive, decompile it, and run it
+/// through the recognizer chain
+/// ([`byroredux_scripting::translate_pex`]). A recognized script inserts
+/// its canonical ECS behavior; an unrecognized or missing one is a
+/// silent miss. Returns `true` when at least one script was recognized.
+///
+/// Two VMAD sources are processed **additively** (SCR-D7-01 / #1737):
+/// `refr_script_instance` is the placed reference's OWN `VMAD` (Skyrim+
+/// objectReference override scripts — a uniquely-scripted lever / quest
+/// item / activator), and the base record's `VMAD` is looked up from
+/// `index`. Both are attached, mirroring Bethesda's additive
+/// objectReference semantics; on a name collision the REFR's script wins
+/// (it is processed first and the base copy is skipped), so a placement
+/// can override a base script's binding without dropping the rest.
+///
+/// `owning_quest` is `None` here: base-record-attached scripts (lever,
+/// door, trap activators; scripted containers / NPCs) bind their quest
+/// through a VMAD `Quest` property, not an alias. Alias-attached scripts
+/// (which need the owning quest id) flow through the quest-alias attach
+/// path, not this one.
+pub(super) fn attach_vmad_scripts(
+    world: &mut byroredux_core::ecs::world::World,
+    entity: byroredux_core::ecs::EntityId,
+    base_form_id: u32,
+    index: &esm::records::EsmIndex,
+    refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
+) -> bool {
+    // Fast-out before any per-REFR work when no `--scripts-bsa` was
+    // supplied (the common case for mesh-only / FO3-FNV launches): no
+    // archive means every `.pex` lookup would miss anyway.
+    let have_archive = world
+        .try_resource::<crate::asset_provider::ScriptProvider>()
+        .is_some_and(|p| !p.is_empty());
+    if !have_archive {
+        return false;
+    }
+    let base_script_instance = index.base_record_script_instance(base_form_id);
+    // Nothing to attach if neither the REFR nor its base record carries a
+    // VMAD. Pre-#1737 this returned on the base lookup alone, so a REFR
+    // with its own override VMAD over a script-less base attached nothing.
+    if base_script_instance.is_none() && refr_script_instance.is_none() {
+        return false;
+    }
+    let game = index.game;
+    let mut any = false;
+    // REFR-own VMAD first so it wins name collisions; then the base record.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for script_instance in [refr_script_instance, base_script_instance]
+        .into_iter()
+        .flatten()
+    {
+        for script in &script_instance.scripts {
+            if !seen.insert(script.name.as_str()) {
+                // Same script name already attached from the REFR override —
+                // skip the base record's copy (REFR wins).
+                continue;
+            }
+            // Scope the provider borrow: extract the owned `.pex` bytes,
+            // then drop the resource read before the `&mut World` spawn.
+            let bytes = {
+                let provider = world.resource::<crate::asset_provider::ScriptProvider>();
+                provider.extract_pex(&script.name)
+            };
+            let Some(bytes) = bytes else {
+                log::trace!(
+                    "M47.2: .pex '{}' not in script archive (base {base_form_id:08X})",
+                    script.name,
+                );
+                continue;
+            };
+            // `script_instance` borrows `index` / the placed ref (not
+            // `world`), so it stays valid across the `&mut World` spawn.
+            match byroredux_scripting::translate_pex(&bytes, game, Some(script_instance), None) {
+                Some(recognized) => {
+                    log::debug!(
+                        "M47.2: recognized '{}' from .pex '{}' on base {base_form_id:08X} → entity {entity:?}",
+                        recognized.archetype,
+                        script.name,
+                    );
+                    (recognized.spawn)(world, entity);
+                    any = true;
+                }
+                None => {
+                    log::trace!(
+                        "M47.2: .pex '{}' decompiled but unrecognized (base {base_form_id:08X})",
+                        script.name,
+                    );
+                }
+            }
+        }
+    }
+    any
+}
+
+/// Phase 17 — attach a [`LightFlicker`] component when the light's
+/// FNAM flags request flicker / pulse animation. No-op for static
+/// lights (the common case for sun proxies, exterior fill, mage
+/// spells), so the per-frame `animate_lights_system` iterates only
+/// the candle / torch / chandelier slice via sparse-set membership.
+///
+/// `base_translation` is captured from `ref_pos` so the animator can
+/// restore the un-jittered position each frame and the movement
+/// amplitude doesn't accumulate. Seeds `phase_offset_secs` from the
+/// entity id so a room full of identical candles doesn't flicker in
+/// lockstep — deterministic per session, scene-stable across cell
+/// reloads since EntityIds reset on cell unload.
+pub(super) fn attach_light_flicker_if_needed(
+    world: &mut World,
+    entity: byroredux_core::ecs::EntityId,
+    ld: &byroredux_plugin::esm::cell::LightData,
+    base_translation: byroredux_core::math::Vec3,
+) {
+    const FLICKER_MASK: u32 =
+        LIGHT_FLAG_FLICKER | LIGHT_FLAG_FLICKER_SLOW | LIGHT_FLAG_PULSE | LIGHT_FLAG_PULSE_SLOW;
+    if ld.flags & FLICKER_MASK == 0 {
+        return;
+    }
+    // Pre-Skyrim LIGH records truncate after byte 16 — `period_secs`
+    // reads as 0.0 then. Fall back to 0.5 s (the Skyrim vanilla
+    // default for candle FNAM authoring) so flicker still
+    // visibly fires on those records.
+    let period_secs = if ld.period_secs > 0.0 {
+        ld.period_secs
+    } else {
+        0.5
+    };
+    // EntityId-derived phase offset in [0, period). The wrap-around
+    // is automatic because the animator computes `phase = (t +
+    // phase_offset) / period` mod 1. Cheap, deterministic, no RNG.
+    let phase_offset_secs =
+        (entity.wrapping_mul(2654435761) as f32 / u32::MAX as f32) * period_secs;
+    world.insert(
+        entity,
+        LightFlicker {
+            period_secs,
+            intensity_amplitude: ld.intensity_amplitude,
+            movement_amplitude: ld.movement_amplitude,
+            base_translation: [base_translation.x, base_translation.y, base_translation.z],
+            phase_offset_secs,
+        },
+    );
+}

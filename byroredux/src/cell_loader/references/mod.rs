@@ -6,10 +6,7 @@
 //! path), expanding container placements, resolving base records,
 //! and committing the per-cell NifImportRegistry deltas.
 
-use byroredux_core::ecs::{
-    BillboardMode, GlobalTransform, LightFlicker, LightSource, Transform, World,
-    LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
-};
+use byroredux_core::ecs::{GlobalTransform, LightSource, Transform, World};
 use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
@@ -17,13 +14,26 @@ use byroredux_renderer::VulkanContext;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::asset_provider::{merge_bgsm_into_mesh, MaterialProvider, TextureProvider};
+use crate::asset_provider::{MaterialProvider, TextureProvider};
 
 use super::euler::euler_zup_to_quat_yup_refr;
 use super::load_order::{self, plugin_for_form_id};
 use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
 use super::refr::{build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements};
 use super::spawn::{light_radius_or_default, spawn_placed_instances};
+
+mod attach;
+mod import;
+
+use attach::{
+    attach_light_flicker_if_needed, attach_script_for_refr, trigger_volume_from_primitive,
+};
+pub(super) use import::parse_and_import_nif_pub;
+// Consumed only by the sibling `attach_points_spawn_tests` (#[cfg(test)]);
+// gate the re-export so it isn't an unused import in the non-test build.
+#[cfg(test)]
+pub(crate) use attach::{attach_points_component, child_attach_connections_component};
+use import::{parse_and_import_nif, parse_and_import_spt};
 
 pub(super) struct RefLoadResult {
     pub(super) entity_count: usize,
@@ -279,8 +289,9 @@ pub(super) fn load_references(
         // (`zup_to_yup_pos`) rather than an inline `(x, z, -y)` so a future
         // change to the canonical swap can't silently skip this hot REFR
         // placement path. Bit-identical to the old inline form.
-        let outer_pos =
-            Vec3::from_array(byroredux_core::math::coord::zup_to_yup_pos(placed_ref.position));
+        let outer_pos = Vec3::from_array(byroredux_core::math::coord::zup_to_yup_pos(
+            placed_ref.position,
+        ));
         let outer_rot = euler_zup_to_quat_yup_refr(
             placed_ref.rotation[0],
             placed_ref.rotation[1],
@@ -1044,731 +1055,13 @@ pub(super) fn load_references(
     }
 }
 
-/// Parse + import a NIF scene once. Returns `None` on parse failure
-/// or when the scene has zero useful geometry. All per-block parse
-/// warnings and the truncation message (if any) are emitted exactly
-/// once per unique NIF at this step — subsequent placements read
-/// from the cache without re-parsing. See runtime-spam incident from
-/// the `AnvilHeinrichOakenHallsHouse` trace.
-/// Public re-export of `parse_and_import_nif` for the precombined-mesh
-/// loader (#1188). `pub(super)` so only sibling modules in
-/// `cell_loader` can reach it.
-pub(super) fn parse_and_import_nif_pub(
-    nif_data: &[u8],
-    label: &str,
-    mat_provider: Option<&mut MaterialProvider>,
-    pool: &mut byroredux_core::string::StringPool,
-    mesh_resolver: Option<&dyn byroredux_nif::import::MeshResolver>,
-) -> Option<Arc<CachedNifImport>> {
-    parse_and_import_nif(nif_data, label, mat_provider, pool, mesh_resolver)
-}
-
-fn parse_and_import_nif(
-    nif_data: &[u8],
-    label: &str,
-    mat_provider: Option<&mut MaterialProvider>,
-    pool: &mut byroredux_core::string::StringPool,
-    mesh_resolver: Option<&dyn byroredux_nif::import::MeshResolver>,
-) -> Option<Arc<CachedNifImport>> {
-    let scene = match byroredux_nif::parse_nif(nif_data) {
-        Ok(s) => {
-            log::debug!("Parsed NIF '{}': {} blocks", label, s.len());
-            if s.truncated {
-                log::warn!(
-                    "  NIF '{}' parsed with truncation — downstream import will \
-                     work from the partial block list",
-                    label
-                );
-            }
-            s
-        }
-        Err(e) => {
-            log::warn!("Failed to parse NIF '{}': {}", label, e);
-            return None;
-        }
-    };
-
-    // BSXFlags bit 5 — semantics differ across game eras:
-    //   * Oblivion / FO3 / FNV (BSVER < FALLOUT4): bit 5 = `EditorMarker`.
-    //     The NIF is an invisible CK pin (XMarker, PrisonMarker, etc.)
-    //     and must not render.
-    //   * Skyrim / FO4 / FO76 / Starfield (BSVER >= FALLOUT4):
-    //     bit 5 = `MultiBoundNode` (Bethesda re-purposed it). A hint
-    //     that the NIF carries an authored BSMultiBound for culling.
-    //     Filtering on it drops legitimate architecture — F4 in the
-    //     2026-05-26 sweep was caused by `hitfloorsolidfull01.nif`
-    //     (FO4 Institute floor, BSXFlags = 0xA2, bit 5 set) and 14
-    //     siblings being wrongly classified as editor markers.
-    //
-    // For FO4+ we rely on the name-based check in `walk/mod.rs:1430`
-    // (`is_editor_marker`) which catches names matching `EditorMarker*`,
-    // `marker_*`, `MarkerX`, `marker:*`, `MapMarker` — every shipping
-    // FO4 editor-marker NIF authored a name in that family.
-    let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
-    // NifScene doesn't retain the header, so re-parse the header
-    // (~60 bytes) to read `bs_version`. Cheap relative to the full
-    // scene parse we already did.
-    let bsver = byroredux_nif::header::NifHeader::parse(nif_data)
-        .map(|(h, _)| h.user_version_2)
-        .unwrap_or(0);
-    let bsx_editor_marker = bsx & 0x20 != 0 && bsver < byroredux_nif::version::bsver::FALLOUT4;
-    if bsx_editor_marker {
-        log::debug!(
-            "Skipping editor marker NIF '{}' (BSXFlags 0x{:X}, BSVER {})",
-            label,
-            bsx,
-            bsver,
-        );
-        return None;
-    }
-    // Root-node NiAVObject.flags — surfaced for the placement-root
-    // SceneFlags row. See #1235 / LC-D1-NEW-01.
-    let root_flags = byroredux_nif::import::extract_root_flags(&scene);
-
-    let (mut meshes, collisions) =
-        byroredux_nif::import::import_nif_with_collision_and_resolver(&scene, pool, mesh_resolver);
-    // FO4+ external material resolution (#493). Walk once at cache-fill
-    // time so every REFR sharing this NIF sees the merged texture paths.
-    // NIF fields take precedence; only empty slots are filled from the
-    // resolved BGSM/BGEM chain.
-    if let Some(provider) = mat_provider {
-        for mesh in &mut meshes {
-            merge_bgsm_into_mesh(mesh, provider, pool);
-        }
-    }
-    let lights = byroredux_nif::import::import_nif_lights(&scene);
-    let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
-    let embedded_clip = byroredux_nif::anim::import_embedded_animations(&scene);
-    // Cell-load path doesn't yet attach `Name` components or a
-    // per-placement subtree root to spawned mesh entities, so the
-    // AnimationStack's name-keyed subtree lookup can't anchor onto the
-    // flat-spawn hierarchy. Clips extracted here are captured on the
-    // cache entry for a follow-up wiring pass (add placement-root
-    // entities + parent meshes under them, then attach a scoped
-    // AnimationPlayer per placement). See #261. The loose-NIF
-    // `load_nif_bytes` path already consumes embedded clips end-to-end.
-    if let Some(ref clip) = embedded_clip {
-        log::debug!(
-            "NIF '{}' has {} embedded controllers ({} float + {} color + {} bool) \
-             — captured on cache; cell-loader spawn wiring is a follow-up",
-            label,
-            clip.float_channels.len() + clip.color_channels.len() + clip.bool_channels.len(),
-            clip.float_channels.len(),
-            clip.color_channels.len(),
-            clip.bool_channels.len(),
-        );
-    }
-    // #1215 / D2 FIND-1 — surface zero-contribution imports loudly. A
-    // NIF that parses cleanly but yields no meshes / collisions / lights /
-    // emitters / clips is almost always either a CSG-deferred precombined
-    // `_oc.nif` (Shared variant, geometry in companion `.csg` blob —
-    // #1188) or a malformed scene. Pre-#1215 these were silently
-    // returned as empty `CachedNifImport` entries and the operator
-    // hit a "props in a void" symptom downstream with no log clue.
-    // The fix is observability-only — cache invariants unchanged.
-    if meshes.is_empty()
-        && collisions.is_empty()
-        && lights.is_empty()
-        && particle_emitters.is_empty()
-        && embedded_clip.is_none()
-    {
-        log::warn!(
-            "NIF '{}' imported with zero meshes / collisions / lights / \
-             emitters / clips — likely CSG-deferred (`_oc.nif` Shared \
-             variant, #1188) or pure marker scene",
-            label,
-        );
-    }
-    // Phase 18 — walk the scene graph for a flame-marker node and
-    // capture its world position relative to the root. Most Skyrim
-    // candles + chandeliers + torches author this as a `Flame01` /
-    // `AttachFire` / `AttachLight` NiNode child of the root; the
-    // ESM-fallback light should sit at that offset, not at the
-    // placement root. The nodes array doesn't survive into
-    // `CachedNifImport`, so the offset is computed once here and
-    // stored as `flame_attach_offset` for the spawn site to read.
-    let flame_attach_offset = find_flame_attach_offset(&scene);
-
-    // #985 / #1594 — materialize the FO4+ weapon-mod attach graph. The flat
-    // import drops the node array, so pull the `BSConnectPoint` blocks
-    // straight off the parsed scene (the transforms are already Y-up — the
-    // extractor converts) and intern them into the ECS components here,
-    // where the StringPool lives. The spawn site stamps them onto the
-    // placement root. `None` for the dominant non-modular case.
-    let attach_points = byroredux_nif::import::extract_attach_points(&scene)
-        .map(|pts| attach_points_component(&pts, pool));
-    let child_attach_connections = byroredux_nif::import::extract_child_attach_connections(&scene)
-        .map(|c| child_attach_connections_component(&c, pool));
-
-    Some(Arc::new(CachedNifImport {
-        meshes,
-        collisions,
-        lights,
-        particle_emitters,
-        embedded_clip,
-        // NIF cell-loader path leaves billboard wiring to a follow-up —
-        // imported.nodes here represent the whole scene graph, not the
-        // placement root, so we'd need a "which node corresponds to the
-        // REFR placement" heuristic. Tracked alongside #994.
-        placement_root_billboard: None,
-        // #1214 / D1-NEW-03 — surface the BSXFlags bits on the cache
-        // entry so the spawn site can attach a `BSXFlags` ECS row on
-        // the placement root. The editor-marker bit (0x20) is consumed
-        // above as an early-return; the remaining bits (havok-managed,
-        // ragdoll, articulated, externally-emitted-particles, etc.)
-        // ride through to the ECS for downstream consumers.
-        bsx_flags: bsx,
-        // #1235 / LC-D1-NEW-01 — root-node NiAVObject.flags for
-        // placement-root SceneFlags parity with the loose-NIF loader.
-        root_flags,
-        flame_attach_offset,
-        attach_points,
-        child_attach_connections,
-    }))
-}
-
-/// Intern an [`ImportedAttachPoint`] list into the `AttachPoints` ECS
-/// component (#985 / #1594). Attach-point names + parent-bone tags become
-/// `FixedString` handles so the equip-time `AttachPoints::find` lookup is an
-/// integer compare. Transforms arrive already Y-up from the extractor.
-pub(super) fn attach_points_component(
-    imported: &[byroredux_nif::import::ImportedAttachPoint],
-    pool: &mut byroredux_core::string::StringPool,
-) -> byroredux_core::ecs::components::AttachPoints {
-    use byroredux_core::ecs::components::{AttachPoint, AttachPoints};
-    AttachPoints {
-        points: imported
-            .iter()
-            .map(|p| AttachPoint {
-                name: pool.intern(p.name.as_str()),
-                // Empty `parent` → anchored on the host mesh root, not a bone.
-                parent_bone: (!p.parent.is_empty()).then(|| pool.intern(p.parent.as_str())),
-                translation: p.translation,
-                rotation: p.rotation,
-                scale: p.scale,
-            })
-            .collect(),
-    }
-}
-
-/// Intern an [`ImportedChildAttachConnections`] into the
-/// `ChildAttachConnections` ECS component (#985 / #1594).
-pub(super) fn child_attach_connections_component(
-    imported: &byroredux_nif::import::ImportedChildAttachConnections,
-    pool: &mut byroredux_core::string::StringPool,
-) -> byroredux_core::ecs::components::ChildAttachConnections {
-    byroredux_core::ecs::components::ChildAttachConnections {
-        connect_names: imported
-            .point_names
-            .iter()
-            .map(|n| pool.intern(n.as_str()))
-            .collect(),
-        skinned: imported.skinned,
-    }
-}
-
-/// Phase 18 — locate the flame-attach marker node in a parsed NIF
-/// scene. Scans every node's name for the canonical flame-marker
-/// substrings Skyrim's CK uses, then composes the node's world
-/// position relative to the placement root by walking its parent
-/// chain.
-///
-/// Names checked (case-insensitive substring match):
-/// - `flame` — `Flame01`, `FlameNode`, `CandleFlame`
-/// - `fire` — `FireNode01`, `AttachFire`
-/// - `attachlight` — `AttachLight01`
-///
-/// First match wins. Returns `None` when no matching node is
-/// authored — the typical case for static props that ship LIGH
-/// data only on the REFR placement (no NIF marker). The spawn
-/// path falls back to the placement-root position in that case,
-/// preserving pre-Phase-18 behaviour.
-///
-/// Cost: O(nodes). NIF scenes typically have 10-100 nodes; the
-/// search runs once per unique model path at cache fill time
-/// and the result is cached across every placement.
-pub(super) fn find_flame_attach_offset(scene: &byroredux_nif::scene::NifScene) -> Option<[f32; 3]> {
-    const PATTERNS: &[&str] = &["flame", "fire", "attachlight"];
-
-    // Walk raw NIF blocks. Limited to first-level lookup: returns
-    // the flame node's local translation (relative to its
-    // immediate parent — typically the scene root, where this
-    // composes correctly). Deep-nested flame nodes (some
-    // chandelier rigs) would need full parent-chain composition
-    // by following `children` references back to root; deferred
-    // until a visible bug surfaces.
-    for idx in 0..scene.blocks.len() {
-        // `NifScene::get_as` downcasts the boxed NiObject to the
-        // concrete type via `as_any().downcast_ref()`. NiNode
-        // carries `av.net.name` + `av.transform.translation` —
-        // everything the flame-marker search needs.
-        let Some(node) = scene.get_as::<byroredux_nif::blocks::node::NiNode>(idx) else {
-            continue;
-        };
-        let name = match node.name() {
-            Some(n) => n,
-            None => continue,
-        };
-        let name_lower = name.to_ascii_lowercase();
-        if PATTERNS.iter().any(|p| name_lower.contains(p)) {
-            let t = node.transform().translation;
-            // NIF is Z-up; the engine is Y-up. Route through the canonical
-            // array-form flip so this stays in lockstep with the importer
-            // (was an inline `[t.x, t.z, -t.y]` copy — #1318 / TD3-NEW-B).
-            return Some(byroredux_core::math::coord::zup_to_yup_pos([t.x, t.y, t.z]));
-        }
-    }
-    None
-}
-
-/// Parse a SpeedTree `.spt` byte slice and convert it to the same
-/// [`CachedNifImport`] shape every other model goes through. Lets the
-/// cache + spawn paths consume `.spt` REFRs without a parallel
-/// dispatch tree.
-///
-/// Today (Phase 1.4 + 1.5) the SPT importer ships the **placeholder
-/// fallback** — a single yaw-billboard quad textured with the leaf
-/// icon resolved from the matching `TreeRecord` (TREE.ICON wins,
-/// `.spt` tag 4003 falls back). When the geometry-tail decoder lands
-/// later, `byroredux_spt::import_spt_scene` will start producing
-/// real branch / frond meshes + per-leaf billboards without any
-/// signature change here.
-///
-/// Returns `None` on parse failure or when the importer produces no
-/// usable geometry (e.g. `.spt` magic missing) so subsequent REFRs
-/// of the same model don't re-attempt the doomed parse.
-fn parse_and_import_spt(
-    spt_data: &[u8],
-    label: &str,
-    tree_record: Option<&byroredux_plugin::esm::records::TreeRecord>,
-    pool: &mut byroredux_core::string::StringPool,
-) -> Option<Arc<CachedNifImport>> {
-    let scene = match byroredux_spt::parse_spt(spt_data) {
-        Ok(s) => {
-            // #1820 / SPT-NEW-01 — logged sanity check, not a dispatch
-            // input: `detect_variant` had zero production callers, which
-            // read as a live per-game hook while actually being inert
-            // (the placeholder importer below is variant-agnostic).
-            // Logging it here gives the Phase 2 geometry-tail decoder a
-            // corpus trail to consult once it needs Oblivion-vs-FO3/FNV
-            // body disambiguation, without changing today's behaviour.
-            let variant = byroredux_spt::detect_variant(spt_data);
-            log::debug!(
-                "Parsed SPT '{}': {} entries, tail at offset {}, variant={}",
-                label,
-                s.entries.len(),
-                s.tail_offset,
-                variant.tag(),
-            );
-            if !s.unknown_tags.is_empty() {
-                log::debug!(
-                    "  SPT '{}' bailed at unknown tag {} (offset {}) — \
-                     parameter section partial; placeholder still renders",
-                    label,
-                    s.unknown_tags[0].0,
-                    s.unknown_tags[0].1,
-                );
-            }
-            s
-        }
-        Err(e) => {
-            log::warn!("Failed to parse SPT '{}': {}", label, e);
-            return None;
-        }
-    };
-
-    // Build SptImportParams from the matching TREE record. Every
-    // field defaults gracefully when the record is absent — a `.spt`
-    // referenced from a stub TREE (or from non-TREE content) still
-    // gets a generic-sized placeholder.
-    let leaf_texture_override = tree_record
-        .map(|t| t.leaf_texture.as_str())
-        .filter(|s| !s.is_empty());
-
-    let bounds = tree_record.and_then(|t| t.bounds).map(|b| {
-        let min = [b.min[0] as f32, b.min[1] as f32, b.min[2] as f32];
-        let max = [b.max[0] as f32, b.max[1] as f32, b.max[2] as f32];
-        (min, max)
-    });
-
-    // Wind sensitivity / strength would come from CNAM, not BNAM
-    // (BNAM is billboard-card width/height per UESP). CNAM semantics
-    // aren't pinned down yet — Phase 2 wires it. Leave None so the
-    // placeholder doesn't pretend to know the wind response.
-    let wind = None;
-
-    let form_id = tree_record.map(|t| t.form_id);
-
-    // #1001 — Oblivion ships MODB on 100 % of TREE records and OBND
-    // on none, so the placeholder size fallback needs MODB to size
-    // Cyrodiil trees correctly (vanilla MODB range 157–3621 game
-    // units). FO3/FNV are inverse: 100 % OBND, 0 % MODB. Surface both
-    // and let `compute_billboard_size` pick its precedence.
-    let bound_radius = tree_record.map(|t| t.bound_radius).filter(|r| *r > 0.0);
-
-    // #1002 — BNAM (FO3/FNV billboard width × height) as a fallback
-    // BELOW OBND. Corpus inspection (2026-05-13) showed BNAM clamps
-    // tall trees vs their physical OBND extent (e.g. `WhiteOak01`
-    // BNAM 768×768 vs OBND 802×1567), so OBND wins for the
-    // whole-tree placeholder. BNAM only reaches `compute_billboard_size`
-    // when OBND is absent — a rare mod-content case in FO3/FNV.
-    let billboard_size = tree_record.and_then(|t| t.billboard_size);
-
-    let params = byroredux_spt::SptImportParams {
-        leaf_texture_override,
-        bounds,
-        wind,
-        form_id,
-        bound_radius,
-        billboard_size,
-    };
-
-    let imported = byroredux_spt::import_spt_scene(&scene, &params, pool);
-
-    // #994 — the placeholder root node is authored with
-    // `billboard_mode = Some(BsRotateAboutUp)` so the cell-loader spawn
-    // can attach a `Billboard` ECS component to the placement root.
-    // Pre-#994 this field was dropped because `CachedNifImport` carried
-    // no node metadata; trees rendered as static quads facing whichever
-    // direction the REFR was authored at.
-    let placement_root_billboard = imported
-        .nodes
-        .first()
-        .and_then(|n| n.billboard_mode)
-        .map(BillboardMode::from_nif);
-
-    Some(Arc::new(CachedNifImport {
-        meshes: imported.meshes,
-        // No collisions / lights / particles / animation clips on
-        // the placeholder. Real branch geometry might emit a sphere
-        // collision (tree-trunk collider) once the geometry tail is
-        // decoded — follow-up sub-phase.
-        collisions: Vec::new(),
-        lights: Vec::new(),
-        particle_emitters: Vec::new(),
-        embedded_clip: None,
-        placement_root_billboard,
-        // SpeedTree `.spt` files carry no BSXFlags — they're a
-        // separate format outside the NIF block hierarchy. #1214.
-        bsx_flags: 0,
-        // SpeedTree `.spt` placeholders have no NiAVObject root, so no
-        // NiAVObject.flags to propagate. #1235 / LC-D1-NEW-01.
-        root_flags: 0,
-        // SpeedTree placeholders carry no flame markers — they're
-        // pure billboard quads. Phase 18.
-        flame_attach_offset: None,
-        // SpeedTree `.spt` is a separate format with no BSConnectPoint
-        // blocks. #1594.
-        attach_points: None,
-        child_attach_connections: None,
-    }))
-}
-
-/// M47.0 Phase 3b — attach script-state components to a freshly-spawned
-/// REFR's placement root. Three-stage lookup:
-///
-/// 1. `EsmIndex::base_record_script(base_form_id)` → SCPT form_id (or
-///    `None` if the base record has no script).
-/// 2. `EsmIndex.scripts.get(&script_form_id)` → `ScriptRecord` (or
-///    `None` if the cross-ref dangled — a real data issue, but
-///    survivable; logged at debug).
-/// 3. `ScriptRegistry.lookup(&script.editor_id)` → spawn fn (or
-///    `None` if M47.0 doesn't yet ship a handler for this script —
-///    by far the most common miss path, ~1 256 / 1 257 vanilla FO3
-///    scripts unregistered as of Phase 2).
-///
-/// Fall-through on every `None` is silent — see Phase 2 contract: M47.0
-/// only ships hand-translated equivalents for ~5 R5-prototype scripts;
-/// every other SCPT in vanilla content correctly reaches a "no spawner
-/// registered" leaf and contributes nothing observable.
-///
-/// The function takes `&mut World` because the spawner mutates it (each
-/// spawner does `query_mut::<…>().insert(entity, …)`). The
-/// `ScriptRegistry` resource borrow is scoped tightly so the spawner
-/// can re-borrow World freely.
-/// Build a world-space [`TriggerVolume`](byroredux_scripting::TriggerVolume)
-/// from a REFR's `XPRM` primitive + placement. `None` for non-containment
-/// shapes (line / portal / plane).
-///
-/// `XPRM` bounds are Bethesda **z-up half-extents** — the Creation Kit
-/// Primitive convention, consistent with `bhkBoxShape::aabb_half_extents`
-/// and the `XMBO` half-extent bound. Permute to engine y-up (the position
-/// swap is `[x, z, -y]`; extents are magnitudes, so the sign drops) and
-/// bake the REFR scale in, since the volume is stored in world space. For
-/// a sphere, `bounds[0]` is the radius (carried in `half_extents.x`).
-fn trigger_volume_from_primitive(
-    prim: &esm::cell::PrimitiveBounds,
-    center: Vec3,
-    rotation: Quat,
-    scale: f32,
-) -> Option<byroredux_scripting::TriggerVolume> {
-    use byroredux_scripting::{TriggerShape, TriggerVolume};
-    let shape = match prim.shape_type {
-        1 => TriggerShape::Box,
-        3 => TriggerShape::Sphere,
-        _ => return None,
-    };
-    let half_extents = Vec3::new(
-        prim.bounds[0].abs() * scale,
-        prim.bounds[2].abs() * scale,
-        prim.bounds[1].abs() * scale,
-    );
-    Some(TriggerVolume {
-        center,
-        half_extents,
-        rotation,
-        shape,
-        // SCR-D6-NEW-02 / #1817 — `None`, not `false`. `false` is
-        // indistinguishable from "known outside, primed" to
-        // `trigger_detection_system`; a player who loads already
-        // standing inside this volume would see a spurious
-        // `OnTriggerEnterEvent` on frame 1. `None` lets the detection
-        // system's first tick seed the real state silently instead.
-        occupant_inside: None,
-    })
-}
-
-/// Returns `true` when canonical behavior attached (either per-game arm
-/// recognized the script) — the cell loader counts these for its summary.
-fn attach_script_for_refr(
-    world: &mut byroredux_core::ecs::world::World,
-    entity: byroredux_core::ecs::EntityId,
-    base_form_id: u32,
-    index: &esm::records::EsmIndex,
-    refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
-) -> bool {
-    // Two mutually-exclusive per-game attach paths converge here. A
-    // record carries either a pre-Skyrim `SCRI` → SCPT (Obscript, the
-    // M47.0 registry path) or a Skyrim+ `VMAD` inline Papyrus block (the
-    // M47.2 decompile path), never both in vanilla content. Run both —
-    // each no-ops for the wrong era — and emit one `OnCellLoadEvent` if
-    // either attached canonical behavior. `refr_script_instance` carries
-    // the placed reference's OWN VMAD (#1737), attached additively with
-    // the base record's by `attach_vmad_scripts`.
-    let mut attached = attach_scpt_script(world, entity, base_form_id, index);
-    attached |= attach_vmad_scripts(world, entity, base_form_id, index, refr_script_instance);
-
-    if attached {
-        // M47.0 Phase 5 — emit OnCellLoadEvent on the freshly-attached
-        // entity so the script's first-tick init hook fires on the same
-        // frame the cell loads. Mirrors Papyrus `OnLoad` semantics. The
-        // marker is drained by `event_cleanup_system` at end-of-frame,
-        // so each script sees exactly one OnCellLoad per cell entry.
-        if let Some(mut q) = world.query_mut::<byroredux_scripting::OnCellLoadEvent>() {
-            q.insert(entity, byroredux_scripting::OnCellLoadEvent);
-        }
-    }
-    attached
-}
-
-/// FO3 / FNV / Oblivion path: resolve the base record's `SCRI` form id
-/// to its SCPT editor id, look up a hand-written M47.0 spawner in the
-/// [`ScriptRegistry`], and run it. Returns `true` when a spawner ran.
-fn attach_scpt_script(
-    world: &mut byroredux_core::ecs::world::World,
-    entity: byroredux_core::ecs::EntityId,
-    base_form_id: u32,
-    index: &esm::records::EsmIndex,
-) -> bool {
-    let Some(script_form_id) = index.base_record_script(base_form_id) else {
-        return false;
-    };
-    let Some(script) = index.scripts.get(&script_form_id) else {
-        // SCPT cross-ref dangled. Pre-#443 the SCPT records weren't
-        // parsed at all; post-#443 the index is populated, so a miss
-        // here is genuinely a broken plugin / parser bug rather than
-        // a missing-consumer story.
-        log::debug!(
-            "M47.0: SCRI {script_form_id:08X} on base {base_form_id:08X} not in index.scripts (dangling cross-ref)",
-        );
-        return false;
-    };
-    // Scope the registry borrow tightly — the spawn fn that comes back
-    // is a function pointer (Copy), so we can drop the borrow before
-    // invoking the spawner with `&mut World`.
-    let spawn_fn = {
-        let Some(registry) = world.try_resource::<byroredux_scripting::ScriptRegistry>() else {
-            // Engine init didn't insert the registry — a programming
-            // error. Log loudly the first time per process so the
-            // misconfiguration surfaces during cell load instead of
-            // silently disabling every script in the engine.
-            log::error!(
-                "M47.0: ScriptRegistry resource missing — \
-                 byroredux_scripting::register and ScriptRegistry init \
-                 must run before cell load. Script attach disabled."
-            );
-            return false;
-        };
-        registry.lookup(&script.editor_id)
-    };
-    let Some(spawn_fn) = spawn_fn else {
-        // Most common miss path: a real SCPT with no Phase-2 handler.
-        // log::trace! so it's available with `--RUST_LOG=trace` for
-        // debugging without polluting INFO/DEBUG-level logs (a 1 200-
-        // REFR cell load would emit ~1 200 misses).
-        log::trace!(
-            "M47.0: no spawner registered for SCPT editor_id '{}' (form {:08X})",
-            script.editor_id,
-            script_form_id,
-        );
-        return false;
-    };
-    spawn_fn(world, entity);
-    log::debug!(
-        "M47.0: attached script '{}' (SCPT {:08X}) to entity {entity:?} via base {base_form_id:08X}",
-        script.editor_id,
-        script_form_id,
-    );
-    true
-}
-
-/// Skyrim+ path: for each script named in the record's `VMAD`, fetch its
-/// compiled `.pex` from the script archive, decompile it, and run it
-/// through the recognizer chain
-/// ([`byroredux_scripting::translate_pex`]). A recognized script inserts
-/// its canonical ECS behavior; an unrecognized or missing one is a
-/// silent miss. Returns `true` when at least one script was recognized.
-///
-/// Two VMAD sources are processed **additively** (SCR-D7-01 / #1737):
-/// `refr_script_instance` is the placed reference's OWN `VMAD` (Skyrim+
-/// objectReference override scripts — a uniquely-scripted lever / quest
-/// item / activator), and the base record's `VMAD` is looked up from
-/// `index`. Both are attached, mirroring Bethesda's additive
-/// objectReference semantics; on a name collision the REFR's script wins
-/// (it is processed first and the base copy is skipped), so a placement
-/// can override a base script's binding without dropping the rest.
-///
-/// `owning_quest` is `None` here: base-record-attached scripts (lever,
-/// door, trap activators; scripted containers / NPCs) bind their quest
-/// through a VMAD `Quest` property, not an alias. Alias-attached scripts
-/// (which need the owning quest id) flow through the quest-alias attach
-/// path, not this one.
-fn attach_vmad_scripts(
-    world: &mut byroredux_core::ecs::world::World,
-    entity: byroredux_core::ecs::EntityId,
-    base_form_id: u32,
-    index: &esm::records::EsmIndex,
-    refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
-) -> bool {
-    // Fast-out before any per-REFR work when no `--scripts-bsa` was
-    // supplied (the common case for mesh-only / FO3-FNV launches): no
-    // archive means every `.pex` lookup would miss anyway.
-    let have_archive = world
-        .try_resource::<crate::asset_provider::ScriptProvider>()
-        .is_some_and(|p| !p.is_empty());
-    if !have_archive {
-        return false;
-    }
-    let base_script_instance = index.base_record_script_instance(base_form_id);
-    // Nothing to attach if neither the REFR nor its base record carries a
-    // VMAD. Pre-#1737 this returned on the base lookup alone, so a REFR
-    // with its own override VMAD over a script-less base attached nothing.
-    if base_script_instance.is_none() && refr_script_instance.is_none() {
-        return false;
-    }
-    let game = index.game;
-    let mut any = false;
-    // REFR-own VMAD first so it wins name collisions; then the base record.
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for script_instance in [refr_script_instance, base_script_instance]
-        .into_iter()
-        .flatten()
-    {
-        for script in &script_instance.scripts {
-            if !seen.insert(script.name.as_str()) {
-                // Same script name already attached from the REFR override —
-                // skip the base record's copy (REFR wins).
-                continue;
-            }
-            // Scope the provider borrow: extract the owned `.pex` bytes,
-            // then drop the resource read before the `&mut World` spawn.
-            let bytes = {
-                let provider = world.resource::<crate::asset_provider::ScriptProvider>();
-                provider.extract_pex(&script.name)
-            };
-            let Some(bytes) = bytes else {
-                log::trace!(
-                    "M47.2: .pex '{}' not in script archive (base {base_form_id:08X})",
-                    script.name,
-                );
-                continue;
-            };
-            // `script_instance` borrows `index` / the placed ref (not
-            // `world`), so it stays valid across the `&mut World` spawn.
-            match byroredux_scripting::translate_pex(&bytes, game, Some(script_instance), None) {
-                Some(recognized) => {
-                    log::debug!(
-                        "M47.2: recognized '{}' from .pex '{}' on base {base_form_id:08X} → entity {entity:?}",
-                        recognized.archetype,
-                        script.name,
-                    );
-                    (recognized.spawn)(world, entity);
-                    any = true;
-                }
-                None => {
-                    log::trace!(
-                        "M47.2: .pex '{}' decompiled but unrecognized (base {base_form_id:08X})",
-                        script.name,
-                    );
-                }
-            }
-        }
-    }
-    any
-}
-
-/// Phase 17 — attach a [`LightFlicker`] component when the light's
-/// FNAM flags request flicker / pulse animation. No-op for static
-/// lights (the common case for sun proxies, exterior fill, mage
-/// spells), so the per-frame `animate_lights_system` iterates only
-/// the candle / torch / chandelier slice via sparse-set membership.
-///
-/// `base_translation` is captured from `ref_pos` so the animator can
-/// restore the un-jittered position each frame and the movement
-/// amplitude doesn't accumulate. Seeds `phase_offset_secs` from the
-/// entity id so a room full of identical candles doesn't flicker in
-/// lockstep — deterministic per session, scene-stable across cell
-/// reloads since EntityIds reset on cell unload.
-fn attach_light_flicker_if_needed(
-    world: &mut World,
-    entity: byroredux_core::ecs::EntityId,
-    ld: &byroredux_plugin::esm::cell::LightData,
-    base_translation: byroredux_core::math::Vec3,
-) {
-    const FLICKER_MASK: u32 =
-        LIGHT_FLAG_FLICKER | LIGHT_FLAG_FLICKER_SLOW | LIGHT_FLAG_PULSE | LIGHT_FLAG_PULSE_SLOW;
-    if ld.flags & FLICKER_MASK == 0 {
-        return;
-    }
-    // Pre-Skyrim LIGH records truncate after byte 16 — `period_secs`
-    // reads as 0.0 then. Fall back to 0.5 s (the Skyrim vanilla
-    // default for candle FNAM authoring) so flicker still
-    // visibly fires on those records.
-    let period_secs = if ld.period_secs > 0.0 {
-        ld.period_secs
-    } else {
-        0.5
-    };
-    // EntityId-derived phase offset in [0, period). The wrap-around
-    // is automatic because the animator computes `phase = (t +
-    // phase_offset) / period` mod 1. Cheap, deterministic, no RNG.
-    let phase_offset_secs =
-        (entity.wrapping_mul(2654435761) as f32 / u32::MAX as f32) * period_secs;
-    world.insert(
-        entity,
-        LightFlicker {
-            period_secs,
-            intensity_amplitude: ld.intensity_amplitude,
-            movement_amplitude: ld.movement_amplitude,
-            base_translation: [base_translation.x, base_translation.y, base_translation.z],
-            phase_offset_secs,
-        },
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Test-only symbols not referenced by production code in this module
+    // (they'd warn as unused at file scope). #1877 split.
+    use super::attach::attach_vmad_scripts;
+    use byroredux_core::ecs::BillboardMode;
     use byroredux_core::string::StringPool;
 
     /// `XPRM` box primitive → world-space `TriggerVolume`: bounds are
@@ -1904,11 +1197,23 @@ mod tests {
         let entity = world.spawn();
 
         // No ScriptProvider resource at all.
-        assert!(!attach_vmad_scripts(&mut world, entity, 0x0000_1234, &index, None));
+        assert!(!attach_vmad_scripts(
+            &mut world,
+            entity,
+            0x0000_1234,
+            &index,
+            None
+        ));
 
         // An empty ScriptProvider (flag absent) → same clean miss.
         world.insert_resource(crate::asset_provider::build_script_provider(&[]));
-        assert!(!attach_vmad_scripts(&mut world, entity, 0x0000_1234, &index, None));
+        assert!(!attach_vmad_scripts(
+            &mut world,
+            entity,
+            0x0000_1234,
+            &index,
+            None
+        ));
     }
 
     /// `attach_script_for_refr` on a base form with no SCPT and no VMAD
@@ -1946,10 +1251,7 @@ mod tests {
         );
         // Vanilla exterior corner (~±233k, Skyrim Tamriel) — clear.
         assert_eq!(
-            worldspace_extent_over_rt_ceiling(
-                Vec3::splat(-233_000.0),
-                Vec3::splat(233_000.0),
-            ),
+            worldspace_extent_over_rt_ceiling(Vec3::splat(-233_000.0), Vec3::splat(233_000.0),),
             None,
         );
         // Mega-worldspace past 2^20 — flagged, returns the max |coord|.
@@ -2034,7 +1336,7 @@ mod tests {
     /// loop has into its own per-NPC spawn cost.
     #[test]
     fn npc_spawn_call_sites_are_wall_clock_timed() {
-        let full_src = include_str!("references.rs");
+        let full_src = include_str!("mod.rs");
         // Slice off `mod tests` itself — this test's own source text
         // contains the literal strings it's searching for, which would
         // otherwise self-match and inflate the counts.
@@ -2049,7 +1351,9 @@ mod tests {
             .find("crate::npc_spawn::spawn_prebaked_npc_entity(")
             .expect("load_references must call spawn_prebaked_npc_entity");
 
-        let timer_starts: Vec<_> = src.match_indices("let spawn_t0 = std::time::Instant::now();").collect();
+        let timer_starts: Vec<_> = src
+            .match_indices("let spawn_t0 = std::time::Instant::now();")
+            .collect();
         assert_eq!(
             timer_starts.len(),
             2,
@@ -2057,7 +1361,9 @@ mod tests {
              and pre-baked-FaceGen); #1798 / D7-NEW-01"
         );
         assert!(
-            timer_starts.iter().any(|&(pos, _)| pos < runtime_facegen_pos),
+            timer_starts
+                .iter()
+                .any(|&(pos, _)| pos < runtime_facegen_pos),
             "runtime-FaceGen dispatch (spawn_npc_entity) must be preceded by a spawn_t0 timer"
         );
         assert!(
