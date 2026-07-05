@@ -287,9 +287,12 @@ pub mod bsver {
     /// Pre-Bethesda authoring tools (Morrowind era, NifSkope older
     /// builds) — every Bethesda title is `>= FO3_FNV`.
     pub const PRE_BETHESDA: u32 = 0;
-    /// `bhkRigidBody` carries two trailing `Unknown Float 1/2` fields on
-    /// content with `bsver < RIGID_BODY_EXTRA_FLOATS` (nif.xml
-    /// `#BSVER# #LT# 9`). Pre-collision-v2 Oblivion dev builds
+    /// `bhkBlendCollisionObject` carries two trailing `Unknown Float 1/2`
+    /// fields on content with `bsver < RIGID_BODY_EXTRA_FLOATS` (nif.xml
+    /// `bhkBlendCollisionObject`, `#BSVER# #LT# 9`) — read on the `is_blend`
+    /// path in `blocks/collision/collision_object.rs`, NOT on `bhkRigidBody`.
+    /// (The const name predates the correct attribution; it gates the blend
+    /// object's extra floats.) Pre-collision-v2 Oblivion dev builds
     /// (e.g. boxtest skeleton.nif, bsver=6) hit this; standard Oblivion
     /// (bsver=11) does not. See #549.
     pub const RIGID_BODY_EXTRA_FLOATS: u32 = 9;

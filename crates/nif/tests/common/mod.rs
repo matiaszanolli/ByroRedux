@@ -506,17 +506,31 @@ pub struct BlockCounts {
     pub unknown: usize,
 }
 
-/// Per-header-type histogram across a corpus of parsed scenes.
+/// Per-type histogram across a corpus of parsed scenes.
 ///
-/// Attribution rule: every block in the scene is keyed by its
-/// **header-advertised type name** (i.e. the value the writer put in
-/// the block-type table). When that block downcasts to `NiUnknown` it
-/// contributes to `unknown[type_name]`; when it dispatched to a real
-/// parser it contributes to `parsed[block_type_name()]`. Both share a
-/// key, so a regressed parser that starts under-consuming a previously
-/// well-handled type shows up as `parsed: N->N-k, unknown: 0->k` for
-/// the same key — exactly the signal the per-block baseline test
-/// gates on.
+/// Attribution rule (#1883 / NIF-D3-001 — the two branches key on
+/// DIFFERENT names, they do not share a key):
+/// - A block that downcast to `NiUnknown` contributes to
+///   `unknown[type_name]`, keyed on the **header-advertised** name (the
+///   value the writer put in the block-type table).
+/// - A block that dispatched to a real parser contributes to
+///   `parsed[block_type_name()]`, keyed on the **parsed struct's** name.
+///
+/// For most types these coincide, so a regressed parser that starts
+/// under-consuming shows as `parsed: N->N-k` on the type's key while a new
+/// `unknown[type]` key appears — both caught by [`compare_histograms`].
+/// But several parsers register a shared *alias* struct name via the
+/// implicit `impl_ni_object!` form: ~28 `NiPSys*Modifier` header types all
+/// report `block_type_name() == "NiPSysBlock"` (and 5 emitter types report
+/// `"NiPSysEmitter"`), so their `parsed` counts AGGREGATE into one bucket
+/// that never appears in any NIF header table. Per-type *resolution* is
+/// therefore lost on the parsed side for those families (a member
+/// regressing only moves the `NiPSysBlock` aggregate). The regression is
+/// still CAUGHT — the regressed member lands in `unknown[<header name>]`,
+/// a distinct key `compare_histograms` (union-keyed) flags — but the
+/// harness can't name *which* modifier without keying the parsed side on
+/// the header name too (deferred: `NifScene` does not carry per-block
+/// header names). See also project memory "FO76 silently RED on NiPSysBlock".
 #[derive(Debug, Default, Clone)]
 pub struct PerBlockHistogram {
     pub counts: BTreeMap<String, BlockCounts>,
@@ -633,14 +647,28 @@ pub enum BaselineRegression {
 /// Compare a freshly-built histogram against a baseline. Improvements
 /// (current `unknown` < baseline, or current `parsed` > baseline) are
 /// silent — regenerate the baseline when fixing a parser. Returns one
-/// entry per regressed type. New types absent from the baseline are
-/// always accepted (they can only add coverage).
+/// entry per regressed type. A type that is new-in-current and only
+/// *parses* adds coverage and stays silent; a type that is new-in-current
+/// and lands in `NiUnknown` is a real coverage regression and IS flagged.
+///
+/// #1883 / NIF-D3-002 — this iterates the UNION of baseline and current
+/// keys. The prior version iterated only baseline keys, so a block type
+/// absent from the baseline that started landing in `NiUnknown` had no
+/// baseline key and slipped the gate entirely. Combined with the alias
+/// collapse (see [`PerBlockHistogram`]), an offsetting alias-family swap
+/// could keep both `total_unknown` and the aggregate `parsed` count flat
+/// while a real member regression hid in a new `NiUnknown` key. Because
+/// `NiUnknown` is keyed on the *header-advertised* name, that new key is
+/// now visible here and fires `UnknownGrew { baseline: 0, current: k }`.
 pub fn compare_histograms(
     current: &PerBlockHistogram,
     baseline: &PerBlockHistogram,
 ) -> Vec<BaselineRegression> {
     let mut regressions = Vec::new();
-    for (name, base_counts) in &baseline.counts {
+    let names: std::collections::BTreeSet<&String> =
+        baseline.counts.keys().chain(current.counts.keys()).collect();
+    for name in names {
+        let base_counts = baseline.counts.get(name).copied().unwrap_or_default();
         let cur_counts = current.counts.get(name).copied().unwrap_or_default();
         if cur_counts.unknown > base_counts.unknown {
             regressions.push(BaselineRegression::UnknownGrew {
@@ -849,10 +877,29 @@ mod tests {
     }
 
     #[test]
-    fn types_new_in_current_are_silent() {
+    fn types_new_in_current_that_only_parse_are_silent() {
+        // A brand-new type that dispatches to a real parser adds coverage.
         let baseline = hist_of(&[("NiNode", 10, 0)]);
         let current = hist_of(&[("NiNode", 10, 0), ("NiNewBlock", 3, 0)]);
         assert!(compare_histograms(&current, &baseline).is_empty());
+    }
+
+    #[test]
+    fn new_type_landing_in_unknown_is_a_regression() {
+        // #1883 / NIF-D3-002 — a block type absent from the baseline that
+        // starts landing in NiUnknown must be flagged. Pre-fix, iterating
+        // only baseline keys made this current-only key invisible and it
+        // slipped both the per-block and (via an offsetting alias swap) the
+        // unknown-ceiling gates.
+        let baseline = hist_of(&[("NiNode", 10, 0)]);
+        let current = hist_of(&[("NiNode", 10, 0), ("NiPSysBombModifier", 0, 7)]);
+        let regs = compare_histograms(&current, &baseline);
+        assert_eq!(regs.len(), 1);
+        assert!(matches!(
+            regs[0],
+            BaselineRegression::UnknownGrew { ref type_name, baseline: 0, current: 7 }
+                if type_name == "NiPSysBombModifier"
+        ));
     }
 
     #[test]

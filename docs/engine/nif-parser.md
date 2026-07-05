@@ -17,7 +17,7 @@ Source: [`crates/nif/src/`](../../crates/nif/src/)
 
 | | |
 |---|---|
-| Dispatch table       | 254 match arms covering 310 distinct block-type names ([`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) — the live arm count is the source of truth; this figure drifts) |
+| Dispatch table       | hand-written `match type_name` in [`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) `parse_block_inner` — **the live arm count is the source of truth; count fresh, this figure drifts.** ~260 arms covering ~309 distinct block-type-name literals (2026-07-05). |
 | Game variants supported | 8 (Morrowind → Starfield) via the [`NifVariant`](../../crates/nif/src/version.rs) enum |
 | Tests (unit)         | ~738 in-crate `#[test]`s with synthetic byte streams (per-parser regressions + the 67-test `dispatch_tests` suite + per-category `*_tests.rs` siblings) |
 | Integration sweeps   | 7 games, 100% recoverable each ([`tests/parse_real_nifs.rs`](../../crates/nif/tests/parse_real_nifs.rs) + per-block-baseline / heap-bound / translation-completeness siblings) |
@@ -275,9 +275,9 @@ regression.
 ## Block coverage
 
 Block types fall into a handful of families. The dispatch table in
-[`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) currently carries
-254 match arms covering 310 distinct type-name literals (verify the live
-count from source — it grows). Coverage summary:
+[`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) `parse_block_inner`
+carries ~260 match arms covering ~309 distinct type-name literals
+(2026-07-05 — verify the live count from source; it grows). Coverage summary:
 
 ### Nodes and geometry
 `NiNode`, `BSFadeNode`, `BSLeafAnimNode`, `BSTreeNode`, `BSMultiBoundNode`,
