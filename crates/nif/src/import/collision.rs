@@ -94,8 +94,18 @@ pub fn extract_collision(
     scene: &NifScene,
     collision_ref: BlockRef,
 ) -> Option<(CollisionShape, RigidBodyData)> {
-    let coll_idx = collision_ref.index()?;
-    let block = scene.get(coll_idx)?;
+    // #1874/#1832 diagnostic — trace level since "no collision authored on
+    // this node" is the overwhelmingly common case; enable via
+    // `RUST_LOG=byroredux_nif::import::collision=trace` to get a per-node
+    // census of collision_ref presence for a suspiciously sparse cell.
+    let Some(coll_idx) = collision_ref.index() else {
+        log::trace!("extract_collision: no collision_ref on this AVObject");
+        return None;
+    };
+    let Some(block) = scene.get(coll_idx) else {
+        log::debug!("extract_collision: collision_ref {coll_idx} does not resolve to a block");
+        return None;
+    };
 
     // Dispatch on the concrete bhk*CollisionObject subclass. The three live
     // arms differ in what they wrap and which game line ships them — see the
@@ -158,16 +168,99 @@ fn havok_motion_type(raw: u8) -> MotionType {
 /// still covers most FO4+ rigid bodies that author the legacy chain. Body of
 /// the original `extract_collision` — preserved bit-for-bit so the refactor
 /// is a no-op on every existing classic-bhk fixture.
+/// #1874/#1832 diagnostic-only — coarse "how big is this shape" summary so
+/// a debug-level census can distinguish small clutter placeholders from
+/// large architecture pieces without a separate inspection pass. Not used
+/// outside logging.
+fn shape_size_descriptor(shape: &CollisionShape) -> String {
+    match shape {
+        CollisionShape::Ball { radius } => format!("Ball(r={radius:.1})"),
+        CollisionShape::Cuboid { half_extents } => format!(
+            "Cuboid(half_extents=[{:.1},{:.1},{:.1}])",
+            half_extents.x, half_extents.y, half_extents.z
+        ),
+        CollisionShape::Capsule {
+            half_height,
+            radius,
+        } => {
+            format!("Capsule(half_height={half_height:.1}, r={radius:.1})")
+        }
+        CollisionShape::Cylinder {
+            half_height,
+            radius,
+        } => {
+            format!("Cylinder(half_height={half_height:.1}, r={radius:.1})")
+        }
+        CollisionShape::ConvexHull { vertices } => {
+            let bbox = aabb_extent(vertices.iter().copied());
+            format!(
+                "ConvexHull({} verts, bbox={:.1}x{:.1}x{:.1})",
+                vertices.len(),
+                bbox.x,
+                bbox.y,
+                bbox.z
+            )
+        }
+        CollisionShape::TriMesh { vertices, indices } => {
+            let bbox = aabb_extent(vertices.iter().copied());
+            format!(
+                "TriMesh({} verts, {} tris, bbox={:.1}x{:.1}x{:.1})",
+                vertices.len(),
+                indices.len(),
+                bbox.x,
+                bbox.y,
+                bbox.z
+            )
+        }
+        CollisionShape::Compound { children } => {
+            format!("Compound({} children)", children.len())
+        }
+    }
+}
+
+/// Bounding-box extent (max-min per axis) of a point cloud, `Vec3::ZERO` if empty.
+fn aabb_extent(points: impl Iterator<Item = Vec3>) -> Vec3 {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    let mut any = false;
+    for p in points {
+        any = true;
+        min = min.min(p);
+        max = max.max(p);
+    }
+    if any {
+        max - min
+    } else {
+        Vec3::ZERO
+    }
+}
+
 fn extract_from_classic(
     scene: &NifScene,
     coll_obj: &BhkCollisionObject,
 ) -> Option<(CollisionShape, RigidBodyData)> {
-    let body_idx = coll_obj.body_ref.index()?;
-    let body = scene.get_as::<BhkRigidBody>(body_idx)?;
+    // #1874/#1832 diagnostic — these three early-returns previously had no
+    // logging at all, so a classic BhkCollisionObject that fails to produce
+    // a collider left no trace. See the module-level trace/debug note on
+    // `extract_collision`.
+    let Some(body_idx) = coll_obj.body_ref.index() else {
+        log::debug!("extract_from_classic: BhkCollisionObject has no body_ref");
+        return None;
+    };
+    let Some(body) = scene.get_as::<BhkRigidBody>(body_idx) else {
+        log::debug!("extract_from_classic: body_ref {body_idx} does not resolve to a BhkRigidBody");
+        return None;
+    };
 
     let scale = scene.havok_scale;
     let mut visited = HashSet::new();
-    let mut shape = resolve_shape(scene, body.shape_ref, &mut visited)?;
+    let Some(mut shape) = resolve_shape(scene, body.shape_ref, &mut visited) else {
+        log::debug!(
+            "extract_from_classic: body {body_idx}'s shape_ref failed to resolve to a CollisionShape \
+             (unsupported/corrupt shape tree — see resolve_shape debug logs)"
+        );
+        return None;
+    };
 
     // Apply rigid body center-of-mass offset and orientation to the shape.
     // Static architecture typically has zero offset; dynamic objects (crates,
@@ -187,7 +280,34 @@ fn extract_from_classic(
         };
     }
 
-    let motion_type = havok_motion_type(body.motion_type);
+    let mut motion_type = havok_motion_type(body.motion_type);
+
+    // #1832/#1874 — a zero-mass "Dynamic"-per-enum body is Havok's
+    // convention for immovable world geometry, not a real physics object:
+    // F=ma is undefined at m=0, so no physics engine actually integrates
+    // these — Havok's own runtime special-cases them, but Rapier doesn't,
+    // so a naive 1:1 enum mapping hands Rapier a genuine `Dynamic` body
+    // with no support under it. Confirmed live: Skyrim SE architecture
+    // (walls/floor/roof — large TriMesh shapes, e.g. 256×10×256 floor
+    // tiles) ships `motionType` raw values 2-5 (SPHERE/BOX_INERTIA family)
+    // with `mass=0`, gets built as `RigidBodyType::Dynamic`, spawns asleep
+    // (the exterior-freeze fix), then free-falls the instant the player's
+    // KCC wakes it by standing on it — the root cause of the TES-family
+    // (Oblivion/Skyrim) "character never grounds" bug. FNV/FO3 ship the
+    // same architecture as genuinely `motionType=7` (Static); FO4+ never
+    // reaches this path at all (NP-collision stub + render-geometry
+    // trimesh fallback). A real dynamic prop (crate, plate, ragdoll bone)
+    // always has non-zero authored mass, so this only reclassifies the
+    // physically-nonsensical case.
+    if motion_type == MotionType::Dynamic && body.mass <= 0.0 {
+        log::debug!(
+            "extract_from_classic: body {body_idx} authored motionType={raw} (Dynamic-family) \
+             with mass=0 — treating as Static (immovable world geometry), shape={shape_desc}",
+            raw = body.motion_type,
+            shape_desc = shape_size_descriptor(&shape),
+        );
+        motion_type = MotionType::Static;
+    }
 
     let body_data = RigidBodyData {
         motion_type,
@@ -2317,6 +2437,103 @@ mod ragdoll_extract_tests {
         scene.blocks.push(sphere(1.0));
         scene.blocks.push(ragdoll_constraint(2, 6, 10.0));
         assert!(extract_ragdoll(&scene).is_some());
+    }
+
+    /// #1832/#1874 — a `BhkRigidBody` authored with a Dynamic-family
+    /// `motionType` (SPHERE/BOX_INERTIA, raw 2-5) but `mass == 0.0` must be
+    /// treated as immovable world geometry (`MotionType::Static`), not a
+    /// real Rapier `Dynamic` body. Confirmed live against vanilla Skyrim SE
+    /// architecture (WhiterunBanneredMare): 139 of 240 successfully-parsed
+    /// collision bodies in that cell match exactly this pattern — large
+    /// TriMesh floor/wall/roof shapes (e.g. 256×10×256 floor tiles), raw
+    /// motionType 2-5, mass=0 — which built as sleeping Dynamic bodies that
+    /// free-fell the instant the player's KCC woke them by standing on the
+    /// floor. This is the root cause of the TES-family (Oblivion/Skyrim)
+    /// "character never grounds" bug (RT-2 / #1832), which also manifests
+    /// as a ghosted-camera artifact (#1874) via the character-controller's
+    /// camera-follow path never signalling a temporal discontinuity.
+    #[test]
+    fn zero_mass_dynamic_body_becomes_static() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(coll_obj(1)); // [0]
+        scene.blocks.push(Box::new(BhkRigidBody {
+            shape_ref: BlockRef(2),
+            havok_filter: 0,
+            translation: [0.0; 4],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            linear_velocity: [0.0; 4],
+            angular_velocity: [0.0; 4],
+            inertia_tensor: [0.0; 12],
+            center_of_mass: [0.0; 4],
+            mass: 0.0,
+            linear_damping: 0.1,
+            angular_damping: 0.05,
+            friction: 0.3,
+            restitution: 0.4,
+            max_linear_velocity: 0.0,
+            max_angular_velocity: 0.0,
+            penetration_depth: 0.0,
+            motion_type: 4, // BOX_INERTIA — Dynamic family per havok_motion_type
+            deactivator_type: 0,
+            solver_deactivation: 0,
+            quality_type: 0,
+            constraint_refs: Vec::new(),
+            body_flags: 0,
+        })); // [1]
+        scene.blocks.push(sphere(50.0)); // [2]
+
+        let (_, body_data) = extract_collision(&scene, BlockRef(0))
+            .expect("classic BhkCollisionObject chain must resolve");
+        assert_eq!(
+            body_data.motion_type,
+            MotionType::Static,
+            "zero-mass Dynamic-family body must be reclassified as immovable"
+        );
+    }
+
+    /// Sibling guard: the same Dynamic-family `motionType` with REAL
+    /// authored mass (movable clutter — crates, plates, ragdoll bones)
+    /// must NOT be reclassified — only the physically-nonsensical
+    /// mass=0 case is special-cased.
+    #[test]
+    fn nonzero_mass_dynamic_body_stays_dynamic() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(coll_obj(1)); // [0]
+        scene.blocks.push(Box::new(BhkRigidBody {
+            shape_ref: BlockRef(2),
+            havok_filter: 0,
+            translation: [0.0; 4],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            linear_velocity: [0.0; 4],
+            angular_velocity: [0.0; 4],
+            inertia_tensor: [0.0; 12],
+            center_of_mass: [0.0; 4],
+            mass: 5.0,
+            linear_damping: 0.1,
+            angular_damping: 0.05,
+            friction: 0.3,
+            restitution: 0.4,
+            max_linear_velocity: 0.0,
+            max_angular_velocity: 0.0,
+            penetration_depth: 0.0,
+            motion_type: 4, // BOX_INERTIA — Dynamic family per havok_motion_type
+            deactivator_type: 0,
+            solver_deactivation: 0,
+            quality_type: 0,
+            constraint_refs: Vec::new(),
+            body_flags: 0,
+        })); // [1]
+        scene.blocks.push(sphere(1.0)); // [2]
+
+        let (_, body_data) = extract_collision(&scene, BlockRef(0))
+            .expect("classic BhkCollisionObject chain must resolve");
+        assert_eq!(
+            body_data.motion_type,
+            MotionType::Dynamic,
+            "real authored mass must keep the body Dynamic — only mass=0 is reclassified"
+        );
     }
 }
 
