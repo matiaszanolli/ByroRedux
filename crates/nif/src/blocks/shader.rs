@@ -1581,6 +1581,14 @@ pub struct BSEffectShaderProperty {
     pub emit_gradient_texture: String,
     /// FO76 luminance params (BSVER == 155).
     pub luminance: Option<LuminanceParams>,
+    /// #1881 — opaque trailing Starfield bytes between the parser's stop
+    /// point and `block_size`, captured via [`read_starfield_tail`] (the
+    /// same treatment #1606 gave the `BSLightingShaderProperty` sibling).
+    /// Every retail-Starfield `BSEffectShaderProperty` carries a ~32-byte
+    /// undocumented tail beyond the FO76 fields; capturing it keeps
+    /// `consumed == block_size` instead of leaning on drift recovery.
+    /// Empty for the material-reference stub and every non-Starfield variant.
+    pub starfield_tail: Vec<u8>,
 }
 
 impl BSEffectShaderProperty {
@@ -1616,13 +1624,36 @@ impl BSEffectShaderProperty {
             emittance_color: [0.0, 0.0, 0.0],
             emit_gradient_texture: String::new(),
             luminance: None,
+            starfield_tail: Vec::new(),
         }
     }
 }
 
 impl BSEffectShaderProperty {
+    /// Parse a `BSEffectShaderProperty` block. Equivalent to
+    /// `parse_with_size(stream, None)` — no Starfield tail capture, so any
+    /// trailing bytes fall to the outer `block_size` drift recovery as before.
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        Self::parse_with_size(stream, None)
+    }
+
+    /// As [`parse`](Self::parse), but with the block's declared `block_size`
+    /// so the undocumented Starfield trailing tail (#1881) is captured
+    /// opaquely up to the block boundary — mirroring #1606 on the
+    /// `BSLightingShaderProperty` sibling. The dispatcher passes
+    /// `Some(block_size)`; the legacy `parse(stream)` entry passes `None`.
+    pub fn parse_with_size(
+        stream: &mut NifStream,
+        block_size: Option<u32>,
+    ) -> io::Result<Self> {
+        let block_start = stream.position();
         let bsver = stream.bsver();
+        let mut me = Self::parse_inner(stream, bsver)?;
+        me.starfield_tail = read_starfield_tail(stream, block_start, block_size, bsver)?;
+        Ok(me)
+    }
+
+    fn parse_inner(stream: &mut NifStream, bsver: u32) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
 
         // FO76+ stopcond: Name is an external `.bgem` / `.mat` material-file
@@ -1793,6 +1824,9 @@ impl BSEffectShaderProperty {
             emittance_color,
             emit_gradient_texture,
             luminance,
+            // Set by `parse_with_size` after the body; `parse_inner` leaves it
+            // empty (the `None`-block_size path keeps no tail).
+            starfield_tail: Vec::new(),
         })
     }
 }

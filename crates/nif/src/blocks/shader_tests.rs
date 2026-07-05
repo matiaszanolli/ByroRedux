@@ -1819,6 +1819,119 @@ fn parse_bs_effect_starfield_hashpath_name_stubs() {
     );
 }
 
+/// Build a minimal **Starfield** (BSVER 172) full-body `BSEffectShaderProperty`.
+/// Name index 0 is "" so the block takes the full-body path (a non-empty
+/// Starfield name is a content-hash material reference → stub). The NiObjectNET
+/// name is a header-table INDEX (`0i32`); every `BSEffectShaderProperty` texture
+/// field is a length-prefixed INLINE sized string (`0u32` length = empty), and
+/// `controller_ref` is a `-1` BlockRef.
+fn build_starfield_bs_effect_minimal() -> Vec<u8> {
+    let mut data = Vec::new();
+    data.extend_from_slice(&0i32.to_le_bytes()); // name idx 0 ("")
+    data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref (BlockRef)
+                                                    // BSVER >= 132: CRC arrays, both empty
+    data.extend_from_slice(&0u32.to_le_bytes()); // num_sf1
+    data.extend_from_slice(&0u32.to_le_bytes()); // num_sf2 (>= 152)
+    for v in [0.0f32, 0.0, 1.0, 1.0] {
+        data.extend_from_slice(&v.to_le_bytes()); // uv_offset, uv_scale
+    }
+    data.extend_from_slice(&0u32.to_le_bytes()); // source_texture (empty sized string)
+    data.extend_from_slice(&[3u8, 0u8, 0u8, 0u8]); // clamp, light_infl, min_lod, unused
+    for _ in 0..4 {
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // falloff start/stop angle+opacity
+    }
+    data.extend_from_slice(&0.25f32.to_le_bytes()); // refraction_power (>= 155)
+    for _ in 0..4 {
+        data.extend_from_slice(&1.0f32.to_le_bytes()); // base_color
+    }
+    data.extend_from_slice(&1.0f32.to_le_bytes()); // base_color_scale
+    data.extend_from_slice(&50.0f32.to_le_bytes()); // soft_falloff_depth
+    data.extend_from_slice(&0u32.to_le_bytes()); // greyscale_texture (empty)
+                                                 // FO4+ (>= 130): env / normal / mask (empty) + env_map_scale
+    for _ in 0..3 {
+        data.extend_from_slice(&0u32.to_le_bytes());
+    }
+    data.extend_from_slice(&1.0f32.to_le_bytes()); // env_map_scale
+                                                   // FO76+ (>= 155): reflectance / lighting (empty), emittance, gradient (empty), luminance
+    data.extend_from_slice(&0u32.to_le_bytes()); // reflectance_texture
+    data.extend_from_slice(&0u32.to_le_bytes()); // lighting_texture
+    for v in [0.4f32, 0.5, 0.6] {
+        data.extend_from_slice(&v.to_le_bytes()); // emittance_color
+    }
+    data.extend_from_slice(&0u32.to_le_bytes()); // emit_gradient_texture
+    for v in [100.0f32, 13.5, 2.0, 3.0] {
+        data.extend_from_slice(&v.to_le_bytes()); // luminance
+    }
+    data
+}
+
+/// #1881 — Starfield full-body `BSEffectShaderProperty` carries a trailing
+/// tail (byte-audited as a constant +32 B across 166 LODMeshes/MeshesPatch
+/// instances) that the FO76+ parser doesn't decode and nif.xml doesn't
+/// document — the missed sibling of #1606's `BSLightingShaderProperty` fix.
+/// `parse_with_size` captures it opaquely up to `block_size` so the stream
+/// stays self-consistent (no +32 drift) and the bytes survive for a future
+/// decoder.
+#[test]
+fn parse_bs_effect_starfield_captures_trailing_tail() {
+    let header = make_starfield_header(""); // empty name → full-body path
+    let body = build_starfield_bs_effect_minimal();
+    // Sanity: the fixture body parses and consumes exactly (no drift) on its own.
+    {
+        let mut s = NifStream::new(&body, &header);
+        let p = BSEffectShaderProperty::parse(&mut s).expect("fixture body must parse");
+        assert!(!p.material_reference, "empty name → full body, not stub");
+        assert_eq!(
+            s.position(),
+            body.len() as u64,
+            "fixture body must consume exactly — bad fixture otherwise",
+        );
+    }
+    // Arbitrary-but-distinct 32 B tail; assert capture without asserting semantics.
+    let tail: Vec<u8> = (0u8..32).collect();
+    let mut data = body.clone();
+    data.extend_from_slice(&tail);
+    let block_size = data.len() as u32;
+
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSEffectShaderProperty::parse_with_size(&mut stream, Some(block_size))
+        .expect("Starfield full body + tail must parse");
+    assert_eq!(
+        prop.starfield_tail, tail,
+        "the trailing block_size bytes are captured opaquely",
+    );
+    assert_eq!(
+        stream.position(),
+        data.len() as u64,
+        "tail capture consumes exactly to block_size — no drift",
+    );
+}
+
+/// #1881 — the tail is captured ONLY with a `block_size` and trailing bytes.
+/// The legacy `parse(stream)` (no size) and a block consumed exactly to its
+/// boundary both yield an empty tail — drift recovery handles the no-size case
+/// as before. Mirrors the BLSP `..._tail_empty_without_size_or_drift` guard.
+#[test]
+fn parse_bs_effect_starfield_tail_empty_without_size_or_drift() {
+    let header = make_starfield_header("");
+    let body = build_starfield_bs_effect_minimal();
+
+    // (a) legacy parse(stream): no block_size → no tail capture.
+    let mut s1 = NifStream::new(&body, &header);
+    let p1 = BSEffectShaderProperty::parse(&mut s1).unwrap();
+    assert!(p1.starfield_tail.is_empty(), "no block_size → no tail capture");
+
+    // (b) parse_with_size with the exact body size (no trailing bytes).
+    let mut s2 = NifStream::new(&body, &header);
+    let p2 =
+        BSEffectShaderProperty::parse_with_size(&mut s2, Some(body.len() as u32)).unwrap();
+    assert!(
+        p2.starfield_tail.is_empty(),
+        "consumed == block_size → empty tail",
+    );
+}
+
 /// Regression for #716 — BSShaderPPLightingProperty.Emissive Color (Color4)
 /// is gated by `#BS_GT_FO3#` (bsver > crate::version::bsver::FO3_FNV).  Pre-fix the field was never read,
 /// leaving 16 bytes in the stream; block_size recovery silently masked this on

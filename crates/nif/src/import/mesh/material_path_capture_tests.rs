@@ -92,6 +92,7 @@ fn minimal_effect_shader_named(name: &str) -> BSEffectShaderProperty {
         emittance_color: [0.0; 3],
         emit_gradient_texture: String::new(),
         luminance: None,
+        starfield_tail: Vec::new(),
     }
 }
 

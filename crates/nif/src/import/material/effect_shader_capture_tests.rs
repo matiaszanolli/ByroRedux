@@ -48,6 +48,7 @@ fn fully_populated_fo4_shader() -> BSEffectShaderProperty {
         emittance_color: [0.0; 3],
         emit_gradient_texture: String::new(),
         luminance: None,
+        starfield_tail: Vec::new(),
     }
 }
 

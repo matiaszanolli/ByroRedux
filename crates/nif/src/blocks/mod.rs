@@ -419,7 +419,9 @@ fn parse_block_inner(
         // MeshesPatch.ba2 terrain LOD meshes (7552 / 7552 and 7552 / 29849 NIFs
         // respectively). nif.xml has no entry; wire layout sourced from nifly
         // Nodes.hpp / Nodes.cpp. See SF-D5-02 / #754.
-        "BSWeakReferenceNode" => Ok(Box::new(BsWeakReferenceNode::parse(stream)?)),
+        "BSWeakReferenceNode" => Ok(Box::new(BsWeakReferenceNode::parse_with_size(
+            stream, block_size,
+        )?)),
         // Multi-bound spatial volumes
         "BSMultiBound" => Ok(Box::new(BsMultiBound::parse(stream)?)),
         "BSMultiBoundAABB" => Ok(Box::new(BsMultiBoundAABB::parse(stream)?)),
@@ -576,7 +578,9 @@ fn parse_block_inner(
         "BSLightingShaderProperty" => Ok(Box::new(BSLightingShaderProperty::parse_with_size(
             stream, block_size,
         )?)),
-        "BSEffectShaderProperty" => Ok(Box::new(BSEffectShaderProperty::parse(stream)?)),
+        "BSEffectShaderProperty" => Ok(Box::new(BSEffectShaderProperty::parse_with_size(
+            stream, block_size,
+        )?)),
         "NiMaterialProperty" => Ok(Box::new(NiMaterialProperty::parse(stream)?)),
         "NiAlphaProperty" => Ok(Box::new(NiAlphaProperty::parse(stream)?)),
         "NiStencilProperty" => Ok(Box::new(NiStencilProperty::parse(stream)?)),

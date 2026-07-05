@@ -210,6 +210,7 @@ fn bs_effect_shader_explicit_opaque_blocks_implicit_blend() {
             emittance_color: [0.0; 3],
             emit_gradient_texture: String::new(),
             luminance: None,
+            starfield_tail: Vec::new(),
         }),
         // block 1 — explicit-opaque NiAlphaProperty
         Box::new(alpha_prop(0x0000, 128)),
@@ -277,6 +278,7 @@ fn bs_effect_shader_without_alpha_property_still_gets_implicit_blend() {
         emittance_color: [0.0; 3],
         emit_gradient_texture: String::new(),
         luminance: None,
+        starfield_tail: Vec::new(),
     })];
     let scene = NifScene {
         blocks,

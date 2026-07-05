@@ -820,9 +820,21 @@ impl NiCamera {
 /// (they feed the LOD-streaming / packin system which is M35+ work). The
 /// parser reads and discards the trailing data so block alignment is
 /// maintained and downstream block refs remain valid.
+///
+/// #1882 — every retail-Starfield instance carries a small undocumented tail
+/// after the water-ref list (byte-audited as a constant +2 B on 6907/7552
+/// MeshesPatch instances, the residual sitting at the exact block end; +8 B on
+/// a handful of others). nifly's visible `Sync` doesn't read it and nif.xml has
+/// no entry. [`parse_with_size`](Self::parse_with_size) captures it opaquely up
+/// to `block_size` (mirroring #1606 on `BSLightingShaderProperty`) so
+/// `consumed == block_size` instead of leaning on drift recovery, and the bytes
+/// survive for a future decoder.
 #[derive(Debug)]
 pub struct BsWeakReferenceNode {
     pub base: NiNode,
+    /// Opaque trailing Starfield bytes captured up to `block_size` (#1882).
+    /// Empty when parsed without a `block_size` (the legacy `parse` entry).
+    pub starfield_tail: Vec<u8>,
 }
 
 impl NiObject for BsWeakReferenceNode {
@@ -841,7 +853,39 @@ impl NiObject for BsWeakReferenceNode {
 }
 
 impl BsWeakReferenceNode {
+    /// Parse without a `block_size` — no Starfield tail capture (any trailing
+    /// bytes fall to the outer drift recovery as before). Equivalent to
+    /// `parse_with_size(stream, None)`.
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        Self::parse_with_size(stream, None)
+    }
+
+    /// As [`parse`](Self::parse), but with the block's declared `block_size` so
+    /// the undocumented Starfield trailing tail (#1882) is captured opaquely up
+    /// to the block boundary — mirroring #1606 on `BSLightingShaderProperty`.
+    /// The dispatcher passes `Some(block_size)`; `parse(stream)` passes `None`.
+    pub fn parse_with_size(
+        stream: &mut NifStream,
+        block_size: Option<u32>,
+    ) -> io::Result<Self> {
+        let block_start = stream.position();
+        let bsver = stream.bsver();
+        let mut me = Self::parse_inner(stream)?;
+        // Capture the trailing bytes between the parser's stop point and
+        // block_size (Starfield only, when a size is known and bytes remain).
+        if bsver >= crate::version::bsver::STARFIELD {
+            if let Some(size) = block_size {
+                let consumed = stream.position().saturating_sub(block_start);
+                let remaining = u64::from(size).saturating_sub(consumed);
+                if remaining > 0 {
+                    me.starfield_tail = stream.read_bytes(remaining as usize)?;
+                }
+            }
+        }
+        Ok(me)
+    }
+
+    fn parse_inner(stream: &mut NifStream) -> io::Result<Self> {
         let base = NiNode::parse(stream)?;
 
         // BSWeakReference[] — nifly Nodes.cpp:166
@@ -876,7 +920,11 @@ impl BsWeakReferenceNode {
             stream.skip(mat_len as u64)?;
         }
 
-        Ok(Self { base })
+        Ok(Self {
+            base,
+            // Set by parse_with_size after the body; empty on the no-size path.
+            starfield_tail: Vec::new(),
+        })
     }
 }
 

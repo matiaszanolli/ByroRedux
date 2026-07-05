@@ -558,6 +558,7 @@ fn empty_effect_shader_with_base_color(rgba: [f32; 4]) -> BSEffectShaderProperty
         emittance_color: [0.0; 3],
         emit_gradient_texture: String::new(),
         luminance: None,
+        starfield_tail: Vec::new(),
     }
 }
 

@@ -126,6 +126,104 @@ fn build_bs_multi_bound_node_body() -> Vec<u8> {
     b
 }
 
+/// Starfield header — bsver=172, version=20.2.0.7. String slot 0 is "" so a
+/// name index of 0 resolves to an empty NiObjectNET name (full-body path).
+fn starfield_header() -> NifHeader {
+    NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: 172,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: vec![Arc::from("")],
+        max_string_length: 0,
+        num_groups: 0,
+    }
+}
+
+/// Minimal Starfield (v20.2.0.7 / bsver 172) `BSWeakReferenceNode` body with
+/// empty weak-ref and water-ref lists — the NiNode base (76 B, same modern
+/// layout as `build_bs_multi_bound_node_body`) + num_weak_refs(0) + unk_int1 +
+/// num_water_refs(0) = 88 B. Callers append the #1882 trailing tail.
+fn build_empty_starfield_weakref_body() -> Vec<u8> {
+    let mut b = Vec::new();
+    // NiObjectNET
+    b.extend_from_slice(&0i32.to_le_bytes()); // name idx 0 ("")
+    b.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
+    b.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+                                                 // NiAVObject: u32 flags + transform (13 f32) + collision_ref
+                                                 // (properties gated bsver<=34 → absent; effects gated bsver<130 → absent).
+    b.extend_from_slice(&0u32.to_le_bytes()); // flags
+    for _ in 0..3 {
+        b.extend_from_slice(&0.0f32.to_le_bytes()); // translation
+    }
+    for r in &[1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] {
+        b.extend_from_slice(&r.to_le_bytes()); // rotation
+    }
+    b.extend_from_slice(&1.0f32.to_le_bytes()); // scale
+    b.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
+    b.extend_from_slice(&0u32.to_le_bytes()); // NiNode children count
+                                              // BSWeakReferenceNode body: empty weak-refs, unk_int1, empty water-refs.
+    b.extend_from_slice(&0u32.to_le_bytes()); // num_weak_refs
+    b.extend_from_slice(&0u32.to_le_bytes()); // unk_int1
+    b.extend_from_slice(&0u32.to_le_bytes()); // num_water_refs
+    b
+}
+
+/// #1882 — every retail-Starfield `BSWeakReferenceNode` carries a small
+/// undocumented tail at the exact block end (byte-audited as a constant +2 B
+/// residual across 6907 MeshesPatch instances) that nifly's visible `Sync`
+/// doesn't read. `parse_with_size` captures it opaquely up to `block_size` so
+/// `consumed == block_size` (no drift), mirroring #1606 on the shader sibling.
+#[test]
+fn bs_weak_reference_node_captures_starfield_trailing_tail() {
+    use crate::blocks::node::BsWeakReferenceNode;
+    let header = starfield_header();
+    let body = build_empty_starfield_weakref_body();
+
+    // Sanity: the body parses and consumes exactly on its own (no drift).
+    {
+        let mut s = NifStream::new(&body, &header);
+        let n = BsWeakReferenceNode::parse(&mut s).expect("body must parse");
+        assert!(n.starfield_tail.is_empty(), "no block_size → no tail capture");
+        assert_eq!(s.position(), body.len() as u64, "body consumes exactly");
+    }
+
+    // With a block_size 2 B larger than the body, the trailing bytes are captured.
+    let tail = [0xABu8, 0xCD];
+    let mut data = body.clone();
+    data.extend_from_slice(&tail);
+    let block_size = data.len() as u32;
+
+    let mut stream = NifStream::new(&data, &header);
+    let node = BsWeakReferenceNode::parse_with_size(&mut stream, Some(block_size))
+        .expect("weak-ref node + tail must parse");
+    assert_eq!(node.starfield_tail, tail, "trailing tail captured opaquely");
+    assert_eq!(
+        stream.position(),
+        data.len() as u64,
+        "tail capture consumes exactly to block_size — no drift",
+    );
+
+    // The dispatcher path (parse_block with a block_size) captures it too.
+    let mut s2 = NifStream::new(&data, &header);
+    let boxed = crate::blocks::parse_block("BSWeakReferenceNode", &mut s2, Some(block_size))
+        .expect("dispatch must parse");
+    assert_eq!(
+        s2.position(),
+        data.len() as u64,
+        "dispatch routes through parse_with_size — no residual drift",
+    );
+    let downcast = boxed
+        .as_any()
+        .downcast_ref::<BsWeakReferenceNode>()
+        .expect("BSWeakReferenceNode");
+    assert_eq!(downcast.starfield_tail, tail);
+}
+
 /// Regression test for issue #142: NiNode subtypes with trailing fields.
 #[test]
 fn oblivion_node_subtypes_dispatch_with_correct_payload() {
