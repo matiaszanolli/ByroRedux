@@ -32,16 +32,20 @@ use byroredux_plugin::esm::records::script_instance::ScriptInstanceData;
 /// before the generic ones so a bespoke script isn't swallowed by a
 /// family match.
 ///
-/// **Staged, not yet wired (SCR-D5-02 / #1739).** The quest-fragment
-/// lowerer [`effects::lower_fragment`] (+ `effects::EFFECT_PRIMITIVES`) is
-/// complete and unit-tested but has **no** entry in this table, so no
-/// decompiled quest-fragment `.pex` reaches it through the live boundary
-/// today — it is exercised only by its own tests. Wiring waits on the QUST
-/// `VMAD` fragment decoder that would feed each stage's `Fragment_NN` body
-/// into `lower_fragment`; until that lands the table is intentionally
-/// fragment-free (not an oversight). When it lands, add a
-/// `fragment::recognize` entry here and the end-to-end `.pex` →
-/// [`translate_script`] → effect-spawn test the issue calls for.
+/// **Fragments dispatch off-chain, by contract — not through this table
+/// (SCR-D5-02 / #1739 landed).** The quest-fragment lowerer
+/// [`effects::lower_fragment`] is deliberately absent from `RECOGNIZERS`:
+/// fragments are invoked by the quest-stage contract (stage N's
+/// `Fragment_N` runs when the quest reaches stage N), not by shape
+/// recognition. The QUST `VMAD` fragment decoder
+/// (`byroredux_plugin::esm::records::script_instance::parse_quest_fragments`,
+/// landed) recovers each stage→`Fragment_N` binding, and
+/// [`crate::fragment::populate_quest_fragments_from_pex`] feeds each body
+/// into `lower_fragment` at cell load, keyed into
+/// [`crate::fragment::QuestStageFragments`] for
+/// [`crate::quest_fragment_dispatch_system`]. So this recognizer chain
+/// stays event-handler-only (the ~22% handler population); the 69.5%
+/// fragment population flows through the stage-contract path instead.
 const RECOGNIZERS: &[Recognizer] = &[
     // Per-script (long tail):
     recognizers::rumble::recognize,

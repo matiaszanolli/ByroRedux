@@ -134,6 +134,20 @@ impl ScriptInstanceData {
     /// Decode a `VMAD` sub-record payload. Graceful: returns whatever
     /// decoded cleanly before any truncation/unknown-type.
     pub fn parse(data: &[u8]) -> Self {
+        Self::parse_with_consumed(data).0
+    }
+
+    /// Decode a `VMAD` scripts section, also returning the byte offset at
+    /// which decoding stopped — i.e. the start of any trailing per-record
+    /// *fragment* section (QUST / INFO / PACK / SCEN). Object records
+    /// (ACTI / REFR / …) have no fragment section, so the offset lands at
+    /// `data.len()` for them; the QUST fragment decoder uses this to seek
+    /// past the scripts to the stage→`Fragment_N` table.
+    ///
+    /// On a truncated/unknown-type scripts section the offset marks how
+    /// far the graceful decode got; a fragment decoder should treat a
+    /// short read as "no fragments" rather than seeking into garbage.
+    pub fn parse_with_consumed(data: &[u8]) -> (Self, usize) {
         let mut c = Cursor::new(data);
         let version = c.i16().unwrap_or(0);
         let object_format = c.i16().unwrap_or(0);
@@ -143,7 +157,7 @@ impl ScriptInstanceData {
             scripts: Vec::new(),
         };
         let Some(script_count) = c.u16() else {
-            return out;
+            return (out, c.pos);
         };
         let has_status = version >= 4;
         for _ in 0..script_count {
@@ -194,8 +208,99 @@ impl ScriptInstanceData {
                 break;
             }
         }
-        out
+        (out, c.pos)
     }
+}
+
+/// One quest-stage script-fragment binding decoded from a QUST `VMAD`
+/// fragment section: the compiled quest script + the `Fragment_N`
+/// function the runtime runs when the quest reaches `stage`.
+///
+/// This is the M47.2 keystone datum — it binds a quest stage to the
+/// Papyrus function whose body the `byroredux_scripting` fragment lowerer
+/// turns into canonical ECS effects. Without it the (already built +
+/// tested) lowerer and dispatcher never see real game data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestScriptFragment {
+    /// Quest stage index this fragment runs on (leading `u16` of the
+    /// per-fragment struct).
+    pub stage: u16,
+    /// The compiled quest script (`QF_<Quest>_<FormID>`) — the `.pex` to
+    /// decompile. Equal to the section's `fileName` on all vanilla
+    /// samples, but the per-fragment field is authoritative.
+    pub script_name: String,
+    /// The fragment function to invoke (`Fragment_N`).
+    pub fragment_name: String,
+}
+
+/// Decode the trailing *fragment* section of a QUST `VMAD` payload into
+/// stage→`Fragment_N` bindings. `vmad` is the whole VMAD sub-record
+/// (scripts section first — skipped via [`ScriptInstanceData::parse_with_consumed`]
+/// — then the fragment section this reads).
+///
+/// ## Layout (Skyrim SE, empirically derived + cross-validated)
+///
+/// No public byte-spec was in-repo (same situation as the scripts
+/// section), so the layout was derived by dumping every QUST VMAD in
+/// `Skyrim.esm` (`examples/dump_qust_vmad_fragments.rs`) and confirming
+/// every field cross-validates: the version byte is `2` on all 856
+/// fragment-bearing QUST VMADs; `fileName` / `scriptName` decode to
+/// readable `QF_<Quest>_<FormID>` ASCII; `fragmentName` is `Fragment_N`;
+/// stage values match the quest's INDX stage set.
+///
+/// ```text
+/// u8      version            (== 2; distinct from the scripts-section version 5)
+/// u16     fragmentCount
+/// wstring fileName           (the QF_ compiled quest script)
+/// fragmentCount × {
+///   u16     stage            (the quest stage this fragment runs on)
+///   i16     unk0             (0 on every vanilla sample)
+///   i32     stageIndex/logentry (0 on every vanilla sample)
+///   u8      flags            (1 on every vanilla sample)
+///   wstring scriptName       (== fileName)
+///   wstring fragmentName     (Fragment_N)
+/// }
+/// u16     aliasCount         (trailing alias fragments — not decoded; not
+///                             needed for stage dispatch)
+/// ```
+///
+/// Graceful + conservative: an absent/short fragment section (object-only
+/// VMADs), or a `version != 2` header (e.g. FO4's differing shape, which
+/// needs its own derivation under the no-guessing policy), returns empty
+/// rather than guessing — matching the scripts-section decoder's
+/// recover-don't-crash contract.
+pub fn parse_quest_fragments(vmad: &[u8]) -> Vec<QuestScriptFragment> {
+    let (_, consumed) = ScriptInstanceData::parse_with_consumed(vmad);
+    let Some(section) = vmad.get(consumed..) else {
+        return Vec::new();
+    };
+    let mut c = Cursor::new(section);
+    // Skyrim fragment sections are universally version 2; decline any
+    // other value rather than misread an underived shape.
+    if c.u8() != Some(2) {
+        return Vec::new();
+    }
+    let Some(count) = c.u16() else {
+        return Vec::new();
+    };
+    let Some(_file_name) = c.wstring() else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let Some(stage) = c.u16() else { break };
+        let (Some(_unk0), Some(_unk1), Some(_flags)) = (c.i16(), c.i32(), c.u8()) else {
+            break;
+        };
+        let Some(script_name) = c.wstring() else { break };
+        let Some(fragment_name) = c.wstring() else { break };
+        out.push(QuestScriptFragment {
+            stage,
+            script_name,
+            fragment_name,
+        });
+    }
+    out
 }
 
 /// Minimal bounds-checked little-endian cursor over a VMAD payload.
@@ -423,5 +528,129 @@ mod tests {
         assert_eq!(s.property("I").unwrap().value, PropertyValue::Int32(42));
         assert_eq!(s.property("F").unwrap().value, PropertyValue::Float(1.5));
         assert_eq!(s.property("B").unwrap().value, PropertyValue::Bool(true));
+    }
+
+    // ---- QUST fragment section ----------------------------------------
+
+    /// A minimal, valid empty scripts section (version 5, objectFormat 2,
+    /// zero scripts) — 6 bytes. `parse_with_consumed` stops right after
+    /// it, so a fragment section appended here starts at offset 6. Real
+    /// QUST VMADs carry a populated scripts section first; the fragment
+    /// decoder only cares where it *ends*, so an empty one exercises the
+    /// same seek-past-scripts path.
+    fn empty_scripts_prefix() -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&5i16.to_le_bytes()); // version
+        v.extend_from_slice(&2i16.to_le_bytes()); // objectFormat
+        v.extend_from_slice(&0u16.to_le_bytes()); // scriptCount = 0
+        v
+    }
+
+    /// Build a QUST fragment section per the derived layout.
+    fn fragment_section(file_name: &str, frags: &[(u16, &str, &str)]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.push(2u8); // version
+        v.extend_from_slice(&(frags.len() as u16).to_le_bytes());
+        v.extend_from_slice(&(file_name.len() as u16).to_le_bytes());
+        v.extend_from_slice(file_name.as_bytes());
+        for (stage, script, frag) in frags {
+            v.extend_from_slice(&stage.to_le_bytes());
+            v.extend_from_slice(&0i16.to_le_bytes()); // unk0
+            v.extend_from_slice(&0i32.to_le_bytes()); // stageIndex/logentry
+            v.push(1u8); // flags
+            v.extend_from_slice(&(script.len() as u16).to_le_bytes());
+            v.extend_from_slice(script.as_bytes());
+            v.extend_from_slice(&(frag.len() as u16).to_le_bytes());
+            v.extend_from_slice(frag.as_bytes());
+        }
+        v.extend_from_slice(&0u16.to_le_bytes()); // aliasCount = 0
+        v
+    }
+
+    /// The real `DA08FriendKill` (`0010FAEE`) fragment section from
+    /// `Skyrim.esm` — 82 bytes, one fragment (stage 0 → `Fragment_2`),
+    /// captured via `examples/dump_qust_vmad_fragments.rs`. Ground-truth
+    /// fidelity fixture for the empirically-derived layout.
+    const DA08_FRAGMENT_SECTION_HEX: &str = "0201001a0051465f4441303846726965\
+6e644b696c6c5f303031304641454500\
+00000000000000011a0051465f444130\
+38467269656e644b696c6c5f30303130\
+464145450a00467261676d656e745f32\
+0000";
+
+    #[test]
+    fn decodes_real_skyrim_qust_fragment_section() {
+        let mut vmad = empty_scripts_prefix();
+        let frag = from_hex(DA08_FRAGMENT_SECTION_HEX);
+        assert_eq!(frag.len(), 82);
+        vmad.extend_from_slice(&frag);
+
+        let frags = parse_quest_fragments(&vmad);
+        assert_eq!(frags.len(), 1);
+        assert_eq!(frags[0].stage, 0);
+        assert_eq!(frags[0].script_name, "QF_DA08FriendKill_0010FAEE");
+        assert_eq!(frags[0].fragment_name, "Fragment_2");
+    }
+
+    #[test]
+    fn decodes_multi_fragment_section_preserving_stage_binding() {
+        // Mirrors the real DA15Return shape: three fragments, stages out
+        // of authoring/name order — the stage u16 is authoritative, NOT
+        // the Fragment_N ordinal.
+        let mut vmad = empty_scripts_prefix();
+        vmad.extend_from_slice(&fragment_section(
+            "QF_DA15Return_0010FF8F",
+            &[
+                (0, "QF_DA15Return_0010FF8F", "Fragment_6"),
+                (200, "QF_DA15Return_0010FF8F", "Fragment_3"),
+                (10, "QF_DA15Return_0010FF8F", "Fragment_5"),
+            ],
+        ));
+        let frags = parse_quest_fragments(&vmad);
+        assert_eq!(frags.len(), 3);
+        assert_eq!((frags[0].stage, &*frags[0].fragment_name), (0, "Fragment_6"));
+        assert_eq!(
+            (frags[1].stage, &*frags[1].fragment_name),
+            (200, "Fragment_3")
+        );
+        assert_eq!((frags[2].stage, &*frags[2].fragment_name), (10, "Fragment_5"));
+    }
+
+    #[test]
+    fn declines_non_version_2_fragment_section() {
+        // A version byte the layout wasn't derived against (e.g. FO4's
+        // differing shape) declines rather than misreads.
+        let mut vmad = empty_scripts_prefix();
+        let mut section = fragment_section("QF_X_0", &[(0, "QF_X_0", "Fragment_0")]);
+        section[0] = 5; // corrupt the fragment version
+        vmad.extend_from_slice(&section);
+        assert!(parse_quest_fragments(&vmad).is_empty());
+    }
+
+    #[test]
+    fn object_only_vmad_yields_no_fragments() {
+        // A real ACTI-shaped VMAD (scripts only, no fragment section)
+        // returns no fragments — the consumed offset lands at the end.
+        let bytes = from_hex(WINTERHOLD_JAIL_VMAD_HEX);
+        assert!(parse_quest_fragments(&bytes).is_empty());
+    }
+
+    #[test]
+    fn truncated_fragment_section_recovers_gracefully() {
+        // Cut a valid two-fragment section mid-way through the second
+        // fragment: the first fragment survives, decode stops cleanly.
+        let mut vmad = empty_scripts_prefix();
+        let section = fragment_section(
+            "QF_Y_0",
+            &[(1, "QF_Y_0", "Fragment_0"), (2, "QF_Y_0", "Fragment_1")],
+        );
+        // Keep the prefix + the whole first fragment + a few bytes of the
+        // second (enough to read its stage, not its strings).
+        let keep = vmad.len() + section.len() - 10;
+        vmad.extend_from_slice(&section);
+        vmad.truncate(keep);
+        let frags = parse_quest_fragments(&vmad);
+        assert_eq!(frags.len(), 1);
+        assert_eq!(frags[0].fragment_name, "Fragment_0");
     }
 }

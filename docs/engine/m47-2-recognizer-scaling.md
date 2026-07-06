@@ -178,10 +178,25 @@ steep head the primitive-frequency curve predicted. The example doubles
 as a coverage-regression gate as the table grows toward the ~500-primitive
 / ~78% target. The lowerer is fully tested
 ([`crates/scripting/src/translate/effects.rs`](../../crates/scripting/src/translate/effects.rs))
-and dispatched through [`crates/scripting/src/fragment.rs`]; the only
-missing piece for runtime population is the **QUST VMAD fragment-section
-decoder** (stage→`Fragment_N` binding), deferred pending the format spec
-(no-guessing policy).
+and dispatched through [`crates/scripting/src/fragment.rs`].
+
+**Runtime population landed.** The last missing piece — the **QUST VMAD
+fragment-section decoder** (stage→`Fragment_N` binding) — is now built.
+Its layout was derived empirically + cross-validated against `Skyrim.esm`
+(version byte `2` on all 856 fragment-bearing QUST VMADs;
+[`crates/plugin/examples/dump_qust_vmad_fragments.rs`](../../crates/plugin/examples/dump_qust_vmad_fragments.rs)),
+the same accepted method the scripts-section decoder used —
+[`parse_quest_fragments`](../../crates/plugin/src/esm/records/script_instance.rs)
+surfaces the bindings on `QustRecord.fragments`. At cell load the binary's
+`populate_quest_fragments` resolves each quest's compiled `QF_` `.pex`,
+decompiles it, and lowers each bound fragment body via
+[`populate_quest_fragments_from_pex`](../../crates/scripting/src/fragment.rs)
+into `QuestStageFragments` for `quest_fragment_dispatch_system`. End-to-end
+on real data (`crates/scripting/examples/quest_fragment_populate.rs`):
+**845 scripted Skyrim quests → 5,108 stage bindings → 742 stage fragments
+lowered + registered** (14.5%, gated by the current 5-primitive effect
+table; the remainder decline safely pending more b2 primitives + the
+FormID→entity resolver).
 
 ## Sequencing
 

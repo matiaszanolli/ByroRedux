@@ -66,6 +66,76 @@ pub(crate) fn pex_archive_path(script_name: &str) -> String {
     name
 }
 
+/// Populate the [`byroredux_scripting::QuestStageFragments`] table from a
+/// merged index's QUST `VMAD` fragment bindings — the M47.2 runtime
+/// keystone. For every quest carrying stage→`Fragment_N` bindings, resolve
+/// its compiled `QF_` `.pex` once (via the [`ScriptProvider`]), decompile,
+/// lower each bound fragment body to canonical effects, and register them
+/// keyed by `(quest, stage)` for `quest_fragment_dispatch_system`.
+///
+/// No-op when no `--scripts-bsa` archive is present (nothing to
+/// decompile) or on pre-Papyrus games (empty `fragments`). Runs once per
+/// cell load; re-registering a `(quest, stage)` on a later load simply
+/// overwrites with the identical lowering.
+pub(crate) fn populate_quest_fragments(
+    world: &mut byroredux_core::ecs::world::World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) {
+    // Fast-out before any per-quest work when no script archive was
+    // supplied (the common mesh-only / FO3-FNV case).
+    let have_archive = world
+        .try_resource::<ScriptProvider>()
+        .is_some_and(|p| !p.is_empty());
+    if !have_archive {
+        return;
+    }
+
+    let mut total = 0usize;
+    let mut quests_with_fragments = 0usize;
+    for (&form_id, quest) in index.quests.iter() {
+        if quest.fragments.is_empty() {
+            continue;
+        }
+        quests_with_fragments += 1;
+        // All of a quest's fragments share one QF_ script, but group by
+        // script name defensively (and resolve each `.pex` once).
+        let mut by_script: std::collections::HashMap<&str, Vec<(u16, &str)>> =
+            std::collections::HashMap::new();
+        for f in &quest.fragments {
+            by_script
+                .entry(f.script_name.as_str())
+                .or_default()
+                .push((f.stage, f.fragment_name.as_str()));
+        }
+        for (script_name, bindings) in by_script {
+            // Scope the provider borrow: extract owned `.pex` bytes, then
+            // drop the resource read before the `&mut` resource access.
+            let bytes = {
+                let provider = world.resource::<ScriptProvider>();
+                provider.extract_pex(script_name)
+            };
+            let Some(bytes) = bytes else {
+                log::trace!(
+                    "M47.2 quest-fragment: .pex '{script_name}' not in archive (quest {form_id:08X})"
+                );
+                continue;
+            };
+            let mut frags = world.resource_mut::<byroredux_scripting::QuestStageFragments>();
+            total += byroredux_scripting::populate_quest_fragments_from_pex(
+                &mut frags,
+                byroredux_scripting::QuestFormId(form_id),
+                &bytes,
+                &bindings,
+            );
+        }
+    }
+    if total > 0 {
+        log::info!(
+            "M47.2: populated {total} quest-stage fragments from {quests_with_fragments} scripted quests"
+        );
+    }
+}
+
 /// Build a [`ScriptProvider`] from CLI arguments. Accepts repeated
 /// `--scripts-bsa <path>` flags so modded script archives can layer over
 /// the vanilla one (first hit wins, so list overrides before the base).
