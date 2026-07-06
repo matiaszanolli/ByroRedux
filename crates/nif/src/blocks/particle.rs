@@ -397,9 +397,19 @@ pub fn parse_grow_fade_modifier(stream: &mut NifStream) -> io::Result<NiPSysGrow
 pub fn parse_rotation_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
     let _base = NiPSysModifierBase::parse(stream)?;
     let _initial_speed = stream.read_f32_le()?;
-    // speed_variation + initial_angle + angle_variation: since v20.0.0.2
+    // speed_variation + initial_angle + angle_variation: since v20.0.0.2.
+    // On FO76 (`#BS_F76#`, bsver == 155) nif.xml interleaves two extra fields
+    // *between* Rotation Speed Variation and Rotation Angle — Unknown Vector
+    // (Vector4, 16 B) + Unknown Byte (1 B) — so the three floats can't be one
+    // lumped skip there. Pre-#1896 the single skip(12) left the stream 17 B
+    // short on FO76 (recovered by the dispatcher's block_size seek; inert but
+    // misaligning). Split so `consumed == block_size` on every title.
     if stream.version() >= NifVersion::V20_0_0_2 {
-        stream.skip(4 * 3)?; // 3 floats
+        stream.skip(4)?; // Rotation Speed Variation
+        if stream.bsver() == crate::version::bsver::FO76 {
+            stream.skip(16 + 1)?; // Unknown Vector (Vector4) + Unknown Byte
+        }
+        stream.skip(4 * 2)?; // Rotation Angle + Rotation Angle Variation
     }
     // Random Rot Speed Sign — nif.xml `since="20.0.0.2"`, no game/bsver
     // condition. The #383 fix narrowed this to `bsver >= 34` on the claim
@@ -537,11 +547,11 @@ pub fn parse_scale_modifier(stream: &mut NifStream) -> io::Result<NiPSysBlock> {
 /// authored ramp — the same class of bug #707 fixed for the legacy
 /// `NiPSysColorModifier`, just not extended to the Bethesda variant.
 ///
-/// The trailing FO76-only `Unknown Shorts[26]` (`#BS_F76#` in nif.xml) is
-/// NOT consumed here; on FO76 the dispatcher's block-size recovery skips
-/// it. The leading 72 bytes (base-relative: 6 floats + 3 Color4) are
-/// byte-identical across FO3/FNV/Skyrim/FO4/FO76, so `colors` is captured
-/// correctly on every title.
+/// The trailing FO76-only `Unknown Shorts[26]` (`#BS_F76#` in nif.xml, 52 B)
+/// is consumed on FO76 (bsver == 155) so `consumed == block_size` (#1896);
+/// its contents are opaque and discarded. The leading 72 bytes (base-relative:
+/// 6 floats + 3 Color4) are byte-identical across FO3/FNV/Skyrim/FO4/FO76, so
+/// `colors` is captured correctly on every title.
 #[derive(Debug)]
 pub struct BSPSysSimpleColorModifier {
     pub base: NiPSysModifierBase,
@@ -573,6 +583,13 @@ impl BSPSysSimpleColorModifier {
                 stream.read_f32_le()?,
                 stream.read_f32_le()?,
             ];
+        }
+        // Trailing Unknown Shorts[26] (52 B) — FO76 only (`#BS_F76#`, bsver
+        // == 155 per nif.xml). Pre-#1896 the dispatcher's block_size recovery
+        // skipped it; consume it here so `consumed == block_size` and the drift
+        // histogram is clean. `colors` above is captured on every title.
+        if stream.bsver() == crate::version::bsver::FO76 {
+            stream.skip(26 * 2)?; // ushort × 26
         }
         Ok(Self {
             base,
@@ -1251,6 +1268,16 @@ pub fn parse_particles_data(stream: &mut NifStream, type_name: &str) -> io::Resu
                 28
             };
             stream.skip(count * info_size)?;
+        }
+        // Unknown Vector (Vector3, 12 B) — FO76 only (`#BS_F76#`, i.e. bsver
+        // == 155 exactly per nif.xml). Sits between the (BS202-absent)
+        // Particle Info array and Has Rotation Speeds; nif.xml NiPSysData.
+        // Pre-#1896 these 12 bytes fell through to the dispatcher's block_size
+        // seek — inert (nothing downstream reads them) but the stream sat 12 B
+        // short here, so any future structural read of the later fields would
+        // start misaligned on FO76. Consuming it makes `consumed == block_size`.
+        if stream.bsver() == crate::version::bsver::FO76 {
+            stream.skip(12)?; // Vector3
         }
         // Has Rotation Speeds (since 20.0.0.2) — bool always read; array !BS202.
         if stream.version() >= NifVersion::V20_0_0_2 {
@@ -2108,6 +2135,86 @@ mod tests {
              bsver>=34 gate skipped it and under-read by 1 byte"
         );
         assert_eq!(block.original_type, "NiPSysRotationModifier");
+    }
+
+    /// FO76 header (`#BS_F76#`): v20.2.0.7 stream with `user_version_2 == 155`.
+    fn make_header_fo76() -> NifHeader {
+        NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 12,
+            user_version_2: 155,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: vec![Arc::from("Mod")],
+            max_string_length: 4,
+            num_groups: 0,
+        }
+    }
+
+    /// Regression: #1896 — on FO76 (`#BS_F76#`, bsver 155) nif.xml interleaves
+    /// `Unknown Vector` (Vector4, 16 B) + `Unknown Byte` (1 B) *between*
+    /// Rotation Speed Variation and Rotation Angle. Pre-fix the single
+    /// `skip(12)` left the stream 17 bytes short (recovered by block_size,
+    /// inert but misaligning). The FNV layout (bsver 34) must stay 17 bytes
+    /// shorter — the interleaved fields are absent there.
+    #[test]
+    fn parse_rotation_modifier_reads_fo76_interleaved_fields() {
+        let header = make_header_fo76();
+        let mut d = modifier_base_bytes();
+        d.extend_from_slice(&1.0f32.to_le_bytes()); // initial_speed
+        d.extend_from_slice(&0.5f32.to_le_bytes()); // speed_variation
+        d.extend_from_slice(&[0u8; 16]); // FO76 Unknown Vector (Vector4)
+        d.push(0u8); // FO76 Unknown Byte
+        d.extend_from_slice(&0.0f32.to_le_bytes()); // rotation_angle
+        d.extend_from_slice(&0.1f32.to_le_bytes()); // rotation_angle_variation
+        d.push(0u8); // random_rot_speed_sign
+        d.push(1u8); // random_axis
+        d.extend_from_slice(&[0u8; 12]); // axis vec3
+
+        // 13 base + 4 speed + 4 var + 17 FO76 + 8 (angle+var) + 1 + 1 + 12 = 60.
+        assert_eq!(d.len(), 60);
+
+        let mut stream = NifStream::new(&d, &header);
+        parse_rotation_modifier(&mut stream)
+            .expect("FO76 NiPSysRotationModifier should parse cleanly");
+        assert_eq!(
+            stream.position() as usize,
+            d.len(),
+            "FO76 must consume the interleaved #BS_F76# Unknown Vector + Byte (17 B)"
+        );
+    }
+
+    /// Regression: #1896 — `BSPSysSimpleColorModifier` consumes its trailing
+    /// FO76-only `Unknown Shorts[26]` (52 B, `#BS_F76#`) so `consumed ==
+    /// block_size`. `colors` is still captured; the tail is opaque/discarded.
+    #[test]
+    fn bs_simple_color_modifier_consumes_fo76_trailer() {
+        let header = make_header_fo76();
+        let mut bytes = modifier_base_bytes();
+        for f in [0.1f32, 0.9, 0.0, 0.0, 0.0, 1.0] {
+            bytes.extend_from_slice(&f.to_le_bytes()); // 6 fade/percent floats
+        }
+        for _ in 0..3 {
+            bytes.extend_from_slice(&[0u8; 16]); // 3 × Color4
+        }
+        bytes.extend_from_slice(&[0u8; 52]); // FO76 Unknown Shorts[26]
+
+        // 13 base + 24 (6 floats) + 48 (3 Color4) + 52 trailer = 137.
+        assert_eq!(bytes.len(), 137);
+
+        let mut stream = NifStream::new(&bytes, &header);
+        let modifier = BSPSysSimpleColorModifier::parse(&mut stream)
+            .expect("FO76 BSPSysSimpleColorModifier should parse cleanly");
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "FO76 must consume the trailing #BS_F76# Unknown Shorts[26] (52 B)"
+        );
+        // The colour ramp is still captured (all zero here, but present).
+        assert_eq!(modifier.colors.len(), 3);
     }
 
     /// Regression: NiFlipController follow-up to #1306 — `World Aligned` is

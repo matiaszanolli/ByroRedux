@@ -384,8 +384,42 @@ fn read_pod_vec_from_cursor<T: crate::stream::AnyBitPattern>(
     Ok(out)
 }
 
+/// Bounds a header-phase `len`-byte allocation before it happens, mirroring
+/// [`crate::stream::NifStream::check_alloc`] for the pre-`NifStream` header
+/// parse (block-type names + string table). The `NifStream` OOM guards from
+/// #388 only cover the stream body; the header string readers run before that
+/// wrapper exists. Rejects a `len` past the 256 MB hard cap or past the bytes
+/// remaining in `cursor`, so a corrupt u32 length can't force a multi-GB
+/// `vec![0u8; len]` before `read_exact` fails (#388 residual, SAFE-D2-01 / #1903).
+fn check_header_alloc(len: usize, cursor: &Cursor<&[u8]>) -> io::Result<()> {
+    if len > crate::stream::MAX_SINGLE_ALLOC_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "NIF header requested {len}-byte allocation, exceeds hard cap \
+                 ({})",
+                crate::stream::MAX_SINGLE_ALLOC_BYTES
+            ),
+        ));
+    }
+    let pos = cursor.position() as usize;
+    let total = cursor.get_ref().len();
+    let remaining = total.saturating_sub(pos);
+    if len > remaining {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "NIF header requested {len}-byte string at position {pos}, \
+                 only {remaining} bytes remaining in {total}-byte stream"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn read_sized_string(cursor: &mut Cursor<&[u8]>) -> io::Result<String> {
     let len = read_u32_le(cursor)? as usize;
+    check_header_alloc(len, cursor)?;
     let mut buf = vec![0u8; len];
     cursor.read_exact(&mut buf)?;
     match String::from_utf8(buf) {
@@ -412,6 +446,32 @@ fn read_short_string(cursor: &mut Cursor<&[u8]>) -> io::Result<String> {
 mod tests {
     use super::*;
     use crate::version::NifVersion;
+
+    #[test]
+    fn check_header_alloc_rejects_oversized_len() {
+        // A corrupt string length claiming ~4 GB must be rejected *before*
+        // the `vec![0u8; len]` in read_sized_string (SAFE-D2-01 / #1903),
+        // not allocated then failed at read_exact.
+        let data = vec![0u8; 16];
+        let cursor = Cursor::new(data.as_slice());
+        // Past the 256 MB hard cap.
+        let err = check_header_alloc(u32::MAX as usize, &cursor).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        // Under the cap but past the bytes remaining → clean EOF, no alloc.
+        let err = check_header_alloc(64, &cursor).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        // A plausible in-bounds length is accepted.
+        assert!(check_header_alloc(8, &cursor).is_ok());
+    }
+
+    #[test]
+    fn read_sized_string_rejects_corrupt_length() {
+        // len prefix = 0xFFFF_FFFF, no payload → bounded error, not a 4 GB alloc.
+        let mut data = Vec::new();
+        data.extend_from_slice(&u32::MAX.to_le_bytes());
+        let mut cursor = Cursor::new(data.as_slice());
+        assert!(read_sized_string(&mut cursor).is_err());
+    }
 
     /// Build a minimal valid NIF header for version 20.2.0.7 (Skyrim).
     /// num_blocks=0, user_version=12, user_version_2=83.

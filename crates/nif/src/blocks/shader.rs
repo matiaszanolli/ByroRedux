@@ -967,7 +967,7 @@ impl BSLightingShaderProperty {
     ///   the RT-reflection metalness/roughness gate.
     /// - FO4 subsurface block (`subsurface_rolloff`, `rimlight_power`,
     ///   `backlight_power`) ONLY in BSVER 130-139. `backlight_power`
-    ///   present iff `rimlight_power >= 3.0e38` per nif.xml 6609 +
+    ///   present iff `rimlight_power >= FLT_MAX` per nif.xml 6609 +
     ///   openmw `property.cpp:335` + nifly `Shaders.cpp:477`. See #1175.
     /// - `grayscale_to_palette_scale`, `fresnel_power`, wetness all read.
     /// - Wetness `unknown_2` is FO76-gated (`>= 155`) so always 0.0 here.
@@ -1021,7 +1021,12 @@ impl BSLightingShaderProperty {
         {
             let sub = stream.read_f32_le()?;
             let rim = stream.read_f32_le()?;
-            let back = if rim >= 3.0e38 && rim.is_finite() {
+            // nif.xml gates Backlight Power on `Rimlight Power >= FLT_MAX &&
+            // < FLT_INF` (the `#FLT_MAX#` sentinel). Use the exact FLT_MAX
+            // bound, not a looser 3.0e38 — a rimlight in [3.0e38, FLT_MAX)
+            // would otherwise over-read a 4-byte field nif.xml says is absent.
+            // `is_finite()` covers the `< FLT_INF` clause (and rejects NaN). #1901.
+            let back = if rim >= f32::MAX && rim.is_finite() {
                 stream.read_f32_le()?
             } else {
                 0.0
