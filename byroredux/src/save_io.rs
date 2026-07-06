@@ -87,6 +87,11 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "LightSource",
     "LightFlicker",
     "ScriptTimer",
+    // #1834 — runtime-mutated by the `setav`/`modav` console commands
+    // (`commands/actor_value.rs`). Delta-safe: the map is keyed by
+    // global-space AVIF FormID (u32, stable across reload) with four `f32`
+    // composition layers — no FixedString / EntityId / session handle.
+    "ActorValues",
 ];
 
 /// The player's standing position + look direction at save time, so a
@@ -157,7 +162,8 @@ impl Resource for PendingSaveLoadSlot {}
 pub fn build_save_registry() -> SaveRegistry {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
     use byroredux_core::ecs::components::{
-        Children, EquipmentSlots, Inventory, LightFlicker, LightSource, Name, Parent, Transform,
+        ActorValues, Children, EquipmentSlots, Inventory, LightFlicker, LightSource, Name, Parent,
+        Transform,
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
     use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
@@ -177,6 +183,12 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_component::<AnimationPlayer>("AnimationPlayer")
         .register_component::<AnimationStack>("AnimationStack")
         .register_component::<ScriptTimer>("ScriptTimer")
+        // #1834 — layered actor values (SPECIAL / skills / resistances /
+        // resources / derived). Stamped at NPC spawn from class auto-calc and
+        // mutated live by `setav`/`modav`; pre-fix a save/load silently
+        // reverted every edited/permanent/temporary/damage layer to the
+        // re-derived spawn base. Also a MUTABLE_DELTA_COLUMN (delta-safe).
+        .register_component::<ActorValues>("ActorValues")
         .register_form_id_component("FormIdComponent")
         .register_resource::<ItemInstancePool>("ItemInstancePool")
         // M45.1 — the cell identity + plugin set the save was taken in,
@@ -749,6 +761,10 @@ mod tests {
             "LightSource",
             "LightFlicker",
             "ScriptTimer",
+            // #1834 — ActorValues: HashMap<u32 AVIF-FormID, [f32; 4] layers>.
+            // Keys are global-space FormIDs (stable across reload); values are
+            // plain f32s. No FixedString / EntityId / session handle → delta-safe.
+            "ActorValues",
         ];
         assert_eq!(
             MUTABLE_DELTA_COLUMNS, AUDITED,
@@ -791,6 +807,100 @@ mod tests {
 
         let qt = dst.query::<Transform>().unwrap();
         assert_eq!(qt.iter().next().unwrap().1.translation, Vec3::new(4.0, 5.0, 6.0));
+    }
+
+    /// #1834 — an actor's layered `ActorValues` (class-auto-calc base plus any
+    /// `setav`/`modav` console edit) must survive a save → load round-trip.
+    /// Pre-fix the component was neither registered nor serialised, so a
+    /// reload dropped every permanent/temporary/damage layer and re-derived
+    /// only the spawn base.
+    #[test]
+    fn actor_values_survive_save_load_round_trip() {
+        use byroredux_core::ecs::components::ActorValues;
+        const AV_HEALTH: u32 = 0x0000_02C9;
+        let reg = build_save_registry();
+
+        let mut src = World::new();
+        src.insert_resource(StringPool::new());
+        src.insert_resource(FormIdPool::new());
+        let e = src.spawn();
+        let mut av = ActorValues::new();
+        av.set_base(AV_HEALTH, 100.0); // class auto-calc base
+        av.mod_permanent(AV_HEALTH, 25.0); // e.g. a `modav` edit
+        av.apply_damage(AV_HEALTH, 40.0);
+        src.insert(e, av);
+
+        let snap = save_world(&src, &reg).unwrap();
+        let bytes = encode(&snap, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+        let mut dst = World::new();
+        dst.insert_resource(FormIdPool::new());
+        restore_world(&mut dst, &reg, &decoded).unwrap();
+
+        let q = dst.query::<ActorValues>().unwrap();
+        let (_, restored) = q.iter().next().expect("ActorValues must round-trip");
+        // All four layers survive (pre-#1834 the whole component was dropped).
+        assert_eq!(restored.current(AV_HEALTH), 85.0, "100 + 25 − 40");
+        let layer = restored.get(AV_HEALTH).expect("entry present after reload");
+        assert_eq!(layer.base, 100.0);
+        assert_eq!(layer.permanent_mod, 25.0);
+        assert_eq!(layer.damage, 40.0);
+    }
+
+    /// #1835 — every gameplay-state component `spawn_npc_entity` stamps on an
+    /// NPC placement root must be a deliberate save decision: registered in
+    /// [`build_save_registry`] (persisted + restored) XOR listed as
+    /// re-derived-from-static-ESM-at-respawn (write-once, no runtime mutator,
+    /// so not saving it is a correct no-op). A new spawn-stamp that is neither
+    /// — or one wrongly in both — trips this test. This is the structural
+    /// guard the `ActorValues` (#1834) gap lacked, so the pattern can't
+    /// silently repeat a third time.
+    ///
+    /// Manually maintained — Rust has no reflection over `world.insert` sites,
+    /// same tripwire philosophy as `delta_columns_carry_only_session_stable_fields`.
+    /// When a runtime mutator lands for a re-derived type (leveling XP,
+    /// `AddPerk`, a faction-rank command), register it AND drop it from the
+    /// allowlist in the SAME commit (per #1835).
+    #[test]
+    fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
+        // Persistent gameplay-state components stamped on the placement root by
+        // `spawn_npc_entity` + its `stamp_*` helpers (`npc_spawn.rs`). Pure
+        // placement scaffolding (Parent/Children), GPU handles, and transient
+        // markers are out of scope — this guards actor state, the #1834 class.
+        const NPC_SPAWN_STAMPED: &[&str] = &[
+            "Transform",
+            "Name",
+            "Inventory",
+            "EquipmentSlots",
+            "ActorValues",
+            "FactionRanks",
+            "CharacterLevel",
+            "Background",
+            "Perks",
+        ];
+        // Write-once from static ESM `NPC_` data — no runtime mutator exists,
+        // so a save/load re-derives byte-identical values on respawn and NOT
+        // saving them is a correct no-op (#1835). Register + remove from here
+        // the moment a mutator lands.
+        const REDERIVED_NOT_SAVED: &[&str] =
+            &["FactionRanks", "CharacterLevel", "Background", "Perks"];
+
+        let registered: std::collections::HashSet<&str> =
+            build_save_registry().component_names().collect();
+
+        for name in NPC_SPAWN_STAMPED {
+            let saved = registered.contains(name);
+            let rederived = REDERIVED_NOT_SAVED.contains(name);
+            assert!(
+                saved ^ rederived,
+                "NPC-spawn-stamped {name:?}: must be EITHER registered in \
+                 build_save_registry (saved={saved}) OR in REDERIVED_NOT_SAVED \
+                 (rederived={rederived}) — never both/neither. If it gained a \
+                 runtime mutator, register it (#1834); if it stays write-once \
+                 from ESM, allowlist it (#1835).",
+            );
+        }
     }
 
     /// A clean validation pass is the precondition every save checks.

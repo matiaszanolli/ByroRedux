@@ -39,6 +39,7 @@ use std::collections::HashMap;
 /// `current()` folds them per the actor-value model. All four default to
 /// `0.0`, so a freshly-inserted entry reads `0.0` until a base is set.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorValue {
     /// Race + class + level result (or formula / editor default).
     pub base: f32,
@@ -64,6 +65,7 @@ impl ActorValue {
 /// carries many values (SPECIAL + skills + resistances + resources + derived,
 /// up to the full AVIF set) and reads are by id.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorValues {
     values: HashMap<u32, ActorValue>,
 }

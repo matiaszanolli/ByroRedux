@@ -297,6 +297,13 @@ impl SaveRegistry {
             .map(|e| (e.name, &e.save, &e.load))
     }
 
+    /// Names of every registered component column, in registration order.
+    /// Lets callers audit registry membership without touching the save/load
+    /// closures — e.g. the binary's spawn-stamp-vs-registry cross-check (#1835).
+    pub fn component_names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.components.iter().map(|e| e.name)
+    }
+
     pub(crate) fn resource_entries(&self) -> impl Iterator<Item = (&'static str, &SaveFn, &LoadFn)> {
         self.resources.iter().map(|e| (e.name, &e.save, &e.load))
     }
