@@ -413,6 +413,23 @@ void main() {
         outAlbedo = vec4(viz, 1.0);
         return;
     }
+    // #1874 — screen-space motion-vector visualisation. `outMotion` (written
+    // above) is the exact velocity SVGF + TAA reproject with, so this shows
+    // the *input* to the ghosting artifact. A static camera reads flat grey;
+    // a UNIFORM full-screen tint ⇒ a spatially-uniform bad motion vector (H1:
+    // stale/jittered prevViewProj or origin — camera-level); a tint that
+    // VARIES with depth ⇒ real camera parallax (correct). Scale is large
+    // (×64) so the few-pixel stuck offset in the report is clearly visible.
+    // See BYROREDUX_RENDER_DEBUG=0x20000.
+    if ((dbgFlags & DBG_VIZ_MOTION) != 0u) {
+        vec3 mViz = vec3(clamp(0.5 + outMotion.x * 64.0, 0.0, 1.0),
+                         clamp(0.5 + outMotion.y * 64.0, 0.0, 1.0),
+                         0.5);
+        outColor = vec4(mViz, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(mViz, 1.0);
+        return;
+    }
 
     // View direction. NdotV is clamped to 0.05 (~87°) to prevent the
     // Cook-Torrance `D*G*F / (4*NdotV*NdotL)` specular term from blowing

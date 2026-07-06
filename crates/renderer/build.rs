@@ -339,6 +339,7 @@ fn main() {
         "#define DBG_DISABLE_SPATIAL {DBG_DISABLE_SPATIAL}u"
     )
     .unwrap();
+    writeln!(out, "#define DBG_VIZ_MOTION {DBG_VIZ_MOTION}u").unwrap();
     writeln!(out).unwrap();
 
     writeln!(

@@ -373,6 +373,24 @@ pub const DBG_DISABLE_RESTIR: u32 = 0x8000;
 /// full spatiotemporal path in one live session.
 pub const DBG_DISABLE_SPATIAL: u32 = 0x10000;
 
+/// 0x20000 — #1874 diagnostic: visualise the per-fragment screen-space motion
+/// vector (`outMotion`, the G-buffer velocity SVGF + TAA reproject with) as
+/// colour, so the "ghosted diagonal double-image" can be root-caused live
+/// without a RenderDoc capture. Encoding: `rg = 0.5 + motion.xy * scale`,
+/// `b = 0.5` — a static camera reads flat grey `(0.5, 0.5, 0.5)` everywhere.
+///
+/// The decisive read for issue #1874's hypothesis H1 (a *spatially-uniform*
+/// bad motion vector shared by SVGF and TAA): under this view a real camera
+/// translation shows motion that **varies with depth** (near geometry tints
+/// harder than far — parallax), whereas the suspected fault paints the **whole
+/// screen one uniform non-grey tint** (a post-projection screen shift with no
+/// depth dependence — a stale/jittered `prevViewProj`, not real motion). Park
+/// the camera on the artifact and set this bit: uniform tint ⇒ camera-level
+/// (`prevViewProj`/origin), depth-varying-but-localised-to-a-body tint ⇒
+/// skinning. Diagnostic-only — gated entirely behind the debug bit, no effect
+/// on normal rendering.
+pub const DBG_VIZ_MOTION: u32 = 0x20000;
+
 /// #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot WRS
 /// reservoir arrays (`resLight[16]` / `resWSel[16]`) that `DBG_DISABLE_RESTIR`
 /// A/Bs against. `DBG_DISABLE_RESTIR` is a RUNTIME bit read from a uniform, so

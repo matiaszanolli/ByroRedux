@@ -105,6 +105,7 @@
 #define DBG_DISABLE_ATROUS 16384u
 #define DBG_DISABLE_RESTIR 32768u
 #define DBG_DISABLE_SPATIAL 65536u
+#define DBG_VIZ_MOTION 131072u
 
 // #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot
 // WRS reservoir arrays. 0 (default): preprocessed out of
