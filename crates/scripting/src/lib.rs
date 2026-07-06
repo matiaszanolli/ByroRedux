@@ -32,8 +32,10 @@ pub use events::{
     OnEquipEvent, OnTriggerEnterEvent, TimerExpired,
 };
 pub use fragment::{
-    apply_effects, quest_fragment_dispatch_system, QuestStageFragments,
+    apply_effects, populate_quest_fragments_from_pex, quest_fragment_dispatch_system,
+    QuestStageFragments,
 };
+pub use quest_stages::QuestFormId;
 pub use globals::Globals;
 pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, RecurringUpdate};
 pub use registry::{ScriptRegistry, ScriptSpawnFn};

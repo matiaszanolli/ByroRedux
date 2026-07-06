@@ -217,6 +217,92 @@ fn end_to_end_lower_then_dispatch() {
 }
 
 #[test]
+fn populate_from_script_binds_stages_to_the_right_fragments() {
+    // Exercises the production population entry (the AST half of
+    // `populate_quest_fragments_from_pex`): a QF_ script with several
+    // Fragment_N functions + the QUST VMAD stage→Fragment_N bindings →
+    // each stage dispatches its own fragment's effects. Mirrors the real
+    // DA15Return shape where the Fragment_N ordinal ≠ the stage.
+    use byroredux_papyrus::parse_script;
+
+    let (script, errs) = parse_script(
+        "ScriptName QF_TestQuest_00099 extends Quest\n\
+         Function Fragment_6()\n Self.SetStage(200)\n EndFunction\n\
+         Function Fragment_3()\n Self.SetObjectiveCompleted(10)\n EndFunction\n\
+         Function Fragment_5()\n Self.SetObjectiveDisplayed(20)\n EndFunction\n",
+    )
+    .expect("QF_ script parses");
+    assert!(errs.is_empty(), "{errs:?}");
+
+    // Bindings as the VMAD decoder would surface them: stage → Fragment_N,
+    // deliberately out of ordinal order.
+    let bindings = [(0u16, "Fragment_6"), (200, "Fragment_3"), (10, "Fragment_5")];
+
+    let world = fixture();
+    let inserted = {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        populate_quest_fragments_from_script(&mut frags, Q, &script, &bindings)
+    };
+    assert_eq!(inserted, 3, "all three fragments lower + register");
+
+    // Stage 10 → Fragment_5 → SetObjectiveDisplayed(20).
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+    assert!(
+        world.resource::<QuestObjectiveState>().get(Q, 20).displayed,
+        "stage 10's fragment (Fragment_5) ran"
+    );
+    assert!(
+        !world.resource::<QuestObjectiveState>().get(Q, 10).completed,
+        "stage 3's fragment must NOT have run — wrong stage"
+    );
+
+    // Stage 0 → Fragment_6 → SetStage(200) → cascades to Fragment_3 →
+    // SetObjectiveCompleted(10).
+    emit_advance(&world, Q, 0);
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(Q),
+        200,
+        "Fragment_6 advanced the quest to stage 200"
+    );
+    assert!(
+        world.resource::<QuestObjectiveState>().get(Q, 10).completed,
+        "the stage-200 cascade ran Fragment_3"
+    );
+}
+
+#[test]
+fn populate_from_script_skips_absent_and_declined_fragments() {
+    use byroredux_papyrus::parse_script;
+
+    let (script, errs) = parse_script(
+        "ScriptName QF_X_0 extends Quest\n\
+         Function Fragment_0()\n Self.SetStage(20)\n EndFunction\n\
+         Function Fragment_1()\n Debug.Notification(\"hi\")\n EndFunction\n",
+    )
+    .expect("parses");
+    assert!(errs.is_empty(), "{errs:?}");
+
+    let bindings = [
+        (5u16, "Fragment_0"),  // lowers cleanly
+        (6, "Fragment_1"),     // unmodeled call → declines
+        (7, "Fragment_99"),    // absent → skipped
+    ];
+    let world = fixture();
+    let inserted = {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        populate_quest_fragments_from_script(&mut frags, Q, &script, &bindings)
+    };
+    assert_eq!(inserted, 1, "only the fully-lowered fragment registers");
+    let frags = world.resource::<QuestStageFragments>();
+    assert!(frags.get(Q, 5).is_some());
+    assert!(frags.get(Q, 6).is_none(), "declined fragment not registered");
+    assert!(frags.get(Q, 7).is_none(), "absent fragment not registered");
+}
+
+#[test]
 fn dispatch_ignores_stage_without_a_fragment() {
     let world = fixture();
     {

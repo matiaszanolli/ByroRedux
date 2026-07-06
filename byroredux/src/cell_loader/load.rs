@@ -340,6 +340,14 @@ pub fn load_cell_with_masters(
         absorbed,
     );
 
+    // 3a′. M47.2 keystone — populate the quest-stage fragment table from
+    // the merged index's QUST VMAD fragment bindings (Skyrim+). Decompiles
+    // each quest's `QF_` script once and lowers its bound `Fragment_N`
+    // bodies to canonical effects the `quest_fragment_dispatch_system`
+    // applies when a stage advances. No-op without `--scripts-bsa` (no
+    // `.pex` to resolve) or on pre-Papyrus games (empty `fragments`).
+    crate::asset_provider::populate_quest_fragments(world, &index);
+
     // 3a. Interior water plane from XCLW / XCWT — flooded ruins,
     // sewers, named indoor pools. The cell parser captured the
     // height directly; the water material comes from the global

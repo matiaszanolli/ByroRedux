@@ -42,11 +42,15 @@ use byroredux_plugin::esm::records::script_instance::ScriptInstanceData;
 use crate::quest_stages::{
     QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
 };
-use crate::translate::compose::QuestRef;
-use crate::translate::effects::Effect;
+use byroredux_papyrus::ast::{Script, ScriptItem, StateItem, Stmt};
+use byroredux_papyrus::span::Spanned;
 
-/// Lowered quest-stage fragments, keyed by `(quest, stage)`. Populated by
-/// the (pending) QUST-fragment decoder; consumed by
+use crate::translate::compose::QuestRef;
+use crate::translate::effects::{lower_fragment, Effect};
+
+/// Lowered quest-stage fragments, keyed by `(quest, stage)`. Populated at
+/// cell load by [`populate_quest_fragments_from_pex`] from the QUST `VMAD`
+/// fragment bindings the decoder recovers; consumed by
 /// [`quest_fragment_dispatch_system`].
 #[derive(Debug, Default)]
 pub struct QuestStageFragments {
@@ -167,15 +171,123 @@ pub fn register(world: &mut World) {
     world.insert_resource(QuestObjectiveState::default());
 }
 
+/// A top-level (or state) function body from a decompiled script, by name
+/// (Papyrus identifiers are case-insensitive). Quest `Fragment_N`
+/// functions are top-level, but state functions are checked too so the
+/// lookup is robust.
+fn function_body<'a>(script: &'a Script, name: &str) -> Option<&'a [Spanned<Stmt>]> {
+    for item in &script.body {
+        match &item.node {
+            ScriptItem::Function(f) if f.name.node.0.eq_ignore_ascii_case(name) => {
+                return Some(&f.body);
+            }
+            ScriptItem::State(st) => {
+                for si in &st.body {
+                    if let StateItem::Function(f) = &si.node {
+                        if f.name.node.0.eq_ignore_ascii_case(name) {
+                            return Some(&f.body);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Populate [`QuestStageFragments`] for one quest from its compiled quest
+/// script (`.pex`). Each `(stage, fragment_name)` binding comes from the
+/// QUST `VMAD` fragment section
+/// ([`byroredux_plugin::esm::records::script_instance::parse_quest_fragments`]);
+/// all fragments of a quest share a single `QF_` script, so the caller
+/// resolves and passes its bytes once. Returns the number of stage
+/// fragments inserted (non-empty, fully-lowered ones).
+///
+/// This is the runtime half of the M47.2 keystone: it takes the
+/// stage→`Fragment_N` binding the decoder recovered and turns each
+/// fragment body into the canonical [`Effect`]s the dispatcher applies —
+/// closing the loop from real game data to quest behavior on screen.
+///
+/// Mirrors [`crate::translate::translate_pex`]'s hostile-input contract:
+/// a `.pex` that fails to parse/decompile — including a decompiler panic
+/// (#1816) — inserts nothing (logged at debug), never aborts the load. A
+/// fragment carrying a statement no effect primitive claims lowers to
+/// `None` and is declined (safe — no behavior attached), never partially
+/// applied.
+pub fn populate_quest_fragments_from_pex(
+    frags: &mut QuestStageFragments,
+    quest: QuestFormId,
+    pex_bytes: &[u8],
+    bindings: &[(u16, &str)],
+) -> usize {
+    let pex = match byroredux_pex::parse(pex_bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            log::debug!("populate_quest_fragments: .pex parse failed (quest {:08X}): {e}", quest.0);
+            return 0;
+        }
+    };
+    let script = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        byroredux_pex::decompile::decompile_script(&pex)
+    })) {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            log::debug!("populate_quest_fragments: decompile failed (quest {:08X}): {e}", quest.0);
+            return 0;
+        }
+        Err(_) => {
+            log::debug!("populate_quest_fragments: decompile panicked (quest {:08X})", quest.0);
+            return 0;
+        }
+    };
+    populate_quest_fragments_from_script(frags, quest, &script, bindings)
+}
+
+/// The AST half of [`populate_quest_fragments_from_pex`] — lower each
+/// `(stage, fragment_name)` binding against an already-decompiled (or
+/// source-parsed) [`Script`] and register the non-empty lowerings.
+/// Split out so the lowering path is unit-testable from a `.psc` source
+/// without game-data `.pex` bytes.
+pub fn populate_quest_fragments_from_script(
+    frags: &mut QuestStageFragments,
+    quest: QuestFormId,
+    script: &Script,
+    bindings: &[(u16, &str)],
+) -> usize {
+    let mut inserted = 0;
+    for (stage, fragment_name) in bindings {
+        let Some(body) = function_body(script, fragment_name) else {
+            log::debug!(
+                "populate_quest_fragments: fn '{fragment_name}' absent in quest {:08X} .pex",
+                quest.0
+            );
+            continue;
+        };
+        // Decline-on-any-unmodeled-term: a fragment the effect table can't
+        // fully lower is skipped, not partially applied. An empty
+        // fully-lowered fragment carries no effects, so it needn't occupy
+        // the map (a lookup miss is equivalent to an empty entry).
+        if let Some(effects) = lower_fragment(body) {
+            if !effects.is_empty() {
+                frags.insert(quest, *stage, effects);
+                inserted += 1;
+            }
+        }
+    }
+    inserted
+}
+
 /// Consume [`QuestStageAdvanced`] markers and run the matching
 /// `(quest, stage)` fragments, cascading any `SetStage`s they perform
 /// (bounded by [`MAX_CASCADE`]). Runs after `quest_advance_system` (which
 /// emits the initial markers) and before end-of-frame cleanup.
 ///
-/// Resolution uses no QUST VMAD (not decoded yet), so only `Self`/
-/// owning-quest-targeted effects apply; property-targeted effects are
-/// skipped. The resource is empty until the QUST-fragment decoder lands,
-/// making this a safe no-op at runtime today.
+/// Effect resolution passes no QUST VMAD, so only `Self`/owning-quest-
+/// targeted effects apply — which is exactly the set [`lower_fragment`]
+/// emits today (object-targeting effects decline pending a FormID→entity
+/// resolver), so nothing is silently dropped. The table is empty (and this
+/// a no-op) on loads without `--scripts-bsa` or on pre-Papyrus games.
 pub fn quest_fragment_dispatch_system(world: &World) {
     // Snapshot the stage advances this frame. #1864 / SCR-D7-NEW-01 — a
     // batch can hold >1 advance from the same frame; iterate every entry,

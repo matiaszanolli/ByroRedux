@@ -2,6 +2,7 @@
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
 use super::super::condition::{parse_ctda, remap_condition_form_ids, ConditionList};
+use super::super::script_instance::{parse_quest_fragments, QuestScriptFragment};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -132,6 +133,13 @@ pub struct QustRecord {
     /// usually a strict subset of stages (one objective per major
     /// player-visible step).
     pub objectives: Vec<QuestObjective>,
+    /// Stage→`Fragment_N` bindings from the QUST `VMAD` fragment section
+    /// (Skyrim+). Each entry names the compiled quest script + the
+    /// fragment function the runtime runs when the quest reaches that
+    /// stage — the M47.2 fragment-dispatch input. Empty on FO3/FNV
+    /// (pre-Papyrus; they use `script_ref`) and on Skyrim+ quests whose
+    /// VMAD attaches only non-fragment utility scripts.
+    pub fragments: Vec<QuestScriptFragment>,
 }
 
 /// Which block-structured sub-record we're currently inside while
@@ -182,6 +190,13 @@ pub fn parse_qust(
             b"DATA" if sub.data.len() >= 2 => {
                 out.quest_flags = sub.data[0];
                 out.priority = sub.data[1];
+            }
+            // Skyrim+ Papyrus attachment. The scripts section is decoded
+            // by the generic path elsewhere; here we only want the QUST-
+            // specific trailing fragment section (stage→`Fragment_N`),
+            // the M47.2 fragment-dispatch input.
+            b"VMAD" => {
+                out.fragments = parse_quest_fragments(&sub.data);
             }
             // INDX opens a stage block. Anything still open (a prior
             // stage or objective) is flushed first. Skyrim widened
@@ -700,6 +715,41 @@ mod tests {
         assert_eq!(q.script_ref, 0x0010_BEEF);
         assert_eq!(q.quest_flags, 0x05);
         assert_eq!(q.priority, 20);
+    }
+
+    #[test]
+    fn parse_qust_decodes_vmad_stage_fragment_bindings() {
+        // A QUST carrying a VMAD with an empty scripts section + one
+        // stage fragment (stage 30 → Fragment_4) surfaces the binding on
+        // `QustRecord.fragments` — the M47.2 fragment-dispatch input.
+        let mut vmad = Vec::new();
+        // scripts section: version 5, objFmt 2, zero scripts.
+        vmad.extend_from_slice(&5i16.to_le_bytes());
+        vmad.extend_from_slice(&2i16.to_le_bytes());
+        vmad.extend_from_slice(&0u16.to_le_bytes());
+        // fragment section: version 2, one fragment.
+        vmad.push(2u8);
+        vmad.extend_from_slice(&1u16.to_le_bytes()); // fragmentCount
+        let file = b"QF_TestQuest_00001234";
+        vmad.extend_from_slice(&(file.len() as u16).to_le_bytes());
+        vmad.extend_from_slice(file);
+        vmad.extend_from_slice(&30u16.to_le_bytes()); // stage
+        vmad.extend_from_slice(&0i16.to_le_bytes());
+        vmad.extend_from_slice(&0i32.to_le_bytes());
+        vmad.push(1u8);
+        vmad.extend_from_slice(&(file.len() as u16).to_le_bytes());
+        vmad.extend_from_slice(file);
+        let frag = b"Fragment_4";
+        vmad.extend_from_slice(&(frag.len() as u16).to_le_bytes());
+        vmad.extend_from_slice(frag);
+        vmad.extend_from_slice(&0u16.to_le_bytes()); // aliasCount
+
+        let subs = vec![sub(b"EDID", b"TestQuest\0"), sub(b"VMAD", &vmad)];
+        let q = parse_qust(0x0000_1234, &subs, &None);
+        assert_eq!(q.fragments.len(), 1);
+        assert_eq!(q.fragments[0].stage, 30);
+        assert_eq!(q.fragments[0].script_name, "QF_TestQuest_00001234");
+        assert_eq!(q.fragments[0].fragment_name, "Fragment_4");
     }
 
     #[test]
