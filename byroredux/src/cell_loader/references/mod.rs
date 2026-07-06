@@ -6,7 +6,7 @@
 //! path), expanding container placements, resolving base records,
 //! and committing the per-cell NifImportRegistry deltas.
 
-use byroredux_core::ecs::{GlobalTransform, LightSource, Transform, World};
+use byroredux_core::ecs::{EntityId, GlobalTransform, LightSource, Transform, World};
 use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
@@ -748,13 +748,8 @@ pub(super) fn load_references(
             entity_count += count;
 
             // #1889 / EXAL §5.2 — materialise the base record's
-            // Visible-When-Distant flag onto the placement root. This is the
-            // per-record signal a full-model LOD cull reads; see the
-            // `VisibleWhenDistant` doc comment for why it has no render-time
-            // consumer under the current conservative streaming-ring rule.
-            if stat.visible_when_distant {
-                world.insert(placement_root, VisibleWhenDistant);
-            }
+            // Visible-When-Distant flag onto the placement root.
+            stamp_visible_when_distant(world, placement_root, stat.visible_when_distant);
 
             // M47.0 Phase 3b — attach script state to the placement
             // root. `child_form_id` is the leaf base record (SCOL /
@@ -1065,6 +1060,25 @@ pub(super) fn load_references(
     }
 }
 
+/// #1889 / EXAL §5.2 — materialise the base record's Visible-When-Distant flag
+/// onto the placement root. This is the per-record signal a full-model LOD cull
+/// reads; see the [`VisibleWhenDistant`] doc comment for why it has no
+/// render-time consumer under the current conservative streaming-ring rule (the
+/// ring already guarantees a full model and its LOD proxy never coexist, #1866).
+///
+/// Extracted from the spawn loop (#1890) so the flag→marker plumbing is
+/// unit-testable without the full Vulkan spawn path; the record→flag half is
+/// pinned in `crates/plugin/src/esm/cell/tests/addn_stat.rs`.
+fn stamp_visible_when_distant(
+    world: &mut World,
+    placement_root: EntityId,
+    visible_when_distant: bool,
+) {
+    if visible_when_distant {
+        world.insert(placement_root, VisibleWhenDistant);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1073,6 +1087,33 @@ mod tests {
     use super::attach::attach_vmad_scripts;
     use byroredux_core::ecs::BillboardMode;
     use byroredux_core::string::StringPool;
+
+    /// #1890 / DELTA-01 — the spawn-path half of the VWD chain: a base record
+    /// whose `visible_when_distant` flag is set ends with a `VisibleWhenDistant`
+    /// marker on its placement root, and an unflagged one does not. Complements
+    /// the record→flag pin in `esm/cell/tests/addn_stat.rs` (#1889), closing the
+    /// parse→spawn plumbing the audit flagged as untested.
+    #[test]
+    fn stamp_visible_when_distant_marks_only_flagged_roots() {
+        let mut world = World::new();
+
+        let flagged = world.spawn();
+        stamp_visible_when_distant(&mut world, flagged, true);
+        let unflagged = world.spawn();
+        stamp_visible_when_distant(&mut world, unflagged, false);
+
+        let q = world
+            .query::<VisibleWhenDistant>()
+            .expect("VisibleWhenDistant storage exists after one insert");
+        assert!(
+            q.get(flagged).is_some(),
+            "a VWD-flagged base record must stamp the marker on its placement root",
+        );
+        assert!(
+            q.get(unflagged).is_none(),
+            "an unflagged base record must NOT carry the marker",
+        );
+    }
 
     /// `XPRM` box primitive → world-space `TriggerVolume`: bounds are
     /// z-up half-extents, permuted to engine y-up `[x, z, y]` and scaled

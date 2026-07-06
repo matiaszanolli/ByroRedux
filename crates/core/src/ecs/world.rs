@@ -554,6 +554,12 @@ impl World {
     // ── Resource API ─────────────────────────────────────────────────────
 
     /// Insert a global resource. Returns the previous value if one existed.
+    ///
+    /// # Panics
+    /// If the replaced resource's `RwLock` was poisoned (a prior holder
+    /// panicked mid-access), this re-panics with the type name via the #466
+    /// fail-fast lock-poison doctrine rather than swallowing it into `None`
+    /// (#1837). The freshly-installed replacement value is always un-poisoned.
     pub fn insert_resource<R: Resource>(&mut self, resource: R) -> Option<R> {
         let old = self
             .resources
@@ -572,6 +578,11 @@ impl World {
     }
 
     /// Remove a global resource, returning it if it existed.
+    ///
+    /// # Panics
+    /// If the removed resource's `RwLock` was poisoned (a prior holder
+    /// panicked mid-access), this re-panics with the type name (the #466
+    /// fail-fast lock-poison doctrine).
     pub fn remove_resource<R: Resource>(&mut self) -> Option<R> {
         let lock = self.resources.remove(&TypeId::of::<R>())?;
         let boxed = lock
@@ -590,6 +601,9 @@ impl World {
     /// (debug and release builds) and additionally panics if a
     /// conflicting lock on `R` is already held on the same thread.
     /// Use `try_resource` if you need a graceful miss.
+    ///
+    /// Also panics if `R`'s `RwLock` is poisoned — a prior holder panicked
+    /// mid-access (the #466 fail-fast lock-poison doctrine).
     pub fn resource<R: Resource>(&self) -> ResourceRead<'_, R> {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id).unwrap_or_else(|| {
@@ -616,6 +630,9 @@ impl World {
     /// (debug and release builds) and additionally panics if a
     /// conflicting lock on `R` (read or write) is already held on the
     /// same thread. Use `try_resource_mut` if you need a graceful miss.
+    ///
+    /// Also panics if `R`'s `RwLock` is poisoned — a prior holder panicked
+    /// mid-access (the #466 fail-fast lock-poison doctrine).
     pub fn resource_mut<R: Resource>(&self) -> ResourceWrite<'_, R> {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id).unwrap_or_else(|| {
@@ -646,6 +663,9 @@ impl World {
     /// conflicting lock on `A` or `B` is already held on the same
     /// thread. In debug builds only, it further panics if the ordered
     /// lock graph detects a cross-thread ABBA risk (#313).
+    ///
+    /// Also panics if `A`'s or `B`'s `RwLock` is poisoned — a prior holder
+    /// panicked mid-access (the #466 fail-fast lock-poison doctrine).
     pub fn resource_2_mut<A: Resource, B: Resource>(
         &self,
     ) -> (ResourceWrite<'_, A>, ResourceWrite<'_, B>) {
@@ -713,6 +733,9 @@ impl World {
     /// `R` is already held on the same thread. The `try_` prefix is
     /// about existence, not re-entrancy — drop the offending guard
     /// before calling.
+    ///
+    /// Also panics (not `None`) if `R`'s `RwLock` is poisoned — the `try_`
+    /// prefix is about existence, not poison recovery (#466 fail-fast).
     pub fn try_resource<R: Resource>(&self) -> Option<ResourceRead<'_, R>> {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id)?;
@@ -730,6 +753,9 @@ impl World {
     /// The `lock_tracker`'s same-thread reentrancy check is always on
     /// (debug and release builds) and panics if a conflicting lock on
     /// `R` (read or write) is already held on the same thread.
+    ///
+    /// Also panics (not `None`) if `R`'s `RwLock` is poisoned — the `try_`
+    /// prefix is about existence, not poison recovery (#466 fail-fast).
     pub fn try_resource_mut<R: Resource>(&self) -> Option<ResourceWrite<'_, R>> {
         let type_id = TypeId::of::<R>();
         let lock = self.resources.get(&type_id)?;
@@ -761,6 +787,9 @@ impl World {
     /// conflicting lock on `A` or `B` is already held on the same
     /// thread. In debug builds only, it further panics if the ordered
     /// lock graph detects a cross-thread ABBA risk (#313).
+    ///
+    /// Also panics (not `None`) if `A`'s or `B`'s `RwLock` is poisoned — the
+    /// `try_` prefix is about existence, not poison recovery (#466 fail-fast).
     pub fn try_resource_2_mut<A: Resource, B: Resource>(
         &self,
     ) -> Option<(ResourceWrite<'_, A>, ResourceWrite<'_, B>)> {
