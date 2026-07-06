@@ -577,8 +577,12 @@ impl TextureRegistry {
         if let Ok(meta) = super::vulkan::dds::parse_dds(dds_bytes) {
             self.texture_has_alpha
                 .insert(handle, super::vulkan::dds::format_has_alpha(meta.format));
-            if let Some(avg) = super::vulkan::dds::average_rgb(&meta, dds_bytes) {
-                self.texture_avg_rgb.insert(handle, avg);
+            // #1542: for a to-be-expanded 16/24-bpp source the raw bytes
+            // aren't RGBA8 yet, so `average_rgb` would misread them; skip.
+            if meta.expand.is_none() {
+                if let Some(avg) = super::vulkan::dds::average_rgb(&meta, dds_bytes) {
+                    self.texture_avg_rgb.insert(handle, avg);
+                }
             }
         }
 
@@ -781,12 +785,20 @@ impl TextureRegistry {
                         upload.handle,
                         super::vulkan::dds::format_has_alpha(meta.format),
                     );
-                    if let Some(avg) =
-                        super::vulkan::dds::average_rgb(&meta, &upload.dds_bytes)
-                    {
-                        self.texture_avg_rgb.insert(upload.handle, avg);
+                    // #1542: a 16/24-bpp `DDPF_RGB` source is CPU-expanded to
+                    // R8G8B8A8. Its raw bytes aren't RGBA8 yet, so skip
+                    // `average_rgb` for it (it would misread the packed
+                    // pixels) — these are UI/font atlases, never diffuse
+                    // albedo anyway.
+                    if meta.expand.is_none() {
+                        if let Some(avg) =
+                            super::vulkan::dds::average_rgb(&meta, &upload.dds_bytes)
+                        {
+                            self.texture_avg_rgb.insert(upload.handle, avg);
+                        }
                     }
-                    let pixel_data = &upload.dds_bytes[meta.data_offset..];
+                    let pixel_data =
+                        super::vulkan::dds::upload_pixels(&meta, &upload.dds_bytes);
                     let sampler = self.samplers[upload.clamp_mode as usize];
                     let (texture, staging, staging_capacity) =
                         match super::vulkan::texture::Texture::record_dds_upload(
@@ -794,7 +806,7 @@ impl TextureRegistry {
                             allocator,
                             cmd,
                             &meta,
-                            pixel_data,
+                            pixel_data.as_ref(),
                             sampler,
                             self.staging_pool.as_mut(),
                         ) {

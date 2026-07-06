@@ -58,6 +58,29 @@ pub struct DdsMetadata {
     pub compressed: bool,
     /// Byte offset where pixel data begins (128 standard, 148 for DX10 extended header).
     pub data_offset: usize,
+    /// Set for an uncompressed `DDPF_RGB` DDS that is NOT 32-bpp
+    /// R8G8B8A8 and must be CPU-expanded to R8G8B8A8 before upload
+    /// (#1542). When `Some`, `format`/`block_size` already describe the
+    /// *post-expansion* R8G8B8A8 target, and the caller must run
+    /// [`expand_uncompressed_rgb`] on the raw bytes rather than uploading
+    /// them directly. `None` for every zero-copy format (BC, 32-bpp RGBA).
+    pub expand: Option<RgbExpand>,
+}
+
+/// Source pixel layout for a 16- or 24-bpp uncompressed `DDPF_RGB` DDS
+/// that needs CPU expansion to R8G8B8A8 (#1542). The channel masks come
+/// straight from DDS_PIXELFORMAT, so any ordering — 16-bpp A1R5G5B5 /
+/// A4R4G4B4 / R5G6B5, 24-bpp R8G8B8 / B8G8R8 — decodes from the masks
+/// alone without enumerating named formats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RgbExpand {
+    /// Source bits per pixel — 16 or 24.
+    pub src_bpp: u32,
+    pub r_mask: u32,
+    pub g_mask: u32,
+    pub b_mask: u32,
+    /// `0` when the source carries no alpha channel (opaque → A=255).
+    pub a_mask: u32,
 }
 
 /// Whether a loaded DDS format carries a usable alpha channel. Skyrim (and
@@ -229,6 +252,7 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                 block_size,
                 compressed,
                 data_offset: HEADER_SIZE + DX10_EXT_SIZE,
+                expand: None,
             })
         } else {
             let (format, block_size) = map_fourcc(pf_fourcc)?;
@@ -240,41 +264,132 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                 block_size,
                 compressed: true,
                 data_offset: HEADER_SIZE,
+                expand: None,
             })
         }
     } else if pf_flags & DDPF_RGB != 0 {
-        // Uncompressed RGBA. Only 32-bpp R8G8B8A8 is uploaded directly today.
-        //
-        // #1542 — 9 of FO3's 12,261 textures are uncompressed RGB at 16-bpp
-        // (8 × `textures\fonts\*_lod_a.dds` glyph atlases) or 24-bpp (1 ×
-        // `textures\interface\hud\hud_comp_direction_vertical.dds`); FNV ships
-        // the same era atlases. They're rejected here and fall back to the
-        // checker placeholder (texture_registry catches the Err and warns), so
-        // those fonts / HUD compass render as the placeholder — UI-only, never
-        // world geometry, graceful (not a crash). Supporting them needs CPU
-        // expansion to R8G8B8A8 (24-bpp R8G8B8 and A4R4G4B4 lack reliable
-        // sampled Vulkan formats, so a native-format map isn't safe), which is
-        // an upload-path refactor deferred as low-value (0.07% of textures).
         let bpp = pf_rgb_bit_count;
-        ensure!(
-            bpp == 32,
-            "Uncompressed DDS at {bpp} bpp not yet supported (only 32-bit \
-             R8G8B8A8 uploaded directly) — rendering as placeholder. FO3/FNV \
-             font + HUD atlases hit this; needs CPU expansion to RGBA8 (#1542).",
-        );
-        let format = vk::Format::R8G8B8A8_SRGB;
-        Ok(DdsMetadata {
-            width,
-            height,
-            mip_count,
-            format,
-            block_size: 4, // bytes per pixel
-            compressed: false,
-            data_offset: HEADER_SIZE,
-        })
+        if bpp == 32 {
+            // 32-bpp R8G8B8A8 uploads directly — zero-copy.
+            Ok(DdsMetadata {
+                width,
+                height,
+                mip_count,
+                format: vk::Format::R8G8B8A8_SRGB,
+                block_size: 4, // bytes per pixel
+                compressed: false,
+                data_offset: HEADER_SIZE,
+                expand: None,
+            })
+        } else if bpp == 16 || bpp == 24 {
+            // #1542 — FO3/FNV-era font glyph atlases (16-bpp, e.g.
+            // A1R5G5B5 / A4R4G4B4) and the HUD compass (24-bpp R8G8B8)
+            // carry DDPF_RGB but no 32-bpp layout and no sampled Vulkan
+            // format of their own. Decode them from the DDS_PIXELFORMAT
+            // channel masks and CPU-expand to R8G8B8A8 at upload time.
+            let r_mask = read_u32(data, 92);
+            let g_mask = read_u32(data, 96);
+            let b_mask = read_u32(data, 100);
+            let a_mask = read_u32(data, 104);
+            ensure!(
+                r_mask | g_mask | b_mask != 0,
+                "Uncompressed {bpp}-bpp DDS has empty RGB channel masks — cannot decode",
+            );
+            Ok(DdsMetadata {
+                width,
+                height,
+                mip_count,
+                // Post-expansion target — the raw bytes are `bpp`-bpp until
+                // `expand_uncompressed_rgb` runs.
+                format: vk::Format::R8G8B8A8_SRGB,
+                block_size: 4,
+                compressed: false,
+                data_offset: HEADER_SIZE,
+                expand: Some(RgbExpand {
+                    src_bpp: bpp,
+                    r_mask,
+                    g_mask,
+                    b_mask,
+                    a_mask,
+                }),
+            })
+        } else {
+            bail!("Unsupported uncompressed DDS: {bpp} bpp (RGB masks; expected 16/24/32)");
+        }
     } else {
         bail!("Unsupported DDS pixel format (flags={:#x})", pf_flags);
     }
+}
+
+/// Expand a 16- or 24-bpp uncompressed `DDPF_RGB` DDS to a contiguous
+/// R8G8B8A8 buffer covering all mips, laid out mip-0-first to match what
+/// the upload path expects for `block_size = 4` (#1542).
+///
+/// `meta.expand` must be `Some`; returns an empty `Vec` otherwise. Source
+/// pixels are read starting at `meta.data_offset`, one `src_bpp/8`-byte
+/// little-endian value per pixel, then each channel is extracted via its
+/// mask and bit-expanded to 8 bits. A zero alpha mask yields an opaque
+/// (255) alpha.
+pub fn expand_uncompressed_rgb(meta: &DdsMetadata, data: &[u8]) -> Vec<u8> {
+    let Some(ex) = meta.expand else {
+        return Vec::new();
+    };
+    let src_bpp = (ex.src_bpp / 8) as usize; // source bytes per pixel
+    let mut total_pixels = 0usize;
+    for m in 0..meta.mip_count {
+        let w = (meta.width >> m).max(1) as usize;
+        let h = (meta.height >> m).max(1) as usize;
+        total_pixels += w * h;
+    }
+    let mut out = Vec::with_capacity(total_pixels * 4);
+    let mut src_off = meta.data_offset;
+    for m in 0..meta.mip_count {
+        let w = (meta.width >> m).max(1) as usize;
+        let h = (meta.height >> m).max(1) as usize;
+        for _ in 0..(w * h) {
+            let mut val = 0u32;
+            for b in 0..src_bpp {
+                val |= (data.get(src_off + b).copied().unwrap_or(0) as u32) << (8 * b);
+            }
+            src_off += src_bpp;
+            out.push(scale_channel(val, ex.r_mask));
+            out.push(scale_channel(val, ex.g_mask));
+            out.push(scale_channel(val, ex.b_mask));
+            out.push(if ex.a_mask != 0 {
+                scale_channel(val, ex.a_mask)
+            } else {
+                255
+            });
+        }
+    }
+    out
+}
+
+/// The R8G8B8A8-ready pixel bytes for `meta` (all mips): the expanded
+/// buffer for a 16/24-bpp `DDPF_RGB` source (#1542), or a zero-copy borrow
+/// of `data[data_offset..]` for every directly-uploadable format. Every
+/// DDS upload site funnels through here so the expansion can't be missed
+/// on one path.
+pub fn upload_pixels<'a>(meta: &DdsMetadata, data: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+    if meta.expand.is_some() {
+        std::borrow::Cow::Owned(expand_uncompressed_rgb(meta, data))
+    } else {
+        std::borrow::Cow::Borrowed(&data[meta.data_offset..])
+    }
+}
+
+/// Extract the channel selected by `mask` from a packed pixel value and
+/// bit-expand it to a full 8-bit range (e.g. a 5-bit `0x1F` → `255`,
+/// a 1-bit `0x1` → `255`). A zero mask reads as `0`.
+fn scale_channel(val: u32, mask: u32) -> u8 {
+    if mask == 0 {
+        return 0;
+    }
+    let shift = mask.trailing_zeros();
+    let max = mask >> shift; // largest raw value the channel can hold
+    let raw = (val & mask) >> shift;
+    // Round-to-nearest expansion of [0, max] onto [0, 255].
+    ((raw * 255 + max / 2) / max) as u8
 }
 
 /// Compute byte size of a single mip level.
@@ -529,6 +644,107 @@ mod tests {
         assert_eq!(meta.format, vk::Format::R8G8B8A8_SRGB);
         assert_eq!(meta.block_size, 4);
         assert!(!meta.compressed);
+        assert!(meta.expand.is_none(), "32-bpp RGBA uploads zero-copy");
+    }
+
+    /// Single-mip uncompressed `DDPF_RGB` header at `bpp` with the given
+    /// channel masks, followed by `pixels` of raw source bytes (#1542).
+    fn make_rgb_header(
+        width: u32,
+        height: u32,
+        bpp: u32,
+        masks: [u32; 4],
+        pixels: &[u8],
+    ) -> Vec<u8> {
+        let mut buf = vec![0u8; HEADER_SIZE + pixels.len()];
+        buf[0..4].copy_from_slice(b"DDS ");
+        buf[4..8].copy_from_slice(&124u32.to_le_bytes());
+        buf[8..12].copy_from_slice(&0x0000_100Fu32.to_le_bytes());
+        buf[12..16].copy_from_slice(&height.to_le_bytes());
+        buf[16..20].copy_from_slice(&width.to_le_bytes());
+        buf[28..32].copy_from_slice(&1u32.to_le_bytes());
+        buf[76..80].copy_from_slice(&32u32.to_le_bytes());
+        let flags = if masks[3] != 0 {
+            DDPF_RGB | DDPF_ALPHAPIXELS
+        } else {
+            DDPF_RGB
+        };
+        buf[80..84].copy_from_slice(&flags.to_le_bytes());
+        buf[88..92].copy_from_slice(&bpp.to_le_bytes());
+        buf[92..96].copy_from_slice(&masks[0].to_le_bytes()); // R
+        buf[96..100].copy_from_slice(&masks[1].to_le_bytes()); // G
+        buf[100..104].copy_from_slice(&masks[2].to_le_bytes()); // B
+        buf[104..108].copy_from_slice(&masks[3].to_le_bytes()); // A
+        buf[HEADER_SIZE..].copy_from_slice(pixels);
+        buf
+    }
+
+    #[test]
+    fn parse_uncompressed_24bpp_marks_expand() {
+        // 24-bpp R8G8B8 (masks like FO3's HUD compass). Parses to the
+        // post-expansion R8G8B8A8 target with an `expand` descriptor.
+        let data = make_rgb_header(4, 4, 24, [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0], &[]);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::R8G8B8A8_SRGB);
+        assert_eq!(meta.block_size, 4);
+        assert!(!meta.compressed);
+        let ex = meta.expand.expect("24-bpp must set expand");
+        assert_eq!(ex.src_bpp, 24);
+        assert_eq!(ex.a_mask, 0);
+    }
+
+    #[test]
+    fn parse_uncompressed_16bpp_a1r5g5b5_marks_expand() {
+        // 16-bpp A1R5G5B5 (FO3 font glyph atlas era).
+        let data = make_rgb_header(2, 2, 16, [0x7C00, 0x03E0, 0x001F, 0x8000], &[]);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::R8G8B8A8_SRGB);
+        let ex = meta.expand.expect("16-bpp must set expand");
+        assert_eq!(ex.src_bpp, 16);
+        assert_eq!(ex.r_mask, 0x7C00);
+        assert_eq!(ex.a_mask, 0x8000);
+    }
+
+    #[test]
+    fn reject_uncompressed_empty_masks() {
+        // DDPF_RGB with no channel masks can't be decoded — reject, not 0.
+        let data = make_rgb_header(1, 1, 24, [0, 0, 0, 0], &[0, 0, 0]);
+        assert!(parse_dds(&data).is_err());
+    }
+
+    #[test]
+    fn expand_24bpp_pixel_to_rgba8() {
+        // One 24-bpp pixel, memory order [B, G, R] per the masks.
+        let data = make_rgb_header(
+            1,
+            1,
+            24,
+            [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, 0],
+            &[0x10, 0x20, 0x30],
+        );
+        let meta = parse_dds(&data).unwrap();
+        let rgba = expand_uncompressed_rgb(&meta, &data);
+        // R=0x30, G=0x20, B=0x10, A=opaque.
+        assert_eq!(rgba, vec![0x30, 0x20, 0x10, 0xFF]);
+    }
+
+    #[test]
+    fn expand_16bpp_a1r5g5b5_pixel_to_rgba8() {
+        // 0xFC00 = alpha bit + full red (A1R5G5B5). LE bytes [0x00, 0xFC].
+        let data = make_rgb_header(1, 1, 16, [0x7C00, 0x03E0, 0x001F, 0x8000], &[0x00, 0xFC]);
+        let meta = parse_dds(&data).unwrap();
+        let rgba = expand_uncompressed_rgb(&meta, &data);
+        // 5-bit full → 255; 1-bit alpha → 255.
+        assert_eq!(rgba, vec![255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn scale_channel_bit_expands_to_full_range() {
+        assert_eq!(scale_channel(0x1F, 0x1F), 255); // 5-bit max → 255
+        assert_eq!(scale_channel(0x00, 0x1F), 0); // 5-bit min → 0
+        assert_eq!(scale_channel(0x01, 0x01), 255); // 1-bit set → 255
+        assert_eq!(scale_channel(0xFF00, 0xFF00), 255); // 8-bit high byte
+        assert_eq!(scale_channel(0, 0), 0); // empty mask
     }
 
     #[test]
@@ -587,6 +803,7 @@ mod tests {
             block_size: 8,
             compressed: true,
             data_offset: 128,
+            expand: None,
         };
         let total = total_data_size(&meta);
         // Sum: 32768 + 8192 + 2048 + 512 + 128 + 32 + 8 + 8 + 8 = 43704
@@ -611,6 +828,7 @@ mod tests {
             block_size: 4, // bytes per pixel
             compressed: false,
             data_offset: 128,
+            expand: None,
         };
         let total = total_data_size(&meta);
         // Geometric sum over mips:

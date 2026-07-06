@@ -71,6 +71,7 @@ impl Texture {
             block_size: 4, // bytes per pixel — uncompressed RGBA
             compressed: false,
             data_offset: 0, // unused: caller passes the pixel slice directly
+            expand: None,   // already R8G8B8A8
         };
         let texture = Self::from_dds_with_mip_chain(ctx, &meta, pixels, sampler, staging_pool)?;
         log::debug!("Texture uploaded: {}x{} RGBA", width, height);
@@ -422,7 +423,9 @@ impl Texture {
         staging_pool: Option<&mut StagingPool>,
     ) -> Result<Self> {
         let meta = super::dds::parse_dds(dds_bytes)?;
-        let pixel_data = &dds_bytes[meta.data_offset..];
+        // #1542: expands a 16/24-bpp DDPF_RGB source to R8G8B8A8, else a
+        // zero-copy borrow of the raw slice.
+        let pixel_data = super::dds::upload_pixels(&meta, dds_bytes);
 
         Self::from_dds_with_mip_chain(
             GpuUploadCtx {
@@ -432,7 +435,7 @@ impl Texture {
                 command_pool,
             },
             &meta,
-            pixel_data,
+            pixel_data.as_ref(),
             sampler,
             staging_pool,
         )
