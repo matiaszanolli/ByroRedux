@@ -398,9 +398,27 @@ mod tests {
 
     #[test]
     fn test_negative_int_literal() {
-        // logos tokenizes `-10` as a single IntLit(-10) token
+        // `-10` lexes as Minus + IntLit(10); the prefix path builds Neg(10)
+        // (#1906 — the lexer no longer swallows the sign into the literal).
         let e = parse_expr_str("-10").unwrap();
-        assert_int(&e.node, -10);
+        match &e.node {
+            Expr::UnaryOp { op: UnaryOp::Neg, operand } => assert_int(&operand.node, 10),
+            other => panic!("expected Neg(IntLit(10)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_adjacent_subtraction() {
+        // `5-3` with no spaces must parse as subtraction, not IntLit(5) with
+        // the `-3` silently dropped (#1906).
+        let e = parse_expr_str("5-3").unwrap();
+        match &e.node {
+            Expr::BinaryOp { op: BinaryOp::Sub, left, right } => {
+                assert_int(&left.node, 5);
+                assert_int(&right.node, 3);
+            }
+            other => panic!("expected Sub(5, 3), got {other:?}"),
+        }
     }
 
     #[test]

@@ -174,11 +174,25 @@ mod tests {
 
     #[test]
     fn test_lex_int_literals() {
+        // A leading `-` is a separate unary-minus token, not part of the
+        // literal — otherwise binary subtraction is silently swallowed (#1906).
         let (tokens, errors) = lex("42 -10 0xFF");
         assert!(errors.is_empty());
         assert!(matches!(&tokens[0].token, Token::IntLit(42)));
-        assert!(matches!(&tokens[1].token, Token::IntLit(-10)));
-        assert!(matches!(&tokens[2].token, Token::IntLit(255)));
+        assert!(matches!(&tokens[1].token, Token::Minus));
+        assert!(matches!(&tokens[2].token, Token::IntLit(10)));
+        assert!(matches!(&tokens[3].token, Token::IntLit(255)));
+    }
+
+    #[test]
+    fn test_lex_adjacent_subtraction_not_swallowed() {
+        // `a-10` with no spaces must lex as Ident, Minus, IntLit — the `-`
+        // is binary subtraction, not a negative literal (#1906).
+        let (tokens, errors) = lex("a-10");
+        assert!(errors.is_empty());
+        assert!(matches!(&tokens[0].token, Token::Ident(s) if s == "a"));
+        assert!(matches!(&tokens[1].token, Token::Minus));
+        assert!(matches!(&tokens[2].token, Token::IntLit(10)));
     }
 
     #[test]

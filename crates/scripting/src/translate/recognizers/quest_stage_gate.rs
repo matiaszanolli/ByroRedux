@@ -264,9 +264,11 @@ fn match_guarded_if(
 /// left as one atom that no primitive claims), runs each atom through the
 /// table, and accumulates the result. Returns `None` the moment it meets
 /// an atom no primitive models — the caller then declines rather than
-/// silently dropping the unmodeled guard. On success: the
-/// `(stage, expected)` predicates, how the quest is named (first naming
-/// wins), and whether a player-gate term was present.
+/// silently dropping the unmodeled guard. Also declines if two predicates
+/// name *different* quests (#1905), since only one quest is resolved and
+/// stamped onto every emitted Condition. On success: the
+/// `(stage, expected)` predicates, the single quest all predicates name,
+/// and whether a player-gate term was present.
 ///
 /// [`compose`]: crate::translate::compose
 fn classify_if_condition(
@@ -289,7 +291,17 @@ fn classify_if_condition(
                 expected,
             } => {
                 conditions.push((stage, expected));
-                quest_via.get_or_insert(via);
+                // All predicates must name the SAME quest. `recognize`
+                // resolves one `owning_quest` and stamps it onto every
+                // emitted Condition's param_1, so a mixed-quest gate (e.g.
+                // `Self.GetOwningQuest().GetStageDone(37) && Other.GetStageDone(5)`)
+                // would silently retarget the second predicate to the first
+                // quest. Decline rather than mis-attribute (#1905).
+                match &quest_via {
+                    Some(existing) if *existing != via => return None,
+                    Some(_) => {}
+                    None => quest_via = Some(via),
+                }
             }
         }
     }
@@ -418,6 +430,60 @@ mod tests {
         assert_eq!(got.target_stage, 20);
         assert_eq!(got.conditions.len(), 1);
         assert_eq!(got.conditions[0].param_2, 10); // stage 10
+    }
+
+    #[test]
+    fn declines_mixed_quest_conjunction() {
+        // A gate whose AND-conjunction predicates on TWO different quests
+        // must be DECLINED, not emitted with the second predicate silently
+        // retargeted onto the first quest (#1905). The SetStage receiver
+        // matches the first predicate's quest, so the same-quest cross-check
+        // at `match_guarded_if` passes — only the per-atom compare catches it.
+        let src = "ScriptName MixedGate extends ObjectReference\n\
+                   Quest Property MyQuest Auto\n\
+                   Quest Property OtherQuest Auto\n\
+                   Event OnActivate(ObjectReference akActionRef)\n\
+                   If MyQuest.GetStageDone(37) == 1 && OtherQuest.GetStageDone(5) == 1\n\
+                   MyQuest.SetStage(40)\n\
+                   EndIf\n\
+                   EndEvent\n";
+        let (script, errors) = parse_script(src).expect("parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        let source = ScriptSource::PapyrusSource(&script);
+
+        // Bind BOTH quests so the decline is provably on the mixed-quest
+        // guard, not on an unresolved FormID.
+        let instance = ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "MixedGate".into(),
+                status: 1,
+                properties: vec![
+                    ScriptProperty {
+                        name: "MyQuest".into(),
+                        status: 1,
+                        value: PropertyValue::Object {
+                            form_id: 0x0001_2345,
+                            alias: -1,
+                        },
+                    },
+                    ScriptProperty {
+                        name: "OtherQuest".into(),
+                        status: 1,
+                        value: PropertyValue::Object {
+                            form_id: 0x0006_789A,
+                            alias: -1,
+                        },
+                    },
+                ],
+            }],
+        };
+
+        assert!(
+            translate_script(&source, GameKind::Skyrim, Some(&instance), None).is_none(),
+            "mixed-quest gate must be declined, not retargeted"
+        );
     }
 
     /// A VMAD-bound `Quest Property` instance for the synthetic

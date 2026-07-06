@@ -224,12 +224,17 @@ pub enum Token {
     KwNone,
 
     // ── Literals ──
+    // A leading `-` is NOT part of the literal: logos longest-match would
+    // otherwise swallow the `-` of binary subtraction (`a-10`, `5-3`),
+    // leaving two adjacent value tokens the Pratt loop drops silently
+    // (#1906). Negation is the unary-minus prefix path (`Token::Minus` →
+    // `Expr::Neg`) instead.
     #[regex(r"0[xX][0-9a-fA-F]+", parse_int)]
-    #[regex(r"-?[0-9]+", parse_int, priority = 2)]
+    #[regex(r"[0-9]+", parse_int, priority = 2)]
     IntLit(i64),
 
-    #[regex(r"-?[0-9]+\.[0-9]*", parse_float, priority = 3)]
-    #[regex(r"-?[0-9]*\.[0-9]+", parse_float, priority = 2)]
+    #[regex(r"[0-9]+\.[0-9]*", parse_float, priority = 3)]
+    #[regex(r"[0-9]*\.[0-9]+", parse_float, priority = 2)]
     FloatLit(f64),
 
     #[token("\"", parse_string_literal)]
