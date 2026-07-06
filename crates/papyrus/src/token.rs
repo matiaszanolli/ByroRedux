@@ -76,20 +76,29 @@ fn parse_string_literal(lex: &mut logos::Lexer<Token>) -> String {
     result
 }
 
-fn parse_int(lex: &mut logos::Lexer<Token>) -> i64 {
+// A lexable-but-out-of-range literal (`0xFFFFFFFFFFFFFFFF`, a 40-digit
+// decimal, a float past f64 range) must surface a lex error, not silently
+// become 0 — returning `Err(())` routes the lexeme into `lex()`'s error
+// list (#1908).
+fn parse_int(lex: &mut logos::Lexer<Token>) -> Result<i64, ()> {
     let slice = lex.slice();
     if let Some(hex) = slice
         .strip_prefix("0x")
         .or_else(|| slice.strip_prefix("0X"))
     {
-        i64::from_str_radix(hex, 16).unwrap_or(0)
+        i64::from_str_radix(hex, 16).map_err(|_| ())
     } else {
-        slice.parse().unwrap_or(0)
+        slice.parse().map_err(|_| ())
     }
 }
 
-fn parse_float(lex: &mut logos::Lexer<Token>) -> f64 {
-    lex.slice().parse().unwrap_or(0.0)
+fn parse_float(lex: &mut logos::Lexer<Token>) -> Result<f64, ()> {
+    // `f64::from_str` never errors on the regex-constrained slice; overflow
+    // yields a non-finite `inf`, so reject that explicitly as out-of-range.
+    match lex.slice().parse::<f64>() {
+        Ok(v) if v.is_finite() => Ok(v),
+        _ => Err(()),
+    }
 }
 
 #[derive(Logos, Debug, Clone, PartialEq)]

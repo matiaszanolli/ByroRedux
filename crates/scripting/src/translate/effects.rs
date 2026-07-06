@@ -122,7 +122,7 @@ pub fn lower_fragment(body: &[Spanned<Stmt>]) -> Option<Vec<Effect>> {
             Stmt::VarDecl(var) => {
                 let name = var.name.node.0.to_ascii_lowercase();
                 match &var.initial_value {
-                    Some(init) => bind_local(&mut scope, name, &init.node),
+                    Some(init) => bind_local(&mut scope, name, &init.node)?,
                     None => {
                         scope.decl_locals.insert(name);
                     }
@@ -133,7 +133,7 @@ pub fn lower_fragment(body: &[Spanned<Stmt>]) -> Option<Vec<Effect>> {
                 let Expr::Ident(name) = &target.node else {
                     return None; // assignment to a field/index — unmodeled
                 };
-                bind_local(&mut scope, name.0.to_ascii_lowercase(), &value.node);
+                bind_local(&mut scope, name.0.to_ascii_lowercase(), &value.node)?;
             }
             // `Return` with no value is Champollion's fragment terminator.
             Stmt::Return(None) => {}
@@ -146,13 +146,51 @@ pub fn lower_fragment(body: &[Spanned<Stmt>]) -> Option<Vec<Effect>> {
     Some(effects)
 }
 
-/// Record a local's binding: a quest expression → `quest_locals`,
-/// anything else → `decl_locals` (a non-quest local).
-fn bind_local(scope: &mut Scope, name: String, init: &Expr) {
+/// Record a local's binding, or decline the whole fragment.
+///
+/// - A quest expression → `quest_locals`.
+/// - A side-effect-free non-quest value (a literal, ident, member read,
+///   arithmetic) → `decl_locals` (a plain local; a later misuse as a
+///   quest receiver still declines via [`receiver_quest`]).
+/// - A non-quest *side-effecting* initializer (e.g.
+///   `k = akActor.PlaceAtMe(...)`) is an unmodeled statement whose effect
+///   this table can't lower — decline rather than silently drop the
+///   side-effect (#1907), matching the flat-sequence decline contract.
+fn bind_local(scope: &mut Scope, name: String, init: &Expr) -> Option<()> {
     if let Some(via) = quest_expr_ref(init, scope) {
         scope.quest_locals.insert(name, via);
-    } else {
+    } else if is_side_effect_free(init) {
         scope.decl_locals.insert(name);
+    } else {
+        return None;
+    }
+    Some(())
+}
+
+/// Whether evaluating `e` invokes no function/method call. Papyrus side
+/// effects come from calls, so a non-quest initializer that contains a
+/// `Call` can't be lowered to an effect and must decline (#1907).
+fn is_side_effect_free(e: &Expr) -> bool {
+    match e {
+        Expr::Call { .. } => false,
+        Expr::MemberAccess { object, .. } => is_side_effect_free(&object.node),
+        Expr::Index { object, index } => {
+            is_side_effect_free(&object.node) && is_side_effect_free(&index.node)
+        }
+        Expr::UnaryOp { operand, .. } => is_side_effect_free(&operand.node),
+        Expr::BinaryOp { left, right, .. } => {
+            is_side_effect_free(&left.node) && is_side_effect_free(&right.node)
+        }
+        Expr::Cast { expr, .. } => is_side_effect_free(&expr.node),
+        Expr::New { size, .. } => is_side_effect_free(&size.node),
+        Expr::ArrayLit(items) => items.iter().all(|i| is_side_effect_free(&i.node)),
+        Expr::IntLit(_)
+        | Expr::FloatLit(_)
+        | Expr::BoolLit(_)
+        | Expr::StringLit(_)
+        | Expr::NoneLit
+        | Expr::Ident(_)
+        | Expr::ParentAccess => true,
     }
 }
 
@@ -378,6 +416,39 @@ mod tests {
              akTarget.Enable()\n EndFunction\n",
         );
         assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn declines_on_side_effecting_binding() {
+        // A non-quest binding whose initializer is a side-effecting call
+        // (the spawn) must decline the whole fragment — otherwise the
+        // spawn is silently dropped while the SetStage still applies (#1907).
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_5()\n\
+             ObjectReference k = akActor.PlaceAtMe(SomeForm)\n\
+             Self.SetStage(20)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn side_effect_free_binding_is_recorded_not_declined() {
+        // A pure-value non-quest local (an ident copy) has no side-effect
+        // to drop, so it is recorded and lowering continues (#1907).
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_6()\n\
+             ObjectReference k = akActor\n\
+             Self.SetStage(20)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::SetStage {
+                quest: QuestRef::SelfRef,
+                stage: 20
+            }])
+        );
     }
 
     #[test]

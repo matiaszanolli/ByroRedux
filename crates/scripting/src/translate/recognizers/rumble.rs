@@ -31,14 +31,19 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
     }
 
     // Extract the five Auto-property defaults from the AST; fall back to
-    // the .psc-documented defaults for any the parser didn't surface.
+    // the .psc-documented defaults for any the parser didn't surface. A
+    // property that is *present but non-literal* declines the whole
+    // recognizer (`?`) rather than coercing to the default — upholding the
+    // chain-wide decline invariant (#1909). (Papyrus auto-property inits
+    // are literal-only, so in practice `?` only ever fires on absence,
+    // which `unwrap_or` handles.)
     let d = RumbleOnActivate::default();
     let rumble = RumbleOnActivate {
-        camera_intensity: float_prop(script, "cameraIntensity").unwrap_or(d.camera_intensity),
-        duration: float_prop(script, "duration").unwrap_or(d.duration),
-        repeatable: bool_prop(script, "repeatable").unwrap_or(d.repeatable),
-        shake_left: float_prop(script, "shakeLeft").unwrap_or(d.shake_left),
-        shake_right: float_prop(script, "shakeRight").unwrap_or(d.shake_right),
+        camera_intensity: float_prop(script, "cameraIntensity")?.unwrap_or(d.camera_intensity),
+        duration: float_prop(script, "duration")?.unwrap_or(d.duration),
+        repeatable: bool_prop(script, "repeatable")?.unwrap_or(d.repeatable),
+        shake_left: float_prop(script, "shakeLeft")?.unwrap_or(d.shake_left),
+        shake_right: float_prop(script, "shakeRight")?.unwrap_or(d.shake_right),
         // `Auto State active` — boots into Active, like the .psc.
         state: RumbleState::Active,
     };
@@ -64,18 +69,26 @@ fn prop_init<'a>(script: &'a Script, name: &str) -> Option<&'a Expr> {
     })
 }
 
-fn float_prop(script: &Script, name: &str) -> Option<f32> {
-    match prop_init(script, name)? {
-        Expr::FloatLit(f) => Some(*f as f32),
-        Expr::IntLit(i) => Some(*i as f32),
-        _ => None,
+/// Extract a float auto-property. The nested `Option` distinguishes the
+/// three cases the caller must treat differently (#1909):
+/// - `Some(Some(v))` — present with a literal value.
+/// - `Some(None)` — absent (or no initializer) → caller uses its default.
+/// - `None` — present but *non-literal* → caller declines.
+fn float_prop(script: &Script, name: &str) -> Option<Option<f32>> {
+    match prop_init(script, name) {
+        None => Some(None),
+        Some(Expr::FloatLit(f)) => Some(Some(*f as f32)),
+        Some(Expr::IntLit(i)) => Some(Some(*i as f32)),
+        Some(_) => None,
     }
 }
 
-fn bool_prop(script: &Script, name: &str) -> Option<bool> {
-    match prop_init(script, name)? {
-        Expr::BoolLit(b) => Some(*b),
-        _ => None,
+/// Boolean sibling of [`float_prop`] with the same three-case contract.
+fn bool_prop(script: &Script, name: &str) -> Option<Option<bool>> {
+    match prop_init(script, name) {
+        None => Some(None),
+        Some(Expr::BoolLit(b)) => Some(Some(*b)),
+        Some(_) => None,
     }
 }
 
@@ -127,5 +140,23 @@ mod tests {
             parse_script("ScriptName SomethingElse extends ObjectReference\n").expect("parses");
         let source = ScriptSource::PapyrusSource(&script);
         assert!(translate_script(&source, GameKind::Skyrim, None, None).is_none());
+    }
+
+    #[test]
+    fn declines_on_non_literal_property() {
+        // A property present with a *non-literal* initializer (here a bare
+        // identifier) declines rather than coercing to the .psc default —
+        // the chain-wide "decline, don't coerce" invariant (#1909).
+        let (script, errors) = parse_script(
+            "ScriptName defaultRumbleOnActivate extends ObjectReference\n\
+             Float Property cameraIntensity = someGlobalValue Auto\n",
+        )
+        .expect("parses");
+        assert!(errors.is_empty(), "clean parse: {errors:?}");
+        let source = ScriptSource::PapyrusSource(&script);
+        assert!(
+            translate_script(&source, GameKind::Skyrim, None, None).is_none(),
+            "non-literal property value must decline, not coerce to default"
+        );
     }
 }

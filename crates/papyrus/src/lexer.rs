@@ -185,6 +185,22 @@ mod tests {
     }
 
     #[test]
+    fn test_out_of_range_literals_surface_diagnostic() {
+        // #1908: a lexable-but-out-of-range literal must lex-error, not
+        // silently become 0.
+        let (_t, e) = lex("0xFFFFFFFFFFFFFFFF");
+        assert!(!e.is_empty(), "oversized hex int must lex-error");
+
+        let big_dec = "9".repeat(40);
+        let (_t, e) = lex(&big_dec);
+        assert!(!e.is_empty(), "oversized decimal int must lex-error");
+
+        let big_float = format!("{}.0", "9".repeat(400));
+        let (_t, e) = lex(&big_float);
+        assert!(!e.is_empty(), "overflowing float must lex-error");
+    }
+
+    #[test]
     fn test_lex_adjacent_subtraction_not_swallowed() {
         // `a-10` with no spaces must lex as Ident, Minus, IntLit — the `-`
         // is binary subtraction, not a negative literal (#1906).
