@@ -20,6 +20,7 @@ BSMultiBoundNode	180	0
 BSMultiBoundOBB	176	0
 BSNiAlphaPropertyTestRefController	751	0
 BSOrderedNode	228	0
+BSPSysSimpleColorModifier	1143	0
 BSProceduralLightningController	3	0
 BSRangeNode	41	0
 BSShaderTextureSet	57414	0
@@ -47,7 +48,9 @@ NiFloatInterpolator	28788	0
 NiLookAtInterpolator	5	0
 NiMultiTargetTransformController	1051	0
 NiNode	109145	0
-NiPSysBlock	19732	0
+NiPSysBlock	16247	0
+NiPSysEmitter	1173	0
+NiPSysEmitterCtlr	1169	0
 NiParticleSystem	1173	0
 NiPathInterpolator	71	0
 NiPoint3Interpolator	1489	0

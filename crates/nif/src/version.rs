@@ -530,114 +530,27 @@ impl NifVariant {
     // Each method documents which games have the feature and why.
     // Parsers call these instead of raw `user_version_2 >= N` checks.
     //
-    // #938 / NIF-D2-NEW-04 — three predicates (compact_material,
-    // has_emissive_mult, has_shader_emissive_color) were deleted here.
-    // They had zero production call sites — every parser queried
-    // `stream.bsver()` directly — and their own doc comments told
-    // callers to prefer that path. Keeping them around as "approved
-    // helpers" alongside the ones that ARE called (`has_properties_list`,
-    // `has_material_crc`, etc.) was an architectural foot-gun: no way
-    // for a future contributor to know which family is blessed without
-    // grepping. The Fallout3 vs FalloutNV boundary made the deleted
-    // predicates disagree with the parse path by one bsver step at
-    // the v20.2.0.7 boundary, compounding the foot-gun.
-
-    /// NiGeometryData has a material CRC field after data_flags.
-    /// Present in Skyrim+ (user_version >= 12).
-    pub fn has_material_crc(self) -> bool {
-        matches!(
-            self,
-            Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield
-        )
-    }
-
-    // ── NiAVObject feature flags (from nif.xml) ───────────────────
-
-    /// NiAVObject has Num Properties + Properties list.
-    /// nif.xml: `#NI_BS_LTE_FO3#` (BSVER ≤ 34). Removed in Skyrim+.
-    pub fn has_properties_list(self) -> bool {
-        matches!(
-            self,
-            Self::Morrowind | Self::Oblivion | Self::Fallout3 | Self::FalloutNV
-        )
-    }
-
-    /// NiAVObject flags field is u32 (BSVER > 26). Older versions use u16.
-    /// nif.xml: flags is uint for BSVER > 26, ushort otherwise.
-    pub fn avobject_flags_u32(self) -> bool {
-        matches!(
-            self,
-            Self::Fallout3
-                | Self::FalloutNV
-                | Self::SkyrimLE
-                | Self::SkyrimSE
-                | Self::Fallout4
-                | Self::Fallout76
-                | Self::Starfield
-        )
-    }
-
-    // ── NiGeometry feature flags ──────────────────────────────────
-
-    /// NiGeometry has Shader Property + Alpha Property refs.
-    /// nif.xml: `#BS_GT_FO3#` (BSVER > 34). Present in Skyrim+, NOT in FNV.
-    pub fn has_shader_alpha_refs(self) -> bool {
-        matches!(
-            self,
-            Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield
-        )
-    }
-
-    // ── NiNode feature flags ──────────────────────────────────────
-
-    /// NiNode has Num Effects + Effects list.
-    /// nif.xml: `#NI_BS_LT_FO4#` (BSVER < 130). Present in everything pre-FO4.
-    pub fn has_effects_list(self) -> bool {
-        matches!(
-            self,
-            Self::Morrowind
-                | Self::Oblivion
-                | Self::Fallout3
-                | Self::FalloutNV
-                | Self::SkyrimLE
-                | Self::SkyrimSE
-        )
-    }
-
-    // ── BSShaderProperty feature flags ────────────────────────────
+    // #938 / NIF-D2-NEW-04 removed three predicates (compact_material,
+    // has_emissive_mult, has_shader_emissive_color); #1511 removed six more;
+    // #1840 removed the last seven (has_material_crc, has_properties_list,
+    // avobject_flags_u32, has_shader_alpha_refs, has_effects_list,
+    // uses_bs_tri_shape, has_culling_mode). All had zero production call
+    // sites — every parser queries `stream.bsver()` directly per the
+    // raw-bsver doctrine (base.rs / node.rs, #160 / #1331 / #1838 / #1839).
+    // Keeping a call-site-less predicate as an "approved helper" alongside
+    // the raw-bsver path was an architectural foot-gun: a contributor
+    // adopting one (e.g. the Fallout3-vs-FalloutNV `avobject_flags_u32`, or
+    // any variant helper that answers `false` on the `Unknown` hybrid-header
+    // corner) reintroduces the one-bsver-step transitional-export mis-parse
+    // those call sites were fixed to avoid. `has_shader_property_fo3_fields`
+    // is the sole surviving predicate — it still has a live consumer
+    // (`shader_flags.rs`).
 
     /// BSShaderProperty has ShaderType, ShaderFlags, ShaderFlags2, EnvMapScale.
     /// nif.xml: `#NI_BS_LTE_FO3#` (BSVER ≤ 34). Only FO3/FNV.
     pub fn has_shader_property_fo3_fields(self) -> bool {
         matches!(self, Self::Fallout3 | Self::FalloutNV)
     }
-
-    // ── BSTriShape (SSE+ specific geometry) ───────────────────────
-
-    /// Uses BSTriShape instead of NiTriShape for geometry.
-    /// nif.xml: `#SSE# #FO4# #F76#`. SSE and later.
-    pub fn uses_bs_tri_shape(self) -> bool {
-        matches!(
-            self,
-            Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield
-        )
-    }
-
-    // ── NiNode feature flags (#1277 Task 5) ──────────────────────
-
-    /// NiNode has the `culling_mode` field (Skyrim LE+). FO3/FNV stop
-    /// after `multi_bound_ref`; Skyrim added `culling_mode` as a new
-    /// trailing field. nif.xml: `#SKY_AND_LATER#` on the field.
-    ///
-    /// Source: `crates/nif/src/blocks/node.rs:257` previously inlined
-    /// `stream.bsver() >= crate::version::bsver::SKYRIM_LE`.
-    pub fn has_culling_mode(self) -> bool {
-        matches!(
-            self,
-            Self::SkyrimLE | Self::SkyrimSE | Self::Fallout4 | Self::Fallout76 | Self::Starfield
-        )
-    }
-
 }
 
 #[cfg(test)]
@@ -928,64 +841,12 @@ mod tests {
         assert_eq!(NifVariant::Unknown.bsver(), 0);
     }
 
-    #[test]
-    fn feature_properties_list() {
-        // FNV and earlier have properties list on NiAVObject
-        assert!(NifVariant::Morrowind.has_properties_list());
-        assert!(NifVariant::Oblivion.has_properties_list());
-        assert!(NifVariant::FalloutNV.has_properties_list());
-        // Skyrim+ removed it
-        assert!(!NifVariant::SkyrimLE.has_properties_list());
-        assert!(!NifVariant::SkyrimSE.has_properties_list());
-        assert!(!NifVariant::Fallout4.has_properties_list());
-    }
-
-    #[test]
-    fn feature_shader_alpha_refs() {
-        // Skyrim+ has dedicated shader/alpha property refs on NiGeometry
-        assert!(!NifVariant::FalloutNV.has_shader_alpha_refs());
-        assert!(NifVariant::SkyrimLE.has_shader_alpha_refs());
-        assert!(NifVariant::SkyrimSE.has_shader_alpha_refs());
-        assert!(NifVariant::Fallout4.has_shader_alpha_refs());
-    }
-
-    #[test]
-    fn feature_effects_list() {
-        // Everything before FO4 has effects list on NiNode
-        assert!(NifVariant::FalloutNV.has_effects_list());
-        assert!(NifVariant::SkyrimSE.has_effects_list());
-        assert!(!NifVariant::Fallout4.has_effects_list());
-    }
-
-    // #938 — `feature_compact_material` / `feature_has_emissive_mult`
-    // were deleted alongside the predicates they exercised. No
-    // production code queried either; the in-file `stream.bsver()`
-    // path was the authority. See the comment block on the
-    // `Feature flags` section in the impl.
-
-    #[test]
-    fn feature_material_crc() {
-        assert!(!NifVariant::FalloutNV.has_material_crc());
-        assert!(NifVariant::SkyrimLE.has_material_crc());
-        assert!(NifVariant::Fallout4.has_material_crc());
-        assert!(NifVariant::Fallout76.has_material_crc());
-        assert!(NifVariant::Starfield.has_material_crc());
-    }
-
-    // ── #1277 Task 5: new helper coverage ──────────────────────────
-
-    #[test]
-    fn feature_culling_mode() {
-        // Skyrim+ only — pre-Skyrim NiNodes stop after multi_bound_ref.
-        assert!(!NifVariant::Morrowind.has_culling_mode());
-        assert!(!NifVariant::Oblivion.has_culling_mode());
-        assert!(!NifVariant::Fallout3.has_culling_mode());
-        assert!(!NifVariant::FalloutNV.has_culling_mode());
-        assert!(NifVariant::SkyrimLE.has_culling_mode());
-        assert!(NifVariant::SkyrimSE.has_culling_mode());
-        assert!(NifVariant::Fallout4.has_culling_mode());
-        assert!(NifVariant::Fallout76.has_culling_mode());
-        assert!(NifVariant::Starfield.has_culling_mode());
-        assert!(!NifVariant::Unknown.has_culling_mode());
-    }
+    // #938 / #1511 / #1840 — the per-feature predicate tests
+    // (feature_properties_list / _shader_alpha_refs / _effects_list /
+    // _material_crc / _culling_mode, and earlier _compact_material /
+    // _has_emissive_mult) were deleted alongside the call-site-less
+    // predicates they exercised. Every parser queries `stream.bsver()`
+    // directly; see the comment block on the `Feature flags` section in
+    // the impl. `has_shader_property_fo3_fields` (the one surviving
+    // predicate) is covered by its live consumer in `shader_flags.rs`.
 }

@@ -1317,12 +1317,11 @@ fn ni_tri_shape_reads_shader_alpha_refs_on_hybrid_unknown_bsver_over_34() {
         max_string_length: 0,
         num_groups: 0,
     };
+    // (11, 50) detects as `Unknown` — the hybrid-header corner where a
+    // game-variant feature helper answers `false` and would drop the refs,
+    // which is exactly why the production gate reads raw bsver (#1838 / #1840).
     let variant = crate::version::NifVariant::detect(header.version, 11, 50);
     assert_eq!(variant, crate::version::NifVariant::Unknown);
-    assert!(
-        !variant.has_shader_alpha_refs(),
-        "helper misfires on the Unknown corner"
-    );
 
     // The SSE fixture layout is bsver-invariant here: bsver 50 gives u32
     // flags (>26), no properties list (<=34 false), and a dirty_flag +
@@ -1338,6 +1337,6 @@ fn ni_tri_shape_reads_shader_alpha_refs_on_hybrid_unknown_bsver_over_34() {
         stream.position() as usize,
         bytes.len(),
         "bsver 50 > 34 must consume both shader/alpha refs (raw-bsver gate); \
-         a revert to variant().has_shader_alpha_refs() ends 8 bytes short"
+         a revert to the game-variant helper would end 8 bytes short"
     );
 }

@@ -361,11 +361,11 @@ fn nigeometry_data_reads_material_crc_on_hybrid_unknown_bsver_over_34() {
         max_string_length: 0,
         num_groups: 0,
     };
-    // Sanity: this exact tuple is the `Unknown` corner the fix targets,
-    // and the variant helper disagrees with the spec-correct raw bsver.
+    // This exact tuple is the `Unknown` corner the fix targets — a game-
+    // variant helper would answer `false` here and drop the CRC, disagreeing
+    // with the spec-correct raw bsver the production gate reads (#1838 / #1840).
     let variant = crate::version::NifVariant::detect(header.version, 11, 50);
     assert_eq!(variant, crate::version::NifVariant::Unknown);
-    assert!(!variant.has_material_crc(), "helper misfires on Unknown");
 
     let mut data = Vec::new();
     data.extend_from_slice(&0i32.to_le_bytes()); // group_id (>= 10.1.0.114)
@@ -390,6 +390,6 @@ fn nigeometry_data_reads_material_crc_on_hybrid_unknown_bsver_over_34() {
         stream.position() as usize,
         data.len(),
         "bsver 50 > 34 must consume the 4-byte material CRC (raw-bsver gate); \
-         a revert to variant().has_material_crc() leaves it unread"
+         a revert to the game-variant helper would leave it unread"
     );
 }

@@ -759,12 +759,10 @@ fn bs_multi_bound_node_reads_culling_mode_on_hybrid_unknown_bsver_ge_83() {
         max_string_length: 0,
         num_groups: 0,
     };
+    // `Unknown` is the hybrid corner where a game-variant helper would answer
+    // `false` and drop culling_mode; the production gate reads raw bsver (#1839 / #1840).
     let variant = NifVariant::detect(header.version, 11, 90);
     assert_eq!(variant, NifVariant::Unknown);
-    assert!(
-        !variant.has_culling_mode(),
-        "helper misfires on the Unknown corner"
-    );
 
     // Skyrim-era NiNode body (bsver 90): indexed name, u32 flags, no
     // properties list (bsver > 34), effects list present (bsver < 130).
@@ -801,7 +799,7 @@ fn bs_multi_bound_node_reads_culling_mode_on_hybrid_unknown_bsver_ge_83() {
     assert_eq!(
         node.culling_mode, 7,
         "bsver 90 >= 83 must read culling_mode (raw-bsver gate); \
-         a revert to variant().has_culling_mode() leaves it 0"
+         a revert to the game-variant helper would leave it 0"
     );
     assert_eq!(stream.position() as usize, expected_len);
 }

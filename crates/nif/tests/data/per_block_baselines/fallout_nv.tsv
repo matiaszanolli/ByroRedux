@@ -8,6 +8,7 @@ BSMultiBoundAABB	2671	0
 BSMultiBoundNode	2672	0
 BSMultiBoundSphere	1	0
 BSOrderedNode	78	0
+BSPSysSimpleColorModifier	1112	0
 BSRangeNode	142	0
 BSRefractionFirePeriodController	25	0
 BSShaderNoLightingProperty	7588	0
@@ -44,8 +45,11 @@ NiMaterialProperty	21955	0
 NiMorphData	64	0
 NiMultiTargetTransformController	855	0
 NiNode	49721	0
-NiPSysBlock	16625	0
+NiPSysBlock	12157	0
 NiPSysColorModifier	46	0
+NiPSysEmitter	1262	0
+NiPSysEmitterCtlr	1204	0
+NiPSysGrowFadeModifier	890	0
 NiParticleSystem	1262	0
 NiPathInterpolator	52	0
 NiPoint3Interpolator	1211	0

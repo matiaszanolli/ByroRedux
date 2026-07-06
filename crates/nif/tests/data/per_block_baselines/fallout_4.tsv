@@ -20,6 +20,7 @@ BSMultiBoundNode	14	0
 BSMultiBoundOBB	12	0
 BSNiAlphaPropertyTestRefController	205	0
 BSOrderedNode	143	0
+BSPSysSimpleColorModifier	1344	0
 BSPositionData	372	0
 BSProceduralLightningController	64	0
 BSRangeNode	243	0
@@ -52,7 +53,9 @@ NiLightDimmerController	161	0
 NiLightRadiusController	132	0
 NiMultiTargetTransformController	1127	0
 NiNode	140332	0
-NiPSysBlock	25075	0
+NiPSysBlock	21228	0
+NiPSysEmitter	1345	0
+NiPSysEmitterCtlr	1158	0
 NiParticleSystem	1345	0
 NiPathInterpolator	21	0
 NiPoint3Interpolator	2105	0
