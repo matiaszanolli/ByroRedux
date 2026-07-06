@@ -99,7 +99,7 @@ Six colour attachments + depth, all double-buffered (one set per
 | Mesh ID | `R32_UINT` | Bits 0–30: instance ID + 1; bit 31: `ALPHA_BLEND_NO_HISTORY` (skip SVGF accumulation) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Raw indirect | `B10G11R11_UFLOAT_PACK32` | Albedo-demodulated indirect light (SVGF input) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Albedo | `B10G11R11_UFLOAT_PACK32` | Surface colour (diffuse × vertex colour) | `COLOR_ATTACHMENT_OPTIMAL` |
-| Depth | `D32_SFLOAT` | Reverse-Z depth (1.0 = camera near, 0.0 = far) | `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` |
+| Depth | `D32_SFLOAT` | Standard depth (0.0 = near, 1.0 = far), `LESS_OR_EQUAL`, clear = 1.0 | `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` |
 
 After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIMAL`.
 

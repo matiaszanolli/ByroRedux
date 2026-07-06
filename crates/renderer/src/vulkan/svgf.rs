@@ -1,14 +1,17 @@
 //! SVGF (spatiotemporal variance-guided filtering) denoiser for 1-SPP GI.
 //!
-//! Phase 3 only implements the temporal accumulation pass: reproject the
-//! previous frame's accumulated indirect via motion vectors, test
-//! consistency against the previous frame's mesh_id, and blend with the
-//! current 1-SPP indirect at α=0.2. The moments image tracks luminance
-//! μ₁/μ₂ for Phase 4's variance estimation.
+//! The temporal accumulation pass reprojects the previous frame's
+//! accumulated indirect via motion vectors, tests consistency against the
+//! previous frame's mesh_id, and blends with the current 1-SPP indirect at
+//! α=0.2. The moments image tracks luminance μ₁/μ₂ for variance estimation.
+//! The Session-49 overhaul added the à-trous spatial pass
+//! (`svgf_atrous.comp`, `ATROUS_ITERATIONS` iterations) dispatched right
+//! after the temporal pass; its final ping-pong slot — not the temporal
+//! output — is what `indirect_view`/composite sample.
 //!
 //! ## Resource layout
 //!
-//! - **indirect_history[frame]** (RGBA16F, STORAGE|SAMPLED, per frame-in-flight):
+//! - **indirect_history[frame]** (B10G11R11_UFLOAT_PACK32, STORAGE|SAMPLED, per frame-in-flight):
 //!   the accumulated demodulated indirect light. Read as history by the
 //!   NEXT frame, written by the CURRENT frame, sampled by composite.
 //! - **moments_history[frame]** (RGBA16F, STORAGE|SAMPLED, per frame-in-flight):
