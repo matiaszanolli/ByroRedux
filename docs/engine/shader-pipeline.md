@@ -33,6 +33,7 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `cluster_cull.comp` | Build per-froxel light lists (clustered shading) |
 | `ssao.comp` | Screen-space ambient occlusion texture generation |
 | `svgf_temporal.comp` | Temporal denoiser — motion-vector reprojection + color/moments accumulation for indirect lighting |
+| `svgf_atrous.comp` | Spatial denoiser — edge-stopping à-trous wavelet filter, `ATROUS_ITERATIONS` = 5 ping-pong passes after the temporal dispatch; final slot feeds composite (Session-49) |
 | `taa.comp` | TAA resolve — Halton(2,3) jitter, YCoCg variance-clamp, history reproject |
 | `bloom_downsample.comp` | Gaussian + downsample pyramid (bright content) |
 | `bloom_upsample.comp` | Upsample + blur stages of bloom pyramid |
@@ -63,19 +64,23 @@ graphics+compute queue. Pass ordering is inside
 5  [Barrier]               SHADER_READ_ONLY_OPTIMAL on all G-buffer attachments
 6  [Barrier]               caustic accum atomic-add → SHADER_READ
 7  svgf_temporal.comp   ─  temporal denoiser (indirect lighting)
-8  caustic_splat.comp   ─  caustic scatter
-9  volumetrics_inject   ─┐ froxel grid (gated: VOLUMETRIC_OUTPUT_CONSUMED)
-10 volumetrics_integrate ─┘
-11 taa.comp              ─  TAA resolve
-12 ssao.comp             ─  SSAO texture
-13 bloom_downsample ×N   ─┐ bloom pyramid
+8  svgf_atrous.comp ×5  ─  à-trous spatial denoiser (ATROUS_ITERATIONS),
+   [COMPUTE→COMPUTE]        ping-pong slots gated each iteration by a
+                           COMPUTE→COMPUTE barrier; final (odd count → slot 0)
+                           is what composite samples via indirect_view(frame)
+9  caustic_splat.comp   ─  caustic scatter
+10 volumetrics_inject   ─┐ froxel grid (gated: VOLUMETRIC_OUTPUT_CONSUMED)
+11 volumetrics_integrate ─┘
+12 taa.comp              ─  TAA resolve
+13 ssao.comp             ─  SSAO texture
+14 bloom_downsample ×N   ─┐ bloom pyramid
    bloom_upsample   ×N   ─┘
-14 [Composite render pass]─ raster:
+15 [Composite render pass]─ raster:
      composite.vert / .frag  HDR combine → swapchain (PRESENT_SRC_KHR)
-15 [Egui render pass]    ─  egui overlay (blended on swapchain)
-16 [Screenshot copy]     ─  transfer blit → staging buffer (if requested)
-17 Queue submit
-18 Present
+16 [Egui render pass]    ─  egui overlay (blended on swapchain)
+17 [Screenshot copy]     ─  transfer blit → staging buffer (if requested)
+18 Queue submit
+19 Present
 ```
 
 ---

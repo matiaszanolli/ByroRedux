@@ -124,11 +124,15 @@ pub(super) const SKINNED_BLAS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
 /// compiler-enforced invariant. Sibling lift of [`SKINNED_BLAS_FLAGS`]
 /// (`1775a7e6`), see #1137 / CONC-D2-NEW-02.
 ///
-/// `ALLOW_COMPACTION` is set even though no caller currently runs the
-/// compact pass — the lockstep with the other static-BLAS sites is the
-/// load-bearing reason for keeping the flag. When the compact pass
-/// lands it lights up across all three call sites simultaneously
-/// without a flag-drift bisect (REN-D8-NEW-06 audit history).
+/// `ALLOW_COMPACTION` is load-bearing: `build_blas_batched`
+/// (`blas_static.rs`) runs a live compaction pass on every cell/scene
+/// load — it size-queries each freshly built BLAS
+/// (`ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR`) behind an
+/// `AS_BUILD → AS_BUILD` WRITE→READ barrier, then
+/// `cmd_copy_acceleration_structure(… COMPACT)` into the shrunk target.
+/// The flag must stay lockstep across all three static-BLAS sites so the
+/// size-query and record `flags` match (VUID-…-03801) and no site drifts
+/// out of the compaction path (REN-D8-NEW-06 audit history; #1892).
 pub(super) const STATIC_BLAS_FLAGS: vk::BuildAccelerationStructureFlagsKHR =
     vk::BuildAccelerationStructureFlagsKHR::from_raw(
         vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE.as_raw()
