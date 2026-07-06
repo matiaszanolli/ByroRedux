@@ -225,9 +225,15 @@ impl World {
     /// cell loader) must release them separately, exactly as the cell-unload
     /// path already does.
     pub fn clear_entities(&mut self) {
-        for lock in self.storages.values_mut() {
+        for (type_id, lock) in self.storages.iter_mut() {
+            // #1836 — resolve the source type name through the #466 side-table
+            // so a poison cascade during a snapshot restore names the offending
+            // storage, mirroring `despawn` above, instead of a generic message
+            // that discards the TypeId key. Fallback is unreachable in practice
+            // (every storage is registered with its type name).
+            let type_name = self.type_names.get(type_id).copied().unwrap_or("<unknown>");
             lock.get_mut()
-                .unwrap_or_else(|_| panic!("storage lock poisoned during clear_entities"))
+                .unwrap_or_else(|_| storage_lock_poisoned_erased(type_name))
                 .clear_erased();
         }
     }
@@ -552,11 +558,16 @@ impl World {
         let old = self
             .resources
             .insert(TypeId::of::<R>(), RwLock::new(Box::new(resource)));
-        old.and_then(|lock| {
-            lock.into_inner()
-                .ok()
-                .and_then(|boxed| boxed.downcast::<R>().ok())
-                .map(|b| *b)
+        old.map(|lock| {
+            // #1837 — mirror `remove_resource`: a poisoned prior-value lock
+            // re-panics loud with the type name (the #466 fail-fast policy)
+            // rather than `.ok()`-swallowing it into an ambiguous `None` that
+            // reads as "no prior value existed". The insert above already
+            // installed a fresh, un-poisoned lock for the new value.
+            let boxed = lock
+                .into_inner()
+                .unwrap_or_else(|_| resource_lock_poisoned::<R>());
+            *boxed.downcast::<R>().expect("resource type mismatch")
         })
     }
 

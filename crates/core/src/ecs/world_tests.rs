@@ -1173,6 +1173,46 @@ fn poisoned_resource_lock_panics_with_type_name() {
     );
 }
 
+/// Regression test for issue #1837: replacing a resource whose lock was
+/// poisoned must re-panic loud with the type name (the #466 fail-fast
+/// policy), not `.ok()`-swallow the `PoisonError` into an ambiguous `None`
+/// that reads as "no prior value existed".
+#[test]
+fn insert_resource_over_poisoned_lock_panics_with_type_name() {
+    use std::sync::Arc;
+
+    let mut world = World::new();
+    world.insert_resource(ResA(42.0));
+    let world_arc = Arc::new(world);
+
+    // Poison the ResA lock from another thread.
+    let w = Arc::clone(&world_arc);
+    let _ = std::thread::spawn(move || {
+        let _r = w.resource_mut::<ResA>();
+        panic!("intentional panic to poison the lock");
+    })
+    .join();
+
+    let mut world = Arc::try_unwrap(world_arc)
+        .unwrap_or_else(|_| panic!("Arc still aliased after worker join"));
+
+    // Replacing the poisoned resource must panic naming `ResA`, not return
+    // a silent `None` (pre-#1837 behaviour).
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = world.insert_resource(ResA(7.0));
+    }));
+    let err = result.expect_err("expected poisoned-lock panic from insert_resource");
+    let msg = err
+        .downcast_ref::<String>()
+        .map(|s| s.as_str())
+        .or_else(|| err.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        msg.contains("ResA") && msg.contains("poisoned"),
+        "insert_resource panic should name the resource type, got: {msg}"
+    );
+}
+
 /// Regression test for issue #36: `spawn()` must panic when the
 /// `EntityId` counter would overflow, not wrap silently.
 #[test]
@@ -1324,6 +1364,46 @@ fn despawn_poisoned_lock_panics_with_type_name() {
     assert!(
         msg.contains("Health") && msg.contains("poisoned"),
         "despawn panic should name the component type, got: {msg}"
+    );
+}
+
+/// Regression test for issue #1836: `clear_entities` (the M45 snapshot-
+/// restore path) walks the type-erased storage map, so a poisoned lock must
+/// name the offending component type via the #466 side-table — like
+/// `despawn` — instead of the generic "poisoned during clear_entities"
+/// message that discarded the `TypeId` key.
+#[test]
+fn clear_entities_poisoned_lock_panics_with_type_name() {
+    use std::sync::Arc;
+
+    let mut world = World::new();
+    let e = world.spawn();
+    world.insert(e, Health(100.0));
+    let world_arc = Arc::new(world);
+
+    // Poison the Health storage from another thread.
+    let w = Arc::clone(&world_arc);
+    let _ = std::thread::spawn(move || {
+        let _q = w.query_mut::<Health>().unwrap();
+        panic!("intentional panic to poison the lock");
+    })
+    .join();
+
+    let mut world = Arc::try_unwrap(world_arc)
+        .unwrap_or_else(|_| panic!("Arc still aliased after worker join"));
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        world.clear_entities();
+    }));
+    let err = result.expect_err("expected poisoned-lock panic from clear_entities");
+    let msg = err
+        .downcast_ref::<String>()
+        .map(|s| s.as_str())
+        .or_else(|| err.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        msg.contains("Health") && msg.contains("poisoned"),
+        "clear_entities panic should name the component type, got: {msg}"
     );
 }
 
