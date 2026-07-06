@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::asset_provider::{MaterialProvider, TextureProvider};
+use crate::components::VisibleWhenDistant;
 
 use super::euler::euler_zup_to_quat_yup_refr;
 use super::load_order::{self, plugin_for_form_id};
@@ -745,6 +746,15 @@ pub(super) fn load_references(
                 placed_ref.teleport,
             );
             entity_count += count;
+
+            // #1889 / EXAL §5.2 — materialise the base record's
+            // Visible-When-Distant flag onto the placement root. This is the
+            // per-record signal a full-model LOD cull reads; see the
+            // `VisibleWhenDistant` doc comment for why it has no render-time
+            // consumer under the current conservative streaming-ring rule.
+            if stat.visible_when_distant {
+                world.insert(placement_root, VisibleWhenDistant);
+            }
 
             // M47.0 Phase 3b — attach script state to the placement
             // root. `child_form_id` is the leaf base record (SCOL /

@@ -32,9 +32,12 @@ pub(super) fn extract_records_with_modl(
         if &header.record_type == expected_type {
             let subs = reader.read_sub_records(&header)?;
             // Cell-side: build the StaticObject from the same subs.
-            if let Some(stat) =
-                build_static_object_from_subs(header.form_id, &header.record_type, &subs)
-            {
+            if let Some(stat) = build_static_object_from_subs(
+                header.form_id,
+                &header.record_type,
+                header.is_visible_when_distant(),
+                &subs,
+            ) {
                 statics.insert(header.form_id, stat);
             }
             // Records-side: typed parser.

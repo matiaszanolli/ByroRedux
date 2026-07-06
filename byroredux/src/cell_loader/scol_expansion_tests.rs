@@ -21,6 +21,7 @@ fn mk_stat(form_id: u32, editor_id: &str, model_path: &str) -> StaticObject {
         light_data: None,
         addon_data: None,
         has_script: false,
+        visible_when_distant: false,
     }
 }
 

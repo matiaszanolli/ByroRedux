@@ -291,6 +291,7 @@ fn expand_pkin_with_cached_scol_child_does_not_recurse() {
             light_data: None,
             addon_data: None,
             has_script: false,
+            visible_when_distant: false,
         },
     );
     index.scols.insert(

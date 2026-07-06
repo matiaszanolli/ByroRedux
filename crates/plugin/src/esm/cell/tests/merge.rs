@@ -14,6 +14,7 @@ fn make_static(form_id: u32, model: &str) -> StaticObject {
         light_data: None,
         addon_data: None,
         has_script: false,
+        visible_when_distant: false,
     }
 }
 

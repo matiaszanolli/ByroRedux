@@ -685,6 +685,16 @@ pub struct StaticObject {
     /// at least makes the count of script-bearing records discoverable.
     /// See #369.
     pub has_script: bool,
+    /// True when the base record's header carries the **Visible-When-Distant**
+    /// / "Has Distant LOD" flag (`0x00010000`,
+    /// [`crate::esm::reader::FLAG_VISIBLE_WHEN_DISTANT`], surfaced via
+    /// [`crate::esm::reader::RecordHeader::is_visible_when_distant`]). It marks a
+    /// base object the world's distant-LOD baker folded into its `.bto` /
+    /// `DistantLOD\*.lod` proxies. The cell loader materialises it onto the
+    /// spawned placement root as a `VisibleWhenDistant` marker so a per-record
+    /// full-model cull has the signal without re-reading the ESM — the runtime
+    /// consumer #1731 parsed the flag for. See #1889 / EXAL §5.2.
+    pub visible_when_distant: bool,
 }
 
 /// Full Skyrim+ Texture Set — eight named slots from a single TXST

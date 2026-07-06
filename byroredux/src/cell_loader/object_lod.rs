@@ -324,8 +324,11 @@ fn spawn_object_lod_quad(
         world.insert(entity, bound);
         world.insert(entity, RenderLayer::Architecture);
         // No BLAS, lean static draw, kept out of the TLAS (shared with terrain
-        // LOD). The full-model VWD cull is deferred; quads load only outside
-        // the full-detail ring, so no resident full model conflicts here.
+        // LOD). The active full-model VWD cull is deferred; quads load only
+        // outside the full-detail ring, so no resident full model conflicts
+        // here. The per-record VWD signal is now materialised as the
+        // `VisibleWhenDistant` marker at spawn (#1889) — the hook that cull
+        // would read once the full-detail radius is decoupled from the ring.
         world.insert(entity, IsLodTerrain);
 
         entities.push(entity);

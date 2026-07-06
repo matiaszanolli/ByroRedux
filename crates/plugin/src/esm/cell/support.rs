@@ -24,6 +24,7 @@ use crate::esm::reader::SubRecord;
 pub(crate) fn build_static_object_from_subs(
     form_id: u32,
     record_type: &[u8; 4],
+    visible_when_distant: bool,
     subs: &[SubRecord],
 ) -> Option<StaticObject> {
     let is_ligh = record_type == b"LIGH";
@@ -226,6 +227,7 @@ pub(crate) fn build_static_object_from_subs(
             light_data,
             addon_data,
             has_script,
+            visible_when_distant,
         })
     } else {
         None
@@ -249,9 +251,12 @@ pub(crate) fn parse_modl_group(
 
         let header = reader.read_record_header()?;
         let subs = reader.read_sub_records(&header)?;
-        if let Some(stat) =
-            build_static_object_from_subs(header.form_id, &header.record_type, &subs)
-        {
+        if let Some(stat) = build_static_object_from_subs(
+            header.form_id,
+            &header.record_type,
+            header.is_visible_when_distant(),
+            &subs,
+        ) {
             statics.insert(header.form_id, stat);
         }
     }
@@ -460,6 +465,7 @@ pub(crate) fn parse_scol_group(
                         // physics). Propagate so Papyrus event dispatch
                         // doesn't skip scripted SCOL placements.
                         has_script: record.has_script,
+                        visible_when_distant: header.is_visible_when_distant(),
                     },
                 );
             }
@@ -519,6 +525,10 @@ pub(crate) fn parse_pkin_group(
                         light_data: None,
                         addon_data: None,
                         has_script: false,
+                        // Nominal expansion-trigger entry (empty model_path);
+                        // the flag rides the real PKIN header for completeness,
+                        // though the synthetic child placements are what render.
+                        visible_when_distant: header.is_visible_when_distant(),
                     },
                 );
             }
@@ -579,6 +589,7 @@ pub(crate) fn parse_movs_group(
                         light_data: None,
                         addon_data: None,
                         has_script: record.has_script,
+                        visible_when_distant: header.is_visible_when_distant(),
                     },
                 );
             }
@@ -673,7 +684,7 @@ mod ligh_dat2_tests {
             sub(b"DAT2", dat2_bytes(512.0, [200, 150, 100], 0x0010)),
         ];
 
-        let obj = build_static_object_from_subs(0x000027BB, b"LIGH", &subs)
+        let obj = build_static_object_from_subs(0x000027BB, b"LIGH", false, &subs)
             .expect("Starfield LIGH with DAT2 must produce a StaticObject");
 
         let ld = obj.light_data.expect("DAT2 must yield light_data");
@@ -701,7 +712,7 @@ mod ligh_dat2_tests {
         data[9] = 200;
         data[10] = 128;
         let subs = vec![sub(b"DATA", data)];
-        let obj = build_static_object_from_subs(0x1, b"LIGH", &subs)
+        let obj = build_static_object_from_subs(0x1, b"LIGH", false, &subs)
             .expect("Skyrim LIGH DATA must still produce a StaticObject");
         let ld = obj.light_data.expect("DATA must yield light_data");
         assert_eq!(ld.radius, 300.0, "Skyrim radius is a u32 cast to f32");
@@ -713,7 +724,7 @@ mod ligh_dat2_tests {
     fn non_ligh_dat2_is_not_treated_as_light() {
         let subs = vec![sub(b"DAT2", dat2_bytes(512.0, [200, 150, 100], 0))];
         // AMMO with only a DAT2 and no MODL → no light_data, no model → None.
-        let obj = build_static_object_from_subs(0x2, b"AMMO", &subs);
+        let obj = build_static_object_from_subs(0x2, b"AMMO", false, &subs);
         assert!(
             obj.is_none() || obj.unwrap().light_data.is_none(),
             "DAT2 on a non-LIGH record must not synthesize light_data"

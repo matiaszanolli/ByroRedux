@@ -184,6 +184,97 @@ fn parse_stat_without_vmad_leaves_has_script_false() {
     assert!(!s.has_script);
 }
 
+// Helper: build a STAT record with an explicit record-header `flags` word.
+// Header layout: TYPE(4) | data_size(u32) | flags(u32) | form_id(u32) | pad(8).
+fn build_stat_record_with_flags(
+    form_id: u32,
+    editor_id: &str,
+    model_path: &str,
+    flags: u32,
+) -> Vec<u8> {
+    let mut sub_data = Vec::new();
+    let edid = format!("{}\0", editor_id);
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+    let modl = format!("{}\0", model_path);
+    sub_data.extend_from_slice(b"MODL");
+    sub_data.extend_from_slice(&(modl.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(modl.as_bytes());
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"STAT");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&flags.to_le_bytes());
+    buf.extend_from_slice(&form_id.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+    buf
+}
+
+fn wrap_in_stat_group(record: &[u8]) -> Vec<u8> {
+    let total_size = 24 + record.len();
+    let mut group = Vec::new();
+    group.extend_from_slice(b"GRUP");
+    group.extend_from_slice(&(total_size as u32).to_le_bytes());
+    group.extend_from_slice(b"STAT");
+    group.extend_from_slice(&0u32.to_le_bytes());
+    group.extend_from_slice(&[0u8; 8]);
+    group.extend_from_slice(record);
+    group
+}
+
+#[test]
+fn parse_stat_with_vwd_flag_sets_visible_when_distant() {
+    // Regression: #1889 / EXAL §5.2 — the base record header's
+    // Visible-When-Distant / "Has Distant LOD" flag (0x00010000, parsed
+    // under #1731) must flow end-to-end from `read_record_header` through
+    // `parse_modl_group` onto `StaticObject::visible_when_distant`, so the
+    // cell loader can materialise the `VisibleWhenDistant` marker. Prior to
+    // #1889 the flag was parsed but had zero consumers.
+    const FLAG_VISIBLE_WHEN_DISTANT: u32 = 0x0001_0000;
+    let stat = build_stat_record_with_flags(
+        0xAA,
+        "DistantTower",
+        "meshes\\architecture\\tower.nif",
+        FLAG_VISIBLE_WHEN_DISTANT,
+    );
+    let group = wrap_in_stat_group(&stat);
+
+    let mut reader = EsmReader::new(&group);
+    let gh = reader.read_group_header().unwrap();
+    let end = reader.group_content_end(&gh);
+    let mut statics = HashMap::new();
+    parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+    let s = statics.get(&0xAA).expect("STAT entry present");
+    assert!(
+        s.visible_when_distant,
+        "VWD header flag must set StaticObject::visible_when_distant"
+    );
+}
+
+#[test]
+fn parse_stat_without_vwd_flag_leaves_visible_when_distant_false() {
+    // Sibling: a STAT with flags == 0 keeps visible_when_distant false —
+    // catches a regression that unconditionally sets the field or reads the
+    // wrong header word.
+    let stat = build_stat_record_with_flags(0xAB, "NearWall", "meshes\\wall.nif", 0);
+    let group = wrap_in_stat_group(&stat);
+
+    let mut reader = EsmReader::new(&group);
+    let gh = reader.read_group_header().unwrap();
+    let end = reader.group_content_end(&gh);
+    let mut statics = HashMap::new();
+    parse_modl_group(&mut reader, end, &mut statics).unwrap();
+
+    let s = statics.get(&0xAB).expect("STAT entry present");
+    assert!(
+        !s.visible_when_distant,
+        "flags == 0 must leave visible_when_distant false"
+    );
+}
+
 #[test]
 fn parse_non_addn_record_has_no_addon_data() {
     // STATs must not accidentally populate addon_data even if a

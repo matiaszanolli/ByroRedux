@@ -311,8 +311,17 @@ Per-game impls (the runtime source per the Q3 finding):
   - **VWD culling rule**: the base record's *Visible-When-Distant* / "Has Distant
     LOD" flag is the one runtime signal the real engine reads — to **cull the full
     model** once its quad's `.bto` is active (otherwise the full mesh and the LOD
-    mesh both draw → z-fighting). EXAL must parse this record-header flag and have
-    the streaming ring suppress the full REFR beyond the full-detail radius.
+    mesh both draw → z-fighting). The flag is parsed (#1731) and, as of #1889,
+    **materialised per placement** as the `VisibleWhenDistant` marker
+    (`byroredux/src/components.rs`, set at cell-load from
+    `StaticObject::visible_when_distant`). Redux does **not** yet run an active
+    per-record cull off it: full REFRs only spawn inside the streaming ring
+    (`d <= radius_unload`) and both LOD rings load strictly outside it
+    (`d > radius_unload`, #1866), so the conservative ring already guarantees a
+    full model and its LOD proxy never coexist — there is no z-fight to cull.
+    Turning the marker into an active suppression means decoupling the full-detail
+    radius from the streaming ring (reintroducing the #1866 overlap risk) and
+    needs real-game visual validation before it is enabled.
 - **PlacementLodProvider** (Oblivion, FO3, FNV) — the **per-object placement**
   scheme.
   - Terrain: `Meshes\Landscape\LOD\*.nif` + `_lod` diffuse/normal textures.

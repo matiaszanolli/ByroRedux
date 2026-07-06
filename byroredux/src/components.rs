@@ -104,6 +104,32 @@ impl Component for IsLodTerrain {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Marker for a placement whose base record carries the **Visible-When-Distant**
+/// / "Has Distant LOD" header flag, materialised at cell-load from
+/// [`byroredux_plugin::esm::cell::StaticObject::visible_when_distant`] (which the
+/// ESM reader surfaces via `RecordHeader::is_visible_when_distant`, #1731).
+///
+/// It records, per placement root, that this object is one the world's
+/// distant-LOD baker folded into its `.bto` / `DistantLOD\*.lod` proxies — i.e.
+/// a full model that *has* a distant substitute. It is the per-record signal
+/// EXAL §5.2 calls for: the hook a full-model cull would read to suppress the
+/// full mesh once its LOD proxy covers the cell.
+///
+/// **No render-time consumer today, by design.** Full REFRs only ever spawn
+/// inside the cell-streaming ring (`d <= radius_unload`) and both LOD rings load
+/// strictly outside it (`d > radius_unload`, #1866), so a full model and its LOD
+/// proxy never coexist — the conservative ring already prevents the z-fighting a
+/// per-record cull would. Turning this marker into an active cull requires
+/// decoupling the full-detail radius from the streaming ring (which would
+/// reintroduce the #1866 overlap risk and needs real-game visual validation
+/// before it can be enabled). This component materialises the signal so that
+/// work does not have to re-derive the parse→spawn plumbing. See #1889.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct VisibleWhenDistant;
+impl Component for VisibleWhenDistant {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Returns `true` if `texture_path` matches any of the 6 "FX decoration"
 /// needles the renderer drops. Pulled out as a shared helper so the
 /// spawn-time tagger in `cell_loader::spawn` + `scene::nif_loader` and
