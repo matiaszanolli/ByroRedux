@@ -962,3 +962,42 @@ fn parse_blend_transform_interpolator_legacy_10_1_0_106() {
     assert_eq!(block.base.items[0].interpolator_ref.index(), Some(7));
     assert_eq!(block.base.items[1].interpolator_ref.index(), Some(8));
 }
+
+/// #1885 / NIF-D6-001 — `NiBlendInterpolator::parse_legacy` must route its
+/// file-driven `array_size` through the `allocate_vec` byte-budget guard, not
+/// a raw `Vec::with_capacity`. A drifted/corrupt count that exceeds the bytes
+/// remaining now errors at the reservation instead of blindly reserving and
+/// running the per-item loop to EOF. `array_size` is only u16 here, so the
+/// blast radius was small (mirrors the larger `#388` text-key OOM), but this
+/// pins the guard so the site can't silently revert to the raw idiom.
+#[test]
+fn parse_legacy_blend_interpolator_rejects_oversized_array_size() {
+    let header = NifHeader {
+        version: NifVersion::V10_1_0_106, // <= 10.1.0.109 → parse_legacy(int_priority)
+        little_endian: true,
+        user_version: 10,
+        user_version_2: 5,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    };
+    let mut data = Vec::new();
+    // Array Size = 65535 (u16 max) with no item payload following — the
+    // guard must reject it against the ~0 bytes remaining, not reserve for
+    // 65535 × InterpBlendItem.
+    data.extend_from_slice(&u16::MAX.to_le_bytes()); // Array Size
+    data.extend_from_slice(&0u16.to_le_bytes()); // Array Grow By
+
+    let mut stream = NifStream::new(&data, &header);
+    let result = NiBlendInterpolator::parse(&mut stream);
+    assert!(result.is_err(), "expected Err on oversized array_size");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("only") && msg.contains("bytes remain"),
+        "expected allocate_vec budget message, got: {msg}"
+    );
+}

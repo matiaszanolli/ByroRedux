@@ -907,7 +907,10 @@ impl NiBlendInterpolator {
             let _next_high_weights_sum = stream.read_f32_le()?;
             let _high_ease_spinner = stream.read_f32_le()?;
 
-            items.reserve(array_size as usize);
+            // #1885 sibling — same allocate_vec byte-budget guard as the
+            // legacy path below; `items` is empty here (manager-controlled
+            // blends carry no array), so reassigning the guarded Vec is exact.
+            items = stream.allocate_vec::<InterpBlendItem>(array_size as u32)?;
             for _ in 0..array_size {
                 let interpolator_ref = stream.read_block_ref()?;
                 let weight = stream.read_f32_le()?;
@@ -949,7 +952,13 @@ impl NiBlendInterpolator {
             stream.read_u8()? as u16
         };
 
-        let mut items = Vec::with_capacity(array_size as usize);
+        // #1885 — route the file-driven blend-item count through the
+        // `allocate_vec` byte-budget guard (#408/#764/#768) instead of a raw
+        // `Vec::with_capacity`, so a corrupt count can't reserve past the
+        // bytes actually remaining in the stream. `array_size` is u8/u16 here,
+        // so the cap is modest, but this keeps the crate's one allocation
+        // idiom consistent (mirrors `read_block_ref_list` / `parse_modern`).
+        let mut items = stream.allocate_vec::<InterpBlendItem>(array_size as u32)?;
         for _ in 0..array_size {
             let interpolator_ref = stream.read_block_ref()?;
             let weight = stream.read_f32_le()?;
