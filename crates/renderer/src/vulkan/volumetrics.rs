@@ -46,7 +46,7 @@ use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
     image_barrier_undef_to_general, memory_barrier, write_acceleration_structure,
-    write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
+    write_storage_buffer, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -80,14 +80,29 @@ pub struct VolumetricsParams {
     /// matches the scene's directional-light convention), w = HG phase
     /// asymmetry parameter g in (-1, 1). Hazy sunlight ≈ 0.4–0.6.
     pub sun_dir: [f32; 4],
-    /// rgb = sun radiance (already scaled by intensity), a = unused.
+    /// rgb = sun radiance (already scaled by intensity), a = the cell's
+    /// XCLL fog-far distance (matches the `screen.w` field
+    /// `cluster_cull.comp` uses for its exponential depth-slice
+    /// distribution — see `clusters.glsl::getClusterIndex`). Phase 2b
+    /// point-light injection needs to compute the SAME cluster index a
+    /// froxel's world position would map to, to look up that cluster's
+    /// pre-built light list; reusing the identical fog-far basis keeps
+    /// the two slicing schemes aligned instead of drifting apart.
     pub sun_color: [f32; 4],
     /// x = volume far plane (m) — maps slice z = 1 to this distance
     /// along the view ray. y/z/w = unused.
     pub volume_extent: [f32; 4],
     /// #markarth-precision — xyz = camera-relative render origin; the inject
     /// shader adds it to the `inv_view_proj`-reconstructed far point so froxel
-    /// world positions (and their TLAS shadow rays) are absolute. w unused.
+    /// world positions (and their TLAS shadow rays) are absolute. w = 1.0 for
+    /// an exterior cell, 0.0 for interior — selects the inject shader's
+    /// shadow-ray strategy: exterior keeps the single opaque-mask query
+    /// (no-hit = lit, real open sky); interior runs the two-pass query
+    /// (opaque-mask first; only if that misses, a bounded glass-mask pass —
+    /// no-hit-in-either = occluded) so a geometry gap (e.g. a missing
+    /// ceiling mesh) can't masquerade as a window. See the interior-godray
+    /// investigation note in `context/draw.rs` near `VolumetricsParams`
+    /// construction.
     pub render_origin: [f32; 4],
 }
 
@@ -109,38 +124,34 @@ pub const DEFAULT_PHASE_G: f32 = 0.4;
 pub const DEFAULT_VOLUME_FAR: f32 = crate::shader_constants::VOLUME_FAR;
 
 /// Single source of truth for whether the composite shader actually
-/// consumes the integrated volumetric output. Pinned in lockstep with
-/// `composite.frag`'s `combined += vol.rgb * 0.0` keep-alive at line
-/// 362 — when M-LIGHT v2 lands and the per-froxel banding is fixed,
-/// flip this `true` AND remove the `* 0.0` in the shader together.
+/// consumes the integrated volumetric output.
 ///
-/// While `false`, callers MUST gate `vol.dispatch()` behind this const.
-/// The diagnostic that produced this gate (per-froxel single-shadow
-/// ray banding on Prospector cup-and-lantern interior content) is
-/// documented in commits `f62d4bd` and `33f48b5`.
+/// History: gated off 2026-05-09 after a diagnosed per-froxel single-
+/// shadow-ray banding artifact on Prospector Saloon cup-and-lantern
+/// interior content (commits `f62d4bd`, `33f48b5`). Re-enabled once
+/// M-LIGHT v2 — a 3x3 XY spatial blur over the injection buffer in
+/// `volumetrics_integrate.comp` — resolved the banding, and #1462
+/// (the inject/integrate/composite depth-slice convention mismatch,
+/// a ~half-slab fog-depth bias) was reconciled by moving `inject`'s
+/// per-slice world-distance sample from slice-CENTER to slice-FRONT-
+/// EDGE, matching what `integrate` and `composite` already assumed.
 ///
-/// **Why this is here, not in draw.rs**: keeping the flag adjacent to
-/// the pipeline implementation it controls means a future contributor
-/// editing `volumetrics.rs` for M-LIGHT v2 can't miss it. The
-/// `composite.frag` shader can't `#include` Rust, so the lockstep is
-/// documented via cross-comments rather than enforced by the compiler.
-/// See #928.
+/// Also resolved alongside: the blanket `is_exterior` zero that used
+/// to suppress ALL sun/scattering contribution for interior cells
+/// (too blunt — it also blocked real sun-through-window godrays) is
+/// gone. `volumetrics_inject.comp`'s shadow ray now runs a two-pass
+/// opaque-then-glass-masked query for interiors specifically, so a
+/// geometry gap (e.g. a `--cell`-loaded interior's typically-missing
+/// ceiling mesh) can't masquerade as a window — see
+/// `VolumetricsParams::render_origin`'s doc comment and the
+/// interior-godray investigation note in `context/draw.rs`.
 ///
-/// **FLIP CHECKLIST — before setting this to `true` (M-LIGHT v2),
-/// address the two latent items that are dead while the read is gated
-/// off but become live the instant it flips:**
-/// 1. **#1462** — reconcile the froxel depth conventions: inject samples
-///    each slice at its *center* (`(z+0.5)/size.z`), integrate uses a
-///    *front-of-slab* Riemann sum (inscatter weighted before the
-///    transmittance step), and composite samples by *texel edge*
-///    (`worldDist/VOLUME_FAR`). Under the linear model that is a
-///    ~half-slab (~0.78 m) fog-depth bias. Reconcile, or accept it
-///    explicitly.
-/// 2. **#1463** — `integration_param_buffer` is single-buffered (sound
-///    only because `dt` is immutable). If Phase 5 makes `dt` per-frame,
-///    convert it to per-FIF first (mirror `param_buffers`) or frame
-///    N+1's host write races frame N's in-flight integrate read.
-pub const VOLUMETRIC_OUTPUT_CONSUMED: bool = false;
+/// **#1463** remains an open, non-blocking item: `integration_param_buffer`
+/// is single-buffered (sound only because `dt` is immutable today). If a
+/// future Phase 5 exponential-slice distribution makes `dt` per-frame,
+/// convert it to per-FIF first (mirror `param_buffers`) or frame N+1's
+/// host write will race frame N's in-flight integrate read.
+pub const VOLUMETRIC_OUTPUT_CONSUMED: bool = true;
 
 /// Integration shader uniform — slab thickness `dt` shared across all
 /// slices under linear distribution. Phase 5 will replace this with
@@ -218,6 +229,10 @@ pub struct VolumetricsPipeline {
     /// frame the gate is on. `dispatch` debug_asserts this. (#1105 /
     /// REN-D18-003)
     tlas_written: [bool; MAX_FRAMES_IN_FLIGHT],
+    /// Same latch shape as `tlas_written`, for bindings 3/4/5 (lights /
+    /// cluster grid / light-index SSBOs) written via
+    /// `write_lights_and_clusters`. See that method's doc comment.
+    lights_written: [bool; MAX_FRAMES_IN_FLIGHT],
 }
 
 impl VolumetricsPipeline {
@@ -254,6 +269,7 @@ impl VolumetricsPipeline {
             integrated_volumes: Vec::new(),
             integration_param_buffer: None,
             tlas_written: [false; MAX_FRAMES_IN_FLIGHT],
+            lights_written: [false; MAX_FRAMES_IN_FLIGHT],
         };
 
         macro_rules! try_or_cleanup {
@@ -320,6 +336,31 @@ impl VolumetricsPipeline {
             vk::DescriptorSetLayoutBinding::default()
                 .binding(2)
                 .descriptor_type(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 3/4/5: Phase 2b point/spot light injection — the same
+            // per-frame lights SSBO + cluster grid + light-index list
+            // `ClusterCullPipeline` already builds for the fragment
+            // shader (`triangle.frag`'s `lights[]` / `clusters[]` /
+            // `clusterLightIndices[]`), reused here rather than
+            // building a separate froxel-space light-culling
+            // structure. Written per-frame via `write_lights_and_clusters`
+            // (same deferred-write flow as `write_tlas`, since the
+            // buffer *contents* are rebuilt every frame even though the
+            // handles are frame-in-flight-stable).
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(5)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
@@ -810,6 +851,14 @@ impl VolumetricsPipeline {
         );
         // Reset latch so the assert fires if write_tlas() is skipped next frame.
         self.tlas_written[frame] = false;
+        // Same shape for bindings 3/4/5 (Phase 2b lights/clusters) —
+        // see `write_lights_and_clusters`.
+        debug_assert!(
+            self.lights_written[frame],
+            "VolumetricsPipeline::dispatch called without prior write_lights_and_clusters() for frame {}",
+            frame,
+        );
+        self.lights_written[frame] = false;
         // ── Stage A: write injection-pass UBO ────────────────────────
         // The buffer is HOST_VISIBLE + HOST_COHERENT via
         // `GpuBuffer::create_host_visible`, but the execution
@@ -976,6 +1025,61 @@ impl VolumetricsPipeline {
         // Latch so dispatch's debug_assert can verify the binding was
         // written this session. (#1105 / REN-D18-003)
         self.tlas_written[frame] = true;
+    }
+
+    /// Update the injection descriptor set's bindings 3/4/5 (lights /
+    /// cluster grid / light-index SSBOs) for `frame` — Phase 2b
+    /// point/spot light injection. Reuses the exact same per-frame
+    /// buffers `ClusterCullPipeline` already builds for the fragment
+    /// shader (`scene_buffers.light_buffers()`,
+    /// `cluster_cull.scene_cluster_grid_buffers`,
+    /// `cluster_cull.scene_light_index_buffers`) rather than a
+    /// separate froxel-space light-culling structure — see the
+    /// Phase 2b design note on `volumetrics_inject.comp`.
+    ///
+    /// Mirrors `write_tlas`: the buffer *contents* are rebuilt every
+    /// frame (cluster_cull's compute dispatch runs earlier in the
+    /// same command buffer), so this MUST be called every frame from
+    /// `draw.rs` before `dispatch`, after `cluster_cull.dispatch()`
+    /// has recorded and after the compute→compute barrier that makes
+    /// its writes visible (see the barrier note in `draw.rs`).
+    pub fn write_lights_and_clusters(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+        light_buffer: vk::Buffer,
+        light_buffer_size: vk::DeviceSize,
+        cluster_grid_buffer: vk::Buffer,
+        cluster_grid_size: vk::DeviceSize,
+        light_index_buffer: vk::Buffer,
+        light_index_size: vk::DeviceSize,
+    ) {
+        let light_info = [vk::DescriptorBufferInfo {
+            buffer: light_buffer,
+            offset: 0,
+            range: light_buffer_size,
+        }];
+        let cluster_info = [vk::DescriptorBufferInfo {
+            buffer: cluster_grid_buffer,
+            offset: 0,
+            range: cluster_grid_size,
+        }];
+        let index_info = [vk::DescriptorBufferInfo {
+            buffer: light_index_buffer,
+            offset: 0,
+            range: light_index_size,
+        }];
+        let set = self.descriptor_sets[frame];
+        let writes = [
+            write_storage_buffer(set, 3, &light_info),
+            write_storage_buffer(set, 4, &cluster_info),
+            write_storage_buffer(set, 5, &index_info),
+        ];
+        // SAFETY: the injection descriptor set for `frame` is live and not in
+        // use by an in-flight frame (caller invokes this before this frame's
+        // dispatch); the *_info arrays outlive the call.
+        unsafe { device.update_descriptor_sets(&writes, &[]) };
+        self.lights_written[frame] = true;
     }
 
     /// Destroy all froxel images, views, buffers, and pipeline objects.

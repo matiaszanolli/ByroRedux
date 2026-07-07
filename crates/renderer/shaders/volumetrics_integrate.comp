@@ -45,6 +45,39 @@ layout(set = 0, binding = 2) uniform IntegrationParams {
     vec4 step;
 } params;
 
+// M-LIGHT v2 — 3x3 XY box blur over the injection buffer, sampled per
+// slice. The per-froxel injection shadow ray is a single deterministic
+// sample with no jitter or temporal accumulation, so a hard geometric
+// edge (e.g. a window frame) that doesn't align with the froxel grid
+// produces a stair-step visibility pattern at the froxel's native
+// resolution — 160 columns over a 1280px-wide screen is 8 screen-
+// pixels per froxel column, exactly the "~8px-wide vertical banding"
+// diagnosed on Prospector Saloon lantern content (the reason
+// `VOLUMETRIC_OUTPUT_CONSUMED` was gated off, see `volumetrics.rs`).
+// A cheap spatial blur softens that edge directly, without the
+// temporal-reprojection machinery (history buffer, `prev_view_proj`,
+// jitter) a noise-driven artifact would need — this one is static
+// banding, not noise, so spatial averaging is the right tool. Blurs
+// XY only (not Z/depth) since the artifact is a screen-space column
+// effect; blurring across depth slices would smear the sun-shaft
+// boundary along the view ray, which is exactly the crispness M55's
+// design doc wants to preserve.
+vec4 sampleInjectionBlurred(ivec3 size, ivec2 col, int slice) {
+    vec4 sum = vec4(0.0);
+    float count = 0.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            ivec2 c = col + ivec2(dx, dy);
+            if (any(lessThan(c, ivec2(0))) || any(greaterThanEqual(c, size.xy))) {
+                continue;
+            }
+            sum += imageLoad(injection, ivec3(c, slice));
+            count += 1.0;
+        }
+    }
+    return sum / max(count, 1.0);
+}
+
 void main() {
     ivec3 size = imageSize(injection);
     ivec2 col = ivec2(gl_GlobalInvocationID.xy);
@@ -57,7 +90,7 @@ void main() {
     float trans_cumulative = 1.0;
 
     for (int slice = 0; slice < size.z; ++slice) {
-        vec4 inj = imageLoad(injection, ivec3(col, slice));
+        vec4 inj = sampleInjectionBlurred(size, col, slice);
         vec3 inscatter = inj.rgb;
         float extinction = inj.a;
 

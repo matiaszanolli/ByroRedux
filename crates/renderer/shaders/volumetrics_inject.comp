@@ -47,7 +47,9 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     vec4 volume_extent;
     // #markarth-precision — xyz = camera-relative render origin; added to the
     // inv_view_proj-reconstructed far point to recover ABSOLUTE froxel world
-    // positions (the TLAS shadow rays below are cast in absolute space). w unused.
+    // positions (the TLAS shadow rays below are cast in absolute space).
+    // w = is_exterior (1.0 exterior, 0.0 interior) — selects the shadow-ray
+    // strategy below.
     vec4 render_origin;
 } params;
 
@@ -57,7 +59,135 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
 // needed because sun radiance is constant.
 layout(set = 0, binding = 2) uniform accelerationStructureEXT topLevelAS;
 
+// Phase 2b — point/spot light in-scattering. Bindings 3/4/5 mirror the
+// SAME per-frame lights SSBO + cluster grid + light-index list
+// `cluster_cull.comp` builds for the fragment shader (struct layouts
+// copied from `include/bindings.glsl`'s `GpuLight` / `ClusterEntry` —
+// not `#include`d wholesale since that file's bindings are numbered
+// for the fragment shader's own descriptor set, not this compute
+// shader's). Written per-frame via
+// `VolumetricsPipeline::write_lights_and_clusters`.
+struct GpuLight {
+    vec4 position_radius; // xyz = position, w = radius
+    vec4 color_type;       // rgb = color, w = type (0=point, 1=spot, 2=directional)
+    vec4 direction_angle;  // xyz = direction, w = spot angle cosine
+    vec4 params;           // x = falloff_exponent; yzw reserved
+};
+
+layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
+    uint lightCount;
+    uint _pad0, _pad1, _pad2;
+    GpuLight lights[];
+};
+
+struct ClusterEntry {
+    uint offset;
+    uint count;
+};
+
+layout(std430, set = 0, binding = 4) readonly buffer ClusterGrid {
+    ClusterEntry clusters[];
+};
+
+layout(std430, set = 0, binding = 5) readonly buffer ClusterLightIndices {
+    uint clusterLightIndices[];
+};
+
 const float PI = 3.14159265358979323846;
+
+// Simplified point/spot attenuation — mirrors `pointSpotAtten`'s
+// default-tier curve (`include/lighting.glsl`) but self-contained:
+// this compute shader has none of that function's dependencies
+// (`dofParams.z` knee-frac override, `dbgFlags` legacy A/B branch)
+// bound, and doesn't need them for an ambient-style fog glow.
+float froxelLightAtten(float dist, float R, float shape) {
+    float knee = max(R * 0.5, 1.0);
+    float dn = dist / knee;
+    float phys = 1.0 / (1.0 + shape * dn * dn);
+    float wcull = 1.0 - smoothstep(knee, max(R, knee + 1.0), dist);
+    return phys * wcull;
+}
+
+// Procedural fog density — NOT the REGN-weather-record-driven density
+// the module header's "Phase 6" comment describes (that needs new ESM
+// record parsing, separate future work); this is a lightweight
+// height-falloff × 3D value-noise modulation of the otherwise-constant
+// `params.camera_pos.w` scattering coefficient, so fog reads as
+// atmospheric haze rather than a flat uniform veil. Static (not time-
+// animated) for now — a `time` uniform isn't currently plumbed into
+// `VolumetricsParams`; animating the noise offset per-frame would be a
+// small follow-up if drifting fog is wanted later.
+float hash3(vec3 p) {
+    p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+// Trilinear value noise over the unit lattice containing `p`, in [0, 1].
+float valueNoise3D(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f); // smoothstep-shaped interpolant
+    float n000 = hash3(i + vec3(0.0, 0.0, 0.0));
+    float n100 = hash3(i + vec3(1.0, 0.0, 0.0));
+    float n010 = hash3(i + vec3(0.0, 1.0, 0.0));
+    float n110 = hash3(i + vec3(1.0, 1.0, 0.0));
+    float n001 = hash3(i + vec3(0.0, 0.0, 1.0));
+    float n101 = hash3(i + vec3(1.0, 0.0, 1.0));
+    float n011 = hash3(i + vec3(0.0, 1.0, 1.0));
+    float n111 = hash3(i + vec3(1.0, 1.0, 1.0));
+    float nx00 = mix(n000, n100, f.x);
+    float nx10 = mix(n010, n110, f.x);
+    float nx01 = mix(n001, n101, f.x);
+    float nx11 = mix(n011, n111, f.x);
+    float nxy0 = mix(nx00, nx10, f.y);
+    float nxy1 = mix(nx01, nx11, f.y);
+    return mix(nxy0, nxy1, f.z);
+}
+
+// Density multiplier at `worldPos`, relative to `refHeight` (the
+// camera's own height — no data-driven "floor" reference exists yet,
+// so fog is denser at and below eye level and thins going up, which
+// reads correctly for both a ground-hugging interior haze and an
+// exterior morning-mist look). `HEIGHT_FALLOFF` and `NOISE_SCALE` are
+// plain tuning constants (matching this pipeline's existing
+// `DEFAULT_SCATTERING_COEF` / `DEFAULT_PHASE_G` precedent — not yet
+// wired to a runtime debug knob).
+float proceduralDensityScale(vec3 worldPos, float refHeight) {
+    const float HEIGHT_FALLOFF = 1.0 / 300.0; // e-folding distance ~300 m above ref height
+    const float NOISE_SCALE = 1.0 / 180.0;    // ~180 m per noise lattice cell
+    const float NOISE_STRENGTH = 0.6;         // density varies +/-60% around the mean
+    float heightAbove = max(worldPos.y - refHeight, 0.0);
+    float heightTerm = exp(-heightAbove * HEIGHT_FALLOFF);
+    float n = valueNoise3D(worldPos * NOISE_SCALE);
+    float noiseTerm = 1.0 - NOISE_STRENGTH * 0.5 + NOISE_STRENGTH * n;
+    return heightTerm * noiseTerm;
+}
+
+// Binary occlusion test: true if the ray hits ANY geometry in `mask`'s
+// bucket within [tMin, tMax]. TERMINATE_ON_FIRST_HIT — only presence
+// matters, no closest-hit shading. `mask` selects the TLAS instance
+// bucket (SHADOW_MASK_OPAQUE / SHADOW_MASK_GLASS, see
+// `shader_constants.glsl` and the instance-mask assignment in
+// `acceleration/tlas.rs`) — both buckets are built with the same
+// per-triangle OPAQUE geometry flag, so this is a presence check, not
+// an alpha test.
+bool traceOcclusion(vec3 origin, vec3 dir, float tMin, float tMax, uint mask) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(
+        rq,
+        topLevelAS,
+        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        mask,
+        origin,
+        tMin,
+        dir,
+        tMax
+    );
+    rayQueryProceedEXT(rq);
+    return rayQueryGetIntersectionTypeEXT(rq, true)
+        != gl_RayQueryCommittedIntersectionNoneEXT;
+}
 
 // Henyey-Greenstein single-lobe phase function. cos_theta is the
 // cosine of the angle between the light incoming direction and the
@@ -110,10 +240,25 @@ void main() {
 
     // Slice → along-ray distance (linear for Phase 2; exponential
     // distribution lands with Phase 5 temporal reprojection).
-    // #1462: this samples the slice CENTER (uvw.z = (coord.z+0.5)/size.z);
-    // integrate weights with FRONT-of-slab transmittance and composite
-    // samples by texel EDGE — reconcile the three when the read is enabled.
-    float t = uvw.z * params.volume_extent.x;
+    //
+    // #1462 (resolved) — depth-slice convention reconciled across all
+    // three passes. `integrate`'s Riemann sum stores each slice's
+    // (inscatter_total, transmittance) valid at the FRONT of that
+    // slab (transmittance is only updated by the slab's own
+    // attenuation AFTER the store), and `composite` samples the
+    // integrated volume by texel EDGE (`worldDist / VOLUME_FAR`, no
+    // half-texel shift) — both already agreed on a front-edge
+    // convention. This pass previously evaluated its shadow ray /
+    // phase function at the slice CENTER (`uvw.z = (coord.z+0.5) /
+    // size.z`), a ~half-slab bias against the other two. Use the
+    // FRONT edge here too (`coord.z / size.z`, no `+0.5`) so the
+    // in-scattered radiance this pass computes is actually valid at
+    // the same world distance `integrate` and `composite` treat it as.
+    // `uvw.xy` keeps its center-of-column sampling — screen-space XY
+    // has no equivalent edge/center ambiguity (composite samples
+    // `fragUV` directly, per-fragment, not froxel-column-binned).
+    float slice_front = float(coord.z) / float(size.z);
+    float t = slice_front * params.volume_extent.x;
 
     vec3 world_pos = froxel_to_world(uvw.xy, t);
 
@@ -128,8 +273,10 @@ void main() {
     float cos_theta = dot(light_in, view_dir);
     float phase = henyey_greenstein(cos_theta, params.sun_dir.w);
 
-    // Constant medium parameters (Phase 2 simplification).
-    float scattering_coef = params.camera_pos.w;
+    // Procedural fog density — height falloff × 3D value noise around
+    // the base scattering coefficient (see `proceduralDensityScale`).
+    float density_scale = proceduralDensityScale(world_pos, params.camera_pos.y);
+    float scattering_coef = params.camera_pos.w * density_scale;
     // Single-scattering albedo of 1 (pure scattering, no absorption)
     // is a defensible default for clear haze. Smoke / dust / fog
     // with non-trivial absorption follows from a separate
@@ -143,39 +290,106 @@ void main() {
     //     geometry, but never lying on a surface), so a small tMin
     //     handles self-intersection trivially.
     //   - direction = -sun_dir.xyz (points from sample toward sun).
-    //   - tMax = effectively the sun's "distance" — huge.
-    //   - flags = OPAQUE | TERMINATE_ON_FIRST_HIT — we only care
-    //     whether any geometry blocks the path; closest-hit walk
-    //     would cost ~10× this.
-    // If the ray hits anything, the sample is shadowed: zero sun
-    // contribution. Otherwise the sun lights this voxel through the
-    // medium, modulated by the phase function. This is what produces
-    // god rays — voxels in a window's beam are lit, voxels behind a
-    // wall are not, and the integration pass propagates the
-    // boundary as crisp light shafts.
+    // If the opaque-mask ray hits anything, the sample is shadowed:
+    // zero sun contribution. Otherwise the sun lights this voxel
+    // through the medium, modulated by the phase function. This is
+    // what produces god rays — voxels in a window's beam are lit,
+    // voxels behind a wall are not, and the integration pass
+    // propagates the boundary as crisp light shafts.
+    //
+    // Exterior vs interior take different strategies for the
+    // no-opaque-hit case (see `render_origin.w` doc comment above and
+    // `VolumetricsParams::render_origin` in `volumetrics.rs`):
+    // exterior really does have open sky above, so no-hit genuinely
+    // means lit. A `--cell`-loaded interior has no guaranteed
+    // watertight shell — Bethesda authoring commonly omits ceiling
+    // geometry entirely since players never see it from inside — so a
+    // bare no-hit there just as often means "the ray escaped through a
+    // missing ceiling," not "this froxel sees a real window." The
+    // second, GLASS-only pass (bounded to the froxel volume's own far
+    // plane — real windows are within the room, not out at the sun's
+    // actual distance) disambiguates: a hit there means the ray
+    // genuinely passed through window glass on its way out.
     vec3 ray_origin = world_pos;
     vec3 ray_dir = light_in;
     float visibility;
-    {
-        rayQueryEXT rq;
-        rayQueryInitializeEXT(
-            rq,
-            topLevelAS,
-            gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-            0xFFu,
-            ray_origin,
-            0.05,
-            ray_dir,
-            10000.0
+    bool isExterior = params.render_origin.w > 0.5;
+    bool opaqueHit = traceOcclusion(ray_origin, ray_dir, 0.05, 10000.0, SHADOW_MASK_OPAQUE);
+    if (opaqueHit) {
+        visibility = 0.0;
+    } else if (isExterior) {
+        visibility = 1.0;
+    } else {
+        bool sawGlass = traceOcclusion(
+            ray_origin, ray_dir, 0.05, params.volume_extent.x, SHADOW_MASK_GLASS
         );
-        rayQueryProceedEXT(rq);
-        visibility = (rayQueryGetIntersectionTypeEXT(rq, true)
-                      == gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
+        visibility = sawGlass ? 1.0 : 0.0;
     }
 
     // In-scattered radiance from the sun at this voxel, gated on
     // shadow visibility. HG normalisation already includes 1/4π.
     vec3 inscatter = scattering_coef * phase * params.sun_color.rgb * visibility;
+
+    // Phase 2b — point/spot light in-scattering (real lantern glow in
+    // the fog), reusing the SAME per-frame cluster grid the fragment
+    // shader builds rather than a separate froxel-space light-culling
+    // structure. Deliberately UNSHADOWED: a per-light shadow ray here,
+    // across up to `MAX_FROXEL_LIGHTS` lights for every one of the
+    // ~1.8M froxels in the grid, would be far more ray queries than
+    // the single sun shadow ray above — lanterns get an ambient-style
+    // glow in the fog instead of crisp shadowed shafts (the sun above
+    // is the one that produces real, wall-occluded god rays). Isotropic
+    // scattering (not the sun's HG `phase` value, which is specific to
+    // the sun's own incoming direction) since each point light has its
+    // own direction to the sample point.
+    {
+        // Mirrors `getClusterIndex` (`include/clusters.glsl`) exactly,
+        // so a froxel maps to the SAME cluster the fragment shader
+        // would at this world distance — using `params.sun_color.a`
+        // (the cell's fog-far, plumbed to match `screen.w`) as the
+        // identical basis for the exponential depth-slice distribution.
+        float clusterFar = params.sun_color.a > 1.0
+            ? max(params.sun_color.a, CLUSTER_FAR_FLOOR)
+            : CLUSTER_FAR_FALLBACK;
+        float logRatio = log(clusterFar / CLUSTER_NEAR);
+        uint tileX = min(uint(uvw.x * float(CLUSTER_TILES_X)), CLUSTER_TILES_X - 1u);
+        uint tileY = min(uint(uvw.y * float(CLUSTER_TILES_Y)), CLUSTER_TILES_Y - 1u);
+        uint sliceZ = uint(
+            log(max(t, CLUSTER_NEAR) / CLUSTER_NEAR) / logRatio * float(CLUSTER_SLICES_Z)
+        );
+        sliceZ = min(sliceZ, CLUSTER_SLICES_Z - 1u);
+        uint clusterIdx =
+            tileX + tileY * CLUSTER_TILES_X + sliceZ * CLUSTER_TILES_X * CLUSTER_TILES_Y;
+
+        const float ISOTROPIC_PHASE = 1.0 / (4.0 * PI);
+        const uint MAX_FROXEL_LIGHTS = 4u;
+        ClusterEntry cluster = clusters[clusterIdx];
+        uint lightLoopCount = min(cluster.count, MAX_FROXEL_LIGHTS);
+        for (uint ci = 0u; ci < lightLoopCount; ++ci) {
+            uint li = clusterLightIndices[cluster.offset + ci];
+            float radius = lights[li].position_radius.w;
+            float lightType = lights[li].color_type.w;
+            // Directional / interior-fill-directional sentinel (radius
+            // < 0, per the fragment-shader loop's own convention) — the
+            // sun above already covers directional light; skip here.
+            if (lightType > 1.5 || radius < 0.0) {
+                continue;
+            }
+            vec3 toLight = lights[li].position_radius.xyz - world_pos;
+            float dist = length(toLight);
+            float shape = lights[li].params.x;
+            float atten = froxelLightAtten(dist, radius, shape > 0.0 ? shape : 1.0);
+            if (lightType > 0.5) {
+                // Spot — same cone factor as the fragment-shader loop.
+                vec3 spotDir = normalize(lights[li].direction_angle.xyz);
+                float spotAngle = lights[li].direction_angle.w;
+                vec3 Ldir = toLight / max(dist, 0.001);
+                float spotFactor = dot(-Ldir, spotDir);
+                atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
+            }
+            inscatter += scattering_coef * ISOTROPIC_PHASE * lights[li].color_type.rgb * atten;
+        }
+    }
 
     imageStore(froxel, coord, vec4(inscatter, extinction_coef));
 }

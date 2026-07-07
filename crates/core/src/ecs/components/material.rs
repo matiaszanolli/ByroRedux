@@ -459,6 +459,22 @@ pub fn is_glass_keyword_path(path: &str) -> bool {
 pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
     let path = inputs.texture_path.unwrap_or("");
 
+    // Weathered scrap/junk cladding (FNV/FO3 shanty-town architecture —
+    // `textures\architecture\megaton\metalscrap{shingles,beams,panels}*.dds`,
+    // reused verbatim for Goodsprings' Prospector Saloon shack walls and
+    // its LowerClass bar counter panel). Checked BEFORE the "metal"
+    // keyword arm below because "metalscrap" contains "metal" and would
+    // otherwise fall into the polished/oxidised-steel bucket at
+    // metalness=0.9 — visibly chrome on rusted, painted corrugated tin
+    // that was never meant to be reflective. The visible surface here is
+    // paint/rust, not bare conductive metal, so treat it like the
+    // stone/rubble bucket: matte, non-metallic.
+    if contains_any_ci(path, &["scrap"]) {
+        return PbrMaterial {
+            roughness: 0.85,
+            metalness: 0.0,
+        };
+    }
     if contains_any_ci(
         path,
         &["metal", "iron", "steel", "dwemer", "dwarven", "chainmail"],
@@ -775,6 +791,33 @@ mod tests {
 
         let glass = classify(&m, "textures/clutter/ICE/IceShard01.dds");
         assert!(glass.roughness < 0.2);
+    }
+
+    /// Prospector Saloon (`GSProspectorSaloonInterior`) bar-counter panel
+    /// and Goodsprings/Megaton shack-wall siding both use
+    /// `textures\architecture\megaton\metalscrap{panels,shingles,beams}*.dds`
+    /// — rusted, painted corrugated-tin cladding. Pre-fix these matched
+    /// the generic "metal" arm (metalness=0.9) and rendered as chrome.
+    /// User-reported 2026-07-06.
+    #[test]
+    fn classify_pbr_scrap_metal_is_not_chrome() {
+        let m = Material::default();
+        let panel = classify(&m, r"textures\architecture\megaton\metalscrappanels04.dds");
+        assert_eq!(
+            panel.metalness, 0.0,
+            "rusted/painted scrap cladding must not be classified as bare conductive metal"
+        );
+        assert!(panel.roughness > 0.6);
+
+        let shingles = classify(&m, r"textures\architecture\megaton\metalscrapshingles04.dds");
+        assert_eq!(shingles.metalness, 0.0);
+
+        let beams = classify(&m, r"textures\architecture\megaton\metalscrapbeams01.dds");
+        assert_eq!(beams.metalness, 0.0);
+
+        // Genuine bare-metal paths (no "scrap") are unaffected.
+        let steel = classify(&m, r"textures\weapons\steel\barrel01.dds");
+        assert!(steel.metalness > 0.8);
     }
 
     /// `env_map_scale > 0.3` (legacy BSShaderPPLighting cube-map

@@ -2042,6 +2042,10 @@ void main() {
         float restirWSum = 0.0;          // running reservoir weight sum
         float restirM = 0.0;             // effective sample count
         float restirPHat = 0.0;          // target pdf of the selected sample
+        // RL-03 per-light ambient fill — MAX across the cluster's lights,
+        // not a sum. Added once after the loop. See the fill site below
+        // for why this can't be a per-light additive term.
+        vec3 lightAmbientFill = vec3(0.0);
 
         ClusterEntry cluster = clusters[clusterIdx];
         for (uint ci = 0; ci < cluster.count; ci++) {
@@ -2151,6 +2155,46 @@ void main() {
                     * INTERIOR_FILL_AMBIENT_FACTOR;
                 continue;
             }
+
+            // RL-03 — per-light ambient fill (point/spot only; the
+            // interior-fill directional above already carries its own
+            // dim ambient-like term, and a true directional sun has no
+            // "ambient" component in the Gamebryo model). Gamebryo's
+            // original D3D9 lighting adds `Material.Ambient ×
+            // Light.Ambient` on top of diffuse for every active light —
+            // ByroRedux had no equivalent, so a fragment merely NEAR a
+            // lantern but not directly facing it (NdotL ≈ 0, or the
+            // `contribution < 0.001` early-out just below) got zero
+            // contribution from that light at all. Real Bethesda
+            // interiors rely on several point lights to fill a room
+            // this way — without it, lanterns only lit the exact
+            // surface patch facing them and everything else stayed at
+            // the (deliberately dim, see INTERIOR_FILL_AMBIENT_FACTOR
+            // above) cell-ambient floor. Scaled by `atten` (distance/
+            // radius falloff) only, NOT NdotL, so it survives grazing
+            // and back-facing angles but still respects the light's
+            // cull radius.
+            //
+            // MAX across lights, NOT a per-light sum: a fragment near
+            // several lanterns at once (e.g. a bar counter under a
+            // chandelier plus 2-3 nearby wall lanterns) would otherwise
+            // accumulate this term once per light with no natural
+            // NdotL-driven falloff to bound it — unlike the direct
+            // diffuse/specular term below, which self-limits because
+            // most lights face away from any given fragment. That
+            // unbounded per-light sum was blowing out flat, multi-light
+            // surfaces (a wood bar counter reading as chrome-white).
+            // `max()` matches this file's existing `ambientFill` floor
+            // pattern (a few lines up in the ambient block) — bounded by
+            // the single brightest nearby light's contribution, not the
+            // count of lights in range.
+            const float LIGHT_AMBIENT_FILL_FACTOR = 0.15;
+            lightAmbientFill = max(
+                lightAmbientFill,
+                lightColor * atten * albedo
+                    * vec3(mat.ambientR, mat.ambientG, mat.ambientB)
+                    * LIGHT_AMBIENT_FILL_FACTOR
+            );
 
             float NdotL = max(dot(N, L), 0.0);
             float contribution = NdotL * atten;
@@ -2292,6 +2336,8 @@ void main() {
 #endif
             }
         }
+        // RL-03 fill, once — see declaration above the loop.
+        Lo += lightAmbientFill;
 
         if (useRestir) {
             // ── ReSTIR finalize: temporal combine + accumulated soft shadow ─

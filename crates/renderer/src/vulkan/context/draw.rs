@@ -464,6 +464,7 @@ impl VulkanContext {
         vp: &[f32; 16],
         inv_vp_arr: [[f32; 4]; 4],
         sky_params: &SkyParams,
+        fog_far: f32,
     ) {
         // SAFETY: `cmd` is in the recording state — opened by
         // `begin_command_buffer` in `draw_frame` and not yet closed — and
@@ -598,47 +599,96 @@ impl VulkanContext {
             //
             // Sun direction + radiance are plumbed from
             // `SkyParams::sun_direction` / `sun_color` / `sun_intensity`
-            // (#1022 / REN-D18-008). When the cell isn't exterior (interior
-            // gate `!is_exterior`) or the sun is below the horizon
-            // (`sun_intensity <= 0`), `sun_color` is zeroed so the
-            // volumetric inject path produces no contribution — without
-            // this, interior cells would otherwise inject daylight
-            // god-rays through walls the moment #928 flips
-            // VOLUMETRIC_OUTPUT_CONSUMED on. Direction is still plumbed
-            // (rather than left at a hardcoded default) so the UBO
-            // field is meaningful when a future debug toggle samples it.
+            // (#1022 / REN-D18-008). Below-horizon (`sun_intensity <= 0`)
+            // still zeros `sun_color` regardless of interior/exterior — no
+            // sun, no godrays, trivially correct either way.
+            //
+            // Interior vs exterior no longer zeroes sun/scattering outright
+            // (pre-fix behavior — see git blame for the old gate). That
+            // approach was too blunt: it also blocked real sun-through-
+            // window godrays the moment #928 flips
+            // VOLUMETRIC_OUTPUT_CONSUMED on. Instead the inject shader
+            // itself distinguishes "real window" from "geometry gap" via
+            // `render_origin.w` (is_exterior) — see the two-pass shadow-ray
+            // note on `VolumetricsParams::render_origin` in `volumetrics.rs`
+            // and the interior-godray investigation: a `--cell`-loaded
+            // interior has no complete ceiling mesh (never seen from
+            // inside, so Bethesda authoring omits it), so a naive single
+            // opaque-mask shadow ray escaping upward would register as
+            // "lit" everywhere, not just through real windows.
             if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
                 if let Some(ref mut vol) = self.volumetrics {
                     let vol_tlas = self
                         .accel_manager
                         .as_ref()
                         .and_then(|accel| accel.tlas_handle(frame));
-                    if let Some(tlas) = vol_tlas {
+                    // Phase 2b point/spot light injection needs the SAME
+                    // per-frame cluster grid / light-index buffers the
+                    // fragment shader reads — reused rather than building a
+                    // separate froxel-space light-culling structure. No
+                    // cluster_cull pipeline (RT unsupported / not yet built)
+                    // means no lights this frame; skip injection entirely
+                    // rather than binding stale/undefined buffers.
+                    let vol_lights = self.cluster_cull.as_ref().map(|cc| {
+                        (
+                            self.scene_buffers.light_buffers()[frame].buffer,
+                            self.scene_buffers.light_buffer_size(),
+                            cc.scene_cluster_grid_buffers[frame],
+                            cc.scene_light_index_buffers[frame],
+                        )
+                    });
+                    if let (Some(tlas), Some((light_buf, light_buf_size, grid_buf, index_buf))) =
+                        (vol_tlas, vol_lights)
+                    {
                         vol.write_tlas(&self.device, frame, tlas);
-                        let sun_radiance =
-                            if sky_params.is_exterior && sky_params.sun_intensity > 0.0 {
-                                [
-                                    sky_params.sun_color[0] * sky_params.sun_intensity,
-                                    sky_params.sun_color[1] * sky_params.sun_intensity,
-                                    sky_params.sun_color[2] * sky_params.sun_intensity,
-                                    0.0,
-                                ]
-                            } else {
-                                [0.0, 0.0, 0.0, 0.0]
-                            };
-                        // Zero scattering (and therefore extinction, since
-                        // single-scattering-albedo = 1) for interior cells so
-                        // the volumetric integration is a no-op: T_cum = exp(0)
-                        // = 1, and composite `scene * vol.a + vol.rgb` becomes
-                        // `scene * 1 + 0 = scene`. Without this gate, interior
-                        // cells darkened by ~63% because extinction accumulated
-                        // over 128 slices at 0.005/m with no inscatter to
-                        // compensate (#1082 / REN-D18-002).
-                        let scatter_coef = if sky_params.is_exterior {
-                            super::super::volumetrics::DEFAULT_SCATTERING_COEF
+                        // Cluster grid / light-index buffer sizes mirror the
+                        // formulas in `ClusterCullPipeline::new`
+                        // (`compute.rs`): grid entries are `{offset:u32,
+                        // count:u32}` = 8 B each; the index list is one u32
+                        // per (cluster, light-slot) pair.
+                        const CLUSTER_ENTRY_SIZE: vk::DeviceSize = 8;
+                        let grid_size = CLUSTER_ENTRY_SIZE
+                            * crate::shader_constants::TOTAL_CLUSTERS as vk::DeviceSize;
+                        let index_size = std::mem::size_of::<u32>() as vk::DeviceSize
+                            * crate::shader_constants::TOTAL_CLUSTERS as vk::DeviceSize
+                            * crate::shader_constants::MAX_LIGHTS_PER_CLUSTER as vk::DeviceSize;
+                        // Compute→compute visibility: cluster_cull's own
+                        // trailing barrier (draw_frame, ~line 2960) only
+                        // targets FRAGMENT_SHADER (the rasterizer's read).
+                        // This dispatch reads the same buffers from a LATER
+                        // COMPUTE_SHADER stage, which that barrier does not
+                        // cover — a separate barrier is required by the
+                        // Vulkan spec even though both writes happened
+                        // earlier in the same command buffer.
+                        memory_barrier(
+                            &self.device,
+                            cmd,
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
+                            vk::AccessFlags::SHADER_WRITE,
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
+                            vk::AccessFlags::SHADER_READ,
+                        );
+                        vol.write_lights_and_clusters(
+                            &self.device,
+                            frame,
+                            light_buf,
+                            light_buf_size,
+                            grid_buf,
+                            grid_size,
+                            index_buf,
+                            index_size,
+                        );
+                        let sun_radiance = if sky_params.sun_intensity > 0.0 {
+                            [
+                                sky_params.sun_color[0] * sky_params.sun_intensity,
+                                sky_params.sun_color[1] * sky_params.sun_intensity,
+                                sky_params.sun_color[2] * sky_params.sun_intensity,
+                                fog_far,
+                            ]
                         } else {
-                            0.0
+                            [0.0, 0.0, 0.0, fog_far]
                         };
+                        let scatter_coef = super::super::volumetrics::DEFAULT_SCATTERING_COEF;
                         let vol_params = super::super::volumetrics::VolumetricsParams {
                             inv_view_proj: inv_vp_arr,
                             camera_pos: [camera_pos[0], camera_pos[1], camera_pos[2], scatter_coef],
@@ -657,12 +707,13 @@ impl VulkanContext {
                             ],
                             // #markarth-precision — inv_view_proj is relative;
                             // the inject shader adds this to recover absolute
-                            // froxel positions for the TLAS shadow rays.
+                            // froxel positions for the TLAS shadow rays. w =
+                            // is_exterior — see doc comment on the struct field.
                             render_origin: [
                                 render_origin.x,
                                 render_origin.y,
                                 render_origin.z,
-                                0.0,
+                                if sky_params.is_exterior { 1.0 } else { 0.0 },
                             ],
                         };
                         if let Some(ref mut timers) = self.gpu_timers {
@@ -3684,6 +3735,7 @@ impl VulkanContext {
                 vp,
                 inv_vp_arr,
                 sky_params,
+                fog_far,
             );
 
             // Debug-UI overlay (Phase 4 of the debug-UI plan).

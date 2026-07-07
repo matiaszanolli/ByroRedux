@@ -417,60 +417,32 @@ void main() {
             // would over-extrapolate transmittance for fragments past
             // the volume far plane.
             //
-            // #1462: this is a texel-EDGE mapping, while inject samples at
-            // the slice CENTER ((z+0.5)/size.z) and integrate uses a
-            // FRONT-of-slab Riemann sum — a ~half-slab (~0.78 m) fog-depth
-            // bias under the linear model. Dead while the read is gated off
-            // (depth_params.z); reconcile the three conventions when
-            // VOLUMETRIC_OUTPUT_CONSUMED flips. See the FLIP CHECKLIST in
-            // volumetrics.rs.
+            // #1462 (resolved) — this texel-EDGE mapping now agrees
+            // with `integrate`'s front-of-slab Riemann storage and
+            // `inject`'s front-edge sampling (see the reconciliation
+            // note in `volumetrics_inject.comp`). All three passes
+            // share one convention.
             float slice = clamp(worldDist / VOLUME_FAR, 0.0, 0.9999);
             vec4 vol = texture(volumetricFroxel, vec3(fragUV, slice));
             // vol.rgb = ∫inscatter accumulated 0..slice (HDR-linear)
             // vol.a   = cumulative transmittance through 0..slice
-            // M55 Phase 2c volumetric contribution gated OFF on
-            // 2026-05-09. Diagnostic confirmed the per-froxel single-
-            // shadow-ray approach produces ~8-pixel-wide vertical
-            // bands on bright surfaces (1-bit visibility per froxel
-            // column → bilinear sampling can't recover sub-froxel
-            // detail). Stripes were clearly visible on lantern
-            // bodies in Prospector; disabling the read restored
-            // smooth shading. Re-enable when M-LIGHT (multi-tap
-            // shadow rays + temporal stability) lands — see Tier 8
-            // row in ROADMAP.md.
             //
-            // ── Lockstep host-side gate (#928 / #1013) ──────────
-            // `params.depth_params.z` mirrors the host-side
-            // `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED` const. When
-            // it's true (1.0) the volumetric integrate pass has run
-            // and `vol.a` carries cumulative transmittance + `vol.rgb`
-            // carries inscatter; the Frostbite §5.3 standard form is
-            //   `final = scene * vol.a + vol.rgb`
-            // — attenuate FIRST (energy lost to absorption between
-            // camera and fragment), then ADD inscatter (radiance that
-            // arrived from in-scattering, NOT itself attenuated by
-            // `T_cum` because the integrate pass already weighted each
-            // slab's contribution by its own running transmittance).
+            // M55 Phase 2c volumetric contribution was gated off
+            // 2026-05-09 (per-froxel single-shadow-ray produced
+            // ~8px-wide vertical banding on Prospector Saloon lantern
+            // content) and re-enabled once M-LIGHT v2 (the 3x3 spatial
+            // blur in `volumetrics_integrate.comp`) resolved it — see
+            // `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED`.
             //
-            // When the gate is false (0.0), `vol.dispatch()` is
-            // skipped in `draw.rs::draw_frame` — the 3D image's `.a`
-            // channel is undefined / zero, so consuming it would
-            // multiply `combined` by 0 and produce a black screen.
-            // The fallback `vol.rgb * 0.0` keeps the texture sample
-            // alive for SPIR-V reflection (`validate_set_layout`
-            // still sees binding 6 referenced).
-            //
-            // Pre-#1013 this branch only had the `* 0.0` keep-alive,
-            // so flipping `VOLUMETRIC_OUTPUT_CONSUMED = true` after
-            // M-LIGHT v2 lands would have shipped a missing-`vol.a`
-            // bug. With the gate plumbed through `depth_params.z`,
-            // the flip is now a single-line const change in
-            // `volumetrics.rs`.
-            if (params.depth_params.z > 0.5) {
-                combined = combined * vol.a + vol.rgb;
-            } else {
-                combined += vol.rgb * 0.0;
-            }
+            // `params.depth_params.z` mirrors that host-side const, so
+            // it's always 1.0 here; `vol.a` genuinely carries cumulative
+            // transmittance and `vol.rgb` in-scattered radiance. Frostbite
+            // §5.3 standard form: attenuate FIRST (energy lost to
+            // absorption between camera and fragment), then ADD inscatter
+            // (radiance that arrived via in-scattering, NOT itself
+            // attenuated by `T_cum` — the integrate pass already weighted
+            // each slab's contribution by its own running transmittance).
+            combined = combined * vol.a + vol.rgb;
         }
 
         // M58 — bloom add. Sampled with bilinear from mip 0 of the

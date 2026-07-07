@@ -58,6 +58,19 @@ pub const MATERIAL_KIND_GLASS: u32 = 100;
 pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
 pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
 
+// TLAS instance shadow-ray mask buckets (the 8-bit mask AND'd against a
+// ray query's cullMask — see the extension-point comment at
+// `acceleration/tlas.rs`'s `instance_custom_index_and_mask` site). Every
+// instance gets exactly one bucket; every EXISTING ray query still passes
+// cullMask=0xFF (matches every bucket, no behavior change) except the new
+// interior-godray two-pass shadow ray in `volumetrics_inject.comp`, which
+// queries `SHADOW_MASK_OPAQUE` alone first, then `SHADOW_MASK_GLASS` alone
+// with a bounded tMax. Only 2 of 8 bits used; remaining bits are reserved
+// for future per-light-type segregation (per the original REN-D8-NEW-07
+// extension-point note).
+pub const SHADOW_MASK_OPAQUE: u32 = 0x01;
+pub const SHADOW_MASK_GLASS: u32 = 0x02;
+
 // Glass / IOR ray budget. The per-frame atomic ray pool for the glass
 // IOR refraction path; when exhausted, glass fragments drop to the
 // cheaper Fresnel-only fallback. The old 8192 (≈2048 IOR fragments)

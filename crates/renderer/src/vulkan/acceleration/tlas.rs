@@ -14,7 +14,9 @@ use super::predicates::{
 };
 use super::types::TlasState;
 use super::AccelerationManager;
+use crate::shader_constants::{SHADOW_MASK_GLASS, SHADOW_MASK_OPAQUE};
 use crate::vulkan::context::DrawCommand;
+use crate::vulkan::scene_buffer::MATERIAL_KIND_GLASS;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -246,25 +248,31 @@ impl AccelerationManager {
                  upstream cap drifted. See #957.",
                 ssbo_idx = ssbo_idx,
             );
+            // Shadow-ray mask bucket (REN-D8-NEW-07 extension point,
+            // first consumer). Every EXISTING ray query still passes
+            // cullMask=0xFF, which matches every bucket below — no
+            // behavior change for RT reflections / GI / the existing
+            // shadow rays. Only the new interior-godray two-pass shadow
+            // ray in `volumetrics_inject.comp` narrows cullMask, querying
+            // `SHADOW_MASK_OPAQUE` alone first and, only if that misses,
+            // `SHADOW_MASK_GLASS` alone with a bounded tMax — the
+            // distinguishing signal between "a real window let light
+            // through" and "the ray escaped through a geometry gap with
+            // no glass in the way" (e.g. an interior cell with no
+            // ceiling mesh, common Bethesda authoring practice since
+            // players never see it from inside).
+            let shadow_mask = if draw_cmd.material_kind == MATERIAL_KIND_GLASS {
+                SHADOW_MASK_GLASS
+            } else {
+                SHADOW_MASK_OPAQUE
+            } as u8;
             instances.push(vk::AccelerationStructureInstanceKHR {
                 transform,
                 // #419 — SSBO-compacted index from the shared map, NOT
                 // the raw enumerate index. The 24-bit field holds the
                 // `instances[ssbo_idx]` position the shader reads via
                 // `rayQueryGetIntersectionInstanceCustomIndexEXT`.
-                //
-                // Mask 0xFF: every instance is hit by every ray. The
-                // 8-bit mask is AND'd against `cullMask` at
-                // `rayQueryInitializeEXT` time, so per-light-type
-                // segregation (e.g. shadow rays skipping transparent
-                // foliage, or directional vs point shadow buckets)
-                // could light up by handing instances bucket-specific
-                // bit masks and the corresponding ray sites narrower
-                // cullMask values. Today every shader passes 0xFF and
-                // the lighting model doesn't need the segregation; the
-                // extension point is the mask byte here. See
-                // REN-D8-NEW-07 (audit 2026-05-09).
-                instance_custom_index_and_mask: vk::Packed24_8::new(ssbo_idx, 0xFF),
+                instance_custom_index_and_mask: vk::Packed24_8::new(ssbo_idx, shadow_mask),
                 instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
                     0,
                     instance_flags as u8,
