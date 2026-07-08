@@ -1610,6 +1610,14 @@ impl App {
                         let dest_rot =
                             cell_loader::rotation_zup_to_yup_quat(pending.destination_rotation_zup);
                         cell_loader::reposition_camera(&mut self.world, dest_pos, dest_rot);
+                        // #1874 — see the doc comment on
+                        // `snap_character_body_to_camera`: without this,
+                        // `camera_follow_system` snaps the camera back
+                        // toward the stale (pre-transition) capsule
+                        // position on the next tick, fighting this
+                        // reposition every frame and producing a stuck
+                        // TAA/SVGF ghost.
+                        crate::systems::snap_character_body_to_camera(&mut self.world);
 
                         log::info!(
                             "Cell transition applied: → {} at world ({:.1}, {:.1}, {:.1})",

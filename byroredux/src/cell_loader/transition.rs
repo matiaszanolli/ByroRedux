@@ -272,6 +272,21 @@ pub fn load_interior_cell(
     let dest_pos = position_zup_to_yup(dest_pos_zup);
     let dest_rot = rotation_zup_to_yup_quat(dest_rot_zup);
     reposition_camera(world, dest_pos, dest_rot);
+    // #1874 — `reposition_camera` only moves the CAMERA. In
+    // `PlayerMode::Character` the physics capsule stays behind in the
+    // just-unloaded source cell; `camera_follow_system` (Stage::Late,
+    // every frame) pins the camera to "body position + eye_height,"
+    // so on the very next tick it would snap the camera straight back
+    // toward the stale (often now ungrounded / free-falling through
+    // unloaded geometry) capsule — undoing this reposition and
+    // re-triggering a fresh, unsignaled camera discontinuity every
+    // frame until the capsule happened to settle. That recurring
+    // fight, not a single bad motion vector, is what let a ghosted/
+    // doubled TAA-SVGF history artifact "stick" indefinitely after a
+    // door transition. No-ops harmlessly in FlyCam mode (no player
+    // body to snap). See `snap_character_body_to_camera`'s doc comment
+    // for the full mechanism.
+    crate::systems::snap_character_body_to_camera(world);
     Ok(dest_pos)
 }
 

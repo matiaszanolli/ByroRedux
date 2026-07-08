@@ -63,6 +63,89 @@ final visibility ray re-validates every shaded sample.
 
 ---
 
+## RT-Denoiser & Post-Process Screen-Sized Resources
+
+Like the ReSTIR reservoirs above, every one of these scales with
+**swapchain resolution**, not a fixed constant, and every one of them
+had **no ledger entry here** until this sweep (#1872 — sibling finding
+from #1814's ReSTIR audit: grep confirmed zero mentions of SVGF, Bloom,
+SSAO, TAA, Volumetrics, Water, or Caustic anywhere on this page).
+
+### SVGF (indirect-lighting denoiser)
+
+[`svgf.rs`](../../crates/renderer/src/vulkan/svgf.rs) — two double-buffered
+(`MAX_FRAMES_IN_FLIGHT` = 2) history images per slot: `indirect_history`
+(B10G11R11_UFLOAT_PACK32, 4 B/px) and `moments_history` (RGBA16F, 8 B/px).
+12 B/px/slot × 2 FIF = 24 B/px total.
+
+| Resolution | Total (both histories, 2 FIF) |
+|---|---|
+| 1920×1080 | ~49.8 MB |
+| 2560×1440 | ~88.5 MB |
+| 3840×2160 | ~199.1 MB |
+
+### TAA
+
+[`taa.rs`](../../crates/renderer/src/vulkan/taa.rs) — one RGBA16F
+(8 B/px) history image per frame-in-flight, ping-ponged the same way
+as SVGF (current frame writes one slot, reads the other as history).
+
+| Resolution | Total (2 FIF) |
+|---|---|
+| 1920×1080 | ~33.2 MB |
+| 2560×1440 | ~59.0 MB |
+| 3840×2160 | ~132.7 MB |
+
+### Glass + Water Caustics
+
+[`caustic.rs`](../../crates/renderer/src/vulkan/caustic.rs) (glass-side)
+and [`water_caustic.rs`](../../crates/renderer/src/vulkan/water_caustic.rs)
+(water-side) each own a full-resolution R32_UINT (4 B/px) atomic
+accumulator image, double-buffered per FIF — two independent
+accumulators, 16 B/px combined.
+
+| Resolution | Total (both accumulators, 2 FIF) |
+|---|---|
+| 1920×1080 | ~33.2 MB |
+| 2560×1440 | ~59.0 MB |
+| 3840×2160 | ~132.7 MB |
+
+### SSAO
+
+[`ssao.rs`](../../crates/renderer/src/vulkan/ssao.rs) — one R8_UNORM
+(1 B/px) image per frame-in-flight (no ping-pong; computed after the
+main render pass, read the following frame).
+
+| Resolution | Total (2 FIF) |
+|---|---|
+| 1920×1080 | ~4.1 MB |
+| 2560×1440 | ~7.4 MB |
+| 3840×2160 | ~16.6 MB |
+
+### Bloom
+
+[`bloom.rs`](../../crates/renderer/src/vulkan/bloom.rs) — a mip pyramid
+(5 down-levels + 4 up-levels, B10G11R11_UFLOAT_PACK32, 4 B/px) seeded
+from a **half-resolution** base, recomputed every frame with no
+history — not FIF-doubled, unlike everything else on this page.
+
+| Resolution | Down+up pyramid |
+|---|---|
+| 1920×1080 | ~3.5 MB |
+| 2560×1440 | ~6.2 MB |
+| 3840×2160 | ~13.8 MB |
+
+### Volumetrics (M55) — the one exception: NOT resolution-scaled
+
+[`volumetrics.rs`](../../crates/renderer/src/vulkan/volumetrics.rs) —
+unlike every other entry in this section, the froxel grid is a
+**fixed** 160×90×128 RGBA16F volume regardless of swapchain
+resolution (screen-space XY, but a constant grid size, not
+per-pixel). Two volumes (injection + integrated) × 2 FIF × 14 MiB
+each ≈ **56 MB fixed**, at any resolution.
+
+---
+
 ## Acceleration Structures (BLAS / TLAS)
 
 [`acceleration/constants.rs`](../../crates/renderer/src/vulkan/acceleration/constants.rs)
@@ -219,12 +302,18 @@ the fence slot is complete before the tick runs (#418).
 | G-buffer (6 attachments × 2 FIF) | ~22 MB | ~45 MB (4K) |
 | Scene SSBOs | ~140 MB | ~140 MB |
 | ReSTIR reservoirs (2 FIF) | ~133 MB (1080p) | ~531 MB (4K) |
+| SVGF history (2 FIF) | ~50 MB (1080p) | ~199 MB (4K) |
+| TAA history (2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |
+| Glass + water caustics (2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |
+| SSAO (2 FIF) | ~4 MB (1080p) | ~17 MB (4K) |
+| Bloom pyramid | ~4 MB (1080p) | ~14 MB (4K) |
+| Volumetrics froxel grid (fixed) | ~56 MB | ~56 MB |
 | Vertex / index pools | ~200 MB | ~1.6 GB cap |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.25 GB** | **< 4 GB target** |
+| **Estimated total** | **~1.43 GB** | **< 4 GB target** |
 
 The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
 they are design targets. The RTX 4070 Ti (12 GB) has headroom for all

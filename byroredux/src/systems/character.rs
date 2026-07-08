@@ -473,6 +473,97 @@ pub(crate) fn camera_follow_system(world: &World, dt: f32) {
 ///
 /// Logs the new mode at INFO so the user gets feedback without an
 /// in-engine console.
+/// Snap the character body (physics capsule + `Transform`) to the
+/// active camera's current position, minus `eye_height` so the eyes
+/// end up where the camera was. Vertical velocity zeroed; grounded
+/// reset to false so gravity re-engages next tick.
+///
+/// Shared by [`toggle_player_mode`] (Fly → Character) and
+/// `cell_loader::transition`'s runtime door-transition path (#1874).
+/// The transition path calls [`reposition_camera`] to jump the camera
+/// to the destination spawn point but — pre-#1874-fix — never touched
+/// the character capsule at all, leaving it behind in the just-
+/// unloaded source cell. `camera_follow_system` (Stage::Late, every
+/// frame) pins the camera to "body position + eye_height," so on the
+/// very next tick it snapped the camera straight back toward the
+/// stale (now often ungrounded/free-falling through unloaded
+/// geometry) capsule — undoing the transition and re-triggering a
+/// fresh, UNSIGNALED camera discontinuity每 frame until the capsule
+/// physically settled somewhere. That's the mechanism behind the
+/// "ghosted double-image, sticks after camera parks" symptom: TAA/SVGF
+/// history never got a chance to recover because the source of the
+/// bad motion vector kept recurring every frame, not because the
+/// initial `signal_temporal_discontinuity` call (which the transition
+/// path already made correctly) failed to protect a single jump.
+///
+/// Returns `false` (with a warning already logged) when there's no
+/// player body to snap — safe to call unconditionally; the caller
+/// doesn't need to gate on `PlayerMode` itself, since a fly-cam-only
+/// boot (no `PlayerEntity`) just no-ops here.
+pub fn snap_character_body_to_camera(world: &mut byroredux_core::ecs::World) -> bool {
+    let player_entity = world.try_resource::<PlayerEntity>().and_then(|r| r.0);
+    let Some(player) = player_entity else {
+        log::warn!(
+            "snap_character_body_to_camera: no PlayerEntity registered \
+             (engine booted without a character body — \
+             `--mesh` / `--tree` / `--fly`? Use a `--cell` \
+             invocation to spawn one). No-op."
+        );
+        return false;
+    };
+    let cam_entity = match world.try_resource::<ActiveCamera>() {
+        Some(active) => active.0,
+        None => {
+            log::warn!("snap_character_body_to_camera: no ActiveCamera resource. Aborting.");
+            return false;
+        }
+    };
+    let (cam_pos, eye_height) = {
+        let Some(tq) = world.query::<Transform>() else {
+            return false;
+        };
+        let Some(cam_t) = tq.get(cam_entity) else {
+            log::warn!("snap_character_body_to_camera: ActiveCamera entity has no Transform. Aborting.");
+            return false;
+        };
+        let pos = cam_t.translation;
+        drop(tq);
+        let Some(cq) = world.query::<byroredux_physics::CharacterController>() else {
+            return false;
+        };
+        let height = cq.get(player).map(|c| c.eye_height).unwrap_or(52.0);
+        (pos, height)
+    };
+    let body_pos = cam_pos - Vec3::Y * eye_height;
+    {
+        let Some(mut tq) = world.query_mut::<Transform>() else {
+            return false;
+        };
+        if let Some(t) = tq.get_mut(player) {
+            t.translation = body_pos;
+            t.rotation = Quat::IDENTITY;
+        }
+    }
+    {
+        let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>() else {
+            return false;
+        };
+        if let Some(c) = cq.get_mut(player) {
+            // Clear momentum so the body doesn't carry a stale
+            // free-fall velocity from before the snap. Gravity
+            // re-engages on the next controller tick.
+            c.vertical_velocity = 0.0;
+            c.is_grounded = false;
+            c.wants_jump = false;
+        }
+    }
+    // Sync the kinematic Rapier body to the new transform so the
+    // KCC's next-frame collide-and-slide query starts from the
+    // correct position rather than the pre-snap frozen one.
+    byroredux_physics::set_kinematic_translation(world, player, body_pos);
+    true
+}
+
 pub fn toggle_player_mode(world: &mut byroredux_core::ecs::World) {
     let current = world
         .try_resource::<PlayerMode>()
@@ -484,72 +575,12 @@ pub fn toggle_player_mode(world: &mut byroredux_core::ecs::World) {
     };
 
     // On Fly → Character, snap the character body to the active
-    // camera's position. The player entity may be absent (engine
-    // booted with `--mesh` / `--tree` / `--fly` flags that didn't
-    // spawn a character body); in that case bail with a warn — the
-    // toggle is a no-op and we stay in FlyCam.
-    if matches!(next, PlayerMode::Character) {
-        let player_entity = world.try_resource::<PlayerEntity>().and_then(|r| r.0);
-        let Some(player) = player_entity else {
-            log::warn!(
-                "Walk/Fly toggle: no PlayerEntity registered \
-                 (engine booted without a character body — \
-                 `--mesh` / `--tree` / `--fly`? Use a `--cell` \
-                 invocation to spawn one). Staying in FlyCam mode."
-            );
-            return;
-        };
-        let cam_entity = match world.try_resource::<ActiveCamera>() {
-            Some(active) => active.0,
-            None => {
-                log::warn!("Walk/Fly toggle: no ActiveCamera resource. Aborting toggle.");
-                return;
-            }
-        };
-        let (cam_pos, eye_height) = {
-            let Some(tq) = world.query::<Transform>() else {
-                return;
-            };
-            let Some(cam_t) = tq.get(cam_entity) else {
-                log::warn!("Walk/Fly toggle: ActiveCamera entity has no Transform. Aborting.");
-                return;
-            };
-            let pos = cam_t.translation;
-            drop(tq);
-            let Some(cq) = world.query::<byroredux_physics::CharacterController>() else {
-                return;
-            };
-            let height = cq.get(player).map(|c| c.eye_height).unwrap_or(52.0);
-            (pos, height)
-        };
-        let body_pos = cam_pos - Vec3::Y * eye_height;
-        {
-            let Some(mut tq) = world.query_mut::<Transform>() else {
-                return;
-            };
-            if let Some(t) = tq.get_mut(player) {
-                t.translation = body_pos;
-                t.rotation = Quat::IDENTITY;
-            }
-        }
-        {
-            let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>() else {
-                return;
-            };
-            if let Some(c) = cq.get_mut(player) {
-                // Clear momentum so the body doesn't carry a stale
-                // free-fall velocity from before the user entered
-                // FlyCam mode. Gravity re-engages on the next
-                // controller tick.
-                c.vertical_velocity = 0.0;
-                c.is_grounded = false;
-                c.wants_jump = false;
-            }
-        }
-        // Sync the kinematic Rapier body to the new transform so the
-        // KCC's next-frame collide-and-slide query starts from the
-        // correct position rather than the pre-toggle frozen one.
-        byroredux_physics::set_kinematic_translation(world, player, body_pos);
+    // camera's position. Abort the toggle (stay in FlyCam) if the
+    // snap couldn't complete — matches the pre-extraction behavior:
+    // a body-less boot (`--mesh` / `--tree` / `--fly`) shouldn't
+    // silently flip into a PlayerMode with no body to control.
+    if matches!(next, PlayerMode::Character) && !snap_character_body_to_camera(world) {
+        return;
     }
 
     *world.resource_mut::<PlayerMode>() = next;
