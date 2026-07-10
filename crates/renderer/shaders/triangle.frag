@@ -604,8 +604,11 @@ void main() {
             uint scanCount = min(lightCount, 32u);
             for (uint lIdx = 0u; lIdx < scanCount; ++lIdx) {
                 if (uint(lights[lIdx].color_type.w) == 2u) {
+                    // direction_angle.xyz is the direction TO the sun (matches
+                    // the main lit path below and GpuLight's documented
+                    // convention) — do not negate it here (#1939).
                     vec3 Ldir = normalize(lights[lIdx].direction_angle.xyz);
-                    float NdotL = max(dot(N, -Ldir), 0.0);
+                    float NdotL = max(dot(N, Ldir), 0.0);
                     lit += lights[lIdx].color_type.rgb * NdotL * surf;
                     break;
                 }

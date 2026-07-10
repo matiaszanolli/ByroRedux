@@ -36,9 +36,10 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     mat4 inv_view_proj;
     // xyz = camera world position, w = scattering coefficient (1 / m)
     vec4 camera_pos;
-    // xyz = sun direction (world space, points FROM the sun toward the
-    // ground — same convention as the scene's directional light), w =
-    // HG phase function asymmetry parameter g in (-1, 1).
+    // xyz = direction TO the sun (world space, unit length — matches
+    // GpuLight.direction_angle / GpuCamera.sun_direction and every other
+    // consumer in the renderer, #1937), w = HG phase function asymmetry
+    // parameter g in (-1, 1).
     vec4 sun_dir;
     // rgb = sun radiance (already multiplied by intensity), a = unused
     vec4 sun_color;
@@ -265,8 +266,8 @@ void main() {
     // View direction points FROM the sample point TOWARD the camera.
     vec3 view_dir = normalize(params.camera_pos.xyz - world_pos);
 
-    // params.sun_dir.xyz points from sun → ground; the light incoming
-    // direction at the sample is -sun_dir.
+    // params.sun_dir.xyz points TO the sun; the light's propagation
+    // (incoming) direction at the sample is the opposite, -sun_dir.
     vec3 light_in = -normalize(params.sun_dir.xyz);
 
     // HG phase: angle between light arrival direction and view direction.
@@ -289,7 +290,9 @@ void main() {
     //     sample is in volume space (potentially inside or outside
     //     geometry, but never lying on a surface), so a small tMin
     //     handles self-intersection trivially.
-    //   - direction = -sun_dir.xyz (points from sample toward sun).
+    //   - direction = sun_dir.xyz (points from sample toward sun; this
+    //     is -light_in, since light_in is the light's propagation
+    //     direction, not the direction toward its source — #1937).
     // If the opaque-mask ray hits anything, the sample is shadowed:
     // zero sun contribution. Otherwise the sun lights this voxel
     // through the medium, modulated by the phase function. This is
@@ -311,7 +314,9 @@ void main() {
     // actual distance) disambiguates: a hit there means the ray
     // genuinely passed through window glass on its way out.
     vec3 ray_origin = world_pos;
-    vec3 ray_dir = light_in;
+    // Toward the sun, i.e. -light_in (light_in is the propagation
+    // direction, away from the sun) — #1937.
+    vec3 ray_dir = -light_in;
     float visibility;
     bool isExterior = params.render_origin.w > 0.5;
     bool opaqueHit = traceOcclusion(ray_origin, ray_dir, 0.05, 10000.0, SHADOW_MASK_OPAQUE);
