@@ -284,6 +284,7 @@ pub fn extract_bs_tri_shape(
         // BGSM greyscale LUT path is resolved later by `merge_bgsm_into_mesh`
         // (the NIF extractor has no BGSM file in scope here). See #1353.
         bgsm_greyscale_lut_path: None,
+        bgsm_greyscale_lut_is_alpha: false,
         fresnel_power: mat.fresnel_power,
         uv_offset: mat.uv_offset,
         uv_scale: mat.uv_scale,

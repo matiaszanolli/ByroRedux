@@ -629,6 +629,15 @@ pub struct ImportedMesh {
     /// effect-mesh path which rides on `effect_shader`. `None` for non-BGSM /
     /// non-palette content. See #1353 / FO4-D8-07.
     pub bgsm_greyscale_lut_path: Option<String>,
+    /// `true` when [`bgsm_greyscale_lut_path`] should gate
+    /// `MAT_FLAG_EFFECT_PALETTE_ALPHA` instead of the default
+    /// `MAT_FLAG_EFFECT_PALETTE_COLOR`. Only BGEM authors this — it's
+    /// `BSEffectShaderProperty.grayscale_to_palette_alpha`; BGSM has no
+    /// alpha-variant bool, so a BGSM-sourced LUT path always leaves this
+    /// `false`. See #1580.
+    ///
+    /// [`bgsm_greyscale_lut_path`]: Self::bgsm_greyscale_lut_path
+    pub bgsm_greyscale_lut_is_alpha: bool,
     /// `BSLightingShaderProperty.fresnel_power` (FO4+ BSVER >= 130).
     /// Per-material Schlick exponent for the Fresnel rim term.
     /// Default 5.0 (standard Schlick exponent, matches the BSLSP
@@ -847,6 +856,7 @@ impl ImportedMesh {
             backlight_power: 0.0,
             grayscale_to_palette_scale: 1.0,
             bgsm_greyscale_lut_path: None,
+            bgsm_greyscale_lut_is_alpha: false,
             fresnel_power: 5.0,
             uv_offset: [0.0, 0.0],
             uv_scale: [1.0, 1.0],

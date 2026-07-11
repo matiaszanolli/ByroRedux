@@ -199,8 +199,8 @@ pub(crate) fn pack_effect_shader_flags(
 /// [`ImportedMesh::model_space_normals`]: byroredux_nif::import::ImportedMesh::model_space_normals
 pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMesh) -> u32 {
     use byroredux_renderer::vulkan::material::material_flag::{
-        BGSM_AUTHORED, EFFECT_PALETTE_COLOR, MODEL_SPACE_NORMALS, PBR_BSDF, TRANSLUCENCY,
-        TRANSLUCENCY_MIX_ALBEDO, TRANSLUCENCY_THICK_OBJECT,
+        BGSM_AUTHORED, EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR, MODEL_SPACE_NORMALS, PBR_BSDF,
+        TRANSLUCENCY, TRANSLUCENCY_MIX_ALBEDO, TRANSLUCENCY_THICK_OBJECT,
     };
     let mut flags = 0u32;
     // `BGSM_AUTHORED` — set when `merge_bgsm_into_mesh` resolved a
@@ -234,8 +234,19 @@ pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMes
     // luminance. The effect-mesh path sets the same bit via
     // `pack_effect_shader_flags`; the two live in different material-kind
     // shader branches so there is no conflict.
+    //
+    // #1580 — BGEM's `grayscale_to_palette_alpha` bool (BGSM has no
+    // alpha-variant field, so it's always false there) picks
+    // EFFECT_PALETTE_ALPHA instead of the color default so the palette
+    // remap targets alpha rather than luminance, matching how
+    // `pack_effect_shader_flags` derives the two bits independently for
+    // the inline-effect-shader path.
     if mesh.bgsm_greyscale_lut_path.is_some() {
-        flags |= EFFECT_PALETTE_COLOR;
+        if mesh.bgsm_greyscale_lut_is_alpha {
+            flags |= EFFECT_PALETTE_ALPHA;
+        } else {
+            flags |= EFFECT_PALETTE_COLOR;
+        }
     }
     // #1147 Phase 2b — translucency parameter-shape bits. Only
     // meaningful when `TRANSLUCENCY` is also set, but pack them
@@ -339,6 +350,7 @@ mod pack_bgsm_material_flags_tests {
             backlight_power: 0.0,
             grayscale_to_palette_scale: 1.0,
             bgsm_greyscale_lut_path: None,
+            bgsm_greyscale_lut_is_alpha: false,
             fresnel_power: 5.0,
             uv_offset: [0.0; 2],
             uv_scale: [1.0; 2],
@@ -421,6 +433,31 @@ mod pack_bgsm_material_flags_tests {
             pack_bgsm_material_flags(&mesh) & EFFECT_PALETTE_COLOR,
             EFFECT_PALETTE_COLOR,
             "BGSM greyscale LUT path must pack EFFECT_PALETTE_COLOR (#1353)"
+        );
+    }
+
+    /// Regression for #1580 — a BGEM's `grayscale_to_palette_alpha` bool
+    /// (forwarded onto `bgsm_greyscale_lut_is_alpha` by the BGEM merge arm
+    /// in `asset_provider/material.rs`) must pack `EFFECT_PALETTE_ALPHA`
+    /// instead of the color default, and the two bits are mutually
+    /// exclusive for a single greyscale LUT path.
+    #[test]
+    fn bgem_alpha_variant_sets_effect_palette_alpha_not_color() {
+        use byroredux_renderer::vulkan::material::material_flag::EFFECT_PALETTE_ALPHA;
+
+        let mut mesh = empty_mesh();
+        mesh.bgsm_greyscale_lut_path = Some("textures\\effects\\gradients\\fire.dds".to_string());
+        mesh.bgsm_greyscale_lut_is_alpha = true;
+        let flags = pack_bgsm_material_flags(&mesh);
+        assert_eq!(
+            flags & EFFECT_PALETTE_ALPHA,
+            EFFECT_PALETTE_ALPHA,
+            "BGEM grayscale_to_palette_alpha must pack EFFECT_PALETTE_ALPHA (#1580)"
+        );
+        assert_eq!(
+            flags & EFFECT_PALETTE_COLOR,
+            0,
+            "alpha variant must not also set EFFECT_PALETTE_COLOR"
         );
     }
 

@@ -1000,6 +1000,10 @@ pub(crate) fn merge_bgsm_into_mesh(
         // for `GreyscaleLutHandle` and the `EFFECT_PALETTE_COLOR` flag.
         if mesh.bgsm_greyscale_lut_path.is_none() && !bgem.grayscale_texture.is_empty() {
             mesh.bgsm_greyscale_lut_path = Some(bgem.grayscale_texture.clone());
+            // #1580 — BGEM's own alpha-variant bool decides whether the LUT
+            // gates EFFECT_PALETTE_ALPHA or the default EFFECT_PALETTE_COLOR;
+            // see `pack_bgsm_material_flags` in `cell_loader.rs`.
+            mesh.bgsm_greyscale_lut_is_alpha = bgem.grayscale_to_palette_alpha;
             touched = true;
         }
         fill(&mut mesh.env_map, &bgem.envmap_texture, &mut touched, pool);

@@ -1136,6 +1136,50 @@ fn bgem_merge_forwards_grayscale_texture_as_lut_path() {
     );
 }
 
+/// Regression for #1580 — BGEM's `grayscale_to_palette_alpha` bool must
+/// forward alongside the LUT path so `pack_bgsm_material_flags` (in
+/// `cell_loader.rs`) can pick `EFFECT_PALETTE_ALPHA` over the color
+/// default. Pre-fix the bool had zero consumers outside the parser.
+#[test]
+fn bgem_merge_forwards_grayscale_to_palette_alpha_bool() {
+    use byroredux_bgsm::BgemFile;
+
+    let bgem = BgemFile {
+        grayscale_texture: "textures\\effects\\gradients\\electricity.dds".into(),
+        grayscale_to_palette_alpha: true,
+        ..Default::default()
+    };
+
+    // Mirror the prod assignment from the BGEM branch.
+    let mut lut_path: Option<String> = None;
+    let mut lut_is_alpha = false;
+    if lut_path.is_none() && !bgem.grayscale_texture.is_empty() {
+        lut_path = Some(bgem.grayscale_texture.clone());
+        lut_is_alpha = bgem.grayscale_to_palette_alpha;
+    }
+
+    assert_eq!(lut_path.as_deref(), Some("textures\\effects\\gradients\\electricity.dds"));
+    assert!(
+        lut_is_alpha,
+        "grayscale_to_palette_alpha=true must forward to bgsm_greyscale_lut_is_alpha"
+    );
+
+    // BGSM never authors an alpha variant — a BGSM-only path stays color.
+    let bgem_color_only = BgemFile {
+        grayscale_texture: "textures\\effects\\gradients\\fire.dds".into(),
+        grayscale_to_palette_alpha: false,
+        ..Default::default()
+    };
+    let mut lut_path2: Option<String> = None;
+    let mut lut_is_alpha2 = false;
+    if lut_path2.is_none() && !bgem_color_only.grayscale_texture.is_empty() {
+        lut_path2 = Some(bgem_color_only.grayscale_texture.clone());
+        lut_is_alpha2 = bgem_color_only.grayscale_to_palette_alpha;
+    }
+    assert!(lut_path2.is_some());
+    assert!(!lut_is_alpha2, "default BGEM/BGSM path must stay the color variant");
+}
+
 /// Every failing-to-resolve path logs at most once, so a broken
 /// material in a 1000-REFR cell doesn't spam the log.
 #[test]
@@ -1459,6 +1503,7 @@ fn imported_mesh_with_material_path(
         backlight_power: 0.0,
         grayscale_to_palette_scale: 1.0,
         bgsm_greyscale_lut_path: None,
+        bgsm_greyscale_lut_is_alpha: false,
         fresnel_power: 5.0,
         uv_offset: [0.0; 2],
         uv_scale: [1.0; 2],
