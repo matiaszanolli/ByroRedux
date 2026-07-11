@@ -58,29 +58,36 @@ graphics+compute queue. Pass ordering is inside
 1  skin_palette.comp    ─┐ compute
 2  skin_vertices.comp   ─┘ skinned BLAS input ready
 3  AccelerationManager   ─  BLAS rebuild / refit + TLAS build
-4  [Main render pass]   ─  raster (BEGIN → END):
+4  cluster_cull.comp     ─  per-froxel light lists (cluster grid +
+                           light-index list); consumed by both the
+                           triangle.frag fragment shader AND
+                           volumetrics_inject (same per-frame buffers,
+                           #977eb95a)
+5  [Main render pass]   ─  raster (BEGIN → END):
      triangle.vert / .frag  geometry + RT ray-queries
      water.vert / .frag     water + caustic imageAtomicAdd
-5  [Barrier]               SHADER_READ_ONLY_OPTIMAL on all G-buffer attachments
-6  [Barrier]               caustic accum atomic-add → SHADER_READ
-7  svgf_temporal.comp   ─  temporal denoiser (indirect lighting)
-8  svgf_atrous.comp ×5  ─  à-trous spatial denoiser (ATROUS_ITERATIONS),
+6  [Barrier]               SHADER_READ_ONLY_OPTIMAL on all G-buffer attachments
+7  [Barrier]               caustic accum atomic-add → SHADER_READ
+8  svgf_temporal.comp   ─  temporal denoiser (indirect lighting)
+9  svgf_atrous.comp ×5  ─  à-trous spatial denoiser (ATROUS_ITERATIONS),
    [COMPUTE→COMPUTE]        ping-pong slots gated each iteration by a
                            COMPUTE→COMPUTE barrier; final (odd count → slot 0)
                            is what composite samples via indirect_view(frame)
-9  caustic_splat.comp   ─  caustic scatter
-10 volumetrics_inject   ─┐ froxel grid (gated: VOLUMETRIC_OUTPUT_CONSUMED)
-11 volumetrics_integrate ─┘
-12 taa.comp              ─  TAA resolve
-13 ssao.comp             ─  SSAO texture
-14 bloom_downsample ×N   ─┐ bloom pyramid
+10 caustic_splat.comp   ─  caustic scatter
+11 volumetrics_inject   ─┐ froxel grid (gated: VOLUMETRIC_OUTPUT_CONSUMED);
+                           reads cluster_cull's cluster grid + light-index
+                           list from step 4
+12 volumetrics_integrate ─┘
+13 taa.comp              ─  TAA resolve
+14 ssao.comp             ─  SSAO texture
+15 bloom_downsample ×N   ─┐ bloom pyramid
    bloom_upsample   ×N   ─┘
-15 [Composite render pass]─ raster:
+16 [Composite render pass]─ raster:
      composite.vert / .frag  HDR combine → swapchain (PRESENT_SRC_KHR)
-16 [Egui render pass]    ─  egui overlay (blended on swapchain)
-17 [Screenshot copy]     ─  transfer blit → staging buffer (if requested)
-18 Queue submit
-19 Present
+17 [Egui render pass]    ─  egui overlay (blended on swapchain)
+18 [Screenshot copy]     ─  transfer blit → staging buffer (if requested)
+19 Queue submit
+20 Present
 ```
 
 ---

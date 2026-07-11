@@ -689,10 +689,11 @@ pub const UI_PIPELINE_DYNAMIC_STATES: &[vk::DynamicState] =
 ///
 /// Uses the same pipeline layout as the scene pipelines (set 0 = bindless
 /// textures, set 1 = scene UBO/SSBOs including the instance buffer at
-/// binding 4). No push constants exist on any pipeline — per-instance
-/// data lives in the instance SSBO. The UI vertex shader reads only the
-/// `textureIndex` field; vertices are already in NDC clip space so the
-/// `model` matrix is ignored.
+/// binding 4). No push constants on this shared scene/UI layout —
+/// per-instance data lives in the instance SSBO (water uses its own
+/// 128-byte push-constant layout on a separate pipeline layout). The UI
+/// vertex shader reads only the `textureIndex` field; vertices are
+/// already in NDC clip space so the `model` matrix is ignored.
 pub fn create_ui_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
