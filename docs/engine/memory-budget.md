@@ -158,8 +158,20 @@ each ≈ **56 MB fixed**, at any resolution.
 | `TLAS_SCRATCH_SLACK_BYTES` | 256 KB | Retained headroom above peak before TLAS-scratch shrink |
 | `TLAS_REBUILD_SLACK_BYTES` | 1 MB | Retained headroom above peak before TLAS instance-buffer shrink |
 
-`shrink_blas_scratch_to_fit` and `shrink_tlas_to_fit` run at cell-unload time
-to reclaim VRAM after a peak scene is evicted.
+`shrink_blas_scratch_to_fit` runs at cell-unload
+([`unload.rs`](../../byroredux/src/cell_loader/unload.rs)) and on swapchain
+recreate ([`resize.rs`](../../crates/renderer/src/vulkan/context/resize.rs))
+to reclaim VRAM after a peak scene is evicted or the swapchain resizes.
+
+`shrink_tlas_to_fit` and `shrink_tlas_scratch_to_fit` (#1911 / REN-D1-01) are a
+**different** call site with a stricter precondition: they run at the end of
+every `draw_frame`
+([`draw.rs`](../../crates/renderer/src/vulkan/context/draw.rs), post
+`current_frame` increment), targeting the FIF slot whose fence was just
+waited at this frame's start — not cell-unload. A future teardown path
+copying the "runs at cell-unload" placement for these two would hit the
+#1782 class of bug: destroying TLAS/instance buffers that an in-flight
+command buffer still references.
 
 ### Reserve floors
 
@@ -189,6 +201,15 @@ overhead that exceeds the traversal saving). Switching back recovered
 (triggered at 90% of BLAS budget). Eviction check interval:
 `BATCH_EVICTION_CHECK_INTERVAL` = 64 BLAS builds. LRU victim = the BLAS
 with the smallest last-used frame tick.
+
+Two more call sites (#1911 / REN-D1-01), both `pending_bytes = 0` (#1792 —
+neither has an in-flight batch context to report on top of): a per-frame
+call at the end of `draw_frame`'s TLAS-build block
+([`draw.rs`](../../crates/renderer/src/vulkan/context/draw.rs)), and a
+single-shot guard inside `build_blas` itself
+([`blas_static.rs`](../../crates/renderer/src/vulkan/acceleration/blas_static.rs))
+for the ad-hoc / UI-quad / lazy-upload path that sits outside the M40
+cell-loader batched hot path (#915).
 
 BLAS refit count before a forced rebuild: `SKINNED_BLAS_REFIT_THRESHOLD`
 = 600 frames (~10 seconds at 60 FPS). After 600 refits the BLAS is

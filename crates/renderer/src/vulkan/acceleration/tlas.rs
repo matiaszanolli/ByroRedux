@@ -361,21 +361,21 @@ impl AccelerationManager {
             //
             // The 2× + 8192-floor strategy intentionally over-allocates
             // — a 200-instance interior gets 8192-slot backing
-            // (~660 KB BAR), a 3000-instance exterior gets 8192
-            // (still ~660 KB), and only past 4096 does the 2× term
+            // (~512 KB BAR), a 3000-instance exterior gets 8192
+            // (still ~512 KB), and only past 4096 does the 2× term
             // dominate. The trade-off: each TLAS resize destroys
             // both the staging + device-local instance buffers and
             // recreates them, including a fresh allocator slot lookup
             // and host→device staging — collectively ~50 µs per
             // resize. Over-allocating to amortise resizes away costs
-            // a fixed ~660 KB of BAR per TLAS slot in the typical
-            // case (well under 1 MB total across both FIF slots).
+            // a fixed ~512 KB of BAR per TLAS slot in the typical
+            // case (~1.0 MB total across both FIF slots).
             // See REN-D8-NEW-10 (audit 2026-05-09).
             //
             // REN-D2-NEW-02 (audit 2026-05-09) flagged the 8192 floor
-            // as wasting ~1 MB BAR on interior cells with < 100
-            // instances. The waste is real (8192 slots × 88 B per
-            // instance × 2 FIF = ~1.4 MB across both slots) but the
+            // as wasting BAR on interior cells with < 100 instances.
+            // The waste is real (8192 slots × 64 B per instance × 2 FIF
+            // = ~1.0 MB across both slots, #1912 / REN-D1-02) but the
             // floor stays for the cell-streaming case: M40
             // exterior-tile loads frequently transition through low-
             // instance frames between high-instance cell pairs, and
