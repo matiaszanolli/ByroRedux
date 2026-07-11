@@ -762,3 +762,78 @@ fn gpu_material_glsl_field_order_matches_rust_struct() {
         );
     }
 }
+
+// ── GpuLight four-way GLSL lockstep (#1916) ──
+
+/// Strip a GLSL struct body down to its bare `<type> <name>;` declaration
+/// lines — drop `//` line comments and blank lines, collapse internal
+/// whitespace. Two struct bodies with identical stripped output declare
+/// the same fields in the same order, regardless of how each copy's
+/// comments describe them.
+fn strip_struct_body(body: &str) -> Vec<String> {
+    body.lines()
+        .map(|raw| match raw.find("//") {
+            Some(i) => &raw[..i],
+            None => raw,
+        })
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// #1916 — `struct GpuLight` is hand-duplicated across four GLSL sources:
+/// `include/bindings.glsl` (the shared copy `triangle.frag` `#include`s),
+/// `cluster_cull.comp`, `caustic_splat.comp`, and (since commit `977eb95a`)
+/// `volumetrics_inject.comp`. That fourth copy was never added to the
+/// `gpu_types.rs` doc-comment enumeration, and no test pinned the four
+/// declarations against each other — a future `GpuLight` field change
+/// could update three copies and silently leave the volumetrics fog pass
+/// reading a stale layout (wrong light color/position feeding the fog
+/// glow). Walks all four sources at compile time (`include_str!`, no
+/// glslangValidator dependency) and asserts their stripped field lists
+/// are byte-identical.
+#[test]
+fn gpu_light_glsl_copies_stay_in_lockstep() {
+    const SOURCES: &[(&str, &str)] = &[
+        (
+            "include/bindings.glsl",
+            include_str!("../../../shaders/include/bindings.glsl"),
+        ),
+        (
+            "cluster_cull.comp",
+            include_str!("../../../shaders/cluster_cull.comp"),
+        ),
+        (
+            "caustic_splat.comp",
+            include_str!("../../../shaders/caustic_splat.comp"),
+        ),
+        (
+            "volumetrics_inject.comp",
+            include_str!("../../../shaders/volumetrics_inject.comp"),
+        ),
+    ];
+
+    let mut reference: Option<(&str, Vec<String>)> = None;
+    for (name, src) in SOURCES {
+        let body = extract_struct_body(src, "struct GpuLight")
+            .unwrap_or_else(|| panic!("{name}: no longer declares `struct GpuLight`"));
+        let fields = strip_struct_body(body);
+        assert!(
+            fields.len() >= 4,
+            "{name}: parsed only {} GpuLight field lines — parser likely broke",
+            fields.len()
+        );
+        match &reference {
+            None => reference = Some((name, fields)),
+            Some((ref_name, ref_fields)) => {
+                assert_eq!(
+                    ref_fields, &fields,
+                    "GpuLight layout mismatch: `{ref_name}` vs `{name}`. All four GLSL copies of \
+                     `struct GpuLight` must declare identical fields in the same order (Shader \
+                     Struct Sync invariant, #1916) — a drift here silently corrupts light data \
+                     for whichever copy lags behind."
+                );
+            }
+        }
+    }
+}

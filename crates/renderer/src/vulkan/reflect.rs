@@ -289,6 +289,33 @@ pub fn uniform_block_size_by_name(spirv_bytes: &[u8], name: &str) -> Result<Opti
     Ok(Some((last_offset + last_size).div_ceil(16) * 16))
 }
 
+/// Count `OpBranchConditional` instructions in a SPIR-V module.
+///
+/// Read directly from the committed SPIR-V — no recompile, no
+/// `glslangValidator` — so unlike a byte-for-byte `.spv` diff (which the
+/// #1447 doc comment already notes false-positives across glslang versions
+/// on complex shaders) this is independent of the compiler version. A GLSL
+/// `if`/`else` compiles to exactly one `OpBranchConditional`, so removing a
+/// runtime branch is visible here even when it changes no struct layout and
+/// no descriptor binding — the failure mode `uniform_block_size_by_name`
+/// and `reflect_bindings` can't catch. See #1917.
+pub fn count_branch_conditionals(spirv_bytes: &[u8]) -> Result<usize> {
+    if !spirv_bytes.len().is_multiple_of(4) {
+        bail!(
+            "SPIR-V byte length {} is not a multiple of 4",
+            spirv_bytes.len()
+        );
+    }
+    let mut loader = Loader::new();
+    binary::parse_bytes(spirv_bytes, &mut loader)
+        .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
+    let module = loader.module();
+    Ok(module
+        .all_inst_iter()
+        .filter(|inst| inst.class.opcode == Op::BranchConditional)
+        .count())
+}
+
 /// std140 size in bytes of a scalar / vector / square-matrix type — the only
 /// shapes the engine's UBO blocks use. Bails on anything else so an unhandled
 /// member type can never silently under-report a block size.
@@ -558,6 +585,31 @@ mod tests {
                  (glslangValidator -V {name} -o {name}.spv from crates/renderer/shaders). See #1493."
             );
         }
+    }
+
+    /// Regression: #1917. Commit `977eb95a` rewrote `composite.frag`'s
+    /// volumetric-apply block from a runtime `if (params.depth_params.z >
+    /// 0.5) {...} else {...}` branch to the unconditional
+    /// `combined = combined * vol.a + vol.rgb;`, but shipped the stale
+    /// pre-fix `.spv` (only `triangle.frag.spv` and the volumetrics `.spv`s
+    /// were recompiled that commit). Unlike #1447/#1493 this drift changes
+    /// no UBO/struct size, so `uniform_block_size_by_name` can't see it —
+    /// the GLSL `if`/`else` removal drops exactly one `OpBranchConditional`
+    /// from the compiled module (17 → 16, confirmed via `spirv-dis` against
+    /// both the pre- and post-fix binaries). Pins the post-fix count so a
+    /// future stale-recompile of this file fails loudly instead of shipping
+    /// silently, the same failure mode #1447 fixed for `CameraUBO` size.
+    #[test]
+    fn composite_frag_spv_matches_recompiled_branch_count() {
+        let spv = include_bytes!("../../shaders/composite.frag.spv");
+        let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
+        assert_eq!(
+            count, 16,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 16 — \
+             the committed .spv looks stale relative to composite.frag; recompile it \
+             (glslangValidator -V composite.frag -o composite.frag.spv from \
+             crates/renderer/shaders). See #1917."
+        );
     }
 
     #[test]

@@ -144,8 +144,10 @@ impl Default for GpuInstance {
 /// GPU-side light struct (64 bytes, std430 layout).
 ///
 /// Shader Struct Sync: every shader that declares `struct GpuLight`
-/// must mirror this layout (currently `triangle.frag`,
-/// `cluster_cull.comp`, `caustic_splat.comp`). The trailing
+/// must mirror this layout (currently `include/bindings.glsl`
+/// — `#include`d by `triangle.frag` — plus the standalone copies in
+/// `cluster_cull.comp`, `caustic_splat.comp`, and `volumetrics_inject.comp`,
+/// #1916). The trailing
 /// `params` vec4 was added in lockstep with the LIGH
 /// `falloff_exponent` plumb-through — pre-fix the shader applied
 /// a hardcoded `1/(1 + 0.01*d)` linear attenuation that ignored
