@@ -722,12 +722,16 @@ impl TextureRegistry {
     /// queued uploads.
     ///
     /// Returns the number of textures uploaded (≥ 0). On any
-    /// recording error the queue is left intact so a retry is
-    /// possible; the partial command buffer is freed without submit.
-    /// On submit/fence error the staging buffers leak into the pool
-    /// (the GPU may still be reading them) — a future-proof
-    /// alternative would defer-destroy them, but cell-load failure is
-    /// already a fatal-style error path.
+    /// recording error the queue is taken and dropped, not preserved
+    /// for retry — every entry in the failed batch is gone, and any
+    /// handle already reserved for it (via `queue_or_hit`) stays
+    /// `texture: None` forever, cache-HIT-redirected to a dead handle
+    /// until every reference to it drops (see #1922 for the fix-vs-
+    /// document tradeoff). The partial command buffer is freed
+    /// without submit. On submit/fence error the staging buffers leak
+    /// into the pool (the GPU may still be reading them) — a
+    /// future-proof alternative would defer-destroy them, but
+    /// cell-load failure is already a fatal-style error path.
     ///
     /// Empty queue → no-op (returns `Ok(0)` without allocating a
     /// command buffer or touching the queue mutex).
@@ -744,9 +748,10 @@ impl TextureRegistry {
         }
 
         // Move the queue out so we can borrow `&mut self` across the
-        // record loop without aliasing the field. Any pending entries
-        // not flushed (recording error mid-loop) are pushed back at
-        // the end so a retry sees a non-empty queue.
+        // record loop without aliasing the field. On a recording
+        // error the taken `pending` is simply dropped below — there
+        // is no push-back, so any entries not yet staged at the point
+        // of failure are lost, not retried (#1922).
         let pending = std::mem::take(&mut self.pending_dds_uploads);
         let count = pending.len();
 
@@ -839,8 +844,10 @@ impl TextureRegistry {
             // Recording failure path: nothing was submitted. Best-
             // effort destroy of any partially-staged textures so
             // their VkImage / staging buffer don't leak. The pending
-            // queue is gone (we `take`d it); future enqueues will
-            // re-populate.
+            // queue is gone (we `take`d it) — but `path_map` was
+            // already populated by `queue_or_hit` at enqueue time, so
+            // a later request for the same path cache-HITs the dead
+            // `texture: None` handle instead of re-queuing (#1922).
             log::warn!(
                 "flush_pending_uploads recording failed ({} uploads dropped): {}",
                 staged.len(),

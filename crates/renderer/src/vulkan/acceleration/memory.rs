@@ -24,8 +24,10 @@ impl AccelerationManager {
     /// Per-frame TLAS `scratch_buffers[i]` are NOT touched here: they
     /// can be in flight on the GPU at this point and dropping them
     /// without the pending-destroy pattern would be a use-after-free.
-    /// Shrinking TLAS scratch needs a follow-up that mirrors
-    /// [`pending_destroy_blas`]. Issue #495 tracks this gap.
+    /// TLAS scratch shrink is handled separately by
+    /// [`Self::shrink_tlas_scratch_to_fit`], called at its own
+    /// fence-gated end-of-frame call site (see that fn's `# Safety`
+    /// section for the precondition).
     ///
     /// # Safety
     ///

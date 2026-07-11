@@ -462,7 +462,10 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
     // Weathered scrap/junk cladding (FNV/FO3 shanty-town architecture —
     // `textures\architecture\megaton\metalscrap{shingles,beams,panels}*.dds`,
     // reused verbatim for Goodsprings' Prospector Saloon shack walls and
-    // its LowerClass bar counter panel). Checked BEFORE the "metal"
+    // its LowerClass bar counter panel). Landed in `977eb95a` — that
+    // commit's "Add Scripting Subsystem Audit report" title does not
+    // reflect this arm; anchor archaeology here, not the message (#1924).
+    // Checked BEFORE the "metal"
     // keyword arm below because "metalscrap" contains "metal" and would
     // otherwise fall into the polished/oxidised-steel bucket at
     // metalness=0.9 — visibly chrome on rusted, painted corrugated tin
