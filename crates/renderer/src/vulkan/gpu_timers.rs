@@ -57,10 +57,12 @@
 //!
 //! Some frames skip the skin chain entirely (no skinned draws, no RT)
 //! or skip TAA (disabled). On those frames the bracket timestamps are
-//! never written; the prior frame's result stays valid (no flicker),
-//! and the caller flags the bracket as inactive via the
-//! `*_ran_this_frame` bits supplied alongside the snapshot. Consumers
-//! should pair the elapsed-ms field with the bit.
+//! never written, and `read_and_reset` builds a fresh
+//! `GpuTimerSnapshot::default()` each call, only filling in fields
+//! whose `active_bits` bit was set — so an inactive bracket reads back
+//! `0.0`, not the prior frame's value. There is currently no
+//! per-bracket "ran this frame" flag exposed to consumers; `0.0` is
+//! ambiguous between "inactive" and "genuinely instantaneous."
 //!
 //! ## When the driver lacks timestamp support
 //!

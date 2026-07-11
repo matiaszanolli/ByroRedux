@@ -191,10 +191,9 @@ impl EguiPass {
         // them, which is fine — we don't need them again.
         let primitives = egui_ctx.tessellate(output.shapes, output.pixels_per_point);
 
-        // 4. Begin RP + draw + end RP. cmd_draw early-returns on an
-        // empty primitive list, but we still want the begin/end to
-        // record because skipping mid-frame would mismatch the
-        // composite pass's expected layout transitions.
+        // 4. Begin RP + draw + end RP. Skip the whole pass on an empty
+        // primitive list — the RP's initialLayout == finalLayout ==
+        // PRESENT_SRC_KHR, so not recording it is layout-neutral.
         if !primitives.is_empty() {
             let rp_begin = vk::RenderPassBeginInfo::default()
                 .render_pass(self.render_pass)
