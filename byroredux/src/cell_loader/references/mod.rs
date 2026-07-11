@@ -27,7 +27,8 @@ mod attach;
 mod import;
 
 use attach::{
-    attach_light_flicker_if_needed, attach_script_for_refr, trigger_volume_from_primitive,
+    attach_container_inventory, attach_light_flicker_if_needed, attach_script_for_refr,
+    trigger_volume_from_primitive,
 };
 pub(super) use import::parse_and_import_nif_pub;
 // Consumed only by the sibling `attach_points_spawn_tests` (#[cfg(test)]);
@@ -196,6 +197,9 @@ pub(super) fn load_references(
     // without inspecting individual entities.
     let mut scripts_recognized: u32 = 0;
     let mut trigger_volumes: u32 = 0;
+    // #1359 / D6-06a — how many CONT-based REFRs got an `Inventory`
+    // component from their typed `ContainerRecord`.
+    let mut containers_attached: u32 = 0;
     // `npc_pending` was the Phase 0/2 telemetry for pre-baked-FaceGen
     // games waiting on Phase 4's spawn path — kept (unused after
     // Phase 4 wired) so the cell summary's "0 ACHR refs ... pending"
@@ -751,6 +755,13 @@ pub(super) fn load_references(
             // Visible-When-Distant flag onto the placement root.
             stamp_visible_when_distant(world, placement_root, stat.visible_when_distant);
 
+            // #1359 / D6-06a — CONT REFRs already spawn a mesh via the
+            // `statics` lookup above; attach the typed record's inventory
+            // contents so the data layer is no longer absent.
+            if attach_container_inventory(world, placement_root, child_form_id, record_index) {
+                containers_attached += 1;
+            }
+
             // M47.0 Phase 3b — attach script state to the placement
             // root. `child_form_id` is the leaf base record (SCOL /
             // PKIN children each get their own; non-expanded REFRs
@@ -869,6 +880,11 @@ pub(super) fn load_references(
             scripts_recognized,
             trigger_volumes,
         );
+    }
+    if containers_attached > 0 {
+        // #1359 / D6-06a — how many CONT REFRs now carry an `Inventory`
+        // populated from their typed `ContainerRecord`.
+        log::info!("  {} containers attached an Inventory component", containers_attached);
     }
     if npc_spawned > 0 {
         // M41.0 Phase 1b + Phase 4 — NPC actors landed. The

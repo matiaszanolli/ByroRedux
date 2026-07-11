@@ -154,6 +154,47 @@ pub(super) fn attach_script_for_refr(
     attached
 }
 
+/// #1359 / D6-06a — attach an `Inventory` ECS component to a CONT-based
+/// REFR from its typed [`ContainerRecord`](esm::records::ContainerRecord).
+/// Container REFRs already spawn a visual mesh via the `statics` lookup
+/// (CONT is dual-dispatched into both `index.cells.statics` and
+/// `index.containers` at parse time); this closes the gap where the
+/// typed record's inventory contents were parsed but never consumed,
+/// leaving containers empty in the ECS. Returns `true` when a
+/// `ContainerRecord` was found and attached (regardless of whether its
+/// `contents` list was empty — an intentionally-empty container is
+/// still a container).
+///
+/// Scope: this wires the DATA layer only. Interaction (loot prompt,
+/// opening a container, `open_sound` playback) is a separate
+/// interaction-layer milestone — see the issue for the full context.
+pub(super) fn attach_container_inventory(
+    world: &mut byroredux_core::ecs::world::World,
+    entity: byroredux_core::ecs::EntityId,
+    base_form_id: u32,
+    index: &esm::records::EsmIndex,
+) -> bool {
+    use byroredux_core::ecs::components::{Inventory, ItemStack};
+
+    let Some(cont) = index.containers.get(&base_form_id) else {
+        return false;
+    };
+    let mut inventory = Inventory::new();
+    for entry in &cont.contents {
+        // Negative parsed counts are remove-from-inventory deltas, not
+        // live state — clamp at runtime per `ItemStack::count` docs
+        // (matches the same normalization `npc_spawn.rs` applies to
+        // NPC/actor inventories built from the same CNTO entry shape).
+        let runtime_count = entry.count.max(0) as u32;
+        if runtime_count == 0 {
+            continue;
+        }
+        inventory.push(ItemStack::new(entry.item_form_id, runtime_count));
+    }
+    world.insert(entity, inventory);
+    true
+}
+
 /// FO3 / FNV / Oblivion path: resolve the base record's `SCRI` form id
 /// to its SCPT editor id, look up a hand-written M47.0 spawner in the
 /// [`ScriptRegistry`], and run it. Returns `true` when a spawner ran.
@@ -357,4 +398,93 @@ pub(super) fn attach_light_flicker_if_needed(
             phase_offset_secs,
         },
     );
+}
+
+#[cfg(test)]
+mod container_inventory_tests {
+    use super::*;
+    use byroredux_core::ecs::components::Inventory;
+    use byroredux_plugin::esm::records::{ContainerRecord, EsmIndex, InventoryEntry};
+
+    fn container_with_contents(form_id: u32, entries: &[(u32, i32)]) -> ContainerRecord {
+        ContainerRecord {
+            form_id,
+            editor_id: String::new(),
+            full_name: String::new(),
+            model_path: String::new(),
+            weight: 0.0,
+            flags: 0,
+            open_sound: 0,
+            close_sound: 0,
+            script_form_id: 0,
+            script_instance: None,
+            contents: entries
+                .iter()
+                .map(|&(item_form_id, count)| InventoryEntry {
+                    item_form_id,
+                    count,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn attaches_inventory_from_container_record() {
+        let mut index = EsmIndex::default();
+        index
+            .containers
+            .insert(0x1234, container_with_contents(0x1234, &[(0xAAAA, 5), (0xBBBB, 1)]));
+
+        let mut world = World::new();
+        let entity = world.spawn();
+
+        assert!(attach_container_inventory(&mut world, entity, 0x1234, &index));
+
+        let inv = world.get::<Inventory>(entity).expect("Inventory attached");
+        assert_eq!(inv.items.len(), 2);
+        assert_eq!(inv.items[0].base_form_id, 0xAAAA);
+        assert_eq!(inv.items[0].count, 5);
+        assert_eq!(inv.items[1].base_form_id, 0xBBBB);
+        assert_eq!(inv.items[1].count, 1);
+    }
+
+    /// Negative CNTO counts are remove-from-inventory deltas on disk, never
+    /// live state — they must be dropped, not underflow into a huge `u32`.
+    #[test]
+    fn negative_counts_are_dropped() {
+        let mut index = EsmIndex::default();
+        index
+            .containers
+            .insert(0x1, container_with_contents(0x1, &[(0x10, -3), (0x20, 2)]));
+
+        let mut world = World::new();
+        let entity = world.spawn();
+        attach_container_inventory(&mut world, entity, 0x1, &index);
+
+        let inv = world.get::<Inventory>(entity).expect("Inventory attached");
+        assert_eq!(inv.items.len(), 1);
+        assert_eq!(inv.items[0].base_form_id, 0x20);
+    }
+
+    #[test]
+    fn empty_container_still_attaches() {
+        let mut index = EsmIndex::default();
+        index.containers.insert(0x1, container_with_contents(0x1, &[]));
+
+        let mut world = World::new();
+        let entity = world.spawn();
+
+        assert!(attach_container_inventory(&mut world, entity, 0x1, &index));
+        assert!(world.get::<Inventory>(entity).expect("Inventory attached").is_empty());
+    }
+
+    #[test]
+    fn non_container_base_form_returns_false_and_attaches_nothing() {
+        let index = EsmIndex::default();
+        let mut world = World::new();
+        let entity = world.spawn();
+
+        assert!(!attach_container_inventory(&mut world, entity, 0xFFFF, &index));
+        assert!(world.get::<Inventory>(entity).is_none());
+    }
 }
