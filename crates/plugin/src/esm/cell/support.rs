@@ -21,6 +21,23 @@ use crate::esm::reader::SubRecord;
 /// `DATA` (Skyrim/FO4) or `DAT2` (Starfield, #1567) light chunk, nor an
 /// ADDN `DATA`/`DNAM` payload — those would produce an empty
 /// `StaticObject` that the cell loader ignores anyway.
+///
+/// Only the top-level `MODL` is read (#1576 / SF-D4-03). Some Starfield
+/// STAT/ACTI/ARMO forms with no `MODL` DO carry a model reference inside
+/// a `BFCB`/`BFCE`-tagged `TESModel_Component` in their generic
+/// `BaseFormComponents` array instead — confirmed against the
+/// authoritative `wbDefinitionsSF1.pas` (TES5Edit dev-4.1.6):
+/// `wbBaseFormComponents`'s component-type enum lists `TESModel_Component`
+/// by name. But — same blocker class as #1567's LIGH `DAT2` decode before
+/// its schema landed — that same reference only names the tag; it has no
+/// field-level breakdown of what's inside the component's BFCB payload
+/// (xEdit's own per-component decoders are reflection-derived, dumped
+/// from a live running Starfield process, not present in any static
+/// schema in this repo's reference set). Decoding it without that layout
+/// would be exactly the offset-guessing the no-guessing policy forbids.
+/// Affects ~140 REFRs / ~0.5% of one cell, mostly very-low-FormID
+/// marker/template STAT forms. Do not add a speculative decoder here —
+/// wait for a reflection dump or a validated reverse-engineering pass.
 pub(crate) fn build_static_object_from_subs(
     form_id: u32,
     record_type: &[u8; 4],
