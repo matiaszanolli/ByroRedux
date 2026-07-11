@@ -378,7 +378,7 @@ pub struct BsDismemberSkinInstance {
 }
 
 /// Per-partition body part flag.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BodyPartInfo {
     pub part_flag: u16,
     pub body_part: u16,

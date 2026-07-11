@@ -25,19 +25,23 @@ pub fn extract_skin_ni_tri_shape(
     let skin_idx = shape.skin_instance_ref.index()?;
 
     // Accept either NiSkinInstance or BSDismemberSkinInstance (the
-    // Bethesda extension with body-part flags — we only need the base).
-    let (bone_refs, skeleton_root_ref, data_ref) =
+    // Bethesda extension with body-part flags). #1659 — capture the
+    // dismemberment partitions (empty for plain NiSkinInstance) so
+    // ImportedSkin::body_part_flags isn't silently dropped.
+    let (bone_refs, skeleton_root_ref, data_ref, body_part_flags) =
         if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {
             (
                 inst.bone_refs.as_slice(),
                 inst.skeleton_root_ref,
                 inst.data_ref,
+                Vec::new(),
             )
         } else if let Some(inst) = scene.get_as::<BsDismemberSkinInstance>(skin_idx) {
             (
                 inst.base.bone_refs.as_slice(),
                 inst.base.skeleton_root_ref,
                 inst.base.data_ref,
+                inst.partitions.clone(),
             )
         } else {
             return None;
@@ -74,6 +78,7 @@ pub fn extract_skin_ni_tri_shape(
         vertex_bone_indices,
         vertex_bone_weights,
         global_skin_transform,
+        body_part_flags,
     })
 }
 
@@ -125,21 +130,24 @@ pub fn extract_skin_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option
 
     // Skyrim LE path: NiSkinInstance + NiSkinData (bone list + bind transforms).
     // Borrow bone_refs instead of cloning — they're only iterated. #279 D5-11.
-    let (bone_refs_slice, skeleton_root_ref, data_ref) =
+    // #1659 — capture BSDismemberSkinInstance's partitions alongside.
+    let (bone_refs_slice, skeleton_root_ref, data_ref, body_part_flags) =
         if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {
             (
                 inst.bone_refs.as_slice(),
                 inst.skeleton_root_ref,
                 inst.data_ref,
+                Vec::new(),
             )
         } else if let Some(inst) = scene.get_as::<BsDismemberSkinInstance>(skin_idx) {
             (
                 inst.base.bone_refs.as_slice(),
                 inst.base.skeleton_root_ref,
                 inst.base.data_ref,
+                inst.partitions.clone(),
             )
         } else {
-            (&[] as &[_], BlockRef::NULL, BlockRef::NULL)
+            (&[] as &[_], BlockRef::NULL, BlockRef::NULL, Vec::new())
         };
     // #613 defensive: if the global skin bone list exceeds u16 range,
     // remap below truncates. Vanilla Bethesda content stays well under
@@ -165,6 +173,7 @@ pub fn extract_skin_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option
             vertex_bone_indices,
             vertex_bone_weights,
             global_skin_transform,
+            body_part_flags,
         });
     }
 
@@ -201,6 +210,10 @@ pub fn extract_skin_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option
                 [0.0, 0.0, 1.0, 0.0],
                 [0.0, 0.0, 0.0, 1.0],
             ],
+            // BSSkin::Instance (FO4+/Skyrim SE) carries no dismemberment
+            // partitions of its own — those live on NiSkinInstance /
+            // BsDismemberSkinInstance, handled above. See #1659.
+            body_part_flags: Vec::new(),
         });
     }
 
@@ -256,6 +269,9 @@ pub fn extract_skin_bs_geometry(scene: &NifScene, shape: &BSGeometry) -> Option<
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ],
+        // BSGeometry's BsSkinInstance carries no dismemberment
+        // partitions — see #1659.
+        body_part_flags: Vec::new(),
     })
 }
 

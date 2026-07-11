@@ -955,6 +955,17 @@ pub struct ImportedSkin {
     /// one (FO4+ BSSkin paths). See M41.0 Phase 1b.x research in
     /// `byroredux/tests/skinning_e2e.rs`.
     pub global_skin_transform: [[f32; 4]; 4],
+    /// Per-partition dismemberment flags (`BSDismemberSkinInstance`'s
+    /// `BodyPartInfo`), in the same order as the linked `NiSkinPartition`'s
+    /// `partitions`. A future slot-hiding consumer cross-references this
+    /// against the per-vertex partition assignment (already computed
+    /// during bone-index remap, see `remap_bs_tri_shape_bone_indices`) to
+    /// suppress FaceGen body sub-shapes whose `body_part` overlaps an
+    /// equipped armor's biped slot. Empty when the skin instance is a
+    /// plain `NiSkinInstance` (no dismemberment data) or the geometry
+    /// path doesn't resolve one (BSGeometry / FO4+ BSSkin::Instance).
+    /// See #1659.
+    pub body_part_flags: Vec<crate::blocks::skin::BodyPartInfo>,
 }
 
 impl Default for ImportedSkin {
@@ -964,6 +975,7 @@ impl Default for ImportedSkin {
             skeleton_root: None,
             vertex_bone_indices: Vec::new(),
             vertex_bone_weights: Vec::new(),
+            body_part_flags: Vec::new(),
             // Identity matrix in column-major glam form. Required so a
             // default ImportedSkin doesn't multiply vertices by a zero
             // matrix when `global_skin_transform` is unused (e.g.
