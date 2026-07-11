@@ -650,6 +650,27 @@ impl BsTriShape {
                         }
                     }
                 } else {
+                    // #1826 / FO4-D4-01 — unlike the `Some(size)` arm above,
+                    // a bare rewind here has no compensating forward skip:
+                    // the stream is left sitting at `segmentation_start`,
+                    // inside this block's still-unconsumed segmentation
+                    // payload, with nothing to resync it. Every live caller
+                    // (the block dispatcher in `blocks/mod.rs`) always
+                    // passes `Some(_)` — block sizes have appeared in the
+                    // header since V20.2.0.5, and `BSSubIndexTriShape` is
+                    // Skyrim-SE+ only — so this arm is unreachable today;
+                    // the assert documents that invariant rather than
+                    // silently tolerating a caller that could desync the
+                    // stream. If a size-less caller is ever added, prefer
+                    // returning `Err` here so the outer block-loop's
+                    // `block_size` recovery stays the single resync
+                    // mechanism, instead of this bare rewind.
+                    debug_assert!(
+                        false,
+                        "parse_sub_index recovery hit the block_size == None arm — \
+                         this path has no compensating skip and can desync the \
+                         stream; every live caller passes Some(_)",
+                    );
                     stream.set_position(segmentation_start);
                 }
                 shape.kind = BsTriShapeKind::SubIndex(Box::default());

@@ -549,6 +549,29 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
              unknown variant or corrupt archive",
             chunk_hdr_len,
         );
+        // #1825 / FO4-D3-01 — the debug_assert above compiles out in
+        // release builds, but the chunk-read loop below unconditionally
+        // reads a fixed 24-byte chunk regardless of the parsed
+        // `chunk_hdr_len` value — so a `chunk_hdr_len != 24` archive would
+        // misparse every following chunk with no telemetry. Surface it as
+        // `warn!` (tolerant clamp-to-24 read behavior is unchanged), same
+        // pattern as the `num_mips == 0` warn below and the non-monotonic
+        // `start_mip` warn further down.
+        // Not unit-tested directly: `read_dx10_records` takes a concrete
+        // `BufReader<File>` (no existing test harness constructs one), and
+        // asserting the `warn!` fires would need a captured global logger —
+        // the same trade-off the sibling `num_mips == 0` warn below
+        // documents (see `build_dds_header_clamps_num_mips_zero_to_one_and_clears_mip_flags`).
+        if chunk_hdr_len != 24 {
+            log::warn!(
+                "BA2 DX10 record at chunk 0x{:016x} declares chunk_hdr_len={} \
+                 (expected 24) — unknown variant or corrupt archive; reading \
+                 chunks as 24 bytes anyway, which will misparse if the true \
+                 layout differs",
+                reader.stream_position().unwrap_or(0),
+                chunk_hdr_len,
+            );
+        }
         let height = u16::from_le_bytes(base[16..18].try_into().unwrap());
         let width = u16::from_le_bytes(base[18..20].try_into().unwrap());
         let num_mips = base[20];
