@@ -224,9 +224,8 @@ impl WaterPipeline {
         // ── Set 2 layout: single STORAGE_IMAGE for the water-caustic
         // accumulator (#1255 / Phase C of #1210). water.frag binding
         // matches: `layout(set = 2, binding = 0, r32ui)
-        //          uniform uimage2D waterCausticAccum;`. Even when
-        // Phase D hasn't activated the consumer yet, the descriptor
-        // set must exist so the pipeline layout is reachable.
+        //          uniform uimage2D waterCausticAccum;`. water.frag
+        // writes it and composite.frag reads it (Phase D/E, live).
         let water_caustic_binding = vk::DescriptorSetLayoutBinding::default()
             .binding(0)
             .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)

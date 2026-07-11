@@ -3680,9 +3680,9 @@ impl VulkanContext {
 
         // #1255 / Phase C of #1210 — clear the water-caustic
         // accumulator BEFORE the main render pass begins. water.frag
-        // (Phase D consumer, not yet activated) will atomic-add into
-        // it during the main pass; the post-render-pass barrier
-        // below sequences those writes to the composite read.
+        // (the live Phase D/E consumer) atomic-adds into it during
+        // the main pass; the post-render-pass barrier below
+        // sequences those writes to the composite read.
         // Skipped when the accumulator failed init (None) — graceful
         // degrade matches the rest of the renderer's optional-pipeline
         // policy.
