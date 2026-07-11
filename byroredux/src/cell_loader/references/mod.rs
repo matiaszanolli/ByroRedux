@@ -813,24 +813,41 @@ pub(super) fn load_references(
     // drives `parsed_count` / `failed_count` and runs LRU eviction; we
     // touch hit keys first so they bump above the LRU watermark before
     // any new inserts fight them for cache space (#635 / FNV-D3-05).
+    //
+    // #1854 — commit `pending_clip_handles` BEFORE the `pending_new`
+    // insert loop, not after. Every `pending_clip_handles` key is also a
+    // `pending_new` key (both are populated together, see the `#544`
+    // comment at the parse site above), so this ordering is safe. It
+    // matters when a single batched commit inserts more keys than
+    // `BYRO_NIF_CACHE_MAX`, so the insert loop's own LRU eviction can
+    // evict an earlier key from THIS SAME loop: `NifImportRegistry::
+    // insert`'s eviction path only releases a clip handle it finds
+    // already in `self.clip_handles` — committing clip handles second
+    // meant an evicted-this-loop key's handle hadn't been committed yet,
+    // so eviction found nothing to free, and the later `set_clip_handle`
+    // then planted a handle for a key no longer resident in the cache —
+    // never released, leaking the `AnimationClipRegistry` slot. Not
+    // reachable on vanilla FNV today (no single cell has anywhere near
+    // 2048 unique models), but the ordering bug is real for any future
+    // caller batching more.
     let (this_cell_hits, this_cell_misses, this_cell_unique, lifetime_hit_rate, freed_clip_handles) = {
         let mut reg = world.resource_mut::<NifImportRegistry>();
         let mut freed: Vec<u32> = Vec::new();
         reg.accumulate_hits(this_call_hits);
         reg.accumulate_misses(this_call_misses);
         reg.touch_keys(pending_hits.iter().map(String::as_str));
-        for (key, entry) in pending_new {
-            // #863 — accumulate LRU-evicted clip handles from each
-            // insert; the AnimationClipRegistry release happens after
-            // we drop the NifImportRegistry write lock.
-            freed.extend(reg.insert(key, entry));
-        }
         // #544 — commit per-call clip handles into the process-lifetime
         // registry. Future cell loads of the same NIF reach the
         // memoised handle through `clip_handle_for` without
         // re-converting the channel arrays.
         for (key, handle) in pending_clip_handles {
             reg.set_clip_handle(key, handle);
+        }
+        for (key, entry) in pending_new {
+            // #863 — accumulate LRU-evicted clip handles from each
+            // insert; the AnimationClipRegistry release happens after
+            // we drop the NifImportRegistry write lock.
+            freed.extend(reg.insert(key, entry));
         }
         let new_entries = reg.len().saturating_sub(cache_size_at_entry);
         (

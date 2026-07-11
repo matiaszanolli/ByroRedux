@@ -331,6 +331,67 @@ fn lru_eviction_drops_clip_handle_for_victim() {
     assert_eq!(reg.clip_handle_for("b.nif"), Some(2));
 }
 
+/// Regression for #1854 — models the FIXED shape of the batched
+/// end-of-load commit in `references/mod.rs`: commit ALL of a batch's
+/// pending clip handles BEFORE running the batch's inserts, so that if
+/// the insert loop's own LRU eviction evicts an EARLIER key from the
+/// SAME batch, that key's clip handle is already resident in
+/// `clip_handles` and the eviction path (which only frees a handle it
+/// finds there) correctly captures and returns it.
+///
+/// Pre-#1854 the real call site committed all inserts first, then all
+/// clip handles — so a key evicted mid-insert-loop had no handle
+/// resident yet at eviction time (nothing to free), and the later
+/// `set_clip_handle` planted a handle for an already-evicted key that
+/// would never be released: a permanent `AnimationClipRegistry` leak
+/// plus a dangling `clip_handles` entry. This test proves the
+/// commit-handles-first ordering avoids both. Doesn't exercise
+/// `load_references` end-to-end (would need >2048 unique synthetic
+/// NIFs through a real BSA/ESM) — it pins the `NifImportRegistry`-level
+/// contract the fix relies on instead.
+#[test]
+fn batched_clip_handle_commit_before_insert_avoids_dangling_handle_on_self_eviction() {
+    let mut reg = registry_with_cap(2);
+
+    // Simulate one batched commit inserting 3 unique keys into a cache
+    // capped at 2 — the third insert evicts the first (oldest tick).
+    let keys = ["a.nif", "b.nif", "c.nif"];
+    let pending_clip_handles: Vec<(String, u32)> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| ((*k).to_string(), i as u32 + 1))
+        .collect();
+
+    // Fixed order: commit the whole batch's clip handles FIRST.
+    for (key, handle) in &pending_clip_handles {
+        reg.set_clip_handle(key.clone(), *handle);
+    }
+    // Then run the batch's inserts — this is where eviction fires.
+    let mut freed = Vec::new();
+    for key in keys {
+        freed.extend(reg.insert(key.into(), Some(dummy_cached())));
+    }
+
+    assert_eq!(reg.evictions, 1, "capacity 2 with 3 inserts evicts once");
+    assert!(
+        !reg.core.cache.contains_key("a.nif"),
+        "a.nif (earliest tick) must have been evicted"
+    );
+    assert_eq!(
+        freed,
+        vec![1],
+        "a.nif's clip handle must be captured as freed by the eviction \
+         that removed it, not left dangling (#1854)"
+    );
+    assert!(
+        reg.clip_handle_for("a.nif").is_none(),
+        "no dangling clip_handles entry must survive for a key evicted \
+         within the same batched commit (#1854)"
+    );
+    assert_eq!(reg.clip_handle_for("b.nif"), Some(2));
+    assert_eq!(reg.clip_handle_for("c.nif"), Some(3));
+}
+
 /// Regression for #863: when no eviction happens (cache below
 /// `max_entries`), `insert` returns an empty Vec — the no-eviction
 /// path stays allocation-free.

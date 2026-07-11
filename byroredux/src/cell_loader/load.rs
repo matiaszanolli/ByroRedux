@@ -354,7 +354,12 @@ pub fn load_cell_with_masters(
     // WATR record table.
     if let Some(water_height) = cell.water_height {
         let mut _blas_dummy: Vec<(u32, u32, u32)> = Vec::new();
-        let _ = water::spawn_water_plane(
+        // #1855 — same SIBLING gap as the exterior route: `spawn_water_plane`
+        // already `log::warn!`s a mesh-upload failure, but without cell
+        // context (it doesn't take a cell identifier). Add the correlation
+        // here so a flooded interior that renders dry is diagnosable from
+        // this cell's own log lines.
+        if water::spawn_water_plane(
             world,
             ctx,
             tex_provider,
@@ -372,7 +377,14 @@ pub fn load_cell_with_masters(
             (0.0, 0.0),
             water::default_interior_half_extent(),
             &mut _blas_dummy,
-        );
+        )
+        .is_none()
+        {
+            log::warn!(
+                "  Cell '{}': water plane spawn failed — no water will render",
+                cell.editor_id
+            );
+        }
     }
 
     // SK-D6-02 / #566 — LGTM lighting-template fallback. Vanilla

@@ -306,7 +306,14 @@ pub fn load_one_exterior_cell(
         None => &mut local_blas,
     };
     if let Some(ref land) = cell.landscape {
-        let _ = terrain::spawn_terrain_mesh(
+        // #1855 — `spawn_terrain_mesh` already `log::warn!`s a mesh-upload
+        // failure with its own (gx,gy) (the only realistic None cause in
+        // production; the other — no GPU allocator — can't happen once
+        // VulkanContext is constructed). This call-site line adds the
+        // "cell had no terrain" correlation the per-cell log block above
+        // otherwise lacks, so a partial-cell-render is diagnosable from
+        // this cell's own log lines without cross-referencing the callee.
+        if terrain::spawn_terrain_mesh(
             world,
             terrain::TerrainSpawnCtx {
                 ctx: &mut *ctx,
@@ -317,7 +324,11 @@ pub fn load_one_exterior_cell(
             gx,
             gy,
             land,
-        );
+        )
+        .is_none()
+        {
+            log::warn!("  Cell ({gx},{gy}): terrain mesh spawn failed — no terrain will render");
+        }
     }
     // Water plane. A cell's explicit XCLW height wins; cells without one
     // inherit the worldspace default (Tamriel sea level Z=0, resolved into
@@ -332,7 +343,12 @@ pub fn load_one_exterior_cell(
         // grid-scale and the Z-up→Y-up flip; see TD3-202 / #1112.
         let origin = cell_grid_to_world_yup(gx, gy);
         let half = water::exterior_half_extent();
-        let _ = water::spawn_water_plane(
+        // #1855 — `spawn_water_plane` already `log::warn!`s a mesh-upload
+        // failure, but without cell coords (it doesn't take gx/gy). This
+        // call-site line adds the cell correlation so a dry cell that
+        // should have had water is diagnosable from this cell's own log
+        // lines.
+        if water::spawn_water_plane(
             world,
             ctx,
             tex_provider,
@@ -342,7 +358,11 @@ pub fn load_one_exterior_cell(
             (origin.x + half, origin.z - half),
             half,
             blas_sink,
-        );
+        )
+        .is_none()
+        {
+            log::warn!("  Cell ({gx},{gy}): water plane spawn failed — no water will render");
+        }
     }
     // Streaming path: submit our own BLAS build now (one mesh, one submit).
     if !local_blas.is_empty() {
