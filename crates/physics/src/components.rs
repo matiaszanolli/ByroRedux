@@ -154,8 +154,13 @@ impl Component for CharacterController {
 /// [`crate::world::PhysicsWorld::remove_ragdoll`].
 #[derive(Debug, Clone)]
 pub struct Ragdoll {
-    /// `(bone entity, rapier body)` for every ragdoll body, in build order.
-    pub bodies: Vec<(EntityId, RigidBodyHandle)>,
+    /// `(bone entity, rapier body, seed-time bone scale)` for every ragdoll
+    /// body, in build order. The third element is a snapshot of the bone's
+    /// `GlobalTransform.scale` at activation (`RagdollBodySpec::scale`) —
+    /// the per-frame writeback must decompose the simulated pose using
+    /// this snapshot, not a fresh live `GlobalTransform` read, or a bone
+    /// rescaled after activation drifts. See #1852.
+    pub bodies: Vec<(EntityId, RigidBodyHandle, f32)>,
     /// Multibody joint handles created for this ragdoll.
     pub joints: Vec<MultibodyJointHandle>,
 }

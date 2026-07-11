@@ -227,6 +227,11 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
                 entity: b.bone,
                 translation,
                 rotation,
+                // #1852 — snapshot the seed-time scale so the writeback
+                // inverse decomposes with the same value this was composed
+                // with, regardless of any later live GlobalTransform.scale
+                // mutation.
+                scale: gt.scale,
                 shape: b.shape.clone(),
                 mass: b.mass,
                 linear_damping: b.linear_damping,
@@ -339,7 +344,7 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
         let Some(template) = tq.get(actor) else {
             continue;
         };
-        for ((bone, handle), tb) in ragdoll.bodies.iter().zip(template.bodies.iter()) {
+        for ((bone, handle, seed_scale), tb) in ragdoll.bodies.iter().zip(template.bodies.iter()) {
             let Some((t, r)) = body_pose(&pw, *handle) else {
                 continue;
             };
@@ -357,8 +362,15 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
                 let bone_rotation = r * tb.local_rotation.inverse();
                 // bone_translation = body_translation
                 //                  - bone_rotation * (local_translation * scale)
+                //
+                // #1852 — decompose with `seed_scale` (the value the seed
+                // in `activate_ragdoll` composed `translation` with), NOT a
+                // fresh `gt.scale` read. If the bone's live scale changed
+                // since activation, using it here would de-compose against
+                // a different scale than the seed used, displacing the
+                // bone by `local_translation * Δscale`.
                 gt.rotation = bone_rotation;
-                gt.translation = t - bone_rotation * (tb.local_translation * gt.scale);
+                gt.translation = t - bone_rotation * (tb.local_translation * *seed_scale);
             }
         }
     }
@@ -535,6 +547,88 @@ mod tests {
             orig.translation
         );
         // Quaternion proximity via |dot| ≈ 1.
+        assert!(
+            gt.rotation.dot(orig.rotation).abs() > 1.0 - 1e-3,
+            "bone rotation must round-trip: {:?} vs {:?}",
+            gt.rotation,
+            orig.rotation
+        );
+    }
+
+    /// #1852 — seed a body with a non-uniform-vs-later `GlobalTransform.scale`
+    /// (2.0 at activation) and a non-zero body-local offset, then MUTATE the
+    /// bone's live scale to a different value (1.0) before running writeback
+    /// with no physics step. Pre-fix the writeback inverse re-read the live
+    /// (now-mutated) `gt.scale`, decomposing against the wrong value and
+    /// displacing the bone by `local_translation * Δscale`. Post-fix the
+    /// snapshotted `RagdollBodySpec::scale` (2.0, taken at activation) is used
+    /// instead, so the bone still round-trips back to its original pose
+    /// despite the live scale having changed underneath it.
+    #[test]
+    fn writeback_uses_seed_time_scale_not_live_scale_after_mutation() {
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<RagdollTemplate>();
+        world.register::<RagdollActive>();
+        world.register::<Ragdoll>();
+        world.insert_resource(PhysicsWorld::new());
+
+        let actor = world.spawn();
+        let bone = world.spawn();
+        let orig = GlobalTransform {
+            translation: Vec3::new(100.0, 200.0, 300.0),
+            rotation: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            scale: 2.0,
+        };
+        world.insert(bone, orig);
+
+        let template = RagdollTemplate {
+            bodies: vec![RagdollTemplateBody {
+                bone,
+                // Non-zero offset — the term the wrong scale would corrupt.
+                local_translation: Vec3::new(5.0, -10.0, 2.0),
+                local_rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_6),
+                shape: CollisionShape::Ball { radius: 5.0 },
+                mass: 4.0,
+                linear_damping: 0.05,
+                angular_damping: 0.05,
+                friction: 0.5,
+                restitution: 0.0,
+            }],
+            constraints: Vec::new(),
+        };
+        world.insert(actor, template);
+
+        activate_ragdoll(&world, actor).expect("activation should succeed");
+
+        // Mutate the bone's live GlobalTransform.scale AFTER activation —
+        // simulates a gameplay system (shrink/enlarge FX) rescaling an
+        // active ragdoll bone mid-sim. The seed already composed the body
+        // pose using scale=2.0; only the snapshot should be used on the way
+        // back, not this new live value.
+        {
+            let mut gtq = world.query_mut::<GlobalTransform>().unwrap();
+            gtq.get_mut(bone).unwrap().scale = 1.0;
+        }
+
+        // No physics step — the body sits at its seeded pose, so the
+        // inverse must recover the ORIGINAL bone pose exactly (modulo float
+        // epsilon), despite the live scale mutation above.
+        ragdoll_writeback_system(&world, 0.0);
+
+        let gt = *world
+            .query::<GlobalTransform>()
+            .unwrap()
+            .get(bone)
+            .unwrap();
+        assert!(
+            (gt.translation - orig.translation).length() < 1e-2,
+            "bone translation must round-trip using the seed-time scale, not \
+             the mutated live scale: {:?} vs {:?} (#1852)",
+            gt.translation,
+            orig.translation
+        );
         assert!(
             gt.rotation.dot(orig.rotation).abs() > 1.0 - 1e-3,
             "bone rotation must round-trip: {:?} vs {:?}",

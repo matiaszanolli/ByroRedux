@@ -40,6 +40,14 @@ pub struct RagdollBodySpec {
     /// World-space seed pose (bone world × body-local offset).
     pub translation: Vec3,
     pub rotation: Quat,
+    /// The bone's `GlobalTransform.scale` at the moment this spec was
+    /// seeded — the *same* value `translation` was composed with
+    /// (`bone_t + bone_r * (local_t * scale)`). The writeback inverse
+    /// (`ragdoll_writeback_system`) must decompose using this exact
+    /// snapshot, not a fresh live read, or a bone whose scale changes
+    /// after activation decomposes against the wrong scale and
+    /// displaces by `local_translation * Δscale`. See #1852.
+    pub scale: f32,
     /// Collider shape in body-local space (Y-up, havok-scaled).
     pub shape: CollisionShape,
     pub mass: f32,
@@ -216,8 +224,8 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
         bodies: spec
             .bodies
             .iter()
-            .map(|b| b.entity)
             .zip(handles)
+            .map(|(b, h)| (b.entity, h, b.scale))
             .collect(),
         joints,
     }
@@ -377,7 +385,7 @@ impl PhysicsWorld {
     /// no-leak discipline so a cell unload mid-ragdoll doesn't strand
     /// bodies in the broad-phase. Safe to call with stale handles.
     pub fn remove_ragdoll(&mut self, ragdoll: &Ragdoll) {
-        for (_, h) in &ragdoll.bodies {
+        for (_, h, _) in &ragdoll.bodies {
             self.remove_body(*h);
         }
     }
@@ -407,6 +415,7 @@ mod tests {
             entity: entity_idx,
             translation: Vec3::new(x, y, 0.0),
             rotation: Quat::IDENTITY,
+            scale: 1.0,
             shape: CollisionShape::Ball { radius: 5.0 },
             mass: 4.0,
             linear_damping: 0.05,

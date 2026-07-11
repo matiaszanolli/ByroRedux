@@ -41,12 +41,17 @@ pub struct ExteriorWorldContext {
     /// Worldspace-default water height for exterior cells with no XCLW.
     /// `Some(0.0)` for an **Oblivion** worldspace carrying a NAM2 default
     /// water form (Tamriel sea level Z=0 — Oblivion WRLD has no DNAM
-    /// height field); `None` otherwise. Resolved once here so
-    /// `load_one_exterior_cell` can fall back to it per-cell. The 98% of
-    /// Oblivion cells without XCLW relied on this default; without it
-    /// every coastal/sea cell rendered dry seabed (#1305 / OBL-D6-NEW-02).
-    /// FO3/FNV/Skyrim+ carry an explicit DNAM default height (not Z=0) and
-    /// are excluded pending DNAM parsing — see `default_water_for_worldspace`.
+    /// height field); for FO3/FNV/Skyrim+/FO4, `Some(height)` from the
+    /// worldspace's parsed DNAM second f32 (`WorldspaceRecord::
+    /// default_water_height`, `crates/plugin/src/esm/cell/wrld.rs`) when
+    /// present; `None` when the worldspace has no default water at all.
+    /// Resolved once here so `load_one_exterior_cell` can fall back to it
+    /// per-cell. The 98% of Oblivion cells without XCLW relied on this
+    /// default; without it every coastal/sea cell rendered dry seabed
+    /// (#1305 / OBL-D6-NEW-02). See `default_water_for_worldspace` for the
+    /// per-game resolution, regression-tested by
+    /// `wrld_dnam_captures_default_water_height` (parser) and
+    /// `non_oblivion_uses_dnam_default_water_height` (consumer).
     pub default_water_height: Option<f32>,
     /// Worldspace-default water TYPE form (NAM2 → WATR), used for the
     /// water plane's appearance when a cell inherits the default height.
@@ -213,7 +218,9 @@ pub fn build_exterior_world_context(
     // Resolve the worldspace-default water once (#1305 / OBL-D6-NEW-02).
     // Oblivion WRLD has no DNAM/height field, so the default height is the
     // global Tamriel sea level (Z=0); a worldspace advertises that it has
-    // default water via its NAM2 `water_form`. Cells without XCLW inherit
+    // default water via its NAM2 `water_form`. FO3/FNV/Skyrim+/FO4 resolve
+    // the height from the worldspace's own parsed DNAM second f32 instead
+    // (see `default_water_for_worldspace`). Cells without XCLW inherit
     // this in `load_one_exterior_cell`.
     let (default_water_height, default_water_type_form) =
         crate::env_translate::default_water_for_worldspace(

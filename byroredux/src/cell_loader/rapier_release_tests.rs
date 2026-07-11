@@ -164,6 +164,7 @@ fn ball_body(entity: byroredux_core::ecs::storage::EntityId, x: f32) -> RagdollB
         entity,
         translation: Vec3::new(x, 0.0, 0.0),
         rotation: Quat::IDENTITY,
+        scale: 1.0,
         shape: CollisionShape::Ball { radius: 5.0 },
         mass: 4.0,
         linear_damping: 0.05,
