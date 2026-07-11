@@ -116,10 +116,10 @@ impl Texture {
         // submit + fence-wait. See #881.
         let mut texture_holder: Option<Self> = None;
         let mut staging_holder: Option<StagingGuard> = None;
-        let mut image_size_holder: vk::DeviceSize = 0;
+        let mut staging_capacity_holder: vk::DeviceSize = 0;
 
         with_one_time_commands(device, queue, command_pool, |cmd| {
-            let (texture, staging, image_size) = Self::record_dds_upload(
+            let (texture, staging, staging_capacity) = Self::record_dds_upload(
                 device,
                 allocator,
                 cmd,
@@ -130,7 +130,7 @@ impl Texture {
             )?;
             texture_holder = Some(texture);
             staging_holder = Some(staging);
-            image_size_holder = image_size;
+            staging_capacity_holder = staging_capacity;
             Ok(())
         })?;
 
@@ -140,14 +140,10 @@ impl Texture {
         // Release staging — back to pool (reuse) or destroy. Safe to
         // do here because the fence wait inside `with_one_time_commands`
         // has already returned, so the GPU is done reading the staging
-        // buffer.
+        // buffer. `record_dds_upload` already resolved this to the
+        // buffer's actual capacity (#1921), not the requested size.
         if let Some(pool) = staging_pool {
-            let capacity = staging
-                .allocation
-                .as_ref()
-                .map(|a| a.size())
-                .unwrap_or(image_size_holder);
-            staging.release_to(pool, capacity);
+            staging.release_to(pool, staging_capacity_holder);
         } else {
             staging.destroy();
         }
@@ -388,6 +384,22 @@ impl Texture {
             meta.mip_count,
         );
 
+        // #1921 — the returned size is for `StagingGuard::release_to`,
+        // which must record the STAGING BUFFER's actual capacity, not
+        // the (possibly smaller) requested `image_size`. `StagingPool::
+        // acquire` is best-fit (capacity >= size), so a larger pooled
+        // buffer can legitimately serve a smaller upload; returning
+        // `image_size` here made every pooled reuse re-record the
+        // buffer under a shrunken capacity, ratcheting the pool's
+        // ledger down on every reuse. Fall back to `image_size` only
+        // for the non-pooled branch above, where the buffer was
+        // created at exactly that size.
+        let staging_capacity = staging
+            .allocation
+            .as_ref()
+            .map(|a| a.size())
+            .unwrap_or(image_size);
+
         Ok((
             Self {
                 image,
@@ -398,7 +410,7 @@ impl Texture {
                 allocator: Some(allocator.clone()),
             },
             staging,
-            image_size,
+            staging_capacity,
         ))
     }
 

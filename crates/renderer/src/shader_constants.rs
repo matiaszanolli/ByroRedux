@@ -93,6 +93,19 @@ mod tests {
             ("WATER_RIVER", format!("#define WATER_RIVER {WATER_RIVER}u")),
             ("WATER_RAPIDS", format!("#define WATER_RAPIDS {WATER_RAPIDS}u")),
             ("WATER_WATERFALL", format!("#define WATER_WATERFALL {WATER_WATERFALL}u")),
+            // #1920 — 10 defines `build.rs` emits that this value-pin had
+            // never covered (found by an audit sweep alongside the
+            // 2-day-old SHADOW_MASK_* pair, which shipped without a pin).
+            ("CLUSTER_NEAR", format!("#define CLUSTER_NEAR {CLUSTER_NEAR:?}")),
+            ("CLUSTER_FAR_FLOOR", format!("#define CLUSTER_FAR_FLOOR {CLUSTER_FAR_FLOOR:?}")),
+            ("CLUSTER_FAR_FALLBACK", format!("#define CLUSTER_FAR_FALLBACK {CLUSTER_FAR_FALLBACK:?}")),
+            ("VERTEX_NORMAL_OFFSET_FLOATS", format!("#define VERTEX_NORMAL_OFFSET_FLOATS {VERTEX_NORMAL_OFFSET_FLOATS}u")),
+            ("VERTEX_UV_OFFSET_FLOATS", format!("#define VERTEX_UV_OFFSET_FLOATS {VERTEX_UV_OFFSET_FLOATS}u")),
+            ("SHADOW_MASK_OPAQUE", format!("#define SHADOW_MASK_OPAQUE {SHADOW_MASK_OPAQUE}u")),
+            ("SHADOW_MASK_GLASS", format!("#define SHADOW_MASK_GLASS {SHADOW_MASK_GLASS}u")),
+            ("GI_HIT_LIGHT_CAP", format!("#define GI_HIT_LIGHT_CAP {GI_HIT_LIGHT_CAP}u")),
+            ("CAUSTIC_FIXED_SCALE", format!("#define CAUSTIC_FIXED_SCALE {CAUSTIC_FIXED_SCALE:?}")),
+            ("ENABLE_LEGACY_WRS", format!("#define ENABLE_LEGACY_WRS {ENABLE_LEGACY_WRS}")),
             // DBG_* bits are pinned below via the shared DBG_BITS catalog
             // (all 13, not the 4 that used to live here) — see #1482.
             ("INSTANCE_FLAG_NON_UNIFORM_SCALE", format!("#define INSTANCE_FLAG_NON_UNIFORM_SCALE {INSTANCE_FLAG_NON_UNIFORM_SCALE}u")),
