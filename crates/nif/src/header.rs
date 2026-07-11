@@ -155,7 +155,7 @@ impl NifHeader {
                 let _process_script = read_short_string(&mut cursor)?;
             }
             let _export_script = read_short_string(&mut cursor)?;
-            if user_version_2 >= 103 {
+            if user_version_2 >= bsver::MAX_FILEPATH {
                 let _max_filepath = read_short_string(&mut cursor)?;
             }
         }

@@ -341,6 +341,10 @@ pub mod bsver {
     pub const SKYRIM_LE: u32 = 83;
     /// Skyrim Special Edition.
     pub const SKYRIM_SE: u32 = 100;
+    /// BSStreamHeader's `Max Filepath` field is present only on content
+    /// with `bsver >= MAX_FILEPATH` (nif.xml `#BS_GTE_103#`). See #1898 /
+    /// NIF-D2-06.
+    pub const MAX_FILEPATH: u32 = 103;
     /// Fallout 4 (also covers 132 / 139 patch BSVERs in shipping
     /// content per the `Fallout4` variant fan-out; this constant is
     /// the lower bound).
