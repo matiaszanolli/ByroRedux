@@ -59,6 +59,34 @@ jobs:
         run: cargo test --workspace
 
   # ──────────────────────────────────────────────────────────────────────────
+  # NIF heap-allocation regression (TD9-001 / #1247 / #1381 / #1763)
+  #
+  # `heap_allocation_bounds` (+ its sibling `heap_allocation_bounds_geometry`,
+  # #1381 / PERF-D2-NEW-03) pin the NIF-PERF-01/02/03 (#832/#833/#831) + #408
+  # allocation-hygiene fixes by parsing synthetic NIFs inside a
+  # `dhat::Profiler` scope and asserting upper bounds on block count + byte
+  # total. Gated on the opt-in `dhat-heap` feature (installs a
+  # `#[global_allocator]`), so the default `cargo test --workspace` job above
+  # never runs them. Runs as its own job — dhat's global-allocator override
+  # must not share a process with the rest of the suite. The two files are
+  # separate test binaries (dhat's profiler is a process-global singleton),
+  # so each `--test` runs as its own process — list both explicitly rather
+  # than a bare `cargo test -p byroredux-nif --features dhat-heap`, which
+  # would also re-run every non-dhat integration test in the crate.
+  # ──────────────────────────────────────────────────────────────────────────
+  nif-heap-allocation-bounds:
+    name: NIF heap-allocation regression (dhat-heap)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test (dhat-heap)
+        run: |
+          cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds
+          cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds_geometry
+
+  # ──────────────────────────────────────────────────────────────────────────
   # Vulkan validation layer headless bench (VKC-006 / #1429)
   #
   # Uses Mesa lavapipe (software Vulkan) so no GPU is required.

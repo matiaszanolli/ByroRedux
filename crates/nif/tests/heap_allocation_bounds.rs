@@ -15,7 +15,9 @@
 //! cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds
 //! ```
 //!
-//! CI should run this alongside the default test job. Failures here
+//! Runs in CI as its own `nif-heap-allocation-bounds` job (`ci.yml`) —
+//! dhat's `#[global_allocator]` override must not share a process with
+//! the default `cargo-test` job's suite. See #1763. Failures here
 //! mean a future block-parser change re-introduced an
 //! `or_insert(name.to_string())`-class pattern (#832), dropped a
 //! `read_pod_vec` for a per-element push loop (#833), discarded an

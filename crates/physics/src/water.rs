@@ -645,8 +645,13 @@ mod tests {
         assert!(contact.material.is_some(), "contact carries the plane material");
     }
 
+    /// A buoyant body settling at equilibrium must fall asleep, and once
+    /// asleep the static-scene fast path (`PhysicsWorld::step` returning 0
+    /// substeps) must re-engage — buoyancy's continuous per-frame force
+    /// application must not keep the body (and thus the whole sim) awake
+    /// forever.
     #[test]
-    fn ZZZ_probe_buoyant_body_sleeps_and_sim_quiesces() {
+    fn buoyant_body_sleeps_so_static_fast_path_re_engages() {
         use crate::{physics_sync_system, RapierHandles};
         use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
         use byroredux_core::ecs::components::water::{WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume};
@@ -676,22 +681,16 @@ mod tests {
         world.insert(body, Transform::from_translation(Vec3::new(0.0, start_y, 0.0)));
 
         // Run long enough to settle.
-        for i in 0..2000 {
+        for _ in 0..2000 {
             physics_sync_system(&world, PHYSICS_DT);
             let (ad, _ak) = world.resource::<PhysicsWorld>().awake_counts();
             if ad == 0 {
-                eprintln!("PROBE: sim quiesced at frame {i} (awake_dyn=0)");
                 break;
-            }
-            if i == 1999 {
-                eprintln!("PROBE: FAILED TO QUIESCE after 2000 frames (awake_dyn={ad})");
             }
         }
         let (ad, _ak) = world.resource::<PhysicsWorld>().awake_counts();
-        eprintln!("PROBE FINAL awake_dyn={ad}");
         // Now confirm the static-scene fast path: further steps return 0.
         let steps = { let mut pw = world.resource_mut::<PhysicsWorld>(); pw.step(PHYSICS_DT) };
-        eprintln!("PROBE: extra step returned {steps} substeps (0 == fast-path engaged)");
         assert_eq!(ad, 0, "buoyant body must sleep at equilibrium so the fast path re-engages");
         assert_eq!(steps, 0, "static-scene fast path must skip stepping once the float sleeps");
     }

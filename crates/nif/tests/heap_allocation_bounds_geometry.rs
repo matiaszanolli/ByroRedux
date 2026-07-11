@@ -22,6 +22,10 @@
 //! ```bash
 //! cargo test -p byroredux-nif --features dhat-heap --test heap_allocation_bounds_geometry
 //! ```
+//!
+//! Runs in CI as part of the `nif-heap-allocation-bounds` job (`ci.yml`),
+//! alongside `heap_allocation_bounds`. See #1763 — pre-fix neither file
+//! ran under CI's default `cargo test --workspace` job at all.
 
 #![cfg(feature = "dhat-heap")]
 
