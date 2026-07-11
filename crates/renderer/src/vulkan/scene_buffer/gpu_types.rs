@@ -260,7 +260,14 @@ pub struct GpuCamera {
     pub dof_params: [f32; 4],
     /// **Camera-relative render origin** (#markarth-precision). xyz = the
     /// world-space origin all GPU clip-space math is performed relative to;
-    /// w = unused. To survive large worldspace offsets (e.g. MarkarthWorld
+    /// w = unused **in this struct**. The same field name is separately
+    /// overloaded in `VolumetricsParams::render_origin` (`volumetrics.rs`),
+    /// where w packs `is_exterior` (read by `volumetrics_inject.comp`) — a
+    /// distinct struct with its own layout, not a shared UBO slot. Don't
+    /// assume `GpuCamera`'s w is free to repurpose without checking that
+    /// sibling struct too (#1928 / REN-D10-01).
+    ///
+    /// To survive large worldspace offsets (e.g. MarkarthWorld
     /// at world X ≈ −176 000, where f32 carries only ~0.015-unit precision),
     /// `view_proj` / `prev_view_proj` / `inv_view_proj` are built with the
     /// camera at `cam − render_origin`, and `GpuInstance.model` translations

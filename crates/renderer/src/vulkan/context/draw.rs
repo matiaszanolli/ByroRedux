@@ -304,8 +304,21 @@ pub struct FrameInputs<'a> {
     /// XCLL FNV+ cubic-fog clip distance. `0.0` (with `fog_power == 0.0`)
     /// falls back to the linear `fog_near..fog_far` ramp. See #865 /
     /// FNV-D3-NEW-06.
+    ///
+    /// **Currently unconsumed** (#1926, #1927 / REN-D8-01, REN-D8-02):
+    /// `composite.frag` parsed and mixed this curve inside the
+    /// aerial-perspective fog fallback, but that branch was gated
+    /// `is_exterior`-only — meaningless for the FNV interiors (Doc
+    /// Mitchell's House, Goodsprings Source Pump) the curve was authored
+    /// for, and it mixed toward sky-haze rather than `fog_color` in any
+    /// case. #1926 removed that dead branch entirely once
+    /// `VOLUMETRIC_OUTPUT_CONSUMED` made it permanently unreachable.
+    /// `fog_clip`/`fog_power` are still parsed from XCLL and uploaded,
+    /// reserved for a future interior-scoped composite branch that mixes
+    /// toward `fog_color` — not resurrected as-is.
     pub fog_clip: f32,
     /// XCLL FNV+ cubic-fog falloff exponent. `0.0` disables the curve.
+    /// See the `fog_clip` doc for current unconsumed status.
     pub fog_power: f32,
     /// Optional UI overlay texture handle.
     pub ui_texture_handle: Option<u32>,

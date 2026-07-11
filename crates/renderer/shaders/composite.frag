@@ -34,8 +34,13 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 fog_color;      // xyz = RGB, w = enabled (1.0 = yes)
     // x = near, y = far, z = XCLL cubic-fog clip distance (0 = no
     // curve), w = XCLL cubic-fog falloff exponent (0 = no curve).
-    // When z > 0 && w > 0, use pow(dist / z, w) instead of the linear
-    // (dist - near) / (far - near) blend. See #865 / FNV-D3-NEW-06.
+    // Formula (currently unconsumed by any shader — see fog_color's
+    // note above and #1927 / REN-D8-02): when z > 0 && w > 0, use
+    // pow(dist / z, w) instead of the linear (dist - near) / (far -
+    // near) blend. See #865 / FNV-D3-NEW-06. The removed consumer was
+    // exterior-gated and mixed toward sky-haze — meaningless for the
+    // FNV interiors this curve targets; a future revival needs its own
+    // interior-scoped branch mixing toward fog_color instead.
     vec4 fog_params;
     vec4 depth_params;   // x = is_exterior (1.0 = sky enabled), y = exposure, z = volumetric_consumed (bool as float), w = unused
     vec4 sky_zenith;     // xyz = zenith color (linear RGB), w = sun_size (cos threshold)
