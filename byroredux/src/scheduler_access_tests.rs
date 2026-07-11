@@ -1,15 +1,16 @@
 //! Static source-assertion tests for scheduler construction correctness
 //! (AUDIT_CONCURRENCY_2026-07-02, #1785 / #1787 / #1788).
 //!
-//! These can't be live-tested: the declarations and construction order live
-//! inline in `App::new`'s scheduler construction, which needs a live window
-//! + Vulkan context to run. Instead each test greps the actual `main.rs`
-//! source for the exact call the fix added or reordered, so a future edit
-//! that drops a declaration back out (while the system body still touches
-//! it) or reverts a call order fails the build instead of silently
-//! regressing the invariant.
+//! These can't be live-tested: the declarations live in `boot::build_scheduler`
+//! (split out of `App::new` by #1858 / TD1-003) and the construction order
+//! lives inline in `App::new` itself (`main.rs`). Instead each test greps
+//! the actual source for the exact call the fix added or reordered, so a
+//! future edit that drops a declaration back out (while the system body
+//! still touches it) or reverts a call order fails the build instead of
+//! silently regressing the invariant.
 
 const MAIN_RS: &str = include_str!("main.rs");
+const BOOT_RS: &str = include_str!("boot.rs");
 
 /// #1785 / CONC-D3-02 — `apply_color_channels` writes all five
 /// `ColorTarget` color-sink storages (Diffuse, Ambient, Specular,
@@ -26,7 +27,7 @@ fn animation_declaration_writes_all_five_color_sinks() {
     ] {
         let needle = format!(".writes::<byroredux_core::ecs::{ty}>()");
         assert!(
-            MAIN_RS.contains(&needle),
+            BOOT_RS.contains(&needle),
             "animation_system declaration is missing `{needle}` — \
              apply_color_channels writes this color sink, see \
              byroredux/src/systems/animation.rs",
@@ -49,7 +50,7 @@ fn physics_sync_declaration_reads_contact_config_and_faller_dump_types() {
         ".reads_resource::<byroredux_core::form_id::FormIdPool>()",
     ] {
         assert!(
-            MAIN_RS.contains(needle),
+            BOOT_RS.contains(needle),
             "physics_sync_system declaration is missing `{needle}` — \
              see crates/physics/src/sync.rs::dump_awake_fallers",
         );
@@ -63,7 +64,7 @@ fn physics_sync_declaration_reads_contact_config_and_faller_dump_types() {
 #[test]
 fn contact_config_read_is_declared_on_both_physics_systems() {
     let needle = ".reads_resource::<byroredux_physics::ContactConfig>()";
-    let count = MAIN_RS.matches(needle).count();
+    let count = BOOT_RS.matches(needle).count();
     assert_eq!(
         count, 2,
         "expected exactly 2 occurrences of `{needle}` (physics_sync_system \
@@ -85,7 +86,7 @@ fn contact_config_read_is_declared_on_both_physics_systems() {
 #[test]
 fn debug_server_start_runs_before_runtime_registries_snapshot() {
     let start_call = "byroredux_debug_server::start(&mut scheduler, debug_port)";
-    let snapshot_call = "Self::install_runtime_registries(&mut world, &scheduler);";
+    let snapshot_call = "boot::install_runtime_registries(&mut world, &scheduler);";
 
     let start_pos = MAIN_RS
         .find(start_call)
