@@ -21,28 +21,40 @@ pub const VERTEX_STRIDE_BYTES: u64 = VERTEX_STRIDE_FLOATS as u64 * 4;
 mod tests {
     use super::*;
 
-    /// Single source of truth for the `DBG_*` debug-viz bit catalog,
-    /// shared by `generated_header_contains_all_defines` (value-pin) and
-    /// `triangle_frag_dbg_bits_not_redeclared` (no-shadow). Adding a bit
-    /// here covers BOTH contracts automatically — the divergence #1482
-    /// fixed (value-pin covered only 4 of 13 bits, so a `build.rs`
-    /// mis-value on the other 9 would ship silently) cannot recur. Keep in
-    /// emit order to match `build.rs`.
-    const DBG_BITS: &[(&str, u32)] = &[
-        ("DBG_BYPASS_POM", DBG_BYPASS_POM),
-        ("DBG_BYPASS_DETAIL", DBG_BYPASS_DETAIL),
-        ("DBG_VIZ_NORMALS", DBG_VIZ_NORMALS),
-        ("DBG_VIZ_TANGENT", DBG_VIZ_TANGENT),
-        ("DBG_BYPASS_NORMAL_MAP", DBG_BYPASS_NORMAL_MAP),
-        ("DBG_RESERVED_20", DBG_RESERVED_20),
-        ("DBG_VIZ_RENDER_LAYER", DBG_VIZ_RENDER_LAYER),
-        ("DBG_VIZ_GLASS_PASSTHRU", DBG_VIZ_GLASS_PASSTHRU),
-        ("DBG_DISABLE_SPECULAR_AA", DBG_DISABLE_SPECULAR_AA),
-        ("DBG_DISABLE_HALF_LAMBERT_FILL", DBG_DISABLE_HALF_LAMBERT_FILL),
-        ("DBG_BYPASS_VERTEX_COLOR", DBG_BYPASS_VERTEX_COLOR),
-        ("DBG_DISABLE_AO", DBG_DISABLE_AO),
-        ("DBG_LEGACY_LIGHT_ATTEN", DBG_LEGACY_LIGHT_ATTEN),
-    ];
+    // #1860 — `DBG_BITS` moved to `shader_constants_data.rs` (shared with
+    // `build.rs`'s header emit, see that file's doc comment) so it's a
+    // single source of truth for the emit, the value-pin below, the
+    // no-redeclare guard (`triangle_frag_dbg_bits_not_redeclared`), and
+    // the count-parity test right below. `use super::*` (top of this
+    // module) brings it into scope from the `include!`d data file.
+
+    /// #1860 — pins that `DBG_BITS` cannot silently drift behind a new
+    /// `pub const DBG_*` again: every constant declared in
+    /// `shader_constants_data.rs` must have a matching catalog entry.
+    /// Counts `pub const DBG_` occurrences in the data file's source text
+    /// rather than re-declaring the list, so this test fails the moment a
+    /// new DBG_* constant is added without a catalog entry — the exact
+    /// gap #1482 fixed once and #1860 found had regrown to 5 constants.
+    #[test]
+    fn dbg_bits_catalog_covers_every_dbg_constant() {
+        let data_src = include_str!("shader_constants_data.rs");
+        // Exclude `DBG_BITS` itself — it's the catalog, typed
+        // `&[(&str, u32)]`, not one of the `u32` bit constants it lists.
+        let declared = data_src
+            .lines()
+            .filter(|l| l.trim_start().starts_with("pub const DBG_"))
+            .filter(|l| !l.trim_start().starts_with("pub const DBG_BITS"))
+            .count();
+        assert_eq!(
+            DBG_BITS.len(),
+            declared,
+            "DBG_BITS has {} entries but shader_constants_data.rs declares {} \
+             `pub const DBG_*` constants — a new DBG_* constant was added \
+             without a matching DBG_BITS catalog entry",
+            DBG_BITS.len(),
+            declared,
+        );
+    }
 
     #[test]
     fn max_bones_per_mesh_matches_core() {
@@ -107,7 +119,8 @@ mod tests {
             ("CAUSTIC_FIXED_SCALE", format!("#define CAUSTIC_FIXED_SCALE {CAUSTIC_FIXED_SCALE:?}")),
             ("ENABLE_LEGACY_WRS", format!("#define ENABLE_LEGACY_WRS {ENABLE_LEGACY_WRS}")),
             // DBG_* bits are pinned below via the shared DBG_BITS catalog
-            // (all 13, not the 4 that used to live here) — see #1482.
+            // (every constant, count-checked by
+            // dbg_bits_catalog_covers_every_dbg_constant) — see #1482 / #1860.
             ("INSTANCE_FLAG_NON_UNIFORM_SCALE", format!("#define INSTANCE_FLAG_NON_UNIFORM_SCALE {INSTANCE_FLAG_NON_UNIFORM_SCALE}u")),
             ("INSTANCE_FLAG_ALPHA_BLEND", format!("#define INSTANCE_FLAG_ALPHA_BLEND {INSTANCE_FLAG_ALPHA_BLEND}u")),
             ("INSTANCE_FLAG_CAUSTIC_SOURCE", format!("#define INSTANCE_FLAG_CAUSTIC_SOURCE {INSTANCE_FLAG_CAUSTIC_SOURCE}u")),
@@ -132,8 +145,8 @@ mod tests {
                 "shader_constants.glsl missing or wrong value for {name}: expected `{expected}`",
             );
         }
-        // All 13 DBG_* bits, driven from the shared catalog so this
-        // value-pin can never again cover a subset (#1482).
+        // Every DBG_* bit, driven from the shared catalog so this
+        // value-pin can never again cover a subset (#1482 / #1860).
         for (name, value) in DBG_BITS {
             let expected = format!("#define {name} {value}u");
             assert!(

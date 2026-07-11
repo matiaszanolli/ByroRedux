@@ -651,19 +651,27 @@ where
         // create/destroy for early-init paths that don't yet have a
         // persistent fence.
         let fence_guard = reusable_fence.map(|m| m.lock().expect("one-time fence lock poisoned"));
+        // #1861 — every fallible call from here on must free `cmd` (already
+        // past `end_command_buffer`, so no re-ending needed — just
+        // `free_command_buffers`) and destroy the fence *if we created it*
+        // before propagating, or both are leaked on an already-failing GPU
+        // call (device-loss/OOM). The reusable-fence path (`owned == false`)
+        // never destroys — that fence belongs to the caller.
         let (fence, owned) = match fence_guard.as_ref() {
             Some(guard) => {
-                device
-                    .reset_fences(&[**guard])
-                    .context("reset reusable one-time fence")?;
+                if let Err(e) = device.reset_fences(&[**guard]) {
+                    device.free_command_buffers(pool, &[cmd]);
+                    return Err(e).context("reset reusable one-time fence");
+                }
                 (**guard, false)
             }
-            None => {
-                let f = device
-                    .create_fence(&vk::FenceCreateInfo::default(), None)
-                    .context("create one-time fence")?;
-                (f, true)
-            }
+            None => match device.create_fence(&vk::FenceCreateInfo::default(), None) {
+                Ok(f) => (f, true),
+                Err(e) => {
+                    device.free_command_buffers(pool, &[cmd]);
+                    return Err(e).context("create one-time fence");
+                }
+            },
         };
 
         // VUID-vkQueueSubmit-queue-00893 requires external synchronisation
@@ -678,15 +686,26 @@ where
         // CONC-D2-NEW-01 (audit 2026-05-16). The reusable-`fence_guard`
         // (below) deliberately stays held across the wait — the fence must
         // not be reset/reused by another caller mid-wait.
-        {
+        let submit_result = {
             let q = queue.lock().expect("graphics queue lock poisoned");
-            device
-                .queue_submit(*q, &[submit_info], fence)
-                .context("submit one-time commands")?;
+            device.queue_submit(*q, &[submit_info], fence)
+        };
+        if let Err(e) = submit_result {
+            if owned {
+                device.destroy_fence(fence, None);
+            }
+            drop(fence_guard);
+            device.free_command_buffers(pool, &[cmd]);
+            return Err(e).context("submit one-time commands");
         }
-        device
-            .wait_for_fences(&[fence], true, u64::MAX)
-            .context("wait for one-time commands")?;
+        if let Err(e) = device.wait_for_fences(&[fence], true, u64::MAX) {
+            if owned {
+                device.destroy_fence(fence, None);
+            }
+            drop(fence_guard);
+            device.free_command_buffers(pool, &[cmd]);
+            return Err(e).context("wait for one-time commands");
+        }
         if owned {
             device.destroy_fence(fence, None);
         }
@@ -756,5 +775,70 @@ mod one_time_lock_scope_tests {
              — no scope close found between the submit and the wait, so the \
              Mutex is still held across the GPU wait. (#1713)",
         );
+    }
+
+    /// #1861 — every fallible call in `with_one_time_commands_inner` after
+    /// the command buffer is allocated must free it before propagating an
+    /// error, or a failing `create_fence` / `reset_fences` / `queue_submit`
+    /// / `wait_for_fences` leaks the command buffer (and, when we own it,
+    /// the fence). Pre-fix only the closure-failure branch and the
+    /// success tail called `free_command_buffers`; the four later fallible
+    /// calls propagated via `?` straight past it.
+    ///
+    /// Static source check (no GPU device under `cargo test`), same seam as
+    /// `queue_guard_released_before_one_time_fence_wait` above. Counts
+    /// `free_command_buffers(pool, &[cmd])` call sites in the function
+    /// body: 1 (closure-failure) + 4 (the four post-allocation fallible
+    /// calls) + 1 (success tail) = 6.
+    #[test]
+    fn one_time_commands_free_cmd_buffer_on_every_error_path() {
+        let src = include_str!("texture.rs");
+        let start = src
+            .find("fn with_one_time_commands_inner")
+            .expect("with_one_time_commands_inner must exist");
+        let end = start
+            + src[start..]
+                .find("fn generate_checkerboard")
+                .expect("generate_checkerboard follows with_one_time_commands_inner");
+        let body = &src[start..end];
+
+        let free_count = body.matches("free_command_buffers(pool, &[cmd])").count();
+        assert_eq!(
+            free_count, 6,
+            "expected 6 free_command_buffers(pool, &[cmd]) call sites in \
+             with_one_time_commands_inner (closure-failure + create_fence + \
+             reset_fences + queue_submit + wait_for_fences error arms + the \
+             success tail) — found {free_count}. A new fallible call was \
+             likely added without a matching cleanup arm (#1861).",
+        );
+
+        // Every one of the four post-allocation fallible calls must be
+        // followed by an explicit error arm (not a bare `?`) before its
+        // `.context(...)` — pins that none of them regress back to the
+        // pre-#1861 `?`-propagates-straight-through shape.
+        for context_needle in [
+            "create one-time fence",
+            "reset reusable one-time fence",
+            "submit one-time commands",
+            "wait for one-time commands",
+        ] {
+            let pos = body
+                .find(context_needle)
+                .unwrap_or_else(|| panic!("{context_needle} context string must still exist"));
+            // The nearest `free_command_buffers` before this context string
+            // must be closer than the nearest preceding `?` that isn't part
+            // of an already-handled arm — approximated here by requiring a
+            // `free_command_buffers` call within the 400 bytes preceding
+            // the context string, which comfortably covers each arm's
+            // `if let Err(e) = ... { destroy_fence?; drop(...)?; free_command_buffers(...); return ... }`
+            // shape without reaching into a neighbouring arm.
+            let window_start = pos.saturating_sub(400);
+            let window = &body[window_start..pos];
+            assert!(
+                window.contains("free_command_buffers(pool, &[cmd])"),
+                "{context_needle}: expected a free_command_buffers(pool, &[cmd]) \
+                 call within the preceding error-handling arm (#1861)",
+            );
+        }
     }
 }

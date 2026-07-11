@@ -292,56 +292,14 @@ fn main() {
         "// Debug-viz bit flags (set via console for renderer bisects)."
     )
     .unwrap();
-    writeln!(out, "#define DBG_BYPASS_POM {DBG_BYPASS_POM}u").unwrap();
-    writeln!(out, "#define DBG_BYPASS_DETAIL {DBG_BYPASS_DETAIL}u").unwrap();
-    writeln!(out, "#define DBG_VIZ_NORMALS {DBG_VIZ_NORMALS}u").unwrap();
-    writeln!(out, "#define DBG_VIZ_TANGENT {DBG_VIZ_TANGENT}u").unwrap();
-    writeln!(
-        out,
-        "#define DBG_BYPASS_NORMAL_MAP {DBG_BYPASS_NORMAL_MAP}u"
-    )
-    .unwrap();
-    writeln!(out, "#define DBG_RESERVED_20 {DBG_RESERVED_20}u").unwrap();
-    writeln!(out, "#define DBG_VIZ_RENDER_LAYER {DBG_VIZ_RENDER_LAYER}u").unwrap();
-    writeln!(
-        out,
-        "#define DBG_VIZ_GLASS_PASSTHRU {DBG_VIZ_GLASS_PASSTHRU}u"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "#define DBG_DISABLE_SPECULAR_AA {DBG_DISABLE_SPECULAR_AA}u"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "#define DBG_DISABLE_HALF_LAMBERT_FILL {DBG_DISABLE_HALF_LAMBERT_FILL}u"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "#define DBG_BYPASS_VERTEX_COLOR {DBG_BYPASS_VERTEX_COLOR}u"
-    )
-    .unwrap();
-    writeln!(out, "#define DBG_DISABLE_AO {DBG_DISABLE_AO}u").unwrap();
-    writeln!(
-        out,
-        "#define DBG_LEGACY_LIGHT_ATTEN {DBG_LEGACY_LIGHT_ATTEN}u"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "#define DBG_DISABLE_MULTISCATTER {DBG_DISABLE_MULTISCATTER}u"
-    )
-    .unwrap();
-    writeln!(out, "#define DBG_DISABLE_ATROUS {DBG_DISABLE_ATROUS}u").unwrap();
-    writeln!(out, "#define DBG_DISABLE_RESTIR {DBG_DISABLE_RESTIR}u").unwrap();
-    writeln!(
-        out,
-        "#define DBG_DISABLE_SPATIAL {DBG_DISABLE_SPATIAL}u"
-    )
-    .unwrap();
-    writeln!(out, "#define DBG_VIZ_MOTION {DBG_VIZ_MOTION}u").unwrap();
+    // #1860 — emit driven from the shared DBG_BITS catalog (defined
+    // alongside the constants above) instead of one hand-written
+    // `writeln!` per bit, so a newly-added DBG_* constant can no longer
+    // ship its header emit without also being covered by the
+    // value-pin / no-redeclare / count-parity tests in shader_constants.rs.
+    for (name, value) in DBG_BITS {
+        writeln!(out, "#define {name} {value}u").unwrap();
+    }
     writeln!(out).unwrap();
 
     writeln!(

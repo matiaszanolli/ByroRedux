@@ -404,6 +404,40 @@ pub const DBG_DISABLE_SPATIAL: u32 = 0x10000;
 /// on normal rendering.
 pub const DBG_VIZ_MOTION: u32 = 0x20000;
 
+/// Single source of truth for every `DBG_*` debug-viz bit, in emit order.
+/// Both `build.rs` (GLSL header emit) and `shader_constants.rs`'s test
+/// module (`generated_header_contains_all_defines` value-pin,
+/// `triangle_frag_dbg_bits_not_redeclared` no-shadow guard, and
+/// `dbg_bits_catalog_covers_every_dbg_constant`) drive off this single list,
+/// so a new `DBG_*` constant can no longer land covered by only one (or
+/// zero) of those three contracts. Pre-#1860 `build.rs` hand-emitted each
+/// `DBG_*` `writeln!` separately and this catalog (then test-only, living in
+/// `shader_constants.rs`) had drifted to 13 of 18 constants — the 5 newest
+/// bits (`DBG_DISABLE_MULTISCATTER`/`ATROUS`/`RESTIR`/`SPATIAL`,
+/// `DBG_VIZ_MOTION`) bypassed both the value-pin and the no-redeclare guard
+/// silently. See #1482 (original catalog fix) / #1860 (this fix, moving the
+/// catalog here so `build.rs` can drive its emit from it too).
+pub const DBG_BITS: &[(&str, u32)] = &[
+    ("DBG_BYPASS_POM", DBG_BYPASS_POM),
+    ("DBG_BYPASS_DETAIL", DBG_BYPASS_DETAIL),
+    ("DBG_VIZ_NORMALS", DBG_VIZ_NORMALS),
+    ("DBG_VIZ_TANGENT", DBG_VIZ_TANGENT),
+    ("DBG_BYPASS_NORMAL_MAP", DBG_BYPASS_NORMAL_MAP),
+    ("DBG_RESERVED_20", DBG_RESERVED_20),
+    ("DBG_VIZ_RENDER_LAYER", DBG_VIZ_RENDER_LAYER),
+    ("DBG_VIZ_GLASS_PASSTHRU", DBG_VIZ_GLASS_PASSTHRU),
+    ("DBG_DISABLE_SPECULAR_AA", DBG_DISABLE_SPECULAR_AA),
+    ("DBG_DISABLE_HALF_LAMBERT_FILL", DBG_DISABLE_HALF_LAMBERT_FILL),
+    ("DBG_BYPASS_VERTEX_COLOR", DBG_BYPASS_VERTEX_COLOR),
+    ("DBG_DISABLE_AO", DBG_DISABLE_AO),
+    ("DBG_LEGACY_LIGHT_ATTEN", DBG_LEGACY_LIGHT_ATTEN),
+    ("DBG_DISABLE_MULTISCATTER", DBG_DISABLE_MULTISCATTER),
+    ("DBG_DISABLE_ATROUS", DBG_DISABLE_ATROUS),
+    ("DBG_DISABLE_RESTIR", DBG_DISABLE_RESTIR),
+    ("DBG_DISABLE_SPATIAL", DBG_DISABLE_SPATIAL),
+    ("DBG_VIZ_MOTION", DBG_VIZ_MOTION),
+];
+
 /// #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot WRS
 /// reservoir arrays (`resLight[16]` / `resWSel[16]`) that `DBG_DISABLE_RESTIR`
 /// A/Bs against. `DBG_DISABLE_RESTIR` is a RUNTIME bit read from a uniform, so
