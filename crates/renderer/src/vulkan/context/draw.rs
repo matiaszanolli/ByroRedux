@@ -54,6 +54,60 @@ fn halton(mut index: u32, base: u32) -> f32 {
     result
 }
 
+/// TAA sub-pixel jitter via Halton(2,3) sequence, in NDC. Each frame shifts
+/// the projection by a different sub-pixel offset so temporal blending
+/// reconstructs a super-sampled result; the vertex shader applies it AFTER
+/// motion-vector computation so reprojection stays jitter-free.
+///
+/// Period 16 (#1093 / REN-D11-002): Halton(2) natural period is 2, Halton(3)
+/// natural period is 3, LCM = 6. Using 16 (nearest power-of-2 ≥ 6) avoids the
+/// asymmetric Y-coverage gap that `% 8` caused.
+///
+/// Returns `(0.0, 0.0)` (no jitter) whenever `taa_present` is false OR
+/// `taa_failed` is true (#1932 / TAA-D13-01) — a permanent TAA failure must
+/// fall back to a stable pinhole image, not a jittered-but-unresolved one.
+fn taa_jitter(taa_present: bool, taa_failed: bool, frame_counter: u32, width: f32, height: f32) -> (f32, f32) {
+    if taa_present && !taa_failed {
+        let idx = (frame_counter % 16) + 1; // 1-indexed
+        let hx = halton(idx, 2);
+        let hy = halton(idx, 3);
+        // Map [0,1] → [-0.5, 0.5] pixels, then to NDC.
+        ((hx - 0.5) * 2.0 / width, (hy - 0.5) * 2.0 / height)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+#[cfg(test)]
+mod taa_jitter_tests {
+    use super::taa_jitter;
+
+    /// No TAA pipeline at all (disabled build / init failure before the
+    /// `Option` is ever populated) — always the stable pinhole offset.
+    #[test]
+    fn no_taa_present_is_unjittered() {
+        assert_eq!(taa_jitter(false, false, 7, 1920.0, 1080.0), (0.0, 0.0));
+    }
+
+    /// #1932 / TAA-D13-01 — the regression this issue is about: once
+    /// `taa_failed` latches, jitter must stop even though `taa.is_some()`
+    /// stays true (the `Option` isn't torn down on failure, only bypassed).
+    /// Pre-fix this returned a nonzero offset, matching the un-failed case.
+    #[test]
+    fn taa_failed_is_unjittered_even_with_pipeline_present() {
+        assert_eq!(taa_jitter(true, true, 7, 1920.0, 1080.0), (0.0, 0.0));
+    }
+
+    /// The normal case still jitters, and does so identically regardless
+    /// of the (irrelevant when un-failed) taa_failed plumbing path taken
+    /// to reach here — i.e. this isn't a trivial "always zero" fix.
+    #[test]
+    fn taa_present_and_not_failed_jitters_nonzero() {
+        let (jx, jy) = taa_jitter(true, false, 7, 1920.0, 1080.0);
+        assert!(jx != 0.0 || jy != 0.0, "expected a nonzero Halton jitter offset");
+    }
+}
+
 /// Minimum focal distance for the DOF path. A zero or near-zero `focus_dist`
 /// collapses the look-at eye→center vector onto the (perpendicular) aperture
 /// offset, producing a sideways view basis — or NaN when the aperture disk
@@ -2500,17 +2554,19 @@ impl VulkanContext {
         // Halton(3) natural period is 3, LCM = 6. Using 16 (nearest power-
         // of-2 ≥ 6) avoids the asymmetric Y-coverage gap that % 8 caused
         // (the 9th Halton(3) sample ≈ 0.889 was never reached with % 8).
-        let (jx, jy) = if self.taa.is_some() {
-            let idx = (self.frame_counter % 16) + 1; // 1-indexed
-            let hx = halton(idx, 2);
-            let hy = halton(idx, 3);
-            // Map [0,1] → [-0.5, 0.5] pixels, then to NDC.
-            let w = self.swapchain_state.extent.width as f32;
-            let h = self.swapchain_state.extent.height as f32;
-            ((hx - 0.5) * 2.0 / w, (hy - 0.5) * 2.0 / h)
-        } else {
-            (0.0, 0.0)
-        };
+        // #1932 / TAA-D13-01 — gate on `!self.taa_failed` too, matching the
+        // dispatch gate above and `upload_params`. Without it, a permanent
+        // TAA failure would leave composite reading raw un-resolved HDR
+        // (per #479's fallback) while geometry kept rendering with a
+        // per-frame Halton sub-pixel offset — full-frame shimmer instead of
+        // a stable pinhole fallback image.
+        let (jx, jy) = taa_jitter(
+            self.taa.is_some(),
+            self.taa_failed,
+            self.frame_counter,
+            self.swapchain_state.extent.width as f32,
+            self.swapchain_state.extent.height as f32,
+        );
 
         // Camera-relative render origin (#markarth-precision). MUST use the
         // shared `RENDER_ORIGIN_SNAP` (#1494) and the same un-jittered

@@ -46,6 +46,16 @@ All SPIR-V binaries are pre-compiled and embedded via `include_bytes!` in
 and `compute.rs`. **All GLSL edits require a recompile** (see
 [`crates/renderer/shaders/`](../../crates/renderer/shaders/) for the build script).
 
+Every committed `.spv` targets **SPIR-V 1.0** — the version `glslangValidator -V`
+emits by default with no `--target-env` flag (CLAUDE.md's documented recompile
+command). Don't add `--target-env` to bump an individual shader to a newer
+SPIR-V version; a mismatched version stamp across the shader set breaks the
+"the documented command reproduces every binary" invariant (#1929 / REN-D11-01
+— `triangle.vert.spv` had drifted to 1.5). `triangle.frag.spv`'s ray queries
+running under a 1.0 stamp is tolerated by the current driver; bumping *that*
+shader's version to formally match its capabilities is a separate, deferred
+question needing RenderDoc/driver verification, not a "just recompile" fix.
+
 ---
 
 ## Per-Frame Submission Order

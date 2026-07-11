@@ -207,6 +207,34 @@ pub fn reflect_output_locations(spirv_bytes: &[u8]) -> Result<Vec<u32>> {
     Ok(out)
 }
 
+/// Read the (major, minor) SPIR-V version stamp from a module's header.
+///
+/// Read directly from the committed SPIR-V header word — no recompile, no
+/// `glslangValidator`. Every shader in this engine is compiled with plain
+/// `glslangValidator -V` (no `--target-env`), which stamps SPIR-V 1.0; a
+/// stray `--target-env` flag bumps the emitted version (e.g. `vulkan1.2` →
+/// 1.5) without changing anything a byte-diff of I/O semantics would catch.
+/// See #1929 / REN-D11-01.
+pub fn spirv_version(spirv_bytes: &[u8]) -> Result<(u8, u8)> {
+    if !spirv_bytes.len().is_multiple_of(4) {
+        bail!(
+            "SPIR-V byte length {} is not a multiple of 4",
+            spirv_bytes.len()
+        );
+    }
+    let mut loader = Loader::new();
+    binary::parse_bytes(spirv_bytes, &mut loader)
+        .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
+    let header = loader
+        .module()
+        .header
+        .ok_or_else(|| anyhow!("SPIR-V module has no header"))?;
+    // Version word layout: 0x00MMmmpp (MM = major, mm = minor, pp = 0).
+    let major = ((header.version >> 16) & 0xff) as u8;
+    let minor = ((header.version >> 8) & 0xff) as u8;
+    Ok((major, minor))
+}
+
 /// Compute the std140 byte size of a named uniform block from a SPIR-V module.
 ///
 /// Returns `Ok(None)` if the module declares no `OpTypeStruct` named `name`.
@@ -614,6 +642,100 @@ mod tests {
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). See #1917."
         );
+    }
+
+    /// Regression: #1929 / REN-D11-01. `triangle.vert.spv` (and, discovered
+    /// by the same sweep, `taa.comp.spv`) had drifted to SPIR-V 1.5 while
+    /// every other committed shader is 1.0 — evidence someone recompiled
+    /// with a stray `--target-env` flag instead of the documented plain
+    /// `glslangValidator -V`. That breaks the "the documented command
+    /// reproduces every binary" invariant even though the drift is
+    /// functionally silent (I/O semantics unaffected). Pins every shipped
+    /// `.spv` to (1, 0) so a future stray `--target-env` recompile fails
+    /// `cargo test` instead of shipping a quietly non-uniform binary.
+    #[test]
+    fn every_committed_spv_is_spirv_1_0() {
+        let shaders: &[(&str, &[u8])] = &[
+            (
+                "bloom_downsample.comp",
+                include_bytes!("../../shaders/bloom_downsample.comp.spv"),
+            ),
+            (
+                "bloom_upsample.comp",
+                include_bytes!("../../shaders/bloom_upsample.comp.spv"),
+            ),
+            (
+                "caustic_splat.comp",
+                include_bytes!("../../shaders/caustic_splat.comp.spv"),
+            ),
+            (
+                "cluster_cull.comp",
+                include_bytes!("../../shaders/cluster_cull.comp.spv"),
+            ),
+            (
+                "composite.frag",
+                include_bytes!("../../shaders/composite.frag.spv"),
+            ),
+            (
+                "composite.vert",
+                include_bytes!("../../shaders/composite.vert.spv"),
+            ),
+            (
+                "skin_palette.comp",
+                include_bytes!("../../shaders/skin_palette.comp.spv"),
+            ),
+            (
+                "skin_vertices.comp",
+                include_bytes!("../../shaders/skin_vertices.comp.spv"),
+            ),
+            ("ssao.comp", include_bytes!("../../shaders/ssao.comp.spv")),
+            (
+                "svgf_atrous.comp",
+                include_bytes!("../../shaders/svgf_atrous.comp.spv"),
+            ),
+            (
+                "svgf_temporal.comp",
+                include_bytes!("../../shaders/svgf_temporal.comp.spv"),
+            ),
+            ("taa.comp", include_bytes!("../../shaders/taa.comp.spv")),
+            (
+                "triangle.frag",
+                include_bytes!("../../shaders/triangle.frag.spv"),
+            ),
+            (
+                "triangle.vert",
+                include_bytes!("../../shaders/triangle.vert.spv"),
+            ),
+            ("ui.frag", include_bytes!("../../shaders/ui.frag.spv")),
+            ("ui.vert", include_bytes!("../../shaders/ui.vert.spv")),
+            (
+                "volumetrics_inject.comp",
+                include_bytes!("../../shaders/volumetrics_inject.comp.spv"),
+            ),
+            (
+                "volumetrics_integrate.comp",
+                include_bytes!("../../shaders/volumetrics_integrate.comp.spv"),
+            ),
+            (
+                "water.frag",
+                include_bytes!("../../shaders/water.frag.spv"),
+            ),
+            (
+                "water.vert",
+                include_bytes!("../../shaders/water.vert.spv"),
+            ),
+        ];
+        for (name, spv) in shaders {
+            let (major, minor) =
+                spirv_version(spv).unwrap_or_else(|e| panic!("{name}: reflect version failed: {e}"));
+            assert_eq!(
+                (major, minor),
+                (1, 0),
+                "{name}.spv is SPIR-V {major}.{minor}, expected 1.0 — recompile with plain \
+                 `glslangValidator -V {name} -o {name}.spv` (no `--target-env`) from \
+                 crates/renderer/shaders. See #1929 / REN-D11-01."
+            );
+        }
     }
 
     #[test]
