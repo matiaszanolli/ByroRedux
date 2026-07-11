@@ -27,6 +27,10 @@ layout(set = 0, binding = 0) uniform sampler2D hdrTex;       // direct light
 layout(set = 0, binding = 1) uniform sampler2D indirectTex;  // demodulated indirect
 layout(set = 0, binding = 2) uniform sampler2D albedoTex;    // surface albedo (multiplies demodulated indirect)
 layout(set = 0, binding = 3) uniform CompositeParams {
+    // Reserved-and-unconsumed (#1926 / REN-D8-01): the aerial-perspective
+    // fallback that read these two fields was removed once
+    // VOLUMETRIC_OUTPUT_CONSUMED made it permanently dead. Kept in the
+    // UBO for the future REGN-driven volumetric density tint (M55 Phase 6).
     vec4 fog_color;      // xyz = RGB, w = enabled (1.0 = yes)
     // x = near, y = far, z = XCLL cubic-fog clip distance (0 = no
     // curve), w = XCLL cubic-fog falloff exponent (0 = no curve).
@@ -473,80 +477,18 @@ void main() {
         // on the post-tone-map side.
         vec3 tonemapped = aces(combined * exposure);
 
-        // Aerial-perspective fog — exterior cells only (Markarth probe
-        // 2026-05-10). Pre-fix the geometry branch shipped with NO
-        // distance fade because M55 Phase 3 (2026-05-09) removed the
-        // legacy display-space fog mix on the assumption that the
-        // volumetric pipeline at line 368 above would take over. That
-        // pipeline's per-froxel single-shadow-ray approach produced
-        // ~8-pixel vertical bands on bright surfaces and was gated
-        // OFF (`vol.rgb * 0.0`) pending M-LIGHT v2. Net effect from
-        // 2026-05-09 to 2026-05-10: no atmospheric perspective on any
-        // exterior — distant cliffs read as harsh black silhouettes
-        // against the bright sky (Markarth screenshot, looking up
-        // between the canyon walls). Restoring the legacy mix here
-        // covers the gap until M-LIGHT v2 lands; when it does, drop
-        // this branch in lockstep with flipping the `* 0.0` on
-        // `vol.rgb` and flipping `VOLUMETRIC_OUTPUT_CONSUMED = true`
-        // in `draw.rs::draw_frame`.
-        //
-        // The mix targets the SKY COLOUR along the view direction (not
-        // the flat `params.fog_color`), so the haze pulls each pixel
-        // toward whatever the sky behind it would have painted — real
-        // aerial perspective. `fog_color` stays in the UBO for the
-        // future REGN-driven volumetric density tint (M55 Phase 6).
-        //
-        // Display-space mix (post-tonemap) per #784: HDR-linear fog
-        // values authored in raw monitor space (`feedback_color_space.md`)
-        // get perceptually amplified through ACES if mixed pre-tonemap,
-        // producing a yellow / sepia distance wash on warm-fog cells.
-        // Display-space mix lands closer to the perceptual intent of
-        // the authored values.
-        // #1013 — skip the aerial-perspective fallback when volumetric
-        // consumption is active, otherwise both fog mechanisms stack and
-        // double-darken distant geometry. The volumetric path attenuates
-        // via `vol.a` above and is the canonical exterior fog source
-        // once `VOLUMETRIC_OUTPUT_CONSUMED = true`.
-        if (params.depth_params.x > 0.5 && depth < 0.9999 && params.depth_params.z < 0.5) {
-            float fog_near = params.fog_params.x;
-            float fog_far  = params.fog_params.y;
-            float fog_clip  = params.fog_params.z;
-            float fog_power = params.fog_params.w;
-            if (fog_far > fog_near) {
-                // worldDist was computed above in the volumetric
-                // branch but only inside that `if (depth < 0.9999)`
-                // scope — recompute here so the geometry path
-                // doesn't depend on volumetric branch ordering.
-                vec2 ndc_xy_fog = fragUV * 2.0 - 1.0;
-                vec4 clip_fog = vec4(ndc_xy_fog, depth, 1.0);
-                vec4 world_fog = params.inv_view_proj * clip_fog;
-                vec3 worldPos_fog = world_fog.xyz / world_fog.w;
-                float worldDist = length(worldPos_fog - params.camera_pos.xyz);
-                // #865 / FNV-D3-NEW-06 — when XCLL authors a cubic-fog
-                // curve (FNV+ 40-byte tail), use `pow(dist / clip, power)`
-                // instead of the linear ramp. Vanilla FNV interiors
-                // (Doc Mitchell's House, Goodsprings Source Pump)
-                // author both fields to shape close-camera fog more
-                // gently than the linear blend allows. Falls through
-                // to the linear ramp when either field is 0 (un-authored).
-                float fog_t;
-                if (fog_clip > 0.0 && fog_power > 0.0) {
-                    fog_t = clamp(pow(worldDist / fog_clip, fog_power), 0.0, 1.0);
-                } else {
-                    fog_t = clamp(
-                        (worldDist - fog_near) / (fog_far - fog_near),
-                        0.0, 1.0
-                    );
-                }
-                // Sky colour along the view direction — same shader
-                // function the sky branch uses, so the haze matches
-                // what the geometry occludes.
-                vec3 viewDir = screen_to_world_dir(fragUV);
-                vec3 skyHaze = compute_sky(viewDir);
-                vec3 tonemappedHaze = aces(skyHaze * exposure);
-                tonemapped = mix(tonemapped, tonemappedHaze, fog_t);
-            }
-        }
+        // Aerial-perspective fog fallback (Markarth probe 2026-05-10)
+        // stood in for the volumetric froxel pipeline while M-LIGHT v2
+        // was gated off. `VOLUMETRIC_OUTPUT_CONSUMED` (volumetrics.rs)
+        // flipped to `true` once M-LIGHT v2 landed — `depth_params.z` is
+        // now permanently pinned to 1.0 (draw.rs), so this fallback's
+        // `depth_params.z < 0.5` guard can never pass. Removed per the
+        // lockstep note this branch used to carry (#1926 / REN-D8-01);
+        // the volumetric path (`vol.a` / `vol.rgb` above) is the sole
+        // exterior fog source now. `fog_color` / `fog_params` stay in
+        // the UBO, reserved-and-unconsumed for the future REGN-driven
+        // volumetric density tint (M55 Phase 6) — nothing in this
+        // shader reads them today.
 
         // ── Underwater post-FX ────────────────────────────────────────
         //

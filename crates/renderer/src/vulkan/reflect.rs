@@ -587,7 +587,7 @@ mod tests {
         }
     }
 
-    /// Regression: #1917. Commit `977eb95a` rewrote `composite.frag`'s
+    /// Regression: #1917 / #1926. Commit `977eb95a` rewrote `composite.frag`'s
     /// volumetric-apply block from a runtime `if (params.depth_params.z >
     /// 0.5) {...} else {...}` branch to the unconditional
     /// `combined = combined * vol.a + vol.rgb;`, but shipped the stale
@@ -596,16 +596,20 @@ mod tests {
     /// no UBO/struct size, so `uniform_block_size_by_name` can't see it —
     /// the GLSL `if`/`else` removal drops exactly one `OpBranchConditional`
     /// from the compiled module (17 → 16, confirmed via `spirv-dis` against
-    /// both the pre- and post-fix binaries). Pins the post-fix count so a
-    /// future stale-recompile of this file fails loudly instead of shipping
+    /// both the pre- and post-fix binaries). #1926 then removed the
+    /// aerial-perspective fog fallback branch entirely (dead since
+    /// `VOLUMETRIC_OUTPUT_CONSUMED` pinned `depth_params.z` to 1.0),
+    /// dropping the count further to 12 (confirmed via `spirv-dis` before/
+    /// after that recompile too). Pins the current count so a future
+    /// stale-recompile of this file fails loudly instead of shipping
     /// silently, the same failure mode #1447 fixed for `CameraUBO` size.
     #[test]
     fn composite_frag_spv_matches_recompiled_branch_count() {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 16,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 16 — \
+            count, 12,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 12 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). See #1917."

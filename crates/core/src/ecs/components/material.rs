@@ -472,7 +472,14 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
     // that was never meant to be reflective. The visible surface here is
     // paint/rust, not bare conductive metal, so treat it like the
     // stone/rubble bucket: matte, non-metallic.
-    if contains_any_ci(path, &["scrap"]) {
+    //
+    // Matches "metalscrap" specifically, NOT the bare "scrap" substring
+    // (#1925 / MAT-D6-02): a bare match also caught unrelated scrap-metal
+    // clutter (e.g. Starfield `meshes\SetDressing\ScrapPile_Kit\*.nif`,
+    // whose textures plausibly live under a `ScrapPile*` path with no
+    // "metal" token) and forced it to the same painted-tin matte look
+    // instead of letting it reach the conductive-metal arm below.
+    if contains_any_ci(path, &["metalscrap"]) {
         return PbrMaterial {
             roughness: 0.85,
             metalness: 0.0,
@@ -821,6 +828,31 @@ mod tests {
         // Genuine bare-metal paths (no "scrap") are unaffected.
         let steel = classify(&m, r"textures\weapons\steel\barrel01.dds");
         assert!(steel.metalness > 0.8);
+    }
+
+    /// #1925 / MAT-D6-02 — the "scrap" arm must match "metalscrap"
+    /// specifically, not any path containing the bare "scrap" substring.
+    /// A "Scrap Metal" misc-item / clutter texture (FNV/FO4 naming
+    /// convention: token order "scrap" then "metal", e.g.
+    /// `scrapmetalpile01_d.dds`) is genuine bare conductive scrap, not
+    /// the megaton painted-tin cladding this arm targets. Pre-fix, the
+    /// unbounded "scrap" substring match caught it too (before the
+    /// "metal" keyword arm ever ran) and forced metalness=0.0; post-fix
+    /// it falls through to the conductive-metal arm since "metalscrap"
+    /// (cladding-token order) does not match "scrapmetal".
+    #[test]
+    fn classify_pbr_bare_scrap_reaches_metal_arm() {
+        let m = Material::default();
+        let pile = classify(&m, r"textures\clutter\scrapmetal\scrapmetalpile01_d.dds");
+        assert!(
+            pile.metalness > 0.8,
+            "a bare \"scrap\" path with no \"metalscrap\" token must reach the \
+             conductive-metal arm, not the painted-tin matte override"
+        );
+
+        // The megaton cladding arm still catches its actual target.
+        let cladding = classify(&m, r"textures\architecture\megaton\metalscrappanels04.dds");
+        assert_eq!(cladding.metalness, 0.0);
     }
 
     /// `env_map_scale > 0.3` (legacy BSShaderPPLighting cube-map
