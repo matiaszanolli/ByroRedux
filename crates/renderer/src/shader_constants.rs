@@ -390,6 +390,50 @@ mod tests {
         assert_eq!(MATERIAL_KIND_NO_LIGHTING, SB_NO_LIGHTING);
     }
 
+    /// Shared scan for `<accessor> & N` where `N` is a bare numeric
+    /// literal instead of a `#define`d `INSTANCE_FLAG_*` name. `accessor`
+    /// is matched as a plain substring (e.g. `"inst.flags"` for the
+    /// triangle shaders' struct-field access, or `"flags"` for
+    /// `caustic_splat.comp`'s local variable — case-sensitive, so it
+    /// doesn't false-match `sceneFlags` / `render_debug_flags`, whose
+    /// `Flags`/`_flags` casing or trailing context never lands on a
+    /// bare `accessor & digit` pattern). Skips comment lines. The regex
+    /// would be `accessor\s*&\s*\d+u`, but a hand-rolled scan keeps the
+    /// test free of regex deps.
+    fn assert_no_bare_flags_literal(path: &str, src: &str, accessor: &str) {
+        for (lineno, line) in src.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("/*") {
+                continue;
+            }
+            let Some(start) = line.find(accessor) else {
+                continue;
+            };
+            let rest = &line[start + accessor.len()..];
+            // The next non-whitespace char must be either nothing
+            // (declaration like `<accessor> = ...`), `.` (field
+            // access — there is none today, but future-proof),
+            // or `&`. If it's `&`, the token immediately after
+            // the `&` and whitespace must NOT be a digit.
+            let rest_trimmed = rest.trim_start();
+            let Some(after_amp) = rest_trimmed.strip_prefix('&') else {
+                continue;
+            };
+            let after_amp_trimmed = after_amp.trim_start();
+            let Some(first_char) = after_amp_trimmed.chars().next() else {
+                continue;
+            };
+            assert!(
+                !first_char.is_ascii_digit(),
+                "{path}:{} uses bare numeric literal on `{accessor}`; \
+                 use the `INSTANCE_FLAG_*` `#define` from shader_constants.glsl. \
+                 Offending line: `{}`",
+                lineno + 1,
+                line.trim(),
+            );
+        }
+    }
+
     /// #1190 (TD4-NEW-01) — `triangle.frag` + `triangle.vert` must
     /// NOT test `inst.flags` with bare numeric literals. Every
     /// active `inst.flags & N` site must use a `#define`d
@@ -408,41 +452,27 @@ mod tests {
             ("triangle.frag", include_str!("../shaders/triangle.frag")),
             ("triangle.vert", include_str!("../shaders/triangle.vert")),
         ] {
-            // Skim each non-comment line for the offending pattern.
-            // The regex would be `inst\.flags\s*&\s*\d+u`, but a
-            // hand-rolled scan keeps the test free of regex deps.
-            for (lineno, line) in src.lines().enumerate() {
-                let trimmed = line.trim_start();
-                if trimmed.starts_with("//") || trimmed.starts_with("/*") {
-                    continue;
-                }
-                let Some(start) = line.find("inst.flags") else {
-                    continue;
-                };
-                let rest = &line[start + "inst.flags".len()..];
-                // The next non-whitespace char must be either nothing
-                // (declaration like `inst.flags = ...`), `.` (field
-                // access — there is none today, but future-proof),
-                // or `&`. If it's `&`, the token immediately after
-                // the `&` and whitespace must NOT be a digit.
-                let rest_trimmed = rest.trim_start();
-                let Some(after_amp) = rest_trimmed.strip_prefix('&') else {
-                    continue;
-                };
-                let after_amp_trimmed = after_amp.trim_start();
-                let Some(first_char) = after_amp_trimmed.chars().next() else {
-                    continue;
-                };
-                assert!(
-                    !first_char.is_ascii_digit(),
-                    "{path}:{} uses bare numeric literal on `inst.flags`; \
-                     use the `INSTANCE_FLAG_*` `#define` from shader_constants.glsl. \
-                     Offending line: `{}`",
-                    lineno + 1,
-                    line.trim(),
-                );
-            }
+            assert_no_bare_flags_literal(path, src, "inst.flags");
         }
+    }
+
+    /// #1234 / #1934 (CAUSTIC-D14-01) — `caustic_splat.comp` reads its
+    /// per-instance flags into a local `flags` variable
+    /// (`uint flags = instances[instIdx].flags;`) and tests it as
+    /// `flags & INSTANCE_FLAG_CAUSTIC_SOURCE`. The #1234 fix (bare `4u` →
+    /// the named constant) had no regression coverage: this shader isn't
+    /// in `triangle_shaders_use_named_instance_flag_constants`'s list, and
+    /// even if it were, that test searches for the `inst.flags` struct-
+    /// access token, not caustic's local-variable accessor — a revert to
+    /// `flags & 4u` would compile clean and pass the whole suite. Reuses
+    /// the same bare-literal scan with `"flags"` as the accessor.
+    #[test]
+    fn caustic_splat_comp_uses_named_instance_flag_constant() {
+        assert_no_bare_flags_literal(
+            "caustic_splat.comp",
+            include_str!("../shaders/caustic_splat.comp"),
+            "flags",
+        );
     }
 
     /// #1190 (TD4-NEW-01) — The shader-side mirror of `INSTANCE_FLAG_*`

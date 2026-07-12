@@ -526,15 +526,19 @@ impl TaaPipeline {
             // that just submitted last frame and is now resident in
             // `SHADER_READ_ONLY_OPTIMAL` / `GENERAL`.
             //
-            // First-frame note (REN-D11-NEW-04, audit 2026-05-09):
-            // on session frame 0, the OTHER slot's images are in
-            // `UNDEFINED` layout (initialized but never written).
-            // The shader's `params.params.y > 0.5` first-frame guard
-            // (`taa.comp:93`) skips the `prev_mid` / `prev_history`
-            // texelFetch entirely on that frame, so the UNDEFINED
-            // contents never reach a sample site. If the first-frame
-            // guard is ever dropped or moved, this descriptor write
-            // needs to pre-clear the OTHER slot's images to a defined
+            // First-frame note (REN-D11-NEW-04, audit 2026-05-09; reworded
+            // #1933 / TAA-D13-02): on session frame 0, the OTHER slot's
+            // images are already in `GENERAL` layout — `initialize_layouts`
+            // transitions every history slot UNDEFINED→GENERAL once, right
+            // after pipeline creation, before any dispatch runs — but hold
+            // undefined CONTENTS (allocated + layout-initialised, never
+            // written by a compute dispatch). There is no layout hazard,
+            // only a contents one. The shader's `params.params.y > 0.5`
+            // first-frame guard (`taa.comp:93`) skips the `prev_mid` /
+            // `prev_history` texelFetch entirely on that frame, so the
+            // undefined contents never reach a sample site. If the
+            // first-frame guard is ever dropped or moved, this descriptor
+            // write needs to pre-clear the OTHER slot's images to a defined
             // colour first, or skip the dispatch for frame 0.
             let prev = (f + 1) % MAX_FRAMES_IN_FLIGHT;
 
