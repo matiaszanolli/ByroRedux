@@ -260,12 +260,55 @@ pub fn load_idle_clip(
         return None;
     }
     let kf_path = humanoid_default_idle_kf_path(game)?;
+    load_kf_clip_by_path(world, tex_provider, kf_path)
+}
 
+/// Load the generic seated-loop clip
+/// (`meshes\characters\_male\idleanims\dynamicidle_chairsit.kf`) once per
+/// cell so `sandbox_seat_system` — which has no archive provider — can
+/// switch a seated actor's `AnimationPlayer` to it via the registry. Path-
+/// keyed memoised (#790), so re-entry is a HashMap hit. `None` for
+/// Skyrim+/Havok games or when the clip isn't archived. See M42.
+pub fn load_sit_clip(
+    world: &mut World,
+    tex_provider: &TextureProvider,
+    game: GameKind,
+) -> Option<u32> {
+    let kf_path = sandbox_sit_kf_path(game)?;
+    load_kf_clip_by_path(world, tex_provider, kf_path)
+}
+
+/// Archive path of the generic humanoid chair-sit dynamic-idle loop the
+/// Sandbox seat procedure plays. Verified present in vanilla FNV
+/// `Fallout - Meshes.bsa` (BSA scan 2026-07-12). `None` for games whose
+/// actors animate through Havok `.hkx` (Skyrim+/FO4+) or whose furniture
+/// sit-anim path hasn't been verified yet (Oblivion — deferred, its idle
+/// pipeline differs). FO3 shares the FNV path.
+pub fn sandbox_sit_kf_path(game: GameKind) -> Option<&'static str> {
+    match game {
+        GameKind::Fallout3NV => {
+            Some(r"meshes\characters\_male\idleanims\dynamicidle_chairsit.kf")
+        }
+        GameKind::Oblivion
+        | GameKind::Skyrim
+        | GameKind::Fallout4
+        | GameKind::Fallout76
+        | GameKind::Starfield => None,
+    }
+}
+
+/// Shared KF-clip loader: fast-path the registry by `kf_path`, else
+/// extract from the mesh archives, parse, `import_kf`, convert the first
+/// clip, and register it path-keyed (#790). Returns the clip handle, or
+/// `None` when the KF is absent / unparseable / empty. Backs both
+/// [`load_idle_clip`] and [`load_sit_clip`].
+fn load_kf_clip_by_path(
+    world: &mut World,
+    tex_provider: &TextureProvider,
+    kf_path: &str,
+) -> Option<u32> {
     // Fast path: clip already registered for this path. Skips the BSA
-    // extract + NIF parse + channel conversion entirely. Without this
-    // gate every cell crossing that loads NPCs re-paid the parse cost
-    // AND grew `AnimationClipRegistry` unboundedly (one full keyframe
-    // copy per cell load). See #790.
+    // extract + NIF parse + channel conversion entirely (#790).
     if let Some(handle) = world
         .resource::<AnimationClipRegistry>()
         .get_by_path(kf_path)
@@ -277,8 +320,8 @@ pub fn load_idle_clip(
         Some(b) => b,
         None => {
             log::debug!(
-                "M41.0 Phase 2: idle KF '{}' not found in mesh archives — \
-                 NPCs in this cell will spawn without an idle animation",
+                "KF clip '{}' not found in mesh archives — actors in this \
+                 cell will not use it",
                 kf_path,
             );
             return None;
@@ -287,20 +330,13 @@ pub fn load_idle_clip(
     let nif_scene = match byroredux_nif::parse_nif(&kf_bytes) {
         Ok(s) => s,
         Err(e) => {
-            log::warn!(
-                "M41.0 Phase 2: idle KF '{}' failed to parse: {}",
-                kf_path,
-                e,
-            );
+            log::warn!("KF clip '{}' failed to parse: {}", kf_path, e);
             return None;
         }
     };
     let mut clips = byroredux_nif::anim::import_kf(&nif_scene);
     if clips.is_empty() {
-        log::warn!(
-            "M41.0 Phase 2: idle KF '{}' produced zero clips — skipping",
-            kf_path,
-        );
+        log::warn!("KF clip '{}' produced zero clips — skipping", kf_path);
         return None;
     }
     let nif_clip = clips.remove(0);
@@ -312,13 +348,10 @@ pub fn load_idle_clip(
         let clip = convert_nif_clip(&nif_clip, &mut pool);
         drop(pool);
         let mut registry = world.resource_mut::<AnimationClipRegistry>();
-        // Memoise by `kf_path` so subsequent cell loads short-circuit
-        // through the fast path above (#790).
         registry.get_or_insert_by_path(kf_path.to_string(), || clip)
     };
     log::info!(
-        "M41.0 Phase 2: idle clip '{}' registered from '{}' \
-         ({:.2}s, {} channels) → handle {}",
+        "KF clip '{}' registered from '{}' ({:.2}s, {} channels) → handle {}",
         clip_name,
         kf_path,
         duration,
@@ -1382,6 +1415,23 @@ pub fn spawn_npc_entity(
             player.speed = speed;
             world.insert(placement_root, player);
         }
+    }
+
+    // 6. Sandbox behavior (M42). Tag actors whose form packages include a
+    //    Sandbox-type PACK so `sandbox_seat_system` can seat them in
+    //    nearby furniture. ~56 % of vanilla FNV NPCs carry one — it's the
+    //    dominant ambient idle behavior. `ai_packages` (PKID refs) resolve
+    //    through `index.packages`; the seat behavior itself lives in the
+    //    binary's systems, this just marks who participates.
+    let runs_sandbox = npc
+        .ai_packages
+        .iter()
+        .any(|pk| index.packages.get(pk).is_some_and(|p| p.is_sandbox()));
+    if runs_sandbox {
+        world.insert(
+            placement_root,
+            byroredux_core::ecs::components::SandboxBehavior,
+        );
     }
 
     tag_descendants_as_actor(world, placement_root);

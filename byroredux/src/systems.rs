@@ -16,6 +16,7 @@ mod debug;
 mod light_anim;
 mod metrics;
 mod particle;
+mod sandbox;
 mod water;
 // `pub(crate)` so the EXAL bootstrap (`scene::world_setup`) can seed the
 // initial sun direction from the same `compute_sun_arc` model the per-frame
@@ -32,5 +33,6 @@ pub(crate) use debug::*;
 pub(crate) use light_anim::*;
 pub(crate) use metrics::*;
 pub(crate) use particle::*;
+pub(crate) use sandbox::*;
 pub(crate) use water::*;
 pub(crate) use weather::*;

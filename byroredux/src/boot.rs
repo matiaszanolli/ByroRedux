@@ -388,6 +388,17 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // startup with no scene loaded).
     world.register::<crate::components::FootstepEmitter>();
 
+    // M42 — pre-register the Sandbox marker storages so
+    // `sandbox_seat_system`'s `query_mut::<Seated>().insert(...)` and the
+    // `query::<SandboxBehavior>()` skip-scan resolve even before the first
+    // actor spawns (the seat guard depends on `Seated` inserts landing).
+    world.register::<byroredux_core::ecs::components::SandboxBehavior>();
+    world.register::<byroredux_core::ecs::components::Seated>();
+    // Seat reservations (cleared per cell load) + the per-cell sit clip
+    // handle (set at cell load where the archive provider lives).
+    world.insert_resource(crate::components::SeatReservations::default());
+    world.insert_resource(crate::components::SandboxSitClip::default());
+
     // Register scripting component storages.
     byroredux_scripting::register(&mut world);
 
@@ -649,6 +660,27 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // Particle simulation runs after transform propagation so emitter
     // entities have their final world-space spawn origin (#401).
     scheduler.add_exclusive(Stage::PostUpdate, particle_system);
+    // M42 — sandbox seat procedure. GATED OFF by default (opt in with
+    // `BYRO_SANDBOX_SIT=1`). The seat placement + clip-swap pipeline is fully
+    // verified (live bone inspection: actors land on the correct furniture
+    // marker and the sit clip *is* applied — L-thigh matches the authored
+    // folded pose), but the generic `dynamicidle_*` sit loops carry NO
+    // pelvis/root channel: they only fold the limbs and assume a sitdown
+    // *transition* already lowered `Bip01` onto the seat. Without that
+    // transition (FNV drives it via the anim-group/special-idle system we
+    // don't have yet) the actor floats ~85u above the seat with dangling
+    // feet. Proper furniture-use — the sit-enter transition that lowers the
+    // body — is its own milestone; see `systems::sandbox` module docs. The
+    // rest of the M42 foundation (Sandbox package tagging, `Furniture`
+    // markers, `Seated`, resources) stays live regardless. Runs after
+    // transform propagation, same exclusive lane as the systems above.
+    if std::env::var_os("BYRO_SANDBOX_SIT").is_some() {
+        log::info!(
+            "BYRO_SANDBOX_SIT set — enabling experimental sandbox seat-snap \
+             (actors will float above seats until the sit-enter transition lands)"
+        );
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::sandbox_seat_system);
+    }
     // PostUpdate ordering contract (#1375 invariant pin):
     //   1. transform_propagation — BFS GlobalTransform composition
     //   2. make_billboard_system  — overwrites billboard GT rotations

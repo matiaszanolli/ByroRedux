@@ -161,6 +161,11 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     // M41.5 Phase B — furniture sit/sleep/lean markers, so `byro-dbg`'s
     // `entities Furniture` surfaces seatable furniture in a loaded cell.
     register_component::<Furniture>(registry, "Furniture", vec!["markers"]);
+    // M42 — Sandbox AI markers: `entities SandboxBehavior` lists actors
+    // running the idle-in-area procedure; `entities Seated` lists those
+    // the seat system has placed in furniture.
+    register_component::<SandboxBehavior>(registry, "SandboxBehavior", vec![]);
+    register_component::<Seated>(registry, "Seated", vec!["furniture"]);
     register_component::<AnimatedVisibility>(registry, "AnimatedVisibility", vec!["0"]);
     register_component::<AnimatedAlpha>(registry, "AnimatedAlpha", vec!["0"]);
     // Post-#517 split: five target-specific color components replaced
