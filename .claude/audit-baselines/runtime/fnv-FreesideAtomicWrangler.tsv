@@ -8,7 +8,7 @@ tex_missing_unique_paths    1
 mesh_cache_failed_count     11
 light_count_directional     1
 skin_pool_live              686
-skin_pool_max               1365
+skin_pool_max               1364
 skin_pool_overflow_attempts 0
 bench_fps_p50               141.4
 bench_fps_avg               147.3

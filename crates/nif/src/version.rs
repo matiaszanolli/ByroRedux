@@ -323,8 +323,9 @@ pub mod bsver {
     /// `bsver > FO3_PARALLAX` carries these fields.
     pub const FO3_PARALLAX: u32 = 24;
     /// BSVER threshold at which NiAVObject `flags` widens from u16 to
-    /// u32 (`bsver > FLAGS_U32_THRESHOLD`). Corresponds to nif.xml's
-    /// `#BS_GTE_26#` predicate.
+    /// u32 (`bsver > FLAGS_U32_THRESHOLD`). nif.xml gates
+    /// `NiAVObject.Flags` on the inline `#BSVER# #GT# 26` vercond (no
+    /// named token); u16 at `bsver <= 26`.
     pub const FLAGS_U32_THRESHOLD: u32 = 26;
     /// BSVER threshold at which NiControllerSequence gains an animation-
     /// notes list (`bsver > ANIM_NOTES_THRESHOLD`). Content with
