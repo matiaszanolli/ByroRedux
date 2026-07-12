@@ -137,6 +137,7 @@ fn import_nif_scene_impl(
         bs_bound: None,
         attach_points: None,
         child_attach_connections: None,
+        furniture_markers: extract_furniture_markers(scene),
         embedded_clip: crate::anim::import_embedded_animations(scene),
         ragdoll: collision::extract_ragdoll(scene),
     };
@@ -304,6 +305,62 @@ pub fn extract_child_attach_connections(
         }
     }
     None
+}
+
+/// Extract sit/sleep/lean entry markers from every `BSFurnitureMarker`
+/// block in the scene, converted from Gamebryo Z-up to renderer Y-up.
+/// Empty for the overwhelming majority of meshes (non-furniture).
+///
+/// Scans all blocks (not just root extra-data) — mirrors the
+/// [`crate::anim::import_kf`] top-level-block sweep — because the marker
+/// can hang off the root node's extra-data *or* a `BSFurnitureMarkerNode`
+/// child; there is normally one per furniture NIF. Vanilla authors the
+/// `FurniturePosition.offset` values relative to the furniture root, so
+/// they're treated as root-local (composed with the placement entity's
+/// world transform downstream). Public so the flat cell-loader import
+/// path can call it directly — that path drops the node array and builds
+/// a `CachedNifImport`, exactly like [`extract_attach_points`]. See M41.5
+/// Phase B.
+pub fn extract_furniture_markers(scene: &NifScene) -> Vec<ImportedFurnitureMarker> {
+    use crate::blocks::extra_data::BsFurnitureMarker;
+
+    let mut out = Vec::new();
+    for block in &scene.blocks {
+        let Some(marker) = block.as_any().downcast_ref::<BsFurnitureMarker>() else {
+            continue;
+        };
+        out.extend(marker.positions.iter().map(imported_furniture_marker));
+    }
+    out
+}
+
+/// Convert one parsed `FurniturePosition` to an [`ImportedFurnitureMarker`]:
+/// offset Gamebryo Z-up → renderer Y-up, and the version-split
+/// heading/animation fields to the canonical shape. Split out so the
+/// coordinate + branch mapping is unit-testable without a `NifScene`.
+fn imported_furniture_marker(
+    pos: &crate::blocks::extra_data::FurniturePosition,
+) -> ImportedFurnitureMarker {
+    use crate::blocks::extra_data::FurniturePositionData;
+    use byroredux_core::math::coord::zup_to_yup_pos;
+
+    let (heading_z_radians, animation_type) = match pos.data {
+        // Skyrim+/FO4: `Heading` is documented radians about +Z.
+        FurniturePositionData::Modern {
+            heading,
+            animation_type,
+            ..
+        } => (Some(heading), animation_type),
+        // Oblivion/FO3/FNV: ushort `Orientation` has no verified radian
+        // mapping (indexes a `furnituremarkerXX.nif`), and there is no
+        // AnimationType field — defer both to Phase C.
+        FurniturePositionData::Legacy { .. } => (None, 0),
+    };
+    ImportedFurnitureMarker {
+        offset: zup_to_yup_pos(pos.offset),
+        heading_z_radians,
+        animation_type,
+    }
 }
 
 /// The scene's root `NiNode`, if it has one. Connect-point extra-data hangs

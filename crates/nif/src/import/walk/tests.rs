@@ -582,6 +582,7 @@ mod recursion_depth_tests {
             bs_bound: None,
             attach_points: None,
             child_attach_connections: None,
+            furniture_markers: Vec::new(),
             embedded_clip: None,
             ragdoll: None,
         }
@@ -750,6 +751,7 @@ mod particle_local_transform_tests {
             bs_bound: None,
             attach_points: None,
             child_attach_connections: None,
+            furniture_markers: Vec::new(),
             embedded_clip: None,
             ragdoll: None,
         };

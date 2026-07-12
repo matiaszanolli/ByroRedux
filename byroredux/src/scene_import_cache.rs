@@ -151,6 +151,7 @@ mod tests {
             bs_bound: None,
             attach_points: None,
             child_attach_connections: None,
+            furniture_markers: Vec::new(),
             embedded_clip: None,
             ragdoll: None,
         })

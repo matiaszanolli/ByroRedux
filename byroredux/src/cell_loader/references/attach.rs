@@ -41,6 +41,27 @@ pub(crate) fn attach_points_component(
     }
 }
 
+/// Map an [`ImportedFurnitureMarker`] list into the `Furniture` ECS
+/// component (M41.5 Phase B). Pure data — no string interning: offsets
+/// arrive already Y-up from the extractor; heading is kept in Gamebryo
+/// source space (see `FurnitureMarker` docs). Caller guarantees a
+/// non-empty slice (a marker-less furniture attaches no component).
+pub(crate) fn furniture_component(
+    imported: &[byroredux_nif::import::ImportedFurnitureMarker],
+) -> byroredux_core::ecs::components::Furniture {
+    use byroredux_core::ecs::components::{Furniture, FurnitureMarker};
+    Furniture {
+        markers: imported
+            .iter()
+            .map(|m| FurnitureMarker {
+                local_offset: m.offset,
+                heading_z_radians: m.heading_z_radians,
+                animation_type: m.animation_type,
+            })
+            .collect(),
+    }
+}
+
 /// Intern an [`ImportedChildAttachConnections`] into the
 /// `ChildAttachConnections` ECS component (#985 / #1594).
 pub(crate) fn child_attach_connections_component(
