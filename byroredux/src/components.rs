@@ -1133,6 +1133,27 @@ impl Default for LightTuning {
     }
 }
 
+/// M42 — furniture seats currently occupied (or claimed this frame) by a
+/// sandboxing actor, keyed by the furniture entity. `sandbox_seat_system`
+/// checks this before assigning a seat so two NPCs never share one chair,
+/// and inserts on assignment. Cleared on cell load (entity ids reset on
+/// unload, so stale reservations would be meaningless). The companion
+/// [`Seated`](byroredux_core::ecs::components::Seated) component on the
+/// actor is the per-actor one-shot guard.
+#[derive(Default)]
+pub(crate) struct SeatReservations(pub(crate) HashSet<EntityId>);
+impl Resource for SeatReservations {}
+
+/// M42 — the per-cell generic sit-loop clip handle
+/// (`meshes\characters\_male\idleanims\dynamicidle_chairsit.kf`),
+/// resolved once at cell load where the archive provider is available and
+/// read by `sandbox_seat_system` (which has no provider). `None` for
+/// Skyrim+/Havok-animation games or when the clip isn't archived — those
+/// actors keep their idle and are not seated.
+#[derive(Default)]
+pub(crate) struct SandboxSitClip(pub(crate) Option<u32>);
+impl Resource for SandboxSitClip {}
+
 #[cfg(test)]
 mod fx_mesh_classification_tests {
     //! PERF-D3-NEW-02 / #1136 — pin the 6-needle FX-decoration set so a

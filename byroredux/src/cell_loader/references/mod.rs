@@ -231,6 +231,19 @@ pub(super) fn load_references(
         Vec::new()
     };
 
+    // M42 — resolve the generic sit-loop clip once per cell (archive
+    // provider available here; `sandbox_seat_system` has none) into the
+    // `SandboxSitClip` resource, and clear stale seat reservations from
+    // the previous cell (entity ids reset on unload). `None` for
+    // Skyrim+/Havok games → those actors are not seated.
+    let sit_clip = crate::npc_spawn::load_sit_clip(world, tex_provider, game);
+    if let Some(mut r) = world.try_resource_mut::<crate::components::SandboxSitClip>() {
+        r.0 = sit_clip;
+    }
+    if let Some(mut r) = world.try_resource_mut::<crate::components::SeatReservations>() {
+        r.0.clear();
+    }
+
     // Per-call accumulators — committed to `NifImportRegistry` in a
     // single `resource_mut` borrow after the loop instead of acquiring
     // the write lock on every REFR. Previously every iteration took

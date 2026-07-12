@@ -388,6 +388,17 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // startup with no scene loaded).
     world.register::<crate::components::FootstepEmitter>();
 
+    // M42 — pre-register the Sandbox marker storages so
+    // `sandbox_seat_system`'s `query_mut::<Seated>().insert(...)` and the
+    // `query::<SandboxBehavior>()` skip-scan resolve even before the first
+    // actor spawns (the seat guard depends on `Seated` inserts landing).
+    world.register::<byroredux_core::ecs::components::SandboxBehavior>();
+    world.register::<byroredux_core::ecs::components::Seated>();
+    // Seat reservations (cleared per cell load) + the per-cell sit clip
+    // handle (set at cell load where the archive provider lives).
+    world.insert_resource(crate::components::SeatReservations::default());
+    world.insert_resource(crate::components::SandboxSitClip::default());
+
     // Register scripting component storages.
     byroredux_scripting::register(&mut world);
 
@@ -649,6 +660,11 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // Particle simulation runs after transform propagation so emitter
     // entities have their final world-space spawn origin (#401).
     scheduler.add_exclusive(Stage::PostUpdate, particle_system);
+    // M42 — sandbox seat procedure. Runs after transform propagation so
+    // it reads this frame's world-space furniture + actor positions; the
+    // snapped placement root propagates to the skeleton next frame. Same
+    // exclusive lane as the systems above.
+    scheduler.add_exclusive(Stage::PostUpdate, crate::systems::sandbox_seat_system);
     // PostUpdate ordering contract (#1375 invariant pin):
     //   1. transform_propagation — BFS GlobalTransform composition
     //   2. make_billboard_system  — overwrites billboard GT rotations

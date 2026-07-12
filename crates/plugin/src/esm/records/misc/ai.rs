@@ -21,10 +21,25 @@ pub struct PackRecord {
     /// Flags bitfield from PKDT (schedule / location repeat / weapon
     /// draw / etc.). Low 16 bits on FO3/FNV, u32 on Skyrim+.
     pub package_flags: u32,
-    /// Procedure type — index into the 30-procedure catalog
-    /// (`Travel`, `Wander`, `Sandbox`, `Find`, `Escort`, `Follow`,
-    /// `Patrol`, `Use Item At`, ...). Read from PKDT offset 4.
+    /// Procedure type — the FO3/FNV package-type enum (0..=16):
+    /// 0 Find, 1 Follow, 2 Escort, 3 Eat, 4 Sleep, 5 Wander, 6 Travel,
+    /// 7 Accompany, 8 UseItemAt, 9 Ambush, 10 FleeNotCombat,
+    /// 11 CastMagic, 12 **Sandbox**, 13 Patrol, 14 Guard, 15 Dialogue,
+    /// 16 UseWeapon. Read as a single **byte** at PKDT offset 4.
     pub procedure_type: u32,
+}
+
+/// FO3/FNV package procedure-type index for `Sandbox` — idle activities
+/// in an area (sit, wander, use furniture). 56 % of vanilla FNV NPCs
+/// carry one; it's the dominant ambient idle behavior. See M42.
+pub const PROCEDURE_SANDBOX: u32 = 12;
+
+impl PackRecord {
+    /// True when this package's procedure is `Sandbox` (the idle-in-area
+    /// behavior that drives furniture use).
+    pub fn is_sandbox(&self) -> bool {
+        self.procedure_type == PROCEDURE_SANDBOX
+    }
 }
 
 pub fn parse_pack(form_id: u32, subs: &[SubRecord]) -> PackRecord {
@@ -38,7 +53,14 @@ pub fn parse_pack(form_id: u32, subs: &[SubRecord]) -> PackRecord {
             b"PKDT" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 out.package_flags = r.u32_or_default();
-                out.procedure_type = r.u32_or_default();
+                // FO3/FNV PKDT: the procedure type is a single BYTE at
+                // offset 4, followed by type-specific / flags2 bytes.
+                // Reading it as a u32 (the pre-M42 bug) polluted the
+                // type with the next 3 bytes — e.g. a Sandbox (12)
+                // package parsed as 3452816652 / 268 / 65292. Masking to
+                // the byte restores the clean 0..=16 enum (verified
+                // against a full FalloutNV.esm sweep).
+                out.procedure_type = r.u8_or_default() as u32;
             }
             _ => {}
         }
@@ -693,12 +715,33 @@ mod tests {
     fn parse_pack_picks_pkdt_flags_and_procedure() {
         let mut pkdt = Vec::new();
         pkdt.extend_from_slice(&0x0000_0421u32.to_le_bytes()); // flags
-        pkdt.extend_from_slice(&6u32.to_le_bytes()); // procedure 6 = Patrol
-        let subs = vec![sub(b"EDID", b"GuardPatrolDay\0"), sub(b"PKDT", &pkdt)];
+        pkdt.extend_from_slice(&6u32.to_le_bytes()); // procedure 6 = Travel
+        let subs = vec![sub(b"EDID", b"TravelToWork\0"), sub(b"PKDT", &pkdt)];
         let p = parse_pack(0xA1A1, &subs);
-        assert_eq!(p.editor_id, "GuardPatrolDay");
+        assert_eq!(p.editor_id, "TravelToWork");
         assert_eq!(p.package_flags, 0x0000_0421);
         assert_eq!(p.procedure_type, 6);
+        assert!(!p.is_sandbox());
+    }
+
+    /// The procedure type is a single BYTE at PKDT offset 4. Real FNV
+    /// PKDTs carry type-specific data in the 3 bytes after it; the
+    /// pre-M42 u32 read polluted the type with them (a Sandbox package
+    /// parsed as e.g. 0xCC…0C instead of 12). Masking to the byte must
+    /// recover 12.
+    #[test]
+    fn parse_pack_reads_procedure_as_byte_not_polluted_u32() {
+        let mut pkdt = Vec::new();
+        pkdt.extend_from_slice(&0x0000_1234u32.to_le_bytes()); // flags
+        pkdt.push(12); // procedure byte = Sandbox
+        pkdt.extend_from_slice(&[0xAB, 0xCD, 0xEF]); // type-specific junk
+        let subs = vec![sub(b"EDID", b"DefaultSandbox\0"), sub(b"PKDT", &pkdt)];
+        let p = parse_pack(0xB2B2, &subs);
+        assert_eq!(
+            p.procedure_type, 12,
+            "procedure must be the byte value, not the polluted u32"
+        );
+        assert!(p.is_sandbox());
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub mod particle;
 pub mod perk_list;
 pub mod physics_source;
 pub mod render_layer;
+pub mod sandbox;
 pub mod scene_flags;
 pub mod skinned_mesh;
 pub mod texture;
@@ -67,6 +68,7 @@ pub use render_layer::{
     escalate_small_static_to_clutter, render_layer_with_decal_escalation, RenderLayer,
     SMALL_STATIC_RADIUS_UNITS,
 };
+pub use sandbox::{SandboxBehavior, Seated};
 pub use scene_flags::SceneFlags;
 pub use skinned_mesh::{SkinnedMesh, MAX_BONES_PER_MESH};
 pub use texture::TextureHandle;
