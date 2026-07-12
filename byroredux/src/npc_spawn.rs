@@ -1431,16 +1431,23 @@ pub fn spawn_npc_entity(
         }
     }
 
-    // 6. Sandbox behavior (M42). Tag actors whose form packages include a
-    //    Sandbox-type PACK so `sandbox_seat_system` can seat them in
-    //    nearby furniture. ~56 % of vanilla FNV NPCs carry one — it's the
-    //    dominant ambient idle behavior. `ai_packages` (PKID refs) resolve
-    //    through `index.packages`; the seat behavior itself lives in the
-    //    binary's systems, this just marks who participates.
-    let runs_sandbox = npc
-        .ai_packages
-        .iter()
-        .any(|pk| index.packages.get(pk).is_some_and(|p| p.is_sandbox()));
+    // 6. Sandbox behavior (M42.1). Tag actors whose *active* package at the
+    //    current game hour is a Sandbox-type PACK, so `sandbox_seat_system`
+    //    seats only NPCs actually idling here — not day-shift workers whose
+    //    Sandbox package is a low-priority evening fallback. `ai_packages`
+    //    (PKID refs, priority order) resolve through `index.packages`;
+    //    `active_package_is_sandbox` walks them in order and returns the
+    //    sandbox-ness of the first package scheduled-active at `hour`. This is
+    //    what stops the saloon bartender (08:00–20:00 `AtBar`) from being
+    //    dragged to a table at 10:00.
+    let game_hour = world
+        .try_resource::<crate::components::GameTimeRes>()
+        .map(|r| r.hour)
+        .unwrap_or(10.0);
+    let runs_sandbox = byroredux_plugin::esm::records::active_package_is_sandbox(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+    );
     if runs_sandbox {
         world.insert(
             placement_root,
