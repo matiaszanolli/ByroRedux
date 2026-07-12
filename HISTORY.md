@@ -24,6 +24,69 @@ Commits hold that record.
 
 ---
 
+## Session 55 — M47.2 QUST fragment keystone + VWD/ghosting root-cause + a 100-issue audit bug-bash tail  (2026-07-11, `c4d5996f..5fb2e666`, 82 commits)
+
+Opened on the M47.2 scripting runtime and the long-open interior-ghosting
+investigation, then spent the back half of the session working through five
+`AUDIT_RENDERER` / `AUDIT_NIF` / `AUDIT_TECH_DEBT` reports filed 2026-07-05
+through 2026-07-09, closing well over 100 individual low/medium-severity
+findings two-at-a-time via the `/fix-issue` pipeline.
+
+- **M47.2 scripting runtime** — the QUST VMAD fragment-section decoder
+  (`parse_quest_fragments`, layout derived + cross-validated against all
+  856 fragment-bearing `Skyrim.esm` VMADs) and its cell-loader population
+  wiring landed (`8a70b81a`), so vanilla quests now advance stages from
+  decompiled `.pex` fragment bodies instead of test fixtures — the
+  quest-fragment lowerer/dispatcher covers 69.5% of the script corpus and
+  had been built and unit-tested but dead at runtime until this session.
+  Three scripting front-end hardening passes closed decline/coercion leaks
+  and a lexer bug that swallowed subtraction (#1905–#1909).
+- **VWD / interior-ghosting root cause** — materialised the
+  long-parsed-but-unconsumed `VisibleWhenDistant` base-record flag as a
+  real per-placement marker component with its spawn plumbing pinned
+  (#1889/#1890/#1891); added a `DBG_VIZ_MOTION` debug view to root-cause
+  the diagonal double-image ghosting artifact live, and traced it to a
+  repeated camera/capsule desync on interior cell transitions rather than
+  a shader bug (#1874) — closes an investigation open since Session ~53.
+  The same `radius_load`/`radius_unload` streaming-hysteresis z-fighting
+  bug found in the object/placement LOD rings (#1866) turned out to have
+  an identical, separately-confirmed sibling in the terrain LOD hole-mask
+  (#1871).
+- **NIF parser hygiene** — 16/24-bpp uncompressed DDS decoding (#1542),
+  `BSDismemberSkinInstance` body-part flags surfaced onto `ImportedSkin`
+  (#1659), BGEM grayscale-to-palette-alpha forwarding (#1580), four raw-
+  BSVER version gates restored (#1838/#1839), a live 7-game clean-rate
+  sweep that refreshed two stale-low doc matrices and tightened
+  Starfield's regression floors to match the FO4 precedent (#1900), plus
+  a dozen smaller allocation-hygiene / named-constant fixes (#1885,
+  #1902, #1898, #1903/#1896/#1901).
+- **Renderer correctness + doc/comment hygiene** — one real behavioral
+  fix (env-map metalness lift no longer fires on the unauthored `[1,1,1]`
+  specular struct default, #1873) alongside a long tail of stale-comment
+  corrections the renderer audits surfaced: dead `composite.frag`
+  fog-fallback code removed post-`VOLUMETRIC_OUTPUT_CONSUMED` (#1926), a
+  drifted SPIR-V version on two shaders caught and pinned with a new
+  regression test (#1929), the Halton TAA jitter gate now respects
+  `taa_failed` (#1932), and roughly a dozen comment-only corrections
+  (memory-budget.md call-site attribution, GpuLight/GpuCamera doc drift,
+  sun-direction sign convention, water/caustic/debug-pass comments).
+- **Structure + ECS/save hygiene** — `main.rs` split into `boot.rs` /
+  `app_step.rs` (#1858) plus two more 2000+-LOC file splits
+  (`cell_loader/references.rs`, `import/collision.rs`, #1876/#1877) with
+  27 audit-skill references re-pointed afterward; poisoned-lock naming
+  fixes in `clear_entities`/`insert_resource` (#1836/#1837), ActorValues
+  save coverage + an NPC-spawn-stamp save gap guard (#1834/#1835), and a
+  ragdoll seed-time-scale snapshot bug (#1852).
+
+Net: tests 3431 → 3549 (+118); Rust LOC (excl. `tests/`) ~263,696 →
+~270,020 (+6,324); source files 650 → 668 (+18); open issue dirs 1725 →
+1825 (+100, expected churn from filing + closing the audit bundle).
+Bench-of-record unchanged at `1c26bc25` (2026-06-03) — now 584 commits
+stale (was 501); every renderer touch this session was a doc/small-
+blast-radius fix, not hot-path code, so no new drift risk was added.
+
+---
+
 ## Session 54 — CHARAL new mechanism families (affliction/stealth/affinity) + per-game ruleset extensions + audit bug-bash  (2026-07-04, `1b4e8e84..8ec1f0aa`, 63 commits)
 
 Continued the CHARAL research/build cadence from Session 53: a long stretch
