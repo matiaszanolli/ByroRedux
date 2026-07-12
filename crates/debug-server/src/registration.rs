@@ -158,6 +158,9 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     register_component::<TextureHandle>(registry, "TextureHandle", vec!["0"]);
     register_component::<BSXFlags>(registry, "BSXFlags", vec!["0"]);
     register_component::<BSBound>(registry, "BSBound", vec!["center", "half_extents"]);
+    // M41.5 Phase B — furniture sit/sleep/lean markers, so `byro-dbg`'s
+    // `entities Furniture` surfaces seatable furniture in a loaded cell.
+    register_component::<Furniture>(registry, "Furniture", vec!["markers"]);
     register_component::<AnimatedVisibility>(registry, "AnimatedVisibility", vec!["0"]);
     register_component::<AnimatedAlpha>(registry, "AnimatedAlpha", vec!["0"]);
     // Post-#517 split: five target-specific color components replaced

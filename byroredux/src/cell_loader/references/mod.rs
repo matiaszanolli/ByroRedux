@@ -212,24 +212,23 @@ pub(super) fn load_references(
     #[allow(unused_mut)]
     let mut npc_pending_sample: Vec<u32> = Vec::with_capacity(8);
 
-    // M41.0 Phase 2 — resolve the per-game default idle KF clip once
-    // before the REFR loop. The handle is threaded through every
-    // `spawn_npc_entity` call so each NPC's `AnimationStack` references
-    // the same registry slot. `load_idle_clip` itself is path-keyed
-    // memoised (#790), so re-entry across cell loads is a HashMap hit
-    // — neither the BSA extract nor `AnimationClipRegistry::add` runs
-    // a second time for the same `kf_path`. Returns `None` when the
-    // game is on the Havok-animation track (Skyrim+/FO4+) or the KF
-    // isn't archived — NPCs in those cases just spawn without an
-    // animation player. Gender variation is collapsed: FNV vanilla
-    // ships only `_male\idle.kf` and uses it for both genders. The
-    // `Gender` argument was dropped from these resolvers in #1117 /
-    // TD8-018; re-introduce it when a game variant actually ships
-    // separate clips.
-    let idle_clip_handle = if game.has_kf_animations() {
-        crate::npc_spawn::load_idle_clip(world, tex_provider, game)
+    // M41.0 Phase 2 + M41.5 Phase A — resolve the shared per-cell idle
+    // pool once before the REFR loop; it is threaded through every
+    // `spawn_npc_entity` call, where each NPC picks + phase-desyncs its
+    // own handle. `load_idle_pool` is path-keyed memoised (#790), so
+    // re-entry across cell loads is a HashMap hit — neither the BSA
+    // extract nor `AnimationClipRegistry::add` runs a second time for
+    // the same `kf_path`. Returns an empty pool when the game is on the
+    // Havok-animation track (Skyrim+/FO4+) or the KF isn't archived —
+    // those NPCs just spawn without an animation player. Gender variation
+    // is collapsed: FNV vanilla ships only `_male\idle.kf` and uses it
+    // for both genders. The `Gender` argument was dropped from these
+    // resolvers in #1117 / TD8-018; re-introduce it when a game variant
+    // actually ships separate clips.
+    let idle_pool = if game.has_kf_animations() {
+        crate::npc_spawn::load_idle_pool(world, tex_provider, game)
     } else {
-        None
+        Vec::new()
     };
 
     // Per-call accumulators — committed to `NifImportRegistry` in a
@@ -377,7 +376,7 @@ pub(super) fn load_references(
                         game,
                         tex_provider,
                         mat_provider.as_deref_mut(),
-                        idle_clip_handle,
+                        &idle_pool,
                         ref_pos,
                         ref_rot,
                         ref_scale,

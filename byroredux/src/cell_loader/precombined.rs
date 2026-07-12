@@ -504,6 +504,7 @@ fn geometry_only_cached(meshes: Vec<ImportedMesh>) -> CachedNifImport {
         // connect points. #1594.
         attach_points: None,
         child_attach_connections: None,
+        furniture: None,
     }
 }
 

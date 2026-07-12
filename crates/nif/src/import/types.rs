@@ -1013,6 +1013,26 @@ pub struct ImportedAttachPoint {
     pub scale: f32,
 }
 
+/// One furniture entry marker lifted from a `BSFurnitureMarker` block —
+/// where an actor sits, sleeps, or leans on the furniture. Maps onto the
+/// engine's `Furniture` ECS component at spawn time (M41.5 Phase B). The
+/// `offset` is converted to renderer Y-up at extraction (like
+/// [`ImportedScene::bs_bound`] / attach points); `heading_z_radians` is
+/// kept in Gamebryo source space — see the field docs on
+/// `byroredux_core::ecs::components::FurnitureMarker`.
+#[derive(Debug, Clone)]
+pub struct ImportedFurnitureMarker {
+    /// Entry position, renderer Y-up, local to the furniture mesh root.
+    pub offset: [f32; 3],
+    /// Skyrim+ `Heading` — rotation about Gamebryo +Z in radians. `None`
+    /// on Oblivion/FO3/FNV (whose ushort `Orientation` has no verified
+    /// radian mapping).
+    pub heading_z_radians: Option<f32>,
+    /// Skyrim+ `AnimationType` (1 = Sit, 2 = Sleep, 3 = Lean); `0` on the
+    /// legacy path (no AnimationType field).
+    pub animation_type: u16,
+}
+
 /// Child-side companion to [`ImportedAttachPoint`]: the list of
 /// attach-point names this NIF connects back to on its parent host,
 /// plus the `skinned` flag from `BSConnectPoint::Children`. Maps onto
@@ -1060,6 +1080,12 @@ pub struct ImportedScene {
     /// engine's `ChildAttachConnections` ECS component at spawn time.
     /// `None` for non-accessory NIFs.
     pub child_attach_connections: Option<ImportedChildAttachConnections>,
+    /// Sit / sleep / lean entry markers from a `BSFurnitureMarker` block
+    /// (chairs, benches, beds, wall-lean spots, workbenches). Empty for
+    /// the overwhelming majority of meshes (non-furniture). Offsets are
+    /// renderer Y-up; maps onto the `Furniture` ECS component at spawn.
+    /// See M41.5 Phase B / [`ImportedFurnitureMarker`].
+    pub furniture_markers: Vec<ImportedFurnitureMarker>,
     /// Ambient animation clip collecting every mesh-embedded controller
     /// (alpha fade, UV scroll, visibility flicker, material color
     /// pulse, shader float/color). Populated by

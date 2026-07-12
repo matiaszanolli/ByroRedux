@@ -146,6 +146,7 @@ pub(crate) fn finish_partial_import(
         // near-zero-loss follow-up.
         attach_points: None,
         child_attach_connections: None,
+        furniture: None,
     });
 
     let freed_clip_handles = {

@@ -27,6 +27,7 @@ fn dummy_cached() -> Arc<CachedNifImport> {
         flame_attach_offset: None,
         attach_points: None,
         child_attach_connections: None,
+        furniture: None,
     })
 }
 

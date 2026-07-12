@@ -163,6 +163,12 @@ pub(super) fn stamp_attach_components(
     if let Some(cac) = &cached.child_attach_connections {
         world.insert(root, cac.clone());
     }
+    // M41.5 Phase B — stamp furniture sit/sleep/lean markers. `None` for
+    // the dominant non-furniture case; furniture still renders as its
+    // static mesh, this only surfaces the entry positions to the runtime.
+    if let Some(furn) = &cached.furniture {
+        world.insert(root, furn.clone());
+    }
 }
 
 #[tracing::instrument(

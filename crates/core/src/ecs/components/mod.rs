@@ -11,6 +11,7 @@ pub mod collision;
 pub mod faction_ranks;
 pub mod fog_volume;
 pub mod form_id;
+pub mod furniture;
 pub mod global_transform;
 pub mod hierarchy;
 pub mod inventory;
@@ -45,6 +46,7 @@ pub use collision::{CollisionShape, MotionType, RigidBodyData};
 pub use faction_ranks::FactionRanks;
 pub use fog_volume::{FogBounds, FogSource, FogVolume};
 pub use form_id::FormIdComponent;
+pub use furniture::{Furniture, FurnitureMarker};
 pub use global_transform::GlobalTransform;
 pub use hierarchy::{Children, Parent};
 pub use inventory::{

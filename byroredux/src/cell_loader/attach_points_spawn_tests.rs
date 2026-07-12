@@ -31,6 +31,7 @@ fn cached_with_attach(
         flame_attach_offset: None,
         attach_points,
         child_attach_connections,
+        furniture: None,
     }
 }
 

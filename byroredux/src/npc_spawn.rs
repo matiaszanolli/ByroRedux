@@ -328,6 +328,40 @@ pub fn load_idle_clip(
     Some(handle)
 }
 
+/// Load the shared per-cell idle-clip **pool** — the set of generic
+/// standing idles an NPC can be assigned at spawn (`pick_idle_handle`).
+/// Each clip is registered once (path-keyed via `load_idle_clip` →
+/// `AnimationClipRegistry::get_or_insert_by_path`, #790) and its handle
+/// collected; re-entry across cell loads is a HashMap hit.
+///
+/// **Pool contents (M41.5 Phase A2).** Today the pool is the single
+/// verified generic standing idle, `mtidle.kf` — a BSA scan of vanilla
+/// FNV (`Fallout - Meshes.bsa`, 2026-07-11) confirmed it is the *only*
+/// unconditional full-body standing idle: every other candidate is
+/// either weapon-stance-specific (`1hmidle`/`2hlidle` — wrong on an
+/// unarmed civilian) or a `3rdp_specialidle_*` context idle
+/// (`barkeeper*`, `blacksmith`, `workbench*` — need a matching furniture
+/// / AI context to not mime in empty air). Assigning those blind would
+/// be a guess (`feedback_no_guessing`); they slot into the pool only
+/// once the IDLE-record condition tree (DATA/ANAM/CTDA) or AI-package
+/// context lands. Until then the per-NPC *variety* comes from
+/// `idle_desync` (phase + speed), not from clip diversity — the size-1
+/// pool is an intentional floor, and this fn is the extension point.
+///
+/// Returns an empty `Vec` for Havok-animation games (Skyrim+/FO4+) or
+/// when the KF isn't archived — those NPCs spawn without an idle.
+pub fn load_idle_pool(
+    world: &mut World,
+    tex_provider: &TextureProvider,
+    game: GameKind,
+) -> Vec<u32> {
+    // One verified entry today; extend here (behind the no-guessing gate
+    // above) as safe generic idles are confirmed.
+    load_idle_clip(world, tex_provider, game)
+        .into_iter()
+        .collect()
+}
+
 /// Build a sidecar path next to the given head NIF, swapping the
 /// `.nif` extension for the requested `extension` (e.g. `"egm"`,
 /// `"egt"`, `"tri"`). FaceGen co-locates all four sidecars in the
@@ -381,6 +415,72 @@ pub fn humanoid_default_idle_kf_path(game: GameKind) -> Option<&'static str> {
         }
         GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => None,
     }
+}
+
+/// Speed jitter half-range for idle desync — NPC playback rate lands in
+/// `[1 - IDLE_SPEED_JITTER, 1 + IDLE_SPEED_JITTER]`. Small enough to read
+/// as natural variation, large enough that two NPCs on the same clip
+/// visibly drift apart within a few seconds instead of breathing in
+/// lockstep. `± 8 %` keeps the loop period within ~half a second of the
+/// authored `mtidle.kf` cadence.
+const IDLE_SPEED_JITTER: f32 = 0.08;
+
+/// Deterministically derive a per-NPC idle start phase and playback speed
+/// from the NPC's stable FormId, so every actor sharing one idle clip
+/// starts at a different point in the loop and drifts at a slightly
+/// different rate. Without this, a cell full of NPCs plays the single
+/// `mtidle.kf` in perfect sync — the "mannequins breathing together"
+/// tell. See M41.5 Phase A1.
+///
+/// Deterministic (a FormId hash, **not** an RNG): the same actor produces
+/// the same phase every load, so a save/reload or a re-streamed cell
+/// re-seeds identically — matching the determinism the ECS + save paths
+/// assume.
+///
+/// Returns `(start_time, speed)`:
+/// - `start_time ∈ [0, duration)` — the seed for `AnimationPlayer.local_time`
+///   (and `prev_time`, so no spurious text-key events fire on the first
+///   tick). `0.0` when `duration` is non-positive (empty / released clip).
+/// - `speed ∈ [1 - IDLE_SPEED_JITTER, 1 + IDLE_SPEED_JITTER]`.
+pub fn idle_desync(form_id: u32, duration: f32) -> (f32, f32) {
+    // SplitMix64-style avalanche on the FormId → two independent 32-bit
+    // fractions. Cheap, allocation-free, good bit diffusion so adjacent
+    // FormIds (Bethesda hands them out sequentially within a plugin)
+    // don't produce near-identical phases.
+    let mut z = (form_id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0x1234_5678);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+
+    let frac_phase = ((z & 0xFFFF_FFFF) as f32) / (u32::MAX as f32 + 1.0);
+    let frac_speed = (((z >> 32) & 0xFFFF_FFFF) as f32) / (u32::MAX as f32 + 1.0);
+
+    let start_time = if duration > 0.0 {
+        // clamp guards f32 rounding pushing the product to exactly `duration`.
+        (frac_phase * duration).min(duration * (1.0 - f32::EPSILON))
+    } else {
+        0.0
+    };
+    // Map [0,1) → [1 - jitter, 1 + jitter].
+    let speed = 1.0 + (frac_speed * 2.0 - 1.0) * IDLE_SPEED_JITTER;
+    (start_time, speed)
+}
+
+/// Deterministically pick one idle-clip handle from the shared per-cell
+/// pool for an NPC, keyed by its stable FormId. `None` when the pool is
+/// empty (Havok-animation game, or the KF wasn't archived). The choice
+/// is stable across loads and balanced across a >1 pool; with today's
+/// size-1 pool it always resolves the single generic idle. Uses a hash
+/// multiplier distinct from [`idle_desync`]'s so clip choice and start
+/// phase don't correlate.
+fn pick_idle_handle(pool: &[u32], form_id: u32) -> Option<u32> {
+    if pool.is_empty() {
+        return None;
+    }
+    let h = (form_id as u64)
+        .wrapping_mul(0xD6E8_FEB8_6659_FD93)
+        .rotate_left(29);
+    pool.get((h % pool.len() as u64) as usize).copied()
 }
 
 /// One armor piece resolved against the ESM index, queued for mesh
@@ -529,7 +629,7 @@ pub fn spawn_npc_entity(
     game: GameKind,
     tex_provider: &TextureProvider,
     mut mat_provider: Option<&mut MaterialProvider>,
-    idle_clip_handle: Option<u32>,
+    idle_pool: &[u32],
     ref_pos: Vec3,
     ref_rot: Quat,
     ref_scale: f32,
@@ -1255,17 +1355,33 @@ pub fn spawn_npc_entity(
     world.insert(placement_root, npc_inventory);
     world.insert(placement_root, equipment_slots);
 
-    // 5. Idle animation (M41.0 Phase 2). The clip handle is
-    //    pre-registered once per cell load by `load_idle_clip` and
-    //    threaded through every `spawn_npc_entity` call so the
+    // 5. Idle animation (M41.0 Phase 2 + M41.5 Phase A). Each NPC picks a
+    //    clip from the shared per-cell idle pool by a stable FormId hash,
+    //    then seeds a per-NPC start phase + playback-speed jitter
+    //    (`idle_desync`) so a cell full of actors no longer loops the idle
+    //    in lockstep ("mannequins breathing together"). The pool is
+    //    pre-registered once per cell load (`load_idle_pool`), so the
     //    `AnimationClipRegistry` doesn't grow per-NPC.
     //
     // KF channels keyed by `Bip01 Spine`, `Bip01 Head`, etc. resolve
     // against the skeleton's BFS-scoped subtree map via
     // `with_root(skel_root)`.
-    if let (Some(skel), Some(handle)) = (skel_root, idle_clip_handle) {
-        let player = AnimationPlayer::new(handle).with_root(skel);
-        world.insert(placement_root, player);
+    if let Some(skel) = skel_root {
+        if let Some(handle) = pick_idle_handle(idle_pool, npc.form_id) {
+            // Read the clip duration so the phase seed lands in
+            // [0, duration); a released/empty slot yields 0 → phase 0.
+            let duration = world
+                .resource::<AnimationClipRegistry>()
+                .get(handle)
+                .map(|c| c.duration)
+                .unwrap_or(0.0);
+            let (start_time, speed) = idle_desync(npc.form_id, duration);
+            let mut player = AnimationPlayer::new(handle).with_root(skel);
+            player.local_time = start_time;
+            player.prev_time = start_time;
+            player.speed = speed;
+            world.insert(placement_root, player);
+        }
     }
 
     tag_descendants_as_actor(world, placement_root);
@@ -1579,6 +1695,70 @@ pub(crate) fn tag_descendants_as_actor(world: &mut World, root: EntityId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── M41.5 Phase A — idle desync + pool selection ──────────────────
+
+    #[test]
+    fn idle_desync_is_deterministic_per_form_id() {
+        // Same FormId → identical seed every call (save/reload + cell
+        // re-stream must re-derive the same phase).
+        let a = idle_desync(0x0010_A2F3, 2.0);
+        let b = idle_desync(0x0010_A2F3, 2.0);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn idle_desync_phase_in_range_and_varies() {
+        let duration = 2.0_f32;
+        // Sequential FormIds (Bethesda hands them out in runs) must not
+        // collapse to near-identical phases.
+        let (p0, s0) = idle_desync(0x0100_0001, duration);
+        let (p1, s1) = idle_desync(0x0100_0002, duration);
+        let (p2, s2) = idle_desync(0x0100_0003, duration);
+        for p in [p0, p1, p2] {
+            assert!(p >= 0.0 && p < duration, "phase {p} out of [0,{duration})");
+        }
+        for s in [s0, s1, s2] {
+            assert!(
+                (s - 1.0).abs() <= IDLE_SPEED_JITTER + 1e-6,
+                "speed {s} outside ±{IDLE_SPEED_JITTER}",
+            );
+        }
+        // Adjacent ids diverge in phase (avalanche hash, not sequential).
+        assert!((p0 - p1).abs() > 1e-4 && (p1 - p2).abs() > 1e-4);
+    }
+
+    #[test]
+    fn idle_desync_zero_duration_yields_zero_phase() {
+        // Empty / released clip slot: no phase, speed still jittered.
+        let (phase, speed) = idle_desync(0xDEAD_BEEF, 0.0);
+        assert_eq!(phase, 0.0);
+        assert!((speed - 1.0).abs() <= IDLE_SPEED_JITTER + 1e-6);
+    }
+
+    #[test]
+    fn pick_idle_handle_empty_pool_is_none() {
+        assert_eq!(pick_idle_handle(&[], 0x1234), None);
+    }
+
+    #[test]
+    fn pick_idle_handle_size_one_always_resolves() {
+        // Today's floor: the size-1 pool always yields the single handle
+        // regardless of FormId.
+        assert_eq!(pick_idle_handle(&[7], 0x0001), Some(7));
+        assert_eq!(pick_idle_handle(&[7], 0xF00D_BABE), Some(7));
+    }
+
+    #[test]
+    fn pick_idle_handle_is_deterministic_and_in_bounds() {
+        // Forward-compatible: a >1 pool selects stably and in-range.
+        let pool = [10_u32, 11, 12, 13];
+        for id in [0x01_u32, 0x02, 0xABCD, 0x0010_A2F3] {
+            let h = pick_idle_handle(&pool, id).unwrap();
+            assert!(pool.contains(&h));
+            assert_eq!(pick_idle_handle(&pool, id), Some(h), "stable per id");
+        }
+    }
 
     #[test]
     fn prebaked_facegen_nif_path_matches_vanilla_layout() {

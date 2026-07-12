@@ -17,7 +17,9 @@ use crate::asset_provider::{merge_bgsm_into_mesh, MaterialProvider};
 
 use crate::cell_loader::nif_import_registry::CachedNifImport;
 
-use super::attach::{attach_points_component, child_attach_connections_component};
+use super::attach::{
+    attach_points_component, child_attach_connections_component, furniture_component,
+};
 
 /// Parse + import a NIF scene once. Returns `None` on parse failure
 /// or when the scene has zero useful geometry. All per-block parse
@@ -175,6 +177,18 @@ pub(super) fn parse_and_import_nif(
     let child_attach_connections = byroredux_nif::import::extract_child_attach_connections(&scene)
         .map(|c| child_attach_connections_component(&c, pool));
 
+    // M41.5 Phase B — lift `BSFurnitureMarker` sit/sleep/lean positions to
+    // the `Furniture` ECS component (the node array doesn't survive into
+    // `CachedNifImport`). `None` for the dominant non-furniture case.
+    let furniture = {
+        let markers = byroredux_nif::import::extract_furniture_markers(&scene);
+        if markers.is_empty() {
+            None
+        } else {
+            Some(furniture_component(&markers))
+        }
+    };
+
     Some(Arc::new(CachedNifImport {
         meshes,
         collisions,
@@ -199,6 +213,7 @@ pub(super) fn parse_and_import_nif(
         flame_attach_offset,
         attach_points,
         child_attach_connections,
+        furniture,
     }))
 }
 
@@ -396,5 +411,7 @@ pub(super) fn parse_and_import_spt(
         // blocks. #1594.
         attach_points: None,
         child_attach_connections: None,
+        // SpeedTree placeholders carry no furniture markers. M41.5 Phase B.
+        furniture: None,
     }))
 }

@@ -107,6 +107,13 @@ pub(crate) struct CachedNifImport {
     /// `None` when absent. See #985 / #1594.
     pub(super) child_attach_connections:
         Option<byroredux_core::ecs::components::ChildAttachConnections>,
+    /// Sit/sleep/lean entry markers from a `BSFurnitureMarker` block,
+    /// lifted to the `Furniture` ECS component at parse time (the node
+    /// array doesn't survive into this cache) and stamped onto the
+    /// placement root at spawn. `None` for the dominant non-furniture
+    /// case. Surfacing the markers is the foundation for actor seating
+    /// (M41.5 Phase C); this just lands them in the ECS. See M41.5 Phase B.
+    pub(super) furniture: Option<byroredux_core::ecs::components::Furniture>,
     // SPT-NEW-03 / #1711 — route divergence, documented intentionally.
     //
     // `ImportedScene::bs_bound` (an OBND/BSBound-derived AABB) is deliberately

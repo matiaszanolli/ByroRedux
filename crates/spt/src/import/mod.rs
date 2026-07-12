@@ -179,6 +179,8 @@ pub fn import_spt_scene(
         // SpeedTree placeholders carry no FO4-weapon-mod attach graph.
         attach_points: None,
         child_attach_connections: None,
+        // SpeedTree placeholder billboards carry no furniture markers.
+        furniture_markers: Vec::new(),
         embedded_clip: None,
         // SpeedTree placeholder billboards carry no Havok ragdoll.
         ragdoll: None,
