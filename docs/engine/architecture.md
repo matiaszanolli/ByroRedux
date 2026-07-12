@@ -299,7 +299,7 @@ Workspace-wide metrics (ground truth lives in
 | Workspace members                   | 21 (19 crates + `byroredux` + `byro-dbg`) |
 | Tests passing                       | ~2635          |
 | NIFs in per-game integration sweeps | 184,886        |
-| Per-game NIF clean-parse rate       | 100% on FO3 / FNV / Skyrim SE; Oblivion 96.24%, FO4 96.46%, FO76 97.34%, Starfield 98.6% aggregate (recoverable 100% except Oblivion 99.99%; sweep 2026-04-27) |
+| Per-game NIF clean-parse rate       | 100% on FO3 / FNV / Skyrim SE / FO4 / FO76; Oblivion 99.93%, Starfield 99.64% aggregate (recoverable 100% on all games; sweep 2026-07-11, #1900) |
 | Supported archive formats           | BSA v103/104/105, BA2 v1/2/3/7/8 |
 
 What works today, end-to-end:

@@ -202,7 +202,7 @@ The Phase 1 measurement reveals that **the existing handlers already decode Star
 **Revised effort**: minimum-scope "Cydonia interior renders" Phase 5 milestone drops from the Phase 0 estimate of 5-7 sessions to **1-2 sessions**. The remaining unknowns aren't ESM issues — they're:
 
 1. Does the Starfield BA2 mesh archive open + extract Cydonia NIFs? (Already works per existing `--bsa` flag.)
-2. Does `import_nif_scene` parse those NIFs? (Already works — 98.6% / 100% recoverable per ROADMAP.)
+2. Does `import_nif_scene` parse those NIFs? (Already works — 99.64% aggregate / 100% recoverable per ROADMAP.)
 3. Does the renderer display them with Disney BSDF? (Yes per #1289 closeout.)
 
 **Phase 2+ on the original roadmap is mostly already done.** The next concrete step is to actually attempt `cargo run -- --esm Starfield.esm --cell citycydoniamainlevel --bsa "Starfield - Meshes01.ba2" --textures-ba2 "Starfield - Textures01.ba2" --materials-ba2 "Starfield - Materials.ba2"` and see what breaks.

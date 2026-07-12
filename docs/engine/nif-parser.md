@@ -6,10 +6,10 @@ game's mesh archive **recoverably at 100%** (184,886 NIFs across the
 seven-game sweep — every file links end-to-end, counting `NiUnknown`
 placeholders and truncated trailers as recoverable). The stricter
 *clean* rate (no `NiUnknown`, no truncated trailer) is 100% on
-FO3 / FNV / Skyrim SE and in the 96–99% band on FO4 / FO76 / Starfield /
-Oblivion — see [Game Compatibility](game-compatibility.md) for the live
-per-game matrix. This document explains how the parser is organised and
-what each piece does.
+FO3 / FNV / Skyrim SE / FO4 / FO76, 99.93% on Oblivion, and 99.64%
+aggregate on Starfield — see [Game Compatibility](game-compatibility.md)
+for the live per-game matrix. This document explains how the parser is
+organised and what each piece does.
 
 Source: [`crates/nif/src/`](../../crates/nif/src/)
 
@@ -626,18 +626,18 @@ Starfield coverage work below.
 
 ## Per-game NIF coverage (Oblivion → Starfield)
 
-Live numbers in [Game Compatibility](game-compatibility.md); summary as of
-the 2026-04 sweeps:
+Live numbers in [Game Compatibility](game-compatibility.md); summary
+refreshed 2026-07-11 (#1900 / NIF-D3-02):
 
 | Game | NIF clean rate | Recoverable | Notes |
 |------|----------------|-------------|-------|
-| Oblivion | 96.24% (7 730 / 8 032) | 99.99% | `block_sizes`-less; remaining ~149 NetImmerse-era files + 1 corrupt-by-design debug marker (#687 / #688 / #698 closed) |
+| Oblivion | 99.93% (8 026 / 8 032) | 100% | `block_sizes`-less; remaining 6 v3.3.0.13 NetImmerse-era marker files (#687 / #688 / #698 closed) |
 | Fallout 3 | 100% (10 989) | 100% | shared FNV parser |
 | Fallout NV | 100% (14 881) | 100% | reference title |
 | Skyrim SE | 100% (18 862) | 100% | BSTriShape packed-vertex format |
-| Fallout 4 | 96.46% (33 757 / 34 995) | 100% | FaceGen NIFs dominate the truncation tail (1 235 / 1 238) |
-| Fallout 76 | 97.34% (56 915 / 58 469) | 100% | CRC32 shader flag arrays |
-| Starfield | 98.6% aggregate (5 archives) | 100% | BSGeometry / SkinAttach / BoneTranslations dispatch (#708, #754 BSWeakReferenceNode) |
+| Fallout 4 | 100% (34 995 + 124 871 MeshesExtra) | 100% | FaceGen truncation tail resolved (#1457) |
+| Fallout 76 | 100% (58 469) | 100% | CRC32 shader flag arrays |
+| Starfield | 99.64% aggregate (5 archives) | 100% | BSGeometry / SkinAttach / BoneTranslations dispatch (#708, #754 BSWeakReferenceNode); MeshesPatch truncation tail is residual drift (#746/#747) |
 
 The two big bring-ups since the N26 era were:
 

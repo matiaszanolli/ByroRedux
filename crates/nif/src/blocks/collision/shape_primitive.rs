@@ -56,14 +56,11 @@ impl BhkMultiSphereShape {
             stream.read_u32_le()?,
         ];
         let num_spheres = stream.read_u32_le()?;
-        let mut spheres = stream.allocate_vec::<[f32; 4]>(num_spheres)?;
-        for _ in 0..num_spheres {
-            let cx = stream.read_f32_le()?;
-            let cy = stream.read_f32_le()?;
-            let cz = stream.read_f32_le()?;
-            let r = stream.read_f32_le()?;
-            spheres.push([cx, cy, cz, r]);
-        }
+        // #1902 / NIF-D6-01 — contiguous (cx,cy,cz,r) run, byte-identical
+        // to the [f32;4] bulk-read shape `read_ni_color4_array` already
+        // serves for non-color data (#981, shape_compound.rs vertices/
+        // normals). One read_exact instead of a per-element push loop.
+        let spheres = stream.read_ni_color4_array(num_spheres as usize)?;
         Ok(Self {
             material,
             shape_property,

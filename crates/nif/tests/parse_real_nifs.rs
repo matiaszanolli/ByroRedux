@@ -119,14 +119,16 @@ fn parse_rate_starfield() {
 /// Full Starfield mesh corpus — walks all 5 vanilla mesh archives so the
 /// per-archive clean rates are each independently gated. The headline
 /// `parse_rate_starfield` test only covers Meshes01 (~35% of total NIFs).
-/// Thresholds set from the 2026-04-27 audit sweep post-#754 (#759).
 ///
-/// Per-archive minimums (clean %) — measured post-#754 (2026-04-27):
-///   Meshes01.ba2        ≥ 97.0% (31 058 NIFs; 97.21% actual)
-///   Meshes02.ba2        ≥ 99.0% ( 7 552 NIFs; 100.00% actual; #754 BSWeakReferenceNode)
-///   MeshesPatch.ba2     ≥ 97.0% (29 849 NIFs; 98.11% actual; was 74% pre-#754)
-///   LODMeshes.ba2       ≥ 99.5% (19 535 NIFs; 99.92% actual)
-///   FaceMeshes.ba2      ≥ 99.5% ( 1 282 NIFs; 100.00% actual)
+/// Per-archive minimums (clean %) — refreshed 2026-07-11 (#1900 / NIF-D3-02,
+/// mirroring the FO4 #1457 treatment: measured minus ~0.5% margin, rounded
+/// down to the nearest 0.5%). The 2026-04-27 (#759) floors had gone stale
+/// by 2-3 points on every archive except MeshesPatch:
+///   Meshes01.ba2        ≥ 99.5% (31 058 NIFs; 100.00% actual; was 97.0%)
+///   Meshes02.ba2        ≥ 99.5% ( 7 552 NIFs; 100.00% actual; was 99.0%)
+///   MeshesPatch.ba2     ≥ 98.0% (29 849 NIFs; 98.91% actual; was 97.0%)
+///   LODMeshes.ba2       ≥ 99.5% (19 535 NIFs; 100.00% actual; unchanged)
+///   FaceMeshes.ba2      ≥ 99.5% ( 1 282 NIFs; 100.00% actual; unchanged)
 #[test]
 #[ignore]
 fn parse_rate_starfield_all_meshes() {
@@ -139,15 +141,15 @@ fn parse_rate_starfield_all_meshes() {
     let archives: &[ArchiveSpec] = &[
         ArchiveSpec {
             name: "Starfield - Meshes01.ba2",
-            min_clean: 0.970,
+            min_clean: 0.995,
         },
         ArchiveSpec {
             name: "Starfield - Meshes02.ba2",
-            min_clean: 0.990,
+            min_clean: 0.995,
         },
         ArchiveSpec {
             name: "Starfield - MeshesPatch.ba2",
-            min_clean: 0.970,
+            min_clean: 0.980,
         },
         ArchiveSpec {
             name: "Starfield - LODMeshes.ba2",

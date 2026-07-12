@@ -8,33 +8,34 @@ real measured numbers are.
 > matrix](../../ROADMAP.md#compatibility-matrix) is refreshed every
 > `/session-close` and is the canonical ground truth for parse rates and
 > per-cell status. This doc reconciles to it; where the two disagree,
-> ROADMAP wins. Last reconciled 2026-05-28 (Session 42 closeout).
+> ROADMAP wins. Last reconciled 2026-07-11 (#1900 / NIF-D3-02).
 
 The headline result: **every supported game parses its full mesh archive
 *recoverably* at 100%** — every file links end-to-end (counting `NiUnknown`
 placeholders and truncated trailers as recoverable). The stricter *clean*
-rate (no `NiUnknown`, no truncation) is 100% on FO3 / FNV / Skyrim SE and
-in the 96–98% band on Oblivion / FO4 / FO76 / Starfield, where the residual
-gap is parser drift on a long tail of edge-case blocks rather than a missing
-format.
+rate (no `NiUnknown`, no truncation) is 100% on FO3 / FNV / Skyrim SE / FO4 /
+FO76, 99.93% on Oblivion (6 pre-Gamebryo NetImmerse marker files with no
+global type table), and 99.64% aggregate on Starfield (the MeshesPatch
+terrain-overlay truncation tail, #746/#747) — see #1900 / NIF-D3-02.
 
 ## Parse-rate matrix
 
 Clean = no `NiUnknown` placeholders + no truncation. Recoverable = file
 parses end-to-end. Numbers from the
 `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`
-sweep against unmodded retail data; clean-rate columns measured 2026-04-26,
-Starfield aggregate 2026-04-27 (post-#754 `BSWeakReferenceNode`).
+sweep against unmodded retail data; refreshed 2026-07-11 (#1900 / NIF-D3-02
+— the 2026-04-26/27 figures had gone stale-low by 2-4 points on every row
+but Fallout 3 / FNV / Skyrim SE).
 
 | Game              | Archive            | NIF clean rate            | Recoverable | Notes |
 |-------------------|--------------------|---------------------------|-------------|-------|
-| Oblivion          | BSA v103           | **96.24%** (7 730 / 8 032) | 99.99%      | `#687` recovered 83 truncations (NiGeomMorpherController + NiControllerSequence Phase). One hard-fail on a corrupt-by-design debug marker (#698, closed). ~149 NetImmerse-era files truncate; tracked in git log. |
+| Oblivion          | BSA v103           | **99.93%** (8 026 / 8 032) | 100%        | `#687` recovered 83 truncations (NiGeomMorpherController + NiControllerSequence Phase). The corrupt-by-design debug marker (#698) is closed and no longer a hard failure. 6 v3.3.0.13 NetImmerse-era marker files (`meshes/marker_*.nif`) truncate; tracked in git log. |
 | Fallout 3         | BSA v104           | **100%** (10 989)         | 100%        | — |
 | Fallout New Vegas | BSA v104           | **100%** (14 881)         | 100%        | Reference title — most engine features shipped against FNV first. |
 | Skyrim SE         | BSA v105 (LZ4)     | **100%** (18 862)         | 100%        | — |
-| Fallout 4         | BA2 BTDX v1/v7/v8  | **96.46%** (33 757 / 34 995) | 100%     | FaceGen NIFs dominate the truncation tail (1 235 of 1 238 truncated files). |
-| Fallout 76        | BA2 BTDX v1 GNRL   | **97.34%** (56 915 / 58 469) | 100%     | — |
-| Starfield         | BA2 BTDX v2/v3 LZ4 | **98.6%** aggregate       | 100%        | Per-archive (all 5): Meshes01 97.21% (31 058), Meshes02 100% (7 552), MeshesPatch 98.11% (29 849), LODMeshes 99.92% (19 535), FaceMeshes 100% (1 282). Truncation tail in Meshes01/MeshesPatch is residual drift (#746/#747). |
+| Fallout 4         | BA2 BTDX v1/v7/v8  | **100%** (34 995 + 124 871 MeshesExtra) | 100% | FaceGen truncation tail resolved (#1457, 2026-06-14). |
+| Fallout 76        | BA2 BTDX v1 GNRL   | **100%** (58 469)         | 100%        | — |
+| Starfield         | BA2 BTDX v2/v3 LZ4 | **99.64%** aggregate      | 100%        | Per-archive (all 5): Meshes01 100% (31 058), Meshes02 100% (7 552), MeshesPatch 98.91% (29 849), LODMeshes 100% (19 535), FaceMeshes 100% (1 282). Truncation tail in MeshesPatch is residual drift (#746/#747). |
 
 The full multi-game sweep runs the seven `Game` variants in
 [`crates/nif/tests/common/mod.rs`](../../crates/nif/tests/common/mod.rs)
@@ -145,8 +146,9 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
 
 #### Fallout 4
 
-- **NIF parser**: 33,757 / 34,995 (96.46% clean, 100% recoverable) — across
-  both BA2 v1 (original release) and v7/v8 (Next Gen update) archives
+- **NIF parser**: 34,995 / 34,995 + 124,871 / 124,871 MeshesExtra (100%
+  clean, 100% recoverable, #1457) — across both BA2 v1 (original release)
+  and v7/v8 (Next Gen update) archives
 - **Archive**: BA2 BTDX v1/v7/v8 GNRL + DX10 ✓ — verified across the
   vanilla archive set, see [Archives](archives.md)
 - **NIF support**: BSTriShape FO4 packed vertex format with
@@ -189,8 +191,9 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
 
 #### Starfield
 
-- **NIF parser**: 31,058 / 31,058 on Meshes01; **98.6% aggregate clean**
-  (100% recoverable) across all five mesh archives
+- **NIF parser**: 31,058 / 31,058 on Meshes01; **99.64% aggregate clean**
+  (100% recoverable) across all five mesh archives — MeshesPatch (98.91%)
+  is the sole sub-100% archive, residual drift tracked under #746/#747
 - **Mesh archive**: BA2 BTDX v2 GNRL ✓ (32-byte header, +8-byte extension)
 - **Texture archive**: BA2 BTDX v3 DX10 ✓ — verified against the 30
   vanilla Starfield texture archives (see [Archives](archives.md)). The v3
@@ -249,9 +252,10 @@ cargo run -- --esm Starfield.esm \
 
 #### Oblivion
 
-- **NIF parser**: 7,730 / 8,032 (96.24% clean, 99.99% recoverable) —
+- **NIF parser**: 8,026 / 8,032 (99.93% clean, 100% recoverable) —
   recoverable rate bumped from the longstanding gap once the M26+ per-block
-  recovery path made the failures legible
+  recovery path made the failures legible; the residual 6 files are the
+  pre-Gamebryo NetImmerse marker placeholders below, not a hard failure
 - **Archive**: BSA v103 ✓ (147 629 / 147 629 vanilla files extract cleanly
   across all 17 Oblivion BSAs; the old "v103 decompression broken" framing
   was a stale premise, closed via #699)
@@ -272,7 +276,7 @@ cargo run -- --esm Starfield.esm \
 
 #### Fallout 76
 
-- **NIF parser**: 56,915 / 58,469 (97.34% clean, 100% recoverable)
+- **NIF parser**: 58,469 / 58,469 (100% clean, 100% recoverable)
 - **Archive**: BA2 BTDX v1 GNRL + DX10 ✓
 - **NIF support**: BSVER 155+ shader stopcond — non-empty Name = BGSM file
   path, rest of the block absent. CRC32-hashed shader flag arrays
