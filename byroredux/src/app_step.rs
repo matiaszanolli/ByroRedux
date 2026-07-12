@@ -170,25 +170,22 @@ impl App {
         // so `lod_blocks` can be borrowed mutably alongside `self.world`.
         let lod_tex = state.tex_provider.clone();
         let lod_wctx = state.wctx.clone();
-        let lod_full_radius = state.radius_load;
+        // #1866 / #1871 (LC0703-01 / LC0703-02) — every LOD ring (terrain,
+        // object, placement) gates on `radius_unload`, not `radius_load`:
+        // full cells stay resident through `radius_load + 1` under the
+        // streaming hysteresis band (`streaming.rs`), so gating on
+        // `radius_load` let a LOD block/quad load one cell early and
+        // z-fight a still-resident full model.
+        let max_full_cell_radius = state.radius_unload;
         cell_loader::stream_lod_blocks(
             &mut self.world,
             ctx,
             lod_tex.as_ref(),
             lod_wctx.as_ref(),
             player_grid,
-            lod_full_radius,
+            max_full_cell_radius,
             &mut state.lod_blocks,
         );
-        // #1866 / LC0703-01 — the object/placement LOD rings gate on
-        // `radius_unload`, not `radius_load`: full cells stay resident
-        // through `radius_load + 1` under the streaming hysteresis band
-        // (`streaming.rs`), so gating on `radius_load` let a LOD quad load
-        // one cell early and z-fight a still-resident full model. Terrain
-        // LOD's hole-mask keeps using `radius_load` unchanged (tracked
-        // separately — same root cause, different module, out of scope
-        // here).
-        let max_full_cell_radius = state.radius_unload;
         // Distant object LOD (Skyrim+/FO4 `.bto`) — no-op on other games.
         cell_loader::stream_object_lod_blocks(
             &mut self.world,

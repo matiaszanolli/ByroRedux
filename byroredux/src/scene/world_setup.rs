@@ -594,11 +594,15 @@ pub(crate) fn stream_initial_radius(
 
     // Distant-terrain LOD ring (#view-dist). With every full-detail cell
     // now loaded, build the coarse LOD blocks that extend view distance
-    // ~10× beyond the streamed ring. Cells inside `radius_load` are holed
-    // out so the LOD never overlaps the near terrain. Slice 2 (#1373):
-    // populate `state.lod_blocks` so the ring is tracked and re-centered as
-    // the player walks (the initial call runs against an empty map → spawns
-    // the whole ring around the spawn cell).
+    // ~10× beyond the streamed ring. Cells inside `radius_unload` are holed
+    // out so the LOD never overlaps the near terrain — #1866 / #1871
+    // (LC0703-01 / LC0703-02): full cells stay resident through
+    // `radius_load + 1` under the streaming hysteresis band, so gating on
+    // `radius_load` let a LOD block load one cell early and z-fight a
+    // still-resident full model. Slice 2 (#1373): populate `state.lod_blocks`
+    // so the ring is tracked and re-centered as the player walks (the
+    // initial call runs against an empty map → spawns the whole ring around
+    // the spawn cell).
     let lod_tex = state.tex_provider.clone();
     cell_loader::stream_lod_blocks(
         world,
@@ -606,15 +610,9 @@ pub(crate) fn stream_initial_radius(
         lod_tex.as_ref(),
         wctx.as_ref(),
         (cx, cy),
-        state.radius_load,
+        state.radius_unload,
         &mut state.lod_blocks,
     );
-    // #1866 / LC0703-01 — gate on `radius_unload`, not `radius_load`: full
-    // cells stay resident through `radius_load + 1` under the streaming
-    // hysteresis band, so gating on `radius_load` let a LOD quad/cell load
-    // one cell early and z-fight a still-resident full model. Terrain LOD's
-    // hole-mask above keeps using `radius_load` unchanged (tracked
-    // separately).
     // Distant object LOD (Skyrim+/FO4 `.bto`) — no-op on other games.
     cell_loader::stream_object_lod_blocks(
         world,

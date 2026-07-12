@@ -109,8 +109,10 @@ Dimensions are ordered by Oblivion-specific risk: NIF version handling first
 - **#1509 regression guard** (`crates/nif/src/blocks/controller/morph.rs`):
   `NiGeomMorpherController` gates its trailing field on `bsver > 9` (NOT the old
   `bsver != 0 && bsver <= 11`). `doghead.nif` is v10.2.0.0 **bsver 9** and must
-  keep the field; an off-by-band gate restarts `NiMorphData` 24 B late and
-  truncates the file. Tests: `crates/nif/src/blocks/controller/path_lookat_tests.rs`.
+  **skip** the trailing field; Oblivion's bsver-**11** morph rigs (e.g.
+  `obgatemini01.nif`) must **keep** it — an off-by-band gate either direction
+  truncates/misaligns `NiMorphData`. Tests:
+  `crates/nif/src/blocks/controller/path_lookat_tests.rs`.
 - **#1506/#1507/#1508 regression guards** — the resolved stride-drift family.
   Each was a `since`/`until` field gated on the wrong comparator dropping N
   bytes. Confirm `NiInterpController`/`NiQuatTransform`, `NiPSysData` + emitter,

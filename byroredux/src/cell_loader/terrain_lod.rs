@@ -116,6 +116,25 @@ fn chebyshev(a: (i32, i32), b: (i32, i32)) -> i32 {
     (a.0 - b.0).abs().max((a.1 - b.1).abs())
 }
 
+/// Whether cell `(gx, gy)` sits inside the full-detail region and should be
+/// holed out of the LOD mesh (left for the streamed near terrain to cover).
+///
+/// `max_full_cell_radius` **must** be the caller's cell-streaming
+/// `radius_unload`, not `radius_load` — #1871 / LC0703-02 (the terrain
+/// sibling of #1866 / LC0703-01). Full cells load at `radius_load` but only
+/// unload past `radius_unload` (`radius_load + 1`, the streaming hysteresis
+/// band that prevents load/unload thrash at the boundary — see
+/// `streaming.rs`), so a cell at exactly `radius_load + 1` can still hold a
+/// resident full landscape. Gating this predicate on `radius_load` let the
+/// LOD mesh render un-holed at that same cell, z-fighting the still-resident
+/// full-detail terrain. Gating on `radius_unload` means a cell is only left
+/// un-holed once it's provably beyond any possible full-cell residency.
+/// Single source of truth for both [`block_hole_mask`] and
+/// [`spawn_lod_block`]'s per-vertex hole test, so the two can't drift apart.
+fn cell_is_full_detail(gx: i32, gy: i32, player_grid: (i32, i32), max_full_cell_radius: i32) -> bool {
+    chebyshev((gx, gy), player_grid) <= max_full_cell_radius
+}
+
 // Compile-time footprint assertions (#1378): pin the worst-case LOD ring
 // vertex + index count against the renderer's pool soft caps so that a
 // parameter retune (larger RADIUS, smaller STRIDE) fails CI rather than
@@ -182,15 +201,18 @@ fn all_holed_mask() -> u16 {
 /// full-detail radius (streamed near terrain renders it) or has no
 /// landscape. Stored on [`LodBlock`] so a boundary block is regenerated
 /// only when its pattern actually changes.
+///
+/// `max_full_cell_radius` **must** be the caller's `radius_unload` — see
+/// [`cell_is_full_detail`] (#1871 / LC0703-02).
 fn block_hole_mask(
     cells_map: &HashMap<(i32, i32), CellData>,
     bi: i32,
     bj: i32,
     player_grid: (i32, i32),
-    full_radius_load: i32,
+    max_full_cell_radius: i32,
 ) -> u16 {
     assemble_hole_mask(bi, bj, |gx, gy| {
-        chebyshev((gx, gy), player_grid) <= full_radius_load
+        cell_is_full_detail(gx, gy, player_grid, max_full_cell_radius)
             || cells_map
                 .get(&(gx, gy))
                 .and_then(|cell| cell.landscape.as_ref())
@@ -207,16 +229,20 @@ fn block_hole_mask(
 ///     moved with the player) are regenerated so the LOD never overlaps or
 ///     gaps against the streamed near terrain.
 ///
-/// Cells inside `full_radius_load` are holed out. Called once at scene
+/// Cells inside `max_full_cell_radius` are holed out. Called once at scene
 /// setup (against an empty map → spawns the whole ring) and again on every
 /// cell-boundary crossing from `App::step_streaming`.
+///
+/// `max_full_cell_radius` **must** be the caller's cell-streaming
+/// `radius_unload`, not `radius_load` — see [`cell_is_full_detail`]
+/// (#1871 / LC0703-02, the terrain sibling of #1866 / LC0703-01).
 pub(crate) fn stream_lod_blocks(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     wctx: &ExteriorWorldContext,
     player_grid: (i32, i32),
-    full_radius_load: i32,
+    max_full_cell_radius: i32,
     lod_blocks: &mut HashMap<(i32, i32), LodBlock>,
 ) {
     let index = &wctx.record_index.cells;
@@ -269,7 +295,7 @@ pub(crate) fn stream_lod_blocks(
 
     // Spawn entering blocks + regenerate boundary blocks whose mask moved.
     for &(bi, bj) in &desired {
-        let mask = block_hole_mask(cells_map, bi, bj, player_grid, full_radius_load);
+        let mask = block_hole_mask(cells_map, bi, bj, player_grid, max_full_cell_radius);
         // Copy the prior mask out before mutating the map (no borrow held).
         let prev_mask = lod_blocks.get(&(bi, bj)).map(|b| b.hole_mask);
 
@@ -327,7 +353,7 @@ pub(crate) fn stream_lod_blocks(
                 bi,
                 bj,
                 player_grid,
-                full_radius_load,
+                max_full_cell_radius,
                 world_form_id,
             )
         });
@@ -380,6 +406,9 @@ pub(crate) fn unload_lod_block(world: &mut World, ctx: &mut VulkanContext, block
 /// (nothing spawned) when the block is entirely holes — every cell either
 /// missing, landscape-less, or inside the full-detail radius — or the
 /// upload fails. On success returns the [`LodBlock`] for streaming tracking.
+///
+/// `max_full_cell_radius` **must** be the caller's `radius_unload` — see
+/// [`cell_is_full_detail`] (#1871 / LC0703-02).
 #[allow(clippy::too_many_arguments)]
 fn spawn_lod_block(
     world: &mut World,
@@ -390,7 +419,7 @@ fn spawn_lod_block(
     bi: i32,
     bj: i32,
     player_grid: (i32, i32),
-    full_radius_load: i32,
+    max_full_cell_radius: i32,
     world_form_id: u32,
 ) -> Option<LodBlock> {
     let k = LOD_BLOCK_CELLS;
@@ -419,7 +448,7 @@ fn spawn_lod_block(
 
             // Cell inside the full-detail ring → leave a hole for the
             // streamed near terrain (no overlap / z-fight).
-            let full_detail = chebyshev((gx, gy), player_grid) <= full_radius_load;
+            let full_detail = cell_is_full_detail(gx, gy, player_grid, max_full_cell_radius);
             let land = if full_detail {
                 None
             } else {
@@ -605,7 +634,7 @@ fn spawn_lod_block(
     // and is skipped by any TLAS-membership logic.
     world.insert(entity, IsLodTerrain);
 
-    let hole_mask = block_hole_mask(cells_map, bi, bj, player_grid, full_radius_load);
+    let hole_mask = block_hole_mask(cells_map, bi, bj, player_grid, max_full_cell_radius);
     Some(LodBlock {
         entity,
         mesh_handle,
@@ -678,6 +707,42 @@ mod tests {
         assert_eq!(chebyshev((0, 0), (0, 0)), 0);
         assert_eq!(chebyshev((3, 1), (0, 0)), 3);
         assert_eq!(chebyshev((-2, 5), (0, 0)), 5);
+    }
+
+    /// #1871 / LC0703-02 — the terrain sibling of #1866 / LC0703-01. A cell
+    /// whose nearest full-detail distance sits exactly at the streaming
+    /// hysteresis boundary (`radius_load + 1 == radius_unload`) must NOT be
+    /// left un-holed (i.e. must stay full-detail-excluded from the LOD mesh)
+    /// when gated on `radius_unload`, even though the pre-fix code (gating
+    /// on `radius_load`) would have left it un-holed — that one-cell band is
+    /// exactly where a full cell can still be resident (unload only fires
+    /// past `radius_unload`), so rendering LOD terrain there would z-fight
+    /// the still-resident full-detail terrain.
+    #[test]
+    fn cell_is_full_detail_covers_hysteresis_band_when_gated_on_radius_unload() {
+        let radius_load = 5;
+        let radius_unload = radius_load + 1; // streaming.rs's hysteresis rule
+        let player = (0, 0);
+        let cell = (radius_unload, 0); // nearest cell at exactly radius_load+1
+
+        // Buggy pre-fix behaviour: gating on radius_load does NOT cover this
+        // cell (it's one past radius_load), so it would be left un-holed.
+        assert!(
+            !cell_is_full_detail(cell.0, cell.1, player, radius_load),
+            "sanity: radius_load gating must reproduce the pre-fix bug"
+        );
+
+        // Fixed behaviour: gating on radius_unload covers it (holed out —
+        // left for the streamed near terrain, not rendered as LOD).
+        assert!(
+            cell_is_full_detail(cell.0, cell.1, player, radius_unload),
+            "a cell at exactly radius_load+1 can still hold a resident full \
+             REFR under the load/unload hysteresis band — LOD terrain must \
+             not render there"
+        );
+
+        // A cell safely beyond the hysteresis band is still LOD-eligible.
+        assert!(!cell_is_full_detail(radius_unload + 1, 0, player, radius_unload));
     }
 
     /// #1373 — a boundary block's hole mask shifts as the player crosses
