@@ -1,34 +1,37 @@
 //! Sandbox seat procedure (M42) — seats sandboxing actors in nearby free
 //! furniture. **Registered only when `BYRO_SANDBOX_SIT` is set** (see
-//! `boot.rs`); gated off by default pending the sit-enter transition.
+//! `boot.rs`); gated off by default pending live confirmation of Phase A.
 //!
 //! For each [`SandboxBehavior`] actor not yet [`Seated`], find the nearest
 //! unreserved [`Furniture`] with a sit marker within a radius, reserve it,
 //! snap the actor's placement-root [`Transform`] onto the seat (the marker
-//! `offset` is the actor's floor-root position per nif.xml), and switch its
-//! [`AnimationPlayer`] to the generic sit loop.
+//! `offset` is the actor's floor-root position per nif.xml), and park its
+//! [`AnimationPlayer`] on the sit-enter clip's final (fully-seated) frame.
 //!
-//! ## Why it's gated (M42.0b diagnosis, live bone inspection)
+//! ## The body-lowering mechanism (M42.1)
 //!
-//! Placement + clip binding are **verified correct**: seated actors land on
-//! the right furniture marker at floor height, and the sit clip *is* applied
-//! (a seated actor's `Bip01 L Thigh` local rotation matches the clip's
-//! authored folded-leg pose exactly, distinct from a standing actor's).
+//! M42.0 first swapped to the generic `dynamicidle_chairsit` / `dynamicidle_sit`
+//! **loop** — but those carry **no `Bip01` / `Pelvis` / `NonAccum` channel**:
+//! they fold the limbs but never lower the body, so the actor floated ~90 units
+//! above the seat (feet measured world-y ≈ 3540 over a 3456 floor). Placement
+//! and clip binding were verified correct at the time (a seated actor's
+//! `Bip01 L Thigh` local rotation matched the clip's authored folded pose).
 //!
-//! But the generic `dynamicidle_chairsit` / `dynamicidle_sit` clips carry
-//! **no `Bip01` / `Pelvis` / `NonAccum` channel** — they fold the limbs but
-//! never lower the body. They are *loops* authored to run *after* a sitdown
-//! transition has already translated `Bip01` down onto the seat. Played from
-//! the standing bind pose with no transition, the actor holds a correct
-//! sitting leg-fold while floating ~85 units above the seat (feet measured at
-//! world-y ≈ 3540 over a 3456 seat floor). FNV ships no standalone sitdown
-//! KF — the enter is driven by the anim-group/special-idle system we don't
-//! have. The fix (a furniture sit-enter transition that lowers `Bip01`) is
-//! its own milestone; everything here is the groundwork for it.
+//! The loops are meant to run *after* a sit-**enter** transition that lowers the
+//! body. FNV ships those enter clips (e.g. `chairskirt_leftenter`): they drive
+//! the accum root `Bip01` (y→0) and `Bip01 NonAccum` (y 66.67→36.87) down onto
+//! the seat, and their **final frame is a complete grounded seated pose**. So
+//! Phase A parks the player on that final frame: `local_time = duration`,
+//! `playing = false` (the enter clip's `Reverse` cycle would otherwise ping-pong
+//! back to standing). The engine applies the accum root's vertical translation
+//! as pose (`split_root_motion` keeps Y; horizontal X/Z is discarded — no
+//! `RootMotionDelta` consumer), so no approach-walk handling is needed.
 //!
 //! v0 scope (documented approximations): nearest free chair, seat once, no
-//! scoring / scheduling / meals / wander / ownership, no pathing
-//! (snap-to-seat), generic sit clip, furniture-rotation facing.
+//! scoring / scheduling / meals / wander / ownership, no pathing (snap-to-seat),
+//! one verified chair enter for all sit markers (per-furniture-type enter/loop
+//! mapping is Phase C), static held pose (fidget-loop blend is Phase B),
+//! furniture-rotation facing.
 
 use std::collections::HashSet;
 
@@ -70,13 +73,24 @@ fn is_sit_marker(m: &FurnitureMarker) -> bool {
 ///
 /// **Facing.** Skyrim+/FO4 markers carry a radian `heading` about +Z
 /// (`heading_z_radians`). Legacy Oblivion/FO3/FNV markers carry only an
-/// `Orientation` ushort that indexes `furnituremarkerNN.nif` (undecoded),
-/// so legacy inherits the furniture's own world rotation (local identity).
+/// `Orientation` ushort that indexes `furnituremarkerNN.nif` (undecoded), so
+/// legacy facing is derived geometrically: the actor faces from the marker
+/// toward the furniture centre — the seating direction for tables/counters
+/// (each seat around a table faces its middle). In furniture-local space that
+/// direction is `normalize(-offset.xz)`; the model's forward is `+Z`, so the
+/// local yaw is `atan2(-offset.x, -offset.z)`, and `compose` maps it to world
+/// via `furn.rotation`. Inheriting the furniture's own rotation (the M42.0
+/// approximation) sat actors 90° sideways on the chair. Degenerate near-zero
+/// XZ (marker at the furniture pivot) → inherit furniture facing. The exact
+/// per-marker `Orientation` decode is deferred to Phase C.
 fn seat_world_transform(furn: &GlobalTransform, m: &FurnitureMarker) -> GlobalTransform {
     let seat_local = Vec3::from_array(m.local_offset);
     let facing = match m.heading_z_radians {
         Some(h) => Quat::from_rotation_y(h),
-        None => Quat::IDENTITY, // inherit furniture facing via `compose`
+        None if seat_local.x.abs() > 1e-3 || seat_local.z.abs() > 1e-3 => {
+            Quat::from_rotation_y((-seat_local.x).atan2(-seat_local.z))
+        }
+        None => Quat::IDENTITY, // degenerate → inherit furniture facing
     };
     GlobalTransform::compose(furn, seat_local, facing, 1.0)
 }
@@ -103,9 +117,13 @@ fn pick_nearest_seat(
 /// propagated `GlobalTransform`s; the snapped root propagates to the
 /// skeleton next frame.
 pub fn sandbox_seat_system(world: &World, _dt: f32) {
-    // No sit clip → nothing to seat (Skyrim+/Havok games, or the clip
-    // wasn't archived). Resolved once per cell into this resource.
-    let Some(sit_handle) = world.try_resource::<SandboxSitClip>().and_then(|r| r.0) else {
+    // No sit-enter clip → nothing to seat (Skyrim+/Havok games, or the clip
+    // wasn't archived). Resolved once per cell into this resource as
+    // `(handle, hold_time)` — `hold_time` is the clip duration; parking the
+    // player there with `playing = false` holds the final seated frame.
+    let Some((sit_handle, hold_time)) =
+        world.try_resource::<SandboxSitClip>().and_then(|r| r.0)
+    else {
         return;
     };
     let Some(sandbox_q) = world.query::<SandboxBehavior>() else {
@@ -194,13 +212,20 @@ pub fn sandbox_seat_system(world: &World, _dt: f32) {
             }
         }
     }
-    // Switch to the sit loop, restarting cleanly.
+    // Park on the sit-enter clip's FINAL frame: `local_time = hold_time`
+    // (clip duration) so the apply phase samples each channel's last key (the
+    // fully-seated end pose), and `playing = false` so `advance_time` freezes
+    // it — the enter clip's cycle is `Reverse`, which would otherwise ping-pong
+    // back to standing. This is what lowers the body onto the seat (the enter
+    // clip's `Bip01`/`NonAccum` channels, absent from the sit loops). See the
+    // M42.1 diagnosis in this module's docs.
     if let Some(mut pq) = world.query_mut::<AnimationPlayer>() {
         for (npc, _, _) in &assignments {
             if let Some(p) = pq.get_mut(*npc) {
                 p.clip_handle = sit_handle;
-                p.local_time = 0.0;
-                p.prev_time = 0.0;
+                p.local_time = hold_time;
+                p.prev_time = hold_time;
+                p.playing = false;
                 p.speed = 1.0;
             }
         }
@@ -247,9 +272,22 @@ mod tests {
     }
 
     #[test]
-    fn seat_world_legacy_facing_inherits_furniture_rotation() {
-        // Furniture yawed 90° about Y; a legacy marker (no heading) inherits
-        // the furniture's own facing (local rotation identity).
+    fn seat_world_legacy_faces_furniture_centre() {
+        // Legacy marker (no heading) offset toward +X of an identity furniture:
+        // the actor should face back toward the centre (−X), not sideways.
+        let furn = GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0);
+        let seat = seat_world_transform(&furn, &marker([30.0, -30.0, 0.0], None, 0));
+        let fwd = seat.rotation * Vec3::Z;
+        assert!(
+            (fwd - (-Vec3::X)).length() < 1e-5,
+            "should face the furniture centre (−X), got {fwd:?}"
+        );
+    }
+
+    #[test]
+    fn seat_world_legacy_degenerate_offset_inherits_furniture_rotation() {
+        // Marker at the furniture pivot (near-zero XZ) → no centre direction;
+        // fall back to the furniture's own facing.
         let furn =
             GlobalTransform::new(Vec3::ZERO, Quat::from_rotation_y(core::f32::consts::FRAC_PI_2), 1.0);
         let seat = seat_world_transform(&furn, &marker([0.0, -30.0, 0.0], None, 0));
@@ -257,7 +295,7 @@ mod tests {
         let seat_fwd = seat.rotation * Vec3::Z;
         assert!(
             (seat_fwd - furn_fwd).length() < 1e-5,
-            "legacy facing should match furniture, got {seat_fwd:?} vs {furn_fwd:?}"
+            "degenerate offset should inherit furniture facing, got {seat_fwd:?}"
         );
     }
 

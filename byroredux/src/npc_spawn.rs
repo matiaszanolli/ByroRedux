@@ -263,31 +263,45 @@ pub fn load_idle_clip(
     load_kf_clip_by_path(world, tex_provider, kf_path)
 }
 
-/// Load the generic seated-loop clip
-/// (`meshes\characters\_male\idleanims\dynamicidle_chairsit.kf`) once per
-/// cell so `sandbox_seat_system` — which has no archive provider — can
-/// switch a seated actor's `AnimationPlayer` to it via the registry. Path-
-/// keyed memoised (#790), so re-entry is a HashMap hit. `None` for
-/// Skyrim+/Havok games or when the clip isn't archived. See M42.
+/// Load the sit-**enter** transition clip once per cell so
+/// `sandbox_seat_system` — which has no archive provider — can park a seated
+/// actor's `AnimationPlayer` on its final (fully-seated) frame via the
+/// registry. Returns `(handle, duration)`: the seat system holds the clip at
+/// `local_time = duration` with `playing = false`, which yields the seated end
+/// pose (see the M42.1 diagnosis in `systems::sandbox`). Path-keyed memoised
+/// (#790). `None` for Skyrim+/Havok games or when the clip isn't archived.
 pub fn load_sit_clip(
     world: &mut World,
     tex_provider: &TextureProvider,
     game: GameKind,
-) -> Option<u32> {
-    let kf_path = sandbox_sit_kf_path(game)?;
-    load_kf_clip_by_path(world, tex_provider, kf_path)
+) -> Option<(u32, f32)> {
+    let kf_path = sandbox_sit_enter_kf_path(game)?;
+    let handle = load_kf_clip_by_path(world, tex_provider, kf_path)?;
+    // The held-frame time is the clip duration; fetch it once now so the seat
+    // system doesn't re-query the registry per assignment.
+    let duration = world
+        .resource::<AnimationClipRegistry>()
+        .get(handle)
+        .map(|c| c.duration)
+        .unwrap_or(0.0);
+    Some((handle, duration))
 }
 
-/// Archive path of the generic humanoid chair-sit dynamic-idle loop the
-/// Sandbox seat procedure plays. Verified present in vanilla FNV
-/// `Fallout - Meshes.bsa` (BSA scan 2026-07-12). `None` for games whose
-/// actors animate through Havok `.hkx` (Skyrim+/FO4+) or whose furniture
-/// sit-anim path hasn't been verified yet (Oblivion — deferred, its idle
-/// pipeline differs). FO3 shares the FNV path.
-pub fn sandbox_sit_kf_path(game: GameKind) -> Option<&'static str> {
+/// Archive path of the humanoid **sit-enter** transition the Sandbox seat
+/// procedure holds at its final frame. Unlike the `dynamicidle_*` sit *loops*
+/// (which fold the limbs but carry no `Bip01`/`NonAccum` channel, so the body
+/// never lowers onto the seat — the M42.0 float bug), this enter clip drives
+/// the accum root + `Bip01 NonAccum` down onto the seat; its last frame is a
+/// complete, grounded seated pose. Verified present in vanilla FNV
+/// `Fallout - Meshes.bsa` (BSA scan 2026-07-12). `None` for games whose actors
+/// animate through Havok `.hkx` (Skyrim+/FO4+) or whose furniture sit-anim path
+/// hasn't been verified (Oblivion — deferred). FO3 shares the FNV path. The
+/// enter↔furniture pairing is game-hardcoded; Phase A uses one verified chair
+/// enter for all sit markers (per-type mapping is Phase C).
+pub fn sandbox_sit_enter_kf_path(game: GameKind) -> Option<&'static str> {
     match game {
         GameKind::Fallout3NV => {
-            Some(r"meshes\characters\_male\idleanims\dynamicidle_chairsit.kf")
+            Some(r"meshes\characters\_male\idleanims\chairskirt_leftenter.kf")
         }
         GameKind::Oblivion
         | GameKind::Skyrim

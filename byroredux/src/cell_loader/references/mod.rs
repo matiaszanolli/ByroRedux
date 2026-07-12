@@ -231,9 +231,9 @@ pub(super) fn load_references(
         Vec::new()
     };
 
-    // M42 — resolve the generic sit-loop clip once per cell (archive
-    // provider available here; `sandbox_seat_system` has none) into the
-    // `SandboxSitClip` resource, and clear stale seat reservations from
+    // M42.1 — resolve the sit-enter clip (handle, duration) once per cell
+    // (archive provider available here; `sandbox_seat_system` has none) into
+    // the `SandboxSitClip` resource, and clear stale seat reservations from
     // the previous cell (entity ids reset on unload). `None` for
     // Skyrim+/Havok games → those actors are not seated.
     let sit_clip = crate::npc_spawn::load_sit_clip(world, tex_provider, game);
