@@ -35,8 +35,9 @@ mod water;
 mod world;
 
 pub use ai::{
-    parse_csty, parse_dial, parse_idle, parse_info, parse_mesg, parse_pack, parse_qust, CstyRecord,
-    DialRecord, IdleRecord, InfoRecord, MesgRecord, PackRecord, QustRecord,
+    active_package_is_sandbox, parse_csty, parse_dial, parse_idle, parse_info, parse_mesg,
+    parse_pack, parse_qust, CstyRecord, DialRecord, IdleRecord, InfoRecord, MesgRecord, PackRecord,
+    PackSchedule, QustRecord,
 };
 pub use character::{parse_eyes, parse_hair, parse_hdpt, EyesRecord, HairRecord, HdptRecord};
 pub use effects::{

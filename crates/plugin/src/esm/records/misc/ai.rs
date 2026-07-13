@@ -21,10 +21,88 @@ pub struct PackRecord {
     /// Flags bitfield from PKDT (schedule / location repeat / weapon
     /// draw / etc.). Low 16 bits on FO3/FNV, u32 on Skyrim+.
     pub package_flags: u32,
-    /// Procedure type — index into the 30-procedure catalog
-    /// (`Travel`, `Wander`, `Sandbox`, `Find`, `Escort`, `Follow`,
-    /// `Patrol`, `Use Item At`, ...). Read from PKDT offset 4.
+    /// Procedure type — the FO3/FNV package-type enum (0..=16):
+    /// 0 Find, 1 Follow, 2 Escort, 3 Eat, 4 Sleep, 5 Wander, 6 Travel,
+    /// 7 Accompany, 8 UseItemAt, 9 Ambush, 10 FleeNotCombat,
+    /// 11 CastMagic, 12 **Sandbox**, 13 Patrol, 14 Guard, 15 Dialogue,
+    /// 16 UseWeapon. Read as a single **byte** at PKDT offset 4.
     pub procedure_type: u32,
+    /// Schedule from PSDT (FO3/FNV). `None` when the package has no PSDT
+    /// (treated as always-active). Drives which package is *active* at a
+    /// given game hour — the M42.1 seat-assignment selector.
+    pub schedule: Option<PackSchedule>,
+}
+
+/// FO3/FNV package procedure-type index for `Sandbox` — idle activities
+/// in an area (sit, wander, use furniture). 56 % of vanilla FNV NPCs
+/// carry one; it's the dominant ambient idle behavior. See M42.
+pub const PROCEDURE_SANDBOX: u32 = 12;
+
+/// PACK schedule window from PSDT (FO3/FNV). `start_hour = None` when the raw
+/// `time` byte is -1 (0xFF) = "any time". `duration_hours` is the PSDT
+/// duration (in hours for FO3/FNV — verified against FalloutNV.esm: a
+/// bartender's `8x12` = 08:00 for 12 h, an evening idle `20x2` = 20:00 for 2 h,
+/// a `22x10` sleep = 22:00 for 10 h wrapping to 08:00).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PackSchedule {
+    pub start_hour: Option<u8>,
+    pub duration_hours: u32,
+}
+
+impl PackSchedule {
+    /// True when `hour` (0..24) falls in `[start, start + duration)` mod 24.
+    /// Any-time (`start_hour == None`) is always active.
+    pub fn active_at(&self, hour: f32) -> bool {
+        let Some(start) = self.start_hour else {
+            return true;
+        };
+        let start = start as f32;
+        let end = start + self.duration_hours as f32;
+        let h = hour.rem_euclid(24.0);
+        if end <= 24.0 {
+            h >= start && h < end
+        } else {
+            h >= start || h < end - 24.0 // wraps past midnight
+        }
+    }
+}
+
+impl PackRecord {
+    /// True when this package's procedure is `Sandbox` (the idle-in-area
+    /// behavior that drives furniture use).
+    pub fn is_sandbox(&self) -> bool {
+        self.procedure_type == PROCEDURE_SANDBOX
+    }
+
+    /// Whether this package's schedule includes `hour`. No PSDT → always
+    /// active (the package is condition/location-gated, not time-gated).
+    pub fn scheduled_active_at(&self, hour: f32) -> bool {
+        self.schedule.map_or(true, |s| s.active_at(hour))
+    }
+}
+
+/// Selection rule (M42.1): whether an NPC's *active* package at `hour` is a
+/// Sandbox package. Iterates the NPC's resolved packages in priority order
+/// (`NpcRecord.ai_packages` order) and returns the sandbox-ness of the first
+/// one whose schedule includes `hour`. This keeps day-shift workers from being
+/// treated as idle sandboxers — e.g. a bartender whose 08:00–20:00 `AtBar`
+/// package outranks an evening `Sandbox` package is *not* seated at 10:00.
+///
+/// Schedule + priority only; package conditions (CTDA) and the PLDT location
+/// are not yet evaluated. FO3/FNV sandbox locations are predominantly
+/// "in cell", already scoped by per-cell loading, so nearest-furniture-in-cell
+/// is correct once selection is right. Unresolved packages are skipped by the
+/// caller (pass only resolved records, in order).
+pub fn active_package_is_sandbox<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+) -> bool {
+    for pk in packages {
+        if pk.scheduled_active_at(hour) {
+            return pk.is_sandbox();
+        }
+    }
+    false
 }
 
 pub fn parse_pack(form_id: u32, subs: &[SubRecord]) -> PackRecord {
@@ -38,7 +116,27 @@ pub fn parse_pack(form_id: u32, subs: &[SubRecord]) -> PackRecord {
             b"PKDT" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 out.package_flags = r.u32_or_default();
-                out.procedure_type = r.u32_or_default();
+                // FO3/FNV PKDT: the procedure type is a single BYTE at
+                // offset 4, followed by type-specific / flags2 bytes.
+                // Reading it as a u32 (the pre-M42 bug) polluted the
+                // type with the next 3 bytes — e.g. a Sandbox (12)
+                // package parsed as 3452816652 / 268 / 65292. Masking to
+                // the byte restores the clean 0..=16 enum (verified
+                // against a full FalloutNV.esm sweep).
+                out.procedure_type = r.u8_or_default() as u32;
+            }
+            b"PSDT" if sub.data.len() >= 8 => {
+                // FO3/FNV PSDT: month i8, dayOfWeek i8, date u8, time i8
+                // (hour; -1/0xFF = any), duration i32 (hours). Verified vs
+                // FalloutNV.esm (AtBar 8x12, Evening 20x2, Sleep 22x10).
+                let time = sub.data[3] as i8;
+                let duration = i32::from_le_bytes([
+                    sub.data[4], sub.data[5], sub.data[6], sub.data[7],
+                ]);
+                out.schedule = Some(PackSchedule {
+                    start_hour: if time < 0 { None } else { Some(time as u8) },
+                    duration_hours: duration.max(0) as u32,
+                });
             }
             _ => {}
         }
@@ -693,12 +791,104 @@ mod tests {
     fn parse_pack_picks_pkdt_flags_and_procedure() {
         let mut pkdt = Vec::new();
         pkdt.extend_from_slice(&0x0000_0421u32.to_le_bytes()); // flags
-        pkdt.extend_from_slice(&6u32.to_le_bytes()); // procedure 6 = Patrol
-        let subs = vec![sub(b"EDID", b"GuardPatrolDay\0"), sub(b"PKDT", &pkdt)];
+        pkdt.extend_from_slice(&6u32.to_le_bytes()); // procedure 6 = Travel
+        let subs = vec![sub(b"EDID", b"TravelToWork\0"), sub(b"PKDT", &pkdt)];
         let p = parse_pack(0xA1A1, &subs);
-        assert_eq!(p.editor_id, "GuardPatrolDay");
+        assert_eq!(p.editor_id, "TravelToWork");
         assert_eq!(p.package_flags, 0x0000_0421);
         assert_eq!(p.procedure_type, 6);
+        assert!(!p.is_sandbox());
+    }
+
+    /// The procedure type is a single BYTE at PKDT offset 4. Real FNV
+    /// PKDTs carry type-specific data in the 3 bytes after it; the
+    /// pre-M42 u32 read polluted the type with them (a Sandbox package
+    /// parsed as e.g. 0xCC…0C instead of 12). Masking to the byte must
+    /// recover 12.
+    #[test]
+    fn parse_pack_reads_procedure_as_byte_not_polluted_u32() {
+        let mut pkdt = Vec::new();
+        pkdt.extend_from_slice(&0x0000_1234u32.to_le_bytes()); // flags
+        pkdt.push(12); // procedure byte = Sandbox
+        pkdt.extend_from_slice(&[0xAB, 0xCD, 0xEF]); // type-specific junk
+        let subs = vec![sub(b"EDID", b"DefaultSandbox\0"), sub(b"PKDT", &pkdt)];
+        let p = parse_pack(0xB2B2, &subs);
+        assert_eq!(
+            p.procedure_type, 12,
+            "procedure must be the byte value, not the polluted u32"
+        );
+        assert!(p.is_sandbox());
+    }
+
+    fn pack(procedure: u32, schedule: Option<PackSchedule>) -> PackRecord {
+        PackRecord {
+            procedure_type: procedure,
+            schedule,
+            ..Default::default()
+        }
+    }
+
+    fn sched(start_hour: Option<u8>, duration_hours: u32) -> Option<PackSchedule> {
+        Some(PackSchedule {
+            start_hour,
+            duration_hours,
+        })
+    }
+
+    #[test]
+    fn parse_pack_reads_psdt_schedule() {
+        // AtBar `8x12`: time byte = 8, duration i32 = 12 → 08:00 for 12 h.
+        let psdt = [0xff, 0xff, 0x00, 0x08, 0x0c, 0, 0, 0];
+        assert_eq!(
+            parse_pack(0x1, &[sub(b"PSDT", &psdt)]).schedule,
+            sched(Some(8), 12)
+        );
+        // Any-time sandbox: time byte = -1 (0xFF) → start_hour None.
+        let any = [0xff, 0xff, 0x00, 0xff, 0, 0, 0, 0];
+        assert_eq!(
+            parse_pack(0x2, &[sub(b"PSDT", &any)]).schedule,
+            sched(None, 0)
+        );
+    }
+
+    #[test]
+    fn pack_schedule_active_at_windows() {
+        let bar = PackSchedule {
+            start_hour: Some(8),
+            duration_hours: 12,
+        }; // 08:00–20:00
+        assert!(bar.active_at(10.0));
+        assert!(!bar.active_at(21.0));
+        assert!(!bar.active_at(7.9));
+        let sleep = PackSchedule {
+            start_hour: Some(22),
+            duration_hours: 10,
+        }; // 22:00–08:00 (wraps midnight)
+        assert!(sleep.active_at(23.0));
+        assert!(sleep.active_at(2.0));
+        assert!(!sleep.active_at(10.0));
+        let any = PackSchedule {
+            start_hour: None,
+            duration_hours: 0,
+        };
+        assert!(any.active_at(0.0) && any.active_at(15.0));
+    }
+
+    #[test]
+    fn active_package_selector_respects_priority_and_schedule() {
+        // Bartender's daytime package outranks an evening Sandbox fallback.
+        let bartender = pack(6, sched(Some(8), 12)); // Travel/AtBar 08–20
+        let evening = pack(PROCEDURE_SANDBOX, sched(Some(20), 2)); // sandbox 20–22
+        // 10:00 → bartender active → NOT treated as sandbox (the Trudy bug).
+        assert!(!active_package_is_sandbox([&bartender, &evening], 10.0));
+        // 21:00 → bartender off-shift, evening sandbox active.
+        assert!(active_package_is_sandbox([&bartender, &evening], 21.0));
+        // Any-time saloon sandbox behind an inactive sleep package → sandbox.
+        let sleep = pack(4, sched(Some(22), 10));
+        let anytime_sandbox = pack(PROCEDURE_SANDBOX, None);
+        assert!(active_package_is_sandbox([&sleep, &anytime_sandbox], 10.0));
+        // No resolvable packages → not sandbox.
+        assert!(!active_package_is_sandbox(std::iter::empty::<&PackRecord>(), 10.0));
     }
 
     #[test]
