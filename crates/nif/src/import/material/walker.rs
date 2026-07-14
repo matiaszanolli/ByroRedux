@@ -335,11 +335,19 @@ pub(crate) fn extract_material_info_from_refs(
                 // no CRC identifier, and the typed field is zero on
                 // BSVER >= 132, so this is a no-op for FO76+). The
                 // `NiAlphaProperty` path already covers meshes that ship one
-                // (it sets the threshold/func); this catches inline FO4 NIFs
-                // that signal cutout via the shader flag alone, where the
-                // GREATEREQUAL/default threshold stands in.
+                // (it ran at line ~118 and owns the authored threshold/func);
+                // this catches inline FO4 NIFs that signal cutout via the
+                // shader flag alone. Seed Bethesda's conventional 128/255
+                // cutout threshold when no NiAlphaProperty supplied one:
+                // `triangle.frag` gates the discard on `alphaThreshold > 0.0`,
+                // so the `MaterialInfo::default()` 0.0 would leave the flag
+                // inert (a solid opaque quad). `alpha_test_func` stays at its
+                // GREATEREQUAL default. See #1985 (FO4-D5-01).
                 if shader.shader_flags_2 & crate::shader_flags::fo4_slsf2::ALPHA_TEST != 0 {
                     info.alpha_test = true;
+                    if !info.alpha_property_consumed {
+                        info.alpha_threshold = 128.0 / 255.0;
+                    }
                 }
             }
             // Capture rich material data.

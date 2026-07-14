@@ -119,6 +119,19 @@ fn fo4_alpha_test_flag_sets_field() {
         info.alpha_test,
         "FO4 F4SF2 bit 25 must OR alpha_test into MaterialInfo (#1592)"
     );
+    // #1985 (FO4-D5-01): the flag alone must also seed a shader-usable
+    // threshold. `triangle.frag` gates the discard on `alphaThreshold > 0.0`,
+    // so the default 0.0 would leave the cutout inert (a solid opaque quad).
+    // With no NiAlphaProperty present, the walker seeds Bethesda's 128/255.
+    assert!(
+        info.alpha_threshold > 0.0,
+        "FO4 shader-flag-only alpha test must seed a usable threshold, not leave it 0.0 (#1985)"
+    );
+    assert_eq!(
+        info.alpha_threshold,
+        128.0 / 255.0,
+        "expected Bethesda's conventional 128/255 cutout threshold (#1985)"
+    );
     assert!(!info.model_space_normals, "MSN bit was not set");
 }
 
