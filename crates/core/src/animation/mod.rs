@@ -494,6 +494,36 @@ mod tests {
     }
 
     #[test]
+    fn advance_time_reverse_hitch_larger_than_period() {
+        // #1980: a frame hitch on a short Reverse clip advances `delta` past a
+        // full `2*duration` period; the triangle-wave fold must keep
+        // `local_time` in `[0, duration]` (a single reflection would not).
+        let clip = AnimationClip {
+            name: "short_reverse".to_string(),
+            duration: 0.1,
+            cycle_type: CycleType::Reverse,
+            frequency: 1.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        };
+        let mut player = AnimationPlayer::new(0);
+        // dt=0.55 → delta=0.55, far beyond 2*duration=0.2.
+        advance_time(&mut player, &clip, 0.55);
+        assert!(
+            player.local_time >= 0.0 && player.local_time <= clip.duration,
+            "local_time {} escaped [0, {}]",
+            player.local_time,
+            clip.duration
+        );
+    }
+
+    #[test]
     fn clip_registry_add_and_get() {
         let mut reg = AnimationClipRegistry::new();
         let clip = AnimationClip {

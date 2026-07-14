@@ -50,6 +50,39 @@ impl Component for AnimationPlayer {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Fold a ping-pong (`CycleType::Reverse`) clock advanced by `delta` back into
+/// `[0, duration]` via a triangle wave over period `2*duration`.
+///
+/// Returns the new `(local_time, reverse_direction)`, where `reverse_direction`
+/// means time is currently moving backward (duration → 0). Unlike a single
+/// reflection, this stays in range for **any** `delta` magnitude (a frame hitch
+/// on a short clip, a large `speed`/`frequency`, or a negative `delta`), because
+/// it reconstructs the monotonic phase, advances it, and wraps a full period.
+pub(crate) fn fold_reverse_time(
+    local_time: f32,
+    reverse_direction: bool,
+    delta: f32,
+    duration: f32,
+) -> (f32, bool) {
+    if duration <= 0.0 {
+        return (0.0, false);
+    }
+    let period = 2.0 * duration;
+    // Reconstruct the monotonic phase along [0, 2*duration): forward maps
+    // directly, backward is mirrored into the second half.
+    let phase = if reverse_direction {
+        period - local_time
+    } else {
+        local_time
+    };
+    let m = (phase + delta).rem_euclid(period);
+    if m > duration {
+        (period - m, true)
+    } else {
+        (m, false)
+    }
+}
+
 /// Advance the animation time according to the cycle type.
 /// Updates `prev_time` to the value of `local_time` before advancing.
 pub fn advance_time(player: &mut AnimationPlayer, clip: &AnimationClip, dt: f32) {
@@ -74,20 +107,59 @@ pub fn advance_time(player: &mut AnimationPlayer, clip: &AnimationClip, dt: f32)
             }
         }
         CycleType::Reverse => {
-            if player.reverse_direction {
-                player.local_time -= delta;
-                if player.local_time <= 0.0 {
-                    player.local_time = -player.local_time;
-                    player.reverse_direction = false;
-                }
-            } else {
-                player.local_time += delta;
-                if player.local_time >= clip.duration {
-                    player.local_time = 2.0 * clip.duration - player.local_time;
-                    player.reverse_direction = true;
-                }
-            }
+            let (local_time, reverse_direction) = fold_reverse_time(
+                player.local_time,
+                player.reverse_direction,
+                delta,
+                clip.duration,
+            );
+            player.local_time = local_time;
+            player.reverse_direction = reverse_direction;
         }
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    //! #1980 — the triangle-wave fold shared by `advance_time`
+    //! (`player.rs`) and `advance_stack` (`stack.rs`) must keep
+    //! `local_time` in `[0, duration]` for any `delta` magnitude,
+    //! including one larger than a full `2*duration` period.
+    use super::fold_reverse_time;
+
+    fn in_range(t: f32, duration: f32) -> bool {
+        t >= 0.0 && t <= duration
+    }
+
+    #[test]
+    fn single_reflection_case_matches_legacy() {
+        // 0.8 forward + 0.4 → past 1.0, bounce to 0.8 reversing.
+        let (t, rev) = fold_reverse_time(0.8, false, 0.4, 1.0);
+        assert!((t - 0.8).abs() < 1e-5);
+        assert!(rev);
+    }
+
+    #[test]
+    fn delta_larger_than_full_period_stays_in_range() {
+        let duration = 0.1;
+        // delta 0.55 spans 2.75 periods of 2*duration=0.2.
+        let (t, _) = fold_reverse_time(0.05, false, 0.55, duration);
+        assert!(in_range(t, duration), "t={t} escaped [0,{duration}]");
+    }
+
+    #[test]
+    fn negative_delta_stays_in_range() {
+        let duration = 1.0;
+        // A negative advance (speed<0) folds correctly too.
+        let (t, _) = fold_reverse_time(0.2, false, -3.7, duration);
+        assert!(in_range(t, duration), "t={t} escaped [0,{duration}]");
+    }
+
+    #[test]
+    fn zero_duration_is_safe() {
+        let (t, rev) = fold_reverse_time(0.5, true, 1.0, 0.0);
+        assert_eq!(t, 0.0);
+        assert!(!rev);
     }
 }
 

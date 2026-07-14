@@ -6,6 +6,7 @@ use crate::math::{Quat, Vec3};
 use crate::string::FixedString;
 
 use super::interpolation::{sample_rotation, sample_scale, sample_translation};
+use super::player::fold_reverse_time;
 use super::registry::AnimationClipRegistry;
 use super::text_events::visit_text_key_events;
 use super::types::CycleType;
@@ -168,19 +169,14 @@ pub fn advance_stack(stack: &mut AnimationStack, registry: &AnimationClipRegistr
                 }
             }
             CycleType::Reverse => {
-                if layer.reverse_direction {
-                    layer.local_time -= delta;
-                    if layer.local_time <= 0.0 {
-                        layer.local_time = -layer.local_time;
-                        layer.reverse_direction = false;
-                    }
-                } else {
-                    layer.local_time += delta;
-                    if layer.local_time >= clip.duration {
-                        layer.local_time = 2.0 * clip.duration - layer.local_time;
-                        layer.reverse_direction = true;
-                    }
-                }
+                let (local_time, reverse_direction) = fold_reverse_time(
+                    layer.local_time,
+                    layer.reverse_direction,
+                    delta,
+                    clip.duration,
+                );
+                layer.local_time = local_time;
+                layer.reverse_direction = reverse_direction;
             }
         }
 
