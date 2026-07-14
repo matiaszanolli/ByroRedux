@@ -76,9 +76,9 @@ pub struct VolumetricsParams {
     /// (1 / m). The scattering coefficient also drives extinction in
     /// Phase 2 (single-scattering-albedo = 1).
     pub camera_pos: [f32; 4],
-    /// xyz = directional light "from sun toward ground" (world space,
-    /// matches the scene's directional-light convention), w = HG phase
-    /// asymmetry parameter g in (-1, 1). Hazy sunlight ≈ 0.4–0.6.
+    /// xyz = direction TO the sun (world space, unit; matches
+    /// GpuCamera.sun_direction / GpuLight.direction_angle, #1937), w = HG
+    /// phase asymmetry parameter g in (-1, 1). Hazy sunlight ≈ 0.4–0.6.
     pub sun_dir: [f32; 4],
     /// rgb = sun radiance (already scaled by intensity), a = the cell's
     /// XCLL fog-far distance (matches the `screen.w` field

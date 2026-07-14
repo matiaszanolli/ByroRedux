@@ -39,7 +39,7 @@
 //! | 3       | prev mesh_id        | usampler2D (G-buffer prev) |
 //! | 4       | prev indirect hist  | sampler2D (this module)    |
 //! | 5       | prev moments hist   | sampler2D (this module)    |
-//! | 6       | out indirect        | image2D (rgba16f, storage) |
+//! | 6       | out indirect        | image2D (r11f_g11f_b10f, storage) |
 //! | 7       | out moments         | image2D (rgba16f, storage) |
 //! | 8       | SvgfTemporalParams  | uniform buffer             |
 //! | 9       | curr normal         | sampler2D (RG16_SNORM oct) |

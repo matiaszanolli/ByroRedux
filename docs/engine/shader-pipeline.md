@@ -22,7 +22,7 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `ui.vert` | UI quad passthrough — position already in NDC [-1, 1] |
 | `ui.frag` | UI bindless texture sampling — no shading, straight texel output |
 | `composite.vert` | Fullscreen triangle via `gl_VertexIndex` — no vertex buffer |
-| `composite.frag` | HDR compose — direct + SVGF-denoised indirect, ACES tone-map, bloom add, volumetric froxel sample, underwater FX |
+| `composite.frag` | HDR compose — direct + SVGF-denoised indirect + dual caustic accumulator (glass/water), ACES tone-map, bloom add, volumetric froxel sample, underwater FX |
 
 ### Compute
 
@@ -139,7 +139,7 @@ After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIM
 | 240 | 16 | `fog` | xyz = fog colour; w = fog enabled (1.0) |
 | 256 | 16 | `jitter` | xy = TAA Halton jitter (NDC); z = debug flags (bitcast f32); w = is_exterior |
 | 272 | 16 | `sky_tint` | xyz = TOD/weather zenith colour; w = sun angular radius (rad) |
-| 288 | 16 | `sun_direction` | xyz = direction **from** sun (unit); w = sun intensity |
+| 288 | 16 | `sun_direction` | xyz = direction **to** sun (unit); w = sun intensity |
 | 304 | 16 | `dof_params` | x = aperture half-radius; y = focus distance; zw reserved |
 | 320 | 16 | `render_origin` | xyz = camera-relative render origin (#markarth-precision); w reserved |
 
