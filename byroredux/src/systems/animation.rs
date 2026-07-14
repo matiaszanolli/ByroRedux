@@ -511,6 +511,7 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
         {
             let mut transform_query = world.query_mut::<Transform>().unwrap();
             let mut root_motion = Vec3::ZERO;
+            let mut accum_root_animated = false;
             for (channel_name, channel) in &clip.channels {
                 let Some(target_entity) = resolve_entity(channel_name) else {
                     continue;
@@ -524,6 +525,7 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                         let (anim_pos, delta) = split_root_motion(pos);
                         transform.translation = anim_pos;
                         root_motion += delta;
+                        accum_root_animated = true;
                     } else {
                         transform.translation = pos;
                     }
@@ -539,6 +541,28 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
 
             // Write root motion delta to the player entity.
             write_root_motion(world, entity, root_motion);
+
+            // Ground the skeleton (accum-root reset). The accumulation root
+            // (e.g. FNV `Bip01`) is a root-motion *carrier*, not a pose node —
+            // its skeleton *bind* translation (FNV rigs `Bip01` at Z≈67.77,
+            // pelvis height) must not lift the body. When the clip animates the
+            // accum root, the split above already reset it; but most idle clips
+            // animate only `Bip01 NonAccum` (which holds the real root pose) and
+            // leave the accum root untouched, so its bind lift stacks onto
+            // NonAccum and floats the actor ~68 units off the floor. Zero the
+            // accum-root translation in that case (rotation kept). Matches the
+            // Gamebryo accum/non-accum model (cf. OpenMW `ResetAccumRootCallback`).
+            if !accum_root_animated {
+                if let Some(accum_entity) =
+                    clip.accum_root_name.as_ref().and_then(&resolve_entity)
+                {
+                    if let Some(mut tq) = world.query_mut::<Transform>() {
+                        if let Some(t) = tq.get_mut(accum_entity) {
+                            t.translation = Vec3::ZERO;
+                        }
+                    }
+                }
+            }
         }
 
         // Apply float channels — alpha + UV params + shader floats +
