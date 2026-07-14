@@ -578,3 +578,19 @@ pub(super) fn compute_blas_budget(
         super::super::device::total_device_local_bytes(instance, physical_device);
     (device_local_bytes / 3).max(MIN_BLAS_BUDGET_BYTES)
 }
+
+/// Pick the 8-bit shadow-ray `cullMask` bucket for a TLAS instance from its
+/// material kind: glass geometry goes in `SHADOW_MASK_GLASS`, everything else
+/// in `SHADOW_MASK_OPAQUE` (REN-D8-NEW-07 extension point). Lifted out of the
+/// inline `build_tlas` select so the bucket assignment is unit-testable and the
+/// `as u8` narrowing sits behind the compile-time ceiling pinned in
+/// `shader_constants_data.rs` (#1913). Returns `u8` because that is the width
+/// of the `Packed24_8` mask field it feeds.
+#[inline]
+pub(super) fn shadow_mask_for_material(material_kind: u32) -> u8 {
+    if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_GLASS {
+        crate::shader_constants::SHADOW_MASK_GLASS as u8
+    } else {
+        crate::shader_constants::SHADOW_MASK_OPAQUE as u8
+    }
+}

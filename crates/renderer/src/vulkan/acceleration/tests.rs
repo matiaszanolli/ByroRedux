@@ -1473,3 +1473,44 @@ fn static_blas_flags_is_fast_trace_plus_allow_compaction() {
          static BLAS is rebuilt, never refit."
     );
 }
+
+/// #1913 — pin the shadow-mask bucket assignment fed into the TLAS
+/// instance's 8-bit `Packed24_8` mask. Glass geometry must land in
+/// `SHADOW_MASK_GLASS`, everything else in `SHADOW_MASK_OPAQUE`, and the two
+/// buckets must be nonzero + distinct + 8-bit (the const-assert in
+/// `shader_constants_data.rs` enforces the ceiling at build time; this pins
+/// the runtime selection + invariant so a value edit or an inverted branch
+/// is caught by `cargo test`, not by a silent RT dropout in-engine).
+#[test]
+fn shadow_mask_bucket_selection_is_pinned() {
+    use crate::shader_constants::{SHADOW_MASK_GLASS, SHADOW_MASK_OPAQUE};
+    use crate::vulkan::scene_buffer::{
+        MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_GLASS, MATERIAL_KIND_NO_LIGHTING,
+    };
+
+    // Glass → glass bucket; every non-glass kind → opaque bucket.
+    assert_eq!(
+        shadow_mask_for_material(MATERIAL_KIND_GLASS),
+        SHADOW_MASK_GLASS as u8,
+        "glass material must select the glass shadow bucket",
+    );
+    for kind in [
+        0u32, // default / opaque PBR
+        MATERIAL_KIND_EFFECT_SHADER,
+        MATERIAL_KIND_NO_LIGHTING,
+    ] {
+        assert_eq!(
+            shadow_mask_for_material(kind),
+            SHADOW_MASK_OPAQUE as u8,
+            "non-glass material kind {kind} must select the opaque shadow bucket",
+        );
+    }
+
+    // The buckets must stay nonzero, distinct, and 8-bit: a bucket of 0 is
+    // culled by every ray query (silent total RT dropout); a collision
+    // collapses the godray two-pass narrowing; > 0xFF truncates under `as u8`.
+    assert_ne!(SHADOW_MASK_OPAQUE, 0);
+    assert_ne!(SHADOW_MASK_GLASS, 0);
+    assert_ne!(SHADOW_MASK_OPAQUE, SHADOW_MASK_GLASS);
+    assert!(SHADOW_MASK_OPAQUE <= 0xFF && SHADOW_MASK_GLASS <= 0xFF);
+}

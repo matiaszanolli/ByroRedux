@@ -9,14 +9,12 @@ use super::super::buffer::GpuBuffer;
 use super::constants::{MIN_TLAS_INSTANCE_RESERVE, UPDATABLE_AS_FLAGS};
 use super::predicates::{
     align_scratch_address, decide_use_update, draw_command_eligible_for_tlas,
-    scratch_alignment_padding, scratch_needs_growth, shrink_scratch_if_oversized,
-    tlas_instance_transform,
+    scratch_alignment_padding, scratch_needs_growth, shadow_mask_for_material,
+    shrink_scratch_if_oversized, tlas_instance_transform,
 };
 use super::types::TlasState;
 use super::AccelerationManager;
-use crate::shader_constants::{SHADOW_MASK_GLASS, SHADOW_MASK_OPAQUE};
 use crate::vulkan::context::DrawCommand;
-use crate::vulkan::scene_buffer::MATERIAL_KIND_GLASS;
 use anyhow::{Context, Result};
 use ash::vk;
 
@@ -261,11 +259,10 @@ impl AccelerationManager {
             // no glass in the way" (e.g. an interior cell with no
             // ceiling mesh, common Bethesda authoring practice since
             // players never see it from inside).
-            let shadow_mask = if draw_cmd.material_kind == MATERIAL_KIND_GLASS {
-                SHADOW_MASK_GLASS
-            } else {
-                SHADOW_MASK_OPAQUE
-            } as u8;
+            // Bucket select + 8-bit narrowing pulled into a pure helper so
+            // the assignment is unit-tested and the `as u8` sits behind the
+            // compile-time ceiling pin in `shader_constants_data.rs` (#1913).
+            let shadow_mask = shadow_mask_for_material(draw_cmd.material_kind);
             instances.push(vk::AccelerationStructureInstanceKHR {
                 transform,
                 // #419 — SSBO-compacted index from the shared map, NOT
@@ -592,8 +589,12 @@ impl AccelerationManager {
         current_addresses_scratch.clear();
         current_addresses_scratch.reserve(instances.len());
         for inst in &instances {
-            current_addresses_scratch
-                .push(unsafe { inst.acceleration_structure_reference.device_handle });
+            current_addresses_scratch.push(unsafe {
+                // SAFETY: `acceleration_structure_reference` is a union; every
+                // BLAS entry in this manager is device-built, so `device_handle`
+                // is the live variant at each push site (see note above).
+                inst.acceleration_structure_reference.device_handle
+            });
         }
         let (mut use_update, _did_zip) = decide_use_update(
             tlas.needs_full_rebuild,

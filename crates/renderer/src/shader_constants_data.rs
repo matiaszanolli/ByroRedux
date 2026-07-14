@@ -71,6 +71,31 @@ pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
 pub const SHADOW_MASK_OPAQUE: u32 = 0x01;
 pub const SHADOW_MASK_GLASS: u32 = 0x02;
 
+// #1913 — these buckets are declared `u32` here but packed into the 8-bit
+// `mask` field of `Packed24_8` at the TLAS instance build
+// (`acceleration/tlas.rs`) via `as u8`, which silently truncates anything
+// ≥ 0x100. A bucket that truncates to 0 is skipped by EVERY ray query
+// regardless of `cullMask` — silent, total RT dropout (no shadows /
+// reflections / GI) for that geometry, invisible to `cargo test` and to
+// validation layers. Pin the 8-bit ceiling + nonzero + distinctness at the
+// definition site so a future `SHADOW_MASK_FOLIAGE = 0x100` fails the build
+// here instead of vanishing at runtime. Mirrors the 24-bit `ssbo_idx`
+// guard in the same TLAS build (#957).
+const _: () = {
+    assert!(
+        SHADOW_MASK_OPAQUE != 0 && SHADOW_MASK_OPAQUE <= 0xFF,
+        "SHADOW_MASK_OPAQUE must be a nonzero 8-bit value (packed as u8 into Packed24_8)"
+    );
+    assert!(
+        SHADOW_MASK_GLASS != 0 && SHADOW_MASK_GLASS <= 0xFF,
+        "SHADOW_MASK_GLASS must be a nonzero 8-bit value (packed as u8 into Packed24_8)"
+    );
+    assert!(
+        SHADOW_MASK_OPAQUE != SHADOW_MASK_GLASS,
+        "SHADOW_MASK buckets must be distinct or ray-query narrowing collapses"
+    );
+};
+
 // Glass / IOR ray budget. The per-frame atomic ray pool for the glass
 // IOR refraction path; when exhausted, glass fragments drop to the
 // cheaper Fresnel-only fallback. The old 8192 (≈2048 IOR fragments)
