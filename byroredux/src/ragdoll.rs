@@ -16,13 +16,13 @@
 //! skip is needed for slice 1: propagation's bind-pose recompute is
 //! simply overwritten by the simulated pose every frame.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use byroredux_core::ecs::components::{CollisionShape, RigidBodyData};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
-use byroredux_core::ecs::{EntityId, GlobalTransform, World};
+use byroredux_core::ecs::{Children, EntityId, GlobalTransform, Parent, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_nif::import::{ImportedJointKind, ImportedRagdoll};
 use byroredux_physics::ragdoll::body_pose;
@@ -321,6 +321,18 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
 /// bone entities' `GlobalTransform`. Register in `Stage::Late` (after
 /// `physics_sync_system` steps the sim). Only the rotation + translation
 /// are written; the bone's `GlobalTransform.scale` is preserved.
+///
+/// After the body poses land, a localized transform propagation re-derives
+/// every **non-body descendant** bone's `GlobalTransform` from its now-
+/// simulated parent (`parent_global ∘ local`). Without it, bones that hang
+/// under a ragdoll body but are not themselves bodies — on the FNV skeleton
+/// the finger bones (children of `Bip01 [LR] Hand`) and the toes — keep the
+/// `animated_parent_global ∘ local` pose that PostUpdate propagation left on
+/// them (the *animated* parent, computed before writeback overwrote it), so
+/// they float detached at the pre-ragdoll pose while the body crumples
+/// (FNV-D7-01 / #1979). This is the "option 1" fix from the issue: a subtree
+/// re-derivation in the same `Stage::Late` write, self-contained and with no
+/// dependency on gating the (still-running) animation system.
 pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
     let Some(pw) = world.try_resource::<PhysicsWorld>() else {
         return;
@@ -334,6 +346,14 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
     let Some(mut gtq) = world.query_mut::<GlobalTransform>() else {
         return;
     };
+    // Hierarchy + local-pose reads for the descendant re-derivation pass.
+    // Absent (a flat skeleton with neither Parent nor Children) the pass is a
+    // no-op and only the body writeback runs. Scratch reused across actors.
+    let parent_q = world.query::<Parent>();
+    let children_q = world.query::<Children>();
+    let transform_q = world.query::<Transform>();
+    let mut body_bones: HashSet<EntityId> = HashSet::new();
+    let mut queue: VecDeque<EntityId> = VecDeque::new();
     for (actor, ragdoll) in rq.iter() {
         // The seed (activate_ragdoll) composed the body world pose as
         // body = bone ∘ body-local: `body_t = bone_t + bone_r * (local_t *
@@ -371,6 +391,61 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
                 // bone by `local_translation * Δscale`.
                 gt.rotation = bone_rotation;
                 gt.translation = t - bone_rotation * (tb.local_translation * *seed_scale);
+            }
+        }
+
+        // ── #1979 — re-derive non-body descendants from the simulated pose ──
+        //
+        // The body loop above wrote GlobalTransform on the ragdoll bones only.
+        // Any bone hanging under a body but not itself a body (fingers, toes)
+        // still holds the pose PostUpdate propagation computed from the
+        // *animated* parent, so it's detached from the crumpling body. Walk the
+        // body bones' descendants BFS and recompose each non-body bone from its
+        // parent's (now-simulated, or already-re-derived) global. Requires both
+        // Parent (to find each node's parent global) and Children (to enqueue
+        // grandchildren) — a flat skeleton with neither is already final.
+        let (Some(pq), Some(cq)) = (parent_q.as_ref(), children_q.as_ref()) else {
+            continue;
+        };
+        body_bones.clear();
+        body_bones.extend(template.bodies.iter().map(|b| b.bone));
+        // Seed with the children of every body bone; body bones themselves keep
+        // their simulated global (authoritative) and are only recursed through.
+        queue.clear();
+        for tb in &template.bodies {
+            if let Some(children) = cq.get(tb.bone) {
+                queue.extend(children.0.iter().copied());
+            }
+        }
+        while let Some(entity) = queue.pop_front() {
+            // A descendant that is itself a body keeps its simulated pose; do
+            // not overwrite it, but still walk through to its own children.
+            if !body_bones.contains(&entity) {
+                let Some(parent) = pq.get(entity) else {
+                    continue;
+                };
+                // Copy the parent global out first (BFS guarantees the parent
+                // is already final: a body from the writeback loop, or a
+                // non-body re-derived earlier in this walk).
+                let Some(parent_global) = gtq.get_mut(parent.0).map(|g| *g) else {
+                    continue;
+                };
+                let local = transform_q
+                    .as_ref()
+                    .and_then(|tq| tq.get(entity).copied())
+                    .unwrap_or(Transform::IDENTITY);
+                let composed = GlobalTransform::compose(
+                    &parent_global,
+                    local.translation,
+                    local.rotation,
+                    local.scale,
+                );
+                if let Some(g) = gtq.get_mut(entity) {
+                    *g = composed;
+                }
+            }
+            if let Some(children) = cq.get(entity) {
+                queue.extend(children.0.iter().copied());
             }
         }
     }
@@ -634,6 +709,137 @@ mod tests {
             "bone rotation must round-trip: {:?} vs {:?}",
             gt.rotation,
             orig.rotation
+        );
+    }
+
+    /// #1979 — a bone that hangs under a ragdoll body but is NOT itself a body
+    /// (fingers, toes) must follow the simulated parent after writeback, not
+    /// float at the pre-ragdoll animated pose. Build `hand` (a body) with a
+    /// non-body child `finger`; ragdoll + fall the hand under gravity; assert
+    /// the finger's `GlobalTransform` is exactly `hand_global ∘ finger_local`
+    /// (so it tracks the crumpling hand) and that it actually moved with it.
+    /// Pre-fix the writeback touched only body bones, so `finger` kept its
+    /// standing global and detached from the fallen hand.
+    #[test]
+    fn writeback_rederives_non_body_descendant_from_simulated_parent() {
+        use byroredux_core::ecs::{Children, Parent};
+        use byroredux_physics::world::PHYSICS_DT;
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<Parent>();
+        world.register::<Children>();
+        world.register::<RagdollTemplate>();
+        world.register::<RagdollActive>();
+        world.register::<Ragdoll>();
+        world.insert_resource(PhysicsWorld::new());
+
+        let actor = world.spawn();
+
+        // `hand` is a ragdoll body at (0, 1000, 0).
+        let hand = world.spawn();
+        world.insert(hand, Transform::IDENTITY);
+        world.insert(
+            hand,
+            GlobalTransform {
+                translation: Vec3::new(0.0, 1000.0, 0.0),
+                rotation: Quat::IDENTITY,
+                scale: 1.0,
+            },
+        );
+
+        // `finger` hangs off `hand` with a +X local offset. Its initial global
+        // is the correct standing placement (hand ∘ local); the bug is that it
+        // stays there while the hand falls.
+        let finger = world.spawn();
+        let finger_local = Transform::new(Vec3::new(3.0, 0.0, 0.0), Quat::IDENTITY, 1.0);
+        world.insert(finger, finger_local);
+        world.insert(
+            finger,
+            GlobalTransform {
+                translation: Vec3::new(3.0, 1000.0, 0.0),
+                rotation: Quat::IDENTITY,
+                scale: 1.0,
+            },
+        );
+        world.insert(finger, Parent(hand));
+        world.insert(hand, Children(vec![finger]));
+
+        // A second body so the physics multibody is well-formed; jointless is
+        // fine for a free fall (matches `writeback_inverts_body_local_offset`).
+        let elbow = world.spawn();
+        world.insert(
+            elbow,
+            GlobalTransform {
+                translation: Vec3::new(-50.0, 1000.0, 0.0),
+                rotation: Quat::IDENTITY,
+                scale: 1.0,
+            },
+        );
+
+        let body = |bone| RagdollTemplateBody {
+            bone,
+            local_translation: Vec3::ZERO,
+            local_rotation: Quat::IDENTITY,
+            shape: CollisionShape::Ball { radius: 5.0 },
+            mass: 4.0,
+            linear_damping: 0.05,
+            angular_damping: 0.05,
+            friction: 0.5,
+            restitution: 0.0,
+        };
+        world.insert(
+            actor,
+            RagdollTemplate {
+                bodies: vec![body(hand), body(elbow)],
+                constraints: Vec::new(),
+            },
+        );
+
+        activate_ragdoll(&world, actor).expect("activation should succeed");
+
+        let finger_init_y = 1000.0_f32;
+        for _ in 0..120 {
+            {
+                let mut pw = world.resource_mut::<PhysicsWorld>();
+                pw.step(PHYSICS_DT);
+            }
+            ragdoll_writeback_system(&world, PHYSICS_DT);
+        }
+
+        let gq = world.query::<GlobalTransform>().unwrap();
+        let gh = *gq.get(hand).unwrap();
+        let gf = *gq.get(finger).unwrap();
+
+        // The hand fell (parent is simulated, not static — test is meaningful).
+        assert!(
+            gh.translation.y < 1000.0 - 1.0,
+            "hand body should have fallen under gravity: {}",
+            gh.translation.y
+        );
+        // The finger tracks the simulated hand: global == hand ∘ finger_local.
+        let expected = GlobalTransform::compose(
+            &gh,
+            finger_local.translation,
+            finger_local.rotation,
+            finger_local.scale,
+        );
+        assert!(
+            (gf.translation - expected.translation).length() < 1e-3,
+            "finger global must be re-derived from the simulated hand: {:?} vs {:?}",
+            gf.translation,
+            expected.translation
+        );
+        assert!(
+            gf.rotation.dot(expected.rotation).abs() > 1.0 - 1e-4,
+            "finger rotation must follow the simulated hand",
+        );
+        // And it actually moved down with the hand (pre-fix it stayed at 1000).
+        assert!(
+            gf.translation.y < finger_init_y - 1.0,
+            "finger must move down with the hand, not float at the standing pose: {}",
+            gf.translation.y
         );
     }
 
