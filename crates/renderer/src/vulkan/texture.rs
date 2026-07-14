@@ -206,11 +206,19 @@ impl Texture {
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
             let buf = unsafe {
+                // SAFETY: `device` is the caller's live logical device;
+                // `staging_buffer_info` is a stack-local `BufferCreateInfo`
+                // that outlives this call and describes a TRANSFER_SRC buffer
+                // of the computed `image_size`.
                 device
                     .create_buffer(&staging_buffer_info, None)
                     .context("Failed to create DDS staging buffer")?
             };
-            let reqs = unsafe { device.get_buffer_memory_requirements(buf) };
+            let reqs = unsafe {
+                // SAFETY: pure query — `buf` was just created above by this
+                // same live `device` and has not been destroyed.
+                device.get_buffer_memory_requirements(buf)
+            };
             let alloc = allocator
                 .lock()
                 .expect("allocator lock poisoned")
@@ -224,6 +232,10 @@ impl Texture {
                 .context("Failed to allocate DDS staging memory")?;
             super::buffer::debug_assert_cpu_to_gpu_mapped(&alloc, "dds_texture_staging");
             unsafe {
+                // SAFETY: `buf` is device-created above and unbound; `alloc`
+                // is a fresh CpuToGpu allocation from this device's allocator
+                // whose `memory()`/`offset()` satisfy `buf`'s memory
+                // requirements queried just above.
                 device
                     .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
                     .context("Failed to bind DDS staging buffer")?;
@@ -262,12 +274,19 @@ impl Texture {
             .initial_layout(vk::ImageLayout::UNDEFINED);
 
         let image = unsafe {
+            // SAFETY: `device` is the caller's live logical device;
+            // `image_info` is a stack-local `ImageCreateInfo` that outlives
+            // this call and describes the device-local DDS texture.
             device
                 .create_image(&image_info, None)
                 .context("Failed to create DDS texture image")?
         };
 
-        let image_reqs = unsafe { device.get_image_memory_requirements(image) };
+        let image_reqs = unsafe {
+            // SAFETY: pure query — `image` was just created above by this same
+            // live `device` and has not been destroyed.
+            device.get_image_memory_requirements(image)
+        };
 
         let image_alloc = allocator
             .lock()
@@ -282,6 +301,10 @@ impl Texture {
             .context("Failed to allocate DDS texture image memory")?;
 
         unsafe {
+            // SAFETY: `image` is device-created above and unbound; `image_alloc`
+            // is a fresh GpuOnly allocation from this device's allocator whose
+            // `memory()`/`offset()` satisfy `image`'s memory requirements
+            // queried just above.
             device
                 .bind_image_memory(image, image_alloc.memory(), image_alloc.offset())
                 .context("Failed to bind DDS texture image memory")?;
@@ -330,6 +353,12 @@ impl Texture {
         // prior writes to expose; NONE is the Vulkan 1.3 idiom
         // post-#949 / #1100 / #1122.
         unsafe {
+            // SAFETY: `cmd` is a live command buffer in the recording state;
+            // `image` and `staging.buffer` are device-owned and live; the
+            // barrier's subresource range covers all `meta.mip_count` mips of
+            // `image`, and every `regions` entry's mip/extent/offset lies
+            // within `image`'s extent while `buffer_offset + mip_bytes` stays
+            // within the staging buffer's `image_size`.
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::NONE,
@@ -352,6 +381,10 @@ impl Texture {
         let barrier_to_read = image_barrier_transfer_dst_to_shader_read(image, meta.mip_count);
 
         unsafe {
+            // SAFETY: `cmd` is still recording; `image` is device-owned and
+            // live; `barrier_to_read`'s subresource range covers all
+            // `meta.mip_count` mips of `image` and transitions the layout the
+            // copy above left them in (TRANSFER_DST_OPTIMAL → shader-read).
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::TRANSFER,
@@ -371,6 +404,10 @@ impl Texture {
             .subresource_range(color_subresource_mips(meta.mip_count));
 
         let image_view = unsafe {
+            // SAFETY: `device` is the live logical device; `view_info` is a
+            // stack-local `ImageViewCreateInfo` that outlives this call and
+            // references the device-owned `image` created above, with a
+            // subresource range spanning its `meta.mip_count` mips.
             device
                 .create_image_view(&view_info, None)
                 .context("Failed to create DDS texture image view")?
@@ -512,6 +549,12 @@ impl Drop for Texture {
             debug_assert!(false, "Texture leaked into Drop: call destroy() first");
         }
         unsafe {
+            // SAFETY: reached only when `allocation.is_some()`, i.e. destroy()
+            // was never run, so `image_view`/`image` are still live and
+            // device-created. `self.device` is the stashed live logical device
+            // that created them; destruction order (view before image) matches
+            // the reverse of creation and neither is in use by in-flight work
+            // on this drop path.
             self.device.destroy_image_view(self.image_view, None);
             self.device.destroy_image(self.image, None);
         }
@@ -604,6 +647,10 @@ where
         .command_buffer_count(1);
 
     let cmd = unsafe {
+        // SAFETY: `device` is the caller's live logical device; `alloc_info`
+        // is a stack-local `CommandBufferAllocateInfo` that outlives this call
+        // and names the caller-owned, live `pool` with count 1 (so `[0]` is
+        // always present).
         device
             .allocate_command_buffers(&alloc_info)
             .context("Failed to allocate one-time command buffer")?[0]
@@ -613,6 +660,9 @@ where
         vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
     unsafe {
+        // SAFETY: `cmd` was just allocated above from `pool` and is in the
+        // initial state (not already recording); `begin_info` is a stack-local
+        // that outlives the call. `device` is live.
         device
             .begin_command_buffer(cmd, &begin_info)
             .context("begin one-time command buffer")?;
@@ -624,6 +674,10 @@ where
     // *without submitting*.
     if let Err(e) = f(cmd) {
         unsafe {
+            // SAFETY: `cmd` is in the recording state (begun above, never
+            // submitted); the spec requires ending it before free, so end then
+            // free. `cmd` was allocated from `pool` and is not in flight (never
+            // submitted), so freeing it here is sound. `device`/`pool` live.
             // Best-effort end; ignore the result since we're already in an
             // error path. The buffer is then freed without submission.
             let _ = device.end_command_buffer(cmd);
@@ -633,6 +687,9 @@ where
     }
 
     unsafe {
+        // SAFETY: `cmd` is in the recording state (begun above, closure
+        // succeeded); `device` is live. Ending a recording buffer is the
+        // required precondition before submission.
         device
             .end_command_buffer(cmd)
             .context("end one-time command buffer")?;
@@ -641,6 +698,12 @@ where
     let submit_info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd));
 
     unsafe {
+        // SAFETY: `cmd` is a fully-recorded (ended above), never-submitted
+        // buffer referenced by the stack-local `submit_info`; `device` is live;
+        // the queue is externally synchronised by locking `queue` around the
+        // `queue_submit` call, and the fence is either the caller's reset
+        // reusable fence or a freshly created owned one. All error paths free
+        // `cmd` and destroy the fence iff owned, so no handle outlives its use.
         // Use a dedicated fence instead of queue_wait_idle — waits only for
         // this submission, not the entire queue. Avoids serializing other
         // queue work during texture streaming or BLAS builds.

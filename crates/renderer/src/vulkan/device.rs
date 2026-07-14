@@ -178,7 +178,12 @@ pub fn smallest_device_local_heap_bytes(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
 ) -> vk::DeviceSize {
-    let mem_props = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let mem_props = unsafe {
+        // SAFETY: `instance` is the live Vulkan instance and `physical_device`
+        // was enumerated from it; the query has no preconditions beyond a valid
+        // handle and writes only into the returned properties struct.
+        instance.get_physical_device_memory_properties(physical_device)
+    };
     mem_props.memory_heaps[..mem_props.memory_heap_count as usize]
         .iter()
         .filter(|heap| heap.flags.contains(vk::MemoryHeapFlags::DEVICE_LOCAL))
@@ -205,6 +210,8 @@ pub fn pick_physical_device(
     surface: vk::SurfaceKHR,
 ) -> Result<(vk::PhysicalDevice, QueueFamilyIndices, DeviceCapabilities)> {
     let devices = unsafe {
+        // SAFETY: `instance` is the live Vulkan instance; enumeration writes
+        // only into the returned Vec of device handles.
         instance
             .enumerate_physical_devices()
             .context("Failed to enumerate physical devices")?
@@ -218,7 +225,11 @@ pub fn pick_physical_device(
         if let Some((indices, caps)) =
             is_device_suitable(instance, surface_loader, surface, device)?
         {
-            let props = unsafe { instance.get_physical_device_properties(device) };
+            let props = unsafe {
+                // SAFETY: `instance` is live and `device` was enumerated from it
+                // above; the query writes only into the returned properties struct.
+                instance.get_physical_device_properties(device)
+            };
             // SAFETY: device_name is a fixed-size [c_char; 256] array null-terminated by the
             // Vulkan driver. The pointer is valid for the lifetime of `props` (stack-local).
             let name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) };
@@ -245,6 +256,8 @@ fn is_device_suitable(
     device: vk::PhysicalDevice,
 ) -> Result<Option<(QueueFamilyIndices, DeviceCapabilities)>> {
     let available_extensions = unsafe {
+        // SAFETY: `instance` is live and `device` was enumerated from it; the
+        // query writes only into the returned Vec of extension properties.
         instance
             .enumerate_device_extension_properties(device)
             .context("Failed to enumerate device extensions")?
@@ -277,8 +290,16 @@ fn is_device_suitable(
 
     // Query features + limits for optional features we care about.
     // `samplerAnisotropy` is the only one right now (issue #136).
-    let features = unsafe { instance.get_physical_device_features(device) };
-    let properties = unsafe { instance.get_physical_device_properties(device) };
+    let features = unsafe {
+        // SAFETY: `instance` is live and `device` was enumerated from it; the
+        // query writes only into the returned features struct.
+        instance.get_physical_device_features(device)
+    };
+    let properties = unsafe {
+        // SAFETY: `instance` is live and `device` was enumerated from it; the
+        // query writes only into the returned properties struct.
+        instance.get_physical_device_properties(device)
+    };
     let sampler_anisotropy_supported = features.sampler_anisotropy == vk::TRUE;
     // Cap at 16× — the point of diminishing returns on every modern
     // GPU, and the common "16x AF" preset players expect.
@@ -307,6 +328,10 @@ fn is_device_suitable(
         .push_next(&mut vulkan12_features)
         .push_next(&mut vulkan13_features);
     unsafe {
+        // SAFETY: `instance` is live and `device` was enumerated from it;
+        // `features2` and the `vulkan12_features` / `vulkan13_features` structs
+        // it chains via pNext are stack-local and outlive this call, which
+        // writes only into them.
         instance.get_physical_device_features2(device, &mut features2);
     }
     let synchronization2_supported = vulkan13_features.synchronization2 == vk::TRUE;
@@ -335,6 +360,10 @@ fn is_device_suitable(
         .push_next(&mut indexing_props)
         .push_next(&mut accel_props);
     unsafe {
+        // SAFETY: `instance` is live and `device` was enumerated from it;
+        // `props2` and the `indexing_props` / `accel_props` structs it chains
+        // via pNext are stack-local and outlive this call, which writes only
+        // into them.
         instance.get_physical_device_properties2(device, &mut props2);
     }
     // 65535 is a u16 ceiling — it dates back to the pre-#992 `R16_UINT`
@@ -372,7 +401,11 @@ fn is_device_suitable(
     };
 
     // Find queue families.
-    let queue_families = unsafe { instance.get_physical_device_queue_family_properties(device) };
+    let queue_families = unsafe {
+        // SAFETY: `instance` is live and `device` was enumerated from it; the
+        // query writes only into the returned Vec of queue-family properties.
+        instance.get_physical_device_queue_family_properties(device)
+    };
 
     let mut graphics = None;
     let mut present = None;
@@ -385,6 +418,10 @@ fn is_device_suitable(
         }
 
         let present_support = unsafe {
+            // SAFETY: `surface_loader` wraps the live instance; `device` was
+            // enumerated from it, `surface` was created against it, and `i` is a
+            // valid queue-family index bounded by `queue_families.len()`. The
+            // query writes only into the returned support flag.
             surface_loader
                 .get_physical_device_surface_support(device, i, surface)
                 .unwrap_or(false)
@@ -549,6 +586,10 @@ pub fn create_logical_device(
     }
 
     let device = unsafe {
+        // SAFETY: `instance` is live and `physical_device` was enumerated from
+        // it; `create_info` and everything it borrows — the `queue_create_infos`
+        // slice, the `extensions` name-pointer slice, and the pNext feature
+        // structs — are stack-local and outlive this call.
         instance
             .create_device(physical_device, &create_info, None)
             .context("Failed to create logical device")?
@@ -568,9 +609,13 @@ pub fn create_logical_device(
     // `PhysicalDeviceLimits` plumbing if this ever fires.
     #[cfg(debug_assertions)]
     {
-        let atom = unsafe { instance.get_physical_device_properties(physical_device) }
-            .limits
-            .non_coherent_atom_size;
+        let atom = unsafe {
+            // SAFETY: `instance` is live and `physical_device` was enumerated
+            // from it; the query writes only into the returned properties struct.
+            instance.get_physical_device_properties(physical_device)
+        }
+        .limits
+        .non_coherent_atom_size;
         debug_assert!(
             atom <= super::buffer::NON_COHERENT_ATOM_SIZE,
             "device reports nonCoherentAtomSize={atom} > the {} the flush \
@@ -581,8 +626,18 @@ pub fn create_logical_device(
         );
     }
 
-    let graphics_queue = unsafe { device.get_device_queue(indices.graphics, 0) };
-    let present_queue = unsafe { device.get_device_queue(indices.present, 0) };
+    let graphics_queue = unsafe {
+        // SAFETY: `device` was just created above with a queue-create-info for
+        // `indices.graphics`, so queue index 0 of that family is guaranteed to
+        // exist.
+        device.get_device_queue(indices.graphics, 0)
+    };
+    let present_queue = unsafe {
+        // SAFETY: `device` was just created above with a queue-create-info for
+        // `indices.present`, so queue index 0 of that family is guaranteed to
+        // exist.
+        device.get_device_queue(indices.present, 0)
+    };
 
     log::info!(
         "Logical device created (graphics queue family: {}, present: {}, sync2: {})",

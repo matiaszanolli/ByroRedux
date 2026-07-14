@@ -26,6 +26,10 @@ impl super::buffers::SceneBuffers {
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
         let write = write_combined_image_sampler(self.descriptor_sets[frame_index], 7, &image_info);
         unsafe {
+            // SAFETY: `device` is live; `descriptor_sets[frame_index]` is device-allocated
+            // and live; `write` borrows `image_info`, whose `ao_sampler`/`ao_image_view`
+            // are caller-owned live handles, and it stays valid for the whole call. No
+            // descriptor copies.
             device.update_descriptor_sets(&[write], &[]);
         }
     }
@@ -49,6 +53,9 @@ impl super::buffers::SceneBuffers {
         let write =
             write_combined_image_sampler(self.descriptor_sets[frame_index], 15, &image_info);
         unsafe {
+            // SAFETY: `device` is live; `descriptor_sets[frame_index]` is device-allocated
+            // and live; `write` borrows `image_info`, whose depth-history view/sampler are
+            // caller-owned live handles, and it stays valid for the whole call. No copies.
             device.update_descriptor_sets(&[write], &[]);
         }
     }
@@ -78,7 +85,12 @@ impl super::buffers::SceneBuffers {
             write_storage_buffer(set, 8, &vert_info),
             write_storage_buffer(set, 9, &idx_info),
         ];
-        unsafe { device.update_descriptor_sets(&writes, &[]) }
+        unsafe {
+            // SAFETY: `device` is live; `set` is device-allocated and live; the two
+            // `writes` borrow `vert_info`/`idx_info`, whose vertex/index buffers are
+            // caller-owned live handles, and stay valid for the whole call. No copies.
+            device.update_descriptor_sets(&writes, &[])
+        }
     }
 
     /// Write cluster buffer references into the scene descriptor set for a given frame.
@@ -108,6 +120,9 @@ impl super::buffers::SceneBuffers {
             write_storage_buffer(set, 6, &index_info),
         ];
         unsafe {
+            // SAFETY: `device` is live; `set` is device-allocated and live; the two
+            // `writes` borrow `grid_info`/`index_info`, whose cluster grid/index buffers
+            // are caller-owned live handles, and stay valid for the whole call. No copies.
             device.update_descriptor_sets(&writes, &[]);
         }
     }
@@ -143,6 +158,9 @@ impl super::buffers::SceneBuffers {
             write_storage_buffer(set, 17, &prev_info),
         ];
         unsafe {
+            // SAFETY: `device` is live; `set` is device-allocated and live; the two
+            // `writes` borrow `curr_info`/`prev_info`, whose reservoir buffers are
+            // caller-owned live handles, and stay valid for the whole call. No copies.
             device.update_descriptor_sets(&writes, &[]);
         }
     }
@@ -163,6 +181,9 @@ impl super::buffers::SceneBuffers {
             write_acceleration_structure(self.descriptor_sets[frame_index], 2, &mut accel_write);
 
         unsafe {
+            // SAFETY: `device` is live; `descriptor_sets[frame_index]` is device-allocated
+            // and live; `write` is chained to `accel_write`, which borrows `accel_structs`
+            // (the caller-owned live TLAS handle), and both stay valid for the whole call.
             device.update_descriptor_sets(&[write], &[]);
         }
     }

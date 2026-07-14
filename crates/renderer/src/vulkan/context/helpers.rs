@@ -26,8 +26,12 @@ pub(super) fn find_depth_format(
     let candidates = [vk::Format::D32_SFLOAT, vk::Format::D16_UNORM];
 
     for &format in &candidates {
-        let props =
-            unsafe { instance.get_physical_device_format_properties(physical_device, format) };
+        let props = unsafe {
+            // SAFETY: pure format-capability query on the live `instance`;
+            // `physical_device` was enumerated from that instance and outlives
+            // this call.
+            instance.get_physical_device_format_properties(physical_device, format)
+        };
 
         if props
             .optimal_tiling_features
@@ -241,6 +245,10 @@ pub(super) fn create_render_pass(
         .dependencies(&dependencies);
 
     let render_pass = unsafe {
+        // SAFETY: `device` is the live logical device; `create_info` and the
+        // attachment / subpass / dependency slices it borrows all outlive this
+        // call (they are locals held above), so the CreateInfo pointers are
+        // valid for the duration of the call.
         device
             .create_render_pass(&create_info, None)
             .context("Failed to create render pass")?
@@ -312,6 +320,10 @@ pub(super) fn create_main_framebuffers(
                 .height(extent.height)
                 .layers(1);
             unsafe {
+                // SAFETY: `device` is the live logical device; `render_pass`
+                // and the attachment image views were created by this device
+                // and outlive the framebuffer; `create_info` borrows the local
+                // `attachments` array for the duration of the call.
                 device
                     .create_framebuffer(&create_info, None)
                     .context("Failed to create main framebuffer")
@@ -354,12 +366,19 @@ pub(super) fn create_depth_resources(
     // handles resource creation.
 
     let image = unsafe {
+        // SAFETY: `device` is the live logical device; `image_info` is a local
+        // that outlives this call and describes a self-contained image (no
+        // borrowed handles), so its pointers are valid for the call.
         device
             .create_image(&image_info, None)
             .context("Failed to create depth image")?
     };
 
-    let requirements = unsafe { device.get_image_memory_requirements(image) };
+    let requirements = unsafe {
+        // SAFETY: pure query — `image` was just created by `device` above and
+        // has not been destroyed.
+        device.get_image_memory_requirements(image)
+    };
 
     // Bind the allocate result to a local so the MutexGuard from
     // `.lock()` drops at end-of-statement BEFORE the `match` runs.
@@ -391,9 +410,13 @@ pub(super) fn create_depth_resources(
         }
     };
 
-    if let Err(e) =
-        unsafe { device.bind_image_memory(image, allocation.memory(), allocation.offset()) }
-    {
+    if let Err(e) = unsafe {
+        // SAFETY: `image` was created by `device` above and not yet bound;
+        // `allocation` is a live gpu-allocator allocation whose `memory()` was
+        // minted by the same device and whose `offset()` satisfies the image's
+        // reported memory requirements.
+        device.bind_image_memory(image, allocation.memory(), allocation.offset())
+    } {
         // Bind failed — destroy the image and release the allocation.
         // Order matters: destroy the image first so the allocator isn't
         // freeing memory that still has a live binding from the GPU's
@@ -422,7 +445,12 @@ pub(super) fn create_depth_resources(
             layer_count: 1,
         });
 
-    let view = match unsafe { device.create_image_view(&view_info, None) } {
+    let view = match unsafe {
+        // SAFETY: `device` is the live logical device; `view_info` is a local
+        // borrowing `image`, which was created and bound to memory by this
+        // device above and outlives the call.
+        device.create_image_view(&view_info, None)
+    } {
         Ok(v) => v,
         Err(e) => {
             // View creation failed — image exists, memory bound. Free
@@ -537,8 +565,12 @@ pub(super) fn create_depth_history_sampler(device: &ash::Device) -> Result<vk::S
         .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
         .min_lod(0.0)
         .max_lod(0.0);
-    unsafe { device.create_sampler(&info, None) }
-        .context("Failed to create depth-history sampler")
+    unsafe {
+        // SAFETY: `device` is the live logical device; `info` is a local,
+        // self-contained SamplerCreateInfo that outlives the call.
+        device.create_sampler(&info, None)
+    }
+    .context("Failed to create depth-history sampler")
 }
 
 /// One-time init of the depth-history image: UNDEFINED → clear to far depth
@@ -576,6 +608,12 @@ pub(super) fn init_depth_history_layout(
             stencil: 0,
         };
         unsafe {
+            // SAFETY: `cmd` is the one-time command buffer supplied by
+            // `with_one_time_commands`, currently in the recording state;
+            // `device` owns it and `image` (the depth-history image). The
+            // barriers and clear reference only `image` and the `range` local,
+            // and the layout transitions are recorded in dependency order
+            // (UNDEFINED → TRANSFER_DST → SHADER_READ_ONLY).
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::TOP_OF_PIPE,
@@ -645,6 +683,9 @@ pub(super) fn create_command_pool(
         .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
 
     let pool = unsafe {
+        // SAFETY: `device` is the live logical device; `create_info` is a
+        // local, self-contained CommandPoolCreateInfo (its queue-family index
+        // was validated at device creation) that outlives the call.
         device
             .create_command_pool(&create_info, None)
             .context("Failed to create command pool")?
@@ -670,6 +711,9 @@ pub(super) fn create_transfer_pool(
         .flags(vk::CommandPoolCreateFlags::TRANSIENT);
 
     let pool = unsafe {
+        // SAFETY: `device` is the live logical device; `create_info` is a
+        // local, self-contained CommandPoolCreateInfo (its queue-family index
+        // was validated at device creation) that outlives the call.
         device
             .create_command_pool(&create_info, None)
             .context("Failed to create transfer command pool")?
@@ -690,6 +734,9 @@ pub(super) fn allocate_command_buffers(
         .command_buffer_count(count as u32);
 
     let buffers = unsafe {
+        // SAFETY: `device` is the live logical device; `alloc_info` borrows
+        // `pool`, a device-owned command pool that outlives the call, and the
+        // requested count is a plain u32.
         device
             .allocate_command_buffers(&alloc_info)
             .context("Failed to allocate command buffers")?
@@ -853,6 +900,9 @@ pub(super) fn load_or_create_pipeline_cache(
     };
 
     let cache = unsafe {
+        // SAFETY: `device` is the live logical device; `create_info` borrows
+        // `validated_data` (a local that outlives the call) as initial cache
+        // bytes, already header-validated against this device above.
         device
             .create_pipeline_cache(&create_info, None)
             .context("Failed to create pipeline cache")?

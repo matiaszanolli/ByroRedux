@@ -81,6 +81,10 @@ impl WaterCausticAccum {
                     // created; no in-flight command buffer references
                     // them yet (we haven't returned `self`).
                     for s in slots.drain(..) {
+                        // SAFETY: the slot's image/view handles were created by this
+                        // device and are torn down here with the device idle (init
+                        // cleanup before returning `self`, or resize after
+                        // device_wait_idle), so no in-flight command buffer references them.
                         unsafe { Self::destroy_slot(device, allocator, s) };
                     }
                     return Err(e);
@@ -198,6 +202,9 @@ impl WaterCausticAccum {
                 // already-created storage view, free alloc, destroy image.
                 unsafe { device.destroy_image_view(storage_view, None) };
                 allocator.lock().expect("allocator lock").free(alloc).ok();
+                // SAFETY: `image` was created by this device and is destroyed here
+                // at teardown, when the device is idle (frames-in-flight fenced /
+                // device_wait_idle), so no in-flight command buffer references it.
                 unsafe { device.destroy_image(image, None) };
                 return Err(e);
             }
@@ -312,6 +319,7 @@ impl WaterCausticAccum {
         };
         let clear_range = color_subresource_single_mip();
         unsafe {
+            // SAFETY: caller's unsafe-fn contract — `cmd` is recording and `frame` is in range; `slot.image` is device-owned and now in GENERAL layout (transitioned by the pre-clear barrier above); `clear_range` covers its single mip.
             device.cmd_clear_color_image(
                 cmd,
                 slot.image,
@@ -332,6 +340,7 @@ impl WaterCausticAccum {
             .image(slot.image)
             .subresource_range(clear_range);
         unsafe {
+            // SAFETY: caller's unsafe-fn contract — `cmd` is recording; the well-formed `post_clear` barrier targets device-owned `slot.image`, sequencing the clear's TRANSFER_WRITE before water.frag's FRAGMENT_SHADER atomic access.
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::TRANSFER,
@@ -415,6 +424,10 @@ impl WaterCausticAccum {
         // SAFETY: caller idled the device — no in-flight cmd buffer
         // references the old slots.
         for slot in self.slots.drain(..) {
+            // SAFETY: the slot's image/view handles were created by this
+            // device and are torn down here with the device idle (init
+            // cleanup before returning `self`, or resize after
+            // device_wait_idle), so no in-flight command buffer references them.
             unsafe { Self::destroy_slot(device, allocator, slot) };
         }
         self.width = width;

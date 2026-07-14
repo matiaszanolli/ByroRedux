@@ -30,6 +30,9 @@ impl VulkanContext {
     /// crosses into the later phases — they read the `self` state set here.
     fn recreate_swapchain_core(&mut self, window_size: [u32; 2]) -> Result<()> {
         unsafe {
+            // SAFETY: `self.device` is the live logical device; `device_wait_idle`
+            // is a pure host-side wait that only requires the device handle to be
+            // valid, which it is for the lifetime of `self`.
             self.device.device_wait_idle().context("device_wait_idle")?;
         }
 
@@ -49,6 +52,9 @@ impl VulkanContext {
             (self.accel_manager.as_mut(), self.allocator.as_ref())
         {
             unsafe {
+                // SAFETY: `accel`, `self.device` and `allocator` are live;
+                // recreate already waited the frames-in-flight idle, so the
+                // freed BLAS scratch is not referenced by any in-flight build.
                 accel.shrink_blas_scratch_to_fit(&self.device, allocator);
             }
         }
@@ -71,6 +77,12 @@ impl VulkanContext {
         // framebuffer + depth steps are encoded once in helpers.rs so
         // Drop and resize stay in lockstep — see #33 / R-10.
         unsafe {
+            // SAFETY: `device_wait_idle` above guarantees the device is idle, so
+            // these framebuffers, depth image/view, and depth-history image/view —
+            // all created by `self.device`/`self.allocator` and not yet destroyed —
+            // are no longer referenced by any in-flight command buffer and can be
+            // destroyed. Each handle is nulled by the helper so a later Drop is a
+            // no-op on VK_NULL_HANDLE.
             destroy_main_framebuffers(&self.device, &mut self.framebuffers);
 
             destroy_depth_resources(
@@ -151,6 +163,11 @@ impl VulkanContext {
         let format_changed = self.swapchain_state.format != old_swapchain_format;
         if format_changed {
             unsafe {
+                // SAFETY: the device is idle (device_wait_idle at entry), so the
+                // old pipelines and render pass — all created by `self.device` and
+                // not yet destroyed — are free of in-flight references. Pipelines
+                // are torn down before the render pass they were built against, and
+                // `render_pass` is nulled so a later Drop is a no-op.
                 // Destroy old pipelines before the render pass they
                 // reference (Vulkan spec: pipelines must outlive their
                 // render pass for a clean teardown). Helper drains the
@@ -181,6 +198,10 @@ impl VulkanContext {
         // (VUID-VkSwapchainCreateInfoKHR-oldSwapchain-01933 + the
         // "swapchain image not in expected state" check).
         unsafe {
+            // SAFETY: the device is idle (device_wait_idle at entry) and the new
+            // swapchain is already created, so these retired image views — created
+            // by `self.device` from the old swapchain's images and not yet
+            // destroyed — have no in-flight references and can be destroyed.
             for &view in &old_image_views {
                 self.device.destroy_image_view(view, None);
             }
@@ -189,6 +210,11 @@ impl VulkanContext {
         // Destroy the retired old swapchain now that the new one is active.
         if old_swapchain != vk::SwapchainKHR::null() {
             unsafe {
+                // SAFETY: the device is idle (device_wait_idle at entry), its child
+                // image views were destroyed just above, and the new swapchain is
+                // already active, so the retired `old_swapchain` (non-null per the
+                // guard) has no remaining references and can be destroyed by the
+                // loader that created it.
                 self.swapchain_state
                     .swapchain_loader
                     .destroy_swapchain(old_swapchain, None);
@@ -290,6 +316,10 @@ impl VulkanContext {
             // by falling back to no water rendering (same robustness
             // policy as the initial create site).
             if let Some(mut old) = self.water.take() {
+                // SAFETY: the resize path called device_wait_idle before this
+                // rebuild, so the old water pipeline — created by `self.device`
+                // and not yet destroyed — has no in-flight references and is safe
+                // to destroy.
                 unsafe { old.destroy(&self.device) };
             }
             self.water = match super::super::water::WaterPipeline::new(
@@ -330,6 +360,10 @@ impl VulkanContext {
                 .allocator
                 .as_ref()
                 .expect("allocator missing during resize");
+            // SAFETY: the resize path called device_wait_idle before this phase,
+            // so the old SSAO pipeline — its images/views/descriptors created by
+            // `self.device`/`allocator` and not yet destroyed — has no in-flight
+            // references and is safe to destroy.
             unsafe { old_ssao.destroy(&self.device, allocator) };
             self.ssao = None;
             // Re-use `self.pipeline_cache` for the rebuilt SSAO
@@ -355,6 +389,11 @@ impl VulkanContext {
                 Ok(new_ssao) => {
                     // Transition AO image to valid layout before first use.
                     if let Err(e) = unsafe {
+                        // SAFETY: `self.device`, `self.graphics_queue` and
+                        // `self.transfer_pool` are all live; the AO images being
+                        // transitioned were just created by `new_ssao` and are
+                        // owned by it, so recording + submitting the one-time
+                        // layout-transition command buffer is valid.
                         new_ssao.initialize_ao_images(
                             &self.device,
                             &self.graphics_queue,
@@ -403,6 +442,11 @@ impl VulkanContext {
             // New images start UNDEFINED — transition to SHADER_READ_ONLY so
             // the "prev" frame slot is valid on the first frame after resize.
             if let Err(e) = unsafe {
+                // SAFETY: `self.device`, `self.graphics_queue` and
+                // `self.transfer_pool` are all live; the G-buffer images being
+                // transitioned were just (re)created by `gbuffer` and are owned by
+                // it, so recording + submitting the one-time layout-transition
+                // command buffer is valid.
                 gbuffer.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
             } {
                 log::warn!("G-buffer post-resize layout init failed: {e}");
@@ -539,6 +583,10 @@ impl VulkanContext {
                 .as_ref()
                 .expect("allocator missing during resize");
             unsafe {
+                // SAFETY: `recreate_swapchain` paid device_wait_idle before
+                // this, so the water-caustic accumulator's old slot handles are
+                // unreferenced by any in-flight command buffer and can be
+                // recreated in place.
                 if let Err(e) = wca.recreate_on_resize(
                     &self.device,
                     allocator,
@@ -593,6 +641,10 @@ impl VulkanContext {
                 .allocator
                 .as_ref()
                 .expect("allocator missing during resize");
+            // SAFETY: the resize path called device_wait_idle before this phase,
+            // so the old bloom pipeline — its mip images/views created by
+            // `self.device`/`allocator` and not yet destroyed — has no in-flight
+            // references and is safe to destroy.
             unsafe { old_bloom.destroy(&self.device, allocator) };
             self.bloom = None;
             match super::super::bloom::BloomPipeline::new(
@@ -603,6 +655,11 @@ impl VulkanContext {
             ) {
                 Ok(new_bloom) => {
                     if let Err(e) = unsafe {
+                        // SAFETY: `self.device`, `self.graphics_queue` and
+                        // `self.transfer_pool` are all live; the bloom mip images
+                        // being transitioned were just created by `new_bloom` and
+                        // are owned by it, so recording + submitting the one-time
+                        // layout-transition command buffer is valid.
                         new_bloom.initialize_layouts(
                             &self.device,
                             &self.graphics_queue,
@@ -769,6 +826,10 @@ impl VulkanContext {
 
         // Recreate per-image semaphores and fence tracking for the new swapchain.
         unsafe {
+            // SAFETY: the resize path called device_wait_idle before this phase,
+            // so the retired per-image semaphores/fences owned by `frame_sync` are
+            // no longer in use by any in-flight submission and can be destroyed and
+            // recreated against `self.device` (which is live).
             self.frame_sync
                 .recreate_for_swapchain(&self.device, self.swapchain_state.images.len())?;
         }

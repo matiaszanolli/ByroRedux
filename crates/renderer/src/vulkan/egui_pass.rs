@@ -253,9 +253,18 @@ impl EguiPass {
         // reverse-construction order) guarantees the device is idle and no
         // command buffer references these framebuffers or the render pass.
         for fb in self.framebuffers.drain(..) {
+            // SAFETY: `fb` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_framebuffer(fb, None) };
         }
-        unsafe { device.destroy_render_pass(self.render_pass, None) };
+        unsafe {
+            // SAFETY: same teardown contract as the framebuffer loop above —
+            // called from `VulkanContext::drop` after the device is idle, so no
+            // command buffer references `self.render_pass`; it was created by
+            // `create_render_pass` and is destroyed exactly once here.
+            device.destroy_render_pass(self.render_pass, None)
+        };
         // `self.renderer`'s Drop runs when `EguiPass` itself drops.
     }
 }

@@ -652,6 +652,9 @@ fn create_scene_descriptors(
         .bindings(&bindings)
         .push_next(&mut binding_flags_info);
     let descriptor_set_layout = unsafe {
+        // SAFETY: `device` is the live logical device; `layout_info` and the slices it
+        // borrows (`bindings`, the chained `binding_flags_info`) outlive this call; the
+        // None allocation callback is valid.
         device
             .create_descriptor_set_layout(&layout_info, None)
             .context("Failed to create scene descriptor set layout")?
@@ -670,6 +673,9 @@ fn create_scene_descriptors(
         .descriptor_pool(descriptor_pool)
         .set_layouts(&layouts);
     let descriptor_sets = unsafe {
+        // SAFETY: `device` is live; `alloc_info` borrows `descriptor_pool` (just built
+        // above) and `layouts` (owned by `descriptor_set_layout`), both device-owned and
+        // live; the pool was sized for MAX_FRAMES_IN_FLIGHT sets, matching `layouts.len()`.
         device
             .allocate_descriptor_sets(&alloc_info)
             .context("Failed to allocate scene descriptor sets")?
@@ -739,6 +745,10 @@ fn create_scene_descriptors(
             write_uniform_buffer(set, 14, &dalc_buf_info),
         ];
         unsafe {
+            // SAFETY: `device` is live; `set` is one of the just-allocated device-owned
+            // descriptor sets; every `writes` entry borrows a `*_buf_info` whose buffer is
+            // a live `bufs` allocation, and all borrows stay valid for the whole call. No
+            // descriptor copies.
             device.update_descriptor_sets(&writes, &[]);
         }
     }

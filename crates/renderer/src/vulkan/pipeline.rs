@@ -27,6 +27,10 @@ pub fn load_shader_module(device: &ash::Device, spv: &[u8]) -> Result<vk::Shader
     let create_info = vk::ShaderModuleCreateInfo::default().code(&code);
 
     let module = unsafe {
+        // SAFETY: `device` is the live logical device; `create_info` borrows
+        // `code`, which outlives this call, and the SPIR-V was 4-byte aligned
+        // by the `chunks_exact(4)` decode above; the returned module is owned
+        // and destroyed by the caller.
         device
             .create_shader_module(&create_info, None)
             .context("Failed to create shader module")?
@@ -199,6 +203,9 @@ fn build_triangle_pipeline_layout(
     let set_layouts = [descriptor_set_layout, scene_set_layout];
     let layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
     unsafe {
+        // SAFETY: `device` is the live logical device; `layout_info` borrows
+        // `set_layouts`, whose descriptor-set-layout handles are device-owned,
+        // live, and outlive this call; the returned layout is caller-owned.
         device
             .create_pipeline_layout(&layout_info, None)
             .context("Failed to create pipeline layout")
@@ -443,6 +450,12 @@ fn triangle_pipeline_inner(
     }
 
     let pipelines = unsafe {
+        // SAFETY: `device` + `pipeline_cache` are live; every `pipeline_infos`
+        // entry borrows state (stages, vertex input, dynamic state) that
+        // outlives this call and references live device-owned handles —
+        // `pipeline_layout`, `render_pass`, and the `vert_module`/`frag_module`
+        // shader modules (destroyed just below); the returned pipelines are
+        // caller-owned.
         device
             .create_graphics_pipelines(pipeline_cache, &pipeline_infos, None)
             .map_err(|(_, err)| err)
@@ -656,6 +669,11 @@ pub fn create_blend_pipeline(
         .subpass(0)];
 
     let pipelines = unsafe {
+        // SAFETY: `device` + `pipeline_cache` are live; the single `infos` entry
+        // borrows state that outlives this call and references live device-owned
+        // handles — `pipeline_layout`, `render_pass`, and the `vert_module`/
+        // `frag_module` shader modules (destroyed just below); the returned
+        // pipeline is caller-owned.
         device
             .create_graphics_pipelines(pipeline_cache, &infos, None)
             .map_err(|(_, err)| err)
@@ -663,6 +681,9 @@ pub fn create_blend_pipeline(
     };
 
     unsafe {
+        // SAFETY: both modules were created by us for this build and not yet
+        // destroyed; the pipeline is built so the modules are no longer needed
+        // (Vulkan copies them in at create time); `device` is live.
         device.destroy_shader_module(vert_module, None);
         device.destroy_shader_module(frag_module, None);
     }
@@ -818,6 +839,11 @@ pub fn create_ui_pipeline(
         .subpass(0)];
 
     let pipelines = unsafe {
+        // SAFETY: `device` + `pipeline_cache` are live; the single `pipeline_info`
+        // entry borrows state that outlives this call and references live
+        // device-owned handles — `pipeline_layout`, `render_pass`, and the
+        // `vert_module`/`frag_module` shader modules (destroyed just below); the
+        // returned pipeline is caller-owned.
         device
             .create_graphics_pipelines(pipeline_cache, &pipeline_info, None)
             .map_err(|(_, err)| err)

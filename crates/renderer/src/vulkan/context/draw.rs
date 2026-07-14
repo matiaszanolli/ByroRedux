@@ -4046,6 +4046,10 @@ impl VulkanContext {
             if let Some(allocator) = self.allocator.as_ref() {
                 let slot_to_shrink = self.current_frame;
                 unsafe {
+                    // SAFETY: `accel`, `device` and `allocator` are live; the
+                    // shrink runs on this frame slot after its prior GPU use
+                    // completed (the caller's fence wait), so the freed TLAS
+                    // scratch/buffers are not referenced by an in-flight build.
                     accel.shrink_tlas_to_fit(
                         slot_to_shrink,
                         working_instances as u32,

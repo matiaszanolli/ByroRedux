@@ -279,6 +279,10 @@ impl CompositePipeline {
                 match $expr {
                     Ok(v) => v,
                     Err(e) => {
+                        // SAFETY: `partial` holds only handles created by this device
+                        // earlier in this initializer; on this error path none has been
+                        // bound to an in-flight command buffer yet, so tearing them down
+                        // in reverse creation order is sound.
                         unsafe { partial.destroy(device, allocator) };
                         return Err(e.into());
                     }
@@ -970,16 +974,25 @@ impl CompositePipeline {
         // first). Old framebuffer / view / image handles are unreferenced
         // by any in-flight command.
         for &fb in &self.composite_framebuffers {
+            // SAFETY: `fb` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_framebuffer(fb, None) };
         }
         self.composite_framebuffers.clear();
 
         // Destroy old HDR images
         for &view in &self.hdr_image_views {
+            // SAFETY: `view` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_image_view(view, None) };
         }
         self.hdr_image_views.clear();
         for &img in &self.hdr_images {
+            // SAFETY: `img` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_image(img, None) };
         }
         self.hdr_images.clear();
@@ -1144,14 +1157,23 @@ impl CompositePipeline {
             // in-flight command references any of the partially-allocated
             // recreate state.
             for &fb in &self.composite_framebuffers {
+                // SAFETY: `fb` was created by this device and is destroyed here
+                // at teardown, when the device is idle (frames-in-flight fenced /
+                // device_wait_idle), so no in-flight command buffer references it.
                 unsafe { device.destroy_framebuffer(fb, None) };
             }
             self.composite_framebuffers.clear();
             for &view in &self.hdr_image_views {
+                // SAFETY: `view` was created by this device and is destroyed here
+                // at teardown, when the device is idle (frames-in-flight fenced /
+                // device_wait_idle), so no in-flight command buffer references it.
                 unsafe { device.destroy_image_view(view, None) };
             }
             self.hdr_image_views.clear();
             for &img in &self.hdr_images {
+                // SAFETY: `img` was created by this device and is destroyed here
+                // at teardown, when the device is idle (frames-in-flight fenced /
+                // device_wait_idle), so no in-flight command buffer references it.
                 unsafe { device.destroy_image(img, None) };
             }
             self.hdr_images.clear();
@@ -1243,41 +1265,77 @@ impl CompositePipeline {
         }
         self.param_buffers.clear();
         if self.pipeline != vk::Pipeline::null() {
+            // SAFETY: `pipeline` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_pipeline(self.pipeline, None) };
         }
         if self.vert_module != vk::ShaderModule::null() {
+            // SAFETY: `vert_module` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_shader_module(self.vert_module, None) };
         }
         if self.frag_module != vk::ShaderModule::null() {
+            // SAFETY: `frag_module` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_shader_module(self.frag_module, None) };
         }
         if self.pipeline_layout != vk::PipelineLayout::null() {
+            // SAFETY: `pipeline_layout` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_pipeline_layout(self.pipeline_layout, None) };
         }
         if self.descriptor_pool != vk::DescriptorPool::null() {
+            // SAFETY: `descriptor_pool` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_descriptor_pool(self.descriptor_pool, None) };
         }
         if self.descriptor_set_layout != vk::DescriptorSetLayout::null() {
+            // SAFETY: `descriptor_set_layout` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
         }
         for &fb in &self.composite_framebuffers {
+            // SAFETY: `fb` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_framebuffer(fb, None) };
         }
         self.composite_framebuffers.clear();
         if self.composite_render_pass != vk::RenderPass::null() {
+            // SAFETY: `composite_render_pass` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_render_pass(self.composite_render_pass, None) };
         }
         if self.hdr_sampler != vk::Sampler::null() {
+            // SAFETY: `hdr_sampler` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_sampler(self.hdr_sampler, None) };
         }
         if self.nearest_sampler != vk::Sampler::null() {
+            // SAFETY: `nearest_sampler` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_sampler(self.nearest_sampler, None) };
         }
         for &view in &self.hdr_image_views {
+            // SAFETY: `view` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_image_view(view, None) };
         }
         self.hdr_image_views.clear();
         for &img in &self.hdr_images {
+            // SAFETY: `img` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_image(img, None) };
         }
         self.hdr_images.clear();

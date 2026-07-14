@@ -49,18 +49,25 @@ pub fn create_swapchain(
         surface,
     } = ctx;
     let capabilities = unsafe {
+        // SAFETY: `surface_loader` is the live surface extension loader;
+        // `physical_device` and `surface` are the live handles it was queried
+        // against, both owned by the enclosing context.
         surface_loader
             .get_physical_device_surface_capabilities(physical_device, surface)
             .context("Failed to get surface capabilities")?
     };
 
     let formats = unsafe {
+        // SAFETY: `surface_loader` is live; `physical_device` and `surface` are
+        // the live, context-owned handles it queries.
         surface_loader
             .get_physical_device_surface_formats(physical_device, surface)
             .context("Failed to get surface formats")?
     };
 
     let present_modes = unsafe {
+        // SAFETY: `surface_loader` is live; `physical_device` and `surface` are
+        // the live, context-owned handles it queries.
         surface_loader
             .get_physical_device_surface_present_modes(physical_device, surface)
             .context("Failed to get present modes")?
@@ -113,12 +120,19 @@ pub fn create_swapchain(
     let swapchain_loader = ash::khr::swapchain::Device::new(instance, device);
 
     let swapchain = unsafe {
+        // SAFETY: `swapchain_loader` was just built from the live instance +
+        // device; `create_info` is fully initialized, borrows `queue_family_indices`
+        // (which outlives this call) only in CONCURRENT mode, and references the
+        // live `surface` + `old_swapchain`; the returned swapchain is caller-owned.
         swapchain_loader
             .create_swapchain(&create_info, None)
             .context("Failed to create swapchain")?
     };
 
     let images = unsafe {
+        // SAFETY: `swapchain_loader` is live and `swapchain` is the swapchain it
+        // just created; the driver owns the returned images (freed with the
+        // swapchain, not individually).
         swapchain_loader
             .get_swapchain_images(swapchain)
             .context("Failed to get swapchain images")?
@@ -236,6 +250,10 @@ fn create_image_views(
                 .subresource_range(super::descriptors::color_subresource_single_mip());
 
             unsafe {
+                // SAFETY: `device` is the live logical device; `create_info`
+                // references `image`, a live swapchain image owned by `device`,
+                // with a valid 2D color view configuration; the returned view is
+                // caller-owned and destroyed in `SwapchainState::destroy`.
                 device
                     .create_image_view(&create_info, None)
                     .context("Failed to create image view")

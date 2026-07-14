@@ -110,6 +110,9 @@ pub fn create_sync_objects(
     let mut image_available = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     for _ in 0..MAX_FRAMES_IN_FLIGHT {
         unsafe {
+            // SAFETY: `device` is the live logical device; `semaphore_info` is a
+            // valid (default) create info; the returned semaphore is owned by
+            // `FrameSync` and destroyed in its teardown.
             image_available.push(
                 device
                     .create_semaphore(&semaphore_info, None)
@@ -124,6 +127,9 @@ pub fn create_sync_objects(
     let mut render_finished = Vec::with_capacity(swapchain_image_count);
     for _ in 0..swapchain_image_count {
         unsafe {
+            // SAFETY: `device` is the live logical device; `semaphore_info` is a
+            // valid (default) create info; the returned semaphore is owned by
+            // `FrameSync` and destroyed in its teardown.
             render_finished.push(
                 device
                     .create_semaphore(&semaphore_info, None)
@@ -136,6 +142,9 @@ pub fn create_sync_objects(
     let mut in_flight = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     for _ in 0..MAX_FRAMES_IN_FLIGHT {
         unsafe {
+            // SAFETY: `device` is the live logical device; `fence_info` is a valid
+            // create info (SIGNALED so the first frame's wait passes); the returned
+            // fence is owned by `FrameSync` and destroyed in its teardown.
             in_flight.push(
                 device
                     .create_fence(&fence_info, None)

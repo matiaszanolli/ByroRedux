@@ -1675,6 +1675,10 @@ impl VulkanContext {
         // Persistent fence for one-time submits (#302). Created unsignaled;
         // every use calls reset_fences then wait_for_fences.
         let transfer_fence = Arc::new(Mutex::new(unsafe {
+            // SAFETY: `device` is this context's live logical device; the
+            // `FenceCreateInfo` is a stack temporary valid for the call and the
+            // returned fence is owned here (stored in the struct) and destroyed
+            // in `Drop`.
             device
                 .create_fence(&vk::FenceCreateInfo::default(), None)
                 .context("create transfer fence")?
@@ -1777,6 +1781,11 @@ impl VulkanContext {
                     transfer_pool,
                     &transfer_fence,
                     |cmd| unsafe {
+                        // SAFETY: `cmd` is a command buffer that
+                        // `with_one_time_commands_reuse_fence` has already begun
+                        // recording; `device`/`gpu_allocator` are live and own
+                        // the acceleration structures `accel` builds into for
+                        // frame index `f` (< MAX_FRAMES_IN_FLIGHT).
                         accel
                             .build_tlas(&device, &gpu_allocator, cmd, &empty_draws, &empty_map, f)
                             .context("initial empty TLAS build")
@@ -1986,14 +1995,24 @@ impl VulkanContext {
                 // VUID-vkCmdDraw-None-09600 (the barrier assumes
                 // `oldLayout = GENERAL`). Mirror of CausticPipeline's
                 // initialize_layouts call in the caustic block below.
-                if let Err(e) =
-                    unsafe { a.initialize_layouts(&device, &graphics_queue, transfer_pool) }
-                {
+                if let Err(e) = unsafe {
+                    // SAFETY: `device` + `graphics_queue` are live and
+                    // `transfer_pool` is a command pool allocated from this
+                    // device; `a`'s caustic-accumulator images were just created
+                    // above by the same device, so recording their one-time
+                    // layout transition is sound.
+                    a.initialize_layouts(&device, &graphics_queue, transfer_pool)
+                } {
                     log::warn!(
                         "Water-caustic initialize_layouts failed: {e} — disabling for the rest of the session"
                     );
                     let mut a_mut = a;
-                    unsafe { a_mut.destroy(&device, &gpu_allocator) };
+                    unsafe {
+                        // SAFETY: `a_mut`'s images/buffers were made by `device`
+                        // and are destroyed on this init-failure path before any
+                        // frame command buffer could reference them.
+                        a_mut.destroy(&device, &gpu_allocator)
+                    };
                     None
                 } else {
                     Some(a)
@@ -2037,9 +2056,14 @@ impl VulkanContext {
                 // Transition AO image from UNDEFINED to SHADER_READ_ONLY_OPTIMAL
                 // so the first frame's fragment shader sees a valid layout (1.0 =
                 // no occlusion). Without this, sampling UNDEFINED is UB.
-                if let Err(e) =
-                    unsafe { s.initialize_ao_images(&device, &graphics_queue, transfer_pool) }
-                {
+                if let Err(e) = unsafe {
+                    // SAFETY: `device` + `graphics_queue` are live and
+                    // `transfer_pool` is a command pool from this device; the
+                    // SSAO pipeline `s`'s AO images were just created above by
+                    // the same device, so recording their UNDEFINED →
+                    // SHADER_READ_ONLY transition is sound.
+                    s.initialize_ao_images(&device, &graphics_queue, transfer_pool)
+                } {
                     log::warn!("SSAO AO image init failed: {e}");
                 }
                 for f in 0..MAX_FRAMES_IN_FLIGHT {
@@ -2085,11 +2109,22 @@ impl VulkanContext {
                 }
             };
         if let Some(ref v) = volumetrics {
-            if let Err(e) = unsafe { v.initialize_layouts(&device, &graphics_queue, transfer_pool) }
-            {
+            if let Err(e) = unsafe {
+                // SAFETY: `device` + `graphics_queue` are live and
+                // `transfer_pool` is a command pool from this device; the
+                // volumetrics pipeline `v`'s froxel images were just created
+                // above by the same device, so recording their one-time layout
+                // transition is sound.
+                v.initialize_layouts(&device, &graphics_queue, transfer_pool)
+            } {
                 log::warn!("Volumetrics froxel layout init failed: {e} — disabling volumetrics");
                 if let Some(mut pipe) = volumetrics.take() {
-                    unsafe { pipe.destroy(&device, &gpu_allocator) };
+                    unsafe {
+                        // SAFETY: `pipe` was just created by `device`; on this
+                        // init-failure path no frame command buffer has yet
+                        // referenced its images, so destroying it is sound.
+                        pipe.destroy(&device, &gpu_allocator)
+                    };
                 }
             }
         }
@@ -2112,9 +2147,13 @@ impl VulkanContext {
         // SHADER_READ_ONLY_OPTIMAL so the "previous frame" slot is in a
         // valid layout on the very first frame (SVGF temporal pass binds
         // the previous frame's mesh_id/motion/raw_indirect for sampling).
-        if let Err(e) =
-            unsafe { gbuffer_ref.initialize_layouts(&device, &graphics_queue, transfer_pool) }
-        {
+        if let Err(e) = unsafe {
+            // SAFETY: `device` + `graphics_queue` are live and `transfer_pool`
+            // is a command pool from this device; `gbuffer_ref`'s attachment
+            // images were just created above by the same device, so recording
+            // their UNDEFINED → SHADER_READ_ONLY transition is sound.
+            gbuffer_ref.initialize_layouts(&device, &graphics_queue, transfer_pool)
+        } {
             log::warn!("G-buffer layout init failed: {e}");
         }
 
@@ -2164,12 +2203,23 @@ impl VulkanContext {
         // Transition history images UNDEFINED → GENERAL so first dispatch
         // and first descriptor sampling see a valid layout.
         if let Some(ref s) = svgf {
-            if let Err(e) = unsafe { s.initialize_layouts(&device, &graphics_queue, transfer_pool) }
-            {
+            if let Err(e) = unsafe {
+                // SAFETY: `device` + `graphics_queue` are live and
+                // `transfer_pool` is a command pool from this device; the SVGF
+                // pipeline `s`'s history images were just created above by the
+                // same device, so recording their UNDEFINED → GENERAL
+                // transition is sound.
+                s.initialize_layouts(&device, &graphics_queue, transfer_pool)
+            } {
                 log::warn!("SVGF layout init failed: {e} — disabling SVGF");
                 // Destroy partially-initialized pipeline.
                 if let Some(mut pipe) = svgf.take() {
-                    unsafe { pipe.destroy(&device, &gpu_allocator) };
+                    unsafe {
+                        // SAFETY: `pipe` was just created by `device`; on this
+                        // init-failure path no frame command buffer has yet
+                        // referenced its images, so destroying it is sound.
+                        pipe.destroy(&device, &gpu_allocator)
+                    };
                 }
             }
         }
@@ -2234,11 +2284,22 @@ impl VulkanContext {
             }
         };
         if let Some(ref c) = caustic {
-            if let Err(e) = unsafe { c.initialize_layouts(&device, &graphics_queue, transfer_pool) }
-            {
+            if let Err(e) = unsafe {
+                // SAFETY: `device` + `graphics_queue` are live and
+                // `transfer_pool` is a command pool from this device; the
+                // caustic pipeline `c`'s images were just created above by the
+                // same device, so recording their one-time layout transition
+                // is sound.
+                c.initialize_layouts(&device, &graphics_queue, transfer_pool)
+            } {
                 log::warn!("Caustic layout init failed: {e} — disabling caustic");
                 if let Some(mut pipe) = caustic.take() {
-                    unsafe { pipe.destroy(&device, &gpu_allocator) };
+                    unsafe {
+                        // SAFETY: `pipe` was just created by `device`; on this
+                        // init-failure path no frame command buffer has yet
+                        // referenced its images, so destroying it is sound.
+                        pipe.destroy(&device, &gpu_allocator)
+                    };
                 }
             }
         }
@@ -2298,9 +2359,14 @@ impl VulkanContext {
             swapchain_state.extent,
         ) {
             Ok(b) => {
-                if let Err(e) =
-                    unsafe { b.initialize_layouts(&device, &graphics_queue, transfer_pool) }
-                {
+                if let Err(e) = unsafe {
+                    // SAFETY: `device` + `graphics_queue` are live and
+                    // `transfer_pool` is a command pool from this device; the
+                    // bloom pipeline `b`'s pyramid images were just created
+                    // above by the same device, so recording their one-time
+                    // layout transition is sound.
+                    b.initialize_layouts(&device, &graphics_queue, transfer_pool)
+                } {
                     log::warn!("Bloom pyramid layout init failed: {e}");
                 }
                 Some(b)
@@ -2388,11 +2454,22 @@ impl VulkanContext {
             }
         };
         if let Some(ref t) = taa {
-            if let Err(e) = unsafe { t.initialize_layouts(&device, &graphics_queue, transfer_pool) }
-            {
+            if let Err(e) = unsafe {
+                // SAFETY: `device` + `graphics_queue` are live and
+                // `transfer_pool` is a command pool from this device; the TAA
+                // pipeline `t`'s history/output images were just created above
+                // by the same device, so recording their one-time layout
+                // transition is sound.
+                t.initialize_layouts(&device, &graphics_queue, transfer_pool)
+            } {
                 log::warn!("TAA layout init failed: {e} — disabling TAA");
                 if let Some(mut pipe) = taa.take() {
-                    unsafe { pipe.destroy(&device, &gpu_allocator) };
+                    unsafe {
+                        // SAFETY: `pipe` was just created by `device`; on this
+                        // init-failure path no frame command buffer has yet
+                        // referenced its images, so destroying it is sound.
+                        pipe.destroy(&device, &gpu_allocator)
+                    };
                 }
             }
         }
@@ -2583,6 +2660,10 @@ impl VulkanContext {
         }
         if let Some(accel) = self.accel_manager.as_mut() {
             unsafe {
+                // SAFETY: the `device_wait_idle` above has settled all in-flight
+                // command buffers, so the acceleration structures queued for
+                // destruction are no longer referenced by any pending GPU work;
+                // `self.device` + `allocator` are live and own them.
                 accel.drain_pending_destroys(&self.device, &allocator);
             }
         }

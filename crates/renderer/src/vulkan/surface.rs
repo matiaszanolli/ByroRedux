@@ -11,6 +11,9 @@ pub fn create_surface(
     window_handle: RawWindowHandle,
 ) -> Result<vk::SurfaceKHR> {
     let surface = unsafe {
+        // SAFETY: `entry` and `instance` are live and outlive the returned
+        // surface; `display_handle` and `window_handle` are valid raw handles
+        // to the live OS window for the duration of this call.
         ash_window::create_surface(entry, instance, display_handle, window_handle, None)
             .context("Failed to create Vulkan surface")?
     };

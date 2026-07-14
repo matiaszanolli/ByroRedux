@@ -233,6 +233,7 @@ impl WaterPipeline {
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
         let water_caustic_bindings = [water_caustic_binding];
         let water_caustic_set_layout = unsafe {
+            // SAFETY: `device` is the live logical device; `water_caustic_bindings` (one FRAGMENT STORAGE_IMAGE) is a stack slice valid for the call; the returned layout is owned by `WaterPipeline` and freed in `destroy()`.
             device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&water_caustic_bindings),
@@ -270,6 +271,7 @@ impl WaterPipeline {
         // after the first descriptor write.
         let layouts = vec![water_caustic_set_layout; super::sync::MAX_FRAMES_IN_FLIGHT];
         let water_caustic_descriptor_sets = match unsafe {
+            // SAFETY: `device` is live; `water_caustic_descriptor_pool` was just created and sized for MAX_FRAMES_IN_FLIGHT sets of `water_caustic_set_layout`; the AllocateInfo borrows both live handles (via `layouts`) only for the call.
             device
                 .allocate_descriptor_sets(
                     &vk::DescriptorSetAllocateInfo::default()
@@ -305,6 +307,7 @@ impl WaterPipeline {
             .push_constant_ranges(&push_ranges);
 
         let pipeline_layout = match unsafe {
+            // SAFETY: `device` is live; `layout_info` borrows `set_layouts` (three live descriptor-set-layout handles) and `push_ranges`, all stack temporaries valid for the call; the returned layout is owned by `self` and freed in `destroy()`.
             device
                 .create_pipeline_layout(&layout_info, None)
                 .context("water pipeline layout")
@@ -327,6 +330,7 @@ impl WaterPipeline {
             Err(e) => {
                 // Clean up the layout on failure so we don't leak.
                 unsafe {
+                    // SAFETY: `pipeline_layout`, `water_caustic_descriptor_pool`, and `water_caustic_set_layout` were all just created above by this `device` and are unreferenced by any command buffer; destroyed in reverse dependency order on this partial-init failure.
                     device.destroy_pipeline_layout(pipeline_layout, None);
                     device.destroy_descriptor_pool(water_caustic_descriptor_pool, None);
                     device.destroy_descriptor_set_layout(water_caustic_set_layout, None);
@@ -650,6 +654,7 @@ fn build_pipeline(
         .subpass(0)];
 
     let pipelines = unsafe {
+        // SAFETY: `device` is live; `infos` is a stack slice whose GraphicsPipelineCreateInfo references live `stages` (the `vert`/`frag` modules), `pipeline_layout`, and `render_pass`, all valid for the call; the returned pipeline is owned by the caller.
         device
             .create_graphics_pipelines(pipeline_cache, &infos, None)
             .map_err(|(_, err)| err)
@@ -657,6 +662,7 @@ fn build_pipeline(
     };
 
     unsafe {
+        // SAFETY: `vert`/`frag` were created by this `device` earlier in this fn; their code is now baked into the built pipeline, so neither is referenced by any live pipeline or command buffer.
         device.destroy_shader_module(vert, None);
         device.destroy_shader_module(frag, None);
     }

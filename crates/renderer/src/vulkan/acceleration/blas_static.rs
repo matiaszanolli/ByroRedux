@@ -365,6 +365,12 @@ impl AccelerationManager {
 
             submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
                 unsafe {
+                    // SAFETY: `cmd` is the recording one-time command buffer from
+                    // `submit_one_time`; `accel_loader` + `device` are live; `build_info`
+                    // targets the just-created `accel` and references the live geometry
+                    // (vertex/index device addresses) and scratch buffer whose
+                    // aligned device address is >= the queried `build_scratch_size`;
+                    // `range_info.primitive_count` matches the size query.
                     self.accel_loader.cmd_build_acceleration_structures(
                         cmd,
                         &[build_info],

@@ -1,3 +1,14 @@
+// #1904 — every `unsafe {}` block in this crate now carries a `SAFETY:`
+// comment stating the ash precondition it upholds (device live, handles
+// created by this device, not in use by an in-flight command buffer, pointers
+// valid for the call). The audit suggested `allow` at the crate root with
+// per-file `deny` as files were cleaned; since that sweep cleaned the *whole*
+// crate at once (verified: `cargo clippy -- -W clippy::undocumented_unsafe_blocks`
+// reports zero), we go straight to the end-state and `deny` crate-wide so any
+// new undocumented block fails `cargo clippy`. This is a Clippy tool-lint, so
+// it is inert under plain `cargo build` / `cargo test` and only gates clippy.
+#![deny(clippy::undocumented_unsafe_blocks)]
+
 pub(crate) mod deferred_destroy;
 pub mod mesh;
 pub mod shader_constants;

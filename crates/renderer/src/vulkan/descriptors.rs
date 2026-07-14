@@ -375,7 +375,13 @@ impl DescriptorPoolBuilder {
             .flags(self.flags)
             .pool_sizes(&self.sizes)
             .max_sets(self.max_sets);
-        unsafe { device.create_descriptor_pool(&info, None) }.context(label)
+        unsafe {
+            // SAFETY: `device` is the caller-provided live logical device;
+            // `info` borrows `self.sizes`/`self.max_sets` which outlive this
+            // call; the new pool handle is returned for the caller to own.
+            device.create_descriptor_pool(&info, None)
+        }
+        .context(label)
     }
 
     /// Test-only accessor exposing the accumulated pool sizes so the

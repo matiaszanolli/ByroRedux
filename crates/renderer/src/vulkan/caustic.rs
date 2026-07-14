@@ -210,6 +210,10 @@ impl CausticPipeline {
                 match $expr {
                     Ok(v) => v,
                     Err(e) => {
+                        // SAFETY: `partial` holds only handles created by this
+                        // device earlier in `new`; on this init error path none
+                        // has been bound to an in-flight command buffer yet, so
+                        // destroying them in reverse creation order is sound.
                         unsafe { partial.destroy(device, allocator) };
                         return Err(e.into());
                     }
@@ -536,6 +540,9 @@ impl CausticPipeline {
                 // already-created storage view, free alloc, destroy image.
                 unsafe { device.destroy_image_view(storage_view, None) };
                 allocator.lock().expect("allocator lock").free(alloc).ok();
+                // SAFETY: `image` was created by this device just above and has
+                // not been bound to any in-flight command buffer on this error
+                // path, so destroying it here is sound.
                 unsafe { device.destroy_image(image, None) };
                 return Err(e);
             }
@@ -1016,21 +1023,27 @@ impl CausticPipeline {
         }
         self.param_buffers.clear();
         if self.pipeline != vk::Pipeline::null() {
+            // SAFETY: `self.pipeline` was built by this `device` in `initialize_layouts`, is non-null (guarded above), and per the whole-function contract is unreferenced by any in-flight command buffer.
             unsafe { device.destroy_pipeline(self.pipeline, None) };
         }
         if self.shader_module != vk::ShaderModule::null() {
+            // SAFETY: `self.shader_module` was loaded by this `device`, is non-null (guarded above), and its code is already baked into `self.pipeline` — no live consumer remains.
             unsafe { device.destroy_shader_module(self.shader_module, None) };
         }
         if self.pipeline_layout != vk::PipelineLayout::null() {
+            // SAFETY: `self.pipeline_layout` was created by this `device`, is non-null (guarded above), and its dependent pipeline is destroyed first (above); no in-flight command references it.
             unsafe { device.destroy_pipeline_layout(self.pipeline_layout, None) };
         }
         if self.descriptor_pool != vk::DescriptorPool::null() {
+            // SAFETY: `self.descriptor_pool` was created by this `device`, is non-null (guarded above); destroying it frees all sets allocated from it, none of which are in flight per the whole-function contract.
             unsafe { device.destroy_descriptor_pool(self.descriptor_pool, None) };
         }
         if self.descriptor_set_layout != vk::DescriptorSetLayout::null() {
+            // SAFETY: `self.descriptor_set_layout` was created by this `device`, is non-null (guarded above), and its dependent pool/layout users are destroyed first (above).
             unsafe { device.destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
         }
         if self.point_sampler != vk::Sampler::null() {
+            // SAFETY: `self.point_sampler` was created by this `device`, is non-null (guarded above), and per the whole-function contract is unreferenced by any in-flight command buffer.
             unsafe { device.destroy_sampler(self.point_sampler, None) };
         }
         for slot in self.slots.drain(..) {

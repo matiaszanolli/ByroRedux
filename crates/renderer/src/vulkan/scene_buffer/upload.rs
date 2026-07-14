@@ -248,6 +248,12 @@ impl super::buffers::SceneBuffers {
             size: byte_size,
         };
         unsafe {
+            // SAFETY: `cmd` is in the recording state (the caller's frame command
+            // buffer). Both `bone_world_staging_buffers[frame_index]` and
+            // `bone_world_device_buffers[frame_index]` are device-owned and live for
+            // the renderer's lifetime; each is sized ≥ `byte_size` (staging held
+            // exactly that many written bytes), so the copy region and the following
+            // buffer barrier's [0, byte_size) range stay within bounds.
             device.cmd_copy_buffer(
                 cmd,
                 self.bone_world_staging_buffers[frame_index].buffer,
@@ -373,6 +379,11 @@ impl super::buffers::SceneBuffers {
             });
         }
         unsafe {
+            // SAFETY: `cmd` is a recording-state command buffer; `bind_inverse_upload_staging`
+            // and `bind_inverses_persistent` are device-owned and live. Every `copies`
+            // region's dst_offset+size stays within the persistent SSBO (the debug_assert
+            // above proves each slot_id write ends ≤ MAX_TOTAL_BONES), and the src regions
+            // index the staging slots written by upload_pending_bind_inverses.
             // Single cmd_copy_buffer with N regions — one Vulkan call
             // even when several pending uploads land in the same
             // frame. Spec: all regions target the same dst buffer
@@ -471,6 +482,10 @@ impl super::buffers::SceneBuffers {
         let dst = self.bind_inverses_persistent.buffer;
         super::super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
             unsafe {
+                // SAFETY: `cmd` is the recording-state one-time command buffer from
+                // with_one_time_commands; `dst` (bind_inverses_persistent) is
+                // device-owned and live; `payload_bytes` is 9216 B (< the 65536 B
+                // vkCmdUpdateBuffer limit) and stays borrowed for the whole call.
                 device.cmd_update_buffer(cmd, dst, 0, payload_bytes);
             }
             Ok(())
@@ -707,11 +722,18 @@ impl super::buffers::SceneBuffers {
             .usage(vk::BufferUsageFlags::TRANSFER_SRC)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
         let staging_buffer = unsafe {
+            // SAFETY: `device` is the live logical device; `staging_info` and the
+            // fields it borrows outlive this call; the None allocation callback is
+            // always valid.
             device
                 .create_buffer(&staging_info, None)
                 .context("Failed to create terrain tile staging buffer")?
         };
-        let reqs = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
+        let reqs = unsafe {
+            // SAFETY: `device` is live and `staging_buffer` was just created by it
+            // above and not yet destroyed.
+            device.get_buffer_memory_requirements(staging_buffer)
+        };
         let mut staging_alloc = allocator
             .lock()
             .expect("allocator lock poisoned")
@@ -728,6 +750,10 @@ impl super::buffers::SceneBuffers {
             "terrain_tile_staging",
         );
         unsafe {
+            // SAFETY: `device` is live; `staging_buffer` was created by it above and
+            // is not yet bound; `staging_alloc`'s memory + offset come from the
+            // allocator's successful allocation against this buffer's own memory
+            // requirements, so the binding satisfies size/alignment.
             device
                 .bind_buffer_memory(
                     staging_buffer,
@@ -743,6 +769,10 @@ impl super::buffers::SceneBuffers {
             .mapped_slice_mut()
             .context("Terrain tile staging not mapped")?;
         unsafe {
+            // SAFETY: `mapped` is the host-visible staging slice fetched just
+            // above, valid for `byte_size` bytes (the buffer was sized to
+            // `byte_size`); `tiles` is a distinct `#[repr(C)]` source of the
+            // same length, so the regions do not overlap.
             std::ptr::copy_nonoverlapping(
                 tiles.as_ptr() as *const u8,
                 mapped.as_mut_ptr(),
@@ -759,6 +789,10 @@ impl super::buffers::SceneBuffers {
         let result =
             super::super::texture::with_one_time_commands(device, queue, command_pool, |cmd| {
                 unsafe {
+                    // SAFETY: `cmd` is the recording-state one-time command buffer
+                    // from with_one_time_commands; `staging_buffer` and `dst`
+                    // (terrain_tile_buffer) are device-owned, live, and both sized
+                    // ≥ `byte_size`, so the single copy region stays within bounds.
                     device.cmd_copy_buffer(cmd, staging_buffer, dst, &[copy]);
                 }
                 Ok(())
@@ -766,6 +800,9 @@ impl super::buffers::SceneBuffers {
 
         // Tear down staging regardless of copy outcome.
         unsafe {
+            // SAFETY: `staging_buffer` was created by `device` above and is destroyed
+            // exactly once here; with_one_time_commands waited on its fence before
+            // returning, so no in-flight command buffer still references it.
             device.destroy_buffer(staging_buffer, None);
         }
         allocator

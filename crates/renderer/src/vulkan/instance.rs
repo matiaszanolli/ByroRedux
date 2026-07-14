@@ -87,6 +87,10 @@ pub fn create_instance(
     }
 
     let instance = unsafe {
+        // SAFETY: `entry` is the live Vulkan entry point; `create_info` and
+        // everything it borrows — the `extensions` and `layer_names_raw`
+        // name-pointer slices and the pushed `validation_features` — are
+        // stack-local and outlive this call.
         entry
             .create_instance(&create_info, None)
             .context("Failed to create Vulkan instance")?
@@ -109,6 +113,8 @@ pub fn create_instance(
 
 fn check_validation_layer_support(entry: &ash::Entry) -> Result<()> {
     let available = unsafe {
+        // SAFETY: `entry` is the live Vulkan entry point; enumeration writes
+        // only into the returned Vec of layer properties.
         entry
             .enumerate_instance_layer_properties()
             .context("Failed to enumerate instance layer properties")?

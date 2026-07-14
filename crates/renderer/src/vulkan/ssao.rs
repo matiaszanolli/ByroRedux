@@ -228,6 +228,10 @@ impl SsaoPipeline {
                 match $expr {
                     Ok(v) => v,
                     Err(e) => {
+                        // SAFETY: `partial` holds only handles created by this device
+                        // earlier in this initializer; on this error path none has been
+                        // bound to an in-flight command buffer yet, so tearing them down
+                        // in reverse creation order is sound.
                         unsafe { partial.destroy(device, allocator) };
                         return Err(e.into());
                     }

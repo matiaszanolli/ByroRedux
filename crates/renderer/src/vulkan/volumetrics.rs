@@ -652,6 +652,9 @@ impl VolumetricsPipeline {
             .expect("allocator lock")
             .allocate(&vk_alloc::AllocationCreateDesc {
                 name,
+                // SAFETY: pure query — `device` is the live logical device and
+                // `image` was just created by it above; the call only reads the
+                // memory requirements into a caller-owned struct.
                 requirements: unsafe { device.get_image_memory_requirements(image) },
                 location: gpu_allocator::MemoryLocation::GpuOnly,
                 linear: false,

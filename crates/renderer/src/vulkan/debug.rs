@@ -27,6 +27,10 @@ pub fn create_debug_messenger(
         .pfn_user_callback(Some(debug_callback));
 
     let messenger = unsafe {
+        // SAFETY: `debug_utils` (the VK_EXT_debug_utils loader) and the
+        // instance it was created from are both live and outlive this call,
+        // and `create_info` — including the callback fn pointer — stays
+        // borrowed for the duration of the call.
         debug_utils
             .create_debug_utils_messenger(&create_info, None)
             .context("Failed to create debug utils messenger")?
