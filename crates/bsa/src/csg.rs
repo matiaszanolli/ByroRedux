@@ -244,6 +244,21 @@ impl CsgArchive {
                 ),
             ));
         }
+        // A non-final chunk MUST inflate to exactly `CSG_CHUNK_SIZE`: both
+        // `read_psg` and `psg_len` address PSG space as
+        // `idx * CSG_CHUNK_SIZE + local`, so a short interior chunk would
+        // silently mis-address every later offset. Reject it explicitly rather
+        // than return wrong bytes (matches the over-size guard above). Only the
+        // final chunk is allowed to be short. See #1986 (FO4-D1-01).
+        if (idx as usize) < self.chunks.len() - 1 && raw.len() != CSG_CHUNK_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "CSG non-final chunk {idx} inflated to {} != {CSG_CHUNK_SIZE}",
+                    raw.len()
+                ),
+            ));
+        }
         let arc: Arc<[u8]> = Arc::from(raw.into_boxed_slice());
         inner.cache.insert(idx, arc.clone());
         Ok(arc)
@@ -335,6 +350,24 @@ mod tests {
             csg.read_psg((CSG_CHUNK_SIZE + 990) as u64, 10).unwrap(),
             &c1[990..1000]
         );
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn rejects_short_non_final_chunk() {
+        // A non-final chunk that inflates to < CSG_CHUNK_SIZE breaks the PSG
+        // chunk-addressing invariant (idx*CSG_CHUNK_SIZE + local). chunk_bytes
+        // must reject it rather than silently mis-address the rest of PSG
+        // space. The final chunk is allowed to be short (covered elsewhere).
+        // See #1986 (FO4-D1-01).
+        let short = vec![0xABu8; 100]; // non-final but only 100 B
+        let last = vec![0xCDu8; 50];
+        let p = write_temp(&build_csg(&[short, last]), "shortchunk");
+        let csg = CsgArchive::open(&p).unwrap();
+        match csg.read_psg(0, 8) {
+            Ok(_) => panic!("expected short non-final chunk rejection"),
+            Err(e) => assert_eq!(e.kind(), io::ErrorKind::InvalidData),
+        }
         std::fs::remove_file(&p).ok();
     }
 
