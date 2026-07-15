@@ -178,22 +178,26 @@ fn compute_directional_upload(
 ///   Opaque      — slot 4/5 = 0 (blend factors unused); slot 6 = depth_state;
 ///                 slot 7 = mesh (cluster key); slot 8 = sort_depth
 ///                 (front-to-back); slot 9 = entity_id tiebreaker (#506).
-///   Transparent — slot 4/5 = (src_blend, dst_blend); slot 7 = depth_state;
-///                 slot 9 = entity_id. Slots 6/8 swap by blend mode:
+///   Transparent — slot 4/5 = (src_blend, dst_blend); slot 9 = entity_id.
+///                 Slots 6/7/8 vary by blend mode:
 ///                 * alpha-over (dst != ONE) → slot 6 = !sort_depth
-///                   (back-to-front within a (blend, depth_state) cohort),
-///                   slot 8 = mesh. Correctness: alpha compositing requires
-///                   back-to-front order *within one pipeline state*.
+///                   (back-to-front — compositing correctness must win
+///                   even over the pipeline-bind boundary), slot 7 =
+///                   depth_state (tie-break only), slot 8 = mesh.
 ///                 * additive (Gamebryo dst_blend == ONE == 0) is
-///                   order-independent → slot 6 = mesh, slot 8 = sort_depth,
-///                   so same-mesh particles stay contiguous and instance-
-///                   batch (#1649).
+///                   order-independent → slot 6 = depth_state (the
+///                   pipeline-bind boundary dominates, mirroring the
+///                   Opaque branch — #1994/DIM2-01), slot 7 = mesh
+///                   (cluster key), slot 8 = sort_depth, so same-mesh
+///                   particles of one pipeline state stay contiguous and
+///                   instance-batch (#1649).
 ///
-/// D2-NEW-05 (#1806): every `depth_state` slot above (6 for Opaque, 7 for
-/// Transparent) also carries the `wireframe` pipeline-bind boundary,
-/// packed into `pack_depth_state`'s spare bit 2 — see that function's
-/// doc comment. Without it a wireframe draw could land mid-run among
-/// fill draws of the same mesh/depth state and split the batch.
+/// D2-NEW-05 (#1806): every branch's `depth_state` slot (6 for Opaque and
+/// additive Transparent, 7 for alpha-over Transparent) also carries the
+/// `wireframe` pipeline-bind boundary, packed into `pack_depth_state`'s
+/// spare bit 2 — see that function's doc comment. Without it a wireframe
+/// draw could land mid-run among fill draws of the same mesh/depth state
+/// and split the batch.
 ///
 /// Slot 2 widened from `is_decal as u8` to `render_layer as u8`
 /// (#renderlayer): same shape, but consecutive same-layer draws now
@@ -202,7 +206,7 @@ fn compute_directional_upload(
 ///
 /// The entity_id final slot makes `par_sort_unstable_by_key` behave
 /// deterministically across runs: without it, rayon's work-stealing
-/// could reorder commands whose 9-tuple prefix tied, breaking
+/// could reorder commands whose 10-tuple prefix tied, breaking
 /// capture/replay and screenshot-diff workflows on scenes with many
 /// identical-mesh / identical-depth entries (e.g. exterior rock
 /// fields at a fixed camera distance).
@@ -217,16 +221,26 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u8, u32, u32, u32
         // `gamebryo_to_vk_blend_factor`) is order-independent: the HDR
         // target accumulates `src*srcF + dst*1` commutatively, so
         // same-mesh particles need no back-to-front sort. For that subset
-        // mesh dominates depth so an emitter's billboards stay contiguous
-        // in the sorted array and the CPU batch-merge collapses them into
-        // a single instanced indirect draw (#1649). True alpha-over
-        // (e.g. ONE_MINUS_SRC_ALPHA = 7) keeps depth dominant — its
-        // compositing order is visible.
+        // the pipeline-bind boundary (depth_state, which folds in
+        // `wireframe` — D2-NEW-05 / #1806) dominates mesh, mirroring the
+        // Opaque branch below — otherwise a wireframe draw interleaved
+        // among fill draws of the same mesh forces extra pipeline binds
+        // instead of two contiguous fill/wireframe runs (#1994 / DIM2-01).
+        // Mesh still dominates *within* one depth_state, so same-mesh
+        // billboards stay contiguous and the CPU batch-merge collapses
+        // them into a single instanced indirect draw (#1649). True
+        // alpha-over (e.g. ONE_MINUS_SRC_ALPHA = 7) keeps depth dominant
+        // over even the pipeline-bind boundary — its compositing order is
+        // visible, so correctness wins over bind-count efficiency there.
         const GAMEBRYO_BLEND_ONE: u8 = 0;
-        let (slot6, slot8) = if cmd.dst_blend == GAMEBRYO_BLEND_ONE {
-            (cmd.mesh_handle, cmd.sort_depth) // mesh dominates → contiguous
+        let (slot6, slot7, slot8) = if cmd.dst_blend == GAMEBRYO_BLEND_ONE {
+            // depth_state dominates → contiguous fill/wireframe runs;
+            // mesh clusters within each; sort_depth is front-to-back.
+            (pack_depth_state(cmd) as u32, cmd.mesh_handle, cmd.sort_depth)
         } else {
-            (!cmd.sort_depth, cmd.mesh_handle) // depth dominates → back-to-front
+            // depth dominates → back-to-front; depth_state only breaks
+            // ties within a depth bucket; mesh is the final tiebreaker.
+            (!cmd.sort_depth, pack_depth_state(cmd) as u32, cmd.mesh_handle)
         };
         (
             rt_only,
@@ -236,7 +250,7 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u8, u32, u32, u32
             cmd.src_blend as u32,
             cmd.dst_blend as u32,
             slot6,
-            pack_depth_state(cmd) as u32,
+            slot7,
             slot8,
             cmd.entity_id,
         )
@@ -442,7 +456,7 @@ pub(crate) fn build_render_data(
     //
     // #934 / PERF-DC-01 — rayon's fork-join overhead loses to serial
     // `sort_unstable_by_key` below ~2K elements on the closure-extracted
-    // 9-tuple key. Measured on a 7950X (see
+    // 10-tuple key. Measured on a 7950X (see
     // `bench_draw_sort_serial_vs_parallel` in
     // `byroredux/src/render/draw_sort_key_tests.rs`):
     //
@@ -455,11 +469,13 @@ pub(crate) fn build_render_data(
     //
     // Typical Bethesda cell counts sit in 400–1500 (Prospector ~811,
     // GSDocMitchell ~263, exterior radius-3 grid ~1200), so serial is
-    // the default. The fallback to `par_sort_unstable_by_key` at ≥2K
-    // covers exterior radius-5+ grids and Skyrim+ city interiors.
+    // the default. The fallback to `par_sort_unstable_by_key` at
+    // `DRAW_SORT_PARALLEL_THRESHOLD` covers exterior radius-5+ grids and
+    // Skyrim+ city interiors.
+    const DRAW_SORT_PARALLEL_THRESHOLD: usize = 2000;
     let ms_particles = took(t_particles);
     let t_sort = mark(profile);
-    if draw_commands.len() >= 2000 {
+    if draw_commands.len() >= DRAW_SORT_PARALLEL_THRESHOLD {
         draw_commands.par_sort_unstable_by_key(draw_sort_key);
     } else {
         draw_commands.sort_unstable_by_key(draw_sort_key);

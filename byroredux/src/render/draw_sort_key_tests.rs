@@ -244,6 +244,44 @@ fn additive_same_mesh_draws_stay_contiguous_for_instancing() {
     assert_eq!(meshes, vec![7, 7, 7, 9, 9, 9], "additive draws group by mesh");
 }
 
+/// Regression for #1994 (DIM2-01): the additive-blend branch must put the
+/// pipeline-bind boundary (`depth_state`, which folds in `wireframe` —
+/// D2-NEW-05 / #1806) *ahead* of `mesh_handle` in the sort key, mirroring
+/// the Opaque branch. Pre-fix, `mesh_handle` sorted ahead of `depth_state`
+/// for additive draws, so two meshes each present in both wireframe and
+/// fill variants sorted as `meshA-fill, meshA-wire, meshB-fill, meshB-wire`
+/// (4 pipeline binds) instead of `fill, fill, wire, wire` (2 binds).
+#[test]
+fn additive_wireframe_and_fill_draws_do_not_interleave_across_meshes() {
+    let mut cmds = Vec::new();
+    for mesh in [7u32, 9u32] {
+        for wireframe in [false, true] {
+            let mut c = cmd(true, false, false);
+            c.src_blend = 6;
+            c.dst_blend = 0; // additive
+            c.mesh_handle = mesh;
+            c.wireframe = wireframe;
+            c.entity_id = mesh * 2 + wireframe as u32;
+            cmds.push(c);
+        }
+    }
+    cmds.sort_by_key(draw_sort_key);
+    let flags: Vec<bool> = cmds.iter().map(|c| c.wireframe).collect();
+    // Exactly one run per wireframe value — fill draws of both meshes
+    // together, then wireframe draws of both meshes together (or vice
+    // versa), never interleaved by mesh.
+    let first = flags[0];
+    let boundary = flags.iter().position(|&w| w != first).unwrap_or(flags.len());
+    assert!(
+        flags[boundary..].iter().all(|&w| w != first),
+        "additive wireframe={} and wireframe={} draws must not interleave \
+         across meshes; got {:?}",
+        first,
+        !first,
+        flags,
+    );
+}
+
 /// Counterpart to the above: true alpha-over (`dst_blend == 7`) is
 /// order-dependent, so it must stay depth-sorted (back-to-front) even
 /// when that splits a same-mesh run — correctness wins over batching.
@@ -268,7 +306,7 @@ fn alpha_over_same_mesh_draws_stay_depth_sorted() {
     assert_eq!(order, vec![900, 900, 300, 300, 100, 100]);
 }
 
-/// Regression for #506: with ties in the 8-tuple prefix (same
+/// Regression for #506: with ties in the 9-tuple prefix (same
 /// mesh, same pipeline state, same depth bucket) the `entity_id`
 /// final slot must break them deterministically so two sorts of
 /// the same input produce byte-identical output. Pre-#506 the
@@ -322,7 +360,7 @@ fn sort_key_is_deterministic_for_full_tuple_ties() {
 
 /// #934 / PERF-DC-01 — measure serial vs parallel sort cost across
 /// scene-sized N. The audit claims rayon's `par_sort_unstable_by_key`
-/// loses to `sort_unstable_by_key` on the closure-extracted 9-tuple
+/// loses to `sort_unstable_by_key` on the closure-extracted 10-tuple
 /// key at typical Bethesda draw counts (~800–1500), and that the
 /// crossover is in the 2K range.
 ///
