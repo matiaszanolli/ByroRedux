@@ -40,6 +40,14 @@ pub struct PackRecord {
     /// package should search around, replacing the v0 actor-position
     /// approximation in `sandbox_seat_system`.
     pub location: Option<PackLocation>,
+    /// `CTDA` conditions gating whether this package is eligible at all
+    /// (M42.2). Empty = unconditionally eligible (Bethesda's "no
+    /// conditions = always fires"). The plugin crate only *carries* these
+    /// — evaluation lives in `byroredux_scripting`'s M47.1 evaluator, so
+    /// [`active_package`] and friends take a caller-supplied
+    /// `condition_met` predicate rather than reaching across the crate
+    /// boundary (scripting depends on plugin, not the reverse).
+    pub conditions: ConditionList,
 }
 
 /// PACK location data from PLDT — where a package's activity centers.
@@ -126,41 +134,54 @@ impl PackRecord {
     }
 }
 
-/// Selection rule (M42.1): an NPC's *active* package at `hour` — the first
+/// Selection rule (M42.2): an NPC's *active* package at `hour` — the first
 /// package, in priority order (`NpcRecord.ai_packages` order), whose
-/// schedule includes `hour`. This keeps day-shift workers from being
-/// treated as idle sandboxers — e.g. a bartender whose 08:00–20:00 `AtBar`
-/// package outranks an evening `Sandbox` package is *not* seated at 10:00.
+/// schedule includes `hour` **and** whose CTDA conditions pass. This keeps
+/// day-shift workers from being treated as idle sandboxers — e.g. a
+/// bartender whose 08:00–20:00 `AtBar` package outranks an evening `Sandbox`
+/// package is *not* seated at 10:00 — and now also skips a package whose
+/// author-set conditions (e.g. `GetIsID`, `GetActorValue`) don't hold.
 ///
-/// Schedule + priority only; package conditions (CTDA) are not yet
-/// evaluated. Unresolved packages are skipped by the caller (pass only
-/// resolved records, in order).
+/// `condition_met` is caller-supplied because the M47.1 condition evaluator
+/// lives in `byroredux_scripting`, which depends on this crate — so the
+/// evaluation is injected rather than called across the boundary. Pass
+/// `|_| true` for the schedule-only behavior (M42.1). Empty condition lists
+/// must map to `true` in the caller's predicate (Bethesda's "no conditions
+/// = always fires"). Unresolved packages are skipped by the caller (pass
+/// only resolved records, in order).
 fn active_package<'a>(
     packages: impl IntoIterator<Item = &'a PackRecord>,
     hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
 ) -> Option<&'a PackRecord> {
-    packages.into_iter().find(|pk| pk.scheduled_active_at(hour))
+    packages
+        .into_iter()
+        .find(|pk| pk.scheduled_active_at(hour) && condition_met(pk))
 }
 
 /// Whether an NPC's active package at `hour` (see [`active_package`]) is a
-/// Sandbox package.
+/// Sandbox package. `condition_met` injects M47.1 CTDA evaluation (M42.2);
+/// pass `|_| true` for schedule-only selection.
 pub fn active_package_is_sandbox<'a>(
     packages: impl IntoIterator<Item = &'a PackRecord>,
     hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
 ) -> bool {
-    active_package(packages, hour).is_some_and(PackRecord::is_sandbox)
+    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_sandbox)
 }
 
 /// The PLDT location of an NPC's active package at `hour` (see
 /// [`active_package`]), when that package is Sandbox-type. `None` when the
 /// active package isn't Sandbox, carries no PLDT, or nothing is scheduled
 /// active. M42.1's seat system uses this to size its search radius around
-/// the authored center instead of a fixed guess.
+/// the authored center instead of a fixed guess. `condition_met` injects
+/// M47.1 CTDA evaluation (M42.2); pass `|_| true` for schedule-only.
 pub fn active_sandbox_location<'a>(
     packages: impl IntoIterator<Item = &'a PackRecord>,
     hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
 ) -> Option<PackLocation> {
-    active_package(packages, hour)
+    active_package(packages, hour, condition_met)
         .filter(|pk| pk.is_sandbox())
         .and_then(|pk| pk.location)
 }
@@ -234,6 +255,16 @@ pub fn parse_pack(
                     target,
                     radius,
                 });
+            }
+            // Package eligibility conditions (M42.2). A PACK carries a flat
+            // CTDA list (no per-block nesting like QUST stages), combined
+            // with the standard OR-precedence rule. FormID params are
+            // remapped to global load-order space here, same as PLDT above.
+            b"CTDA" => {
+                if let Some(mut cond) = parse_ctda(sub) {
+                    remap_condition_form_ids(&mut cond, remap);
+                    out.conditions.push(cond);
+                }
             }
             _ => {}
         }
@@ -876,6 +907,7 @@ pub fn parse_idle(form_id: u32, subs: &[SubRecord]) -> IdleRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::esm::records::condition::Condition;
 
     fn sub(typ: &[u8; 4], data: &[u8]) -> SubRecord {
         SubRecord {
@@ -1052,15 +1084,65 @@ mod tests {
         let bartender = pack(6, sched(Some(8), 12)); // Travel/AtBar 08–20
         let evening = pack(PROCEDURE_SANDBOX, sched(Some(20), 2)); // sandbox 20–22
         // 10:00 → bartender active → NOT treated as sandbox (the Trudy bug).
-        assert!(!active_package_is_sandbox([&bartender, &evening], 10.0));
+        assert!(!active_package_is_sandbox([&bartender, &evening], 10.0, |_| true));
         // 21:00 → bartender off-shift, evening sandbox active.
-        assert!(active_package_is_sandbox([&bartender, &evening], 21.0));
+        assert!(active_package_is_sandbox([&bartender, &evening], 21.0, |_| true));
         // Any-time saloon sandbox behind an inactive sleep package → sandbox.
         let sleep = pack(4, sched(Some(22), 10));
         let anytime_sandbox = pack(PROCEDURE_SANDBOX, None);
-        assert!(active_package_is_sandbox([&sleep, &anytime_sandbox], 10.0));
+        assert!(active_package_is_sandbox([&sleep, &anytime_sandbox], 10.0, |_| true));
         // No resolvable packages → not sandbox.
-        assert!(!active_package_is_sandbox(std::iter::empty::<&PackRecord>(), 10.0));
+        assert!(!active_package_is_sandbox(
+            std::iter::empty::<&PackRecord>(),
+            10.0,
+            |_| true
+        ));
+    }
+
+    #[test]
+    fn active_package_selector_gates_on_conditions() {
+        // Two packages both scheduled-active at 10:00: a higher-priority
+        // Sandbox whose condition fails, and a lower-priority Sandbox with no
+        // conditions. The condition predicate must skip the first and pick
+        // the second — proving CTDA gating changes the selection, not just
+        // the boolean.
+        let mut gated = pack(PROCEDURE_SANDBOX, None);
+        gated.editor_id = "GatedSandbox".into();
+        gated.conditions = vec![Condition {
+            function_index: 72, // GetIsID (arbitrary — the predicate decides)
+            ..Default::default()
+        }];
+        let fallback = pack(PROCEDURE_SANDBOX, None); // no conditions
+        // Predicate: a package passes iff it has no conditions (models the
+        // caller's fail path for the gated one).
+        let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
+        // Still sandbox overall — the fallback wins.
+        assert!(active_package_is_sandbox([&gated, &fallback], 10.0, cond_met));
+        // With only the gated package, its failing condition drops it → no
+        // active package → not sandbox. Contrast `|_| true` which passes it.
+        assert!(!active_package_is_sandbox([&gated], 10.0, cond_met));
+        assert!(active_package_is_sandbox([&gated], 10.0, |_| true));
+    }
+
+    #[test]
+    fn parse_pack_captures_ctda_conditions() {
+        // PKDT (sandbox) + one CTDA → the condition lands on the record so
+        // the caller can evaluate it. 28-byte FO3/FNV CTDA: type byte at 0,
+        // function_index (u32) at offset 8.
+        let mut pkdt = Vec::new();
+        pkdt.extend_from_slice(&0u32.to_le_bytes()); // flags
+        pkdt.push(PROCEDURE_SANDBOX as u8); // procedure byte
+        pkdt.extend_from_slice(&[0u8; 3]); // pad to 8
+        let mut ctda = vec![0u8; 28];
+        ctda[8..12].copy_from_slice(&72u32.to_le_bytes()); // function_index
+        let p = parse_pack(
+            0x1,
+            &[sub(b"PKDT", &pkdt), sub(b"CTDA", &ctda)],
+            &None,
+        );
+        assert!(p.is_sandbox());
+        assert_eq!(p.conditions.len(), 1);
+        assert_eq!(p.conditions[0].function_index, 72);
     }
 
     #[test]

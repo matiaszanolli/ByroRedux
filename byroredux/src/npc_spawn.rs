@@ -1444,9 +1444,27 @@ pub fn spawn_npc_entity(
         .try_resource::<crate::components::GameTimeRes>()
         .map(|r| r.hour)
         .unwrap_or(10.0);
+    // M42.2: CTDA gating. A package is eligible only if its author-set
+    // conditions pass, evaluated against this actor via the M47.1 evaluator.
+    // The predicate closure is what threads scripting's evaluator into
+    // plugin's schedule-only selector (plugin can't call scripting — the
+    // dependency runs the other way). `subject` is the spawned NPC; the
+    // package `target` isn't resolved (v0, matching the search-center
+    // approximation above), so conditions using `RunOn::Target` fall to the
+    // evaluator's missing-ref-fails default.
+    let cond_ctx = byroredux_scripting::condition::ConditionContext {
+        subject: placement_root,
+        target: None,
+        combat_target: None,
+        linked_reference: None,
+    };
+    let condition_met = |pk: &byroredux_plugin::esm::records::PackRecord| {
+        package_conditions_pass(&pk.conditions, world, &cond_ctx)
+    };
     let runs_sandbox = byroredux_plugin::esm::records::active_package_is_sandbox(
         npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
         game_hour,
+        condition_met,
     );
     if runs_sandbox {
         // PLDT's authored radius (when decoded and > 0) replaces
@@ -1458,6 +1476,7 @@ pub fn spawn_npc_entity(
         let search_radius = byroredux_plugin::esm::records::active_sandbox_location(
             npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
             game_hour,
+            condition_met,
         )
         .map(|loc| loc.radius as f32)
         .filter(|r| *r > 0.0);
@@ -1485,6 +1504,43 @@ pub fn spawn_npc_entity(
 
     tag_descendants_as_actor(world, placement_root);
     Some(placement_root)
+}
+
+/// Whether an AI package's CTDA conditions permit it to be selected for this
+/// actor (M42.2), evaluated through the M47.1 condition evaluator.
+///
+/// **Fail-open on unimplemented functions.** The M47.1 catalog covers ~15
+/// of Bethesda's ~300 condition functions; an out-of-catalog index
+/// evaluates to `0.0` in `evaluate_function`, which would silently turn a
+/// `SomeUnimplementedFunc == 1` gate into a *false* result and drop a
+/// package the engine can't actually reason about — a regression versus
+/// M42.1, where conditions were ignored entirely and every scheduled
+/// package stayed eligible. So if *any* condition in the list references a
+/// function outside the catalog, the whole list is treated as passing (the
+/// OR/AND blocks mix, so one unknown poisons the boolean). Only lists whose
+/// every function is implemented are gated for real — honoring the common,
+/// evaluable cases (`GetIsID` / `GetActorValue` / `GetFactionRank` /
+/// `GetStage`) without regressing on the rest. Empty lists pass (Bethesda's
+/// "no conditions = always fires", also short-circuited in `evaluate`).
+fn package_conditions_pass(
+    conditions: &byroredux_plugin::esm::records::condition::ConditionList,
+    world: &byroredux_core::ecs::World,
+    ctx: &byroredux_scripting::condition::ConditionContext,
+) -> bool {
+    use byroredux_scripting::condition::{evaluate, ConditionFunction};
+    if conditions.is_empty() {
+        return true;
+    }
+    let all_known = conditions.iter().all(|c| {
+        !matches!(
+            ConditionFunction::from_index(c.function_index),
+            ConditionFunction::Unknown(_)
+        )
+    });
+    if !all_known {
+        return true; // can't evaluate soundly → don't gate (fail-open)
+    }
+    evaluate(conditions, world, ctx)
 }
 
 /// Path inside the meshes archive for an NPC's pre-baked FaceGen

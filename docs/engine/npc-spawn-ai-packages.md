@@ -65,12 +65,25 @@ sub-records) holds the NPC's package list in priority order.
 
 ## 4. Package selection: narrower than "priority stack" suggests
 
-`active_package` (`ai.rs:138`, private) picks the **first** package in
+`active_package` (`ai.rs`, private) picks the **first** package in
 priority order whose `PSDT` schedule covers a given hour (no `PSDT` =
-always eligible) — that's the entire selection logic. **Package `CTDA`
-conditions are never evaluated** for this choice, despite the
-condition-evaluator infrastructure (M47.1) being fully wired for other
-subsystems — a doc comment at `ai.rs:135-137` says so explicitly.
+always eligible) **and whose `CTDA` conditions pass** — that's the
+selection logic as of M42.2. Package conditions *are* now evaluated
+(they were not before 2026-07-15): `parse_pack` captures the flat CTDA
+list onto `PackRecord.conditions`, and the selector takes a
+caller-supplied `condition_met` predicate that the spawn site fills
+with the M47.1 evaluator (`byroredux_scripting::condition::evaluate`).
+The predicate lives at the caller because `scripting` depends on
+`plugin`, not the reverse — the plugin crate carries the conditions but
+can't reach the evaluator. **Fail-open on unimplemented functions:**
+the M47.1 catalog covers ~15 of Bethesda's ~300 condition functions, so
+if any condition in a package's list references an out-of-catalog
+function, `package_conditions_pass` (`npc_spawn.rs`) treats the whole
+list as passing rather than let an unevaluable `Func == 1` silently
+resolve to `0.0 == 1` (false) and drop a package the engine can't
+reason about. Only lists whose every function is implemented gate for
+real — honoring the common `GetIsID` / `GetActorValue` /
+`GetFactionRank` / `GetStage` cases without regressing the rest.
 
 More significant: **selection runs exactly once, at spawn time**
 (`npc_spawn.rs:1433-1479`), against whatever `GameTimeRes.hour` happens
@@ -125,8 +138,9 @@ a near-term follow-up.
   AI-adjacent per-frame system, and it isn't part of the default
   scheduler — it requires `BYRO_SANDBOX_SIT=1`.
 - **Selection is spawn-time-only.** No package re-evaluation as game
-  time advances; no `CTDA` condition evaluation for package choice;
-  `PTDT`/`PTD2` target data isn't parsed.
+  time advances — `CTDA` conditions *are* now evaluated (M42.2), but
+  only once, against the game hour and world state at spawn. `PTDT`/
+  `PTD2` target data still isn't parsed.
 - **Sit-enter clip coverage is FNV/FO3-only** — `None` for Oblivion
   (deferred), and for Skyrim+/FO4+/FO76/Starfield, whose actors animate
   through Havok `.hkx`, not `.kf`, so this whole mechanism doesn't apply
