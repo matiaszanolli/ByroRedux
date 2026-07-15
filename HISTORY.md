@@ -24,6 +24,57 @@ Commits hold that record.
 
 ---
 
+## Session 56 — M42 sandbox seating + M41.5 NPC idle variety + audit bug-bash tail  (2026-07-15, `c0b2d4e0..005ff563`, 28 commits)
+
+Opened on the NPC-liveliness arc — giving spawned actors something to *do*
+beyond standing in a T-pose — and closed out the M42 Sandbox seat behavior
+end-to-end (PACK location decode → authored search radius → grounded
+sit-enter pose), then spent the tail working through the ECS-core / audio /
+renderer audit reports (2026-07-11 → 2026-07-14) as a low/medium-severity
+doc-rot + correctness bug-bash, and finished with three source-cited
+cross-cutting docs that pinned the drift those audits surfaced.
+
+- **M42 AI-package Sandbox seating** — the `SandboxBehavior` / `Seated`
+  components + `sandbox_seat_system` v0 ("sit in the nearest free chair,
+  once", gated behind `BYRO_SANDBOX_SIT`) landed across the
+  `feat/m42.0-sandbox-sit` branch (`6371cb0f` / `2f1a637b`, PR #1978). PACK
+  `PLDT` (package location) is now decoded and verified against real
+  `FalloutNV.esm` (`7d5e91db`), and the seat search uses each package's
+  authored PLDT radius instead of a blanket guess (`17d55414`). The FNV/FO3
+  sit *loop* clips carry no pelvis/root channel — actors floated — so the
+  procedure now parks `AnimationPlayer` on the sit-*enter* clip's final
+  grounded frame (M42.1, `c5dcad97`), plus schedule handling (`1c8fa7b4`).
+  `NearReference`→live-entity center resolution was investigated and
+  deprioritized: only ~12% of vanilla FNV NearReference packages resolve to
+  anything spawnable (`db42dee7`).
+- **M41.5 NPC idle variety** — per-actor phase/speed desync on shared idle
+  clips so a room of NPCs stops animating in lockstep, plus the
+  furniture-marker foundation (`004b51c7`, PR #1977). Related: accum-root
+  translation now resets when a clip has no root channel, fixing actors
+  drifting off their placement (`bb07f48c`).
+- **Format / animation correctness** — `CycleType::Reverse` now folds
+  ping-pong over a full period instead of a half (#1980); ragdoll non-body
+  descendant bones are re-derived from the simulated pose (#1979); the CSG
+  reader rejects a short non-final chunk instead of mis-addressing the PSG
+  stream (#1986); FO4 shader-flag-only materials seed an alpha-test
+  threshold (#1985).
+- **Audit doc-rot + hardening bug-bash** — closed doc-rot across renderer
+  and SoundCache docstrings (#1859, #1989/#1990/#1991, #1988/#1992/#1993,
+  with an SVGF firefly-hoist regression test), documented every renderer FFI
+  unsafe block with a SAFETY comment (#1904), pinned `SHADOW_MASK_*` to an
+  8-bit ceiling at the packing site (#1913), and filed the ECS-core (clean,
+  0 findings), audio-subsystem, and four renderer-dimension audit reports.
+- **Cross-cutting docs** — new source-cited walkthroughs for NPC spawn / AI
+  packages, save/load round-trip, and exterior-grid streaming, each landed
+  alongside a fix for the ROADMAP/module drift it exposed (M42 sit-enter,
+  M45 load-apply contradiction, and streaming `radius`/`app_step.rs` drift
+  respectively).
+
+Net: tests 3549 → **3587** (+38); `src/` LOC ~270 020 → ~272 700 (+~2 680);
+no bench delta — bench-of-record `1c26bc25` is now 613 commits stale
+(R6a-stale-15 still gates any current FPS claim). No hot-path shader/pipeline
+change landed this session.
+
 ## Session 55 — M47.2 QUST fragment keystone + VWD/ghosting root-cause + a 100-issue audit bug-bash tail  (2026-07-11, `c4d5996f..5fb2e666`, 82 commits)
 
 Opened on the M47.2 scripting runtime and the long-open interior-ghosting

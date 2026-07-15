@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-07-11 (Session 55 closeout — tests 3549, +118; src/ LOC +~6 324; bench-of-record now 584 commits stale, see staleness caveat below). Session 55 landed the M47.2 QUST VMAD fragment-section decoder + runtime population (`8a70b81a`) — vanilla quests now advance stages from decompiled `.pex` fragment bodies instead of test fixtures — plus the VWD flag materialization and the actual root cause of the long-open interior-ghosting artifact (a repeated camera/capsule desync on cell transitions, #1874, not a shader bug). The bulk of the session worked through five `AUDIT_RENDERER`/`AUDIT_NIF`/`AUDIT_TECH_DEBT` reports (2026-07-05 → 2026-07-09), closing 100+ individual low/medium-severity findings via `/fix-issue`. See [HISTORY.md](HISTORY.md) Session 55.
+**Last verified**: 2026-07-15 (Session 56 closeout — tests 3587, +38; src/ LOC +~2 680; bench-of-record now 613 commits stale, see staleness caveat below). Session 56 closed the M42 Sandbox seat behavior end-to-end (PACK `PLDT` location decode → authored search radius → grounded sit-enter pose, `7d5e91db`/`17d55414`/`c5dcad97`, PR #1978), shipped M41.5 NPC idle-variety phase/speed desync + furniture-marker foundation (`004b51c7`, PR #1977), and worked through the ECS-core / audio / renderer audit reports (2026-07-11 → 2026-07-14) as a low/medium-severity doc-rot + correctness bug-bash — no hot-path shader/pipeline change landed. See [HISTORY.md](HISTORY.md) Session 56.
 **Bench-of-record** (R6a-stale-14 refresh, HEAD `1c26bc25`, 2026-06-03,
 wall-clock bench, 300 frames, RTX 4070 Ti, run from each game's `Data/`
 directory — see Repro-command CWD note below):
@@ -28,7 +28,7 @@ Whiterun (control, authored bhk collision) improved +10% FPS — attributable to
 
 **Repro-command CWD note:** bare `--bsa` / `--textures-bsa` / `--materials-ba2` names resolve against CWD, not the `--esm` folder. Run each bench with CWD set to that game's `Data/` directory. Run from elsewhere → archives silently fail → scene loads near-empty (Prospector: 36 entities / 3 meshes / spurious ~1792 FPS).
 
-**Staleness (2026-07-11, Session 55):** bench-of-record is now **584 commits stale**. Session 55 was scripting-runtime work (M47.2) plus a large audit-driven bug-bash — the renderer touches were doc/comment corrections, one small classifier-keyword narrowing (#1873), and a stale-SPIR-V-version recompile (#1929), none of them hot-path shader/pipeline changes — so no new drift risk was added, but the gap is not closing either. R6a-stale-15 (a fresh 300-frame three-scene GPU bench) still gates any current FPS claim.
+**Staleness (2026-07-15, Session 56):** bench-of-record is now **613 commits stale**. Session 56 was NPC-behavior work (M42 sandbox seating / M41.5 idle variety — CPU-side ECS + animation systems) plus an audit-driven doc-rot bug-bash — the renderer touches were doc/SAFETY-comment corrections and one 8-bit clamp at the `SHADOW_MASK_*` packing site (#1913), none of them hot-path shader/pipeline changes — so no new drift risk was added, but the gap is not closing either. R6a-stale-15 (a fresh 300-frame three-scene GPU bench) still gates any current FPS claim.
 
 ---
 
@@ -726,16 +726,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-07-11 (Session 55 closeout). Last `/session-close` verification was 2026-07-11 (Session 55).
+Ground-truth as of 2026-07-15 (Session 56 closeout). Last `/session-close` verification was 2026-07-15 (Session 56).
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~270 020 (Session 55 measure) |
-| Rust total lines (all `.rs`, excl. `target/`) | ~285 245 (updated 2026-07-11)  |
-| Source files (`.rs`, excl. `target/`)   | 668 total · 630 outside `tests/` dirs |
+| Rust source lines (`src/` dirs)         | ~272 700 (Session 56 measure) |
+| Rust total lines (all `.rs`, excl. `target/`) | ~288 028 (updated 2026-07-15)  |
+| Source files (`.rs`, excl. `target/`)   | 671 total · 633 outside `tests/` dirs |
 | Workspace members                       | 23 (21 crates + `byroredux` binary + `tools/byro-dbg`) |
-| Tests (last reported by ROADMAP)        | **3549 passing** (Session 55 closeout, 2026-07-11). +118 vs Session 54. |
-| Open issue directories                  | 1825 (`.claude/issues/`)     |
+| Tests (last reported by ROADMAP)        | **3587 passing** (Session 56 closeout, 2026-07-15). +38 vs Session 55. |
+| Open issue directories                  | 1840 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE / FO4 / FO76 (FO4 both base mesh archives, 159 866 NIFs, 2026-06-14; FO76 58 469 NIFs, 2026-07-11 #1900); Oblivion 99.93% (2026-06-15 sweep, post-#1543/#1544), Starfield 99.64% aggregate (2026-07-03 sweep; see compat matrix for per-archive breakdown). Recoverable 100% on all games, including Oblivion (#698's corrupt-marker hard-failure is closed). Sweep dates: Oblivion 2026-06-15, FO4 2026-06-14, FO76 2026-07-11, Starfield 2026-07-03; FO3/FNV/Skyrim SE unrefreshed since the original integration sweep (still 100%). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
