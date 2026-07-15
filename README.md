@@ -99,9 +99,12 @@ Stats](ROADMAP.md#project-stats), refreshed per `/session-close`.
 Full RT pipeline + sky/atmosphere + exterior sun operational. Skinning
 chain verified end-to-end (M29 closed) with GPU bone-palette compute
 pass + persistent SSBO slot pool (M29.5 / M29.6, Session 40). World
-streaming Phase 1 (single-cell async pre-parse) + Phase 2
-(interior↔exterior cell-swap via `script.activate <door>`) shipped;
-multi-cell grid pending. Kinematic character controller (M28.5)
+streaming (M40, closed) — multi-cell grid loads and follows the player
+via an async pre-parse worker, with LRU BLAS eviction/reload as cells
+stream out; interior↔exterior cell swaps trigger via the `door.teleport`
+console command. See
+[docs/engine/exterior-grid-streaming.md](docs/engine/exterior-grid-streaming.md).
+Kinematic character controller (M28.5)
 replaces fly-cam-only on-foot movement — gravity + collide-and-slide +
 jump, walk/fly toggle on `F`. NPC spawning (M41) shipped Phase 1
 (T-pose humanoid + skeleton + body + hands + head + FaceGen morphs) and

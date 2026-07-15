@@ -9,6 +9,7 @@ built, where the code lives, and what guarantees it makes.
 | Doc | Crate(s) | What it covers |
 |---|---|---|
 | [Pipeline Overview](pipeline-overview.md) | all | Cross-cutting: one interior cell load traced end-to-end, CLI → parse → NIFAL → ECS spawn → scheduler → GPU upload → present |
+| [Exterior Grid Streaming](exterior-grid-streaming.md) | byroredux, plugin, renderer | Cross-cutting: WRLD/LAND → terrain+REFRs, async pre-parse worker, multi-cell streaming, door-teleport cell swap |
 | [Architecture Overview](architecture.md) | all | Design principles, workspace layout, crate dependency graph |
 | [ECS](ecs.md) | core | Components, storage backends, queries, scheduler, resources |
 | [Vulkan Renderer](renderer.md) | renderer | Init chain, RT pipeline, multi-light, BLAS/TLAS, swapchain |

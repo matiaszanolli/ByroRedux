@@ -195,6 +195,7 @@ doesn't have to rediscover the need:
 - **NPC spawn → AI package execution** — `npc_spawn.rs` instantiation
   through package selection/priority stack to an actor executing a
   Sandbox procedure. Touches `plugin` (PACK records), `scripting`, `core`.
-- **Exterior grid streaming** — the Phase 1/2 async pre-parse and
-  interior↔exterior cell-swap path (`script.activate <door>`), which
-  this doc's interior-only scope skips entirely.
+
+This doc's interior-only scope also skipped exterior grid loading and
+streaming entirely — that's now covered by
+[Exterior Grid Streaming](exterior-grid-streaming.md).
