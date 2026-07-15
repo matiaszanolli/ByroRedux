@@ -1738,4 +1738,32 @@ mod tests {
         assert!((a_color - SVGF_ALPHA_STEADY_STATE).abs() < 1e-6);
         assert_eq!(next, 0);
     }
+
+    /// REG-07 (#1639 / #1481, hoist #48906670): the SVGF temporal pass clamps
+    /// each incoming GI sample against a SPATIAL (current-frame 3×3) mean+3σ
+    /// firefly threshold BEFORE the `hasHistory` branch, so the freshly-
+    /// disoccluded (no-history) path is clamped too. Re-scoped inside
+    /// `hasHistory`, a GI spike leaks into history for one frame on
+    /// disocclusion edges. Source assertion because the ordering lives
+    /// entirely in the compiled `.spv` — moving the clamp compiles clean and
+    /// passes every other test. Sibling of
+    /// `taa.rs::taa_comp_floors_alpha_for_moving_pixels_under_parked_camera`.
+    #[test]
+    fn svgf_temporal_clamps_fireflies_before_history_branch() {
+        let src = include_str!("../../shaders/svgf_temporal.comp");
+        let clamp = src.find("currInd *= maxL").expect(
+            "svgf_temporal.comp lost the spatial firefly clamp \
+             (`currInd *= maxL …`) — REG-07 / #1639",
+        );
+        let branch = src
+            .find("if (hasHistory)")
+            .expect("svgf_temporal.comp lost the `if (hasHistory)` temporal-blend branch");
+        assert!(
+            clamp < branch,
+            "svgf_temporal.comp firefly clamp moved INTO/after the \
+             `if (hasHistory)` branch (REG-07 / #1639, #1481) — re-arms a \
+             one-frame un-clamped firefly on the disocclusion (no-history) \
+             path. Keep `currInd *= maxL` ahead of `if (hasHistory)`."
+        );
+    }
 }

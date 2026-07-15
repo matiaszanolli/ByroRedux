@@ -538,7 +538,8 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
         let num_chunks = base[13] as usize;
         let chunk_hdr_len = u16::from_le_bytes(base[14..16].try_into().unwrap());
         // #1079 / FO4-D2-009 — every vanilla FO4 DX10 record sets
-        // chunk_hdr_len = 24 (matches the chunk struct decoded at line ~496).
+        // chunk_hdr_len = 24 (matches the 24-byte chunk struct decoded in
+        // the per-chunk loop below).
         // A different value would indicate a future format extension or a
         // corrupt archive; bail rather than silently misparse the rest of
         // the record. Debug-only so release builds keep the prior tolerant
@@ -639,8 +640,8 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
         // local), `log::warn!` flags it in release so an operator can
         // spot the bad archive in the logs. Don't auto-sort — that
         // would mask the malformed archive. Same pattern as the
-        // `num_mips == 0` warn at lines 512-519 and the
-        // `chunk_hdr_len != 24` debug_assert at lines 490-495.
+        // `num_mips == 0` warn and the `chunk_hdr_len != 24` debug_assert
+        // above.
         let monotonic = chunks.windows(2).all(|w| w[0].start_mip <= w[1].start_mip);
         debug_assert!(
             monotonic,

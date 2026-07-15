@@ -19,7 +19,10 @@
 // same` sum here carries DC gain >= 1.0 BY DESIGN — `upsampled` is
 // unit-gain (4 taps x 0.25), `same` is unit-gain (1 tap), and they're
 // summed without renormalisation. Across the 4-step up-chain a
-// DC-constant scene accumulates up to ~8x peak at up[0]. The global
+// DC-constant scene accumulates LINEARLY, not geometrically: each up-step
+// adds one unit-gain down mip to a unit-gain upsample of the accumulator,
+// so for the shipped 5-mip pyramid up[3]=2V, up[2]=3V, up[1]=4V, up[0]=5V
+// (seed + 4 unit-gain additions) — a ~5x peak at up[0], not ~8x. The global
 // scale `BLOOM_INTENSITY = 0.15` (shader_constants_data.rs) is tuned
 // to absorb this gain — Frostbite SIGGRAPH 2015 quotes ~0.04 for a
 // normalised pyramid; 0.15 ~= 4x compensates the un-normalised sum
