@@ -477,30 +477,42 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             // fused walker so the cell-side STAT-equivalent
             // registration in `statics` still happens (REFR base-form
             // resolution against named NPCs / creatures keeps working).
-            b"NPC_" => extract_records_with_modl(
-                &mut reader,
-                end,
-                b"NPC_",
-                &mut statics,
-                &mut |fid, subs| {
-                    index.npcs.insert(fid, parse_npc(fid, subs, game));
-                },
-            )?,
+            // Embedded FormIDs (RNAM/CNAM/VTCK/SNAM/PKID/DOFT/INAM/TPLT/…)
+            // are plugin-local; remap to global here (#1996) so
+            // `index.packages` / `index.races` / etc. lookups (all keyed
+            // by remapped global FormIDs via `read_record_header`) hit.
+            b"NPC_" => {
+                let npc_remap = reader.get_form_id_remap();
+                extract_records_with_modl(
+                    &mut reader,
+                    end,
+                    b"NPC_",
+                    &mut statics,
+                    &mut |fid, subs| {
+                        index.npcs.insert(fid, parse_npc(fid, subs, game, &npc_remap));
+                    },
+                )?
+            }
             // Creatures share EDID / FULL / MODL / RNAM / CNAM / SNAM /
             // CNTO / PKID / ACBS with NPC_ — `parse_npc` populates the
             // same `NpcRecord` shape. FO3 bestiary (super mutants,
             // deathclaws, radroaches, robots) lives here; pre-fix the
             // whole top-level group was dropped at the catch-all skip.
             // See #442 / audit FO3-3-02.
-            b"CREA" => extract_records_with_modl(
-                &mut reader,
-                end,
-                b"CREA",
-                &mut statics,
-                &mut |fid, subs| {
-                    index.creatures.insert(fid, parse_npc(fid, subs, game));
-                },
-            )?,
+            b"CREA" => {
+                let crea_remap = reader.get_form_id_remap();
+                extract_records_with_modl(
+                    &mut reader,
+                    end,
+                    b"CREA",
+                    &mut statics,
+                    &mut |fid, subs| {
+                        index
+                            .creatures
+                            .insert(fid, parse_npc(fid, subs, game, &crea_remap));
+                    },
+                )?
+            }
             b"RACE" => extract_records(&mut reader, end, b"RACE", &mut |fid, subs| {
                 index.races.insert(fid, parse_race(fid, subs, game));
             })?,

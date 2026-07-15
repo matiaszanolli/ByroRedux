@@ -2,12 +2,14 @@
 //!
 //! NPC parsing pulls the essentials needed to spawn the NPC into the world:
 //! base race/class form IDs, faction memberships, inventory list, and a
-//! pointer to the head/body model. Combat stats and AI packages are stored
-//! as raw form IDs for now; full evaluation lands when the AI/combat
-//! systems come online.
+//! pointer to the head/body model. Every embedded FormID field on
+//! `NpcRecord` is remapped to global load-order space at parse time
+//! (`parse_npc`'s `remap` param), the same convention `parse_pack` /
+//! `parse_qust` / `parse_perk` / `parse_avif` / `parse_dial` / `parse_info`
+//! use — see #1996.
 
 use super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
-use crate::esm::reader::{GameKind, SubRecord};
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// One faction the NPC belongs to, with their rank within it.
@@ -270,11 +272,10 @@ pub struct NpcRecord {
     /// FormID + its value, alongside any other authored AV overrides.
     /// These are *already* the [`ActorValues::from_pairs`] shape — the
     /// FO4 arm of `derive_npc_actor_values` returns them verbatim. FormIDs
-    /// are in the record's source-plugin space (identity-correct for
-    /// single-plugin loads; shares the multi-plugin remap gap with
-    /// `factions` / `class_form_id`). Empty for pre-FO4 games and for FO4
-    /// NPCs that inherit all stats from `RACE`/template. Gated on
-    /// [`GameKind::uses_actor_value_properties`].
+    /// are remapped to global load-order space at parse time (`parse_npc`'s
+    /// `remap` param — see #1996), same as `factions` / `class_form_id`.
+    /// Empty for pre-FO4 games and for FO4 NPCs that inherit all stats from
+    /// `RACE`/template. Gated on [`GameKind::uses_actor_value_properties`].
     ///
     /// [`ActorValues::from_pairs`]: byroredux_core::ecs::components::ActorValues::from_pairs
     pub actor_value_props: Vec<(u32, f32)>,
@@ -490,7 +491,23 @@ pub struct FactionRecord {
 
 // ── Parsers ───────────────────────────────────────────────────────────
 
-pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord {
+/// Remap a raw plugin-local FormID to global space, leaving 0 (no
+/// FormID / null ref) untouched. Same convention as `misc/ai.rs`'s
+/// `remap_fid` — kept local rather than shared since neither module
+/// depends on the other's record types.
+fn remap_fid(raw: u32, remap: &Option<FormIdRemap>) -> u32 {
+    if raw == 0 {
+        return 0;
+    }
+    remap.as_ref().map_or(raw, |r| r.remap(raw))
+}
+
+pub fn parse_npc(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> NpcRecord {
     // The FMRI/FMRS/MSDK/MSDV/QNAM/HCLF/BCLF face-morph block was
     // introduced in FO4. FNV/FO3/Skyrim NPCs ship none of those
     // sub-records — and crucially, FNV `PNAM` carries a single
@@ -546,18 +563,22 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
     for sub in subs {
         match &sub.sub_type {
             b"RNAM" if sub.data.len() >= 4 => {
-                record.race_form_id = SubReader::new(&sub.data).u32_or_default();
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record.race_form_id = remap_fid(raw, remap);
             }
             b"CNAM" if sub.data.len() >= 4 => {
-                record.class_form_id = SubReader::new(&sub.data).u32_or_default();
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record.class_form_id = remap_fid(raw, remap);
             }
             b"VTCK" if sub.data.len() >= 4 => {
-                record.voice_form_id = SubReader::new(&sub.data).u32_or_default();
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record.voice_form_id = remap_fid(raw, remap);
             }
             // SCRI — pre-Skyrim attached-script FormID. NPC_ + CREA
             // share `parse_npc` so this arm covers both. See #1273.
             b"SCRI" if sub.data.len() >= 4 => {
-                record.script_form_id = SubReader::new(&sub.data).u32_or_default();
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record.script_form_id = remap_fid(raw, remap);
             }
             // SNAM (FNV NPC_): faction form ID (u32) + rank (i8) + pad x3
             b"SNAM" if sub.data.len() >= 8 => {
@@ -565,39 +586,44 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
                 let faction = r.u32_or_default();
                 let rank = r.u8_or_default() as i8;
                 record.factions.push(FactionMembership {
-                    faction_form_id: faction,
+                    faction_form_id: remap_fid(faction, remap),
                     rank,
                 });
             }
             // CNTO: shared with CONT (size const lives on InventoryEntry, #1631)
             b"CNTO" if sub.data.len() >= super::container::InventoryEntry::WIRE_SIZE => {
                 let mut r = SubReader::new(&sub.data);
+                let item = r.u32_or_default();
                 record.inventory.push(NpcInventoryEntry {
-                    item_form_id: r.u32_or_default(),
+                    item_form_id: remap_fid(item, remap),
                     count: r.i32_or_default(),
                 });
             }
             b"PKID" if sub.data.len() >= 4 => {
-                record
-                    .ai_packages
-                    .push(SubReader::new(&sub.data).u32_or_default());
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record.ai_packages.push(remap_fid(raw, remap));
             }
             // DOFT — Skyrim+ default outfit FormID. Pre-Skyrim games
             // don't emit DOFT (NPCs equip directly from inventory).
             // Stored as Option so the equip pipeline can dispatch on
             // presence without ambiguity vs the null-form sentinel.
             b"DOFT" if sub.data.len() >= 4 => {
-                record.default_outfit = SubReader::new(&sub.data).u32().ok();
+                record.default_outfit = SubReader::new(&sub.data)
+                    .u32()
+                    .ok()
+                    .map(|raw| remap_fid(raw, remap));
             }
             b"INAM" if sub.data.len() >= 4 => {
-                record.death_item_form_id = SubReader::new(&sub.data).u32_or_default();
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record.death_item_form_id = remap_fid(raw, remap);
             }
             // TPLT — FNV / FO3 template-inheritance pointer. Vanilla
             // Lvl* NPCs author this and rely on `template_flags` (in
             // ACBS) to pull per-field categories from the referenced
             // base. See `NpcRecord::template_form_id` for the bitmap.
             b"TPLT" if sub.data.len() >= 4 => {
-                record.template_form_id = SubReader::new(&sub.data).u32_or_default();
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record.template_form_id = remap_fid(raw, remap);
             }
             // Oblivion ACBS (NPC_ / CREA Configuration) is a fixed
             // 16-byte layout with NO disposition or template-flags field:
@@ -747,7 +773,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
                 for chunk in sub.data.chunks_exact(8) {
                     let avif = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                     let value = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
-                    record.actor_value_props.push((avif, value));
+                    record.actor_value_props.push((remap_fid(avif, remap), value));
                 }
             }
             // DNAM (FO4+): 8-byte struct whose head is two u16 baked
@@ -766,7 +792,7 @@ pub fn parse_npc(form_id: u32, subs: &[SubRecord], game: GameKind) -> NpcRecord 
             // a benign hint, not read. Populates a `Perks` component at spawn.
             b"PRKR" if captures_av_props && sub.data.len() >= 5 => {
                 let perk = SubReader::new(&sub.data).u32_or_default();
-                record.perks.push((perk, sub.data[4]));
+                record.perks.push((remap_fid(perk, remap), sub.data[4]));
             }
             _ => {}
         }
@@ -1190,7 +1216,7 @@ mod tests {
             sub(b"CNTO", &cnto),
             sub(b"PKID", &0xEEEEu32.to_le_bytes()),
         ];
-        let n = parse_npc(0x500, &subs, GameKind::Fallout3NV);
+        let n = parse_npc(0x500, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(n.editor_id, "NpcTest");
         assert_eq!(n.race_form_id, 0xCCCC);
         assert_eq!(n.class_form_id, 0xDDDD);
@@ -1224,7 +1250,7 @@ mod tests {
         assert_eq!(acbs.len(), 16);
 
         let subs = vec![sub(b"EDID", b"OblivionGuard\0"), sub(b"ACBS", &acbs)];
-        let n = parse_npc(0x0001_7000, &subs, GameKind::Oblivion);
+        let n = parse_npc(0x0001_7000, &subs, GameKind::Oblivion, &None);
         assert_eq!(n.level, 6, "Oblivion ACBS level @10 must decode (not default 1)");
         assert_eq!(n.acbs_flags, 1, "Oblivion ACBS flags @0 must decode");
         assert_eq!(
@@ -1246,7 +1272,7 @@ mod tests {
         acbs.extend_from_slice(&6i16.to_le_bytes());
         acbs.extend_from_slice(&[0u8; 4]);
         let subs = vec![sub(b"EDID", b"FnvNpc\0"), sub(b"ACBS", &acbs)];
-        let n = parse_npc(0x0010_0001, &subs, GameKind::Fallout3NV);
+        let n = parse_npc(0x0010_0001, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(n.level, 1, "16-byte ACBS must not parse under FNV (stays default)");
         assert_eq!(n.acbs_flags, 0);
     }
@@ -1263,7 +1289,7 @@ mod tests {
             sub(b"EDID", b"ThreeDog\0"),
             sub(b"SCRI", &0xDEAD_BEEFu32.to_le_bytes()),
         ];
-        let n = parse_npc(0x000A_0001, &subs, GameKind::Fallout3NV);
+        let n = parse_npc(0x000A_0001, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(n.script_form_id, 0xDEAD_BEEF);
         assert_eq!(n.editor_id, "ThreeDog");
     }
@@ -1278,7 +1304,7 @@ mod tests {
             sub(b"EDID", b"SuperMutantBrute\0"),
             sub(b"SCRI", &0xCAFE_0001u32.to_le_bytes()),
         ];
-        let n = parse_npc(0x000B_0002, &subs, GameKind::Fallout3NV);
+        let n = parse_npc(0x000B_0002, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(n.script_form_id, 0xCAFE_0001);
     }
 
@@ -1288,7 +1314,7 @@ mod tests {
     #[test]
     fn npc_short_scri_is_ignored() {
         let subs = vec![sub(b"EDID", b"NoScript\0"), sub(b"SCRI", &[])];
-        let n = parse_npc(0x000A_0003, &subs, GameKind::Fallout3NV);
+        let n = parse_npc(0x000A_0003, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(n.script_form_id, 0);
     }
 
@@ -1320,6 +1346,7 @@ mod tests {
                 sub(b"ACBS", &acbs_with_disposition(-40)),
             ],
             GameKind::Fallout3NV,
+            &None,
         );
         assert_eq!(
             neg.disposition_base, -40,
@@ -1333,6 +1360,7 @@ mod tests {
                 sub(b"ACBS", &acbs_with_disposition(200)),
             ],
             GameKind::Fallout3NV,
+            &None,
         );
         assert_eq!(
             high.disposition_base, 200,
@@ -1349,7 +1377,7 @@ mod tests {
             sub(b"EDID", b"ScriptedActor\0"),
             sub(b"VMAD", b"\x05\x00\x02\x00\x00\x00"),
         ];
-        let n = parse_npc(0x501, &subs, GameKind::Skyrim);
+        let n = parse_npc(0x501, &subs, GameKind::Skyrim, &None);
         assert!(n.has_script);
     }
 
@@ -1357,7 +1385,7 @@ mod tests {
     fn npc_without_vmad_has_script_false() {
         // Sibling check — bare NPC must keep has_script at default.
         let subs = vec![sub(b"EDID", b"PlainActor\0")];
-        let n = parse_npc(0x502, &subs, GameKind::Fallout3NV);
+        let n = parse_npc(0x502, &subs, GameKind::Fallout3NV, &None);
         assert!(!n.has_script);
     }
 
@@ -1480,7 +1508,7 @@ mod tests {
             sub(b"FMRI", &0xBEEFu32.to_le_bytes()),
             sub(b"FMRS", &fmrs_bytes(s1)),
         ];
-        let n = parse_npc(0x600, &subs, GameKind::Fallout4);
+        let n = parse_npc(0x600, &subs, GameKind::Fallout4, &None);
         let face = n
             .face_morphs
             .as_ref()
@@ -1510,7 +1538,7 @@ mod tests {
             sub(b"MSDK", &msdk),
             sub(b"MSDV", &msdv),
         ];
-        let n = parse_npc(0x601, &subs, GameKind::Fallout4);
+        let n = parse_npc(0x601, &subs, GameKind::Fallout4, &None);
         let face = n.face_morphs.as_ref().unwrap();
         assert_eq!(face.slider_keys, vec![0x10, 0x20, 0x30]);
         assert_eq!(face.slider_values, vec![0.25, 0.5, 0.75]);
@@ -1533,7 +1561,7 @@ mod tests {
             sub(b"PNAM", &0xBBBBu32.to_le_bytes()),
             sub(b"PNAM", &0xCCCCu32.to_le_bytes()),
         ];
-        let n = parse_npc(0x602, &subs, GameKind::Fallout4);
+        let n = parse_npc(0x602, &subs, GameKind::Fallout4, &None);
         let face = n.face_morphs.as_ref().unwrap();
         assert_eq!(face.texture_lighting, Some([0.6, 0.7, 0.8, 1.0]));
         assert_eq!(face.hair_color, Some(0x1111));
@@ -1548,7 +1576,7 @@ mod tests {
     #[test]
     fn npc_without_face_subs_leaves_face_morphs_none() {
         let subs = vec![sub(b"EDID", b"PlainSettler\0")];
-        let n = parse_npc(0x603, &subs, GameKind::Fallout4);
+        let n = parse_npc(0x603, &subs, GameKind::Fallout4, &None);
         assert!(n.face_morphs.is_none());
     }
 
@@ -1578,7 +1606,7 @@ mod tests {
             sub(b"PRKR", &prkr_a),
             sub(b"PRKR", &prkr_b),
         ];
-        let n = parse_npc(0x610, &subs, GameKind::Fallout4);
+        let n = parse_npc(0x610, &subs, GameKind::Fallout4, &None);
         assert_eq!(n.actor_value_props, vec![(0x2A0, 7.0), (0x2A6, 5.0)]);
         assert_eq!(n.calculated_health, 240);
         assert_eq!(n.calculated_action_points, 90);
@@ -1596,7 +1624,7 @@ mod tests {
             sub(b"DNAM", &[0xFF; 8]),
             sub(b"PRKR", &[0xFF; 5]),
         ];
-        let n = parse_npc(0x611, &subs, GameKind::Fallout3NV);
+        let n = parse_npc(0x611, &subs, GameKind::Fallout3NV, &None);
         assert!(n.actor_value_props.is_empty());
         assert_eq!(n.calculated_health, 0);
         assert_eq!(n.calculated_action_points, 0);
@@ -1618,7 +1646,7 @@ mod tests {
             sub(b"FMRS", &fmrs_bytes(s)),
             sub(b"FMRS", &fmrs_bytes(s)),
         ];
-        let n = parse_npc(0x604, &subs, GameKind::Fallout4);
+        let n = parse_npc(0x604, &subs, GameKind::Fallout4, &None);
         let face = n.face_morphs.as_ref().unwrap();
         assert_eq!(face.morphs.len(), 2);
         assert_eq!(face.morphs[0].form_id, 0xA1);
@@ -1637,7 +1665,7 @@ mod tests {
             // FNV-style PNAM: a single 4-byte eyebrow HDPT FormID.
             sub(b"PNAM", &0xDEADu32.to_le_bytes()),
         ];
-        let n = parse_npc(0x606, &subs, GameKind::Fallout3NV);
+        let n = parse_npc(0x606, &subs, GameKind::Fallout3NV, &None);
         assert!(
             n.face_morphs.is_none(),
             "FNV PNAM must not populate face_morphs.head_parts (FO4 semantic)"
@@ -1673,7 +1701,7 @@ mod tests {
             sub(b"FGGA", &fgga),
             sub(b"FGTS", &fgts),
         ];
-        let n = parse_npc(0x607, &subs, GameKind::Fallout3NV);
+        let n = parse_npc(0x607, &subs, GameKind::Fallout3NV, &None);
         let recipe = n
             .runtime_facegen
             .as_ref()
@@ -1696,7 +1724,7 @@ mod tests {
             fggs.extend_from_slice(&v.to_le_bytes());
         }
         let subs = vec![sub(b"EDID", b"TruncMod\0"), sub(b"FGGS", &fggs)];
-        let n = parse_npc(0x608, &subs, GameKind::Fallout3NV);
+        let n = parse_npc(0x608, &subs, GameKind::Fallout3NV, &None);
         let recipe = n.runtime_facegen.as_ref().unwrap();
         assert_eq!(recipe.fggs[0], 1.0);
         assert_eq!(recipe.fggs[4], 5.0);
@@ -1716,7 +1744,7 @@ mod tests {
             sub(b"LNAM", &0xBEEFu32.to_le_bytes()),
             sub(b"ENAM", &0xF00Du32.to_le_bytes()),
         ];
-        let n = parse_npc(0x609, &subs, GameKind::Fallout3NV);
+        let n = parse_npc(0x609, &subs, GameKind::Fallout3NV, &None);
         let recipe = n.runtime_facegen.as_ref().unwrap();
         assert_eq!(recipe.hair_color_rgb, Some([0x33, 0x55, 0x77]));
         assert_eq!(recipe.hair_form_id, Some(0xCAFE));
@@ -1733,7 +1761,7 @@ mod tests {
     fn npc_runtime_facegen_and_face_morphs_are_mutually_exclusive() {
         let fggs = vec![0u8; 200];
         let subs_fo4 = vec![sub(b"EDID", b"Fo4Stray\0"), sub(b"FGGS", &fggs)];
-        let n = parse_npc(0x60A, &subs_fo4, GameKind::Fallout4);
+        let n = parse_npc(0x60A, &subs_fo4, GameKind::Fallout4, &None);
         assert!(n.runtime_facegen.is_none(), "FO4 must not parse FGGS");
 
         let mut fmrs = Vec::with_capacity(36);
@@ -1745,7 +1773,7 @@ mod tests {
             sub(b"FMRI", &0xDEADu32.to_le_bytes()),
             sub(b"FMRS", &fmrs),
         ];
-        let n = parse_npc(0x60B, &subs_fnv, GameKind::Fallout3NV);
+        let n = parse_npc(0x60B, &subs_fnv, GameKind::Fallout3NV, &None);
         assert!(n.face_morphs.is_none(), "FNV must not parse FMRI/FMRS");
     }
 
@@ -1761,10 +1789,57 @@ mod tests {
             sub(b"FMRI", &0xF00Du32.to_le_bytes()),
             sub(b"FMRS", &[0u8; 16]), // < 36 bytes
         ];
-        let n = parse_npc(0x605, &subs, GameKind::Fallout4);
+        let n = parse_npc(0x605, &subs, GameKind::Fallout4, &None);
         // FMRI captured but FMRS dropped → mismatched (1 vs 0) →
         // truncate to 0 → no morphs → block is empty → None.
         assert!(n.face_morphs.is_none());
+    }
+
+    /// #1996 — every embedded FormID on `NpcRecord` must land in global
+    /// load-order space, matching how `EsmIndex.packages` / `.races` /
+    /// `.classes` are keyed (`read_record_header` remaps the record's own
+    /// header FormID unconditionally). Pre-fix, `parse_npc` never threaded
+    /// a remap at all, so `PKID`/`RNAM`/`CNAM` stayed plugin-local and any
+    /// multi-plugin load silently failed every `index.packages.get(pk)` /
+    /// `index.races.get(...)` / `index.classes.get(...)` lookup for an
+    /// override-plugin NPC — e.g. `active_package_is_sandbox` always
+    /// returning `false` for that NPC's sandbox packages.
+    #[test]
+    fn npc_embedded_form_ids_remap_to_global_space() {
+        // Plugin slot 2, one master at slot 0 (mirrors
+        // `parse_pack_pldt_near_reference_remaps_form_id`'s fixture).
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        // mod_index 1 == master_slots.len() → self-reference (a FormID
+        // this override plugin defines itself, e.g. its own PACK/RACE).
+        let self_ref = (1u32 << 24) | 0x0000_1234;
+        // mod_index 0 → the master's slot (e.g. a base-game RACE/CLAS).
+        let master_ref: u32 = 0x0000_5678;
+
+        let subs = vec![
+            sub(b"EDID", b"OverridePluginNpc\0"),
+            sub(b"RNAM", &master_ref.to_le_bytes()),
+            sub(b"CNAM", &master_ref.to_le_bytes()),
+            sub(b"PKID", &self_ref.to_le_bytes()),
+        ];
+        let n = parse_npc(0x000A_0001, &subs, GameKind::Fallout3NV, &Some(remap));
+
+        assert_eq!(
+            n.race_form_id,
+            master_ref,
+            "master-slot reference (mod_index 0) stays at slot 0's byte"
+        );
+        assert_eq!(
+            n.class_form_id, master_ref,
+            "class FormID must remap the same way as race"
+        );
+        assert_eq!(
+            n.ai_packages,
+            vec![(2u32 << 24) | 0x0000_1234],
+            "self-referential PKID must resolve to the plugin's own \
+             global slot (2), not stay at its local self-ref top byte (1) — \
+             this is the exact field `active_package_is_sandbox` looks up \
+             via `index.packages.get(pk)`"
+        );
     }
 
     // ── #967 / OBL-D3-NEW-03 — RACE Oblivion-shape DATA + subs ────────

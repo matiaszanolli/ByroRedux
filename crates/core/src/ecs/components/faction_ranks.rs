@@ -7,12 +7,11 @@
 //!
 //! ## FormID space
 //!
-//! Faction FormIDs are stored verbatim from the `NpcRecord` — i.e. in the
-//! NPC's source-plugin space, the same un-remapped space the rest of the NPC
-//! subsystem uses for its `RNAM`/`CNAM`/`SNAM` references (race / class /
-//! faction). This matches a remapped CTDA `param_1` in single-plugin loads
-//! (where the remap is identity) and shares the NPC subsystem's known
-//! multi-plugin remap gap — it is not a new inconsistency.
+//! Faction FormIDs are copied verbatim from the `NpcRecord`, which remaps
+//! them (along with every other embedded FormID field — `RNAM`/`CNAM`/
+//! `SNAM`/… ) to global load-order space at parse time (`parse_npc`'s
+//! `remap` param — see #1996). They land in the same space a remapped CTDA
+//! `param_1` compares against on both single- and multi-plugin loads.
 
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;

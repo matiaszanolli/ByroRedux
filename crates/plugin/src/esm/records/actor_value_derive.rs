@@ -48,10 +48,9 @@
 //! `index.classes` and `index.actor_values` are keyed in global load-order
 //! space; the returned `AVIF` FormIDs are too (the same space a remapped
 //! CTDA `param_1` / `GetActorValue` compares against). `NpcRecord.
-//! class_form_id` (CNAM) is carried in the NPC's source-plugin space, so
-//! the `index.classes` lookup is exact in single-plugin loads (identity
-//! remap) and shares the NPC subsystem's known multi-plugin remap gap —
-//! the same one [`super::super::super::ecs`-adjacent] `FactionRanks` has.
+//! class_form_id` (CNAM) is remapped to global load-order space at parse
+//! time (`parse_npc`'s `remap` param — see #1996), so the `index.classes`
+//! lookup is exact on multi-plugin loads too.
 
 use super::actor::NpcRecord;
 use super::index::EsmIndex;

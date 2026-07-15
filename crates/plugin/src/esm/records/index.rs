@@ -761,6 +761,7 @@ mod tests {
                 sub(b"SCRI", &0xBBBB_0001u32.to_le_bytes()),
             ],
             GameKind::Fallout3NV,
+            &None,
         );
         idx.npcs.insert(0x000A_0001, npc);
 
@@ -771,6 +772,7 @@ mod tests {
                 sub(b"SCRI", &0xBBBB_0002u32.to_le_bytes()),
             ],
             GameKind::Fallout3NV,
+            &None,
         );
         idx.creatures.insert(0x000B_0002, crea);
 
@@ -783,6 +785,7 @@ mod tests {
             0x000A_0009,
             &[sub(b"EDID", b"UnscriptedNpc\0")],
             GameKind::Fallout3NV,
+            &None,
         );
         idx.npcs.insert(0x000A_0009, unscripted);
         assert!(idx.base_record_script(0x000A_0009).is_none());
@@ -924,6 +927,7 @@ mod tests {
                 sub(b"VMAD", &synthetic_vmad(b"QuestGiverScript")),
             ],
             GameKind::Skyrim,
+            &None,
         );
         idx.npcs.insert(0x0A_0001, npc);
         let si = idx
