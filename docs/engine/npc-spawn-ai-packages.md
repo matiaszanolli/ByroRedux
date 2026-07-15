@@ -99,15 +99,21 @@ as a raw integer and dispatched nowhere.
 ## 5. The one procedure that runs: Sandbox seating
 
 `active_package_is_sandbox`/`active_sandbox_location` (`ai.rs:147,159`)
-feed `npc_spawn.rs:1437-1479`, which inserts `SandboxBehavior { search_radius }`
-(`crates/core/src/ecs/components/sandbox.rs:39`) using the active
+feed `npc_spawn.rs`, which inserts `SandboxBehavior { search_radius }`
+(`crates/core/src/ecs/components/sandbox.rs`) using the active
 package's authored `PLDT.radius` when present. At runtime,
-`sandbox_seat_system` (`byroredux/src/systems/sandbox.rs:122`) — **opt-in
-only**, registered when `BYRO_SANDBOX_SIT` is set (`boot.rs:677`) —
+`sandbox_seat_system` (`byroredux/src/systems/sandbox.rs`) — **opt-in
+only**, registered when `BYRO_SANDBOX_SIT` is set (`boot.rs`) —
 finds the nearest unreserved `Furniture` sit marker within radius,
 snaps the placement-root `Transform` onto it, and swaps
-`AnimationPlayer` onto a sit-**enter** clip
-(`sandbox_sit_enter_kf_path`, `npc_spawn.rs:301` — FNV/FO3 only,
+`AnimationPlayer` onto a sit-**enter** clip.
+**Every** sit marker on a furniture is its own reservable seat, keyed
+`(furniture entity, marker index)` (M42.2 seat-polish) — a multi-seat
+piece (counter / bench / multi-chair table authored as one FURN with
+several `BSFurnitureMarker` positions) seats one actor per marker; before
+this the reservation was keyed by furniture entity alone and a six-stool
+counter seated exactly one NPC. The seat pose comes from the sit-enter
+clip (`sandbox_sit_enter_kf_path`, `npc_spawn.rs` — FNV/FO3 only,
 `chairskirt_leftenter.kf`), parked at its **final frame**
 (`local_time = duration`, `playing = false`).
 

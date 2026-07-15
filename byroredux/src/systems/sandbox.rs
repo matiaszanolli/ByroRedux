@@ -27,11 +27,20 @@
 //! as pose (`split_root_motion` keeps Y; horizontal X/Z is discarded — no
 //! `RootMotionDelta` consumer), so no approach-walk handling is needed.
 //!
-//! v0 scope (documented approximations): nearest free chair, seat once, no
+//! Each sit marker on a furniture is an independently reservable seat
+//! (M42.2 seat-polish), keyed `(furniture, marker index)` — a multi-seat
+//! piece (counter / bench / multi-chair table authored as one FURN with
+//! several markers) now seats one actor per marker instead of one actor for
+//! the whole piece.
+//!
+//! v0 scope (documented approximations): nearest free seat, seat once, no
 //! scoring / scheduling / meals / wander / ownership, no pathing (snap-to-seat),
 //! one verified chair enter for all sit markers (per-furniture-type enter/loop
 //! mapping is Phase C), static held pose (fidget-loop blend is Phase B),
-//! furniture-rotation facing.
+//! furniture-rotation facing. Legacy (FO3/FNV/Oblivion) markers carry no
+//! AnimationType, so sleep/lean markers are still over-matched as sit — that
+//! disambiguation needs the marker's furniture-type resolved and is visually
+//! validated on-device (Phase C), not decodable from the marker alone.
 
 use std::collections::HashSet;
 
@@ -98,13 +107,16 @@ fn seat_world_transform(furn: &GlobalTransform, m: &FurnitureMarker) -> GlobalTr
 }
 
 /// Pick the nearest unreserved seat to `actor_pos` within `radius`. Pure —
-/// the selection core, unit-tested.
-fn pick_nearest_seat(
+/// the selection core, unit-tested. Generic over the seat key `K` so the
+/// same logic serves both a bare furniture-entity key (tests) and the
+/// production `(furniture, marker index)` key, which lets several markers on
+/// one multi-seat furniture reserve independently.
+fn pick_nearest_seat<K: Copy + Eq + std::hash::Hash>(
     actor_pos: Vec3,
-    seats: &[(EntityId, GlobalTransform)],
-    reserved: &HashSet<EntityId>,
+    seats: &[(K, GlobalTransform)],
+    reserved: &HashSet<K>,
     radius: f32,
-) -> Option<(EntityId, GlobalTransform)> {
+) -> Option<(K, GlobalTransform)> {
     let r2 = radius * radius;
     seats
         .iter()
@@ -147,22 +159,28 @@ pub fn sandbox_seat_system(world: &World, _dt: f32) {
         };
         let seated_q = world.query::<Seated>();
 
-        // World-space seat transform for each furniture with a sit marker.
-        // `seat_meta` mirrors `seats` keyed by furniture entity for the
-        // one-shot diagnostic log emitted per assignment below (M42.0b
-        // co-debug: readable numbers instead of dark screenshots).
-        let mut seats: Vec<(EntityId, GlobalTransform)> = Vec::new();
-        let mut seat_meta: std::collections::HashMap<EntityId, ([f32; 3], Vec3)> =
+        // World-space seat transform for *every* sit marker on each
+        // furniture, keyed `(furniture entity, marker index)` so a multi-seat
+        // piece (counter / bench / multi-chair table) offers one seat per
+        // marker instead of just its first (M42.2 seat-polish). `seat_meta`
+        // mirrors `seats` for the one-shot diagnostic log emitted per
+        // assignment below (M42.0b co-debug: readable numbers instead of dark
+        // screenshots).
+        let mut seats: Vec<((EntityId, u32), GlobalTransform)> = Vec::new();
+        let mut seat_meta: std::collections::HashMap<(EntityId, u32), ([f32; 3], Vec3)> =
             std::collections::HashMap::new();
         for (furn_e, furn) in furn_q.iter() {
-            let Some(marker) = furn.markers.iter().find(|m| is_sit_marker(m)) else {
-                continue;
-            };
             let Some(furn_g) = gq.get(furn_e) else {
                 continue;
             };
-            seats.push((furn_e, seat_world_transform(furn_g, marker)));
-            seat_meta.insert(furn_e, (marker.local_offset, furn_g.translation));
+            for (idx, marker) in furn.markers.iter().enumerate() {
+                if !is_sit_marker(marker) {
+                    continue;
+                }
+                let seat_id = (furn_e, idx as u32);
+                seats.push((seat_id, seat_world_transform(furn_g, marker)));
+                seat_meta.insert(seat_id, (marker.local_offset, furn_g.translation));
+            }
         }
         if seats.is_empty() {
             return;
@@ -177,21 +195,22 @@ pub fn sandbox_seat_system(world: &World, _dt: f32) {
                 continue;
             };
             let radius = behavior.search_radius.unwrap_or(SEAT_SEARCH_RADIUS);
-            if let Some((furn_e, seat)) =
+            if let Some((seat_id, seat)) =
                 pick_nearest_seat(npc_g.translation, &seats, &reservations.0, radius)
             {
-                reservations.0.insert(furn_e); // claim now so no two share it
+                reservations.0.insert(seat_id); // claim this marker so no two share it
+                let (furn_e, marker_idx) = seat_id;
                 // One-shot per NPC (Seated is tagged in pass 2, skipping it
                 // next frame) — safe to log at info without spamming.
                 let (offset, furn_world) =
-                    seat_meta.get(&furn_e).copied().unwrap_or(([0.0; 3], Vec3::ZERO));
+                    seat_meta.get(&seat_id).copied().unwrap_or(([0.0; 3], Vec3::ZERO));
                 log::info!(
-                    "[sandbox] seat npc={} npc_pos=({:.1},{:.1},{:.1}) -> furn={} \
+                    "[sandbox] seat npc={} npc_pos=({:.1},{:.1},{:.1}) -> furn={} marker={} \
                      furn_world=({:.1},{:.1},{:.1}) marker_offset=({:.1},{:.1},{:.1}) \
                      seat_world=({:.1},{:.1},{:.1}) dist={:.1}",
                     npc,
                     npc_g.translation.x, npc_g.translation.y, npc_g.translation.z,
-                    furn_e,
+                    furn_e, marker_idx,
                     furn_world.x, furn_world.y, furn_world.z,
                     offset[0], offset[1], offset[2],
                     seat.translation.x, seat.translation.y, seat.translation.z,
@@ -350,6 +369,36 @@ mod tests {
 
     #[test]
     fn pick_nearest_seat_empty_is_none() {
-        assert!(pick_nearest_seat(Vec3::ZERO, &[], &HashSet::new(), SEAT_SEARCH_RADIUS).is_none());
+        assert!(pick_nearest_seat(
+            Vec3::ZERO,
+            &[] as &[((EntityId, u32), GlobalTransform)],
+            &HashSet::new(),
+            SEAT_SEARCH_RADIUS
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn distinct_markers_of_one_furniture_reserve_independently() {
+        // The M42.2 seat-polish invariant: two markers on the SAME furniture
+        // entity (a counter/bench) are two seats. Reserving one must not lock
+        // the other — a second actor takes marker 1 of the same furniture.
+        let furn = 42; // one furniture entity, two sit markers
+        let seats = vec![
+            ((furn, 0u32), GlobalTransform::new(Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0)),
+            ((furn, 1u32), GlobalTransform::new(Vec3::new(20.0, 0.0, 0.0), Quat::IDENTITY, 1.0)),
+        ];
+        let mut reserved: HashSet<(EntityId, u32)> = HashSet::new();
+        // Actor A near marker 0 claims it.
+        let a = pick_nearest_seat(Vec3::ZERO, &seats, &reserved, SEAT_SEARCH_RADIUS);
+        assert_eq!(a.map(|(id, _)| id), Some((furn, 0)));
+        reserved.insert((furn, 0));
+        // Actor B still finds marker 1 of the *same* furniture — pre-fix this
+        // returned None because the whole furniture was reserved.
+        let b = pick_nearest_seat(Vec3::ZERO, &seats, &reserved, SEAT_SEARCH_RADIUS);
+        assert_eq!(b.map(|(id, _)| id), Some((furn, 1)));
+        reserved.insert((furn, 1));
+        // Both markers taken → the furniture is full.
+        assert!(pick_nearest_seat(Vec3::ZERO, &seats, &reserved, SEAT_SEARCH_RADIUS).is_none());
     }
 }
