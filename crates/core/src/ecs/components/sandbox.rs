@@ -23,11 +23,17 @@ use crate::ecs::storage::{Component, EntityId};
 /// `search_radius` carries the active package's authored PLDT radius
 /// (game units) when one was decoded and is `> 0.0`; spawn falls back to
 /// `sandbox_seat_system`'s own default otherwise (radius-0 / no-PLDT
-/// packages, and location types the parser doesn't resolve a center for
-/// yet — Object ID / Near Linked Reference / Object Type). v0 still
-/// derives the search *center* from the actor's own `GlobalTransform`
-/// regardless of the authored location type (Near Reference / In Cell
-/// center resolution is a later phase).
+/// packages).
+///
+/// v0 always derives the search *center* from the actor's own
+/// `GlobalTransform`, regardless of the authored location type. FormID
+/// center resolution (`PackLocationTarget::NearReference` → a live
+/// entity's position) was investigated 2026-07-14 (see `npc_spawn.rs`)
+/// and found low-value: only ~12% of vanilla FNV NearReference packages
+/// resolve to anything spawnable, since most target either an
+/// unparsed/unloaded cell or the hardcoded XMarker family that
+/// `cell_loader` never spawns as an entity. Not planned as a near-term
+/// follow-up unless that changes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct SandboxBehavior {

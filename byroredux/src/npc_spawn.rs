@@ -1461,6 +1461,22 @@ pub fn spawn_npc_entity(
         )
         .map(|loc| loc.radius as f32)
         .filter(|r| *r > 0.0);
+        // Deliberately NOT resolving `PackLocationTarget::NearReference` to
+        // a live entity's position for the search *center* — investigated
+        // 2026-07-14 and found low-value. Empirically (real FalloutNV.esm,
+        // 1822 NearReference-type Sandbox packages): 62% target a FormID
+        // that isn't a placed ref anywhere in the parsed cell data; of the
+        // rest, 69% resolve to the hardcoded XMarker/XMarkerHeading base
+        // records (0x34 / 0x3b), which `cell_loader` filters out and never
+        // spawns as ECS entities regardless. That leaves ~12% of packages
+        // where resolution could even succeed — before accounting for
+        // same-cell scoping (a target in a different, unloaded cell can
+        // never resolve) or spawn-ordering (references are placed in one
+        // interleaved pass, not markers-then-actors, so a same-cell target
+        // later in the REFR list isn't live yet). The actor's own position
+        // remains the v0 center approximation; see the `resolve_entity_by
+        // _global_form_id` pattern in `crates/scripting/src/condition.rs`
+        // if a future session revisits this with a stronger reason to.
         world.insert(
             placement_root,
             byroredux_core::ecs::components::SandboxBehavior { search_radius },
