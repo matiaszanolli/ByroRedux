@@ -44,10 +44,12 @@ use byroredux_core::math::{Quat, Vec3};
 
 use crate::components::{SandboxSitClip, SeatReservations};
 
-/// Max distance (world units) an actor claims a seat from its current
-/// position. FNV interiors are small; 512 ≈ the `DefaultSandbox…512…`
-/// package radius. v0 uses the actor's own position as the sandbox center
-/// (no PLDT location parse yet).
+/// Fallback max distance (world units) an actor claims a seat from its
+/// current position, used when `SandboxBehavior.search_radius` is `None`
+/// (no PLDT / radius 0 / a location type the parser doesn't resolve a
+/// center for). Most sandboxing actors carry a real authored radius from
+/// PLDT (npc_spawn.rs); 512 was the estimate before that landed — still a
+/// reasonable FNV-interior-scale default for the no-PLDT case.
 const SEAT_SEARCH_RADIUS: f32 = 512.0;
 
 /// True when a furniture marker is a *sit* entry. Skyrim+ tags this
@@ -95,14 +97,15 @@ fn seat_world_transform(furn: &GlobalTransform, m: &FurnitureMarker) -> GlobalTr
     GlobalTransform::compose(furn, seat_local, facing, 1.0)
 }
 
-/// Pick the nearest unreserved seat to `actor_pos` within
-/// [`SEAT_SEARCH_RADIUS`]. Pure — the selection core, unit-tested.
+/// Pick the nearest unreserved seat to `actor_pos` within `radius`. Pure —
+/// the selection core, unit-tested.
 fn pick_nearest_seat(
     actor_pos: Vec3,
     seats: &[(EntityId, GlobalTransform)],
     reserved: &HashSet<EntityId>,
+    radius: f32,
 ) -> Option<(EntityId, GlobalTransform)> {
-    let r2 = SEAT_SEARCH_RADIUS * SEAT_SEARCH_RADIUS;
+    let r2 = radius * radius;
     seats
         .iter()
         .filter(|(e, _)| !reserved.contains(e))
@@ -166,15 +169,16 @@ pub fn sandbox_seat_system(world: &World, _dt: f32) {
         }
 
         let mut reservations = world.resource_mut::<SeatReservations>();
-        for (npc, _) in sandbox_q.iter() {
+        for (npc, behavior) in sandbox_q.iter() {
             if seated_q.as_ref().is_some_and(|s| s.contains(npc)) {
                 continue; // already seated (one-shot guard)
             }
             let Some(npc_g) = gq.get(npc) else {
                 continue;
             };
+            let radius = behavior.search_radius.unwrap_or(SEAT_SEARCH_RADIUS);
             if let Some((furn_e, seat)) =
-                pick_nearest_seat(npc_g.translation, &seats, &reservations.0)
+                pick_nearest_seat(npc_g.translation, &seats, &reservations.0, radius)
             {
                 reservations.0.insert(furn_e); // claim now so no two share it
                 // One-shot per NPC (Seated is tagged in pass 2, skipping it
@@ -318,22 +322,34 @@ mod tests {
         let mut reserved = HashSet::new();
         // Nearest free is entity 2.
         assert_eq!(
-            pick_nearest_seat(Vec3::ZERO, &seats, &reserved).map(|(e, _)| e),
+            pick_nearest_seat(Vec3::ZERO, &seats, &reserved, SEAT_SEARCH_RADIUS).map(|(e, _)| e),
             Some(2)
         );
         // Reserve 2 → next nearest is 1 (3 is out of radius).
         reserved.insert(2);
         assert_eq!(
-            pick_nearest_seat(Vec3::ZERO, &seats, &reserved).map(|(e, _)| e),
+            pick_nearest_seat(Vec3::ZERO, &seats, &reserved, SEAT_SEARCH_RADIUS).map(|(e, _)| e),
             Some(1)
         );
         // Reserve 1 too → only the out-of-range seat 3 remains → None.
         reserved.insert(1);
-        assert!(pick_nearest_seat(Vec3::ZERO, &seats, &reserved).is_none());
+        assert!(pick_nearest_seat(Vec3::ZERO, &seats, &reserved, SEAT_SEARCH_RADIUS).is_none());
+    }
+
+    #[test]
+    fn pick_nearest_seat_respects_per_actor_radius() {
+        let seats = vec![(1, GlobalTransform::new(Vec3::new(300.0, 0.0, 0.0), Quat::IDENTITY, 1.0))];
+        let reserved = HashSet::new();
+        // A small authored radius excludes a seat the default 512 would include.
+        assert!(pick_nearest_seat(Vec3::ZERO, &seats, &reserved, 128.0).is_none());
+        assert_eq!(
+            pick_nearest_seat(Vec3::ZERO, &seats, &reserved, 512.0).map(|(e, _)| e),
+            Some(1)
+        );
     }
 
     #[test]
     fn pick_nearest_seat_empty_is_none() {
-        assert!(pick_nearest_seat(Vec3::ZERO, &[], &HashSet::new()).is_none());
+        assert!(pick_nearest_seat(Vec3::ZERO, &[], &HashSet::new(), SEAT_SEARCH_RADIUS).is_none());
     }
 }

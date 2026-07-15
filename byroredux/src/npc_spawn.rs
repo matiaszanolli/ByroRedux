@@ -1449,9 +1449,21 @@ pub fn spawn_npc_entity(
         game_hour,
     );
     if runs_sandbox {
+        // PLDT's authored radius (when decoded and > 0) replaces
+        // `sandbox_seat_system`'s blanket search-radius guess with the
+        // per-package value the CK author actually set. `location` can be
+        // `None` (no PLDT) or carry radius 0 (some vanilla packages, e.g.
+        // FormID-anchored ones with no meaningful area) — both fall back to
+        // the system's own default.
+        let search_radius = byroredux_plugin::esm::records::active_sandbox_location(
+            npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+            game_hour,
+        )
+        .map(|loc| loc.radius as f32)
+        .filter(|r| *r > 0.0);
         world.insert(
             placement_root,
-            byroredux_core::ecs::components::SandboxBehavior,
+            byroredux_core::ecs::components::SandboxBehavior { search_radius },
         );
     }
 

@@ -126,28 +126,43 @@ impl PackRecord {
     }
 }
 
-/// Selection rule (M42.1): whether an NPC's *active* package at `hour` is a
-/// Sandbox package. Iterates the NPC's resolved packages in priority order
-/// (`NpcRecord.ai_packages` order) and returns the sandbox-ness of the first
-/// one whose schedule includes `hour`. This keeps day-shift workers from being
+/// Selection rule (M42.1): an NPC's *active* package at `hour` — the first
+/// package, in priority order (`NpcRecord.ai_packages` order), whose
+/// schedule includes `hour`. This keeps day-shift workers from being
 /// treated as idle sandboxers — e.g. a bartender whose 08:00–20:00 `AtBar`
 /// package outranks an evening `Sandbox` package is *not* seated at 10:00.
 ///
-/// Schedule + priority only; package conditions (CTDA) and the PLDT location
-/// are not yet evaluated. FO3/FNV sandbox locations are predominantly
-/// "in cell", already scoped by per-cell loading, so nearest-furniture-in-cell
-/// is correct once selection is right. Unresolved packages are skipped by the
-/// caller (pass only resolved records, in order).
+/// Schedule + priority only; package conditions (CTDA) are not yet
+/// evaluated. Unresolved packages are skipped by the caller (pass only
+/// resolved records, in order).
+fn active_package<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+) -> Option<&'a PackRecord> {
+    packages.into_iter().find(|pk| pk.scheduled_active_at(hour))
+}
+
+/// Whether an NPC's active package at `hour` (see [`active_package`]) is a
+/// Sandbox package.
 pub fn active_package_is_sandbox<'a>(
     packages: impl IntoIterator<Item = &'a PackRecord>,
     hour: f32,
 ) -> bool {
-    for pk in packages {
-        if pk.scheduled_active_at(hour) {
-            return pk.is_sandbox();
-        }
-    }
-    false
+    active_package(packages, hour).is_some_and(PackRecord::is_sandbox)
+}
+
+/// The PLDT location of an NPC's active package at `hour` (see
+/// [`active_package`]), when that package is Sandbox-type. `None` when the
+/// active package isn't Sandbox, carries no PLDT, or nothing is scheduled
+/// active. M42.1's seat system uses this to size its search radius around
+/// the authored center instead of a fixed guess.
+pub fn active_sandbox_location<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+) -> Option<PackLocation> {
+    active_package(packages, hour)
+        .filter(|pk| pk.is_sandbox())
+        .and_then(|pk| pk.location)
 }
 
 /// Remap a raw plugin-local FormID to global space, leaving 0 (no

@@ -19,12 +19,20 @@ use crate::ecs::storage::{Component, EntityId};
 
 /// Marks an actor that runs the Sandbox idle procedure. Attached at NPC
 /// spawn when the actor's form packages include a Sandbox-type PACK.
-/// A zero-size marker: v0 derives the sandbox center from the actor's own
-/// `GlobalTransform` and uses a default search radius, so no per-actor
-/// location payload is needed yet (PLDT parse is a later phase).
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+///
+/// `search_radius` carries the active package's authored PLDT radius
+/// (game units) when one was decoded and is `> 0.0`; spawn falls back to
+/// `sandbox_seat_system`'s own default otherwise (radius-0 / no-PLDT
+/// packages, and location types the parser doesn't resolve a center for
+/// yet — Object ID / Near Linked Reference / Object Type). v0 still
+/// derives the search *center* from the actor's own `GlobalTransform`
+/// regardless of the authored location type (Near Reference / In Cell
+/// center resolution is a later phase).
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
-pub struct SandboxBehavior;
+pub struct SandboxBehavior {
+    pub search_radius: Option<f32>,
+}
 
 impl Component for SandboxBehavior {
     type Storage = SparseSetStorage<Self>;
