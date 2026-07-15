@@ -664,20 +664,18 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // `BYRO_SANDBOX_SIT=1`). The seat placement + clip-swap pipeline is fully
     // verified (live bone inspection: actors land on the correct furniture
     // marker and the sit clip *is* applied — L-thigh matches the authored
-    // folded pose), but the generic `dynamicidle_*` sit loops carry NO
-    // pelvis/root channel: they only fold the limbs and assume a sitdown
-    // *transition* already lowered `Bip01` onto the seat. Without that
-    // transition (FNV drives it via the anim-group/special-idle system we
-    // don't have yet) the actor floats ~85u above the seat with dangling
-    // feet. Proper furniture-use — the sit-enter transition that lowers the
-    // body — is its own milestone; see `systems::sandbox` module docs. The
-    // rest of the M42 foundation (Sandbox package tagging, `Furniture`
-    // markers, `Seated`, resources) stays live regardless. Runs after
-    // transform propagation, same exclusive lane as the systems above.
+    // folded pose). M42.1 fixed the earlier float bug (the generic
+    // `dynamicidle_*` sit loops carry no pelvis/root channel) by holding the
+    // FNV/FO3 sit-**enter** transition clip's final frame instead, which does
+    // lower `Bip01`/`NonAccum` onto the seat; see `systems::sandbox` module
+    // docs for the full mechanism. The rest of the M42 foundation (Sandbox
+    // package tagging, `Furniture` markers, `Seated`, resources) stays live
+    // regardless. Runs after transform propagation, same exclusive lane as
+    // the systems above.
     if std::env::var_os("BYRO_SANDBOX_SIT").is_some() {
         log::info!(
-            "BYRO_SANDBOX_SIT set — enabling experimental sandbox seat-snap \
-             (actors will float above seats until the sit-enter transition lands)"
+            "BYRO_SANDBOX_SIT set — enabling sandbox seat-snap \
+             (grounded sit-enter pose on FNV/FO3; see systems::sandbox docs for other games)"
         );
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::sandbox_seat_system);
     }
