@@ -8,7 +8,7 @@ This file is referenced by all audit skills. Do NOT use as a slash command (pref
 Core ECS:        crates/core/src/ecs/
 Components:      crates/core/src/ecs/components/
 Animation:       crates/core/src/animation/          (types, player, stack, registry, interpolation, root_motion, text_events, controller)
-Resources:       crates/core/src/ecs/resources.rs
+Resources:       crates/core/src/ecs/resources/       (mod.rs + skin_slot_pool.rs, split under #1869)
 Strings:         crates/core/src/string/
 NIF Parser:      crates/nif/src/
 NIF Blocks:      crates/nif/src/blocks/               (see blocks/mod.rs dispatch; controller/ subdir, tri_shape/ subdir {mod, ni_tri_shape, bs_tri_shape, agd}, collision/ subdir {mod, collision_object, rigid_body, ragdoll, shape_primitive, shape_compound, shape_mesh, compressed_mesh, constraints, phantom_action}, particle.rs (typed NiPSysEmitter/NiPSysEmitterCtlr/NiPSysEmitterCtlrData/NiPSysGrowFadeModifier), shader.rs, skin.rs, properties.rs, interpolator.rs, extra_data.rs, light.rs, multibound.rs, palette.rs, legacy_particle.rs, texture.rs, bs_geometry.rs, node.rs, base.rs, traits.rs; *_tests.rs siblings)
@@ -72,7 +72,7 @@ EXAL Translate:  byroredux/src/env_translate.rs (EXAL exterior-environment trans
 Ragdoll:         byroredux/src/ragdoll.rs (M41.x ragdoll activation + writeback; PHYSAL consumer). Spec: docs/engine/physal.md.
 Cornell Harness: byroredux/src/cornell.rs (--cornell self-contained RT material/lighting reference scene; no on-disk game data)
 Asset Provider:  byroredux/src/asset_provider.rs (BSA/BA2 texture+mesh extraction, resolve_texture, strip_build_prefix for AE pipeline-path paths)
-Components:      byroredux/src/components.rs (binary-local markers + app resources: Spinning, AlphaBlend, TwoSided, DoorTeleport, IsFxMesh, IsLodTerrain, IsCollisionOnly, FootstepEmitter/Config/Scratch, CellLightingRes, SkyParamsRes, WeatherDataRes, LightTuning, …). Shared ECS components (WaterPlane/WaterVolume/SubmersionState) live in crates/core/src/ecs/components/water.rs; SelectedRef is a resource in crates/core/src/ecs/resources.rs)
+Components:      byroredux/src/components.rs (binary-local markers + app resources: Spinning, AlphaBlend, TwoSided, DoorTeleport, IsFxMesh, IsLodTerrain, IsCollisionOnly, FootstepEmitter/Config/Scratch, CellLightingRes, SkyParamsRes, WeatherDataRes, LightTuning, …). Shared ECS components (WaterPlane/WaterVolume/SubmersionState) live in crates/core/src/ecs/components/water.rs; SelectedRef is a resource in crates/core/src/ecs/resources/mod.rs)
 NPC Spawn:       byroredux/src/npc_spawn.rs           (M41 actor instantiation)
 World Stream:    byroredux/src/streaming.rs           (M40 cell lifecycle) + streaming_tests.rs
 SF Smoke:        byroredux/src/sf_smoke.rs            (Starfield ESM resolve-rate harness, --sf-smoke CLI)

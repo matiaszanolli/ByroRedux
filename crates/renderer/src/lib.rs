@@ -1,3 +1,14 @@
+//! Vulkan renderer for ByroRedux.
+//!
+//! Owns the full Vulkan pipeline: instance/device init, swapchain, RT
+//! shadows/reflections/GI via `VK_KHR_ray_query`, SVGF temporal denoising,
+//! TAA, the deferred G-buffer + composite pass, BLAS/TLAS lifecycle
+//! (build, compaction, LRU eviction, refit), and GPU resource management
+//! (mesh/texture registries, scene SSBOs/UBOs, descriptor sets). Built on
+//! `ash` + `gpu-allocator`. See `docs/engine/renderer.md` and
+//! `docs/engine/shader-pipeline.md` for the architecture and shader
+//! contracts (`GpuInstance`/`GpuMaterial`/`GpuLight` layouts).
+
 // #1904 — every `unsafe {}` block in this crate now carries a `SAFETY:`
 // comment stating the ash precondition it upholds (device live, handles
 // created by this device, not in use by an in-flight command buffer, pointers

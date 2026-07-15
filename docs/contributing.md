@@ -4,6 +4,17 @@ How to build, test, and run the engine. No game data is required for
 the unit tests and CI checks; real game files are only needed for
 integration tests and the Vulkan renderer.
 
+## Where to start
+
+New to the codebase? Read in this order:
+
+1. **This doc** — get a build running and the test suite green.
+2. [`docs/engine/index.md`](engine/index.md) — architecture reading order
+   (start with [Architecture Overview](engine/architecture.md) → [ECS](engine/ecs.md) → [Game Loop](engine/game-loop.md)
+   for the fastest path to understanding the whole engine).
+3. [`CLAUDE.md`](../CLAUDE.md) — repo conventions (commit style, ECS
+   patterns, git workflow) an agent or contributor is expected to follow.
+
 ---
 
 ## Prerequisites
@@ -69,6 +80,23 @@ The `target/` directory grows large (~5 GB with all crates). Use
 
 ---
 
+## API Reference
+
+`docs/engine/*.md` covers architecture and design — why a subsystem is
+built the way it is. For per-type/per-function reference (what a struct's
+fields are, what a function returns), generate rustdoc from the inline doc
+comments already in the source:
+
+```bash
+cargo doc --workspace --no-deps --open
+```
+
+Most crates carry a crate-level `//!` doc comment (see `crates/nif/src/lib.rs`
+for the style to follow) plus doc comments on public items. If you add a
+public type or function without one, add a short one — `cargo doc` is only
+as useful as the comments feeding it.
+
+---
 ## Tests
 
 ### Unit tests (no GPU, no game data — run in CI)

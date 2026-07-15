@@ -8,6 +8,7 @@ built, where the code lives, and what guarantees it makes.
 
 | Doc | Crate(s) | What it covers |
 |---|---|---|
+| [Pipeline Overview](pipeline-overview.md) | all | Cross-cutting: one interior cell load traced end-to-end, CLI → parse → NIFAL → ECS spawn → scheduler → GPU upload → present |
 | [Architecture Overview](architecture.md) | all | Design principles, workspace layout, crate dependency graph |
 | [ECS](ecs.md) | core | Components, storage backends, queries, scheduler, resources |
 | [Vulkan Renderer](renderer.md) | renderer | Init chain, RT pipeline, multi-light, BLAS/TLAS, swapchain |
@@ -104,12 +105,16 @@ indexed are listed in [ESM Records](esm-records.md).
 
 If you're new to the codebase, here's a sane reading path:
 
-1. [Architecture Overview](architecture.md) — orient yourself in the workspace
-2. [ECS](ecs.md) — the data model everything else hangs off
-3. [Vulkan Renderer](renderer.md) — how frames get drawn
-4. [NIF Parser](nif-parser.md) and [Archives](archives.md) — how raw bytes become geometry
-5. [ESM Records](esm-records.md) — how raw bytes become world state
-6. [Asset Pipeline](asset-pipeline.md) — how those two come together at cell load
-7. [Game Loop](game-loop.md) — how the engine ties it all together at runtime
+1. [Pipeline Overview](pipeline-overview.md) — the big picture first: one
+   request traced end-to-end, with pointers into everything below
+2. [Architecture Overview](architecture.md) — orient yourself in the workspace
+3. [ECS](ecs.md) — the data model everything else hangs off
+4. [Vulkan Renderer](renderer.md) — how frames get drawn
+5. [NIF Parser](nif-parser.md) and [Archives](archives.md) — how raw bytes become geometry
+6. [ESM Records](esm-records.md) — how raw bytes become world state
+7. [Asset Pipeline](asset-pipeline.md) — how those two come together at cell load
+8. [Game Loop](game-loop.md) — how the engine ties it all together at runtime
 
-For a single-day onboarding, [Architecture](architecture.md) → [ECS](ecs.md) → [Game Loop](game-loop.md) is enough to understand the engine end-to-end.
+For a single-day onboarding, [Pipeline Overview](pipeline-overview.md) →
+[Architecture](architecture.md) → [ECS](ecs.md) is enough to understand the
+engine end-to-end.

@@ -199,6 +199,7 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
 
 ## Documentation
 
+- [docs/contributing.md](docs/contributing.md) — build, test, run; start here to get hacking
 - [ROADMAP.md](ROADMAP.md) — current state, active milestones, architecture decisions
 - [HISTORY.md](HISTORY.md) — session narratives (2026-04 audit closeouts, Session 42 Starfield bring-up, etc.)
 - [docs/engine/nifal.md](docs/engine/nifal.md) — NIFAL canonical translation tier (three-tier model, per-category leak inventory)
