@@ -1652,3 +1652,105 @@ fn dump_prospector_saloon_refrs() {
          base-form linkage regression"
     );
 }
+
+/// PLDT (package location) real-data regression. FNV package editor IDs
+/// conventionally embed their own radius in the name (e.g.
+/// `DefaultSandboxEditorLocation512`) — a strong independent check of the
+/// PLDT byte layout against
+/// <https://tes5edit.github.io/fopdoc/FalloutNV/Records/PACK.html>, spot-
+/// verified 2026-07-14 against every `DefaultSandbox*` package in vanilla
+/// FalloutNV.esm (all matched; e.g. `…LinkedMarker1024` → radius 1024,
+/// `…CurrentLocation256` → radius 256).
+#[test]
+#[ignore]
+fn parse_rate_fnv_pack_pldt_location() {
+    let Some(data) = data_dir(
+        "BYROREDUX_FNV_DATA",
+        "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+    ) else {
+        eprintln!("[FNV] skipping: BYROREDUX_FNV_DATA unset and fallback path missing");
+        return;
+    };
+    let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
+    let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
+
+    // Observed 2026-07-14: 3804 / 4163 packages carry a PLDT. Floor sits a
+    // few percent below to absorb DLC drift without masking a dispatch
+    // regression that would silently drop the sub-record.
+    let with_location = index
+        .packages
+        .values()
+        .filter(|p| p.location.is_some())
+        .count();
+    assert!(
+        with_location > 3500,
+        "PACK.location populated on {with_location} / {} packages, expected > 3500",
+        index.packages.len(),
+    );
+
+    // Location Type is a documented 0..=7 enum; any other value means the
+    // PLDT cursor has drifted (e.g. reading a different sub-record's bytes
+    // as PLDT).
+    for p in index.packages.values() {
+        if let Some(loc) = &p.location {
+            assert!(
+                loc.location_type <= 7,
+                "{} location_type={} out of the documented 0..=7 range",
+                p.editor_id,
+                loc.location_type,
+            );
+            assert!(
+                loc.radius >= 0,
+                "{} radius={} is negative",
+                p.editor_id,
+                loc.radius,
+            );
+        }
+    }
+
+    // Name-encoded radius cross-check: most `DefaultSandbox*Location<N>*`
+    // packages' PLDT radius equals the `<N>` in their own editor ID — a
+    // vanilla-authored convention, not a hard guarantee (e.g.
+    // `DefaultSandboxEditorLocation500` genuinely carries radius 1000 in
+    // FalloutNV.esm, a CK-authoring inconsistency, not a decode bug — every
+    // other sampled package matches exactly). Assert a majority match
+    // rather than 100%, so this stays a decode-corruption tripwire without
+    // being fragile to individual authoring quirks.
+    let name_radius_re = |name: &str| -> Option<i32> {
+        let digits: String = name
+            .chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        digits.parse().ok()
+    };
+    let mut checked = 0;
+    let mut mismatched = Vec::new();
+    for p in index.packages.values() {
+        if !p.editor_id.starts_with("DefaultSandbox") {
+            continue;
+        }
+        let Some(loc) = &p.location else { continue };
+        let Some(expected) = name_radius_re(&p.editor_id) else {
+            continue; // e.g. "DefaultSandboxEditorLocation" with no digits
+        };
+        checked += 1;
+        if loc.radius != expected {
+            mismatched.push(format!(
+                "{} (decoded {}, name says {})",
+                p.editor_id, loc.radius, expected
+            ));
+        }
+    }
+    assert!(
+        checked > 20,
+        "expected to cross-check > 20 DefaultSandbox* packages, only checked {checked}",
+    );
+    assert!(
+        mismatched.len() * 10 <= checked, // allow up to 10% authoring-quirk noise
+        "{}/{checked} DefaultSandbox* packages' PLDT radius disagrees with their \
+         name-encoded radius (>10% — looks like a decode regression, not authoring \
+         noise): {mismatched:?}",
+        mismatched.len(),
+    );
+}

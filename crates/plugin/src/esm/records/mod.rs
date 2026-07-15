@@ -583,9 +583,16 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             // AI / dialogue / effect stubs (#446, #447). Follow the
             // #458 supplementary-record pattern: minimal struct
             // (EDID + FULL + a few scalars), no deep decoding.
-            b"PACK" => extract_records(&mut reader, end, b"PACK", &mut |fid, subs| {
-                index.packages.insert(fid, parse_pack(fid, subs));
-            })?,
+            b"PACK" => {
+                // PLDT's Near Reference / In Cell / Object ID FormIDs are
+                // plugin-local; remap to global here (same #1666 pattern
+                // as QUST/PERK) so consumers compare against entities'
+                // global FormIdComponents.
+                let pack_remap = reader.get_form_id_remap();
+                extract_records(&mut reader, end, b"PACK", &mut |fid, subs| {
+                    index.packages.insert(fid, parse_pack(fid, subs, &pack_remap));
+                })?;
+            }
             b"QUST" => {
                 // Stage CTDA params live in plugin-local FormID space; remap
                 // them to global here (#1666) so the condition evaluator can

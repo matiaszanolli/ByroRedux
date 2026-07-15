@@ -11,9 +11,11 @@ use crate::esm::sub_reader::SubReader;
 /// idles). `NpcRecord.ai_packages` carries PKID form refs; pre-#446
 /// those dangled.
 ///
-/// Only the PKDT header (package flags + procedure type) is captured
-/// here — PSDT / PLDT / PKTG / PKCU / PKPA decoding lands with the
-/// AI runtime per the `ai_packages_procedures.md` memo.
+/// PKDT (package flags + procedure type), PSDT (schedule), and PLDT
+/// (location) are captured here. PTDT / PKTG(Skyrim+) / PKCU / PKPA
+/// decoding lands with the AI runtime per the `ai_packages_procedures.md`
+/// memo. Layout verified against the FO3/FNV xEdit-derived spec:
+/// <https://tes5edit.github.io/fopdoc/FalloutNV/Records/PACK.html>.
 #[derive(Debug, Clone, Default)]
 pub struct PackRecord {
     pub form_id: u32,
@@ -31,6 +33,49 @@ pub struct PackRecord {
     /// (treated as always-active). Drives which package is *active* at a
     /// given game hour — the M42.1 seat-assignment selector.
     pub schedule: Option<PackSchedule>,
+    /// Authored activity center from PLDT. `None` when the package has
+    /// no PLDT (rare — most FO3/FNV packages carry one). This is the
+    /// Sandbox procedure's "Location" parameter (param #1 of 15 per the
+    /// `ai_packages_procedures.md` memo) — the real center a Sandbox
+    /// package should search around, replacing the v0 actor-position
+    /// approximation in `sandbox_seat_system`.
+    pub location: Option<PackLocation>,
+}
+
+/// PACK location data from PLDT — where a package's activity centers.
+/// FormIDs in [`PackLocationTarget`] are plugin-local at parse time; the
+/// caller must remap them the same way `parse_pack` does internally
+/// (via the `FormIdRemap` threaded through `extract_records`, #1666).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PackLocation {
+    /// Raw Location Type enum (0..=7) — kept alongside `target` so a
+    /// consumer can distinguish `Other` variants without re-deriving it.
+    pub location_type: u32,
+    pub target: PackLocationTarget,
+    /// Search radius (game units) around `target`.
+    pub radius: i32,
+}
+
+/// The `union` half of PLDT — its meaning depends on the Location Type
+/// enum. Only types 0/1/4 carry a resolvable FormID per the FO3/FNV spec;
+/// types 2/3/6/7 (Near Current Location / Near Editor Location / Near
+/// Linked Reference / At Package Location) are self-referential to the
+/// runtime actor or package and carry no FormID to look up.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PackLocationTarget {
+    /// Type 0 — Near Reference. FormID of a REFR/PGRE/PMIS/ACHR/ACRE/PLYR.
+    NearReference(u32),
+    /// Type 1 — In Cell. FormID of a CELL.
+    InCell(u32),
+    /// Type 4 — Object ID. FormID of a base-object record (ACTI/DOOR/
+    /// STAT/FURN/CREA/SPEL/NPC_/CONT/ARMO/AMMO/MISC/WEAP/BOOK/KEYM/
+    /// ALCH/LIGH/…).
+    ObjectId(u32),
+    /// Types 2 (Near Current Location), 3 (Near Editor Location), 5
+    /// (Object Type — an enum value, not a FormID), 6 (Near Linked
+    /// Reference), 7 (At Package Location). The raw union bytes are kept
+    /// but not interpreted as a FormID.
+    Other(u32),
 }
 
 /// FO3/FNV package procedure-type index for `Sandbox` — idle activities
@@ -105,7 +150,21 @@ pub fn active_package_is_sandbox<'a>(
     false
 }
 
-pub fn parse_pack(form_id: u32, subs: &[SubRecord]) -> PackRecord {
+/// Remap a raw plugin-local FormID to global space, leaving 0 (no
+/// FormID / null ref) untouched. Mirrors the null-guard in
+/// `remap_condition_form_ids` for the single-field PLDT case.
+fn remap_fid(raw: u32, remap: &Option<crate::esm::reader::FormIdRemap>) -> u32 {
+    if raw == 0 {
+        return 0;
+    }
+    remap.as_ref().map_or(raw, |r| r.remap(raw))
+}
+
+pub fn parse_pack(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> PackRecord {
     let mut out = PackRecord {
         form_id,
         ..Default::default()
@@ -136,6 +195,29 @@ pub fn parse_pack(form_id: u32, subs: &[SubRecord]) -> PackRecord {
                 out.schedule = Some(PackSchedule {
                     start_hour: if time < 0 { None } else { Some(time as u8) },
                     duration_hours: duration.max(0) as u32,
+                });
+            }
+            // FO3/FNV PLDT: Location Type u32, Location union u32
+            // (FormID or raw value depending on type), Radius i32. Per
+            // https://tes5edit.github.io/fopdoc/FalloutNV/Records/PACK.html.
+            // Only types 0 (Near Reference) / 1 (In Cell) / 4 (Object ID)
+            // carry a FormID that needs remapping to global space; the
+            // others are self-referential and pass through raw.
+            b"PLDT" if sub.data.len() >= 12 => {
+                let mut r = SubReader::new(&sub.data);
+                let location_type = r.u32_or_default();
+                let raw = r.u32_or_default();
+                let radius = r.i32_or_default();
+                let target = match location_type {
+                    0 => PackLocationTarget::NearReference(remap_fid(raw, remap)),
+                    1 => PackLocationTarget::InCell(remap_fid(raw, remap)),
+                    4 => PackLocationTarget::ObjectId(remap_fid(raw, remap)),
+                    _ => PackLocationTarget::Other(raw),
+                };
+                out.location = Some(PackLocation {
+                    location_type,
+                    target,
+                    radius,
                 });
             }
             _ => {}
@@ -793,7 +875,7 @@ mod tests {
         pkdt.extend_from_slice(&0x0000_0421u32.to_le_bytes()); // flags
         pkdt.extend_from_slice(&6u32.to_le_bytes()); // procedure 6 = Travel
         let subs = vec![sub(b"EDID", b"TravelToWork\0"), sub(b"PKDT", &pkdt)];
-        let p = parse_pack(0xA1A1, &subs);
+        let p = parse_pack(0xA1A1, &subs, &None);
         assert_eq!(p.editor_id, "TravelToWork");
         assert_eq!(p.package_flags, 0x0000_0421);
         assert_eq!(p.procedure_type, 6);
@@ -812,7 +894,7 @@ mod tests {
         pkdt.push(12); // procedure byte = Sandbox
         pkdt.extend_from_slice(&[0xAB, 0xCD, 0xEF]); // type-specific junk
         let subs = vec![sub(b"EDID", b"DefaultSandbox\0"), sub(b"PKDT", &pkdt)];
-        let p = parse_pack(0xB2B2, &subs);
+        let p = parse_pack(0xB2B2, &subs, &None);
         assert_eq!(
             p.procedure_type, 12,
             "procedure must be the byte value, not the polluted u32"
@@ -840,14 +922,89 @@ mod tests {
         // AtBar `8x12`: time byte = 8, duration i32 = 12 → 08:00 for 12 h.
         let psdt = [0xff, 0xff, 0x00, 0x08, 0x0c, 0, 0, 0];
         assert_eq!(
-            parse_pack(0x1, &[sub(b"PSDT", &psdt)]).schedule,
+            parse_pack(0x1, &[sub(b"PSDT", &psdt)], &None).schedule,
             sched(Some(8), 12)
         );
         // Any-time sandbox: time byte = -1 (0xFF) → start_hour None.
         let any = [0xff, 0xff, 0x00, 0xff, 0, 0, 0, 0];
         assert_eq!(
-            parse_pack(0x2, &[sub(b"PSDT", &any)]).schedule,
+            parse_pack(0x2, &[sub(b"PSDT", &any)], &None).schedule,
             sched(None, 0)
+        );
+    }
+
+    fn pldt(location_type: u32, raw: u32, radius: i32) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&location_type.to_le_bytes());
+        data.extend_from_slice(&raw.to_le_bytes());
+        data.extend_from_slice(&radius.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn parse_pack_no_pldt_leaves_location_none() {
+        let p = parse_pack(0x1, &[sub(b"EDID", b"NoLocation\0")], &None);
+        assert!(p.location.is_none());
+    }
+
+    #[test]
+    fn parse_pack_reads_pldt_near_reference() {
+        // Type 0 = Near Reference, radius 512 (the FNV DefaultSandbox
+        // package radius).
+        let data = pldt(0, 0x0001_2345, 512);
+        let p = parse_pack(0x1, &[sub(b"PLDT", &data)], &None);
+        let loc = p.location.expect("PLDT should populate location");
+        assert_eq!(loc.location_type, 0);
+        assert_eq!(loc.target, PackLocationTarget::NearReference(0x0001_2345));
+        assert_eq!(loc.radius, 512);
+    }
+
+    #[test]
+    fn parse_pack_reads_pldt_in_cell_and_object_id() {
+        let cell = pldt(1, 0x0002_ABCD, 0);
+        let p = parse_pack(0x1, &[sub(b"PLDT", &cell)], &None);
+        assert_eq!(
+            p.location.unwrap().target,
+            PackLocationTarget::InCell(0x0002_ABCD)
+        );
+
+        let obj = pldt(4, 0x0003_1111, 256);
+        let p = parse_pack(0x1, &[sub(b"PLDT", &obj)], &None);
+        assert_eq!(
+            p.location.unwrap().target,
+            PackLocationTarget::ObjectId(0x0003_1111)
+        );
+    }
+
+    /// Types other than 0/1/4 (Near Current Location, Near Editor
+    /// Location, Object Type, Near Linked Reference, At Package
+    /// Location) carry no FormID — the raw union value passes through
+    /// unremapped as `Other`.
+    #[test]
+    fn parse_pack_reads_pldt_other_types_pass_through_raw() {
+        for location_type in [2u32, 3, 5, 6, 7] {
+            let data = pldt(location_type, 0x0009_9999, 128);
+            let p = parse_pack(0x1, &[sub(b"PLDT", &data)], &None);
+            let loc = p.location.unwrap();
+            assert_eq!(loc.location_type, location_type);
+            assert_eq!(loc.target, PackLocationTarget::Other(0x0009_9999));
+        }
+    }
+
+    /// PLDT's Near Reference FormID is plugin-local at parse time; a
+    /// self-reference (top byte == master count) must remap to the
+    /// plugin's own global slot, mirroring `remap_condition_form_ids`'s
+    /// contract for the same #1666 pattern.
+    #[test]
+    fn parse_pack_pldt_near_reference_remaps_form_id() {
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        // mod_index 1 == master_slots.len() → self-reference.
+        let raw = (1u32 << 24) | 0x0000_5678;
+        let data = pldt(0, raw, 512);
+        let p = parse_pack(0x1, &[sub(b"PLDT", &data)], &Some(remap));
+        assert_eq!(
+            p.location.unwrap().target,
+            PackLocationTarget::NearReference((2u32 << 24) | 0x0000_5678)
         );
     }
 
