@@ -1174,7 +1174,7 @@ pub fn load_streaming_sound_from_file(
 ///
 /// **Dormant API (#859):** the engine binary currently has zero
 /// call sites for `SoundCache`. The footstep dispatch path at
-/// `byroredux/src/asset_provider.rs::try_load_default_footstep` writes
+/// `byroredux/src/asset_provider/texture.rs::try_load_default_footstep` writes
 /// directly into `FootstepConfig.default_sound: Option<Arc<Sound>>`,
 /// bypassing the cache; the decoded `Arc` is held by exactly one
 /// `Resource` (`FootstepConfig`) for the engine lifetime. The "no
