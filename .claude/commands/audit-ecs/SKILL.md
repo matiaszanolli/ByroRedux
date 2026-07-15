@@ -201,6 +201,17 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   load/unload cycle.
 - **M41 NPC spawn** (`byroredux/src/npc_spawn.rs`): ACHR/REFR → entity dispatch
   is idempotent (same REFR FormId never spawns twice).
+- **M42 sandbox seating** (`byroredux/src/systems/sandbox.rs::sandbox_seat_system`,
+  `crates/core/src/ecs/components/sandbox.rs`, `crates/core/src/ecs/components/furniture.rs`): `SandboxBehavior`
+  and `Seated` are `SparseSetStorage` (only sandboxing/seated actors carry them) —
+  verify a growing actor population doesn't force either onto `PackedStorage`.
+  `Seated` is the one-shot gate: once tagged, an actor must not re-enter the seat
+  search on a later frame. Seat claims are per-`(furniture entity, marker index)`
+  in the `SeatReservations` resource, wholesale-cleared on every cell load
+  (`cell_loader/references/mod.rs`, since entity ids reset on unload) rather than
+  released per-entity — verify this doesn't wrongly free seats still held by an
+  actor in a *different, still-loaded* cell under exterior multi-cell grid
+  streaming (radius > 0), which would let two NPCs claim the same marker.
 - **Scripting transient markers** (`crates/scripting/src/events.rs`):
   `ActivateEvent` / `HitEvent` / `TimerExpired` are removed by
   `event_cleanup_system` (registered `add_exclusive(Stage::Late, …)`) — verify

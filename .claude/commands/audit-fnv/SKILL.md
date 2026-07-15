@@ -29,7 +29,7 @@ The Prospector Saloon bench is the FNV bench-of-record; treat any drop below the
 
 ## Parameters (from $ARGUMENTS)
 
-- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3`). Default: all 8.
+- `--focus <dimensions>`: Comma-separated dimension numbers (e.g., `1,3`). Default: all 9.
 
 ## Phase 1: Setup
 
@@ -46,6 +46,9 @@ Dimensions are ordered by current FNV risk: the layers most likely to silently b
 ### Dimension 1: Cell Loading End-to-End (highest blast radius)
 **Subagent**: `general-purpose`
 **Entry points**: `byroredux/src/cell_loader/` (`cell_loader.rs` is a thin dispatcher), `byroredux/src/scene/world_setup.rs`, `byroredux/src/streaming.rs`
+Companion docs: `docs/engine/pipeline-overview.md` (interior cell load trace) and
+`docs/engine/exterior-grid-streaming.md` (exterior grid, background pre-parse,
+cell-boundary + door-teleport swaps) — both verified against the tree 2026-07-15.
 **Checklist**:
 - Interior load — Prospector Saloon entity count + XCLL lighting + `NiAlphaProperty` decal routing.
 - Exterior 7×7 (radius 3) WastelandNV grid — LAND terrain (`byroredux/src/cell_loader/terrain.rs`), LTEX/TXST splat, WTHR→CLMT→WTHR resolution, cloud texture resolution through the asset provider's `TextureProvider`.
@@ -140,6 +143,18 @@ Dimensions are ordered by current FNV risk: the layers most likely to silently b
 - Exterior: `--grid <x>,<y> --radius 3` on WastelandNV.
 - Validate `tex.missing` / `tex.loaded` return sensible output (FNV ships base textures split across `Fallout - Textures.bsa` + DLC archives — `tex.missing` first when surfaces look chrome/posterized).
 **Output**: `/tmp/audit/fnv/dim_8.md`
+
+### Dimension 9: AI Packages & Sandbox Behavior (M41.5/M42, newest slice)
+**Subagent**: `general-purpose`
+**Entry points**: `byroredux/src/npc_spawn.rs` (`spawn_npc_entity` package-selection tail, `package_conditions_pass`), `byroredux/src/systems/sandbox.rs::sandbox_seat_system`, `crates/core/src/ecs/components/{sandbox,furniture}.rs`, `crates/plugin/src/esm/records/misc/ai.rs` (PACK/PLDT decode), `docs/engine/npc-spawn-ai-packages.md`
+**Checklist**: This is the newest and least-complete slice in the engine — audit for correctness of what's implemented, not for missing scope (v0 is deliberately "sit in the nearest free chair, once"; do not flag the absence of scheduling/meals/sleep/wander/ownership as a bug).
+- **CTDA fail-open is intentional, not a bug (M42.2)**: `package_conditions_pass` treats a package's whole condition list as passing if ANY referenced function is outside the ~15-function M47.1 catalog (`ConditionFunction::Unknown`) — this preserves M42.1 behavior (every scheduled package eligible) rather than silently dropping packages the evaluator can't reason about. Only lists whose every function is implemented are gated for real. Verify a regression doesn't flip this to fail-closed (that would silently stop unrelated FNV NPCs from sandboxing).
+- **Schedule gating**: `active_package_is_sandbox` / `active_sandbox_location` (`crates/plugin/src/esm/records/misc/ai.rs`) pick the first package scheduled-active at the current `GameTimeRes.hour` — verify an NPC with a non-Sandbox package active at the current hour (e.g. an `AtBar` schedule) does NOT get a `SandboxBehavior` marker for that hour.
+- **PLDT search radius**: when decoded and `> 0.0`, `active_sandbox_location`'s radius feeds `SandboxBehavior.search_radius`, overriding `sandbox_seat_system`'s own default — verify radius-0 / no-PLDT packages still fall back correctly rather than searching radius 0 (which would never find a seat).
+- **NearReference center resolution is deliberately NOT implemented**: the search *center* is always the actor's own position, never a resolved `PackLocationTarget::NearReference` target — investigated 2026-07-14 against real FalloutNV.esm data (1822 NearReference Sandbox packages: 62% target a FormID absent from parsed cell data, 69% of the rest resolve to XMarker/XMarkerHeading which `cell_loader` never spawns — net ~12% theoretically resolvable). Do not re-flag this as a missing feature without a materially different approach.
+- **Seat reservation correctness (`0a21d5f9`)**: seats are keyed `(furniture entity, marker index)`, not just `furniture entity` — verify a multi-marker furniture (bench, long table) seats one actor per marker independently rather than treating the whole furniture as one seat.
+- **Legacy marker over-match (known v0 limitation)**: FNV/FO3/Oblivion `BSFurnitureMarker`s carry no `AnimationType`, so `is_sit_marker` treats every legacy marker as sit-eligible — sleep/lean markers on FNV furniture will be over-matched as sit targets. Confirm this is still documented as a known gap, not silently "fixed" by a heuristic that could misfire.
+**Output**: `/tmp/audit/fnv/dim_9.md`
 
 ## Phase 3: Merge
 

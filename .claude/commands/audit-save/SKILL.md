@@ -384,6 +384,8 @@ ordering (~line 2300).
 `apply_player_pose`, `snapshot_cell_context`, `snapshot_player_pose`;
 `byroredux/src/cell_loader/transition.rs` — `CurrentCellContext`,
 `reposition_camera`; `crates/physics/src/sync.rs` — `set_kinematic_translation`.
+Companion doc: `docs/engine/save-load-roundtrip.md` (cross-cutting trace of this
+exact flow, verified against the tree 2026-07-15).
 **Checklist**:
 - **Strict apply ordering.** `execute_pending_save_loads` must run:
   drain slot → resolve `CurrentCellContext` → teardown (`drain_streaming_state` +

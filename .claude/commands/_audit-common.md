@@ -62,7 +62,7 @@ Platform:        crates/platform/src/
 UI (Ruffle):     crates/ui/src/
 CXX Bridge:      crates/cxx-bridge/
 Binary:          byroredux/src/main.rs
-Systems:         byroredux/src/systems.rs (module index) → systems/{animation, audio, billboard, bounds, camera, character, debug, light_anim, metrics, particle, water, weather}.rs (particle.rs carries apply_emitter_params, fed by the typed NIF emitter pipeline)
+Systems:         byroredux/src/systems.rs (module index) → systems/{animation, audio, billboard, bounds, camera, character, debug, light_anim, metrics, particle, sandbox, water, weather}.rs (particle.rs carries apply_emitter_params, fed by the typed NIF emitter pipeline; sandbox.rs is sandbox_seat_system, M42)
 Scene Setup:     byroredux/src/scene.rs (thin) → scene/{nif_loader, world_setup}.rs (+ *_tests.rs siblings: climate_tod_hours, cloud_tile_scale, procedural_fallback, radius_parse)
 Render Data:     byroredux/src/render/ (mod.rs carries build_render_data + draw enumeration) → render/{camera, lights, skinned, static_meshes, particles, sky, water}.rs (+ *_tests.rs siblings)
 Cell Loader:     byroredux/src/cell_loader.rs (thin dispatch) → cell_loader/{load, unload, exterior, references, spawn, partial, euler, refr, terrain, terrain_lod, object_lod, water, load_order, index, precombined, transition, nif_import_registry}.rs (+ *_tests.rs siblings)
@@ -73,7 +73,8 @@ Ragdoll:         byroredux/src/ragdoll.rs (M41.x ragdoll activation + writeback;
 Cornell Harness: byroredux/src/cornell.rs (--cornell self-contained RT material/lighting reference scene; no on-disk game data)
 Asset Provider:  byroredux/src/asset_provider.rs (BSA/BA2 texture+mesh extraction, resolve_texture, strip_build_prefix for AE pipeline-path paths)
 Components:      byroredux/src/components.rs (binary-local markers + app resources: Spinning, AlphaBlend, TwoSided, DoorTeleport, IsFxMesh, IsLodTerrain, IsCollisionOnly, FootstepEmitter/Config/Scratch, CellLightingRes, SkyParamsRes, WeatherDataRes, LightTuning, …). Shared ECS components (WaterPlane/WaterVolume/SubmersionState) live in crates/core/src/ecs/components/water.rs; SelectedRef is a resource in crates/core/src/ecs/resources/mod.rs)
-NPC Spawn:       byroredux/src/npc_spawn.rs           (M41 actor instantiation)
+NPC Spawn:       byroredux/src/npc_spawn.rs           (M41 actor instantiation; M42.2 adds CTDA package-condition gating (`package_conditions_pass`, fail-open on unimplemented condition functions) + PLDT-radius resolution (`active_sandbox_location`) feeding SandboxBehavior)
+Sandbox AI:      byroredux/src/systems/sandbox.rs (M42 sandbox_seat_system: nearest-free-seat assignment, per-marker reservation via SeatReservations keyed (furniture, marker index)) + crates/core/src/ecs/components/{sandbox, furniture}.rs (SandboxBehavior/Seated markers; Furniture BSFurnitureMarker entry positions, M41.5). v0 scope only — no target scoring/scheduling/meals/sleep/wander/ownership. Doc: docs/engine/npc-spawn-ai-packages.md.
 World Stream:    byroredux/src/streaming.rs           (M40 cell lifecycle) + streaming_tests.rs
 SF Smoke:        byroredux/src/sf_smoke.rs            (Starfield ESM resolve-rate harness, --sf-smoke CLI)
 Golden Frames:   byroredux/tests/golden_frames.rs     (cube-demo frame-60 regression PNG; opts into --ignored)
@@ -91,6 +92,10 @@ Prefer them over re-deriving facts from source during an audit.
 | `docs/engine/memory-budget.md` | VRAM/RAM ceilings, SSBO sizes, LRU eviction thresholds (`AccelerationManager`, `TextureRegistry`, BGSM cache, `MeshRegistry`), deferred-destroy countdown depth |
 | `docs/engine/nifal.md` | NIFAL three-tier canonical translation spec (Imported* → translate() → Canonical); single-boundary / no-fabrication / no-render-time-fallback rules |
 | `docs/engine/plugin-loading.md` | `PluginManifest` TOML schema, `DataStore`, `DependencyResolver` algorithm, Form ID three-layer design, ESM parser entry points, conflict resolution |
+| `docs/engine/pipeline-overview.md` | Cross-cutting trace #1: a single interior cell load end-to-end, ESM record → ECS spawn → GPU draw |
+| `docs/engine/exterior-grid-streaming.md` | Cross-cutting trace #2: exterior worldspace grid streaming — background pre-parse worker, cell-boundary crossing, door teleport scene swaps |
+| `docs/engine/save-load-roundtrip.md` | Cross-cutting trace #3: M45/M45.1 save — what a snapshot captures, atomic disk write, live load-apply onto a *running* engine (no process restart) |
+| `docs/engine/npc-spawn-ai-packages.md` | Cross-cutting trace #4: NPC_ spawn → AI package selection (CTDA gating, M42.2) → Sandbox behavior (M41.5/M42). States plainly which of the ~17 FO3/FNV package procedures actually execute at runtime (currently: Sandbox only) |
 | `docs/feature-matrix.md` | What works at runtime per game — cell loading, rendering, NPCs, audio, scripting, physics, UI. Living status document. (NOTE: the "Scripting (M47)" + "Save / load (M45)" rows lag the code — M45/M45.1 + the M47.2 .pex slice shipped; treat the matrix as a floor, not ceiling, and flag the doc-rot.) |
 | `docs/engine/scripting.md` | ECS-native scripting model (Papyrus VM → ECS), recognizer-chain design, what `.pex`/recognizers translate vs. defer. Paired with `docs/engine/papyrus-parser.md` (`.psc` AST), `docs/engine/m47-0-design.md`, `docs/engine/m47-2-design.md`, `docs/engine/m47-2-recognizer-scaling.md`. Owner audit: `/audit-scripting`. |
 | `docs/contributing.md` | Prerequisites, build, test tiers (unit/integration/Vulkan/smoke), shader recompile, game data paths, CI jobs |
