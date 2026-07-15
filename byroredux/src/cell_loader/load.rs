@@ -35,44 +35,104 @@ pub struct CellLoadResult {
     pub lighting: Option<byroredux_plugin::esm::cell::CellLighting>,
 }
 
-/// Apply a freshly-loaded interior cell's [`CellLighting`](esm::cell::CellLighting)
-/// to the renderer's `CellLightingRes`. Shared by *every* interior-load
-/// entry point — the startup `--cell` path (`scene.rs`), the M40 door-walk
-/// transition ([`super::load_interior_cell`]), and the `cell.load` debug
-/// command (`debug_load.rs`) — so they cannot drift.
+/// Ambient-only "no authored data" interior default — installed by
+/// [`apply_interior_cell_lighting`] when `resolve_cell_lighting` returns
+/// `None` (its case 3: no `XCLL`, no resolvable `LTMP`).
+///
+/// FNV-D1-01: pre-fix, all four interior-load call sites simply skipped
+/// installing anything on `None`, silently leaving whatever
+/// `CellLightingRes` the *previous* cell had installed — reproducing the
+/// #1340/#1282 stale-lighting failure (wrong ambient/fog, exterior sun
+/// leaking into a sealed interior) for this one input shape. Neutral gray
+/// and zero directional contribution are a deliberate inert default, not
+/// an approximation of any specific game's typical values — there is no
+/// authored data here to approximate. Fog pushed far out of range mirrors
+/// the same "effectively off" convention `cornell.rs`'s synthetic interior
+/// uses. `is_interior` stays `true` so the #1282 gate still keeps a scene
+/// directional out of the sealed cell.
+const ENGINE_DEFAULT_INTERIOR_AMBIENT: [f32; 3] = [0.15, 0.15, 0.15];
+
+fn engine_default_interior_lighting() -> CellLightingRes {
+    CellLightingRes {
+        ambient: ENGINE_DEFAULT_INTERIOR_AMBIENT,
+        directional_color: [0.0, 0.0, 0.0],
+        directional_dir: [0.0, -1.0, 0.0],
+        is_interior: true,
+        fog_color: ENGINE_DEFAULT_INTERIOR_AMBIENT,
+        fog_near: 100_000.0,
+        fog_far: 1_000_000.0,
+        directional_fade: None,
+        fog_clip: None,
+        fog_power: None,
+        fog_far_color: None,
+        fog_max: None,
+        light_fade_begin: None,
+        light_fade_end: None,
+        directional_ambient: None,
+        specular_color: None,
+        specular_alpha: None,
+        fresnel_power: None,
+    }
+}
+
+/// Apply a freshly-loaded interior cell's resolved
+/// [`CellLighting`](esm::cell::CellLighting) — or the engine default when
+/// `resolve_cell_lighting` found none — to the renderer's `CellLightingRes`.
+/// Shared by *every* interior-load entry point — the startup `--cell` path
+/// (`scene.rs`), the M40 door-walk transition ([`super::load_interior_cell`]),
+/// the `cell.load` debug command (`debug_load.rs`), and the M45.1 live-load
+/// apply (`save_io.rs`) — so they cannot drift.
 ///
 /// Pre-#1340 only the startup path applied it, so an interior reached at
 /// runtime rendered with the *previous* cell's `CellLightingRes`: wrong
 /// ambient/fog, exterior clear color, and the directional sun leaking into
 /// a sealed interior — the exact failure #1282 gated on `is_interior`.
+/// Pre-FNV-D1-01, the `None` case reintroduced the same failure for cells
+/// with neither `XCLL` nor a resolvable `LTMP` — every caller's
+/// `if let Some(ref lit) = result.lighting { .. }` guard skipped the apply
+/// entirely instead of installing anything, so a `None` inherited whatever
+/// the previous cell left behind. Taking `Option` here and always
+/// installing *something* is the fix — callers no longer branch on it.
 ///
-/// Routes the authored XCLL Euler angles through `euler_zup_to_quat_yup`
-/// (the CW-convention helper REFR placements use), then applies the Y-up
-/// quaternion to Gamebryo's `NiDirectionalLight` model direction `(1,0,0)`
-/// (2.3 `NiDirectionalLight.h`: "The model direction of the light is
-/// (1,0,0)"; the Z-up → Y-up swap leaves +X invariant). `is_interior` is
-/// always `true` — `load_cell_with_masters` only loads interior cells, and
-/// the flag makes `CellLightingRes` skip the directional as a scene light
-/// to prevent wall light leakage. The 9 extended XCLL fields (`fog_clip`,
-/// `directional_ambient`, …) are propagated by `from_cell_lighting` (#861).
-pub(crate) fn apply_interior_cell_lighting(world: &mut World, lighting: &esm::cell::CellLighting) {
-    let (rx, ry) = (
-        lighting.directional_rotation[0],
-        lighting.directional_rotation[1],
-    );
-    let quat = super::euler_zup_to_quat_yup(rx, ry, 0.0);
-    let dir_v = quat * Vec3::new(1.0, 0.0, 0.0);
-    let dir = [dir_v.x, dir_v.y, dir_v.z];
-    world.insert_resource(CellLightingRes::from_cell_lighting(lighting, dir, true));
-    log::info!(
-        "Cell lighting: ambient={:?} directional={:?} dir={:?} fog={:?} near={:.0} far={:.0}",
-        lighting.ambient,
-        lighting.directional_color,
-        dir,
-        lighting.fog_color,
-        lighting.fog_near,
-        lighting.fog_far,
-    );
+/// For `Some`, routes the authored XCLL Euler angles through
+/// `euler_zup_to_quat_yup` (the CW-convention helper REFR placements use),
+/// then applies the Y-up quaternion to Gamebryo's `NiDirectionalLight` model
+/// direction `(1,0,0)` (2.3 `NiDirectionalLight.h`: "The model direction of
+/// the light is (1,0,0)"; the Z-up → Y-up swap leaves +X invariant).
+/// `is_interior` is always `true` — `load_cell_with_masters` only loads
+/// interior cells, and the flag makes `CellLightingRes` skip the
+/// directional as a scene light to prevent wall light leakage. The 9
+/// extended XCLL fields (`fog_clip`, `directional_ambient`, …) are
+/// propagated by `from_cell_lighting` (#861).
+pub(crate) fn apply_interior_cell_lighting(
+    world: &mut World,
+    lighting: Option<&esm::cell::CellLighting>,
+) {
+    let res = match lighting {
+        Some(lit) => {
+            let (rx, ry) = (lit.directional_rotation[0], lit.directional_rotation[1]);
+            let quat = super::euler_zup_to_quat_yup(rx, ry, 0.0);
+            let dir_v = quat * Vec3::new(1.0, 0.0, 0.0);
+            let dir = [dir_v.x, dir_v.y, dir_v.z];
+            log::info!(
+                "Cell lighting: ambient={:?} directional={:?} dir={:?} fog={:?} near={:.0} far={:.0}",
+                lit.ambient,
+                lit.directional_color,
+                dir,
+                lit.fog_color,
+                lit.fog_near,
+                lit.fog_far,
+            );
+            CellLightingRes::from_cell_lighting(lit, dir, true)
+        }
+        None => {
+            log::info!(
+                "Cell lighting: no XCLL and no resolvable LTMP — installing engine-default interior lighting"
+            );
+            engine_default_interior_lighting()
+        }
+    };
+    world.insert_resource(res);
 }
 
 /// Surface parsed `GLOB` runtime values as the `Globals` `World` resource,
@@ -469,7 +529,12 @@ pub fn load_cell_with_masters(
 ///    sun-from-+X cell origin and the Skyrim-extended optionals stay
 ///    `None` (the renderer falls back to legacy single-color ambient
 ///    when they're absent, the same path FO3/FNV cells take).
-/// 3. **No XCLL and no resolvable LGTM** → `None` (engine default).
+/// 3. **No XCLL and no resolvable LGTM** → `None`. The caller,
+///    [`apply_interior_cell_lighting`], installs
+///    [`engine_default_interior_lighting`] in this case (FNV-D1-01) rather
+///    than skipping the apply — `resolve_cell_lighting` itself stays a pure
+///    "what did the plugin author?" query with no fallback-construction
+///    logic of its own.
 pub(crate) fn resolve_cell_lighting(
     cell: &esm::cell::CellData,
     index: &esm::records::EsmIndex,
@@ -613,7 +678,7 @@ mod tests {
         // Fresh world == "no previous cell lighting present".
         assert!(world.try_resource::<CellLightingRes>().is_none());
 
-        apply_interior_cell_lighting(&mut world, &interior_lighting());
+        apply_interior_cell_lighting(&mut world, Some(&interior_lighting()));
 
         let res = world
             .try_resource::<CellLightingRes>()
@@ -625,5 +690,58 @@ mod tests {
         );
         assert_eq!(res.ambient, [0.10, 0.10, 0.12], "ambient must propagate");
         assert_eq!(res.fog_far, 8000.0, "fog_far must propagate");
+    }
+
+    /// Regression for FNV-D1-01 — a cell with no `XCLL` and no resolvable
+    /// `LTMP` (`resolve_cell_lighting` returns `None`) must still install a
+    /// fresh, interior-flagged `CellLightingRes`, not silently leave a
+    /// stale one (potentially an exterior cell's, with `is_interior: false`
+    /// and a full-strength directional sun) sitting in the world from
+    /// whatever loaded before it.
+    #[test]
+    fn apply_interior_cell_lighting_none_overwrites_stale_exterior_resource() {
+        let mut world = World::new();
+        // Simulate walking in from an exterior cell: a stale, non-interior
+        // resource with a live directional sun is already installed.
+        world.insert_resource(CellLightingRes {
+            ambient: [0.5, 0.5, 0.6],
+            directional_color: [1.0, 0.95, 0.8],
+            directional_dir: [0.3, -0.8, 0.5],
+            is_interior: false,
+            fog_color: [0.6, 0.6, 0.7],
+            fog_near: 1000.0,
+            fog_far: 50_000.0,
+            directional_fade: None,
+            fog_clip: None,
+            fog_power: None,
+            fog_far_color: None,
+            fog_max: None,
+            light_fade_begin: None,
+            light_fade_end: None,
+            directional_ambient: None,
+            specular_color: None,
+            specular_alpha: None,
+            fresnel_power: None,
+        });
+
+        apply_interior_cell_lighting(&mut world, None);
+
+        let res = world
+            .try_resource::<CellLightingRes>()
+            .expect("None must still install a CellLightingRes, not leave the stale one untouched");
+        assert!(
+            res.is_interior,
+            "the engine-default interior fallback must set is_interior=true \
+             so no scene directional leaks into the sealed cell (FNV-D1-01)"
+        );
+        assert_eq!(
+            res.directional_color,
+            [0.0, 0.0, 0.0],
+            "engine-default fallback must not carry over the previous cell's directional color"
+        );
+        assert_ne!(
+            res.ambient, [0.5, 0.5, 0.6],
+            "engine-default fallback must not carry over the previous (exterior) cell's ambient"
+        );
     }
 }

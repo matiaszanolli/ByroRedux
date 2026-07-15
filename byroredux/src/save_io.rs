@@ -654,9 +654,11 @@ pub fn execute_pending_save_loads(
     );
     let entity_count = match result {
         Ok(r) => {
-            if let Some(ref lit) = r.lighting {
-                crate::cell_loader::apply_interior_cell_lighting(world, lit);
-            }
+            // Always called (not gated on `Some`) so a cell with no
+            // `XCLL`/resolvable `LTMP` still gets the engine-default
+            // interior fallback rather than a stale carry-over from
+            // whatever cell was loaded before the load-apply (FNV-D1-01).
+            crate::cell_loader::apply_interior_cell_lighting(world, r.lighting.as_ref());
             ctx.signal_temporal_discontinuity(
                 crate::streaming_helpers::SVGF_TAA_STREAMING_RECOVERY_FRAMES,
             );

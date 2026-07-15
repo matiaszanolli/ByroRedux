@@ -264,10 +264,11 @@ pub fn load_interior_cell(
     // path does this too, via the same helper). Without it the door-walked
     // interior keeps the previous cell's `CellLightingRes`: stale
     // ambient/fog + the exterior directional sun leaking into a sealed
-    // interior (the failure #1282 gated on `is_interior`).
-    if let Some(ref lit) = result.lighting {
-        super::apply_interior_cell_lighting(world, lit);
-    }
+    // interior (the failure #1282 gated on `is_interior`). Always called
+    // (not gated on `Some`) so a cell with no `XCLL`/resolvable `LTMP`
+    // still gets the engine-default interior fallback, not a stale carry-
+    // over from the exterior cell just departed (FNV-D1-01).
+    super::apply_interior_cell_lighting(world, result.lighting.as_ref());
 
     let dest_pos = position_zup_to_yup(dest_pos_zup);
     let dest_rot = rotation_zup_to_yup_quat(dest_rot_zup);

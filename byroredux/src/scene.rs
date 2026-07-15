@@ -213,10 +213,12 @@ pub(crate) fn setup_scene(
                     // the door-walk transition + `cell.load` debug paths
                     // via `apply_interior_cell_lighting` so a runtime cell
                     // switch can't leave a sealed interior lit by the
-                    // previous cell's resource (#1340).
-                    if let Some(ref lit) = result.lighting {
-                        cell_loader::apply_interior_cell_lighting(world, lit);
-                    }
+                    // previous cell's resource (#1340). Always called
+                    // (not gated on `Some`) so a cell with neither `XCLL`
+                    // nor a resolvable `LTMP` still gets the engine-default
+                    // interior fallback instead of inheriting a stale
+                    // resource (FNV-D1-01).
+                    cell_loader::apply_interior_cell_lighting(world, result.lighting.as_ref());
                     log::info!(
                         "Cell '{}' ready: {} entities",
                         result.cell_name,

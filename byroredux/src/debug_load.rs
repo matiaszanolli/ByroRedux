@@ -246,9 +246,10 @@ fn exec_load_interior(
             // startup `--cell` and door-walk transition paths. Without it
             // the debug-loaded interior keeps the previous cell's
             // `CellLightingRes` (stale ambient/fog + leaked exterior sun).
-            if let Some(ref lit) = result.lighting {
-                cell_loader::apply_interior_cell_lighting(world, lit);
-            }
+            // Always called (not gated on `Some`) so a cell with no
+            // `XCLL`/resolvable `LTMP` still gets the engine-default
+            // interior fallback rather than a stale carry-over (FNV-D1-01).
+            cell_loader::apply_interior_cell_lighting(world, result.lighting.as_ref());
             ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
             // Update the LoadedPluginSet so a subsequent
             // `door.teleport` from inside the debug-loaded cell
