@@ -183,19 +183,16 @@ function names directly.
 
 ## Candidate follow-ups
 
-This doc traces one flow. A few others would earn their own
-cross-cutting narrative if the same "nothing connects the subsystem docs"
-gap shows up there too — not written yet, listed here so the next pass
-doesn't have to rediscover the need:
+This doc traces one flow. One other would earn its own cross-cutting
+narrative if the same "nothing connects the subsystem docs" gap shows up
+there too — not written yet, listed here so the next pass doesn't have
+to rediscover the need:
 
-- **Save/load full round-trip** — ECS snapshot → validation gates →
-  atomic write/ring buffer → load-apply (cell reload + FormId-keyed
-  deltas + player-pose restore). Touches `crates/save`, `cell_loader`,
-  and the M45.1 live-load-apply path.
 - **NPC spawn → AI package execution** — `npc_spawn.rs` instantiation
   through package selection/priority stack to an actor executing a
   Sandbox procedure. Touches `plugin` (PACK records), `scripting`, `core`.
 
 This doc's interior-only scope also skipped exterior grid loading and
-streaming entirely — that's now covered by
-[Exterior Grid Streaming](exterior-grid-streaming.md).
+streaming, and the save/load system — now covered by
+[Exterior Grid Streaming](exterior-grid-streaming.md) and
+[Save/Load Round-Trip](save-load-roundtrip.md) respectively.
