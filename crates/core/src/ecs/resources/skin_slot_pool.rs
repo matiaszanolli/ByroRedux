@@ -41,8 +41,9 @@ use crate::ecs::storage::EntityId;
 ///   cleared — overwritten by the next `allocate`'s upload.
 ///
 /// Capacity: `max_skinned` is set at construction (typical value is
-/// `MAX_TOTAL_BONES / MAX_BONES_PER_MESH`, currently 196608 / 144 =
-/// 1366 with slot 0 reserved → 1365 allocatable; see #1284); `allocate`
+/// `MAX_TOTAL_BONES / MAX_BONES_PER_MESH`, currently
+/// `floor(196608 / 144) = 1365`, minus the reserved slot 0 →
+/// 1364 allocatable; see #1284); `allocate`
 /// returns `None` past it. The caller is expected to warn-once and
 /// fall back to bind-pose rendering for the overflowed entity. See
 /// `Self::overflow_warned` (one-shot log) and `Self::overflow_attempt_count`
