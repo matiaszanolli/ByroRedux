@@ -40,6 +40,12 @@ pub struct PackRecord {
     /// package should search around, replacing the v0 actor-position
     /// approximation in `sandbox_seat_system`.
     pub location: Option<PackLocation>,
+    /// Target actor/object from PTDT (M42.5). `None` when the package has
+    /// no PTDT — most procedures don't need one; Follow/Escort-family
+    /// procedures do. `PTD2` (a second target, for two-target procedures
+    /// like Escort-someone-to-someone) is not decoded — no implemented
+    /// procedure needs it yet.
+    pub target: Option<PackTarget>,
     /// `CTDA` conditions gating whether this package is eligible at all
     /// (M42.2). Empty = unconditionally eligible (Bethesda's "no
     /// conditions = always fires"). The plugin crate only *carries* these
@@ -86,6 +92,45 @@ pub enum PackLocationTarget {
     Other(u32),
 }
 
+/// PACK target data from PTDT (M42.5) — layout verified against
+/// <https://tes5edit.github.io/fopdoc/FalloutNV/Records/PACK.html> (the
+/// same xEdit-derived reference the PLDT/PSDT arms below already cite),
+/// cross-checked against those two *already-implemented* layouts before
+/// trusting it for a brand-new sub-record: PSDT's fetched Month/DayOfWeek/
+/// Date/Time(@3)/Duration(@4) layout and PLDT's fetched Type/union/Radius
+/// (12 bytes) layout both matched this codebase's existing, tested decode
+/// exactly. PTDT is the same fixed-width-union shape as PLDT (type + union
+/// + one more field), 16 bytes: Type u32 @0, Target union u32 @4,
+/// Count/Distance i32 @8, and a trailing Unknown f32 @12 that has no known
+/// consumer anywhere and isn't stored (same convention PSDT's unused
+/// Month/DayOfWeek/Date bytes already established).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PackTarget {
+    /// Raw Target Type enum (0..=3) — kept alongside `target` so a
+    /// consumer can distinguish `Other` without re-deriving it.
+    pub target_type: u32,
+    pub target: PackTargetKind,
+    /// Count or distance (game units) — meaning is procedure-dependent
+    /// per the source spec (undocumented generically); Follow interprets
+    /// it as a stand-off distance.
+    pub count_or_distance: i32,
+}
+
+/// The `union` half of PTDT. Only types 0/1 carry a resolvable FormID,
+/// mirroring [`PackLocationTarget`]'s exact precedent of only naming the
+/// FormID-carrying variants.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PackTargetKind {
+    /// Type 0 — Specific Reference. FormID of a REFR/PGRE/PMIS/ACHR/ACRE/PLYR.
+    SpecificReference(u32),
+    /// Type 1 — Object ID. FormID of a base-object record.
+    ObjectId(u32),
+    /// Type 2 (Object Type — an enum value, not a FormID) or type 3
+    /// (Linked Reference — undocumented, "??" in the source spec). The
+    /// raw union bytes are kept but not interpreted as a FormID.
+    Other(u32),
+}
+
 /// FO3/FNV package procedure-type index for `Sandbox` — idle activities
 /// in an area (sit, wander, use furniture). 56 % of vanilla FNV NPCs
 /// carry one; it's the dominant ambient idle behavior. See M42.
@@ -107,6 +152,16 @@ pub const PROCEDURE_WANDER: u32 = 5;
 /// than only ever approximating with the actor's own spawn position. See
 /// M42.
 pub const PROCEDURE_TRAVEL: u32 = 6;
+
+/// FO3/FNV package procedure-type index for `Follow` — continuously
+/// follow a target actor, closing to (and holding) a stand-off distance.
+/// Third procedure to reuse `wander_system`'s locomotion primitive (M42.5,
+/// via `systems::locomotion::step_toward`), and the first to track a
+/// **live** target position every tick rather than a frozen destination
+/// (Travel resolves once and stops; Follow keeps re-reading the target's
+/// `GlobalTransform`). Needs `PTDT` (target data), decoded for the first
+/// time in this codebase for this procedure. See M42.
+pub const PROCEDURE_FOLLOW: u32 = 1;
 
 /// PACK schedule window from PSDT (FO3/FNV). `start_hour = None` when the raw
 /// `time` byte is -1 (0xFF) = "any time". `duration_hours` is the PSDT
@@ -154,6 +209,12 @@ impl PackRecord {
     /// PLDT location and stop).
     pub fn is_travel(&self) -> bool {
         self.procedure_type == PROCEDURE_TRAVEL
+    }
+
+    /// True when this package's procedure is `Follow` (continuously
+    /// follow a target actor).
+    pub fn is_follow(&self) -> bool {
+        self.procedure_type == PROCEDURE_FOLLOW
     }
 
     /// Whether this package's schedule includes `hour`. No PSDT → always
@@ -275,6 +336,32 @@ pub fn active_travel_location<'a>(
         .and_then(|pk| pk.location)
 }
 
+/// Whether an NPC's active package at `hour` (see [`active_package`]) is a
+/// Follow package. Mirrors [`active_package_is_travel`]. `condition_met`
+/// injects M47.1 CTDA evaluation; pass `|_| true` for schedule-only.
+pub fn active_package_is_follow<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> bool {
+    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_follow)
+}
+
+/// The PTDT target of an NPC's active package at `hour` (see
+/// [`active_package`]), when that package is Follow-type. `None` when the
+/// active package isn't Follow, carries no PTDT, or nothing is scheduled
+/// active. Mirrors [`active_travel_location`]. `condition_met` injects
+/// M47.1 CTDA evaluation; pass `|_| true` for schedule-only.
+pub fn active_follow_target<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> Option<PackTarget> {
+    active_package(packages, hour, condition_met)
+        .filter(|pk| pk.is_follow())
+        .and_then(|pk| pk.target)
+}
+
 /// Remap a raw plugin-local FormID to global space, leaving 0 (no
 /// FormID / null ref) untouched. Mirrors the null-guard in
 /// `remap_condition_form_ids` for the single-field PLDT case.
@@ -343,6 +430,31 @@ pub fn parse_pack(
                     location_type,
                     target,
                     radius,
+                });
+            }
+            // FO3/FNV PTDT (M42.5): Target Type u32, Target union u32
+            // (FormID or raw value depending on type), Count/Distance i32.
+            // A trailing Unknown f32 (offset 12) exists but has no known
+            // consumer and isn't read. Per
+            // https://tes5edit.github.io/fopdoc/FalloutNV/Records/PACK.html,
+            // cross-checked against this file's own PLDT/PSDT arms (see
+            // `PackTarget`'s doc comment). Only types 0 (Specific
+            // Reference) / 1 (Object ID) carry a FormID that needs
+            // remapping to global space; the rest pass through raw.
+            b"PTDT" if sub.data.len() >= 16 => {
+                let mut r = SubReader::new(&sub.data);
+                let target_type = r.u32_or_default();
+                let raw = r.u32_or_default();
+                let count_or_distance = r.i32_or_default();
+                let target = match target_type {
+                    0 => PackTargetKind::SpecificReference(remap_fid(raw, remap)),
+                    1 => PackTargetKind::ObjectId(remap_fid(raw, remap)),
+                    _ => PackTargetKind::Other(raw),
+                };
+                out.target = Some(PackTarget {
+                    target_type,
+                    target,
+                    count_or_distance,
                 });
             }
             // Package eligibility conditions (M42.2). A PACK carries a flat
@@ -1144,6 +1256,57 @@ mod tests {
         );
     }
 
+    fn ptdt(target_type: u32, raw: u32, count_or_distance: i32) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&target_type.to_le_bytes());
+        data.extend_from_slice(&raw.to_le_bytes());
+        data.extend_from_slice(&count_or_distance.to_le_bytes());
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // trailing Unknown f32, not read
+        data
+    }
+
+    #[test]
+    fn parse_pack_no_ptdt_leaves_target_none() {
+        let p = parse_pack(0x1, &[sub(b"EDID", b"NoTarget\0")], &None);
+        assert!(p.target.is_none());
+    }
+
+    #[test]
+    fn parse_pack_reads_ptdt_specific_reference() {
+        // Type 0 = Specific Reference, distance 256.
+        let data = ptdt(0, 0x0001_2345, 256);
+        let p = parse_pack(0x1, &[sub(b"PTDT", &data)], &None);
+        let target = p.target.expect("PTDT should populate target");
+        assert_eq!(target.target_type, 0);
+        assert_eq!(target.target, PackTargetKind::SpecificReference(0x0001_2345));
+        assert_eq!(target.count_or_distance, 256);
+    }
+
+    #[test]
+    fn parse_pack_reads_ptdt_object_id_and_other_types() {
+        let obj = ptdt(1, 0x0003_1111, 128);
+        let p = parse_pack(0x1, &[sub(b"PTDT", &obj)], &None);
+        assert_eq!(p.target.unwrap().target, PackTargetKind::ObjectId(0x0003_1111));
+
+        for target_type in [2u32, 3] {
+            let data = ptdt(target_type, 0x0009_9999, 0);
+            let p = parse_pack(0x1, &[sub(b"PTDT", &data)], &None);
+            assert_eq!(p.target.unwrap().target, PackTargetKind::Other(0x0009_9999));
+        }
+    }
+
+    #[test]
+    fn parse_pack_ptdt_specific_reference_remaps_form_id() {
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        let raw = (1u32 << 24) | 0x0000_5678; // mod_index 1 == master_slots.len() → self-reference
+        let data = ptdt(0, raw, 0);
+        let p = parse_pack(0x1, &[sub(b"PTDT", &data)], &Some(remap));
+        assert_eq!(
+            p.target.unwrap().target,
+            PackTargetKind::SpecificReference((2u32 << 24) | 0x0000_5678)
+        );
+    }
+
     #[test]
     fn pack_schedule_active_at_windows() {
         let bar = PackSchedule {
@@ -1308,22 +1471,65 @@ mod tests {
     #[test]
     fn active_package_is_sandbox_wander_and_travel_are_mutually_exclusive() {
         // A single winning PackRecord can only satisfy one procedure check
-        // — Sandbox, Wander, and Travel selection over the same package
-        // list/hour must never report true for more than one.
+        // — Sandbox, Wander, Travel, and Follow selection over the same
+        // package list/hour must never report true for more than one.
         let sandbox_only = pack(PROCEDURE_SANDBOX, None);
         assert!(active_package_is_sandbox([&sandbox_only], 10.0, |_| true));
         assert!(!active_package_is_wander([&sandbox_only], 10.0, |_| true));
         assert!(!active_package_is_travel([&sandbox_only], 10.0, |_| true));
+        assert!(!active_package_is_follow([&sandbox_only], 10.0, |_| true));
 
         let wander_only = pack(PROCEDURE_WANDER, None);
         assert!(!active_package_is_sandbox([&wander_only], 10.0, |_| true));
         assert!(active_package_is_wander([&wander_only], 10.0, |_| true));
         assert!(!active_package_is_travel([&wander_only], 10.0, |_| true));
+        assert!(!active_package_is_follow([&wander_only], 10.0, |_| true));
 
         let travel_only = pack(PROCEDURE_TRAVEL, None);
         assert!(!active_package_is_sandbox([&travel_only], 10.0, |_| true));
         assert!(!active_package_is_wander([&travel_only], 10.0, |_| true));
         assert!(active_package_is_travel([&travel_only], 10.0, |_| true));
+        assert!(!active_package_is_follow([&travel_only], 10.0, |_| true));
+
+        let follow_only = pack(PROCEDURE_FOLLOW, None);
+        assert!(!active_package_is_sandbox([&follow_only], 10.0, |_| true));
+        assert!(!active_package_is_wander([&follow_only], 10.0, |_| true));
+        assert!(!active_package_is_travel([&follow_only], 10.0, |_| true));
+        assert!(active_package_is_follow([&follow_only], 10.0, |_| true));
+    }
+
+    #[test]
+    fn active_package_is_follow_selector_respects_priority_and_schedule() {
+        // Mirrors active_package_is_travel_selector_respects_priority_and_schedule
+        // with Follow swapped in. Bartender uses Escort (2) here — 1 is now
+        // Follow itself, so it can't stand in as the generic placeholder.
+        let bartender = pack(2, sched(Some(8), 12)); // Escort/AtBar 08–20
+        let evening = pack(PROCEDURE_FOLLOW, sched(Some(20), 2)); // follow 20–22
+        assert!(!active_package_is_follow([&bartender, &evening], 10.0, |_| true));
+        assert!(active_package_is_follow([&bartender, &evening], 21.0, |_| true));
+        let sleep = pack(4, sched(Some(22), 10));
+        let anytime_follow = pack(PROCEDURE_FOLLOW, None);
+        assert!(active_package_is_follow([&sleep, &anytime_follow], 10.0, |_| true));
+        assert!(!active_package_is_follow(
+            std::iter::empty::<&PackRecord>(),
+            10.0,
+            |_| true
+        ));
+    }
+
+    #[test]
+    fn active_package_is_follow_selector_gates_on_conditions() {
+        let mut gated = pack(PROCEDURE_FOLLOW, None);
+        gated.editor_id = "GatedFollow".into();
+        gated.conditions = vec![Condition {
+            function_index: 72,
+            ..Default::default()
+        }];
+        let fallback = pack(PROCEDURE_FOLLOW, None);
+        let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
+        assert!(active_package_is_follow([&gated, &fallback], 10.0, cond_met));
+        assert!(!active_package_is_follow([&gated], 10.0, cond_met));
+        assert!(active_package_is_follow([&gated], 10.0, |_| true));
     }
 
     #[test]

@@ -415,6 +415,13 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::TravelState>();
     world.register::<byroredux_core::ecs::components::Traveled>();
 
+    // M42.5 — pre-register the Follow marker + runtime-state storages so
+    // `follow_system`'s `query::<FollowBehavior>()` skip-scan and
+    // `query_mut::<FollowState>().insert(...)` resolve even before the
+    // first following actor spawns.
+    world.register::<byroredux_core::ecs::components::FollowBehavior>();
+    world.register::<byroredux_core::ecs::components::FollowState>();
+
     // Register scripting component storages.
     byroredux_scripting::register(&mut world);
 
@@ -721,6 +728,20 @@ pub(crate) fn build_scheduler() -> Scheduler {
     if std::env::var_os("BYRO_TRAVEL").is_some() {
         log::info!("BYRO_TRAVEL set — enabling NPC travel locomotion (M42.4 v0)");
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::travel_system);
+    }
+    // M42.5 — Follow locomotion. GATED OFF by default (opt in with
+    // `BYRO_FOLLOW=1`), mirroring `BYRO_TRAVEL`/`BYRO_WANDER` above.
+    // Shares the same `step_toward` locomotion primitive, but tracks a
+    // *live* target's position every tick instead of a frozen destination
+    // (Travel) or a hash-picked point (Wander) — see `systems::follow`
+    // module docs for the PTDT target-resolution mechanism and the full
+    // v0-scope list. Same exclusive PostUpdate lane, after transform
+    // propagation; Sandbox/Wander/Travel/Follow never touch the same
+    // actor (a single winning `PackRecord` per NPC), so relative order
+    // among the four doesn't matter.
+    if std::env::var_os("BYRO_FOLLOW").is_some() {
+        log::info!("BYRO_FOLLOW set — enabling NPC follow locomotion (M42.5 v0)");
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::follow_system);
     }
     // PostUpdate ordering contract (#1375 invariant pin):
     //   1. transform_propagation — BFS GlobalTransform composition

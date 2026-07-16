@@ -1531,6 +1531,33 @@ pub fn spawn_npc_entity(
         _ => None,
     });
 
+    // M42.5: Follow behavior, same reads as Sandbox/Wander/Travel above.
+    // Follow needs `PTDT` (target data) rather than `PLDT` (location) —
+    // decoded for the first time in this codebase for this procedure.
+    // Only `SpecificReference`/`ObjectId` PTDT target types carry a
+    // FormID `resolve_entity_by_global_form_id` can resolve; `Other`
+    // leaves `follow_target_form_id` `None`, and (unlike Travel) there's
+    // no hash-picked fallback — a Follow package with no resolvable
+    // target simply never moves (see `follow.rs`'s module docs).
+    let runs_follow = byroredux_plugin::esm::records::active_package_is_follow(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    );
+    let follow_pack_target = byroredux_plugin::esm::records::active_follow_target(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    );
+    let follow_distance = follow_pack_target
+        .map(|t| t.count_or_distance as f32)
+        .filter(|d| *d > 0.0);
+    let follow_target_form_id = follow_pack_target.and_then(|t| match t.target {
+        byroredux_plugin::esm::records::PackTargetKind::SpecificReference(fid)
+        | byroredux_plugin::esm::records::PackTargetKind::ObjectId(fid) => Some(fid),
+        byroredux_plugin::esm::records::PackTargetKind::Other(_) => None,
+    });
+
     if runs_sandbox {
         // Deliberately NOT resolving `PackLocationTarget::NearReference` to
         // a live entity's position for the search *center* — investigated
@@ -1573,6 +1600,15 @@ pub fn spawn_npc_entity(
                 radius: travel_radius,
                 target_form_id: travel_target_form_id,
                 form_id: npc.form_id,
+            },
+        );
+    }
+    if runs_follow {
+        world.insert(
+            placement_root,
+            byroredux_core::ecs::components::FollowBehavior {
+                target_form_id: follow_target_form_id,
+                follow_distance,
             },
         );
     }

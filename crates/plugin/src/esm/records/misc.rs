@@ -35,12 +35,12 @@ mod water;
 mod world;
 
 pub use ai::{
-    active_package_is_sandbox, active_package_is_travel, active_package_is_wander,
-    active_sandbox_location, active_travel_location, active_wander_location, parse_csty,
-    parse_dial, parse_idle,
+    active_follow_target, active_package_is_follow, active_package_is_sandbox,
+    active_package_is_travel, active_package_is_wander, active_sandbox_location,
+    active_travel_location, active_wander_location, parse_csty, parse_dial, parse_idle,
     parse_info, parse_mesg, parse_pack, parse_qust, CstyRecord, DialRecord, IdleRecord,
     InfoRecord, MesgRecord, PackLocation, PackLocationTarget, PackRecord, PackSchedule,
-    QustRecord,
+    PackTarget, PackTargetKind, QustRecord,
 };
 pub use character::{parse_eyes, parse_hair, parse_hdpt, EyesRecord, HairRecord, HdptRecord};
 pub use effects::{

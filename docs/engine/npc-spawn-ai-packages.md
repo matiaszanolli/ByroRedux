@@ -6,7 +6,7 @@ Fourth in the cross-cutting series alongside [Pipeline Overview](pipeline-overvi
 record from cell-load spawn through AI package selection to an actor
 actually running behavior — and it's the most incomplete of the four.
 Say that up front rather than let the prose imply otherwise: of the
-~17-value FO3/FNV package-procedure enum, **exactly three procedures
+~17-value FO3/FNV package-procedure enum, **exactly four procedures
 execute anything at runtime.** This doc documents what's real, not
 what's planned.
 
@@ -33,6 +33,12 @@ what's planned.
 > rather than duplicated) and the first procedure to attempt resolving a
 > PLDT target to a real live entity's position instead of only ever
 > approximating with the actor's own spawn position.
+>
+> **Update (M42.5, 2026-07-16).** Follow (procedure type 1) now has a
+> runtime too — §8 below. It required decoding `PTDT` for the first time
+> in this codebase (previously 0% parsed) and is the first procedure to
+> track a *live* target position every tick rather than a frozen
+> destination or hash-picked point.
 
 ## 1. Spawn trigger: NPC_ vs. static
 
@@ -59,21 +65,25 @@ there. Components stamped on the placement root: `Name`,
 `FactionRanks`, `ActorValues` (via CHARAL's `derive_npc_actor_values` —
 see [CHARAL](charal.md)), `CharacterLevel`/`Background`/`Perks`,
 `Inventory` + `EquipmentSlots`, `AnimationPlayer` (idle clip, kf-era
-only) — and, when the actor's packages include a Sandbox-, Wander-, or
-Travel-type entry, `SandboxBehavior`, `WanderBehavior`, or
-`TravelBehavior` respectively (§4).
+only) — and, when the actor's packages include a Sandbox-, Wander-,
+Travel-, or Follow-type entry, `SandboxBehavior`, `WanderBehavior`,
+`TravelBehavior`, or `FollowBehavior` respectively (§4).
 
 ## 3. PACK record parsing
 
 `crates/plugin/src/esm/records/mod.rs:587` dispatches `b"PACK"` groups
 to `parse_pack` (`crates/plugin/src/esm/records/misc/ai.rs:178`),
 populating `EsmIndex.packages: HashMap<u32, PackRecord>`. `PackRecord`
-(`ai.rs:20`) decodes three sub-records: `PKDT` (flags +
+(`ai.rs:20`) decodes four sub-records: `PKDT` (flags +
 `procedure_type`, a **single byte** — a pre-#446 bug had read this as a
 polluted `u32`), `PSDT` (`PackSchedule { start_hour, duration_hours }`),
-and `PLDT` (`PackLocation { location_type, target, radius }` — only 3
-of the location-type variants carry a resolvable FormID). `PTDT`/`PTD2`
-(target data) is **not parsed at all**. `NpcRecord.ai_packages: Vec<u32>`
+`PLDT` (`PackLocation { location_type, target, radius }` — only 3
+of the location-type variants carry a resolvable FormID), and `PTDT`
+(`PackTarget { target_type, target, count_or_distance }`, M42.5 — only 2
+of the 4 target-type variants carry a resolvable FormID). `PTD2` (a
+second target, for two-target procedures like Escort-someone-to-someone)
+is **not parsed** — no implemented procedure needs it yet.
+`NpcRecord.ai_packages: Vec<u32>`
 (`crates/plugin/src/esm/records/actor.rs:190-191`, from `PKID`
 sub-records) holds the NPC's package list in priority order.
 
@@ -105,17 +115,18 @@ to be at that instant. There is no per-frame or per-hour
 re-evaluation — an NPC picked for a 20:00-22:00 sandbox slot keeps that
 `SandboxBehavior` tag forever, regardless of in-game time passing. Of
 the FO3/FNV procedure enum's values, only `PROCEDURE_SANDBOX = 12`
-(`ai.rs`), `PROCEDURE_WANDER = 5` (`ai.rs`, M42.3), and
-`PROCEDURE_TRAVEL = 6` (`ai.rs`, M42.4) have a name and a consumer; the
-other ~14
-(Find/Follow/Escort/Eat/Sleep/Accompany/UseItemAt/Ambush/
+(`ai.rs`), `PROCEDURE_WANDER = 5` (`ai.rs`, M42.3),
+`PROCEDURE_TRAVEL = 6` (`ai.rs`, M42.4), and `PROCEDURE_FOLLOW = 1`
+(`ai.rs`, M42.5) have a name and a consumer; the other ~13
+(Find/Escort/Eat/Sleep/Accompany/UseItemAt/Ambush/
 FleeNotCombat/CastMagic/Patrol/Guard/Dialogue/UseWeapon) are captured
 as a raw integer and dispatched nowhere. `active_package_is_sandbox`/
 `active_sandbox_location`, `active_package_is_wander`/
-`active_wander_location`, and `active_package_is_travel`/
-`active_travel_location` are independent mirror triples — since an
+`active_wander_location`, `active_package_is_travel`/
+`active_travel_location`, and `active_package_is_follow`/
+`active_follow_target` are independent mirror quadruples — since an
 NPC's active package is always a single winning `PackRecord`
-(`active_package`'s `find`), the three checks are naturally mutually
+(`active_package`'s `find`), the four checks are naturally mutually
 exclusive per actor with no extra guard logic needed.
 
 ## 5. Sandbox seating
@@ -248,20 +259,64 @@ target resolution attempted only for `NearReference`, not
 `InCell`/`ObjectId` (the latter means "nearest instance of this *base*
 form," a different, unimplemented lookup).
 
+## 8. Follow locomotion (M42.5)
+
+The third consumer of `step_toward`, and the first procedure requiring
+`PTDT` ("Target Data") — a sub-record that was **0% parsed** anywhere in
+this codebase before this milestone. Layout verified against the same
+xEdit-derived reference (`tes5edit.github.io/fopdoc`) already cited for
+PLDT/PSDT, cross-checked against those two *already-implemented and
+tested* layouts before trusting it for a brand-new sub-record: fetched
+PSDT and PLDT layouts both matched this codebase's existing, tested
+decode exactly, which is what made the PTDT fetch trustworthy despite
+being new. New `PackTarget`/`PackTargetKind` types
+(`crates/plugin/src/esm/records/misc/ai.rs`) mirror
+`PackLocation`/`PackLocationTarget`'s exact shape — only `SpecificReference`/
+`ObjectId` target types get named, resolvable-FormID variants; the rest
+fold into `Other`. `PTD2` (a second target) is not decoded — no
+implemented procedure needs one yet.
+
+Follow's defining difference from both Wander and Travel: it's the first
+procedure to track a **live** target rather than a fixed point. Wired at
+`npc_spawn.rs` alongside Sandbox/Wander/Travel: `active_package_is_follow`
++ `active_follow_target` gate a `FollowBehavior` insert
+(`crates/core/src/ecs/components/follow.rs`), capturing PTDT's target
+FormID (only for `SpecificReference`/`ObjectId`) and its
+`count_or_distance` field (interpreted here as a stand-off distance).
+`follow_system` (`byroredux/src/systems/follow.rs`, opt-in via
+`BYRO_FOLLOW=1`) resolves the target FormID to a live `EntityId` exactly
+once, lazily, on its own first tick per actor — via the same
+`resolve_entity_by_global_form_id` Travel uses — but then, unlike
+`TravelState`'s frozen destination, **re-reads that entity's
+`GlobalTransform` fresh every tick**. A moving target is actually
+chased, not walked toward where it once was. If resolution fails (no
+target FormID, or the FormID doesn't resolve to a live entity), the
+actor simply never moves — v0 has **no fallback wandering**, since
+silently substituting different movement would be an undocumented
+behavior swap; a Follow package with nothing to follow has nothing
+meaningful to do.
+
+v0 scope: no animation-clip swap (same gap as Wander/Travel); no
+per-frame package re-evaluation; target-*entity* resolution happens only
+once (a target that spawns late, or despawns after resolution, is never
+retried); no combat/dialogue/relationship gating beyond straight-line
+stand-off distance.
+
 ## What's not covered / honest state
 
-- **Three procedures of ~17 execute.** Sandbox, Wander (M42.3), and
-  Travel (M42.4). No Follow/Escort/Guard/Patrol/etc. runtime exists
-  anywhere in the engine.
+- **Four procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
+  (M42.4), and Follow (M42.5). No Escort/Guard/Patrol/etc. runtime
+  exists anywhere in the engine.
 - **No general AI tick.** `byroredux/src/systems/` has no `ai.rs` /
-  `behavior.rs` / `npc.rs`; `sandbox_seat_system`, `wander_system`, and
-  `travel_system` are the only AI-adjacent per-frame systems, and none
-  is part of the default scheduler — they require `BYRO_SANDBOX_SIT=1` /
-  `BYRO_WANDER=1` / `BYRO_TRAVEL=1` respectively.
+  `behavior.rs` / `npc.rs`; `sandbox_seat_system`, `wander_system`,
+  `travel_system`, and `follow_system` are the only AI-adjacent
+  per-frame systems, and none is part of the default scheduler — they
+  require `BYRO_SANDBOX_SIT=1` / `BYRO_WANDER=1` / `BYRO_TRAVEL=1` /
+  `BYRO_FOLLOW=1` respectively.
 - **Selection is spawn-time-only.** No package re-evaluation as game
   time advances — `CTDA` conditions *are* now evaluated (M42.2), but
-  only once, against the game hour and world state at spawn. `PTDT`/
-  `PTD2` target data still isn't parsed.
+  only once, against the game hour and world state at spawn. `PTD2`
+  (a second target) still isn't parsed.
 - **Sit-enter clip coverage is FNV/FO3-only** — `None` for Oblivion
   (deferred), and for Skyrim+/FO4+/FO76/Starfield, whose actors animate
   through Havok `.hkx`, not `.kf`, so this whole mechanism doesn't apply
@@ -270,6 +325,7 @@ form," a different, unimplemented lookup).
 This is the M42 *bootstrap*, by its own module docs' framing — "v0 is
 sit in the nearest free chair, once" for Sandbox, "v0 is walk to a
 random point, pause, repeat" for Wander, "v0 is walk to a destination
-once, stop" for Travel. Anyone building on this pipeline should treat
+once, stop" for Travel, "v0 is chase a live target, hold a stand-off
+distance" for Follow. Anyone building on this pipeline should treat
 package selection and procedure dispatch as a proof of concept, not a
 general AI system.
