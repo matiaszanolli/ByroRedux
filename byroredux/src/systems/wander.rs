@@ -47,6 +47,7 @@
 //!   camera placement), not through the physics simulation itself — an
 //!   actor can't be pushed, blocked, or fall.
 
+use super::locomotion::step_toward;
 use byroredux_core::ecs::components::{Transform, WanderBehavior, WanderPhase, WanderState};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
@@ -58,30 +59,9 @@ use byroredux_core::math::{Quat, Vec3};
 /// radius" defaults for the same class of FNV-interior/yard-scale content.
 const WANDER_DEFAULT_RADIUS: f32 = 512.0;
 
-/// Walk speed (world units/second). Engine default — no authored
-/// equivalent exists in PACK data, so this is a plain constant subject to
-/// tuning, not a value derived from game content.
-const WANDER_WALK_SPEED: f32 = 100.0;
-
-/// Distance (world units) within which an actor is considered to have
-/// arrived at its target and switches to `Paused`.
-const WANDER_ARRIVAL_EPSILON: f32 = 8.0;
-
 /// Pause duration range (seconds) between walks. Engine default.
 const WANDER_PAUSE_MIN: f32 = 3.0;
 const WANDER_PAUSE_MAX: f32 = 8.0;
-
-/// Facing turn rate (fraction of the remaining turn closed per second,
-/// clamped to `[0,1]` per tick via `(WANDER_TURN_RATE * dt).clamp(0.0, 1.0)`
-/// as the `Quat::slerp` interpolation factor). Engine default.
-const WANDER_TURN_RATE: f32 = 4.0;
-
-/// Downward-raycast cast distance (world units) for ground-snapping —
-/// generous enough to cover a full cell's vertical extent.
-const WANDER_GROUND_RAY_MAX_DISTANCE: f32 = 4096.0;
-/// Raycast origin is lifted this far above the actor's last known Y
-/// before casting down, so walking uphill doesn't cast from underground.
-const WANDER_GROUND_RAY_UP_OFFSET: f32 = 256.0;
 
 /// SplitMix64-style avalanche — same core as `npc_spawn.rs::idle_desync`,
 /// extracted as a standalone step since Wander needs more than the two
@@ -114,7 +94,11 @@ fn unit_frac(h: u64) -> f32 {
 /// Pick a new wander target: a random point within `radius` of `home` on
 /// the XZ plane (Y is ground-snapped independently by the caller). Pure —
 /// unit-tested directly, mirroring `idle_desync`'s test style.
-fn pick_wander_target(home: Vec3, radius: f32, form_id: u32, pick_count: u32) -> Vec3 {
+///
+/// `pub(crate)` — `travel_system` (M42.4) reuses this directly (always
+/// with `pick_count = 0`, since Travel only picks once) as its
+/// no-target-resolved fallback, rather than duplicating the hash logic.
+pub(crate) fn pick_wander_target(home: Vec3, radius: f32, form_id: u32, pick_count: u32) -> Vec3 {
     let angle = unit_frac(wander_seed(form_id, pick_count, 0)) * std::f32::consts::TAU;
     let dist = unit_frac(wander_seed(form_id, pick_count, 1)) * radius;
     home + Vec3::new(angle.cos() * dist, 0.0, angle.sin() * dist)
@@ -205,37 +189,14 @@ pub fn wander_system(world: &World, dt: f32) {
                     // (which was only ever a copy of `home.y` at pick time
                     // and drifts from real terrain on sloped ground).
                     let target_xz = Vec3::new(state.target.x, current.y, state.target.z);
-                    let mut new_pos = current.move_towards(target_xz, WANDER_WALK_SPEED * dt);
-
-                    if let Some(pw) = physics.as_ref() {
-                        let ray_origin = Vec3::new(
-                            new_pos.x,
-                            current.y + WANDER_GROUND_RAY_UP_OFFSET,
-                            new_pos.z,
-                        );
-                        if let Some(ground_y) =
-                            pw.cast_ray_down(ray_origin, WANDER_GROUND_RAY_MAX_DISTANCE)
-                        {
-                            new_pos.y = ground_y;
-                        }
-                        // No collider hit (e.g. a synthetic test World, or a
-                        // stale query pipeline) → keep the XZ-moved Y as-is
-                        // rather than snapping to a wrong height.
-                    }
-
-                    let delta = Vec3::new(target_xz.x - current.x, 0.0, target_xz.z - current.z);
-                    let rotation = if delta.length_squared() > 1e-6 {
-                        let desired_yaw = delta.x.atan2(delta.z);
-                        let desired_rot = Quat::from_rotation_y(desired_yaw);
-                        let t = (WANDER_TURN_RATE * dt).clamp(0.0, 1.0);
-                        Some(transform.rotation.slerp(desired_rot, t))
-                    } else {
-                        None
-                    };
+                    let (new_pos, rotation) =
+                        step_toward(current, transform.rotation, target_xz, dt, physics.as_deref());
 
                     let horiz_delta =
                         Vec3::new(new_pos.x - state.target.x, 0.0, new_pos.z - state.target.z);
-                    if horiz_delta.length_squared() <= WANDER_ARRIVAL_EPSILON * WANDER_ARRIVAL_EPSILON
+                    if horiz_delta.length_squared()
+                        <= super::locomotion::LOCOMOTION_ARRIVAL_EPSILON
+                            * super::locomotion::LOCOMOTION_ARRIVAL_EPSILON
                     {
                         state.phase = WanderPhase::Paused {
                             remaining: pick_pause_duration(behavior.form_id, state.pick_count),

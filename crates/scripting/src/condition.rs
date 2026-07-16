@@ -319,7 +319,11 @@ pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionC
 /// resolves to a pair whose `local` equals `form_id` (the cell loader stores
 /// the full global FormID as the `LocalFormId`). O(n) over entities carrying
 /// a `FormIdComponent`, which is fine for the rare condition-eval path.
-fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<EntityId> {
+/// Find the live entity whose `FormIdComponent` resolves (through the
+/// `FormIdPool`) to `form_id` in global-plugin space. `O(n)` over every
+/// `FormIdComponent`-tagged entity — fine for the occasional resolution
+/// this and `travel_system` (M42.4) perform, not a per-frame hot path.
+pub fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<EntityId> {
     use byroredux_core::ecs::components::FormIdComponent;
     use byroredux_core::form_id::FormIdPool;
     let pool = world.try_resource::<FormIdPool>()?;

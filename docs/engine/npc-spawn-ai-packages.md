@@ -6,7 +6,7 @@ Fourth in the cross-cutting series alongside [Pipeline Overview](pipeline-overvi
 record from cell-load spawn through AI package selection to an actor
 actually running behavior — and it's the most incomplete of the four.
 Say that up front rather than let the prose imply otherwise: of the
-~17-value FO3/FNV package-procedure enum, **exactly two procedures
+~17-value FO3/FNV package-procedure enum, **exactly three procedures
 execute anything at runtime.** This doc documents what's real, not
 what's planned.
 
@@ -26,6 +26,13 @@ what's planned.
 > any kind (Sandbox never needed one; it teleports onto a seat), and the
 > pattern it establishes is the seam future procedures (Follow, Travel,
 > Patrol, Guard, …) build on.
+>
+> **Update (M42.4, 2026-07-16).** Travel (procedure type 6) now has a
+> runtime too — §7 below. It's the second consumer of Wander's
+> locomotion primitive (extracted into a shared `step_toward` helper
+> rather than duplicated) and the first procedure to attempt resolving a
+> PLDT target to a real live entity's position instead of only ever
+> approximating with the actor's own spawn position.
 
 ## 1. Spawn trigger: NPC_ vs. static
 
@@ -52,9 +59,9 @@ there. Components stamped on the placement root: `Name`,
 `FactionRanks`, `ActorValues` (via CHARAL's `derive_npc_actor_values` —
 see [CHARAL](charal.md)), `CharacterLevel`/`Background`/`Perks`,
 `Inventory` + `EquipmentSlots`, `AnimationPlayer` (idle clip, kf-era
-only) — and, when the actor's packages include a Sandbox- or
-Wander-type entry, `SandboxBehavior` or `WanderBehavior` respectively
-(§4).
+only) — and, when the actor's packages include a Sandbox-, Wander-, or
+Travel-type entry, `SandboxBehavior`, `WanderBehavior`, or
+`TravelBehavior` respectively (§4).
 
 ## 3. PACK record parsing
 
@@ -98,15 +105,17 @@ to be at that instant. There is no per-frame or per-hour
 re-evaluation — an NPC picked for a 20:00-22:00 sandbox slot keeps that
 `SandboxBehavior` tag forever, regardless of in-game time passing. Of
 the FO3/FNV procedure enum's values, only `PROCEDURE_SANDBOX = 12`
-(`ai.rs`) and `PROCEDURE_WANDER = 5` (`ai.rs`, M42.3) have a name and a
-consumer; the other ~15
-(Find/Follow/Escort/Eat/Sleep/Travel/Accompany/UseItemAt/Ambush/
+(`ai.rs`), `PROCEDURE_WANDER = 5` (`ai.rs`, M42.3), and
+`PROCEDURE_TRAVEL = 6` (`ai.rs`, M42.4) have a name and a consumer; the
+other ~14
+(Find/Follow/Escort/Eat/Sleep/Accompany/UseItemAt/Ambush/
 FleeNotCombat/CastMagic/Patrol/Guard/Dialogue/UseWeapon) are captured
 as a raw integer and dispatched nowhere. `active_package_is_sandbox`/
-`active_sandbox_location` and `active_package_is_wander`/
-`active_wander_location` are independent mirror pairs — since an NPC's
-active package is always a single winning `PackRecord`
-(`active_package`'s `find`), the two checks are naturally mutually
+`active_sandbox_location`, `active_package_is_wander`/
+`active_wander_location`, and `active_package_is_travel`/
+`active_travel_location` are independent mirror triples — since an
+NPC's active package is always a single winning `PackRecord`
+(`active_package`'s `find`), the three checks are naturally mutually
 exclusive per actor with no extra guard logic needed.
 
 ## 5. Sandbox seating
@@ -184,16 +193,71 @@ guessed at); no target-reference resolution (center is always the
 actor's own position, same call Sandbox made and for the same reason);
 no per-frame package re-evaluation (same limitation as Sandbox).
 
+## 7. Travel locomotion (M42.4)
+
+The second consumer of Wander's locomotion primitive — the per-tick
+straight-line move (XZ `Vec3::move_towards`, ground-snap via
+`PhysicsWorld::cast_ray_down`, turn-to-face via `Quat::slerp`) was
+extracted from `wander_system` into `byroredux/src/systems/locomotion.rs`
+(`step_toward`) once a second procedure needed the exact same math,
+rather than copy-pasting it. Wired at `npc_spawn.rs` alongside
+Sandbox/Wander: `active_package_is_travel` + `active_travel_location`
+gate a `TravelBehavior` insert
+(`crates/core/src/ecs/components/travel.rs`), reusing the same
+`game_hour`/`condition_met` closure.
+
+Travel differs from Wander in what it's *for*: Wander repeats
+indefinitely and only needs a search center, so "actor's own spawn
+position" is a legitimate v0 approximation; Travel walks **once** to a
+destination and stops, so a real destination actually matters. To that
+end, `travel_system` (`byroredux/src/systems/travel.rs`, opt-in via
+`BYRO_TRAVEL=1`, same gating convention as `BYRO_WANDER`) is the first
+procedure to attempt resolving a PLDT target to a **live entity's
+position** rather than only ever falling back to the actor's own spot:
+on its own first tick per actor (i.e. *after* the whole cell has
+finished loading — a strictly better vantage point than a spawn-time
+attempt, since it sidesteps the same-pass spawn-ordering half of the
+2026-07-14 Sandbox investigation's finding), it calls
+`byroredux_scripting::condition::resolve_entity_by_global_form_id`
+(made `pub` for this — it already existed, built for M47.1's
+`GetDistance` condition function) against the package's
+`TravelBehavior::target_form_id`. That field is only ever populated
+when the PLDT location type is `NearReference` — the one type
+`resolve_entity_by_global_form_id` can resolve directly (a specific
+instance's FormID); `InCell`/`ObjectId`/`Other` location types leave it
+`None`. On any resolution miss (including those other location types),
+`travel_system` falls back to `wander_system::pick_wander_target`
+(reused directly, not duplicated) — a hash-picked point within
+`TravelBehavior::radius` of the actor's own spawn position, Wander's
+same v0 approximation. It still won't resolve most targets: the same
+2026-07-14 investigation found only ~12% of `NearReference` targets
+resolve to anything spawnable at all (most are off-cell, or the
+hardcoded XMarker family `cell_loader` never spawns) — this system
+inherits that ceiling, just from a better vantage point.
+
+Once resolved or picked, the destination is frozen in `TravelState` —
+no re-resolution, so a moving target isn't followed (that would be
+Follow's job, a different, unimplemented procedure). On arrival,
+`travel_system` tags the actor `Traveled` (a terminal one-shot marker,
+mirroring `Seated`'s role for Sandbox) and stops processing it.
+
+v0 scope, mirroring Wander's own documented approximations: no
+animation-clip swap (same no-verified-walk-`.kf`-path gap); no
+per-frame package re-evaluation (same limitation as Sandbox/Wander);
+target resolution attempted only for `NearReference`, not
+`InCell`/`ObjectId` (the latter means "nearest instance of this *base*
+form," a different, unimplemented lookup).
+
 ## What's not covered / honest state
 
-- **Two procedures of ~17 execute.** Sandbox and Wander (M42.3). No
-  Follow/Escort/Guard/Patrol/Travel/etc. runtime exists anywhere in the
-  engine.
+- **Three procedures of ~17 execute.** Sandbox, Wander (M42.3), and
+  Travel (M42.4). No Follow/Escort/Guard/Patrol/etc. runtime exists
+  anywhere in the engine.
 - **No general AI tick.** `byroredux/src/systems/` has no `ai.rs` /
-  `behavior.rs` / `npc.rs`; `sandbox_seat_system` and `wander_system`
-  are the only AI-adjacent per-frame systems, and neither is part of
-  the default scheduler — they require `BYRO_SANDBOX_SIT=1` /
-  `BYRO_WANDER=1` respectively.
+  `behavior.rs` / `npc.rs`; `sandbox_seat_system`, `wander_system`, and
+  `travel_system` are the only AI-adjacent per-frame systems, and none
+  is part of the default scheduler — they require `BYRO_SANDBOX_SIT=1` /
+  `BYRO_WANDER=1` / `BYRO_TRAVEL=1` respectively.
 - **Selection is spawn-time-only.** No package re-evaluation as game
   time advances — `CTDA` conditions *are* now evaluated (M42.2), but
   only once, against the game hour and world state at spawn. `PTDT`/
@@ -205,6 +269,7 @@ no per-frame package re-evaluation (same limitation as Sandbox).
 
 This is the M42 *bootstrap*, by its own module docs' framing — "v0 is
 sit in the nearest free chair, once" for Sandbox, "v0 is walk to a
-random point, pause, repeat" for Wander. Anyone building on this
-pipeline should treat package selection and procedure dispatch as a
-proof of concept, not a general AI system.
+random point, pause, repeat" for Wander, "v0 is walk to a destination
+once, stop" for Travel. Anyone building on this pipeline should treat
+package selection and procedure dispatch as a proof of concept, not a
+general AI system.

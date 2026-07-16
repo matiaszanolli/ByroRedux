@@ -98,6 +98,16 @@ pub const PROCEDURE_SANDBOX: u32 = 12;
 /// walk-to-point locomotion (no pathing/NAVM). See M42.
 pub const PROCEDURE_WANDER: u32 = 5;
 
+/// FO3/FNV package procedure-type index for `Travel` — walk once to the
+/// package's PLDT location and stop (no repeat, unlike Wander). Second
+/// procedure to reuse `wander_system`'s locomotion primitive (M42.4, via
+/// the shared `locomotion::step_toward` helper), and the first to attempt
+/// resolving its PLDT target to a real live entity's position (a
+/// `NearReference` FormID, via `resolve_entity_by_global_form_id`) rather
+/// than only ever approximating with the actor's own spawn position. See
+/// M42.
+pub const PROCEDURE_TRAVEL: u32 = 6;
+
 /// PACK schedule window from PSDT (FO3/FNV). `start_hour = None` when the raw
 /// `time` byte is -1 (0xFF) = "any time". `duration_hours` is the PSDT
 /// duration (in hours for FO3/FNV — verified against FalloutNV.esm: a
@@ -138,6 +148,12 @@ impl PackRecord {
     /// points within a radius, pause, repeat).
     pub fn is_wander(&self) -> bool {
         self.procedure_type == PROCEDURE_WANDER
+    }
+
+    /// True when this package's procedure is `Travel` (walk once to the
+    /// PLDT location and stop).
+    pub fn is_travel(&self) -> bool {
+        self.procedure_type == PROCEDURE_TRAVEL
     }
 
     /// Whether this package's schedule includes `hour`. No PSDT → always
@@ -227,6 +243,35 @@ pub fn active_wander_location<'a>(
 ) -> Option<PackLocation> {
     active_package(packages, hour, condition_met)
         .filter(|pk| pk.is_wander())
+        .and_then(|pk| pk.location)
+}
+
+/// Whether an NPC's active package at `hour` (see [`active_package`]) is a
+/// Travel package. Mirrors [`active_package_is_wander`]. `condition_met`
+/// injects M47.1 CTDA evaluation; pass `|_| true` for schedule-only.
+pub fn active_package_is_travel<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> bool {
+    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_travel)
+}
+
+/// The PLDT location of an NPC's active package at `hour` (see
+/// [`active_package`]), when that package is Travel-type. `None` when the
+/// active package isn't Travel, carries no PLDT, or nothing is scheduled
+/// active. `travel_system` uses `PackLocation.radius` as its
+/// no-target-resolved fallback pick radius, and `PackLocation.target`
+/// (when it's `NearReference`) as the FormID to resolve to a live
+/// destination. Mirrors [`active_wander_location`]. `condition_met`
+/// injects M47.1 CTDA evaluation; pass `|_| true` for schedule-only.
+pub fn active_travel_location<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> Option<PackLocation> {
+    active_package(packages, hour, condition_met)
+        .filter(|pk| pk.is_travel())
         .and_then(|pk| pk.location)
 }
 
@@ -1218,6 +1263,67 @@ mod tests {
         let wander_only = pack(PROCEDURE_WANDER, None);
         assert!(!active_package_is_sandbox([&wander_only], 10.0, |_| true));
         assert!(active_package_is_wander([&wander_only], 10.0, |_| true));
+    }
+
+    #[test]
+    fn active_package_is_travel_selector_respects_priority_and_schedule() {
+        // Mirrors active_package_is_wander_selector_respects_priority_and_schedule
+        // with Travel swapped in for Wander. Bartender uses Follow (1) here
+        // — procedure 6 is now Travel itself, so it can't stand in as the
+        // generic "some other procedure" placeholder anymore.
+        let bartender = pack(1, sched(Some(8), 12)); // Follow/AtBar 08–20
+        let evening = pack(PROCEDURE_TRAVEL, sched(Some(20), 2)); // travel 20–22
+        // 10:00 → bartender active → NOT treated as travel.
+        assert!(!active_package_is_travel([&bartender, &evening], 10.0, |_| true));
+        // 21:00 → bartender off-shift, evening travel active.
+        assert!(active_package_is_travel([&bartender, &evening], 21.0, |_| true));
+        // Any-time travel behind an inactive sleep package → travel.
+        let sleep = pack(4, sched(Some(22), 10));
+        let anytime_travel = pack(PROCEDURE_TRAVEL, None);
+        assert!(active_package_is_travel([&sleep, &anytime_travel], 10.0, |_| true));
+        // No resolvable packages → not travel.
+        assert!(!active_package_is_travel(
+            std::iter::empty::<&PackRecord>(),
+            10.0,
+            |_| true
+        ));
+    }
+
+    #[test]
+    fn active_package_is_travel_selector_gates_on_conditions() {
+        // Mirrors active_package_is_wander_selector_gates_on_conditions with Travel.
+        let mut gated = pack(PROCEDURE_TRAVEL, None);
+        gated.editor_id = "GatedTravel".into();
+        gated.conditions = vec![Condition {
+            function_index: 72, // GetIsID (arbitrary — the predicate decides)
+            ..Default::default()
+        }];
+        let fallback = pack(PROCEDURE_TRAVEL, None); // no conditions
+        let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
+        assert!(active_package_is_travel([&gated, &fallback], 10.0, cond_met));
+        assert!(!active_package_is_travel([&gated], 10.0, cond_met));
+        assert!(active_package_is_travel([&gated], 10.0, |_| true));
+    }
+
+    #[test]
+    fn active_package_is_sandbox_wander_and_travel_are_mutually_exclusive() {
+        // A single winning PackRecord can only satisfy one procedure check
+        // — Sandbox, Wander, and Travel selection over the same package
+        // list/hour must never report true for more than one.
+        let sandbox_only = pack(PROCEDURE_SANDBOX, None);
+        assert!(active_package_is_sandbox([&sandbox_only], 10.0, |_| true));
+        assert!(!active_package_is_wander([&sandbox_only], 10.0, |_| true));
+        assert!(!active_package_is_travel([&sandbox_only], 10.0, |_| true));
+
+        let wander_only = pack(PROCEDURE_WANDER, None);
+        assert!(!active_package_is_sandbox([&wander_only], 10.0, |_| true));
+        assert!(active_package_is_wander([&wander_only], 10.0, |_| true));
+        assert!(!active_package_is_travel([&wander_only], 10.0, |_| true));
+
+        let travel_only = pack(PROCEDURE_TRAVEL, None);
+        assert!(!active_package_is_sandbox([&travel_only], 10.0, |_| true));
+        assert!(!active_package_is_wander([&travel_only], 10.0, |_| true));
+        assert!(active_package_is_travel([&travel_only], 10.0, |_| true));
     }
 
     #[test]

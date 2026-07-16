@@ -406,6 +406,15 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::WanderBehavior>();
     world.register::<byroredux_core::ecs::components::WanderState>();
 
+    // M42.4 — pre-register the Travel marker + runtime-state + terminal
+    // storages so `travel_system`'s `query::<TravelBehavior>()` skip-scan,
+    // `query_mut::<TravelState>().insert(...)`, and
+    // `query_mut::<Traveled>().insert(...)` resolve even before the first
+    // traveling actor spawns.
+    world.register::<byroredux_core::ecs::components::TravelBehavior>();
+    world.register::<byroredux_core::ecs::components::TravelState>();
+    world.register::<byroredux_core::ecs::components::Traveled>();
+
     // Register scripting component storages.
     byroredux_scripting::register(&mut world);
 
@@ -698,6 +707,20 @@ pub(crate) fn build_scheduler() -> Scheduler {
     if std::env::var_os("BYRO_WANDER").is_some() {
         log::info!("BYRO_WANDER set — enabling NPC wander locomotion (M42.3 v0)");
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::wander_system);
+    }
+    // M42.4 — Travel locomotion. GATED OFF by default (opt in with
+    // `BYRO_TRAVEL=1`), mirroring `BYRO_WANDER`/`BYRO_SANDBOX_SIT` above.
+    // Shares `wander_system`'s straight-line walk primitive via
+    // `systems::locomotion::step_toward`, but walks once to a destination
+    // and stops (terminal `Traveled` marker) instead of repeating — see
+    // `systems::travel` module docs for the resolution/fallback mechanism
+    // and the full v0-scope list. Same exclusive PostUpdate lane, after
+    // transform propagation; Sandbox/Wander/Travel never touch the same
+    // actor (a single winning `PackRecord` per NPC), so relative order
+    // among the three doesn't matter.
+    if std::env::var_os("BYRO_TRAVEL").is_some() {
+        log::info!("BYRO_TRAVEL set — enabling NPC travel locomotion (M42.4 v0)");
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::travel_system);
     }
     // PostUpdate ordering contract (#1375 invariant pin):
     //   1. transform_propagation — BFS GlobalTransform composition

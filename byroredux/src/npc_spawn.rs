@@ -1502,6 +1502,35 @@ pub fn spawn_npc_entity(
     .map(|loc| loc.radius as f32)
     .filter(|r| *r > 0.0);
 
+    // M42.4: Travel behavior, same reads as Sandbox/Wander above. Unlike
+    // those two, Travel's *destination* matters (it walks there once and
+    // stops, rather than just needing a search center) — so it captures
+    // the PLDT target's raw FormID here, and `travel_system` attempts to
+    // resolve it to a live entity's position on its own first tick via
+    // `resolve_entity_by_global_form_id` (see that fn's doc + `travel.rs`'s
+    // module docs for why this is a strictly better vantage point than a
+    // spawn-time attempt, and why it still won't resolve most targets).
+    // Only `NearReference` carries a FormID that fn can resolve; other
+    // location types leave `travel_target_form_id` `None` and fall
+    // straight to `travel_system`'s hash-picked fallback.
+    let runs_travel = byroredux_plugin::esm::records::active_package_is_travel(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    );
+    let travel_location = byroredux_plugin::esm::records::active_travel_location(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    );
+    let travel_radius = travel_location
+        .map(|loc| loc.radius as f32)
+        .filter(|r| *r > 0.0);
+    let travel_target_form_id = travel_location.and_then(|loc| match loc.target {
+        byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => Some(fid),
+        _ => None,
+    });
+
     if runs_sandbox {
         // Deliberately NOT resolving `PackLocationTarget::NearReference` to
         // a live entity's position for the search *center* — investigated
@@ -1516,9 +1545,13 @@ pub fn spawn_npc_entity(
         // never resolve) or spawn-ordering (references are placed in one
         // interleaved pass, not markers-then-actors, so a same-cell target
         // later in the REFR list isn't live yet). The actor's own position
-        // remains the v0 center approximation; see the `resolve_entity_by
-        // _global_form_id` pattern in `crates/scripting/src/condition.rs`
-        // if a future session revisits this with a stronger reason to.
+        // remains the v0 center approximation. M42.4's `travel_system` now
+        // uses `resolve_entity_by_global_form_id` (`crates/scripting/src
+        // /condition.rs`) from a later vantage point — its own first tick,
+        // after the whole cell has finished loading — which sidesteps the
+        // spawn-ordering half of this problem; Sandbox could adopt the same
+        // approach here if a future session wants the search *center* to
+        // do the same.
         world.insert(
             placement_root,
             byroredux_core::ecs::components::SandboxBehavior { search_radius },
@@ -1529,6 +1562,16 @@ pub fn spawn_npc_entity(
             placement_root,
             byroredux_core::ecs::components::WanderBehavior {
                 wander_radius,
+                form_id: npc.form_id,
+            },
+        );
+    }
+    if runs_travel {
+        world.insert(
+            placement_root,
+            byroredux_core::ecs::components::TravelBehavior {
+                radius: travel_radius,
+                target_form_id: travel_target_form_id,
                 form_id: npc.form_id,
             },
         );

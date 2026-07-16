@@ -35,8 +35,9 @@ mod water;
 mod world;
 
 pub use ai::{
-    active_package_is_sandbox, active_package_is_wander, active_sandbox_location,
-    active_wander_location, parse_csty, parse_dial, parse_idle,
+    active_package_is_sandbox, active_package_is_travel, active_package_is_wander,
+    active_sandbox_location, active_travel_location, active_wander_location, parse_csty,
+    parse_dial, parse_idle,
     parse_info, parse_mesg, parse_pack, parse_qust, CstyRecord, DialRecord, IdleRecord,
     InfoRecord, MesgRecord, PackLocation, PackLocationTarget, PackRecord, PackSchedule,
     QustRecord,
