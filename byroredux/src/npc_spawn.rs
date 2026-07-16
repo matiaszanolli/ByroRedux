@@ -1461,25 +1461,48 @@ pub fn spawn_npc_entity(
     let condition_met = |pk: &byroredux_plugin::esm::records::PackRecord| {
         package_conditions_pass(&pk.conditions, world, &cond_ctx)
     };
+    // All package-selection reads (they borrow `world` via `condition_met`)
+    // are resolved to owned values *before* any `world.insert` below —
+    // interleaving a read after an insert here is a borrow-checker
+    // conflict, since `condition_met` closes over `world: &World`.
     let runs_sandbox = byroredux_plugin::esm::records::active_package_is_sandbox(
         npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
         game_hour,
         condition_met,
     );
+    // PLDT's authored radius (when decoded and > 0) replaces
+    // `sandbox_seat_system`'s blanket search-radius guess with the
+    // per-package value the CK author actually set. `location` can be
+    // `None` (no PLDT) or carry radius 0 (some vanilla packages, e.g.
+    // FormID-anchored ones with no meaningful area) — both fall back to
+    // the system's own default.
+    let search_radius = byroredux_plugin::esm::records::active_sandbox_location(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    )
+    .map(|loc| loc.radius as f32)
+    .filter(|r| *r > 0.0);
+    // M42.3: Wander behavior, mirroring the Sandbox reads above verbatim
+    // (same game_hour/condition_met, same PLDT-radius-or-default pattern,
+    // same v0 "actor's own position is the center approximation" rationale
+    // — no second investigation needed, `active_package_is_sandbox` and
+    // `active_package_is_wander` are naturally mutually exclusive since an
+    // NPC's active package is a single winning `PackRecord`).
+    let runs_wander = byroredux_plugin::esm::records::active_package_is_wander(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    );
+    let wander_radius = byroredux_plugin::esm::records::active_wander_location(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    )
+    .map(|loc| loc.radius as f32)
+    .filter(|r| *r > 0.0);
+
     if runs_sandbox {
-        // PLDT's authored radius (when decoded and > 0) replaces
-        // `sandbox_seat_system`'s blanket search-radius guess with the
-        // per-package value the CK author actually set. `location` can be
-        // `None` (no PLDT) or carry radius 0 (some vanilla packages, e.g.
-        // FormID-anchored ones with no meaningful area) — both fall back to
-        // the system's own default.
-        let search_radius = byroredux_plugin::esm::records::active_sandbox_location(
-            npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-            game_hour,
-            condition_met,
-        )
-        .map(|loc| loc.radius as f32)
-        .filter(|r| *r > 0.0);
         // Deliberately NOT resolving `PackLocationTarget::NearReference` to
         // a live entity's position for the search *center* — investigated
         // 2026-07-14 and found low-value. Empirically (real FalloutNV.esm,
@@ -1499,6 +1522,15 @@ pub fn spawn_npc_entity(
         world.insert(
             placement_root,
             byroredux_core::ecs::components::SandboxBehavior { search_radius },
+        );
+    }
+    if runs_wander {
+        world.insert(
+            placement_root,
+            byroredux_core::ecs::components::WanderBehavior {
+                wander_radius,
+                form_id: npc.form_id,
+            },
         );
     }
 

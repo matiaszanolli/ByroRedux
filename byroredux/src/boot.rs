@@ -399,6 +399,13 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::components::SeatReservations::default());
     world.insert_resource(crate::components::SandboxSitClip::default());
 
+    // M42.3 — pre-register the Wander marker + runtime-state storages so
+    // `wander_system`'s `query::<WanderBehavior>()` skip-scan and
+    // `query_mut::<WanderState>().insert(...)` resolve even before the
+    // first wandering actor spawns.
+    world.register::<byroredux_core::ecs::components::WanderBehavior>();
+    world.register::<byroredux_core::ecs::components::WanderState>();
+
     // Register scripting component storages.
     byroredux_scripting::register(&mut world);
 
@@ -678,6 +685,19 @@ pub(crate) fn build_scheduler() -> Scheduler {
              (grounded sit-enter pose on FNV/FO3; see systems::sandbox docs for other games)"
         );
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::sandbox_seat_system);
+    }
+    // M42.3 — Wander locomotion. GATED OFF by default (opt in with
+    // `BYRO_WANDER=1`), mirroring `BYRO_SANDBOX_SIT` above. Straight-line
+    // walk-to-point, no pathing/NAVM, no animation-clip swap — see
+    // `systems::wander` module docs for the full v0-scope list. Same
+    // exclusive PostUpdate lane, after transform propagation, as
+    // `sandbox_seat_system`; the two never touch the same actor (an NPC's
+    // active package is a single winning `PackRecord`, so `SandboxBehavior`
+    // and `WanderBehavior` are mutually exclusive), so their relative
+    // order doesn't matter.
+    if std::env::var_os("BYRO_WANDER").is_some() {
+        log::info!("BYRO_WANDER set — enabling NPC wander locomotion (M42.3 v0)");
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::wander_system);
     }
     // PostUpdate ordering contract (#1375 invariant pin):
     //   1. transform_propagation — BFS GlobalTransform composition

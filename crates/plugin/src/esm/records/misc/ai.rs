@@ -91,6 +91,13 @@ pub enum PackLocationTarget {
 /// carry one; it's the dominant ambient idle behavior. See M42.
 pub const PROCEDURE_SANDBOX: u32 = 12;
 
+/// FO3/FNV package procedure-type index for `Wander` — walk to random
+/// points within a radius, pause, repeat, with no target reference and no
+/// scheduling beyond PSDT/CTDA. First non-Sandbox procedure to get a
+/// runtime (M42.3), backed by `wander_system`'s straight-line
+/// walk-to-point locomotion (no pathing/NAVM). See M42.
+pub const PROCEDURE_WANDER: u32 = 5;
+
 /// PACK schedule window from PSDT (FO3/FNV). `start_hour = None` when the raw
 /// `time` byte is -1 (0xFF) = "any time". `duration_hours` is the PSDT
 /// duration (in hours for FO3/FNV — verified against FalloutNV.esm: a
@@ -125,6 +132,12 @@ impl PackRecord {
     /// behavior that drives furniture use).
     pub fn is_sandbox(&self) -> bool {
         self.procedure_type == PROCEDURE_SANDBOX
+    }
+
+    /// True when this package's procedure is `Wander` (walk to random
+    /// points within a radius, pause, repeat).
+    pub fn is_wander(&self) -> bool {
+        self.procedure_type == PROCEDURE_WANDER
     }
 
     /// Whether this package's schedule includes `hour`. No PSDT → always
@@ -183,6 +196,37 @@ pub fn active_sandbox_location<'a>(
 ) -> Option<PackLocation> {
     active_package(packages, hour, condition_met)
         .filter(|pk| pk.is_sandbox())
+        .and_then(|pk| pk.location)
+}
+
+/// Whether an NPC's active package at `hour` (see [`active_package`]) is a
+/// Wander package (M42.3). `condition_met` injects M47.1 CTDA evaluation;
+/// pass `|_| true` for schedule-only selection. Mirrors
+/// [`active_package_is_sandbox`] — an NPC's active package is always a
+/// single winning `PackRecord`, so this and `active_package_is_sandbox`
+/// are naturally mutually exclusive for the same package list/hour.
+pub fn active_package_is_wander<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> bool {
+    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_wander)
+}
+
+/// The PLDT location of an NPC's active package at `hour` (see
+/// [`active_package`]), when that package is Wander-type. `None` when the
+/// active package isn't Wander, carries no PLDT, or nothing is scheduled
+/// active. `wander_system` uses this to size its wander radius around the
+/// authored center instead of a fixed default. Mirrors
+/// [`active_sandbox_location`]. `condition_met` injects M47.1 CTDA
+/// evaluation; pass `|_| true` for schedule-only.
+pub fn active_wander_location<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> Option<PackLocation> {
+    active_package(packages, hour, condition_met)
+        .filter(|pk| pk.is_wander())
         .and_then(|pk| pk.location)
 }
 
@@ -1122,6 +1166,58 @@ mod tests {
         // active package → not sandbox. Contrast `|_| true` which passes it.
         assert!(!active_package_is_sandbox([&gated], 10.0, cond_met));
         assert!(active_package_is_sandbox([&gated], 10.0, |_| true));
+    }
+
+    #[test]
+    fn active_package_is_wander_selector_respects_priority_and_schedule() {
+        // Mirrors active_package_selector_respects_priority_and_schedule
+        // with Wander swapped in for Sandbox.
+        let bartender = pack(6, sched(Some(8), 12)); // Travel/AtBar 08–20
+        let evening = pack(PROCEDURE_WANDER, sched(Some(20), 2)); // wander 20–22
+        // 10:00 → bartender active → NOT treated as wander.
+        assert!(!active_package_is_wander([&bartender, &evening], 10.0, |_| true));
+        // 21:00 → bartender off-shift, evening wander active.
+        assert!(active_package_is_wander([&bartender, &evening], 21.0, |_| true));
+        // Any-time wander behind an inactive sleep package → wander.
+        let sleep = pack(4, sched(Some(22), 10));
+        let anytime_wander = pack(PROCEDURE_WANDER, None);
+        assert!(active_package_is_wander([&sleep, &anytime_wander], 10.0, |_| true));
+        // No resolvable packages → not wander.
+        assert!(!active_package_is_wander(
+            std::iter::empty::<&PackRecord>(),
+            10.0,
+            |_| true
+        ));
+    }
+
+    #[test]
+    fn active_package_is_wander_selector_gates_on_conditions() {
+        // Mirrors active_package_selector_gates_on_conditions with Wander.
+        let mut gated = pack(PROCEDURE_WANDER, None);
+        gated.editor_id = "GatedWander".into();
+        gated.conditions = vec![Condition {
+            function_index: 72, // GetIsID (arbitrary — the predicate decides)
+            ..Default::default()
+        }];
+        let fallback = pack(PROCEDURE_WANDER, None); // no conditions
+        let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
+        assert!(active_package_is_wander([&gated, &fallback], 10.0, cond_met));
+        assert!(!active_package_is_wander([&gated], 10.0, cond_met));
+        assert!(active_package_is_wander([&gated], 10.0, |_| true));
+    }
+
+    #[test]
+    fn active_package_is_sandbox_and_is_wander_are_mutually_exclusive() {
+        // A single winning PackRecord can only satisfy one procedure check
+        // — Sandbox and Wander selection over the same package list/hour
+        // must never both report true.
+        let sandbox_only = pack(PROCEDURE_SANDBOX, None);
+        assert!(active_package_is_sandbox([&sandbox_only], 10.0, |_| true));
+        assert!(!active_package_is_wander([&sandbox_only], 10.0, |_| true));
+
+        let wander_only = pack(PROCEDURE_WANDER, None);
+        assert!(!active_package_is_sandbox([&wander_only], 10.0, |_| true));
+        assert!(active_package_is_wander([&wander_only], 10.0, |_| true));
     }
 
     #[test]

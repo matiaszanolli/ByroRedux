@@ -6,8 +6,8 @@ Fourth in the cross-cutting series alongside [Pipeline Overview](pipeline-overvi
 record from cell-load spawn through AI package selection to an actor
 actually running behavior — and it's the most incomplete of the four.
 Say that up front rather than let the prose imply otherwise: of the
-~17-value FO3/FNV package-procedure enum, **exactly one procedure
-executes anything at runtime.** This doc documents what's real, not
+~17-value FO3/FNV package-procedure enum, **exactly two procedures
+execute anything at runtime.** This doc documents what's real, not
 what's planned.
 
 > **Currency note.** Verified against the tree as of 2026-07-15. One
@@ -20,6 +20,12 @@ what's planned.
 > Issues list still carried `PACK records have stubs only — no
 > evaluator (#446, M42)` as an open item, contradicting its own M42 row
 > three sections above, which documents #446 as closed.
+>
+> **Update, same day (M42.3).** Wander (procedure type 5) now has a
+> runtime too — §6 below. This is the engine's first NPC locomotion of
+> any kind (Sandbox never needed one; it teleports onto a seat), and the
+> pattern it establishes is the seam future procedures (Follow, Travel,
+> Patrol, Guard, …) build on.
 
 ## 1. Spawn trigger: NPC_ vs. static
 
@@ -46,8 +52,9 @@ there. Components stamped on the placement root: `Name`,
 `FactionRanks`, `ActorValues` (via CHARAL's `derive_npc_actor_values` —
 see [CHARAL](charal.md)), `CharacterLevel`/`Background`/`Perks`,
 `Inventory` + `EquipmentSlots`, `AnimationPlayer` (idle clip, kf-era
-only) — and, when the actor's packages include a Sandbox-type entry,
-`SandboxBehavior` (§4).
+only) — and, when the actor's packages include a Sandbox- or
+Wander-type entry, `SandboxBehavior` or `WanderBehavior` respectively
+(§4).
 
 ## 3. PACK record parsing
 
@@ -91,12 +98,18 @@ to be at that instant. There is no per-frame or per-hour
 re-evaluation — an NPC picked for a 20:00-22:00 sandbox slot keeps that
 `SandboxBehavior` tag forever, regardless of in-game time passing. Of
 the FO3/FNV procedure enum's values, only `PROCEDURE_SANDBOX = 12`
-(`ai.rs:84`) has a name or a consumer; the other ~16
-(Find/Follow/Escort/Eat/Sleep/Wander/Travel/Accompany/UseItemAt/Ambush/
+(`ai.rs`) and `PROCEDURE_WANDER = 5` (`ai.rs`, M42.3) have a name and a
+consumer; the other ~15
+(Find/Follow/Escort/Eat/Sleep/Travel/Accompany/UseItemAt/Ambush/
 FleeNotCombat/CastMagic/Patrol/Guard/Dialogue/UseWeapon) are captured
-as a raw integer and dispatched nowhere.
+as a raw integer and dispatched nowhere. `active_package_is_sandbox`/
+`active_sandbox_location` and `active_package_is_wander`/
+`active_wander_location` are independent mirror pairs — since an NPC's
+active package is always a single winning `PackRecord`
+(`active_package`'s `find`), the two checks are naturally mutually
+exclusive per actor with no extra guard logic needed.
 
-## 5. The one procedure that runs: Sandbox seating
+## 5. Sandbox seating
 
 `active_package_is_sandbox`/`active_sandbox_location` (`ai.rs:147,159`)
 feed `npc_spawn.rs`, which inserts `SandboxBehavior { search_radius }`
@@ -135,14 +148,52 @@ found only ~12% of vanilla FNV `NearReference`-type packages resolve to
 anything spawnable, so FormID-based center resolution isn't planned as
 a near-term follow-up.
 
+## 6. Wander locomotion (M42.3)
+
+The first non-Sandbox procedure runtime, and the first NPC locomotion
+of any kind in the engine — Sandbox never needed one because it
+teleports an actor onto a seat rather than walking there. Wired at
+`npc_spawn.rs` exactly like Sandbox: `active_package_is_wander` +
+`active_wander_location` gate a `WanderBehavior` insert
+(`crates/core/src/ecs/components/wander.rs`), reusing the same
+`game_hour`/`condition_met` closure Sandbox's block builds (both
+package checks now run *before* either component insert, since
+interleaving a read through `condition_met` — which closes over
+`world` — after a `world.insert` is a genuine borrow-checker conflict,
+not just a style preference).
+
+`wander_system` (`byroredux/src/systems/wander.rs`, opt-in via
+`BYRO_WANDER=1`, same gating convention as `BYRO_SANDBOX_SIT`) drives a
+`WanderState` (home / target / phase / pick_count) per actor: walk
+straight-line toward `target` via `Vec3::move_towards` (no pathing —
+open ground only), ground-snap Y each tick via
+`PhysicsWorld::cast_ray_down` (the same downward-raycast mechanism
+`scene.rs` uses for camera placement), turn to face the direction of
+travel via `Quat::slerp`, and on arrival pause for a few seconds before
+picking a new point. Target points and pause durations are **not**
+`rand`-crate randomness — both are derived from a SplitMix64-style
+avalanche hash seeded on `(WanderBehavior::form_id,
+WanderState::pick_count)`, the same no-RNG-dependency, save/reload-
+stable convention `npc_spawn.rs::idle_desync` uses for per-actor idle
+phase/speed desync.
+
+v0 scope, mirroring Sandbox's own documented approximations: no
+animation-clip swap (no verified walk `.kf` path exists anywhere in
+this codebase — verifying one against a real archive is deferred, not
+guessed at); no target-reference resolution (center is always the
+actor's own position, same call Sandbox made and for the same reason);
+no per-frame package re-evaluation (same limitation as Sandbox).
+
 ## What's not covered / honest state
 
-- **One procedure of ~17 executes.** No Follow/Escort/Guard/Patrol/
-  Wander/Travel/etc. runtime exists anywhere in the engine.
+- **Two procedures of ~17 execute.** Sandbox and Wander (M42.3). No
+  Follow/Escort/Guard/Patrol/Travel/etc. runtime exists anywhere in the
+  engine.
 - **No general AI tick.** `byroredux/src/systems/` has no `ai.rs` /
-  `behavior.rs` / `npc.rs`; `sandbox_seat_system` is the only
-  AI-adjacent per-frame system, and it isn't part of the default
-  scheduler — it requires `BYRO_SANDBOX_SIT=1`.
+  `behavior.rs` / `npc.rs`; `sandbox_seat_system` and `wander_system`
+  are the only AI-adjacent per-frame systems, and neither is part of
+  the default scheduler — they require `BYRO_SANDBOX_SIT=1` /
+  `BYRO_WANDER=1` respectively.
 - **Selection is spawn-time-only.** No package re-evaluation as game
   time advances — `CTDA` conditions *are* now evaluated (M42.2), but
   only once, against the game hour and world state at spawn. `PTDT`/
@@ -152,7 +203,8 @@ a near-term follow-up.
   through Havok `.hkx`, not `.kf`, so this whole mechanism doesn't apply
   there yet.
 
-This is the M42 *bootstrap*, by its own module doc's framing — "v0 is
-sit in the nearest free chair, once." Anyone building on this pipeline
-should treat package selection and procedure dispatch as a proof of
-concept, not a general AI system.
+This is the M42 *bootstrap*, by its own module docs' framing — "v0 is
+sit in the nearest free chair, once" for Sandbox, "v0 is walk to a
+random point, pause, repeat" for Wander. Anyone building on this
+pipeline should treat package selection and procedure dispatch as a
+proof of concept, not a general AI system.

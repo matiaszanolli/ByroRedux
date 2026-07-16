@@ -29,6 +29,7 @@ pub mod scene_flags;
 pub mod skinned_mesh;
 pub mod texture;
 pub mod transform;
+pub mod wander;
 pub mod water;
 pub mod world_bound;
 
@@ -73,6 +74,7 @@ pub use scene_flags::SceneFlags;
 pub use skinned_mesh::{SkinnedMesh, MAX_BONES_PER_MESH};
 pub use texture::TextureHandle;
 pub use transform::Transform;
+pub use wander::{WanderBehavior, WanderPhase, WanderState};
 pub use water::{
     SubmersionState, WaterContact, WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
 };
