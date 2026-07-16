@@ -423,6 +423,15 @@ fn resolve_sun_sprite(
 /// them plus `GameTimeRes` and the survives-transitions `CloudSimState`,
 /// so `weather_system` runs the sun arc each frame instead of
 /// early-returning. See #542 / M33-10.
+///
+/// REN-D18-01: `GameTimeRes` is seeded only on the first call (mirroring
+/// `CloudSimState` immediately below and the WTHR branch's own first-load
+/// guard in `apply_worldspace_weather`) — an unconditional insert here
+/// snapped the global clock back to `initial_game_time()`'s fixed hour on
+/// every transition into a climateless worldspace, popping time-of-day /
+/// sun direction / fog mid-session on corrupt ESMs, climate-less mod
+/// worldspaces, and synthetic test cells (vanilla content always resolves
+/// a CLMT and never re-enters this branch after first load).
 pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [f32; 3]) {
     world.insert_resource(crate::env_translate::procedural_fallback_cell_lighting(
         sun_dir,
@@ -434,7 +443,9 @@ pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [
         world.insert_resource(CloudSimState::default());
     }
     world.insert_resource(crate::env_translate::procedural_fallback_weather());
-    world.insert_resource(initial_game_time());
+    if world.try_resource::<GameTimeRes>().is_none() {
+        world.insert_resource(initial_game_time());
+    }
 }
 
 /// Stream the initial radius around the player's spawn cell. Returns
@@ -714,6 +725,47 @@ mod tests {
             got,
             vec![10, 11, 12, 13, 14],
             "a transition into a texture-less procedural sky must release every prior sky handle",
+        );
+    }
+
+    /// REN-D18-01 — a second (or later) call to `insert_procedural_fallback_resources`
+    /// within the same session (re-entering a climateless worldspace mid-session)
+    /// must NOT reset `GameTimeRes` back to its initial hour. Pre-fix, the insert
+    /// was unconditional, popping time-of-day every such transition even though
+    /// the neighboring `CloudSimState` insert already used the correct
+    /// survives-transitions guard.
+    #[test]
+    fn insert_procedural_fallback_resources_preserves_advanced_game_time() {
+        let mut world = World::new();
+        world.insert_resource(GameTimeRes {
+            hour: 18.0,
+            time_scale: 30.0,
+        });
+
+        insert_procedural_fallback_resources(&mut world, [0.0, 1.0, 0.0]);
+
+        let time = world
+            .try_resource::<GameTimeRes>()
+            .expect("insert_procedural_fallback_resources must leave a GameTimeRes installed");
+        assert_eq!(
+            time.hour, 18.0,
+            "a later call must not reset an already-advanced game clock (REN-D18-01)"
+        );
+    }
+
+    /// The very first call (no prior `GameTimeRes`) must still seed one —
+    /// otherwise `weather_system` early-returns forever on a climateless
+    /// worldspace with no clock to read.
+    #[test]
+    fn insert_procedural_fallback_resources_seeds_game_time_on_first_call() {
+        let mut world = World::new();
+        assert!(world.try_resource::<GameTimeRes>().is_none());
+
+        insert_procedural_fallback_resources(&mut world, [0.0, 1.0, 0.0]);
+
+        assert!(
+            world.try_resource::<GameTimeRes>().is_some(),
+            "first entry into a climateless worldspace must still seed GameTimeRes"
         );
     }
 }
