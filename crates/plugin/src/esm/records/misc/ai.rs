@@ -163,6 +163,16 @@ pub const PROCEDURE_TRAVEL: u32 = 6;
 /// time in this codebase for this procedure. See M42.
 pub const PROCEDURE_FOLLOW: u32 = 1;
 
+/// FO3/FNV package procedure-type index for `Escort` — walk to (and
+/// collect) a PTDT target, then lead it once to the package's PLDT
+/// location and stop. Fourth procedure to reuse `wander_system`'s
+/// locomotion primitive (M42.6, via `systems::locomotion::step_toward`),
+/// and the first to combine two already-decoded sub-records (`PTDT` from
+/// Follow, `PLDT` from Travel) rather than needing new decode work — see
+/// `systems::escort` module docs for the two-phase collect-then-lead
+/// runtime. See M42.
+pub const PROCEDURE_ESCORT: u32 = 2;
+
 /// PACK schedule window from PSDT (FO3/FNV). `start_hour = None` when the raw
 /// `time` byte is -1 (0xFF) = "any time". `duration_hours` is the PSDT
 /// duration (in hours for FO3/FNV — verified against FalloutNV.esm: a
@@ -215,6 +225,12 @@ impl PackRecord {
     /// follow a target actor).
     pub fn is_follow(&self) -> bool {
         self.procedure_type == PROCEDURE_FOLLOW
+    }
+
+    /// True when this package's procedure is `Escort` (collect a target,
+    /// then lead it to the PLDT location and stop).
+    pub fn is_escort(&self) -> bool {
+        self.procedure_type == PROCEDURE_ESCORT
     }
 
     /// Whether this package's schedule includes `hour`. No PSDT → always
@@ -360,6 +376,46 @@ pub fn active_follow_target<'a>(
     active_package(packages, hour, condition_met)
         .filter(|pk| pk.is_follow())
         .and_then(|pk| pk.target)
+}
+
+/// Whether an NPC's active package at `hour` (see [`active_package`]) is an
+/// Escort package (M42.6). Mirrors [`active_package_is_follow`].
+/// `condition_met` injects M47.1 CTDA evaluation; pass `|_| true` for
+/// schedule-only selection.
+pub fn active_package_is_escort<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> bool {
+    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_escort)
+}
+
+/// The PTDT target (who to collect) of an NPC's active package at `hour`
+/// (see [`active_package`]), when that package is Escort-type. Mirrors
+/// [`active_follow_target`]. `condition_met` injects M47.1 CTDA evaluation;
+/// pass `|_| true` for schedule-only.
+pub fn active_escort_target<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> Option<PackTarget> {
+    active_package(packages, hour, condition_met)
+        .filter(|pk| pk.is_escort())
+        .and_then(|pk| pk.target)
+}
+
+/// The PLDT location (where to lead the target) of an NPC's active package
+/// at `hour` (see [`active_package`]), when that package is Escort-type.
+/// Mirrors [`active_travel_location`]. `condition_met` injects M47.1 CTDA
+/// evaluation; pass `|_| true` for schedule-only.
+pub fn active_escort_location<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> Option<PackLocation> {
+    active_package(packages, hour, condition_met)
+        .filter(|pk| pk.is_escort())
+        .and_then(|pk| pk.location)
 }
 
 /// Remap a raw plugin-local FormID to global space, leaving 0 (no
@@ -1530,6 +1586,54 @@ mod tests {
         assert!(active_package_is_follow([&gated, &fallback], 10.0, cond_met));
         assert!(!active_package_is_follow([&gated], 10.0, cond_met));
         assert!(active_package_is_follow([&gated], 10.0, |_| true));
+    }
+
+    #[test]
+    fn active_package_is_escort_selector_respects_priority_and_schedule() {
+        // Mirrors active_package_is_follow_selector_respects_priority_and_schedule
+        // with Escort swapped in. Bartender uses Wander (5) here — 2 is now
+        // Escort itself, so it can't stand in as the generic placeholder.
+        let bartender = pack(PROCEDURE_WANDER, sched(Some(8), 12)); // Wander/AtBar 08–20
+        let evening = pack(PROCEDURE_ESCORT, sched(Some(20), 2)); // escort 20–22
+        assert!(!active_package_is_escort([&bartender, &evening], 10.0, |_| true));
+        assert!(active_package_is_escort([&bartender, &evening], 21.0, |_| true));
+        let sleep = pack(4, sched(Some(22), 10));
+        let anytime_escort = pack(PROCEDURE_ESCORT, None);
+        assert!(active_package_is_escort([&sleep, &anytime_escort], 10.0, |_| true));
+        assert!(!active_package_is_escort(
+            std::iter::empty::<&PackRecord>(),
+            10.0,
+            |_| true
+        ));
+    }
+
+    #[test]
+    fn active_package_is_escort_selector_gates_on_conditions() {
+        let mut gated = pack(PROCEDURE_ESCORT, None);
+        gated.editor_id = "GatedEscort".into();
+        gated.conditions = vec![Condition {
+            function_index: 72,
+            ..Default::default()
+        }];
+        let fallback = pack(PROCEDURE_ESCORT, None);
+        let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
+        assert!(active_package_is_escort([&gated, &fallback], 10.0, cond_met));
+        assert!(!active_package_is_escort([&gated], 10.0, cond_met));
+        assert!(active_package_is_escort([&gated], 10.0, |_| true));
+    }
+
+    #[test]
+    fn active_package_is_sandbox_wander_travel_follow_and_escort_are_mutually_exclusive() {
+        // A single winning PackRecord can only satisfy one procedure check.
+        let escort_only = pack(PROCEDURE_ESCORT, None);
+        assert!(!active_package_is_sandbox([&escort_only], 10.0, |_| true));
+        assert!(!active_package_is_wander([&escort_only], 10.0, |_| true));
+        assert!(!active_package_is_travel([&escort_only], 10.0, |_| true));
+        assert!(!active_package_is_follow([&escort_only], 10.0, |_| true));
+        assert!(active_package_is_escort([&escort_only], 10.0, |_| true));
+
+        let follow_only = pack(PROCEDURE_FOLLOW, None);
+        assert!(!active_package_is_escort([&follow_only], 10.0, |_| true));
     }
 
     #[test]

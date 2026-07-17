@@ -1558,6 +1558,39 @@ pub fn spawn_npc_entity(
         byroredux_plugin::esm::records::PackTargetKind::Other(_) => None,
     });
 
+    // M42.6: Escort behavior, same reads as Sandbox/Wander/Travel/Follow
+    // above. Escort needs both `PTDT` (who to collect, read the same way
+    // Follow reads it) and `PLDT` (where to lead them, read the same way
+    // Travel reads it) — no new sub-record decode work, just the two
+    // existing reads combined onto one component.
+    let runs_escort = byroredux_plugin::esm::records::active_package_is_escort(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    );
+    let escort_target = byroredux_plugin::esm::records::active_escort_target(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    );
+    let escort_target_form_id = escort_target.and_then(|t| match t.target {
+        byroredux_plugin::esm::records::PackTargetKind::SpecificReference(fid)
+        | byroredux_plugin::esm::records::PackTargetKind::ObjectId(fid) => Some(fid),
+        byroredux_plugin::esm::records::PackTargetKind::Other(_) => None,
+    });
+    let escort_location = byroredux_plugin::esm::records::active_escort_location(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    );
+    let escort_destination_radius = escort_location
+        .map(|loc| loc.radius as f32)
+        .filter(|r| *r > 0.0);
+    let escort_destination_form_id = escort_location.and_then(|loc| match loc.target {
+        byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => Some(fid),
+        _ => None,
+    });
+
     if runs_sandbox {
         // Deliberately NOT resolving `PackLocationTarget::NearReference` to
         // a live entity's position for the search *center* — investigated
@@ -1609,6 +1642,17 @@ pub fn spawn_npc_entity(
             byroredux_core::ecs::components::FollowBehavior {
                 target_form_id: follow_target_form_id,
                 follow_distance,
+            },
+        );
+    }
+    if runs_escort {
+        world.insert(
+            placement_root,
+            byroredux_core::ecs::components::EscortBehavior {
+                target_form_id: escort_target_form_id,
+                destination_form_id: escort_destination_form_id,
+                destination_radius: escort_destination_radius,
+                form_id: npc.form_id,
             },
         );
     }

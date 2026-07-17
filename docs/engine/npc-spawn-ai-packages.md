@@ -6,7 +6,7 @@ Fourth in the cross-cutting series alongside [Pipeline Overview](pipeline-overvi
 record from cell-load spawn through AI package selection to an actor
 actually running behavior — and it's the most incomplete of the four.
 Say that up front rather than let the prose imply otherwise: of the
-~17-value FO3/FNV package-procedure enum, **exactly four procedures
+~17-value FO3/FNV package-procedure enum, **exactly five procedures
 execute anything at runtime.** This doc documents what's real, not
 what's planned.
 
@@ -39,6 +39,12 @@ what's planned.
 > in this codebase (previously 0% parsed) and is the first procedure to
 > track a *live* target position every tick rather than a frozen
 > destination or hash-picked point.
+>
+> **Update (M42.6, 2026-07-16).** Escort (procedure type 2) now has a
+> runtime too — §9 below. It's the first M42 procedure needing **no new
+> sub-record decode work** — it combines `PTDT` (from Follow) and `PLDT`
+> (from Travel) onto one component, running a two-phase collect-then-lead
+> state machine over the same `step_toward` primitive.
 
 ## 1. Spawn trigger: NPC_ vs. static
 
@@ -66,8 +72,9 @@ there. Components stamped on the placement root: `Name`,
 see [CHARAL](charal.md)), `CharacterLevel`/`Background`/`Perks`,
 `Inventory` + `EquipmentSlots`, `AnimationPlayer` (idle clip, kf-era
 only) — and, when the actor's packages include a Sandbox-, Wander-,
-Travel-, or Follow-type entry, `SandboxBehavior`, `WanderBehavior`,
-`TravelBehavior`, or `FollowBehavior` respectively (§4).
+Travel-, Follow-, or Escort-type entry, `SandboxBehavior`,
+`WanderBehavior`, `TravelBehavior`, `FollowBehavior`, or
+`EscortBehavior` respectively (§4).
 
 ## 3. PACK record parsing
 
@@ -82,7 +89,8 @@ of the location-type variants carry a resolvable FormID), and `PTDT`
 (`PackTarget { target_type, target, count_or_distance }`, M42.5 — only 2
 of the 4 target-type variants carry a resolvable FormID). `PTD2` (a
 second target, for two-target procedures like Escort-someone-to-someone)
-is **not parsed** — no implemented procedure needs it yet.
+is **not parsed** — Escort's own v0 runtime (§9) only ever escorts one
+actor, so no implemented procedure needs it yet.
 `NpcRecord.ai_packages: Vec<u32>`
 (`crates/plugin/src/esm/records/actor.rs:190-191`, from `PKID`
 sub-records) holds the NPC's package list in priority order.
@@ -116,18 +124,20 @@ re-evaluation — an NPC picked for a 20:00-22:00 sandbox slot keeps that
 `SandboxBehavior` tag forever, regardless of in-game time passing. Of
 the FO3/FNV procedure enum's values, only `PROCEDURE_SANDBOX = 12`
 (`ai.rs`), `PROCEDURE_WANDER = 5` (`ai.rs`, M42.3),
-`PROCEDURE_TRAVEL = 6` (`ai.rs`, M42.4), and `PROCEDURE_FOLLOW = 1`
-(`ai.rs`, M42.5) have a name and a consumer; the other ~13
-(Find/Escort/Eat/Sleep/Accompany/UseItemAt/Ambush/
+`PROCEDURE_TRAVEL = 6` (`ai.rs`, M42.4), `PROCEDURE_FOLLOW = 1`
+(`ai.rs`, M42.5), and `PROCEDURE_ESCORT = 2` (`ai.rs`, M42.6) have a
+name and a consumer; the other ~12
+(Find/Eat/Sleep/Accompany/UseItemAt/Ambush/
 FleeNotCombat/CastMagic/Patrol/Guard/Dialogue/UseWeapon) are captured
 as a raw integer and dispatched nowhere. `active_package_is_sandbox`/
 `active_sandbox_location`, `active_package_is_wander`/
 `active_wander_location`, `active_package_is_travel`/
-`active_travel_location`, and `active_package_is_follow`/
-`active_follow_target` are independent mirror quadruples — since an
-NPC's active package is always a single winning `PackRecord`
-(`active_package`'s `find`), the four checks are naturally mutually
-exclusive per actor with no extra guard logic needed.
+`active_travel_location`, `active_package_is_follow`/
+`active_follow_target`, and `active_package_is_escort`/
+`active_escort_target`/`active_escort_location` are independent mirror
+groups — since an NPC's active package is always a single winning
+`PackRecord` (`active_package`'s `find`), the five checks are naturally
+mutually exclusive per actor with no extra guard logic needed.
 
 ## 5. Sandbox seating
 
@@ -302,17 +312,64 @@ once (a target that spawns late, or despawns after resolution, is never
 retried); no combat/dialogue/relationship gating beyond straight-line
 stand-off distance.
 
+## 9. Escort locomotion (M42.6)
+
+The fourth consumer of `step_toward`, and the first M42 procedure that
+needed **no new sub-record decode work** — it's built entirely from two
+pieces already parsed for prior milestones: `PTDT` (who to collect, the
+same read Follow does) and `PLDT` (where to lead them, the same read
+Travel does), both landing on one `EscortBehavior`
+(`crates/core/src/ecs/components/escort.rs`). Wired at `npc_spawn.rs`
+alongside Sandbox/Wander/Travel/Follow: `active_package_is_escort` +
+`active_escort_target` + `active_escort_location` gate the insert,
+reusing the same `game_hour`/`condition_met` closure.
+
+`escort_system` (`byroredux/src/systems/escort.rs`, opt-in via
+`BYRO_ESCORT=1`) runs a two-phase state machine per actor:
+
+1. **Collect** — resolve the PTDT target once (exactly like
+   `follow_system`), then re-read its live `GlobalTransform` every tick
+   and walk toward it until within `ESCORT_COLLECT_DISTANCE` (128
+   units).
+2. **Lead** — once collected, resolve the PLDT destination exactly once
+   (reusing `travel_system`'s `resolve_destination` shape verbatim:
+   `NearReference`-type FormID first, `wander_system::pick_wander_target`
+   hash-pick fallback within `EscortBehavior::destination_radius`
+   otherwise), freeze it in `EscortState::destination`, and walk there
+   — tagging the actor `Escorted` (a terminal one-shot marker,
+   mirroring `Traveled`) on arrival.
+
+The one deliberate behavioral difference from Follow: **Escort skips
+straight to the lead phase when there's nothing to collect** — no
+`target_form_id`, a resolution miss, or a despawned target all fall
+through to "just go to the destination" rather than Follow's "stand
+still forever." This is a considered departure, not an oversight:
+Escort's whole point is reaching a destination, and per `ai.rs`'s own
+PLDT doc, most FO3/FNV packages carry one regardless of PTDT — treating
+"nobody to escort" as "silently give up on the destination too" would
+throw away the more useful half of the package.
+
+v0 scope, mirroring Follow/Travel: no animation-clip swap; no
+per-frame package re-evaluation; target-entity resolution happens only
+once (not retried on a later miss); destination is frozen once resolved
+(a `NearReference` destination that moves after resolution isn't
+re-tracked, unlike the live collect phase); no `PTD2` (two-target
+Escort variants aren't decoded, so v0 only ever escorts one actor); one
+settle tick on the collect→lead transition is avoided by resolving and
+taking the first lead-phase step on the same tick collection completes
+(mirrors `travel_system` moving on the tick it resolves).
+
 ## What's not covered / honest state
 
-- **Four procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
-  (M42.4), and Follow (M42.5). No Escort/Guard/Patrol/etc. runtime
-  exists anywhere in the engine.
+- **Five procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
+  (M42.4), Follow (M42.5), and Escort (M42.6). No Guard/Patrol/etc.
+  runtime exists anywhere in the engine.
 - **No general AI tick.** `byroredux/src/systems/` has no `ai.rs` /
   `behavior.rs` / `npc.rs`; `sandbox_seat_system`, `wander_system`,
-  `travel_system`, and `follow_system` are the only AI-adjacent
-  per-frame systems, and none is part of the default scheduler — they
-  require `BYRO_SANDBOX_SIT=1` / `BYRO_WANDER=1` / `BYRO_TRAVEL=1` /
-  `BYRO_FOLLOW=1` respectively.
+  `travel_system`, `follow_system`, and `escort_system` are the only
+  AI-adjacent per-frame systems, and none is part of the default
+  scheduler — they require `BYRO_SANDBOX_SIT=1` / `BYRO_WANDER=1` /
+  `BYRO_TRAVEL=1` / `BYRO_FOLLOW=1` / `BYRO_ESCORT=1` respectively.
 - **Selection is spawn-time-only.** No package re-evaluation as game
   time advances — `CTDA` conditions *are* now evaluated (M42.2), but
   only once, against the game hour and world state at spawn. `PTD2`
@@ -326,6 +383,7 @@ This is the M42 *bootstrap*, by its own module docs' framing — "v0 is
 sit in the nearest free chair, once" for Sandbox, "v0 is walk to a
 random point, pause, repeat" for Wander, "v0 is walk to a destination
 once, stop" for Travel, "v0 is chase a live target, hold a stand-off
-distance" for Follow. Anyone building on this pipeline should treat
-package selection and procedure dispatch as a proof of concept, not a
-general AI system.
+distance" for Follow, "v0 is collect a live target then walk it to a
+destination once" for Escort. Anyone building on this pipeline should
+treat package selection and procedure dispatch as a proof of concept,
+not a general AI system.

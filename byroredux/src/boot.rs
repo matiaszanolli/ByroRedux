@@ -422,6 +422,15 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::FollowBehavior>();
     world.register::<byroredux_core::ecs::components::FollowState>();
 
+    // M42.6 — pre-register the Escort marker + runtime-state + terminal
+    // storages so `escort_system`'s `query::<EscortBehavior>()` skip-scan,
+    // `query_mut::<EscortState>().insert(...)`, and
+    // `query_mut::<Escorted>().insert(...)` resolve even before the first
+    // escorting actor spawns.
+    world.register::<byroredux_core::ecs::components::EscortBehavior>();
+    world.register::<byroredux_core::ecs::components::EscortState>();
+    world.register::<byroredux_core::ecs::components::Escorted>();
+
     // Register scripting component storages.
     byroredux_scripting::register(&mut world);
 
@@ -742,6 +751,20 @@ pub(crate) fn build_scheduler() -> Scheduler {
     if std::env::var_os("BYRO_FOLLOW").is_some() {
         log::info!("BYRO_FOLLOW set — enabling NPC follow locomotion (M42.5 v0)");
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::follow_system);
+    }
+    // M42.6 — Escort locomotion. GATED OFF by default (opt in with
+    // `BYRO_ESCORT=1`), mirroring `BYRO_FOLLOW`/`BYRO_TRAVEL`/`BYRO_WANDER`
+    // above. Shares the same `step_toward` locomotion primitive across two
+    // phases — collect a live PTDT target (like Follow), then lead it to a
+    // frozen PLDT destination and stop (like Travel, terminal `Escorted`
+    // marker) — see `systems::escort` module docs for the full mechanism
+    // and v0-scope list. Same exclusive PostUpdate lane, after transform
+    // propagation; Sandbox/Wander/Travel/Follow/Escort never touch the
+    // same actor (a single winning `PackRecord` per NPC), so relative
+    // order among the five doesn't matter.
+    if std::env::var_os("BYRO_ESCORT").is_some() {
+        log::info!("BYRO_ESCORT set — enabling NPC escort locomotion (M42.6 v0)");
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::escort_system);
     }
     // PostUpdate ordering contract (#1375 invariant pin):
     //   1. transform_propagation — BFS GlobalTransform composition
