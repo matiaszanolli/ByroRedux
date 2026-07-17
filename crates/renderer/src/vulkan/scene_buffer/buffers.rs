@@ -31,6 +31,13 @@ pub(super) struct LightHeader {
 pub struct SceneBuffers {
     /// One SSBO per frame-in-flight (header + light array).
     pub(super) light_buffers: Vec<GpuBuffer>,
+    /// Sibling dirty-gate for [`SceneBuffers::upload_lights`] — light
+    /// buffers are only a few KB/frame so the win is small, but this
+    /// closes the one per-frame SSBO upload that was still
+    /// unconditional while `upload_instances`/`upload_materials`/
+    /// `upload_indirect_draws` had already gained the gate.
+    /// See #2036 / PERF-D4-01 and #878 for the template.
+    pub(super) last_uploaded_light_hash: [Option<u64>; MAX_FRAMES_IN_FLIGHT],
     /// One UBO per frame-in-flight (camera data).
     pub(super) camera_buffers: Vec<GpuBuffer>,
     /// DEVICE_LOCAL | STORAGE_BUFFER bone palette per frame-in-flight.
@@ -830,6 +837,7 @@ impl SceneBuffers {
             last_uploaded_material_hash: [None; MAX_FRAMES_IN_FLIGHT],
             last_uploaded_instance_hash: [None; MAX_FRAMES_IN_FLIGHT],
             last_uploaded_indirect_hash: [None; MAX_FRAMES_IN_FLIGHT],
+            last_uploaded_light_hash: [None; MAX_FRAMES_IN_FLIGHT],
         })
     }
 }

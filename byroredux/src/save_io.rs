@@ -608,7 +608,11 @@ pub fn execute_pending_save_loads(
     let registry = build_save_registry();
 
     // Build asset providers from the boot CLI args (same BSAs the engine
-    // is running with) — matches the cell-transition path.
+    // is running with) — matches the cell-transition path. #2039 /
+    // PERF-D7-02: this rebuild discards the same warm BGSM/BGEM/CSG
+    // caches `step_cell_transition`'s identical rebuild does — see the
+    // caching design note on `App::step_cell_transition` in
+    // `app_step.rs` for the shape a shared cache should take.
     let args = crate::cli_args::effective_args();
     let tex_provider = crate::asset_provider::build_texture_provider(&args);
     let mut mat_provider = crate::asset_provider::build_material_provider(&args);

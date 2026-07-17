@@ -3720,14 +3720,13 @@ impl VulkanContext {
             }
         }
 
-        // Bloom UBOs — same fold (#1397 / NCPS-03). Per-mip extents are
-        // known pre-render-pass; only the input_view descriptor update
-        // (which depends on the render-pass HDR output) stays in dispatch().
-        if let Some(ref mut bloom) = self.bloom {
-            if let Err(e) = bloom.upload_params(&self.device, frame) {
-                log::warn!("bloom upload_params failed: {e}");
-            }
-        }
+        // Bloom UBOs — #2037 / GPU-D5-01: every down/upsample param UBO
+        // is a pure function of the (construction-time-fixed) mip
+        // extents, so `BloomPipeline::new` writes them once and a
+        // resize (which rebuilds the whole pipeline) re-enters that
+        // same write. No per-frame upload needed here; only the
+        // input_view descriptor update (which depends on the
+        // render-pass HDR output) stays in dispatch().
 
         // Barrier: make the instance SSBO host write (and any remaining
         // light/camera/bone host writes) visible to the vertex + fragment

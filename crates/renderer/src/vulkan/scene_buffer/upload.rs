@@ -9,7 +9,9 @@ use byroredux_core::ecs::components::MAX_BONES_PER_MESH;
 use super::super::allocator::SharedAllocator;
 use super::super::buffer::GpuBuffer;
 use super::buffers::LightHeader;
-use super::descriptors::{hash_indirect_slice, hash_instance_slice, hash_material_slice};
+use super::descriptors::{
+    hash_indirect_slice, hash_instance_slice, hash_light_slice, hash_material_slice,
+};
 use super::*;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -30,6 +32,24 @@ impl super::buffers::SceneBuffers {
                 MAX_LIGHTS,
             );
         }
+        // #2036 / PERF-D4-01 — dirty-gate via content hash, mirror of
+        // #1134's upload_instances / #878's upload_materials / #1809's
+        // upload_indirect_draws gates. Light buffers are only a few KB/
+        // frame so the win is small, and the gate will often miss on
+        // flickering-light content (a torch's color/radius changing
+        // every frame defeats it by design) — but static interiors with
+        // no dynamic lights produce a byte-identical slice each frame,
+        // and this closes the one per-frame SSBO upload that hadn't
+        // gained the sibling gate yet. Hash is computed over the clamped
+        // prefix actually written (`lights[..count]`), so an overflow
+        // that drops trailing lights still re-uploads when the kept
+        // prefix changes, and a count change (including to/from zero)
+        // always changes the hashed byte length.
+        let hash = hash_light_slice(&lights[..count]);
+        if self.last_uploaded_light_hash[frame_index] == Some(hash) {
+            return Ok(());
+        }
+
         let header = LightHeader {
             count: count as u32,
             _pad: [0; 3],
@@ -80,7 +100,12 @@ impl super::buffers::SceneBuffers {
 
         // F8 (#1587) — flush only the written prefix (header + live lights),
         // not the whole allocation, on non-coherent host-visible memory.
-        buf.flush_range(device, 0, (header_size + light_size * count) as vk::DeviceSize)
+        buf.flush_range(device, 0, (header_size + light_size * count) as vk::DeviceSize)?;
+        // Stamp the hash AFTER a successful flush — a flush failure
+        // leaves the buffer in an indeterminate state, so we want the
+        // next call to re-upload rather than skip.
+        self.last_uploaded_light_hash[frame_index] = Some(hash);
+        Ok(())
     }
 
     /// Upload camera data for the current frame-in-flight.

@@ -251,7 +251,40 @@ impl App {
     /// Provider construction is per-transition: rebuilding from CLI
     /// args matches the boot-time `scene::setup_scene` pattern. The
     /// cost is a few-hundred-ms BSA re-open per transition, acceptable
-    /// for the single-trigger door flow.
+    /// for the single-trigger door flow reachable today only via the
+    /// `door.teleport` console command.
+    ///
+    /// ## #2039 / PERF-D7-02 — caching design note
+    ///
+    /// `build_texture_provider`/`build_material_provider` (called fresh
+    /// here, and identically in [`crate::save_io::execute_pending_save_loads`])
+    /// discard the BGSM/BGEM template cache, `MaterialProvider::csg_cache`,
+    /// and `MaterialProvider::sf_cdbs` on every call — each rebuild
+    /// re-opens and re-parses the same BSA/BA2 archives the previous
+    /// provider already warmed. Fine for a single console-triggered
+    /// transition; becomes a real per-door cost once Stage 4 interactive
+    /// door activation ships (every door use pays the rebuild).
+    ///
+    /// Not implemented yet — not urgent before Stage 4 — but the shape
+    /// this should take when it lands:
+    ///
+    /// * **Cache key**: the loaded-plugin-set identity (the `masters` +
+    ///   `esm_path` combination CLI args resolve to), not the CLI args
+    ///   string itself — two transitions with the same effective plugin
+    ///   set should share a provider even if `--esm`/`--master` ordering
+    ///   differs.
+    /// * **Storage**: an `Option<(PluginSetKey, TextureProvider,
+    ///   MaterialProvider)>` slot on `App` (this struct), checked before
+    ///   the `build_*_provider` calls here and in `save_io`'s sibling
+    ///   call site; rebuild only on a key miss.
+    /// * **Invalidation**: any plugin-set change (different `--esm`,
+    ///   added/removed `--master`) must miss the cache — stale archives
+    ///   held open across a plugin swap would resolve textures/materials
+    ///   against the wrong content.
+    /// * **Lifetime interaction**: `drain_streaming_state` currently
+    ///   drops the streaming state's owned providers as part of teardown;
+    ///   caching means that ownership needs to move to `App` instead, so
+    ///   teardown no longer implies "provider goes away."
     pub(crate) fn step_cell_transition(&mut self) {
         let Some(ctx) = self.renderer.as_mut() else {
             return;

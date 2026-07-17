@@ -354,3 +354,28 @@ pub(super) fn hash_indirect_slice(draws: &[ash::vk::DrawIndexedIndirectCommand])
     hasher.write(bytes);
     hasher.finish()
 }
+
+/// Sibling of [`hash_instance_slice`] / [`hash_material_slice`] /
+/// [`hash_indirect_slice`] for the [`SceneBuffers::upload_lights`]
+/// dirty-gate (#2036 / PERF-D4-01). Light buffers are only a few KB/frame
+/// so the win is small, but this closes the one per-frame SSBO upload
+/// that was still unconditional while every sibling had already gained
+/// the gate.
+///
+/// `GpuLight` is `#[repr(C)]` with four plain `[f32; 4]` fields and no
+/// implicit padding, so the raw byte-slice cast is sound for the same
+/// reason `hash_material_slice`'s is. The hash covers the clamped
+/// prefix actually written (`lights[..count]`), so its length changing
+/// (e.g. the scene going from N lights to 0) always changes the hash
+/// even though the `LightHeader.count` the hash doesn't directly cover
+/// is a pure function of that same length.
+pub(super) fn hash_light_slice(lights: &[super::gpu_types::GpuLight]) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = rustc_hash::FxHasher::default();
+    let byte_size = std::mem::size_of_val(lights);
+    // SAFETY: see hash_material_slice — same invariant on the producer
+    // side; `GpuLight` has no implicit padding (four `[f32; 4]` fields).
+    let bytes: &[u8] = unsafe { std::slice::from_raw_parts(lights.as_ptr() as *const u8, byte_size) };
+    hasher.write(bytes);
+    hasher.finish()
+}

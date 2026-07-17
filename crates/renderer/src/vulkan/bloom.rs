@@ -375,6 +375,19 @@ impl BloomPipeline {
             partial.frames.push(frame);
         }
 
+        // #2037 / GPU-D5-01 — every down/upsample param UBO is a pure
+        // function of `screen_extent` (via `partial.extent` and each
+        // mip's own fixed extent), so it only needs writing once here
+        // rather than every frame in `draw_frame`. A resize tears down
+        // and rebuilds the whole `BloomPipeline` (see
+        // `context/resize.rs`), which re-enters this constructor, so
+        // this single write-at-construction covers both the initial
+        // build and every resize — there is no separate "on resize"
+        // path to keep in sync.
+        for frame_idx in 0..MAX_FRAMES_IN_FLIGHT {
+            try_or_cleanup!(partial.upload_params(device, frame_idx));
+        }
+
         log::info!(
             "Bloom pipeline created: {} mip levels (down 0..{}, up 0..{}), top extent {}x{}",
             BLOOM_MIP_COUNT,
@@ -443,11 +456,15 @@ impl BloomPipeline {
     /// transition handles that for the composite HDR.
     /// Write per-mip UBOs into the mapped host-visible param buffers.
     ///
-    /// Must be called BEFORE the pre-render-pass bulk HOST→{VS|FS|COMPUTE}
-    /// barrier in `draw_frame` so host writes fold into that barrier's
-    /// existing execution dependency. Mirrors the SVGF/TAA fold (#961).
-    /// The descriptor update for `input_view` (HDR scene output) still
-    /// happens inside `dispatch` because it depends on the render pass.
+    /// #2037 / GPU-D5-01 — every down/upsample param is a pure function
+    /// of `self.extent` and the (construction-time-fixed) per-mip
+    /// extents, so this is called once per frame-in-flight from
+    /// `new_inner` rather than every `draw_frame` call. A resize
+    /// rebuilds the whole `BloomPipeline`, which re-enters `new_inner`
+    /// and so re-runs this write — there is no separate steady-state
+    /// caller. The descriptor update for `input_view` (HDR scene
+    /// output) still happens inside `dispatch` because it depends on
+    /// the render pass, unlike these UBOs.
     pub fn upload_params(&mut self, device: &ash::Device, frame: usize) -> Result<()> {
         let f = &mut self.frames[frame];
         for i in 0..BLOOM_MIP_COUNT {
@@ -487,9 +504,9 @@ impl BloomPipeline {
         Ok(())
     }
 
-    /// Dispatch bloom. [`Self::upload_params`] must have been called this
-    /// frame BEFORE the pre-render-pass bulk barrier so the UBO writes are
-    /// covered by that barrier's HOST→COMPUTE execution dependency.
+    /// Dispatch bloom. [`Self::upload_params`] wrote the param UBOs once
+    /// at construction (#2037 / GPU-D5-01) — no per-frame upload needed
+    /// before this call.
     ///
     /// # Safety
     ///
@@ -989,3 +1006,55 @@ fn create_mip(
 // folded all shared constants into the build.rs codegen path. Canonical checks:
 //   shader_constants::tests::affected_shaders_include_constants_header
 //   shader_constants::tests::generated_header_contains_all_defines
+
+#[cfg(test)]
+mod construction_invariant_upload_tests {
+    //! Regression for #2037 / GPU-D5-01 — `upload_params` rewrote all 9
+    //! down/upsample param UBOs every frame even though they're a pure
+    //! function of `self.extent`, fixed at construction. `BloomPipeline`
+    //! needs a live Vulkan device to exercise end-to-end, so this pins
+    //! the fix at the source level — the same pattern already used by
+    //! `light_overflow_tests` for another Vulkan-untestable invariant.
+
+    /// `new_inner` must call `upload_params` once per frame-in-flight so
+    /// every UBO is populated before the first `dispatch`, without
+    /// `draw_frame` having to call it again every frame.
+    #[test]
+    fn new_inner_writes_params_once_per_frame_in_flight() {
+        let src = include_str!("bloom.rs");
+        let new_inner_start = src
+            .find("fn new_inner(")
+            .expect("new_inner must exist in bloom.rs");
+        let upload_params_start = src
+            .find("pub fn upload_params(")
+            .expect("upload_params must exist in bloom.rs");
+        assert!(
+            new_inner_start < upload_params_start,
+            "test assumes new_inner is declared before upload_params in bloom.rs"
+        );
+        let new_inner_body = &src[new_inner_start..upload_params_start];
+
+        assert!(
+            new_inner_body.contains("partial.upload_params(device, frame_idx)"),
+            "new_inner must write every frame-in-flight's param UBOs once at \
+             construction (#2037 / GPU-D5-01) — mirroring the per-frame-in-flight \
+             loop already used for `BloomFrame::new`"
+        );
+    }
+
+    /// `draw_frame`'s per-frame UBO section (composite/SVGF/TAA) must
+    /// NOT call `bloom.upload_params` — the whole point of #2037 is that
+    /// bloom's param UBOs are written once at construction, not every
+    /// frame like its siblings.
+    #[test]
+    fn draw_frame_does_not_re_upload_bloom_params_every_frame() {
+        let src = include_str!("context/draw.rs");
+        assert!(
+            !src.contains("bloom.upload_params"),
+            "draw_frame must not call bloom.upload_params per-frame — bloom's \
+             param UBOs are construction-invariant and written once in \
+             BloomPipeline::new_inner (#2037 / GPU-D5-01). A per-frame call here \
+             would silently reintroduce the redundant rewrite."
+        );
+    }
+}

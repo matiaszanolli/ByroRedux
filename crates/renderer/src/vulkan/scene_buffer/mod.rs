@@ -34,6 +34,8 @@ mod indirect_hash_tests;
 #[cfg(test)]
 mod instance_hash_tests;
 #[cfg(test)]
+mod light_hash_tests;
+#[cfg(test)]
 mod light_overflow_tests;
 #[cfg(test)]
 mod material_hash_tests;
