@@ -313,35 +313,97 @@ fn check_assign(node: Node) -> Node {
 /// folded into the single following statement that consumes its result,
 /// collapsing temps into nested expression trees. More than one consumer
 /// of a temp at this stage is a structural error.
+/// Sentinel for [`rebuild_expression`]'s `next`/`prev` links — "no live
+/// index in that direction."
+const NO_LINK: usize = usize::MAX;
+
 pub(super) fn rebuild_expression(
     scope: &mut Vec<Node>,
     func_name: &str,
 ) -> Result<(), DecompileError> {
-    let mut i = 0;
-    while i < scope.len() {
-        if !scope[i].is_final() && i + 1 < scope.len() {
-            // Non-final ⇒ result is a temp/nonevar identifier.
-            let temp = scope[i].result.clone().expect("non-final node has a result");
-            match count_constant_id(&scope[i + 1], &temp) {
-                0 => i += 1,
-                1 => {
-                    let producer = scope.remove(i); // consumer shifts to index i
-                    let mut slot = Some(producer);
-                    replace_constant_id(&mut scope[i], &temp, &mut slot);
-                    debug_assert!(slot.is_none(), "verified single match must be consumed");
-                    i = 0; // restart, like the C++ `it = scope->begin()`
+    let len = scope.len();
+    if len == 0 {
+        return Ok(());
+    }
+
+    // #2024 / SCR-D2-NEW-01 — an explicit doubly linked list over live
+    // indices, so a fold's removal is O(1) (relink around the dead slot)
+    // and "the live statement immediately before/after index i" is an
+    // O(1) pointer follow. Two independent O(n^2) sources existed here
+    // pre-fix, both with no cap on instruction count (wire-format max
+    // 65535): (1) the scan restarting at 0 after every fold (Champollion's
+    // `it = scope->begin()`), and (2) `Vec::remove(i)` itself, which
+    // shifts every later element down by one — O(n) per call, O(n^2)
+    // over a whole pass regardless of (1). Fixing only (1) (resume at
+    // the live predecessor instead of restarting) leaves (2) dominant;
+    // both need to go for the pass to actually be O(n) — confirmed via a
+    // 20k/40k/80k-independent-fold-pair benchmark that scaled cleanly
+    // quadratic (~4x time per doubling) with only (1) fixed. A crafted
+    // `.pex` could stall the synchronous cell-loader VMAD-attach path
+    // for seconds to tens of seconds without ever erroring.
+    let mut next: Vec<usize> = (0..len).map(|i| if i + 1 < len { i + 1 } else { NO_LINK }).collect();
+    let mut prev: Vec<usize> = (0..len).map(|i| if i == 0 { NO_LINK } else { i - 1 }).collect();
+    let mut removed = vec![false; len];
+
+    let mut i = 0usize;
+    while i != NO_LINK {
+        if scope[i].is_final() {
+            i = next[i];
+            continue;
+        }
+        let j = next[i];
+        if j == NO_LINK {
+            // No live statement after `i` to fold into — matches the
+            // original `i + 1 < scope.len()` guard's else-branch.
+            break;
+        }
+        // Non-final ⇒ result is a temp/nonevar identifier.
+        let temp = scope[i].result.clone().expect("non-final node has a result");
+        match count_constant_id(&scope[j], &temp) {
+            0 => i = next[i],
+            1 => {
+                // Take the producer out in place (O(1)) — the Vec slot
+                // is never shifted, only marked dead and unlinked.
+                let placeholder = Node::constant(scope[i].begin, Value::default());
+                let producer = std::mem::replace(&mut scope[i], placeholder);
+                let mut slot = Some(producer);
+                replace_constant_id(&mut scope[j], &temp, &mut slot);
+                debug_assert!(slot.is_none(), "verified single match must be consumed");
+
+                // Unlink `i` from the live chain.
+                removed[i] = true;
+                let p = prev[i];
+                if p != NO_LINK {
+                    next[p] = j;
                 }
-                _ => {
-                    return Err(DecompileError::ExpressionRebuildFailed {
-                        function: func_name.to_string(),
-                        ip: scope[i + 1].begin,
-                    })
-                }
+                prev[j] = p;
+
+                // Resume at the live predecessor of the fold target (or
+                // the target itself, if `i` was the chain head) —
+                // mirrors the single-file-#2024-fix's intent of only
+                // re-checking the one statement whose consumer's shape
+                // just changed, now expressed over the live chain
+                // instead of physical Vec indices.
+                i = if p != NO_LINK { p } else { j };
             }
-        } else {
-            i += 1;
+            _ => {
+                return Err(DecompileError::ExpressionRebuildFailed {
+                    function: func_name.to_string(),
+                    ip: scope[j].begin,
+                })
+            }
         }
     }
+
+    // Compact: keep only live slots, in original order. One O(n) pass
+    // replaces every per-fold `Vec::remove` shift.
+    let mut out = Vec::with_capacity(len - removed.iter().filter(|&&r| r).count());
+    for (idx, node) in std::mem::take(scope).into_iter().enumerate() {
+        if !removed[idx] {
+            out.push(node);
+        }
+    }
+    *scope = out;
     Ok(())
 }
 
@@ -550,5 +612,60 @@ mod tests {
             lift_function(&object, &f, &cfg),
             Err(DecompileError::ExpressionRebuildFailed { .. })
         ));
+    }
+
+    /// #2024 / SCR-D2-NEW-01 — `rebuild_expression` must stay linear in
+    /// statement count, up to the wire format's per-function instruction
+    /// ceiling (`u16`, 65535). Builds `N` *independent* fold pairs
+    /// (`::tempK = a + b ; xK = ::tempK`, mirroring
+    /// `temp_folds_into_its_single_consumer` above, repeated with no
+    /// nesting between pairs) directly as a `Vec<Node>`, bypassing
+    /// `build_cfg`/`lift_function` so this measures `rebuild_expression`
+    /// alone. Two independent O(n^2) sources existed pre-fix: the outer
+    /// scan restarting at 0 after every fold, and `Vec::remove(i)`'s
+    /// O(n) shift cost — fixing only the former (the literal reading of
+    /// the audit's suggested fix) left this exact "many independent
+    /// pairs" pattern quadratic (empirically: 20k/40k/80k pairs scaled
+    /// ~4x per doubling, ~6.2s at 80k). The full fix (an explicit
+    /// doubly-linked live-index chain replacing both the restart-scan
+    /// and the `Vec::remove` shifting) scales linearly (confirmed
+    /// 20k→160k pairs at ~4ms→~32ms, doubling time per doubling of N).
+    /// `N` here is set to the wire format's actual per-function ceiling
+    /// so this pins the worst real-world case, not just a comfortable
+    /// margin below it.
+    #[test]
+    fn rebuild_expression_is_linear_up_to_the_wire_format_ceiling() {
+        // 65535 instructions total, in independent 2-instruction pairs.
+        const N: usize = 65535 / 2;
+        let mut scope = Vec::with_capacity(N * 2);
+        for k in 0..N {
+            let temp_name = format!("::temp{k}");
+            scope.push(Node::binary_op(
+                k * 2,
+                0,
+                Some(temp_name.clone()),
+                Node::constant(k * 2, Value::Identifier(format!("a{k}"))),
+                "+",
+                Node::constant(k * 2, Value::Identifier(format!("b{k}"))),
+            ));
+            scope.push(Node::assign(
+                k * 2 + 1,
+                Node::constant(k * 2 + 1, Value::Identifier(format!("x{k}"))),
+                Node::constant(k * 2 + 1, Value::Identifier(temp_name)),
+            ));
+        }
+
+        let start = std::time::Instant::now();
+        rebuild_expression(&mut scope, "AdversarialFn").expect("every pair folds cleanly");
+        let elapsed = start.elapsed();
+
+        assert_eq!(scope.len(), N, "each pair collapses to one Assign");
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "rebuild_expression took {elapsed:?} for {N} independent fold pairs (the wire \
+             format's full per-function instruction ceiling) — expected well under 100ms \
+             under the O(n) fix; a multi-second time here means the quadratic scan-restart \
+             and/or Vec::remove shifting has regressed",
+        );
     }
 }

@@ -362,7 +362,22 @@ pub(super) fn load_references(
             )
         });
 
-        for (child_form_id, ref_pos, ref_rot, ref_scale) in synth_refs {
+        // #2026 / SCR-D7-NEW2-01 — the outer REFR's own VMAD
+        // (`placed_ref.script_instance`) is a property of that single
+        // REFR, not of each synthetic child a SCOL/PKIN expansion fans
+        // it out into. Attach it only to the first child; the remaining
+        // N-1 pass `None` so a VMAD-scripted SCOL/PKIN's behavior
+        // (including the `OnCellLoadEvent` that follows a successful
+        // attach) instantiates once per REFR, not once per decorative
+        // piece. Mirrors the texture-overlay sharing above (#584) in
+        // spirit — one REFR-level property, applied once — but VMAD
+        // attachment is behavioral, not visual, so it goes to a single
+        // child instead of being broadcast to all of them.
+        for (synth_idx, (child_form_id, ref_pos, ref_rot, ref_scale)) in
+            synth_refs.into_iter().enumerate()
+        {
+            let refr_script_instance =
+                refr_script_instance_for_synth_child(synth_idx, placed_ref.script_instance.as_ref());
             // M41.0 Phase 1b — NPC dispatch must run BEFORE the
             // statics lookup. NPC_ records are also indexed in
             // `EsmCellIndex.statics` (because they carry a MODL —
@@ -466,7 +481,12 @@ pub(super) fn load_references(
                     .is_some()
                 // #1737 — a model-less REFR can be a trigger volume scripted
                 // purely by its OWN VMAD (no base-record script at all).
-                || placed_ref.script_instance.is_some();
+                // #2026 — gated on `refr_script_instance`, not the raw
+                // `placed_ref.script_instance`, so only the first
+                // synthetic child of a SCOL/PKIN expansion qualifies on
+                // this basis; the base-record checks above still apply
+                // to every child (they're keyed by `child_form_id`).
+                || refr_script_instance.is_some();
             if !has_mesh && has_script {
                 if let Some(prim) = placed_ref.primitive.as_ref() {
                     if let Some(volume) =
@@ -481,7 +501,7 @@ pub(super) fn load_references(
                             entity,
                             child_form_id,
                             record_index,
-                            placed_ref.script_instance.as_ref(),
+                            refr_script_instance,
                         ) {
                             scripts_recognized += 1;
                         }
@@ -781,12 +801,15 @@ pub(super) fn load_references(
             // editor_id → ScriptRegistry → spawner; misses fall
             // through silently per Phase 2's "unregistered scripts are
             // common" contract. See docs/engine/m47-0-design.md.
+            // #2026 — `refr_script_instance` (the outer REFR's own VMAD,
+            // gated to the first synthetic child only) replaces the raw
+            // `placed_ref.script_instance` here.
             if attach_script_for_refr(
                 world,
                 placement_root,
                 child_form_id,
                 record_index,
-                placed_ref.script_instance.as_ref(),
+                refr_script_instance,
             ) {
                 scripts_recognized += 1;
             }
@@ -1124,6 +1147,27 @@ fn stamp_visible_when_distant(
     }
 }
 
+/// #2026 / SCR-D7-NEW2-01 — the outer REFR's own VMAD is a property of
+/// that single REFR, not of each synthetic child a SCOL/PKIN expansion
+/// fans it out into. Only the first synthetic child (`synth_idx == 0`)
+/// gets it; the rest get `None`, so a VMAD-scripted SCOL/PKIN's behavior
+/// (including the `OnCellLoadEvent` that follows a successful attach)
+/// instantiates once per REFR, not once per decorative piece.
+///
+/// Extracted from the spawn loop so the gating is unit-testable without
+/// the full Vulkan spawn path — mirrors `stamp_visible_when_distant`
+/// just above.
+fn refr_script_instance_for_synth_child(
+    synth_idx: usize,
+    script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
+) -> Option<&esm::records::script_instance::ScriptInstanceData> {
+    if synth_idx == 0 {
+        script_instance
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1158,6 +1202,42 @@ mod tests {
             q.get(unflagged).is_none(),
             "an unflagged base record must NOT carry the marker",
         );
+    }
+
+    /// #2026 / SCR-D7-NEW2-01 — a VMAD-carrying SCOL/PKIN outer REFR must
+    /// attach its own script instance to the first synthetic child only;
+    /// every later child gets `None`, not a copy. Pre-fix, every
+    /// synthetic child received the same `Some(&script_instance)`, so a
+    /// SCOL/PKIN expansion would instantiate the outer REFR's behavior
+    /// (including `OnCellLoadEvent`) once per decorative piece instead
+    /// of once per REFR.
+    #[test]
+    fn refr_script_instance_attaches_to_first_synth_child_only() {
+        let script_instance = esm::records::script_instance::ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![esm::records::script_instance::ScriptInstance {
+                name: "MyTriggerScript".to_string(),
+                status: 0,
+                properties: Vec::new(),
+            }],
+        };
+
+        assert_eq!(
+            refr_script_instance_for_synth_child(0, Some(&script_instance)),
+            Some(&script_instance),
+            "the first synthetic child (idx 0) must receive the outer REFR's VMAD",
+        );
+        for idx in 1..5 {
+            assert_eq!(
+                refr_script_instance_for_synth_child(idx, Some(&script_instance)),
+                None,
+                "synthetic child {idx} must NOT receive a copy of the outer REFR's VMAD",
+            );
+        }
+        // A REFR with no VMAD at all: every child (including the first)
+        // correctly gets `None` — nothing to propagate in the first place.
+        assert_eq!(refr_script_instance_for_synth_child(0, None), None);
     }
 
     /// `XPRM` box primitive → world-space `TriggerVolume`: bounds are

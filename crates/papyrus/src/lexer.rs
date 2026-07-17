@@ -90,6 +90,22 @@ pub struct LexedToken {
 
 /// Lex the preprocessed source into a vector of tokens with spans.
 /// Spans are in preprocessed coordinates — use OffsetMap to convert back.
+///
+/// A lex failure (an out-of-range numeric literal per #1908, or any byte
+/// sequence matching no token pattern at all) still records a
+/// [`LexError`] for reporting, but ALSO pushes a synthetic `IntLit(0)`
+/// placeholder into `tokens` at that span rather than leaving a gap
+/// (#2025 / SCR-D4-NEW2-01). A gap would force every caller into an
+/// all-or-nothing choice — trust a token stream with a hole in it, or
+/// discard the whole lex — and `parse_script` chose the latter, which
+/// pre-#1908 rarely mattered (an out-of-range literal silently became
+/// `0` at the token level, so `lex_errors` was almost always empty) but
+/// post-#1908 turned "one bad literal anywhere in the file" into "zero
+/// AST for the entire file." The placeholder keeps the stream
+/// contiguous so `parser::Parser`'s own per-item recovery
+/// (`skip_to_next_line`) can isolate the damage to just the statement
+/// that referenced the bad literal, exactly as it already does for a
+/// parser-level (not lexer-level) error.
 pub fn lex(source: &str) -> (Vec<LexedToken>, Vec<LexError>) {
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
@@ -103,6 +119,10 @@ pub fn lex(source: &str) -> (Vec<LexedToken>, Vec<LexError>) {
             }
             Err(()) => {
                 errors.push(LexError { span });
+                tokens.push(LexedToken {
+                    token: Token::IntLit(0),
+                    span,
+                });
             }
         }
     }
@@ -198,6 +218,29 @@ mod tests {
         let big_float = format!("{}.0", "9".repeat(400));
         let (_t, e) = lex(&big_float);
         assert!(!e.is_empty(), "overflowing float must lex-error");
+    }
+
+    #[test]
+    fn test_lex_error_still_emits_a_placeholder_token() {
+        // #2025 / SCR-D4-NEW2-01 — a lex error must not leave a gap in
+        // `tokens`: `parse_script`'s per-item recovery needs something to
+        // consume at the error's position, or it can't isolate the
+        // damage to just the offending statement.
+        let src = format!("a = {} + 1", "9".repeat(40));
+        let (tokens, errors) = lex(&src);
+        assert_eq!(errors.len(), 1, "the oversized literal is the only lex error");
+        // Ident("a"), Assign, IntLit(0) [placeholder], Plus, IntLit(1) —
+        // same token count as if the literal had lexed cleanly.
+        assert_eq!(tokens.len(), 5, "the placeholder keeps the stream contiguous: {tokens:?}");
+        assert!(
+            matches!(&tokens[2].token, Token::IntLit(0)),
+            "expected an IntLit(0) placeholder at the error's position, got {:?}",
+            tokens[2].token
+        );
+        assert_eq!(
+            tokens[2].span, errors[0].span,
+            "the placeholder's span must match the error's span for diagnostics to line up"
+        );
     }
 
     #[test]

@@ -228,7 +228,7 @@ fn prim_set_objective_displayed(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetObjectiveDisplayed")?;
     let objective = u16::try_from(int_arg(args, 0)?).ok()?;
     // Optional 2nd arg `abDisplayed` defaults to true in Papyrus.
-    let displayed = bool_arg(args, 1).unwrap_or(true);
+    let displayed = bool_arg(args, 1)?.unwrap_or(true);
     Some(Effect::SetObjectiveDisplayed {
         quest: receiver_quest(object, scope)?,
         objective,
@@ -239,7 +239,7 @@ fn prim_set_objective_displayed(e: &Expr, scope: &Scope) -> Option<Effect> {
 fn prim_set_objective_completed(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetObjectiveCompleted")?;
     let objective = u16::try_from(int_arg(args, 0)?).ok()?;
-    let completed = bool_arg(args, 1).unwrap_or(true);
+    let completed = bool_arg(args, 1)?.unwrap_or(true);
     Some(Effect::SetObjectiveCompleted {
         quest: receiver_quest(object, scope)?,
         objective,
@@ -250,7 +250,7 @@ fn prim_set_objective_completed(e: &Expr, scope: &Scope) -> Option<Effect> {
 fn prim_set_objective_failed(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetObjectiveFailed")?;
     let objective = u16::try_from(int_arg(args, 0)?).ok()?;
-    let failed = bool_arg(args, 1).unwrap_or(true);
+    let failed = bool_arg(args, 1)?.unwrap_or(true);
     Some(Effect::SetObjectiveFailed {
         quest: receiver_quest(object, scope)?,
         objective,
@@ -294,8 +294,25 @@ fn quest_expr_ref(value: &Expr, scope: &Scope) -> Option<QuestRef> {
 
 /// A boolean positional argument — `Bool`/`Int` literal, unwrapping a
 /// cast (mirrors [`as_num`]'s tolerance).
-fn bool_arg(args: &[byroredux_papyrus::ast::CallArg], idx: usize) -> Option<bool> {
-    Some(as_num(&args.get(idx)?.value.node)? != 0.0)
+///
+/// Three-case contract (#2023 / SCR-D5-NEW2-01), matching the fix
+/// [`rumble::bool_prop`]/`float_prop` already got under #1909: `None`
+/// when the argument slot is present but `as_num` can't evaluate it (a
+/// local variable, `Not(...)`, a copy-propagated temp) — decline, the
+/// caller must NOT assume the Papyrus-side default applies, since the
+/// real runtime value is unknown. `Some(None)` when the slot is
+/// genuinely absent (the call omitted the optional argument) — safe to
+/// apply the default. `Some(Some(v))` when present and a literal.
+///
+/// Pre-fix, both "absent" and "present but non-literal" collapsed into
+/// a single `None` that every call site turned into the Papyrus default
+/// via `.unwrap_or(true)` — silently discarding a real (just unresolved)
+/// runtime value.
+fn bool_arg(args: &[byroredux_papyrus::ast::CallArg], idx: usize) -> Option<Option<bool>> {
+    match args.get(idx) {
+        None => Some(None),
+        Some(arg) => as_num(&arg.value.node).map(|n| Some(n != 0.0)),
+    }
 }
 
 #[cfg(test)]
@@ -403,6 +420,27 @@ mod tests {
                 displayed: false,
             }])
         );
+    }
+
+    #[test]
+    fn objective_non_literal_arg_declines_whole_fragment() {
+        // #2023 / SCR-D5-NEW2-01 — a present-but-non-literal 2nd argument
+        // (an ordinary local bool, unconstrained Papyrus unlike the
+        // auto-property-initializer case `bool_prop` guards) must NOT
+        // silently collapse into the Papyrus-side default `true`. Pre-fix
+        // `bool_arg` returned a single `None` for both "absent" and
+        // "present but unevaluable," so `.unwrap_or(true)` masked this
+        // exact case — asserting `completed: true` here would have
+        // passed both before and after the fix, so the meaningful
+        // assertion is that the whole fragment declines (`None`), not a
+        // specific wrong value.
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_5()\n\
+             Bool bWasSuccessful = true\n\
+             Self.SetObjectiveCompleted(20, bWasSuccessful)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
     }
 
     #[test]
