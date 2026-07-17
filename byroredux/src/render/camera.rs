@@ -74,6 +74,15 @@ pub(super) struct CameraView {
     /// World-space camera position — captured for particle billboard
     /// face-camera rotation.
     pub cam_pos: Vec3,
+    /// Camera-relative render origin (#markarth-precision) — cell-grid-
+    /// snapped `cam_pos` via `snap_render_origin`. Computed exactly once
+    /// here and threaded through `RenderFrameView` / `FrameInputs` to
+    /// `context::draw::draw_frame` (#2043 / PERF-D9-04) so the relative
+    /// `view_proj` built below and the per-instance model rebasing in
+    /// `draw_frame` are guaranteed to agree on the same origin — pre-fix
+    /// `draw_frame` independently recomputed this from a separately-
+    /// threaded `camera_pos`, an invariant only convention enforced.
+    pub render_origin: Vec3,
     /// Camera right vector in world space (unit length).
     pub cam_right: Vec3,
     /// Camera up vector in world space (unit length).
@@ -113,6 +122,7 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
     let mut proj_mat = Mat4::IDENTITY;
     let mut aperture = 0.0f32;
     let mut focus_dist = 20.0f32;
+    let mut render_origin = Vec3::ZERO;
 
     let (view_proj, frustum, vp_mat) = if let Some(active) = world.try_resource::<ActiveCamera>() {
         let cam_entity = active.0;
@@ -158,6 +168,7 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
         // vertex shader reconstructs absolute world position as
         // `worldPos_rel + render_origin`.
         let o = byroredux_renderer::vulkan::scene_buffer::snap_render_origin(cam_pos);
+        render_origin = o;
         let eye_rel = cam_pos - o;
         let vp_rel = proj_mat * Mat4::look_at_rh(eye_rel, eye_rel + cam_forward, cam_up);
         let frustum = FrustumPlanes::from_view_proj(vp_abs);
@@ -174,6 +185,7 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
         frustum,
         vp_mat,
         cam_pos,
+        render_origin,
         cam_right,
         cam_up,
         cam_forward,

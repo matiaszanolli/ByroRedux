@@ -417,13 +417,14 @@ impl ScratchRow {
 /// alongside `mesh_count` / `texture_count` on `DebugStats`). Read by
 /// the `ctx.scratch` console command.
 ///
-/// `rows` is a reused `Vec` — stabilises at the count of registered
-/// scratches (5 today) after the first frame, and is the *only*
-/// per-frame heap allocation in the telemetry path. Bounded by the
-/// number of declared scratches at the call site
-/// (`VulkanContext::fill_scratch_telemetry`), so it cannot itself
-/// exhibit the unbounded-growth pattern this resource is designed
-/// to catch.
+/// `rows` is a reused `Vec` — stabilises at one row per registered
+/// scratch after the first frame (see `VulkanContext::
+/// fill_scratch_telemetry` for the current, authoritative row count and
+/// list — it has grown since this was last counted, don't recount it
+/// here), and is the *only* per-frame heap allocation in the telemetry
+/// path. Bounded by the number of declared scratches at that call site,
+/// so it cannot itself exhibit the unbounded-growth pattern this
+/// resource is designed to catch.
 #[derive(Debug, Default)]
 pub struct ScratchTelemetry {
     pub rows: Vec<ScratchRow>,

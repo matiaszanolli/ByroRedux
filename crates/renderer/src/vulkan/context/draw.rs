@@ -347,6 +347,13 @@ pub struct FrameInputs<'a> {
     pub materials: &'a [GpuMaterial],
     /// Camera world position.
     pub camera_pos: [f32; 3],
+    /// Cell-grid-snapped render origin (`scene_buffer::snap_render_origin`
+    /// applied to the same un-jittered camera position used to build the
+    /// relative `view_proj`). Computed once by `render::camera::assemble_
+    /// camera` in the binary and threaded here so this consumer and that
+    /// one can't independently compute — and potentially disagree on —
+    /// the origin (#2043 / PERF-D9-04).
+    pub render_origin: [f32; 3],
     /// Ambient light color.
     pub ambient_color: [f32; 3],
     /// Linear fog color.
@@ -2189,6 +2196,7 @@ impl VulkanContext {
             bind_inverse_pending_uploads,
             materials,
             camera_pos,
+            render_origin: input_render_origin,
             ambient_color,
             fog_color,
             fog_near,
@@ -2568,20 +2576,23 @@ impl VulkanContext {
             self.swapchain_state.extent.height as f32,
         );
 
-        // Camera-relative render origin (#markarth-precision). MUST use the
-        // shared `RENDER_ORIGIN_SNAP` (#1494) and the same un-jittered
-        // `camera_pos` that `render::camera::assemble_camera` used to build
-        // the RELATIVE `view_proj`, so the rebased per-instance models below
-        // and the uploaded matrices agree on the origin. Uploaded `view_proj`
-        // / `inv_view_proj` are relative; the vertex shader reconstructs the
-        // absolute world position as `worldPos_rel + renderOrigin`. Passes
-        // that reconstruct world from an inverse VP either add the origin
-        // back where absolute space is required (cluster_cull,
-        // caustic_splat, volumetrics_inject) or stay fully relative with a
-        // relative camera position (ssao, composite — origin-invariant
-        // differences only). See `GpuCamera::render_origin` (#1492).
-        let render_origin =
-            scene_buffer::snap_render_origin(byroredux_core::math::Vec3::from_array(camera_pos));
+        // Camera-relative render origin (#markarth-precision). Computed
+        // ONCE by `render::camera::assemble_camera` (the same un-jittered
+        // camera position it used to build the RELATIVE `view_proj`) and
+        // threaded in via `FrameInputs::render_origin` (#2043 / PERF-D9-04)
+        // — this consumer no longer recomputes `snap_render_origin`
+        // independently, so the rebased per-instance models below and the
+        // uploaded matrices are structurally guaranteed to agree on the
+        // origin rather than relying on both call sites happening to be
+        // passed the same value. Uploaded `view_proj` / `inv_view_proj` are
+        // relative; the vertex shader reconstructs the absolute world
+        // position as `worldPos_rel + renderOrigin`. Passes that
+        // reconstruct world from an inverse VP either add the origin back
+        // where absolute space is required (cluster_cull, caustic_splat,
+        // volumetrics_inject) or stay fully relative with a relative
+        // camera position (ssao, composite — origin-invariant differences
+        // only). See `GpuCamera::render_origin` (#1492).
+        let render_origin = byroredux_core::math::Vec3::from_array(input_render_origin);
         // DOF aperture-disk jitter, or the pinhole pass-through. The bokeh
         // rationale and the #1525 degenerate-`focus_dist` guard live in
         // `dof_effective_view_proj`.

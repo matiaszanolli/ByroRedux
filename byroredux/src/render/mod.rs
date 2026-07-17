@@ -278,6 +278,11 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u8, u32, u32, u32
 pub(crate) struct RenderFrameView {
     pub view_proj: [f32; 16],
     pub camera_pos: [f32; 3],
+    /// Cell-grid-snapped render origin — computed once in
+    /// `camera::assemble_camera`, threaded to `FrameInputs` so
+    /// `context::draw::draw_frame` doesn't independently recompute it
+    /// from a separately-passed `camera_pos` (#2043 / PERF-D9-04).
+    pub render_origin: [f32; 3],
     pub ambient: [f32; 3],
     pub fog_color: [f32; 3],
     pub fog_near: f32,
@@ -409,6 +414,7 @@ pub(crate) fn build_render_data(
         frustum,
         vp_mat,
         cam_pos,
+        render_origin,
         cam_right,
         cam_up,
         cam_forward,
@@ -594,6 +600,7 @@ pub(crate) fn build_render_data(
     RenderFrameView {
         view_proj,
         camera_pos,
+        render_origin: render_origin.to_array(),
         ambient,
         fog_color,
         fog_near,
@@ -637,6 +644,8 @@ mod env_var_cache_tests;
 mod fog_curve_propagation_tests;
 #[cfg(test)]
 mod frustum_tests;
+#[cfg(test)]
+mod render_origin_shared_tests;
 #[cfg(test)]
 mod sort_key_tests;
 #[cfg(test)]

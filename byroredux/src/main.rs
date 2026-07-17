@@ -590,6 +590,7 @@ impl App {
                 bind_inverse_pending_uploads: &pending_with_data,
                 materials: self.material_table.materials(),
                 camera_pos: frame.camera_pos,
+                render_origin: frame.render_origin,
                 ambient_color: frame.ambient,
                 fog_color: frame.fog_color,
                 fog_near: frame.fog_near,

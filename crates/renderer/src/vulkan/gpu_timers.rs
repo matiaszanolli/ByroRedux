@@ -108,6 +108,17 @@ const Q_VOLUMETRICS_END: u32 = 23;
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
 /// first complete pipelined cycle.
+///
+/// **Upper bound, not a precise attribution (#2040 / PERF-D9-01).** Every
+/// bracket's START timestamp is written at `vk::PipelineStageFlags::
+/// TOP_OF_PIPE` (see the `cmd_*_start` methods below), the earliest point
+/// in the pipeline. If prior in-flight GPU work is still draining when a
+/// bracket's START command reaches the front of the queue, that queue-wait
+/// is absorbed into the bracket's reported time rather than attributed to
+/// whatever was still running. Each field is therefore a ceiling on that
+/// pass's true cost, not an exact figure — and the fields must NOT be
+/// summed into a "total GPU ms" without that caveat, since overlapping
+/// queue-wait could be double-counted across adjacent brackets.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GpuTimerSnapshot {
     pub skin_dispatch_ms: f32,
@@ -245,59 +256,79 @@ impl GpuPerFrameTimers {
     pub fn read_and_reset(&mut self, device: &ash::Device, frame: usize) {
         let pool = self.pools[frame];
         let bits = self.active_bits[frame];
-        // Read brackets individually. WAIT-reading the entire 24-query
-        // pool when only a subset was written blocks forever on the
-        // unwritten queries (Vulkan spec: VK_QUERY_RESULT_WAIT_BIT
-        // blocks until ALL queried results are available; reset-but-
-        // never-written queries never become available). The
-        // `active_bits` gate captures which START/END pairs were
-        // actually written; bracketed reads keep WAIT correct
-        // because the fence preceding `read_and_reset` proves any
-        // emitted timestamp has retired.
+        // #2041 / PERF-D9-02 — one batched read for the whole pool instead
+        // of up to twelve individual per-bracket `get_query_pool_results`
+        // calls (one driver round-trip each). Deliberately WITHOUT
+        // `WAIT`: WAIT-reading the full 24-query pool when only a subset
+        // was written blocks forever on the unwritten queries (Vulkan
+        // spec — VK_QUERY_RESULT_WAIT_BIT blocks until ALL queried
+        // results are available; reset-but-never-written queries never
+        // become available). Without WAIT the call is non-blocking and
+        // returns `VK_NOT_READY` whenever any query in the range lacks
+        // data — expected on every frame that skips a bracket, not an
+        // error — while still writing valid data into `ticks` for the
+        // queries that ARE available. The `active_bits` gate (set by
+        // each bracket's END writer) is what makes reading those slots
+        // sound: the fence preceding `read_and_reset` proves any bracket
+        // whose bit is set has retired, so its two ticks are valid
+        // regardless of the overall call's `VK_NOT_READY` result.
+        let mut ticks = [0u64; QUERIES_PER_FRAME as usize];
+        // SAFETY: `ticks` is sized to the full pool (`QUERIES_PER_FRAME`);
+        // `pool` is valid for this frame slot. Bracket slots this method
+        // reads are gated by `active_bits`, which is only set after the
+        // matching END writer retires (proven by the preceding fence
+        // wait); unwritten slots are never read below.
+        let read = unsafe {
+            device.get_query_pool_results(pool, 0, &mut ticks, vk::QueryResultFlags::TYPE_64)
+        };
+        if let Err(e) = read {
+            if e != vk::Result::NOT_READY {
+                log::warn!("GPU TIMESTAMP batched read failed: {e}");
+            }
+        }
+
+        let bracket_ms = |start: u32| -> f32 {
+            let s = ticks[start as usize];
+            let e = ticks[start as usize + 1];
+            e.saturating_sub(s) as f32 * self.ticks_to_ms
+        };
+
         let mut snap = GpuTimerSnapshot::default();
         if bits & BIT_SKIN_DISPATCH != 0 {
-            snap.skin_dispatch_ms =
-                Self::read_bracket(device, pool, Q_SKIN_DISPATCH_START, self.ticks_to_ms);
+            snap.skin_dispatch_ms = bracket_ms(Q_SKIN_DISPATCH_START);
         }
         if bits & BIT_BLAS_REFIT != 0 {
-            snap.skin_blas_refit_ms =
-                Self::read_bracket(device, pool, Q_BLAS_REFIT_START, self.ticks_to_ms);
+            snap.skin_blas_refit_ms = bracket_ms(Q_BLAS_REFIT_START);
         }
         if bits & BIT_TAA != 0 {
-            snap.taa_ms = Self::read_bracket(device, pool, Q_TAA_START, self.ticks_to_ms);
+            snap.taa_ms = bracket_ms(Q_TAA_START);
         }
         if bits & BIT_MAIN_RENDER != 0 {
-            snap.main_render_ms =
-                Self::read_bracket(device, pool, Q_MAIN_RENDER_START, self.ticks_to_ms);
+            snap.main_render_ms = bracket_ms(Q_MAIN_RENDER_START);
         }
         if bits & BIT_TLAS_BUILD != 0 {
-            snap.tlas_build_ms =
-                Self::read_bracket(device, pool, Q_TLAS_BUILD_START, self.ticks_to_ms);
+            snap.tlas_build_ms = bracket_ms(Q_TLAS_BUILD_START);
         }
         if bits & BIT_CLUSTER_CULL != 0 {
-            snap.cluster_cull_ms =
-                Self::read_bracket(device, pool, Q_CLUSTER_CULL_START, self.ticks_to_ms);
+            snap.cluster_cull_ms = bracket_ms(Q_CLUSTER_CULL_START);
         }
         if bits & BIT_SVGF != 0 {
-            snap.svgf_ms = Self::read_bracket(device, pool, Q_SVGF_START, self.ticks_to_ms);
+            snap.svgf_ms = bracket_ms(Q_SVGF_START);
         }
         if bits & BIT_COMPOSITE != 0 {
-            snap.composite_ms =
-                Self::read_bracket(device, pool, Q_COMPOSITE_START, self.ticks_to_ms);
+            snap.composite_ms = bracket_ms(Q_COMPOSITE_START);
         }
         if bits & BIT_SSAO != 0 {
-            snap.ssao_ms = Self::read_bracket(device, pool, Q_SSAO_START, self.ticks_to_ms);
+            snap.ssao_ms = bracket_ms(Q_SSAO_START);
         }
         if bits & BIT_BLOOM != 0 {
-            snap.bloom_ms = Self::read_bracket(device, pool, Q_BLOOM_START, self.ticks_to_ms);
+            snap.bloom_ms = bracket_ms(Q_BLOOM_START);
         }
         if bits & BIT_CAUSTIC_SPLAT != 0 {
-            snap.caustic_splat_ms =
-                Self::read_bracket(device, pool, Q_CAUSTIC_SPLAT_START, self.ticks_to_ms);
+            snap.caustic_splat_ms = bracket_ms(Q_CAUSTIC_SPLAT_START);
         }
         if bits & BIT_VOLUMETRICS != 0 {
-            snap.volumetrics_ms =
-                Self::read_bracket(device, pool, Q_VOLUMETRICS_START, self.ticks_to_ms);
+            snap.volumetrics_ms = bracket_ms(Q_VOLUMETRICS_START);
         }
         self.last_snapshot = snap;
 
@@ -308,40 +339,6 @@ impl GpuPerFrameTimers {
             device.reset_query_pool(pool, 0, QUERIES_PER_FRAME);
         }
         self.active_bits[frame] = 0;
-    }
-
-    /// Read one bracket (2 consecutive queries starting at
-    /// `start_query`) and return its elapsed time in milliseconds.
-    /// WAIT-safe because the caller only invokes this when both
-    /// queries were written (gated by `active_bits`).
-    fn read_bracket(
-        device: &ash::Device,
-        pool: vk::QueryPool,
-        start_query: u32,
-        ticks_to_ms: f32,
-    ) -> f32 {
-        let mut ticks = [0u64; 2];
-        // SAFETY: caller gates on the active bit, which was set by
-        // the END writer. END can only fire after START in the same
-        // command buffer (paired by construction in `cmd_*_start` /
-        // `cmd_*_end`). The fence preceding `read_and_reset` ensures
-        // both timestamps have retired; WAIT is therefore a no-op
-        // on the host but kept for spec compliance.
-        let result = unsafe {
-            device.get_query_pool_results(
-                pool,
-                start_query,
-                &mut ticks,
-                vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
-            )
-        };
-        match result {
-            Ok(()) => ticks[1].saturating_sub(ticks[0]) as f32 * ticks_to_ms,
-            Err(e) => {
-                log::warn!("GPU TIMESTAMP read failed (bracket @{start_query}): {e}");
-                0.0
-            }
-        }
     }
 
     /// Last snapshot read by [`Self::read_and_reset`]. Zero-defaulted
