@@ -6,7 +6,7 @@ Fourth in the cross-cutting series alongside [Pipeline Overview](pipeline-overvi
 record from cell-load spawn through AI package selection to an actor
 actually running behavior — and it's the most incomplete of the four.
 Say that up front rather than let the prose imply otherwise: of the
-~17-value FO3/FNV package-procedure enum, **exactly five procedures
+~17-value FO3/FNV package-procedure enum, **exactly seven procedures
 execute anything at runtime.** This doc documents what's real, not
 what's planned.
 
@@ -45,6 +45,14 @@ what's planned.
 > sub-record decode work** — it combines `PTDT` (from Follow) and `PLDT`
 > (from Travel) onto one component, running a two-phase collect-then-lead
 > state machine over the same `step_toward` primitive.
+>
+> **Update (M42.7 + M42.8, 2026-07-16).** Guard (type 14) and Patrol (type
+> 13) now have runtimes too — §10 and §11 below. Guard needs only `PLDT`,
+> and never reaches a terminal state (it holds a post indefinitely,
+> returning if displaced). Patrol runs no algorithm of its own at all — no
+> patrol-route data is decoded anywhere in this codebase, so v0 Patrol
+> calls `wander_system`'s shared oscillating-walk core directly rather
+> than duplicating it under a new name.
 
 ## 1. Spawn trigger: NPC_ vs. static
 
@@ -72,9 +80,9 @@ there. Components stamped on the placement root: `Name`,
 see [CHARAL](charal.md)), `CharacterLevel`/`Background`/`Perks`,
 `Inventory` + `EquipmentSlots`, `AnimationPlayer` (idle clip, kf-era
 only) — and, when the actor's packages include a Sandbox-, Wander-,
-Travel-, Follow-, or Escort-type entry, `SandboxBehavior`,
-`WanderBehavior`, `TravelBehavior`, `FollowBehavior`, or
-`EscortBehavior` respectively (§4).
+Travel-, Follow-, Escort-, Guard-, or Patrol-type entry,
+`SandboxBehavior`, `WanderBehavior`, `TravelBehavior`, `FollowBehavior`,
+`EscortBehavior`, `GuardBehavior`, or `PatrolBehavior` respectively (§4).
 
 ## 3. PACK record parsing
 
@@ -125,19 +133,23 @@ re-evaluation — an NPC picked for a 20:00-22:00 sandbox slot keeps that
 the FO3/FNV procedure enum's values, only `PROCEDURE_SANDBOX = 12`
 (`ai.rs`), `PROCEDURE_WANDER = 5` (`ai.rs`, M42.3),
 `PROCEDURE_TRAVEL = 6` (`ai.rs`, M42.4), `PROCEDURE_FOLLOW = 1`
-(`ai.rs`, M42.5), and `PROCEDURE_ESCORT = 2` (`ai.rs`, M42.6) have a
-name and a consumer; the other ~12
+(`ai.rs`, M42.5), `PROCEDURE_ESCORT = 2` (`ai.rs`, M42.6),
+`PROCEDURE_GUARD = 14` (`ai.rs`, M42.7), and `PROCEDURE_PATROL = 13`
+(`ai.rs`, M42.8) have a name and a consumer; the other ~10
 (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/
-FleeNotCombat/CastMagic/Patrol/Guard/Dialogue/UseWeapon) are captured
-as a raw integer and dispatched nowhere. `active_package_is_sandbox`/
+FleeNotCombat/CastMagic/Dialogue/UseWeapon) are captured as a raw
+integer and dispatched nowhere. `active_package_is_sandbox`/
 `active_sandbox_location`, `active_package_is_wander`/
 `active_wander_location`, `active_package_is_travel`/
 `active_travel_location`, `active_package_is_follow`/
-`active_follow_target`, and `active_package_is_escort`/
-`active_escort_target`/`active_escort_location` are independent mirror
-groups — since an NPC's active package is always a single winning
-`PackRecord` (`active_package`'s `find`), the five checks are naturally
-mutually exclusive per actor with no extra guard logic needed.
+`active_follow_target`, `active_package_is_escort`/
+`active_escort_target`/`active_escort_location`,
+`active_package_is_guard`/`active_guard_location`, and
+`active_package_is_patrol`/`active_patrol_location` are independent
+mirror groups — since an NPC's active package is always a single
+winning `PackRecord` (`active_package`'s `find`), the seven checks are
+naturally mutually exclusive per actor with no extra guard logic
+needed.
 
 ## 5. Sandbox seating
 
@@ -359,17 +371,92 @@ settle tick on the collect→lead transition is avoided by resolving and
 taking the first lead-phase step on the same tick collection completes
 (mirrors `travel_system` moving on the tick it resolves).
 
+## 10. Guard locomotion (M42.7)
+
+The fifth consumer of `step_toward`. Guard needs only `PLDT` — no new
+sub-record decode work. Wired at `npc_spawn.rs` alongside
+Sandbox/Wander/Travel/Follow/Escort: `active_package_is_guard` +
+`active_guard_location` gate a `GuardBehavior` insert
+(`crates/core/src/ecs/components/guard.rs`), reusing the same
+`game_hour`/`condition_met` closure.
+
+`guard_system` (`byroredux/src/systems/guard.rs`, opt-in via
+`BYRO_GUARD=1`) resolves an anchor point exactly once, on first sight:
+a `NearReference`-type PLDT FormID first (via
+`resolve_entity_by_global_form_id`, the same call Travel/Escort make),
+falling back — **deliberately not** to Travel's random-pick-within-radius
+— to the actor's own spawn position. That fallback choice is worth
+calling out because the more "consistent-looking" choice (reuse Travel's
+`resolve_destination` verbatim) was tried first and reverted: handing a
+Guard actor a random point exactly `radius` away from its own spawn
+trivially satisfies the leash check below, so the actor "arrives" by
+construction and never actually walks anywhere. Guard's fallback instead
+matches Sandbox/Wander's "center is the actor's own position" convention,
+since Guard's job is "hold a post", not "go explore."
+
+What actually distinguishes Guard from Travel isn't the resolution call,
+it's what happens after arrival. Travel tags `Traveled` and stops
+forever; Guard never reaches a terminal state — every tick,
+`guard_system` checks whether the actor has drifted more than
+`GuardBehavior::radius` from the anchor, and walks back if so. No system
+in the engine currently displaces a placed actor (no combat, no shove,
+no ragdoll-to-Transform writeback), so in practice v0 Guard is
+observably a non-terminal Travel today — walk to the anchor once, then
+hold. The leash check itself is real and tested, just dormant until
+something can actually push a guarding actor off its post.
+
+v0 scope, mirroring Travel/Wander: no animation-clip swap; no
+per-frame package re-evaluation; anchor is frozen once resolved (a
+`NearReference` anchor that moves after resolution isn't re-tracked).
+
+## 11. Patrol locomotion (M42.8)
+
+The sixth consumer of `step_toward` — except `patrol_system` doesn't
+call it directly. Real Bethesda Patrol packages walk a route defined by
+linked patrol-idle markers, data this codebase decodes nowhere (outside
+`PACK`'s own sub-records). Absent that, there is nothing to distinguish
+v0 Patrol from Wander: both reduce to "walk to a random point within a
+PLDT radius, pause, repeat," with no target-reference resolution. Rather
+than copy-paste `wander_system`'s ~40-line phase-transition state
+machine under a new name, `wander_system`'s core was extracted into a
+shared, ECS-component-agnostic function —
+`step_oscillating_wander` (`byroredux/src/systems/wander.rs`) — that
+both `wander_system` and `patrol_system`
+(`byroredux/src/systems/patrol.rs`, opt-in via `BYRO_PATROL=1`) call.
+The two systems differ only in which component types they read/write
+(`PatrolBehavior`/`PatrolState` vs `WanderBehavior`/`WanderState`, kept
+separate so Patrol and Wander actors stay independently
+selectable/inspectable — every other M42 procedure has its own
+component pair too). `PatrolState` reuses `WanderPhase` directly rather
+than defining an identical second enum. Wired at `npc_spawn.rs`:
+`active_package_is_patrol` + `active_patrol_location` gate the insert,
+mirroring Wander's own wiring exactly.
+
+If real patrol-route data is ever decoded, `patrol_system` is the seam
+to swap — it would gain its own state machine without touching
+`wander_system`.
+
+v0 scope: identical to Wander's documented approximations (no pathing,
+no target-reference resolution, no animation-clip swap, no per-frame
+package re-evaluation).
+
 ## What's not covered / honest state
 
-- **Five procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
-  (M42.4), Follow (M42.5), and Escort (M42.6). No Guard/Patrol/etc.
-  runtime exists anywhere in the engine.
+- **Seven procedures of ~17 execute.** Sandbox, Wander (M42.3), Travel
+  (M42.4), Follow (M42.5), Escort (M42.6), Guard (M42.7), and Patrol
+  (M42.8, which shares Wander's algorithm rather than running a
+  distinct one). No Find/Eat/Sleep/Accompany/UseItemAt/Ambush/
+  FleeNotCombat/CastMagic/Dialogue/UseWeapon runtime exists anywhere in
+  the engine — each needs a subsystem (item/furniture use beyond
+  Sandbox's seat-snap, combat, magic, or dialogue) that doesn't exist in
+  this codebase yet, not just a missing procedure dispatch.
 - **No general AI tick.** `byroredux/src/systems/` has no `ai.rs` /
   `behavior.rs` / `npc.rs`; `sandbox_seat_system`, `wander_system`,
-  `travel_system`, `follow_system`, and `escort_system` are the only
-  AI-adjacent per-frame systems, and none is part of the default
-  scheduler — they require `BYRO_SANDBOX_SIT=1` / `BYRO_WANDER=1` /
-  `BYRO_TRAVEL=1` / `BYRO_FOLLOW=1` / `BYRO_ESCORT=1` respectively.
+  `travel_system`, `follow_system`, `escort_system`, `guard_system`, and
+  `patrol_system` are the only AI-adjacent per-frame systems, and none
+  is part of the default scheduler — they require `BYRO_SANDBOX_SIT=1` /
+  `BYRO_WANDER=1` / `BYRO_TRAVEL=1` / `BYRO_FOLLOW=1` / `BYRO_ESCORT=1` /
+  `BYRO_GUARD=1` / `BYRO_PATROL=1` respectively.
 - **Selection is spawn-time-only.** No package re-evaluation as game
   time advances — `CTDA` conditions *are* now evaluated (M42.2), but
   only once, against the game hour and world state at spawn. `PTD2`
@@ -381,9 +468,11 @@ taking the first lead-phase step on the same tick collection completes
 
 This is the M42 *bootstrap*, by its own module docs' framing — "v0 is
 sit in the nearest free chair, once" for Sandbox, "v0 is walk to a
-random point, pause, repeat" for Wander, "v0 is walk to a destination
-once, stop" for Travel, "v0 is chase a live target, hold a stand-off
-distance" for Follow, "v0 is collect a live target then walk it to a
-destination once" for Escort. Anyone building on this pipeline should
-treat package selection and procedure dispatch as a proof of concept,
-not a general AI system.
+random point, pause, repeat" for Wander (and Patrol, which reuses the
+same algorithm verbatim), "v0 is walk to a destination once, stop" for
+Travel, "v0 is chase a live target, hold a stand-off distance" for
+Follow, "v0 is collect a live target then walk it to a destination
+once" for Escort, "v0 is walk to a post and hold it, returning if
+displaced" for Guard. Anyone building on this pipeline should treat
+package selection and procedure dispatch as a proof of concept, not a
+general AI system.

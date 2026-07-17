@@ -106,9 +106,76 @@ pub(crate) fn pick_wander_target(home: Vec3, radius: f32, form_id: u32, pick_cou
 
 /// Pick a new pause duration in `[WANDER_PAUSE_MIN, WANDER_PAUSE_MAX)`.
 /// Pure — unit-tested directly.
-fn pick_pause_duration(form_id: u32, pick_count: u32) -> f32 {
+///
+/// `pub(crate)` — `step_oscillating_wander` below needs it, and
+/// (transitively) so does `patrol_system` (M42.8).
+pub(crate) fn pick_pause_duration(form_id: u32, pick_count: u32) -> f32 {
     let frac = unit_frac(wander_seed(form_id, pick_count, 2));
     WANDER_PAUSE_MIN + frac * (WANDER_PAUSE_MAX - WANDER_PAUSE_MIN)
+}
+
+/// Plain-value shape of one oscillating-walk actor's state, decoupled from
+/// any specific ECS component type — both `WanderState` and `PatrolState`
+/// (M42.8) convert to/from this rather than either depending on the
+/// other's component type.
+pub(crate) struct OscillateWalk {
+    pub home: Vec3,
+    pub target: Vec3,
+    pub phase: WanderPhase,
+    pub pick_count: u32,
+}
+
+/// One tick of the shared "walk to a random point within `radius`, pause,
+/// repeat" state machine — the core algorithm `wander_system` runs,
+/// extracted so `patrol_system` (M42.8) can reuse it verbatim rather than
+/// duplicating the phase-transition logic. v0 Patrol has no route data to
+/// differ on (see `crates/plugin`'s `PROCEDURE_PATROL` doc for why), so
+/// the two procedures share this exactly; only the ECS component types
+/// (and their opt-in env gates) differ. Returns the new translation, the
+/// new rotation (`None` when paused or already at target), and the
+/// updated state.
+pub(crate) fn step_oscillating_wander(
+    current: Vec3,
+    current_rotation: Quat,
+    dt: f32,
+    physics: Option<&byroredux_physics::PhysicsWorld>,
+    radius: f32,
+    form_id: u32,
+    mut state: OscillateWalk,
+) -> (Vec3, Option<Quat>, OscillateWalk) {
+    match state.phase {
+        WanderPhase::Paused { remaining } => {
+            let remaining = remaining - dt;
+            if remaining <= 0.0 {
+                state.pick_count = state.pick_count.wrapping_add(1);
+                state.target = pick_wander_target(state.home, radius, form_id, state.pick_count);
+                state.phase = WanderPhase::Walking;
+            } else {
+                state.phase = WanderPhase::Paused { remaining };
+            }
+            (current, None, state)
+        }
+        WanderPhase::Walking => {
+            // Move on the XZ plane only — Y is re-derived from the ground
+            // below, not interpolated toward the target's Y (which was
+            // only ever a copy of `home.y` at pick time and drifts from
+            // real terrain on sloped ground).
+            let target_xz = Vec3::new(state.target.x, current.y, state.target.z);
+            let (new_pos, rotation) =
+                step_toward(current, current_rotation, target_xz, dt, physics);
+
+            let horiz_delta = Vec3::new(new_pos.x - state.target.x, 0.0, new_pos.z - state.target.z);
+            if horiz_delta.length_squared()
+                <= super::locomotion::LOCOMOTION_ARRIVAL_EPSILON
+                    * super::locomotion::LOCOMOTION_ARRIVAL_EPSILON
+            {
+                state.phase = WanderPhase::Paused {
+                    remaining: pick_pause_duration(form_id, state.pick_count),
+                };
+            }
+            (new_pos, rotation, state)
+        }
+    }
 }
 
 /// One actor's computed movement/state update for this tick, applied in
@@ -150,7 +217,7 @@ pub fn wander_system(world: &World, dt: f32) {
                 continue;
             };
             let radius = behavior.wander_radius.unwrap_or(WANDER_DEFAULT_RADIUS);
-            let mut state = state_q
+            let state = state_q
                 .as_ref()
                 .and_then(|q| q.get(entity))
                 .copied()
@@ -164,53 +231,32 @@ pub fn wander_system(world: &World, dt: f32) {
                     }
                 });
 
-            match state.phase {
-                WanderPhase::Paused { remaining } => {
-                    let remaining = remaining - dt;
-                    if remaining <= 0.0 {
-                        state.pick_count = state.pick_count.wrapping_add(1);
-                        state.target =
-                            pick_wander_target(state.home, radius, behavior.form_id, state.pick_count);
-                        state.phase = WanderPhase::Walking;
-                    } else {
-                        state.phase = WanderPhase::Paused { remaining };
-                    }
-                    decisions.push(WanderDecision {
-                        entity,
-                        translation: transform.translation,
-                        rotation: None,
-                        state,
-                    });
-                }
-                WanderPhase::Walking => {
-                    let current = transform.translation;
-                    // Move on the XZ plane only — Y is re-derived from the
-                    // ground below, not interpolated toward the target's Y
-                    // (which was only ever a copy of `home.y` at pick time
-                    // and drifts from real terrain on sloped ground).
-                    let target_xz = Vec3::new(state.target.x, current.y, state.target.z);
-                    let (new_pos, rotation) =
-                        step_toward(current, transform.rotation, target_xz, dt, physics.as_deref());
+            let (new_pos, rotation, new_state) = step_oscillating_wander(
+                transform.translation,
+                transform.rotation,
+                dt,
+                physics.as_deref(),
+                radius,
+                behavior.form_id,
+                OscillateWalk {
+                    home: state.home,
+                    target: state.target,
+                    phase: state.phase,
+                    pick_count: state.pick_count,
+                },
+            );
 
-                    let horiz_delta =
-                        Vec3::new(new_pos.x - state.target.x, 0.0, new_pos.z - state.target.z);
-                    if horiz_delta.length_squared()
-                        <= super::locomotion::LOCOMOTION_ARRIVAL_EPSILON
-                            * super::locomotion::LOCOMOTION_ARRIVAL_EPSILON
-                    {
-                        state.phase = WanderPhase::Paused {
-                            remaining: pick_pause_duration(behavior.form_id, state.pick_count),
-                        };
-                    }
-
-                    decisions.push(WanderDecision {
-                        entity,
-                        translation: new_pos,
-                        rotation,
-                        state,
-                    });
-                }
-            }
+            decisions.push(WanderDecision {
+                entity,
+                translation: new_pos,
+                rotation,
+                state: WanderState {
+                    home: new_state.home,
+                    target: new_state.target,
+                    phase: new_state.phase,
+                    pick_count: new_state.pick_count,
+                },
+            });
         }
     }
     if decisions.is_empty() {

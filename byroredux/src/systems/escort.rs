@@ -54,7 +54,7 @@
 //!   extra idle tick in between.
 
 use super::locomotion::{step_toward, LOCOMOTION_ARRIVAL_EPSILON};
-use super::wander::pick_wander_target;
+use super::travel::resolve_destination as resolve_travel_destination;
 use byroredux_core::ecs::components::{
     EscortBehavior, EscortState, Escorted, GlobalTransform, Transform,
 };
@@ -79,19 +79,18 @@ fn resolve_escort_target(world: &World, behavior: &EscortBehavior) -> Option<Ent
     resolve_entity_by_global_form_id(world, behavior.target_form_id?)
 }
 
-/// Resolve (or pick) the lead-phase destination. Mirrors
-/// `travel.rs::resolve_destination` exactly — `NearReference`-type PLDT
-/// FormID first, hash-picked point within radius as the fallback.
+/// Resolve (or pick) the lead-phase destination — delegates to
+/// `travel_system::resolve_destination` (M42.7 extracted it to primitive
+/// fields for exactly this kind of second consumer): `NearReference`-type
+/// PLDT FormID first, hash-picked point within radius as the fallback.
 fn resolve_destination(world: &World, behavior: &EscortBehavior, home: Vec3) -> Vec3 {
-    if let Some(fid) = behavior.destination_form_id {
-        if let Some(target_entity) = resolve_entity_by_global_form_id(world, fid) {
-            if let Some(gt) = world.get::<GlobalTransform>(target_entity) {
-                return gt.translation;
-            }
-        }
-    }
-    let radius = behavior.destination_radius.unwrap_or(ESCORT_DEFAULT_RADIUS);
-    pick_wander_target(home, radius, behavior.form_id, 0)
+    resolve_travel_destination(
+        world,
+        behavior.destination_form_id,
+        behavior.destination_radius.unwrap_or(ESCORT_DEFAULT_RADIUS),
+        behavior.form_id,
+        home,
+    )
 }
 
 /// One actor's computed movement/state update for this tick, applied in

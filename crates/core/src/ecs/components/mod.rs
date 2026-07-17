@@ -15,6 +15,7 @@ pub mod follow;
 pub mod form_id;
 pub mod furniture;
 pub mod global_transform;
+pub mod guard;
 pub mod hierarchy;
 pub mod inventory;
 pub mod light;
@@ -23,6 +24,7 @@ pub mod material;
 pub mod mesh;
 pub mod name;
 pub mod particle;
+pub mod patrol;
 pub mod perk_list;
 pub mod physics_source;
 pub mod render_layer;
@@ -55,6 +57,7 @@ pub use follow::{FollowBehavior, FollowState};
 pub use form_id::FormIdComponent;
 pub use furniture::{Furniture, FurnitureMarker};
 pub use global_transform::GlobalTransform;
+pub use guard::{GuardBehavior, GuardState};
 pub use hierarchy::{Children, Parent};
 pub use inventory::{
     EquipmentSlots, Inventory, InventoryIndex, ItemInstanceId, ItemStack, MAX_BIPED_SLOTS,
@@ -68,6 +71,7 @@ pub use material::Material;
 pub use mesh::MeshHandle;
 pub use name::Name;
 pub use particle::{EmitterShape, ParticleEmitter, ParticleForceField, ParticleSoA};
+pub use patrol::{PatrolBehavior, PatrolState};
 pub use perk_list::PerkList;
 pub use physics_source::PhysicsSourceForm;
 pub use render_layer::{

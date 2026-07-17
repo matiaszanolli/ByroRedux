@@ -1591,6 +1591,40 @@ pub fn spawn_npc_entity(
         _ => None,
     });
 
+    // M42.7: Guard behavior, same PLDT-only reads as Travel (no PTDT —
+    // Guard has nothing to collect, just a post to hold).
+    let runs_guard = byroredux_plugin::esm::records::active_package_is_guard(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    );
+    let guard_location = byroredux_plugin::esm::records::active_guard_location(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    );
+    let guard_radius = guard_location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+    let guard_anchor_form_id = guard_location.and_then(|loc| match loc.target {
+        byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => Some(fid),
+        _ => None,
+    });
+
+    // M42.8: Patrol behavior, same PLDT-only reads as Wander (no target
+    // resolution — v0 Patrol is Wander's algorithm under a different tag,
+    // see `systems::patrol` module docs).
+    let runs_patrol = byroredux_plugin::esm::records::active_package_is_patrol(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    );
+    let patrol_radius = byroredux_plugin::esm::records::active_patrol_location(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    )
+    .map(|loc| loc.radius as f32)
+    .filter(|r| *r > 0.0);
+
     if runs_sandbox {
         // Deliberately NOT resolving `PackLocationTarget::NearReference` to
         // a live entity's position for the search *center* — investigated
@@ -1652,6 +1686,25 @@ pub fn spawn_npc_entity(
                 target_form_id: escort_target_form_id,
                 destination_form_id: escort_destination_form_id,
                 destination_radius: escort_destination_radius,
+                form_id: npc.form_id,
+            },
+        );
+    }
+    if runs_guard {
+        world.insert(
+            placement_root,
+            byroredux_core::ecs::components::GuardBehavior {
+                anchor_form_id: guard_anchor_form_id,
+                radius: guard_radius,
+                form_id: npc.form_id,
+            },
+        );
+    }
+    if runs_patrol {
+        world.insert(
+            placement_root,
+            byroredux_core::ecs::components::PatrolBehavior {
+                patrol_radius,
                 form_id: npc.form_id,
             },
         );

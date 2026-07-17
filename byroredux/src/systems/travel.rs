@@ -66,20 +66,31 @@ use byroredux_scripting::condition::resolve_entity_by_global_form_id;
 /// authored radius" defaults for the same class of content.
 const TRAVEL_DEFAULT_RADIUS: f32 = 512.0;
 
-/// Resolve (or pick) this actor's destination once, on first sight.
-/// Pulled out of `travel_system`'s Pass 1 loop body for readability —
-/// still a plain read against `world`, called only when no `TravelState`
-/// exists yet for this entity.
-fn resolve_destination(world: &World, behavior: &TravelBehavior, home: Vec3) -> Vec3 {
-    if let Some(fid) = behavior.target_form_id {
+/// Resolve (or pick) a `NearReference`-anchored destination once, on first
+/// sight: a `NearReference`-type FormID first (via
+/// `resolve_entity_by_global_form_id`), falling back to a hash-picked
+/// point within `radius` of `home` (via `pick_wander_target`) on any miss.
+/// Pulled out of `travel_system`'s Pass 1 loop body for readability, and
+/// generic over primitive fields (rather than `&TravelBehavior` directly)
+/// so `guard_system` (M42.7) can reuse it verbatim for anchor resolution —
+/// the two procedures need the exact same "resolve or pick once" logic,
+/// just applied to different terminal behavior after arrival. `pub(crate)`
+/// for that second consumer.
+pub(crate) fn resolve_destination(
+    world: &World,
+    target_form_id: Option<u32>,
+    radius: f32,
+    form_id: u32,
+    home: Vec3,
+) -> Vec3 {
+    if let Some(fid) = target_form_id {
         if let Some(target_entity) = resolve_entity_by_global_form_id(world, fid) {
             if let Some(gt) = world.get::<GlobalTransform>(target_entity) {
                 return gt.translation;
             }
         }
     }
-    let radius = behavior.radius.unwrap_or(TRAVEL_DEFAULT_RADIUS);
-    pick_wander_target(home, radius, behavior.form_id, 0)
+    pick_wander_target(home, radius, form_id, 0)
 }
 
 /// One actor's computed movement/state update for this tick, applied in
@@ -127,7 +138,13 @@ pub fn travel_system(world: &World, dt: f32) {
             let state = state_q.as_ref().and_then(|q| q.get(entity)).copied();
             let destination = match state {
                 Some(s) => s.destination,
-                None => resolve_destination(world, behavior, current),
+                None => resolve_destination(
+                    world,
+                    behavior.target_form_id,
+                    behavior.radius.unwrap_or(TRAVEL_DEFAULT_RADIUS),
+                    behavior.form_id,
+                    current,
+                ),
             };
 
             let target_xz = Vec3::new(destination.x, current.y, destination.z);

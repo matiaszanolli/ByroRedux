@@ -431,6 +431,20 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::EscortState>();
     world.register::<byroredux_core::ecs::components::Escorted>();
 
+    // M42.7 — pre-register the Guard marker + runtime-state storages so
+    // `guard_system`'s `query::<GuardBehavior>()` skip-scan and
+    // `query_mut::<GuardState>().insert(...)` resolve even before the
+    // first guarding actor spawns.
+    world.register::<byroredux_core::ecs::components::GuardBehavior>();
+    world.register::<byroredux_core::ecs::components::GuardState>();
+
+    // M42.8 — pre-register the Patrol marker + runtime-state storages so
+    // `patrol_system`'s `query::<PatrolBehavior>()` skip-scan and
+    // `query_mut::<PatrolState>().insert(...)` resolve even before the
+    // first patrolling actor spawns.
+    world.register::<byroredux_core::ecs::components::PatrolBehavior>();
+    world.register::<byroredux_core::ecs::components::PatrolState>();
+
     // Register scripting component storages.
     byroredux_scripting::register(&mut world);
 
@@ -765,6 +779,29 @@ pub(crate) fn build_scheduler() -> Scheduler {
     if std::env::var_os("BYRO_ESCORT").is_some() {
         log::info!("BYRO_ESCORT set — enabling NPC escort locomotion (M42.6 v0)");
         scheduler.add_exclusive(Stage::PostUpdate, crate::systems::escort_system);
+    }
+    // M42.7 — Guard locomotion. GATED OFF by default (opt in with
+    // `BYRO_GUARD=1`), mirroring `BYRO_ESCORT`/`BYRO_FOLLOW`/`BYRO_TRAVEL`/
+    // `BYRO_WANDER` above. Reuses `travel_system`'s anchor-resolution logic
+    // but never reaches a terminal state — holds the anchor indefinitely,
+    // returning if displaced beyond its radius — see `systems::guard`
+    // module docs. Same exclusive PostUpdate lane, after transform
+    // propagation; Sandbox/Wander/Travel/Follow/Escort/Guard never touch
+    // the same actor (a single winning `PackRecord` per NPC), so relative
+    // order among the six doesn't matter.
+    if std::env::var_os("BYRO_GUARD").is_some() {
+        log::info!("BYRO_GUARD set — enabling NPC guard locomotion (M42.7 v0)");
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::guard_system);
+    }
+    // M42.8 — Patrol locomotion. GATED OFF by default (opt in with
+    // `BYRO_PATROL=1`), mirroring the gates above. v0 Patrol is Wander's
+    // exact random-point-in-radius algorithm under a different procedure
+    // tag — no patrol-route data is decoded anywhere in this codebase, so
+    // there is nothing to differentiate it on yet; see `systems::patrol`
+    // module docs. Same exclusive PostUpdate lane.
+    if std::env::var_os("BYRO_PATROL").is_some() {
+        log::info!("BYRO_PATROL set — enabling NPC patrol locomotion (M42.8 v0, aliases Wander's algorithm)");
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::patrol_system);
     }
     // PostUpdate ordering contract (#1375 invariant pin):
     //   1. transform_propagation — BFS GlobalTransform composition

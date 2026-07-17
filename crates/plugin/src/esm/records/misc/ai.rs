@@ -143,6 +143,16 @@ pub const PROCEDURE_SANDBOX: u32 = 12;
 /// walk-to-point locomotion (no pathing/NAVM). See M42.
 pub const PROCEDURE_WANDER: u32 = 5;
 
+/// FO3/FNV package procedure-type index for `Patrol` — authored real
+/// Bethesda Patrol packages walk a route defined by linked patrol-idle
+/// markers, none of which this codebase decodes anywhere (that data lives
+/// outside `PACK`'s own sub-records). Absent that, v0 Patrol reduces to
+/// exactly `Wander`'s random-point-in-`PLDT`-radius algorithm — not a
+/// distinct runtime, just a second procedure type routed onto the same
+/// oscillating-walk core (`systems::wander`'s shared helper). See
+/// `systems::patrol` module docs. See M42.
+pub const PROCEDURE_PATROL: u32 = 13;
+
 /// FO3/FNV package procedure-type index for `Travel` — walk once to the
 /// package's PLDT location and stop (no repeat, unlike Wander). Second
 /// procedure to reuse `wander_system`'s locomotion primitive (M42.4, via
@@ -172,6 +182,13 @@ pub const PROCEDURE_FOLLOW: u32 = 1;
 /// `systems::escort` module docs for the two-phase collect-then-lead
 /// runtime. See M42.
 pub const PROCEDURE_ESCORT: u32 = 2;
+
+/// FO3/FNV package procedure-type index for `Guard` — walk once to the
+/// package's PLDT location and hold that post, returning if displaced
+/// beyond the authored radius. Needs only `PLDT`, mirroring `Travel`'s
+/// read exactly; unlike Travel it never reaches a terminal state (guarding
+/// is indefinite, like Wander) — see `systems::guard` module docs. See M42.
+pub const PROCEDURE_GUARD: u32 = 14;
 
 /// PACK schedule window from PSDT (FO3/FNV). `start_hour = None` when the raw
 /// `time` byte is -1 (0xFF) = "any time". `duration_hours` is the PSDT
@@ -231,6 +248,19 @@ impl PackRecord {
     /// then lead it to the PLDT location and stop).
     pub fn is_escort(&self) -> bool {
         self.procedure_type == PROCEDURE_ESCORT
+    }
+
+    /// True when this package's procedure is `Guard` (hold the PLDT
+    /// location indefinitely, returning if displaced).
+    pub fn is_guard(&self) -> bool {
+        self.procedure_type == PROCEDURE_GUARD
+    }
+
+    /// True when this package's procedure is `Patrol` (v0: identical to
+    /// Wander's random-point-in-radius algorithm — see
+    /// [`PROCEDURE_PATROL`]'s doc for why).
+    pub fn is_patrol(&self) -> bool {
+        self.procedure_type == PROCEDURE_PATROL
     }
 
     /// Whether this package's schedule includes `hour`. No PSDT → always
@@ -415,6 +445,59 @@ pub fn active_escort_location<'a>(
 ) -> Option<PackLocation> {
     active_package(packages, hour, condition_met)
         .filter(|pk| pk.is_escort())
+        .and_then(|pk| pk.location)
+}
+
+/// Whether an NPC's active package at `hour` (see [`active_package`]) is a
+/// Guard package (M42.7). Mirrors [`active_package_is_travel`].
+/// `condition_met` injects M47.1 CTDA evaluation; pass `|_| true` for
+/// schedule-only selection.
+pub fn active_package_is_guard<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> bool {
+    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_guard)
+}
+
+/// The PLDT location (the post to hold) of an NPC's active package at
+/// `hour` (see [`active_package`]), when that package is Guard-type.
+/// Mirrors [`active_travel_location`]. `condition_met` injects M47.1 CTDA
+/// evaluation; pass `|_| true` for schedule-only.
+pub fn active_guard_location<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> Option<PackLocation> {
+    active_package(packages, hour, condition_met)
+        .filter(|pk| pk.is_guard())
+        .and_then(|pk| pk.location)
+}
+
+/// Whether an NPC's active package at `hour` (see [`active_package`]) is a
+/// Patrol package (M42.8). Mirrors [`active_package_is_wander`] — v0
+/// Patrol reduces to the exact same algorithm (see [`PROCEDURE_PATROL`]'s
+/// doc). `condition_met` injects M47.1 CTDA evaluation; pass `|_| true`
+/// for schedule-only selection.
+pub fn active_package_is_patrol<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> bool {
+    active_package(packages, hour, condition_met).is_some_and(PackRecord::is_patrol)
+}
+
+/// The PLDT location of an NPC's active package at `hour` (see
+/// [`active_package`]), when that package is Patrol-type. Mirrors
+/// [`active_wander_location`]. `condition_met` injects M47.1 CTDA
+/// evaluation; pass `|_| true` for schedule-only.
+pub fn active_patrol_location<'a>(
+    packages: impl IntoIterator<Item = &'a PackRecord>,
+    hour: f32,
+    condition_met: impl Fn(&PackRecord) -> bool,
+) -> Option<PackLocation> {
+    active_package(packages, hour, condition_met)
+        .filter(|pk| pk.is_patrol())
         .and_then(|pk| pk.location)
 }
 
@@ -1634,6 +1717,97 @@ mod tests {
 
         let follow_only = pack(PROCEDURE_FOLLOW, None);
         assert!(!active_package_is_escort([&follow_only], 10.0, |_| true));
+    }
+
+    #[test]
+    fn active_package_is_guard_selector_respects_priority_and_schedule() {
+        // Mirrors active_package_is_travel_selector_respects_priority_and_schedule
+        // with Guard swapped in. Bartender uses Follow (1) here — 14 is now
+        // Guard itself, so it can't stand in as the generic placeholder.
+        let bartender = pack(PROCEDURE_FOLLOW, sched(Some(8), 12)); // Follow/AtBar 08–20
+        let evening = pack(PROCEDURE_GUARD, sched(Some(20), 2)); // guard 20–22
+        assert!(!active_package_is_guard([&bartender, &evening], 10.0, |_| true));
+        assert!(active_package_is_guard([&bartender, &evening], 21.0, |_| true));
+        let sleep = pack(4, sched(Some(22), 10));
+        let anytime_guard = pack(PROCEDURE_GUARD, None);
+        assert!(active_package_is_guard([&sleep, &anytime_guard], 10.0, |_| true));
+        assert!(!active_package_is_guard(
+            std::iter::empty::<&PackRecord>(),
+            10.0,
+            |_| true
+        ));
+    }
+
+    #[test]
+    fn active_package_is_guard_selector_gates_on_conditions() {
+        let mut gated = pack(PROCEDURE_GUARD, None);
+        gated.editor_id = "GatedGuard".into();
+        gated.conditions = vec![Condition {
+            function_index: 72,
+            ..Default::default()
+        }];
+        let fallback = pack(PROCEDURE_GUARD, None);
+        let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
+        assert!(active_package_is_guard([&gated, &fallback], 10.0, cond_met));
+        assert!(!active_package_is_guard([&gated], 10.0, cond_met));
+        assert!(active_package_is_guard([&gated], 10.0, |_| true));
+    }
+
+    #[test]
+    fn active_package_is_patrol_selector_respects_priority_and_schedule() {
+        // Mirrors active_package_is_wander_selector_respects_priority_and_schedule
+        // with Patrol swapped in. Bartender uses Guard (14) here — 13 is
+        // now Patrol itself, so it can't stand in as the generic placeholder.
+        let bartender = pack(PROCEDURE_GUARD, sched(Some(8), 12)); // Guard/AtBar 08–20
+        let evening = pack(PROCEDURE_PATROL, sched(Some(20), 2)); // patrol 20–22
+        assert!(!active_package_is_patrol([&bartender, &evening], 10.0, |_| true));
+        assert!(active_package_is_patrol([&bartender, &evening], 21.0, |_| true));
+        let sleep = pack(4, sched(Some(22), 10));
+        let anytime_patrol = pack(PROCEDURE_PATROL, None);
+        assert!(active_package_is_patrol([&sleep, &anytime_patrol], 10.0, |_| true));
+        assert!(!active_package_is_patrol(
+            std::iter::empty::<&PackRecord>(),
+            10.0,
+            |_| true
+        ));
+    }
+
+    #[test]
+    fn active_package_is_patrol_selector_gates_on_conditions() {
+        let mut gated = pack(PROCEDURE_PATROL, None);
+        gated.editor_id = "GatedPatrol".into();
+        gated.conditions = vec![Condition {
+            function_index: 72,
+            ..Default::default()
+        }];
+        let fallback = pack(PROCEDURE_PATROL, None);
+        let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
+        assert!(active_package_is_patrol([&gated, &fallback], 10.0, cond_met));
+        assert!(!active_package_is_patrol([&gated], 10.0, cond_met));
+        assert!(active_package_is_patrol([&gated], 10.0, |_| true));
+    }
+
+    #[test]
+    fn active_package_is_sandbox_wander_travel_follow_escort_guard_and_patrol_are_mutually_exclusive(
+    ) {
+        // A single winning PackRecord can only satisfy one procedure check.
+        let guard_only = pack(PROCEDURE_GUARD, None);
+        assert!(!active_package_is_sandbox([&guard_only], 10.0, |_| true));
+        assert!(!active_package_is_wander([&guard_only], 10.0, |_| true));
+        assert!(!active_package_is_travel([&guard_only], 10.0, |_| true));
+        assert!(!active_package_is_follow([&guard_only], 10.0, |_| true));
+        assert!(!active_package_is_escort([&guard_only], 10.0, |_| true));
+        assert!(active_package_is_guard([&guard_only], 10.0, |_| true));
+        assert!(!active_package_is_patrol([&guard_only], 10.0, |_| true));
+
+        let patrol_only = pack(PROCEDURE_PATROL, None);
+        assert!(!active_package_is_sandbox([&patrol_only], 10.0, |_| true));
+        assert!(!active_package_is_wander([&patrol_only], 10.0, |_| true));
+        assert!(!active_package_is_travel([&patrol_only], 10.0, |_| true));
+        assert!(!active_package_is_follow([&patrol_only], 10.0, |_| true));
+        assert!(!active_package_is_escort([&patrol_only], 10.0, |_| true));
+        assert!(!active_package_is_guard([&patrol_only], 10.0, |_| true));
+        assert!(active_package_is_patrol([&patrol_only], 10.0, |_| true));
     }
 
     #[test]
