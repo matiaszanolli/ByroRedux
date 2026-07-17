@@ -203,8 +203,21 @@ pub(super) fn collect_lights(world: &World, gpu_lights: &mut Vec<byroredux_rende
     // by ID from its own per-cluster lists and doesn't care about array
     // order). The directional light, if present, is never part of this
     // sort — it stays pinned at index 0.
-    gpu_lights[directional_count..]
-        .sort_by(|a, b| gi_priority_score(b).total_cmp(&gi_priority_score(a)));
+    //
+    // #2034 / PERF-D1-2026-07-16-02 — precompute `gi_priority_score` once
+    // per light (Schwartzian transform / decorate-sort-undecorate)
+    // instead of recomputing it on both sides of every comparator call.
+    // Point-light counts are small (streaming-RIS-capped, typically <50),
+    // so the temporary `(score, light)` Vec is negligible; the point is
+    // avoiding the redundant O(n log n) recomputation, not avoiding this
+    // one small allocation.
+    let suffix = &mut gpu_lights[directional_count..];
+    let mut scored: Vec<(f32, byroredux_renderer::GpuLight)> =
+        suffix.iter().map(|l| (gi_priority_score(l), *l)).collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for (slot, (_, light)) in suffix.iter_mut().zip(scored) {
+        *slot = light;
+    }
 
     // Log light count once per session.
     {

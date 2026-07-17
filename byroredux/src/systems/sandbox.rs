@@ -127,11 +127,23 @@ fn pick_nearest_seat<K: Copy + Eq + std::hash::Hash>(
         .map(|(e, seat, _)| (e, seat))
 }
 
+/// Reusable per-frame scratch for [`sandbox_seat_system_inner`] — captured
+/// by [`make_sandbox_seat_system`] so `assignments`/`seats`/`seat_meta`'s
+/// backing allocations survive across frames instead of being re-declared
+/// fresh every tick (#2033 / PERF-D1-2026-07-16-01), mirroring
+/// `animation_system`'s `AnimScratch` (#1372).
+#[derive(Default)]
+struct SandboxScratch {
+    assignments: Vec<(EntityId, EntityId, GlobalTransform)>,
+    seats: Vec<((EntityId, u32), GlobalTransform)>,
+    seat_meta: std::collections::HashMap<(EntityId, u32), ([f32; 3], Vec3)>,
+}
+
 /// Seat sandboxing actors in nearby furniture. Registered
 /// `add_exclusive(Stage::PostUpdate, …)` so it reads this frame's
 /// propagated `GlobalTransform`s; the snapped root propagates to the
 /// skeleton next frame.
-pub fn sandbox_seat_system(world: &World, _dt: f32) {
+fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScratch) {
     // No sit-enter clip → nothing to seat (Skyrim+/Havok games, or the clip
     // wasn't archived). Resolved once per cell into this resource as
     // `(handle, hold_time)` — `hold_time` is the clip duration; parking the
@@ -149,7 +161,7 @@ pub fn sandbox_seat_system(world: &World, _dt: f32) {
     // All held guards are distinct component/resource types, so the
     // lock-tracker sees no conflict; writes happen in Pass 2 after these
     // read guards drop.
-    let mut assignments: Vec<(EntityId, EntityId, GlobalTransform)> = Vec::new();
+    scratch.assignments.clear();
     {
         let Some(gq) = world.query::<GlobalTransform>() else {
             return;
@@ -166,9 +178,8 @@ pub fn sandbox_seat_system(world: &World, _dt: f32) {
         // mirrors `seats` for the one-shot diagnostic log emitted per
         // assignment below (M42.0b co-debug: readable numbers instead of dark
         // screenshots).
-        let mut seats: Vec<((EntityId, u32), GlobalTransform)> = Vec::new();
-        let mut seat_meta: std::collections::HashMap<(EntityId, u32), ([f32; 3], Vec3)> =
-            std::collections::HashMap::new();
+        scratch.seats.clear();
+        scratch.seat_meta.clear();
         for (furn_e, furn) in furn_q.iter() {
             let Some(furn_g) = gq.get(furn_e) else {
                 continue;
@@ -178,11 +189,13 @@ pub fn sandbox_seat_system(world: &World, _dt: f32) {
                     continue;
                 }
                 let seat_id = (furn_e, idx as u32);
-                seats.push((seat_id, seat_world_transform(furn_g, marker)));
-                seat_meta.insert(seat_id, (marker.local_offset, furn_g.translation));
+                scratch.seats.push((seat_id, seat_world_transform(furn_g, marker)));
+                scratch
+                    .seat_meta
+                    .insert(seat_id, (marker.local_offset, furn_g.translation));
             }
         }
-        if seats.is_empty() {
+        if scratch.seats.is_empty() {
             return;
         }
 
@@ -196,14 +209,17 @@ pub fn sandbox_seat_system(world: &World, _dt: f32) {
             };
             let radius = behavior.search_radius.unwrap_or(SEAT_SEARCH_RADIUS);
             if let Some((seat_id, seat)) =
-                pick_nearest_seat(npc_g.translation, &seats, &reservations.0, radius)
+                pick_nearest_seat(npc_g.translation, &scratch.seats, &reservations.0, radius)
             {
                 reservations.0.insert(seat_id); // claim this marker so no two share it
                 let (furn_e, marker_idx) = seat_id;
                 // One-shot per NPC (Seated is tagged in pass 2, skipping it
                 // next frame) — safe to log at info without spamming.
-                let (offset, furn_world) =
-                    seat_meta.get(&seat_id).copied().unwrap_or(([0.0; 3], Vec3::ZERO));
+                let (offset, furn_world) = scratch
+                    .seat_meta
+                    .get(&seat_id)
+                    .copied()
+                    .unwrap_or(([0.0; 3], Vec3::ZERO));
                 log::info!(
                     "[sandbox] seat npc={} npc_pos=({:.1},{:.1},{:.1}) -> furn={} marker={} \
                      furn_world=({:.1},{:.1},{:.1}) marker_offset=({:.1},{:.1},{:.1}) \
@@ -216,18 +232,18 @@ pub fn sandbox_seat_system(world: &World, _dt: f32) {
                     seat.translation.x, seat.translation.y, seat.translation.z,
                     (seat.translation - npc_g.translation).length(),
                 );
-                assignments.push((npc, furn_e, seat));
+                scratch.assignments.push((npc, furn_e, seat));
             }
         }
     }
-    if assignments.is_empty() {
+    if scratch.assignments.is_empty() {
         return;
     }
 
     // ── Pass 2: apply writes (each a scoped single-type lock). ──
     // Snap the placement root — a propagation root, so local == world.
     if let Some(mut tq) = world.query_mut::<Transform>() {
-        for (npc, _, seat) in &assignments {
+        for (npc, _, seat) in &scratch.assignments {
             if let Some(t) = tq.get_mut(*npc) {
                 t.translation = seat.translation;
                 t.rotation = seat.rotation;
@@ -243,7 +259,7 @@ pub fn sandbox_seat_system(world: &World, _dt: f32) {
     // clip's `Bip01`/`NonAccum` channels, absent from the sit loops). See the
     // M42.1 diagnosis in this module's docs.
     if let Some(mut pq) = world.query_mut::<AnimationPlayer>() {
-        for (npc, _, _) in &assignments {
+        for (npc, _, _) in &scratch.assignments {
             if let Some(p) = pq.get_mut(*npc) {
                 p.clip_handle = sit_handle;
                 p.local_time = hold_time;
@@ -255,15 +271,63 @@ pub fn sandbox_seat_system(world: &World, _dt: f32) {
     }
     // Tag Seated (storage pre-registered at boot so insert lands).
     if let Some(mut sq) = world.query_mut::<Seated>() {
-        for (npc, furn, _) in &assignments {
+        for (npc, furn, _) in &scratch.assignments {
             sq.insert(*npc, Seated { furniture: *furn });
         }
+    }
+}
+
+/// Sandbox seat system factory — returns a closure with a persistent
+/// [`SandboxScratch`] (#2033 / PERF-D1-2026-07-16-01). Behavior is
+/// identical to calling [`sandbox_seat_system_inner`] fresh every frame;
+/// use this when wiring the system into the scheduler. Unlike the other
+/// six M42 systems, no existing test calls the whole system directly
+/// (this module's tests exercise only the pure helpers —
+/// `is_sit_marker` / `pick_nearest_seat` / `seat_world_transform`), so
+/// there's no `#[cfg(test)]` non-persistent wrapper to keep here.
+pub(crate) fn make_sandbox_seat_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut scratch = SandboxScratch::default();
+    move |world: &World, dt: f32| {
+        sandbox_seat_system_inner(world, dt, &mut scratch);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for #2033 / PERF-D1-2026-07-16-01. Unlike the other six
+    /// M42 systems, no existing test builds the full `World` (`Furniture`
+    /// + sit markers + `SandboxSitClip` resource + `SeatReservations`)
+    /// `sandbox_seat_system_inner` needs to reach its scratch-populating
+    /// path, so a behavioral capacity/len test isn't practical to add
+    /// here without inventing that whole fixture from nothing. Pin the
+    /// `.clear()` contract at the source level instead — the same
+    /// approach this codebase already uses for setup-heavy code that
+    /// can't be exercised end-to-end in a unit test (see
+    /// `light_overflow_tests` in the renderer crate).
+    #[test]
+    fn sandbox_scratch_clears_all_three_fields_every_frame() {
+        let src = include_str!("sandbox.rs");
+        let fn_start = src
+            .find("fn sandbox_seat_system_inner(")
+            .expect("sandbox_seat_system_inner must exist");
+        let fn_end = src[fn_start..]
+            .find("\n/// Sandbox seat system factory")
+            .map(|off| fn_start + off)
+            .expect("make_sandbox_seat_system doc must follow the fn body");
+        let body = &src[fn_start..fn_end];
+
+        for field in ["assignments", "seats", "seat_meta"] {
+            let needle = format!("scratch.{field}.clear()");
+            assert!(
+                body.contains(&needle),
+                "sandbox_seat_system_inner must call `{needle}` — a missing clear() \
+                 would leak stale entries from a prior frame into a persistent-scratch \
+                 SandboxScratch driven by make_sandbox_seat_system()"
+            );
+        }
+    }
 
     fn marker(offset: [f32; 3], heading: Option<f32>, anim: u16) -> FurnitureMarker {
         FurnitureMarker {

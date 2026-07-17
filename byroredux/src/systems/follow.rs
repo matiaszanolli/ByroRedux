@@ -74,6 +74,16 @@ struct FollowDecision {
     state_to_insert: Option<FollowState>,
 }
 
+/// Reusable per-frame scratch for [`follow_system_inner`] — captured by
+/// [`make_follow_system`] so the `decisions` backing allocation survives
+/// across frames instead of being re-declared `Vec::new()` every tick
+/// (#2033 / PERF-D1-2026-07-16-01), mirroring `animation_system`'s
+/// `AnimScratch` (#1372).
+#[derive(Default)]
+struct FollowScratch {
+    decisions: Vec<FollowDecision>,
+}
+
 /// Drive straight-line stand-off tracking for every [`FollowBehavior`]
 /// actor. Registered `add_exclusive(Stage::PostUpdate, …)`, same
 /// stage/slot family as `wander_system`/`travel_system` — NPC placement
@@ -81,13 +91,13 @@ struct FollowDecision {
 /// position for them; the *target*'s live position is read via
 /// `GlobalTransform` since it may be any REFR, not necessarily a
 /// propagation root.
-pub fn follow_system(world: &World, dt: f32) {
+fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
     let Some(behavior_q) = world.query::<FollowBehavior>() else {
         return;
     };
 
     // ── Pass 1: gather decisions (reads only). ──
-    let mut decisions: Vec<FollowDecision> = Vec::new();
+    scratch.decisions.clear();
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
@@ -109,7 +119,7 @@ pub fn follow_system(world: &World, dt: f32) {
             };
 
             let Some(target_entity) = target_entity else {
-                decisions.push(FollowDecision {
+                scratch.decisions.push(FollowDecision {
                     entity,
                     movement: None,
                     state_to_insert,
@@ -119,7 +129,7 @@ pub fn follow_system(world: &World, dt: f32) {
             let Some(target_gt) = world.get::<GlobalTransform>(target_entity) else {
                 // Target despawned since resolution — stand still this
                 // tick rather than re-resolving (v0 discipline).
-                decisions.push(FollowDecision {
+                scratch.decisions.push(FollowDecision {
                     entity,
                     movement: None,
                     state_to_insert,
@@ -138,20 +148,20 @@ pub fn follow_system(world: &World, dt: f32) {
                 None
             };
 
-            decisions.push(FollowDecision {
+            scratch.decisions.push(FollowDecision {
                 entity,
                 movement,
                 state_to_insert,
             });
         }
     }
-    if decisions.is_empty() {
+    if scratch.decisions.is_empty() {
         return;
     }
 
     // ── Pass 2: apply writes (each a scoped single-type lock). ──
     if let Some(mut tq) = world.query_mut::<Transform>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             if let (Some((new_pos, rotation)), Some(t)) = (d.movement, tq.get_mut(d.entity)) {
                 t.translation = new_pos;
                 if let Some(r) = rotation {
@@ -161,12 +171,30 @@ pub fn follow_system(world: &World, dt: f32) {
         }
     }
     if let Some(mut sq) = world.query_mut::<FollowState>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             if let Some(state) = d.state_to_insert {
                 sq.insert(d.entity, state);
             }
         }
     }
+}
+
+/// Follow system factory — returns a closure with a persistent
+/// [`FollowScratch`] (#2033 / PERF-D1-2026-07-16-01). Behavior is
+/// identical to calling [`follow_system_inner`] fresh every frame; use
+/// this when wiring the system into the scheduler.
+pub(crate) fn make_follow_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut scratch = FollowScratch::default();
+    move |world: &World, dt: f32| {
+        follow_system_inner(world, dt, &mut scratch);
+    }
+}
+
+/// Kept for test ergonomics — tests call this directly and don't need
+/// persistent scratch. Production code uses [`make_follow_system`].
+#[cfg(test)]
+pub(crate) fn follow_system(world: &World, dt: f32) {
+    follow_system_inner(world, dt, &mut FollowScratch::default());
 }
 
 #[cfg(test)]

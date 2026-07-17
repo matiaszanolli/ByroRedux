@@ -190,12 +190,22 @@ struct WanderDecision {
     state: WanderState,
 }
 
+/// Reusable per-frame scratch for [`wander_system_inner`] — captured by
+/// [`make_wander_system`] so the `decisions` backing allocation survives
+/// across frames instead of being re-declared `Vec::new()` every tick
+/// (#2033 / PERF-D1-2026-07-16-01), mirroring `animation_system`'s
+/// `AnimScratch` (#1372).
+#[derive(Default)]
+struct WanderScratch {
+    decisions: Vec<WanderDecision>,
+}
+
 /// Drive straight-line walk-to-point locomotion for every [`WanderBehavior`]
 /// actor. Registered `add_exclusive(Stage::PostUpdate, …)` so it reads this
 /// frame's propagated `GlobalTransform`-equivalent position via `Transform`
 /// directly — NPC placement roots are propagation roots (no `Parent`), so
 /// `Transform` == world position for them, same as `sandbox_seat_system`.
-pub fn wander_system(world: &World, dt: f32) {
+fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
     let Some(behavior_q) = world.query::<WanderBehavior>() else {
         return;
     };
@@ -204,7 +214,7 @@ pub fn wander_system(world: &World, dt: f32) {
     // Held guards are distinct component/resource types, so the
     // lock-tracker sees no conflict; writes happen in Pass 2 after these
     // read guards drop.
-    let mut decisions: Vec<WanderDecision> = Vec::new();
+    scratch.decisions.clear();
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
@@ -246,7 +256,7 @@ pub fn wander_system(world: &World, dt: f32) {
                 },
             );
 
-            decisions.push(WanderDecision {
+            scratch.decisions.push(WanderDecision {
                 entity,
                 translation: new_pos,
                 rotation,
@@ -259,13 +269,13 @@ pub fn wander_system(world: &World, dt: f32) {
             });
         }
     }
-    if decisions.is_empty() {
+    if scratch.decisions.is_empty() {
         return;
     }
 
     // ── Pass 2: apply writes (each a scoped single-type lock). ──
     if let Some(mut tq) = world.query_mut::<Transform>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             if let Some(t) = tq.get_mut(d.entity) {
                 t.translation = d.translation;
                 if let Some(r) = d.rotation {
@@ -275,10 +285,28 @@ pub fn wander_system(world: &World, dt: f32) {
         }
     }
     if let Some(mut sq) = world.query_mut::<WanderState>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             sq.insert(d.entity, d.state);
         }
     }
+}
+
+/// Wander system factory — returns a closure with a persistent
+/// [`WanderScratch`] (#2033 / PERF-D1-2026-07-16-01). Behavior is
+/// identical to calling [`wander_system_inner`] fresh every frame; use
+/// this when wiring the system into the scheduler.
+pub(crate) fn make_wander_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut scratch = WanderScratch::default();
+    move |world: &World, dt: f32| {
+        wander_system_inner(world, dt, &mut scratch);
+    }
+}
+
+/// Kept for test ergonomics — tests call this directly and don't need
+/// persistent scratch. Production code uses [`make_wander_system`].
+#[cfg(test)]
+pub(crate) fn wander_system(world: &World, dt: f32) {
+    wander_system_inner(world, dt, &mut WanderScratch::default());
 }
 
 #[cfg(test)]
@@ -374,6 +402,59 @@ mod tests {
         assert!(
             sq.get(entity).is_some(),
             "wander_system must lazily insert WanderState on first tick"
+        );
+    }
+
+    /// Regression for #2033 / PERF-D1-2026-07-16-01. Pre-fix,
+    /// `wander_system` declared `let mut decisions: Vec<WanderDecision> =
+    /// Vec::new()` fresh every call — a per-frame allocation regardless of
+    /// how it was driven. Post-fix, [`WanderScratch::decisions`] is
+    /// captured once by [`make_wander_system`] and reused via `clear()`
+    /// each tick. Drives [`wander_system_inner`] directly against the same
+    /// persistent scratch across two ticks and asserts (a) the backing
+    /// allocation's capacity doesn't grow on the second tick (the actual
+    /// perf property this fix delivers) and (b) `len()` resets to 1 each
+    /// tick rather than accumulating — the second assertion is what would
+    /// actually catch a missing `clear()` call, since a growing `Vec`
+    /// alone wouldn't be visible from outside without it.
+    #[test]
+    fn wander_scratch_reuses_allocation_across_frames() {
+        let mut world = World::new();
+        world.register::<WanderBehavior>();
+        world.register::<WanderState>();
+        world.register::<Transform>();
+
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(Vec3::ZERO));
+        world.insert(
+            entity,
+            WanderBehavior {
+                wander_radius: Some(200.0),
+                form_id: 0x0002_0002,
+            },
+        );
+
+        let mut scratch = WanderScratch::default();
+        wander_system_inner(&world, 0.5, &mut scratch);
+        assert_eq!(
+            scratch.decisions.len(),
+            1,
+            "first tick must populate exactly one decision"
+        );
+        let cap_after_first = scratch.decisions.capacity();
+        assert!(cap_after_first > 0);
+
+        wander_system_inner(&world, 0.5, &mut scratch);
+        assert_eq!(
+            scratch.decisions.len(),
+            1,
+            "clear() must reset len each frame, not accumulate stale decisions"
+        );
+        assert_eq!(
+            scratch.decisions.capacity(),
+            cap_after_first,
+            "capacity must not grow on a second frame with the same entity count — \
+             the backing allocation must be reused via clear(), not reallocated"
         );
     }
 }

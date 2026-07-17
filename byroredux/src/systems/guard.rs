@@ -91,18 +91,28 @@ struct GuardDecision {
     state: Option<GuardState>,
 }
 
+/// Reusable per-frame scratch for [`guard_system_inner`] — captured by
+/// [`make_guard_system`] so the `decisions` backing allocation survives
+/// across frames instead of being re-declared `Vec::new()` every tick
+/// (#2033 / PERF-D1-2026-07-16-01), mirroring `animation_system`'s
+/// `AnimScratch` (#1372).
+#[derive(Default)]
+struct GuardScratch {
+    decisions: Vec<GuardDecision>,
+}
+
 /// Drive anchor-hold-and-return locomotion for every [`GuardBehavior`]
 /// actor. Registered `add_exclusive(Stage::PostUpdate, …)`, same
 /// stage/slot family as `wander_system`/`travel_system` — NPC placement
 /// roots are propagation roots (no `Parent`), so `Transform` == world
 /// position for them.
-pub fn guard_system(world: &World, dt: f32) {
+fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
     let Some(behavior_q) = world.query::<GuardBehavior>() else {
         return;
     };
 
     // ── Pass 1: gather decisions (reads only). ──
-    let mut decisions: Vec<GuardDecision> = Vec::new();
+    scratch.decisions.clear();
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
@@ -134,7 +144,7 @@ pub fn guard_system(world: &World, dt: f32) {
                 None
             };
 
-            decisions.push(GuardDecision {
+            scratch.decisions.push(GuardDecision {
                 entity,
                 translation: movement.map_or(current, |(pos, _)| pos),
                 rotation: movement.and_then(|(_, rot)| rot),
@@ -142,13 +152,13 @@ pub fn guard_system(world: &World, dt: f32) {
             });
         }
     }
-    if decisions.is_empty() {
+    if scratch.decisions.is_empty() {
         return;
     }
 
     // ── Pass 2: apply writes (each a scoped single-type lock). ──
     if let Some(mut tq) = world.query_mut::<Transform>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             if let Some(t) = tq.get_mut(d.entity) {
                 t.translation = d.translation;
                 if let Some(r) = d.rotation {
@@ -158,12 +168,30 @@ pub fn guard_system(world: &World, dt: f32) {
         }
     }
     if let Some(mut sq) = world.query_mut::<GuardState>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             if let Some(state) = d.state {
                 sq.insert(d.entity, state);
             }
         }
     }
+}
+
+/// Guard system factory — returns a closure with a persistent
+/// [`GuardScratch`] (#2033 / PERF-D1-2026-07-16-01). Behavior is
+/// identical to calling [`guard_system_inner`] fresh every frame; use
+/// this when wiring the system into the scheduler.
+pub(crate) fn make_guard_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut scratch = GuardScratch::default();
+    move |world: &World, dt: f32| {
+        guard_system_inner(world, dt, &mut scratch);
+    }
+}
+
+/// Kept for test ergonomics — tests call this directly and don't need
+/// persistent scratch. Production code uses [`make_guard_system`].
+#[cfg(test)]
+pub(crate) fn guard_system(world: &World, dt: f32) {
+    guard_system_inner(world, dt, &mut GuardScratch::default());
 }
 
 #[cfg(test)]

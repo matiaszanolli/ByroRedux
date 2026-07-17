@@ -49,18 +49,28 @@ struct PatrolDecision {
     state: PatrolState,
 }
 
+/// Reusable per-frame scratch for [`patrol_system_inner`] — captured by
+/// [`make_patrol_system`] so the `decisions` backing allocation survives
+/// across frames instead of being re-declared `Vec::new()` every tick
+/// (#2033 / PERF-D1-2026-07-16-01), mirroring `animation_system`'s
+/// `AnimScratch` (#1372).
+#[derive(Default)]
+struct PatrolScratch {
+    decisions: Vec<PatrolDecision>,
+}
+
 /// Drive `wander_system`'s shared oscillating-walk core for every
 /// [`PatrolBehavior`] actor. Registered `add_exclusive(Stage::PostUpdate,
 /// …)`, same stage/slot family as `wander_system` — NPC placement roots
 /// are propagation roots (no `Parent`), so `Transform` == world position
 /// for them.
-pub fn patrol_system(world: &World, dt: f32) {
+fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
     let Some(behavior_q) = world.query::<PatrolBehavior>() else {
         return;
     };
 
     // ── Pass 1: gather decisions (reads only). ──
-    let mut decisions: Vec<PatrolDecision> = Vec::new();
+    scratch.decisions.clear();
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
@@ -102,7 +112,7 @@ pub fn patrol_system(world: &World, dt: f32) {
                 },
             );
 
-            decisions.push(PatrolDecision {
+            scratch.decisions.push(PatrolDecision {
                 entity,
                 translation: new_pos,
                 rotation,
@@ -115,13 +125,13 @@ pub fn patrol_system(world: &World, dt: f32) {
             });
         }
     }
-    if decisions.is_empty() {
+    if scratch.decisions.is_empty() {
         return;
     }
 
     // ── Pass 2: apply writes (each a scoped single-type lock). ──
     if let Some(mut tq) = world.query_mut::<Transform>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             if let Some(t) = tq.get_mut(d.entity) {
                 t.translation = d.translation;
                 if let Some(r) = d.rotation {
@@ -131,10 +141,28 @@ pub fn patrol_system(world: &World, dt: f32) {
         }
     }
     if let Some(mut sq) = world.query_mut::<PatrolState>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             sq.insert(d.entity, d.state);
         }
     }
+}
+
+/// Patrol system factory — returns a closure with a persistent
+/// [`PatrolScratch`] (#2033 / PERF-D1-2026-07-16-01). Behavior is
+/// identical to calling [`patrol_system_inner`] fresh every frame; use
+/// this when wiring the system into the scheduler.
+pub(crate) fn make_patrol_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut scratch = PatrolScratch::default();
+    move |world: &World, dt: f32| {
+        patrol_system_inner(world, dt, &mut scratch);
+    }
+}
+
+/// Kept for test ergonomics — tests call this directly and don't need
+/// persistent scratch. Production code uses [`make_patrol_system`].
+#[cfg(test)]
+pub(crate) fn patrol_system(world: &World, dt: f32) {
+    patrol_system_inner(world, dt, &mut PatrolScratch::default());
 }
 
 #[cfg(test)]

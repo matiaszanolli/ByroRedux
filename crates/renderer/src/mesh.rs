@@ -37,9 +37,16 @@ static VERTEX_POOL_SOFT_WARNED: Once = Once::new();
 static INDEX_POOL_SOFT_WARNED: Once = Once::new();
 
 /// Hard cap on the number of mesh handle slots. Slot IDs are cast to
-/// `u32`; this constant keeps that cast safe. A correct streaming
-/// session re-uses freed slots via drop-and-push, so realistic counts
-/// stay well below 100 k.
+/// `u32`; this constant keeps that cast safe.
+///
+/// #2035 / MEM-D3-02 — slots are grow-only and never reused: a dropped
+/// slot's entry holds `None` forever ([`MeshRegistry::drop_mesh`]).
+/// Reusing a handle would re-enter the same `GpuInstance.mesh_id` for a
+/// different mesh and produce silent data corruption, so the 16 M
+/// ceiling here — not slot reuse — is what keeps a long streaming
+/// session safe: every mesh ever loaded across the session's lifetime
+/// gets its own permanent slot, and 16 M is far past any realistic
+/// per-session unique-mesh count.
 pub const MAX_MESH_SLOTS: u32 = 1 << 24; // 16 M
 
 /// Pure-function check — given the current pool length and the new

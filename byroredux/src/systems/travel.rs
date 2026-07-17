@@ -106,19 +106,29 @@ struct TravelDecision {
     state: Option<TravelState>,
 }
 
+/// Reusable per-frame scratch for [`travel_system_inner`] — captured by
+/// [`make_travel_system`] so the `decisions` backing allocation survives
+/// across frames instead of being re-declared `Vec::new()` every tick
+/// (#2033 / PERF-D1-2026-07-16-01), mirroring `animation_system`'s
+/// `AnimScratch` (#1372).
+#[derive(Default)]
+struct TravelScratch {
+    decisions: Vec<TravelDecision>,
+}
+
 /// Drive straight-line walk-to-destination-once locomotion for every
 /// [`TravelBehavior`] actor not yet [`Traveled`]. Registered
 /// `add_exclusive(Stage::PostUpdate, …)`, same stage/slot family as
 /// `wander_system`/`sandbox_seat_system` — NPC placement roots are
 /// propagation roots (no `Parent`), so `Transform` == world position for
 /// them.
-pub fn travel_system(world: &World, dt: f32) {
+fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     let Some(behavior_q) = world.query::<TravelBehavior>() else {
         return;
     };
 
     // ── Pass 1: gather decisions (reads only). ──
-    let mut decisions: Vec<TravelDecision> = Vec::new();
+    scratch.decisions.clear();
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
@@ -154,7 +164,7 @@ pub fn travel_system(world: &World, dt: f32) {
             let horiz_delta = Vec3::new(new_pos.x - destination.x, 0.0, new_pos.z - destination.z);
             let arrived = horiz_delta.length_squared() <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
 
-            decisions.push(TravelDecision {
+            scratch.decisions.push(TravelDecision {
                 entity,
                 translation: new_pos,
                 rotation,
@@ -166,13 +176,13 @@ pub fn travel_system(world: &World, dt: f32) {
             });
         }
     }
-    if decisions.is_empty() {
+    if scratch.decisions.is_empty() {
         return;
     }
 
     // ── Pass 2: apply writes (each a scoped single-type lock). ──
     if let Some(mut tq) = world.query_mut::<Transform>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             if let Some(t) = tq.get_mut(d.entity) {
                 t.translation = d.translation;
                 if let Some(r) = d.rotation {
@@ -182,19 +192,37 @@ pub fn travel_system(world: &World, dt: f32) {
         }
     }
     if let Some(mut sq) = world.query_mut::<TravelState>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             if let Some(state) = d.state {
                 sq.insert(d.entity, state);
             }
         }
     }
     if let Some(mut tq) = world.query_mut::<Traveled>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             if d.state.is_none() {
                 tq.insert(d.entity, Traveled);
             }
         }
     }
+}
+
+/// Travel system factory — returns a closure with a persistent
+/// [`TravelScratch`] (#2033 / PERF-D1-2026-07-16-01). Behavior is
+/// identical to calling [`travel_system_inner`] fresh every frame; use
+/// this when wiring the system into the scheduler.
+pub(crate) fn make_travel_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut scratch = TravelScratch::default();
+    move |world: &World, dt: f32| {
+        travel_system_inner(world, dt, &mut scratch);
+    }
+}
+
+/// Kept for test ergonomics — tests call this directly and don't need
+/// persistent scratch. Production code uses [`make_travel_system`].
+#[cfg(test)]
+pub(crate) fn travel_system(world: &World, dt: f32) {
+    travel_system_inner(world, dt, &mut TravelScratch::default());
 }
 
 #[cfg(test)]

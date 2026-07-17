@@ -463,30 +463,31 @@ impl BSGeometryMeshData {
         // Per nifly: weight count is interpreted as a *flat* count of
         // BoneWeight entries; the per-vertex grouping is `weights_per_vert`.
         // When `weights_per_vert == 0` we skip the resize (no skin weights).
-        let mut skin_weights: Vec<Vec<BoneWeight>> =
-            match n_total_weights.checked_div(weights_per_vert) {
-                Some(outer_len) => stream.allocate_vec::<Vec<BoneWeight>>(outer_len)?,
-                None => Vec::new(),
-            };
-        if let Some(outer_len) = n_total_weights.checked_div(weights_per_vert) {
-            let outer_len = outer_len as usize;
-            for _ in 0..outer_len {
-                // #768: route the inner allocation through `allocate_vec`
-                // so a hostile `weights_per_vert = 0xFFFFFFFF` cannot
-                // OOM-panic the process before the inner u16 reads
-                // fail. The outer `outer_len` already goes through
-                // `allocate_vec` at line 443 (since #764), but
-                // `Vec::with_capacity(weights_per_vert)` here was an
-                // unbounded sibling — companion fix to #764.
-                let mut row = stream.allocate_vec::<BoneWeight>(weights_per_vert)?;
-                for _ in 0..weights_per_vert {
-                    let bone_index = stream.read_u16_le()?;
-                    let weight = stream.read_u16_le()?;
-                    row.push(BoneWeight { bone_index, weight });
-                }
-                skin_weights.push(row);
+        //
+        // #2032 / PERF-D8-01 — bulk-read via `read_pod_vec::<BoneWeight>`
+        // (matches the `meshlets`/`cull_data` sibling reads below and
+        // `BoneWeight`'s own doc comment) instead of a per-element
+        // `allocate_vec` + two-`read_u16_le` loop. Reads
+        // `outer_len * weights_per_vert`, NOT `n_total_weights` — floor
+        // division means `outer_len * weights_per_vert <= n_total_weights`
+        // whenever there's a remainder, and the old per-row loop only
+        // ever consumed that same truncated count from the stream, so
+        // this preserves the exact byte-for-byte stream position. The
+        // product can't overflow `usize`: it's bounded above by
+        // `n_total_weights` itself (a `u32`), by construction of floor
+        // division.
+        let skin_weights: Vec<Vec<BoneWeight>> = match n_total_weights.checked_div(weights_per_vert)
+        {
+            Some(outer_len) => {
+                let weights_per_vert = weights_per_vert as usize;
+                let flat = stream
+                    .read_pod_vec::<BoneWeight>(outer_len as usize * weights_per_vert)?;
+                flat.chunks_exact(weights_per_vert)
+                    .map(|c| c.to_vec())
+                    .collect()
             }
-        }
+            None => Vec::new(),
+        };
 
         let n_lods = stream.read_u32_le()?;
         let mut lods = stream.allocate_vec::<Vec<[u16; 3]>>(n_lods)?;
@@ -629,21 +630,22 @@ mod tests {
     /// Regression for #768 / NIF-D3-13. A hostile `weights_per_vert =
     /// 0xFFFFFFFF` paired with a matching `n_total_weights` makes
     /// `outer_len = 1` (passes the outer `allocate_vec` budget guard
-    /// from #764). Pre-fix the inner row used
+    /// from #764). Pre-#768 the inner row used
     /// `Vec::with_capacity(weights_per_vert)`, which on overcommit
     /// systems would request ~16 GB of virtual memory and the
     /// subsequent `read_u16_le` would fail with a generic EOF
     /// message (or, in resource-constrained environments, OOM-panic
-    /// the process). Post-fix the inner allocation routes through
-    /// `allocate_vec` and short-circuits with a descriptive
-    /// "only N bytes remain" budget rejection BEFORE any heap
-    /// allocation is attempted.
+    /// the process).
     ///
-    /// The test stream is sized so the outer allocate_vec(1) passes
-    /// (one trailing padding byte ≥ 1 element) but the inner
-    /// allocate_vec(0xFFFFFFFF) sees remaining = 1 and fires the
-    /// budget gate. The assertion on the error message text
-    /// distinguishes the two failure modes.
+    /// #2032 / PERF-D8-01 replaced the per-row `allocate_vec` +
+    /// `read_u16_le` loop with a single bulk `read_pod_vec` over
+    /// `outer_len * weights_per_vert` elements — that byte count
+    /// (~17 GB here) trips `read_pod_vec`'s own `check_alloc` guard,
+    /// which checks the hard `MAX_SINGLE_ALLOC_BYTES` cap BEFORE the
+    /// remaining-stream-bytes check `allocate_vec` used,
+    /// so the rejection message changed shape (now "exceeds hard cap"
+    /// rather than "only N bytes remain") while the contract — graceful
+    /// error, never a panic or unbounded allocation — is unchanged.
     #[test]
     fn weights_per_vert_hostile_returns_err_not_panic() {
         let mut bytes = Vec::new();
@@ -668,16 +670,98 @@ mod tests {
             result.is_err(),
             "hostile weights_per_vert must error gracefully, not panic"
         );
-        // Pre-fix would either panic (OOM) or fail with a generic
-        // EOF read error; post-fix prints the budget-rejection
-        // string from `allocate_vec`. Asserting on the text catches
-        // any future regression that re-introduces the unbounded
-        // allocation pattern.
+        // Pre-#768 would either panic (OOM) or fail with a generic EOF
+        // read error; post-#2032 the bulk `read_pod_vec` path rejects
+        // the ~17 GB request via `check_alloc`'s hard-cap guard before
+        // any heap allocation is attempted. Asserting on the text
+        // catches any future regression that re-introduces an
+        // unbounded allocation on this path.
         let err = result.unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("only") && msg.contains("bytes remain"),
-            "expected allocate_vec budget rejection, got: {msg}"
+            msg.contains("exceeds hard cap"),
+            "expected read_pod_vec's check_alloc hard-cap rejection, got: {msg}"
         );
+    }
+
+    /// Regression for #2032 / PERF-D8-01. Pins that the bulk
+    /// `read_pod_vec::<BoneWeight>` migration produces byte-identical
+    /// `skin_weights` content AND stream-position behavior to the old
+    /// per-element `allocate_vec` + two-`read_u16_le` loop — including
+    /// the truncating-division edge case where `n_total_weights` isn't
+    /// evenly divisible by `weights_per_vert`.
+    ///
+    /// `n_total_weights` (5) is intentionally NOT a multiple of
+    /// `weights_per_vert` (2); the on-disk data after it holds only
+    /// `outer_len * weights_per_vert` = 4 `BoneWeight` entries (16
+    /// bytes), immediately followed by the real `n_lods` field — i.e.
+    /// this models a stream where the redundant `n_total_weights`
+    /// count doesn't perfectly match the vertex-grouped data that
+    /// actually follows on disk, exactly the case the old loop (and
+    /// therefore the new bulk read) must floor-divide around. If the
+    /// migration had used `n_total_weights` directly instead of
+    /// `outer_len * weights_per_vert`, it would try to read a 5th
+    /// entry's worth of bytes from what are actually the `n_lods` /
+    /// `n_meshlets` / `n_cull_data` fields, corrupting the parse.
+    #[test]
+    fn skin_weights_bulk_read_matches_per_element_semantics() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // version
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_tri_indices
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // scale (positive)
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // weights_per_vert
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_vertices
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_uv1
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_uv2
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_colors
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_normals
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_tangents
+
+        // n_total_weights(5) / weights_per_vert(2) floor-divides to
+        // outer_len = 2, so only 4 BoneWeight entries are ever
+        // consumed — the on-disk layout reflects that (4 entries, not
+        // 5) so a correct reader lands exactly on `n_lods` next.
+        bytes.extend_from_slice(&5u32.to_le_bytes()); // n_total_weights
+        let weights: [(u16, u16); 4] = [(10, 100), (11, 200), (20, 300), (21, 400)];
+        for (bone_index, weight) in weights {
+            bytes.extend_from_slice(&bone_index.to_le_bytes());
+            bytes.extend_from_slice(&weight.to_le_bytes());
+        }
+
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_lods
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_meshlets
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_cull_data
+
+        let data = BSGeometryMeshData::parse_from_bytes(&bytes)
+            .expect("well-formed skin-weight body must parse");
+
+        assert_eq!(
+            data.skin_weights.len(),
+            2,
+            "outer_len must floor-divide n_total_weights(5) / weights_per_vert(2) = 2"
+        );
+        assert_eq!(
+            data.skin_weights[0]
+                .iter()
+                .map(|w| (w.bone_index, w.weight))
+                .collect::<Vec<_>>(),
+            vec![(10, 100), (11, 200)],
+        );
+        assert_eq!(
+            data.skin_weights[1]
+                .iter()
+                .map(|w| (w.bone_index, w.weight))
+                .collect::<Vec<_>>(),
+            vec![(20, 300), (21, 400)],
+        );
+        // If the bulk read had consumed `n_total_weights` (5) elements
+        // instead of `outer_len * weights_per_vert` (4), it would have
+        // read 4 extra bytes past the intended 16-byte skin-weight
+        // region — landing mid-way into the real `n_lods` field's
+        // bytes and either misreading `n_lods` as garbage (causing
+        // `allocate_vec` to reject it) or misaligning every read after
+        // it. `lods.len() == 0` is the observable proof the cursor
+        // landed exactly where the old per-element loop left it.
+        assert_eq!(data.lods.len(), 0);
     }
 }

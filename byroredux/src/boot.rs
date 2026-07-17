@@ -723,7 +723,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
             "BYRO_SANDBOX_SIT set — enabling sandbox seat-snap \
              (grounded sit-enter pose on FNV/FO3; see systems::sandbox docs for other games)"
         );
-        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::sandbox_seat_system);
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_sandbox_seat_system());
     }
     // M42.3 — Wander locomotion. GATED OFF by default (opt in with
     // `BYRO_WANDER=1`), mirroring `BYRO_SANDBOX_SIT` above. Straight-line
@@ -736,7 +736,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // order doesn't matter.
     if std::env::var_os("BYRO_WANDER").is_some() {
         log::info!("BYRO_WANDER set — enabling NPC wander locomotion (M42.3 v0)");
-        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::wander_system);
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_wander_system());
     }
     // M42.4 — Travel locomotion. GATED OFF by default (opt in with
     // `BYRO_TRAVEL=1`), mirroring `BYRO_WANDER`/`BYRO_SANDBOX_SIT` above.
@@ -750,7 +750,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // among the three doesn't matter.
     if std::env::var_os("BYRO_TRAVEL").is_some() {
         log::info!("BYRO_TRAVEL set — enabling NPC travel locomotion (M42.4 v0)");
-        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::travel_system);
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_travel_system());
     }
     // M42.5 — Follow locomotion. GATED OFF by default (opt in with
     // `BYRO_FOLLOW=1`), mirroring `BYRO_TRAVEL`/`BYRO_WANDER` above.
@@ -764,7 +764,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // among the four doesn't matter.
     if std::env::var_os("BYRO_FOLLOW").is_some() {
         log::info!("BYRO_FOLLOW set — enabling NPC follow locomotion (M42.5 v0)");
-        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::follow_system);
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_follow_system());
     }
     // M42.6 — Escort locomotion. GATED OFF by default (opt in with
     // `BYRO_ESCORT=1`), mirroring `BYRO_FOLLOW`/`BYRO_TRAVEL`/`BYRO_WANDER`
@@ -778,7 +778,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // order among the five doesn't matter.
     if std::env::var_os("BYRO_ESCORT").is_some() {
         log::info!("BYRO_ESCORT set — enabling NPC escort locomotion (M42.6 v0)");
-        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::escort_system);
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_escort_system());
     }
     // M42.7 — Guard locomotion. GATED OFF by default (opt in with
     // `BYRO_GUARD=1`), mirroring `BYRO_ESCORT`/`BYRO_FOLLOW`/`BYRO_TRAVEL`/
@@ -791,7 +791,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // order among the six doesn't matter.
     if std::env::var_os("BYRO_GUARD").is_some() {
         log::info!("BYRO_GUARD set — enabling NPC guard locomotion (M42.7 v0)");
-        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::guard_system);
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_guard_system());
     }
     // M42.8 — Patrol locomotion. GATED OFF by default (opt in with
     // `BYRO_PATROL=1`), mirroring the gates above. v0 Patrol is Wander's
@@ -801,7 +801,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // module docs. Same exclusive PostUpdate lane.
     if std::env::var_os("BYRO_PATROL").is_some() {
         log::info!("BYRO_PATROL set — enabling NPC patrol locomotion (M42.8 v0, aliases Wander's algorithm)");
-        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::patrol_system);
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_patrol_system());
     }
     // PostUpdate ordering contract (#1375 invariant pin):
     //   1. transform_propagation — BFS GlobalTransform composition

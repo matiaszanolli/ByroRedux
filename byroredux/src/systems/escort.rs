@@ -109,6 +109,16 @@ struct EscortDecision {
     arrived: bool,
 }
 
+/// Reusable per-frame scratch for [`escort_system_inner`] — captured by
+/// [`make_escort_system`] so the `decisions` backing allocation survives
+/// across frames instead of being re-declared `Vec::new()` every tick
+/// (#2033 / PERF-D1-2026-07-16-01), mirroring `animation_system`'s
+/// `AnimScratch` (#1372).
+#[derive(Default)]
+struct EscortScratch {
+    decisions: Vec<EscortDecision>,
+}
+
 /// Drive the two-phase collect-then-lead locomotion for every
 /// [`EscortBehavior`] actor not yet [`Escorted`]. Registered
 /// `add_exclusive(Stage::PostUpdate, …)`, same stage/slot family as
@@ -117,13 +127,13 @@ struct EscortDecision {
 /// for them; both the collect target and the resolved destination
 /// reference may be any REFR, so their positions are read via
 /// `GlobalTransform`.
-pub fn escort_system(world: &World, dt: f32) {
+fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
     let Some(behavior_q) = world.query::<EscortBehavior>() else {
         return;
     };
 
     // ── Pass 1: gather decisions (reads only). ──
-    let mut decisions: Vec<EscortDecision> = Vec::new();
+    scratch.decisions.clear();
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
@@ -155,7 +165,7 @@ pub fn escort_system(world: &World, dt: f32) {
                 let horiz_delta = Vec3::new(new_pos.x - destination.x, 0.0, new_pos.z - destination.z);
                 let arrived =
                     horiz_delta.length_squared() <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
-                decisions.push(EscortDecision {
+                scratch.decisions.push(EscortDecision {
                     entity,
                     translation: new_pos,
                     rotation,
@@ -188,7 +198,7 @@ pub fn escort_system(world: &World, dt: f32) {
                 let horiz_delta = Vec3::new(new_pos.x - destination.x, 0.0, new_pos.z - destination.z);
                 let arrived =
                     horiz_delta.length_squared() <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
-                decisions.push(EscortDecision {
+                scratch.decisions.push(EscortDecision {
                     entity,
                     translation: new_pos,
                     rotation,
@@ -201,7 +211,7 @@ pub fn escort_system(world: &World, dt: f32) {
                 let target_xz = Vec3::new(pos.x, current.y, pos.z);
                 let (new_pos, rotation) =
                     step_toward(current, transform.rotation, target_xz, dt, physics.as_deref());
-                decisions.push(EscortDecision {
+                scratch.decisions.push(EscortDecision {
                     entity,
                     translation: new_pos,
                     rotation,
@@ -213,13 +223,13 @@ pub fn escort_system(world: &World, dt: f32) {
             }
         }
     }
-    if decisions.is_empty() {
+    if scratch.decisions.is_empty() {
         return;
     }
 
     // ── Pass 2: apply writes (each a scoped single-type lock). ──
     if let Some(mut tq) = world.query_mut::<Transform>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             if let Some(t) = tq.get_mut(d.entity) {
                 t.translation = d.translation;
                 if let Some(r) = d.rotation {
@@ -229,19 +239,37 @@ pub fn escort_system(world: &World, dt: f32) {
         }
     }
     if let Some(mut sq) = world.query_mut::<EscortState>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             if let Some(state) = d.state {
                 sq.insert(d.entity, state);
             }
         }
     }
     if let Some(mut eq) = world.query_mut::<Escorted>() {
-        for d in &decisions {
+        for d in &scratch.decisions {
             if d.arrived {
                 eq.insert(d.entity, Escorted);
             }
         }
     }
+}
+
+/// Escort system factory — returns a closure with a persistent
+/// [`EscortScratch`] (#2033 / PERF-D1-2026-07-16-01). Behavior is
+/// identical to calling [`escort_system_inner`] fresh every frame; use
+/// this when wiring the system into the scheduler.
+pub(crate) fn make_escort_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut scratch = EscortScratch::default();
+    move |world: &World, dt: f32| {
+        escort_system_inner(world, dt, &mut scratch);
+    }
+}
+
+/// Kept for test ergonomics — tests call this directly and don't need
+/// persistent scratch. Production code uses [`make_escort_system`].
+#[cfg(test)]
+pub(crate) fn escort_system(world: &World, dt: f32) {
+    escort_system_inner(world, dt, &mut EscortScratch::default());
 }
 
 #[cfg(test)]
