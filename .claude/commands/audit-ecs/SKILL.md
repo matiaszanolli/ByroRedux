@@ -201,17 +201,57 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   load/unload cycle.
 - **M41 NPC spawn** (`byroredux/src/npc_spawn.rs`): ACHR/REFR → entity dispatch
   is idempotent (same REFR FormId never spawns twice).
-- **M42 sandbox seating** (`byroredux/src/systems/sandbox.rs::sandbox_seat_system`,
-  `crates/core/src/ecs/components/sandbox.rs`, `crates/core/src/ecs/components/furniture.rs`): `SandboxBehavior`
-  and `Seated` are `SparseSetStorage` (only sandboxing/seated actors carry them) —
-  verify a growing actor population doesn't force either onto `PackedStorage`.
-  `Seated` is the one-shot gate: once tagged, an actor must not re-enter the seat
-  search on a later frame. Seat claims are per-`(furniture entity, marker index)`
+- **M42 AI-package behavior components** (`byroredux/src/systems/{sandbox,wander,travel,follow,escort,guard,patrol}.rs`,
+  `crates/core/src/ecs/components/{sandbox,furniture,wander,travel,follow,escort,guard,patrol}.rs`):
+  seven procedure runtimes now exist — `SandboxBehavior`/`Seated` (M42),
+  `WanderBehavior`/`WanderState` (M42.3), `TravelBehavior`/`TravelState`/`Traveled`
+  (M42.4), `FollowBehavior`/`FollowState` (M42.5), `EscortBehavior`/`EscortState`/
+  `Escorted` (M42.6), `GuardBehavior`/`GuardState` (M42.7), `PatrolBehavior`/
+  `PatrolState` (M42.8) — ALL `SparseSetStorage` (only actors running that
+  procedure carry them). Verify a growing actor population doesn't force any of
+  them onto `PackedStorage`. An NPC's active package is always a single winning
+  `PackRecord` (`active_package`'s `find` in `crates/plugin/src/esm/records/misc/ai.rs`),
+  so at most one Behavior component lands per actor at spawn — a regression that
+  lets two of these seven land on the same entity is a correctness bug in the
+  `npc_spawn.rs` spawn-tail's `if runs_*` chain, not a storage issue.
+  - **One-shot terminal markers**: `Seated` (Sandbox) and `Traveled`/`Escorted`
+    (Travel/Escort) are one-shot gates — once tagged, the corresponding system
+    must skip the entity on every later frame (never re-enter seat search /
+    re-walk to an already-reached destination).
+  - **Indefinite, non-terminal state**: `WanderState`/`PatrolState` (oscillate
+    forever) and `GuardState` (holds a post, walking back if the actor drifts
+    past `radius` — no terminal marker, since guarding never ends) are read
+    *and* written every tick by their system, unlike the one-shot markers above.
+  - **Live vs. frozen resolution**: `FollowState`/`EscortState` (mid-collect)
+    re-read their target's `GlobalTransform` fresh every tick; `TravelState`/
+    `EscortState` (once leading)/`GuardState` freeze a resolved-or-picked
+    position exactly once and never re-track it, even if the resolved
+    `NearReference` entity later moves. A system that blurs this line (freezes
+    a Follow target, or re-tracks a Travel destination) is a finding.
+  - **Shared logic, separate storage**: `patrol_system` calls `wander_system`'s
+    `step_oscillating_wander` (a plain-value, component-agnostic function in
+    `systems/wander.rs`) directly rather than duplicating the phase-transition
+    state machine — verify a future edit to one path doesn't silently diverge
+    from the other without updating both `wander_system` and `patrol_system`'s
+    call sites. `PatrolState` reuses `WanderPhase` directly (not a second enum).
+    `travel_system::resolve_destination` (`pub(crate)`, generic over primitive
+    fields) is the second instance of this pattern — `escort_system`'s lead
+    phase and `guard_system`'s `NearReference` resolution both call into
+    Travel's logic (Guard only for the FormID-resolve half; its no-target
+    fallback is deliberately the actor's own position, NOT Travel's
+    hash-picked point — reusing Travel's fallback here was tried and reverted
+    because it trivially satisfies Guard's own leash check on the first tick).
+  - Seat claims are per-`(furniture entity, marker index)`
   in the `SeatReservations` resource, wholesale-cleared on every cell load
   (`cell_loader/references/mod.rs`, since entity ids reset on unload) rather than
   released per-entity — verify this doesn't wrongly free seats still held by an
   actor in a *different, still-loaded* cell under exterior multi-cell grid
   streaming (radius > 0), which would let two NPCs claim the same marker.
+  - All seven systems are opt-in and NOT in the default scheduler — gated by
+    `BYRO_SANDBOX_SIT`/`BYRO_WANDER`/`BYRO_TRAVEL`/`BYRO_FOLLOW`/`BYRO_ESCORT`/
+    `BYRO_GUARD`/`BYRO_PATROL` respectively (`boot.rs`). A regression that
+    registers one unconditionally (or drops its env-var check) changes default
+    engine behavior silently.
 - **Scripting transient markers** (`crates/scripting/src/events.rs`):
   `ActivateEvent` / `HitEvent` / `TimerExpired` are removed by
   `event_cleanup_system` (registered `add_exclusive(Stage::Late, …)`) — verify
