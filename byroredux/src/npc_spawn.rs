@@ -9,8 +9,8 @@
 use byroredux_core::animation::AnimationClipRegistry;
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
-    EquipmentSlots, FactionRanks, GlobalTransform, Inventory, ItemStack, MotionType, Name, Parent,
-    RigidBodyData, Transform,
+    EquipmentSlots, FactionRanks, GlobalTransform, Inventory, InventoryIndex, ItemStack,
+    MotionType, Name, Parent, RigidBodyData, Transform,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
@@ -536,6 +536,14 @@ fn pick_idle_handle(pool: &[u32], form_id: u32) -> Option<u32> {
 struct ResolvedArmor<'a> {
     form_id: u32,
     model_path: &'a str,
+    /// Inventory row this armor mesh resolves from. Cross-checked
+    /// against `EquipmentSlots.occupants` after the equip loop
+    /// finishes (#2094 / SKY-D3-NEW-02) — an entry whose index no
+    /// longer occupies any of the biped bits it was equipped into
+    /// was displaced by a later overlapping entry (multi-pick LVLI,
+    /// mod CNTO overlapping a default OTFT slot) and must not spawn
+    /// a mesh alongside the winner.
+    inv_idx: InventoryIndex,
 }
 
 /// Equip pipeline state built purely from `&NpcRecord` + `&EsmIndex`
@@ -573,6 +581,40 @@ fn build_npc_equip_state<'a>(
     let mut armor_to_spawn: Vec<ResolvedArmor<'a>> = Vec::new();
     let actor_level = npc.level;
     let mut expanded: Vec<u32> = Vec::new();
+
+    // #2093 / SKY-D3-NEW-01 — race default skin (`RACE.WNAM`), equipped
+    // FIRST so it's the lowest-priority layer: any OTFT/CNTO armor
+    // resolved below that claims an overlapping biped bit displaces it
+    // in `equipment_slots` (the #2094 post-loop filter then drops the
+    // skin's mesh for exactly the bits it lost, keeping it for any bit
+    // no other gear covers). Without this, an NPC whose OTFT/CNTO
+    // doesn't cover a biped region has zero mesh source there — the
+    // prebaked path's FaceGeom NIF is head-only (Bethesda FaceGen
+    // convention), not "head and body in one mesh."
+    if let Some(race) = index.races.get(&npc.race_form_id) {
+        if let Some(skin_fid) = race.default_skin {
+            let stack = ItemStack::new(skin_fid, 1);
+            let inv_idx = inventory.push(stack);
+            if let Some(item) = index.items.get(&skin_fid) {
+                if let ItemKind::Armor { biped_flags, .. } = item.kind {
+                    equipment_slots.equip(biped_flags, inv_idx);
+                    if let Some(model_path) = byroredux_plugin::equip::resolve_armor_mesh(
+                        item,
+                        gender,
+                        npc.race_form_id,
+                        index,
+                        game,
+                    ) {
+                        armor_to_spawn.push(ResolvedArmor {
+                            form_id: skin_fid,
+                            model_path,
+                            inv_idx,
+                        });
+                    }
+                }
+            }
+        }
+    }
 
     // Default outfit (OTFT.items) → expand each entry through the
     // LVLI dispatcher. Skyrim+ NPCs typically reference leveled
@@ -626,7 +668,7 @@ fn build_npc_equip_state<'a>(
             continue;
         };
 
-        let _ = equipment_slots.equip(biped_flags, inv_idx);
+        equipment_slots.equip(biped_flags, inv_idx);
 
         if let Some(model_path) =
             byroredux_plugin::equip::resolve_armor_mesh(item, gender, npc.race_form_id, index, game)
@@ -634,9 +676,25 @@ fn build_npc_equip_state<'a>(
             armor_to_spawn.push(ResolvedArmor {
                 form_id,
                 model_path,
+                inv_idx,
             });
         }
     }
+
+    // #2094 / SKY-D3-NEW-02 — drop any queued mesh whose inventory
+    // index no longer occupies a biped bit. `equip()` above already
+    // resolved slot-overlap precedence (later entry in the expanded
+    // list wins any bit it shares with an earlier one, e.g. two
+    // multi-pick LVLI entries or a mod CNTO overlapping a default
+    // OTFT slot) — this pass makes the mesh set agree with that
+    // resolution instead of spawning every candidate regardless of
+    // whether it was displaced.
+    armor_to_spawn.retain(|armor| {
+        equipment_slots
+            .occupants
+            .iter()
+            .any(|occupant| *occupant == Some(armor.inv_idx))
+    });
 
     NpcEquipState {
         inventory,
@@ -740,6 +798,7 @@ pub fn spawn_npc_entity(
         skel_path,
         tex_provider,
         mat_provider.as_deref_mut(),
+        None,
         None,
         None,
     );
@@ -871,6 +930,7 @@ pub fn spawn_npc_entity(
                     tex_provider,
                     mat_provider.as_deref_mut(),
                     Some(&skel_map),
+                    None,
                     None,
                 );
                 if let Some(br) = body_root {
@@ -1024,6 +1084,7 @@ pub fn spawn_npc_entity(
                     tex_provider,
                     mat_provider.as_deref_mut(),
                     Some(&skel_map),
+                    None,
                     pre_spawn,
                 );
                 if let Some(hr) = head_root {
@@ -1094,6 +1155,7 @@ pub fn spawn_npc_entity(
                                 mat_provider.as_deref_mut(),
                                 Some(&skel_map),
                                 None,
+                                None,
                             );
                             if let Some(hr) = hair_root {
                                 world.insert(hr, Parent(placement_root));
@@ -1129,6 +1191,7 @@ pub fn spawn_npc_entity(
                                 tex_provider,
                                 mat_provider.as_deref_mut(),
                                 Some(&skel_map),
+                                None,
                                 None,
                             );
                             if let Some(br) = brow_root {
@@ -1232,6 +1295,7 @@ pub fn spawn_npc_entity(
                     tex_provider,
                     mat_provider.as_deref_mut(),
                     Some(&skel_map),
+                    None,
                     pre_spawn,
                 );
                 if let Some(er) = eye_root {
@@ -1269,6 +1333,21 @@ pub fn spawn_npc_entity(
     let mut equipped_armor_count = 0u32;
     let actor_level = npc.level;
     let mut resolved_buf: Vec<u32> = Vec::new();
+    // #2094 / SKY-D3-NEW-02 — every armor whose mesh resolves is a
+    // *candidate*; whether it still occupies a biped bit isn't known
+    // until every inventory entry has run through `equip()` (a later
+    // entry can displace an earlier one on an overlapping bit).
+    // Collecting candidates and filtering once after the loop
+    // (mirroring `build_npc_equip_state`'s prebaked-path fix) is what
+    // makes that possible — the pre-fix version loaded each mesh
+    // inline as it resolved, before the later displacement was known.
+    struct KfArmorCandidate<'a> {
+        model_path: &'a str,
+        resolved_fid: u32,
+        source_fid: u32,
+        inv_idx: InventoryIndex,
+    }
+    let mut candidates: Vec<KfArmorCandidate> = Vec::new();
     // Same TPLT-inherited inventory used for `body_covered` above —
     // the equip dispatch walks this list, not `npc.inventory`, so
     // Lvl* template NPCs equip the gear authored on their base.
@@ -1323,11 +1402,12 @@ pub fn spawn_npc_entity(
             // Mark the slot mask occupied. `equip()` returns
             // displaced indices for "armor-replacing-armor" cases;
             // an NPC at spawn time normally lays out one armor per
-            // slot, so displacement is rare. Logged-only at debug
-            // level to flag suspicious load-order conflicts (two
-            // armors in inventory both claiming UpperBody — happens
-            // with mod overrides; also happens with multi-pick LVLIs
-            // resolving to overlapping biped slots).
+            // slot, so displacement is rare. Logged at debug level to
+            // flag suspicious load-order conflicts (two armors in
+            // inventory both claiming UpperBody — happens with mod
+            // overrides; also happens with multi-pick LVLIs resolving
+            // to overlapping biped slots); the mesh-level exclusion
+            // itself happens in the candidate filter below.
             let displaced = equipment_slots.equip(biped_flags, inv_idx);
             if !displaced.is_empty() {
                 log::debug!(
@@ -1358,35 +1438,57 @@ pub fn spawn_npc_entity(
             ) else {
                 continue;
             };
-            match tex_provider.extract_mesh(model_path) {
-                Some(armor_data) => {
-                    let (_count, armor_root, _map) = load_nif_bytes_with_skeleton(
-                        world,
-                        ctx,
-                        &armor_data,
-                        model_path,
-                        tex_provider,
-                        mat_provider.as_deref_mut(),
-                        Some(&skel_map),
-                        None,
-                    );
-                    if let Some(ar) = armor_root {
-                        world.insert(ar, Parent(placement_root));
-                        add_child(world, placement_root, ar);
-                        equipped_armor_count += 1;
-                    }
+            candidates.push(KfArmorCandidate {
+                model_path,
+                resolved_fid,
+                source_fid: entry.item_form_id,
+                inv_idx,
+            });
+        }
+    }
+
+    // #2094 / SKY-D3-NEW-02 — drop any candidate whose inventory index
+    // no longer occupies a biped bit (fully displaced by a later
+    // overlapping entry). A candidate that kept at least one bit still
+    // needs its mesh — partial displacement just means a different
+    // item now owns the other bit.
+    candidates.retain(|c| {
+        equipment_slots
+            .occupants
+            .iter()
+            .any(|occupant| *occupant == Some(c.inv_idx))
+    });
+
+    for c in &candidates {
+        match tex_provider.extract_mesh(c.model_path) {
+            Some(armor_data) => {
+                let (_count, armor_root, _map) = load_nif_bytes_with_skeleton(
+                    world,
+                    ctx,
+                    &armor_data,
+                    c.model_path,
+                    tex_provider,
+                    mat_provider.as_deref_mut(),
+                    Some(&skel_map),
+                    None,
+                    None,
+                );
+                if let Some(ar) = armor_root {
+                    world.insert(ar, Parent(placement_root));
+                    add_child(world, placement_root, ar);
+                    equipped_armor_count += 1;
                 }
-                None => {
-                    log::debug!(
-                        "NPC {:08X} ({}): armor {:08X} (from CNTO {:08X}) \
-                         model '{}' not in archives",
-                        npc.form_id,
-                        npc.editor_id,
-                        resolved_fid,
-                        entry.item_form_id,
-                        model_path,
-                    );
-                }
+            }
+            None => {
+                log::debug!(
+                    "NPC {:08X} ({}): armor {:08X} (from CNTO {:08X}) \
+                     model '{}' not in archives",
+                    npc.form_id,
+                    npc.editor_id,
+                    c.resolved_fid,
+                    c.source_fid,
+                    c.model_path,
+                );
             }
         }
     }
@@ -1799,12 +1901,16 @@ pub fn prebaked_facegen_tint_path(plugin_name: &str, form_id: u32) -> Option<Str
 /// [`spawn_npc_entity`] instead).
 ///
 /// Pre-baked path: `meshes\actors\character\facegendata\facegeom\
-/// <plugin>\<formid:08x>.nif` carries the per-NPC head **and**
-/// body in one already-skinned mesh — no separate body/head load,
-/// no FaceGen morph evaluator (the SDK pre-applies the slider
-/// table before shipping). Skeleton load + skinning resolution
-/// stays identical to the kf-era path; the head NIF replaces both
-/// the race body NIF and the race-default head.
+/// <plugin>\<formid:08x>.nif` carries the per-NPC **head only**
+/// (matching Bethesda's FaceGen SDK head-only bake convention — a
+/// real vanilla FaceGeom NIF has no torso/limb geometry; see #2093 /
+/// SKY-D3-NEW-01) — no FaceGen morph evaluator (the SDK pre-applies
+/// the slider table before shipping). Body coverage comes from
+/// `RACE.WNAM`'s default skin ARMO (equipped as the lowest-priority
+/// layer in [`build_npc_equip_state`]) plus whatever OTFT/CNTO armor
+/// resolves on top of it. Skeleton load + skinning resolution stays
+/// identical to the kf-era path; the head NIF replaces the race-
+/// default head only.
 ///
 /// **Animation deferred**: Skyrim+ vanilla ships zero `.kf` files
 /// (Havok `.hkx` only). Pre-baked-track NPCs spawn in bind pose
@@ -1897,6 +2003,7 @@ pub fn spawn_prebaked_npc_entity(
         mat_provider.as_deref_mut(),
         None,
         None,
+        None,
     );
     // #1698 — keyframe the ragdoll bones so they don't free-simulate (and pin
     // the physics step) while the actor is alive. Must run before the first
@@ -1928,6 +2035,14 @@ pub fn spawn_prebaked_npc_entity(
             return Some(placement_root);
         }
     };
+    // #2095 / SKY-D3-NEW-03 — per-NPC face-tint DDS. Checked against the
+    // texture archives (not just computed) so an NPC that ships no tint
+    // (modded / incomplete data) keeps the FaceGeom NIF's own baked
+    // diffuse instead of falling back to the magenta "missing texture"
+    // checker — `resolve_texture` can't tell "no override" apart from
+    // "override authored but file missing" once a path reaches it.
+    let tint_path = prebaked_facegen_tint_path(plugin_name, npc.form_id)
+        .filter(|p| tex_provider.extract(p).is_some());
     let (_fg_count, fg_root, _fg_map) = load_nif_bytes_with_skeleton(
         world,
         ctx,
@@ -1936,6 +2051,7 @@ pub fn spawn_prebaked_npc_entity(
         tex_provider,
         mat_provider.as_deref_mut(),
         Some(&skel_map),
+        tint_path.as_deref(),
         None,
     );
     if let Some(fr) = fg_root {
@@ -1950,11 +2066,14 @@ pub fn spawn_prebaked_npc_entity(
     //    dispatches per-game: Skyrim+ walks the ARMA list, race-
     //    matches, and picks the gender-appropriate biped path.
     //
-    //    **Body suppression NOT applied here.** The pre-baked FaceGen
-    //    NIF is one combined head+body skinned mesh; selectively
-    //    hiding body sub-shapes requires per-shape
-    //    `BSDismemberSkinInstance` partition inspection. Phase B.2
-    //    renders armor on top of the FaceGen body and accepts
+    //    **Body suppression NOT applied here.** Body coverage on this
+    //    path comes from the race-default skin ARMO (`RACE.WNAM`,
+    //    #2093 / SKY-D3-NEW-01) queued into `armor_to_spawn` above —
+    //    a single combined mesh, not per-body-part NIFs like the
+    //    kf-era race body — so it can't be selectively hidden the way
+    //    `armor_covers_main_body` skips `upperbody.nif` there without
+    //    per-shape `BSDismemberSkinInstance` partition inspection.
+    //    Phase B.2 renders armor on top of the skin body and accepts
     //    whatever clipping happens — same compromise Phase A.1 made
     //    before A.2 added the kf-era body-skip.
     let mut equipped_armor_count = 0u32;
@@ -1969,6 +2088,7 @@ pub fn spawn_prebaked_npc_entity(
                     tex_provider,
                     mat_provider.as_deref_mut(),
                     Some(&skel_map),
+                    None,
                     None,
                 );
                 if let Some(ar) = armor_root {
@@ -1998,17 +2118,6 @@ pub fn spawn_prebaked_npc_entity(
             armor_to_spawn.len(),
         );
     }
-
-    // Face-tint texture override (Phase 4.x): the per-NPC face-tint
-    // DDS at `textures\actors\character\facegendata\facetint\
-    // <plugin>\<formid:08x>.dds` should replace slot-0 diffuse on
-    // the head material. Wires through the existing
-    // `RefrTextureOverlay` machinery rather than a parallel
-    // override path. Deferred — minimum Phase 4 ships visible
-    // bind-pose NPCs without per-NPC tint, matching the visible
-    // outcome we'd get on the kf-era path before Phase 3c.x's tint
-    // compositor lands.
-    let _tint_path = prebaked_facegen_tint_path(plugin_name, npc.form_id);
 
     tag_descendants_as_actor(world, placement_root);
     Some(placement_root)
@@ -2396,5 +2505,207 @@ mod tests {
             Some(GEAR),
             "no-template NPC equips from its own inventory unchanged"
         );
+    }
+
+    // ── #2093 (SKY-D3-NEW-01) / #2094 (SKY-D3-NEW-02) — RACE.WNAM skin
+    //    fallback + displaced-mesh exclusion on the prebaked path. ──────
+
+    fn skyrim_armor_item(
+        form_id: u32,
+        biped_flags: u32,
+        armatures: Vec<u32>,
+    ) -> byroredux_plugin::esm::records::ItemRecord {
+        byroredux_plugin::esm::records::ItemRecord {
+            form_id,
+            common: byroredux_plugin::esm::records::common::CommonItemFields::default(),
+            kind: ItemKind::Armor {
+                biped_flags,
+                dt: 0.0,
+                dr: 0,
+                health: 0,
+                slot_mask: 0,
+                armor_rating_x100: 0,
+                armor_type: Some(1),
+                armatures,
+            },
+        }
+    }
+
+    fn arma(form_id: u32, mesh_path: &str) -> byroredux_plugin::esm::records::ArmaRecord {
+        byroredux_plugin::esm::records::ArmaRecord {
+            form_id,
+            editor_id: String::new(),
+            biped_flags: 0,
+            general_flags: 0,
+            dt: 0,
+            dr: 0,
+            race_form_id: 0,
+            male_biped_model: mesh_path.to_string(),
+            female_biped_model: mesh_path.to_string(),
+            additional_races: Vec::new(),
+        }
+    }
+
+    /// The Hulda/Mikael scenario from the audit: OTFT covers only Feet
+    /// (`0x80`), so without a `WNAM` skin fallback the NPC has zero mesh
+    /// source for torso/hands. With the fallback wired, the race skin
+    /// (covering the non-overlapping Torso+Hands bits) and the feet
+    /// armor both survive into `armor_to_spawn`.
+    #[test]
+    fn prebaked_equip_state_falls_back_to_race_skin_for_uncovered_slots() {
+        const RACE: u32 = 0x0100_0020;
+        const SKIN: u32 = 0x0100_0021;
+        const SKIN_ARMA: u32 = 0x0100_0022;
+        const FEET: u32 = 0x0100_0023;
+        const FEET_ARMA: u32 = 0x0100_0024;
+        const TORSO_HANDS: u32 = 0x0004 | 0x0010;
+        const FEET_BIT: u32 = 0x0080;
+
+        let mut race = byroredux_plugin::esm::records::RaceRecord {
+            form_id: RACE,
+            editor_id: String::new(),
+            full_name: String::new(),
+            description: String::new(),
+            skill_bonuses: Vec::new(),
+            body_models: Vec::new(),
+            head_parts: Vec::new(),
+            base_height: (1.0, 1.0),
+            base_weight: (1.0, 1.0),
+            race_flags: 0,
+            base_attributes: None,
+            default_hair: None,
+            voice_forms: None,
+            facegen_main_clamp: None,
+            facegen_face_clamp: None,
+            race_reactions: Vec::new(),
+            default_skin: None,
+        };
+        race.default_skin = Some(SKIN);
+
+        let mut npc = test_npc(0x0100_0025, "SkinFallbackNpc");
+        npc.race_form_id = RACE;
+        npc.inventory.push(byroredux_plugin::esm::records::NpcInventoryEntry {
+            item_form_id: FEET,
+            count: 1,
+        });
+
+        let mut index = EsmIndex {
+            game: GameKind::Skyrim,
+            ..Default::default()
+        };
+        index.races.insert(RACE, race);
+        index
+            .items
+            .insert(SKIN, skyrim_armor_item(SKIN, TORSO_HANDS, vec![SKIN_ARMA]));
+        index
+            .armor_addons
+            .insert(SKIN_ARMA, arma(SKIN_ARMA, r"actors\character\skin.nif"));
+        index
+            .items
+            .insert(FEET, skyrim_armor_item(FEET, FEET_BIT, vec![FEET_ARMA]));
+        index
+            .armor_addons
+            .insert(FEET_ARMA, arma(FEET_ARMA, r"armor\boots\boots.nif"));
+
+        let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+
+        assert_eq!(
+            state.armor_to_spawn.len(),
+            2,
+            "non-overlapping skin + feet armor must both queue a mesh, got {:?}",
+            state
+                .armor_to_spawn
+                .iter()
+                .map(|a| a.model_path)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            state
+                .armor_to_spawn
+                .iter()
+                .any(|a| a.model_path == r"actors\character\skin.nif"),
+            "race skin must fall back to cover the torso/hands OTFT/CNTO left uncovered"
+        );
+        assert!(
+            state
+                .armor_to_spawn
+                .iter()
+                .any(|a| a.model_path == r"armor\boots\boots.nif"),
+            "the actually-equipped feet armor must still spawn"
+        );
+    }
+
+    /// #2094 (SKY-D3-NEW-02) — when the equipped gear fully overlaps the
+    /// race skin's biped bit, the skin is displaced and must NOT spawn a
+    /// second (z-fighting) mesh alongside the winner.
+    #[test]
+    fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
+        const RACE: u32 = 0x0100_0030;
+        const SKIN: u32 = 0x0100_0031;
+        const SKIN_ARMA: u32 = 0x0100_0032;
+        const TORSO: u32 = 0x0100_0033;
+        const TORSO_ARMA: u32 = 0x0100_0034;
+        const TORSO_BIT: u32 = 0x0004;
+
+        let mut race = byroredux_plugin::esm::records::RaceRecord {
+            form_id: RACE,
+            editor_id: String::new(),
+            full_name: String::new(),
+            description: String::new(),
+            skill_bonuses: Vec::new(),
+            body_models: Vec::new(),
+            head_parts: Vec::new(),
+            base_height: (1.0, 1.0),
+            base_weight: (1.0, 1.0),
+            race_flags: 0,
+            base_attributes: None,
+            default_hair: None,
+            voice_forms: None,
+            facegen_main_clamp: None,
+            facegen_face_clamp: None,
+            race_reactions: Vec::new(),
+            default_skin: None,
+        };
+        race.default_skin = Some(SKIN);
+
+        let mut npc = test_npc(0x0100_0035, "SkinDisplacedNpc");
+        npc.race_form_id = RACE;
+        npc.inventory.push(byroredux_plugin::esm::records::NpcInventoryEntry {
+            item_form_id: TORSO,
+            count: 1,
+        });
+
+        let mut index = EsmIndex {
+            game: GameKind::Skyrim,
+            ..Default::default()
+        };
+        index.races.insert(RACE, race);
+        index
+            .items
+            .insert(SKIN, skyrim_armor_item(SKIN, TORSO_BIT, vec![SKIN_ARMA]));
+        index
+            .armor_addons
+            .insert(SKIN_ARMA, arma(SKIN_ARMA, r"actors\character\skin.nif"));
+        index.items.insert(
+            TORSO,
+            skyrim_armor_item(TORSO, TORSO_BIT, vec![TORSO_ARMA]),
+        );
+        index
+            .armor_addons
+            .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
+
+        let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
+
+        assert_eq!(
+            state.armor_to_spawn.len(),
+            1,
+            "the skin's fully-overlapping bit must be displaced, leaving only the winner, got {:?}",
+            state
+                .armor_to_spawn
+                .iter()
+                .map(|a| a.model_path)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(state.armor_to_spawn[0].model_path, r"armor\robe\robe.nif");
     }
 }

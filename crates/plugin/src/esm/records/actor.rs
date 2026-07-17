@@ -380,6 +380,15 @@ pub struct RaceRecord {
     /// Drives the Radiant-AI faction-mood calculation for Oblivion
     /// NPCs interacting across racial lines.
     pub race_reactions: Vec<(u32, i32)>,
+    /// Default "naked skin" ARMO form ID from the Skyrim+ `WNAM`
+    /// sub-record — the race's implicit base-layer armor every actor
+    /// wears beneath OTFT/CNTO gear. `None` outside `uses_prebaked_
+    /// facegen()` games (Skyrim/FO4/FO76/Starfield) or when the RACE
+    /// omits `WNAM` (see #2093 / SKY-D3-NEW-01: without this, a
+    /// prebaked NPC whose equipped gear doesn't cover a biped region
+    /// has zero mesh source for it — the FaceGeom NIF bakes head-only
+    /// geometry, no body).
+    pub default_skin: Option<u32>,
 }
 
 /// FNV / FO3 `INDX` head-part identifiers. Values verified by dumping
@@ -872,6 +881,7 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
         facegen_main_clamp: None,
         facegen_face_clamp: None,
         race_reactions: Vec::new(),
+        default_skin: None,
     };
 
     let is_oblivion = matches!(game, GameKind::Oblivion);
@@ -1012,6 +1022,15 @@ pub fn parse_race(form_id: u32, subs: &[SubRecord], game: GameKind) -> RaceRecor
             // bitmask + 2-byte field that OpenMW also skips (see
             // `esm4/loadrace.cpp:232-251`). Authoritative semantics
             // are undocumented; revisit when M41.0 Phase 3b needs it.
+            //
+            // WNAM — default skin ARMO, Skyrim+ only (#2093 /
+            // SKY-D3-NEW-01). Gated on `uses_prebaked_facegen()`
+            // rather than a hardcoded game list so FO76/Starfield ride
+            // along automatically; TES4/FO3/FNV RACE records don't
+            // author WNAM at all.
+            b"WNAM" if game.uses_prebaked_facegen() && sub.data.len() >= 4 => {
+                record.default_skin = Some(SubReader::new(&sub.data).u32_or_default());
+            }
             _ => {}
         }
     }
@@ -1986,6 +2005,40 @@ mod tests {
         assert_eq!(r.race_reactions.len(), 2);
         assert_eq!(r.race_reactions[0], (0x10010, 5));
         assert_eq!(r.race_reactions[1], (0x10011, -3));
+    }
+
+    // ── #2093 / SKY-D3-NEW-01 — RACE.WNAM default skin ───────────────
+
+    /// `WNAM` on a `uses_prebaked_facegen()` game captures the default
+    /// skin ARMO form ID. Without this the prebaked NPC-spawn path has
+    /// no way to give NPCs a body-mesh fallback when OTFT/CNTO doesn't
+    /// cover every biped region.
+    #[test]
+    fn race_skyrim_wnam_captured() {
+        let subs = vec![
+            sub(b"EDID", b"NordRace\0"),
+            sub(b"WNAM", &0x0001_3746u32.to_le_bytes()),
+        ];
+        let r = parse_race(0x10005, &subs, GameKind::Skyrim);
+        assert_eq!(r.default_skin, Some(0x0001_3746));
+    }
+
+    /// `WNAM` must NOT be read on TES4/FO3/FNV — those games don't
+    /// author it, and treating a stray same-named sub-record as a skin
+    /// FormID would silently equip garbage.
+    #[test]
+    fn race_wnam_skipped_on_non_prebaked_games() {
+        for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
+            let subs = vec![
+                sub(b"EDID", b"SomeRace\0"),
+                sub(b"WNAM", &0x0001_3746u32.to_le_bytes()),
+            ];
+            let r = parse_race(0x10006, &subs, game);
+            assert!(
+                r.default_skin.is_none(),
+                "{game:?} must not capture WNAM as a skin form"
+            );
+        }
     }
 
     // ── #968 / OBL-D3-NEW-04 — CLAS Oblivion-shape DATA ──────────────

@@ -146,6 +146,7 @@ pub(crate) fn load_nif_bytes(
         mat_provider,
         None,
         None,
+        None,
     );
     (count, root)
 }
@@ -302,6 +303,12 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
     external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
+    // M41.0 Phase 4.x — per-call diffuse override (#2095 / SKY-D3-NEW-03).
+    // Wins over every submesh's NIF-authored diffuse when present. Used
+    // by the pre-baked FaceGen path to bind the per-NPC face-tint DDS in
+    // place of the FaceGeom NIF's baked-in head diffuse; `None` for every
+    // other caller (skeleton / body / armor loads keep their own texture).
+    diffuse_override: Option<&str>,
     // M41.0 Phase 3b — optional callback invoked once after the
     // import returns and before the per-mesh GPU upload loop runs.
     // Lets the caller mutate `imported.meshes[i].positions`
@@ -750,6 +757,17 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // (#1303 / OBL-D4-NEW-01).
         let owned_normal_map =
             owned_normal_map.or_else(|| owned_texture_path.as_deref().map(derive_normal_map_path));
+
+        // #2095 / SKY-D3-NEW-03 — the per-call diffuse override (pre-baked
+        // FaceGen tint) wins over the NIF-authored diffuse. Applied after
+        // normal-map derivation so a missing normal slot still derives its
+        // `_n.dds` sibling from the head's own diffuse, not the tint DDS.
+        // Flows into both the bound `TextureHandle` and the canonical
+        // `Material.texture_path` below, mirroring the REFR-overlay
+        // precedent in `cell_loader::spawn`.
+        let owned_texture_path = diffuse_override
+            .map(|p| p.to_string())
+            .or(owned_texture_path);
 
         let tex_handle = resolve_texture(ctx, tex_provider, owned_texture_path.as_deref());
 

@@ -131,7 +131,7 @@ benches refresh every `/session-close`.
 
 ### Dimension 3: NPC Equip + FaceGen (M41)
 **Subagent**: `general-purpose`
-**Entry points**: `byroredux/src/npc_spawn.rs` (M41 actor instantiation), `crates/facegen/src/` (`.tri`/`.egm`/`.egt` morph + texture blend), `byroredux/src/systems/character.rs` (skinning consumer for heads/bodies), `crates/nif/src/import/mesh/sse_recon.rs`
+**Entry points**: `byroredux/src/npc_spawn.rs` (M41 actor instantiation), `crates/facegen/src/` (`.tri`/`.egm`/`.egt` morph + texture blend), `byroredux/src/render/skinned.rs` (skinning consumer for heads/bodies), `crates/nif/src/import/mesh/sse_recon.rs`
 **Checklist**:
 - The Whiterun BanneredMare 6 named NPCs (saadia, brenuin, mikael, sinmir, amaundmotierreend, hulda) each land `Inventory` + `EquipmentSlots` and spawn equipped (OTFT.items + LVLI dispatch). Guard that count + components don't regress.
 - Skyrim+ `resolve_armor_mesh` walks ARMO → ARMA → worn-mesh; body-slot armor pre-scan skips `upperbody.nif` to kill z-fight + double bone-palette overhead.
