@@ -73,12 +73,28 @@ closed by #699.)
 | Equipment via OTFT + LVLI dispatch | ✓ | ✓ | ✓ | ~ |
 | `Inventory` + `EquipmentSlots` components | ✓ | ✓ | ✓ | ✓ |
 | Skinned GPU rendering | ✓ M29.5 | ✓ M29.5 | ✓ M29.5 | ~ |
-| AI / behavior | ✗ | ✗ | ✗ | ✗ |
+| AI / behavior | ~ | ~ | ~ | ~ |
 
 FO4 humanoid actors are `~` because `character assets\skeleton.nif` is absent
 from vanilla FO4 BA2s (only `_1stperson` skeleton exists). `Inventory` +
 `EquipmentSlots` components still land; visible skinned geometry awaits a
 Havok `.hkx` loader (M41.x, Tier 5).
+
+AI / behavior is `~` (M42, Tier 7) — 7 of ~17 `PACK` procedures have a
+runtime, each opt-in behind its own `BYRO_*` env flag: Sandbox
+(`BYRO_SANDBOX_SIT`), Wander (`BYRO_WANDER`), Travel (`BYRO_TRAVEL`), Follow
+(`BYRO_FOLLOW`), Escort (`BYRO_ESCORT`), Guard (`BYRO_GUARD`), and Patrol
+(`BYRO_PATROL`, aliases Wander's algorithm — no patrol-route data is decoded
+anywhere in this codebase). v0 scope limits apply across all seven: package
+selection is spawn-time-only (schedule + priority + CTDA conditions,
+evaluated once, no per-frame re-evaluation as game time advances), and none
+swap animation clips for locomotion (straight-line walk, ground-snapped,
+no NAVM pathing). The remaining 10 procedures (Find/Eat/Sleep/Accompany/
+UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon) are parse-only —
+each blocked on a subsystem (item/furniture-use beyond Sandbox's seat-snap,
+combat, magic, dialogue) that doesn't exist in the engine yet. See
+[docs/engine/npc-spawn-ai-packages.md](engine/npc-spawn-ai-packages.md) for
+the full trace.
 
 ---
 
@@ -176,7 +192,7 @@ Havok `.hkx` loader (M41.x, Tier 5).
 | Oblivion exterior (TES4 worldspace + LAND) | Oblivion exterior render | M32.5 follow-up |
 | Havok `.hkx` loader | FO4 humanoid actors; Starfield animation | M41.x (Tier 5) |
 | Terrain LOD multi-band selection | distance-based 8/16/32 LOD-band selection + `.btr` normal maps (the `.btr`/`.bto`/`_far.nif` parsers ship) | M35 |
-| NPC behavior / AI packages | NPCs animate + navigate | M42 (Tier 7) |
+| Remaining `PACK` procedures (Find/Eat/Sleep/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/Dialogue/UseWeapon) + per-frame package re-evaluation | NPCs perform item-use/combat/magic/dialogue behaviors; packages react to game-time changes | M42 (Tier 7) |
 | Full Papyrus transpiler (M47.2) | Arbitrary script execution on real content (`.pex` recognizer slice shipped Session 51) | M47.2 (Tier 3) |
 | Full Scaleform menus | In-game UI | M48 / R4 decision |
 | UV scroll animated materials | Animated terminals / displays | audited, not prioritised |

@@ -76,21 +76,19 @@ interior/exterior only), raycast occlusion attenuation.
 2. `mkdir -p /tmp/audit/audio`
 3. Fetch dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/audio/issues.json`
 4. **Read the most recent `docs/audits/AUDIT_AUDIO_*.md` report** (sort by date —
-   do not hardcode a filename here, it rots every cycle). As of this writing the
-   latest is `_2026-07-02.md`, superseding `_2026-05-05.md`, `_2026-06-14.md`, and
-   `_2026-06-23.md`. Most of the original report's findings (#843–#859) are CLOSED
-   and now live as regression guards in `crates/audio/src/tests.rs` +
-   `byroredux/src/systems/audio.rs`. A re-flag of any of those is a regression
-   claim, not a new finding; verify the guard is gone before reporting.
+   do not hardcode a filename here, it rots every cycle). Most of the original
+   report's findings (#843–#859) are CLOSED and now live as regression guards in
+   `crates/audio/src/tests.rs` + `byroredux/src/systems/audio.rs`. A re-flag of
+   any of those is a regression claim, not a new finding; verify the guard is
+   gone before reporting.
 5. Read the `crates/audio/src/lib.rs` module docstring to confirm Phases 1–6 are
    shipped vs. inferred. If the docstring drifts from the user-visible API,
-   that's a finding in itself (note: the docstring's function name
-   (`try_load_default_footstep`) is already correct post-#1615, but it still
-   cites the file as *byroredux/src/asset_provider.rs* — a pre-Session-34 path
-   that no longer exists; the live location is
-   `byroredux/src/asset_provider/texture.rs::try_load_default_footstep`.
-   This path drift is tracked as AUD-2026-07-02-01, still open as of the latest
-   report — confirm and treat as LOW doc-rot).
+   that's a finding in itself — e.g. AUD-2026-07-02-01 (#1859, closed 2026-07-15
+   by `37394005`) was the docstring citing a pre-Session-34 path
+   (*byroredux/src/asset_provider.rs*) for `try_load_default_footstep` after it
+   moved to `byroredux/src/asset_provider/texture.rs`. That specific drift is
+   fixed — only re-flag if the path drifts again (check the live docstring
+   against the live file location, don't assume the old finding still applies).
 
 ## Phase 2: Launch Dimension Agents
 

@@ -104,10 +104,12 @@ correctly before reporting anything here.
 1. Parse `$ARGUMENTS` for `--focus`, `--depth`.
 2. `mkdir -p /tmp/audit/save`
 3. Fetch dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/save/issues.json`
-4. **No prior save audit exists** (this is the first — `docs/audits/` has no
-   `AUDIT_SAVE_*`). Still scan `docs/audits/` for any save/load mention in other
-   reports and grep `issues.json` for `save`, `load`, `snapshot`, `corrupt`,
-   `FormId` before reporting anything NEW.
+4. **Read the most recent `docs/audits/AUDIT_SAVE_*.md` report** (sort by date —
+   do not hardcode a filename here, it rots every cycle). Diff direction against
+   it: findings it already closed are regression checks, not new findings — verify
+   the fix is still in place before reporting anything as NEW. Also scan
+   `docs/audits/` for any save/load mention in other reports and grep
+   `issues.json` for `save`, `load`, `snapshot`, `corrupt`, `FormId`.
 5. Read the `crates/save/src/lib.rs` module docstring and the `crates/save/src/snapshot.rs`
    container-layout doc-comment. They state the design intent (atomic write,
    ring, validation gate, off-frame load). For each claim, the matching dimension
