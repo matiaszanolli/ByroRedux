@@ -42,10 +42,33 @@ byroredux/              Binary — game loop, scene setup, systems
   src/components.rs        Marker components (Spinning, AlphaBlend, TwoSided, Decal) + app resources
   src/systems.rs           ECS systems: fly camera, animation, transform propagation, spin, stats
   src/scene.rs             Scene setup, NIF loading (load_nif_bytes, load_nif_from_args)
-  src/asset_provider.rs    TextureProvider, BSA texture/mesh extraction, resolve_texture
-  src/render.rs            Per-frame render data collection (build_render_data)
+  src/asset_provider/      BSA/BA2-backed texture and mesh extraction
+    mod.rs                   TextureProvider, resolve_texture, re-exports
+    archive.rs               GameArchive — wraps BSA (Oblivion-Skyrim SE) or BA2 (FO4-Starfield)
+    texture.rs                File-data lookup by searching BSA/BA2 archives
+    material.rs              Material-path resolution incl. Starfield materialsbeta.cdb
+    script.rs                Compiled Papyrus (.pex) lookup by script name (M47.2 attach path)
+    tests.rs                  Archive-provider regression tests
+  src/render/              Per-frame render data collection (build_render_data), split by pass
+    mod.rs                   Top-level build_render_data + shared collection state
+    camera.rs                View-projection + frustum setup
+    lights.rs                Light collection
+    particles.rs             Particle billboard emission
+    sky.rs                   Sky parameter assembly
+    skinned.rs               Skinned-mesh palette pass
+    static_meshes.rs         Static mesh main loop
+    water.rs                 Water-plane re-emit
+    *_tests.rs               Per-pass regression tests (bone palette overflow, draw sort key, frustum, …)
   src/anim_convert.rs      NIF→core animation clip conversion, subtree name map
-  src/commands.rs           Console commands (help, stats, entities, systems)
+  src/commands/             Console commands (help, stats, entities, systems), split by topic
+    mod.rs                   Command dispatch table
+    scene.rs                 Scene / lighting / material / script-state commands
+    assets.rs                Texture / mesh / skin diagnostic commands
+    actor_value.rs           setav/modav — live-edit an actor's ActorValues
+    condition.rs             cond — evaluate a CTDA condition function live
+    world_info.rs            Engine / world / memory introspection commands
+    view.rs                  Camera + selection/picking commands
+    shared.rs                Cross-command formatting helpers + shared import prelude
   src/helpers.rs            add_child, world_resource_set utilities
   src/cell_loader.rs        ESM cell loading (interior + exterior)
 crates/
@@ -53,7 +76,9 @@ crates/
     src/ecs/                 World, Component, Storage, Query, System, Scheduler, Resource
     src/ecs/components/      Transform, GlobalTransform, Parent, Children, Camera, MeshHandle, Name,
                              FormIdComponent, LightSource, AnimatedVisibility/Alpha/Color
-    src/ecs/resources.rs     DeltaTime, TotalTime, EngineConfig
+    src/ecs/resources/       DeltaTime, TotalTime, EngineConfig
+      mod.rs                   Built-in engine resources
+      skin_slot_pool.rs        Per-entity persistent bone-palette slot pool (bind_inverses SSBO, M29.6)
     src/animation/           Animation engine
       types.rs               CycleType, KeyType, key structs, channels, AnimationClip
       registry.rs            AnimationClipRegistry (Resource)
@@ -122,7 +147,12 @@ crates/
       bloom_downsample.comp / _upsample.comp     Bloom pyramid (M58)
       ui.vert/frag           UI overlay (Scaleform/SWF)
   bsa/                       BSA + BA2 archive readers (Bethesda Softworks Archive)
-    src/archive.rs           BsaArchive: BSA v103/v104/v105 (Oblivion → Skyrim SE)
+    src/archive/             BsaArchive: BSA v103/v104/v105 (Oblivion → Skyrim SE)
+      mod.rs                   Module docs + BsaArchive struct
+      open.rs                  Header + folder/file record table walk
+      extract.rs               Per-file extraction (zlib v103/v104, LZ4 frame v105)
+      hash.rs                  Folder/file name hash functions (debug/test-only)
+      tests.rs                 Integration + synthetic-fixture tests
     src/ba2.rs               Ba2Archive: BTDX v1/v2/v3/v7/v8 (FO4, FO76, Starfield),
                              GNRL + DX10 with reconstructed DDS headers
   platform/                  Windowing (winit), raw handles
@@ -146,7 +176,9 @@ crates/
       dispatch_tests/        Block-dispatch regression tests
     src/import/              NIF-to-ECS import
       mod.rs                 ImportedNode/Mesh/Scene types, import_nif_scene(), import_nif()
-      walk.rs                Hierarchical + flat scene graph traversal
+      walk/                  Hierarchical + flat scene graph traversal
+        mod.rs                 walk_node_hierarchical, walk_node_flat, satellite walkers (lights, particle emitters, …)
+        tests.rs               Traversal regression tests
       mesh/                  Geometry extraction (production + test siblings)
         mod.rs               Re-exports + module docs
         material_path.rs     `material_path_from_name` (`.bgsm`/`.bgem` capture)
@@ -157,7 +189,11 @@ crates/
         tangent.rs           Tangent extraction + Mikkelsen synthesis
         sse_recon.rs         Skyrim SE skinned-geometry reconstruction (#559)
         skin.rs              Skinning data extraction + bone-pose flattening
-      material.rs            MaterialInfo, texture/alpha/decal property extraction
+      material/              MaterialInfo, texture/alpha/decal property extraction
+        mod.rs                 Re-exports + module docs
+        walker.rs              Shader-property tree walker
+        shader_data.rs         Shader-type data extraction
+        *_tests.rs             Per-behavior regression tests (alpha flag, emissive source, FO4 shader flags, PBR translation, …)
       transform.rs           Transform composition, degenerate rotation SVD repair
       coord.rs               Z-up (Gamebryo) → Y-up (renderer) quaternion conversion
     src/anim/                KF animation import
@@ -279,7 +315,7 @@ cargo run -- --master Skyrim.esm --esm Dawnguard.esm --cell <id> --bsa …      
 cargo run --release -- … --bench-frames 300 --bench-hold                                    # bench, then HOLD open for byro-dbg
 ```
 Operational gotchas worth knowing up front:
-- `<stem>N.bsa` siblings auto-load (`Textures.bsa` drags in `Textures2.bsa`) — see `asset_provider.rs`.
+- `<stem>N.bsa` siblings auto-load (`Textures.bsa` drags in `Textures2.bsa`) — see `asset_provider/archive.rs`.
 - `--bench-hold` keeps the engine alive so `byro-dbg` can attach (port 9876) and run
   console commands (`tex.missing`, `tex.loaded`, …); without it the bench exits and the
   debug server is unreachable.

@@ -237,7 +237,7 @@ translate functions:
 | XCLL extended tail | base | +40-byte FNV tail | +92-byte Skyrim tail | Skyrim-like | `CellLightingRes` extended fields |
 | Per-cell water type (XCWT) | — | worldspace NAM2 only | XCWT override | XCWT override | cell `xcwt` |
 | Distant terrain source | `Landscape\LOD\*.nif` + `_lod` tex | same | `<World>.<lvl>.<x>.<y>.btr` + per-quad DDS | same (`.btr`) | §5 |
-| Distant object source | `DistantLOD\<W>_<x>_<y>.lod` → `_far.nif` | same | baked `.bto` per quad + atlas, VWD-gated | same (`.bto`) | §5 |
+| Distant object source | `DistantLOD\<W>_<x>_<y>.lod` → `_far.nif` | **neither scheme** — vanilla archives ship zero `distantlod\*.lod` files (FO3-D4-01/#2086); landmark LOD folds into the terrain-LOD block tree instead | baked `.bto` per quad + atlas, VWD-gated | same (`.bto`) | §5 |
 
 The current `default_water_for_worldspace` is the *prototype* of this pattern
 (it already branches on `GameKind`); EXAL generalises it so every row above is one
@@ -322,13 +322,28 @@ Per-game impls (the runtime source per the Q3 finding):
     Turning the marker into an active suppression means decoupling the full-detail
     radius from the streaming ring (reintroducing the #1866 overlap risk) and
     needs real-game visual validation before it is enabled.
-- **PlacementLodProvider** (Oblivion, FO3, FNV) — the **per-object placement**
-  scheme.
+- **PlacementLodProvider** (Oblivion only — see FO3-D4-01/#2086) — the
+  **per-object placement** scheme.
   - Terrain: `Meshes\Landscape\LOD\*.nif` + `_lod` diffuse/normal textures.
   - Objects: per-cell `DistantLOD\<World>_<x>_<y>.lod` placement lists that
     instance individual `_far.nif` low-poly meshes (one draw per entry). This is
     genuinely per-object (no atlas, no combined mesh) and is a separate code path
     from the `.bto` scheme — do not try to unify them.
+  - **FO3/FNV ship neither LOD scheme for distant objects.** #2086 probed every
+    vanilla FO3/FNV archive (base game + all DLC) and found zero `distantlod\`
+    entries; `Fallout - Meshes.bsa` carries only 2 `_far.nif` files total (one-off
+    landmark assets, not a systematic scheme). The engine's `stream_placement_lod_blocks`
+    (`byroredux/src/cell_loader/placement_lod.rs`) is gated to
+    `GameKind::Oblivion` only as of #2086 — it previously also matched
+    `GameKind::Fallout3NV` (harmless but wasteful: every lookup silently
+    resolved to `None`). Distant static-object LOD (buildings, rocks, landmark
+    silhouettes) is therefore **absent** on FO3/FNV exteriors beyond the
+    streamed-cell radius; terrain LOD still renders via the heightmap fallback.
+    FO3/FNV instead fold landmark-object LOD into the
+    `meshes\landscape\lod\<worldspace>\` terrain-LOD block tree (named
+    landmark sub-folders like `washmontop`, `dcworld03/08/09`) — extending
+    `terrain_lod.rs` to spawn renderable geometry from that tree is the open
+    path to closing this gap, not a `PlacementLodProvider` fix.
 
 The renderer's draw path reads `WorldLodRes` only — it never knows which provider
 filled it. This is the §1 contract applied to LOD: one consumer, per-game
@@ -573,9 +588,16 @@ independent lineages — HIGH confidence.)
   in the LOD ring (prevents full-mesh + LOD-mesh z-fighting). My doc's earlier
   guess ("both per-STAT MNAM and baked `.bto` at different bands") was **wrong** —
   it is strictly the baked `.bto`.
-- **Oblivion/FO3/FNV:** the per-object model — runtime reads `DistantLOD\*.lod`
+- **Oblivion:** the per-object model — runtime reads `DistantLOD\*.lod`
   placement lists and instances individual `_far.nif` meshes. No atlas, no
-  combined mesh.
+  combined mesh. **Correction (FO3-D4-01/#2086, 2026-07-18):** this research
+  entry originally claimed the scheme was shared across "Oblivion/FO3/FNV" —
+  it was reverse-engineered and validated only against Oblivion's `.lod`
+  corpus (see the #1726 write-up below). A direct probe of every real FO3/FNV
+  vanilla archive found **zero** `distantlod\` files; FO3/FNV ship neither
+  this scheme nor the Skyrim+/FO4 `.bto` scheme for distant objects (see §4
+  and §5.2). The engine now gates `PlacementLodProvider` to
+  `GameKind::Oblivion` only.
 
 This is why §5.2 splits into `CombinedLodProvider` (Skyrim+/FO4) and
 `PlacementLodProvider` (older) rather than a single unified path, and why §5.4

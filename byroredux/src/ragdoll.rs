@@ -252,6 +252,17 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
         RagdollSpec { bodies, constraints }
     };
 
+    // 1.5. #2083 — capture any ragdoll from a prior activation of this actor.
+    //    Re-activating (e.g. a second `ragdoll <id>`) rebuilt a fresh Rapier
+    //    body/joint set unconditionally and `insert`ed it, overwriting the
+    //    `Ragdoll` component without freeing the old handles: the orphaned
+    //    first set (~18 bodies + ~17 joints for a humanoid) stayed in the
+    //    solver forever, still simulating at its last pose and fighting the
+    //    new multibody. Read-then-drop, matching the two-phase discipline
+    //    used everywhere else here: no component read guard held across the
+    //    PhysicsWorld write lock below.
+    let old_ragdoll = world.query::<Ragdoll>().and_then(|q| q.get(actor).cloned());
+
     // 2. Build the Rapier multibody (read the live tuning config; copy out
     //    so no guard is held across the PhysicsWorld write lock).
     let cfg = world
@@ -260,6 +271,9 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
         .unwrap_or(ContactConfig::DEFAULT);
     let ragdoll = {
         let mut pw = world.resource_mut::<PhysicsWorld>();
+        if let Some(old) = &old_ragdoll {
+            pw.remove_ragdoll(old);
+        }
         build_ragdoll(&mut pw, &spec, &cfg)
     };
     let n = ragdoll.bodies.len();
@@ -561,6 +575,104 @@ mod tests {
             end.y < init_y - 1.0,
             "writeback should move the bone down under gravity: {init_y} → {}",
             end.y
+        );
+    }
+
+    /// #2083 — activating an already-active ragdoll must free the previous
+    /// body/joint set, not leak it. Pre-fix, a second `activate_ragdoll` on
+    /// the same actor built a fresh Rapier multibody and overwrote the
+    /// `Ragdoll` component without calling `remove_ragdoll` on the old one,
+    /// so `PhysicsWorld::body_count` grew by a full ragdoll's worth on every
+    /// re-activation. Same 3-bone template as `activate_then_writeback_moves_bones`.
+    #[test]
+    fn reactivating_ragdoll_does_not_leak_previous_bodies() {
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<RagdollTemplate>();
+        world.register::<RagdollActive>();
+        world.register::<Ragdoll>();
+        world.insert_resource(PhysicsWorld::new());
+
+        let actor = world.spawn();
+        let mut bones = Vec::new();
+        for i in 0..3 {
+            let e = world.spawn();
+            world.insert(
+                e,
+                GlobalTransform {
+                    translation: Vec3::new(i as f32 * 50.0, 1000.0, 0.0),
+                    rotation: Quat::IDENTITY,
+                    scale: 1.0,
+                },
+            );
+            bones.push(e);
+        }
+
+        let joint = |_a: usize, _b: usize| RagdollJointSpec::Ragdoll {
+            twist_a: Vec3::X,
+            plane_a: Vec3::Y,
+            pivot_a: Vec3::new(25.0, 0.0, 0.0),
+            twist_b: Vec3::X,
+            plane_b: Vec3::Y,
+            pivot_b: Vec3::new(-25.0, 0.0, 0.0),
+            cone_max: std::f32::consts::PI,
+            twist_min: -std::f32::consts::PI,
+            twist_max: std::f32::consts::PI,
+        };
+        let template = RagdollTemplate {
+            bodies: bones
+                .iter()
+                .map(|&bone| RagdollTemplateBody {
+                    bone,
+                    local_translation: Vec3::ZERO,
+                    local_rotation: Quat::IDENTITY,
+                    shape: CollisionShape::Ball { radius: 5.0 },
+                    mass: 4.0,
+                    linear_damping: 0.05,
+                    angular_damping: 0.05,
+                    friction: 0.5,
+                    restitution: 0.0,
+                })
+                .collect(),
+            constraints: vec![
+                RagdollTemplateConstraint {
+                    body_a: 0,
+                    body_b: 1,
+                    joint: joint(0, 1),
+                },
+                RagdollTemplateConstraint {
+                    body_a: 1,
+                    body_b: 2,
+                    joint: joint(1, 2),
+                },
+            ],
+        };
+        world.insert(actor, template);
+
+        let n = activate_ragdoll(&world, actor).expect("first activation should succeed");
+        assert_eq!(n, 3);
+        let count_after_first = world.resource::<PhysicsWorld>().body_count();
+
+        // Re-activate the same actor (e.g. a second `ragdoll <id>` hit) —
+        // the body count must NOT grow: the old set is freed before the new
+        // one is built.
+        let n2 = activate_ragdoll(&world, actor).expect("re-activation should succeed");
+        assert_eq!(n2, 3);
+        let count_after_second = world.resource::<PhysicsWorld>().body_count();
+        assert_eq!(
+            count_after_first, count_after_second,
+            "re-activating a ragdoll must not leak the previous body set \
+             (first={count_after_first}, second={count_after_second})"
+        );
+
+        // Exactly one `Ragdoll` component remains attached, and it references
+        // the newly-built bodies (not the freed ones).
+        let ragdoll = world.query::<Ragdoll>().unwrap().get(actor).unwrap().clone();
+        assert_eq!(ragdoll.bodies.len(), 3);
+        assert!(
+            world.query::<RagdollActive>().unwrap().get(actor).is_some(),
+            "actor must still be tagged RagdollActive after re-activation"
         );
     }
 

@@ -1,4 +1,4 @@
-//! Distant **object** LOD (Oblivion / FO3 / FNV) — the per-cell
+//! Distant **object** LOD (Oblivion only) — the per-cell
 //! `DistantLOD\<World>_<x>_<y>.lod` placement scheme.
 //!
 //! This is the older-game counterpart to [`super::object_lod`] (the
@@ -8,9 +8,14 @@
 //!
 //! - **Skyrim LE/SE, FO4** ([`super::object_lod`]): one baked macro-mesh
 //!   per quad, selected by filename.
-//! - **Oblivion / FO3 / FNV** (this module): per-cell placement lists that
-//!   instance individual `_far.nif` low-poly meshes — one draw per entry,
-//!   no atlas, no combined mesh.
+//! - **Oblivion** (this module): per-cell placement lists that instance
+//!   individual `_far.nif` low-poly meshes — one draw per entry, no atlas,
+//!   no combined mesh.
+//! - **FO3/FNV**: ship **neither** scheme. FO3-D4-01 (#2086) found zero
+//!   `distantlod\*.lod` files in any vanilla FO3/FNV archive; this module is
+//!   gated to `GameKind::Oblivion` only. Landmark-object LOD on those two
+//!   titles instead folds into the `meshes\landscape\lod\<worldspace>\`
+//!   terrain-LOD block tree ([`super::terrain_lod`]), not decoded here.
 //!
 //! ## File format (verified 2026-06-23 against all 9889 vanilla Oblivion
 //! `.lod` files in `Oblivion - Meshes.bsa`)
@@ -269,7 +274,7 @@ impl PlacementLodBlock {
 }
 
 /// Stream the distant **object** LOD ring around the player for the
-/// placement scheme (Oblivion / FO3 / FNV). Mirrors
+/// placement scheme (Oblivion only — see FO3-D4-01 below). Mirrors
 /// [`super::object_lod::stream_object_lod_blocks`]: cells entering the ring
 /// load their `.lod`, cells leaving unload. A cell loads only when it is
 /// **entirely outside** `max_full_cell_radius`, so the distant `_far.nif`
@@ -278,8 +283,29 @@ impl PlacementLodBlock {
 /// `max_full_cell_radius` **must** be the caller's `radius_unload` — see
 /// [`placement_lod_cells_in_radius`] (#1866 / LC0703-01).
 ///
-/// No-op for Skyrim+/FO4 — those ship the baked `.bto` scheme
-/// ([`super::object_lod`]), not `DistantLOD\*.lod`.
+/// No-op for everything but Oblivion. The `DistantLOD\*.lod` scheme this
+/// module implements was reverse-engineered and validated against all 9889
+/// real Oblivion `.lod` files; a direct probe of every FO3/FNV vanilla
+/// archive (base game + all DLC) found **zero** `distantlod\` entries
+/// anywhere — Bethesda didn't ship this scheme for the Fallout titles.
+/// `Fallout - Meshes.bsa` carries only 2 `_far.nif` files total (one-off
+/// landmark assets, not a systematic scheme); FO3/FNV instead fold landmark
+/// LOD into the `meshes\landscape\lod\<worldspace>\` terrain-LOD block tree
+/// ([`super::terrain_lod`]). Gating this module to FO3/FNV as well (as it
+/// did before FO3-D4-01) was harmless — `spawn_placement_lod_cell` just
+/// returned `None` on every call and the ring silently inserted empty
+/// sentinels — but wasted a per-cell archive lookup for no result. Skyrim+/
+/// FO4 ship the unrelated baked `.bto` scheme instead
+/// ([`super::object_lod`]).
+/// Whether `game` ships the `DistantLOD\*.lod` placement scheme this module
+/// implements. Oblivion only — see FO3-D4-01 (#2086): FO3/FNV ship zero
+/// `distantlod\*.lod` files in any vanilla archive, despite
+/// `GameKind::Fallout3NV` collapsing both titles into one enum variant
+/// elsewhere in the parser.
+pub(crate) fn placement_lod_supported(game: GameKind) -> bool {
+    game == GameKind::Oblivion
+}
+
 pub(crate) fn stream_placement_lod_blocks(
     world: &mut World,
     ctx: &mut VulkanContext,
@@ -289,12 +315,7 @@ pub(crate) fn stream_placement_lod_blocks(
     max_full_cell_radius: i32,
     blocks: &mut HashMap<(i32, i32), PlacementLodBlock>,
 ) {
-    // Oblivion + Fallout 3 / New Vegas (the latter two collapse to one
-    // `GameKind`). These ship the `DistantLOD\*.lod` placement scheme.
-    if !matches!(
-        wctx.record_index.game,
-        GameKind::Oblivion | GameKind::Fallout3NV
-    ) {
+    if !placement_lod_supported(wctx.record_index.game) {
         return;
     }
 
@@ -674,6 +695,22 @@ mod tests {
         assert!(parse_placement_lod(&b).is_err());
         // Empty buffer also errors cleanly.
         assert!(parse_placement_lod(&[]).is_err());
+    }
+
+    /// FO3-D4-01 (#2086): the `DistantLOD\*.lod` placement scheme is
+    /// Oblivion-only. `GameKind::Fallout3NV` (which covers BOTH FO3 and
+    /// FNV) — as well as Skyrim/FO4/76/Starfield — must all be excluded, or
+    /// `stream_placement_lod_blocks` wastes a per-cell archive lookup that
+    /// can never resolve (vanilla FO3/FNV archives ship zero `distantlod\`
+    /// entries).
+    #[test]
+    fn placement_lod_supported_is_oblivion_only() {
+        assert!(placement_lod_supported(GameKind::Oblivion));
+        assert!(!placement_lod_supported(GameKind::Fallout3NV));
+        assert!(!placement_lod_supported(GameKind::Skyrim));
+        assert!(!placement_lod_supported(GameKind::Fallout4));
+        assert!(!placement_lod_supported(GameKind::Fallout76));
+        assert!(!placement_lod_supported(GameKind::Starfield));
     }
 
     #[test]
