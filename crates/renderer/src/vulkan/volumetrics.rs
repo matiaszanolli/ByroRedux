@@ -106,10 +106,13 @@ pub struct VolumetricsParams {
     pub render_origin: [f32; 4],
 }
 
-/// Default participating-medium scattering coefficient (1 / m). At
-/// 0.005 a 200 m view distance has ~63% transmittance through the
-/// fog — visible but not opaque, matches "clear haze" reference.
-pub const DEFAULT_SCATTERING_COEF: f32 = 0.005;
+/// Default participating-medium scattering coefficient (1 / m).
+/// Lowered from 0.005 (2026-07-18 — "too bloomy/hazy" feedback on
+/// vanilla content) to 0.0035: at 200 m view distance, transmittance
+/// goes from `exp(-0.005*200) ≈ 37%` to `exp(-0.0035*200) ≈ 50%`,
+/// visibly thinning the haze while keeping the atmospheric depth cue
+/// at long draw distances.
+pub const DEFAULT_SCATTERING_COEF: f32 = 0.0035;
 
 /// Default Henyey-Greenstein asymmetry. 0.4 is mild forward
 /// scattering — atmospheric haze; bumps the sun-side glow without
