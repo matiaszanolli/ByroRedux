@@ -522,4 +522,82 @@ mod tests {
             "expected UnexpectedEof on the first absent element, got {result:?}"
         );
     }
+
+    /// SCR-D1-NEW-01 / #2027 — a value-type tag outside the six known
+    /// `ValueType`s (0-5) must decode to `Err(BadValueType)`, not panic or
+    /// silently coerce to a default variant.
+    #[test]
+    fn rejects_bad_value_type() {
+        let buf: Vec<u8> = vec![6]; // tag 6 — one past the last known tag (5 = Bool)
+        let result = Reader::new(&buf).value();
+        assert!(
+            matches!(result, Err(PexError::BadValueType { ty: 6 })),
+            "expected Err(BadValueType {{ ty: 6 }}), got {result:?}"
+        );
+    }
+
+    /// SCR-D1-NEW-01 / #2027 — a string-table index one past the (empty)
+    /// table's length must decode to `Err(BadStringIndex)`, not panic on an
+    /// out-of-bounds index.
+    #[test]
+    fn rejects_bad_string_index() {
+        // `Reader::new` starts with an empty `strings` table (the real
+        // table is only populated mid-`read_binary`, after the string-table
+        // section) — any index is "one past the table length" here.
+        let buf: Vec<u8> = 0u16.to_le_bytes().to_vec();
+        let result = Reader::new(&buf).string_index();
+        assert!(
+            matches!(
+                result,
+                Err(PexError::BadStringIndex {
+                    index: 0,
+                    table_len: 0,
+                })
+            ),
+            "expected Err(BadStringIndex {{ index: 0, table_len: 0 }}), got {result:?}"
+        );
+    }
+
+    /// SCR-D1-NEW-01 / #2027 — an opcode byte `>= MAX_OPCODE` must decode to
+    /// `Err(BadOpcode)`, not panic on the `OpCode::from_u8` transmute guard.
+    #[test]
+    fn rejects_bad_opcode() {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&1u16.to_le_bytes()); // instruction count = 1
+        buf.push(crate::opcode::MAX_OPCODE); // one past the last valid opcode
+
+        let result = Reader::new(&buf).read_instructions();
+        assert!(
+            matches!(
+                result,
+                Err(PexError::BadOpcode {
+                    byte: crate::opcode::MAX_OPCODE
+                })
+            ),
+            "expected Err(BadOpcode {{ byte: MAX_OPCODE }}), got {result:?}"
+        );
+    }
+
+    /// SCR-D1-NEW-01 / #2027 — the sibling reject arm to
+    /// `hostile_vararg_count_errors_instead_of_ooming` above: a var-arg
+    /// count that decodes but isn't a non-negative integer (here
+    /// `Value::Integer(-1)`) must hit the `_ => Err(BadVarArgCount)` arm,
+    /// not be silently treated as zero elements or panic on the negative
+    /// cast.
+    #[test]
+    fn rejects_negative_vararg_count() {
+        // One `lock_guards` (opcode 48: 0 fixed args, has-varargs) whose
+        // var-arg count is Integer(-1).
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&1u16.to_le_bytes()); // instruction count = 1
+        buf.push(OpCode::LockGuards as u8); // opcode 48
+        buf.push(3); // Value tag 3 = Integer (the var-arg count)
+        buf.extend_from_slice(&(-1i32).to_le_bytes()); // count = -1
+
+        let result = Reader::new(&buf).read_instructions();
+        assert!(
+            matches!(result, Err(PexError::BadVarArgCount)),
+            "expected Err(BadVarArgCount) on a negative count, got {result:?}"
+        );
+    }
 }

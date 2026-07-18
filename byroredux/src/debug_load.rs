@@ -451,7 +451,7 @@ mod tests {
         // Seed the registry as if a prior debug load had already resolved
         // (or failed to resolve) this model path — either way, a cache
         // entry exists under it.
-        world
+        let _ = world
             .resource_mut::<NifImportRegistry>()
             .insert("meshes\\armor\\test.nif".to_string(), None);
         assert_eq!(world.resource::<NifImportRegistry>().len(), 1);

@@ -532,3 +532,62 @@ fn restore_world_does_not_abort_on_referentially_broken_snapshot() {
     );
     assert_eq!(issues[0].kind, ValidationKind::DanglingEntity);
 }
+
+/// SAVE-D1-NEW-02 / #2020 — `insert_batch`'s `entity < next_entity` guard is
+/// `debug_assert`-only (compiled out under `--release`), so a hand-tampered-
+/// but-CRC-valid snapshot whose `next_entity` is smaller than a column's
+/// highest entity id would otherwise admit those rows silently in release
+/// builds. `restore_world` must reject such a snapshot with a real,
+/// always-on `SaveError`, and — since the check runs before any mutation —
+/// must leave the destination world untouched.
+#[test]
+fn restore_world_rejects_snapshot_with_out_of_bounds_entity_id() {
+    let (src, _pair) = build_source_world();
+    let reg = registry();
+
+    let snapshot = save_world(&src, &reg).expect("save");
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).expect("encode");
+    let mut decoded = decode(&bytes, reg.schema_fingerprint()).expect("decode");
+
+    // Simulate a hand-tampered-but-CRC-valid file: shrink `next_entity`
+    // below the highest entity id any column actually carries (built_source_
+    // world's highest live id is 4, the `actor`). `decode` already verified
+    // the CRC before this mutation, so this models a file whose payload was
+    // edited and the CRC recomputed to match — not a corruption `decode`
+    // itself would catch.
+    decoded.next_entity = 2;
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    match restore_world(&mut dst, &reg, &decoded) {
+        Err(SaveError::EntityIdOutOfBounds {
+            entity,
+            next_entity,
+            ..
+        }) => {
+            assert!(
+                entity >= next_entity,
+                "the reported entity ({entity}) must actually violate the reported \
+                 next_entity ({next_entity})"
+            );
+        }
+        other => panic!(
+            "expected Err(EntityIdOutOfBounds {{ .. }}) restoring a snapshot whose \
+             next_entity was tampered below a column's entity ids, got {other:?}"
+        ),
+    }
+
+    // Rejected before any mutation — `restore_world` would have installed a
+    // `StringPool` and advanced `next_entity` as its first two steps; their
+    // absence proves the reject happened before either ran.
+    assert!(
+        dst.try_resource::<StringPool>().is_none(),
+        "a rejected restore must not have installed the StringPool restore_world \
+         would otherwise insert as its first mutation"
+    );
+    assert_eq!(
+        dst.spawn(),
+        0,
+        "a rejected restore must not have advanced next_entity via set_next_entity"
+    );
+}

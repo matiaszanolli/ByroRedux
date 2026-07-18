@@ -61,15 +61,52 @@ pub fn save_world(world: &World, registry: &SaveRegistry) -> Result<Snapshot, Sa
     })
 }
 
+/// Verify every component column's entity ids are `< snapshot.next_entity`
+/// — the invariant [`World::insert_batch`]'s `debug_assert` checks in debug
+/// builds but not release. Real (not `debug_assert`-gated) so a corrupt or
+/// hand-tampered-but-CRC-valid snapshot is refused before any world
+/// mutation happens, rather than silently admitting out-of-range entity
+/// ids that a later `spawn()` could reissue. See SAVE-D1-NEW-02 / #2020.
+///
+/// Rows are the `(entity, value)` pairs [`SaveRegistry::register_component`]
+/// serialises — each a 2-element JSON array whose first element is the
+/// entity id. Peeking just that element means this check works generically
+/// across every registered component type without deserialising the full
+/// (component-type-specific) row.
+fn validate_entity_ids_in_bounds(snapshot: &Snapshot) -> Result<(), SaveError> {
+    for (column, value) in &snapshot.components {
+        let Some(rows) = value.as_array() else {
+            continue;
+        };
+        for row in rows {
+            let Some(entity) = row.get(0).and_then(serde_json::Value::as_u64) else {
+                continue;
+            };
+            let entity = entity as u32;
+            if entity >= snapshot.next_entity {
+                return Err(SaveError::EntityIdOutOfBounds {
+                    column: column.clone(),
+                    entity,
+                    next_entity: snapshot.next_entity,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Replace the live world's entity population (and saved resources) with
 /// the contents of `snapshot`.
 ///
 /// Order matters:
-/// 1. clear every storage (drop the old population),
-/// 2. restore the `StringPool` so `FixedString` symbols resolve,
-/// 3. set `next_entity` so original ids pass the `insert_batch` guard,
-/// 4. repopulate component columns at their saved entity ids,
-/// 5. restore saved resources.
+/// 1. validate every column's entity ids are in bounds (see
+///    [`validate_entity_ids_in_bounds`]) — before any mutation, so a
+///    rejected snapshot leaves the live world untouched,
+/// 2. clear every storage (drop the old population),
+/// 3. restore the `StringPool` so `FixedString` symbols resolve,
+/// 4. set `next_entity` so original ids pass the `insert_batch` guard,
+/// 5. repopulate component columns at their saved entity ids,
+/// 6. restore saved resources.
 ///
 /// GPU / physics handles referenced by the dropped components are **not**
 /// torn down here — that's the caller's responsibility (the binary's
@@ -80,6 +117,7 @@ pub fn restore_world(
     registry: &SaveRegistry,
     snapshot: &Snapshot,
 ) -> Result<(), SaveError> {
+    validate_entity_ids_in_bounds(snapshot)?;
     world.clear_entities();
     world.insert_resource(StringPool::from_dump(&snapshot.strings));
     world.set_next_entity(snapshot.next_entity);

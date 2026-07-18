@@ -91,4 +91,23 @@ pub enum SaveError {
     /// I/O error reading or writing a save file on disk.
     #[error("save I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A component column names an entity id `>= next_entity`. The live
+    /// `load` path never hits this (it goes through `restore_resources` +
+    /// `apply_deltas`, which only insert through an already-live-entity
+    /// remap table) — `restore_world`'s own guard is `insert_batch`'s
+    /// `debug_assert`, compiled out under `--release`. This variant makes
+    /// the check real regardless of build profile, so a hand-tampered-but-
+    /// CRC-valid file (or a hypothetical future `save_world` bug) is
+    /// refused rather than silently admitting entity ids `spawn()` could
+    /// later reissue. See SAVE-D1-NEW-02 / #2020.
+    #[error(
+        "save column '{column}' has entity {entity} >= next_entity {next_entity} \
+         (corrupt or hand-tampered snapshot)"
+    )]
+    EntityIdOutOfBounds {
+        column: String,
+        entity: u32,
+        next_entity: u32,
+    },
 }

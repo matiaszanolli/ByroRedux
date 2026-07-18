@@ -768,7 +768,7 @@ pub fn execute_pending_save_loads(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_core::ecs::components::Transform;
+    use byroredux_core::ecs::components::{LightFlicker, LightSource, Transform};
     use byroredux_core::form_id::FormIdPool;
     use byroredux_core::math::Vec3;
     use byroredux_core::string::StringPool;
@@ -827,8 +827,20 @@ mod tests {
     }
 
     /// The binary's curated registry must round-trip its full type set —
-    /// including the cross-crate `ScriptTimer` and a stable form id —
-    /// through encode → decode → restore into a fresh World.
+    /// including the cross-crate `ScriptTimer`, a stable form id, and
+    /// (SAVE-D2-04 / #2021) `LightSource`/`LightFlicker` — through
+    /// encode → decode → restore into a fresh World.
+    ///
+    /// SIBLING sweep (#2021): the other registered types with an
+    /// audit-confirmed flat shape (no `FixedString`/`EntityId`) —
+    /// `Inventory`/`EquipmentSlots` (round-tripped by
+    /// `crates/save/tests/round_trip.rs`'s `build_source_world`),
+    /// `ActorValues` (`actor_values_survive_save_load_round_trip`), and
+    /// `ScriptTimer` (this test) — already have dedicated round-trip
+    /// coverage. `FollowState`/`EscortState`/`Seated` are excluded from
+    /// this sweep: per the `MUTABLE_DELTA_COLUMNS` doc comment above they
+    /// carry `EntityId` fields, so they're not flat and a gap there would
+    /// be a different (higher-risk) finding, not this one.
     #[test]
     fn binary_registry_round_trips_including_scripttimer() {
         let reg = build_save_registry();
@@ -841,6 +853,27 @@ mod tests {
         src.insert(e, Transform::from_translation(Vec3::new(4.0, 5.0, 6.0)));
         src.insert(e, ScriptTimer { id: 42, remaining: 3.5 });
         src.insert(other, ScriptTimer { id: 7, remaining: 0.25 });
+        src.insert(
+            e,
+            LightSource {
+                radius: 512.0,
+                color: [0.9, 0.6, 0.2],
+                flags: 0x0000_0008, // LIGHT_FLAG_FLICKER
+                dimmer: 0.75,
+                intensity: 1.25,
+                falloff_exponent: 2.0,
+            },
+        );
+        src.insert(
+            e,
+            LightFlicker {
+                period_secs: 0.5,
+                intensity_amplitude: 0.25,
+                movement_amplitude: 1.5,
+                base_translation: [10.0, 20.0, 30.0],
+                phase_offset_secs: 0.125,
+            },
+        );
 
         let snap = save_world(&src, &reg).unwrap();
         let bytes = encode(&snap, reg.schema_fingerprint()).unwrap();
@@ -859,6 +892,21 @@ mod tests {
 
         let qt = dst.query::<Transform>().unwrap();
         assert_eq!(qt.iter().next().unwrap().1.translation, Vec3::new(4.0, 5.0, 6.0));
+
+        let light = dst.query::<LightSource>().unwrap().get(0).copied().unwrap();
+        assert_eq!(light.radius, 512.0);
+        assert_eq!(light.color, [0.9, 0.6, 0.2]);
+        assert_eq!(light.flags, 0x0000_0008);
+        assert_eq!(light.dimmer, 0.75);
+        assert_eq!(light.intensity, 1.25);
+        assert_eq!(light.falloff_exponent, 2.0);
+
+        let flicker = dst.query::<LightFlicker>().unwrap().get(0).copied().unwrap();
+        assert_eq!(flicker.period_secs, 0.5);
+        assert_eq!(flicker.intensity_amplitude, 0.25);
+        assert_eq!(flicker.movement_amplitude, 1.5);
+        assert_eq!(flicker.base_translation, [10.0, 20.0, 30.0]);
+        assert_eq!(flicker.phase_offset_secs, 0.125);
     }
 
     /// #1834 — an actor's layered `ActorValues` (class-auto-calc base plus any
