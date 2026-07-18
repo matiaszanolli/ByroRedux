@@ -171,6 +171,15 @@ impl BoolPass<'_> {
             BoolOp::And => (src.on_true(), src.on_false),
             BoolOp::Or => (src.on_false, src.on_true()),
         };
+        if operand_key == rejoin_key {
+            // Degenerate/adversarial shape (SCR-D3-NEW-01 / #2028): a
+            // conditional block whose true and false edges are the same
+            // target. Removing the operand block below would also remove
+            // `rejoin_key`, leaving `current`'s edges pointing at a block
+            // that no longer exists. Decline rather than corrupt the CFG —
+            // never reachable from real compiler output.
+            return Ok(false);
+        }
 
         let mut operand_scope = match self.scopes.get(&operand_key) {
             Some(s) => s.clone(),
@@ -243,7 +252,7 @@ impl BoolOp {
 
 #[cfg(test)]
 mod tests {
-    use super::super::cfg::build_cfg;
+    use super::super::cfg::{build_cfg, CodeBlock};
     use super::super::control_flow::reconstruct;
     use super::super::lift::lift_function;
     use super::super::node::NodeKind;
@@ -380,6 +389,59 @@ mod tests {
         };
         let tree = decompile(f);
         assert_eq!(child_ifs(&tree), 0);
+    }
+
+    /// SCR-D3-NEW-01 (#2028) — a conditional block whose true and false
+    /// edges are the same target (`operand_key == rejoin_key`, never
+    /// emitted by real compiler output) must decline the collapse rather
+    /// than remove the shared block and leave `current`'s edges dangling.
+    #[test]
+    fn collapse_declines_when_operand_and_rejoin_keys_are_equal() {
+        let mut cfg = Cfg { blocks: BTreeMap::new(), entry: 0, exit: 2 };
+        cfg.blocks.insert(
+            0,
+            CodeBlock {
+                begin: 0,
+                end: 0,
+                next: 1,
+                on_false: 1,
+                condition: Some("t".to_string()),
+            },
+        );
+        cfg.blocks.insert(
+            1,
+            CodeBlock { begin: 1, end: 1, next: 2, on_false: END, condition: None },
+        );
+        let mut scopes: BTreeMap<usize, Vec<Node>> = BTreeMap::new();
+        scopes.insert(
+            0,
+            vec![Node::assign(
+                SYNTH_IP,
+                Node::constant(SYNTH_IP, id("t")),
+                Node::constant(SYNTH_IP, id("a")),
+            )],
+        );
+        scopes.insert(
+            1,
+            vec![Node::assign(
+                SYNTH_IP,
+                Node::constant(SYNTH_IP, id("t")),
+                Node::constant(SYNTH_IP, id("b")),
+            )],
+        );
+        let mut pass = BoolPass { cfg: &mut cfg, scopes: &mut scopes, func_name: "Degenerate" };
+        let collapsed = pass
+            .collapse(0, "t", BoolOp::And)
+            .expect("degenerate shape must decline, not error");
+        assert!(!collapsed, "must not report a merge for operand_key == rejoin_key");
+        assert!(
+            pass.cfg.blocks.contains_key(&1),
+            "the shared operand/rejoin block must remain intact when declined"
+        );
+        assert!(
+            pass.scopes.contains_key(&1),
+            "the shared operand/rejoin scope must remain intact when declined"
+        );
     }
 
     /// SCR-D2-01 (#1815) — an adversarial / malformed `.pex` that would nest

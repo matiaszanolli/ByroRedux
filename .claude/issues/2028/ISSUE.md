@@ -1,6 +1,6 @@
 # SCR-D3-NEW-01: boolean.rs::collapse doesn't special-case operand_key == rejoin_key (absorbed by fail-closed catch-all, not exploitable)
 
-**Labels**: low, tech-debt, documentation
+**Labels**: documentation, low, tech-debt
 
 **Severity**: LOW (informational / defense-in-depth documentation)
 **Dimension**: Decompiler Control-Flow / Boolean / Lower
@@ -23,3 +23,4 @@ None required. Optional hardening: an explicit `if operand_key == rejoin_key { r
 
 ## Completeness Checks
 - [ ] **TESTS**: Optional — a regression test asserting the degenerate case still fails closed via `ControlFlowFailed` rather than panicking
+
