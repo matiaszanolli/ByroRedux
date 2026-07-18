@@ -209,10 +209,43 @@ pub fn build_form_id_remap(
         _ => HashMap::new(),
     };
 
-    saved
+    // #2019 / SAVE-D6-04 — a saved pair with no live match (record removed
+    // from a plugin, or cell content changed between save and load) is a
+    // legitimate "nothing to apply the delta to" outcome, not a bug, but it
+    // was previously silent: every `MUTABLE_DELTA_COLUMNS` row keyed to
+    // that entity is dropped by `apply_deltas`'s `filter_map` with only the
+    // aggregate applied-count as any trace. Log a bounded, diagnosable
+    // summary — mirrors `register_form_id_component`'s symmetric save-side
+    // `log::warn!` in `registry.rs` and `log_validation_warnings`'s
+    // take(20)/"… and N more" shape in `validate.rs`.
+    let mut unresolved: Vec<(u32, FormIdPair)> = Vec::new();
+    let remap: HashMap<u32, u32> = saved
         .into_iter()
-        .filter_map(|(old, pair)| pair_to_live.get(&pair).map(|&live| (old, live)))
-        .collect()
+        .filter_map(|(old, pair)| match pair_to_live.get(&pair) {
+            Some(&live) => Some((old, live)),
+            None => {
+                unresolved.push((old, pair));
+                None
+            }
+        })
+        .collect();
+
+    if !unresolved.is_empty() {
+        log::warn!(
+            "load: {} saved FormIdPair(s) did not resolve in the reloaded cell — \
+             their saved deltas will not apply (record removed from a plugin, or \
+             cell content changed between save and load):",
+            unresolved.len()
+        );
+        for (old, pair) in unresolved.iter().take(20) {
+            log::warn!("  saved entity {old}: {pair:?}");
+        }
+        if unresolved.len() > 20 {
+            log::warn!("  … and {} more", unresolved.len() - 20);
+        }
+    }
+
+    remap
 }
 
 /// Apply saved component deltas onto a freshly reloaded world, remapping

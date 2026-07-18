@@ -445,6 +445,108 @@ fn anim_player_root_entity_not_clobbered_by_delta_apply() {
     }
 }
 
+/// #2016 / SAVE-D2-05 — `AnimationStack` (a `Vec<AnimationLayer>` of 10+
+/// scalar fields per layer, plus an `Option<EntityId> root_entity`) is
+/// registered for full save/restore (deliberately excluded from
+/// `MUTABLE_DELTA_COLUMNS`, unlike `AnimationPlayer`) but had no dedicated
+/// round trip through the registry — only a raw serde-json round trip of
+/// the struct itself existed, unlike its structurally similar sibling
+/// `AnimationPlayer` (`anim_player_root_entity_not_clobbered_by_delta_apply`
+/// above). Builds a multi-layer stack varying every field (weight, both
+/// blend timers, `reverse_direction`, `clip_handle`, `playing`, `speed`,
+/// `prev_time`), with a `root_entity`, and proves every field survives
+/// `save_world → encode → decode → restore_world` at the same entity id.
+#[test]
+fn animation_stack_round_trips_through_container() {
+    use byroredux_core::animation::{AnimationLayer, AnimationStack};
+
+    let mut reg = SaveRegistry::new();
+    reg.register_component::<AnimationStack>("AnimationStack");
+
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    let root = src.spawn(); // 0 — the animated subtree root
+    let actor = src.spawn(); // 1 — carries the stack
+
+    let layer0 = AnimationLayer {
+        clip_handle: 7,
+        local_time: 1.5,
+        playing: true,
+        speed: 1.25,
+        weight: 0.8,
+        reverse_direction: true,
+        blend_in_remaining: 0.2,
+        blend_in_total: 0.5,
+        blend_out_remaining: 0.1,
+        blend_out_total: 0.3,
+        prev_time: 1.4,
+    };
+    let layer1 = AnimationLayer {
+        clip_handle: 9,
+        local_time: 3.0,
+        playing: false,
+        speed: 0.5,
+        weight: 0.4,
+        reverse_direction: false,
+        blend_in_remaining: 0.0,
+        blend_in_total: 0.0,
+        blend_out_remaining: 0.0,
+        blend_out_total: 0.0,
+        prev_time: 2.9,
+    };
+    src.insert(
+        actor,
+        AnimationStack {
+            layers: vec![layer0, layer1],
+            root_entity: Some(root),
+        },
+    );
+
+    let snapshot = save_world(&src, &reg).expect("save");
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).expect("encode");
+    let decoded = decode(&bytes, reg.schema_fingerprint()).expect("decode");
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).expect("restore");
+
+    let q = dst.query::<AnimationStack>().expect("AnimationStack storage");
+    let (e, restored) = q.iter().next().expect("one AnimationStack row");
+    assert_eq!(e, actor, "stack restored at the same entity id");
+    assert_eq!(
+        restored.root_entity,
+        Some(root),
+        "root_entity survives at the same entity id"
+    );
+    assert_eq!(restored.layers.len(), 2, "both layers survive");
+
+    let r0 = &restored.layers[0];
+    assert_eq!(r0.clip_handle, 7);
+    assert_eq!(r0.local_time, 1.5);
+    assert!(r0.playing);
+    assert_eq!(r0.speed, 1.25);
+    assert_eq!(r0.weight, 0.8);
+    assert!(r0.reverse_direction);
+    assert_eq!(r0.blend_in_remaining, 0.2);
+    assert_eq!(r0.blend_in_total, 0.5);
+    assert_eq!(r0.blend_out_remaining, 0.1);
+    assert_eq!(r0.blend_out_total, 0.3);
+    assert_eq!(r0.prev_time, 1.4);
+
+    let r1 = &restored.layers[1];
+    assert_eq!(r1.clip_handle, 9);
+    assert_eq!(r1.local_time, 3.0);
+    assert!(!r1.playing);
+    assert_eq!(r1.speed, 0.5);
+    assert_eq!(r1.weight, 0.4);
+    assert!(!r1.reverse_direction);
+    assert_eq!(r1.blend_in_remaining, 0.0);
+    assert_eq!(r1.blend_in_total, 0.0);
+    assert_eq!(r1.blend_out_remaining, 0.0);
+    assert_eq!(r1.blend_out_total, 0.0);
+    assert_eq!(r1.prev_time, 2.9);
+}
+
 /// SAVE-D2-02 — restoring a `FormIdComponent`-bearing save into a world that
 /// has **no** `FormIdPool` installed must fail with a typed
 /// `SaveError::MissingResource`, never panic.
@@ -590,4 +692,80 @@ fn restore_world_rejects_snapshot_with_out_of_bounds_entity_id() {
         0,
         "a rejected restore must not have advanced next_entity via set_next_entity"
     );
+}
+
+/// #2019 / SAVE-D6-04 — a saved `FormIdPair` that no longer resolves in the
+/// reloaded cell (record removed from a plugin, or cell content changed
+/// between save and load) must be cleanly excluded from the remap rather
+/// than panicking or corrupting an unrelated entry. Mixes a resolvable
+/// pair (present in both worlds) with an unresolvable one (only in the
+/// saved world) to prove the two don't interfere: the resolvable entity's
+/// delta still applies even though the unresolvable one is silently
+/// dropped (diagnosed via `log::warn!` — not independently assertable
+/// here without a test-logging harness, so this pins the functional
+/// contract the warning documents).
+#[test]
+fn delta_apply_skips_unresolvable_form_id_without_disturbing_others() {
+    use byroredux_save::{apply_deltas, build_form_id_remap};
+
+    let pair_kept = FormIdPair {
+        plugin: PluginId::from_filename("FalloutNV.esm"),
+        local: LocalFormId(0x0C),
+    };
+    let pair_removed = FormIdPair {
+        plugin: PluginId::from_filename("FalloutNV.esm"),
+        local: LocalFormId(0x0D),
+    };
+
+    // ── "Saved session": two objects, both moved. ──
+    let mut saved_world = World::new();
+    saved_world.insert_resource(StringPool::new());
+    saved_world.insert_resource(FormIdPool::new());
+    let s_kept = saved_world.spawn();
+    let s_removed = saved_world.spawn();
+    saved_world.insert(s_kept, Transform::from_translation(Vec3::new(7.0, 0.0, 0.0)));
+    saved_world.insert(
+        s_removed,
+        Transform::from_translation(Vec3::new(9.0, 0.0, 0.0)),
+    );
+    for (e, pair) in [(s_kept, pair_kept), (s_removed, pair_removed)] {
+        let fid = saved_world.resource_mut::<FormIdPool>().intern(pair);
+        saved_world.insert(e, FormIdComponent(fid));
+    }
+
+    let reg = registry();
+    let snapshot = save_world(&saved_world, &reg).unwrap();
+
+    // ── "Reloaded cell": only `pair_kept`'s record still exists —
+    //    `pair_removed`'s REFR/base record was dropped between save and
+    //    load (e.g. a plugin update or a different load order). ──
+    let mut live = World::new();
+    live.insert_resource(FormIdPool::new());
+    let l_kept = live.spawn();
+    live.insert(l_kept, Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)));
+    let fid = live.resource_mut::<FormIdPool>().intern(pair_kept);
+    live.insert(l_kept, FormIdComponent(fid));
+
+    let remap = build_form_id_remap(&live, &reg, &snapshot);
+    assert_eq!(
+        remap.get(&s_kept),
+        Some(&l_kept),
+        "the still-present pair must resolve normally"
+    );
+    assert_eq!(
+        remap.get(&s_removed),
+        None,
+        "a saved pair with no live match must be absent from the remap, not panic"
+    );
+    assert_eq!(remap.len(), 1, "only the resolvable pair enters the remap");
+
+    let applied = apply_deltas(&mut live, &reg, &snapshot, &remap, &["Transform"]).unwrap();
+    assert_eq!(
+        applied, 1,
+        "only the resolvable entity's delta applies — the unresolvable one is skipped, not errored"
+    );
+    let qt = live.query::<Transform>().unwrap();
+    let (e, t) = qt.iter().next().unwrap();
+    assert_eq!(e, l_kept);
+    assert_eq!(t.translation, Vec3::new(7.0, 0.0, 0.0));
 }

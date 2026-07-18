@@ -338,16 +338,45 @@ pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) {
         .map(|m| *m == crate::systems::PlayerMode::Character)
         .unwrap_or(false);
 
-    if pose.character_mode && character_now {
+    // #2018 / SAVE-D6-03 — drive the body whenever the LIVE session is in
+    // Character mode, regardless of which mode the pose was SAVED in.
+    // Pre-fix this gated on `pose.character_mode && character_now`, so a
+    // FlyCam-saved pose reloaded into a live Character session fell to the
+    // camera-only branch below, leaving the body untouched;
+    // `camera_follow_system` (Stage::Late, every frame while
+    // `PlayerMode::Character`) unconditionally re-derives the camera
+    // position from the body's `GlobalTransform` + eye height with no
+    // awareness a pose was just restored, so the camera-only fix was
+    // visible for exactly one frame before being silently overwritten —
+    // same mechanism as the door-transition case `#1874` fixed.
+    if character_now {
         if let Some(body) = body {
+            // `pos` is the saved *camera* position when the pose was
+            // captured in FlyCam mode (see `capture_player_pose`'s
+            // `target` selection) — convert it to the body's feet position
+            // the same way `snap_character_body_to_camera` does
+            // (`cam_pos - eye_height` on Y), so `camera_follow_system`
+            // re-derives the identical restored vantage every subsequent
+            // frame instead of `body_pos.y + eye_height` landing one
+            // `eye_height` too high. A Character-saved pose already IS the
+            // body position, so it's used verbatim.
+            let body_pos = if pose.character_mode {
+                pos
+            } else {
+                let eye_height = world
+                    .query::<byroredux_physics::CharacterController>()
+                    .and_then(|q| q.get(body).map(|c| c.eye_height))
+                    .unwrap_or(52.0);
+                pos - Vec3::Y * eye_height
+            };
             if let Some(mut tq) = world.query_mut::<Transform>() {
                 if let Some(t) = tq.get_mut(body) {
-                    t.translation = pos;
+                    t.translation = body_pos;
                 }
             }
             if let Some(mut gq) = world.query_mut::<GlobalTransform>() {
                 if let Some(g) = gq.get_mut(body) {
-                    g.translation = pos;
+                    g.translation = body_pos;
                 }
             }
             // Clear momentum so the body doesn't carry stale free-fall
@@ -361,7 +390,7 @@ pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) {
             }
             // Sync the kinematic Rapier body so the KCC's next collide-and-
             // slide starts from the restored spot (no-op without handles).
-            byroredux_physics::set_kinematic_translation(world, body, pos);
+            byroredux_physics::set_kinematic_translation(world, body, body_pos);
             return;
         }
     }
@@ -427,13 +456,21 @@ impl ConsoleCommand for SaveCommand {
             return CommandOutput::error("save directory not installed");
         };
 
-        // Explicit slot, or advance the ring so the previous save survives.
-        let slot = match args.trim() {
-            "" => state.ring.advance(),
-            s => match s.parse::<u32>() {
+        // Explicit slot, or the ring's next slot — a quicksave only
+        // actually *advances* the ring once validation passes and the
+        // write is committed to, below (#2017 / SAVE-D4-NEW-01). `peek`
+        // is non-mutating: it reports the slot `advance` would hand out
+        // without consuming a rotation, so the round-robin invariant
+        // ("next quicksave lands one slot after the last SUCCESSFUL
+        // one") holds even across repeated validation-aborted attempts.
+        let is_quicksave = args.trim().is_empty();
+        let slot = if is_quicksave {
+            state.ring.peek()
+        } else {
+            match args.trim().parse::<u32>() {
                 Ok(n) => n,
-                Err(_) => return CommandOutput::error(format!("invalid slot '{s}'")),
-            },
+                Err(_) => return CommandOutput::error(format!("invalid slot '{}'", args.trim())),
+            }
         };
 
         // Pre-save validation — refuse to persist a broken world. Core
@@ -453,6 +490,12 @@ impl ConsoleCommand for SaveCommand {
                 lines.push(format!("  … and {} more", issues.len() - 20));
             }
             return CommandOutput::lines(lines);
+        }
+
+        // Validation passed and the write is about to proceed — now it's
+        // safe to actually consume the ring rotation.
+        if is_quicksave {
+            state.ring.advance();
         }
 
         let snapshot = match save_world(world, &registry) {
@@ -1176,6 +1219,77 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// #2017 / SAVE-D4-NEW-01 — a quicksave (blank-slot `save`) whose
+    /// pre-save validation aborts must NOT consume a ring rotation. Pre-fix
+    /// `state.ring.advance()` ran before the validation gate, so a failed
+    /// attempt permanently burned a slot with nothing written to back it,
+    /// breaking "next quicksave lands one slot after the last SUCCESSFUL
+    /// one". Drives one aborted attempt (world carries an unresolvable
+    /// `FormIdComponent`, mirroring `unresolvable_form_id_is_rejected`)
+    /// followed by one successful attempt, and checks the ring cursor only
+    /// moved on the successful write.
+    #[test]
+    fn quicksave_ring_cursor_does_not_advance_on_validation_abort() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        world.insert_resource(FormIdPool::new());
+        world.insert_resource(build_save_registry());
+        let dir = std::env::temp_dir().join(format!("byro_ring_abort_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        world.insert_resource(SaveState::new(dir.clone(), 4));
+
+        // A stray FormId handle minted in a throwaway pool — the world's
+        // own (empty) pool can't resolve it, so `validate_form_ids` fails
+        // and `SaveCommand::execute` must abort without writing.
+        let stray = {
+            let mut tmp = FormIdPool::new();
+            tmp.intern(FormIdPair {
+                plugin: PluginId::from_filename("Test.esm"),
+                local: LocalFormId(0x07),
+            })
+        };
+        let bad_entity = world.spawn();
+        world.insert(bad_entity, FormIdComponent(stray));
+
+        assert_eq!(
+            world.resource::<SaveState>().ring.peek(),
+            0,
+            "fresh ring starts at slot 0"
+        );
+
+        // Attempt 1: quicksave, world is invalid → must abort.
+        let out = SaveCommand.execute(&world, "");
+        assert!(
+            out.lines.iter().any(|l| l.contains("ABORTED")),
+            "invalid world must abort the save: {:?}",
+            out.lines
+        );
+        assert_eq!(
+            world.resource::<SaveState>().ring.peek(),
+            0,
+            "an aborted quicksave must NOT advance the ring cursor"
+        );
+
+        // Fix the world (drop the stray-handle entity) and retry.
+        world.despawn(bad_entity);
+        let out = SaveCommand.execute(&world, "");
+        assert!(
+            out.lines.iter().any(|l| l.contains("saved slot 0")),
+            "valid world must save to the still-unconsumed slot 0: {:?}",
+            out.lines
+        );
+        assert_eq!(
+            world.resource::<SaveState>().ring.peek(),
+            1,
+            "a successful quicksave must advance the ring cursor exactly once"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// FlyCam round-trip: capture reads the camera Transform + look
     /// angles into [`PlayerPose`]; apply puts them back after the pose is
     /// scrambled — the camera returns to the saved spot and InputState to
@@ -1260,6 +1374,64 @@ mod tests {
         apply_player_pose(&mut world, &restored);
         let tq = world.query::<Transform>().unwrap();
         assert_eq!(tq.get(body).unwrap().translation, Vec3::new(100.0, 50.0, -25.0));
+    }
+
+    /// #2018 / SAVE-D6-03 — a pose saved in FlyCam mode (`pose.position` is
+    /// the CAMERA position) reloaded into a live Character-mode session
+    /// must still relocate the BODY, not fall through to the camera-only
+    /// branch (which `camera_follow_system` would silently overwrite one
+    /// frame later). The body's feet land `eye_height` below the saved
+    /// camera position, mirroring `snap_character_body_to_camera`'s
+    /// `cam_pos - eye_height` — so `camera_follow_system` re-derives
+    /// exactly the saved camera vantage (`body.y + eye_height ==
+    /// saved_camera.y`) every subsequent frame instead of reverting.
+    #[test]
+    fn player_pose_flycam_saved_relocates_body_in_live_character_mode() {
+        use crate::components::InputState;
+        use crate::systems::{PlayerEntity, PlayerMode};
+        use byroredux_core::ecs::{GlobalTransform, Transform};
+        use byroredux_core::math::Quat;
+        use byroredux_physics::CharacterController;
+
+        let mut world = World::new();
+        world.insert_resource(PlayerMode::Character);
+        world.insert_resource(InputState::default());
+        let body = world.spawn();
+        // Body sits far from the saved pose before restore — proves the
+        // fallback branch (which left it untouched pre-fix) didn't run.
+        world.insert(body, Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)));
+        world.insert(
+            body,
+            GlobalTransform::new(Vec3::new(0.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(body, CharacterController::HUMAN);
+        world.insert_resource(PlayerEntity(Some(body)));
+
+        // A FlyCam-mode save: `position` is the camera's absolute position.
+        let saved = PlayerPose {
+            position: [10.0, 200.0, 30.0],
+            yaw: 0.3,
+            pitch: -0.1,
+            character_mode: false,
+        };
+        apply_player_pose(&mut world, &saved);
+
+        let expected_body_y = 200.0 - CharacterController::HUMAN.eye_height;
+        let tq = world.query::<Transform>().unwrap();
+        let body_pos = tq.get(body).unwrap().translation;
+        assert_eq!(
+            body_pos,
+            Vec3::new(10.0, expected_body_y, 30.0),
+            "body must relocate to camera_pos - eye_height, not stay untouched"
+        );
+
+        // `camera_follow_system`'s derivation must reproduce the exact
+        // saved camera Y from this body placement.
+        assert_eq!(
+            body_pos.y + CharacterController::HUMAN.eye_height,
+            200.0,
+            "camera_follow_system's body.y + eye_height must reproduce the saved camera Y"
+        );
     }
 
     /// A `PlayerPose` rides along in the snapshot as a registered resource
