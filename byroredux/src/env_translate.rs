@@ -680,6 +680,56 @@ mod tests {
         assert!(ob_flow.is_none(), "calm water has no synthesized flow");
     }
 
+    /// Regression pin for #1997 (REN-D15-01) — the returned `normal_path`
+    /// (4th tuple element) is what the caller (`spawn_water_plane`) uses
+    /// to decide whether a water plane takes the procedural shader branch
+    /// vs. the bound-texture branch. Three ways a plane can fall through
+    /// to the procedural default, all of which the shader-side fix
+    /// (render-origin-relative hashing) now assumes is the COMMON case,
+    /// not an edge case:
+    ///   1. no XCWT on the cell at all (`xcwt_form = None`)
+    ///   2. XCWT present but the form doesn't resolve in `waters`
+    ///   3. XCWT resolves but the WATR's `texture_path` is empty (e.g. a
+    ///      lava pool — mirrors the `LavaPool01` fixture used above)
+    /// A fourth case with a populated `texture_path` proves the positive
+    /// side: normal_path IS produced when the format actually authors one.
+    #[test]
+    fn resolve_water_material_procedural_default_classification() {
+        // Case 1: no XCWT at all.
+        let (_, _, _, normal_none) = resolve_water_material(&HashMap::new(), None);
+        assert!(normal_none.is_none(), "no XCWT must classify as procedural default");
+
+        // Case 2: XCWT present but unresolvable form.
+        let (_, _, _, normal_unresolved) =
+            resolve_water_material(&HashMap::new(), Some(0x00DE_AD00));
+        assert!(
+            normal_unresolved.is_none(),
+            "unresolvable XCWT must classify as procedural default"
+        );
+
+        // Case 3: XCWT resolves, WATR has an empty texture_path.
+        let no_tex = calm_watr(0x000B_0001, "LavaPool01", WaterParams::default());
+        let mut waters = HashMap::new();
+        waters.insert(no_tex.form_id, no_tex);
+        let (_, _, _, normal_empty_tex) = resolve_water_material(&waters, Some(0x000B_0001));
+        assert!(
+            normal_empty_tex.is_none(),
+            "WATR with empty texture_path must classify as procedural default"
+        );
+
+        // Case 4 (contrast): non-empty texture_path must resolve to Some.
+        let mut with_tex = calm_watr(0x000B_0002, "DefaultWater", WaterParams::default());
+        with_tex.texture_path = "textures\\water\\defaultwater.dds".to_string();
+        let mut waters2 = HashMap::new();
+        waters2.insert(with_tex.form_id, with_tex);
+        let (_, _, _, normal_with_tex) = resolve_water_material(&waters2, Some(0x000B_0002));
+        assert_eq!(
+            normal_with_tex,
+            Some("textures\\water\\defaultwater.dds".to_string()),
+            "WATR with a texture_path must NOT classify as procedural default"
+        );
+    }
+
     // ── exterior sky / sun / weather translation (EXAL step 3) ────
 
     use byroredux_plugin::esm::records::weather::{

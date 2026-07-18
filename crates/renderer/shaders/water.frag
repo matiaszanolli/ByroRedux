@@ -163,22 +163,23 @@ float valueNoise(vec2 p) {
 // procedural noise gradient so the water still has wave motion — this
 // path runs for default-water cells that never had an XCWT.
 
-vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 scroll, float scale, float time) {
+vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, vec2 scroll, float scale, float time) {
     if (normalMapIndex == 0xFFFFFFFFu) {
         // Procedural fallback — animated 2-octave value noise gradient.
         // Cheap, doesn't pretend to be real waves but reads as moving
         // water.
         //
-        // PRECISION BOUND (#1502): `uvBase` here is absolute world XZ
-        // (`vWorldPos.xz`, the flat-water branch at the call site).
-        // `hash21`'s sin/fract lattice loses precision and visibly bands
-        // past ~176k-unit coordinates. Currently harmless because this
-        // branch runs ONLY when no water normal map is bound — the
-        // textured path (`texture(...)`, which wraps) covers all shipping
-        // content at ~30× sub-texel margin and never reaches the hash. If
-        // procedural foam/noise ever becomes a default path, feed the hash
-        // render-origin-relative coordinates (or a fract-reduced lattice)
-        // instead of absolute world XZ.
+        // PRECISION BOUND (#1502, rebased #1997): `uvBase` is absolute
+        // world XZ (`vWorldPos.xz`, the flat-water branch at the call
+        // site) — `hash21`'s sin/fract lattice loses precision and
+        // visibly bands past ~176k-unit coordinates. This branch is the
+        // DEFAULT for any cell whose water has no bound normal map
+        // (every FNV/FO3/Oblivion water plane, plus any WATR with an
+        // empty `texture_path` on any game — see `resolve_water_material`
+        // in `byroredux/src/env_translate.rs`), not an edge case, so
+        // `originOffset` (the render origin projected into the same
+        // uvBase space by the caller) is subtracted here to keep the
+        // hash input render-origin-relative rather than absolute.
         //
         // The gradient → tangent-space normal scaling is tuned so the
         // resulting normal stays within ~15° of straight up: anything
@@ -195,7 +196,7 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 scroll, float 
         // multiplier puts the tangent-space normal at
         // `(±0.12, ±0.12, 1)` worst case → world tilt < 10°, well
         // under the 23° threshold where crest foam starts firing.
-        vec2 uv = uvBase * scale + scroll * time;
+        vec2 uv = (uvBase - originOffset) * scale + scroll * time;
         float h0 = valueNoise(uv * 4.0);
         float h1 = valueNoise(uv * 9.0 + 17.0);
         float h  = h0 * 0.65 + h1 * 0.35;
@@ -379,23 +380,30 @@ void main() {
     // the surface tangent (mesh-provided flow axis) so the sheet
     // scrolls down naturally.
     vec2 uvWorld;
+    vec2 uvOrigin;
     if (kind == WATER_WATERFALL) {
         // Project world position onto the flow tangent (T) for v,
         // and the bitangent for u. The vertex shader sets up T as
         // the mesh tangent — for a waterfall the artist authors that
         // pointing along the fall direction.
         uvWorld = vec2(dot(vWorldPos, B), dot(vWorldPos, T));
+        // Render origin projected into the same tangent-space basis, so
+        // the procedural branch of `sampleScrollingNormal` can rebase
+        // its hash input origin-relative (#1997) without disturbing the
+        // textured branch's absolute (wrapping) UV.
+        uvOrigin = vec2(dot(renderOrigin.xyz, B), dot(renderOrigin.xyz, T));
     } else {
         // Use world XZ — flat-plane water.
         uvWorld = vWorldPos.xz;
+        uvOrigin = renderOrigin.xz;
     }
 
     // Two scrolling normal layers (the "movement on flat surfaces"
     // case). For River/Rapids/Waterfall, layer A's scroll vector is
     // baked from `flow` on the CPU side, so we don't have to branch
     // here. Push constants carry the final scroll vectors.
-    vec3 nA = sampleScrollingNormal(normalMapIndex, uvWorld, push.scroll.xy, push.tune.x, time);
-    vec3 nB = sampleScrollingNormal(normalMapIndex, uvWorld, push.scroll.zw, push.tune.y, time);
+    vec3 nA = sampleScrollingNormal(normalMapIndex, uvWorld, uvOrigin, push.scroll.xy, push.tune.x, time);
+    vec3 nB = sampleScrollingNormal(normalMapIndex, uvWorld, uvOrigin, push.scroll.zw, push.tune.y, time);
 
     // Rapids adds a third high-frequency layer scrolled by the flow
     // — gives that chaotic whitewater chop pattern.
@@ -404,6 +412,7 @@ void main() {
         vec3 nC = sampleScrollingNormal(
             normalMapIndex,
             uvWorld,
+            uvOrigin,
             push.flow.xy * push.flow.w * 2.0,
             push.tune.x * 2.5,
             time

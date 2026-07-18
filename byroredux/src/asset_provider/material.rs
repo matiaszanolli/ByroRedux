@@ -65,6 +65,38 @@ pub(crate) fn conductor_diffuse_tint(diffuse: [f32; 3], specular_color: [f32; 3]
     ]
 }
 
+/// Derive scalar metalness from a BGSM leaf's authored specular (#1476,
+/// `08ed03be`). `spec` is `specular_color * specular_mult` for the pbr
+/// branch, or raw `specular_color` for the legacy branch — see call site.
+///
+/// - `pbr = true`: true metallic-roughness authoring, `spec` is F0 —
+///   metalness follows F0 luminance.
+/// - `pbr = false`: legacy spec-glossiness. `mult` only scales highlight
+///   TINT, not F0 — it is ~white `[1,1,1]` for every dielectric (concrete,
+///   wood, plaster, painted metal). Keying metalness off luminance here is
+///   BACKWARDS: vanilla `paintpeelingconcrete` authors `spec=[1,1,1]
+///   mult=1.0` (lum 1.0 → metalness 1.0, mirror-chrome concrete) while real
+///   metals author lower, often tinted spec — `metallocker` `[1,0.85,0.70]
+///   mult=0.45`. The only legacy signal that distinguishes a conductor is
+///   spec CHROMATICITY (conductor F0 is tinted; dielectric F0 is
+///   achromatic grey), so metalness is derived from spec-color saturation
+///   `(max-min)/max`, which is mult-invariant: white spec → 0, tinted
+///   spec → metallic.
+pub(crate) fn bgsm_metalness(spec: [f32; 3], pbr: bool) -> f32 {
+    if pbr {
+        let spec_lum = 0.2126 * spec[0] + 0.7152 * spec[1] + 0.0722 * spec[2];
+        ((spec_lum - 0.04) / 0.96).clamp(0.0, 1.0)
+    } else {
+        let mx = spec[0].max(spec[1]).max(spec[2]);
+        let mn = spec[0].min(spec[1]).min(spec[2]);
+        if mx > 1.0e-4 {
+            ((mx - mn) / mx).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+}
+
 /// Build a MaterialProvider from CLI arguments. Accepts repeated
 /// `--materials-ba2 <path>` flags so a user can layer modded materials
 /// on top of the vanilla `Fallout4 - Materials.ba2`. Silently returns
@@ -725,26 +757,13 @@ pub(crate) fn merge_bgsm_into_mesh(
         let spec_r = leaf.specular_color[0] * leaf.specular_mult;
         let spec_g = leaf.specular_color[1] * leaf.specular_mult;
         let spec_b = leaf.specular_color[2] * leaf.specular_mult;
+        // pbr: spec*mult is F0. Legacy: mult-free specular_color, since
+        // `mult` only scales highlight strength, not F0 — see
+        // `bgsm_metalness` doc comment (#1476).
         let metalness = if leaf.pbr {
-            // True metallic-roughness authoring: spec*mult is F0.
-            let spec_lum = 0.2126 * spec_r + 0.7152 * spec_g + 0.0722 * spec_b;
-            ((spec_lum - 0.04) / 0.96).clamp(0.0, 1.0)
+            bgsm_metalness([spec_r, spec_g, spec_b], true)
         } else {
-            // Legacy spec-glossiness: only chromatic specular is a
-            // conductor. Saturation = (max-min)/max of spec_color is
-            // mult-invariant, so highlight strength doesn't leak into
-            // metalness — achromatic `[1,1,1]` concrete → 0.
-            let mx = leaf.specular_color[0]
-                .max(leaf.specular_color[1])
-                .max(leaf.specular_color[2]);
-            let mn = leaf.specular_color[0]
-                .min(leaf.specular_color[1])
-                .min(leaf.specular_color[2]);
-            if mx > 1.0e-4 {
-                ((mx - mn) / mx).clamp(0.0, 1.0)
-            } else {
-                0.0
-            }
+            bgsm_metalness(leaf.specular_color, false)
         };
         let roughness = (1.0 - leaf.smoothness).clamp(0.04, 1.0);
         mesh.metalness_override = Some(metalness);

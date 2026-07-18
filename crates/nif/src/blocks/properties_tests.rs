@@ -856,3 +856,29 @@ fn num_decals_boundary_pre_v20_2_0_5_count_7_yields_one() {
     );
     assert_eq!(prop.decal_textures[0].source_ref.index(), Some(99));
 }
+
+/// Regression: #2004 — nif.xml defines exactly 4 decal slots. An
+/// anomalous `texture_count` implying more than 4 (here 13, which on
+/// v20.2.0.5+ computes `num_decals = 13 - 8 = 5`) must be rejected as
+/// a parse error rather than reading TexDescs the format doesn't
+/// define and misaligning every following block.
+#[test]
+fn num_decals_above_fixed_maximum_is_parse_error() {
+    let header = make_header(11, 34); // FNV bsver=34
+    let mut data = Vec::new();
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // name index = -1
+    data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+    data.extend_from_slice(&0u16.to_le_bytes()); // flags
+    data.extend_from_slice(&13u32.to_le_bytes()); // texture_count = 13 -> num_decals = 5
+    // Slots 0..=7 (base/dark/detail/gloss/glow/bump/normal/parallax), all
+    // empty — must be fully consumed before the decal-count check runs.
+    for _ in 0..8 {
+        data.push(0); // has = 0
+    }
+
+    let mut stream = NifStream::new(&data, &header);
+    let err = NiTexturingProperty::parse(&mut stream)
+        .expect_err("texture_count implying >4 decal slots must be rejected");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+}

@@ -264,10 +264,16 @@ pub(super) fn spawn_water_plane(
         },
     );
 
-    // RenderLayer::Decal pushes water onto a slightly biased depth
-    // ladder so it stays above coincident architectural geometry
-    // (lake floor mesh, river bed) without z-fighting. The engine-
-    // wide depth-bias ladder treats `Decal` as a soft over-bias.
+    // RenderLayer::Decal here is purely a draw-order placement — it
+    // sorts water late, after opaque architectural geometry (lake floor
+    // mesh, river bed). It is NOT a depth-bias guard: the water pipeline
+    // sets `depth_bias_enable(false)` and never binds DEPTH_BIAS dynamic
+    // state (see `crates/renderer/src/vulkan/water.rs::build_pipeline`),
+    // so no bias is actually applied here (#1998). Water also doesn't
+    // write depth, which is what actually keeps it from z-fighting the
+    // bed mesh; if real shoreline z-fighting is ever observed, add
+    // genuine DEPTH_BIAS dynamic state + `cmd_set_depth_bias` instead of
+    // relying on RenderLayer::Decal.
     world.insert(entity, byroredux_core::ecs::components::RenderLayer::Decal);
 
     log::debug!(

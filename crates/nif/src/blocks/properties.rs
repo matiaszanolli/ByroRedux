@@ -302,6 +302,19 @@ impl NiTexturingProperty {
         } else {
             texture_count.saturating_sub(6)
         };
+        // nif.xml defines exactly 4 decal slots (#2004). A `texture_count`
+        // implying more is corrupt data, not a legitimately larger file —
+        // reject it here rather than reading TexDescs the format doesn't
+        // define and misaligning every block that follows.
+        const MAX_DECAL_SLOTS: u32 = 4;
+        if num_decals > MAX_DECAL_SLOTS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "NiTexturingProperty: texture_count {texture_count} implies {num_decals} decal slots, exceeding nif.xml's fixed maximum of {MAX_DECAL_SLOTS}"
+                ),
+            ));
+        }
         // #400 — retain decal TexDescs so the importer can surface them
         // to the renderer. `TexDesc::None` entries (empty slot flag) are
         // skipped so downstream consumers only see populated slots.
