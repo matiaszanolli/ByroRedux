@@ -110,7 +110,6 @@ pub(super) fn load_references(
     // z-fighting on every wall / floor / ceiling.
     absorbed_refs: &std::collections::HashSet<u32>,
 ) -> RefLoadResult {
-    let mut entity_count = 0;
     // CHARAL: build the per-game derived-stat ruleset once (idempotent across
     // cells) so `GetActorValue` can compute actor-general derived stats (Carry
     // Weight, Melee Damage, …) for actors that don't carry the value directly.
@@ -122,8 +121,6 @@ pub(super) fn load_references(
             world.insert_resource(rs);
         }
     }
-    // Number of mesh-bearing entities (those that receive a
-    // `MeshHandle` insert in `spawn_placed_instances`). Distinct from
     // Process-lifetime cache of parsed-and-imported NIF scene data
     // (`NifImportRegistry`, #381). Each unique mesh is parsed exactly
     // once across the entire process — subsequent placements of the
@@ -138,8 +135,6 @@ pub(super) fn load_references(
         let reg = world.resource::<NifImportRegistry>();
         (reg.core.hits(), reg.core.misses(), reg.len())
     };
-    let mut bounds_min = Vec3::splat(f32::INFINITY);
-    let mut bounds_max = Vec3::splat(f32::NEG_INFINITY);
     // First door REFR's own placement in THIS cell (not its XTEL
     // destination) — a strictly better spawn-point candidate than the raw
     // bounding-box centroid below. A door is always placed on a walkable
@@ -151,55 +146,12 @@ pub(super) fn load_references(
     // comment on `RefLoadResult`/`CellLoadResult`.
     let mut door_pos: Option<Vec3> = None;
 
-    let mut stat_miss = 0u32;
-    let mut stat_hit = 0u32;
     let mut enable_skipped = 0u32;
-    // Count NIF / SPT files not found in the BSA archives. Logged at
-    // info level (not debug) so missing-mesh failures surface in the
-    // default log without needing RUST_LOG=debug. A large number here
-    // indicates either wrong --bsa paths or a BSA path-lookup mismatch.
-    let mut nif_not_found: u32 = 0;
-    let mut nif_not_found_sample: Vec<String> = Vec::with_capacity(5);
     // #1188 — count REFRs skipped because the CK absorbed them into a
     // precombined `_oc.nif`. Surfaced in the end-of-cell summary so an
     // operator can spot a missing precombined-spawn step (would manifest
     // as "absorbed=N but precombined_spawned=0" pair below).
     let mut absorbed_skipped = 0u32;
-    // Bounded sample of distinct miss FormIDs so an operator can
-    // cross-reference in xEdit without flipping the whole log to
-    // debug. Cap at 20 unique IDs; duplicates (same FormID placed
-    // repeatedly across a worldspace) get deduped. See #386.
-    let mut stat_miss_sample: Vec<u32> = Vec::with_capacity(20);
-    // M41.0 Phase 1b — separate counters for the two NPC dispatch
-    // paths so the per-cell summary distinguishes "spawned via
-    // runtime-FaceGen path" (kf-era games — has a real spawn entity)
-    // from "pre-baked-FaceGen pending" (Skyrim+/FO4+ — Phase 4 wires
-    // the spawn). Sample stays small (8) since per-cell NPC counts
-    // are bounded — Whiterun Bannered Mare carries ~6 actors versus
-    // ~1 932 statics, Goodsprings exterior similar.
-    let mut npc_spawned: u32 = 0;
-    let mut npc_spawned_sample: Vec<u32> = Vec::with_capacity(8);
-    // #1798 / D7-NEW-01 — the interior transition path (unlike the
-    // exterior streaming path's `MAX_CELLS_SPAWNED_PER_FRAME` budget)
-    // has no per-frame or per-NPC spawn budget, and until now no timing
-    // existed to even show the cost. `spawn_npc_entity` /
-    // `spawn_prebaked_npc_entity` make ~28 synchronous NIF-load call
-    // sites per actor, so an NPC-dense interior cell can pay a large,
-    // unmeasured stall in one synchronous frame. Accumulate wall time
-    // spent in the two NPC-spawn call sites so the cost is visible in
-    // the end-of-cell summary before investing in the larger chunked-
-    // spawn-budget rewrite the issue's full suggested fix describes.
-    let mut npc_spawn_wall = std::time::Duration::ZERO;
-    // M47.2 — script-attach telemetry for the per-cell summary: how many
-    // REFRs got canonical behavior from the recognizer chain, and how many
-    // invisible trigger volumes were spawned. Both surface in the summary
-    // so a smoke test can confirm the `.pex` attach + trigger paths fired
-    // without inspecting individual entities.
-    let mut scripts_recognized: u32 = 0;
-    let mut trigger_volumes: u32 = 0;
-    // #1359 / D6-06a — how many CONT-based REFRs got an `Inventory`
-    // component from their typed `ContainerRecord`.
-    let mut containers_attached: u32 = 0;
     // `npc_pending` was the Phase 0/2 telemetry for pre-baked-FaceGen
     // games waiting on Phase 4's spawn path — kept (unused after
     // Phase 4 wired) so the cell summary's "0 ACHR refs ... pending"
@@ -244,36 +196,22 @@ pub(super) fn load_references(
         r.0.clear();
     }
 
-    // Per-call accumulators — committed to `NifImportRegistry` in a
-    // single `resource_mut` borrow after the loop instead of acquiring
-    // the write lock on every REFR. Previously every iteration took
-    // `world.resource_mut::<NifImportRegistry>()` (write lock + atomic
-    // CAS) even on the hot cache-hit path; for Prospector Saloon's
-    // ~461 REFRs that was hundreds of write-lock cycles serialising
-    // nothing. See #523.
-    let mut this_call_hits: u64 = 0;
-    let mut this_call_misses: u64 = 0;
-    // Parses performed during this call. Merged into the registry at
-    // end-of-function. `pending_new.get` shadows the registry read so
-    // subsequent iterations of the loop see this call's own parses
-    // without re-entering the registry.
-    let mut pending_new: HashMap<String, Option<Arc<CachedNifImport>>> = HashMap::new();
-    // Cache keys that resolved through a registry hit this call. Bulk-
-    // bumped through `NifImportRegistry::touch_keys` at end-of-load so
-    // recently-used entries float above the LRU eviction watermark.
-    // #635 / FNV-D3-05.
-    let mut pending_hits: Vec<String> = Vec::new();
-    // Embedded-clip handles registered during this call. Mirrors
-    // `pending_new` so the spawn loop can reach a freshly-registered
-    // handle through the per-call shadow before the end-of-load
-    // batched commit pushes it into `NifImportRegistry.clip_handles`.
-    // Each parsed NIF whose `embedded_clip` is `Some` produces one
-    // entry (after the conversion + `AnimationClipRegistry::add`
-    // round-trip). Subsequent REFRs of the same model — within this
-    // load or across cells — reach the same `u32` handle without
-    // re-running `convert_nif_clip`. See #544 / #261.
-    let mut pending_clip_handles: HashMap<String, u32> = HashMap::new();
-
+    // Per-call NIF-cache accumulators (this_call_hits / misses / pending_new
+    // / pending_hits / pending_clip_handles) live on `accum` and are committed
+    // to `NifImportRegistry` in a single `resource_mut` borrow after the loop
+    // rather than a write lock per REFR (#523 / #635 / #544). See the
+    // `RefLoadAccum` field docs for each one's role.
+    let cell = CellLoadCtx {
+        index,
+        record_index,
+        npcs,
+        races,
+        game,
+        tex_provider,
+        load_order,
+        idle_pool: &idle_pool,
+    };
+    let mut accum = RefLoadAccum::new();
     for placed_ref in refs {
         // Skip REFRs whose XESP gating would keep them hidden under
         // the parents-assumed-enabled heuristic: inverted XESP children
@@ -376,445 +314,47 @@ pub(super) fn load_references(
         for (synth_idx, (child_form_id, ref_pos, ref_rot, ref_scale)) in
             synth_refs.into_iter().enumerate()
         {
-            let refr_script_instance =
-                refr_script_instance_for_synth_child(synth_idx, placed_ref.script_instance.as_ref());
-            // M41.0 Phase 1b — NPC dispatch must run BEFORE the
-            // statics lookup. NPC_ records are also indexed in
-            // `EsmCellIndex.statics` (because they carry a MODL —
-            // the body mesh path) by `parse_modl_group` at
-            // `crates/plugin/src/esm/cell/mod.rs:703`. If the
-            // statics check ran first the static-spawn path would
-            // claim every NPC ACHR and the NPC dispatcher would
-            // never see them. Pre-fix `TestQAHairM` (31 NPCs / 61
-            // refs) reported "61 statics hits, 0 NPCs spawned" — the
-            // NPCs were silently rendered as a single non-skinned
-            // body mesh per actor instead of going through the
-            // skeleton-aware spawn function.
-            if let Some(npc) = npcs.get(&child_form_id) {
-                bounds_min = bounds_min.min(ref_pos);
-                bounds_max = bounds_max.max(ref_pos);
-                if game.has_runtime_facegen_recipe() {
-                    let race = races.get(&npc.race_form_id);
-                    let spawn_t0 = std::time::Instant::now();
-                    let spawned = crate::npc_spawn::spawn_npc_entity(
-                        world,
-                        ctx,
-                        npc,
-                        race,
-                        game,
-                        tex_provider,
-                        mat_provider.as_deref_mut(),
-                        &idle_pool,
-                        ref_pos,
-                        ref_rot,
-                        ref_scale,
-                        record_index,
-                    );
-                    npc_spawn_wall += spawn_t0.elapsed();
-                    if spawned.is_some() {
-                        npc_spawned += 1;
-                        if npc_spawned_sample.len() < 8
-                            && !npc_spawned_sample.contains(&child_form_id)
-                        {
-                            npc_spawned_sample.push(child_form_id);
-                        }
-                        entity_count += 1;
-                    }
-                } else if game.uses_prebaked_facegen() {
-                    // M41.0 Phase 4 — Skyrim / FO4 / FO76 / Starfield
-                    // pre-baked-FaceGen dispatch. The NPC's plugin
-                    // name resolves from the high byte of its
-                    // load-order-global FormID against `load_order`;
-                    // when the plugin can't be resolved (corrupt
-                    // FormID, missing master), the spawn function
-                    // logs and returns the placement root with no
-                    // mesh — same observable outcome as a missing
-                    // FaceGen NIF, just diagnosable from the log.
-                    let plugin =
-                        load_order::plugin_for_form_id(child_form_id, load_order).unwrap_or("");
-                    let spawn_t0 = std::time::Instant::now();
-                    let spawned = crate::npc_spawn::spawn_prebaked_npc_entity(
-                        world,
-                        ctx,
-                        npc,
-                        game,
-                        tex_provider,
-                        mat_provider.as_deref_mut(),
-                        plugin,
-                        ref_pos,
-                        ref_rot,
-                        ref_scale,
-                        record_index,
-                    );
-                    npc_spawn_wall += spawn_t0.elapsed();
-                    if spawned.is_some() {
-                        npc_spawned += 1;
-                        if npc_spawned_sample.len() < 8
-                            && !npc_spawned_sample.contains(&child_form_id)
-                        {
-                            npc_spawned_sample.push(child_form_id);
-                        }
-                        entity_count += 1;
-                    }
-                }
-                continue;
-            }
-
-            // M47.2 — invisible trigger volume. A REFR carrying an `XPRM`
-            // box/sphere primitive and an attached script is a Bethesda
-            // trigger box: no MODL, so the statics path below would skip
-            // it (empty / missing mesh). Spawn a transform-only entity,
-            // attach its world-space `TriggerVolume`, and run the script
-            // attach so the recognizer's `OnTriggerEnter → SetStage`
-            // advance lands. `trigger_detection_system` then fires
-            // `OnTriggerEnterEvent` when the player crosses in. Gated on
-            // *no renderable mesh* so a visible scripted activator (lever
-            // with MODL + primitive) still spawns through the normal path
-            // — only genuinely invisible triggers take this branch.
-            let has_mesh = index
-                .statics
-                .get(&child_form_id)
-                .is_some_and(|s| !s.model_path.is_empty());
-            let has_script = record_index.base_record_script(child_form_id).is_some()
-                || record_index
-                    .base_record_script_instance(child_form_id)
-                    .is_some()
-                // #1737 — a model-less REFR can be a trigger volume scripted
-                // purely by its OWN VMAD (no base-record script at all).
-                // #2026 — gated on `refr_script_instance`, not the raw
-                // `placed_ref.script_instance`, so only the first
-                // synthetic child of a SCOL/PKIN expansion qualifies on
-                // this basis; the base-record checks above still apply
-                // to every child (they're keyed by `child_form_id`).
-                || refr_script_instance.is_some();
-            if !has_mesh && has_script {
-                if let Some(prim) = placed_ref.primitive.as_ref() {
-                    if let Some(volume) =
-                        trigger_volume_from_primitive(prim, ref_pos, ref_rot, ref_scale)
-                    {
-                        let entity = world.spawn();
-                        world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
-                        world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
-                        world.insert(entity, volume);
-                        if attach_script_for_refr(
-                            world,
-                            entity,
-                            child_form_id,
-                            record_index,
-                            refr_script_instance,
-                        ) {
-                            scripts_recognized += 1;
-                        }
-                        trigger_volumes += 1;
-                        bounds_min = bounds_min.min(ref_pos);
-                        bounds_max = bounds_max.max(ref_pos);
-                        entity_count += 1;
-                        continue;
-                    }
-                }
-            }
-
-            let stat = match index.statics.get(&child_form_id) {
-                Some(s) => {
-                    stat_hit += 1;
-                    s
-                }
-                None => {
-                    stat_miss += 1;
-                    // Collect a bounded sample so the summary line can
-                    // surface actual FormIDs without pulling down a
-                    // full RUST_LOG=debug run. Linear dedup is fine
-                    // for 20 entries. See #386.
-                    if stat_miss_sample.len() < 20 && !stat_miss_sample.contains(&child_form_id) {
-                        stat_miss_sample.push(child_form_id);
-                    }
-                    log::debug!("REFR base {:08X} not in statics table", child_form_id);
-                    continue;
-                }
-            };
-
-            // Update bounds from the (possibly SCOL-composed) placement.
-            bounds_min = bounds_min.min(ref_pos);
-            bounds_max = bounds_max.max(ref_pos);
-
-            // Spawn light-only entities (LIGH with no mesh).
-            if stat.model_path.is_empty() {
-                if let Some(ref ld) = stat.light_data {
-                    let entity = world.spawn();
-                    world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
-                    world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
-                    world.insert(
-                        entity,
-                        LightSource {
-                            radius: light_radius_or_default(ld.radius),
-                            color: ld.color,
-                            flags: ld.flags,
-                            falloff_exponent: ld.falloff_exponent,
-                            ..Default::default()
-                        },
-                    );
-                    attach_light_flicker_if_needed(world, entity, ld, ref_pos);
-                    entity_count += 1;
-                }
-                continue;
-            }
-
-            // Skip non-renderable meshes: editor markers, effect
-            // sprites, fog. Still spawn the ESM light entity if this
-            // LIGH record carries one — the effect mesh is visual-only
-            // but the point light is real.
-            let model_lower = stat.model_path.to_ascii_lowercase();
-
-            // Extract the filename (after the last \ or /) for prefix matching.
-            let filename = model_lower
-                .rsplit(['\\', '/'])
-                .next()
-                .unwrap_or(&model_lower);
-
-            if filename.starts_with("marker")
-                || filename.starts_with("xmarker")
-                || filename.starts_with("defaultsetmarker")
-                || filename.starts_with("doormarker")
-                || filename.starts_with("northmarker")
-                || filename.starts_with("prisonmarker")
-                || filename.starts_with("travelmarker")
-                || filename.starts_with("roommarker")
-                || filename.starts_with("vatsmarker")
-            {
-                continue;
-            }
-
-            if model_lower.contains("fxlightrays")
-                || model_lower.contains("fxlight")
-                || model_lower.contains("fxfog")
-            {
-                if let Some(ref ld) = stat.light_data {
-                    let entity = world.spawn();
-                    world.insert(entity, Transform::from_translation(ref_pos));
-                    world.insert(entity, GlobalTransform::new(ref_pos, Quat::IDENTITY, 1.0));
-                    world.insert(
-                        entity,
-                        LightSource {
-                            radius: light_radius_or_default(ld.radius),
-                            color: ld.color,
-                            flags: ld.flags,
-                            falloff_exponent: ld.falloff_exponent,
-                            ..Default::default()
-                        },
-                    );
-                    entity_count += 1;
-                }
-                continue;
-            }
-
-            let model_path =
-                if model_lower.starts_with("meshes\\") || model_lower.starts_with("meshes/") {
-                    stat.model_path.clone()
-                } else {
-                    format!("meshes\\{}", stat.model_path)
-                };
-
-            // Fetch parsed+imported NIF from the process-lifetime
-            // registry, or load+parse once. Three-tier lookup (#523):
-            //   1. `pending_new` — this call's own parses, zero lock
-            //      cost.
-            //   2. Registry read-lock — a shared borrow that doesn't
-            //      serialise against concurrent readers.
-            //   3. Parse outside any lock, insert into `pending_new`;
-            //      the merge into the registry happens in a single
-            //      write lock after the loop.
-            //
-            // Previously this block took `resource_mut` (write lock)
-            // on every iteration even on the hit path; see #523 / #381
-            // for the wider cache history.
-            let cache_key = model_path.to_ascii_lowercase();
-            let cached = if let Some(entry) = pending_new.get(&cache_key).cloned() {
-                this_call_hits += 1;
-                entry
-            } else {
-                let reg_entry = {
-                    let reg = world.resource::<NifImportRegistry>();
-                    reg.get(&cache_key).cloned()
-                };
-                match reg_entry {
-                    Some(entry) => {
-                        this_call_hits += 1;
-                        // Mark for LRU touch at the end-of-load batched
-                        // commit so frequently-revisited meshes don't
-                        // get evicted under `BYRO_NIF_CACHE_MAX`. The
-                        // batched flush keeps the read path on a shared
-                        // lock — preserves the #523 invariant.
-                        pending_hits.push(cache_key.clone());
-                        entry
-                    }
-                    None => {
-                        // Slow-path: parse outside any registry borrow.
-                        // Take the StringPool write lock only for the
-                        // parse + intern + BGSM merge — the read lock
-                        // on `NifImportRegistry` was released at the
-                        // close of the `reg_entry` scope above, so the
-                        // two locks never overlap. See #609.
-                        //
-                        // SpeedTree extension switch (Phase 1.5).
-                        // Pre-Skyrim TREE records point MODL at a
-                        // `.spt` SpeedTree binary instead of a NIF —
-                        // dispatch to the SPT crate's parser/importer
-                        // when we see that extension. The TREE record
-                        // (carrying ICON / OBND / etc.) is looked up
-                        // from `record_index.trees` keyed by the same
-                        // form id the cell loader resolved against
-                        // `index.statics`. See SpeedTree plan 1.5.
-                        let is_spt = model_path
-                            .as_str()
-                            .rsplit('.')
-                            .next()
-                            .map(|ext| ext.eq_ignore_ascii_case("spt"))
-                            .unwrap_or(false);
-                        let parsed = match tex_provider.extract_mesh(&model_path) {
-                            Some(d) => {
-                                let mut pool =
-                                    world.resource_mut::<byroredux_core::string::StringPool>();
-                                if is_spt {
-                                    let tree_record = record_index.trees.get(&child_form_id);
-                                    parse_and_import_spt(&d, &model_path, tree_record, &mut pool)
-                                } else {
-                                    parse_and_import_nif(
-                                        &d,
-                                        &model_path,
-                                        mat_provider.as_deref_mut(),
-                                        &mut pool,
-                                        Some(tex_provider),
-                                    )
-                                }
-                            }
-                            None => {
-                                log::debug!(
-                                    "{} not found in BSA: '{}'",
-                                    if is_spt { "SPT" } else { "NIF" },
-                                    model_path,
-                                );
-                                nif_not_found += 1;
-                                if nif_not_found_sample.len() < 5 {
-                                    nif_not_found_sample.push(model_path.clone());
-                                }
-                                None
-                            }
-                        };
-                        this_call_misses += 1;
-                        // #544 — register the embedded animation clip
-                        // exactly once per parsed NIF, before stashing
-                        // into `pending_new`. Subsequent REFRs of this
-                        // model reach the handle through the per-call
-                        // shadow (`pending_clip_handles`) or, on later
-                        // cell loads, through `NifImportRegistry::
-                        // clip_handle_for` after the end-of-load
-                        // commit. The conversion runs at most once per
-                        // unique model across the process — matches
-                        // the loose-NIF path's one-clip-per-NIF
-                        // invariant from #261.
-                        if let Some(ref cached) = parsed {
-                            if let Some(nif_clip) = cached.embedded_clip.as_ref() {
-                                let handle = {
-                                    let mut pool =
-                                        world.resource_mut::<byroredux_core::string::StringPool>();
-                                    let clip =
-                                        crate::anim_convert::convert_nif_clip(nif_clip, &mut pool);
-                                    drop(pool);
-                                    let mut clip_reg = world.resource_mut::<
-                                        byroredux_core::animation::AnimationClipRegistry,
-                                    >();
-                                    clip_reg.add(clip)
-                                };
-                                pending_clip_handles.insert(cache_key.clone(), handle);
-                            }
-                        }
-                        pending_new.insert(cache_key.clone(), parsed.clone());
-                        parsed
-                    }
-                }
-            };
-            let Some(cached) = cached else { continue };
-
-            // #544 — embedded animation-clip handle for this REFR's
-            // model. Three-tier lookup mirrors the cache:
-            //   1. `pending_clip_handles` — registered earlier in this
-            //      call's slow path.
-            //   2. `NifImportRegistry::clip_handle_for` — registered
-            //      by an earlier cell load. Read-only / shared lock.
-            //   3. `None` — the cached NIF authored no controllers.
-            // Subsequent REFRs of the same model in this same load
-            // hit case (1) and never touch the registry write path.
-            let clip_handle = pending_clip_handles.get(&cache_key).copied().or_else(|| {
-                world
-                    .resource::<NifImportRegistry>()
-                    .clip_handle_for(&cache_key)
-            });
-
-            // #1212 / D1-NEW-01 — build the placement FormIdPair so the
-            // spawn site can attach a `FormIdComponent` on the placement
-            // root. Plugin lookup uses `placed_ref.form_id` against the
-            // load-order map (master + DLC + mod chain post-#445 remap).
-            // Unresolved plugin → "Engine.esm" placeholder so the
-            // intern still succeeds; the placement form-id itself is
-            // the unique key callers consume via `find_by_form_id`.
-            let placement_pair = {
-                let plugin_name =
-                    plugin_for_form_id(placed_ref.form_id, load_order).unwrap_or("Engine.esm");
-                FormIdPair {
-                    plugin: PluginId::from_filename(plugin_name),
-                    local: LocalFormId(placed_ref.form_id),
-                }
-            };
-            let (placement_root, count) = spawn_placed_instances(
+            let refr_script_instance = refr_script_instance_for_synth_child(
+                synth_idx,
+                placed_ref.script_instance.as_ref(),
+            );
+            spawn_synth_child(
+                &mut accum,
                 world,
                 ctx,
-                &cached,
-                tex_provider,
+                &cell,
+                mat_provider.as_deref_mut(),
+                placed_ref,
+                &refr_overlay,
+                child_form_id,
                 ref_pos,
                 ref_rot,
                 ref_scale,
-                stat.light_data.as_ref(),
-                refr_overlay.as_ref(),
-                clip_handle,
-                stat.record_type.render_layer(),
-                Some(cache_key.as_str()),
-                Some(placement_pair),
-                placed_ref.teleport,
-            );
-            entity_count += count;
-
-            // #1889 / EXAL §5.2 — materialise the base record's
-            // Visible-When-Distant flag onto the placement root.
-            stamp_visible_when_distant(world, placement_root, stat.visible_when_distant);
-
-            // #1359 / D6-06a — CONT REFRs already spawn a mesh via the
-            // `statics` lookup above; attach the typed record's inventory
-            // contents so the data layer is no longer absent.
-            if attach_container_inventory(world, placement_root, child_form_id, record_index) {
-                containers_attached += 1;
-            }
-
-            // M47.0 Phase 3b — attach script state to the placement
-            // root. `child_form_id` is the leaf base record (SCOL /
-            // PKIN children each get their own; non-expanded REFRs
-            // pass placed_ref.base_form_id verbatim). Index → SCPT →
-            // editor_id → ScriptRegistry → spawner; misses fall
-            // through silently per Phase 2's "unregistered scripts are
-            // common" contract. See docs/engine/m47-0-design.md.
-            // #2026 — `refr_script_instance` (the outer REFR's own VMAD,
-            // gated to the first synthetic child only) replaces the raw
-            // `placed_ref.script_instance` here.
-            if attach_script_for_refr(
-                world,
-                placement_root,
-                child_form_id,
-                record_index,
                 refr_script_instance,
-            ) {
-                scripts_recognized += 1;
-            }
+            );
         }
     }
+    let RefLoadAccum {
+        entity_count,
+        bounds_min,
+        bounds_max,
+        stat_miss,
+        stat_hit,
+        nif_not_found,
+        nif_not_found_sample,
+        stat_miss_sample,
+        npc_spawned,
+        npc_spawned_sample,
+        npc_spawn_wall,
+        scripts_recognized,
+        trigger_volumes,
+        containers_attached,
+        this_call_hits,
+        this_call_misses,
+        pending_new,
+        pending_hits,
+        pending_clip_handles,
+    } = accum;
 
     let bbox_center = (bounds_min + bounds_max) * 0.5;
     let dims = bounds_max - bounds_min;
@@ -936,7 +476,10 @@ pub(super) fn load_references(
     if containers_attached > 0 {
         // #1359 / D6-06a — how many CONT REFRs now carry an `Inventory`
         // populated from their typed `ContainerRecord`.
-        log::info!("  {} containers attached an Inventory component", containers_attached);
+        log::info!(
+            "  {} containers attached an Inventory component",
+            containers_attached
+        );
     }
     if npc_spawned > 0 {
         // M41.0 Phase 1b + Phase 4 — NPC actors landed. The
@@ -1125,6 +668,550 @@ pub(super) fn load_references(
     RefLoadResult {
         entity_count,
         center,
+    }
+}
+
+/// Mutable accumulators threaded through the per-REFR spawn loop in
+/// [`load_references`]. Bundled so the per-record-kind dispatch could be
+/// split into [`spawn_synth_child`] without a 20-argument signature
+/// (#2058). `door_pos` / `enable_skipped` / `absorbed_skipped` /
+/// `npc_pending*` stay as loop-locals — they are set in the outer REFR
+/// loop, never inside the per-child dispatch.
+struct RefLoadAccum {
+    /// Mesh-bearing entities spawned (return value + summary line).
+    entity_count: usize,
+    /// Running world-space AABB over every placed REFR; seeds the spawn point.
+    bounds_min: Vec3,
+    bounds_max: Vec3,
+    /// REFR base forms missing from `index.statics` (+ bounded FormID sample).
+    stat_miss: u32,
+    stat_hit: u32,
+    /// NIF/SPT files not found in the BSA archives (+ bounded path sample).
+    nif_not_found: u32,
+    nif_not_found_sample: Vec<String>,
+    stat_miss_sample: Vec<u32>,
+    /// NPC actors spawned via either FaceGen dispatch path (+ sample + wall time).
+    npc_spawned: u32,
+    npc_spawned_sample: Vec<u32>,
+    npc_spawn_wall: std::time::Duration,
+    /// M47.2 script-attach + trigger-volume telemetry.
+    scripts_recognized: u32,
+    trigger_volumes: u32,
+    /// #1359 — CONT REFRs that received an `Inventory` component.
+    containers_attached: u32,
+    /// #523 per-call NIF-cache hit/miss tallies, merged after the loop.
+    this_call_hits: u64,
+    this_call_misses: u64,
+    /// #523 per-call parse/hit shadows + #544 clip handles, committed after the loop.
+    pending_new: HashMap<String, Option<Arc<CachedNifImport>>>,
+    pending_hits: Vec<String>,
+    pending_clip_handles: HashMap<String, u32>,
+}
+
+impl RefLoadAccum {
+    fn new() -> Self {
+        Self {
+            entity_count: 0,
+            bounds_min: Vec3::splat(f32::INFINITY),
+            bounds_max: Vec3::splat(f32::NEG_INFINITY),
+            stat_miss: 0,
+            stat_hit: 0,
+            nif_not_found: 0,
+            nif_not_found_sample: Vec::with_capacity(5),
+            stat_miss_sample: Vec::with_capacity(20),
+            npc_spawned: 0,
+            npc_spawned_sample: Vec::with_capacity(8),
+            npc_spawn_wall: std::time::Duration::ZERO,
+            scripts_recognized: 0,
+            trigger_volumes: 0,
+            containers_attached: 0,
+            this_call_hits: 0,
+            this_call_misses: 0,
+            pending_new: HashMap::new(),
+            pending_hits: Vec::new(),
+            pending_clip_handles: HashMap::new(),
+        }
+    }
+}
+
+/// Read-only per-cell context shared by every [`spawn_synth_child`] call.
+/// Destructured verbatim at the top of the helper so the moved dispatch
+/// body reads exactly as it did inline (#2058). All fields are `Copy`.
+#[derive(Clone, Copy)]
+struct CellLoadCtx<'a> {
+    index: &'a esm::cell::EsmCellIndex,
+    record_index: &'a byroredux_plugin::esm::records::EsmIndex,
+    npcs: &'a HashMap<u32, byroredux_plugin::esm::records::NpcRecord>,
+    races: &'a HashMap<u32, byroredux_plugin::esm::records::RaceRecord>,
+    game: byroredux_plugin::esm::reader::GameKind,
+    tex_provider: &'a TextureProvider,
+    load_order: &'a [String],
+    idle_pool: &'a [u32],
+}
+
+/// Dispatch one synthetic child placement (SCOL/PKIN-expanded or the lone
+/// default) by record kind — NPC actor, invisible trigger volume, light-only
+/// LIGH, marker/FX skip, or the main static-mesh spawn — accumulating its
+/// telemetry into `accum`. Split verbatim out of [`load_references`] (#2058);
+/// each former `continue` (skip this child) is now an early `return`.
+#[allow(clippy::too_many_arguments)]
+fn spawn_synth_child(
+    accum: &mut RefLoadAccum,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    cell: &CellLoadCtx,
+    mut mat_provider: Option<&mut MaterialProvider>,
+    placed_ref: &esm::cell::PlacedRef,
+    refr_overlay: &Option<super::refr::RefrTextureOverlay>,
+    child_form_id: u32,
+    ref_pos: Vec3,
+    ref_rot: Quat,
+    ref_scale: f32,
+    refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
+) {
+    let &CellLoadCtx {
+        index,
+        record_index,
+        npcs,
+        races,
+        game,
+        tex_provider,
+        load_order,
+        idle_pool,
+    } = cell;
+    // M41.0 Phase 1b — NPC dispatch must run BEFORE the
+    // statics lookup. NPC_ records are also indexed in
+    // `EsmCellIndex.statics` (because they carry a MODL —
+    // the body mesh path) by `parse_modl_group` at
+    // `crates/plugin/src/esm/cell/mod.rs:703`. If the
+    // statics check ran first the static-spawn path would
+    // claim every NPC ACHR and the NPC dispatcher would
+    // never see them. Pre-fix `TestQAHairM` (31 NPCs / 61
+    // refs) reported "61 statics hits, 0 NPCs spawned" — the
+    // NPCs were silently rendered as a single non-skinned
+    // body mesh per actor instead of going through the
+    // skeleton-aware spawn function.
+    if let Some(npc) = npcs.get(&child_form_id) {
+        accum.bounds_min = accum.bounds_min.min(ref_pos);
+        accum.bounds_max = accum.bounds_max.max(ref_pos);
+        if game.has_runtime_facegen_recipe() {
+            let race = races.get(&npc.race_form_id);
+            let spawn_t0 = std::time::Instant::now();
+            let spawned = crate::npc_spawn::spawn_npc_entity(
+                world,
+                ctx,
+                npc,
+                race,
+                game,
+                tex_provider,
+                mat_provider.as_deref_mut(),
+                idle_pool,
+                ref_pos,
+                ref_rot,
+                ref_scale,
+                record_index,
+            );
+            accum.npc_spawn_wall += spawn_t0.elapsed();
+            if spawned.is_some() {
+                accum.npc_spawned += 1;
+                if accum.npc_spawned_sample.len() < 8
+                    && !accum.npc_spawned_sample.contains(&child_form_id)
+                {
+                    accum.npc_spawned_sample.push(child_form_id);
+                }
+                accum.entity_count += 1;
+            }
+        } else if game.uses_prebaked_facegen() {
+            // M41.0 Phase 4 — Skyrim / FO4 / FO76 / Starfield
+            // pre-baked-FaceGen dispatch. The NPC's plugin
+            // name resolves from the high byte of its
+            // load-order-global FormID against `load_order`;
+            // when the plugin can't be resolved (corrupt
+            // FormID, missing master), the spawn function
+            // logs and returns the placement root with no
+            // mesh — same observable outcome as a missing
+            // FaceGen NIF, just diagnosable from the log.
+            let plugin = load_order::plugin_for_form_id(child_form_id, load_order).unwrap_or("");
+            let spawn_t0 = std::time::Instant::now();
+            let spawned = crate::npc_spawn::spawn_prebaked_npc_entity(
+                world,
+                ctx,
+                npc,
+                game,
+                tex_provider,
+                mat_provider.as_deref_mut(),
+                plugin,
+                ref_pos,
+                ref_rot,
+                ref_scale,
+                record_index,
+            );
+            accum.npc_spawn_wall += spawn_t0.elapsed();
+            if spawned.is_some() {
+                accum.npc_spawned += 1;
+                if accum.npc_spawned_sample.len() < 8
+                    && !accum.npc_spawned_sample.contains(&child_form_id)
+                {
+                    accum.npc_spawned_sample.push(child_form_id);
+                }
+                accum.entity_count += 1;
+            }
+        }
+        return;
+    }
+
+    // M47.2 — invisible trigger volume. A REFR carrying an `XPRM`
+    // box/sphere primitive and an attached script is a Bethesda
+    // trigger box: no MODL, so the statics path below would skip
+    // it (empty / missing mesh). Spawn a transform-only entity,
+    // attach its world-space `TriggerVolume`, and run the script
+    // attach so the recognizer's `OnTriggerEnter → SetStage`
+    // advance lands. `trigger_detection_system` then fires
+    // `OnTriggerEnterEvent` when the player crosses in. Gated on
+    // *no renderable mesh* so a visible scripted activator (lever
+    // with MODL + primitive) still spawns through the normal path
+    // — only genuinely invisible triggers take this branch.
+    let has_mesh = index
+        .statics
+        .get(&child_form_id)
+        .is_some_and(|s| !s.model_path.is_empty());
+    let has_script = record_index.base_record_script(child_form_id).is_some()
+                || record_index
+                    .base_record_script_instance(child_form_id)
+                    .is_some()
+                // #1737 — a model-less REFR can be a trigger volume scripted
+                // purely by its OWN VMAD (no base-record script at all).
+                // #2026 — gated on `refr_script_instance`, not the raw
+                // `placed_ref.script_instance`, so only the first
+                // synthetic child of a SCOL/PKIN expansion qualifies on
+                // this basis; the base-record checks above still apply
+                // to every child (they're keyed by `child_form_id`).
+                || refr_script_instance.is_some();
+    if !has_mesh && has_script {
+        if let Some(prim) = placed_ref.primitive.as_ref() {
+            if let Some(volume) = trigger_volume_from_primitive(prim, ref_pos, ref_rot, ref_scale) {
+                let entity = world.spawn();
+                world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
+                world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
+                world.insert(entity, volume);
+                if attach_script_for_refr(
+                    world,
+                    entity,
+                    child_form_id,
+                    record_index,
+                    refr_script_instance,
+                ) {
+                    accum.scripts_recognized += 1;
+                }
+                accum.trigger_volumes += 1;
+                accum.bounds_min = accum.bounds_min.min(ref_pos);
+                accum.bounds_max = accum.bounds_max.max(ref_pos);
+                accum.entity_count += 1;
+                return;
+            }
+        }
+    }
+
+    let stat = match index.statics.get(&child_form_id) {
+        Some(s) => {
+            accum.stat_hit += 1;
+            s
+        }
+        None => {
+            accum.stat_miss += 1;
+            // Collect a bounded sample so the summary line can
+            // surface actual FormIDs without pulling down a
+            // full RUST_LOG=debug run. Linear dedup is fine
+            // for 20 entries. See #386.
+            if accum.stat_miss_sample.len() < 20 && !accum.stat_miss_sample.contains(&child_form_id)
+            {
+                accum.stat_miss_sample.push(child_form_id);
+            }
+            log::debug!("REFR base {:08X} not in statics table", child_form_id);
+            return;
+        }
+    };
+
+    // Update bounds from the (possibly SCOL-composed) placement.
+    accum.bounds_min = accum.bounds_min.min(ref_pos);
+    accum.bounds_max = accum.bounds_max.max(ref_pos);
+
+    // Spawn light-only entities (LIGH with no mesh).
+    if stat.model_path.is_empty() {
+        if let Some(ref ld) = stat.light_data {
+            let entity = world.spawn();
+            world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
+            world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
+            world.insert(
+                entity,
+                LightSource {
+                    radius: light_radius_or_default(ld.radius),
+                    color: ld.color,
+                    flags: ld.flags,
+                    falloff_exponent: ld.falloff_exponent,
+                    ..Default::default()
+                },
+            );
+            attach_light_flicker_if_needed(world, entity, ld, ref_pos);
+            accum.entity_count += 1;
+        }
+        return;
+    }
+
+    // Skip non-renderable meshes: editor markers, effect
+    // sprites, fog. Still spawn the ESM light entity if this
+    // LIGH record carries one — the effect mesh is visual-only
+    // but the point light is real.
+    let model_lower = stat.model_path.to_ascii_lowercase();
+
+    // Extract the filename (after the last \ or /) for prefix matching.
+    let filename = model_lower
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(&model_lower);
+
+    if filename.starts_with("marker")
+        || filename.starts_with("xmarker")
+        || filename.starts_with("defaultsetmarker")
+        || filename.starts_with("doormarker")
+        || filename.starts_with("northmarker")
+        || filename.starts_with("prisonmarker")
+        || filename.starts_with("travelmarker")
+        || filename.starts_with("roommarker")
+        || filename.starts_with("vatsmarker")
+    {
+        return;
+    }
+
+    if model_lower.contains("fxlightrays")
+        || model_lower.contains("fxlight")
+        || model_lower.contains("fxfog")
+    {
+        if let Some(ref ld) = stat.light_data {
+            let entity = world.spawn();
+            world.insert(entity, Transform::from_translation(ref_pos));
+            world.insert(entity, GlobalTransform::new(ref_pos, Quat::IDENTITY, 1.0));
+            world.insert(
+                entity,
+                LightSource {
+                    radius: light_radius_or_default(ld.radius),
+                    color: ld.color,
+                    flags: ld.flags,
+                    falloff_exponent: ld.falloff_exponent,
+                    ..Default::default()
+                },
+            );
+            accum.entity_count += 1;
+        }
+        return;
+    }
+
+    let model_path = if model_lower.starts_with("meshes\\") || model_lower.starts_with("meshes/") {
+        stat.model_path.clone()
+    } else {
+        format!("meshes\\{}", stat.model_path)
+    };
+
+    // Fetch parsed+imported NIF from the process-lifetime
+    // registry, or load+parse once. Three-tier lookup (#523):
+    //   1. `pending_new` — this call's own parses, zero lock
+    //      cost.
+    //   2. Registry read-lock — a shared borrow that doesn't
+    //      serialise against concurrent readers.
+    //   3. Parse outside any lock, insert into `pending_new`;
+    //      the merge into the registry happens in a single
+    //      write lock after the loop.
+    //
+    // Previously this block took `resource_mut` (write lock)
+    // on every iteration even on the hit path; see #523 / #381
+    // for the wider cache history.
+    let cache_key = model_path.to_ascii_lowercase();
+    let cached = if let Some(entry) = accum.pending_new.get(&cache_key).cloned() {
+        accum.this_call_hits += 1;
+        entry
+    } else {
+        let reg_entry = {
+            let reg = world.resource::<NifImportRegistry>();
+            reg.get(&cache_key).cloned()
+        };
+        match reg_entry {
+            Some(entry) => {
+                accum.this_call_hits += 1;
+                // Mark for LRU touch at the end-of-load batched
+                // commit so frequently-revisited meshes don't
+                // get evicted under `BYRO_NIF_CACHE_MAX`. The
+                // batched flush keeps the read path on a shared
+                // lock — preserves the #523 invariant.
+                accum.pending_hits.push(cache_key.clone());
+                entry
+            }
+            None => {
+                // Slow-path: parse outside any registry borrow.
+                // Take the StringPool write lock only for the
+                // parse + intern + BGSM merge — the read lock
+                // on `NifImportRegistry` was released at the
+                // close of the `reg_entry` scope above, so the
+                // two locks never overlap. See #609.
+                //
+                // SpeedTree extension switch (Phase 1.5).
+                // Pre-Skyrim TREE records point MODL at a
+                // `.spt` SpeedTree binary instead of a NIF —
+                // dispatch to the SPT crate's parser/importer
+                // when we see that extension. The TREE record
+                // (carrying ICON / OBND / etc.) is looked up
+                // from `record_index.trees` keyed by the same
+                // form id the cell loader resolved against
+                // `index.statics`. See SpeedTree plan 1.5.
+                let is_spt = model_path
+                    .as_str()
+                    .rsplit('.')
+                    .next()
+                    .map(|ext| ext.eq_ignore_ascii_case("spt"))
+                    .unwrap_or(false);
+                let parsed = match tex_provider.extract_mesh(&model_path) {
+                    Some(d) => {
+                        let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+                        if is_spt {
+                            let tree_record = record_index.trees.get(&child_form_id);
+                            parse_and_import_spt(&d, &model_path, tree_record, &mut pool)
+                        } else {
+                            parse_and_import_nif(
+                                &d,
+                                &model_path,
+                                mat_provider,
+                                &mut pool,
+                                Some(tex_provider),
+                            )
+                        }
+                    }
+                    None => {
+                        log::debug!(
+                            "{} not found in BSA: '{}'",
+                            if is_spt { "SPT" } else { "NIF" },
+                            model_path,
+                        );
+                        accum.nif_not_found += 1;
+                        if accum.nif_not_found_sample.len() < 5 {
+                            accum.nif_not_found_sample.push(model_path.clone());
+                        }
+                        None
+                    }
+                };
+                accum.this_call_misses += 1;
+                // #544 — register the embedded animation clip
+                // exactly once per parsed NIF, before stashing
+                // into `pending_new`. Subsequent REFRs of this
+                // model reach the handle through the per-call
+                // shadow (`pending_clip_handles`) or, on later
+                // cell loads, through `NifImportRegistry::
+                // clip_handle_for` after the end-of-load
+                // commit. The conversion runs at most once per
+                // unique model across the process — matches
+                // the loose-NIF path's one-clip-per-NIF
+                // invariant from #261.
+                if let Some(ref cached) = parsed {
+                    if let Some(nif_clip) = cached.embedded_clip.as_ref() {
+                        let handle = {
+                            let mut pool =
+                                world.resource_mut::<byroredux_core::string::StringPool>();
+                            let clip = crate::anim_convert::convert_nif_clip(nif_clip, &mut pool);
+                            drop(pool);
+                            let mut clip_reg = world
+                                .resource_mut::<byroredux_core::animation::AnimationClipRegistry>(
+                            );
+                            clip_reg.add(clip)
+                        };
+                        accum.pending_clip_handles.insert(cache_key.clone(), handle);
+                    }
+                }
+                accum.pending_new.insert(cache_key.clone(), parsed.clone());
+                parsed
+            }
+        }
+    };
+    let Some(cached) = cached else { return };
+
+    // #544 — embedded animation-clip handle for this REFR's
+    // model. Three-tier lookup mirrors the cache:
+    //   1. `pending_clip_handles` — registered earlier in this
+    //      call's slow path.
+    //   2. `NifImportRegistry::clip_handle_for` — registered
+    //      by an earlier cell load. Read-only / shared lock.
+    //   3. `None` — the cached NIF authored no controllers.
+    // Subsequent REFRs of the same model in this same load
+    // hit case (1) and never touch the registry write path.
+    let clip_handle = accum
+        .pending_clip_handles
+        .get(&cache_key)
+        .copied()
+        .or_else(|| {
+            world
+                .resource::<NifImportRegistry>()
+                .clip_handle_for(&cache_key)
+        });
+
+    // #1212 / D1-NEW-01 — build the placement FormIdPair so the
+    // spawn site can attach a `FormIdComponent` on the placement
+    // root. Plugin lookup uses `placed_ref.form_id` against the
+    // load-order map (master + DLC + mod chain post-#445 remap).
+    // Unresolved plugin → "Engine.esm" placeholder so the
+    // intern still succeeds; the placement form-id itself is
+    // the unique key callers consume via `find_by_form_id`.
+    let placement_pair = {
+        let plugin_name =
+            plugin_for_form_id(placed_ref.form_id, load_order).unwrap_or("Engine.esm");
+        FormIdPair {
+            plugin: PluginId::from_filename(plugin_name),
+            local: LocalFormId(placed_ref.form_id),
+        }
+    };
+    let (placement_root, count) = spawn_placed_instances(
+        world,
+        ctx,
+        &cached,
+        tex_provider,
+        ref_pos,
+        ref_rot,
+        ref_scale,
+        stat.light_data.as_ref(),
+        refr_overlay.as_ref(),
+        clip_handle,
+        stat.record_type.render_layer(),
+        Some(cache_key.as_str()),
+        Some(placement_pair),
+        placed_ref.teleport,
+    );
+    accum.entity_count += count;
+
+    // #1889 / EXAL §5.2 — materialise the base record's
+    // Visible-When-Distant flag onto the placement root.
+    stamp_visible_when_distant(world, placement_root, stat.visible_when_distant);
+
+    // #1359 / D6-06a — CONT REFRs already spawn a mesh via the
+    // `statics` lookup above; attach the typed record's inventory
+    // contents so the data layer is no longer absent.
+    if attach_container_inventory(world, placement_root, child_form_id, record_index) {
+        accum.containers_attached += 1;
+    }
+
+    // M47.0 Phase 3b — attach script state to the placement
+    // root. `child_form_id` is the leaf base record (SCOL /
+    // PKIN children each get their own; non-expanded REFRs
+    // pass placed_ref.base_form_id verbatim). Index → SCPT →
+    // editor_id → ScriptRegistry → spawner; misses fall
+    // through silently per Phase 2's "unregistered scripts are
+    // common" contract. See docs/engine/m47-0-design.md.
+    // #2026 — `refr_script_instance` (the outer REFR's own VMAD,
+    // gated to the first synthetic child only) replaces the raw
+    // `placed_ref.script_instance` here.
+    if attach_script_for_refr(
+        world,
+        placement_root,
+        child_form_id,
+        record_index,
+        refr_script_instance,
+    ) {
+        accum.scripts_recognized += 1;
     }
 }
 

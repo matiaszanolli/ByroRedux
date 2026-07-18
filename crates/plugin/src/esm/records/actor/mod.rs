@@ -882,8 +882,8 @@ fn parse_npc_fo4_facemorph(
     }
 }
 
-/// FO4+ actor-value model — PRPS properties + baked DNAM derived stats
-/// + PRKR perks. Only invoked when `game.uses_actor_value_properties()`;
+/// FO4+ actor-value model — PRPS properties, baked DNAM derived stats,
+/// and PRKR perks. Only invoked when `game.uses_actor_value_properties()`;
 /// the former per-arm `captures_av_props` guard now lives at the
 /// [`parse_npc`] call site.
 fn parse_npc_actor_values(record: &mut NpcRecord, sub: &SubRecord, remap: &Option<FormIdRemap>) {
