@@ -707,6 +707,52 @@ fn bs_lighting_bsver_132_reads_crc_counts_but_not_flag_pair() {
     );
 }
 
+/// Regression for #2002: BSVER 140+ no longer carries the legacy shader
+/// type before `NiObjectNETData`. Reading it shifts Name and every following
+/// field by four bytes.
+#[test]
+fn bs_lighting_bsver_140_skips_legacy_shader_type() {
+    let header = make_fo4_header_with_bsver(140);
+    let mut data = Vec::new();
+
+    // NiObjectNET is the first field at BSVER >= FO4_DLC_UPPER.
+    data.extend_from_slice(&0i32.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&(-1i32).to_le_bytes());
+    // CRC flags: Num SF1 only; Num SF2 starts at BSVER 152.
+    data.extend_from_slice(&0u32.to_le_bytes());
+    for v in [0.0f32, 0.0, 1.0, 1.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    data.extend_from_slice(&3i32.to_le_bytes());
+    for v in [0.0f32, 0.5, 1.0, 2.0] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    data.extend_from_slice(&(-1i32).to_le_bytes());
+    data.extend_from_slice(&3u32.to_le_bytes());
+    for v in [0.8f32, 0.0, 0.5] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in [1.0f32, 0.9, 0.8, 1.5] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+    // BSVER 140 omits the FO4 subsurface block.
+    data.extend_from_slice(&0.7f32.to_le_bytes());
+    data.extend_from_slice(&5.0f32.to_le_bytes());
+    // Wetness has six floats; shader_type defaults to 0, so no trailing data.
+    for v in [0.1f32, 0.2, 0.3, 0.5, 0.6, 0.95] {
+        data.extend_from_slice(&v.to_le_bytes());
+    }
+
+    let expected_len = data.len();
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+    assert_eq!(prop.shader_type, 0);
+    assert!(prop.sf1_crcs.is_empty());
+    assert!(prop.sf2_crcs.is_empty());
+    assert_eq!(stream.position() as usize, expected_len);
+}
+
 // ── N23.9: FO76/Starfield tests ──────────────────────────────────
 
 fn make_fo76_header(name: &str) -> NifHeader {
