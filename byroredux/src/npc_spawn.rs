@@ -1525,284 +1525,11 @@ pub fn spawn_npc_entity(
         }
     }
 
-    // 6. Sandbox behavior (M42.1). Tag actors whose *active* package at the
-    //    current game hour is a Sandbox-type PACK, so `sandbox_seat_system`
-    //    seats only NPCs actually idling here — not day-shift workers whose
-    //    Sandbox package is a low-priority evening fallback. `ai_packages`
-    //    (PKID refs, priority order) resolve through `index.packages`;
-    //    `active_package_is_sandbox` walks them in order and returns the
-    //    sandbox-ness of the first package scheduled-active at `hour`. This is
-    //    what stops the saloon bartender (08:00–20:00 `AtBar`) from being
-    //    dragged to a table at 10:00.
-    let game_hour = world
-        .try_resource::<crate::components::GameTimeRes>()
-        .map(|r| r.hour)
-        .unwrap_or(10.0);
-    // M42.2: CTDA gating. A package is eligible only if its author-set
-    // conditions pass, evaluated against this actor via the M47.1 evaluator.
-    // The predicate closure is what threads scripting's evaluator into
-    // plugin's schedule-only selector (plugin can't call scripting — the
-    // dependency runs the other way). `subject` is the spawned NPC; the
-    // package `target` isn't resolved (v0, matching the search-center
-    // approximation above), so conditions using `RunOn::Target` fall to the
-    // evaluator's missing-ref-fails default.
-    let cond_ctx = byroredux_scripting::condition::ConditionContext {
-        subject: placement_root,
-        target: None,
-        combat_target: None,
-        linked_reference: None,
-    };
-    let condition_met = |pk: &byroredux_plugin::esm::records::PackRecord| {
-        package_conditions_pass(&pk.conditions, world, &cond_ctx)
-    };
-    // All package-selection reads (they borrow `world` via `condition_met`)
-    // are resolved to owned values *before* any `world.insert` below —
-    // interleaving a read after an insert here is a borrow-checker
-    // conflict, since `condition_met` closes over `world: &World`.
-    let runs_sandbox = byroredux_plugin::esm::records::active_package_is_sandbox(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    );
-    // PLDT's authored radius (when decoded and > 0) replaces
-    // `sandbox_seat_system`'s blanket search-radius guess with the
-    // per-package value the CK author actually set. `location` can be
-    // `None` (no PLDT) or carry radius 0 (some vanilla packages, e.g.
-    // FormID-anchored ones with no meaningful area) — both fall back to
-    // the system's own default.
-    let search_radius = byroredux_plugin::esm::records::active_sandbox_location(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    )
-    .map(|loc| loc.radius as f32)
-    .filter(|r| *r > 0.0);
-    // M42.3: Wander behavior, mirroring the Sandbox reads above verbatim
-    // (same game_hour/condition_met, same PLDT-radius-or-default pattern,
-    // same v0 "actor's own position is the center approximation" rationale
-    // — no second investigation needed, `active_package_is_sandbox` and
-    // `active_package_is_wander` are naturally mutually exclusive since an
-    // NPC's active package is a single winning `PackRecord`).
-    let runs_wander = byroredux_plugin::esm::records::active_package_is_wander(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    );
-    let wander_radius = byroredux_plugin::esm::records::active_wander_location(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    )
-    .map(|loc| loc.radius as f32)
-    .filter(|r| *r > 0.0);
-
-    // M42.4: Travel behavior, same reads as Sandbox/Wander above. Unlike
-    // those two, Travel's *destination* matters (it walks there once and
-    // stops, rather than just needing a search center) — so it captures
-    // the PLDT target's raw FormID here, and `travel_system` attempts to
-    // resolve it to a live entity's position on its own first tick via
-    // `resolve_entity_by_global_form_id` (see that fn's doc + `travel.rs`'s
-    // module docs for why this is a strictly better vantage point than a
-    // spawn-time attempt, and why it still won't resolve most targets).
-    // Only `NearReference` carries a FormID that fn can resolve; other
-    // location types leave `travel_target_form_id` `None` and fall
-    // straight to `travel_system`'s hash-picked fallback.
-    let runs_travel = byroredux_plugin::esm::records::active_package_is_travel(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    );
-    let travel_location = byroredux_plugin::esm::records::active_travel_location(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    );
-    let travel_radius = travel_location
-        .map(|loc| loc.radius as f32)
-        .filter(|r| *r > 0.0);
-    let travel_target_form_id = travel_location.and_then(|loc| match loc.target {
-        byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => Some(fid),
-        _ => None,
-    });
-
-    // M42.5: Follow behavior, same reads as Sandbox/Wander/Travel above.
-    // Follow needs `PTDT` (target data) rather than `PLDT` (location) —
-    // decoded for the first time in this codebase for this procedure.
-    // Only `SpecificReference`/`ObjectId` PTDT target types carry a
-    // FormID `resolve_entity_by_global_form_id` can resolve; `Other`
-    // leaves `follow_target_form_id` `None`, and (unlike Travel) there's
-    // no hash-picked fallback — a Follow package with no resolvable
-    // target simply never moves (see `follow.rs`'s module docs).
-    let runs_follow = byroredux_plugin::esm::records::active_package_is_follow(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    );
-    let follow_pack_target = byroredux_plugin::esm::records::active_follow_target(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    );
-    let follow_distance = follow_pack_target
-        .map(|t| t.count_or_distance as f32)
-        .filter(|d| *d > 0.0);
-    let follow_target_form_id = follow_pack_target.and_then(|t| match t.target {
-        byroredux_plugin::esm::records::PackTargetKind::SpecificReference(fid)
-        | byroredux_plugin::esm::records::PackTargetKind::ObjectId(fid) => Some(fid),
-        byroredux_plugin::esm::records::PackTargetKind::Other(_) => None,
-    });
-
-    // M42.6: Escort behavior, same reads as Sandbox/Wander/Travel/Follow
-    // above. Escort needs both `PTDT` (who to collect, read the same way
-    // Follow reads it) and `PLDT` (where to lead them, read the same way
-    // Travel reads it) — no new sub-record decode work, just the two
-    // existing reads combined onto one component.
-    let runs_escort = byroredux_plugin::esm::records::active_package_is_escort(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    );
-    let escort_target = byroredux_plugin::esm::records::active_escort_target(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    );
-    let escort_target_form_id = escort_target.and_then(|t| match t.target {
-        byroredux_plugin::esm::records::PackTargetKind::SpecificReference(fid)
-        | byroredux_plugin::esm::records::PackTargetKind::ObjectId(fid) => Some(fid),
-        byroredux_plugin::esm::records::PackTargetKind::Other(_) => None,
-    });
-    let escort_location = byroredux_plugin::esm::records::active_escort_location(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    );
-    let escort_destination_radius = escort_location
-        .map(|loc| loc.radius as f32)
-        .filter(|r| *r > 0.0);
-    let escort_destination_form_id = escort_location.and_then(|loc| match loc.target {
-        byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => Some(fid),
-        _ => None,
-    });
-
-    // M42.7: Guard behavior, same PLDT-only reads as Travel (no PTDT —
-    // Guard has nothing to collect, just a post to hold).
-    let runs_guard = byroredux_plugin::esm::records::active_package_is_guard(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    );
-    let guard_location = byroredux_plugin::esm::records::active_guard_location(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    );
-    let guard_radius = guard_location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
-    let guard_anchor_form_id = guard_location.and_then(|loc| match loc.target {
-        byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => Some(fid),
-        _ => None,
-    });
-
-    // M42.8: Patrol behavior, same PLDT-only reads as Wander (no target
-    // resolution — v0 Patrol is Wander's algorithm under a different tag,
-    // see `systems::patrol` module docs).
-    let runs_patrol = byroredux_plugin::esm::records::active_package_is_patrol(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    );
-    let patrol_radius = byroredux_plugin::esm::records::active_patrol_location(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
-        game_hour,
-        condition_met,
-    )
-    .map(|loc| loc.radius as f32)
-    .filter(|r| *r > 0.0);
-
-    if runs_sandbox {
-        // Deliberately NOT resolving `PackLocationTarget::NearReference` to
-        // a live entity's position for the search *center* — investigated
-        // 2026-07-14 and found low-value. Empirically (real FalloutNV.esm,
-        // 1822 NearReference-type Sandbox packages): 62% target a FormID
-        // that isn't a placed ref anywhere in the parsed cell data; of the
-        // rest, 69% resolve to the hardcoded XMarker/XMarkerHeading base
-        // records (0x34 / 0x3b), which `cell_loader` filters out and never
-        // spawns as ECS entities regardless. That leaves ~12% of packages
-        // where resolution could even succeed — before accounting for
-        // same-cell scoping (a target in a different, unloaded cell can
-        // never resolve) or spawn-ordering (references are placed in one
-        // interleaved pass, not markers-then-actors, so a same-cell target
-        // later in the REFR list isn't live yet). The actor's own position
-        // remains the v0 center approximation. M42.4's `travel_system` now
-        // uses `resolve_entity_by_global_form_id` (`crates/scripting/src
-        // /condition.rs`) from a later vantage point — its own first tick,
-        // after the whole cell has finished loading — which sidesteps the
-        // spawn-ordering half of this problem; Sandbox could adopt the same
-        // approach here if a future session wants the search *center* to
-        // do the same.
-        world.insert(
-            placement_root,
-            byroredux_core::ecs::components::SandboxBehavior { search_radius },
-        );
-    }
-    if runs_wander {
-        world.insert(
-            placement_root,
-            byroredux_core::ecs::components::WanderBehavior {
-                wander_radius,
-                form_id: npc.form_id,
-            },
-        );
-    }
-    if runs_travel {
-        world.insert(
-            placement_root,
-            byroredux_core::ecs::components::TravelBehavior {
-                radius: travel_radius,
-                target_form_id: travel_target_form_id,
-                form_id: npc.form_id,
-            },
-        );
-    }
-    if runs_follow {
-        world.insert(
-            placement_root,
-            byroredux_core::ecs::components::FollowBehavior {
-                target_form_id: follow_target_form_id,
-                follow_distance,
-            },
-        );
-    }
-    if runs_escort {
-        world.insert(
-            placement_root,
-            byroredux_core::ecs::components::EscortBehavior {
-                target_form_id: escort_target_form_id,
-                destination_form_id: escort_destination_form_id,
-                destination_radius: escort_destination_radius,
-                form_id: npc.form_id,
-            },
-        );
-    }
-    if runs_guard {
-        world.insert(
-            placement_root,
-            byroredux_core::ecs::components::GuardBehavior {
-                anchor_form_id: guard_anchor_form_id,
-                radius: guard_radius,
-                form_id: npc.form_id,
-            },
-        );
-    }
-    if runs_patrol {
-        world.insert(
-            placement_root,
-            byroredux_core::ecs::components::PatrolBehavior {
-                patrol_radius,
-                form_id: npc.form_id,
-            },
-        );
-    }
+    // 6. Behavior tagging (M42.1-M42.8) — see `apply_ai_package_behavior`.
+    //    #2052 / TD1-003 — shared with `spawn_prebaked_npc_entity` so the
+    //    two spawn paths can't diverge on this again (pre-fix the
+    //    pre-baked path had no AI-package gating at all).
+    apply_ai_package_behavior(world, placement_root, npc, index);
 
     tag_descendants_as_actor(world, placement_root);
     Some(placement_root)
@@ -1843,6 +1570,231 @@ fn package_conditions_pass(
         return true; // can't evaluate soundly → don't gate (fail-open)
     }
     evaluate(conditions, world, ctx)
+}
+
+/// Behavior tagging (M42.1-M42.8). Tags `placement_root` with the ECS
+/// Behavior component matching the NPC's *active* package at the current
+/// game hour — e.g. `sandbox_seat_system` only seats NPCs whose active
+/// package is Sandbox-type, not day-shift workers whose Sandbox package
+/// is a low-priority evening fallback (stops the saloon bartender's
+/// 08:00-20:00 `AtBar` package from being overridden and dragging them
+/// to a table at 10:00). `ai_packages` (PKID refs, priority order)
+/// resolve through `index.packages`; `active_package` walks them in
+/// order and returns the first package scheduled-active at `hour` whose
+/// CTDA conditions pass (M42.2).
+///
+/// Shared by [`spawn_npc_entity`] and [`spawn_prebaked_npc_entity`]
+/// (#2052 / TD1-003 — the pre-baked path previously had no AI-package
+/// gating at all, a divergence from the kf-era path with no reason to
+/// exist since both paths spawn the same NPC record onto the same
+/// placement root).
+///
+/// #2031 / PERF-D7-01 — resolves the active package ONCE (was 14
+/// separate `active_package_is_*`/`active_*_location`/`active_*_target`
+/// calls, one pair per procedure, each independently re-running this
+/// walk — which re-evaluates every rejected package's CTDA conditions
+/// via the M47.1 scripting evaluator). An NPC's active package is a
+/// single winning `PackRecord` by construction (confirmed by
+/// `AUDIT_ECS_2026-07-16.md`), so every one of those 14 calls against
+/// the same `(packages, hour, condition_met)` converged on the same
+/// package anyway; matching its `procedure_type` once builds the one
+/// Behavior component the old code would have built directly, with no
+/// behavior change.
+fn apply_ai_package_behavior(
+    world: &mut World,
+    placement_root: EntityId,
+    npc: &NpcRecord,
+    index: &EsmIndex,
+) {
+    let game_hour = world
+        .try_resource::<crate::components::GameTimeRes>()
+        .map(|r| r.hour)
+        .unwrap_or(10.0);
+    // M42.2: CTDA gating. A package is eligible only if its author-set
+    // conditions pass, evaluated against this actor via the M47.1 evaluator.
+    // The predicate closure is what threads scripting's evaluator into
+    // plugin's schedule-only selector (plugin can't call scripting — the
+    // dependency runs the other way). `subject` is the spawned NPC; the
+    // package `target` isn't resolved (v0, matching the search-center
+    // approximation below), so conditions using `RunOn::Target` fall to the
+    // evaluator's missing-ref-fails default.
+    let cond_ctx = byroredux_scripting::condition::ConditionContext {
+        subject: placement_root,
+        target: None,
+        combat_target: None,
+        linked_reference: None,
+    };
+    let condition_met = |pk: &byroredux_plugin::esm::records::PackRecord| {
+        package_conditions_pass(&pk.conditions, world, &cond_ctx)
+    };
+    // Single resolve (borrows `world` via `condition_met`) — must happen
+    // *before* any `world.insert` below; interleaving a read after an
+    // insert here is a borrow-checker conflict, since `condition_met`
+    // closes over `world: &World`.
+    let active_pkg = byroredux_plugin::esm::records::active_package(
+        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        game_hour,
+        condition_met,
+    );
+
+    if let Some(pk) = active_pkg {
+        if pk.is_sandbox() {
+            // PLDT's authored radius (when decoded and > 0) replaces
+            // `sandbox_seat_system`'s blanket search-radius guess with the
+            // per-package value the CK author actually set. `location` can
+            // be `None` (no PLDT) or carry radius 0 (some vanilla packages,
+            // e.g. FormID-anchored ones with no meaningful area) — both
+            // fall back to the system's own default.
+            //
+            // Deliberately NOT resolving `PackLocationTarget::NearReference`
+            // to a live entity's position for the search *center* —
+            // investigated 2026-07-14 and found low-value. Empirically
+            // (real FalloutNV.esm, 1822 NearReference-type Sandbox
+            // packages): 62% target a FormID that isn't a placed ref
+            // anywhere in the parsed cell data; of the rest, 69% resolve to
+            // the hardcoded XMarker/XMarkerHeading base records (0x34 /
+            // 0x3b), which `cell_loader` filters out and never spawns as
+            // ECS entities regardless. That leaves ~12% of packages where
+            // resolution could even succeed — before accounting for
+            // same-cell scoping (a target in a different, unloaded cell
+            // can never resolve) or spawn-ordering (references are placed
+            // in one interleaved pass, not markers-then-actors, so a
+            // same-cell target later in the REFR list isn't live yet). The
+            // actor's own position remains the v0 center approximation.
+            // M42.4's `travel_system` now uses
+            // `resolve_entity_by_global_form_id` (`crates/scripting/src
+            // /condition.rs`) from a later vantage point — its own first
+            // tick, after the whole cell has finished loading — which
+            // sidesteps the spawn-ordering half of this problem; Sandbox
+            // could adopt the same approach here if a future session wants
+            // the search *center* to do the same.
+            let search_radius = pk.location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+            world.insert(
+                placement_root,
+                byroredux_core::ecs::components::SandboxBehavior { search_radius },
+            );
+        } else if pk.is_wander() {
+            // M42.3: same PLDT-radius-or-default pattern as Sandbox above,
+            // same v0 "actor's own position is the center approximation"
+            // rationale.
+            let wander_radius = pk.location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+            world.insert(
+                placement_root,
+                byroredux_core::ecs::components::WanderBehavior {
+                    wander_radius,
+                    form_id: npc.form_id,
+                },
+            );
+        } else if pk.is_travel() {
+            // M42.4: unlike Sandbox/Wander, Travel's *destination* matters
+            // (it walks there once and stops, rather than just needing a
+            // search center) — so it captures the PLDT target's raw
+            // FormID here, and `travel_system` attempts to resolve it to a
+            // live entity's position on its own first tick via
+            // `resolve_entity_by_global_form_id` (see that fn's doc +
+            // `travel.rs`'s module docs for why this is a strictly better
+            // vantage point than a spawn-time attempt, and why it still
+            // won't resolve most targets). Only `NearReference` carries a
+            // FormID that fn can resolve; other location types leave
+            // `travel_target_form_id` `None` and fall straight to
+            // `travel_system`'s hash-picked fallback.
+            let travel_radius = pk.location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+            let travel_target_form_id = pk.location.and_then(|loc| match loc.target {
+                byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => {
+                    Some(fid)
+                }
+                _ => None,
+            });
+            world.insert(
+                placement_root,
+                byroredux_core::ecs::components::TravelBehavior {
+                    radius: travel_radius,
+                    target_form_id: travel_target_form_id,
+                    form_id: npc.form_id,
+                },
+            );
+        } else if pk.is_follow() {
+            // M42.5: Follow needs `PTDT` (target data) rather than `PLDT`
+            // (location) — decoded for the first time in this codebase for
+            // this procedure. Only `SpecificReference`/`ObjectId` PTDT
+            // target types carry a FormID `resolve_entity_by_global_form_id`
+            // can resolve; `Other` leaves `follow_target_form_id` `None`,
+            // and (unlike Travel) there's no hash-picked fallback — a
+            // Follow package with no resolvable target simply never moves
+            // (see `follow.rs`'s module docs).
+            let follow_distance = pk.target.map(|t| t.count_or_distance as f32).filter(|d| *d > 0.0);
+            let follow_target_form_id = pk.target.and_then(|t| match t.target {
+                byroredux_plugin::esm::records::PackTargetKind::SpecificReference(fid)
+                | byroredux_plugin::esm::records::PackTargetKind::ObjectId(fid) => Some(fid),
+                byroredux_plugin::esm::records::PackTargetKind::Other(_) => None,
+            });
+            world.insert(
+                placement_root,
+                byroredux_core::ecs::components::FollowBehavior {
+                    target_form_id: follow_target_form_id,
+                    follow_distance,
+                },
+            );
+        } else if pk.is_escort() {
+            // M42.6: Escort needs both `PTDT` (who to collect, read the
+            // same way Follow reads it) and `PLDT` (where to lead them,
+            // read the same way Travel reads it) — no new sub-record
+            // decode work, just the two existing reads combined onto one
+            // component.
+            let escort_target_form_id = pk.target.and_then(|t| match t.target {
+                byroredux_plugin::esm::records::PackTargetKind::SpecificReference(fid)
+                | byroredux_plugin::esm::records::PackTargetKind::ObjectId(fid) => Some(fid),
+                byroredux_plugin::esm::records::PackTargetKind::Other(_) => None,
+            });
+            let escort_destination_radius =
+                pk.location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+            let escort_destination_form_id = pk.location.and_then(|loc| match loc.target {
+                byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => {
+                    Some(fid)
+                }
+                _ => None,
+            });
+            world.insert(
+                placement_root,
+                byroredux_core::ecs::components::EscortBehavior {
+                    target_form_id: escort_target_form_id,
+                    destination_form_id: escort_destination_form_id,
+                    destination_radius: escort_destination_radius,
+                    form_id: npc.form_id,
+                },
+            );
+        } else if pk.is_guard() {
+            // M42.7: same PLDT-only reads as Travel (no PTDT — Guard has
+            // nothing to collect, just a post to hold).
+            let guard_radius = pk.location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+            let guard_anchor_form_id = pk.location.and_then(|loc| match loc.target {
+                byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => {
+                    Some(fid)
+                }
+                _ => None,
+            });
+            world.insert(
+                placement_root,
+                byroredux_core::ecs::components::GuardBehavior {
+                    anchor_form_id: guard_anchor_form_id,
+                    radius: guard_radius,
+                    form_id: npc.form_id,
+                },
+            );
+        } else if pk.is_patrol() {
+            // M42.8: same PLDT-only reads as Wander (no target resolution
+            // — v0 Patrol is Wander's algorithm under a different tag, see
+            // `systems::patrol` module docs).
+            let patrol_radius = pk.location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+            world.insert(
+                placement_root,
+                byroredux_core::ecs::components::PatrolBehavior {
+                    patrol_radius,
+                    form_id: npc.form_id,
+                },
+            );
+        }
+    }
 }
 
 /// Path inside the meshes archive for an NPC's pre-baked FaceGen
@@ -2111,6 +2063,11 @@ pub fn spawn_prebaked_npc_entity(
         );
     }
 
+    // 6. Behavior tagging (M42.1-M42.8) — see `apply_ai_package_behavior`.
+    //    #2052 / TD1-003 — this path previously had no AI-package gating
+    //    at all, diverging from `spawn_npc_entity`'s kf-era path.
+    apply_ai_package_behavior(world, placement_root, npc, index);
+
     tag_descendants_as_actor(world, placement_root);
     Some(placement_root)
 }
@@ -2159,6 +2116,10 @@ pub(crate) fn tag_descendants_as_actor(world: &mut World, root: EntityId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_core::ecs::components::{
+        EscortBehavior, FollowBehavior, GuardBehavior, PatrolBehavior, SandboxBehavior,
+        TravelBehavior, WanderBehavior,
+    };
 
     // ── M41.5 Phase A — idle desync + pool selection ──────────────────
 
@@ -2699,5 +2660,99 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(state.armor_to_spawn[0].model_path, r"armor\robe\robe.nif");
+    }
+
+    // ── #2052 / TD1-003 — `apply_ai_package_behavior` shared helper ───
+    //
+    // Extracted out of `spawn_npc_entity` and now also called by
+    // `spawn_prebaked_npc_entity` (which previously had no AI-package
+    // gating at all — the SIBLING gap the issue flagged). Needs only a
+    // `World` + `NpcRecord` + `EsmIndex`, no Vulkan device, so it's
+    // testable in isolation unlike the two spawn functions themselves.
+
+    fn pack_with_procedure(form_id: u32, procedure_type: u32) -> byroredux_plugin::esm::records::PackRecord {
+        byroredux_plugin::esm::records::PackRecord {
+            form_id,
+            procedure_type,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn apply_ai_package_behavior_tags_sandbox_from_active_package() {
+        let mut world = World::new();
+        let placement_root = world.spawn();
+        let npc = NpcRecord {
+            ai_packages: vec![0xAAAA],
+            ..Default::default()
+        };
+        let mut index = EsmIndex::default();
+        index.packages.insert(
+            0xAAAA,
+            pack_with_procedure(0xAAAA, byroredux_plugin::esm::records::misc::ai::PROCEDURE_SANDBOX),
+        );
+
+        apply_ai_package_behavior(&mut world, placement_root, &npc, &index);
+
+        assert!(
+            world.get::<SandboxBehavior>(placement_root).is_some(),
+            "active Sandbox package must tag SandboxBehavior"
+        );
+        assert!(world.get::<WanderBehavior>(placement_root).is_none());
+        assert!(world.get::<TravelBehavior>(placement_root).is_none());
+    }
+
+    #[test]
+    fn apply_ai_package_behavior_tags_travel_with_location_from_active_package() {
+        let mut world = World::new();
+        let placement_root = world.spawn();
+        let npc = NpcRecord {
+            form_id: 0x1234,
+            ai_packages: vec![0xBBBB],
+            ..Default::default()
+        };
+        let mut pk = pack_with_procedure(
+            0xBBBB,
+            byroredux_plugin::esm::records::misc::ai::PROCEDURE_TRAVEL,
+        );
+        pk.location = Some(byroredux_plugin::esm::records::PackLocation {
+            location_type: 0,
+            target: byroredux_plugin::esm::records::PackLocationTarget::NearReference(0xC0FF_EE00),
+            radius: 256,
+        });
+        let mut index = EsmIndex::default();
+        index.packages.insert(0xBBBB, pk);
+
+        apply_ai_package_behavior(&mut world, placement_root, &npc, &index);
+
+        let travel = world
+            .get::<TravelBehavior>(placement_root)
+            .expect("active Travel package must tag TravelBehavior");
+        assert_eq!(travel.radius, Some(256.0));
+        assert_eq!(travel.target_form_id, Some(0xC0FF_EE00));
+        assert_eq!(travel.form_id, 0x1234);
+        assert!(world.get::<SandboxBehavior>(placement_root).is_none());
+    }
+
+    /// No `ai_packages` at all → no active package → no Behavior
+    /// component of any kind gets tagged. Mirrors the pre-#2052 pre-baked
+    /// path's behavior for NPCs with no packages, and confirms the
+    /// shared helper doesn't tag anything speculatively.
+    #[test]
+    fn apply_ai_package_behavior_tags_nothing_without_ai_packages() {
+        let mut world = World::new();
+        let placement_root = world.spawn();
+        let npc = NpcRecord::default(); // ai_packages: vec![]
+        let index = EsmIndex::default();
+
+        apply_ai_package_behavior(&mut world, placement_root, &npc, &index);
+
+        assert!(world.get::<SandboxBehavior>(placement_root).is_none());
+        assert!(world.get::<WanderBehavior>(placement_root).is_none());
+        assert!(world.get::<TravelBehavior>(placement_root).is_none());
+        assert!(world.get::<FollowBehavior>(placement_root).is_none());
+        assert!(world.get::<EscortBehavior>(placement_root).is_none());
+        assert!(world.get::<GuardBehavior>(placement_root).is_none());
+        assert!(world.get::<PatrolBehavior>(placement_root).is_none());
     }
 }

@@ -229,9 +229,28 @@ rebuilt from scratch to prevent BVH quality decay.
 | Deferred-destroy countdown | `MAX_FRAMES_IN_FLIGHT` = 2 frames |
 
 There is no explicit texture-count eviction policy. When the bindless
-array fills (rare on vanilla content; a concern for large mod load-orders)
-new uploads are rejected with an error. A future eviction pass is tracked
-as tech debt.
+array fills, new uploads are rejected with an error and the caller
+(`asset_provider::resolve_texture`) falls back to the checkerboard
+handle — degrades gracefully, no crash/corruption.
+
+**Slots leak on cell revisit (#2030 / MEM-D3-01).** The registry is
+strictly grow-only: every registration takes a fresh `textures.len()`
+index, and `drop_texture` deliberately never reuses a dropped slot's
+index — handle stability is load-bearing (#372: reuse would produce
+silent material corruption on any dangling `GpuInstance.texture_index`
+reference). GPU image memory itself *is* correctly reclaimed via the
+deferred-destroy ring; what leaks is the finite slot-index space. So
+re-entering a previously-unloaded cell re-registers its textures as
+**new** slots instead of hitting the dedup cache, and a long session
+that revisits cells repeatedly can exhaust the ceiling even on vanilla
+content — this is a slow-motion, session-length concern independent of
+mod load-order size. `TextureRegistry::live_slot_count()` /
+`dead_slot_count()` split the two so `dead` dominating `live` is the
+signal this is happening; `check_slot_available` logs a one-time
+warning at 90% capacity including both counts. A real fix (generational
+free-list gated on a deferred-destroy fence proving no live
+`GpuInstance.texture_index` still references the slot) is tracked as
+tech debt — not yet implemented.
 
 ---
 

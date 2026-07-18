@@ -36,7 +36,7 @@ mod world;
 
 pub use ai::{
     active_escort_location, active_escort_target, active_follow_target, active_guard_location,
-    active_package_is_escort, active_package_is_follow, active_package_is_guard,
+    active_package, active_package_is_escort, active_package_is_follow, active_package_is_guard,
     active_package_is_patrol, active_package_is_sandbox, active_package_is_travel,
     active_package_is_wander, active_patrol_location, active_sandbox_location,
     active_travel_location, active_wander_location, parse_csty, parse_dial, parse_idle,

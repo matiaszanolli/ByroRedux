@@ -285,7 +285,16 @@ impl PackRecord {
 /// must map to `true` in the caller's predicate (Bethesda's "no conditions
 /// = always fires"). Unresolved packages are skipped by the caller (pass
 /// only resolved records, in order).
-fn active_package<'a>(
+///
+/// `pub` (#2031 / PERF-D7-01) so a caller that needs more than one of the
+/// `active_package_is_*`/`active_*_location`/`active_*_target` projections
+/// below can resolve the winning package once and read `procedure_type` /
+/// `location` / `target` directly, instead of re-running this walk (which
+/// re-evaluates every rejected package's CTDA conditions) once per
+/// projection. An NPC's active package is a single winning `PackRecord` by
+/// construction, so every `active_package_is_*` call below against the
+/// same `(packages, hour, condition_met)` resolves to the same package.
+pub fn active_package<'a>(
     packages: impl IntoIterator<Item = &'a PackRecord>,
     hour: f32,
     condition_met: impl Fn(&PackRecord) -> bool,
@@ -1860,6 +1869,55 @@ mod tests {
         assert!(!active_package_is_escort([&patrol_only], 10.0, |_| true));
         assert!(!active_package_is_guard([&patrol_only], 10.0, |_| true));
         assert!(active_package_is_patrol([&patrol_only], 10.0, |_| true));
+    }
+
+    /// #2031 / PERF-D7-01 — `npc_spawn::spawn_npc_entity` collapsed 14
+    /// separate `active_package_is_*`/`active_*_location`/`active_*_target`
+    /// calls into a single `active_package(...)` resolve, then reads
+    /// `procedure_type`/`location`/`target` directly off the one resolved
+    /// package instead of re-deriving them through the per-procedure
+    /// getters. This pins the equivalence that refactor depends on: for a
+    /// Travel package (PLDT-only, mirrors Sandbox/Wander/Guard/Patrol's
+    /// location-only shape) and a Follow package (PTDT-only, mirrors
+    /// Escort's target-plus-location shape), a single `active_package` call
+    /// exposes the exact same `location`/`target` data the old
+    /// `active_travel_location`/`active_follow_target` getters would have
+    /// returned — so the refactor is not just "same procedure selected" but
+    /// "same location/target payload available from one resolve".
+    #[test]
+    fn active_package_single_resolve_exposes_same_location_as_travel_getter() {
+        let mut p = pack(PROCEDURE_TRAVEL, None);
+        p.location = Some(PackLocation {
+            location_type: 0,
+            target: PackLocationTarget::NearReference(0xDEAD_BEEF),
+            radius: 512,
+        });
+        let via_getter = active_travel_location([&p], 10.0, |_| true);
+        let resolved = active_package([&p], 10.0, |_| true);
+        assert_eq!(
+            resolved.and_then(|pk| pk.location),
+            via_getter,
+            "single active_package resolve's .location must match active_travel_location"
+        );
+        assert!(resolved.is_some_and(PackRecord::is_travel));
+    }
+
+    #[test]
+    fn active_package_single_resolve_exposes_same_target_as_follow_getter() {
+        let mut p = pack(PROCEDURE_FOLLOW, None);
+        p.target = Some(PackTarget {
+            target_type: 0,
+            target: PackTargetKind::SpecificReference(0xCAFE_F00D),
+            count_or_distance: 128,
+        });
+        let via_getter = active_follow_target([&p], 10.0, |_| true);
+        let resolved = active_package([&p], 10.0, |_| true);
+        assert_eq!(
+            resolved.and_then(|pk| pk.target),
+            via_getter,
+            "single active_package resolve's .target must match active_follow_target"
+        );
+        assert!(resolved.is_some_and(PackRecord::is_follow));
     }
 
     #[test]

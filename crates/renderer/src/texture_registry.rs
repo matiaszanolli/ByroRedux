@@ -186,6 +186,11 @@ pub struct TextureRegistry {
     /// `pending_set_writes` deferred-flush pattern (#92), extended
     /// from descriptor writes to the upload itself.
     pending_dds_uploads: Vec<PendingDdsUpload>,
+    /// Set once `check_slot_available` has already logged the
+    /// approaching-capacity warning (#2030 / MEM-D3-01), so a long
+    /// streaming session logs it once instead of once per subsequent
+    /// registration.
+    slot_capacity_warning_emitted: bool,
 }
 
 /// Build the bindless texture descriptor-set-layout binding (set=0,
@@ -218,12 +223,34 @@ impl TextureRegistry {
     /// when the slot count is truly exhausted — the caller
     /// (`asset_provider::resolve_texture`) already falls back to the
     /// checkerboard handle on `Err`, so overflow degrades gracefully.
-    fn check_slot_available(&self) -> Result<()> {
+    fn check_slot_available(&mut self) -> Result<()> {
         if self.textures.len() as u32 >= self.max_textures {
             anyhow::bail!(
                 "TextureRegistry is full: {} of {} bindless slots in use — raise the device's maxPerStageDescriptorUpdateAfterBindSampledImages limit or reduce unique texture count (#425)",
                 self.textures.len(),
                 self.max_textures
+            );
+        }
+        // #2030 / MEM-D3-01 — surface the slot high-water mark before the
+        // hard failure above hits, since a long streaming session (cell
+        // revisits re-registering already-seen textures as fresh slots,
+        // #372's handle-stability tradeoff) exhausts this ceiling in a
+        // slow-motion way that is otherwise invisible until it degrades
+        // every subsequent texture to the checkerboard fallback. `live` vs
+        // `dead` in the message is what distinguishes "genuinely many
+        // unique textures" from "the grow-only leak" at a glance.
+        if !self.slot_capacity_warning_emitted
+            && self.textures.len() as u64 * 10 >= self.max_textures as u64 * 9
+        {
+            self.slot_capacity_warning_emitted = true;
+            log::warn!(
+                "TextureRegistry approaching capacity: {} of {} bindless slots used \
+                 ({} live, {} dead/retired — see docs/engine/memory-budget.md § Texture \
+                 Registry if `dead` dominates, #2030)",
+                self.textures.len(),
+                self.max_textures,
+                self.live_slot_count(),
+                self.dead_slot_count(),
             );
         }
         Ok(())
@@ -444,6 +471,7 @@ impl TextureRegistry {
             pending_set_writes: vec![Vec::new(); MAX_FRAMES_IN_FLIGHT],
             current_slot: 0,
             pending_dds_uploads: Vec::new(),
+            slot_capacity_warning_emitted: false,
         })
     }
 
@@ -1297,6 +1325,27 @@ impl TextureRegistry {
     /// Whether no textures are loaded.
     pub fn is_empty(&self) -> bool {
         self.textures.is_empty()
+    }
+
+    /// Number of bindless slots still holding a live texture
+    /// (`ref_count > 0`). #2030 / MEM-D3-01 — the registry is grow-only
+    /// and never reuses a dropped slot's index (#372), so `len()` alone
+    /// can't distinguish "many unique textures" from "many cell-revisit
+    /// re-registrations of the same small texture set" — this pairs with
+    /// [`Self::dead_slot_count`] to make that distinction visible.
+    pub fn live_slot_count(&self) -> usize {
+        self.textures.iter().filter(|e| e.ref_count > 0).count()
+    }
+
+    /// Number of bindless slots whose texture was dropped
+    /// (`ref_count == 0`) but whose index is permanently retired (#372)
+    /// rather than reclaimed. On a session that repeatedly revisits the
+    /// same cells, this grows without bound even though GPU image memory
+    /// itself is correctly reclaimed via the deferred-destroy ring — see
+    /// [`Self::check_slot_available`] and `docs/engine/memory-budget.md`
+    /// § Texture Registry.
+    pub fn dead_slot_count(&self) -> usize {
+        self.textures.len() - self.live_slot_count()
     }
 
     /// Recreate descriptor sets for a new swapchain.

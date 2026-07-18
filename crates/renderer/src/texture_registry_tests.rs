@@ -112,12 +112,13 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         pending_set_writes: vec![Vec::new(); MAX_FRAMES_IN_FLIGHT],
         current_slot: 0,
         pending_dds_uploads: Vec::new(),
+        slot_capacity_warning_emitted: false,
     }
 }
 
 #[test]
 fn slot_available_when_under_bound() {
-    let reg = make_registry_for_overflow_test(1024, 512);
+    let mut reg = make_registry_for_overflow_test(1024, 512);
     reg.check_slot_available()
         .expect("half-full registry should accept new textures");
 }
@@ -126,7 +127,7 @@ fn slot_available_when_under_bound() {
 fn slot_rejected_at_exact_bound() {
     // Regression for #425 — old code silently wrote past the bindless
     // array bound once textures.len() == max_textures.
-    let reg = make_registry_for_overflow_test(1024, 1024);
+    let mut reg = make_registry_for_overflow_test(1024, 1024);
     let err = reg
         .check_slot_available()
         .expect_err("full registry must refuse new textures");
@@ -140,8 +141,63 @@ fn slot_rejected_at_exact_bound() {
 
 #[test]
 fn slot_rejected_beyond_bound() {
-    let reg = make_registry_for_overflow_test(16, 16);
+    let mut reg = make_registry_for_overflow_test(16, 16);
     assert!(reg.check_slot_available().is_err());
+}
+
+// ── #2030 / MEM-D3-01 — live/dead slot telemetry ──
+
+/// Every occupied slot from `make_registry_for_overflow_test` has
+/// `ref_count: 0` (dead/retired) — mirrors the grow-only-never-reused
+/// shape `drop_texture` produces on a cell revisit.
+#[test]
+fn live_and_dead_slot_counts_split_correctly() {
+    let reg = make_registry_for_overflow_test(1024, 100);
+    assert_eq!(reg.len(), 100);
+    assert_eq!(
+        reg.dead_slot_count(),
+        100,
+        "overflow-test fixture seeds every slot with ref_count 0"
+    );
+    assert_eq!(reg.live_slot_count(), 0);
+}
+
+/// A registry with a live entry (via `make_registry_with_entry`) must
+/// count it as live, not dead — the split isn't just "everything is
+/// dead".
+#[test]
+fn live_slot_count_reflects_positive_ref_count() {
+    let reg = make_registry_with_entry("chair.dds", 1);
+    // Index 0 = fallback (ref_count u32::MAX), index 1 = "chair.dds"
+    // (ref_count 1) — both live.
+    assert_eq!(reg.live_slot_count(), 2);
+    assert_eq!(reg.dead_slot_count(), 0);
+}
+
+/// `check_slot_available` logs the approaching-capacity warning exactly
+/// once (`slot_capacity_warning_emitted` latches) even across repeated
+/// calls past the 90% threshold — a long streaming session must not
+/// spam the log once per texture registration.
+#[test]
+fn slot_capacity_warning_latches_after_first_emit() {
+    let mut reg = make_registry_for_overflow_test(100, 90); // 90% — at threshold
+    assert!(!reg.slot_capacity_warning_emitted);
+    reg.check_slot_available().expect("still under the hard bound");
+    assert!(
+        reg.slot_capacity_warning_emitted,
+        "crossing the 90% threshold must latch the warning flag"
+    );
+    // Second call must not panic or re-derive anything — flag stays set.
+    reg.check_slot_available().expect("still under the hard bound");
+    assert!(reg.slot_capacity_warning_emitted);
+}
+
+/// Below the 90% threshold, the warning must not fire.
+#[test]
+fn slot_capacity_warning_does_not_fire_below_threshold() {
+    let mut reg = make_registry_for_overflow_test(100, 50);
+    reg.check_slot_available().expect("well under the hard bound");
+    assert!(!reg.slot_capacity_warning_emitted);
 }
 
 /// Seed a registry with the fallback at handle 0 and one
