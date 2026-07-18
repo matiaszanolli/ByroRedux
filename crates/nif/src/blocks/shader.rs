@@ -1856,5 +1856,5 @@ impl_ni_object!(
 );
 
 #[cfg(test)]
-#[path = "shader_tests.rs"]
+#[path = "shader_tests/mod.rs"]
 mod tests;

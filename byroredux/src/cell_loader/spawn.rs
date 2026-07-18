@@ -214,9 +214,6 @@ pub(super) fn spawn_placed_instances(
     // every non-door REFR + on the precombined / loose-NIF spawn paths.
     teleport: Option<esm::cell::TeleportDest>,
 ) -> (byroredux_core::ecs::EntityId, usize) {
-    use byroredux_core::ecs::{Name, Parent};
-    use byroredux_renderer::Vertex;
-
     let imported = &cached.meshes;
     let collisions = &cached.collisions;
     let nif_lights = &cached.lights;
@@ -234,6 +231,123 @@ pub(super) fn spawn_placed_instances(
     // up front so any read that hits the entity before the next
     // propagation tick still sees the right placement (e.g. BLAS
     // build during `build_blas_batched` later in the function).
+
+    let (placement_root, placement_fid) = spawn_placement_root(
+        world,
+        cached,
+        ref_pos,
+        ref_rot,
+        ref_scale,
+        placement_form_id_pair,
+        teleport,
+    );
+
+    // Pre-compute how many NIF lights will actually spawn. The
+    // ESM-fallback gate at the bottom of this function uses this
+    // count instead of `nif_lights.is_empty()` so a NIF that
+    // authored only zero-colour placeholders (FNV light-bulb
+    // meshes are the audit's example) still receives the ESM
+    // LIGH-authored LightSource. Pre-#632 the gate checked the
+    // raw array length, so placeholders prevented the fallback
+    // and the cell rendered dark even when both NIF intent and
+    // ESM authority agreed it should be lit.
+    let spawned_nif_lights = count_spawnable_nif_lights(nif_lights);
+
+    spawn_nif_lights(world, nif_lights, ref_pos, ref_rot, ref_scale, light_data);
+
+    spawn_particle_emitters(world, cached, ref_pos, ref_rot, ref_scale);
+
+    spawn_collision_shapes(
+        world,
+        collisions,
+        ref_pos,
+        ref_rot,
+        ref_scale,
+        placement_fid,
+        base_layer,
+    );
+
+    let resolved_paths = resolve_mesh_paths(world, imported, refr_overlay);
+    let mut blas_specs: Vec<(u32, u32, u32)> = Vec::new();
+    let pc = PlacementCtx {
+        tex_provider,
+        ref_pos,
+        ref_rot,
+        ref_scale,
+        base_layer,
+        mesh_cache_key,
+        refr_overlay,
+        light_data,
+        placement_root,
+        collisions_empty: collisions.is_empty(),
+        spawned_nif_lights,
+    };
+    for (sub_mesh_index, mesh) in imported.iter().enumerate() {
+        if spawn_mesh_instance(
+            world,
+            ctx,
+            &pc,
+            cached,
+            mesh,
+            &resolved_paths[sub_mesh_index],
+            sub_mesh_index,
+            count,
+            &mut blas_specs,
+        ) {
+            count += 1;
+        }
+    }
+
+    // Batched BLAS build: single GPU submission for all meshes in this cell.
+    if !blas_specs.is_empty() {
+        let built = ctx.build_blas_batched(&blas_specs);
+        log::info!("Cell BLAS batch: {built}/{} meshes", blas_specs.len());
+    }
+
+    // #544 — bind the embedded animation clip to this REFR. Mirrors
+    // the loose-NIF path in `scene.rs::load_nif_bytes`. The clip
+    // registration itself happens once per unique parsed NIF in
+    // `load_references` (cached on `NifImportRegistry`); here we
+    // just spawn one `AnimationPlayer` per placement so the
+    // animation system's subtree walk finds this REFR's mesh
+    // children. Without this insert, water UV scrolls / lava
+    // emissive pulses / torch visibility flickers / fade-in alphas
+    // all stay frozen on cell-rendered REFRs, while loose-NIF
+    // imports of the same models animate correctly.
+    if let Some(handle) = clip_handle {
+        let player_entity = world.spawn();
+        let mut player = byroredux_core::animation::AnimationPlayer::new(handle);
+        player.root_entity = Some(placement_root);
+        world.insert(player_entity, player);
+    }
+
+    // M47.0 Phase 3b — return the placement_root alongside the
+    // entity count so the caller (cell_loader/references.rs) can
+    // attach script-state components keyed on the REFR's base
+    // record `script_form_id`. Pre-Phase-3b the function returned
+    // only the count; callers that don't need the placement_root
+    // (precombined.rs bake artifacts) `_`-discard the first element.
+    (placement_root, count)
+}
+
+/// Spawn the per-REFR placement root entity and stamp every
+/// placement-level component (transforms, bounds, billboard, attach
+/// graph, form id, teleport, BSX / scene flags). Returns the root
+/// plus the interned placement `FormId` (when the REFR carried one) so
+/// the standalone collision entities can share it. Split out of
+/// `spawn_placed_instances` (#2057).
+fn spawn_placement_root(
+    world: &mut World,
+    cached: &CachedNifImport,
+    ref_pos: Vec3,
+    ref_rot: Quat,
+    ref_scale: f32,
+    placement_form_id_pair: Option<FormIdPair>,
+    teleport: Option<esm::cell::TeleportDest>,
+) -> (
+    byroredux_core::ecs::EntityId,
+    Option<byroredux_core::form_id::FormId>,
+) {
     let placement_root = world.spawn();
     world.insert(placement_root, Transform::new(ref_pos, ref_rot, ref_scale));
     world.insert(
@@ -313,17 +427,21 @@ pub(super) fn spawn_placed_instances(
     if cached.root_flags != 0 {
         world.insert(placement_root, SceneFlags::from_nif(cached.root_flags));
     }
-    // Pre-compute how many NIF lights will actually spawn. The
-    // ESM-fallback gate at the bottom of this function uses this
-    // count instead of `nif_lights.is_empty()` so a NIF that
-    // authored only zero-colour placeholders (FNV light-bulb
-    // meshes are the audit's example) still receives the ESM
-    // LIGH-authored LightSource. Pre-#632 the gate checked the
-    // raw array length, so placeholders prevented the fallback
-    // and the cell rendered dark even when both NIF intent and
-    // ESM authority agreed it should be lit.
-    let spawned_nif_lights = count_spawnable_nif_lights(nif_lights);
+    (placement_root, placement_fid)
+}
 
+/// Spawn a `LightSource` entity per authored NIF light with a
+/// non-trivial diffuse contribution. Split out of
+/// `spawn_placed_instances` (#2057).
+fn spawn_nif_lights(
+    world: &mut World,
+    nif_lights: &[byroredux_nif::import::ImportedLight],
+    ref_pos: Vec3,
+    ref_rot: Quat,
+    ref_scale: f32,
+    light_data: Option<&esm::cell::LightData>,
+) {
+    use byroredux_core::ecs::Name;
     // Spawn per-mesh NiLight blocks as LightSource entities. Parented
     // through the reference transform so torches/candles inside cell
     // refs contribute to the live GpuLight buffer. See issue #156.
@@ -331,7 +449,6 @@ pub(super) fn spawn_placed_instances(
     // over the NIF-computed attenuation_radius (which often returns 2048
     // for NiPointLights with constant-only attenuation coefficients).
     let esm_radius = light_data.as_ref().map(|ld| ld.radius);
-
     for light in nif_lights {
         // Skip lights whose diffuse contribution is effectively zero —
         // these are usually authored-off placeholders. The audit's
@@ -394,25 +511,18 @@ pub(super) fn spawn_placed_instances(
             world.insert(entity, Name(interned));
         }
     }
+}
 
-    // Spawn particle emitter entities (#401). One ECS entity per
-    // detected NiParticleSystem, positioned at the composed REFR + NIF-
-    // local transform. The heuristic preset is picked from the nearest
-    // named ancestor in the NIF (host_name):
-    //   spark/ember/cinder → embers (small, bright, additive — checked
-    //                                FIRST so "FireSparks" doesn't fall
-    //                                into the larger flame body)
-    //   torch/fire/flame/brazier/candle → torch_flame
-    //   smoke/steam/ash      → smoke
-    //   magic/enchant/sparkle/glow → magic_sparkles
-    //   fallback             → torch_flame so the audit's "every torch
-    //                          invisible" failure is resolved end-to-
-    //                          end even when the host node carries no
-    //                          descriptive name.
-    // Mirrored in `byroredux/src/scene.rs` — keep both lists in lockstep.
-    // The proper data-driven fix (NIF-authored colour curves via
-    // `NiPSysColorModifier` → `NiColorData`) stays open at #707; this
-    // is the heuristic band-aid that landed first.
+/// Spawn one particle-emitter entity per detected NiParticleSystem,
+/// overlaying authored emitter params onto the name-derived preset.
+/// Split out of `spawn_placed_instances` (#2057).
+fn spawn_particle_emitters(
+    world: &mut World,
+    cached: &CachedNifImport,
+    ref_pos: Vec3,
+    ref_rot: Quat,
+    ref_scale: f32,
+) {
     for em in &cached.particle_emitters {
         let nif_pos = Vec3::new(
             em.local_position[0],
@@ -460,11 +570,19 @@ pub(super) fn spawn_placed_instances(
         world.insert(entity, GlobalTransform::new(world_pos, Quat::IDENTITY, 1.0));
         world.insert(entity, preset);
     }
+}
 
-    // Spawn collision entities from NiNode collision data.
-    // Guard against parry3d panics from nested composite shapes — some
-    // Bethesda NIFs have deeply nested bhkCompressedMeshShape hierarchies
-    // that parry3d's Compound shape rejects. Skip those shapes gracefully.
+/// Spawn standalone collision entities from the NIF's bhk shapes.
+/// Split out of `spawn_placed_instances` (#2057).
+fn spawn_collision_shapes(
+    world: &mut World,
+    collisions: &[byroredux_nif::import::ImportedCollision],
+    ref_pos: Vec3,
+    ref_rot: Quat,
+    ref_scale: f32,
+    placement_fid: Option<byroredux_core::form_id::FormId>,
+    base_layer: byroredux_core::ecs::components::RenderLayer,
+) {
     for coll in collisions {
         let nif_pos = Vec3::new(
             coll.translation[0],
@@ -525,722 +643,734 @@ pub(super) fn spawn_placed_instances(
         // resolvable to the actual placement root, not an arbitrary
         // collision proxy.
         if let Some(fid) = placement_fid {
-            world.insert(entity, byroredux_core::ecs::components::PhysicsSourceForm(fid));
+            world.insert(
+                entity,
+                byroredux_core::ecs::components::PhysicsSourceForm(fid),
+            );
         }
         world.insert(entity, base_layer);
     }
+}
 
-    // #882 / CELL-PERF-05 — single StringPool lock acquisition for the
-    // whole spawn loop. Pre-fix the loop took one read lock per mesh
-    // (10 path-slot resolves) AND one write lock per mesh (the
-    // `mesh.name` intern), so Megaton's hundreds of placements paid
-    // hundreds of `RwLock` CAS pairs on the cell-load critical path.
-    // The borrow-checker forbids hoisting the guard across the spawn
-    // loop (`world.spawn()` / `world.insert()` need `&mut world` while
-    // `resource_mut` borrows `&world`), so we resolve every path slot
-    // + intern every name in this single pre-pass and let the spawn
-    // loop below read the pre-computed values. Mirrors the #523
-    // batched-commit pattern already in use one level up at
-    // `load_references`.
-    //
-    // Local `fn resolve_to_owned` (not a closure) so the inline
-    // resolves don't capture `&pool` for longer than a statement and
-    // the trailing `pool.intern(...)` can re-borrow as `&mut`.
-    struct ResolvedMeshPaths {
-        texture_path: Option<String>,
-        normal_map: Option<String>,
-        glow_map: Option<String>,
-        gloss_map: Option<String>,
-        parallax_map: Option<String>,
-        env_map: Option<String>,
-        env_mask: Option<String>,
-        material_path: Option<String>,
-        detail_map: Option<String>,
-        dark_map: Option<String>,
-        /// #890 Stage 2c — BSEffectShaderProperty greyscale LUT path.
-        /// Skyrim+ only; `None` on every non-effect mesh and the
-        /// FO3/FNV BSShaderNoLightingProperty path.
-        greyscale_texture: Option<String>,
-        name_sym: Option<byroredux_core::string::FixedString>,
-    }
-    fn resolve_to_owned(
-        pool: &byroredux_core::string::StringPool,
-        sym: Option<byroredux_core::string::FixedString>,
-    ) -> Option<String> {
-        sym.and_then(|s| pool.resolve(s)).map(|s| s.to_string())
-    }
-    let resolved_paths: Vec<ResolvedMeshPaths> = {
-        let ov = refr_overlay;
-        let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
-        imported
-            .iter()
-            .map(|mesh| {
-                // Effective texture slot paths. REFR overlay
-                // (XATO/XTNM/XTXR) wins over the NIF-authored paths
-                // when present; for slots the overlay left empty the
-                // cached NIF's texture rides through. `None` on both
-                // sides means the slot has no texture. See #584.
-                let texture_path =
-                    resolve_to_owned(&pool, ov.and_then(|o| o.diffuse).or(mesh.texture_path));
-                // Oblivion/FO3 ship normal maps via the `<base>_n.dds`
-                // load-time convention, not an explicit NIF slot. When the
-                // mesh left both normal/bump slots empty, derive the sibling
-                // from the (effective) diffuse path; it resolves like any
-                // texture and fails soft if absent (#1303 / OBL-D4-NEW-01).
-                let normal_map =
-                    resolve_to_owned(&pool, ov.and_then(|o| o.normal).or(mesh.normal_map))
-                        .or_else(|| texture_path.as_deref().map(derive_normal_map_path));
-                let glow_map = resolve_to_owned(&pool, ov.and_then(|o| o.glow).or(mesh.glow_map));
-                let gloss_map =
-                    resolve_to_owned(&pool, ov.and_then(|o| o.specular).or(mesh.gloss_map));
-                let parallax_map =
-                    resolve_to_owned(&pool, ov.and_then(|o| o.height).or(mesh.parallax_map));
-                let env_map = resolve_to_owned(&pool, ov.and_then(|o| o.env).or(mesh.env_map));
-                let env_mask =
-                    resolve_to_owned(&pool, ov.and_then(|o| o.env_mask).or(mesh.env_mask));
-                let material_path = resolve_to_owned(
-                    &pool,
-                    ov.and_then(|o| o.material_path).or(mesh.material_path),
-                );
-                // Detail/dark slots come straight from the NIF
-                // (no REFR-overlay path for these today).
-                let detail_map = resolve_to_owned(&pool, mesh.detail_map);
-                let dark_map = resolve_to_owned(&pool, mesh.dark_map);
-                // #890 Stage 2c — BSEffectShaderProperty greyscale LUT
-                // path. Lives on the nested `effect_shader` payload as
-                // `Option<String>` (not a `FixedString` because the
-                // importer captures it post-stopcond on the modern
-                // shader-property path, which already owns its
-                // resolved strings).
-                // #1353 — BSEffectShaderProperty greyscale LUT (effect
-                // meshes) takes priority; FO4 BGSM lit grayscale-to-palette
-                // (`bgsm_greyscale_lut_path`, set by `merge_bgsm_into_mesh`)
-                // is the fallback. Both flow to the same GreyscaleLutHandle
-                // resolve below; `pack_bgsm_material_flags` sets
-                // EFFECT_PALETTE_COLOR for the BGSM lit case.
-                let greyscale_texture = mesh
-                    .effect_shader
-                    .as_ref()
-                    .and_then(|es| es.greyscale_texture.clone())
-                    .or_else(|| mesh.bgsm_greyscale_lut_path.clone());
-                // Intern the mesh name in the same lock — see #882's
-                // second hotspot. `mesh.name: Option<Arc<str>>`. The
-                // `pool.intern` call must follow the resolves so the
-                // `&pool` borrows from `resolve_to_owned` end before
-                // the `&mut pool` re-borrow.
-                let name_sym = mesh.name.as_deref().map(|n| pool.intern(n));
-                ResolvedMeshPaths {
-                    texture_path,
-                    normal_map,
-                    glow_map,
-                    gloss_map,
-                    parallax_map,
-                    env_map,
-                    env_mask,
-                    material_path,
-                    detail_map,
-                    dark_map,
-                    greyscale_texture,
-                    name_sym,
-                }
-            })
-            .collect()
-        // pool guard dropped here at end of block.
-    };
+/// Effective per-mesh texture-slot paths, resolved in one StringPool
+/// lock (#882). Promoted to module scope from `spawn_placed_instances`
+/// so `resolve_mesh_paths` + `spawn_mesh_instance` can share it (#2057).
+struct ResolvedMeshPaths {
+    texture_path: Option<String>,
+    normal_map: Option<String>,
+    glow_map: Option<String>,
+    gloss_map: Option<String>,
+    parallax_map: Option<String>,
+    env_map: Option<String>,
+    env_mask: Option<String>,
+    material_path: Option<String>,
+    detail_map: Option<String>,
+    dark_map: Option<String>,
+    /// #890 Stage 2c — BSEffectShaderProperty greyscale LUT path.
+    /// Skyrim+ only; `None` on every non-effect mesh and the
+    /// FO3/FNV BSShaderNoLightingProperty path.
+    greyscale_texture: Option<String>,
+    name_sym: Option<byroredux_core::string::FixedString>,
+}
+fn resolve_to_owned(
+    pool: &byroredux_core::string::StringPool,
+    sym: Option<byroredux_core::string::FixedString>,
+) -> Option<String> {
+    sym.and_then(|s| pool.resolve(s)).map(|s| s.to_string())
+}
 
-    let mut blas_specs: Vec<(u32, u32, u32)> = Vec::new();
-    for (sub_mesh_index, mesh) in imported.iter().enumerate() {
-        let paths = &resolved_paths[sub_mesh_index];
-        let num_verts = mesh.positions.len();
-        let sub_mesh_index_u32 = sub_mesh_index as u32;
+/// Resolve every mesh's effective texture-slot paths + interned name
+/// under a single StringPool lock (#882). Split out of
+/// `spawn_placed_instances` (#2057).
+fn resolve_mesh_paths(
+    world: &mut World,
+    imported: &[byroredux_nif::import::ImportedMesh],
+    refr_overlay: Option<&RefrTextureOverlay>,
+) -> Vec<ResolvedMeshPaths> {
+    let ov = refr_overlay;
+    let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+    imported
+        .iter()
+        .map(|mesh| {
+            // Effective texture slot paths. REFR overlay
+            // (XATO/XTNM/XTXR) wins over the NIF-authored paths
+            // when present; for slots the overlay left empty the
+            // cached NIF's texture rides through. `None` on both
+            // sides means the slot has no texture. See #584.
+            let texture_path =
+                resolve_to_owned(&pool, ov.and_then(|o| o.diffuse).or(mesh.texture_path));
+            // Oblivion/FO3 ship normal maps via the `<base>_n.dds`
+            // load-time convention, not an explicit NIF slot. When the
+            // mesh left both normal/bump slots empty, derive the sibling
+            // from the (effective) diffuse path; it resolves like any
+            // texture and fails soft if absent (#1303 / OBL-D4-NEW-01).
+            let normal_map = resolve_to_owned(&pool, ov.and_then(|o| o.normal).or(mesh.normal_map))
+                .or_else(|| texture_path.as_deref().map(derive_normal_map_path));
+            let glow_map = resolve_to_owned(&pool, ov.and_then(|o| o.glow).or(mesh.glow_map));
+            let gloss_map = resolve_to_owned(&pool, ov.and_then(|o| o.specular).or(mesh.gloss_map));
+            let parallax_map =
+                resolve_to_owned(&pool, ov.and_then(|o| o.height).or(mesh.parallax_map));
+            let env_map = resolve_to_owned(&pool, ov.and_then(|o| o.env).or(mesh.env_map));
+            let env_mask = resolve_to_owned(&pool, ov.and_then(|o| o.env_mask).or(mesh.env_mask));
+            let material_path = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| o.material_path).or(mesh.material_path),
+            );
+            // Detail/dark slots come straight from the NIF
+            // (no REFR-overlay path for these today).
+            let detail_map = resolve_to_owned(&pool, mesh.detail_map);
+            let dark_map = resolve_to_owned(&pool, mesh.dark_map);
+            // #890 Stage 2c — BSEffectShaderProperty greyscale LUT
+            // path. Lives on the nested `effect_shader` payload as
+            // `Option<String>` (not a `FixedString` because the
+            // importer captures it post-stopcond on the modern
+            // shader-property path, which already owns its
+            // resolved strings).
+            // #1353 — BSEffectShaderProperty greyscale LUT (effect
+            // meshes) takes priority; FO4 BGSM lit grayscale-to-palette
+            // (`bgsm_greyscale_lut_path`, set by `merge_bgsm_into_mesh`)
+            // is the fallback. Both flow to the same GreyscaleLutHandle
+            // resolve below; `pack_bgsm_material_flags` sets
+            // EFFECT_PALETTE_COLOR for the BGSM lit case.
+            let greyscale_texture = mesh
+                .effect_shader
+                .as_ref()
+                .and_then(|es| es.greyscale_texture.clone())
+                .or_else(|| mesh.bgsm_greyscale_lut_path.clone());
+            // Intern the mesh name in the same lock — see #882's
+            // second hotspot. `mesh.name: Option<Arc<str>>`. The
+            // `pool.intern` call must follow the resolves so the
+            // `&pool` borrows from `resolve_to_owned` end before
+            // the `&mut pool` re-borrow.
+            let name_sym = mesh.name.as_deref().map(|n| pool.intern(n));
+            ResolvedMeshPaths {
+                texture_path,
+                normal_map,
+                glow_map,
+                gloss_map,
+                parallax_map,
+                env_map,
+                env_mask,
+                material_path,
+                detail_map,
+                dark_map,
+                greyscale_texture,
+                name_sym,
+            }
+        })
+        .collect()
+    // pool guard dropped here at end of block.
+}
 
-        // #879 / CELL-PERF-01 — refcounted GPU mesh dedup. First
-        // placement of `chair.nif` uploads the vertex/index pair and
-        // registers it under `(model_path, sub_mesh_index)`; the next
-        // 39 chair placements bump the entry's refcount and reuse
-        // the same `mesh_handle` (and the same BLAS — skipping the
-        // batched BLAS build entry for the cached hit). Without
-        // `mesh_cache_key` (terrain / single-NIF CLI view) the cache
-        // is bypassed and we keep the legacy fresh-upload-per-call
-        // shape.
-        let cache_hit_handle = mesh_cache_key
-            .and_then(|key| ctx.mesh_registry.acquire_cached(key, sub_mesh_index_u32));
+/// Immutable per-placement context shared by `spawn_mesh_instance` —
+/// bundles the REFR transform + render/overlay inputs so the helper's
+/// signature stays legible. Split out of `spawn_placed_instances`
+/// (#2057). All fields are `Copy`.
+#[derive(Clone, Copy)]
+struct PlacementCtx<'a> {
+    tex_provider: &'a TextureProvider,
+    ref_pos: Vec3,
+    ref_rot: Quat,
+    ref_scale: f32,
+    base_layer: byroredux_core::ecs::components::RenderLayer,
+    mesh_cache_key: Option<&'a str>,
+    refr_overlay: Option<&'a RefrTextureOverlay>,
+    light_data: Option<&'a esm::cell::LightData>,
+    placement_root: byroredux_core::ecs::EntityId,
+    collisions_empty: bool,
+    spawned_nif_lights: usize,
+}
 
-        let mesh_handle = if let Some(handle) = cache_hit_handle {
-            // Cached: skip the CPU vertex-build, the GPU upload, AND
-            // the BLAS batch entry. The existing BLAS for this handle
-            // is already attached to live placements in earlier cells
-            // (or earlier in this same cell).
-            handle
-        } else {
-            let vertices: Vec<Vertex> = (0..num_verts)
-                .map(|i| {
-                    // Drop alpha — current `Vertex` color is 3-channel; the
-                    // alpha lane lives on `ImportedMesh::colors[i][3]` for
-                    // when the renderer extends to a 4-channel vertex (#618).
-                    let color3 = if i < mesh.colors.len() {
-                        let c = mesh.colors[i];
-                        [c[0], c[1], c[2]]
+/// Spawn the render entity (+ optional physics ghost + ESM light
+/// fallback) for one imported sub-mesh. Returns `true` when an entity
+/// was spawned (the caller then increments its placement count); a
+/// failed GPU upload returns `false`, mirroring the pre-split `continue`.
+/// Split out of `spawn_placed_instances` (#2057).
+#[allow(clippy::too_many_arguments)]
+fn spawn_mesh_instance(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    pc: &PlacementCtx,
+    cached: &CachedNifImport,
+    mesh: &byroredux_nif::import::ImportedMesh,
+    paths: &ResolvedMeshPaths,
+    sub_mesh_index: usize,
+    count: usize,
+    blas_specs: &mut Vec<(u32, u32, u32)>,
+) -> bool {
+    use byroredux_core::ecs::{Name, Parent};
+    use byroredux_renderer::Vertex;
+    let PlacementCtx {
+        tex_provider,
+        ref_pos,
+        ref_rot,
+        ref_scale,
+        base_layer,
+        mesh_cache_key,
+        refr_overlay,
+        light_data,
+        placement_root,
+        collisions_empty,
+        spawned_nif_lights,
+    } = *pc;
+    let num_verts = mesh.positions.len();
+    let sub_mesh_index_u32 = sub_mesh_index as u32;
+
+    // #879 / CELL-PERF-01 — refcounted GPU mesh dedup. First
+    // placement of `chair.nif` uploads the vertex/index pair and
+    // registers it under `(model_path, sub_mesh_index)`; the next
+    // 39 chair placements bump the entry's refcount and reuse
+    // the same `mesh_handle` (and the same BLAS — skipping the
+    // batched BLAS build entry for the cached hit). Without
+    // `mesh_cache_key` (terrain / single-NIF CLI view) the cache
+    // is bypassed and we keep the legacy fresh-upload-per-call
+    // shape.
+    let cache_hit_handle =
+        mesh_cache_key.and_then(|key| ctx.mesh_registry.acquire_cached(key, sub_mesh_index_u32));
+
+    let mesh_handle = if let Some(handle) = cache_hit_handle {
+        // Cached: skip the CPU vertex-build, the GPU upload, AND
+        // the BLAS batch entry. The existing BLAS for this handle
+        // is already attached to live placements in earlier cells
+        // (or earlier in this same cell).
+        handle
+    } else {
+        let vertices: Vec<Vertex> = (0..num_verts)
+            .map(|i| {
+                // Drop alpha — current `Vertex` color is 3-channel; the
+                // alpha lane lives on `ImportedMesh::colors[i][3]` for
+                // when the renderer extends to a 4-channel vertex (#618).
+                let color3 = if i < mesh.colors.len() {
+                    let c = mesh.colors[i];
+                    [c[0], c[1], c[2]]
+                } else {
+                    [1.0, 1.0, 1.0]
+                };
+                let mut v = Vertex::new(
+                    mesh.positions[i],
+                    color3,
+                    if i < mesh.normals.len() {
+                        mesh.normals[i]
                     } else {
-                        [1.0, 1.0, 1.0]
-                    };
-                    let mut v = Vertex::new(
-                        mesh.positions[i],
-                        color3,
-                        if i < mesh.normals.len() {
-                            mesh.normals[i]
-                        } else {
-                            [0.0, 1.0, 0.0]
-                        },
-                        if i < mesh.uvs.len() {
-                            mesh.uvs[i]
-                        } else {
-                            [0.0, 0.0]
-                        },
-                    );
-                    // #783 / M-NORMALS — propagate authored tangent
-                    // (NiBinaryExtraData "Tangent space ..." for Oblivion
-                    // / FO3 / FNV cell-loader content). Empty mesh.tangents
-                    // → zero, which the fragment shader's perturbNormal
-                    // detects and routes to its screen-space derivative
-                    // fallback.
-                    if i < mesh.tangents.len() {
-                        v.tangent = mesh.tangents[i];
-                    }
-                    v
-                })
-                .collect();
-
-            let alloc = ctx.allocator.as_ref().unwrap();
-            let upload_ctx = GpuUploadCtx {
-                device: &ctx.device,
-                allocator: alloc,
-                queue: &ctx.graphics_queue,
-                command_pool: ctx.transfer_pool,
-            };
-            let upload_result = match mesh_cache_key {
-                Some(key) => ctx.mesh_registry.register_scene_mesh_keyed(
-                    upload_ctx,
-                    &vertices,
-                    &mesh.indices,
-                    ctx.device_caps.ray_query_supported,
-                    None,
-                    (key, sub_mesh_index_u32),
-                ),
-                None => ctx.mesh_registry.upload_scene_mesh(
-                    upload_ctx,
-                    &vertices,
-                    &mesh.indices,
-                    ctx.device_caps.ray_query_supported,
-                    None,
-                ),
-            };
-            let handle = match upload_result {
-                Ok(h) => h,
-                Err(e) => {
-                    log::warn!("Failed to upload mesh: {}", e);
-                    continue;
-                }
-            };
-
-            // Fresh upload — this handle needs a BLAS. Subsequent
-            // cache hits for the same `(path, sub_mesh_index)` reuse
-            // this BLAS entry without re-submitting.
-            blas_specs.push((handle, num_verts as u32, mesh.indices.len() as u32));
-            handle
-        };
-
-        // Pre-resolved texture slot paths from the single-lock
-        // pre-pass above (#882). Cloned per-mesh because the Material
-        // ECS component owns its `Option<String>` fields and the
-        // resolved-paths Vec stays alive across this iteration; the
-        // alternative — moving paths out of `resolved_paths[i]` — would
-        // need a swap-with-default to keep the Vec indexable for the
-        // texture-handle resolves below. Per-slot clone is one
-        // allocation per populated slot per mesh, same as the pre-fix
-        // `resolve_owned(...).clone()` pattern at the Material struct
-        // construction site.
-        let eff_texture_path = paths.texture_path.clone();
-        let eff_normal_map = paths.normal_map.clone();
-        let eff_glow_map = paths.glow_map.clone();
-        let eff_gloss_map = paths.gloss_map.clone();
-        let eff_parallax_map = paths.parallax_map.clone();
-        let eff_env_map = paths.env_map.clone();
-        let eff_env_mask = paths.env_mask.clone();
-        let eff_material_path = paths.material_path.clone();
-        let eff_detail_map = paths.detail_map.clone();
-        let eff_dark_map = paths.dark_map.clone();
-        let eff_greyscale_texture = paths.greyscale_texture.clone();
-
-        // Load texture (shared resolve: cache → BSA → fallback).
-        // #610 — pass the diffuse-slot `TexClampMode` so the bindless
-        // descriptor's sampler picks the matching `VkSamplerAddressMode`
-        // pair. CLAMP-authored decals / scope reticles / Oblivion
-        // architecture trim no longer render with the legacy
-        // REPEAT/REPEAT bleed.
-        let tex_handle = resolve_texture_with_clamp(
-            ctx,
-            tex_provider,
-            eff_texture_path.as_deref(),
-            mesh.texture_clamp_mode,
-        );
-
-        // #544 — mesh entities now sit in the NIF-local frame and
-        // descend from the placement root. The transform-propagation
-        // system composes `placement_root` (the REFR transform) onto
-        // them each frame to produce the world-space `GlobalTransform`
-        // the renderer / BLAS / lighting consume. Pre-#544 every mesh
-        // pre-baked the REFR composition into its own `Transform`,
-        // which left it anchored to nothing the embedded animation
-        // clip could walk to.
-        //
-        // The composed `final_*` values are still computed up front
-        // because the `GlobalTransform` we seed on the mesh has to
-        // match what the propagation pass will compute on the first
-        // tick — anything that reads `GlobalTransform` before then
-        // (renderer's per-frame data collection, BLAS build below)
-        // gets a correctly-placed value in the meantime.
-        let nif_quat = Quat::from_xyzw(
-            mesh.rotation[0],
-            mesh.rotation[1],
-            mesh.rotation[2],
-            mesh.rotation[3],
-        );
-        let nif_pos = Vec3::new(
-            mesh.translation[0],
-            mesh.translation[1],
-            mesh.translation[2],
-        );
-
-        // World-space placement (parent_rot * (parent_scale *
-        // child_pos) + parent_pos) — used only to seed the initial
-        // `GlobalTransform`. `Transform` itself stays NIF-local so
-        // the propagation pass produces the same value next tick.
-        let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
-        let final_rot = ref_rot * nif_quat;
-        let final_scale = ref_scale * mesh.scale;
-
-        // Diagnostic: log meshes with significant NIF-internal offsets
-        // (these are wall/structural pieces most likely to show positioning issues)
-        let nif_offset_len = nif_pos.length();
-        if nif_offset_len > 50.0 {
-            log::debug!(
-                "  NIF offset {:.0} for mesh {:?}: nif_pos=({:.0},{:.0},{:.0}) \
-                 final=({:.0},{:.0},{:.0})",
-                nif_offset_len,
-                mesh.name,
-                nif_pos.x,
-                nif_pos.y,
-                nif_pos.z,
-                final_pos.x,
-                final_pos.y,
-                final_pos.z,
-            );
-        }
-
-        let entity = world.spawn();
-        // NIF-local Transform for hierarchy propagation; world-space
-        // GlobalTransform for first-tick consumers. See #544.
-        world.insert(entity, Transform::new(nif_pos, nif_quat, mesh.scale));
-        world.insert(
-            entity,
-            GlobalTransform::new(final_pos, final_rot, final_scale),
-        );
-        // #1213 / D1-NEW-02 — seed LocalBound from the mesh-local
-        // bounding sphere (`ImportedMesh.local_bound_center`,
-        // `.local_bound_radius`, both extracted by the NIF importer
-        // from `NiTriShapeData.center` / `BsTriShape.center` or
-        // computed from vertex positions). The bounds-propagation
-        // system at `byroredux/src/systems/bounds.rs:43-66` reads
-        // this row and produces a world-space `WorldBound` each
-        // frame; pre-#1213 no LocalBound row was ever inserted, so
-        // every WorldBound stayed at the component default (zero
-        // sphere) and downstream culling / RT-budget / cell-bounds
-        // consumers fell through to coarser approximations.
-        world.insert(
-            entity,
-            LocalBound::new(
-                Vec3::new(
-                    mesh.local_bound_center[0],
-                    mesh.local_bound_center[1],
-                    mesh.local_bound_center[2],
-                ),
-                mesh.local_bound_radius,
-            ),
-        );
-        // Sibling to the LocalBound insert above. `bounds.rs` Pass 1 at
-        // line 61-63 only *updates* a pre-existing `WorldBound` row —
-        // it does not insert one — so a missing seed row means the
-        // entity stays at `WorldBound::default()` (zero sphere) and is
-        // invisible to ray-cast picking, frustum culling, and the
-        // skinned-LRU bounds heuristic. The propagation pass overwrites
-        // this `ZERO` with the real value on the next tick.
-        world.insert(entity, WorldBound::ZERO);
-        // #1235 / LC-D1-NEW-01 — attach SceneFlags for parity with the
-        // loose-NIF loader (`scene/nif_loader.rs:789-791`). APP_CULLED
-        // shapes never reach this point (filtered import-side in
-        // `walk/mod.rs`); the remaining NiAVObject bits ride through
-        // for downstream consumers.
-        if mesh.flags != 0 {
-            world.insert(entity, SceneFlags::from_nif(mesh.flags));
-        }
-        // Parent/Children edge → embedded animation clip's subtree
-        // walk discovers this mesh through `placement_root`.
-        world.insert(entity, Parent(placement_root));
-        crate::helpers::add_child(world, placement_root, entity);
-        // Name from `ImportedMesh.name` so the clip's node-keyed
-        // channels (`FixedString` interned at parse time, #340)
-        // resolve through `build_subtree_name_map` to this entity.
-        // Pre-#544 the cell-loader path skipped this insert, so even
-        // if `Parent` had been wired the channels would have failed
-        // their name lookup and silently no-op'd.
-        //
-        // Pre-#882 this site re-acquired a `world.resource_mut::<
-        // StringPool>()` write lock per mesh. The intern is now done
-        // in the pre-pass above; this site only consumes the cached
-        // `FixedString`.
-        if let Some(sym) = paths.name_sym {
-            world.insert(entity, Name(sym));
-        }
-        world.insert(entity, MeshHandle(mesh_handle));
-        world.insert(entity, TextureHandle(tex_handle));
-        // Canonical material translation — the single boundary that
-        // resolves a raw `ImportedMesh` into the engine `Material`
-        // (PBR resolved, glass classified once, flag union packed).
-        // The cell path contributes the REFR-overlay model-space-normals
-        // bit as `extra_material_flags`; everything else is shared with
-        // the loose-NIF path. See `material_translate.rs`.
-        let extra_material_flags = refr_overlay
-            .filter(|o| o.model_space_normals)
-            .map(|_| byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS)
-            .unwrap_or(0);
-        let material = crate::material_translate::translate_material(
-            mesh,
-            crate::material_translate::ResolvedPaths {
-                texture_path: eff_texture_path.clone(),
-                material_path: eff_material_path.clone(),
-                normal_map: eff_normal_map.clone(),
-                glow_map: eff_glow_map.clone(),
-                detail_map: eff_detail_map.clone(),
-                gloss_map: eff_gloss_map.clone(),
-                dark_map: eff_dark_map.clone(),
-                greyscale_texture: eff_greyscale_texture.clone(),
-            },
-            extra_material_flags,
-        );
-        world.insert(entity, material);
-        // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn
-        // time so build_render_data can skip them via a component query
-        // instead of running 6 substring scans per draw per frame.
-        if let Some(ref tp) = eff_texture_path {
-            if texture_path_is_fx_mesh(tp) {
-                world.insert(entity, IsFxMesh);
-            }
-        }
-        // Load and attach normal map if the material specifies one.
-        if let Some(ref nmap_path) = eff_normal_map {
-            let h = resolve_texture(ctx, tex_provider, Some(nmap_path.as_str()));
-            if h != ctx.texture_registry.fallback() {
-                let has_alpha = ctx.texture_registry.handle_has_alpha(h);
-                world.insert(entity, NormalMapHandle(h, has_alpha));
-            }
-        }
-        // Load and attach dark/lightmap if the material specifies one (#264).
-        if let Some(ref dark_path) = eff_dark_map {
-            let h = resolve_texture(ctx, tex_provider, Some(dark_path.as_str()));
-            if h != ctx.texture_registry.fallback() {
-                world.insert(entity, DarkMapHandle(h));
-            }
-        }
-        // #890 Stage 2c — BSEffectShaderProperty greyscale LUT. Only
-        // attach the component when the path resolves to a real handle
-        // so the SparseSet stays small + the shader's `handle != 0`
-        // gate remains a meaningful disable signal.
-        if let Some(ref lut_path) = eff_greyscale_texture {
-            let h = resolve_texture(ctx, tex_provider, Some(lut_path.as_str()));
-            if h != ctx.texture_registry.fallback() {
-                world.insert(entity, GreyscaleLutHandle(h));
-            }
-        }
-        // #399 — Resolve glow / detail / gloss texture handles. All three
-        // default to 0 (no map; shader falls through to inline material
-        // constants). The component is only attached when at least one
-        // path resolved to a real handle, keeping the SparseSet small
-        // for the bulk of meshes that have no extra maps.
-        let mut resolve = |path: &Option<String>| -> u32 {
-            path.as_deref()
-                .map(|p| resolve_texture(ctx, tex_provider, Some(p)))
-                .filter(|&h| h != ctx.texture_registry.fallback())
-                .unwrap_or(0)
-        };
-        let glow_h = resolve(&eff_glow_map);
-        let detail_h = resolve(&eff_detail_map);
-        let gloss_h = resolve(&eff_gloss_map);
-        let parallax_h = resolve(&eff_parallax_map);
-        let env_h = resolve(&eff_env_map);
-        let env_mask_h = resolve(&eff_env_mask);
-        if glow_h != 0
-            || detail_h != 0
-            || gloss_h != 0
-            || parallax_h != 0
-            || env_h != 0
-            || env_mask_h != 0
-        {
-            world.insert(
-                entity,
-                ExtraTextureMaps {
-                    glow: glow_h,
-                    detail: detail_h,
-                    gloss: gloss_h,
-                    parallax: parallax_h,
-                    env: env_h,
-                    env_mask: env_mask_h,
-                    parallax_height_scale: mesh.parallax_height_scale.unwrap_or(0.04),
-                    parallax_max_passes: mesh.parallax_max_passes.unwrap_or(4.0),
-                },
-            );
-        }
-        // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
-        // ONCE into the canonical Material now that Material + NormalMapHandle
-        // + ExtraTextureMaps are all attached, instead of recomputing it per
-        // draw in the render path. Reads the same components the renderer
-        // reads, so the value is identical — only canonical + tooling-visible.
-        crate::material_translate::resolve_normal_alpha_spec_roughness(world, entity);
-        if mesh.has_alpha {
-            world.insert(
-                entity,
-                AlphaBlend {
-                    src_blend: mesh.src_blend_mode,
-                    dst_blend: mesh.dst_blend_mode,
-                },
-            );
-        }
-        if mesh.two_sided {
-            world.insert(entity, TwoSided);
-        }
-        // #renderlayer — derive the per-entity content-class layer.
-        // Base layer comes from the REFR's record type
-        // (`stat.record_type.render_layer()`); the per-mesh
-        // `mesh.is_decal` (NIF-flagged decals — blood splats, scorch
-        // marks) and `mesh.alpha_test_func != 0` (alpha-tested rugs /
-        // posters / fences / cutout foliage) escalate to
-        // [`RenderLayer::Decal`] regardless of the base, so any
-        // coplanar overlay wins its z-fight against the surface
-        // beneath. Architecture (zero bias) is the safe default for
-        // the rare "neither base nor mesh hints decal" path.
-        //
-        // Pre-#renderlayer this site also inserted a `Decal` marker
-        // component when `mesh.is_decal` — that marker is retired now
-        // that `RenderLayer::Decal` carries the same signal end-to-end.
-        {
-            use byroredux_core::ecs::components::{
-                escalate_small_static_to_clutter, render_layer_with_decal_escalation,
-            };
-            // Small-STAT escalation runs first so decorative clutter
-            // authored as STAT (paper piles, folders, clipboards on
-            // desks — Bethesda's record-type classifier can't tell
-            // these from architectural STATs without spatial extent)
-            // gets the Clutter bias before the decal gate sees it.
-            // Decal escalation still wins for alpha-tested overlays
-            // and NIF-flagged decals regardless of size.
-            //
-            // The post-escalation layer is the RENDER-z-bias signal
-            // (`RenderLayer` ECS component). #1294 moved the collision
-            // trimesh-fallback gate below off this post-escalation
-            // layer onto `base_layer` so SF sub-decomposed architecture
-            // (per-LOD per-material sub-meshes < 50 units each, but
-            // composing into a 1000-unit wall) doesn't get its
-            // collider stripped on a render-side optimization.
-            let layer =
-                escalate_small_static_to_clutter(base_layer, mesh.local_bound_radius * ref_scale);
-            let layer = render_layer_with_decal_escalation(layer, mesh.is_decal, mesh.alpha_test);
-            world.insert(entity, layer);
-        }
-
-        // F3 (2026-05-27) — synthesize a static TriMesh collider from
-        // the render geometry when the NIF authored NO bhk collision.
-        // This is the FO4+ case: those games moved static architecture
-        // collision into the Havok content-system blob
-        // (`bhkNPCollisionObject` → `bhkPhysicsSystem`), which our
-        // `extract_collision` doesn't deserialize yet (a multi-day
-        // project — see docs/audits/FALLOUT_SYMPTOMS F3). Without any
-        // static collider the M28.5 character controller has nothing
-        // to ground against and the player falls through the floor.
-        //
-        // The render mesh is a coarse but serviceable stand-in for the
-        // authored collision hull on structural architecture (floors,
-        // walls, ramps). Gated tightly so we don't turn clutter, decals,
-        // or skinned actors into expensive trimesh colliders:
-        //   - `collisions.is_empty()` — the NIF gave us no bhk shape, so
-        //     we're not double-covering FNV/FO3/Skyrim (which parse bhk).
-        //   - `RenderLayer::Architecture` — structural only; clutter and
-        //     decals are escalated away from this layer above.
-        //   - `!mesh.skinned` — never synthesize for animated bodies.
-        //   - `!mesh.is_decal && !mesh.alpha_test` — skip overlay planes.
-        //   - ≥ 1 triangle of geometry.
-        // Scale: the physics sync places bodies by GlobalTransform
-        // translation+rotation only (it ignores scale — bhk shapes bake
-        // havok_scale into their verts at extract time). So we bake the
-        // composed `final_scale` into the trimesh verts here to match
-        // the rendered geometry.
-        // #1294 — gate on `base_layer` (pre-escalation REFR record-type
-        // classification), NOT `final_layer` (post-escalation render
-        // layer). The small-STAT-to-Clutter escalation
-        // (`escalate_small_static_to_clutter`) is a RENDER z-bias
-        // optimization that demotes architecturally-classified meshes
-        // with a small bounding-sphere radius (< 50 units) to the
-        // Clutter render layer so decorative STATs (papers / folders
-        // / clipboards) win the coplanar z-fight against desks. It was
-        // never intended to gate collision generation.
-        //
-        // For Starfield content the gate-on-`final_layer` site rejected
-        // every wall / floor / ramp on Cydonia because SF NIFs are
-        // heavily decomposed into per-material per-LOD sub-meshes
-        // (an industrial platform = 6 BSGeometry blocks each with 4
-        // LOD slots = 24 sub-meshes), each individual sub-mesh smaller
-        // than the 50-unit threshold. Even though the COMPOSITE REFR
-        // is a giant wall, the per-mesh radius escalates to Clutter
-        // and the trimesh fallback skips it → zero static colliders →
-        // character free-falls indefinitely from frame 0 (`rapier_bodies=1`
-        // diagnostic warn at `character.rs:290`).
-        //
-        // `base_layer` reflects the REFR's base record type
-        // (STAT/MSTT/FURN/DOOR/… → Architecture; NPC_ → Actor; etc.).
-        // That's the correct "should this be a static collider?" signal
-        // — independent of per-mesh sub-decomposition. NPC actors (Actor
-        // base) and small clutter (record-type-classified Clutter) both
-        // skip the fallback as before; only the misclassified
-        // sub-decomposed architecture changes behaviour.
-        if collisions.is_empty()
-            && base_layer == byroredux_core::ecs::components::RenderLayer::Architecture
-            && mesh.skin.is_none()
-            && !mesh.is_decal
-            && !mesh.alpha_test
-            && mesh.positions.len() >= 3
-            && mesh.indices.len() >= 3
-        {
-            if let Some((shape, body)) =
-                synthesize_static_trimesh(&mesh.positions, &mesh.indices, final_scale)
-            {
-                // Spawn a separate physics-only ghost entity — matches the bhk
-                // collision pattern at the top of this function (lines 479-487).
-                // The render `entity` keeps its MeshHandle and enters BLAS+TLAS
-                // normally (restoring RT shadows/GI on FO4/Starfield architecture).
-                // The ghost has no MeshHandle → no BLAS entry, no TLAS instance,
-                // no render cost. Rapier only needs CollisionShape + RigidBodyData
-                // + GlobalTransform, which the ghost carries.
-                // R6a-stale-14-collider-partial fix.
-                let ghost = world.spawn();
-                world.insert(ghost, Transform::new(final_pos, final_rot, final_scale));
-                world.insert(
-                    ghost,
-                    GlobalTransform::new(final_pos, final_rot, final_scale),
-                );
-                world.insert(ghost, shape);
-                world.insert(ghost, body);
-            }
-        }
-        // Attach ESM light_data ONLY if the NIF didn't actually spawn
-        // any lights (avoids duplicates) and only on the first mesh
-        // (avoids N copies when a lamp NIF has multiple sub-meshes).
-        //
-        // Pre-#632 this gated on `nif_lights.is_empty()` — wrong
-        // because zero-colour placeholders take a slot in the array
-        // but get filtered out at the spawn loop above. Cells with
-        // light-bulb meshes (Prospector Saloon) rendered dark even
-        // though both the NIF placeholder and the ESM LIGH record
-        // agreed there should be a light. Track real spawns instead.
-        if let Some(ld) = light_data {
-            if spawned_nif_lights == 0 && count == 0 {
-                // Phase 18 (reverted in Phase 19.7) — the
-                // flame-node offset spawn lived here, but the
-                // substring-based pattern match
-                // (`flame` / `fire` / `attachlight`) hit
-                // false-positives on at least one Skyrim candle
-                // NIF (upper shelf in Sleeping Giant Inn — visible
-                // as "no light emitted at all" from that REFR's
-                // light placement). Restoring the pre-Phase-18
-                // attach-to-mesh-entity-at-ref_pos behaviour.
-                //
-                // The Phase 18 *capture* path stays — every cached
-                // NIF still records `flame_attach_offset` at parse
-                // time. A future re-enable with tighter pattern
-                // matching (e.g. `^Flame[0-9]+$` regex, or
-                // requiring an `AttachFire` block specifically)
-                // can consume the captured offset without
-                // re-walking the NIF.
-                let _ = cached.flame_attach_offset;
-
-                world.insert(
-                    entity,
-                    LightSource {
-                        radius: light_radius_or_default(ld.radius),
-                        color: ld.color,
-                        flags: ld.flags,
-                        falloff_exponent: ld.falloff_exponent,
-                        ..Default::default()
+                        [0.0, 1.0, 0.0]
+                    },
+                    if i < mesh.uvs.len() {
+                        mesh.uvs[i]
+                    } else {
+                        [0.0, 0.0]
                     },
                 );
-                // Phase 17 — flicker companion at the placement
-                // root, same position as the mesh entity.
-                const FLICKER_MASK: u32 = LIGHT_FLAG_FLICKER
-                    | LIGHT_FLAG_FLICKER_SLOW
-                    | LIGHT_FLAG_PULSE
-                    | LIGHT_FLAG_PULSE_SLOW;
-                if ld.flags & FLICKER_MASK != 0 {
-                    let period_secs = if ld.period_secs > 0.0 {
-                        ld.period_secs
-                    } else {
-                        0.5
-                    };
-                    let phase_offset_secs =
-                        (entity.wrapping_mul(2654435761) as f32 / u32::MAX as f32) * period_secs;
-                    world.insert(
-                        entity,
-                        LightFlicker {
-                            period_secs,
-                            intensity_amplitude: ld.intensity_amplitude,
-                            movement_amplitude: ld.movement_amplitude,
-                            base_translation: [ref_pos.x, ref_pos.y, ref_pos.z],
-                            phase_offset_secs,
-                        },
-                    );
+                // #783 / M-NORMALS — propagate authored tangent
+                // (NiBinaryExtraData "Tangent space ..." for Oblivion
+                // / FO3 / FNV cell-loader content). Empty mesh.tangents
+                // → zero, which the fragment shader's perturbNormal
+                // detects and routes to its screen-space derivative
+                // fallback.
+                if i < mesh.tangents.len() {
+                    v.tangent = mesh.tangents[i];
                 }
+                v
+            })
+            .collect();
+
+        let alloc = ctx.allocator.as_ref().unwrap();
+        let upload_ctx = GpuUploadCtx {
+            device: &ctx.device,
+            allocator: alloc,
+            queue: &ctx.graphics_queue,
+            command_pool: ctx.transfer_pool,
+        };
+        let upload_result = match mesh_cache_key {
+            Some(key) => ctx.mesh_registry.register_scene_mesh_keyed(
+                upload_ctx,
+                &vertices,
+                &mesh.indices,
+                ctx.device_caps.ray_query_supported,
+                None,
+                (key, sub_mesh_index_u32),
+            ),
+            None => ctx.mesh_registry.upload_scene_mesh(
+                upload_ctx,
+                &vertices,
+                &mesh.indices,
+                ctx.device_caps.ray_query_supported,
+                None,
+            ),
+        };
+        let handle = match upload_result {
+            Ok(h) => h,
+            Err(e) => {
+                log::warn!("Failed to upload mesh: {}", e);
+                return false;
+            }
+        };
+
+        // Fresh upload — this handle needs a BLAS. Subsequent
+        // cache hits for the same `(path, sub_mesh_index)` reuse
+        // this BLAS entry without re-submitting.
+        blas_specs.push((handle, num_verts as u32, mesh.indices.len() as u32));
+        handle
+    };
+
+    // Pre-resolved texture slot paths from the single-lock
+    // pre-pass above (#882). Cloned per-mesh because the Material
+    // ECS component owns its `Option<String>` fields and the
+    // resolved-paths Vec stays alive across this iteration; the
+    // alternative — moving paths out of `resolved_paths[i]` — would
+    // need a swap-with-default to keep the Vec indexable for the
+    // texture-handle resolves below. Per-slot clone is one
+    // allocation per populated slot per mesh, same as the pre-fix
+    // `resolve_owned(...).clone()` pattern at the Material struct
+    // construction site.
+    let eff_texture_path = paths.texture_path.clone();
+    let eff_normal_map = paths.normal_map.clone();
+    let eff_glow_map = paths.glow_map.clone();
+    let eff_gloss_map = paths.gloss_map.clone();
+    let eff_parallax_map = paths.parallax_map.clone();
+    let eff_env_map = paths.env_map.clone();
+    let eff_env_mask = paths.env_mask.clone();
+    let eff_material_path = paths.material_path.clone();
+    let eff_detail_map = paths.detail_map.clone();
+    let eff_dark_map = paths.dark_map.clone();
+    let eff_greyscale_texture = paths.greyscale_texture.clone();
+
+    // Load texture (shared resolve: cache → BSA → fallback).
+    // #610 — pass the diffuse-slot `TexClampMode` so the bindless
+    // descriptor's sampler picks the matching `VkSamplerAddressMode`
+    // pair. CLAMP-authored decals / scope reticles / Oblivion
+    // architecture trim no longer render with the legacy
+    // REPEAT/REPEAT bleed.
+    let tex_handle = resolve_texture_with_clamp(
+        ctx,
+        tex_provider,
+        eff_texture_path.as_deref(),
+        mesh.texture_clamp_mode,
+    );
+
+    // #544 — mesh entities now sit in the NIF-local frame and
+    // descend from the placement root. The transform-propagation
+    // system composes `placement_root` (the REFR transform) onto
+    // them each frame to produce the world-space `GlobalTransform`
+    // the renderer / BLAS / lighting consume. Pre-#544 every mesh
+    // pre-baked the REFR composition into its own `Transform`,
+    // which left it anchored to nothing the embedded animation
+    // clip could walk to.
+    //
+    // The composed `final_*` values are still computed up front
+    // because the `GlobalTransform` we seed on the mesh has to
+    // match what the propagation pass will compute on the first
+    // tick — anything that reads `GlobalTransform` before then
+    // (renderer's per-frame data collection, BLAS build below)
+    // gets a correctly-placed value in the meantime.
+    let nif_quat = Quat::from_xyzw(
+        mesh.rotation[0],
+        mesh.rotation[1],
+        mesh.rotation[2],
+        mesh.rotation[3],
+    );
+    let nif_pos = Vec3::new(
+        mesh.translation[0],
+        mesh.translation[1],
+        mesh.translation[2],
+    );
+
+    // World-space placement (parent_rot * (parent_scale *
+    // child_pos) + parent_pos) — used only to seed the initial
+    // `GlobalTransform`. `Transform` itself stays NIF-local so
+    // the propagation pass produces the same value next tick.
+    let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
+    let final_rot = ref_rot * nif_quat;
+    let final_scale = ref_scale * mesh.scale;
+
+    // Diagnostic: log meshes with significant NIF-internal offsets
+    // (these are wall/structural pieces most likely to show positioning issues)
+    let nif_offset_len = nif_pos.length();
+    if nif_offset_len > 50.0 {
+        log::debug!(
+            "  NIF offset {:.0} for mesh {:?}: nif_pos=({:.0},{:.0},{:.0}) \
+                 final=({:.0},{:.0},{:.0})",
+            nif_offset_len,
+            mesh.name,
+            nif_pos.x,
+            nif_pos.y,
+            nif_pos.z,
+            final_pos.x,
+            final_pos.y,
+            final_pos.z,
+        );
+    }
+
+    let entity = world.spawn();
+    // NIF-local Transform for hierarchy propagation; world-space
+    // GlobalTransform for first-tick consumers. See #544.
+    world.insert(entity, Transform::new(nif_pos, nif_quat, mesh.scale));
+    world.insert(
+        entity,
+        GlobalTransform::new(final_pos, final_rot, final_scale),
+    );
+    // #1213 / D1-NEW-02 — seed LocalBound from the mesh-local
+    // bounding sphere (`ImportedMesh.local_bound_center`,
+    // `.local_bound_radius`, both extracted by the NIF importer
+    // from `NiTriShapeData.center` / `BsTriShape.center` or
+    // computed from vertex positions). The bounds-propagation
+    // system at `byroredux/src/systems/bounds.rs:43-66` reads
+    // this row and produces a world-space `WorldBound` each
+    // frame; pre-#1213 no LocalBound row was ever inserted, so
+    // every WorldBound stayed at the component default (zero
+    // sphere) and downstream culling / RT-budget / cell-bounds
+    // consumers fell through to coarser approximations.
+    world.insert(
+        entity,
+        LocalBound::new(
+            Vec3::new(
+                mesh.local_bound_center[0],
+                mesh.local_bound_center[1],
+                mesh.local_bound_center[2],
+            ),
+            mesh.local_bound_radius,
+        ),
+    );
+    // Sibling to the LocalBound insert above. `bounds.rs` Pass 1 at
+    // line 61-63 only *updates* a pre-existing `WorldBound` row —
+    // it does not insert one — so a missing seed row means the
+    // entity stays at `WorldBound::default()` (zero sphere) and is
+    // invisible to ray-cast picking, frustum culling, and the
+    // skinned-LRU bounds heuristic. The propagation pass overwrites
+    // this `ZERO` with the real value on the next tick.
+    world.insert(entity, WorldBound::ZERO);
+    // #1235 / LC-D1-NEW-01 — attach SceneFlags for parity with the
+    // loose-NIF loader (`scene/nif_loader.rs:789-791`). APP_CULLED
+    // shapes never reach this point (filtered import-side in
+    // `walk/mod.rs`); the remaining NiAVObject bits ride through
+    // for downstream consumers.
+    if mesh.flags != 0 {
+        world.insert(entity, SceneFlags::from_nif(mesh.flags));
+    }
+    // Parent/Children edge → embedded animation clip's subtree
+    // walk discovers this mesh through `placement_root`.
+    world.insert(entity, Parent(placement_root));
+    crate::helpers::add_child(world, placement_root, entity);
+    // Name from `ImportedMesh.name` so the clip's node-keyed
+    // channels (`FixedString` interned at parse time, #340)
+    // resolve through `build_subtree_name_map` to this entity.
+    // Pre-#544 the cell-loader path skipped this insert, so even
+    // if `Parent` had been wired the channels would have failed
+    // their name lookup and silently no-op'd.
+    //
+    // Pre-#882 this site re-acquired a `world.resource_mut::<
+    // StringPool>()` write lock per mesh. The intern is now done
+    // in the pre-pass above; this site only consumes the cached
+    // `FixedString`.
+    if let Some(sym) = paths.name_sym {
+        world.insert(entity, Name(sym));
+    }
+    world.insert(entity, MeshHandle(mesh_handle));
+    world.insert(entity, TextureHandle(tex_handle));
+    // Canonical material translation — the single boundary that
+    // resolves a raw `ImportedMesh` into the engine `Material`
+    // (PBR resolved, glass classified once, flag union packed).
+    // The cell path contributes the REFR-overlay model-space-normals
+    // bit as `extra_material_flags`; everything else is shared with
+    // the loose-NIF path. See `material_translate.rs`.
+    let extra_material_flags = refr_overlay
+        .filter(|o| o.model_space_normals)
+        .map(|_| byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS)
+        .unwrap_or(0);
+    let material = crate::material_translate::translate_material(
+        mesh,
+        crate::material_translate::ResolvedPaths {
+            texture_path: eff_texture_path.clone(),
+            material_path: eff_material_path.clone(),
+            normal_map: eff_normal_map.clone(),
+            glow_map: eff_glow_map.clone(),
+            detail_map: eff_detail_map.clone(),
+            gloss_map: eff_gloss_map.clone(),
+            dark_map: eff_dark_map.clone(),
+            greyscale_texture: eff_greyscale_texture.clone(),
+        },
+        extra_material_flags,
+    );
+    world.insert(entity, material);
+    // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn
+    // time so build_render_data can skip them via a component query
+    // instead of running 6 substring scans per draw per frame.
+    if let Some(ref tp) = eff_texture_path {
+        if texture_path_is_fx_mesh(tp) {
+            world.insert(entity, IsFxMesh);
+        }
+    }
+    // Load and attach normal map if the material specifies one.
+    if let Some(ref nmap_path) = eff_normal_map {
+        let h = resolve_texture(ctx, tex_provider, Some(nmap_path.as_str()));
+        if h != ctx.texture_registry.fallback() {
+            let has_alpha = ctx.texture_registry.handle_has_alpha(h);
+            world.insert(entity, NormalMapHandle(h, has_alpha));
+        }
+    }
+    // Load and attach dark/lightmap if the material specifies one (#264).
+    if let Some(ref dark_path) = eff_dark_map {
+        let h = resolve_texture(ctx, tex_provider, Some(dark_path.as_str()));
+        if h != ctx.texture_registry.fallback() {
+            world.insert(entity, DarkMapHandle(h));
+        }
+    }
+    // #890 Stage 2c — BSEffectShaderProperty greyscale LUT. Only
+    // attach the component when the path resolves to a real handle
+    // so the SparseSet stays small + the shader's `handle != 0`
+    // gate remains a meaningful disable signal.
+    if let Some(ref lut_path) = eff_greyscale_texture {
+        let h = resolve_texture(ctx, tex_provider, Some(lut_path.as_str()));
+        if h != ctx.texture_registry.fallback() {
+            world.insert(entity, GreyscaleLutHandle(h));
+        }
+    }
+    // #399 — Resolve glow / detail / gloss texture handles. All three
+    // default to 0 (no map; shader falls through to inline material
+    // constants). The component is only attached when at least one
+    // path resolved to a real handle, keeping the SparseSet small
+    // for the bulk of meshes that have no extra maps.
+    let mut resolve = |path: &Option<String>| -> u32 {
+        path.as_deref()
+            .map(|p| resolve_texture(ctx, tex_provider, Some(p)))
+            .filter(|&h| h != ctx.texture_registry.fallback())
+            .unwrap_or(0)
+    };
+    let glow_h = resolve(&eff_glow_map);
+    let detail_h = resolve(&eff_detail_map);
+    let gloss_h = resolve(&eff_gloss_map);
+    let parallax_h = resolve(&eff_parallax_map);
+    let env_h = resolve(&eff_env_map);
+    let env_mask_h = resolve(&eff_env_mask);
+    if glow_h != 0
+        || detail_h != 0
+        || gloss_h != 0
+        || parallax_h != 0
+        || env_h != 0
+        || env_mask_h != 0
+    {
+        world.insert(
+            entity,
+            ExtraTextureMaps {
+                glow: glow_h,
+                detail: detail_h,
+                gloss: gloss_h,
+                parallax: parallax_h,
+                env: env_h,
+                env_mask: env_mask_h,
+                parallax_height_scale: mesh.parallax_height_scale.unwrap_or(0.04),
+                parallax_max_passes: mesh.parallax_max_passes.unwrap_or(4.0),
+            },
+        );
+    }
+    // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
+    // ONCE into the canonical Material now that Material + NormalMapHandle
+    // + ExtraTextureMaps are all attached, instead of recomputing it per
+    // draw in the render path. Reads the same components the renderer
+    // reads, so the value is identical — only canonical + tooling-visible.
+    crate::material_translate::resolve_normal_alpha_spec_roughness(world, entity);
+    if mesh.has_alpha {
+        world.insert(
+            entity,
+            AlphaBlend {
+                src_blend: mesh.src_blend_mode,
+                dst_blend: mesh.dst_blend_mode,
+            },
+        );
+    }
+    if mesh.two_sided {
+        world.insert(entity, TwoSided);
+    }
+    // #renderlayer — derive the per-entity content-class layer.
+    // Base layer comes from the REFR's record type
+    // (`stat.record_type.render_layer()`); the per-mesh
+    // `mesh.is_decal` (NIF-flagged decals — blood splats, scorch
+    // marks) and `mesh.alpha_test_func != 0` (alpha-tested rugs /
+    // posters / fences / cutout foliage) escalate to
+    // [`RenderLayer::Decal`] regardless of the base, so any
+    // coplanar overlay wins its z-fight against the surface
+    // beneath. Architecture (zero bias) is the safe default for
+    // the rare "neither base nor mesh hints decal" path.
+    //
+    // Pre-#renderlayer this site also inserted a `Decal` marker
+    // component when `mesh.is_decal` — that marker is retired now
+    // that `RenderLayer::Decal` carries the same signal end-to-end.
+    {
+        use byroredux_core::ecs::components::{
+            escalate_small_static_to_clutter, render_layer_with_decal_escalation,
+        };
+        // Small-STAT escalation runs first so decorative clutter
+        // authored as STAT (paper piles, folders, clipboards on
+        // desks — Bethesda's record-type classifier can't tell
+        // these from architectural STATs without spatial extent)
+        // gets the Clutter bias before the decal gate sees it.
+        // Decal escalation still wins for alpha-tested overlays
+        // and NIF-flagged decals regardless of size.
+        //
+        // The post-escalation layer is the RENDER-z-bias signal
+        // (`RenderLayer` ECS component). #1294 moved the collision
+        // trimesh-fallback gate below off this post-escalation
+        // layer onto `base_layer` so SF sub-decomposed architecture
+        // (per-LOD per-material sub-meshes < 50 units each, but
+        // composing into a 1000-unit wall) doesn't get its
+        // collider stripped on a render-side optimization.
+        let layer =
+            escalate_small_static_to_clutter(base_layer, mesh.local_bound_radius * ref_scale);
+        let layer = render_layer_with_decal_escalation(layer, mesh.is_decal, mesh.alpha_test);
+        world.insert(entity, layer);
+    }
+
+    // F3 (2026-05-27) — synthesize a static TriMesh collider from
+    // the render geometry when the NIF authored NO bhk collision.
+    // This is the FO4+ case: those games moved static architecture
+    // collision into the Havok content-system blob
+    // (`bhkNPCollisionObject` → `bhkPhysicsSystem`), which our
+    // `extract_collision` doesn't deserialize yet (a multi-day
+    // project — see docs/audits/FALLOUT_SYMPTOMS F3). Without any
+    // static collider the M28.5 character controller has nothing
+    // to ground against and the player falls through the floor.
+    //
+    // The render mesh is a coarse but serviceable stand-in for the
+    // authored collision hull on structural architecture (floors,
+    // walls, ramps). Gated tightly so we don't turn clutter, decals,
+    // or skinned actors into expensive trimesh colliders:
+    //   - `collisions_empty` — the NIF gave us no bhk shape, so
+    //     we're not double-covering FNV/FO3/Skyrim (which parse bhk).
+    //   - `RenderLayer::Architecture` — structural only; clutter and
+    //     decals are escalated away from this layer above.
+    //   - `!mesh.skinned` — never synthesize for animated bodies.
+    //   - `!mesh.is_decal && !mesh.alpha_test` — skip overlay planes.
+    //   - ≥ 1 triangle of geometry.
+    // Scale: the physics sync places bodies by GlobalTransform
+    // translation+rotation only (it ignores scale — bhk shapes bake
+    // havok_scale into their verts at extract time). So we bake the
+    // composed `final_scale` into the trimesh verts here to match
+    // the rendered geometry.
+    // #1294 — gate on `base_layer` (pre-escalation REFR record-type
+    // classification), NOT `final_layer` (post-escalation render
+    // layer). The small-STAT-to-Clutter escalation
+    // (`escalate_small_static_to_clutter`) is a RENDER z-bias
+    // optimization that demotes architecturally-classified meshes
+    // with a small bounding-sphere radius (< 50 units) to the
+    // Clutter render layer so decorative STATs (papers / folders
+    // / clipboards) win the coplanar z-fight against desks. It was
+    // never intended to gate collision generation.
+    //
+    // For Starfield content the gate-on-`final_layer` site rejected
+    // every wall / floor / ramp on Cydonia because SF NIFs are
+    // heavily decomposed into per-material per-LOD sub-meshes
+    // (an industrial platform = 6 BSGeometry blocks each with 4
+    // LOD slots = 24 sub-meshes), each individual sub-mesh smaller
+    // than the 50-unit threshold. Even though the COMPOSITE REFR
+    // is a giant wall, the per-mesh radius escalates to Clutter
+    // and the trimesh fallback skips it → zero static colliders →
+    // character free-falls indefinitely from frame 0 (`rapier_bodies=1`
+    // diagnostic warn at `character.rs:290`).
+    //
+    // `base_layer` reflects the REFR's base record type
+    // (STAT/MSTT/FURN/DOOR/… → Architecture; NPC_ → Actor; etc.).
+    // That's the correct "should this be a static collider?" signal
+    // — independent of per-mesh sub-decomposition. NPC actors (Actor
+    // base) and small clutter (record-type-classified Clutter) both
+    // skip the fallback as before; only the misclassified
+    // sub-decomposed architecture changes behaviour.
+    if collisions_empty
+        && base_layer == byroredux_core::ecs::components::RenderLayer::Architecture
+        && mesh.skin.is_none()
+        && !mesh.is_decal
+        && !mesh.alpha_test
+        && mesh.positions.len() >= 3
+        && mesh.indices.len() >= 3
+    {
+        if let Some((shape, body)) =
+            synthesize_static_trimesh(&mesh.positions, &mesh.indices, final_scale)
+        {
+            // Spawn a separate physics-only ghost entity — matches the bhk
+            // collision pattern at the top of this function (lines 479-487).
+            // The render `entity` keeps its MeshHandle and enters BLAS+TLAS
+            // normally (restoring RT shadows/GI on FO4/Starfield architecture).
+            // The ghost has no MeshHandle → no BLAS entry, no TLAS instance,
+            // no render cost. Rapier only needs CollisionShape + RigidBodyData
+            // + GlobalTransform, which the ghost carries.
+            // R6a-stale-14-collider-partial fix.
+            let ghost = world.spawn();
+            world.insert(ghost, Transform::new(final_pos, final_rot, final_scale));
+            world.insert(
+                ghost,
+                GlobalTransform::new(final_pos, final_rot, final_scale),
+            );
+            world.insert(ghost, shape);
+            world.insert(ghost, body);
+        }
+    }
+    // Attach ESM light_data ONLY if the NIF didn't actually spawn
+    // any lights (avoids duplicates) and only on the first mesh
+    // (avoids N copies when a lamp NIF has multiple sub-meshes).
+    //
+    // Pre-#632 this gated on `nif_lights.is_empty()` — wrong
+    // because zero-colour placeholders take a slot in the array
+    // but get filtered out at the spawn loop above. Cells with
+    // light-bulb meshes (Prospector Saloon) rendered dark even
+    // though both the NIF placeholder and the ESM LIGH record
+    // agreed there should be a light. Track real spawns instead.
+    if let Some(ld) = light_data {
+        if spawned_nif_lights == 0 && count == 0 {
+            // Phase 18 (reverted in Phase 19.7) — the
+            // flame-node offset spawn lived here, but the
+            // substring-based pattern match
+            // (`flame` / `fire` / `attachlight`) hit
+            // false-positives on at least one Skyrim candle
+            // NIF (upper shelf in Sleeping Giant Inn — visible
+            // as "no light emitted at all" from that REFR's
+            // light placement). Restoring the pre-Phase-18
+            // attach-to-mesh-entity-at-ref_pos behaviour.
+            //
+            // The Phase 18 *capture* path stays — every cached
+            // NIF still records `flame_attach_offset` at parse
+            // time. A future re-enable with tighter pattern
+            // matching (e.g. `^Flame[0-9]+$` regex, or
+            // requiring an `AttachFire` block specifically)
+            // can consume the captured offset without
+            // re-walking the NIF.
+            let _ = cached.flame_attach_offset;
+
+            world.insert(
+                entity,
+                LightSource {
+                    radius: light_radius_or_default(ld.radius),
+                    color: ld.color,
+                    flags: ld.flags,
+                    falloff_exponent: ld.falloff_exponent,
+                    ..Default::default()
+                },
+            );
+            // Phase 17 — flicker companion at the placement
+            // root, same position as the mesh entity.
+            const FLICKER_MASK: u32 = LIGHT_FLAG_FLICKER
+                | LIGHT_FLAG_FLICKER_SLOW
+                | LIGHT_FLAG_PULSE
+                | LIGHT_FLAG_PULSE_SLOW;
+            if ld.flags & FLICKER_MASK != 0 {
+                let period_secs = if ld.period_secs > 0.0 {
+                    ld.period_secs
+                } else {
+                    0.5
+                };
+                let phase_offset_secs =
+                    (entity.wrapping_mul(2654435761) as f32 / u32::MAX as f32) * period_secs;
+                world.insert(
+                    entity,
+                    LightFlicker {
+                        period_secs,
+                        intensity_amplitude: ld.intensity_amplitude,
+                        movement_amplitude: ld.movement_amplitude,
+                        base_translation: [ref_pos.x, ref_pos.y, ref_pos.z],
+                        phase_offset_secs,
+                    },
+                );
             }
         }
-        count += 1;
     }
-
-    // Batched BLAS build: single GPU submission for all meshes in this cell.
-    if !blas_specs.is_empty() {
-        let built = ctx.build_blas_batched(&blas_specs);
-        log::info!("Cell BLAS batch: {built}/{} meshes", blas_specs.len());
-    }
-
-    // #544 — bind the embedded animation clip to this REFR. Mirrors
-    // the loose-NIF path in `scene.rs::load_nif_bytes`. The clip
-    // registration itself happens once per unique parsed NIF in
-    // `load_references` (cached on `NifImportRegistry`); here we
-    // just spawn one `AnimationPlayer` per placement so the
-    // animation system's subtree walk finds this REFR's mesh
-    // children. Without this insert, water UV scrolls / lava
-    // emissive pulses / torch visibility flickers / fade-in alphas
-    // all stay frozen on cell-rendered REFRs, while loose-NIF
-    // imports of the same models animate correctly.
-    if let Some(handle) = clip_handle {
-        let player_entity = world.spawn();
-        let mut player = byroredux_core::animation::AnimationPlayer::new(handle);
-        player.root_entity = Some(placement_root);
-        world.insert(player_entity, player);
-    }
-
-    // M47.0 Phase 3b — return the placement_root alongside the
-    // entity count so the caller (cell_loader/references.rs) can
-    // attach script-state components keyed on the REFR's base
-    // record `script_form_id`. Pre-Phase-3b the function returned
-    // only the count; callers that don't need the placement_root
-    // (precombined.rs bake artifacts) `_`-discard the first element.
-    (placement_root, count)
+    true
 }
 
 #[cfg(test)]
