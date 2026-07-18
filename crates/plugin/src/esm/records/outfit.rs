@@ -24,7 +24,7 @@
 //! `dev-4.1.6` (commit valid 2026-05-07). Same shape on Skyrim /
 //! Skyrim SE / FO4 / FO76 / Starfield.
 
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::records::common::read_zstring;
 use crate::esm::sub_reader::SubReader;
 
@@ -39,9 +39,27 @@ pub struct OtftRecord {
     pub items: Vec<u32>,
 }
 
+/// Remap a raw plugin-local FormID to global space, leaving 0 (no
+/// FormID / null ref) untouched. Same convention as `actor.rs` / `misc/
+/// ai.rs`'s `remap_fid` — kept local rather than shared since neither
+/// module depends on the other's record types.
+fn remap_fid(raw: u32, remap: &Option<FormIdRemap>) -> u32 {
+    if raw == 0 {
+        return 0;
+    }
+    remap.as_ref().map_or(raw, |r| r.remap(raw))
+}
+
 /// Parse an OTFT record from its sub-record list. Unknown sub-records
 /// are ignored; short `INAM` entries (< 4 bytes) are silently dropped.
-pub fn parse_otft(form_id: u32, subs: &[SubRecord]) -> OtftRecord {
+///
+/// `remap` promotes each `INAM` entry from plugin-local to global
+/// FormID space, matching how `EsmIndex.items` / `.leveled_items` are
+/// keyed (#1996 / FNV-D4-01 / #2079) — without it, an outfit defined in
+/// a non-base plugin whose `INAM` entries reference content in that same
+/// plugin resolves against the wrong (global-keyed) map and the NPC
+/// spawns with no equipped outfit.
+pub fn parse_otft(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> OtftRecord {
     let mut out = OtftRecord {
         form_id,
         ..Default::default()
@@ -51,7 +69,7 @@ pub fn parse_otft(form_id: u32, subs: &[SubRecord]) -> OtftRecord {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"INAM" if sub.data.len() >= 4 => {
                 if let Ok(id) = SubReader::new(&sub.data).u32() {
-                    out.items.push(id);
+                    out.items.push(remap_fid(id, remap));
                 }
             }
             _ => {}
@@ -92,7 +110,7 @@ mod tests {
             inam(0x0001_3939),
             inam(0x0001_393A),
         ];
-        let r = parse_otft(0x0008_F09E, &subs);
+        let r = parse_otft(0x0008_F09E, &subs, &None);
         assert_eq!(r.editor_id, "WhiterunGuardOutfit");
         assert_eq!(
             r.items,
@@ -103,7 +121,7 @@ mod tests {
 
     #[test]
     fn empty_outfit_round_trips_with_no_items() {
-        let r = parse_otft(0x0001_2345, &[edid("EmptyOutfit")]);
+        let r = parse_otft(0x0001_2345, &[edid("EmptyOutfit")], &None);
         assert_eq!(r.editor_id, "EmptyOutfit");
         assert!(r.items.is_empty());
     }
@@ -115,11 +133,45 @@ mod tests {
             mk_sub(b"INAM", vec![0xAA, 0xBB]), // only 2 bytes, not 4
             inam(0x0001_0000),
         ];
-        let r = parse_otft(0x0001_0000, &subs);
+        let r = parse_otft(0x0001_0000, &subs, &None);
         assert_eq!(
             r.items,
             vec![0x0001_0000],
             "short INAM must not panic or pollute the list"
+        );
+    }
+
+    /// FNV-D4-01 / #2079 — every `INAM` entry must land in global
+    /// load-order space, matching how `EsmIndex.items` / `.leveled_items`
+    /// are keyed. Pre-fix, `parse_otft` never threaded a remap at all, so
+    /// an outfit defined in a non-base plugin whose `INAM` entries
+    /// reference armor/leveled-list content in that same plugin resolved
+    /// against the wrong (global-keyed) map — the NPC spawns gearless.
+    #[test]
+    fn otft_embedded_form_ids_remap_to_global_space() {
+        // Plugin slot 2, one master at slot 0.
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        // mod_index 1 == master_slots.len() → self-reference (armor this
+        // override plugin defines itself).
+        let self_ref = (1u32 << 24) | 0x0000_1234;
+        // mod_index 0 → the master's slot (a base-game ARMO).
+        let master_ref: u32 = 0x0000_5678;
+
+        let subs = vec![
+            edid("OverridePluginOutfit"),
+            inam(master_ref),
+            inam(self_ref),
+        ];
+        let r = parse_otft(0x000A_0001, &subs, &Some(remap));
+
+        assert_eq!(
+            r.items[0], master_ref,
+            "master-slot reference (mod_index 0) stays at slot 0's byte"
+        );
+        assert_eq!(
+            r.items[1],
+            (2u32 << 24) | 0x0000_1234,
+            "self-reference (mod_index == master count) remaps to this plugin's own slot 2"
         );
     }
 }

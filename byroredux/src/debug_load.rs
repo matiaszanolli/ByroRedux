@@ -16,7 +16,7 @@
 //! helpers boot-time uses.
 
 use byroredux_core::ecs::debug_load::{PendingDebugLoad, PendingDebugLoadSlot};
-use byroredux_core::ecs::World;
+use byroredux_core::ecs::{Resource, World};
 use byroredux_renderer::VulkanContext;
 
 use crate::asset_provider::{build_material_provider, build_texture_provider};
@@ -194,6 +194,64 @@ struct DebugLoadSource<'a> {
     textures_bsas: &'a [String],
 }
 
+/// Archive-set signature of the most recent debug `cell.load` request.
+/// Owned (not borrowed) so it survives past the request that created it,
+/// for comparison against the *next* request.
+///
+/// FNV-D1-02 / #2078: `NifImportRegistry` caches parsed NIF scenes keyed
+/// only by lowercased model path — no field records which archive set
+/// resolved that path, and (by design, for the normal single-launch CLI
+/// path) nothing ever clears it mid-process. The debug `cell.load`
+/// console command breaks that assumption: it can synthesize an
+/// arbitrary `--bsa`/`--esm`/`--master` set per request against the same
+/// `World`. Comparing this signature against the previous request lets
+/// [`invalidate_nif_cache_on_archive_change`] wipe the registry exactly
+/// when the archive set actually changed — leaving the common case
+/// (repeated debug loads against the same archive set) fully cached.
+#[derive(Clone, PartialEq, Eq)]
+struct DebugLoadArchiveSet {
+    esm: String,
+    masters: Vec<String>,
+    bsas: Vec<String>,
+    textures_bsas: Vec<String>,
+}
+
+impl Resource for DebugLoadArchiveSet {}
+
+impl DebugLoadArchiveSet {
+    fn from_source(source: &DebugLoadSource) -> Self {
+        Self {
+            esm: source.esm.to_string(),
+            masters: source.masters.to_vec(),
+            bsas: source.bsas.to_vec(),
+            textures_bsas: source.textures_bsas.to_vec(),
+        }
+    }
+}
+
+/// Clear [`cell_loader::NifImportRegistry`] when `source`'s archive set
+/// differs from the previous debug load's — see [`DebugLoadArchiveSet`].
+/// No-op (and no clear) on the very first debug load of a session or on
+/// a repeat load against the same archive set, so the common case keeps
+/// its cache warm.
+fn invalidate_nif_cache_on_archive_change(world: &mut World, source: &DebugLoadSource) {
+    let next = DebugLoadArchiveSet::from_source(source);
+    let changed = world
+        .try_resource::<DebugLoadArchiveSet>()
+        .map(|prev| *prev != next)
+        .unwrap_or(false); // first debug load this session — nothing to invalidate
+    if changed {
+        log::info!(
+            "debug load: archive set changed from the previous debug load — clearing NifImportRegistry \
+             (FNV-D1-02 / #2078, avoids stale cross-load model reuse)",
+        );
+        world
+            .resource_mut::<cell_loader::NifImportRegistry>()
+            .clear();
+    }
+    world.insert_resource(next);
+}
+
 /// Exterior grid target for a debug load: the center cell, stream radius, and
 /// optional worldspace editor-id override.
 struct DebugExteriorTarget<'a> {
@@ -210,6 +268,7 @@ fn exec_load_interior(
     source: DebugLoadSource,
     cell: &str,
 ) {
+    invalidate_nif_cache_on_archive_change(world, &source);
     let DebugLoadSource {
         esm,
         masters,
@@ -272,6 +331,7 @@ fn exec_load_exterior(
     source: DebugLoadSource,
     target: DebugExteriorTarget,
 ) {
+    invalidate_nif_cache_on_archive_change(world, &source);
     let DebugLoadSource {
         esm,
         masters,
@@ -371,4 +431,85 @@ fn synth_provider_args(bsas: &[String], textures_bsas: &[String]) -> Vec<String>
         out.push(b.clone());
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cell_loader::NifImportRegistry;
+
+    /// FNV-D1-02 / #2078 — two debug `cell.load` requests with different
+    /// `--bsa` sets against the same `World` must not let the second
+    /// request see the first request's cached NIF content: a model-path
+    /// collision across the two archive sets would otherwise silently
+    /// keep serving the first-loaded content.
+    #[test]
+    fn archive_set_change_clears_nif_registry() {
+        let mut world = World::new();
+        world.insert_resource(NifImportRegistry::new());
+
+        // Seed the registry as if a prior debug load had already resolved
+        // (or failed to resolve) this model path — either way, a cache
+        // entry exists under it.
+        world
+            .resource_mut::<NifImportRegistry>()
+            .insert("meshes\\armor\\test.nif".to_string(), None);
+        assert_eq!(world.resource::<NifImportRegistry>().len(), 1);
+
+        let no_masters: Vec<String> = Vec::new();
+        let no_textures: Vec<String> = Vec::new();
+        let vanilla_bsa = vec!["Vanilla.bsa".to_string()];
+        let mod_bsa = vec!["Mod.bsa".to_string()];
+
+        // First request establishes the baseline signature — no prior
+        // signature to compare against, so nothing is cleared.
+        invalidate_nif_cache_on_archive_change(
+            &mut world,
+            &DebugLoadSource {
+                esm: "FalloutNV.esm",
+                masters: &no_masters,
+                bsas: &vanilla_bsa,
+                textures_bsas: &no_textures,
+            },
+        );
+        assert_eq!(
+            world.resource::<NifImportRegistry>().len(),
+            1,
+            "first debug load must not clear an existing registry"
+        );
+
+        // Repeat request, same archive set — still no clear.
+        invalidate_nif_cache_on_archive_change(
+            &mut world,
+            &DebugLoadSource {
+                esm: "FalloutNV.esm",
+                masters: &no_masters,
+                bsas: &vanilla_bsa,
+                textures_bsas: &no_textures,
+            },
+        );
+        assert_eq!(
+            world.resource::<NifImportRegistry>().len(),
+            1,
+            "an unchanged archive set must not clear the registry"
+        );
+
+        // Different `--bsa` — a mod's overriding archive. Must clear so a
+        // subsequent lookup of `meshes\armor\test.nif` re-resolves against
+        // the new archive set instead of reusing the first request's entry.
+        invalidate_nif_cache_on_archive_change(
+            &mut world,
+            &DebugLoadSource {
+                esm: "FalloutNV.esm",
+                masters: &no_masters,
+                bsas: &mod_bsa,
+                textures_bsas: &no_textures,
+            },
+        );
+        assert_eq!(
+            world.resource::<NifImportRegistry>().len(),
+            0,
+            "a changed archive set must clear the registry"
+        );
+    }
 }

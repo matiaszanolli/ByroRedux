@@ -912,6 +912,7 @@ mod tests {
                 sub(b"EDID", b"ScriptedChest\0"),
                 sub(b"VMAD", &synthetic_vmad(b"TreasureChestScript")),
             ],
+            &None,
         );
         idx.containers.insert(0xC0_0001, cont);
         let si = idx
@@ -936,7 +937,7 @@ mod tests {
         assert_eq!(si.scripts[0].name, "QuestGiverScript");
 
         // A container with no VMAD still resolves to None on this path.
-        let plain = parse_cont(0xC0_0002, &[sub(b"EDID", b"PlainChest\0")]);
+        let plain = parse_cont(0xC0_0002, &[sub(b"EDID", b"PlainChest\0")], &None);
         idx.containers.insert(0xC0_0002, plain);
         assert!(idx.base_record_script_instance(0xC0_0002).is_none());
     }

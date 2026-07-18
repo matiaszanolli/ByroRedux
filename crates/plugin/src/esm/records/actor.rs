@@ -697,28 +697,44 @@ pub fn parse_npc(
             b"HCLR" if captures_runtime_facegen && sub.data.len() >= 3 => {
                 recipe.hair_color_rgb = Some([sub.data[0], sub.data[1], sub.data[2]]);
             }
+            // #2080 / FNV-D4-02 — HNAM/ENAM/PNAM-eyebrow/FMRI are embedded
+            // FormIDs, same as RNAM/CNAM/VTCK/SCRI/SNAM/CNTO/PKID/DOFT/
+            // INAM/TPLT/PRPS/PRKR above; #1996 threaded `remap` through
+            // this function but missed this FaceGen-recipe block. Without
+            // it, an NPC defined in a non-base plugin whose hair/eyes/
+            // eyebrow reference points at content in that same plugin
+            // resolves the wrong (or no) `index.hair`/`index.eyes`/
+            // `index.head_parts` entry — silently bald/browless, or
+            // wrong-textured on a FormID collision across plugins.
+            // `LNAM` is deliberately left unremapped: nothing downstream
+            // ever reads `unused_lnam` (see its field doc), so remapping
+            // it would fix no observable behavior.
             b"HNAM" if captures_runtime_facegen && sub.data.len() >= 4 => {
-                recipe.hair_form_id = Some(SubReader::new(&sub.data).u32_or_default());
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                recipe.hair_form_id = Some(remap_fid(raw, remap));
             }
             b"LNAM" if captures_runtime_facegen && sub.data.len() >= 4 => {
                 recipe.unused_lnam = Some(SubReader::new(&sub.data).u32_or_default());
             }
             b"ENAM" if captures_runtime_facegen && sub.data.len() >= 4 => {
-                recipe.eyes_form_id = Some(SubReader::new(&sub.data).u32_or_default());
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                recipe.eyes_form_id = Some(remap_fid(raw, remap));
             }
             // FNV / FO3 PNAM = single eyebrow HDPT FormID. The FO4 PNAM
             // arm below carries a different semantic (head-parts list);
             // the two are guarded by `captures_runtime_facegen` vs
             // `captures_fo4_face` and never both fire on a single record.
             b"PNAM" if captures_runtime_facegen && sub.data.len() >= 4 => {
-                recipe.eyebrow_form_id = Some(SubReader::new(&sub.data).u32_or_default());
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                recipe.eyebrow_form_id = Some(remap_fid(raw, remap));
             }
             // ── #591 / FO4-DIM6-06 face-morph block ────────────────────
             // FO4+/FO76/Starfield only. Pre-fix, all of these arms ran
             // unconditionally; FNV `PNAM` (eyebrow HDPT FormID) was
             // misread as an FO4 head-parts entry. See `captures_fo4_face`.
             b"FMRI" if captures_fo4_face && sub.data.len() >= 4 => {
-                fmri_forms.push(SubReader::new(&sub.data).u32_or_default());
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                fmri_forms.push(remap_fid(raw, remap));
             }
             b"FMRS" if captures_fo4_face && sub.data.len() >= 36 => {
                 let s = SubReader::new(&sub.data)
@@ -754,11 +770,16 @@ pub fn parse_npc(
                     .unwrap_or([0.0; 4]);
                 face.texture_lighting = Some(t);
             }
+            // HCLF/BCLF/PNAM (FO4+ head-parts) are embedded FormIDs too —
+            // same #2080 completeness sweep as the pre-FO4 recipe block
+            // above.
             b"HCLF" if captures_fo4_face && sub.data.len() >= 4 => {
-                face.hair_color = Some(SubReader::new(&sub.data).u32_or_default());
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                face.hair_color = Some(remap_fid(raw, remap));
             }
             b"BCLF" if captures_fo4_face && sub.data.len() >= 4 => {
-                face.body_color = Some(SubReader::new(&sub.data).u32_or_default());
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                face.body_color = Some(remap_fid(raw, remap));
             }
             // PNAM on FO4+ NPCs accumulates head-part FormIDs (one per
             // sub-record). FNV / FO3 PNAM is captured by the kf-era
@@ -767,8 +788,8 @@ pub fn parse_npc(
             // `captures_runtime_facegen`, both keyed off `GameKind`
             // semantic predicates.
             b"PNAM" if captures_fo4_face && sub.data.len() >= 4 => {
-                face.head_parts
-                    .push(SubReader::new(&sub.data).u32_or_default());
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                face.head_parts.push(remap_fid(raw, remap));
             }
             // ── FO4+ actor-value model (PRPS properties + baked DNAM) ──
             // PRPS "Properties": an array of (AVIF FormID, f32) pairs —
@@ -1858,6 +1879,80 @@ mod tests {
              global slot (2), not stay at its local self-ref top byte (1) — \
              this is the exact field `active_package_is_sandbox` looks up \
              via `index.packages.get(pk)`"
+        );
+    }
+
+    /// #2080 / FNV-D4-02 — the FNV/FO3/Oblivion FaceGen-recipe fields
+    /// (HNAM/ENAM/PNAM-eyebrow) must remap the same way as the classic
+    /// fields #1996 already covered. Pre-fix, these arms read
+    /// `u32_or_default()` directly with no `remap_fid` wrapper despite
+    /// `remap` being in scope for the whole function — an override-
+    /// plugin NPC's own hair/eyes/eyebrow reference resolved against the
+    /// wrong `index.hair`/`index.eyes` entry (silently bald/browless).
+    #[test]
+    fn npc_facegen_recipe_form_ids_remap_to_global_space() {
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        let self_ref = (1u32 << 24) | 0x0000_1234; // eyebrow: this plugin's own HDPT
+        let master_ref: u32 = 0x0000_5678; // hair/eyes: a base-game HAIR/EYES
+
+        let subs = vec![
+            sub(b"EDID", b"OverridePluginFaceGenNpc\0"),
+            sub(b"HNAM", &master_ref.to_le_bytes()),
+            sub(b"ENAM", &master_ref.to_le_bytes()),
+            sub(b"PNAM", &self_ref.to_le_bytes()),
+        ];
+        let n = parse_npc(0x000A_0002, &subs, GameKind::Fallout3NV, &Some(remap));
+        let recipe = n.runtime_facegen.expect("HNAM/ENAM/PNAM populate the recipe");
+
+        assert_eq!(
+            recipe.hair_form_id,
+            Some(master_ref),
+            "master-slot HNAM reference (mod_index 0) stays at slot 0's byte"
+        );
+        assert_eq!(
+            recipe.eyes_form_id,
+            Some(master_ref),
+            "ENAM must remap the same way as HNAM"
+        );
+        assert_eq!(
+            recipe.eyebrow_form_id,
+            Some((2u32 << 24) | 0x0000_1234),
+            "self-referential eyebrow PNAM must resolve to the plugin's own global slot"
+        );
+    }
+
+    /// #2080 / FNV-D4-02 — the FO4+ face-morph block (FMRI, HCLF, BCLF,
+    /// and the FO4 head-parts `PNAM`) shares the same unremapped-FormID
+    /// gap as the pre-FO4 recipe block. Same impact: an override-plugin
+    /// NPC's own hair-color/body-color/head-part reference resolves
+    /// against the wrong entry.
+    #[test]
+    fn npc_fo4_face_morph_form_ids_remap_to_global_space() {
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        let self_ref = (1u32 << 24) | 0x0000_1234;
+        let master_ref: u32 = 0x0000_5678;
+
+        let subs = vec![
+            sub(b"EDID", b"OverridePluginFo4FaceNpc\0"),
+            sub(b"FMRI", &master_ref.to_le_bytes()),
+            sub(b"FMRS", &[0u8; 36]),
+            sub(b"HCLF", &master_ref.to_le_bytes()),
+            sub(b"BCLF", &self_ref.to_le_bytes()),
+            sub(b"PNAM", &master_ref.to_le_bytes()),
+        ];
+        let n = parse_npc(0x000A_0003, &subs, GameKind::Fallout4, &Some(remap));
+        let face = n.face_morphs.expect("FMRI/HCLF/BCLF/PNAM populate face_morphs");
+
+        assert_eq!(
+            face.morphs[0].form_id, master_ref,
+            "FMRI must remap the same way as the pre-FO4 recipe fields"
+        );
+        assert_eq!(face.hair_color, Some(master_ref));
+        assert_eq!(face.body_color, Some((2u32 << 24) | 0x0000_1234));
+        assert_eq!(
+            face.head_parts,
+            vec![master_ref],
+            "FO4 head-parts PNAM must remap the same way as the FNV/FO3 eyebrow PNAM"
         );
     }
 

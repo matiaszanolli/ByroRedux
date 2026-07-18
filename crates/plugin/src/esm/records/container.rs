@@ -6,8 +6,19 @@
 
 use super::common::{read_zstring, CommonNamedFields};
 use super::script_instance::ScriptInstanceData;
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
+
+/// Remap a raw plugin-local FormID to global space, leaving 0 (no
+/// FormID / null ref) untouched. Same convention as `actor.rs` / `misc/
+/// ai.rs`'s `remap_fid` — kept local rather than shared since neither
+/// module depends on the other's record types.
+fn remap_fid(raw: u32, remap: &Option<FormIdRemap>) -> u32 {
+    if raw == 0 {
+        return 0;
+    }
+    remap.as_ref().map_or(raw, |r| r.remap(raw))
+}
 
 /// One entry in a container's inventory list.
 #[derive(Debug, Clone, Copy)]
@@ -78,9 +89,19 @@ pub struct LeveledList {
     pub entries: Vec<LeveledEntry>,
 }
 
-pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
+/// `remap` promotes every embedded FormID (`CNTO.item_form_id`, `SNAM`,
+/// `QNAM`, and — overriding `CommonNamedFields`'s raw `SCRI` — the
+/// container's own script) from plugin-local to global FormID space,
+/// matching how `EsmIndex.items` are keyed (#1996 / FNV-D4-01 / #2079).
+/// Without it, a container defined in a non-base plugin whose entries
+/// reference content in that same plugin resolves against the wrong
+/// (global-keyed) map and the container spawns empty.
+pub fn parse_cont(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ContainerRecord {
     // Pre-populate the universal named fields (EDID / FULL / MODL / SCRI /
-    // VMAD) in one pass via the shared helper (TD3-006 / #1045).
+    // VMAD) in one pass via the shared helper (TD3-006 / #1045). `SCRI` is
+    // remapped below, overriding the helper's raw value — mirrors
+    // `parse_npc`'s pattern of re-deriving fields the shared helper can't
+    // remap on its own.
     let common = CommonNamedFields::from_subs(subs);
     let mut record = ContainerRecord {
         form_id,
@@ -91,7 +112,7 @@ pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
         flags: 0,
         open_sound: 0,
         close_sound: 0,
-        script_form_id: common.script_form_id,
+        script_form_id: remap_fid(common.script_form_id, remap),
         script_instance: common.script_instance,
         contents: Vec::new(),
     };
@@ -100,7 +121,7 @@ pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
             // CNTO: item form ID (u32) + count (i32)
             b"CNTO" if sub.data.len() >= InventoryEntry::WIRE_SIZE => {
                 let mut r = SubReader::new(&sub.data);
-                let item_form_id = r.u32_or_default();
+                let item_form_id = remap_fid(r.u32_or_default(), remap);
                 let count = r.i32_or_default();
                 record.contents.push(InventoryEntry {
                     item_form_id,
@@ -123,11 +144,11 @@ pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
             }
             // SNAM: open sound form ID
             b"SNAM" if sub.data.len() >= 4 => {
-                record.open_sound = SubReader::new(&sub.data).u32_or_default();
+                record.open_sound = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             // QNAM: close sound form ID
             b"QNAM" if sub.data.len() >= 4 => {
-                record.close_sound = SubReader::new(&sub.data).u32_or_default();
+                record.close_sound = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             _ => {}
         }
@@ -135,8 +156,21 @@ pub fn parse_cont(form_id: u32, subs: &[SubRecord]) -> ContainerRecord {
     record
 }
 
-/// Shared parser for both LVLI and LVLN — they have the same sub-record layout.
-pub fn parse_leveled_list(form_id: u32, subs: &[SubRecord]) -> LeveledList {
+/// Shared parser for CONT-adjacent leveled lists — LVLI, LVLN, and the
+/// legacy LVLC (leveled creature) alias all share this sub-record layout.
+///
+/// `remap` promotes each `LVLO.form_id` entry from plugin-local to global
+/// FormID space, matching how `EsmIndex.leveled_items` / `.leveled_npcs`
+/// / `.leveled_creatures` are keyed (#1996 / FNV-D4-01 / #2079). Without
+/// it, a leveled list defined in a non-base plugin whose entries
+/// reference content in that same plugin resolves against the wrong
+/// (global-keyed) map: `expand_leveled_form_id` treats the unresolved
+/// FormID as "not an item, not a list" and pushes nothing.
+pub fn parse_leveled_list(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<FormIdRemap>,
+) -> LeveledList {
     let mut record = LeveledList {
         form_id,
         editor_id: String::new(),
@@ -154,7 +188,7 @@ pub fn parse_leveled_list(form_id: u32, subs: &[SubRecord]) -> LeveledList {
                 let mut r = SubReader::new(&sub.data);
                 let level = r.u16_or_default();
                 r.skip_or_eof(2); // pad u16 at offset 2..4
-                let entry_form = r.u32_or_default();
+                let entry_form = remap_fid(r.u32_or_default(), remap);
                 let count = r.u16_or_default();
                 record.entries.push(LeveledEntry {
                     level,
@@ -211,7 +245,7 @@ mod tests {
             sub(b"CNTO", &cnto_bytes(0x100, 5)),
             sub(b"CNTO", &cnto_bytes(0x200, -1)),
         ];
-        let r = parse_cont(0xABCD, &subs);
+        let r = parse_cont(0xABCD, &subs, &None);
         assert_eq!(r.editor_id, "TestChest");
         assert_eq!(r.full_name, "Big Chest");
         assert_eq!(r.model_path, "meshes\\furn\\chest.nif");
@@ -238,7 +272,7 @@ mod tests {
         data.push(CONT_FLAG_RESPAWNS); // 0x01 — respawns on cell reset
 
         let subs = vec![sub(b"EDID", b"GenericTrashbag01\0"), sub(b"DATA", &data)];
-        let r = parse_cont(0xCAFE, &subs);
+        let r = parse_cont(0xCAFE, &subs, &None);
         assert!((r.weight - 12.5).abs() < 1e-6);
         assert_eq!(
             r.flags & CONT_FLAG_RESPAWNS,
@@ -257,7 +291,7 @@ mod tests {
         data.extend_from_slice(&5.0f32.to_le_bytes()); // 4 bytes, no flags
 
         let subs = vec![sub(b"EDID", b"OblivionChest\0"), sub(b"DATA", &data)];
-        let r = parse_cont(0x1234, &subs);
+        let r = parse_cont(0x1234, &subs, &None);
         assert!((r.weight - 5.0).abs() < 1e-6);
         assert_eq!(
             r.flags, 0,
@@ -276,7 +310,7 @@ mod tests {
         data.push(0b0000_0011); // bit 0 + bit 1
 
         let subs = vec![sub(b"DATA", &data)];
-        let r = parse_cont(0, &subs);
+        let r = parse_cont(0, &subs, &None);
         assert_eq!(r.flags, 0b0000_0011);
     }
 
@@ -290,12 +324,75 @@ mod tests {
             sub(b"LVLO", &lvlo_bytes(10, 0x200, 3)),
             sub(b"LVLO", &lvlo_bytes(20, 0x300, 1)),
         ];
-        let r = parse_leveled_list(0x9999, &subs);
+        let r = parse_leveled_list(0x9999, &subs, &None);
         assert_eq!(r.chance_none, 25);
         assert_eq!(r.flags, 0x01);
         assert_eq!(r.entries.len(), 3);
         assert_eq!(r.entries[1].level, 10);
         assert_eq!(r.entries[1].form_id, 0x200);
         assert_eq!(r.entries[1].count, 3);
+    }
+
+    /// FNV-D4-01 / #2079 — every embedded FormID on `ContainerRecord`
+    /// (`CNTO.item_form_id`, `SNAM`, `QNAM`, and the `SCRI` script) must
+    /// land in global load-order space, matching how `EsmIndex.items` is
+    /// keyed. Pre-fix, `parse_cont` never threaded a remap at all, so a
+    /// container defined in a non-base plugin whose entries referenced
+    /// content in that same plugin resolved against the wrong
+    /// (global-keyed) map and the container spawned empty.
+    #[test]
+    fn cont_embedded_form_ids_remap_to_global_space() {
+        // Plugin slot 2, one master at slot 0.
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        // mod_index 1 == master_slots.len() → self-reference (an item
+        // this override plugin defines itself).
+        let self_ref = (1u32 << 24) | 0x0000_1234;
+        // mod_index 0 → the master's slot (a base-game item/sound/script).
+        let master_ref: u32 = 0x0000_5678;
+
+        let subs = vec![
+            sub(b"EDID", b"OverridePluginChest\0"),
+            sub(b"SCRI", &master_ref.to_le_bytes()),
+            sub(b"CNTO", &cnto_bytes(self_ref, 1)),
+            sub(b"SNAM", &master_ref.to_le_bytes()),
+            sub(b"QNAM", &self_ref.to_le_bytes()),
+        ];
+        let r = parse_cont(0x000A_0001, &subs, &Some(remap));
+
+        assert_eq!(
+            r.script_form_id, master_ref,
+            "master-slot SCRI reference (mod_index 0) stays at slot 0's byte"
+        );
+        assert_eq!(
+            r.contents[0].item_form_id,
+            (2u32 << 24) | 0x0000_1234,
+            "self-reference CNTO (mod_index == master count) remaps to this plugin's own slot 2"
+        );
+        assert_eq!(r.open_sound, master_ref);
+        assert_eq!(r.close_sound, (2u32 << 24) | 0x0000_1234);
+    }
+
+    /// FNV-D4-01 / #2079 — `LVLO.form_id` must land in global load-order
+    /// space, matching how `EsmIndex.leveled_items` / `.leveled_npcs` /
+    /// `.leveled_creatures` are keyed. Pre-fix, `parse_leveled_list` never
+    /// threaded a remap at all: `expand_leveled_form_id` treats an
+    /// unresolved FormID as "not an item, not a list" and silently pushes
+    /// nothing, so an override-plugin leveled list referencing its own
+    /// same-plugin content rolled empty.
+    #[test]
+    fn leveled_list_embedded_form_ids_remap_to_global_space() {
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        let self_ref = (1u32 << 24) | 0x0000_1234;
+        let master_ref: u32 = 0x0000_5678;
+
+        let subs = vec![
+            sub(b"EDID", b"OverridePluginLvli\0"),
+            sub(b"LVLO", &lvlo_bytes(1, master_ref, 1)),
+            sub(b"LVLO", &lvlo_bytes(2, self_ref, 1)),
+        ];
+        let r = parse_leveled_list(0x000A_0002, &subs, &Some(remap));
+
+        assert_eq!(r.entries[0].form_id, master_ref);
+        assert_eq!(r.entries[1].form_id, (2u32 << 24) | 0x0000_1234);
     }
 }

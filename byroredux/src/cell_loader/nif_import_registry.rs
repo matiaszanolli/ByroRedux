@@ -211,6 +211,31 @@ impl NifImportRegistry {
         }
     }
 
+    /// Fully invalidate the cache: drop every cached scene, LRU touch
+    /// tick, and memoised animation-clip handle, and reset the
+    /// lifetime hit/miss/eviction telemetry to match (a fresh registry
+    /// with no history, not a registry that remembers stats from
+    /// content it no longer holds).
+    ///
+    /// The registry is normally never cleared mid-process by design —
+    /// that's the whole point of a process-lifetime cache reused across
+    /// cell-to-cell streaming. The one caller that needs this is the
+    /// debug `cell.load` console command: it can re-point the archive
+    /// set (`--bsa`/`--esm`/`--master`) on every request against the
+    /// same World, but the cache key is a bare lowercased model path
+    /// with no archive-set discriminant. Without an explicit clear on
+    /// an archive-set change, a model-path collision across two such
+    /// requests (e.g. comparing vanilla content against a mod's
+    /// overriding BSA in one debug session) would silently keep
+    /// serving the first-loaded content. See FNV-D1-02 / #2078.
+    pub(crate) fn clear(&mut self) {
+        self.core = ParsedNifCache::new();
+        self.access_tick.clear();
+        self.next_tick = 0;
+        self.evictions = 0;
+        self.clip_handles.clear();
+    }
+
     /// Look up a previously-registered embedded-clip handle for `key`.
     /// Returns `None` when the cache key has never been parsed, when
     /// the parsed NIF authored no controllers, or when the entry was

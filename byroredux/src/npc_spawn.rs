@@ -26,11 +26,7 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::helpers::add_child;
 use crate::scene::load_nif_bytes_with_skeleton;
 
-// Gender lives in the plugin crate since the equip resolver
-// (`resolve_armor_mesh`) needs it for ARMA dispatch and shouldn't
-// depend on the binary. Re-exported here so existing call sites
-// continue to use `npc_spawn::Gender`.
-pub use byroredux_plugin::equip::Gender;
+use byroredux_plugin::equip::Gender;
 
 /// Path inside the meshes archive for the default humanoid skeleton.
 ///
@@ -428,11 +424,7 @@ pub fn facegen_sidecar_path(head_nif_path: &str, extension: &str) -> Option<Stri
     Some(out)
 }
 
-// `normalize_mesh_path` moved to `crate::asset_provider` so
-// `TextureProvider::extract_mesh` can apply it internally; every
-// caller benefits without per-site sprinkling. Re-export keeps the
-// existing call sites here compiling.
-pub use crate::asset_provider::normalize_mesh_path;
+use crate::asset_provider::normalize_mesh_path;
 
 /// Path inside the meshes archive for the default idle animation
 /// (`.kf` keyframe clip) the NPC plays on loop when no AI package

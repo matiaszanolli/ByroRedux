@@ -448,35 +448,50 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                     index.items.insert(fid, parse_note(fid, subs));
                 },
             )?,
-            // Containers and leveled lists.
-            b"CONT" => extract_records_with_modl(
-                &mut reader,
-                end,
-                b"CONT",
-                &mut statics,
-                &mut |fid, subs| {
-                    index.containers.insert(fid, parse_cont(fid, subs));
-                },
-            )?,
-            b"LVLI" => extract_records(&mut reader, end, b"LVLI", &mut |fid, subs| {
-                index
-                    .leveled_items
-                    .insert(fid, parse_leveled_list(fid, subs));
-            })?,
-            b"LVLN" => extract_records(&mut reader, end, b"LVLN", &mut |fid, subs| {
-                index
-                    .leveled_npcs
-                    .insert(fid, parse_leveled_list(fid, subs));
-            })?,
+            // Containers and leveled lists. Embedded FormIDs
+            // (CNTO/SNAM/QNAM/SCRI, LVLO) are plugin-local; remap to
+            // global here (#2079) so `index.items` / `.leveled_items` /
+            // `.leveled_npcs` / `.leveled_creatures` lookups hit.
+            b"CONT" => {
+                let cont_remap = reader.get_form_id_remap();
+                extract_records_with_modl(
+                    &mut reader,
+                    end,
+                    b"CONT",
+                    &mut statics,
+                    &mut |fid, subs| {
+                        index.containers.insert(fid, parse_cont(fid, subs, &cont_remap));
+                    },
+                )?
+            }
+            b"LVLI" => {
+                let lvli_remap = reader.get_form_id_remap();
+                extract_records(&mut reader, end, b"LVLI", &mut |fid, subs| {
+                    index
+                        .leveled_items
+                        .insert(fid, parse_leveled_list(fid, subs, &lvli_remap));
+                })?
+            }
+            b"LVLN" => {
+                let lvln_remap = reader.get_form_id_remap();
+                extract_records(&mut reader, end, b"LVLN", &mut |fid, subs| {
+                    index
+                        .leveled_npcs
+                        .insert(fid, parse_leveled_list(fid, subs, &lvln_remap));
+                })?
+            }
             // Leveled creatures (CREA spawn tables) — byte-identical to
             // LVLI / LVLN. FO3 wires most enemy encounters through LVLC;
             // FNV migrated most combat to LVLN but still ships legacy
             // LVLC entries. See #448 / audit FO3-3-06.
-            b"LVLC" => extract_records(&mut reader, end, b"LVLC", &mut |fid, subs| {
-                index
-                    .leveled_creatures
-                    .insert(fid, parse_leveled_list(fid, subs));
-            })?,
+            b"LVLC" => {
+                let lvlc_remap = reader.get_form_id_remap();
+                extract_records(&mut reader, end, b"LVLC", &mut |fid, subs| {
+                    index
+                        .leveled_creatures
+                        .insert(fid, parse_leveled_list(fid, subs, &lvlc_remap));
+                })?
+            }
             // Actors and supporting records — dual-target via the
             // fused walker so the cell-side STAT-equivalent
             // registration in `statics` still happens (REFR base-form
@@ -740,9 +755,14 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             // OTFT — Skyrim+ outfit (default-equipped armor list).
             // Pre-Skyrim plugins don't ship OTFT groups; the walker
             // skips them silently when absent (no group hit).
-            b"OTFT" => extract_records(&mut reader, end, b"OTFT", &mut |fid, subs| {
-                index.outfits.insert(fid, parse_otft(fid, subs));
-            })?,
+            // `INAM` entries are plugin-local; remap to global here
+            // (#2079) so `index.items` / `.leveled_items` lookups hit.
+            b"OTFT" => {
+                let otft_remap = reader.get_form_id_remap();
+                extract_records(&mut reader, end, b"OTFT", &mut |fid, subs| {
+                    index.outfits.insert(fid, parse_otft(fid, subs, &otft_remap));
+                })?
+            }
             b"BPTD" => extract_records(&mut reader, end, b"BPTD", &mut |fid, subs| {
                 index.body_parts.insert(fid, parse_bptd(fid, subs));
             })?,

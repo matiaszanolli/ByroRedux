@@ -485,3 +485,31 @@ fn snapshot_keys_decoupled_from_registry_after_capture() {
     assert_eq!(snap_after.len(), 2);
     assert!(snap_after.contains("b.nif"));
 }
+
+/// FNV-D1-02 / #2078 — `clear()` drops every cached scene (positive AND
+/// negative entries), LRU touch state, and memoised clip handle, so a
+/// caller that invalidates the registry mid-process (the debug
+/// `cell.load` archive-set-change path) starts from a genuinely empty
+/// cache rather than one that still remembers content from a different
+/// archive set.
+#[test]
+fn clear_empties_content_and_touch_state() {
+    let mut reg = NifImportRegistry::new();
+    let _ = reg.insert("a.nif".into(), Some(dummy_cached()));
+    let _ = reg.insert("b.nif".into(), None); // negative-cache entry
+    reg.set_clip_handle("a.nif".into(), 7);
+    reg.touch_keys(["a.nif", "b.nif"]);
+
+    assert_eq!(reg.len(), 2);
+    assert_eq!(reg.clip_handle_for("a.nif"), Some(7));
+    assert!(!reg.access_tick.is_empty());
+
+    reg.clear();
+
+    assert_eq!(reg.len(), 0);
+    assert_eq!(reg.clip_handle_for("a.nif"), None);
+    assert!(reg.access_tick.is_empty());
+    assert!(reg.snapshot_keys().is_empty());
+    assert_eq!(reg.core.hits(), 0);
+    assert_eq!(reg.core.misses(), 0);
+}
