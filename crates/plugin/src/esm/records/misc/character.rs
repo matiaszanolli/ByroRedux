@@ -2,6 +2,7 @@
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
 use crate::esm::reader::SubRecord;
+use crate::esm::sub_reader::SubReader;
 
 /// Head part record (`HDPT`). Used by FaceGen to assemble NPC faces —
 /// each part (head, mouth, ears, etc.) references a mesh + texture
@@ -109,6 +110,65 @@ pub fn parse_hair(form_id: u32, subs: &[SubRecord]) -> HairRecord {
 // cross-references resolve; full per-record decoding lands with the
 // consuming subsystem (AI runtime, dialogue system, perk pipeline).
 
+/// CSTY — combat style record. NPC combat AI behavior profile
+/// (aggression, stealth preference, ranged vs melee). Per-NPC
+/// reference via NPC.SPCT. `CSTD` carries the FO3/FNV 124-byte
+/// payload; the stub captures only the first 4 bytes of CSTD as a
+/// flags scalar so the dispatch is verifiable. Full CSTD decode
+/// lands with the AI consumer. See audit `FNV-D2-NEW-02` / #809.
+#[derive(Debug, Clone, Default)]
+pub struct CstyRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// `CSTD` offset 0..4 — combat-style flag bitfield (u32). Decoded
+    /// lazily per-game; vanilla FNV uses ~12 bits.
+    pub csty_flags: u32,
+}
+
+pub fn parse_csty(form_id: u32, subs: &[SubRecord]) -> CstyRecord {
+    let mut out = CstyRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"CSTD" if sub.data.len() >= 4 => {
+                out.csty_flags = SubReader::new(&sub.data).u32_or_default();
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// IDLE — idle animation record. NPC behavior tree references —
+/// "lean against wall", "smoke", "drink", etc. Each NPC's PACK
+/// references IDLEs by form ID. Stub captures EDID + animation file
+/// path (MODL). See audit `FNV-D2-NEW-02` / #809.
+#[derive(Debug, Clone, Default)]
+pub struct IdleRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    /// `MODL` — animation file path (typically `.kf`).
+    pub animation_path: String,
+}
+
+pub fn parse_idle(form_id: u32, subs: &[SubRecord]) -> IdleRecord {
+    let mut out = IdleRecord {
+        form_id,
+        ..Default::default()
+    };
+    for sub in subs {
+        match &sub.sub_type {
+            b"EDID" => out.editor_id = read_zstring(&sub.data),
+            b"MODL" => out.animation_path = read_zstring(&sub.data),
+            _ => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +220,30 @@ mod tests {
         assert_eq!(h.model_path, "meshes\\characters\\hair\\brown.nif");
         assert_eq!(h.icon_path, "textures\\characters\\hair\\brown.dds");
         assert_eq!(h.flags, 0x00);
+    }
+
+    #[test]
+    fn parse_csty_picks_edid_csty_flags() {
+        // `csyAggressive` shape: CSTD with a flag byte at offset 0.
+        let mut cstd = [0u8; 124];
+        cstd[0..4].copy_from_slice(&0x0000_0042_u32.to_le_bytes());
+        let subs = vec![sub(b"EDID", b"csyAggressive\0"), sub(b"CSTD", &cstd)];
+        let c = parse_csty(0x0008_3122, &subs);
+        assert_eq!(c.editor_id, "csyAggressive");
+        assert_eq!(c.csty_flags, 0x42);
+    }
+
+    #[test]
+    fn parse_idle_picks_edid_modl() {
+        // `IdleStandSmokingCigarette` shape: EDID + MODL pointing at
+        // a `.kf` animation file in `meshes\\actors\\character\\` etc.
+        let subs = vec![
+            sub(b"EDID", b"IdleStandSmokingCigarette\0"),
+            sub(b"MODL", b"actors\\character\\idleanims\\smoke.kf\0"),
+        ];
+        let i = parse_idle(0x000A_FB31, &subs);
+        assert_eq!(i.editor_id, "IdleStandSmokingCigarette");
+        assert!(i.animation_path.contains("smoke.kf"));
     }
 
     // ── AI / dialogue / effect stubs (#446, #447) ──────────────────

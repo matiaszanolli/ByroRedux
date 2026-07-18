@@ -1,7 +1,6 @@
 # TD1-005: records/misc/ai.rs crossed 2000 LOC — bundles 6 unrelated record families + 1013 lines of tests
 
-**GitHub Issue**: #2054
-**Labels**: low,import-pipeline,legacy-compat,tech-debt,bug
+**Labels**: bug, import-pipeline, low, legacy-compat, tech-debt
 
 **Severity**: LOW
 **Dimension**: 1 (File/Function/Module Complexity)
@@ -25,3 +24,4 @@ Split into `misc/pack.rs`, `misc/quest.rs`, `misc/dialogue.rs`; fold CSTY+IDLE i
 ## Completeness Checks
 - [ ] **SIBLING**: Match the established one-family-per-file `misc/` convention every other sibling file already follows
 - [ ] **TESTS**: Split preserves all existing per-record test coverage; no test content changes, only module location
+

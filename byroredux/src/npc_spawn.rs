@@ -2689,7 +2689,7 @@ mod tests {
         let mut index = EsmIndex::default();
         index.packages.insert(
             0xAAAA,
-            pack_with_procedure(0xAAAA, byroredux_plugin::esm::records::misc::ai::PROCEDURE_SANDBOX),
+            pack_with_procedure(0xAAAA, byroredux_plugin::esm::records::misc::pack::PROCEDURE_SANDBOX),
         );
 
         apply_ai_package_behavior(&mut world, placement_root, &npc, &index);
@@ -2713,7 +2713,7 @@ mod tests {
         };
         let mut pk = pack_with_procedure(
             0xBBBB,
-            byroredux_plugin::esm::records::misc::ai::PROCEDURE_TRAVEL,
+            byroredux_plugin::esm::records::misc::pack::PROCEDURE_TRAVEL,
         );
         pk.location = Some(byroredux_plugin::esm::records::PackLocation {
             location_type: 0,

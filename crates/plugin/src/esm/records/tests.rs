@@ -1372,7 +1372,7 @@ fn merge_from_carries_magic_effects_by_code() {
 /// asserts the tree correctly orders by PNAM and surfaces TCLT links.
 #[test]
 fn dial_conversation_tree_resolves_pnam_chains_and_tclt_edges() {
-    use super::misc::ai::build_conversation_tree;
+    use super::misc::dialogue::build_conversation_tree;
 
     // Build INFOs in scrambled order with a PNAM chain: A (head) <- B <- C
     // and TCLT edges from C to another topic.
