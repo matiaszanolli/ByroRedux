@@ -292,3 +292,11 @@ adapted from knightcrawler25/GLSL-PathTracer (MIT, Copyright (c) 2019 Asif
 Ali); the BRDF model it implements is Brent Burley / Walt Disney Animation
 Studios' published "Physically Based Shading at Disney" (SIGGRAPH 2012) —
 model only, no Disney code or assets.
+
+## Contributors
+
+In order of first contribution:
+
+- [**Matias Zanolli**](https://github.com/matiaszanolli) — creator and primary maintainer
+- [**Jah-yee**](https://github.com/Jah-yee) — docs fix
+- [**Dodothereal**](https://github.com/Dodothereal) — FO4 legacy shader-type gating fix
