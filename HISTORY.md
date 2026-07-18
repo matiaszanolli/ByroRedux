@@ -24,6 +24,88 @@ Commits hold that record.
 
 ---
 
+## Session 57 — M42 AI-behavior rollout (Wander→Patrol) + audit bug-bash + CI recovery  (2026-07-15 → 2026-07-18, `7b1fefac..b5e38c22`, 42 commits)
+
+Picked up the NPC-liveliness arc where Session 56 left it — Sandbox could
+only make an actor sit — and gave six more PACK procedures a runtime, each
+reusing the last's locomotion/target-resolution machinery rather than
+forking it. In parallel, drained a large tail of the standing audit
+backlog (~35 issues across NIF, renderer, scripting, and save/load), landed
+the project's first external community PR, and discovered — then fully
+resolved — that both CI jobs guarding the main branch (`cargo clippy -D
+warnings` and the ABBA lock-order detector) had been silently red for the
+prior ~10 pushes.
+
+- **M42 AI package behaviors, Wander through Patrol** — CTDA condition
+  gating (M42.2, package selection now evaluates through the M47.1
+  evaluator, fail-open on out-of-catalog functions) and per-marker seat
+  reservation for multi-seat furniture landed first. Then six procedures in
+  sequence, each the first runtime for its `PROCEDURE_*` value: **Wander**
+  (M42.3, `097371b5`) — the engine's first NPC locomotion of any kind,
+  ground-snapped straight-line walk with deterministic SplitMix64
+  target/pause picking; **Travel** (M42.4, `4af8efec`) — reuses Wander's
+  locomotion via an extracted `step_toward` helper, first procedure to
+  attempt live `NearReference` resolution via `resolve_entity_by_global_form_id`;
+  **Follow** (M42.5, `99c6b05a`) — first `PTDT` ("Target Data") decode in
+  the codebase (0%→verified against the same xEdit reference as PLDT/PSDT),
+  re-resolves its target's live `GlobalTransform` every tick instead of
+  freezing a destination; **Escort** (M42.6, `923df40c`) — needed no new
+  sub-record decode, combines `PTDT`+`PLDT` into a collect-then-lead state
+  machine; **Guard + Patrol** (M42.7/8, `aaed1503`) — Guard holds an anchor
+  and leashes back when displaced, Patrol has no route data to decode
+  anywhere in this codebase so it aliases Wander's phase-transition state
+  machine verbatim. All six opt-in via their own `BYRO_*` env var. 7 of 17
+  PACK procedures now runtime-backed; the remaining 10 are blocked on
+  subsystems (combat, magic, dialogue, item-use) that don't exist yet, not
+  just missing dispatch. See the M42 row in ROADMAP.md for the full trace.
+- **Audit bug-bash tail (~35 commits, ~#1987–#2096)** — drained across NIF
+  version-gating, BGSM metalness, water precision, GPU timer telemetry,
+  texture-slot telemetry, doc-rot sweeps, and stale baseline refreshes.
+  Notable fixes: NPC_/CREA embedded FormIDs were never remapped through
+  `FormIdRemap` (`#1996`, `5de577b9`) — every multi-plugin load silently
+  missed package/race/class lookups for non-base-plugin NPCs; the
+  additive-blend sort key ordered `mesh_handle` before `depth_state`,
+  the opposite of the opaque branch, doubling pipeline binds on mixed
+  wireframe/fill content (`#1994`, `56019cdf`); `activate_ragdoll` leaked
+  ~18 bodies + ~17 joints into the solver on every re-activation
+  (`#2083`, `d60a62ee`); PACK `PSDT` schedule decode used one fixed byte
+  layout for every game despite Skyrim+ growing the struct 8→12 bytes
+  (`#2012`, `55ae73e2`); `misc/ai.rs` (2371 lines, 5 record families bundled
+  together) split into `pack.rs`/`quest.rs`/`dialogue.rs`/`character.rs`
+  (`#2054`, `4b891e86`) for the same one-family-per-file convention every
+  other `misc/` sibling already followed; TES-family player-rig grounding
+  at cell-load spawn (`#2013`/RT-1, `e2f75456`) is now partially fixed — a
+  new `PhysicsWorld::cast_capsule_down` ground probe grounds Skyrim SE
+  immediately at frame 0, but Oblivion's resting contact still reads an
+  inverted surface normal, root cause not yet isolated.
+- **First external contribution** — PR #2110 (`Dodothereal`) fixed
+  `BSLightingShaderProperty`'s NIF-D5-01 parse gap (`#2002`), merged via
+  `be7db86e`.
+- **CI recovery** — both branch-protection jobs had been red for roughly
+  the last 10 pushes with nobody noticing, since neither failure blocked
+  local `cargo test`/`cargo check`. `cargo clippy --workspace -D warnings`
+  had 22 lint errors spread across `plugin`/`renderer`/`nif`/`scripting`/
+  the binary crate — most were invisible until the crate ahead of them in
+  the dependency graph compiled clean again, since a clippy failure blocks
+  clippy from even running on that crate's dependents. The ABBA lock-order
+  detector (`BYRO_LOCK_ORDER_CHECK=1`) caught a real bug:
+  `crates/physics/src/sync.rs`'s `collect_newcomers` acquired
+  `RigidBodyData`/`RapierHandles`/`GlobalTransform` in a different relative
+  order than `push_kinematic` — a genuine cross-thread deadlock risk if the
+  scheduler ever ran both concurrently. Fixing that unblocked the rest of
+  the suite (a panicking test stops recording further lock-order edges on
+  its thread) and surfaced ~10 more instances of the same class of bug —
+  component/resource pairs locked in inconsistent order between a
+  production system and a test exercising it — normalized to each pair's
+  established convention (`19703131`, `b5e38c22`).
+
+Net: tests 3587→3708 (+121), Rust src LOC ~272 700→~280 945 (+~8 245),
+source files 671→690 total (633→652 outside `tests/` dirs), bench-of-record
+unchanged at `8a668eff` (16 commits stale, under the 30-commit refresh
+threshold — no re-run needed this session).
+
+---
+
 ## Session 56 — M42 sandbox seating + M41.5 NPC idle variety + audit bug-bash tail  (2026-07-15, `c0b2d4e0..005ff563`, 28 commits)
 
 Opened on the NPC-liveliness arc — giving spawned actors something to *do*

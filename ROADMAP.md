@@ -12,7 +12,7 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-07-15 (Session 56 closeout — tests 3587, +38; src/ LOC +~2 680; bench-of-record now 613 commits stale, see staleness caveat below). Session 56 closed the M42 Sandbox seat behavior end-to-end (PACK `PLDT` location decode → authored search radius → grounded sit-enter pose, `7d5e91db`/`17d55414`/`c5dcad97`, PR #1978), shipped M41.5 NPC idle-variety phase/speed desync + furniture-marker foundation (`004b51c7`, PR #1977), and worked through the ECS-core / audio / renderer audit reports (2026-07-11 → 2026-07-14) as a low/medium-severity doc-rot + correctness bug-bash — no hot-path shader/pipeline change landed. See [HISTORY.md](HISTORY.md) Session 56.
+**Last verified**: 2026-07-18 (Session 57 closeout — tests 3708, +121; src/ LOC +~8 245; bench-of-record `8a668eff`, 16 commits stale — under the 30-commit refresh threshold). Session 57 shipped six more M42 PACK procedure runtimes (Wander→Patrol, M42.3–M42.8), drained ~35 commits of the standing audit backlog (~#1987–#2096) across NIF/renderer/scripting/save, merged the project's first external community PR (#2110), and recovered both `cargo clippy -D warnings` and the ABBA lock-order detector (`BYRO_LOCK_ORDER_CHECK=1`) CI jobs, which had been silently red for ~10 pushes — the lock-order fix caught a genuine cross-thread deadlock risk in `crates/physics/src/sync.rs`. See [HISTORY.md](HISTORY.md) Session 57.
 **Bench-of-record** (R6a-stale-15 refresh, HEAD `8a668eff`, 2026-07-18,
 wall-clock bench, 300 frames × 3 runs/scene averaged, RTX 4070 Ti, run from
 each game's `Data/` directory — see Repro-command CWD note below):
@@ -30,7 +30,7 @@ Prospector confirms #2084's live-sample finding: the fence-recovery gap the R6a-
 
 **Repro-command CWD note:** bare `--bsa` / `--textures-bsa` / `--materials-ba2` names resolve against CWD, not the `--esm` folder. Run each bench with CWD set to that game's `Data/` directory. Run from elsewhere → archives silently fail → scene loads near-empty (Prospector: 36 entities / 3 meshes / spurious ~1792 FPS).
 
-**Staleness (2026-07-18):** bench-of-record refreshed this session (R6a-stale-15, HEAD `8a668eff`) — 0 commits stale.
+**Staleness (2026-07-18, Session 57 closeout):** bench-of-record is R6a-stale-15 (HEAD `8a668eff`) — 16 commits stale, under the 30-commit refresh threshold. No re-run triggered this session.
 
 ---
 
@@ -665,6 +665,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] ~~No world streaming — entire cell re-imported from scratch on every load (M40)~~ — **closed 2026-05-24 via M40 row audit**. `WorldStreamingState` + async cell-pre-parse worker + LRU BLAS eviction + interior↔exterior cell-swap all live; verified by code inspection of [`byroredux/src/streaming.rs`](byroredux/src/streaming.rs), [`byroredux/src/main.rs`](byroredux/src/main.rs), [`byroredux/src/cell_loader/unload.rs`](byroredux/src/cell_loader/unload.rs), and [`crates/renderer/src/vulkan/acceleration/blas_static.rs`](crates/renderer/src/vulkan/acceleration/blas_static.rs). The previous "single-cell-at-a-time" framing on the M40 row was stale wording from before Stage 3b landed.
 - [x] ~~BSA v103 (Oblivion) decompression not working~~ — **stale premise, closed via #699**. v103 archive opens AND extracts cleanly: 147 629 / 147 629 vanilla files across all 17 Oblivion BSAs (2026-04-17 + 2026-04-25 sweeps); `nif_stats` round-trips 8032 NIFs through the v103 path. The real Oblivion exterior blocker is TES4 worldspace + LAND wiring (same shape FO3 was) — already covered by the M40 / M41 / "exterior renderer" Tier-1/2 plan, no separate tracker needed.
 - [x] Skyrim + FO4 cells not wired through `cell_loader` — **closed M32.5**, both render end-to-end
+- [ ] TES-family player rig never grounds at cell-load spawn (RT-1 / #2013) — **partially fixed** (`e2f75456`, 2026-07-18): added `PhysicsWorld::cast_capsule_down` (a capsule-shaped ground probe alongside the existing ray-cast — a bare ray can slip past sloped/narrow geometry the KCC's own capsule would still clip) and widened the door-spawn XZ nudge to probe downward for the real local floor before trusting door height. Skyrim SE (`WhiterunDragonsreach`) now grounds immediately at frame 0 and stays stable. Oblivion (`ICMarketDistrictTheGildedCarafe`) spawn no longer falls through the floor but `is_grounded` still reads false — a diagnostic probe found the resting contact's surface normal inverted (dot-up ≈ −0.99) independent of spawn accuracy; root cause (likely somewhere in the NiTriStrips-based Oblivion collision import path) not yet isolated.
 
 ### Open — Tier 3 / 4 gaps
 
@@ -728,16 +729,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-07-15 (Session 56 closeout). Last `/session-close` verification was 2026-07-15 (Session 56).
+Ground-truth as of 2026-07-18 (Session 57 closeout). Last `/session-close` verification was 2026-07-18 (Session 57).
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~272 700 (Session 56 measure) |
-| Rust total lines (all `.rs`, excl. `target/`) | ~288 028 (updated 2026-07-15)  |
-| Source files (`.rs`, excl. `target/`)   | 671 total · 633 outside `tests/` dirs |
+| Rust source lines (`src/` dirs)         | ~280 945 (Session 57 measure) |
+| Rust total lines (all `.rs`, excl. `target/`) | ~296 514 (updated 2026-07-18)  |
+| Source files (`.rs`, excl. `target/`)   | 690 total · 652 outside `tests/` dirs |
 | Workspace members                       | 23 (21 crates + `byroredux` binary + `tools/byro-dbg`) |
-| Tests (last reported by ROADMAP)        | **3587 passing** (Session 56 closeout, 2026-07-15). +38 vs Session 55. |
-| Open issue directories                  | 1840 (`.claude/issues/`)     |
+| Tests (last reported by ROADMAP)        | **3708 passing** (Session 57 closeout, 2026-07-18). +121 vs Session 56. |
+| Open issue directories                  | 1972 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE / FO4 / FO76 (FO4 both base mesh archives, 159 866 NIFs, 2026-06-14; FO76 58 469 NIFs, 2026-07-11 #1900); Oblivion 99.93% (2026-06-15 sweep, post-#1543/#1544), Starfield 99.64% aggregate (2026-07-03 sweep; see compat matrix for per-archive breakdown). Recoverable 100% on all games, including Oblivion (#698's corrupt-marker hard-failure is closed). Sweep dates: Oblivion 2026-06-15, FO4 2026-06-14, FO76 2026-07-11, Starfield 2026-07-03; FO3/FNV/Skyrim SE unrefreshed since the original integration sweep (still 100%). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
