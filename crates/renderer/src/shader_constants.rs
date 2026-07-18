@@ -125,6 +125,8 @@ mod tests {
             ("INSTANCE_FLAG_ALPHA_BLEND", format!("#define INSTANCE_FLAG_ALPHA_BLEND {INSTANCE_FLAG_ALPHA_BLEND}u")),
             ("INSTANCE_FLAG_CAUSTIC_SOURCE", format!("#define INSTANCE_FLAG_CAUSTIC_SOURCE {INSTANCE_FLAG_CAUSTIC_SOURCE}u")),
             ("INSTANCE_FLAG_TERRAIN_SPLAT", format!("#define INSTANCE_FLAG_TERRAIN_SPLAT {INSTANCE_FLAG_TERRAIN_SPLAT}u")),
+            ("INSTANCE_RENDER_LAYER_SHIFT", format!("#define INSTANCE_RENDER_LAYER_SHIFT {INSTANCE_RENDER_LAYER_SHIFT}u")),
+            ("INSTANCE_RENDER_LAYER_MASK", format!("#define INSTANCE_RENDER_LAYER_MASK {INSTANCE_RENDER_LAYER_MASK}u")),
             ("INSTANCE_FLAG_FLAT_SHADING", format!("#define INSTANCE_FLAG_FLAT_SHADING {INSTANCE_FLAG_FLAT_SHADING}u")),
             ("INSTANCE_FLAG_DIFFUSE_ALPHA", format!("#define INSTANCE_FLAG_DIFFUSE_ALPHA {INSTANCE_FLAG_DIFFUSE_ALPHA}u")),
             ("MAT_FLAG_VERTEX_COLOR_EMISSIVE", format!("#define MAT_FLAG_VERTEX_COLOR_EMISSIVE {MAT_FLAG_VERTEX_COLOR_EMISSIVE}u")),
@@ -327,6 +329,30 @@ mod tests {
         );
     }
 
+    /// #2045 (TD7-101) — `triangle.frag` must NOT redeclare
+    /// `INST_RENDER_LAYER_SHIFT`/`_MASK` (the pre-fix hand-written
+    /// names) or `INSTANCE_RENDER_LAYER_SHIFT`/`_MASK` (the generated
+    /// names) as a local `const uint`. Pre-fix, these two were
+    /// hand-written directly in the shader with no lockstep test — a
+    /// regression back to that pattern would silently drop the
+    /// `#define`d values from `shader_constants.glsl`.
+    #[test]
+    fn triangle_frag_render_layer_bits_not_redeclared() {
+        let src = include_str!("../shaders/triangle.frag");
+        for needle in [
+            "const uint INST_RENDER_LAYER_SHIFT",
+            "const uint INST_RENDER_LAYER_MASK",
+            "const uint INSTANCE_RENDER_LAYER_SHIFT",
+            "const uint INSTANCE_RENDER_LAYER_MASK",
+        ] {
+            assert!(
+                !src.contains(needle),
+                "triangle.frag must not redeclare {needle} — \
+                 the #define from shader_constants.glsl is the source of truth (#2045)",
+            );
+        }
+    }
+
     /// #1190 (TD4-NEW-01) — `triangle.frag` must NOT redeclare any
     /// `MAT_FLAG_*` bit as a local `const uint`. The `#define`d
     /// values from the included `shader_constants.glsl` are the
@@ -496,6 +522,24 @@ mod tests {
         assert_eq!(INSTANCE_FLAG_TERRAIN_SPLAT, SB_TERRAIN_SPLAT);
         assert_eq!(INSTANCE_FLAG_FLAT_SHADING, SB_FLAT_SHADING);
         assert_eq!(INSTANCE_FLAG_DIFFUSE_ALPHA, SB_DIFFUSE_ALPHA);
+    }
+
+    /// #2045 (TD7-101) — `INSTANCE_RENDER_LAYER_SHIFT`/`_MASK` were
+    /// previously hand-written directly in `triangle.frag` with no
+    /// lockstep test, unlike every other `INSTANCE_FLAG_*` bit pinned by
+    /// `instance_flag_bits_match_scene_buffer_consts` above. Now sourced
+    /// from the generated header; this pins the shader-side mirror in
+    /// `shader_constants_data.rs` equal to the authoritative
+    /// `scene_buffer::constants` values so `RenderLayer`'s bit-packing
+    /// can't silently drift between the two layers.
+    #[test]
+    fn instance_render_layer_bits_match_scene_buffer_consts() {
+        use crate::vulkan::scene_buffer::{
+            INSTANCE_RENDER_LAYER_MASK as SB_RENDER_LAYER_MASK,
+            INSTANCE_RENDER_LAYER_SHIFT as SB_RENDER_LAYER_SHIFT,
+        };
+        assert_eq!(INSTANCE_RENDER_LAYER_SHIFT, SB_RENDER_LAYER_SHIFT);
+        assert_eq!(INSTANCE_RENDER_LAYER_MASK, SB_RENDER_LAYER_MASK);
     }
 
     /// #1190 (TD4-NEW-01) — Same pin, for `MAT_FLAG_*` against

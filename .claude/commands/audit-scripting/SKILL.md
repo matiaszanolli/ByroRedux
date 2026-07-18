@@ -15,7 +15,8 @@ the ECS scripting runtime (events / timers / conditions / triggers / quest
 stages), and the cell-loader REFR-attach path that resolves a scripted REFR's
 VMAD-named `.pex` and runs the recognizer chain.
 
-This domain has had **zero prior audit coverage** (~16k LOC). The
+This domain (~16k LOC) has six prior audit passes in `docs/audits/AUDIT_SCRIPTING_*.md`
+— read the most recent one first (Phase 1 below). The
 decompiler is the **highest bug-density area**: it parses untrusted bytecode
 and runs five tree-rewriting passes, so dimensions are weighted toward it
 (three of seven). Its correctness story rests on a corpus-decompile
@@ -98,9 +99,13 @@ before reporting any doc-rot here.
 **Future-phase gaps (do NOT flag as missing unless scope says so)**:
 - Obscript / `SCTX` frontend (Oblivion/FO3/FNV) — `ScriptSource::Obscript` is a
   typed placeholder; the SCTX parser is M47.2 Phase 5, not built.
-- M47.1 condition stubs — `GetActorValue`/`GetDistance`/`GetFactionRank`/`GetIsID`/
-  `HasPerk` return documented safe-defaults pending resolvers. These are tracked
-  (#1663–#1668, #1316) — re-flagging is a dedup miss, not a finding.
+- M47.1 condition resolvers (`GetActorValue`/`GetDistance`/`GetFactionRank`/`GetIsID`/
+  `HasPerk`, the Global comparand, and the 6 stub branches from #1316) are
+  **no longer stubs** — all 13 catalog functions are fully implemented with
+  correct Bethesda safe-default sentinels (#1663–#1668, #1316, all closed
+  2026-06-29→07-04; re-verified `AUDIT_SCRIPTING_2026-07-16.md` Dimension 6,
+  27 passing unit tests). Re-verification against a live headless cell with
+  real CTDA data (not just unit tests) remains outstanding — a gap, not a stub.
 - The fragment lowerer (b2) as a *wired runtime dispatch* — `effects::lower_fragment`
   + `QuestStageFragments` + `quest_fragment_dispatch_system` exist, but the
   decompiled-`.pex`-fragment → `QuestStageFragments` *population* path may be
@@ -143,13 +148,13 @@ one corrupts game state with no fallback to mask it.
 1. Parse `$ARGUMENTS` for `--focus`, `--depth`.
 2. `mkdir -p /tmp/audit/scripting`
 3. Fetch dedup baseline: `gh issue list --repo matiaszanolli/ByroRedux --limit 300 --json number,title,state,labels > /tmp/audit/scripting/issues.json`
-4. **No prior scripting audit exists** (`docs/audits/` has no `AUDIT_SCRIPTING_*`).
-   Every confirmed finding is NEW unless it matches an open issue. Pre-load the
-   known scripting-domain open issues so you don't re-file them:
-   - M47.1 condition stubs: **#1663** (GetActorValue), **#1664** (GetDistance),
-     **#1665** (GetFactionRank), **#1666** (GetIsID), **#1667** (HasPerk),
-     **#1668** (Global comparand / CTDA use_global), **#1316** (6 stub branches,
-     hardcoded safe-defaults). A re-flag of any condition stub is "Existing: #NNNN".
+4. **Read the most recent `docs/audits/AUDIT_SCRIPTING_*.md` report** (sort by
+   date — do not hardcode a filename here, it rots every cycle). Diff direction
+   against it rather than re-litigating settled findings. In particular, the
+   M47.1 condition-resolver stubs (#1663–#1668, #1316) that earlier reports
+   tracked as open are now CLOSED and fully implemented — verify against the
+   live `crates/scripting/` code before flagging any condition-resolver gap,
+   don't assume the stub-era finding still applies.
 5. Read the three crate module docstrings + `docs/engine/m47-2-design.md` §"Frontends
    in detail" and §"Risks & mitigations" to confirm what is *designed* to decline /
    defer vs. what is a real defect, before reporting any "missing handling" finding.

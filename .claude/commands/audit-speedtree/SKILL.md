@@ -95,16 +95,16 @@ gate) — that's intentional, not a drop.
 2. Dedup query (per `_audit-common.md`):
    `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels --search "speedtree OR spt OR TREE" > /tmp/audit/speedtree/issues.json`
 3. Read the **most recent** `docs/audits/AUDIT_SPEEDTREE_*.md` report (sort by
-   date — do not hardcode a filename here, it rots every cycle). As of this
-   writing the latest is `_2026-07-02.md`, superseding `_2026-05-13.md`,
-   `_2026-06-14.md`, and `_2026-06-23.md`; the `_2026-07-01.md`/`_2026-07-02.md`
-   pair carries still-unfiled findings (SPT-NEW-01 dead-code `detect_variant`,
-   SPT-NEW-06 format-notes byte-align, SPT-NEW-07 `MaybeStringElseBare` misparse
-   risk) worth checking before re-deriving from scratch. Findings SPT-D4-01/02/03/04,
-   SPT-D5-01/02, SPT-D2-01, SPT-D3-01, SPT-D1-01 are all **closed**
-   (#994/#995/#996/#997/#998/#999/#1000/#1001/#1002). Treat closed findings as
-   **regression guards**, not open items; only re-flag if a guard has actually
-   broken.
+   date — do not hardcode a filename here, it rots every cycle) and diff
+   direction against it rather than re-deriving from scratch. Findings
+   SPT-D4-01/02/03/04, SPT-D5-01/02, SPT-D2-01, SPT-D3-01, SPT-D1-01 are all
+   **closed** (#994/#995/#996/#997/#998/#999/#1000/#1001/#1002). Of the later
+   SPT-NEW batch, SPT-NEW-01 (dead-code `detect_variant`, #1820) and
+   SPT-NEW-06 (format-notes byte-align, #1821) are also **closed** — only
+   SPT-NEW-07 (`MaybeStringElseBare` misparse risk on a bare tag-13005
+   immediately before the geometry tail, #1822) remains open. Treat closed
+   findings as **regression guards**, not open items; only re-flag if a guard
+   has actually broken.
 4. `deep` only — corpus + recon harness:
    - corpus location: `Fallout - Meshes.bsa` (FNV/FO3), `Oblivion - Meshes.bsa`.
    - acceptance run: `BYROREDUX_FNV_DATA=… cargo test -p byroredux-spt --release --test parse_real_spt -- --ignored --nocapture` (and `_FO3_DATA` / `_OBL_DATA`).

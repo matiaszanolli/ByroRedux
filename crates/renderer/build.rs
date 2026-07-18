@@ -191,6 +191,16 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define INSTANCE_RENDER_LAYER_SHIFT {INSTANCE_RENDER_LAYER_SHIFT}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define INSTANCE_RENDER_LAYER_MASK {INSTANCE_RENDER_LAYER_MASK}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define INSTANCE_FLAG_FLAT_SHADING {INSTANCE_FLAG_FLAT_SHADING}u"
     )
     .unwrap();

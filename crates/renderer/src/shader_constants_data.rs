@@ -162,15 +162,24 @@ pub const VOLUME_FAR: f32 = 200.0;
 // live in `crates/renderer/src/vulkan/scene_buffer/constants.rs`; this
 // shader-side mirror is pinned equal via
 // `instance_flag_bits_match_scene_buffer_consts` so the two layers
-// can't drift. See #1190 (TD4-NEW-01). The render-layer slot
-// (bits 4..5) and the reserved PRESKINNED bit (bit 6) are not
-// emitted as shader-side flags because nothing in GLSL reads them
-// today; if they grow consumers, add the bit + a matching `#define`
-// to keep the include the single source of truth.
+// can't drift. See #1190 (TD4-NEW-01). The reserved PRESKINNED bit
+// (bit 6) is not emitted as a shader-side flag because nothing in
+// GLSL reads it today; if it grows a consumer, add the bit + a
+// matching `#define` to keep the include the single source of truth.
 pub const INSTANCE_FLAG_NON_UNIFORM_SCALE: u32 = 1 << 0;
 pub const INSTANCE_FLAG_ALPHA_BLEND: u32 = 1 << 1;
 pub const INSTANCE_FLAG_CAUSTIC_SOURCE: u32 = 1 << 2;
 pub const INSTANCE_FLAG_TERRAIN_SPLAT: u32 = 1 << 3;
+// Bit offset/mask for the `RenderLayer` classification packed into
+// bits 4..5 of `GpuInstance.flags` (#2045 / TD7-101). Previously
+// hand-written as `INST_RENDER_LAYER_SHIFT`/`_MASK` directly in
+// `triangle.frag` with no lockstep test, unlike every other
+// `INSTANCE_FLAG_*` bit; pinned equal to
+// `scene_buffer::constants::INSTANCE_RENDER_LAYER_SHIFT`/`_MASK` via
+// `instance_render_layer_bits_match_scene_buffer_consts`. Consumed by
+// the fragment shader's `DBG_VIZ_RENDER_LAYER` debug-viz branch.
+pub const INSTANCE_RENDER_LAYER_SHIFT: u32 = 4;
+pub const INSTANCE_RENDER_LAYER_MASK: u32 = 0x3;
 pub const INSTANCE_FLAG_FLAT_SHADING: u32 = 1 << 7;
 // bit 8 — diffuse texture carries a genuine authored alpha channel
 // (BC2/BC3/BC7/RGBA). Set CPU-side from the cached `handle_has_alpha`

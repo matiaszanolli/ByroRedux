@@ -32,9 +32,14 @@ fn dummy_cached() -> Arc<CachedNifImport> {
 }
 
 fn dummy_partial() -> crate::streaming::PartialNifImport {
+    dummy_partial_with(0, 0)
+}
+
+fn dummy_partial_with(bsx: u32, bsver: u32) -> crate::streaming::PartialNifImport {
     crate::streaming::PartialNifImport {
         scene: byroredux_nif::scene::NifScene::default(),
-        bsx: 0,
+        bsx,
+        bsver,
         root_flags: 0,
         lights: Vec::new(),
         particle_emitters: Vec::new(),
@@ -137,4 +142,56 @@ fn finish_partial_import_early_outs_with_mixed_case_model_path() {
         "early-out must not append a duplicate-case entry"
     );
     assert!(reg.get("rock_cliff.nif").is_some());
+}
+
+// ── #2046 / TD2-103 — game-era-gated BSXFlags bit-5 regression ──
+//
+// `references::import::parse_and_import_nif` (the sync REFR path) was
+// fixed under commit 6feac029 to treat BSXFlags bit 5 as `EditorMarker`
+// only below BSVER FALLOUT4 — on Skyrim+/FO4/FO76/Starfield the bit was
+// re-purposed to `MultiBoundNode`, and blanket-skipping it drops real
+// architecture (`hitfloorsolidfull01.nif`-class FO4 content, BSXFlags
+// 0xA2). `finish_partial_import` (the async exterior-streaming drain
+// path) never received that fix. These tests pin it now that it has.
+
+/// FO4-era content (BSVER >= FALLOUT4) with bit 5 set must NOT be
+/// treated as an editor marker — the cache entry must be a POSITIVE
+/// hit (imported), not the `None` skip-marker.
+#[test]
+fn finish_partial_import_fo4_bsx_bit5_is_not_editor_marker() {
+    let mut world = world_with_registries();
+    let partial = dummy_partial_with(0xA2, byroredux_nif::version::bsver::FALLOUT4);
+
+    finish_partial_import(&mut world, None, None, "hitfloorsolidfull01.nif", partial);
+
+    let reg = world.resource::<NifImportRegistry>();
+    let entry = reg
+        .get("hitfloorsolidfull01.nif")
+        .expect("cache entry inserted");
+    assert!(
+        entry.is_some(),
+        "FO4 BSXFlags bit 5 (MultiBoundNode) must NOT be classified as an \
+         editor marker — the NIF must still be imported (#2046)"
+    );
+}
+
+/// Pre-FO4 content (Oblivion/FO3/FNV, BSVER < FALLOUT4) with bit 5 set
+/// IS a genuine editor marker and must still be skipped — the fix must
+/// not regress the case it was never wrong about.
+#[test]
+fn finish_partial_import_oblivion_bsx_bit5_is_still_editor_marker() {
+    let mut world = world_with_registries();
+    let partial = dummy_partial_with(0x20, byroredux_nif::version::bsver::OBLIVION);
+
+    finish_partial_import(&mut world, None, None, "xmarkerheading.nif", partial);
+
+    let reg = world.resource::<NifImportRegistry>();
+    let entry = reg
+        .get("xmarkerheading.nif")
+        .expect("cache entry inserted");
+    assert!(
+        entry.is_none(),
+        "Oblivion-era BSXFlags bit 5 is a genuine editor marker and must \
+         still be skipped (negative cache entry)"
+    );
 }
