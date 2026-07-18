@@ -3,7 +3,7 @@
 use super::super::common::{read_lstring_or_zstring, read_zstring};
 use super::super::condition::{parse_ctda, remap_condition_form_ids, ConditionList};
 use super::super::script_instance::{parse_quest_fragments, QuestScriptFragment};
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// `PACK` AI package record. 30-procedure scheduling system
@@ -515,6 +515,7 @@ pub fn parse_pack(
     form_id: u32,
     subs: &[SubRecord],
     remap: &Option<crate::esm::reader::FormIdRemap>,
+    game: GameKind,
 ) -> PackRecord {
     let mut out = PackRecord {
         form_id,
@@ -536,13 +537,35 @@ pub fn parse_pack(
                 out.procedure_type = r.u8_or_default() as u32;
             }
             b"PSDT" if sub.data.len() >= 8 => {
-                // FO3/FNV PSDT: month i8, dayOfWeek i8, date u8, time i8
-                // (hour; -1/0xFF = any), duration i32 (hours). Verified vs
-                // FalloutNV.esm (AtBar 8x12, Evening 20x2, Sleep 22x10).
+                // FO3/FNV PSDT (8 bytes): month i8, dayOfWeek i8, date u8,
+                // time i8 (hour; -1/0xFF = any), duration i32 (hours).
+                // Verified vs FalloutNV.esm (AtBar 8x12, Evening 20x2,
+                // Sleep 22x10). `time` sits at offset 3 in both eras.
+                //
+                // #2012 / LC0716-01 — Skyrim+ PSDT grew to 12 bytes: the
+                // same month/day/date/hour i8 quartet, plus a new
+                // `minute` i8 (offset 4, not decoded here — no consumer
+                // needs sub-hour precision yet) and 3 bytes of padding,
+                // pushing `duration` from offset 4 to offset 8. Reading
+                // offset 4 unconditionally on a Skyrim+ record misreads
+                // `minute` + padding as `duration`. Cross-checked against
+                // wrye-bash's MelPackSchedule (new, 12 B) vs
+                // MelPackScheduleOld (old, 8 B). `uses_prebaked_facegen`
+                // is Redux's existing "post-Skyrim" predicate (Skyrim /
+                // FO4 / FO76 / Starfield) — reused here rather than
+                // inventing a second one for the same era split.
                 let time = sub.data[3] as i8;
-                let duration = i32::from_le_bytes([
-                    sub.data[4], sub.data[5], sub.data[6], sub.data[7],
-                ]);
+                let duration_offset = if game.uses_prebaked_facegen() { 8 } else { 4 };
+                let duration = if sub.data.len() >= duration_offset + 4 {
+                    i32::from_le_bytes([
+                        sub.data[duration_offset],
+                        sub.data[duration_offset + 1],
+                        sub.data[duration_offset + 2],
+                        sub.data[duration_offset + 3],
+                    ])
+                } else {
+                    0
+                };
                 out.schedule = Some(PackSchedule {
                     start_hour: if time < 0 { None } else { Some(time as u8) },
                     duration_hours: duration.max(0) as u32,
@@ -1262,7 +1285,7 @@ mod tests {
         pkdt.extend_from_slice(&0x0000_0421u32.to_le_bytes()); // flags
         pkdt.extend_from_slice(&6u32.to_le_bytes()); // procedure 6 = Travel
         let subs = vec![sub(b"EDID", b"TravelToWork\0"), sub(b"PKDT", &pkdt)];
-        let p = parse_pack(0xA1A1, &subs, &None);
+        let p = parse_pack(0xA1A1, &subs, &None, GameKind::default());
         assert_eq!(p.editor_id, "TravelToWork");
         assert_eq!(p.package_flags, 0x0000_0421);
         assert_eq!(p.procedure_type, 6);
@@ -1281,7 +1304,7 @@ mod tests {
         pkdt.push(12); // procedure byte = Sandbox
         pkdt.extend_from_slice(&[0xAB, 0xCD, 0xEF]); // type-specific junk
         let subs = vec![sub(b"EDID", b"DefaultSandbox\0"), sub(b"PKDT", &pkdt)];
-        let p = parse_pack(0xB2B2, &subs, &None);
+        let p = parse_pack(0xB2B2, &subs, &None, GameKind::default());
         assert_eq!(
             p.procedure_type, 12,
             "procedure must be the byte value, not the polluted u32"
@@ -1309,14 +1332,43 @@ mod tests {
         // AtBar `8x12`: time byte = 8, duration i32 = 12 → 08:00 for 12 h.
         let psdt = [0xff, 0xff, 0x00, 0x08, 0x0c, 0, 0, 0];
         assert_eq!(
-            parse_pack(0x1, &[sub(b"PSDT", &psdt)], &None).schedule,
+            parse_pack(0x1, &[sub(b"PSDT", &psdt)], &None, GameKind::default()).schedule,
             sched(Some(8), 12)
         );
         // Any-time sandbox: time byte = -1 (0xFF) → start_hour None.
         let any = [0xff, 0xff, 0x00, 0xff, 0, 0, 0, 0];
         assert_eq!(
-            parse_pack(0x2, &[sub(b"PSDT", &any)], &None).schedule,
+            parse_pack(0x2, &[sub(b"PSDT", &any)], &None, GameKind::default()).schedule,
             sched(None, 0)
+        );
+    }
+
+    /// #2012 / LC0716-01 — Skyrim+ PSDT is 12 bytes: the same
+    /// month/day/date/hour i8 quartet at offsets 0-3, a new `minute` i8
+    /// at offset 4, 3 bytes of padding, then `duration` i32 at offset 8
+    /// (not offset 4, where the pre-fix code read unconditionally).
+    /// Pins that a Skyrim+ `GameKind` reads `duration` from the correct
+    /// offset instead of misreading `minute` + padding as the duration.
+    #[test]
+    fn parse_pack_reads_skyrim_plus_psdt_schedule_from_offset_8() {
+        // month=0xff day=0xff date=0x00 hour=0x08 minute=0x1e(30, unused)
+        // pad=[0,0,0] duration=12 (0x0c000000 LE) — AtBar-equivalent
+        // schedule (08:00 for 12h) under the 12-byte Skyrim+ layout.
+        let psdt = [0xff, 0xff, 0x00, 0x08, 0x1e, 0, 0, 0, 0x0c, 0, 0, 0];
+        assert_eq!(
+            parse_pack(0x1, &[sub(b"PSDT", &psdt)], &None, GameKind::Skyrim).schedule,
+            sched(Some(8), 12),
+            "Skyrim+ PSDT must read duration from offset 8, not offset 4 \
+             (which holds `minute` + padding under the 12-byte layout)"
+        );
+
+        // Same bytes read under Fallout3NV (the old 8-byte-layout era)
+        // must reinterpret offset 4 (`minute`=0x1e=30) as `duration`,
+        // proving the two branches genuinely diverge on this input
+        // rather than coincidentally agreeing.
+        assert_eq!(
+            parse_pack(0x2, &[sub(b"PSDT", &psdt)], &None, GameKind::Fallout3NV).schedule,
+            sched(Some(8), 30),
         );
     }
 
@@ -1330,7 +1382,7 @@ mod tests {
 
     #[test]
     fn parse_pack_no_pldt_leaves_location_none() {
-        let p = parse_pack(0x1, &[sub(b"EDID", b"NoLocation\0")], &None);
+        let p = parse_pack(0x1, &[sub(b"EDID", b"NoLocation\0")], &None, GameKind::default());
         assert!(p.location.is_none());
     }
 
@@ -1339,7 +1391,7 @@ mod tests {
         // Type 0 = Near Reference, radius 512 (the FNV DefaultSandbox
         // package radius).
         let data = pldt(0, 0x0001_2345, 512);
-        let p = parse_pack(0x1, &[sub(b"PLDT", &data)], &None);
+        let p = parse_pack(0x1, &[sub(b"PLDT", &data)], &None, GameKind::default());
         let loc = p.location.expect("PLDT should populate location");
         assert_eq!(loc.location_type, 0);
         assert_eq!(loc.target, PackLocationTarget::NearReference(0x0001_2345));
@@ -1349,14 +1401,14 @@ mod tests {
     #[test]
     fn parse_pack_reads_pldt_in_cell_and_object_id() {
         let cell = pldt(1, 0x0002_ABCD, 0);
-        let p = parse_pack(0x1, &[sub(b"PLDT", &cell)], &None);
+        let p = parse_pack(0x1, &[sub(b"PLDT", &cell)], &None, GameKind::default());
         assert_eq!(
             p.location.unwrap().target,
             PackLocationTarget::InCell(0x0002_ABCD)
         );
 
         let obj = pldt(4, 0x0003_1111, 256);
-        let p = parse_pack(0x1, &[sub(b"PLDT", &obj)], &None);
+        let p = parse_pack(0x1, &[sub(b"PLDT", &obj)], &None, GameKind::default());
         assert_eq!(
             p.location.unwrap().target,
             PackLocationTarget::ObjectId(0x0003_1111)
@@ -1371,7 +1423,7 @@ mod tests {
     fn parse_pack_reads_pldt_other_types_pass_through_raw() {
         for location_type in [2u32, 3, 5, 6, 7] {
             let data = pldt(location_type, 0x0009_9999, 128);
-            let p = parse_pack(0x1, &[sub(b"PLDT", &data)], &None);
+            let p = parse_pack(0x1, &[sub(b"PLDT", &data)], &None, GameKind::default());
             let loc = p.location.unwrap();
             assert_eq!(loc.location_type, location_type);
             assert_eq!(loc.target, PackLocationTarget::Other(0x0009_9999));
@@ -1388,7 +1440,7 @@ mod tests {
         // mod_index 1 == master_slots.len() → self-reference.
         let raw = (1u32 << 24) | 0x0000_5678;
         let data = pldt(0, raw, 512);
-        let p = parse_pack(0x1, &[sub(b"PLDT", &data)], &Some(remap));
+        let p = parse_pack(0x1, &[sub(b"PLDT", &data)], &Some(remap), GameKind::default());
         assert_eq!(
             p.location.unwrap().target,
             PackLocationTarget::NearReference((2u32 << 24) | 0x0000_5678)
@@ -1406,7 +1458,7 @@ mod tests {
 
     #[test]
     fn parse_pack_no_ptdt_leaves_target_none() {
-        let p = parse_pack(0x1, &[sub(b"EDID", b"NoTarget\0")], &None);
+        let p = parse_pack(0x1, &[sub(b"EDID", b"NoTarget\0")], &None, GameKind::default());
         assert!(p.target.is_none());
     }
 
@@ -1414,7 +1466,7 @@ mod tests {
     fn parse_pack_reads_ptdt_specific_reference() {
         // Type 0 = Specific Reference, distance 256.
         let data = ptdt(0, 0x0001_2345, 256);
-        let p = parse_pack(0x1, &[sub(b"PTDT", &data)], &None);
+        let p = parse_pack(0x1, &[sub(b"PTDT", &data)], &None, GameKind::default());
         let target = p.target.expect("PTDT should populate target");
         assert_eq!(target.target_type, 0);
         assert_eq!(target.target, PackTargetKind::SpecificReference(0x0001_2345));
@@ -1424,12 +1476,12 @@ mod tests {
     #[test]
     fn parse_pack_reads_ptdt_object_id_and_other_types() {
         let obj = ptdt(1, 0x0003_1111, 128);
-        let p = parse_pack(0x1, &[sub(b"PTDT", &obj)], &None);
+        let p = parse_pack(0x1, &[sub(b"PTDT", &obj)], &None, GameKind::default());
         assert_eq!(p.target.unwrap().target, PackTargetKind::ObjectId(0x0003_1111));
 
         for target_type in [2u32, 3] {
             let data = ptdt(target_type, 0x0009_9999, 0);
-            let p = parse_pack(0x1, &[sub(b"PTDT", &data)], &None);
+            let p = parse_pack(0x1, &[sub(b"PTDT", &data)], &None, GameKind::default());
             assert_eq!(p.target.unwrap().target, PackTargetKind::Other(0x0009_9999));
         }
     }
@@ -1439,7 +1491,7 @@ mod tests {
         let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
         let raw = (1u32 << 24) | 0x0000_5678; // mod_index 1 == master_slots.len() → self-reference
         let data = ptdt(0, raw, 0);
-        let p = parse_pack(0x1, &[sub(b"PTDT", &data)], &Some(remap));
+        let p = parse_pack(0x1, &[sub(b"PTDT", &data)], &Some(remap), GameKind::default());
         assert_eq!(
             p.target.unwrap().target,
             PackTargetKind::SpecificReference((2u32 << 24) | 0x0000_5678)
@@ -1825,6 +1877,7 @@ mod tests {
             0x1,
             &[sub(b"PKDT", &pkdt), sub(b"CTDA", &ctda)],
             &None,
+            GameKind::default(),
         );
         assert!(p.is_sandbox());
         assert_eq!(p.conditions.len(), 1);

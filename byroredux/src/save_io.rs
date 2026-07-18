@@ -92,6 +92,21 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // global-space AVIF FormID (u32, stable across reload) with four `f32`
     // composition layers — no FixedString / EntityId / session handle.
     "ActorValues",
+    // #2014 / SAVE-D1-NEW-01 — delta-safe subset of the seven M42
+    // AI-procedure runtime-state components: WanderState/TravelState/
+    // GuardState/PatrolState are plain Vec3/enum/u32 fields, and
+    // Traveled/Escorted are empty terminal markers. FollowState/
+    // EscortState/Seated are deliberately NOT here — they carry
+    // `EntityId` fields (`target_entity`/`furniture`), the same
+    // session-local-reference hazard `#1696` already excluded
+    // `AnimationPlayer.root_entity` for. Those three still ride the full
+    // register_component round-trip above, just not the live overlay.
+    "WanderState",
+    "TravelState",
+    "Traveled",
+    "GuardState",
+    "PatrolState",
+    "Escorted",
 ];
 
 /// The player's standing position + look direction at save time, so a
@@ -162,8 +177,9 @@ impl Resource for PendingSaveLoadSlot {}
 pub fn build_save_registry() -> SaveRegistry {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
     use byroredux_core::ecs::components::{
-        ActorValues, Children, EquipmentSlots, Inventory, LightFlicker, LightSource, Name, Parent,
-        Transform,
+        ActorValues, Children, EquipmentSlots, EscortState, Escorted, FollowState, GuardState,
+        Inventory, LightFlicker, LightSource, Name, Parent, PatrolState, Seated, Transform,
+        TravelState, Traveled, WanderState,
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
     use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
@@ -189,6 +205,25 @@ pub fn build_save_registry() -> SaveRegistry {
         // reverted every edited/permanent/temporary/damage layer to the
         // re-derived spawn base. Also a MUTABLE_DELTA_COLUMN (delta-safe).
         .register_component::<ActorValues>("ActorValues")
+        // #2014 / SAVE-D1-NEW-01 — the seven M42 AI-procedure runtime-state
+        // components. Continuously-updated state (WanderState/PatrolState/
+        // GuardState) is cosmetically self-correcting if lost (the owning
+        // system re-derives `home`/`anchor` from the actor's post-reload
+        // position on its next tick), but the terminal one-shot markers
+        // (Traveled/Escorted/Seated) are not: losing them makes an
+        // already-finished NPC silently redo its Travel/Escort/Seat
+        // behavior. All nine ride full register_component (restore_world
+        // preserves entity ids verbatim); see MUTABLE_DELTA_COLUMNS below
+        // for which additionally get the live-overlay fast path.
+        .register_component::<WanderState>("WanderState")
+        .register_component::<TravelState>("TravelState")
+        .register_component::<Traveled>("Traveled")
+        .register_component::<FollowState>("FollowState")
+        .register_component::<EscortState>("EscortState")
+        .register_component::<Escorted>("Escorted")
+        .register_component::<GuardState>("GuardState")
+        .register_component::<PatrolState>("PatrolState")
+        .register_component::<Seated>("Seated")
         .register_form_id_component("FormIdComponent")
         .register_resource::<ItemInstancePool>("ItemInstancePool")
         // M45.1 — the cell identity + plugin set the save was taken in,
@@ -771,6 +806,17 @@ mod tests {
             // Keys are global-space FormIDs (stable across reload); values are
             // plain f32s. No FixedString / EntityId / session handle → delta-safe.
             "ActorValues",
+            // #2014 — WanderState/PatrolState: home/target Vec3 + WanderPhase
+            // enum (Walking, or Paused{remaining: f32}) + pick_count u32.
+            // TravelState: destination Vec3. GuardState: anchor Vec3.
+            // Traveled/Escorted: empty unit-struct terminal markers. None
+            // carry FixedString / EntityId / session handle → delta-safe.
+            "WanderState",
+            "TravelState",
+            "Traveled",
+            "GuardState",
+            "PatrolState",
+            "Escorted",
         ];
         assert_eq!(
             MUTABLE_DELTA_COLUMNS, AUDITED,
@@ -852,6 +898,70 @@ mod tests {
         assert_eq!(layer.base, 100.0);
         assert_eq!(layer.permanent_mod, 25.0);
         assert_eq!(layer.damage, 40.0);
+    }
+
+    /// #2014 / SAVE-D1-NEW-01 — the seven M42 AI-procedure runtime-state
+    /// components must survive a save → load round-trip. Pre-fix, none were
+    /// registered, so a reload silently dropped them — the sharpest edge
+    /// being a terminal one-shot marker like `Traveled`: an NPC that had
+    /// already finished its Travel behavior would come back unfinished and
+    /// silently redo it. Covers one delta-safe state type (`WanderState`),
+    /// one terminal marker (`Traveled`), and one `EntityId`-carrying type
+    /// (`Seated`) — the three distinct save shapes this fix introduces.
+    #[test]
+    fn ai_procedure_state_and_terminal_markers_survive_save_load_round_trip() {
+        use byroredux_core::ecs::components::{Seated, Traveled, WanderPhase, WanderState};
+        let reg = build_save_registry();
+
+        let mut src = World::new();
+        src.insert_resource(StringPool::new());
+        src.insert_resource(FormIdPool::new());
+
+        let wanderer = src.spawn();
+        src.insert(
+            wanderer,
+            WanderState {
+                home: Vec3::new(1.0, 2.0, 3.0),
+                target: Vec3::new(4.0, 5.0, 6.0),
+                phase: WanderPhase::Paused { remaining: 2.5 },
+                pick_count: 7,
+            },
+        );
+
+        let arrived = src.spawn();
+        src.insert(arrived, Traveled);
+
+        let furniture = src.spawn();
+        let sitter = src.spawn();
+        src.insert(sitter, Seated { furniture });
+
+        let snap = save_world(&src, &reg).unwrap();
+        let bytes = encode(&snap, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+        let mut dst = World::new();
+        dst.insert_resource(FormIdPool::new());
+        restore_world(&mut dst, &reg, &decoded).unwrap();
+
+        let wq = dst.query::<WanderState>().unwrap();
+        let (_, restored_wander) = wq.iter().next().expect("WanderState must round-trip");
+        assert_eq!(restored_wander.home, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(restored_wander.target, Vec3::new(4.0, 5.0, 6.0));
+        assert_eq!(restored_wander.phase, WanderPhase::Paused { remaining: 2.5 });
+        assert_eq!(restored_wander.pick_count, 7);
+
+        let tq = dst.query::<Traveled>().unwrap();
+        assert_eq!(
+            tq.iter().count(),
+            1,
+            "Traveled must round-trip — losing it makes an already-arrived NPC redo its Travel"
+        );
+
+        let sq = dst.query::<Seated>().unwrap();
+        let (_, restored_seated) = sq.iter().next().expect("Seated must round-trip");
+        // restore_world preserves entity ids verbatim, so the furniture
+        // reference survives even though it wasn't a MUTABLE_DELTA_COLUMN.
+        assert_eq!(restored_seated.furniture, furniture);
     }
 
     /// #1835 — every gameplay-state component `spawn_npc_entity` stamps on an
@@ -1204,6 +1314,7 @@ mod tests {
         "../crates/core/src/ecs/components/inventory.rs", // Inventory, EquipmentSlots, ItemStack, InventoryIndex
         "../crates/core/src/ecs/components/light.rs",     // LightSource, LightFlicker
         "../crates/core/src/ecs/components/form_id.rs",   // FormIdComponent
+        "../crates/core/src/ecs/components/actor_values.rs", // ActorValues
         "../crates/core/src/form_id.rs",                  // FormIdPair (the serialised key)
         "../crates/core/src/animation/player.rs",         // AnimationPlayer
         "../crates/core/src/animation/stack.rs",          // AnimationStack, AnimationLayer
@@ -1212,6 +1323,13 @@ mod tests {
         "../crates/scripting/src/quest_stages.rs",        // QuestStageState, QuestObjectiveState + nested types
         "src/cell_loader/transition.rs",                  // CurrentCellContext
         "src/save_io.rs",                                 // PlayerPose
+        "../crates/core/src/ecs/components/wander.rs",    // WanderState (+ WanderBehavior, WanderPhase)
+        "../crates/core/src/ecs/components/travel.rs",    // TravelState, Traveled (+ TravelBehavior)
+        "../crates/core/src/ecs/components/follow.rs",    // FollowState (+ FollowBehavior)
+        "../crates/core/src/ecs/components/escort.rs",    // EscortState, Escorted (+ EscortBehavior)
+        "../crates/core/src/ecs/components/guard.rs",     // GuardState (+ GuardBehavior)
+        "../crates/core/src/ecs/components/patrol.rs",    // PatrolState (+ PatrolBehavior)
+        "../crates/core/src/ecs/components/sandbox.rs",   // Seated (+ SandboxBehavior)
     ];
 
     /// SAVE-D2-01 (#1714) — a save-participating struct must not gain a

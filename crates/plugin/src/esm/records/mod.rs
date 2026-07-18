@@ -607,7 +607,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 // global FormIdComponents.
                 let pack_remap = reader.get_form_id_remap();
                 extract_records(&mut reader, end, b"PACK", &mut |fid, subs| {
-                    index.packages.insert(fid, parse_pack(fid, subs, &pack_remap));
+                    index.packages.insert(fid, parse_pack(fid, subs, &pack_remap, game));
                 })?;
             }
             b"QUST" => {
