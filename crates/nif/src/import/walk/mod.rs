@@ -1564,13 +1564,24 @@ pub(super) fn extract_bs_value_node(block: &dyn NiObject) -> Option<super::BsVal
 /// `as_ni_node` unwrapped the wrapper to plain `NiNode`, dropping
 /// `alpha_sort_bound` + `is_static_bound`. Returns `None` for any
 /// block that isn't a `BsOrderedNode`. See #625 (SK-D4-03).
+///
+/// #2008 — `alpha_sort_bound`'s `[x, y, z]` center is a point (unlike
+/// `BsBound.dimensions`, an unsigned half-extent), so it gets the full
+/// Z-up → Y-up swap-and-negate like every other node-local position on
+/// `ImportedNode` and its siblings, not the magnitude-only axis reorder
+/// `BsBound.dimensions` uses. `radius` is a magnitude and is unaffected
+/// by the rotation.
 pub(super) fn extract_bs_ordered_node(block: &dyn NiObject) -> Option<super::BsOrderedNodeData> {
     block
         .as_any()
         .downcast_ref::<BsOrderedNode>()
-        .map(|n| super::BsOrderedNodeData {
-            alpha_sort_bound: n.alpha_sort_bound,
-            is_static_bound: n.is_static_bound,
+        .map(|n| {
+            let [x, y, z, radius] = n.alpha_sort_bound;
+            let center = byroredux_core::math::coord::zup_to_yup_pos([x, y, z]);
+            super::BsOrderedNodeData {
+                alpha_sort_bound: [center[0], center[1], center[2], radius],
+                is_static_bound: n.is_static_bound,
+            }
         })
 }
 

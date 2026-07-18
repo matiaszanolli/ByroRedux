@@ -252,7 +252,10 @@ pub struct BsValueNodeData {
 #[derive(Debug, Clone, Copy)]
 pub struct BsOrderedNodeData {
     /// Alpha-sort bounding sphere `[x, y, z, radius]` in node-local
-    /// space, lifted from the BSOrderedNode wire format.
+    /// space, lifted from the BSOrderedNode wire format. The center is
+    /// Y-up (Z-up → Y-up converted at extraction, #2008) like every
+    /// other position field on `ImportedNode` and its siblings; `radius`
+    /// is a magnitude and is unaffected by the conversion.
     pub alpha_sort_bound: [f32; 4],
     /// `true` when the bound is fixed (doesn't update with animation).
     /// Lets the renderer skip per-frame bound recomputation for static

@@ -984,6 +984,13 @@ fn bs_value_node_value_and_flags_are_surfaced_on_imported_node() {
 /// no-speculative-Vulkan-fixes policy — this test pins the data-
 /// plumbing half so the eventual renderer fix has the source
 /// material to read.
+///
+/// #2008 — the center is a point, so it must go through the same
+/// Z-up → Y-up conversion (`(x, y, z) → (x, z, -y)`) as every other
+/// node-local position on `ImportedNode` and its siblings; `radius`
+/// is a magnitude and is unaffected. A non-trivial, asymmetric center
+/// is used specifically so a "copied verbatim" regression would fail
+/// this assertion (an all-zero or symmetric center couldn't).
 #[test]
 fn bs_ordered_node_alpha_sort_bound_is_surfaced_on_imported_node() {
     use crate::blocks::node::BsOrderedNode;
@@ -1002,7 +1009,11 @@ fn bs_ordered_node_alpha_sort_bound_is_surfaced_on_imported_node() {
     let payload = imported.nodes[0]
         .bs_ordered_node
         .expect("BsOrderedNode must surface bs_ordered_node payload (#625 / SK-D4-03)");
-    assert_eq!(payload.alpha_sort_bound, [1.0, 2.0, 3.0, 7.5]);
+    assert_eq!(
+        payload.alpha_sort_bound,
+        [1.0, 3.0, -2.0, 7.5],
+        "center must convert Z-up (x,y,z) -> Y-up (x,z,-y); radius (last element) unchanged"
+    );
     assert!(payload.is_static_bound);
     assert!(imported.nodes[0].bs_value_node.is_none());
 }
