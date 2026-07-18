@@ -15,6 +15,28 @@
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
 
+/// Resolved sit/sleep/lean discriminant for a [`FurnitureMarker`],
+/// computed once at the translate boundary (`furniture_component` in
+/// `byroredux::cell_loader::references::attach`) instead of being
+/// re-derived by gameplay consumers from `heading_z_radians`'s presence
+/// (#2010 / NIFAL-D4-01 no-leak fix).
+///
+/// Skyrim+ `AnimationType` maps directly. Legacy Oblivion/FO3/FNV markers
+/// author no `AnimationType` at all — the position kind is implied by the
+/// referenced `furnituremarkerXX.nif`, which isn't resolved at this
+/// layer — so legacy markers take the same v0 default the pre-fix
+/// `is_sit_marker` proxy used implicitly: [`Sit`](Self::Sit), the
+/// dominant furniture kind in the target cells (bars, offices). A real
+/// per-marker decode is deferred to Phase C; this field is where that
+/// future resolution lands, not a new consumer-side heuristic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub enum FurnitureMarkerKind {
+    Sit,
+    Sleep,
+    Lean,
+}
+
 /// One furniture entry position — where an actor sits, sleeps, or leans.
 ///
 /// Lifted from a `BSFurnitureMarker` `FurniturePosition`. The offset is
@@ -42,8 +64,11 @@ pub struct FurnitureMarker {
     /// Skyrim+ `AnimationType`: `1` = Sit, `2` = Sleep, `3` = Lean.
     /// `0` on the Oblivion/FO3/FNV path, which carries no AnimationType
     /// field (the position kind is implied by the referenced
-    /// `furnituremarkerXX.nif`).
+    /// `furnituremarkerXX.nif`). Kept as the raw source value alongside
+    /// the resolved [`kind`](Self::kind) field.
     pub animation_type: u16,
+    /// Resolved sit/sleep/lean discriminant — see [`FurnitureMarkerKind`].
+    pub kind: FurnitureMarkerKind,
 }
 
 /// Sit / sleep / lean entry markers on a furniture entity.
@@ -94,11 +119,13 @@ mod tests {
                     local_offset: [1.0, 0.0, -2.0],
                     heading_z_radians: Some(std::f32::consts::FRAC_PI_2),
                     animation_type: 1,
+                    kind: FurnitureMarkerKind::Sit,
                 },
                 FurnitureMarker {
                     local_offset: [0.0, 0.0, 0.0],
                     heading_z_radians: None,
                     animation_type: 0,
+                    kind: FurnitureMarkerKind::Sit,
                 },
             ],
         };

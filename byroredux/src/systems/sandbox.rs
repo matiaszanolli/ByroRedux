@@ -46,7 +46,8 @@ use std::collections::HashSet;
 
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
-    Furniture, FurnitureMarker, GlobalTransform, SandboxBehavior, Seated, Transform,
+    Furniture, FurnitureMarker, FurnitureMarkerKind, GlobalTransform, SandboxBehavior, Seated,
+    Transform,
 };
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
@@ -61,13 +62,15 @@ use crate::components::{SandboxSitClip, SeatReservations};
 /// reasonable FNV-interior-scale default for the no-PLDT case.
 const SEAT_SEARCH_RADIUS: f32 = 512.0;
 
-/// True when a furniture marker is a *sit* entry. Skyrim+ tags this
-/// (`animation_type == 1`); legacy FNV/FO3 markers carry no AnimationType
-/// (`heading_z_radians == None`) and are treated as sit in v0 — the
-/// dominant furniture kind in the target cells (bars, offices). Legacy
-/// sleep/lean markers are a known v0 over-match.
+/// True when a furniture marker is a *sit* entry. Reads the already-
+/// resolved [`FurnitureMarkerKind`] (#2010 / NIFAL-D4-01) — the era
+/// discriminant (Skyrim+ `AnimationType` vs. legacy no-AnimationType
+/// v0 default) is resolved once at the translate boundary
+/// (`furniture_component`), not re-derived here from
+/// `heading_z_radians`'s presence. Legacy sleep/lean markers are still a
+/// known v0 over-match (see `FurnitureMarkerKind::Sit` docs).
 fn is_sit_marker(m: &FurnitureMarker) -> bool {
-    m.animation_type == 1 || m.heading_z_radians.is_none()
+    m.kind == FurnitureMarkerKind::Sit
 }
 
 /// World-space seat transform: the furniture's world transform ∘ the
@@ -329,19 +332,42 @@ mod tests {
         }
     }
 
+    /// Mirrors `furniture_component`'s `animation_type` → `kind` resolution
+    /// (attach.rs) so these unit tests exercise `is_sit_marker` against the
+    /// same already-resolved `kind` production markers carry, not a
+    /// hand-picked value that could drift from the real translate boundary.
     fn marker(offset: [f32; 3], heading: Option<f32>, anim: u16) -> FurnitureMarker {
         FurnitureMarker {
             local_offset: offset,
             heading_z_radians: heading,
             animation_type: anim,
+            kind: match anim {
+                2 => FurnitureMarkerKind::Sleep,
+                3 => FurnitureMarkerKind::Lean,
+                _ => FurnitureMarkerKind::Sit,
+            },
         }
     }
 
+    /// Regression for #2010 / NIFAL-D4-01 — `is_sit_marker` must read the
+    /// resolved `kind` field, not re-derive an era discriminant from
+    /// `heading_z_radians`'s presence.
     #[test]
     fn is_sit_marker_modern_sit_and_legacy() {
         assert!(is_sit_marker(&marker([0.0; 3], Some(0.0), 1))); // Skyrim+ sit
         assert!(!is_sit_marker(&marker([0.0; 3], Some(0.0), 2))); // Skyrim+ sleep
+        assert!(!is_sit_marker(&marker([0.0; 3], Some(0.0), 3))); // Skyrim+ lean
         assert!(is_sit_marker(&marker([0.0; 3], None, 0))); // legacy → sit (v0)
+
+        // The resolved `kind` field itself drives the answer, independent
+        // of `heading_z_radians` — a marker with a heading but no resolved
+        // AnimationType (can't happen on real content, but pins the no-leak
+        // contract) must NOT be treated as sit just because heading is Some.
+        let mut m = marker([0.0; 3], Some(0.0), 2);
+        assert_eq!(m.kind, FurnitureMarkerKind::Sleep);
+        assert!(!is_sit_marker(&m));
+        m.kind = FurnitureMarkerKind::Sit;
+        assert!(is_sit_marker(&m));
     }
 
     #[test]

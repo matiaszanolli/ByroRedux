@@ -55,7 +55,7 @@ pub use faction_ranks::FactionRanks;
 pub use fog_volume::{FogBounds, FogSource, FogVolume};
 pub use follow::{FollowBehavior, FollowState};
 pub use form_id::FormIdComponent;
-pub use furniture::{Furniture, FurnitureMarker};
+pub use furniture::{Furniture, FurnitureMarker, FurnitureMarkerKind};
 pub use global_transform::GlobalTransform;
 pub use guard::{GuardBehavior, GuardState};
 pub use hierarchy::{Children, Parent};

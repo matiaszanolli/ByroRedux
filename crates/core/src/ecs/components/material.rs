@@ -450,10 +450,8 @@ pub struct PbrClassifierInputs<'a> {
 pub fn is_glass_keyword_path(path: &str) -> bool {
     contains_any_ci(
         path,
-        &[
-            "glass", "crystal", "ice", "gem", "window", "bottle", "jar", "vial",
-        ],
-    )
+        &["glass", "crystal", "window", "bottle", "jar", "vial"],
+    ) || contains_any_ci_word(path, &["ice", "gem"])
 }
 
 pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
@@ -516,7 +514,17 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
     // and roughness is forced as a consequence of the GLASS classification
     // — never an alpha-unaware roughness guess here (which over-shone
     // opaque container surfaces, the reverted step-3 side effect).
-    if contains_any_ci(path, &["glass", "crystal", "ice", "gem"]) {
+    // #2009 / MAT-D1-01 — "ice"/"gem" are word-boundary-checked
+    // (`contains_any_ci_word`), not plain substring: they're short
+    // enough to collide with ordinary English words that plausibly
+    // appear in legacy diffuse texture paths (office/notice/device/
+    // justice/invoice/spice/voice/twice/advice/entice/artifice/
+    // sacrifice/practice/police/juice/dice/slice for "ice"; management
+    // for "gem"). "glass"/"crystal" stay on the unbounded matcher —
+    // they're long enough to have no such collisions, and Bethesda's
+    // own concatenated-compound naming convention (`brokenglasssheet*`)
+    // relies on the mid-word match still firing for them.
+    if contains_any_ci(path, &["glass", "crystal"]) || contains_any_ci_word(path, &["ice", "gem"]) {
         return PbrMaterial {
             roughness: 0.1,
             metalness: 0.0,
@@ -534,13 +542,18 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
             metalness: 0.0,
         };
     }
+    // "fur" is word-boundary-checked (#2009 / MAT-D1-01) — a bare
+    // substring match makes it a literal prefix of "furniture", a
+    // common Bethesda clutter-asset directory/mesh token across every
+    // game. The rest of the list is long enough to have no such risk.
     if contains_any_ci(
         path,
         &[
-            "fabric", "cloth", "leather", "fur", "linen", "carpet", "rug", "tapestry", "banner",
+            "fabric", "cloth", "leather", "linen", "carpet", "rug", "tapestry", "banner",
             "curtain", "drape", "bedding", "pillow", "sack", "burlap", "wool",
         ],
-    ) {
+    ) || contains_any_ci_word(path, &["fur"])
+    {
         return PbrMaterial {
             roughness: 0.95,
             metalness: 0.0,
@@ -724,6 +737,45 @@ fn contains_any_ci(haystack: &str, keywords: &[&str]) -> bool {
             return false;
         }
         hs.windows(kb.len()).any(|w| w.eq_ignore_ascii_case(kb))
+    })
+}
+
+/// ASCII case-insensitive **word-boundary** substring match (#2009 /
+/// MAT-D1-01). Like [`contains_any_ci`], but a match only counts when
+/// the byte immediately before/after the matched span (if any) is not
+/// an ASCII *letter* — i.e. the keyword must not be embedded inside a
+/// longer run of letters (another English word). Digits are
+/// deliberately treated as valid boundaries, not blocked like letters:
+/// Bethesda's own `keyword01.dds`/`keywordNN.dds` numbering convention
+/// butts a digit run directly against the keyword with no separator
+/// (`fur01.dds`), and that must still match. Path separators,
+/// underscores, and string boundaries are valid edges too.
+///
+/// Reserved for keywords short/common enough to collide with ordinary
+/// English words (`"ice"` inside "office"/"notice"/"device", `"gem"`
+/// inside "management", `"fur"` inside "furniture") — NOT a blanket
+/// replacement for `contains_any_ci`. Several keywords in this file
+/// (`"glass"`, `"head"`, `"body"`, `"hand"`, `"face"`, `"hair"`) rely on
+/// the unbounded match firing on Bethesda's own concatenated-compound
+/// naming convention with no separator (`brokenglasssheet01.dds`,
+/// `malehead.dds`, `femalebody_1.dds`) — switching those to
+/// word-boundary matching would silently stop matching real content.
+fn contains_any_ci_word(haystack: &str, keywords: &[&str]) -> bool {
+    let hs = haystack.as_bytes();
+    keywords.iter().any(|kw| {
+        let kb = kw.as_bytes();
+        if kb.is_empty() || kb.len() > hs.len() {
+            return false;
+        }
+        hs.windows(kb.len()).enumerate().any(|(i, w)| {
+            if !w.eq_ignore_ascii_case(kb) {
+                return false;
+            }
+            let before_ok = i == 0 || !hs[i - 1].is_ascii_alphabetic();
+            let after = i + kb.len();
+            let after_ok = after == hs.len() || !hs[after].is_ascii_alphabetic();
+            before_ok && after_ok
+        })
     })
 }
 
@@ -986,6 +1038,73 @@ mod tests {
             );
             assert_eq!(p.metalness, 0.0, "glass is dielectric");
         }
+    }
+
+    /// Regression for #2009 / MAT-D1-01 — the glass arm's "ice"/"gem"
+    /// keywords are short enough to be substrings of ordinary English
+    /// words that plausibly appear in legacy diffuse texture paths.
+    /// Pre-fix these all misfired the glass arm (roughness=0.1),
+    /// pushing them below the RT reflection gate for a spurious
+    /// mirror/"wet floor" look.
+    #[test]
+    fn common_english_words_do_not_misfire_the_glass_arm() {
+        for path in [
+            "textures/architecture/office/officedesk01.dds",
+            "textures/clutter/noticeboard01.dds",
+            "textures/clutter/devicepanel01.dds",
+            "textures/clutter/justicestatue01.dds",
+            "textures/clutter/invoicepaper01.dds",
+            "textures/plants/spice01.dds",
+            "textures/clutter/voicebox01.dds",
+            "textures/effects/twicebaked01.dds",
+            "textures/clutter/advicecolumn01.dds",
+            "textures/clutter/policeuniform01.dds",
+            "textures/clutter/juicebottlecap01.dds",
+            "textures/clutter/dicepair01.dds",
+            "textures/clutter/slicebread01.dds",
+        ] {
+            let p = classify_pbr_keyword(PbrClassifierInputs {
+                texture_path: Some(path),
+                glossiness: 50.0,
+                env_map_scale: 0.0,
+                has_normal_map: false,
+                specular_color: [0.2; 3],
+                specular_authored: true,
+                has_gloss_map: false,
+            });
+            assert!(
+                p.roughness > 0.2,
+                "'{path}' must NOT hit the glass arm (embedded \"ice\"/\"gem\" \
+                 false positive); got roughness {}",
+                p.roughness,
+            );
+        }
+        assert!(
+            !is_glass_keyword_path("textures/architecture/office/officedesk01.dds"),
+            "render-gate predicate shares the same list and must reject it too"
+        );
+    }
+
+    /// Regression for #2009 / MAT-D1-01 — the fabric arm's "fur"
+    /// keyword is a literal prefix of "furniture", a common Bethesda
+    /// clutter-asset directory/mesh token across every game.
+    #[test]
+    fn furniture_does_not_misfire_the_fabric_arm_via_fur() {
+        let m = Material::default();
+        let p = classify(&m, "meshes/furniture/genericfurniture01.nif");
+        assert!(
+            (p.roughness - 0.95).abs() > 1e-6,
+            "furniture path must NOT hit the fabric arm via embedded \"fur\"; \
+             got roughness {}",
+            p.roughness,
+        );
+
+        // Genuine standalone "fur" still matches (real fur/pelt texture).
+        let fur = classify(&m, "textures/creatures/wolf/wolf_fur01.dds");
+        assert_eq!(
+            fur.roughness, 0.95,
+            "standalone fur texture must still match"
+        );
     }
 
     /// Container/object tokens (window/bottle/jar/vial) match the wide

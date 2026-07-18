@@ -53,9 +53,10 @@ impl Component for GuardBehavior {
 /// picked exactly once (lazily, the first tick `guard_system` sees the
 /// actor) and then frozen — mirrors
 /// [`super::travel::TravelState::destination`]. Unlike Travel, there is no
-/// terminal marker: guarding continues indefinitely, so this state is read
-/// *and* written every tick, the same shape
-/// [`super::wander::WanderState`] has.
+/// terminal marker — `guard_system` reads this state every tick for the
+/// leash check, but `anchor` itself is written only once, the same
+/// frozen-after-resolution discipline `TravelState::destination` has, not
+/// [`super::wander::WanderState`]'s continuous per-tick mutation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct GuardState {

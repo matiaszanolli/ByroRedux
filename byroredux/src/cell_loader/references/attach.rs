@@ -46,10 +46,16 @@ pub(crate) fn attach_points_component(
 /// arrive already Y-up from the extractor; heading is kept in Gamebryo
 /// source space (see `FurnitureMarker` docs). Caller guarantees a
 /// non-empty slice (a marker-less furniture attaches no component).
+///
+/// The sole translate-boundary site that resolves each marker's
+/// [`FurnitureMarkerKind`] from the raw `AnimationType` (#2010 /
+/// NIFAL-D4-01) — gameplay consumers (`systems::sandbox::is_sit_marker`)
+/// read the already-resolved `kind` instead of re-deriving an era
+/// discriminant from `heading_z_radians`'s presence.
 pub(crate) fn furniture_component(
     imported: &[byroredux_nif::import::ImportedFurnitureMarker],
 ) -> byroredux_core::ecs::components::Furniture {
-    use byroredux_core::ecs::components::{Furniture, FurnitureMarker};
+    use byroredux_core::ecs::components::{Furniture, FurnitureMarker, FurnitureMarkerKind};
     Furniture {
         markers: imported
             .iter()
@@ -57,6 +63,14 @@ pub(crate) fn furniture_component(
                 local_offset: m.offset,
                 heading_z_radians: m.heading_z_radians,
                 animation_type: m.animation_type,
+                kind: match m.animation_type {
+                    2 => FurnitureMarkerKind::Sleep,
+                    3 => FurnitureMarkerKind::Lean,
+                    // 1 = explicit Skyrim+ Sit; 0 = legacy (Oblivion/FO3/FNV,
+                    // no AnimationType authored at all) — v0 default, the
+                    // dominant furniture kind in target cells.
+                    _ => FurnitureMarkerKind::Sit,
+                },
             })
             .collect(),
     }
@@ -419,6 +433,43 @@ pub(super) fn attach_light_flicker_if_needed(
             phase_offset_secs,
         },
     );
+}
+
+#[cfg(test)]
+mod furniture_component_tests {
+    use super::*;
+    use byroredux_core::ecs::components::FurnitureMarkerKind;
+    use byroredux_nif::import::ImportedFurnitureMarker;
+
+    fn imported(heading: Option<f32>, anim: u16) -> ImportedFurnitureMarker {
+        ImportedFurnitureMarker {
+            offset: [0.0, 0.0, 0.0],
+            heading_z_radians: heading,
+            animation_type: anim,
+        }
+    }
+
+    /// Regression for #2010 / NIFAL-D4-01 — `furniture_component` is the
+    /// single translate boundary that resolves each marker's
+    /// `FurnitureMarkerKind` from the raw `AnimationType`, so gameplay
+    /// consumers never need to re-derive it from `heading_z_radians`.
+    #[test]
+    fn resolves_kind_from_animation_type_at_the_boundary() {
+        let furn = furniture_component(&[
+            imported(Some(0.0), 1), // Skyrim+ sit
+            imported(Some(0.0), 2), // Skyrim+ sleep
+            imported(Some(0.0), 3), // Skyrim+ lean
+            imported(None, 0),      // legacy — no AnimationType, v0 default
+        ]);
+        assert_eq!(furn.markers[0].kind, FurnitureMarkerKind::Sit);
+        assert_eq!(furn.markers[1].kind, FurnitureMarkerKind::Sleep);
+        assert_eq!(furn.markers[2].kind, FurnitureMarkerKind::Lean);
+        assert_eq!(
+            furn.markers[3].kind,
+            FurnitureMarkerKind::Sit,
+            "legacy markers with no AnimationType default to Sit (v0)"
+        );
+    }
 }
 
 #[cfg(test)]
