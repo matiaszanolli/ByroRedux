@@ -390,4 +390,60 @@ fn oblivion_legacy_particle_system_controller_roundtrip() {
         .is_some());
 }
 
+/// Regression for #2000 / NIF-D1-03 — `NiGeomMorpherController`'s
+/// `Morpher Flags` (`since=10.0.1.2`) and `Num Interpolators`/
+/// `Interpolators` (`since=10.1.0.106`) were read unconditionally. On
+/// old Gamebryo content below both gates (v10.0.1.0), the disk layout
+/// has neither field: base(26) + data_ref(4) + always_update(1) = 31 B.
+/// Pre-fix the parser walked 6 phantom bytes into the next block.
+#[test]
+fn ni_geom_morpher_controller_v10_0_1_0_has_no_flags_or_interpolators() {
+    let header = NifHeader {
+        version: NifVersion::V10_0_1_0,
+        little_endian: true,
+        user_version: 0,
+        user_version_2: 0,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    };
+    let mut bytes = Vec::new();
+    // v10.0.1.0 NiObject groupID (4 B) — present on every non-Havok
+    // NiObject in [10.0.0.0, 10.1.0.114); NiGeomMorpherController isn't
+    // a bhk* serializable so it carries this like the rest.
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    // NiTimeController base (26 B) — no Manager Controlled bool this old.
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // next_controller
+    bytes.extend_from_slice(&0u16.to_le_bytes()); // flags
+    bytes.extend_from_slice(&1.0f32.to_le_bytes()); // frequency
+    bytes.extend_from_slice(&0.0f32.to_le_bytes()); // phase
+    bytes.extend_from_slice(&0.0f32.to_le_bytes()); // start
+    bytes.extend_from_slice(&1.0f32.to_le_bytes()); // stop
+    bytes.extend_from_slice(&(-1i32).to_le_bytes()); // target
+                                                     // data_ref(4) + always_update(1) — no Morpher Flags, no Num Interpolators.
+    bytes.extend_from_slice(&9i32.to_le_bytes()); // data_ref
+    bytes.push(1); // always_update
+    assert_eq!(bytes.len(), 4 + 31);
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block(
+        "NiGeomMorpherController",
+        &mut stream,
+        Some(bytes.len() as u32),
+    )
+    .expect("NiGeomMorpherController must parse at v10.0.1.0");
+    let ctrl = block
+        .as_any()
+        .downcast_ref::<crate::blocks::controller::NiGeomMorpherController>()
+        .expect("downcast NiGeomMorpherController");
+    assert_eq!(ctrl.morpher_flags, 0);
+    assert_eq!(ctrl.data_ref.index(), Some(9));
+    assert_eq!(ctrl.always_update, 1);
+    assert!(ctrl.interpolator_weights.is_empty());
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
 // ── #124 / audit NIF-513 — bhkNPCollisionObject family ──────────

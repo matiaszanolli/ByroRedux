@@ -6,6 +6,7 @@
 use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
+use crate::version::NifVersion;
 use std::io;
 
 use super::read_vec4;
@@ -20,8 +21,11 @@ pub struct BhkSimpleShapePhantom {
 
 impl BhkSimpleShapePhantom {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // bhkWorldObject: shape ref + filter + world CInfo (20 bytes)
+        // bhkWorldObject: shape ref + (until=10.0.1.2 Unknown Int) + filter + world CInfo (20 bytes)
         let shape_ref = stream.read_block_ref()?;
+        if stream.version() <= NifVersion::V10_0_1_2 {
+            stream.skip(4)?; // Unknown Int
+        }
         let havok_filter = stream.read_u32_le()?;
         stream.skip(20)?; // bhkWorldObjectCInfo
 
@@ -50,14 +54,15 @@ impl BhkSimpleShapePhantom {
 /// volumes, region queries). nif.xml line 2778.
 ///
 /// Inheritance chain: bhkAabbPhantom → bhkPhantom → bhkWorldObject.
-/// Layout on disk (Bethesda, 20.0.0.5 and later, no `Unknown Int`
-/// since the `until 10.0.1.2` gate excludes every Bethesda game):
+/// Layout on disk (Bethesda, 20.0.0.5 and later — the `until 10.0.1.2`
+/// `Unknown Int` is absent for these; early Oblivion v10.0.1.x content
+/// still carries it, mirroring `BhkRigidBody::parse_oblivion_old`, #1329):
 /// ```text
-///   bhkWorldObject     : shape_ref(4) + havok_filter(4) + CInfo(20) = 28 B
+///   bhkWorldObject     : shape_ref(4) + [Unknown Int(4), <= v10.0.1.2] + havok_filter(4) + CInfo(20)
 ///   (bhkPhantom adds nothing)
 ///   bhkAabbPhantom     : Unused 01[8] + hkAabb (2 × Vec4 = 32) = 40 B
 ///   --------------------------------------------------------
-///   Total                                                  = 68 B
+///   Total                                                  = 68 B (+4 B on v10.0.1.x)
 /// ```
 #[derive(Debug)]
 pub struct BhkAabbPhantom {
@@ -71,8 +76,11 @@ pub struct BhkAabbPhantom {
 
 impl BhkAabbPhantom {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // bhkWorldObject prefix (28 B): shape + filter + bhkWorldObjectCInfo.
+        // bhkWorldObject prefix: shape + (until=10.0.1.2 Unknown Int) + filter + bhkWorldObjectCInfo.
         let shape_ref = stream.read_block_ref()?;
+        if stream.version() <= NifVersion::V10_0_1_2 {
+            stream.skip(4)?; // Unknown Int
+        }
         let havok_filter = stream.read_u32_le()?;
         stream.skip(20)?; // bhkWorldObjectCInfo
                           // bhkAabbPhantom: 8 unused + 2 × Vec4 hkAabb.

@@ -642,6 +642,62 @@ fn oblivion_old_bhk_rigid_body() {
     assert_eq!(stream.position() as usize, bytes.len());
 }
 
+/// #1999 / NIF-D1-02 — `bhkSimpleShapePhantom` on old Oblivion
+/// (v10.0.1.0) carries the `bhkWorldObject` `until=10.0.1.2` Unknown Int
+/// between the shape ref and the havok filter. Pre-fix the parser read
+/// this 4-byte field as `havok_filter` and shifted everything after it.
+#[test]
+fn oblivion_old_bhk_simple_shape_phantom_skips_unknown_int() {
+    let header = oblivion_old_header();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&5i32.to_le_bytes()); // shape_ref
+    bytes.extend_from_slice(&[0u8; 4]); // bhkWorldObject Unknown Int (<= 10.0.1.2)
+    bytes.extend_from_slice(&0x12345678u32.to_le_bytes()); // havok_filter
+    bytes.extend_from_slice(&[0u8; 20]); // bhkWorldObjectCInfo
+    bytes.extend_from_slice(&[0u8; 8]); // Unused 01
+    for i in 0..16 {
+        bytes.extend_from_slice(&(i as f32).to_le_bytes());
+    }
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("bhkSimpleShapePhantom", &mut stream, None)
+        .expect("bhkSimpleShapePhantom must parse on the v10.0.1.0 path");
+    let phantom = block
+        .as_any()
+        .downcast_ref::<collision::BhkSimpleShapePhantom>()
+        .expect("downcast bhkSimpleShapePhantom");
+    assert_eq!(phantom.shape_ref.index(), Some(5));
+    assert_eq!(phantom.havok_filter, 0x12345678);
+    assert_eq!(phantom.transform[0], [0.0, 1.0, 2.0, 3.0]);
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
+/// #1999 / NIF-D1-02 — `bhkAabbPhantom` counterpart of the above.
+#[test]
+fn oblivion_old_bhk_aabb_phantom_skips_unknown_int() {
+    let header = oblivion_old_header();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&7i32.to_le_bytes()); // shape_ref
+    bytes.extend_from_slice(&[0u8; 4]); // bhkWorldObject Unknown Int (<= 10.0.1.2)
+    bytes.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes()); // havok_filter
+    bytes.extend_from_slice(&[0u8; 20]); // bhkWorldObjectCInfo
+    bytes.extend_from_slice(&[0u8; 8]); // Unused 01
+    for v in [1.0f32, 2.0, 3.0, 0.0, 10.0, 20.0, 30.0, 0.0] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block("bhkAabbPhantom", &mut stream, None)
+        .expect("bhkAabbPhantom must parse on the v10.0.1.0 path");
+    let phantom = block
+        .as_any()
+        .downcast_ref::<collision::BhkAabbPhantom>()
+        .expect("downcast bhkAabbPhantom");
+    assert_eq!(phantom.shape_ref.index(), Some(7));
+    assert_eq!(phantom.havok_filter, 0xDEAD_BEEF);
+    assert_eq!(phantom.aabb_min, [1.0, 2.0, 3.0, 0.0]);
+    assert_eq!(phantom.aabb_max, [10.0, 20.0, 30.0, 0.0]);
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
 /// #1337 — `BSKeyframeController` on old Oblivion (v10.0.1.x). It is
 /// NiObject-derived (NOT a Havok serializable), so `parse_block` consumes
 /// the groupID; the body is NiTimeController base + (no interpolator

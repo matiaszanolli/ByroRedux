@@ -547,7 +547,16 @@ impl NiObject for NiFlagProperty {
 impl NiFlagProperty {
     pub fn parse(stream: &mut NifStream, type_name: &'static str) -> io::Result<Self> {
         let net = NiObjectNETData::parse(stream)?;
-        let flags = stream.read_u16_le()?;
+        // nif.xml: `NiShadeProperty.Flags` alone is gated `vercond="#NI_BS_LTE_FO3#"`
+        // (default SHADING_SMOOTH=1) — NiSpecularProperty/NiWireframeProperty/
+        // NiDitherProperty read `Flags` unconditionally. Skyrim+ (bsver > FO3_FNV)
+        // NiShadeProperty blocks carry no on-disk flags at all. #2003 / NIF-D1-04.
+        let flags =
+            if type_name == "NiShadeProperty" && stream.bsver() > crate::version::bsver::FO3_FNV {
+                1
+            } else {
+                stream.read_u16_le()?
+            };
         Ok(Self {
             net,
             flags,

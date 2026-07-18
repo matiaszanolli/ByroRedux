@@ -78,7 +78,7 @@ use std::any::Any;
 use std::fmt::Debug;
 use std::io;
 use std::sync::Arc;
-use texture::{NiPixelData, NiSourceTexture};
+use texture::{NiPersistentSrcTextureRendererData, NiPixelData, NiSourceTexture};
 use tri_shape::{NiTriShape, NiTriShapeData, NiTriStripsData};
 
 /// Trait implemented by all parsed NIF blocks.
@@ -601,8 +601,9 @@ fn parse_block_inner(
         "NiShadeProperty" => Ok(Box::new(NiFlagProperty::parse(stream, "NiShadeProperty")?)),
         "NiStringPalette" => Ok(Box::new(NiStringPalette::parse(stream)?)),
         "NiSourceTexture" => Ok(Box::new(NiSourceTexture::parse(stream)?)),
-        "NiPixelData" | "NiPersistentSrcTextureRendererData" => {
-            Ok(Box::new(NiPixelData::parse(stream)?))
+        "NiPixelData" => Ok(Box::new(NiPixelData::parse(stream)?)),
+        "NiPersistentSrcTextureRendererData" => {
+            Ok(Box::new(NiPersistentSrcTextureRendererData::parse(stream)?))
         }
         // Skinning blocks
         "NiSkinInstance" => Ok(Box::new(NiSkinInstance::parse(stream)?)),

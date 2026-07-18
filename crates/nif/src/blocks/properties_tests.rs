@@ -138,6 +138,51 @@ fn parse_flag_property_wireframe_disabled() {
     assert!(!prop.enabled());
 }
 
+/// Regression for #2003 / NIF-D1-04 — `NiShadeProperty.Flags` is gated
+/// `vercond="#NI_BS_LTE_FO3#"`; FO3/FNV (bsver<=34) still carries it on
+/// disk, same as the other three `NiFlagProperty` aliases.
+#[test]
+fn parse_flag_property_shade_fo3_reads_flags() {
+    let header = make_header(11, 34);
+    let data = build_flag_property_bytes();
+    let mut stream = NifStream::new(&data, &header);
+    let prop = NiFlagProperty::parse(&mut stream, "NiShadeProperty").unwrap();
+    assert_eq!(prop.block_type_name(), "NiShadeProperty");
+    assert_eq!(prop.flags, 1);
+    assert_eq!(stream.position() as usize, data.len());
+}
+
+/// Skyrim+ (bsver>34) counterpart — `Flags` is absent on disk; the
+/// parser must not consume it and must default to SHADING_SMOOTH (1).
+/// Pre-fix this read a phantom u16, shifting every field of the next
+/// block by 2 bytes (recovered only via `block_sizes` on Skyrim+, but
+/// with wrong `flags`).
+#[test]
+fn parse_flag_property_shade_skyrim_skips_flags() {
+    let header = make_header(12, 83);
+    let mut data = Vec::new();
+    data.extend_from_slice(&0i32.to_le_bytes()); // name
+    data.extend_from_slice(&0u32.to_le_bytes()); // extra_data_refs count
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+                                                    // No trailing Flags — bsver=83 > FO3_FNV.
+    let mut stream = NifStream::new(&data, &header);
+    let prop = NiFlagProperty::parse(&mut stream, "NiShadeProperty").unwrap();
+    assert_eq!(prop.flags, 1, "must default to SHADING_SMOOTH when absent");
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "must not read a phantom Flags u16 on Skyrim+"
+    );
+
+    // Sibling NiFlagProperty aliases still read Flags unconditionally —
+    // append it and confirm they still consume it on the same bsver.
+    data.extend_from_slice(&0u16.to_le_bytes());
+    let mut stream = NifStream::new(&data, &header);
+    let prop = NiFlagProperty::parse(&mut stream, "NiWireframeProperty").unwrap();
+    assert_eq!(prop.flags, 0);
+    assert_eq!(stream.position() as usize, data.len());
+}
+
 #[test]
 fn parse_string_palette() {
     let header = make_header(11, 34);

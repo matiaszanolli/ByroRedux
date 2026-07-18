@@ -163,114 +163,50 @@ pub struct NiPixelData {
     pub pixel_data: Vec<u8>,
 }
 
-impl NiPixelData {
-    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        // NiPixelFormat fields (inline, not inherited).
-        let pixel_format = stream.read_u32_le()?;
+/// Shared decode of the `NiPixelFormat` "member class" (nif.xml: "loaded
+/// at the top of each [NiPixelData/NiPersistentSrcTextureRendererData],
+/// the two classes are not related") — pixel format through `Num
+/// Pixels`. Both niobjects inherit it byte-for-byte identically; they
+/// diverge only in what follows `Num Pixels`. #2001 / NIF-D1-01.
+struct PixelFormatPrelude {
+    pixel_format: u32,
+    bits_per_pixel: u8,
+    renderer_hint: u32,
+    extra_data: u32,
+    flags: u8,
+    tiling: u32,
+    channels: [PixelFormatComponent; 4],
+    palette_ref: BlockRef,
+    num_mipmaps: u32,
+    bytes_per_pixel: u32,
+    mipmaps: Vec<MipMapInfo>,
+    num_pixels: u32,
+}
 
-        // Version split at 10.4.0.2 — Oblivion/FO3+ use the "new" layout.
-        let old_layout = stream.version() < NifVersion::V10_4_0_2;
+fn parse_pixel_format_prelude(stream: &mut NifStream) -> io::Result<PixelFormatPrelude> {
+    let pixel_format = stream.read_u32_le()?;
 
-        if old_layout {
-            // Pre-10.4.0.2: color masks, old bits per pixel, fast compare, tiling.
-            let _red_mask = stream.read_u32_le()?;
-            let _green_mask = stream.read_u32_le()?;
-            let _blue_mask = stream.read_u32_le()?;
-            let _alpha_mask = stream.read_u32_le()?;
-            let bits_per_pixel_u32 = stream.read_u32_le()?;
-            let _fast_compare = stream.read_bytes(8)?;
+    // Version split at 10.4.0.2 — Oblivion/FO3+ use the "new" layout.
+    let old_layout = stream.version() < NifVersion::V10_4_0_2;
 
-            let tiling = if stream.version() >= NifVersion::V10_1_0_0 {
-                stream.read_u32_le()?
-            } else {
-                0
-            };
+    if old_layout {
+        // Pre-10.4.0.2: color masks, old bits per pixel, fast compare, tiling.
+        let _red_mask = stream.read_u32_le()?;
+        let _green_mask = stream.read_u32_le()?;
+        let _blue_mask = stream.read_u32_le()?;
+        let _alpha_mask = stream.read_u32_le()?;
+        let bits_per_pixel_u32 = stream.read_u32_le()?;
+        let _fast_compare = stream.read_bytes(8)?;
 
-            // Old layout NiPixelData fields
-            let palette_ref = stream.read_block_ref()?;
-            let num_mipmaps = stream.read_u32_le()?;
-            let bytes_per_pixel = stream.read_u32_le()?;
-            let mut mipmaps: Vec<MipMapInfo> = stream.allocate_vec(num_mipmaps)?;
-            for _ in 0..num_mipmaps {
-                let width = stream.read_u32_le()?;
-                let height = stream.read_u32_le()?;
-                let offset = stream.read_u32_le()?;
-                mipmaps.push(MipMapInfo {
-                    width,
-                    height,
-                    offset,
-                });
-            }
-            let num_pixels = stream.read_u32_le()? as usize;
-            let pixel_data = stream.read_bytes(num_pixels)?;
+        let tiling = if stream.version() >= NifVersion::V10_1_0_0 {
+            stream.read_u32_le()?
+        } else {
+            0
+        };
 
-            let default_channel = PixelFormatComponent {
-                component_type: 0,
-                convention: 0,
-                bits_per_channel: 0,
-                is_signed: false,
-            };
-
-            return Ok(Self {
-                pixel_format,
-                bits_per_pixel: bits_per_pixel_u32 as u8,
-                renderer_hint: 0,
-                extra_data: 0,
-                flags: 0,
-                tiling,
-                channels: [
-                    default_channel.clone(),
-                    default_channel.clone(),
-                    default_channel.clone(),
-                    default_channel,
-                ],
-                palette_ref,
-                num_mipmaps,
-                bytes_per_pixel,
-                mipmaps,
-                num_faces: 1,
-                pixel_data,
-            });
-        }
-
-        // New layout (10.4.0.2+, covers Oblivion and FO3+).
-        let bits_per_pixel = stream.read_u8()?;
-        let renderer_hint = stream.read_u32_le()?;
-        let extra_data = stream.read_u32_le()?;
-        let flags = stream.read_u8()?;
-        let tiling = stream.read_u32_le()?;
-
-        // sRGB Space — only since 20.3.0.4 (NOT Oblivion, NOT FO3).
-        if stream.version() >= NifVersion::V20_3_0_4 {
-            let _srgb = stream.read_byte_bool()?;
-        }
-
-        // 4 pixel format channels.
-        let mut channels = Vec::with_capacity(4);
-        for _ in 0..4 {
-            let component_type = stream.read_u32_le()?;
-            let convention = stream.read_u32_le()?;
-            let bits_per_channel = stream.read_u8()?;
-            let is_signed = stream.read_byte_bool()?;
-            channels.push(PixelFormatComponent {
-                component_type,
-                convention,
-                bits_per_channel,
-                is_signed,
-            });
-        }
-        let channels_arr = [
-            channels[0].clone(),
-            channels[1].clone(),
-            channels[2].clone(),
-            channels[3].clone(),
-        ];
-
-        // NiPixelData fields.
         let palette_ref = stream.read_block_ref()?;
         let num_mipmaps = stream.read_u32_le()?;
         let bytes_per_pixel = stream.read_u32_le()?;
-
         let mut mipmaps: Vec<MipMapInfo> = stream.allocate_vec(num_mipmaps)?;
         for _ in 0..num_mipmaps {
             let width = stream.read_u32_le()?;
@@ -282,31 +218,207 @@ impl NiPixelData {
                 offset,
             });
         }
+        let num_pixels = stream.read_u32_le()?;
 
-        let num_pixels = stream.read_u32_le()? as usize;
-        let num_faces = stream.read_u32_le()?;
-        let total_bytes = num_pixels * num_faces as usize;
-        let pixel_data = stream.read_bytes(total_bytes)?;
+        let default_channel = PixelFormatComponent {
+            component_type: 0,
+            convention: 0,
+            bits_per_channel: 0,
+            is_signed: false,
+        };
 
-        Ok(Self {
+        return Ok(PixelFormatPrelude {
             pixel_format,
-            bits_per_pixel,
-            renderer_hint,
-            extra_data,
-            flags,
+            bits_per_pixel: bits_per_pixel_u32 as u8,
+            renderer_hint: 0,
+            extra_data: 0,
+            flags: 0,
             tiling,
-            channels: channels_arr,
+            channels: [
+                default_channel.clone(),
+                default_channel.clone(),
+                default_channel.clone(),
+                default_channel,
+            ],
             palette_ref,
             num_mipmaps,
             bytes_per_pixel,
             mipmaps,
+            num_pixels,
+        });
+    }
+
+    // New layout (10.4.0.2+, covers Oblivion and FO3+).
+    let bits_per_pixel = stream.read_u8()?;
+    let renderer_hint = stream.read_u32_le()?;
+    let extra_data = stream.read_u32_le()?;
+    let flags = stream.read_u8()?;
+    let tiling = stream.read_u32_le()?;
+
+    // sRGB Space — only since 20.3.0.4 (NOT Oblivion, NOT FO3).
+    if stream.version() >= NifVersion::V20_3_0_4 {
+        let _srgb = stream.read_byte_bool()?;
+    }
+
+    // 4 pixel format channels.
+    let mut channels = Vec::with_capacity(4);
+    for _ in 0..4 {
+        let component_type = stream.read_u32_le()?;
+        let convention = stream.read_u32_le()?;
+        let bits_per_channel = stream.read_u8()?;
+        let is_signed = stream.read_byte_bool()?;
+        channels.push(PixelFormatComponent {
+            component_type,
+            convention,
+            bits_per_channel,
+            is_signed,
+        });
+    }
+    let channels_arr = [
+        channels[0].clone(),
+        channels[1].clone(),
+        channels[2].clone(),
+        channels[3].clone(),
+    ];
+
+    let palette_ref = stream.read_block_ref()?;
+    let num_mipmaps = stream.read_u32_le()?;
+    let bytes_per_pixel = stream.read_u32_le()?;
+
+    let mut mipmaps: Vec<MipMapInfo> = stream.allocate_vec(num_mipmaps)?;
+    for _ in 0..num_mipmaps {
+        let width = stream.read_u32_le()?;
+        let height = stream.read_u32_le()?;
+        let offset = stream.read_u32_le()?;
+        mipmaps.push(MipMapInfo {
+            width,
+            height,
+            offset,
+        });
+    }
+
+    let num_pixels = stream.read_u32_le()?;
+
+    Ok(PixelFormatPrelude {
+        pixel_format,
+        bits_per_pixel,
+        renderer_hint,
+        extra_data,
+        flags,
+        tiling,
+        channels: channels_arr,
+        palette_ref,
+        num_mipmaps,
+        bytes_per_pixel,
+        mipmaps,
+        num_pixels,
+    })
+}
+
+impl NiPixelData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let p = parse_pixel_format_prelude(stream)?;
+
+        // nif.xml: `Num Faces` is `since="10.4.0.2" default="1"`; `Pixel
+        // Data` length is `Num Pixels` alone `until="10.4.0.1"` and
+        // `Num Pixels #MUL# Num Faces` `since="10.4.0.2"`.
+        let new_layout = stream.version() >= NifVersion::V10_4_0_2;
+        let num_faces = if new_layout { stream.read_u32_le()? } else { 1 };
+        let total_bytes = p.num_pixels as usize * num_faces as usize;
+        let pixel_data = stream.read_bytes(total_bytes)?;
+
+        Ok(Self {
+            pixel_format: p.pixel_format,
+            bits_per_pixel: p.bits_per_pixel,
+            renderer_hint: p.renderer_hint,
+            extra_data: p.extra_data,
+            flags: p.flags,
+            tiling: p.tiling,
+            channels: p.channels,
+            palette_ref: p.palette_ref,
+            num_mipmaps: p.num_mipmaps,
+            bytes_per_pixel: p.bytes_per_pixel,
+            mipmaps: p.mipmaps,
             num_faces,
             pixel_data,
         })
     }
 }
 
-impl_ni_object!(NiSourceTexture, NiPixelData,);
+/// `NiPersistentSrcTextureRendererData` — Skyrim SE+ persistent-source
+/// texture data. Shares the `NiPixelFormat` prelude with `NiPixelData`
+/// (see [`parse_pixel_format_prelude`]) but its tail diverges: an extra
+/// `Pad Num Pixels` (since 20.2.0.6), an unconditional `Num Faces`
+/// (no `default="1"` gate — always on disk, unlike `NiPixelData`), and
+/// a `Platform`/`Renderer` tag `NiPixelData` lacks entirely.
+///
+/// Previously aliased to `NiPixelData::parse`, which read `Num Pixels`
+/// then misread `Pad Num Pixels` as `Num Faces` (wrong pixel-data byte
+/// length) and silently dropped `Platform` — corrupting every field
+/// after it on Oblivion (unrecoverable, no `block_sizes`) and masking
+/// on FO3+ (recovered via `block_sizes`, but the parsed fields were
+/// still wrong). #2001 / NIF-D1-01.
+#[derive(Debug)]
+pub struct NiPersistentSrcTextureRendererData {
+    pub pixel_format: u32,
+    pub bits_per_pixel: u8,
+    pub renderer_hint: u32,
+    pub extra_data: u32,
+    pub flags: u8,
+    pub tiling: u32,
+    pub channels: [PixelFormatComponent; 4],
+    pub palette_ref: BlockRef,
+    pub num_mipmaps: u32,
+    pub bytes_per_pixel: u32,
+    pub mipmaps: Vec<MipMapInfo>,
+    pub num_faces: u32,
+    pub pixel_data: Vec<u8>,
+}
+
+impl NiPersistentSrcTextureRendererData {
+    pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
+        let p = parse_pixel_format_prelude(stream)?;
+
+        // Pad Num Pixels — since=20.2.0.6, present on every Bethesda
+        // title that ships this niobject (Skyrim SE+); absent on
+        // Oblivion (20.0.0.x, below the gate).
+        if stream.version() >= NifVersion::V20_2_0_6 {
+            let _pad_num_pixels = stream.read_u32_le()?;
+        }
+
+        let num_faces = stream.read_u32_le()?;
+
+        // Platform (until=30.1.0.0) / Renderer (since=30.1.0.1) — no
+        // Redux-supported title reaches major version 30, so this is
+        // always the Platform arm in practice; both are a plain u32 tag.
+        let _platform_or_renderer = stream.read_u32_le()?;
+
+        let total_bytes = p.num_pixels as usize * num_faces as usize;
+        let pixel_data = stream.read_bytes(total_bytes)?;
+
+        Ok(Self {
+            pixel_format: p.pixel_format,
+            bits_per_pixel: p.bits_per_pixel,
+            renderer_hint: p.renderer_hint,
+            extra_data: p.extra_data,
+            flags: p.flags,
+            tiling: p.tiling,
+            channels: p.channels,
+            palette_ref: p.palette_ref,
+            num_mipmaps: p.num_mipmaps,
+            bytes_per_pixel: p.bytes_per_pixel,
+            mipmaps: p.mipmaps,
+            num_faces,
+            pixel_data,
+        })
+    }
+}
+
+impl_ni_object!(
+    NiSourceTexture,
+    NiPixelData,
+    NiPersistentSrcTextureRendererData,
+);
 
 #[cfg(test)]
 mod tests {
@@ -614,6 +726,148 @@ mod tests {
         assert_eq!(pix.num_faces, 1);
         assert_eq!(pix.pixel_data.len(), 16);
         assert_eq!(pix.pixel_data[0], 255); // first pixel R
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// Regression for #2001 / NIF-D1-01 — `NiPersistentSrcTextureRendererData`
+    /// on Oblivion (below the `Pad Num Pixels` `since=20.2.0.6` gate):
+    /// prelude, then `Num Faces` (unconditional, unlike NiPixelData's
+    /// `default=1` gate), then `Platform`, then pixel data. Pre-fix this
+    /// dispatched to `NiPixelData::parse`, which misread `Pad Num
+    /// Pixels`/`Platform`'s slots as `num_faces`/pixel-data start.
+    #[test]
+    fn parse_ni_persistent_src_texture_renderer_data_oblivion() {
+        let header = make_oblivion_header();
+        let mut data = Vec::new();
+
+        data.extend_from_slice(&1u32.to_le_bytes()); // pixel_format = RGBA
+        data.push(32u8); // bits_per_pixel
+        data.extend_from_slice(&0u32.to_le_bytes()); // renderer_hint
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data
+        data.push(0u8); // flags
+        data.extend_from_slice(&0u32.to_le_bytes()); // tiling
+        for _ in 0..4 {
+            data.extend_from_slice(&0u32.to_le_bytes()); // component type
+            data.extend_from_slice(&0u32.to_le_bytes()); // convention
+            data.push(8u8); // bits per channel
+            data.push(0u8); // is_signed
+        }
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // palette_ref (NULL)
+        data.extend_from_slice(&1u32.to_le_bytes()); // num_mipmaps
+        data.extend_from_slice(&4u32.to_le_bytes()); // bytes_per_pixel
+        data.extend_from_slice(&2u32.to_le_bytes()); // mipmap width
+        data.extend_from_slice(&2u32.to_le_bytes()); // mipmap height
+        data.extend_from_slice(&0u32.to_le_bytes()); // mipmap offset
+        data.extend_from_slice(&16u32.to_le_bytes()); // num_pixels
+                                                       // No Pad Num Pixels — v20.0.0.5 < 20.2.0.6.
+        data.extend_from_slice(&1u32.to_le_bytes()); // num_faces
+        data.extend_from_slice(&0xABu32.to_le_bytes()); // Platform tag
+        data.extend_from_slice(&[
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 128, 128, 128, 255,
+        ]);
+
+        let mut stream = NifStream::new(&data, &header);
+        let tex = NiPersistentSrcTextureRendererData::parse(&mut stream).unwrap();
+
+        assert_eq!(tex.pixel_format, 1);
+        assert_eq!(tex.num_mipmaps, 1);
+        assert_eq!(tex.num_faces, 1);
+        assert_eq!(tex.pixel_data.len(), 16);
+        assert_eq!(tex.pixel_data[0], 255);
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// FO3+ counterpart — `Pad Num Pixels` present (since=20.2.0.6).
+    #[test]
+    fn parse_ni_persistent_src_texture_renderer_data_fo3_pad_num_pixels() {
+        let header = NifHeader {
+            version: NifVersion::V20_2_0_7,
+            little_endian: true,
+            user_version: 11,
+            user_version_2: 34,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        let mut data = Vec::new();
+
+        data.extend_from_slice(&1u32.to_le_bytes()); // pixel_format = RGBA
+        data.push(32u8); // bits_per_pixel
+        data.extend_from_slice(&0u32.to_le_bytes()); // renderer_hint
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data
+        data.push(0u8); // flags
+        data.extend_from_slice(&0u32.to_le_bytes()); // tiling
+        for _ in 0..4 {
+            data.extend_from_slice(&0u32.to_le_bytes());
+            data.extend_from_slice(&0u32.to_le_bytes());
+            data.push(8u8);
+            data.push(0u8);
+        }
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // palette_ref
+        data.extend_from_slice(&1u32.to_le_bytes()); // num_mipmaps
+        data.extend_from_slice(&4u32.to_le_bytes()); // bytes_per_pixel
+        data.extend_from_slice(&2u32.to_le_bytes());
+        data.extend_from_slice(&2u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&16u32.to_le_bytes()); // num_pixels
+        data.extend_from_slice(&0u32.to_le_bytes()); // Pad Num Pixels — since=20.2.0.6
+        data.extend_from_slice(&1u32.to_le_bytes()); // num_faces
+        data.extend_from_slice(&0xABu32.to_le_bytes()); // Platform tag
+        data.extend_from_slice(&[
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 128, 128, 128, 255,
+        ]);
+
+        let mut stream = NifStream::new(&data, &header);
+        let tex = NiPersistentSrcTextureRendererData::parse(&mut stream).unwrap();
+
+        assert_eq!(tex.num_faces, 1);
+        assert_eq!(tex.pixel_data.len(), 16);
+        assert_eq!(stream.position() as usize, data.len());
+    }
+
+    /// #2001 / NIF-D1-01 — dispatch must route `NiPersistentSrcTextureRendererData`
+    /// to its own parser, not the aliased `NiPixelData::parse`.
+    #[test]
+    fn ni_persistent_src_texture_renderer_data_dispatches_to_its_own_type() {
+        let header = make_oblivion_header();
+        let mut data = Vec::new();
+        data.extend_from_slice(&0u32.to_le_bytes()); // pixel_format
+        data.push(0u8); // bits_per_pixel
+        data.extend_from_slice(&0u32.to_le_bytes()); // renderer_hint
+        data.extend_from_slice(&0u32.to_le_bytes()); // extra_data
+        data.push(0u8); // flags
+        data.extend_from_slice(&0u32.to_le_bytes()); // tiling
+        for _ in 0..4 {
+            data.extend_from_slice(&0u32.to_le_bytes());
+            data.extend_from_slice(&0u32.to_le_bytes());
+            data.push(0u8);
+            data.push(0u8);
+        }
+        data.extend_from_slice(&(-1i32).to_le_bytes()); // palette_ref
+        data.extend_from_slice(&0u32.to_le_bytes()); // num_mipmaps
+        data.extend_from_slice(&0u32.to_le_bytes()); // bytes_per_pixel
+        data.extend_from_slice(&0u32.to_le_bytes()); // num_pixels
+        data.extend_from_slice(&0u32.to_le_bytes()); // num_faces
+        data.extend_from_slice(&0u32.to_le_bytes()); // Platform tag
+
+        let mut stream = NifStream::new(&data, &header);
+        let block = crate::blocks::parse_block(
+            "NiPersistentSrcTextureRendererData",
+            &mut stream,
+            Some(data.len() as u32),
+        )
+        .expect("NiPersistentSrcTextureRendererData dispatch");
+        assert!(
+            block
+                .as_any()
+                .downcast_ref::<NiPersistentSrcTextureRendererData>()
+                .is_some(),
+            "must dispatch to its own type, not NiPixelData"
+        );
         assert_eq!(stream.position() as usize, data.len());
     }
 

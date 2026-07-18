@@ -30,10 +30,23 @@ impl NiGeomMorpherController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         // NiInterpController layer (base + Manager Controlled bool, #1506).
         let base = parse_interp_controller_base(stream)?;
-        let morpher_flags = stream.read_u16_le()?;
+        // nif.xml: `Morpher Flags` is `since="10.0.1.2"` — absent (default 0)
+        // on older NetImmerse content. #2000 / NIF-D1-03.
+        let morpher_flags = if stream.version() >= NifVersion::V10_0_1_2 {
+            stream.read_u16_le()?
+        } else {
+            0
+        };
         let data_ref = stream.read_block_ref()?;
         let always_update = stream.read_u8()?;
-        let num_interpolators = stream.read_u32_le()?;
+        // nif.xml: `Num Interpolators` is `since="10.1.0.106"` — absent
+        // (default 0) below that, same as the sibling `Interpolators`/
+        // `Interpolator Weights` arrays it counts. #2000 / NIF-D1-03.
+        let num_interpolators = if stream.version() >= NifVersion::V10_1_0_106 {
+            stream.read_u32_le()?
+        } else {
+            0
+        };
 
         // nif.xml NiGeomMorpherController:
         //   "Interpolators" (block refs only): since="10.1.0.106" until="20.0.0.5"

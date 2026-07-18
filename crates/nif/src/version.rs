@@ -140,6 +140,10 @@ impl NifVersion {
     /// v20.2.0.5 — block sizes appear in header; NiSpotLight inner
     /// angle field added. High-frequency boundary (~6 call sites).
     pub const V20_2_0_5: Self = Self(0x14020005);
+    /// v20.2.0.6 — `NiPersistentSrcTextureRendererData.Pad Num Pixels`
+    /// appears at this version (nif.xml `since="20.2.0.6"`). Below every
+    /// retail Oblivion NIF (20.0.0.x); at/above every FO3+ title.
+    pub const V20_2_0_6: Self = Self(0x14020006);
     /// Fallout 3+ (v20.2.0.7)
     pub const V20_2_0_7: Self = Self(0x14020007);
     /// Skyrim / Fallout 4 (alias for V20_2_0_7)
@@ -148,6 +152,12 @@ impl NifVersion {
     pub const V20_3_0_4: Self = Self(0x14030004);
     /// v20.5.0.4 — rare; seen in some Gamebryo 3.x SDK content.
     pub const V20_5_0_4: Self = Self(0x14050004);
+    /// v30.1.0.1 — `NiPersistentSrcTextureRendererData.Renderer` replaces
+    /// `Platform` at this version (nif.xml `since="30.1.0.1"`). No
+    /// Bethesda title (all 20.2.0.7) or any other Redux-supported title
+    /// reaches major version 30; kept only so the gate matches nif.xml
+    /// doctrine rather than hard-coding "always Platform".
+    pub const V30_1_0_1: Self = Self(0x1E010001);
 
     /// v20.1.0.1 — the inclusive boundary at which Gamebryo introduced
     /// the per-file string table. Headers `>= STRING_TABLE_THRESHOLD`
