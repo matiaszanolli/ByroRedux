@@ -574,56 +574,97 @@ pub(crate) fn setup_scene(
             // (observed at WhiterunBanneredMare: door Z=1152.0, AABB
             // Z_max=1151.9, character free-falls). Push the spawn
             // *inward* along the XZ vector from door to the static-
-            // collider AABB centre so the capsule lands on architecture
-            // every time, independent of door rotation conventions or
-            // per-game subtleties. Y stays at door height — the door
-            // floor IS the spawn floor.
+            // collider AABB centre so the capsule's XZ lands well past
+            // the threshold, independent of door rotation conventions or
+            // per-game subtleties.
             const INWARD_NUDGE_BU: f32 = 64.0;
-            let inward_xz = {
+            let aabb = {
                 let pw = world.resource::<byroredux_physics::PhysicsWorld>();
-                pw.static_colliders_aabb().and_then(|(min, max, _)| {
-                    let centre = Vec3::new(0.5 * (min[0] + max[0]), 0.0, 0.5 * (min[2] + max[2]));
-                    let to_centre = Vec3::new(centre.x - door_pos.x, 0.0, centre.z - door_pos.z);
-                    let len_sq = to_centre.length_squared();
-                    if len_sq > 1.0 {
-                        Some(to_centre / len_sq.sqrt())
-                    } else {
-                        // Door is at the AABB centre already — no
-                        // meaningful inward direction. Skip the nudge.
-                        None
-                    }
-                })
+                pw.static_colliders_aabb()
             };
+            let inward_xz = aabb.and_then(|(min, max, _)| {
+                let centre = Vec3::new(0.5 * (min[0] + max[0]), 0.0, 0.5 * (min[2] + max[2]));
+                let to_centre = Vec3::new(centre.x - door_pos.x, 0.0, centre.z - door_pos.z);
+                let len_sq = to_centre.length_squared();
+                if len_sq > 1.0 {
+                    Some(to_centre / len_sq.sqrt())
+                } else {
+                    // Door is at the AABB centre already — no
+                    // meaningful inward direction. Skip the nudge.
+                    None
+                }
+            });
             let nudge = inward_xz.unwrap_or(Vec3::ZERO) * INWARD_NUDGE_BU;
-            let spawn = Vec3::new(
-                door_pos.x + nudge.x,
-                door_pos.y + cc.half_height + 4.0,
-                door_pos.z + nudge.z,
-            );
-            // Inward-nudge degradation diagnostic. #1295 — when the
-            // cell has no static colliders (broken bhk extraction, or
-            // pre-#1294 SF cells before the trimesh-fallback gate
-            // landed), `static_colliders_aabb()` returns `None` →
-            // inward_xz=None → nudge=ZERO → capsule lands on the
-            // exact door-threshold position. The threshold often sits
-            // on a thin floor reference 1-2 BU thick; without a
-            // surrounding collider the capsule projects beyond it
-            // and free-falls. Without this explicit warn the failure
-            // mode reads as "door teleporter wasn't used" (the spawn
-            // log shows the door position) when actually it WAS used
-            // with degraded input. Cydonia 2026-05-28 first-render
-            // hit exactly this trap; surfaced as filed-and-closed
-            // #1295.
+            let nudged_x = door_pos.x + nudge.x;
+            let nudged_z = door_pos.z + nudge.z;
+
+            // #2013 — trusting `door_pos.y` as the floor height (the
+            // pre-fix behavior) assumes the door's own Y is the spawn
+            // floor, but the inward nudge moves the XZ position off the
+            // threshold into whatever is 64 BU further into the room —
+            // which empirically is NOT always clear floor: on Skyrim's
+            // WhiterunDragonsreach the nudge lands over open space (the
+            // capsule free-falls forever, `grounded` never true) and on
+            // Oblivion's ICMarketDistrictTheGildedCarafe it wedges against
+            // a sloped surface a few BU below door height (confirmed via a
+            // one-off downward-cast probe: the resting contact normal's
+            // dot-up was -0.44 — a slanted surface, not a floor — so the
+            // character sits blocked but ungrounded rather than free-
+            // falling). Re-verify the nudged XZ against the actual
+            // architecture with a capsule-shaped downward probe (a bare
+            // ray can slip through gaps beside sloped/narrow geometry the
+            // KCC's own capsule would still clip) instead of trusting door
+            // height blindly.
+            //
+            // The probe starts a modest margin above the DOOR's own
+            // height, not the whole cell's AABB ceiling — starting from
+            // the ceiling picks up whatever clutter (shelves, beams,
+            // upper floors) happens to sit anywhere above the nudged XZ,
+            // which is *not* the floor the door actually opens onto.
+            // Doors sit at floor level by construction, so a bounded
+            // search near that height finds the real local floor (or
+            // correctly reports nothing nearby, rather than a false hit
+            // far above).
+            const FLOOR_PROBE_RANGE_BU: f32 = 150.0;
+            let near_door_floor_y = {
+                let pw = world.resource::<byroredux_physics::PhysicsWorld>();
+                let probe_origin = Vec3::new(nudged_x, door_pos.y + 50.0, nudged_z);
+                pw.cast_capsule_down(probe_origin, cc.half_height, cc.radius, FLOOR_PROBE_RANGE_BU)
+            };
+            // Second rung — the near-door probe can legitimately miss when
+            // the nudge lands over a stairwell gap, balcony edge, or
+            // multi-level drop (the room isn't flat near door height at
+            // all). Widen to the whole cell's vertical extent, same
+            // technique the no-door ray-cast branch below already uses,
+            // rather than giving up straight to the (possibly floor-less)
+            // door height.
+            let wide_floor_y = near_door_floor_y.or_else(|| {
+                aabb.and_then(|(_, max, _)| {
+                    let pw = world.resource::<byroredux_physics::PhysicsWorld>();
+                    let probe_origin = Vec3::new(nudged_x, max[1] + 50.0, nudged_z);
+                    let max_distance = (max[1] - door_pos.y).max(1.0) + 150.0;
+                    pw.cast_capsule_down(probe_origin, cc.half_height, cc.radius, max_distance)
+                })
+            });
+            let floor_y = wide_floor_y;
+            let spawn_y = floor_y.unwrap_or(door_pos.y) + cc.half_height + 4.0;
+            let spawn = Vec3::new(nudged_x, spawn_y, nudged_z);
+
             let nudge_degraded = inward_xz.is_none();
+            let floor_probe_failed = floor_y.is_none();
             log::info!(
                 "M28.5 spawn at door teleporter: door at ({:.1}, {:.1}, {:.1}); \
-                 inward nudge ({:.1}, _, {:.1}) BU; placing capsule at \
-                 ({:.1}, {:.1}, {:.1}){}",
+                 inward nudge ({:.1}, _, {:.1}) BU; floor probe {}; placing capsule \
+                 at ({:.1}, {:.1}, {:.1}){}{}",
                 door_pos.x,
                 door_pos.y,
                 door_pos.z,
                 nudge.x,
                 nudge.z,
+                match floor_y {
+                    Some(y) => format!("hit y={y:.1}"),
+                    None => "MISS (used door height)".to_string(),
+                },
                 spawn.x,
                 spawn.y,
                 spawn.z,
@@ -633,6 +674,15 @@ pub(crate) fn setup_scene(
                      may project beyond a thin floor (#1295). If the character \
                      free-falls from this spawn, the root cause is missing \
                      static colliders, not the spawn position."
+                } else {
+                    ""
+                },
+                if floor_probe_failed {
+                    " — FLOOR PROBE MISS: nudged XZ found no floor within range; \
+                     falling back to door height, which may itself be off any \
+                     walkable surface (#2013). If the character free-falls or \
+                     rests ungrounded from this spawn, the nudge distance or \
+                     direction likely needs revisiting for this room's layout."
                 } else {
                     ""
                 },

@@ -516,6 +516,54 @@ impl PhysicsWorld {
             .map(|(_handle, toi)| origin.y - toi)
     }
 
+    /// Like [`cast_ray_down`](Self::cast_ray_down), but sweeps a capsule of
+    /// the given dimensions instead of a zero-width ray. A bare ray can pass
+    /// clean through a gap beside a sloped or narrow piece of architecture
+    /// that a real capsule of nonzero radius would still clip — #2013 traced
+    /// exactly this gap: the M28.5 door-spawn nudge picks an XZ a fixed
+    /// distance into the room, and a ray straight down from that single
+    /// point can miss the actual walkable floor a capsule spawned there
+    /// would rest on (or, conversely, clip a sloped decoration a bare ray
+    /// slips past — either way the ray and the KCC's own shape disagree).
+    ///
+    /// Returns the world-space Y of the surface a capsule of this size would
+    /// rest on (equivalent contract to `cast_ray_down`: the caller still adds
+    /// `half_height + offset` to place the capsule centre above it).
+    ///
+    /// Same **caller must have called [`update_query_pipeline`]** and
+    /// fixed-bodies-only caveats as `cast_ray_down`.
+    pub fn cast_capsule_down(
+        &self,
+        origin: byroredux_core::math::Vec3,
+        capsule_half_height: f32,
+        capsule_radius: f32,
+        max_distance: f32,
+    ) -> Option<f32> {
+        use rapier3d::parry::query::ShapeCastOptions;
+        use rapier3d::prelude::*;
+        let shape = SharedShape::capsule_y(capsule_half_height.max(1e-3), capsule_radius.max(1e-3));
+        let pos = Isometry::translation(origin.x, origin.y, origin.z);
+        let filter = QueryFilter::exclude_dynamic();
+        self.query_pipeline
+            .cast_shape(
+                &self.bodies,
+                &self.colliders,
+                &pos,
+                &-Vector::y_axis(),
+                shape.as_ref(),
+                ShapeCastOptions {
+                    target_distance: 0.0,
+                    stop_at_penetration: false,
+                    max_time_of_impact: max_distance,
+                    compute_impact_geometry_on_penetration: true,
+                },
+                filter,
+            )
+            .map(|(_handle, hit)| {
+                origin.y - hit.time_of_impact - capsule_half_height - capsule_radius
+            })
+    }
+
     /// Diagnostic — compute the AABB of all static colliders in the
     /// world, plus the count. Returns `None` when there are no static
     /// colliders. Used by the M28.5 controller's one-shot "collider
