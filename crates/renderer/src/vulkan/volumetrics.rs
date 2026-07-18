@@ -1049,6 +1049,7 @@ impl VolumetricsPipeline {
     /// `draw.rs` before `dispatch`, after `cluster_cull.dispatch()`
     /// has recorded and after the compute→compute barrier that makes
     /// its writes visible (see the barrier note in `draw.rs`).
+    #[allow(clippy::too_many_arguments)]
     pub fn write_lights_and_clusters(
         &mut self,
         device: &ash::Device,

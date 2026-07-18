@@ -208,10 +208,11 @@ pub(crate) struct MaterialProvider {
     /// #1585 / F6 — process-lifetime cache of the `<Plugin> - Geometry.csg`
     /// companion blob, keyed by the cell's master plugin path. Mirrors the
     /// `sf_cdbs` `Arc` hold: the CSG owns a warm zlib `ChunkCache`, so
-    /// re-opening it per precombine cell-load (the pre-fix behaviour) re-read
-    /// + re-parsed the ~3700-entry chunk table every tile and discarded all
-    /// inter-cell chunk reuse. The negative (`None`) result is cached too, so
-    /// a non-FO4 / no-CSG plugin isn't re-stat'd on every precombine cell.
+    /// re-opening it per precombine cell-load (the pre-fix behaviour)
+    /// re-read and re-parsed the ~3700-entry chunk table every tile and
+    /// discarded all inter-cell chunk reuse. The negative (`None`) result
+    /// is cached too, so a non-FO4 / no-CSG plugin isn't re-stat'd on
+    /// every precombine cell.
     pub(crate) csg_cache: HashMap<String, Option<Arc<byroredux_bsa::CsgArchive>>>,
 }
 

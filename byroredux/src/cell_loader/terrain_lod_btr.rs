@@ -46,6 +46,7 @@
 //!   * `world_x = qx·CELL + local_x · level`
 //!   * `world_z = local_z · level − qy·CELL`   (`CELL` = [`EXTERIOR_CELL_UNITS`])
 //!   * `world_y = local_y` (height, unscaled)
+//!
 //! Normals/tangents are corrected for the anisotropic XZ scale
 //! (normal ∝ `(nx/level, ny, nz/level)`; tangent ∝ `(tx·level, ty, tz·level)`).
 

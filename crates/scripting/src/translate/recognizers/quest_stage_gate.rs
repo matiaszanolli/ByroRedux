@@ -271,10 +271,12 @@ fn match_guarded_if(
 /// and whether a player-gate term was present.
 ///
 /// [`compose`]: crate::translate::compose
+type StageGateGuards = (Vec<(u16, f32)>, Option<QuestRef>, bool);
+
 fn classify_if_condition(
     cond: &byroredux_papyrus::ast::Expr,
     player_param: Option<&str>,
-) -> Option<(Vec<(u16, f32)>, Option<QuestRef>, bool)> {
+) -> Option<StageGateGuards> {
     let mut atoms = Vec::new();
     split_and(cond, &mut atoms);
 

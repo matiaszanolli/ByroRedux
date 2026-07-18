@@ -36,15 +36,14 @@ pub fn extract_skin_ni_tri_shape(
                 inst.data_ref,
                 Vec::new(),
             )
-        } else if let Some(inst) = scene.get_as::<BsDismemberSkinInstance>(skin_idx) {
+        } else {
+            let inst = scene.get_as::<BsDismemberSkinInstance>(skin_idx)?;
             (
                 inst.base.bone_refs.as_slice(),
                 inst.base.skeleton_root_ref,
                 inst.base.data_ref,
                 inst.partitions.clone(),
             )
-        } else {
-            return None;
         };
 
     let data = scene.get_as::<NiSkinData>(data_ref.index()?)?;
@@ -399,10 +398,9 @@ pub fn decode_sse_skin_payload(scene: &NifScene, shape: &BsTriShape) -> Option<S
     let skin_idx = shape.skin_ref.index()?;
     let partition_ref = if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {
         inst.skin_partition_ref
-    } else if let Some(inst) = scene.get_as::<BsDismemberSkinInstance>(skin_idx) {
-        inst.base.skin_partition_ref
     } else {
-        return None;
+        let inst = scene.get_as::<BsDismemberSkinInstance>(skin_idx)?;
+        inst.base.skin_partition_ref
     };
     let partition_idx = partition_ref.index()?;
     let partition = scene.get_as::<crate::blocks::skin::NiSkinPartition>(partition_idx)?;

@@ -684,8 +684,7 @@ fn build_npc_equip_state<'a>(
     armor_to_spawn.retain(|armor| {
         equipment_slots
             .occupants
-            .iter()
-            .any(|occupant| *occupant == Some(armor.inv_idx))
+            .contains(&Some(armor.inv_idx))
     });
 
     NpcEquipState {
@@ -1447,8 +1446,7 @@ pub fn spawn_npc_entity(
     candidates.retain(|c| {
         equipment_slots
             .occupants
-            .iter()
-            .any(|occupant| *occupant == Some(c.inv_idx))
+            .contains(&Some(c.inv_idx))
     });
 
     for c in &candidates {

@@ -218,7 +218,7 @@ fn next_clean_skin_frames(current: u32, skin_state_dirty: bool) -> u32 {
 /// frame. Mirrors the `MAX_FRAMES_IN_FLIGHT + 1` safety margin used by
 /// `SkinSlotPool::sweep`'s `min_idle` threshold.
 fn should_skip_skin_gpu_refresh(clean_skin_frames: u32) -> bool {
-    clean_skin_frames >= MAX_FRAMES_IN_FLIGHT as u32 + 1
+    clean_skin_frames > MAX_FRAMES_IN_FLIGHT as u32
 }
 
 /// A batch of instances sharing the same mesh + pipeline state.
@@ -947,6 +947,7 @@ impl VulkanContext {
     /// single `unsafe` scope, barrier order, and recording order are
     /// unchanged. Runs between the bulk pre-render barrier and
     /// `copy_depth_to_history` / `record_post_passes`.
+    #[allow(clippy::too_many_arguments)]
     fn record_geometry_pass(
         &mut self,
         cmd: vk::CommandBuffer,
@@ -963,7 +964,7 @@ impl VulkanContext {
                 timers.cmd_main_render_start(&self.device, cmd, frame);
             }
             self.device
-                .cmd_begin_render_pass(cmd, &render_pass_begin, vk::SubpassContents::INLINE);
+                .cmd_begin_render_pass(cmd, render_pass_begin, vk::SubpassContents::INLINE);
 
             // No unconditional pipeline bind here — the batch loop below
             // initializes `last_pipeline_key` to a sentinel Blended value

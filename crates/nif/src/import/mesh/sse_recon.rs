@@ -72,10 +72,9 @@ pub fn try_reconstruct_sse_geometry(
     // BSDismemberSkinInstance — both expose `skin_partition_ref`.
     let partition_ref = if let Some(inst) = scene.get_as::<NiSkinInstance>(skin_idx) {
         inst.skin_partition_ref
-    } else if let Some(inst) = scene.get_as::<BsDismemberSkinInstance>(skin_idx) {
-        inst.base.skin_partition_ref
     } else {
-        return None;
+        let inst = scene.get_as::<BsDismemberSkinInstance>(skin_idx)?;
+        inst.base.skin_partition_ref
     };
 
     let partition_idx = partition_ref.index()?;

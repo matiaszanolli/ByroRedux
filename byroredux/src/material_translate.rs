@@ -216,6 +216,7 @@ pub(crate) fn normal_alpha_spec_applies(
 /// them to spawn is value-identical (#1480 / REN-D22-NEW-01). Idempotent —
 /// it derives from `glossiness` / `specular_strength`, never from the
 /// current `roughness`, so re-running it never drifts.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn normal_alpha_spec_roughness(
     material_kind: u32,
     metalness: f32,

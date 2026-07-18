@@ -151,7 +151,7 @@ pub fn average_rgb(meta: &DdsMetadata, data: &[u8]) -> Option<[f32; 3]> {
             vk::Format::BC2_SRGB_BLOCK | vk::Format::BC3_SRGB_BLOCK => 8,
             _ => return None, // BC4/BC5/BC6H/BC7 — not a diffuse-colour format
         };
-        let blocks = ((w + 3) / 4) * ((h + 3) / 4);
+        let blocks = w.div_ceil(4) * h.div_ceil(4);
         if blocks == 0 {
             return None;
         }

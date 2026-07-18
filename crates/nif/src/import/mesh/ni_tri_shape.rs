@@ -88,7 +88,8 @@ pub fn extract_mesh(
             bound_center: data.center,
             bound_radius: data.radius,
         }
-    } else if let Some(data) = scene.get_as::<NiTriStripsData>(data_idx) {
+    } else {
+        let data = scene.get_as::<NiTriStripsData>(data_idx)?;
         let mut tangents = extract_tangents_from_extra_data(
             scene,
             &shape.av.net.extra_data_refs,
@@ -114,8 +115,6 @@ pub fn extract_mesh(
             bound_center: data.center,
             bound_radius: data.radius,
         }
-    } else {
-        return None;
     };
 
     if geom.vertices.is_empty() || geom.triangles.is_empty() {
