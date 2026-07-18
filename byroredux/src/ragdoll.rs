@@ -167,6 +167,18 @@ fn joint_from_imported(k: &ImportedJointKind) -> RagdollJointSpec {
             cone_max,
             twist_min,
             twist_max,
+            // `plane_min` / `plane_max` (the asymmetric swing limits decoded
+            // in `crates/nif/src/import/collision/ragdoll.rs::ragdoll_joint`)
+            // are intentionally dropped into `..` here: `build_joint`
+            // (`crates/physics/src/ragdoll.rs`) applies a *symmetric*
+            // `[-cone, cone]` on both swing axes (`JointAxis::AngY` / `AngZ`).
+            // This is the documented "cone → both swing axes" simplification —
+            // see `docs/engine/physal.md` § Known approximation. Mapping the
+            // plane range onto Rapier's per-axis AngY/AngZ limits is PHYSAL
+            // rollout step 3. Unlike the sibling edge-drop sites this is a
+            // per-field fidelity loss on every ragdoll joint, so it stays a
+            // comment rather than a per-joint `log::warn!` (which would flood
+            // the log at ragdoll-activation time). FNV-D7-03 / #1982.
             ..
         } => RagdollJointSpec::Ragdoll {
             twist_a: *twist_a,

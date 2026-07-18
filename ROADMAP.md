@@ -74,11 +74,18 @@ band (drift-induced truncation; #687/#688 closed). Starfield at 97.19%
 clean (recent BA2 v3 LZ4 chunked content the parser doesn't yet
 fully cover). Recoverable rate is 100% on all seven games except
 Oblivion (99.99%, single hard-fail on a corrupt-by-design debug
-marker — #698 closed). ESM parses structured records across ~25 types on
-FNV; 73 054 structured records on the latest sweep, plus a 5 625-
-record long-tail bucket (sounds / idle / grasses / debris). Archive
+marker — #698 closed). Archive
 readers cover BSA v103/v104/v105 and BA2 v1/v2/v3/v7/v8 (GNRL + DX10
 with reconstructed DDS headers, zlib + LZ4).
+
+ESM parses structured records across ~25 types on FNV. The living source
+of truth for the record total is the floor-based integration test
+`parse_rate_fnv_esm` (`cargo test -p byroredux-plugin --test parse_real_esm
+-- --ignored`), which reports `[FNV] total=77 828` (items 2 643, NPCs
+3 816, quests 436, dialogues 18 215, SCOL 98, …) plus a separate long-tail
+bucket (sounds / idle / grasses / debris) it logs on its own line. The
+older prose "73 054 + 5 625" split reflected a different bucketing, not a
+parse regression — prefer the test output over any hard count pinned here.
 
 **Scripting, physics, UI.** Papyrus `.psc` parses end-to-end —
 lexer + Pratt expression parser + statement/script parsers + full
@@ -205,7 +212,7 @@ gaps tracked under git log).
 |-------------------|---------------|----------------------------------------------|----------------------------------------------------------|
 | Oblivion          | BSA v103      | **99.93%** (8 026 / 8 032) · recover 100%    | Interior (Anvil Heinrich Oaken Halls). Exterior parse + load ✓ — TES4 worldspace + LAND wiring is implemented and game-agnostic; only an on-device exterior render bench is pending (same shape FO3 was). `#687` closed (NiGeomMorpherController + NiControllerSequence Phase fixes; 83 truncations recovered). `#688` / `#698` closed; remaining 6 truncated NetImmerse-era Oblivion files (pre-Gamebryo v3.3–v4.2 markers, #1611) tracked under git log (live `nif_stats` over `Oblivion - Meshes.bsa`, 2026-07-11 post-#1900: 0 hard failures, recoverable is a clean 100%). |
 | Fallout 3         | BSA v104      | 100% (10 989)                                | Interior (Megaton, 929 REFRs). Exterior wired; fresh GPU bench pending (R6a). |
-| Fallout New Vegas | BSA v104      | 100% (14 881)                                | Interior (Prospector **3626 entities @ 145.1 FPS / 6.90 ms / fence=5.06** on RTX 4070 Ti, R6a-stale-15 `8a668eff` 2026-07-18, 3-run avg; +90.4% FPS / fence −54.5% vs R6a-stale-14 (3516 ent / 76.2 FPS / fence=11.12) — most of this session's improvement traces to Session 46-56 landings, not a new fix in this bench cycle. Residual gap to the pre-collider baseline (161.4 FPS / 2.62 ms @ ~2564 ent) is now ~2×, down from ~4×). Exterior 7×7 (radius 3). |
+| Fallout New Vegas | BSA v104      | 100% (14 881 NIF meshes — this column is the NIF-mesh parse rate over `Fallout - Meshes.bsa`, **not** an ESM record count; for ESM records see the `parse_rate_fnv_esm` test cited above) | Interior (Prospector **3626 entities @ 145.1 FPS / 6.90 ms / fence=5.06** on RTX 4070 Ti, R6a-stale-15 `8a668eff` 2026-07-18, 3-run avg; +90.4% FPS / fence −54.5% vs R6a-stale-14 (3516 ent / 76.2 FPS / fence=11.12) — most of this session's improvement traces to Session 46-56 landings, not a new fix in this bench cycle. Residual gap to the pre-collider baseline (161.4 FPS / 2.62 ms @ ~2564 ent) is now ~2×, down from ~4×). Exterior 7×7 (radius 3). |
 | Skyrim SE         | BSA v105 LZ4  | 100% (18 862)                                | Interior (WhiterunBanneredMare **3237 entities @ 335.0 FPS / 3.00 ms / ~1298 draws / fence=1.21**, R6a-stale-15 `8a668eff` 2026-07-18, 3-run avg; −7.7% FPS vs R6a-stale-14 (362.8 FPS) at flat entity count — likely a shared-desktop-hardware confound during this bench run, not a code regression; no renderer-path code changed for Whiterun's hot path between the two bench dates. Session 46 perf wins (#1371–#1379) still hold structurally. The cell loads 246 unique textures across `Skyrim - Textures0..8.bsa` — as of the M35 sibling-auto-load fix (2026-06-19) passing just `Skyrim - Textures0.bsa` auto-opens `Textures1..8` (and `Meshes0.bsa` auto-opens `Meshes1.bsa`): the asset provider now treats a `…0`-suffixed archive as Skyrim's zero-based series start, so the older "list all 9 explicitly" workaround is no longer required). |
 | Fallout 4         | BA2 v1/v7/v8  | **100.00%** (159 866 / 159 866) · recover 100% | Interior (MedTekResearch01 **21414 entities @ 65.2 FPS / 15.34 ms / 14535 draws / brd=3.74 ms / fence=9.03**, R6a-stale-14 refresh `1c26bc25` 2026-06-03; entity/draw growth vs R6a-stale-13 entirely from M49 CSG precombined geometry — scene is larger and richer, not a regression). Both base mesh archives clean, 0 truncated (`Fallout4 - Meshes.ba2` 34 995 + `Fallout4 - MeshesExtra.ba2` 124 871); the former FaceGen truncation tail is gone (2026-06-14 `parse_rate_fo4_all_meshes`). |
 | Fallout 76        | BA2 v1        | **100%** (58 469 / 58 469) · recover 100%    | — (2026-07-11 sweep, #1900; was stale at 97.34%)          |
