@@ -355,12 +355,14 @@ mod tests {
 
         escort_system(&world, 0.1);
 
+        // Transform before EscortState — matches `escort_system_inner`'s
+        // acquisition order for this pair (#313).
+        let tq = world.query::<Transform>().expect("Transform registered");
         let sq = world.query::<EscortState>().expect("EscortState registered");
         let state = sq.get(actor).expect("state written on first tick");
         assert_eq!(state.target_entity, Some(target));
         assert!(state.destination.is_none(), "still collecting — must not have a destination yet");
 
-        let tq = world.query::<Transform>().expect("Transform registered");
         assert!(
             tq.get(actor).unwrap().translation.x > 0.0,
             "actor should be closing toward the far-away target"

@@ -62,11 +62,12 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
             gq.storage_mut().drain_dirty_into(&mut g_dirty);
         }
 
-        // Acquire Children, LocalBound, Parent, GlobalTransform once — used
-        // by both passes (#250).
+        // Acquire LocalBound, Parent, Children, GlobalTransform once — used
+        // by both passes (#250). Parent before Children matches the order
+        // `transform_propagation_system` establishes for this pair (#313).
         let local_q = world.query::<LocalBound>();
-        let children_q = world.query::<Children>();
         let parent_q = world.query::<Parent>();
+        let children_q = world.query::<Children>();
         let Some(g_q) = world.query::<GlobalTransform>() else {
             return;
         };

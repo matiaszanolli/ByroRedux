@@ -546,8 +546,10 @@ impl ConsoleCommand for SkinListCommand {
         let Some(skin_q) = world.query::<SkinnedMesh>() else {
             return CommandOutput::line("No SkinnedMesh components found");
         };
-        let pool = world.try_resource::<StringPool>();
+        // Name before StringPool — matches `resolve_entity_name`'s order
+        // for this pair (#313).
         let name_q = world.query::<Name>();
+        let pool = world.try_resource::<StringPool>();
         let mut lines = vec![format!("{} skinned mesh entities:", skin_q.len())];
         lines.push(format!(
             "  {:>8}  {:>5}  {:>13}  name",

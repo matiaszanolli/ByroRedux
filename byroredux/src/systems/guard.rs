@@ -219,11 +219,13 @@ mod tests {
 
         guard_system(&world, 0.5);
 
+        // Transform before GuardState — matches `guard_system_inner`'s
+        // acquisition order for this pair (#313).
+        let tq = world.query::<Transform>().expect("Transform registered");
         let sq = world.query::<GuardState>().expect("GuardState registered");
         let state = sq.get(entity).expect("guard_system must lazily insert GuardState on first tick");
         assert_eq!(state.anchor, Vec3::ZERO, "fallback anchor must be the actor's own spawn position");
 
-        let tq = world.query::<Transform>().expect("Transform registered");
         assert_eq!(
             tq.get(entity).unwrap().translation,
             Vec3::ZERO,

@@ -348,24 +348,28 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
 /// re-derivation in the same `Stage::Late` write, self-contained and with no
 /// dependency on gating the (still-running) animation system.
 pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
-    let Some(pw) = world.try_resource::<PhysicsWorld>() else {
-        return;
-    };
     let Some(rq) = world.query::<Ragdoll>() else {
         return;
     };
     let Some(tq) = world.query::<RagdollTemplate>() else {
         return;
     };
-    let Some(mut gtq) = world.query_mut::<GlobalTransform>() else {
-        return;
-    };
     // Hierarchy + local-pose reads for the descendant re-derivation pass.
     // Absent (a flat skeleton with neither Parent nor Children) the pass is a
     // no-op and only the body writeback runs. Scratch reused across actors.
+    // Transform, then Parent, then Children — matches
+    // `transform_propagation_system`'s acquisition order for these pairs;
+    // GlobalTransform (write) is taken last of the four, then PhysicsWorld
+    // last of all — matching `push_kinematic`'s order for that pair (#313).
+    let transform_q = world.query::<Transform>();
     let parent_q = world.query::<Parent>();
     let children_q = world.query::<Children>();
-    let transform_q = world.query::<Transform>();
+    let Some(mut gtq) = world.query_mut::<GlobalTransform>() else {
+        return;
+    };
+    let Some(pw) = world.try_resource::<PhysicsWorld>() else {
+        return;
+    };
     let mut body_bones: HashSet<EntityId> = HashSet::new();
     let mut queue: VecDeque<EntityId> = VecDeque::new();
     for (actor, ragdoll) in rq.iter() {

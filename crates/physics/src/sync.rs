@@ -344,9 +344,7 @@ impl Newcomer {
 fn collect_newcomers(world: &World) -> Vec<Newcomer> {
     let mut out = Vec::new();
 
-    let Some(gq) = world.query::<GlobalTransform>() else {
-        return out;
-    };
+    let handles_q = world.query::<RapierHandles>();
 
     let (Some(shape_q), Some(body_q)) = (
         world.query::<CollisionShape>(),
@@ -355,7 +353,13 @@ fn collect_newcomers(world: &World) -> Vec<Newcomer> {
         return out;
     };
 
-    let handles_q = world.query::<RapierHandles>();
+    // Acquired last — matches `push_kinematic`'s Handles → Body → Global
+    // order so the two functions never present the lock-order detector
+    // with opposite edges for the same pair (#313).
+    let Some(gq) = world.query::<GlobalTransform>() else {
+        return out;
+    };
+
     for (entity, shape) in shape_q.iter() {
         if let Some(ref hq) = handles_q {
             if hq.contains(entity) {

@@ -90,7 +90,6 @@ pub(crate) fn parse_console_u32(tok: &str) -> Option<u32> {
 /// Pure formatter — kept separate from the command impl so the test
 /// can drive it without standing up a `ConsoleCommand` dispatcher.
 pub(crate) fn format_skin_dump(world: &World, entity: u32, skin: &SkinnedMesh) -> Vec<String> {
-    let pool = world.try_resource::<StringPool>();
     let mut lines = vec![format!(
         "SkinnedMesh dump for entity {} ({} bones):",
         entity,
@@ -122,10 +121,19 @@ pub(crate) fn format_skin_dump(world: &World, entity: u32, skin: &SkinnedMesh) -
     {
         let (entity_str, name_str, world_mat) = match maybe_bone {
             Some(bone_e) => {
+                // `get::<Name>` fully releases its internal lock before
+                // returning, so acquiring `StringPool` only afterward
+                // (rather than holding it across the call) never presents
+                // the lock-order detector with a Pool-while-holding-Name
+                // edge — matching `resolve_entity_name`'s Name-before-Pool
+                // convention for this pair (#313).
                 let name = world
                     .get::<Name>(*bone_e)
-                    .and_then(|n| pool.as_ref().and_then(|p| p.resolve(n.0)))
-                    .map(|s| s.to_string())
+                    .and_then(|n| {
+                        world
+                            .try_resource::<StringPool>()
+                            .and_then(|p| p.resolve(n.0).map(|s| s.to_string()))
+                    })
                     .unwrap_or_else(|| "(no Name)".to_string());
                 let world_mat = world
                     .get::<GlobalTransform>(*bone_e)

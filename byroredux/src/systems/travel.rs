@@ -259,10 +259,12 @@ mod tests {
         let t = tq.get(entity).expect("actor transform");
         assert!(t.translation.length() > 0.0, "actor should have moved from the origin");
 
+        // Traveled before TravelState — matches `travel_system_inner`'s
+        // acquisition order for this pair (#313).
+        let travq = world.query::<Traveled>().expect("Traveled registered");
         let sq = world.query::<TravelState>().expect("TravelState registered");
         assert!(sq.get(entity).is_some(), "travel_system must lazily insert TravelState on first tick");
 
-        let travq = world.query::<Traveled>().expect("Traveled registered");
         assert!(travq.get(entity).is_none(), "should not have arrived in one 0.5s tick from a 200-unit radius pick");
     }
 

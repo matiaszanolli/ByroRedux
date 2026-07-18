@@ -210,10 +210,13 @@ fn end_to_end_lower_then_dispatch() {
     emit_advance(&world, Q, 50);
     quest_fragment_dispatch_system(&world);
 
+    // QuestStageState before QuestObjectiveState — matches
+    // `quest_fragment_dispatch_system`'s acquisition order for this
+    // pair (#313).
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 100);
     let obj = world.resource::<QuestObjectiveState>();
     assert!(obj.get(Q, 10).completed);
     assert!(obj.get(Q, 20).displayed);
-    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 100);
 }
 
 #[test]

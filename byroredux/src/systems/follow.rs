@@ -272,13 +272,15 @@ mod tests {
 
         follow_system(&world, 0.1);
 
+        // Transform before FollowState — matches `follow_system_inner`'s
+        // acquisition order for this pair (#313).
+        let tq = world.query::<Transform>().expect("Transform registered");
         let sq = world.query::<FollowState>().expect("FollowState registered");
         assert!(
             sq.get(actor).unwrap().target_entity.is_some(),
             "target must resolve on first tick"
         );
 
-        let tq = world.query::<Transform>().expect("Transform registered");
         let pos = tq.get(actor).unwrap().translation;
         assert!(pos.x > 0.0, "actor should have started closing toward the target");
     }

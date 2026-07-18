@@ -123,8 +123,8 @@ fn full_world_round_trips_through_container() {
 
     // Names resolve to the same strings through the restored StringPool.
     {
-        let pool = dst.resource::<StringPool>();
         let q = dst.query::<Name>().expect("name storage");
+        let pool = dst.resource::<StringPool>();
         let names: std::collections::HashMap<u32, String> = q
             .iter()
             .map(|(e, n)| (e, pool.resolve(n.0).unwrap().to_string()))
@@ -148,6 +148,9 @@ fn full_world_round_trips_through_container() {
 
     // Inventory + equipment preserved.
     {
+        // EquipmentSlots before Inventory — matches `validate_world`'s
+        // acquisition order for this pair (#313).
+        let qe = dst.query::<EquipmentSlots>().expect("equip storage");
         let qi = dst.query::<Inventory>().expect("inventory storage");
         let (e, inv) = qi.iter().next().unwrap();
         assert_eq!(e, 4);
@@ -155,7 +158,6 @@ fn full_world_round_trips_through_container() {
         assert_eq!(inv.items[0].base_form_id, 0xDEAD);
         assert_eq!(inv.items[1].count, 5);
 
-        let qe = dst.query::<EquipmentSlots>().expect("equip storage");
         let (_, equip) = qe.iter().next().unwrap();
         assert_eq!(equip.occupants[0], Some(InventoryIndex(0)));
     }
@@ -163,8 +165,11 @@ fn full_world_round_trips_through_container() {
     // FormIdComponent resolves back to the SAME stable pair through the
     // destination pool (handle value is session-local and may differ).
     {
-        let pool = dst.resource::<FormIdPool>();
+        // FormIdComponent before FormIdPool — matches the order
+        // established elsewhere (save registry/driver, physics sync,
+        // condition eval) for this pair (#313).
         let qf = dst.query::<FormIdComponent>().expect("formid storage");
+        let pool = dst.resource::<FormIdPool>();
         let (e, comp) = qf.iter().next().unwrap();
         assert_eq!(e, 4);
         assert_eq!(pool.resolve(comp.0).copied(), Some(pair));

@@ -326,8 +326,10 @@ pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionC
 pub fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<EntityId> {
     use byroredux_core::ecs::components::FormIdComponent;
     use byroredux_core::form_id::FormIdPool;
-    let pool = world.try_resource::<FormIdPool>()?;
+    // FormIdComponent before FormIdPool — matches the order established
+    // elsewhere (save registry/driver, physics sync) for this pair (#313).
     let q = world.query::<FormIdComponent>()?;
+    let pool = world.try_resource::<FormIdPool>()?;
     let found = q
         .iter()
         .find(|(_, fid)| pool.resolve(fid.0).is_some_and(|p| p.local.0 == form_id))
