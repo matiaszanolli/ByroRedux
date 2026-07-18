@@ -604,7 +604,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
     scheduler.add_exclusive(Stage::Update, quest_advance_dispatch);
     // Dispatch quest fragments right after the advance that emits the
     // `QuestStageAdvanced` markers, before end-of-frame cleanup drains
-    // them (no-op until the QUST-VMAD fragment decoder lands, #1739).
+    // them (populated live from parsed QUST VMAD fragments, #1739 / `8a70b81a`).
     scheduler.add_exclusive(Stage::Update, quest_fragment_dispatch);
     scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_init_dispatch);
     // `recurring_update_tick_system` ticks `RecurringUpdate` and emits

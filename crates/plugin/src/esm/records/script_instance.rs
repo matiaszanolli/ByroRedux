@@ -42,8 +42,9 @@
 //! QUST / INFO / PACK / SCEN carry a trailing *fragment* section after
 //! the scripts; ACTI / REFR / STAT / CONT (the records the M47.2
 //! recognizers consume) do not — the scripts section is the whole VMAD
-//! for them. The decoder reads the scripts section and ignores any
-//! trailing bytes (graceful — fragment decode is a later phase).
+//! for them. This decoder reads only the scripts section and ignores any
+//! trailing bytes; the QUST fragment section has its own decoder,
+//! [`parse_quest_fragments`], below (#1739 / `8a70b81a`).
 //!
 //! Parsing is bounds-checked and *graceful*: a truncated VMAD yields the
 //! scripts decoded so far rather than panicking, matching the engine's

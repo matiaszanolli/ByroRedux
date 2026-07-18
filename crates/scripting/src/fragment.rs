@@ -8,22 +8,19 @@
 //! and applies them when a [`QuestStageAdvanced`] marker says the stage
 //! was set.
 //!
-//! ## What ships here vs. what's pending
+//! ## What ships here
 //!
-//! - **Engine + contract + dispatch (here, tested):** the
-//!   [`QuestStageFragments`] resource, [`apply_effects`] against the
-//!   canonical [`QuestStageState`] / [`QuestObjectiveState`], and
-//!   [`quest_fragment_dispatch_system`] which consumes `QuestStageAdvanced`
-//!   and cascades chained `SetStage`s (bounded).
-//! - **Population (pending):** filling [`QuestStageFragments`] from real
-//!   game data needs the **QUST VMAD fragment-section decoder** — the
-//!   binary table mapping a quest's stage index to its `Fragment_N`
-//!   function — which is not decoded yet (see
-//!   `crates/plugin/src/esm/records/script_instance.rs`: "fragment decode
-//!   is a later phase"). Per the no-guessing policy the format is not
-//!   reverse-engineered here. Until it lands, the resource stays empty at
-//!   runtime and the dispatcher is a no-op; tests populate it directly.
-//!   This mirrors how [`QuestStageAdvanced`] shipped before its consumer.
+//! - **Engine + contract + dispatch:** the [`QuestStageFragments`]
+//!   resource, [`apply_effects`] against the canonical [`QuestStageState`]
+//!   / [`QuestObjectiveState`], and [`quest_fragment_dispatch_system`]
+//!   which consumes `QuestStageAdvanced` and cascades chained `SetStage`s
+//!   (bounded).
+//! - **Population (shipped, #1739 / `8a70b81a`):** [`QuestStageFragments`]
+//!   is filled from real game data via the QUST `VMAD` fragment-section
+//!   decoder
+//!   (`byroredux_plugin::esm::records::script_instance::parse_quest_fragments`)
+//!   feeding [`populate_quest_fragments_from_pex`], wired live from the
+//!   cell loader. Validated end-to-end on real Skyrim data.
 //!
 //! ## Quest-ref resolution
 //!

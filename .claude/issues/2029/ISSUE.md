@@ -1,6 +1,6 @@
 # SCR-D6-NEW2-01: Fragment-dispatch docs describe the now-live QUST-fragment pipeline as an unwired no-op
 
-**Labels**: low, documentation
+**Labels**: documentation, low
 
 **Severity**: LOW
 **Dimension**: Scripting Runtime Systems
@@ -26,3 +26,4 @@ Update `fragment.rs:11-26` to "Population (shipped, #1739/8a70b81a)"; drop or up
 
 ## Completeness Checks
 - [ ] **TESTS**: N/A (doc-only fix)
+
