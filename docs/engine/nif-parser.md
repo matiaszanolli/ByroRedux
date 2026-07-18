@@ -17,7 +17,7 @@ Source: [`crates/nif/src/`](../../crates/nif/src/)
 
 | | |
 |---|---|
-| Dispatch table       | hand-written `match type_name` in [`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) `parse_block_inner` — **the live arm count is the source of truth; count fresh, this figure drifts.** ~260 arms covering ~309 distinct block-type-name literals (2026-07-05). |
+| Dispatch table       | hand-written `match type_name` in [`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) `parse_block_inner` — **the live arm count is the source of truth; count fresh, this figure drifts.** ~248 top-level arms covering ~315 distinct block-type-name literals (2026-07-18 — a naive `grep -c '=>'` over the same range returns a higher number since it also counts arms in two small nested `match` blocks used internally to re-derive `&'static str`s; don't recount that way). |
 | Game variants supported | 8 (Morrowind → Starfield) via the [`NifVariant`](../../crates/nif/src/version.rs) enum |
 | Tests (unit)         | ~738 in-crate `#[test]`s with synthetic byte streams (per-parser regressions + the 67-test `dispatch_tests` suite + per-category `*_tests.rs` siblings) |
 | Integration sweeps   | 7 games, 100% recoverable each ([`tests/parse_real_nifs.rs`](../../crates/nif/tests/parse_real_nifs.rs) + per-block-baseline / heap-bound / translation-completeness siblings) |
@@ -177,27 +177,50 @@ pub enum NifVariant {
 }
 ```
 
-`NifVariant::detect()` does the dispatch once at header read time;
-afterwards, every block parser asks **semantic feature flags** on the
-variant rather than checking raw version numbers:
+`NifVariant::detect()` does the dispatch once at header read time and
+still drives a handful of genuinely variant-level decisions (which
+`ShaderFlags` vocabulary applies, which shader-property type a mesh
+uses) — but per-field version gating inside individual block parsers is
+**not** done through `NifVariant` helper predicates. The #1277 epic
+tried exactly that (migrating raw `bsver` comparisons onto
+`NifVariant`-keyed feature flags like `has_properties_list()` /
+`avobject_flags_u32()`), and #160/#1331/#1838/#1839 reverted it: a
+transitional export (e.g. `v20.2.0.7, user_version=11, bsver ≤ 26` —
+NifSkope or a non-Bethesda tool re-saving Oblivion content) detects as
+the `Fallout3` variant, whose helper says "read a u32 flags field", but
+the file on disk only has 2 bytes there — the stream silently slips by
+2-4 bytes and every subsequent block misreads.
+
+The current doctrine, stated in ~10 in-code comments, is: gate on the
+raw `stream.bsver()` against named constants in
+[`crate::version::bsver`](../../crates/nif/src/version.rs), never on a
+`NifVariant` method:
 
 ```rust
-if stream.variant().has_properties_list()  { ... }    // pre-Skyrim NiAVObject
-if stream.variant().avobject_flags_u32()   { ... }    // FO3+ uses u32 not u16
-if stream.variant().has_material_crc()     { ... }    // Skyrim+ NiGeometryData
-if stream.variant().uses_bs_lighting_shader() { ... } // Skyrim+ shader split
-if stream.variant().uses_bs_tri_shape()    { ... }    // SSE+ packed geometry
-if stream.variant().uses_fo76_shader_flags() { ... }  // FO76+ CRC32 flag arrays
+let flags = if stream.bsver() > crate::version::bsver::FLAGS_U32_THRESHOLD {
+    stream.read_u32_le()?   // FO3+ NiAVObject.Flags is u32, not u16
+} else {
+    stream.read_u16_le()? as u32
+};
+
+if stream.bsver() >= crate::version::bsver::SKYRIM_SE   { ... } // SSE+ packed BSTriShape / skin data
+if stream.bsver() >= crate::version::bsver::FALLOUT4    { ... } // FO4+ shader-property split
+if stream.bsver() >= crate::version::bsver::FO76_SF2_CRCS { ... } // FO76+ second CRC32 shader-flag array
 ```
 
-This is the **GameVariant trait pattern** mentioned in the project memory:
-keep all the per-game quirks in one place instead of scattering version
-checks through 150+ block parsers. When a new game variant lands the
-work is "add an enum variant + a few feature flags", not "audit every
-block parser". The #1277 epic migrated the remaining variant-aligned raw
-`bsver` comparisons to `NifVariant` helpers and added a typed
-[`ShaderFlags`](../../crates/nif/src/shader_flags.rs) variant view so a
-single mesh can't pick the wrong flag vocabulary.
+A per-file `bsver` is unambiguous where a `NifVariant` (which buckets
+several distinct `bsver`/`user_version` combinations together) is not —
+see `blocks/base.rs:70-84`'s `NiAVObject::parse` for the live example
+and its full revert rationale in-line.
+
+This is still the **GameVariant trait pattern** mentioned in the
+project memory in spirit: keep per-game quirks out of ad-hoc scattered
+checks. In practice that now means named `bsver` constants with a
+doc comment explaining what each one gates, not a `NifVariant` trait
+method — the trait-method layer is reserved for the coarser variant-
+level decisions (`ShaderFlags` vocabulary selection, shader-property
+type dispatch) where a single file genuinely belongs to one variant
+unambiguously.
 
 > **Detection note (#943 / #1219).** `V20_0_0_4` / `V20_0_0_5` are routed
 > to `Oblivion` ahead of the uv/uv2 match — no other game uses those
@@ -276,8 +299,10 @@ regression.
 
 Block types fall into a handful of families. The dispatch table in
 [`blocks/mod.rs`](../../crates/nif/src/blocks/mod.rs) `parse_block_inner`
-carries ~260 match arms covering ~309 distinct type-name literals
-(2026-07-05 — verify the live count from source; it grows). Coverage summary:
+carries ~248 top-level match arms covering ~315 distinct type-name literals
+(2026-07-18 — verify the live count from source; it grows. Count top-level
+arms only — two small nested `match` blocks re-deriving `&'static str`s
+inflate a naive `grep -c '=>'` count). Coverage summary:
 
 ### Nodes and geometry
 `NiNode`, `BSFadeNode`, `BSLeafAnimNode`, `BSTreeNode`, `BSMultiBoundNode`,
@@ -356,8 +381,13 @@ layouts pulled straight from `nif.xml`.
 `NiMaterialProperty`, `NiAlphaProperty`, `NiTexturingProperty` (with bump
 map / parallax fields), `NiStencilProperty` (version-aware), `NiZBufferProperty`,
 `NiVertexColorProperty`, `NiSpecularProperty`, `NiWireframeProperty`,
-`NiDitherProperty`, `NiShadeProperty`. `NiFogProperty` is a deliberate
-non-dispatch (the gap is accepted and documented, #1224).
+`NiDitherProperty`, `NiShadeProperty`, `NiFogProperty` — all live
+dispatch arms, parsed cleanly (Oblivion / FO3 baselines show zero
+`NiUnknown` for `NiFogProperty`). The accepted gap is one layer
+downstream, not here: the import material walker never calls
+`scene.get_as::<NiFogProperty>()`, so parsed fog data never reaches
+`MaterialInfo` (a deliberate non-consumption, #1224 — see
+[NIFAL](nifal.md)).
 
 ### Textures
 `NiSourceTexture`, `NiPixelData`, `NiPersistentSrcTextureRendererData`,
