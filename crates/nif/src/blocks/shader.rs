@@ -831,7 +831,7 @@ impl BSLightingShaderProperty {
     /// | Range | Parser | Distinguishing features |
     /// |---|---|---|
     /// | BSVER 83-129 | [`parse_skyrim`](Self::parse_skyrim) | u32 shader-flag pair, `lighting_effect_1/2`, no `root_material_path`, no wetness, no FO76 trailing |
-    /// | BSVER 130-154 | [`parse_fo4`](Self::parse_fo4) | u32 pair at BSVER=130 only (gap at 131; CRC32 from 132); `root_material_path`; FO4 subsurface block 130-139; wetness; glossiness scale ×100 |
+    /// | BSVER 130-154 | [`parse_fo4`](Self::parse_fo4) | legacy shader type + u32 pair at BSVER=130 only (gap at 131; CRC32 from 132); `root_material_path`; FO4 subsurface block 130-139; wetness; glossiness scale ×100 |
     /// | BSVER ≥ 155 | [`parse_fo76_plus`](Self::parse_fo76_plus) | shader-type comes AFTER name; material-reference stopcond; CRC32 flag arrays; FO76 luminance/translucency/texture-arrays; FO76 shader-type-data table |
     ///
     /// The three per-variant parsers are bit-for-bit equivalent to the
@@ -948,7 +948,8 @@ impl BSLightingShaderProperty {
 
     /// Fallout 4 + dev-band parser (BSVER 130-154).
     ///
-    /// - `legacy_shader_type` (u32) precedes `NiObjectNETData`.
+    /// - `legacy_shader_type` (u32) precedes `NiObjectNETData` only through
+    ///   BSVER 139; BSVER 140-154 defaults it to 0 and starts at the name.
     /// - **Shader-flag encoding splits within the range**:
     ///   - BSVER == 130: u32 pair (`shader_flags_1/2`), no CRC32.
     ///   - BSVER == 131 (`FO4_SHADER_GAP`): NEITHER — dev-stream 131 ships
@@ -974,7 +975,11 @@ impl BSLightingShaderProperty {
     /// - No `lighting_effect_1/2` (Skyrim-only).
     /// - No FO76 luminance/translucency/texture-arrays.
     fn parse_fo4(stream: &mut NifStream, bsver: u32) -> io::Result<Self> {
-        let shader_type = stream.read_u32_le()?;
+        let shader_type = if bsver < crate::version::bsver::FO4_DLC_UPPER {
+            stream.read_u32_le()?
+        } else {
+            0
+        };
         let net = NiObjectNETData::parse(stream)?;
 
         let (shader_flags_1, shader_flags_2) = if bsver <= crate::version::bsver::FALLOUT4 {
