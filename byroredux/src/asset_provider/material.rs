@@ -37,7 +37,7 @@ pub(crate) fn discover_starfield_cdbs(
         match archive.extract(&path) {
             Ok(bytes) => {
                 log::info!("Discovered Starfield CDB '{path}' in '{source}'");
-                provider.load_starfield_cdb(&bytes);
+                provider.register_starfield_cdb(&bytes);
             }
             Err(e) => log::warn!("Failed to extract CDB '{path}' from '{source}': {e}"),
         }
@@ -188,23 +188,31 @@ pub(crate) struct MaterialProvider {
     pub(crate) failed_paths: HashSet<String>,
     /// Insertion-order key tracker for [`failed_paths`] — drives half-eviction.
     failed_paths_order: VecDeque<String>,
-    /// Starfield `materialsbeta.cdb` Component Databases, in archive /
-    /// load order. The base game ships one (`materials\materialsbeta.cdb`
-    /// in `Starfield - Materials.ba2`); each DLC / Creation ships its own
-    /// at `materials\creations\<plugin>\materialsbeta.cdb` inside its
-    /// `* - Main.ba2`. Empty for non-Starfield content.
+    /// Number of Starfield `materialsbeta.cdb` Component Databases
+    /// discovered across the loaded archives. The base game ships one
+    /// (`materials\materialsbeta.cdb` in `Starfield - Materials.ba2`);
+    /// each DLC / Creation ships its own at
+    /// `materials\creations\<plugin>\materialsbeta.cdb` inside its
+    /// `* - Main.ba2`. `0` for non-Starfield content.
     /// #1289 / SF-D3-NEW-01, multi-CDB discovery #1571 / SF-D3-03.
     ///
-    /// Phase 1 (today): presence-only — the CDBs are parsed and held so
-    /// [`merge_bgsm_into_mesh`]'s `.mat` arm has confirmation that
-    /// Starfield material authoring is loaded before flipping `is_pbr`.
-    /// Phase 2 (future, SF-D3-01 #1289): walk the instance trees in load
-    /// order to build ONE `material_path → MaterialFields` lookup (DLC
-    /// last-wins) so per-material metalness / roughness / texture paths
-    /// flow into `ImportedMesh` (mirrors the FO4 BGSM `resolve_bgsm`
-    /// per-field translation already wired below) — a single index, no
-    /// second per-game material path (CANONICAL-BOUNDARY).
-    pub(crate) sf_cdbs: Vec<Arc<ComponentDatabaseFile>>,
+    /// Phase 1 (today): presence-only — [`merge_bgsm_into_mesh`]'s `.mat`
+    /// arm only needs confirmation that Starfield material authoring is
+    /// loaded before flipping `is_pbr`, so discovery runs a header-only
+    /// probe ([`ComponentDatabaseFile::probe_header`]) and records the
+    /// count. It deliberately does NOT retain the full parsed tree: the
+    /// vanilla CDB materialises ~1.44M typed entries (multi-second parse,
+    /// hundreds of MB–GB of RAM) that nothing reads today.
+    /// SF-D3-AUDIT-01 / #2100.
+    /// Phase 2 (future, SF-D3-01 #1289): re-`parse` each CDB on demand and
+    /// walk the instance trees in load order to build ONE
+    /// `material_path → MaterialFields` lookup (DLC last-wins) so
+    /// per-material metalness / roughness / texture paths flow into
+    /// `ImportedMesh` (mirrors the FO4 BGSM `resolve_bgsm` per-field
+    /// translation already wired below) — a single index, no second
+    /// per-game material path (CANONICAL-BOUNDARY). Archive order is
+    /// preserved in `self.archives`, so re-discovery reproduces load order.
+    pub(crate) sf_cdb_count: usize,
     /// #1585 / F6 — process-lifetime cache of the `<Plugin> - Geometry.csg`
     /// companion blob, keyed by the cell's master plugin path. Mirrors the
     /// `sf_cdbs` `Arc` hold: the CSG owns a warm zlib `ChunkCache`, so
@@ -231,7 +239,7 @@ impl MaterialProvider {
             bgem_cache_order: VecDeque::new(),
             failed_paths: HashSet::new(),
             failed_paths_order: VecDeque::new(),
-            sf_cdbs: Vec::new(),
+            sf_cdb_count: 0,
             csg_cache: HashMap::new(),
         }
     }
@@ -267,30 +275,44 @@ impl MaterialProvider {
     /// paths against a non-Starfield archive set don't accidentally route
     /// to Disney BSDF. #1289 / SF-D3-NEW-01.
     pub(crate) fn has_starfield_cdb(&self) -> bool {
-        !self.sf_cdbs.is_empty()
+        self.sf_cdb_count > 0
     }
 
-    /// Parse a Starfield `materialsbeta.cdb` payload and APPEND it on
-    /// `self` in load order (base first, then DLC) — `discover_starfield_cdbs`
-    /// calls this once per CDB found across the loaded archives (#1571).
-    /// Logs the class + instance count on success; a parse failure is
-    /// warned and dropped, leaving the other CDBs intact. #1289 / SF-D3-NEW-01.
-    pub(crate) fn load_starfield_cdb(&mut self, bytes: &[u8]) {
-        match ComponentDatabaseFile::parse(bytes) {
-            Ok(cdb) => {
+    /// Validate + register a Starfield `materialsbeta.cdb` payload for the
+    /// presence gate — `discover_starfield_cdbs` calls this once per CDB
+    /// found across the loaded archives (#1571). Runs a `peek_magic` cheap
+    /// reject (SF-D3-AUDIT-03 / #2102) then a header-only
+    /// [`ComponentDatabaseFile::probe_header`] validity check
+    /// (SF-D3-AUDIT-01 / #2100) and bumps `sf_cdb_count` on success — it
+    /// does NOT walk or retain the ~1.44M-entry instance tree (see the
+    /// `sf_cdb_count` field doc). A malformed payload is warned and
+    /// dropped, leaving the count intact. #1289 / SF-D3-NEW-01.
+    pub(crate) fn register_starfield_cdb(&mut self, bytes: &[u8]) {
+        // Cheapest reject first: 4-byte magic. Skips the header/chunk-index
+        // work for a mis-named non-CDB file. SF-D3-AUDIT-03 / #2102.
+        if !ComponentDatabaseFile::peek_magic(bytes) {
+            log::warn!(
+                "Starfield CDB rejected ({} bytes): not a BETH-signature file. \
+                 Starfield content will fall back to legacy Lambert shading.",
+                bytes.len(),
+            );
+            return;
+        }
+        match ComponentDatabaseFile::probe_header(bytes) {
+            Ok(info) => {
                 log::info!(
-                    "Starfield CDB loaded: {} classes / {} instances ({} bytes). \
+                    "Starfield CDB present: {} chunks ({} bytes, header-only probe). \
                      `.mat` material paths on NIFs will route through Disney BSDF \
-                     (Phase 1 — per-field extraction is the deferred Phase 2 follow-up).",
-                    cdb.classes.len(),
-                    cdb.instances.len(),
+                     (Phase 1 — full parse + per-field extraction is the deferred \
+                     Phase 2 follow-up).",
+                    info.chunk_count,
                     bytes.len(),
                 );
-                self.sf_cdbs.push(Arc::new(cdb));
+                self.sf_cdb_count += 1;
             }
             Err(e) => {
                 log::warn!(
-                    "Starfield CDB parse failed ({} bytes): {}. \
+                    "Starfield CDB header invalid ({} bytes): {}. \
                      Starfield content will fall back to legacy Lambert shading.",
                     bytes.len(),
                     e,
@@ -610,7 +632,7 @@ pub(crate) fn merge_bgsm_into_mesh(
     // shader.rs::is_material_path`) end in `.mat`. The actual material
     // data lives in the binary Component Database at
     // `materials\materialsbeta.cdb` inside `Starfield - Materials.ba2`,
-    // loaded once at provider init via [`load_starfield_cdb`].
+    // loaded once at provider init via [`register_starfield_cdb`].
     //
     // Phase 1 (this commit): flip `mesh.is_pbr = true` so
     // `pack_bgsm_material_flags` packs `MAT_FLAG_PBR_BSDF` and
@@ -1131,7 +1153,7 @@ pub(crate) fn merge_bgsm_into_mesh(
         // loaded — that's a real degradation (e.g. a future patch bumps
         // CDB fileVersion past the #1569 pins, or `--materials-ba2` was
         // omitted) already logged once, far earlier, in
-        // `load_starfield_cdb`. SF3-02 / #1831 — name that cause
+        // `register_starfield_cdb`. SF3-02 / #1831 — name that cause
         // explicitly instead of the generic "unsupported format" message,
         // so an operator sees one clear degradation line rather than
         // per-mesh spam disconnected from the upstream CDB failure.

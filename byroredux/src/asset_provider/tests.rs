@@ -1574,7 +1574,7 @@ fn imported_mesh_with_material_path(
 }
 
 /// Synthetic minimal CDB: BETH magic + header + STRT (empty) + TYPE
-/// chunk declaring zero types. Sufficient for `load_starfield_cdb`
+/// chunk declaring zero types. Sufficient for `register_starfield_cdb`
 /// to mark `has_starfield_cdb() == true` without needing 105 MB of
 /// real Starfield data.
 ///
@@ -1641,23 +1641,25 @@ fn discovered_cdbs_accumulate_in_load_order() {
     let mut provider = MaterialProvider::new();
     assert!(!provider.has_starfield_cdb(), "empty provider has no CDB");
 
-    // Base CDB, then a DLC CDB — both parse, both retained.
-    provider.load_starfield_cdb(&minimal_cdb_bytes());
-    provider.load_starfield_cdb(&minimal_cdb_bytes());
+    // Base CDB, then a DLC CDB — both pass the header-only probe
+    // (#2100), both counted.
+    provider.register_starfield_cdb(&minimal_cdb_bytes());
+    provider.register_starfield_cdb(&minimal_cdb_bytes());
     assert!(provider.has_starfield_cdb());
     assert_eq!(
-        provider.sf_cdbs.len(),
+        provider.sf_cdb_count,
         2,
-        "a second CDB must be appended, not replace the first (was the \
-         single-Option bug that dropped DLC CDBs)"
+        "a second CDB must increment the count, not replace the first (was \
+         the single-Option bug that dropped DLC CDBs)"
     );
 
-    // A malformed CDB is warned + dropped, leaving the others intact.
-    provider.load_starfield_cdb(b"not a cdb");
+    // A malformed CDB is rejected (peek_magic, #2102) + warned, leaving
+    // the count intact.
+    provider.register_starfield_cdb(b"not a cdb");
     assert_eq!(
-        provider.sf_cdbs.len(),
+        provider.sf_cdb_count,
         2,
-        "a parse failure must not drop the already-loaded CDBs"
+        "a rejected CDB must not change the already-counted CDBs"
     );
 }
 
@@ -1669,7 +1671,7 @@ fn discovered_cdbs_accumulate_in_load_order() {
 fn merge_sets_is_pbr_on_mat_path_when_cdb_loaded() {
     let mut pool = byroredux_core::string::StringPool::new();
     let mut provider = MaterialProvider::new();
-    provider.load_starfield_cdb(&minimal_cdb_bytes());
+    provider.register_starfield_cdb(&minimal_cdb_bytes());
     assert!(
         provider.has_starfield_cdb(),
         "minimal CDB payload must mark the provider as Starfield-loaded"
@@ -1700,7 +1702,7 @@ fn merge_sets_is_pbr_on_mat_path_when_cdb_loaded() {
 fn merge_skips_mat_path_when_cdb_absent() {
     let mut pool = byroredux_core::string::StringPool::new();
     let mut provider = MaterialProvider::new();
-    // No `load_starfield_cdb` call.
+    // No `register_starfield_cdb` call.
     assert!(!provider.has_starfield_cdb());
 
     let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/modded.mat");
@@ -1754,7 +1756,7 @@ fn unresolved_material_warning_generic_for_non_mat_path() {
 fn mat_arm_does_not_steal_bgsm_dispatch() {
     let mut pool = byroredux_core::string::StringPool::new();
     let mut provider = MaterialProvider::new();
-    provider.load_starfield_cdb(&minimal_cdb_bytes());
+    provider.register_starfield_cdb(&minimal_cdb_bytes());
 
     let mut mesh =
         imported_mesh_with_material_path(&mut pool, "materials/setdressing/metallocker01.bgsm");

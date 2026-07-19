@@ -89,9 +89,11 @@ impl ComponentDatabaseFile {
         })
     }
 
-    /// Quick header probe — succeeds when the first 16 bytes look like
-    /// a CDB. Useful as a magic-byte check before invoking the full
-    /// parser (mirrors `BgsmFile::peek_magic` over in the bgsm crate).
+    /// Quick magic-byte probe — succeeds when the first 4 bytes are the
+    /// `BETH` signature. The cheapest possible reject for a mis-named /
+    /// non-CDB file before any header or chunk-table work (mirrors
+    /// `BgsmFile::peek_magic` over in the bgsm crate). Wired into the
+    /// material provider's discovery path. SF-D3-AUDIT-03 / #2102.
     pub fn peek_magic(bytes: &[u8]) -> bool {
         if bytes.len() < 4 {
             return false;
@@ -99,6 +101,35 @@ impl ComponentDatabaseFile {
         let mag = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         mag == SIGNATURE_BETH
     }
+
+    /// Lightweight validity/presence probe: validate the 16-byte header
+    /// and index the chunk table WITHOUT walking the (vanilla: ~1.44M
+    /// entry) instance tree. Returns a [`CdbHeaderInfo`] summary.
+    ///
+    /// Callers that only need to confirm a well-formed CDB is present —
+    /// e.g. the material provider's `has_starfield_cdb` gate — should use
+    /// this instead of [`ComponentDatabaseFile::parse`], which
+    /// materialises the full typed tree (a multi-second, multi-hundred-MB
+    /// operation whose result Phase-1 presence checks never read). When
+    /// Phase 2's per-field material index is built it re-runs the full
+    /// `parse` on demand. SF-D3-AUDIT-01 / #2100.
+    pub fn probe_header(bytes: &[u8]) -> Result<CdbHeaderInfo> {
+        let mut p = Parser::new(bytes);
+        p.parse_header()?;
+        let chunks = p.index_chunks()?;
+        Ok(CdbHeaderInfo {
+            chunk_count: chunks.len(),
+        })
+    }
+}
+
+/// Header-only summary produced by [`ComponentDatabaseFile::probe_header`]
+/// — the cheap presence-check counterpart to a full
+/// [`ComponentDatabaseFile::parse`] that never touches the instance tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CdbHeaderInfo {
+    /// Number of chunks declared in the index (excludes the BETH marker).
+    pub chunk_count: usize,
 }
 
 // ── parser internals ─────────────────────────────────────────────────
@@ -535,7 +566,12 @@ fn read_primitive_ref(state: &mut State, cur: &mut Cursor<'_>, is_diff: bool) ->
 fn read_primitive_string(cur: &mut Cursor<'_>) -> Result<String> {
     let len = cur.read_u16()? as usize;
     let bytes = cur.read_bytes(len)?;
-    Ok(String::from_utf8_lossy(bytes).into_owned())
+    // Gibbed reads inline CDB strings with `trimNull=true`. Truncate at the
+    // first NUL inside the length-prefixed window before the lossy UTF-8
+    // decode so a terminating / embedded `\0` doesn't survive into the
+    // `String` and diverge from the reference. SF-D3-AUDIT-02 / #2101.
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    Ok(String::from_utf8_lossy(&bytes[..end]).into_owned())
 }
 
 // ── tiny byte-slice cursor (avoids `std::io::Cursor`'s Result-only API) ──
@@ -614,6 +650,71 @@ fn read_u32_le(bytes: &[u8], pos: usize) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SF-D3-AUDIT-01 / #2100 — `probe_header` must validate the header +
+    /// chunk index WITHOUT walking (or even semantically checking) the
+    /// instance chunks. Proof: a file whose chunk *table* is well-formed
+    /// but whose chunk *order* is invalid for a real parse (an `OBJT`
+    /// where the `STRT`/`TYPE` chunks belong) probes clean yet fails the
+    /// full parse — so the probe cannot have touched the instance walk.
+    #[test]
+    fn probe_header_skips_instance_walk() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&SIGNATURE_BETH.to_le_bytes());
+        buf.extend_from_slice(&HEADER_SIZE.to_le_bytes());
+        buf.extend_from_slice(&FILE_VERSION.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes()); // chunkCount incl BETH → 2 chunks
+        buf.extend_from_slice(b"OBJT"); // instance chunk where STRT/TYPE belong
+        buf.extend_from_slice(&0u32.to_le_bytes()); // size 0
+        buf.extend_from_slice(b"STRT");
+        buf.extend_from_slice(&0u32.to_le_bytes()); // size 0
+
+        let info = ComponentDatabaseFile::probe_header(&buf)
+            .expect("well-formed header + chunk table must probe clean");
+        assert_eq!(info.chunk_count, 2);
+        // The full parser walks chunk semantics and rejects the misordered
+        // OBJT-before-STRT — work the probe demonstrably skipped.
+        assert!(ComponentDatabaseFile::parse(&buf).is_err());
+    }
+
+    /// SF-D3-AUDIT-03 / #2102 — the discovery cheap-reject. `peek_magic`
+    /// accepts a BETH-signature buffer and rejects a mis-named non-CDB one
+    /// (and a too-short buffer) on the first 4 bytes alone.
+    #[test]
+    fn peek_magic_gates_discovery() {
+        assert!(ComponentDatabaseFile::peek_magic(
+            &SIGNATURE_BETH.to_le_bytes()
+        ));
+        assert!(!ComponentDatabaseFile::peek_magic(b"not a cdb"));
+        assert!(!ComponentDatabaseFile::peek_magic(b"ab")); // < 4 bytes
+    }
+
+    /// SF-D3-AUDIT-02 / #2101 — inline strings follow Gibbed's `trimNull`
+    /// semantics: a length-prefixed window containing an embedded or
+    /// trailing NUL decodes without the NUL.
+    #[test]
+    fn read_primitive_string_trims_nul() {
+        // Embedded NUL mid-window: "abc\0de" (len 6) → "abc".
+        let mut buf = 6u16.to_le_bytes().to_vec();
+        buf.extend_from_slice(b"abc\0de");
+        assert_eq!(
+            read_primitive_string(&mut Cursor::new(&buf)).unwrap(),
+            "abc"
+        );
+
+        // Trailing NUL padding: "hi\0\0" (len 4) → "hi".
+        let mut buf = 4u16.to_le_bytes().to_vec();
+        buf.extend_from_slice(b"hi\0\0");
+        assert_eq!(read_primitive_string(&mut Cursor::new(&buf)).unwrap(), "hi");
+
+        // No NUL — passes through unchanged.
+        let mut buf = 3u16.to_le_bytes().to_vec();
+        buf.extend_from_slice(b"xyz");
+        assert_eq!(
+            read_primitive_string(&mut Cursor::new(&buf)).unwrap(),
+            "xyz"
+        );
+    }
 
     /// #1569 baseline — the CDB is a flat chunk stream with no
     /// per-instance recovery: a single unrecognised chunk FourCC aborts

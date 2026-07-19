@@ -185,6 +185,15 @@ The data supports immediately proceeding to Phase 1. **Key revision** to the roa
 
 ¹ BlueprintShips captured 81 more REFRs than the walker counted — likely persistent vs temporary REFR sub-GRUP nuance. Sub-0.01% drift, well within noise.
 
+> **Superseded (2026-06-26, #1660 / commit `2dc43106`)** — the Starfield.esm
+> interior count `1 971 151` above was captured 2026-05-28. A live re-run now
+> reports **1 971 135** (16 fewer). This is the *intended, more-correct*
+> behavior of `2dc43106`, which skips deletion-tombstone REFRs: 16 vanilla
+> `Starfield.esm` interior REFRs carry the Deleted flag and are now correctly
+> excluded from the parser's capture. Not a regression — parity is unchanged.
+> The table above is left as the dated 2026-05-28 snapshot (its arithmetic
+> intact); this note records the delta. DIM4-STARFIELD-01 / #2103.
+
 **Parse times**: Starfield.esm 4.0 s · ShatteredSpace.esm 1.7 s · BlueprintShips 0.6 s · Constellation 0.0 s. Vanilla Starfield.esm produces:
 - **11 985 interior cells**, **38 of them named `*Cydonia*`** including `citycydoniamainlevel` (27 898 REFRs, form 0x002B3DA2) and `citycydoniamainlevel02` (9 679 REFRs)
 - **18 424 exterior cells** across **432 worldspaces**
