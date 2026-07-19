@@ -255,6 +255,7 @@ pub fn extract_bs_geometry(
     // overwrites for BGSM-resolved Starfield BSGeometry meshes;
     // anything else keeps these classifier-derived values.
     let legacy_pbr = mat.classify_legacy_pbr(pool);
+    let effective_alpha_blend = mat.effective_alpha_blend(shape.av.net.name.as_deref(), pool);
 
     Some(ImportedMesh {
         positions,
@@ -269,7 +270,7 @@ pub fn extract_bs_geometry(
         name: shape.av.net.name.clone(),
         texture_path: mat.texture_path,
         material_path: mat.material_path,
-        has_alpha: mat.alpha_blend,
+        has_alpha: effective_alpha_blend,
         src_blend_mode: mat.src_blend_mode,
         dst_blend_mode: mat.dst_blend_mode,
         alpha_test: mat.alpha_test,

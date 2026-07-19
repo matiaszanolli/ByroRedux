@@ -205,8 +205,8 @@ vec3 traceShadowTransmittance(
             continue;
         }
 
-        bool alphaSensitive = hitInst.alphaThreshold > 0.0
-            || (hitMat.materialFlags & MAT_FLAG_ALPHA_BLEND) != 0u;
+        bool alphaSensitive = hitMat.alphaThreshold > 0.0
+            || (hitInst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u;
         bool nearEmitter = emitterRadius > 0.0
             && opaqueRemaining - hitT <= emitterRadius
             && max(max(hitMat.emissiveR, hitMat.emissiveG), hitMat.emissiveB)

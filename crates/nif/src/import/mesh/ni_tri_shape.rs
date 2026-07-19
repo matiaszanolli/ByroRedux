@@ -179,6 +179,7 @@ pub fn extract_mesh(
     // BGSM-resolved materials, so this fires only for the legacy
     // Oblivion / FO3 / FNV / pre-Skyrim paths it's intended to serve.
     let legacy_pbr = mat.classify_legacy_pbr(pool);
+    let effective_alpha_blend = mat.effective_alpha_blend(shape.av.net.name.as_deref(), pool);
 
     // #783 / M-NORMALS — pre-decoded tangents from the NIF's
     // `NiBinaryExtraData("Tangent space (binormal & tangent vectors)")`.
@@ -207,7 +208,7 @@ pub fn extract_mesh(
         name: shape.av.net.name.clone(),
         texture_path: mat.texture_path,
         material_path: mat.material_path,
-        has_alpha: mat.alpha_blend,
+        has_alpha: effective_alpha_blend,
         src_blend_mode: mat.src_blend_mode,
         dst_blend_mode: mat.dst_blend_mode,
         alpha_test: mat.alpha_test,

@@ -327,11 +327,12 @@ fn precombine_material_from_shape(
         &[],
         pool,
     );
+    let effective_alpha_blend = mat.effective_alpha_blend(shape.av.net.name.as_deref(), pool);
     PrecombineMaterial {
         texture_path: mat.texture_path,
         normal_map: mat.normal_map,
         material_path: mat.material_path,
-        has_alpha: mat.alpha_blend,
+        has_alpha: effective_alpha_blend,
         src_blend_mode: mat.src_blend_mode,
         dst_blend_mode: mat.dst_blend_mode,
         alpha_test: mat.alpha_test,

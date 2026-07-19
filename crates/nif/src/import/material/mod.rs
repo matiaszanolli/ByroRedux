@@ -458,7 +458,16 @@ pub(super) struct MaterialInfo {
     /// `VertexColorMode`. Defaults to `AmbientDiffuse` — the value
     /// Gamebryo uses when the NIF has no `NiVertexColorProperty`.
     pub vertex_color_mode: VertexColorMode,
+    /// Effective alpha-blend state for the renderer. A material that authors
+    /// both alpha test and blend remains test-only here by default so foliage,
+    /// hair, and fences keep the depth-writing cutout path.
     pub alpha_blend: bool,
+    /// Raw NiAlphaProperty blend-enable bit, retained when alpha test wins the
+    /// generic pipeline choice. Some legacy glass meshes (including FNV's
+    /// pitchers and drinking glasses) intentionally author both operations;
+    /// [`effective_alpha_blend`] selectively restores blending for meshes that
+    /// are actually classified as glass.
+    pub alpha_blend_authored: bool,
     /// Source blend factor from NiAlphaProperty flags bits 1–4.
     /// Maps to Gamebryo's AlphaFunction enum:
     ///   0=ONE, 1=ZERO, 2=SRC_COLOR, 3=INV_SRC_COLOR, 4=DEST_COLOR,
@@ -946,6 +955,7 @@ impl Default for MaterialInfo {
             inner_layer_map: None,
             vertex_color_mode: VertexColorMode::AmbientDiffuse,
             alpha_blend: false,
+            alpha_blend_authored: false,
             src_blend_mode: 6, // SRC_ALPHA — Gamebryo default
             dst_blend_mode: 7, // INV_SRC_ALPHA — Gamebryo default
             alpha_test: false,
@@ -1021,6 +1031,31 @@ impl Default for MaterialInfo {
 }
 
 impl MaterialInfo {
+    /// Resolve the renderer blend path without turning every Gamebryo
+    /// blend+test cutout into a sorted transparent mesh. Glass is the exception:
+    /// its alpha test removes texture coverage holes, while its blend bit
+    /// provides framebuffer transmission whenever bounded refraction escapes.
+    pub(super) fn effective_alpha_blend(
+        &self,
+        mesh_name: Option<&str>,
+        pool: &byroredux_core::string::StringPool,
+    ) -> bool {
+        if self.alpha_blend {
+            return true;
+        }
+        if !self.alpha_blend_authored || !self.alpha_test {
+            return false;
+        }
+
+        let name_is_glass =
+            mesh_name.is_some_and(byroredux_core::ecs::components::material::is_glass_keyword_path);
+        let texture_is_glass = self
+            .texture_path
+            .and_then(|path| pool.resolve(path))
+            .is_some_and(byroredux_core::ecs::components::material::is_glass_keyword_path);
+        name_is_glass || texture_is_glass
+    }
+
     /// Stage 2 (`feedback_format_translation.md`) — derive PBR
     /// `(metalness, roughness)` from this MaterialInfo's legacy
     /// inline-shader data at NIF-import time, so every mesh leaves
@@ -1084,6 +1119,7 @@ impl MaterialInfo {
 pub(super) fn apply_alpha_flags(info: &mut MaterialInfo, alpha: &NiAlphaProperty) {
     let blend = alpha.flags & 0x001 != 0;
     let test = alpha.flags & 0x200 != 0;
+    info.alpha_blend_authored = blend;
     // Extract blend factors regardless of which mode wins — they're
     // needed if the mesh later ends up blended (e.g., animated alpha).
     info.src_blend_mode = ((alpha.flags >> 1) & 0xF) as u8; // bits 1–4
@@ -1093,7 +1129,8 @@ pub(super) fn apply_alpha_flags(info: &mut MaterialInfo, alpha: &NiAlphaProperty
         info.alpha_threshold = alpha.threshold as f32 / 255.0;
         // Bits 10-12: alpha test comparison function (3 bits, 0–7).
         info.alpha_test_func = ((alpha.flags & 0x1C00) >> 10) as u8;
-        // Prefer cutout to blending when both are set.
+        // Prefer the depth-writing cutout path for the generic case. The mesh
+        // handoff restores authored blending only for glass-classified shapes.
         info.alpha_blend = false;
     } else if blend {
         info.alpha_blend = true;

@@ -1188,8 +1188,8 @@ void main() {
     // above.
     //
     // Worst-case ray cost per IOR fragment (#916 / REN-D9-NEW-03):
-    //   * 1 reflection ray (`traceReflection`, fired unconditionally
-    //     inside this block).
+    //   * Up to 1 reflection ray (`traceReflection`, fired only when the
+    //     Fresnel contribution exceeds the face-on floor).
     //   * Up to 3 refraction rays — the `REFRACT_PASSTHRU_BUDGET = 2`
     //     glass-passthru loop below iterates `passthru = 0..=2`, so the
     //     extreme of stacked self-textured glass shells (per #789) emits
@@ -1266,11 +1266,23 @@ void main() {
         // above; the IOR block runs inside the isGlass branch).
         float fresnelScalar = fresnelSchlick(NdotV_v, vec3(f0Dielectric)).r;
 
-        // Reflection ray — use the smooth macro surface normal (see above).
-        vec3 R = reflect(-V, N_geom_view);
-        vec4 reflRay = traceReflection(fragWorldPos + N_geom_view * 0.05, R, 3000.0,
-                                       roughness * 8.0, fragInstanceIndex);
-        vec3 reflColor = reflRay.rgb;
+        // Reflection is only material above the normal-incidence Fresnel
+        // floor. The old path traced and fully lit a reflection hit for every
+        // glass fragment even when its contribution was ~4%; a shelf full of
+        // overlapping cups consequently spent most of the frame on invisible
+        // rays. Keep the expensive ray for edges/grazing faces where it is the
+        // dominant glass cue, and use the local environment at face-on angles.
+        bool isExteriorGlass = jitter.w > 0.5;
+        vec3 reflColor = isExteriorGlass
+            ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
+            : sceneFlags.yzw;
+        if (fresnelScalar > 0.08) {
+            vec3 R = reflect(-V, N_geom_view);
+            vec4 reflRay = traceReflection(
+                fragWorldPos + N_geom_view * 0.05, R, 3000.0,
+                roughness * 8.0, fragInstanceIndex);
+            reflColor = reflRay.rgb;
+        }
 
         // Refraction ray using the smooth geometric normal.
         // IGN-seeded roughness spread replaces per-texel bump deviation:
@@ -1310,6 +1322,7 @@ void main() {
         bool totalInternalReflection = dot(refractDir, refractDir) < 0.0001;
 
         vec3 refrColor;
+        bool refractionResolved = totalInternalReflection;
         float glassDistance = 0.0;
         if (totalInternalReflection) {
             refrColor = reflColor;
@@ -1348,6 +1361,12 @@ void main() {
             vec3 rayOrigin = fragWorldPos - N_geom_view * 0.1;
             float rayTMin = 0.05;
             float accumulatedDist = 0.0;
+            // The entry refraction above placed this ray inside the primary
+            // glass volume. Track medium transitions explicitly: the former
+            // loop treated every later glass hit as an exit, so the air gap
+            // between stacked cups was counted as solid-glass absorption and
+            // refracted with glass→air eta at both entry and exit.
+            bool rayInsideGlass = true;
             int tIdx = -1;
             int tPrim = 0;
             vec2 tBary = vec2(0.0);
@@ -1415,25 +1434,42 @@ void main() {
                 // texture is never SAMPLED.
                 if ((hitIsGlass || fallbackTexture) && passthru < REFRACT_PASSTHRU_BUDGET) {
                     vec3 exitPoint = rayOrigin + refractDir * hDist;
-                    // Two-surface refraction: bend the ray AGAIN as it
-                    // leaves the glass (glass→air) instead of passing
-                    // straight through. A single front-surface refraction
-                    // only nudges the image; the exit refraction is what
-                    // inverts/magnifies it, so a solid glass sphere/cube
-                    // actually reads as a lens that bends the scene behind
-                    // it. The geometric face normal is oriented to point
-                    // back into the glass (against the outgoing ray) for
-                    // refract(); eta = n_glass/n_air = GLASS_IOR. On total
-                    // internal reflection (refract → 0, grazing exit) keep
-                    // the straight passthru — a bounded approximation.
+                    // Bend at each real medium transition. A second prop is
+                    // entered air→glass and then exited glass→air; it is not
+                    // another exit from the primary prop. Only distance
+                    // travelled while `rayInsideGlass` contributes to bulk
+                    // absorption.
                     if (hitIsGlass) {
                         uint hPrim =
                             uint(rayQueryGetIntersectionPrimitiveIndexEXT(refrRQ, true));
-                        vec3 exitN = getHitTriNormal(uint(hIdx), hPrim);
-                        if (dot(exitN, refractDir) < 0.0) exitN = -exitN; // outward
-                        vec3 exitDir = refract(refractDir, -exitN, GLASS_IOR);
-                        if (dot(exitDir, exitDir) > 1e-4) refractDir = normalize(exitDir);
-                        glassDistance += hDist;
+                        vec3 interfaceN = getHitTriNormal(uint(hIdx), hPrim);
+                        if (rayInsideGlass) {
+                            glassDistance += hDist;
+                            // Exit normal points with the incident ray; refract
+                            // expects the normal against it.
+                            if (dot(interfaceN, refractDir) < 0.0) {
+                                interfaceN = -interfaceN;
+                            }
+                            interfaceN = -interfaceN;
+                        } else {
+                            // Entry normal points back into the incident air.
+                            if (dot(interfaceN, refractDir) > 0.0) {
+                                interfaceN = -interfaceN;
+                            }
+                        }
+                        float interfaceEta = rayInsideGlass
+                            ? GLASS_IOR : ETA_AIR_TO_GLASS;
+                        vec3 interfaceDir = refract(
+                            refractDir, interfaceN, interfaceEta);
+                        if (dot(interfaceDir, interfaceDir) > 1e-4) {
+                            refractDir = normalize(interfaceDir);
+                            rayInsideGlass = !rayInsideGlass;
+                        } else {
+                            // Total internal reflection stays in the current
+                            // medium; continue from the same interface with a
+                            // reflected direction instead of crossing it.
+                            refractDir = normalize(reflect(refractDir, interfaceN));
+                        }
                     }
                     rayOrigin = exitPoint + refractDir * 0.05;
                     rayTMin = 0.0;
@@ -1447,6 +1483,7 @@ void main() {
                 tHitPos = rayOrigin + refractDir * hDist;
                 accumulatedDist += hDist;
                 hit = true;
+                refractionResolved = !hitIsGlass && !fallbackTexture;
                 diagPassthru = passthru;
                 diagSelfTerminus = hitIsGlass;
                 break;
@@ -1490,7 +1527,12 @@ void main() {
             // paints the tessellation moire. Treat a self-instance terminus
             // as an escape (ambient), like the fallback-texture case.
             bool terminusOnSelf = hit && (tIdx == fragInstanceIndex);
-            if (!hit || terminusOnFallback || terminusOnSelf) {
+            bool terminusOnGlass = hit
+                && materials[instances[tIdx].materialId].materialKind
+                    == MATERIAL_KIND_GLASS;
+            refractionResolved = hit
+                && !terminusOnFallback && !terminusOnSelf && !terminusOnGlass;
+            if (!refractionResolved) {
                 // Escaped scene — fall back to cell ambient. The
                 // diagnostic capture from #789-followup showed this
                 // branch is the *dominant* path for upright glass
@@ -1511,8 +1553,7 @@ void main() {
                 // pins `skyTint` at clear-noon-blue) drop to cell
                 // ambient alone to keep daylight tint out of sealed-
                 // interior glass refractions. See #1125 / REN-D9-NEW-01.
-                bool isExterior = jitter.w > 0.5;
-                refrColor = isExterior
+                refrColor = isExteriorGlass
                     ? (skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5)
                     : sceneFlags.yzw;
             } else {
@@ -1620,12 +1661,16 @@ void main() {
             6.0
         ).rgb * vec3(mat.diffuseR, mat.diffuseG, mat.diffuseB),
             vec3(0.02), vec3(1.0));
-        // Beer-style bulk absorption. Diffuse alpha controls tint strength,
-        // not a second framebuffer blend, while measured in-glass travel
-        // keeps thin panes clear and thicker bottles visibly coloured.
-        float opticalThickness = clamp(glassDistance * 0.02, 0.05, 0.75);
-        float tintWeight = opticalThickness
-            * mix(0.25, 1.0, clamp(texColor.a, 0.0, 1.0));
+        // Beer-style bulk absorption. Only actual in-medium distance is
+        // accumulated above. Use an exponential response with a conservative
+        // cap: Bethesda's pale diffuse art is a surface/reflection texture,
+        // not a literal absorption coefficient, and applying 75% of it made
+        // clear pitchers turn into opaque blue-green solids.
+        float opticalThickness = 1.0 - exp(-max(glassDistance, 0.0) * 0.004);
+        float tintWeight = clamp(
+            opticalThickness
+                * mix(0.15, 0.50, clamp(texColor.a, 0.0, 1.0)),
+            0.0, 0.25);
         vec3 transmission = refrColor
             * mix(vec3(1.0), glassTint, tintWeight);
 
@@ -1634,14 +1679,19 @@ void main() {
         // straight on, shiny at the edges" glass look.
         vec3 glassSurface = mix(transmission, reflColor, fresnelScalar);
 
-        // `glassSurface` is already resolved radiance: it contains both the
-        // traced scene behind the glass and the reflected scene. Sending the
-        // authored material alpha to the fixed-function SRC_ALPHA blend
-        // mixed the raster framebuffer into that result a second time,
-        // suppressing normal-incidence reflection and producing ghostly
-        // see-through objects. Replace the covered pixel with the resolved
-        // radiance. Alpha test/MSAA coverage still handles cutout edges.
-        outColor = vec4(glassSurface, 1.0);
+        // A traced opaque terminus provides resolved transmission, so replace
+        // the framebuffer with that radiance. A miss or a passthrough budget
+        // exhausted on more glass does NOT: for authored alpha-blend glass,
+        // fall back to Fresnel coverage and let the already-rasterized scene
+        // provide the straight-through component. The previous unconditional
+        // alpha=1 replaced that scene with cell ambient, producing the flat
+        // blue cups visible in dense drinkware stacks.
+        float resolvedAlpha = 1.0;
+        if (!refractionResolved && isAlphaBlend) {
+            glassSurface = reflColor;
+            resolvedAlpha = clamp(fresnelScalar, 0.025, 0.65);
+        }
+        outColor = vec4(glassSurface, resolvedAlpha);
         outNormal = octEncode(N_geom_view);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(albedo, 1.0);
@@ -3059,13 +3109,13 @@ void main() {
         finalAlpha = clamp(mat.materialAlpha, 0.0, 1.0);
     }
     if (isGlass) {
-        // This is the non-IOR fallback. Bottle-body textures frequently store
-        // alpha=1 even though the NiTriShape uses alpha blending; trusting that
-        // texel alpha makes the fallback a solid white/chrome object. Use a
-        // bounded dielectric coverage instead. Alpha-tested panes use an
-        // opaque pipeline, so their coverage is still controlled by discard.
+        // This is the non-IOR fallback. Coverage should be the dielectric
+        // Fresnel term, not an arbitrary 12–70% opacity ramp. The old floor
+        // accumulated across a shelf of overlapping cups until the stack was
+        // effectively opaque and amplified their pale diffuse texture into a
+        // blue/green solid. Alpha test still owns cutout coverage before here.
         if (isAlphaBlend) {
-            finalAlpha = mix(0.12, 0.70, glassFresnel);
+            finalAlpha = clamp(glassFresnel, 0.025, 0.65);
         }
 
         // ── Stylized Fresnel rim (Tier 8 visual fidelity) ──────────

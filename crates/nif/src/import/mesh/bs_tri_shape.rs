@@ -118,6 +118,7 @@ pub fn extract_bs_tri_shape(
     // overwrites both for BGSM-resolved Skyrim+/FO4 meshes; legacy
     // inline-shader BSLightingShaderProperty meshes keep these.
     let legacy_pbr = mat.classify_legacy_pbr(pool);
+    let effective_alpha_blend = mat.effective_alpha_blend(shape.av.net.name.as_deref(), pool);
 
     // #795 / SK-D1-03 + #796 / SK-D1-04 — per-vertex tangents.
     //
@@ -204,7 +205,7 @@ pub fn extract_bs_tri_shape(
         name: shape.av.net.name.clone(),
         texture_path: mat.texture_path,
         material_path: mat.material_path,
-        has_alpha: mat.alpha_blend,
+        has_alpha: effective_alpha_blend,
         src_blend_mode: mat.src_blend_mode,
         dst_blend_mode: mat.dst_blend_mode,
         alpha_test: mat.alpha_test,

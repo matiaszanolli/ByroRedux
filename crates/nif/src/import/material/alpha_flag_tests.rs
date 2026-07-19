@@ -38,15 +38,25 @@ fn alpha_test_only_sets_test_and_scales_threshold() {
 }
 
 #[test]
-fn alpha_test_and_blend_prefers_test() {
-    // Foliage with both bits set: alpha-test wins because the
-    // discard + depth-write path sorts cleanly without back-to-front
-    // pre-sort of the alpha-blend pipeline.
+fn alpha_test_and_blend_preserves_authored_blend_for_glass_only() {
+    // Gamebryo runs the compare before blending. Real FNV glass
+    // (GlassPitcher01/DrinkingGlass01) uses 0x12ED, but the same pair appears
+    // widely on foliage. Keep the generic pipeline test-only and selectively
+    // recover the blend bit at the mesh handoff for glass-classified shapes.
     let mut info = MaterialInfo::default();
-    apply_alpha_flags(&mut info, &alpha_prop(0x0201, 200));
-    assert!(!info.alpha_blend, "alpha_blend should yield to alpha_test");
+    apply_alpha_flags(&mut info, &alpha_prop(0x12ED, 200));
+    assert!(!info.alpha_blend);
+    assert!(info.alpha_blend_authored);
     assert!(info.alpha_test);
+    assert_eq!(info.src_blend_mode, 6); // SRC_ALPHA
+    assert_eq!(info.dst_blend_mode, 7); // INV_SRC_ALPHA
     assert!((info.alpha_threshold - (200.0 / 255.0)).abs() < 1e-5);
+
+    let mut pool = StringPool::new();
+    assert!(info.effective_alpha_blend(Some("GlassPitcher01:6"), &pool));
+    assert!(!info.effective_alpha_blend(Some("Leaves:0"), &pool));
+    info.texture_path = Some(pool.intern("textures\\clutter\\bottle01.dds"));
+    assert!(info.effective_alpha_blend(Some("TriShape:0"), &pool));
 }
 
 #[test]
