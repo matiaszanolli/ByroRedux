@@ -305,6 +305,10 @@ struct PlaybackState {
     root_entity: Option<EntityId>,
     current_time: f32,
     prev_time: f32,
+    /// Ping-pong direction (`CycleType::Reverse`) captured from the player,
+    /// threaded to `visit_text_key_events` so a backward leg fires the keys
+    /// it crossed rather than the loop-wrap complement. FNV-D6-01 / #2082.
+    reverse_direction: bool,
 }
 
 /// Reusable per-frame scratch buffers for [`animation_system_inner`].
@@ -455,6 +459,7 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                 root_entity: root_entity_opt,
                 current_time: player.local_time,
                 prev_time: player.prev_time,
+                reverse_direction: player.reverse_direction,
             });
         }
     } // AnimationPlayer lock released here
@@ -468,9 +473,15 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                 continue;
             };
             player_events.clear();
-            visit_text_key_events(clip, ps.prev_time, ps.current_time, |time, sym| {
-                player_events.push(AnimationTextKeyEvent { label: sym, time });
-            });
+            visit_text_key_events(
+                clip,
+                ps.prev_time,
+                ps.current_time,
+                ps.reverse_direction,
+                |time, sym| {
+                    player_events.push(AnimationTextKeyEvent { label: sym, time });
+                },
+            );
             if !player_events.is_empty() {
                 // `clone()` instead of `mem::take` so the scratch keeps its
                 // high-water-mark capacity across iterations *and* frames
@@ -553,8 +564,7 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
             // accum-root translation in that case (rotation kept). Matches the
             // Gamebryo accum/non-accum model (cf. OpenMW `ResetAccumRootCallback`).
             if !accum_root_animated {
-                if let Some(accum_entity) =
-                    clip.accum_root_name.as_ref().and_then(&resolve_entity)
+                if let Some(accum_entity) = clip.accum_root_name.as_ref().and_then(&resolve_entity)
                 {
                     if let Some(mut tq) = world.query_mut::<Transform>() {
                         if let Some(t) = tq.get_mut(accum_entity) {

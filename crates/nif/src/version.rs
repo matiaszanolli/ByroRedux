@@ -446,20 +446,30 @@ impl NifVariant {
         // #943 / NIF-D2-NEW-03 considered routing `V20_0_0_4 user=11`
         // to `Fallout3` because nif.xml's `#FO3#` verset (line 44)
         // includes `V20_0_0_4__11`. nif.xml line 196 itself lists the
-        // version as "Oblivion, Fallout 3" — genuinely ambiguous.
-        // Sample data would be needed to settle which side wins; the
+        // version as "Oblivion, Fallout 3" — genuinely ambiguous. The
         // existing test `detect_oblivion_edge_cases` pins the prior
-        // decision that `(V20_0_0_4, 11, _)` is Oblivion, and no
-        // retail FO3 NIF ships at v20.0.0.4 so the impact is confined
-        // to pre-release / mod content. Leave as Oblivion until sample
-        // data justifies the flip.
+        // decision that `(V20_0_0_4, 11, _)` is Oblivion.
         //
-        // #1219 — fire a process-lifetime one-shot warn when the
-        // ambiguous `(V20_0_0_4, 11, _)` tuple is hit, so any modded
-        // FO3 corpus that exercises this case surfaces in the log
-        // (with the tuple values) and we can collect the sample data
-        // the audit asks for. Vanilla content never hits it; the warn
-        // is silent on every supported game today.
+        // FO3-D6-01 / #2087 — #1219's premise that "no retail FO3 NIF
+        // ships at v20.0.0.4 / vanilla content never hits it" is
+        // EMPIRICALLY FALSE. A header-only `nif_stats` scan of the
+        // vanilla, unmodified `Fallout - Meshes.bsa` fires the one-shot
+        // warn below exactly once, isolated to
+        // `meshes\triggers\collisionboxstatic.nif` — a real FO3 archive
+        // entry (a generic invisible trigger-volume utility mesh,
+        // plausibly a literal Oblivion-era asset carried over unchanged).
+        // The routing deliberately STAYS Oblivion anyway because the
+        // misroute is unobservable: the sole `NifVariant` consumer,
+        // `havok_scale_for` (`lib.rs`), maps `Oblivion` and `Fallout3` to
+        // the identical 7.0 Havok-to-engine scale. Revisit this only if a
+        // future consumer distinguishes the two variants — see the
+        // harmlessness guard in
+        // `detect_ambiguous_v20_0_0_4_uv11_stays_oblivion_pending_sample`.
+        //
+        // #1219 — the process-lifetime one-shot warn below still fires so
+        // a modded FO3 corpus at this tuple surfaces in the log with its
+        // values; it is no longer "silent on every supported game" (the
+        // vanilla FO3 mesh above hits it once).
         if version == NifVersion::V20_0_0_4 && user_version == 11 {
             static ONCE: std::sync::Once = std::sync::Once::new();
             ONCE.call_once(|| {
@@ -723,13 +733,59 @@ mod tests {
         );
     }
 
-    /// #1219 — the ambiguous `(V20_0_0_4, user_version=11, _)` tuple
-    /// is the nif.xml "Oblivion, Fallout 3" case. Current routing
-    /// pins to Oblivion (no retail FO3 NIF ships at this version, so
-    /// any hit is pre-release / mod content). The one-shot warn at
-    /// `detect:307` surfaces the tuple in logs without breaking the
-    /// routing pin; this test guards the routing stays Oblivion until
-    /// sample data justifies flipping.
+    /// FO3-D6-01 (#2087) — harmlessness guard for the ambiguous
+    /// `(V20_0_0_4, user_version=11)` routing. Contrary to #1219's original
+    /// premise, a retail FO3 NIF DOES ship at this tuple: vanilla
+    /// `Fallout - Meshes.bsa` carries `meshes\triggers\collisionboxstatic.nif`
+    /// there (one hit, header-only `nif_stats` scan). Routing stays Oblivion
+    /// because the misroute is unobservable — the sole `NifVariant` consumer,
+    /// `havok_scale_for`, maps both `Oblivion` and `Fallout3` to the same 7.0
+    /// scale. If a future change ever diverges the two variants' Havok scale,
+    /// this assertion fails and flags that `collisionboxstatic.nif` would then
+    /// silently misroute.
+    #[test]
+    fn ambiguous_v20_0_0_4_misroute_is_unobservable_via_havok_scale() {
+        use crate::header::NifHeader;
+        let header = |version: NifVersion, uv: u32, uv2: u32| NifHeader {
+            version,
+            little_endian: true,
+            user_version: uv,
+            user_version_2: uv2,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        };
+        // The collisionboxstatic.nif tuple detects as Oblivion; a canonical
+        // FO3 header (V20_2_0_7, 11, 21 — see `detect_fallout3`) as Fallout3.
+        let oblivion = header(NifVersion::V20_0_0_4, 11, 11);
+        let fallout3 = header(NifVersion::V20_2_0_7, 11, 21);
+        assert_eq!(
+            NifVariant::detect(oblivion.version, oblivion.user_version, oblivion.user_version_2),
+            NifVariant::Oblivion,
+        );
+        assert_eq!(
+            NifVariant::detect(fallout3.version, fallout3.user_version, fallout3.user_version_2),
+            NifVariant::Fallout3,
+        );
+        assert_eq!(
+            crate::havok_scale_for(&oblivion),
+            crate::havok_scale_for(&fallout3),
+            "Oblivion (collisionboxstatic.nif's variant) and Fallout3 must \
+             share a Havok scale — otherwise the #2087 misroute becomes \
+             observable",
+        );
+    }
+
+    /// #1219 — the ambiguous `(V20_0_0_4, user_version=11, _)` tuple is the
+    /// nif.xml "Oblivion, Fallout 3" case; routing pins to Oblivion. A real
+    /// vanilla-FO3 sample now exists (`meshes\triggers\collisionboxstatic.nif`,
+    /// #2087) but does not justify flipping — see the harmlessness guard
+    /// `ambiguous_v20_0_0_4_misroute_is_unobservable_via_havok_scale` above.
+    /// This test guards the routing stays Oblivion.
     #[test]
     fn detect_ambiguous_v20_0_0_4_uv11_stays_oblivion_pending_sample() {
         // The audit's ambiguous tuple — primary case the warn fires on.

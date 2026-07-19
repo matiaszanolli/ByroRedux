@@ -429,16 +429,22 @@ fn parse_real_fnv_esm_record_counts() {
         index.enchantments.len()
     );
 
-    // Spot-check a known FNV item: Varmint Rifle (form 0x000086A8) should
-    // be a Weapon kind with damage and a clip size.
-    if let Some(varmint) = index.items.get(&0x000086A8) {
-        eprintln!(
-            "Varmint Rifle: {:?} kind={}",
-            varmint.common.editor_id,
-            varmint.kind.label()
-        );
-        assert_eq!(varmint.kind.label(), "WEAP");
-    }
+    // Spot-check a known FNV item: Varmint Rifle (form 0x0007EA24) should
+    // be a Weapon kind. Hard `.expect` (not a silent `if let`) so a
+    // regression in this parse path fails loudly instead of no-op'ing.
+    // Pre-fix this keyed on 0x000086A8 — a FormID that does not exist in
+    // FalloutNV.esm — so the `if let` never matched and the whole
+    // spot-check was dead. FNV-D4-03 / #2081.
+    let varmint = index
+        .items
+        .get(&0x0007EA24)
+        .expect("Varmint Rifle (0x0007EA24) must be indexed from FalloutNV.esm");
+    eprintln!(
+        "Varmint Rifle: {:?} kind={}",
+        varmint.common.editor_id,
+        varmint.kind.label()
+    );
+    assert_eq!(varmint.kind.label(), "WEAP");
 
     // Spot-check that NCR faction exists (FNV form 0x0011E662 — name varies
     // by patch; just check there is a faction with "NCR" in its full name).

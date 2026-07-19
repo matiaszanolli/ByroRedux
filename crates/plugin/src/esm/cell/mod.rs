@@ -514,7 +514,9 @@ pub struct PortalLink {
     pub destination: u32,
 }
 
-/// REFR enable-parent gating from the `XESP` sub-record (Skyrim+).
+/// REFR enable-parent gating from the `XESP` sub-record (present since
+/// Oblivion — NOT Skyrim+; the `b"XESP"` match arm is unguarded by game
+/// and Oblivion ACRE/ACHR carry it, per #349/#396/#2088).
 /// Layout: 4-byte parent FormID + 1-byte flags. Bit 0 of the flags
 /// inverts the enable state (so `inverted = true` means the REFR is
 /// visible when the parent is *disabled*).

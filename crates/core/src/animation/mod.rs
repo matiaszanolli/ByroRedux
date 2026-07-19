@@ -570,15 +570,15 @@ mod tests {
         };
 
         // Cross the first key.
-        let events = collect_text_key_events(&clip, &pool, 0.3, 0.6);
+        let events = collect_text_key_events(&clip, &pool, 0.3, 0.6, false);
         assert_eq!(events, vec!["hit"]);
 
         // Cross two keys at once.
-        let events = collect_text_key_events(&clip, &pool, 0.4, 1.1);
+        let events = collect_text_key_events(&clip, &pool, 0.4, 1.1, false);
         assert_eq!(events, vec!["hit", "sound: swing"]);
 
         // No crossing.
-        let events = collect_text_key_events(&clip, &pool, 0.1, 0.4);
+        let events = collect_text_key_events(&clip, &pool, 0.1, 0.4, false);
         assert!(events.is_empty());
     }
 
@@ -602,8 +602,53 @@ mod tests {
         };
 
         // Loop wrap: prev=1.7, curr=0.3 → fires "end" (>1.7) and "start" (<=0.3).
-        let events = collect_text_key_events(&clip, &pool, 1.7, 0.3);
+        let events = collect_text_key_events(&clip, &pool, 1.7, 0.3, false);
         assert_eq!(events, vec!["start", "end"]);
+    }
+
+    #[test]
+    fn text_key_reverse_backward_leg() {
+        // FNV-D6-01 / #2082 — a ping-pong `CycleType::Reverse` clip on its
+        // backward leg steps DOWN (prev > curr) with no loop wrap. The keys
+        // fired must be those actually crossed — the closed interval
+        // `(curr, prev]` — NOT the loop-wrap complement the pre-fix code
+        // produced when it branched on `curr < prev` alone.
+        use crate::string::StringPool;
+        let mut pool = StringPool::new();
+        let clip = AnimationClip {
+            name: "test".into(),
+            duration: 2.0,
+            cycle_type: CycleType::Reverse,
+            frequency: 1.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: vec![
+                (0.5, pool.intern("hit")),
+                (1.0, pool.intern("swing")),
+                (1.5, pool.intern("end")),
+            ],
+        };
+
+        // Backward leg 1.2 → 0.4 crosses "hit" (0.5) and "swing" (1.0), NOT
+        // "end" (1.5). With reverse_direction=true we get exactly those.
+        let events = collect_text_key_events(&clip, &pool, 1.2, 0.4, true);
+        assert_eq!(events, vec!["hit", "swing"]);
+
+        // The pre-#2082 path (reverse_direction=false) mis-reads the
+        // descending step as a loop wrap and fires the complement — "end".
+        // Kept as a guard so a regression that drops the direction flag fails.
+        let wrap_misfire = collect_text_key_events(&clip, &pool, 1.2, 0.4, false);
+        assert_eq!(wrap_misfire, vec!["end"]);
+
+        // Forward leg 0.4 → 1.2 (no reverse, no wrap) crosses the same
+        // interior keys — parity with the backward leg.
+        let forward = collect_text_key_events(&clip, &pool, 0.4, 1.2, false);
+        assert_eq!(forward, vec!["hit", "swing"]);
     }
 
     #[test]
@@ -624,7 +669,7 @@ mod tests {
             texture_flip_channels: Vec::new(),
             text_keys: Vec::new(),
         };
-        let events = collect_text_key_events(&clip, &pool, 0.0, 1.0);
+        let events = collect_text_key_events(&clip, &pool, 0.0, 1.0, false);
         assert!(events.is_empty());
     }
 
@@ -654,18 +699,21 @@ mod tests {
 
         // First advance: 0.0 → 0.6, should cross "hit" at 0.5.
         advance_time(&mut player, &clip, 0.6);
-        let events = collect_text_key_events(&clip, &pool, player.prev_time, player.local_time);
+        let events =
+            collect_text_key_events(&clip, &pool, player.prev_time, player.local_time, false);
         assert_eq!(events, vec!["hit"]);
 
         // Second advance: 0.6 → 1.2, should cross "sound: swing" at 1.0.
         advance_time(&mut player, &clip, 0.6);
-        let events = collect_text_key_events(&clip, &pool, player.prev_time, player.local_time);
+        let events =
+            collect_text_key_events(&clip, &pool, player.prev_time, player.local_time, false);
         assert_eq!(events, vec!["sound: swing"]);
 
         // Advance past loop wrap: 1.2 → (1.2+1.0=2.2 mod 2.0=0.2),
         // should cross "end" at 1.8.
         advance_time(&mut player, &clip, 1.0);
-        let events = collect_text_key_events(&clip, &pool, player.prev_time, player.local_time);
+        let events =
+            collect_text_key_events(&clip, &pool, player.prev_time, player.local_time, false);
         assert!(events.contains(&"end".to_string()));
     }
 

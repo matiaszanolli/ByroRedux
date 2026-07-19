@@ -852,7 +852,9 @@ pub(crate) fn parse_refr_group(
                     b"XSCL" => {
                         scale = r.f32().unwrap_or(1.0);
                     }
-                    // XESP — enable-parent gating (Skyrim+). 4-byte
+                    // XESP — enable-parent gating (present since Oblivion;
+                    // ACRE/ACHR/REFR share the layout — see the ACRE note
+                    // ~70 lines above. NOT Skyrim+, per #2088). 4-byte
                     // parent FormID + 1-byte flags; bit 0 = inverted.
                     // Pre-#349 every default-disabled "spawn after
                     // quest stage" REFR rendered immediately on cell

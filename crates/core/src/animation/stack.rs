@@ -219,17 +219,23 @@ pub fn visit_stack_text_events(
         let Some(clip) = registry.get(layer.clip_handle) else {
             continue;
         };
-        visit_text_key_events(clip, layer.prev_time, layer.local_time, |time, sym| {
-            // Deduplicate labels across layers. Small seen-set (usually
-            // 0–3 entries per frame); linear scan on `FixedString` is
-            // integer comparison so a Vec is faster than a hash set at
-            // this size.
-            if seen.contains(&sym) {
-                return;
-            }
-            seen.push(sym);
-            visit(time, sym);
-        });
+        visit_text_key_events(
+            clip,
+            layer.prev_time,
+            layer.local_time,
+            layer.reverse_direction,
+            |time, sym| {
+                // Deduplicate labels across layers. Small seen-set (usually
+                // 0–3 entries per frame); linear scan on `FixedString` is
+                // integer comparison so a Vec is faster than a hash set at
+                // this size.
+                if seen.contains(&sym) {
+                    return;
+                }
+                seen.push(sym);
+                visit(time, sym);
+            },
+        );
     }
 }
 
