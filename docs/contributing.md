@@ -8,11 +8,13 @@ integration tests and the Vulkan renderer.
 
 New to the codebase? Read in this order:
 
-1. **This doc** — get a build running and the test suite green.
-2. [`docs/engine/index.md`](engine/index.md) — architecture reading order
+1. [Getting Started](getting-started.md) — get a build running, the test
+   suite green, and optionally launch real content.
+2. **This doc** — learn the development loop and contribution checks.
+3. [`docs/engine/index.md`](engine/index.md) — architecture reading order
    (start with [Architecture Overview](engine/architecture.md) → [ECS](engine/ecs.md) → [Game Loop](engine/game-loop.md)
    for the fastest path to understanding the whole engine).
-3. [`CLAUDE.md`](../CLAUDE.md) — repo conventions (commit style, ECS
+4. [`CLAUDE.md`](../CLAUDE.md) — repo conventions (commit style, ECS
    patterns, git workflow) an agent or contributor is expected to follow.
 
 ---
@@ -102,7 +104,7 @@ as useful as the comments feeding it.
 ### Unit tests (no GPU, no game data — run in CI)
 
 ```bash
-# Full workspace (2 752 tests, ~30 s)
+# Full workspace (the live test count is tracked in ROADMAP.md)
 cargo test --workspace
 
 # Single crate
@@ -189,16 +191,13 @@ cargo run --release -- \
   --textures-bsa "Fallout - Textures.bsa" \
   --textures-bsa "Fallout - Textures2.bsa"
 
-# Skyrim SE (list all 9 texture archives — numeric-sibling auto-load
-# does not trigger for the "Textures0" suffix)
+# Skyrim SE (the zero-suffixed archive discovers its numbered siblings)
 cd ".../Skyrim Special Edition/Data"
 cargo run --release -- \
   --esm Skyrim.esm \
   --cell WhiterunBanneredMare \
-  --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" \
-  --textures-bsa "Skyrim - Textures0.bsa" \
-  --textures-bsa "Skyrim - Textures1.bsa" \
-  # … through Textures8.bsa
+  --bsa "Skyrim - Meshes0.bsa" \
+  --textures-bsa "Skyrim - Textures0.bsa"
 ```
 
 For the full set of repro commands (including FO3, FO4, Oblivion,

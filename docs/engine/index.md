@@ -4,6 +4,10 @@ This is the entry point for engine internals. If you came here from the
 [README](../../README.md), it's the next layer down: how each subsystem is
 built, where the code lives, and what guarantees it makes.
 
+If you have not built or run the project yet, begin with
+[Getting Started](../getting-started.md). This index assumes you already have
+a working checkout and want to understand or change engine internals.
+
 ## Subsystems
 
 | Doc | Crate(s) | What it covers |
@@ -11,7 +15,7 @@ built, where the code lives, and what guarantees it makes.
 | [Pipeline Overview](pipeline-overview.md) | all | Cross-cutting: one interior cell load traced end-to-end, CLI → parse → NIFAL → ECS spawn → scheduler → GPU upload → present |
 | [Exterior Grid Streaming](exterior-grid-streaming.md) | byroredux, plugin, renderer | Cross-cutting: WRLD/LAND → terrain+REFRs, async pre-parse worker, multi-cell streaming, door-teleport cell swap |
 | [Save/Load Round-Trip](save-load-roundtrip.md) | save, byroredux | Cross-cutting: curated ECS snapshot, validation gates, atomic write + ring buffer, M45.1 live load-apply (FormId-keyed deltas + player-pose restore) |
-| [NPC Spawn → AI Packages](npc-spawn-ai-packages.md) | byroredux, plugin, core | Cross-cutting: NPC_ spawn dispatch, PACK record parsing, package selection, the one procedure (Sandbox) that actually runs — honest about what's still a stub |
+| [NPC Spawn → AI Packages](npc-spawn-ai-packages.md) | byroredux, plugin, core | Cross-cutting: NPC_ spawn dispatch, PACK record parsing, package selection, and the currently runtime-backed procedures — honest about subsystem-blocked gaps |
 | [Architecture Overview](architecture.md) | all | Design principles, workspace layout, crate dependency graph |
 | [ECS](ecs.md) | core | Components, storage backends, queries, scheduler, resources |
 | [Vulkan Renderer](renderer.md) | renderer | Init chain, RT pipeline, multi-light, BLAS/TLAS, swapchain |

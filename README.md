@@ -32,6 +32,20 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 | **Scripting** | Papyrus `.psc` parser (full AST) + `.pex` bytecode decompiler; recognizer-driven attach of compiled vanilla scripts at cell load; ECS-native event + timer runtime |
 | **UI** | Scaleform / SWF menus via Ruffle (offscreen wgpu → Vulkan texture overlay) |
 
+## Start here
+
+ByroRedux is currently a source-built engine project, not a packaged game or
+launcher. It does not redistribute Bethesda game data.
+
+- **New user:** follow [Getting Started](docs/getting-started.md) for a first
+  build, test run, real-content launch, and troubleshooting.
+- **Contributor:** continue with [Contributing](docs/contributing.md) for the
+  development loop, CI checks, and project conventions.
+- **Engine developer:** use the [engine documentation index](docs/engine/index.md)
+  and its recommended reading order.
+- **Checking capability or direction:** use the [feature matrix](docs/feature-matrix.md)
+  and authoritative [roadmap](ROADMAP.md).
+
 ## Highlights
 
 - **Full RT lighting pipeline** — ray-query shadows with streaming weighted
@@ -202,6 +216,7 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
 
 ## Documentation
 
+- [docs/getting-started.md](docs/getting-started.md) — first build, first run, debug attach, troubleshooting
 - [docs/contributing.md](docs/contributing.md) — build, test, run; start here to get hacking
 - [ROADMAP.md](ROADMAP.md) — current state, active milestones, architecture decisions
 - [HISTORY.md](HISTORY.md) — session narratives (2026-04 audit closeouts, Session 42 Starfield bring-up, etc.)
