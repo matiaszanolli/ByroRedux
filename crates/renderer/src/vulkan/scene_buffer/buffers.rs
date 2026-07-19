@@ -670,22 +670,45 @@ fn create_scene_descriptors(
     // ── Descriptor pool + set allocation ─────────────────────────────────
     // Pool sizes derived from `bindings` so conditional TLAS slot flows
     // through automatically (#1030 / REN-D10-NEW-09).
-    let descriptor_pool =
-        DescriptorPoolBuilder::from_layout_bindings(&bindings, MAX_FRAMES_IN_FLIGHT as u32)
-            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-            .build(device, "Failed to create scene descriptor pool")?;
+    let descriptor_pool = match DescriptorPoolBuilder::from_layout_bindings(
+        &bindings,
+        MAX_FRAMES_IN_FLIGHT as u32,
+    )
+    .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+    .build(device, "Failed to create scene descriptor pool")
+    {
+        Ok(pool) => pool,
+        Err(e) => {
+            // RL-13 / #203 — the layout above was created successfully; free
+            // it before returning so a pool-create failure doesn't leak it.
+            // SAFETY: `descriptor_set_layout` is a live handle just created
+            // above and referenced by nothing yet.
+            unsafe { device.destroy_descriptor_set_layout(descriptor_set_layout, None) };
+            return Err(e);
+        }
+    };
 
     let layouts = vec![descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
     let alloc_info = vk::DescriptorSetAllocateInfo::default()
         .descriptor_pool(descriptor_pool)
         .set_layouts(&layouts);
-    let descriptor_sets = unsafe {
-        // SAFETY: `device` is live; `alloc_info` borrows `descriptor_pool` (just built
-        // above) and `layouts` (owned by `descriptor_set_layout`), both device-owned and
-        // live; the pool was sized for MAX_FRAMES_IN_FLIGHT sets, matching `layouts.len()`.
-        device
-            .allocate_descriptor_sets(&alloc_info)
-            .context("Failed to allocate scene descriptor sets")?
+    // SAFETY: `device` is live; `alloc_info` borrows `descriptor_pool` (just built
+    // above) and `layouts` (owned by `descriptor_set_layout`), both device-owned and
+    // live; the pool was sized for MAX_FRAMES_IN_FLIGHT sets, matching `layouts.len()`.
+    let descriptor_sets = match unsafe { device.allocate_descriptor_sets(&alloc_info) }
+        .context("Failed to allocate scene descriptor sets")
+    {
+        Ok(sets) => sets,
+        Err(e) => {
+            // RL-13 / #203 — free the pool + layout before returning so a
+            // set-allocation failure doesn't leak them. SAFETY: both handles
+            // were created above and are unreferenced by any command buffer.
+            unsafe {
+                device.destroy_descriptor_pool(descriptor_pool, None);
+                device.destroy_descriptor_set_layout(descriptor_set_layout, None);
+            }
+            return Err(e);
+        }
     };
 
     // ── Write descriptors ─────────────────────────────────────────────────
@@ -796,7 +819,19 @@ impl SceneBuffers {
         // a Skyrim WTHR.DALC becomes active. See #993.
         let default_dalc = GpuDalcCube::default();
         for buf in &mut bufs.dalc_buffers {
-            buf.write_mapped(device, std::slice::from_ref(&default_dalc))?;
+            if let Err(e) = buf.write_mapped(device, std::slice::from_ref(&default_dalc)) {
+                // RL-13 / #203 — `bufs`' GpuBuffers free via their `Drop` on
+                // this early return, but the raw descriptor layout + pool from
+                // `create_scene_descriptors` are not yet owned by `Self` and
+                // would leak. Free them explicitly. SAFETY: both handles are
+                // live (just created above) and unreferenced by any command
+                // buffer.
+                unsafe {
+                    device.destroy_descriptor_pool(descriptor_pool, None);
+                    device.destroy_descriptor_set_layout(descriptor_set_layout, None);
+                }
+                return Err(e);
+            }
         }
 
         log::info!(

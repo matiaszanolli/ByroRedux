@@ -321,13 +321,48 @@ impl TextureRegistry {
             .bindings(std::slice::from_ref(&binding))
             .push_next(&mut binding_flags_info);
 
+        // RL-14 / #203 — build a partially-valid `Self` with null handles up
+        // front so a mid-chain creation failure can free everything created
+        // so far via `destroy()` (which tolerates null handles — vkDestroy*
+        // on null is a no-op per the Vulkan spec — and iterates the empty
+        // texture/staging collections harmlessly). Mirrors the blessed
+        // SSAO / ClusterCull partial-destroy pattern. `TextureRegistry` has
+        // no `Drop` impl, so `destroy()` + the subsequent `return` frees the
+        // GPU resources exactly once.
+        let mut partial = Self {
+            texture_has_alpha: HashMap::new(),
+            texture_avg_rgb: HashMap::new(),
+            textures: Vec::new(),
+            path_map: HashMap::new(),
+            fallback_handle: 0,
+            neutral_fallback_handle: 0,
+            descriptor_pool: vk::DescriptorPool::null(),
+            descriptor_set_layout: vk::DescriptorSetLayout::null(),
+            bindless_sets: Vec::new(),
+            shared_sampler: vk::Sampler::null(),
+            samplers: [vk::Sampler::null(); 4],
+            max_textures,
+            current_frame_id: 0,
+            staging_pool: None,
+            pending_set_writes: vec![Vec::new(); MAX_FRAMES_IN_FLIGHT],
+            current_slot: 0,
+            pending_dds_uploads: Vec::new(),
+            slot_capacity_warning_emitted: false,
+        };
+
         // SAFETY: `device` is a live logical device (constructor precondition);
         // `layout_info` + `binding_flags_info` are valid structs built above,
         // and the `push_next` chain outlives this call.
-        let descriptor_set_layout = unsafe {
-            device
-                .create_descriptor_set_layout(&layout_info, None)
-                .context("Failed to create bindless texture descriptor set layout")?
+        partial.descriptor_set_layout = match unsafe {
+            device.create_descriptor_set_layout(&layout_info, None)
+        }
+        .context("Failed to create bindless texture descriptor set layout")
+        {
+            Ok(layout) => layout,
+            Err(e) => {
+                partial.destroy(device, allocator);
+                return Err(e);
+            }
         };
 
         // Pool: 2 sets (per frame-in-flight), each with max_textures samplers.
@@ -343,23 +378,37 @@ impl TextureRegistry {
         // SAFETY: `device` is live; `pool_info` sizes cover exactly
         // `MAX_FRAMES_IN_FLIGHT` sets of `max_textures` samplers each,
         // matching the allocation below.
-        let descriptor_pool = unsafe {
-            device
-                .create_descriptor_pool(&pool_info, None)
-                .context("Failed to create bindless texture descriptor pool")?
+        partial.descriptor_pool = match unsafe {
+            device.create_descriptor_pool(&pool_info, None)
+        }
+        .context("Failed to create bindless texture descriptor pool")
+        {
+            Ok(pool) => pool,
+            Err(e) => {
+                // Frees the layout created above. RL-14 / #203.
+                partial.destroy(device, allocator);
+                return Err(e);
+            }
         };
 
         // Allocate per-frame-in-flight descriptor sets.
-        let layouts = vec![descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
+        let layouts = vec![partial.descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
         let alloc_info = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(descriptor_pool)
+            .descriptor_pool(partial.descriptor_pool)
             .set_layouts(&layouts);
         // SAFETY: `descriptor_pool` was just created above with capacity for
         // exactly `layouts.len()` sets of `descriptor_set_layout`.
-        let bindless_sets = unsafe {
-            device
-                .allocate_descriptor_sets(&alloc_info)
-                .context("Failed to allocate bindless texture descriptor sets")?
+        partial.bindless_sets = match unsafe {
+            device.allocate_descriptor_sets(&alloc_info)
+        }
+        .context("Failed to allocate bindless texture descriptor sets")
+        {
+            Ok(sets) => sets,
+            Err(e) => {
+                // Frees the pool + layout created above. RL-14 / #203.
+                partial.destroy(device, allocator);
+                return Err(e);
+            }
         };
 
         // Build one sampler per Gamebryo `TexClampMode` value (4
@@ -406,36 +455,47 @@ impl TextureRegistry {
         // ships the same encoding directly. Note `0` is CLAMP/CLAMP
         // (the audit's primary fix target — decals / scope reticles)
         // and `3` is REPEAT/REPEAT (the default Skyrim wrap).
-        let samplers = [
-            // 0 = CLAMP_S_CLAMP_T — full clamp: decals, scope reticles,
-            // skybox seams, the audit's primary fix target.
-            make_sampler(
+        // Build one sampler per `TexClampMode` value into `partial.samplers`
+        // one at a time so a mid-array failure frees the earlier ones (plus
+        // the pool + layout) via `destroy()`. Index order matches
+        // `TexClampMode` from nif.xml — the lower 4 bits of `TexDesc.flags`
+        // written by the parser at `properties.rs:464` (and BSEffectShader
+        // ships the same): 0 = CLAMP/CLAMP (decals / scope reticles / skybox
+        // seams, the audit's primary fix target), 1 = CLAMP_S/WRAP_T,
+        // 2 = WRAP_S/CLAMP_T, 3 = WRAP/WRAP (pre-#610 default). See #610.
+        let sampler_modes = [
+            (
                 vk::SamplerAddressMode::CLAMP_TO_EDGE,
                 vk::SamplerAddressMode::CLAMP_TO_EDGE,
-            )?,
-            // 1 = CLAMP_S_WRAP_T — vertical strips that should clamp
-            // horizontally and repeat vertically.
-            make_sampler(
+            ),
+            (
                 vk::SamplerAddressMode::CLAMP_TO_EDGE,
                 vk::SamplerAddressMode::REPEAT,
-            )?,
-            // 2 = WRAP_S_CLAMP_T — mirror of mode 1 (cylindrical labels
-            // etc.).
-            make_sampler(
+            ),
+            (
                 vk::SamplerAddressMode::REPEAT,
                 vk::SamplerAddressMode::CLAMP_TO_EDGE,
-            )?,
-            // 3 = WRAP_S_WRAP_T — pre-#610 default for everything.
-            make_sampler(
+            ),
+            (
                 vk::SamplerAddressMode::REPEAT,
                 vk::SamplerAddressMode::REPEAT,
-            )?,
+            ),
         ];
+        for (i, (u_mode, v_mode)) in sampler_modes.into_iter().enumerate() {
+            partial.samplers[i] = match make_sampler(u_mode, v_mode) {
+                Ok(sampler) => sampler,
+                Err(e) => {
+                    // Frees the pool + layout + any earlier samplers. RL-14 / #203.
+                    partial.destroy(device, allocator);
+                    return Err(e);
+                }
+            };
+        }
         // Legacy public field — kept as an alias on `samplers[3]` (the
         // REPEAT/REPEAT entry) so any non-bindless caller that reads
         // it (composite.rs's HDR sampler path) keeps the pre-#610
         // wrap behaviour.
-        let shared_sampler = samplers[3];
+        partial.shared_sampler = partial.samplers[3];
 
         log::info!(
             "TextureRegistry created: bindless array[{}] × {} frames, anisotropy {}",
@@ -451,28 +511,9 @@ impl TextureRegistry {
         // Staging pool owns cloned device + allocator handles so that
         // texture uploads amortize the gpu-allocator bookkeeping across
         // a burst. Default 128 MB retained cap — see #239 / #511.
-        let staging_pool = Some(StagingPool::new(device.clone(), allocator.clone()));
+        partial.staging_pool = Some(StagingPool::new(device.clone(), allocator.clone()));
 
-        Ok(Self {
-            texture_has_alpha: HashMap::new(),
-            texture_avg_rgb: HashMap::new(),
-            textures: Vec::new(),
-            path_map: HashMap::new(),
-            fallback_handle: 0,
-            neutral_fallback_handle: 0,
-            descriptor_pool,
-            descriptor_set_layout,
-            bindless_sets,
-            shared_sampler,
-            samplers,
-            max_textures,
-            current_frame_id: 0,
-            staging_pool,
-            pending_set_writes: vec![Vec::new(); MAX_FRAMES_IN_FLIGHT],
-            current_slot: 0,
-            pending_dds_uploads: Vec::new(),
-            slot_capacity_warning_emitted: false,
-        })
+        Ok(partial)
     }
 
     /// Register the fallback texture as handle 0. Must be called once after new().
