@@ -625,4 +625,26 @@ mod tests {
              FIRST #if ENABLE_LEGACY_WRS / #endif block (#1799 / PERF-D5-NEW-01)"
         );
     }
+
+    /// The renderer-evaluation suite relies on these switches representing
+    /// independent estimator dimensions. Keep this contract close to the
+    /// shader source so a refactor cannot silently turn the A/B captures into
+    /// equivalent modes.
+    #[test]
+    fn triangle_frag_restir_reuse_dimensions_are_independently_gated() {
+        let src = include_str!("../shaders/triangle.frag");
+
+        assert!(
+            src.contains("bool useSpatial = (dbgFlags & DBG_DISABLE_SPATIAL) == 0u;"),
+            "DBG_DISABLE_SPATIAL must independently gate spatial reservoir reuse"
+        );
+        assert!(
+            src.contains("bool useTemporal = (dbgFlags & DBG_DISABLE_TEMPORAL) == 0u;"),
+            "DBG_DISABLE_TEMPORAL must independently gate temporal reservoir reuse"
+        );
+        assert!(
+            src.contains("if (useTemporal && shadowFade > 0.01"),
+            "temporal reprojection must be conditional on useTemporal"
+        );
+    }
 }

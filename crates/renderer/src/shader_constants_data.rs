@@ -145,7 +145,8 @@ pub const THREADS_PER_CLUSTER: u32 = 32;
 // globally instead.
 pub const BLOOM_INTENSITY: f32 = 0.15;
 
-// M55 — volumetric far plane. Must match `volumetrics::DEFAULT_VOLUME_FAR`
+// M55 — volumetric far plane in Bethesda world units. Must match
+// `volumetrics::DEFAULT_VOLUME_FAR`
 // (Rust side) and the `params.volume_extent.x` value passed to the
 // injection compute pass; otherwise the slice→view-distance mapping
 // disagrees and fog appears compressed or stretched. With Phase 3
@@ -154,7 +155,13 @@ pub const BLOOM_INTENSITY: f32 = 0.15;
 // with the froxel resolution and dt set on the host. Consumed by
 // `composite.frag` (slice math) and `volumetrics_integrate.comp` (dt =
 // VOLUME_FAR / FROXEL_DEPTH).
-pub const VOLUME_FAR: f32 = 200.0;
+//
+// The renderer deliberately preserves Gamebryo coordinates (70 units per
+// metre). The original 200.0 value was documented and tuned as 200 metres but
+// consumed directly beside world-space positions, truncating the volume at
+// 2.86 m. 14,000 units restores the intended 200 m reach; volumetric density
+// is converted from 1/m to 1/world-unit on the host side in volumetrics.rs.
+pub const VOLUME_FAR: f32 = 14_000.0;
 
 // Per-instance flag bits on `GpuInstance.flags` (lower 16 bits — the
 // upper 16 bits pack the terrain-tile slot per
@@ -438,6 +445,40 @@ pub const DBG_DISABLE_SPATIAL: u32 = 0x10000;
 /// on normal rendering.
 pub const DBG_VIZ_MOTION: u32 = 0x20000;
 
+/// 0x40000 — disable ReSTIR-DI **temporal** reservoir and radiance-history
+/// reuse while leaving current-frame sampling and (unless separately disabled
+/// by [`DBG_DISABLE_SPATIAL`]) previous-frame spatial-neighbour reuse active.
+/// This separates the two reuse dimensions for controlled evaluation:
+///
+/// - default: temporal + spatial reuse;
+/// - `DBG_DISABLE_SPATIAL`: temporal-only;
+/// - `DBG_DISABLE_TEMPORAL`: spatial-only;
+/// - both bits: current-frame reservoir only.
+///
+/// Unlike `DBG_DISABLE_RESTIR`, this never selects the compile-time-gated
+/// legacy WRS implementation. It keeps the same ReSTIR estimator and only
+/// removes the centre-pixel temporal candidate plus its colour EMA history.
+pub const DBG_DISABLE_TEMPORAL: u32 = 0x40000;
+
+/// 0x80000 — display the fragment shader's resolved indirect-light signal
+/// directly, before SVGF history and before multiplication by local albedo in
+/// composite. This distinguishes "GI rays returned darkness" from
+/// "denoising/compositing/exposure buried valid indirect energy".
+pub const DBG_VIZ_RAW_INDIRECT: u32 = 0x80000;
+
+/// 0x100000 — display final raster material classification. Opaque surfaces
+/// are grey, alpha-tested surfaces green, alpha-blended surfaces red, and
+/// glass blue. The diagnostic writes alpha=1 so blend-state membership is
+/// visible as a solid classification rather than being obscured by the very
+/// transparency defect under investigation.
+pub const DBG_VIZ_MATERIAL_STATE: u32 = 0x100000;
+
+/// 0x200000 — display only the stochastic ray-traced diffuse GI bounce,
+/// excluding authored cell ambient, AO, reflections, direct light, and SVGF.
+/// This is the decisive probe for whether the GI ray estimator contributes
+/// energy in a real-content scene.
+pub const DBG_VIZ_GI_BOUNCE: u32 = 0x200000;
+
 /// Single source of truth for every `DBG_*` debug-viz bit, in emit order.
 /// Both `build.rs` (GLSL header emit) and `shader_constants.rs`'s test
 /// module (`generated_header_contains_all_defines` value-pin,
@@ -461,7 +502,10 @@ pub const DBG_BITS: &[(&str, u32)] = &[
     ("DBG_VIZ_RENDER_LAYER", DBG_VIZ_RENDER_LAYER),
     ("DBG_VIZ_GLASS_PASSTHRU", DBG_VIZ_GLASS_PASSTHRU),
     ("DBG_DISABLE_SPECULAR_AA", DBG_DISABLE_SPECULAR_AA),
-    ("DBG_DISABLE_HALF_LAMBERT_FILL", DBG_DISABLE_HALF_LAMBERT_FILL),
+    (
+        "DBG_DISABLE_HALF_LAMBERT_FILL",
+        DBG_DISABLE_HALF_LAMBERT_FILL,
+    ),
     ("DBG_BYPASS_VERTEX_COLOR", DBG_BYPASS_VERTEX_COLOR),
     ("DBG_DISABLE_AO", DBG_DISABLE_AO),
     ("DBG_LEGACY_LIGHT_ATTEN", DBG_LEGACY_LIGHT_ATTEN),
@@ -470,6 +514,10 @@ pub const DBG_BITS: &[(&str, u32)] = &[
     ("DBG_DISABLE_RESTIR", DBG_DISABLE_RESTIR),
     ("DBG_DISABLE_SPATIAL", DBG_DISABLE_SPATIAL),
     ("DBG_VIZ_MOTION", DBG_VIZ_MOTION),
+    ("DBG_DISABLE_TEMPORAL", DBG_DISABLE_TEMPORAL),
+    ("DBG_VIZ_RAW_INDIRECT", DBG_VIZ_RAW_INDIRECT),
+    ("DBG_VIZ_MATERIAL_STATE", DBG_VIZ_MATERIAL_STATE),
+    ("DBG_VIZ_GI_BOUNCE", DBG_VIZ_GI_BOUNCE),
 ];
 
 /// #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot WRS

@@ -55,7 +55,7 @@
 
 // Bloom + volumetrics tunables (floats — always decimal).
 #define BLOOM_INTENSITY 0.15
-#define VOLUME_FAR 200.0
+#define VOLUME_FAR 14000.0
 
 // Per-instance flag bits (`GpuInstance.flags`, lower 16 bits).
 // Authoritative values: scene_buffer/constants.rs. #1190.
@@ -110,6 +110,10 @@
 #define DBG_DISABLE_RESTIR 32768u
 #define DBG_DISABLE_SPATIAL 65536u
 #define DBG_VIZ_MOTION 131072u
+#define DBG_DISABLE_TEMPORAL 262144u
+#define DBG_VIZ_RAW_INDIRECT 524288u
+#define DBG_VIZ_MATERIAL_STATE 1048576u
+#define DBG_VIZ_GI_BOUNCE 2097152u
 
 // #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot
 // WRS reservoir arrays. 0 (default): preprocessed out of

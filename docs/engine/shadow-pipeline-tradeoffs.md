@@ -76,34 +76,34 @@ identical, the wider clamp is admitting ghosting unnecessarily.
 
 ---
 
-## 3. Reservoir count `M = 8`, no spatial or temporal reuse
+## 3. ReSTIR-DI replaced the transient `M = 8` estimator
 
 **Where:** [`crates/renderer/shaders/triangle.frag:2221`](../../crates/renderer/shaders/triangle.frag#L2221)
 
-**What:** Each fragment runs 8 independent WRS reservoirs over the
-cluster's light list, casts a shadow ray per non-empty reservoir, and
-discards the reservoir state at end of shader. There is no per-pixel
-persistent storage of reservoirs across frames or across neighboring
-pixels.
+**Historical state:** Each fragment formerly ran 8 independent WRS
+reservoirs over the cluster's light list and discarded them at the end of the
+shader. Phase 19 later raised the legacy path to 16 reservoirs.
 
-**Justifying condition (today):** No GBuffer attachment for reservoirs
-exists and no resample compute pass is implemented. `M = 8` fits in
-fragment shader stack (three arrays of 8 entries, ~96 bytes of register
-pressure) and produces an unbiased estimator in a single pass. Typical
-interior clusters contain 4–12 lights so `M = 8` covers the list with
-reasonable probability.
+**Current state:** M37.3 is complete. The default shader streams one
+current-frame reservoir, combines temporal history, then samples a disk of
+previous-frame neighbouring reservoirs in the same fragment invocation. The
+spatial candidates are re-evaluated at the current surface, normal-rejected,
+and the selected sample is visibility-tested again. Screen-sized reservoir
+SSBOs at scene-set bindings 16/17 persist history across frames.
 
-**Invalidated by:** ReSTIR-DI proper, which by construction uses `M = 1`
-per pixel + spatial neighborhood resample + temporal reservoir reuse.
-This is an **architectural replacement, not an upgrade** — the current
-estimator is discarded entirely and replaced with one whose unbiasedness
-must be proved independently. MIS calibration over the combined temporal
-+ spatial samples is where the new system can break subtly.
+**Remaining trade-off:** Spatial reuse reads fenced previous-frame neighbours
+rather than a dedicated current-frame resample pass. This avoids an extra
+dispatch and read-after-write hazard but makes the estimator a deliberate
+single-pass approximation whose bias and temporal behavior must be measured.
+MIS calibration over the combined temporal and spatial samples is where the
+new system can break subtly.
 
-**Verification owed:** Bandwidth cost is well-bounded (~88 MB ping-pong
-at 1440p for the minimal Bitterli-style reservoir layout, ~200 MB at
-4K). The harder verification is that the resample pass produces an
-unbiased estimate when combined with the temporal pass. Reference:
+**Verification owed:** The harder verification is whether the fused estimator
+converges cleanly and whether its temporal-only and spatial-only components
+each improve variance without introducing persistent bias or ghosting. Run
+the renderer-evaluation suite's four matched ReSTIR captures before changing
+reservoir clamps, history caps, neighbour selection, or visibility-ray count.
+Reference:
 Bitterli et al., "Spatiotemporal Reservoir Resampling for Real-Time Ray
 Tracing with Dynamic Direct Lighting" (SIGGRAPH 2020) plus errata.
 
@@ -150,9 +150,10 @@ The four items above each name a specific constant or location. The
 2. TAA `γ = 1.25` remains tied to the absence of a direct-lighting
    denoiser. If a ReSTIR-DI temporal pass lands, this value should be
    re-tuned and the corresponding milestone closed.
-3. `NUM_RESERVOIRS = 8` and the "Full ReSTIR-DI (…) is a separate
-   milestone" comment block remain in sync. If reservoir persistence is
-   added without removing the comment, flag the inconsistency.
+3. `DBG_DISABLE_SPATIAL` and `DBG_DISABLE_TEMPORAL` continue to isolate the
+   two reuse dimensions without selecting the compile-time-gated legacy WRS
+   path. Changes to neighbor count/radius, history caps, or visibility-ray
+   count require renderer-evaluation captures.
 4. The 24-bit mask on `frame_counter` remains in place. If a
    `frame_counter as f32` cast ever appears without the mask, flag it
    as a regression of #1161.
@@ -162,3 +163,20 @@ to *this document* is itself a flag — the trade-off chain assumes each
 piece compensates for the others, so a unilateral edit means either the
 compensation is no longer needed (good — close the loop here) or someone
 edited a load-bearing constant without realizing what it was holding up.
+
+## Real-content finding: volumetric coordinates are Gamebryo units
+
+The 2026-07-19 Prospector Saloon probe found that the volumetric pipeline's
+documented 200-metre range was passed directly alongside unscaled Bethesda
+world positions. `VOLUME_FAR = 200` therefore covered only about 2.86 metres
+and the `0.0035 / metre` density was integrated as though every world unit
+were a metre. The range is now 14,000 world units and density is divided by
+70 units/metre, preserving the intended 200-metre optical depth while making
+froxel positions, TLAS queries, integration, and composite sampling share one
+coordinate scale.
+
+The same probe established that resolved indirect contains substantial
+authored ambient, but the isolated stochastic GI bounce is nearly black apart
+from sparse high-energy samples around window/cutout geometry. The next GI
+work should target hit-surface light evaluation and firefly rejection rather
+than increasing SVGF strength or exposure.

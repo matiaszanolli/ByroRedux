@@ -106,20 +106,26 @@ pub struct VolumetricsParams {
     pub render_origin: [f32; 4],
 }
 
-/// Default participating-medium scattering coefficient (1 / m).
+/// Gamebryo/Fallout world-coordinate scale. The renderer keeps positions in
+/// Bethesda units all the way through TLAS and shader reconstruction.
+pub const WORLD_UNITS_PER_METER: f32 = 70.0;
+
+/// Default participating-medium scattering coefficient (1 / world unit).
 /// Lowered from 0.005 (2026-07-18 — "too bloomy/hazy" feedback on
 /// vanilla content) to 0.0035: at 200 m view distance, transmittance
 /// goes from `exp(-0.005*200) ≈ 37%` to `exp(-0.0035*200) ≈ 50%`,
 /// visibly thinning the haze while keeping the atmospheric depth cue
 /// at long draw distances.
-pub const DEFAULT_SCATTERING_COEF: f32 = 0.0035;
+pub const DEFAULT_SCATTERING_COEF_PER_METER: f32 = 0.0035;
+pub const DEFAULT_SCATTERING_COEF: f32 = DEFAULT_SCATTERING_COEF_PER_METER / WORLD_UNITS_PER_METER;
 
 /// Default Henyey-Greenstein asymmetry. 0.4 is mild forward
 /// scattering — atmospheric haze; bumps the sun-side glow without
 /// over-tinting the camera-side fog.
 pub const DEFAULT_PHASE_G: f32 = 0.4;
 
-/// Default volume extent (m). 200 m is a reasonable interior+near-
+/// Default volume extent (world units). 200 m / 14,000 Gamebryo units is a
+/// reasonable interior+near-
 /// exterior reach; longer ranges would need exponential slice
 /// distribution (Phase 5) to keep near-camera detail. Source of truth
 /// is `crate::shader_constants::VOLUME_FAR`; `build.rs` emits the
@@ -1022,8 +1028,7 @@ impl VolumetricsPipeline {
         let accel_structs = [tlas];
         let mut accel_write = vk::WriteDescriptorSetAccelerationStructureKHR::default()
             .acceleration_structures(&accel_structs);
-        let write =
-            write_acceleration_structure(self.descriptor_sets[frame], 2, &mut accel_write);
+        let write = write_acceleration_structure(self.descriptor_sets[frame], 2, &mut accel_write);
         // SAFETY: the injection descriptor set for `frame` is live and not in use
         // by an in-flight frame (caller invokes write_tlas before this frame's
         // dispatch); `accel_structs`/`accel_write` outlive the call.
@@ -1151,6 +1156,23 @@ impl VolumetricsPipeline {
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             self.descriptor_set_layout = vk::DescriptorSetLayout::null();
         }
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn physical_volume_reach_and_extinction_are_converted_to_world_units() {
+        let reach_metres = DEFAULT_VOLUME_FAR / WORLD_UNITS_PER_METER;
+        assert!((reach_metres - 200.0).abs() < 1.0e-4);
+
+        // Unit conversion must preserve the authored 200 m optical depth:
+        // sigma_world * distance_world == sigma_m * distance_m.
+        let world_optical_depth = DEFAULT_SCATTERING_COEF * DEFAULT_VOLUME_FAR;
+        let metre_optical_depth = DEFAULT_SCATTERING_COEF_PER_METER * reach_metres;
+        assert!((world_optical_depth - metre_optical_depth).abs() < 1.0e-6);
     }
 }
 

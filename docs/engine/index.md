@@ -19,6 +19,7 @@ a working checkout and want to understand or change engine internals.
 | [Architecture Overview](architecture.md) | all | Design principles, workspace layout, crate dependency graph |
 | [ECS](ecs.md) | core | Components, storage backends, queries, scheduler, resources |
 | [Vulkan Renderer](renderer.md) | renderer | Init chain, RT pipeline, multi-light, BLAS/TLAS, swapchain |
+| [Renderer Evaluation](renderer-evaluation.md) | renderer, byroredux | Deterministic Cornell convergence captures, denoiser A/B, performance metadata, and comparison workflow |
 | [Shader Pipeline](shader-pipeline.md) | renderer | All shader files, G-buffer layout, GPU data types (`GpuCamera`/`GpuInstance`/`GpuMaterial`/`GpuLight`), descriptor sets, pass order, pipeline cache |
 | [Shadow Pipeline Trade-offs](shadow-pipeline-tradeoffs.md) | renderer | Alpha-era constants (`W_CLAMP`, TAA γ, M=8, 24-bit seed) with invalidation conditions |
 | [NIF Parser](nif-parser.md) | nif | Block-type dispatch (~254 arms, source of truth: `blocks/mod.rs`), version handling, robustness |

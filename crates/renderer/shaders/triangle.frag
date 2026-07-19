@@ -2358,6 +2358,7 @@ void main() {
             vec3 prevAccum = vec3(0.0);
             float histPrev = 0.0;
             bool reprojValid = false;
+            bool useTemporal = (dbgFlags & DBG_DISABLE_TEMPORAL) == 0u;
 
             // Reproject to last frame's pixel via the motion vector (matches
             // outMotion = (currNDC-prevNDC)*0.5, consumed as prevUV = uv -
@@ -2365,7 +2366,7 @@ void main() {
             vec2 motion = (fragCurrClipPos.xy / fragCurrClipPos.w
                          - fragPrevClipPos.xy / fragPrevClipPos.w) * 0.5;
             vec2 prevFrag = gl_FragCoord.xy - motion * screen.xy;
-            if (shadowFade > 0.01
+            if (useTemporal && shadowFade > 0.01
                 && prevFrag.x >= 0.0 && prevFrag.y >= 0.0
                 && prevFrag.x < screen.x && prevFrag.y < screen.y) {
                 uint prevIdx = uint(prevFrag.y) * scrW + uint(prevFrag.x);
@@ -3073,7 +3074,37 @@ void main() {
     // avoiding multi-frame ghosting on fog transitions. `fog` UBO is
     // still read above for the RT ray-miss background color.
 
-    outColor = vec4(directLight, finalAlpha);
-    outRawIndirect = vec4(indirectLight, 1.0);
-    outAlbedo = vec4(albedo, 1.0);
+    if ((dbgFlags & DBG_VIZ_GI_BOUNCE) != 0u) {
+        // `indirect` is the stochastic ray-query bounce before authored
+        // ambient and AO are folded into `indirectLight` below. Route it via
+        // the direct attachment to bypass SVGF and local-albedo modulation.
+        outColor = vec4(indirect, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else if ((dbgFlags & DBG_VIZ_RAW_INDIRECT) != 0u) {
+        // Route the single-frame, pre-SVGF signal through the direct
+        // attachment so composite cannot temporally filter it or multiply it
+        // by local albedo. This is intentionally noisy: noise proves rays are
+        // contributing, while black proves the estimator/gates returned no
+        // energy before denoising and exposure can hide it.
+        outColor = vec4(indirectLight, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else if ((dbgFlags & DBG_VIZ_MATERIAL_STATE) != 0u) {
+        // Precedence matches the questions under investigation: glass is a
+        // distinct semantic material even when it also uses alpha blend;
+        // otherwise blend outranks test because a shape carrying both states
+        // is routed through the blend pipeline.
+        vec3 state = isGlass             ? vec3(0.1, 0.3, 1.0)
+                   : alphaBlendFrag      ? vec3(1.0, 0.1, 0.1)
+                   : aThresh > 0.0       ? vec3(0.1, 1.0, 0.1)
+                                         : vec3(0.5);
+        outColor = vec4(state, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else {
+        outColor = vec4(directLight, finalAlpha);
+        outRawIndirect = vec4(indirectLight, 1.0);
+        outAlbedo = vec4(albedo, 1.0);
+    }
 }
