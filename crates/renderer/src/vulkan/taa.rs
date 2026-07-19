@@ -2,7 +2,7 @@
 //!
 //! Runs between SVGF and composite:
 //!
-//!   main render pass → raw HDR + motion + mesh_id  (per frame-in-flight)
+//!   main render pass → raw HDR + motion + mesh_id + normal (per frame-in-flight)
 //!   SVGF temporal    → denoised indirect           (per frame-in-flight)
 //!   TAA dispatch     → anti-aliased HDR            (THIS module)
 //!   composite        → tone-mapped swapchain
@@ -27,6 +27,8 @@
 //! | 4       | prev history    | combined image sampler              |
 //! | 5       | out TAA         | storage image (rgba16f)             |
 //! | 6       | params UBO      | uniform buffer                      |
+//! | 7       | curr normal     | combined image sampler              |
+//! | 8       | prev normal     | combined image sampler              |
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
@@ -134,13 +136,6 @@ pub struct TaaPipeline {
     /// this to `[u32; MAX_FRAMES_IN_FLIGHT]` mirroring SVGF's #964 layout.
     /// REN-D12-NEW-01 (#1124).
     frames_since_creation: u32,
-    /// Consecutive frames the camera has been static, for progressive
-    /// (1/N) history accumulation. Incremented while the camera is parked
-    /// and reset to 0 the moment it moves; drives the temporal blend α down
-    /// to converge jittered direct-channel content (rough-metal / glass
-    /// reflections that SVGF — indirect-only — never sees) toward ground
-    /// truth. Capped so the EMA floor still adapts to scene changes.
-    static_frames: u32,
     /// Set in [`Self::dispatch`] once the compute dispatch has been
     /// recorded; consumed + cleared by [`Self::mark_frame_completed`]
     /// after `queue_submit` returns success. Gates the
@@ -150,8 +145,8 @@ pub struct TaaPipeline {
     dispatched_this_frame: bool,
 }
 
-/// The three per-frame G-buffer view slices TAA samples — HDR color,
-/// motion, and mesh-ID (each of length `MAX_FRAMES_IN_FLIGHT`). Groups the
+/// The four per-frame G-buffer view slices TAA samples — HDR color,
+/// motion, mesh-ID, and normal (each of length `MAX_FRAMES_IN_FLIGHT`). Groups the
 /// view arguments that travel together into the TAA constructor and resize
 /// path.
 #[derive(Clone, Copy)]
@@ -162,6 +157,8 @@ pub struct TaaInputViews<'a> {
     pub motion_views: &'a [vk::ImageView],
     /// Mesh-ID views (disocclusion test).
     pub mesh_id_views: &'a [vk::ImageView],
+    /// Octahedral normal views (same-instance surface validation).
+    pub normal_views: &'a [vk::ImageView],
 }
 
 impl TaaPipeline {
@@ -176,6 +173,7 @@ impl TaaPipeline {
         debug_assert_eq!(views.hdr_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(views.motion_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(views.mesh_id_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(views.normal_views.len(), MAX_FRAMES_IN_FLIGHT);
 
         let result = Self::new_inner(device, allocator, pipeline_cache, views, width, height);
         if let Err(ref e) = result {
@@ -196,6 +194,7 @@ impl TaaPipeline {
             hdr_views,
             motion_views,
             mesh_id_views,
+            normal_views,
         } = views;
         let mut partial = Self {
             pipeline: vk::Pipeline::null(),
@@ -211,7 +210,6 @@ impl TaaPipeline {
             width,
             height,
             frames_since_creation: 0,
-            static_frames: 0,
             dispatched_this_frame: false,
         };
 
@@ -322,6 +320,16 @@ impl TaaPipeline {
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(7)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(8)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
         validate_set_layout(
             0,
@@ -409,7 +417,7 @@ impl TaaPipeline {
                 .context("TAA descriptor sets")
         });
 
-        partial.write_descriptor_sets(device, hdr_views, motion_views, mesh_id_views);
+        partial.write_descriptor_sets(device, hdr_views, motion_views, mesh_id_views, normal_views);
 
         log::info!("TAA pipeline created: {}x{}", width, height);
         Ok(partial)
@@ -520,6 +528,7 @@ impl TaaPipeline {
         hdr_views: &[vk::ImageView],
         motion_views: &[vk::ImageView],
         mesh_id_views: &[vk::ImageView],
+        normal_views: &[vk::ImageView],
     ) {
         let param_size = std::mem::size_of::<TaaParams>() as vk::DeviceSize;
         for f in 0..MAX_FRAMES_IN_FLIGHT {
@@ -562,6 +571,14 @@ impl TaaPipeline {
                 .sampler(self.point_sampler)
                 .image_view(mesh_id_views[prev])
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let curr_normal = [vk::DescriptorImageInfo::default()
+                .sampler(self.point_sampler)
+                .image_view(normal_views[f])
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let prev_normal = [vk::DescriptorImageInfo::default()
+                .sampler(self.point_sampler)
+                .image_view(normal_views[prev])
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let prev_hist = [vk::DescriptorImageInfo::default()
                 .sampler(self.linear_sampler)
                 .image_view(self.history[prev].view)
@@ -584,6 +601,8 @@ impl TaaPipeline {
                 write_combined_image_sampler(set, 4, &prev_hist),
                 write_storage_image(set, 5, &out_taa),
                 write_uniform_buffer(set, 6, &params),
+                write_combined_image_sampler(set, 7, &curr_normal),
+                write_combined_image_sampler(set, 8, &prev_normal),
             ];
             // SAFETY: descriptor sets owned by `self`; `writes` references
             // image views / buffer owned by `self` and `hdr_views` /
@@ -665,35 +684,17 @@ impl TaaPipeline {
     /// barrier in `draw_frame` so the host write folds into that barrier's
     /// existing execution dependency rather than emitting a redundant barrier
     /// inside `dispatch`. Mirrors the SVGF fold from #961 / REN-D10-NEW-04.
-    pub fn upload_params(
-        &mut self,
-        device: &ash::Device,
-        frame: usize,
-        camera_static: bool,
-    ) -> Result<()> {
+    pub fn upload_params(&mut self, device: &ash::Device, frame: usize) -> Result<()> {
         let first_frame = if should_force_history_reset(self.frames_since_creation) {
             1.0
         } else {
             0.0
         };
-        // Progressive history accumulation while the camera is parked.
-        // static_frames counts parked frames (reset on motion); α = 1/(N+1)
-        // is the Monte-Carlo running average that converges the jittered
-        // direct channel. Capped at 255 so α floors at ~1/256 — enough
-        // adaptivity for a scene change under a held camera. A hard
-        // history reset (resize / first frame) also resets the counter.
-        if camera_static && first_frame < 0.5 {
-            self.static_frames = self.static_frames.saturating_add(1).min(255);
-        } else {
-            self.static_frames = 0;
-        }
-        // 0.1 = canonical TAA blend (10% current). While parked, drop to
-        // 1/(N+1) for true convergence.
-        let alpha = if self.static_frames > 0 {
-            1.0 / (self.static_frames as f32 + 1.0)
-        } else {
-            0.1
-        };
+        // TAA remains a bounded rolling resolve. Stochastic lighting owns its
+        // own surface-validated histories; driving this weight toward 1/256
+        // while parked turns any invalid final-colour sample into a persistent
+        // translucent after-image.
+        let alpha = 0.1;
         let params = TaaParams {
             screen: [
                 self.width as f32,
@@ -701,17 +702,7 @@ impl TaaPipeline {
                 1.0 / self.width as f32,
                 1.0 / self.height as f32,
             ],
-            // params.z = camera-static flag. While parked, the alpha-blend
-            // TAA bypass (which exists to stop transparency ghosting under
-            // MOTION) is lifted so glass refraction/reflection accumulates
-            // and converges too — there is no reprojection error when the
-            // camera doesn't move.
-            params: [
-                alpha,
-                first_frame,
-                if self.static_frames > 0 { 1.0 } else { 0.0 },
-                0.0,
-            ],
+            params: [alpha, first_frame, 0.0, 0.0],
         };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))
     }
@@ -848,6 +839,7 @@ impl TaaPipeline {
             hdr_views,
             motion_views,
             mesh_id_views,
+            normal_views,
         } = views;
         for slot in self.history.drain(..) {
             // SAFETY: `recreate_on_resize` is called from the swapchain-
@@ -891,7 +883,7 @@ impl TaaPipeline {
             return result;
         }
 
-        self.write_descriptor_sets(device, hdr_views, motion_views, mesh_id_views);
+        self.write_descriptor_sets(device, hdr_views, motion_views, mesh_id_views, normal_views);
 
         // #1031 — walk fresh history images from UNDEFINED to GENERAL.
         // SAFETY: fenced-resize contract — no concurrent reader on
@@ -1039,24 +1031,29 @@ mod tests {
         );
     }
 
-    /// #1497 / REN2-12 — pin the per-pixel parked-camera α floor in
-    /// taa.comp. A *moving* pixel under a parked camera must not inherit
-    /// the global `1/(static_frames+1)` accumulation α (that pins its
-    /// history at the YCoCg clamp boundary and soft-blurs moving actors);
-    /// the shader floors α at 0.1 for non-static pixels. This is a
-    /// source assertion because the behaviour lives entirely in the
-    /// compiled `.spv` — pre-fix the floor was the unshipped half of
-    /// `2f7bcf78` and nothing caught the omission. (The SVGF temporal
-    /// pass already floors per-pixel via `max(alpha_base, 1/(age+1))`.)
+    /// TAA must remain a bounded anti-aliasing resolve. Progressive path-
+    /// tracing convergence belongs to histories that validate the actual
+    /// surface; applying it to final HDR is the stale double-exposure bug.
     #[test]
-    fn taa_comp_floors_alpha_for_moving_pixels_under_parked_camera() {
+    fn taa_comp_keeps_history_bounded_and_rejects_unstable_surfaces() {
         let src = include_str!("../../shaders/taa.comp");
         assert!(
-            src.contains("pixelStatic ? params.params.x : max(params.params.x, 0.1)"),
-            "taa.comp lost the per-pixel α floor for moving pixels (#1497) — \
-             restore `float alpha = pixelStatic ? params.params.x : \
-             max(params.params.x, 0.1);` or a moving actor under a parked \
-             camera pins at the YCoCg clamp boundary."
+            src.contains(
+                "offscreen || background || disocclusion || surfaceMismatch || alphaBlend"
+            ),
+            "TAA must reject background, surface-mismatched, and blended history"
+        );
+        assert!(
+            src.contains("candidateSurface != currSurface"),
+            "motion dilation must not borrow a different instance's vector"
+        );
+        assert!(
+            src.contains("clamp(rgb_to_ycocg(histRgb), yMin, yMax)"),
+            "all TAA history channels must remain variance-clipped"
+        );
+        assert!(
+            !src.contains("pixelStatic") && !src.contains("cameraStatic"),
+            "parked-camera progressive accumulation must not return to final-colour TAA"
         );
     }
 }

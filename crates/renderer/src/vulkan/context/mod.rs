@@ -2436,7 +2436,8 @@ impl VulkanContext {
             .clone();
 
         // 14d. TAA resolve pass — needs the composite's HDR views (created
-        // above) as its "current HDR" input, plus per-FIF motion + mesh_id.
+        // above) as its "current HDR" input, plus per-FIF motion, mesh_id,
+        // and normal for surface-valid history reprojection.
         // If creation succeeds, composite's HDR descriptor is rewired to
         // sample TAA's output; otherwise we keep the raw HDR path.
         let mut taa = match TaaPipeline::new(
@@ -2447,6 +2448,7 @@ impl VulkanContext {
                 hdr_views: &hdr_views_owned,
                 motion_views: &motion_views_seed,
                 mesh_id_views: &mesh_id_views_seed,
+                normal_views: &normal_views_seed,
             },
             swapchain_state.extent.width,
             swapchain_state.extent.height,

@@ -775,6 +775,7 @@ impl VulkanContext {
                     hdr_views: &hdr_views_owned,
                     motion_views: &motion_views_in,
                     mesh_id_views: &mesh_id_views_in,
+                    normal_views: &normal_views_in,
                 },
                 self.swapchain_state.extent.width,
                 self.swapchain_state.extent.height,

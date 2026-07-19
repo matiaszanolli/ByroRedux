@@ -13,6 +13,22 @@ use byroredux_core::ecs::{Children, World};
 /// the IOR refraction path. Glass is microfacet-smooth (~0.05–0.1).
 const GLASS_ROUGHNESS: f32 = 0.10;
 
+/// Polished metal backing used for legacy mirror panes. A mirror is an
+/// opaque conductor, not a transmissive dielectric: alpha test only cuts
+/// away the broken portions of the sheet.
+const MIRROR_ROUGHNESS: f32 = 0.04;
+const MIRROR_METALNESS: f32 = 1.0;
+
+fn is_mirror_pane(
+    mesh_name: Option<&str>,
+    texture_path: Option<&str>,
+    has_transparent_coverage: bool,
+) -> bool {
+    has_transparent_coverage
+        && mesh_name.is_some_and(|name| name.to_ascii_lowercase().contains("mirror"))
+        && texture_path.is_some_and(is_glass_keyword_path)
+}
+
 /// Canonical glass classification at material-insert (spawn) time — the
 /// single alpha-aware glass decision (canonical-material pass step 3).
 ///
@@ -35,9 +51,11 @@ const GLASS_ROUGHNESS: f32 = 0.10;
 /// "glass". The alpha gate is what keeps an opaque `PawnShopWindow`
 /// (name has "window", but no blend) OUT of the glass path — pane vs.
 /// frame is disambiguated by blend state, never by the keyword alone.
-/// Alpha-tested glass is deliberately allowed: broken-pane sheets use
-/// alpha test for shard coverage but still need dielectric shading on the
-/// surviving fragments. Alpha test is coverage, not a decal classification.
+/// Alpha-tested glass is deliberately allowed: broken-pane sheets use alpha
+/// test for shard coverage but still need dielectric shading on surviving
+/// fragments. Mirror panes are the exception: their mesh name identifies an
+/// opaque reflective backing even when the shared cutout texture contains a
+/// `glass` keyword.
 ///
 /// On a match, `material_kind` becomes `MATERIAL_KIND_GLASS` and
 /// `roughness` is forced glass-smooth ([`GLASS_ROUGHNESS`]) as a
@@ -54,6 +72,12 @@ pub(crate) fn classify_glass_into_material(
 ) {
     // Already an engine-synthesized kind (glass / effect-shader / …) — leave it.
     if material.material_kind >= 100 {
+        return;
+    }
+    if is_mirror_pane(mesh_name, texture_path, has_transparent_coverage) {
+        material.material_kind = 0;
+        material.metalness = MIRROR_METALNESS;
+        material.roughness = MIRROR_ROUGHNESS;
         return;
     }
     if !has_transparent_coverage || is_decal {
@@ -142,16 +166,34 @@ mod glass_classification_tests {
     }
 
     #[test]
-    fn alpha_tested_broken_glass_is_still_dielectric() {
-        // FNV restroom mirrors/broken panes use alpha test to cut holes in
-        // the sheet. The surviving shards are glass, not ordinary glossy
-        // opaque geometry and not decals.
+    fn alpha_tested_restroom_mirror_is_opaque_reflective() {
+        // FNV restroom mirrors use a shared broken-glass alpha-test texture
+        // to cut holes in a silver-backed pane. The surviving coverage must
+        // reflect, not refract the room behind the wall.
         let mut m = mat();
         m.alpha_test = true;
         m.roughness = 0.80;
         classify_glass_into_material(
             &mut m,
             Some("RestroomMirror01:1"),
+            Some("textures/clutter/junk/brokenglasssheet01.dds"),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(m.material_kind, 0);
+        assert_eq!(m.metalness, MIRROR_METALNESS);
+        assert_eq!(m.roughness, MIRROR_ROUGHNESS);
+    }
+
+    #[test]
+    fn alpha_tested_broken_pane_without_mirror_name_is_glass() {
+        let mut m = mat();
+        m.alpha_test = true;
+        m.roughness = 0.80;
+        classify_glass_into_material(
+            &mut m,
+            Some("BrokenWindowPane:1"),
             Some("textures/clutter/junk/brokenglasssheet01.dds"),
             true,
             false,

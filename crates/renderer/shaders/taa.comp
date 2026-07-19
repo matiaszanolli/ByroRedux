@@ -27,8 +27,20 @@ layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D uOutput;
 
 layout(set = 0, binding = 6) uniform TaaParams {
     vec4 screen;   // xy = size, zw = 1/size
-    vec4 params;   // x = history blend α, y = first_frame, z = camera_static (lift alpha-blend bypass), w = unused
+    vec4 params;   // x = history blend α, y = first_frame, zw = unused
 } params;
+layout(set = 0, binding = 7) uniform sampler2D uCurrNormal;
+layout(set = 0, binding = 8) uniform sampler2D uPrevNormal;
+
+vec3 oct_decode(vec2 e) {
+    vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
+    if (n.z < 0.0) {
+        n.xy = (1.0 - abs(n.yx)) * vec2(
+            n.x >= 0.0 ? 1.0 : -1.0,
+            n.y >= 0.0 ? 1.0 : -1.0);
+    }
+    return normalize(n);
+}
 
 // YCoCg helps variance clamping reject chroma outliers without killing
 // high-frequency luma detail. Space is cheap per-pixel, well worth it.
@@ -100,18 +112,13 @@ void main() {
 
     // Motion vector is written as (current_uv - prev_uv). Reproject.
     //
-    // 5-tap dilation (REN-D11-NEW-03, audit 2026-05-09): sample
-    // center + 4 cardinal neighbours, pick the motion vector with
-    // the LONGEST magnitude. Standard "MV-max" pattern from Filmic
-    // SMAA / Inside / Insomniac — at silhouette boundaries the
-    // foreground's motion wins, pulling the reprojection sample
-    // onto the moving object instead of the (static) background
-    // pixel one position over. Pre-fix the point-sample at the
-    // exact pixel let one-pixel-wide silhouette stripes alias into
-    // ghosting trails on fast-moving meshes (NPC walk cycles at
-    // shoulder edge, camera pan past a column). Clamps every offset
-    // tap to image bounds since the corner texels would otherwise
-    // sample out-of-range.
+    // 5-tap, surface-constrained dilation: use the longest vector only from
+    // the SAME instance. Unconstrained MV-max lets foreground motion leak
+    // into a background pixel at silhouettes; if both reprojected locations
+    // happen to carry the same large wall instance, the mesh-ID test below
+    // cannot detect the bad tap and TAA preserves a translucent double image.
+    uint currMid = texelFetch(uCurrMeshId, pix, 0).r;
+    uint currSurface = currMid & 0x7FFFFFFFu;
     vec2 motion = texelFetch(uMotion, pix, 0).rg;
     float maxLenSq = dot(motion, motion);
     const ivec2 OFFSETS[4] = ivec2[4](
@@ -120,6 +127,8 @@ void main() {
     );
     for (int i = 0; i < 4; ++i) {
         ivec2 p = clamp(pix + OFFSETS[i], ivec2(0), dim - 1);
+        uint candidateSurface = texelFetch(uCurrMeshId, p, 0).r & 0x7FFFFFFFu;
+        if (candidateSurface != currSurface) continue;
         vec2 m = texelFetch(uMotion, p, 0).rg;
         float lenSq = dot(m, m);
         if (lenSq > maxLenSq) {
@@ -134,7 +143,6 @@ void main() {
 
     // Disocclusion: current fragment belongs to a different instance than
     // the one that was on-screen at prevUv. Uses nearest sample.
-    uint currMid = texelFetch(uCurrMeshId, pix, 0).r;
     ivec2 prevPix = ivec2(prevUv * params.screen.xy);
     prevPix = clamp(prevPix, ivec2(0), dim - 1);
     uint prevMid = texelFetch(uPrevMeshId, prevPix, 0).r;
@@ -144,7 +152,16 @@ void main() {
     // transition (alpha-blended ↔ opaque) doesn't force a one-frame
     // history reset on bit-31 toggle alone. The dedicated `alphaBlend`
     // path below covers the actual transparency case.
-    bool disocclusion = ((currMid & 0x7FFFFFFFu) != (prevMid & 0x7FFFFFFFu));
+    bool background = currSurface == 0u;
+    bool disocclusion = currSurface != (prevMid & 0x7FFFFFFFu);
+
+    // Instance IDs alone do not reject history at folds within a single mesh
+    // (walls/furniture are commonly batched into one instance). Compare the
+    // octahedral G-buffer normals at the reprojected location as the missing
+    // surface-consistency test.
+    vec3 currNormal = oct_decode(texelFetch(uCurrNormal, pix, 0).rg);
+    vec3 prevNormal = oct_decode(texelFetch(uPrevNormal, prevPix, 0).rg);
+    bool surfaceMismatch = dot(currNormal, prevNormal) < 0.85;
 
     // Alpha-blend opt-out: bit 31 of the mesh_id is set on transparent
     // fragments by triangle.frag. History reprojection would sample
@@ -155,14 +172,10 @@ void main() {
     // depth winner.
     bool alphaBlend = (currMid & 0x80000000u) != 0u;
 
-    // Alpha-blend pixels normally bypass TAA history to avoid transparency
-    // ghosting under camera/object motion. With a parked camera
-    // (params.z = camera_static) there is no reprojection error, so the
-    // bypass is lifted and glass refraction/reflection accumulates toward
-    // a converged, noise-free result like the opaque channel. Offscreen
-    // and disocclusion still bypass unconditionally.
-    bool cameraStatic = params.params.z > 0.5;
-    if (offscreen || disocclusion || (alphaBlend && !cameraStatic)) {
+    // Blended coverage is not a stable single-surface signal. Always bypass
+    // TAA history for it; a parked camera does not make stochastic refraction,
+    // animation, particles, or draw-order changes safe to accumulate.
+    if (offscreen || background || disocclusion || surfaceMismatch || alphaBlend) {
         imageStore(uOutput, pix, vec4(currRgb, currA));
         return;
     }
@@ -212,58 +225,16 @@ void main() {
     if (any(isnan(histRgb)) || any(isinf(histRgb))) {
         histRgb = currRgb;
     }
-    // Neighborhood variance clamp — the anti-ghosting mechanism for
-    // camera/object MOTION. With a parked camera it is actively harmful to
-    // convergence: it re-clamps the converging history to each frame's
-    // noisy 3×3 mean, dragging it around so high-variance content (glass
-    // refraction, rough-metal reflection) never settles. Skip it while
-    // static and let the pure 1/N running average converge to ground
-    // truth; reinstate it the instant the camera moves.
-    // #1479 / REN-D11-NEW-01 — `cameraStatic` (params.z) is derived from the
-    // view-proj matrix delta alone (host side) and is blind to in-scene
-    // motion. A walking actor / animated mesh under a parked camera leaves
-    // the matrix unchanged, so the luma-clamp skip below would otherwise
-    // fire for its pixels: they carry non-zero motion vectors but the SAME
-    // mesh_id at the reprojected pixel (the actor occupies both), so
-    // `disocclusion == false`, the temporal tap is taken at the ≈1/N static
-    // alpha, and with the anti-ghost luma clamp disabled the actor's
-    // luminance edges trail. Gate the skip on PER-PIXEL stillness instead:
-    // truly-static geometry under a static camera reprojects bit-identically
-    // (`motion == 0`), while any real motion (here the dilated vector) re-arms
-    // the full clamp. Threshold ≈ (1e-4 UV)² ≈ 0.1 px — generous for the
-    // exact-zero static case, far below any moving actor's per-frame motion.
-    bool pixelStatic = cameraStatic && dot(motion, motion) < 1e-8;
-    vec3 clampedHist;
-    {
-        vec3 histYc = rgb_to_ycocg(histRgb);
-        if (pixelStatic) {
-            // Parked + locally static: let LUMA (Y) converge via the pure 1/N
-            // running average — a neighborhood luma clamp drags high-variance
-            // content (glass refraction, rough-metal reflection) and stops it
-            // settling. But keep CHROMA (Co/Cg) bounded to the local window: a
-            // sub-pixel-jittered high-contrast COLOUR edge (white tall box
-            // against the red / green Cornell walls) would otherwise accumulate
-            // a stable red/cyan rim in the unbounded chroma average. TARGET 3
-            // fringing.
-            histYc.yz = clamp(histYc.yz, yMin.yz, yMax.yz);
-        } else {
-            histYc = clamp(histYc, yMin, yMax);
-        }
-        clampedHist = ycocg_to_rgb(histYc);
-    }
+    // Always clip all YCoCg channels. TAA is an anti-aliasing resolve, not
+    // the Monte-Carlo integrator; allowing unclamped luma while parked lets
+    // stale lighting or geometry survive indefinitely as a double exposure.
+    vec3 histYc = clamp(rgb_to_ycocg(histRgb), yMin, yMax);
+    vec3 clampedHist = ycocg_to_rgb(histYc);
 
     // Luma-weighted blend reduces flicker on bright highlights.
-    // #1497 / REN2-12 — `params.params.x` is the global parked-camera
-    // accumulation α, driven down to 1/(static_frames+1) (≈1/256 after
-    // ~4 s parked) by taa.rs so a locally-static pixel converges via the
-    // pure running average. But a *moving* pixel under a parked camera
-    // must NOT inherit that tiny α — its history would pin at the YCoCg
-    // clamp boundary and soft-blur moving actors. Floor α at 0.1 for
-    // non-static pixels; static pixels keep the converging global α.
-    // (The SVGF temporal pass already floors per-pixel via
-    // max(alpha_base, 1/(age+1)) with `age` reset on motion, so it
-    // doesn't share this coupling — verified, SIBLING check.)
-    float alpha = pixelStatic ? params.params.x : max(params.params.x, 0.1);
+    // Fixed bounded history weight. Monte-Carlo convergence belongs to the
+    // surface-validated SVGF/ReSTIR histories; TAA must stay responsive.
+    float alpha = params.params.x;
     float lumCurr = max(currRgb.r * 0.2126 + currRgb.g * 0.7152 + currRgb.b * 0.0722, 1e-4);
     float lumHist = max(clampedHist.r * 0.2126 + clampedHist.g * 0.7152 + clampedHist.b * 0.0722, 1e-4);
     float wCurr = 1.0 / (1.0 + lumCurr);

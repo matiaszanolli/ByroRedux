@@ -101,9 +101,9 @@ impl ReservoirBuffers {
 
     /// Recreate at a new extent after a swapchain resize. History is
     /// meaningless across a resize; the temporal pass's first-frame reset
-    /// is owned by the shader's reproject bounds check, and stale reservoir
-    /// contents are harmless (the final visibility ray re-validates every
-    /// shaded sample), so no explicit clear is needed.
+    /// is owned by the shader's packed surface-ID + normal check, and stale
+    /// reservoir contents cannot pass both validations, so no explicit clear
+    /// is needed.
     pub fn recreate_on_resize(
         &mut self,
         device: &ash::Device,
@@ -164,9 +164,28 @@ mod tests {
     /// this and the GLSL must move together.
     #[test]
     fn reservoir_stride_matches_shader() {
-        // lightIndex + W + M + histLen + accumR + accumG + accumB
+        // lightAndSurface + W + M + histLen + accumR + accumG + accumB
         // + pad0 (packed geometric normal). 8 scalars × 4 bytes.
         assert_eq!(RESERVOIR_STRIDE, 8 * 4);
+    }
+
+    #[test]
+    fn temporal_reuse_validates_surface_and_does_not_seed_neighbor_radiance() {
+        let src = include_str!("../../shaders/triangle.frag");
+        assert!(
+            src.contains("rpSurfaceId == surfaceId")
+                && src.contains("dot(geomN, rpGeomN) >= TEMPORAL_NORMAL_COS"),
+            "ReSTIR temporal history must validate surface identity and normal"
+        );
+        assert!(
+            !src.contains("SPATIAL_SEED_HIST") && !src.contains("spatColSum"),
+            "spatial reuse may borrow light candidates, never old surface radiance"
+        );
+        assert!(
+            src.contains("histLen = min(histPrev + 1.0, 16.0)")
+                && src.contains("max(1.0 / histLen, 0.1)"),
+            "direct-light history must remain bounded and responsive"
+        );
     }
 
     /// Ping-pong: curr/prev are always different slots at

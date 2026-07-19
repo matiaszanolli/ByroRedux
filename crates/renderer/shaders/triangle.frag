@@ -64,6 +64,20 @@ layout(location = 5) out vec4 outAlbedo;       // surface color (composite re-mu
 #include "include/lighting.glsl"
 #include "include/material_sampling.glsl"
 
+// ReSTIR reservoir word packing. Ten low bits cover all 512 scene lights
+// plus an explicit 1023 invalid value; the remaining 22 bits hold the
+// raster surface ID (instance index + 1), comfortably above MAX_INSTANCES.
+const uint RESERVOIR_LIGHT_MASK = 0x3FFu;
+uint reservoirLightIndex(uint lightAndSurface) {
+    return lightAndSurface & RESERVOIR_LIGHT_MASK;
+}
+uint reservoirSurfaceId(uint lightAndSurface) {
+    return lightAndSurface >> 10u;
+}
+uint packReservoirLightAndSurface(uint lightIndex, uint surfaceId) {
+    return (surfaceId << 10u) | (lightIndex & RESERVOIR_LIGHT_MASK);
+}
+
 // ── Main ────────────────────────────────────────────────────────────
 
 // DBG_* bit flags, and the render-layer unpack constants
@@ -2413,6 +2427,9 @@ void main() {
             vec3 prevAccum = vec3(0.0);
             float histPrev = 0.0;
             bool reprojValid = false;
+            vec3 geomN = normalize(fragNormalEffective);
+            uint surfaceId = uint(fragInstanceIndex) + 1u;
+            bool stableTemporalSurface = !isAlphaBlend && !isGlass;
             bool useTemporal = (dbgFlags & DBG_DISABLE_TEMPORAL) == 0u;
 
             // Reproject to last frame's pixel via the motion vector (matches
@@ -2421,19 +2438,26 @@ void main() {
             vec2 motion = (fragCurrClipPos.xy / fragCurrClipPos.w
                          - fragPrevClipPos.xy / fragPrevClipPos.w) * 0.5;
             vec2 prevFrag = gl_FragCoord.xy - motion * screen.xy;
-            if (useTemporal && shadowFade > 0.01
+            if (useTemporal && shadowFade > 0.01 && stableTemporalSurface
                 && prevFrag.x >= 0.0 && prevFrag.y >= 0.0
                 && prevFrag.x < screen.x && prevFrag.y < screen.y) {
                 uint prevIdx = uint(prevFrag.y) * scrW + uint(prevFrag.x);
                 Reservoir rp = reservoirsPrev[prevIdx];
+                uint rpLightIndex = reservoirLightIndex(rp.lightAndSurface);
+                uint rpSurfaceId = reservoirSurfaceId(rp.lightAndSurface);
+                vec3 rpGeomN = octDecode(
+                    unpackSnorm2x16(floatBitsToUint(rp.pad0)));
+                const float TEMPORAL_NORMAL_COS = 0.906; // cos 25°
+                bool sameSurface = rpSurfaceId == surfaceId
+                    && dot(geomN, rpGeomN) >= TEMPORAL_NORMAL_COS;
                 // Selection reuse: guard against first-frame / garbage
-                // contents (light index in range, W finite-positive). The
-                // final visibility ray re-validates the sample, so a stale
-                // reused index can ghost but never leak light.
-                if (rp.lightIndex < lightCount && rp.M > 0.0
+                // contents (surface identity + geometric normal + light index
+                // in range + finite-positive weight). The final visibility ray
+                // re-validates the selected light at the current surface.
+                if (sameSurface && rpLightIndex < lightCount && rp.M > 0.0
                     && rp.W > 0.0 && !isnan(rp.W) && !isinf(rp.W)) {
                     vec3 rpRad = shadowableLightRadiance(
-                        rp.lightIndex, N, V, NdotV, F0, albedo, roughness,
+                        rpLightIndex, N, V, NdotV, F0, albedo, roughness,
                         metalness, specStrength, specColor, mat, fragTangent,
                         fragWorldPos, dbgFlags);
                     float rpPHat = max(dot(rpRad,
@@ -2447,16 +2471,15 @@ void main() {
                     float u = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
                         uint(resFrameSeed) * 64u + 131u).x;
                     if (u * restirWSum < wPrev) {
-                        restirY = rp.lightIndex;
+                        restirY = rpLightIndex;
                         restirPHat = rpPHat;
                     }
                 }
-                // Radiance history is valid on any in-bounds reproject with a
-                // sane history length — independent of the selection guard,
-                // so the colour EMA survives selection flips. The disocclusion
-                // reset is the bounds test itself (off-screen ⇒ reprojValid
-                // stays false ⇒ fresh start).
-                if (rp.histLen > 0.0 && !isnan(rp.histLen) && !isinf(rp.histLen)
+                // Radiance is stricter than selection reuse: it is only valid
+                // on the exact reprojected surface. An in-bounds coordinate by
+                // itself says nothing about disocclusion.
+                if (sameSurface && rp.histLen > 0.0
+                    && !isnan(rp.histLen) && !isinf(rp.histLen)
                     && !isnan(rp.accumR) && !isinf(rp.accumR)) {
                     reprojValid = true;
                     prevAccum = max(vec3(rp.accumR, rp.accumG, rp.accumB), vec3(0.0));
@@ -2465,17 +2488,11 @@ void main() {
             }
 
             // ── ReSTIR-DI spatial reuse (ReSTIR "P2", Bitterli 2020 §5) ──────
-            // Temporal reuse above accumulates samples over TIME at this one
-            // pixel; spatial reuse accumulates them over SPACE by pulling a
-            // small disk of neighbour reservoirs and re-evaluating each
-            // neighbour's selected light against THIS pixel's surface. The win
-            // the temporal-only path can't get: a freshly disoccluded or
-            // fast-moving pixel (temporal reproject invalid) inherits many
-            // effective samples from its neighbourhood instead of restarting
-            // from one noisy frame — the fix for "convergence resets on camera
-            // motion". Even when temporal is valid, the selection variance
-            // drops because the reservoir now sees the whole neighbourhood's
-            // candidate lights.
+            // Spatial reuse pulls selected LIGHT CANDIDATES from nearby
+            // reservoirs and re-evaluates them at this surface. It deliberately
+            // does not borrow a neighbour's accumulated radiance/visibility:
+            // that quantity is surface-specific and caused light/shadow leaks
+            // across same-facing disocclusions.
             //
             // Neighbours are read from reservoirsPrev (the fully-written,
             // fenced previous-frame buffer) around the REPROJECTED location, so
@@ -2502,23 +2519,10 @@ void main() {
                 const int   SPATIAL_SAMPLES = 5;
                 const float SPATIAL_RADIUS  = 16.0; // neighbour disk radius (px)
                 const float SPATIAL_M_CAP   = 8.0;  // per-neighbour trust bound
-                const float SPATIAL_SEED_HIST = 4.0; // borrowed-colour eff. samples
                 const float SPATIAL_NORMAL_COS = 0.906; // cos 25° (Bitterli §5)
-                // This pixel's geometric normal — compared against each
-                // neighbour's packed geometric normal for the similarity gate.
-                vec3 geomN = normalize(fragNormalEffective);
                 // Centre on the reprojected location when valid (keeps the disk
                 // geometrically aligned under motion); else on this pixel.
                 vec2 spatialCenter = reprojValid ? prevFrag : gl_FragCoord.xy;
-                // The colour-EMA seed only matters on disocclusion (temporal
-                // reproject failed) — skip its bookkeeping otherwise.
-                bool seedColour = !reprojValid;
-
-                // Colour seed accumulator: a neighbour's converged soft-shadow
-                // estimate weighted by its history length × its pick's relevance
-                // here (p̂), so cross-edge / stale neighbours contribute little.
-                vec3  spatColSum = vec3(0.0);
-                float spatColW   = 0.0;
 
                 for (int sp = 0; sp < SPATIAL_SAMPLES; sp++) {
                     // Fresh per-frame, per-tap disk offset (PCG hash, rotates
@@ -2531,6 +2535,7 @@ void main() {
                         || nq.x >= int(screen.x) || nq.y >= int(screen.y)) continue;
                     uint nIdx = uint(nq.y) * scrW + uint(nq.x);
                     Reservoir rn = reservoirsPrev[nIdx];
+                    uint rnLightIndex = reservoirLightIndex(rn.lightAndSurface);
 
                     // Neighbour's geometric normal (packed into pad0 at write).
                     // Stale / uninitialised reservoirs decode to a near-fixed
@@ -2541,11 +2546,11 @@ void main() {
 
                     // Re-evaluate the neighbour's pick at THIS surface, gated on
                     // geometric-normal similarity (skip cross-edge neighbours).
-                    if (rn.lightIndex < lightCount && rn.M > 0.0
+                    if (rnLightIndex < lightCount && rn.M > 0.0
                         && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)
                         && dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS) {
                         vec3 rnRad = shadowableLightRadiance(
-                            rn.lightIndex, N, V, NdotV, F0, albedo, roughness,
+                            rnLightIndex, N, V, NdotV, F0, albedo, roughness,
                             metalness, specStrength, specColor, mat, fragTangent,
                             fragWorldPos, dbgFlags);
                         float rnPHat = max(dot(rnRad,
@@ -2557,31 +2562,10 @@ void main() {
                         float u = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
                             (uint(resFrameSeed) * uint(SPATIAL_SAMPLES) + uint(sp)) * 31u + 401u).x;
                         if (u * restirWSum < wN) {
-                            restirY = rn.lightIndex;
+                            restirY = rnLightIndex;
                             restirPHat = rnPHat;
                         }
-
-                        // Colour seed: weight a converged neighbour's soft-
-                        // shadow estimate by its history length and relevance.
-                        if (seedColour && rn.histLen > 1.0
-                            && !isnan(rn.accumR) && !isinf(rn.accumR)) {
-                            float cw = clamp(rn.histLen, 0.0, 64.0) * rnPHat;
-                            spatColSum += max(vec3(rn.accumR, rn.accumG, rn.accumB),
-                                              vec3(0.0)) * cw;
-                            spatColW += cw;
-                        }
                     }
-                }
-
-                // On disocclusion with valid spatial colour, seed the EMA from
-                // the neighbourhood so the pixel starts from a smooth estimate
-                // instead of one noisy frame. histPrev is held small so fresh
-                // frames quickly dominate and correct any cross-edge borrow —
-                // the borrowed value is a head-start, not a lock-in.
-                if (seedColour && spatColW > 0.0) {
-                    reprojValid = true;
-                    prevAccum = spatColSum / spatColW;
-                    histPrev = SPATIAL_SEED_HIST;
                 }
             }
 
@@ -2642,22 +2626,15 @@ void main() {
                 frameContribution = rad * restirW * transmissionFrame * shadowFade;
             }
 
-            // EMA-accumulate the colour estimate. alpha = 1/N (0.05 floor):
-            // a static camera converges to a clean soft shadow over ~20-64
-            // frames; a moving one reprojects and stays responsive.
+            // EMA-accumulate the colour estimate with a bounded history. Four
+            // fresh visibility rays already reduce variance per frame; an
+            // ever-growing 1/N window makes light/material changes linger as
+            // illumination ghosts and is not acceptable in a real-time path.
             vec3 accum;
             float histLen;
             if (reprojValid) {
-                // PARKED → pure 1/N progressive accumulation (floor 0, cap
-                // 255): converges to ground truth exactly like SVGF's GI
-                // path, instead of plateauing at a fixed-window noise floor.
-                // MOVING → floored EMA (cap 32, floor 0.1) so it stays
-                // responsive and doesn't ghost. dofParams.w = camera_static.
-                bool parked = dofParams.w > 0.5;
-                float histCap = parked ? 255.0 : 32.0;
-                float alphaFloor = parked ? 0.0 : 0.1;
-                histLen = min(histPrev + 1.0, histCap);
-                float alpha = max(1.0 / histLen, alphaFloor);
+                histLen = min(histPrev + 1.0, 16.0);
+                float alpha = max(1.0 / histLen, 0.1);
                 accum = mix(prevAccum, frameContribution, alpha);
             } else {
                 histLen = 1.0;
@@ -2667,7 +2644,7 @@ void main() {
 
             // Persist selection + radiance history for next-frame reuse.
             Reservoir rc;
-            rc.lightIndex = restirY;
+            rc.lightAndSurface = packReservoirLightAndSurface(restirY, surfaceId);
             rc.W = restirW;
             rc.M = restirM;
             rc.histLen = histLen;

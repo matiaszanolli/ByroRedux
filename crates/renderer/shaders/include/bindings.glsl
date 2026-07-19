@@ -312,13 +312,13 @@ layout(set = 1, binding = 14) uniform DalcCubeUBO {
 // Persisted across frames as a ping-pong pair of per-frame-in-flight
 // SSBOs: `reservoirsCurr` (this frame's write) + `reservoirsPrev` (last
 // frame's read, the temporal source). 32 B/reservoir. The temporal reuse
-// reprojects the previous reservoir via the motion vector (mesh_id +
-// normal rejection, mirroring svgf_temporal.comp) so the soft-shadow
+// reprojects the previous reservoir via the motion vector (packed surface ID
+// + normal rejection, mirroring svgf_temporal.comp) so the soft-shadow
 // estimate accumulates effective samples across frames instead of
 // re-randomising every frame (the un-denoised WRS crawl). Gated by
 // DBG_DISABLE_RESTIR; the legacy per-frame WRS path stays compiled for A/B.
 struct Reservoir {
-    uint  lightIndex;  // selected light index — temporal SELECTION reuse
+    uint  lightAndSurface; // low 10b light index, high 22b surface ID
     float W;           // unbiased contribution weight (w_sum / (M * pHat))
     float M;           // effective sample count (capped)
     float histLen;     // EMA history length for the accumulated radiance
@@ -326,8 +326,8 @@ struct Reservoir {
     float accumG;      // accumulated direct-shadow radiance — G
     float accumB;      // accumulated direct-shadow radiance — B
     float pad0;        // geometric normal: octEncode → packSnorm2x16 → float
-                       // bits. Consumed by spatial-reuse neighbour rejection
-                       // (ReSTIR P2, Bitterli §5); keeps the struct at 32 B.
+                       // bits. Consumed by temporal + spatial rejection;
+                       // keeps the struct at 32 B.
 };
 
 layout(std430, set = 1, binding = 16) buffer ReservoirCurrBuffer {
