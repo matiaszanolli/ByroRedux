@@ -162,8 +162,13 @@ pub(crate) fn translate_material(
         &mut material,
         mesh.name.as_deref(),
         paths.texture_path.as_deref(),
-        mesh.has_alpha,
-        mesh.is_decal || mesh.alpha_test,
+        // `has_alpha` tracks blended transparency, while broken panes and
+        // mirrors commonly express their transparent coverage exclusively
+        // through NiAlphaProperty's alpha-test bit.  Both are valid glass
+        // coverage; alpha-test must not make an otherwise explicit glass
+        // texture look like an opaque wall.
+        mesh.has_alpha || mesh.alpha_test,
+        mesh.is_decal,
         mesh.bgem_glass,
     );
     material
@@ -320,7 +325,8 @@ mod tests {
     #[test]
     fn alpha_normal_seeds_smooth_roughness_from_glossiness() {
         // glossiness 80 → 1.0 - 0.80 = 0.20 (f32: ~0.19999999).
-        let r = normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 1.0, PASS.3, PASS.4, true);
+        let r =
+            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 1.0, PASS.3, PASS.4, true);
         assert!((r.unwrap() - 0.20).abs() < 1e-5, "{r:?}");
     }
 
@@ -377,13 +383,16 @@ mod tests {
         // canonical roughness (`f32::clamp` propagates NaN). The gate-passing
         // alpha-normal arm drops to None so the resolve_pbr roughness stays.
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let r = normal_alpha_spec_roughness(
-                PASS.0, PASS.1, PASS.2, bad, 1.0, PASS.3, PASS.4, true,
+            let r =
+                normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, bad, 1.0, PASS.3, PASS.4, true);
+            assert_eq!(
+                r, None,
+                "glossiness {bad} must yield None, not a NaN/Inf roughness"
             );
-            assert_eq!(r, None, "glossiness {bad} must yield None, not a NaN/Inf roughness");
         }
         // And the value that DOES come back for a finite glossiness is finite.
-        let ok = normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 50.0, 1.0, PASS.3, PASS.4, true);
+        let ok =
+            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 50.0, 1.0, PASS.3, PASS.4, true);
         assert!(ok.unwrap().is_finite());
     }
 

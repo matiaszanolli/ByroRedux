@@ -101,16 +101,16 @@ const _: () = {
 // cheaper Fresnel-only fallback. The old 8192 (≈2048 IOR fragments)
 // starved on any large/close glass — a full-screen pane or a hand-held
 // sphere blew it in a 16×16 px patch, and the binary IOR/fallback split
-// painted a per-fragment stipple. Raised to cover a screenful of glass on
-// the dev-class GPU (RTX 4070 Ti, 12 GB) so refraction actually engages;
-// still bounded so a pathological all-glass cell can't run unbounded.
-pub const GLASS_RAY_BUDGET: u32 = 1048576;
+// painted a per-fragment stipple. Two megarays cover 524,288 IOR fragments
+// at the four-ray worst-case claim: enough for close hero props while the
+// fallback bounds full-screen bottle/pane overdraw.
+pub const GLASS_RAY_BUDGET: u32 = 2_097_152;
 pub const GLASS_RAY_COST: u32 = 4;
 
-// One-bounce GI: max lights evaluated (with a shadow ray each) at a GI
-// bounce hit. Caps the per-GI-hit cost in dense cells; the bounce only
-// needs the dominant nearby lights, so a small cap keeps colour bleed
-// correct without scanning hundreds of lights per hit.
+// First-bounce GI candidate pool. The shader ranks these locally, then stops
+// after the first two VISIBLE contributors. Keeping eight candidates avoids a
+// black bounce when the strongest one or two lamps are behind a wall without
+// paying eight shadow rays on the common path.
 pub const GI_HIT_LIGHT_CAP: u32 = 8;
 
 // Caustic accumulation
@@ -309,7 +309,7 @@ pub const DBG_VIZ_RENDER_LAYER: u32 = 0x40;
 
 /// 0x80 — glass IOR refraction passthru-loop diagnostic (#789
 /// follow-up). Tints glass fragments by where the loop terminated:
-///   * black   — IOR not allowed (rtLOD ≥ 1.0, !isGlass post-LOD-downgrade,
+///   * black   — IOR not allowed (rtLOD ≥ 2.0, !isGlass post-LOD-downgrade,
 ///     ray budget exhausted, isWindow not demoted).
 ///   * red     — IOR fired but ray escaped scene (sky fallback).
 ///   * yellow  — terminated on first hit, no passthru (different texture

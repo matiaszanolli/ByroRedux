@@ -93,7 +93,10 @@ pub struct GpuInstance {
     /// Phase 6 dropped the redundant per-instance copies that used to
     /// inflate this struct from 112 B (now) to 400 B.
     pub material_id: u32, // 4 B, offset 88
-    pub _pad_id0: f32,        // 4 B, offset 92
+    /// Per-draw optical IOR. This occupies the former padding slot so the
+    /// 112-byte std430 layout stays unchanged; the caustic pass consumes it
+    /// without needing a duplicate material-table descriptor.
+    pub _pad_id0: f32, // 4 B, offset 92 (optical IOR)
     /// Pre-computed average albedo for GI bounce approximation.
     /// Avoids 11 divergent memory ops per GI ray hit by replacing
     /// full UV lookup + texture sample with a single SSBO read.
@@ -167,6 +170,8 @@ pub struct GpuLight {
     /// "use default 1.0"). y/z/w reserved for future per-light
     /// shading parameters (Bethesda authors near-clip, FOV, godray
     /// bias on the same LIGH record but none drive the BRDF today).
+    /// x = attenuation exponent, y = finite luminous-source radius used by
+    /// shadow segments, zw reserved.
     pub params: [f32; 4],
 }
 

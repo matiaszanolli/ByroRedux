@@ -61,6 +61,16 @@ pub const LIGHT_RANGE_EXTENSION: f32 = 2.0;
 /// sentinel value.
 pub const FALLOFF_EXPONENT_DEFAULT: f32 = 1.0;
 
+/// Approximate radius of the luminous source represented by a point/spot
+/// light. Bethesda stores an influence radius but no emitter geometry size;
+/// using five percent of the authored radius (bounded for tiny/huge lights)
+/// gives shadow rays a finite endpoint instead of tracing into the middle of
+/// a bulb, flame card, or glowing fixture and declaring the source itself an
+/// occluder. Uploaded in `GpuLight::params.y`.
+fn emitter_radius(authored_radius: f32) -> f32 {
+    (authored_radius * 0.05).clamp(1.0, 32.0)
+}
+
 /// PERF-D5-NEW-02 / #1800 — cheap CPU-side "how much does this light
 /// matter for one-bounce GI" proxy: sum of the light's RGB channels
 /// (already scaled by `dimmer × intensity` at translation time) times
@@ -155,6 +165,7 @@ pub(super) fn collect_lights(world: &World, gpu_lights: &mut Vec<byroredux_rende
                 // reach GLSL — only the post-translation `effective_
                 // range` and `falloff_shape`.
                 let effective_range = light.radius * LIGHT_RANGE_EXTENSION;
+                let source_radius = emitter_radius(light.radius);
                 let falloff_shape = if light.falloff_exponent > 0.0 {
                     light.falloff_exponent
                 } else {
@@ -174,10 +185,10 @@ pub(super) fn collect_lights(world: &World, gpu_lights: &mut Vec<byroredux_rende
                         0.0,
                     ], // 0 = point
                     direction_angle: [0.0, 0.0, 0.0, 0.0],
-                    // `params.x` = standardized attenuation curve shape
-                    // (defaulted CPU-side). Shader uses verbatim with
-                    // no sentinel handling.
-                    params: [falloff_shape, 0.0, 0.0, 0.0],
+                    // x = standardized attenuation curve shape; y = finite
+                    // emitter proxy used to stop shadow segments at the
+                    // luminous shell instead of inside the fixture.
+                    params: [falloff_shape, source_radius, 0.0, 0.0],
                 });
             }
         }
@@ -466,6 +477,13 @@ mod interior_sun_gate_tests {
 mod gi_light_priority_tests {
     use super::*;
     use byroredux_core::ecs::LightSource;
+
+    #[test]
+    fn emitter_radius_is_finite_and_bounded() {
+        assert_eq!(emitter_radius(0.0), 1.0);
+        assert!((emitter_radius(200.0) - 10.0).abs() < f32::EPSILON);
+        assert_eq!(emitter_radius(10_000.0), 32.0);
+    }
 
     #[test]
     fn priority_score_favors_brighter_and_farther_reaching_lights() {

@@ -16,8 +16,8 @@
 //      G-buffer (depth + octahedral normal).
 //   2. For each of the first N lights, refract the light's incidence
 //      direction through the surface normal with IOR 1.5 (glass default).
-//   3. Fire a ray query along the refracted direction to find where the
-//      refracted light lands.
+//   3. Trace to the exit interface of closed glass, apply the matching
+//      glass-to-air refraction, then find the closest opaque receiver.
 //   4. Project that hit back into screen space and atomicAdd a fixed-point
 //      luminance contribution into the caustic accumulator at the hit pixel.
 //
@@ -38,7 +38,7 @@ struct GpuLight {
     vec4 position_radius;
     vec4 color_type;
     vec4 direction_angle;
-    vec4 params;  // x = falloff_exponent; yzw reserved
+    vec4 params;  // x = falloff exponent, y = emitter radius; zw reserved
 };
 
 layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
@@ -92,7 +92,7 @@ struct GpuInstance {
     uint vertexCount;
     uint flags;
     uint materialId;
-    float _padId0;
+    float ior; // former padding lane; populated per draw without ABI growth
     float avgAlbedoR, avgAlbedoG, avgAlbedoB, _padAlbedo;
 };
 
@@ -227,7 +227,11 @@ void main() {
     const float TINT_LUM_FLOOR = 0.05;
     tintLum = max(tintLum, TINT_LUM_FLOOR);
 
-    float ior = max(causticTune.y, 1.01);
+    // Use the actual refractor IOR. `causticTune.y` remains a safe fallback
+    // for old/synthetic instances whose former padding lane is still zero.
+    float instanceIor = instances[instIdx].ior;
+    float ior = instanceIor > 1.0 ? instanceIor : causticTune.y;
+    ior = max(ior, 1.01);
     uint maxLights = uint(causticTune.z);
     float strength = causticTune.w;
     float scale = causticTune.x;
@@ -274,8 +278,11 @@ void main() {
         }
     }
 
-    uint N_LIGHTS = min(lightCount, maxLights);
-    for (uint li = 0u; li < N_LIGHTS; ++li) {
+    // Scan the full light table but spend ray queries only on sources that
+    // actually reach this refractor. The previous fixed upload prefix could
+    // contain eight out-of-range lamps and completely miss a nearby ninth.
+    uint processedLights = 0u;
+    for (uint li = 0u; li < lightCount && processedLights < maxLights; ++li) {
         GpuLight L = lights[li];
         vec3 Lp = L.position_radius.xyz;
         vec3 Lc = L.color_type.rgb;
@@ -322,18 +329,24 @@ void main() {
             if (lightReach < 0.001) continue;
             LtoG = LtoG * inversesqrt(d2);
         }
+        processedLights++;
 
         // Refract through the outward-facing surface normal. If the light
         // hits the back of the surface, flip the normal.
         vec3 ns = (dot(N, -LtoG) > 0.0) ? N : -N;
         vec3 refr = refract(LtoG, ns, 1.0 / ior);
         if (dot(refr, refr) < 0.0001) continue; // total internal reflection
+        float entryCos = clamp(dot(-LtoG, ns), 0.0, 1.0);
+        float f0 = pow((ior - 1.0) / (ior + 1.0), 2.0);
+        float entryFresnel = f0 + (1.0 - f0) * pow(1.0 - entryCos, 5.0);
 
-        // Trace along the refracted direction to find the receiving surface.
-        // Ray flags (#640): caustics only need ANY-hit to cancel splatting
-        // when the refracted ray is occluded, so OPAQUE +
-        // TERMINATE_ON_FIRST_HIT cuts traversal cost dramatically vs the
-        // default closest-hit walk over the full 1000-unit reach.
+        // Closed-surface transport. First find the nearest glass interface
+        // along the in-glass direction. This prevents the bottle/beaker back
+        // face from being mistaken for the caustic receiver. The compute pass
+        // does not bind vertex/index SSBOs, so use the entry normal as a
+        // parallel-interface approximation for the exit normal: exact for
+        // panes, bounded for curved clutter. The subsequent receiver query is
+        // restricted to opaque TLAS instances and resolves the closest hit.
         //
         // Origin bias (#670): pre-fix used `G + refr * 0.5, tMin = 0.0`,
         // which rides the refracted direction. For grazing incidence
@@ -344,18 +357,40 @@ void main() {
         // captures the back-incidence flip from line above), then let
         // tMin = 0.05 escape it. Mirrors the triangle.frag refraction
         // path at line 1063.
+        vec3 receiverOrigin = G - ns * 0.1;
+        vec3 receiverDir = refr;
+        float glassTravel = 0.0;
+
+        rayQueryEXT exitRQ;
+        rayQueryInitializeEXT(
+            exitRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
+            SHADOW_MASK_GLASS,
+            receiverOrigin, 0.05, receiverDir, 1000.0);
+        while (rayQueryProceedEXT(exitRQ)) {}
+        if (rayQueryGetIntersectionTypeEXT(exitRQ, true)
+            != gl_RayQueryCommittedIntersectionNoneEXT) {
+            float exitT = rayQueryGetIntersectionTEXT(exitRQ, true);
+            vec3 exitPoint = receiverOrigin + receiverDir * exitT;
+            vec3 exitDir = refract(receiverDir, ns, ior);
+            if (dot(exitDir, exitDir) < 0.0001) {
+                exitDir = reflect(receiverDir, ns);
+            }
+            receiverDir = normalize(exitDir);
+            receiverOrigin = exitPoint + receiverDir * 0.1;
+            glassTravel = exitT;
+        }
+
         rayQueryEXT rq;
-        rayQueryInitializeEXT(rq, topLevelAS,
-                              gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-                              0xFFu,
-                              G - ns * 0.1, 0.05,
-                              refr, 1000.0);
-        rayQueryProceedEXT(rq);
+        rayQueryInitializeEXT(
+            rq, topLevelAS, gl_RayFlagsOpaqueEXT,
+            SHADOW_MASK_OPAQUE,
+            receiverOrigin, 0.05, receiverDir, 1000.0);
+        while (rayQueryProceedEXT(rq)) {}
         if (rayQueryGetIntersectionTypeEXT(rq, true)
             == gl_RayQueryCommittedIntersectionNoneEXT) continue;
 
         float hitT = rayQueryGetIntersectionTEXT(rq, true);
-        vec3 P = G + refr * hitT;
+        vec3 P = receiverOrigin + receiverDir * hitT;
 
         // Project P to screen space. #markarth-precision / #1488 — `P` is
         // ABSOLUTE world (G was lifted by +renderOrigin for the TLAS trace)
@@ -412,7 +447,8 @@ void main() {
             float d = length(Lp - G);
             lightFall = 1.0 / (1.0 + d * d * 1e-5);
         }
-        float travelFall = 1.0 / (1.0 + hitT * hitT * 1e-4);
+        float totalTravel = glassTravel + hitT;
+        float travelFall = 1.0 / (1.0 + totalTravel * totalTravel * 1e-4);
         float lum = dot(Lc, vec3(0.2126, 0.7152, 0.0722));
         // `lightReach` from the direction-derivation block above —
         // smoothstep shoulder for point/spot + Lambert cosine for
@@ -426,7 +462,11 @@ void main() {
         // brighter. On camera motion the host clears and passes decayFactor=0,
         // so the deposit is full-energy (single-frame, no EMA).
         float emaWeight = 1.0 - pc.decayFactor;
-        float contrib = lum * lightFall * lightReach * travelFall * tintLum * strength * emaWeight;
+        // Two dielectric interfaces transmit `(1-F)^2` under the parallel-
+        // interface approximation used for the exit direction.
+        float interfaceTransmission = (1.0 - entryFresnel) * (1.0 - entryFresnel);
+        float contrib = lum * lightFall * lightReach * travelFall * tintLum
+            * interfaceTransmission * strength * emaWeight;
 
         // Clamp anchored to the u32 atomic range: max representable
         // post-scale is `0xFFFFFFFFu / scale`. The 4.0e7 magic constant

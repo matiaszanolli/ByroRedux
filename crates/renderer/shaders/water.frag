@@ -214,10 +214,9 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
 
 // ── RT reflection / refraction ────────────────────────────────────────
 //
-// Both helpers use `TerminateOnFirstHit` — water doesn't need closest-
-// hit precision and the budget difference is meaningful with two rays
-// per fragment. See `traceReflection` in triangle.frag for the design
-// rationale.
+// Water shades the ray terminus (and uses its distance for absorption), so
+// these rays require the committed closest intersection. Any-hit traversal
+// is reserved for the binary shadow and shoreline-occupancy queries below.
 
 // `missFallback` is the colour returned on a TLAS miss. Reflection
 // callers want the sky tint (light from above the water surface bounces
@@ -242,10 +241,10 @@ vec3 traceWaterRay(vec3 origin, vec3 direction, float maxDist, vec3 missFallback
     rayQueryEXT rq;
     rayQueryInitializeEXT(
         rq, topLevelAS,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
+        gl_RayFlagsOpaqueEXT, 0xFF,
         origin, 0.05, direction, maxDist
     );
-    rayQueryProceedEXT(rq);
+    while (rayQueryProceedEXT(rq)) {}
 
     if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
         hit = false;
@@ -623,7 +622,7 @@ void main() {
                     gl_RayFlagsOpaqueEXT, 0xFF,
                     vWorldPos - N * 0.05, 0.05, refractDir, 5000.0
                 );
-                rayQueryProceedEXT(floorRq);
+                while (rayQueryProceedEXT(floorRq)) {}
                 if (rayQueryGetIntersectionTypeEXT(floorRq, true)
                     != gl_RayQueryCommittedIntersectionNoneEXT) {
                     float floorT = rayQueryGetIntersectionTEXT(floorRq, true);

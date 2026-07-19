@@ -163,76 +163,279 @@ vec3 shadowableLightRadiance(
     return brdfResult * unshadowedRadiance;
 }
 
-// ── One-bounce GI helper (REND — true light-transport bounce) ───────
+// ── Ray-traced visibility with dielectric transmission ─────────────
 
-// Direct irradiance arriving at a one-bounce GI hit point `p` (surface
-// normal `n`), summed over the scene lights with a shadow ray per
-// contributing light. This is the term that turns the GI bounce into
-// real light transport (and colour bleeding) instead of the legacy
-// `cell_ambient × albedo` approximation. Lights are range-culled and the
-// count is capped (`GI_HIT_LIGHT_CAP`) so dense cells can't explode the
-// per-hit cost. Returns radiance in the same units the primary direct
-// path uses, so the bounce energy matches.
-//
-// PERF-D5-NEW-02 / #1800 — this walks a FIXED prefix of the `lights[]`
-// array (upload order), not a per-hit-point selection like the primary
-// path's clustered culling. `collect_lights` (byroredux/src/render/
-// lights.rs) sorts the point-light suffix by descending
-// `gi_priority_score` before upload specifically so this fixed prefix
-// approximates "the most influential lights scene-wide" instead of
-// "whatever ECS iteration order produced." Still an approximation (no
-// idea where `p` actually is) — the per-light `dist > radius` skip below
-// is what keeps genuinely out-of-range lights from contributing, same
-// as before.
-vec3 giHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
-    vec3 e = vec3(0.0);
-    uint count = min(lightCount, GI_HIT_LIGHT_CAP);
-    for (uint i = 0u; i < count; ++i) {
-        float lightType = lights[i].color_type.w;
-        vec3 lightColor = lights[i].color_type.rgb;
-        float radius = lights[i].position_radius.w;
-        float falloffShape = lights[i].params.x;
-
-        vec3 L;
-        float dist;
-        float atten;
-        if (lightType < 1.5) {
-            // Point (type 0) or spot (type 1).
-            vec3 toLight = lights[i].position_radius.xyz - p;
-            dist = length(toLight);
-            if (dist > radius) continue; // out of influence range
-            L = toLight / max(dist, 1e-3);
-            atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
-            if (lightType >= 0.5) {
-                vec3 spotDir = normalize(lights[i].direction_angle.xyz);
-                float spotAngle = lights[i].direction_angle.w;
-                float spotFactor = dot(-L, spotDir);
-                atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
-            }
-        } else {
-            // Directional (type 2): exterior sun / interior fill.
-            L = normalize(lights[i].direction_angle.xyz);
-            dist = 1.0e4;
-            atten = 1.0;
-        }
-
-        float NdotL = max(dot(n, L), 0.0);
-        float contrib = atten * NdotL;
-        if (contrib < 1.0e-4) continue;
-
-        // Shadow ray toward the light — skip the contribution if occluded.
-        rayQueryEXT sRQ;
+// Return RGB visibility along a light segment. Opaque geometry is a binary
+// blocker; glass is accumulated interface by interface so clear/tinted panes
+// transmit light instead of casting wall-like black shadows. TLAS instance
+// masks keep both traversals coherent even though every BLAS is flagged
+// opaque at the geometry level.
+vec3 traceShadowTransmittance(
+    vec3 origin, vec3 direction, float maxDist, float emitterRadius
+) {
+    // Alpha-aware opaque traversal. Ray-query geometry is intentionally built
+    // opaque, so alpha-test holes and effect cards must be continued through
+    // explicitly. Treating their triangle bounds as solid is what let flame
+    // cards and lamp globes shadow the point light they visually emit.
+    const int MAX_OPAQUE_LAYERS = 8;
+    vec3 opaqueOrigin = origin;
+    float opaqueRemaining = maxDist;
+    for (int layer = 0; layer < MAX_OPAQUE_LAYERS; ++layer) {
+        rayQueryEXT opaqueRQ;
         rayQueryInitializeEXT(
-            sRQ, topLevelAS,
-            gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF,
-            p + n * 0.1, 0.05, L, max(dist - 0.2, 0.05));
-        rayQueryProceedEXT(sRQ);
-        if (rayQueryGetIntersectionTypeEXT(sRQ, true)
-            != gl_RayQueryCommittedIntersectionNoneEXT) {
+            opaqueRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
+            SHADOW_MASK_OPAQUE,
+            opaqueOrigin, 0.05, direction, opaqueRemaining);
+        while (rayQueryProceedEXT(opaqueRQ)) {}
+        if (rayQueryGetIntersectionTypeEXT(opaqueRQ, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT) break;
+
+        int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(opaqueRQ, true);
+        int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(opaqueRQ, true);
+        vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(opaqueRQ, true);
+        float hitT = rayQueryGetIntersectionTEXT(opaqueRQ, true);
+        GpuInstance hitInst = instances[hitIdx];
+        GpuMaterial hitMat = materials[hitInst.materialId];
+        bool effectCard = hitMat.materialKind == MATERIAL_KIND_EFFECT_SHADER;
+        if (effectCard) {
+            float advance = hitT + 0.1;
+            opaqueRemaining -= advance;
+            if (opaqueRemaining <= 0.05) break;
+            opaqueOrigin += direction * advance;
             continue;
         }
-        e += lightColor * contrib;
+
+        bool alphaSensitive = hitInst.alphaThreshold > 0.0
+            || (hitMat.materialFlags & MAT_FLAG_ALPHA_BLEND) != 0u;
+        bool nearEmitter = emitterRadius > 0.0
+            && opaqueRemaining - hitT <= emitterRadius
+            && max(max(hitMat.emissiveR, hitMat.emissiveG), hitMat.emissiveB)
+                * max(hitMat.emissiveMult, 1.0) > 0.01;
+        // The overwhelmingly common case is a fully opaque, non-emissive
+        // blocker. Keep that path binary and texture-free; only authored
+        // coverage and terminal emitter shells need material sampling.
+        if (!alphaSensitive && !nearEmitter) return vec3(0.0);
+
+        vec2 hitUV = transformRayHitUV(
+            hitMat, getHitUV(uint(hitIdx), uint(hitPrim), hitBary));
+        vec4 hitBase;
+        bool covered = rayHitHasCoverage(hitInst, hitMat, hitUV, hitBase);
+        vec3 hitEmission = rayHitEmission(hitMat, hitUV, hitBase.rgb, 0.0);
+        bool sourceShell = nearEmitter
+            && max(max(hitEmission.r, hitEmission.g), hitEmission.b) > 0.01;
+        if (covered && !sourceShell) return vec3(0.0);
+
+        float advance = hitT + 0.1;
+        opaqueRemaining -= advance;
+        if (opaqueRemaining <= 0.05) break;
+        opaqueOrigin += direction * advance;
+    }
+
+    const int MAX_GLASS_INTERFACES = 4;
+    vec3 transmission = vec3(1.0);
+    vec3 rayOrigin = origin;
+    float remaining = maxDist;
+
+    for (int layer = 0; layer < MAX_GLASS_INTERFACES; ++layer) {
+        rayQueryEXT glassRQ;
+        rayQueryInitializeEXT(
+            glassRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
+            SHADOW_MASK_GLASS,
+            rayOrigin, 0.05, direction, remaining);
+        while (rayQueryProceedEXT(glassRQ)) {}
+        if (rayQueryGetIntersectionTypeEXT(glassRQ, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT) {
+            break;
+        }
+
+        int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(glassRQ, true);
+        int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(glassRQ, true);
+        vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(glassRQ, true);
+        float hitT = rayQueryGetIntersectionTEXT(glassRQ, true);
+        GpuInstance hitInst = instances[hitIdx];
+        GpuMaterial hitMat = materials[hitInst.materialId];
+        vec2 hitUV = transformRayHitUV(
+            hitMat, getHitUV(uint(hitIdx), uint(hitPrim), hitBary));
+        vec4 glassTex;
+        bool covered = rayHitHasCoverage(hitInst, hitMat, hitUV, glassTex);
+        if (!covered) {
+            float advance = hitT + 0.1;
+            remaining -= advance;
+            if (remaining <= 0.05) break;
+            rayOrigin += direction * advance;
+            continue;
+        }
+        vec3 tint = clamp(
+            glassTex.rgb * vec3(hitMat.diffuseR, hitMat.diffuseG, hitMat.diffuseB),
+            vec3(0.02), vec3(1.0));
+        float authoredOpacity = clamp(glassTex.a * hitMat.materialAlpha, 0.0, 1.0);
+        vec3 hitN = getHitTriNormal(uint(hitIdx), uint(hitPrim));
+        if (dot(hitN, direction) > 0.0) hitN = -hitN;
+        float cosTheta = clamp(dot(-direction, hitN), 0.0, 1.0);
+        float f0 = dielectricF0FromIor(max(hitMat.ior, 1.0));
+        float fresnel = fresnelSchlick(cosTheta, vec3(f0)).r;
+
+        // Opacity in Bethesda glass mostly encodes surface tint/decal
+        // strength, not solid occlusion. Apply modest Beer-style absorption
+        // per interface and the dielectric Fresnel transmission loss.
+        float absorption = mix(0.08, 0.45, authoredOpacity);
+        transmission *= mix(vec3(1.0), tint, absorption) * (1.0 - fresnel);
+        if (max(max(transmission.r, transmission.g), transmission.b) < 0.01) {
+            return vec3(0.0);
+        }
+
+        float advance = hitT + 0.1;
+        remaining -= advance;
+        if (remaining <= 0.05) break;
+        rayOrigin += direction * advance;
+    }
+    return transmission;
+}
+
+// ── Indirect-hit lighting ───────────────────────────────────────────
+
+bool giLightSample(
+    uint i, vec3 p, vec3 n, uint dbgFlags,
+    out vec3 L, out float dist, out float contrib
+) {
+    float lightType = lights[i].color_type.w;
+    float radius = lights[i].position_radius.w;
+    float falloffShape = lights[i].params.x;
+    float atten;
+    if (lightType < 1.5) {
+        vec3 toLight = lights[i].position_radius.xyz - p;
+        dist = length(toLight);
+        if (dist > radius) return false;
+        L = toLight / max(dist, 1e-3);
+        atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
+        if (lightType >= 0.5) {
+            vec3 spotDir = normalize(lights[i].direction_angle.xyz);
+            float spotAngle = lights[i].direction_angle.w;
+            float spotFactor = dot(-L, spotDir);
+            atten *= clamp(
+                (spotFactor - spotAngle) / max(1.0 - spotAngle, 1e-4),
+                0.0, 1.0);
+        }
+    } else {
+        L = normalize(lights[i].direction_angle.xyz);
+        dist = 100000.0;
+        atten = 1.0;
+    }
+    contrib = atten * max(dot(n, L), 0.0);
+    return contrib >= 1.0e-4;
+}
+
+// Reflection/refraction rays run per glossy primary fragment, so evaluating
+// the full GI light cap here multiplies one primary ray into dozens of nested
+// queries in glass-heavy views. Pick the single strongest local light and use
+// one opaque visibility query. The wider glass-aware evaluator remains on the
+// low-rate diffuse GI path.
+vec3 reflectionHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
+    const int REFLECTION_LIGHT_CANDIDATES = 4;
+    uint selected[REFLECTION_LIGHT_CANDIDATES];
+    float selectedScore[REFLECTION_LIGHT_CANDIDATES];
+    for (int k = 0; k < REFLECTION_LIGHT_CANDIDATES; ++k) {
+        selected[k] = 0xFFFFFFFFu;
+        selectedScore[k] = -1.0;
+    }
+
+    for (uint i = 0u; i < lightCount; ++i) {
+        vec3 L;
+        float dist;
+        float contrib;
+        if (!giLightSample(i, p, n, dbgFlags, L, dist, contrib)) continue;
+        float score = contrib
+            * dot(max(lights[i].color_type.rgb, vec3(0.0)),
+                  vec3(0.2126, 0.7152, 0.0722));
+        int insertAt = -1;
+        for (int k = 0; k < REFLECTION_LIGHT_CANDIDATES; ++k) {
+            if (score > selectedScore[k]) {
+                insertAt = k;
+                break;
+            }
+        }
+        if (insertAt >= 0) {
+            for (int k = REFLECTION_LIGHT_CANDIDATES - 1; k > insertAt; --k) {
+                selected[k] = selected[k - 1];
+                selectedScore[k] = selectedScore[k - 1];
+            }
+            selected[insertAt] = i;
+            selectedScore[insertAt] = score;
+        }
+    }
+
+    // Try candidates in local-importance order. The former single-choice
+    // estimator returned black whenever its strongest light was occluded even
+    // if the next lamp was plainly visible in the reflection/refraction.
+    for (int k = 0; k < REFLECTION_LIGHT_CANDIDATES; ++k) {
+        uint i = selected[k];
+        if (i == 0xFFFFFFFFu) break;
+        vec3 L;
+        float dist;
+        float contrib;
+        if (!giLightSample(i, p, n, dbgFlags, L, dist, contrib)) continue;
+        vec3 visibility = traceShadowTransmittance(
+            p + n * 0.1, L, max(dist - 0.2, 0.05), lights[i].params.y);
+        if (max(max(visibility.r, visibility.g), visibility.b) <= 0.001) continue;
+        return lights[i].color_type.rgb * contrib * visibility;
+    }
+    return vec3(0.0);
+}
+
+// Direct irradiance arriving at a ray hit. Select the locally strongest
+// lights before casting visibility rays; the previous fixed upload prefix
+// frequently contained no light whose radius reached the hit point, making
+// indirect illumination black even in visibly lit rooms.
+vec3 giHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
+    uint selected[GI_HIT_LIGHT_CAP];
+    float selectedScore[GI_HIT_LIGHT_CAP];
+    for (uint k = 0u; k < GI_HIT_LIGHT_CAP; ++k) {
+        selected[k] = 0xFFFFFFFFu;
+        selectedScore[k] = -1.0;
+    }
+
+    for (uint i = 0u; i < lightCount; ++i) {
+        vec3 candidateL;
+        float candidateDist;
+        float candidateContrib;
+        if (!giLightSample(
+                i, p, n, dbgFlags,
+                candidateL, candidateDist, candidateContrib)) continue;
+        float score = candidateContrib
+            * dot(max(lights[i].color_type.rgb, vec3(0.0)),
+                  vec3(0.2126, 0.7152, 0.0722));
+        int insertAt = -1;
+        for (uint k = 0u; k < GI_HIT_LIGHT_CAP; ++k) {
+            if (score > selectedScore[k]) {
+                insertAt = int(k);
+                break;
+            }
+        }
+        if (insertAt < 0) continue;
+        for (int k = int(GI_HIT_LIGHT_CAP) - 1; k > insertAt; --k) {
+            selected[k] = selected[k - 1];
+            selectedScore[k] = selectedScore[k - 1];
+        }
+        selected[insertAt] = i;
+        selectedScore[insertAt] = score;
+    }
+
+    vec3 e = vec3(0.0);
+    const uint GI_VISIBLE_LIGHT_CAP = 2u;
+    uint visibleCount = 0u;
+    for (uint k = 0u; k < GI_HIT_LIGHT_CAP; ++k) {
+        uint i = selected[k];
+        if (i == 0xFFFFFFFFu) break;
+        vec3 L;
+        float dist;
+        float contrib;
+        if (!giLightSample(i, p, n, dbgFlags, L, dist, contrib)) continue;
+        vec3 visibility = traceShadowTransmittance(
+            p + n * 0.1, L, max(dist - 0.2, 0.05), lights[i].params.y);
+        if (max(max(visibility.r, visibility.g), visibility.b) <= 0.001) continue;
+        e += lights[i].color_type.rgb * contrib * visibility;
+        visibleCount++;
+        if (visibleCount >= GI_VISIBLE_LIGHT_CAP) break;
     }
     return e;
 }
-

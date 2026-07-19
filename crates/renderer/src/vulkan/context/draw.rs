@@ -66,7 +66,13 @@ fn halton(mut index: u32, base: u32) -> f32 {
 /// Returns `(0.0, 0.0)` (no jitter) whenever `taa_present` is false OR
 /// `taa_failed` is true (#1932 / TAA-D13-01) — a permanent TAA failure must
 /// fall back to a stable pinhole image, not a jittered-but-unresolved one.
-fn taa_jitter(taa_present: bool, taa_failed: bool, frame_counter: u32, width: f32, height: f32) -> (f32, f32) {
+fn taa_jitter(
+    taa_present: bool,
+    taa_failed: bool,
+    frame_counter: u32,
+    width: f32,
+    height: f32,
+) -> (f32, f32) {
     if taa_present && !taa_failed {
         let idx = (frame_counter % 16) + 1; // 1-indexed
         let hx = halton(idx, 2);
@@ -104,7 +110,10 @@ mod taa_jitter_tests {
     #[test]
     fn taa_present_and_not_failed_jitters_nonzero() {
         let (jx, jy) = taa_jitter(true, false, 7, 1920.0, 1080.0);
-        assert!(jx != 0.0 || jy != 0.0, "expected a nonzero Halton jitter offset");
+        assert!(
+            jx != 0.0 || jy != 0.0,
+            "expected a nonzero Halton jitter offset"
+        );
     }
 }
 
@@ -160,7 +169,8 @@ fn dof_effective_view_proj(
     // All rays converge at the focal plane (absolute).
     let focal_pt = pos + dof.focus_dist * fwd;
 
-    let jittered_view = Mat4::look_at_rh(jittered_eye - render_origin, focal_pt - render_origin, up);
+    let jittered_view =
+        Mat4::look_at_rh(jittered_eye - render_origin, focal_pt - render_origin, up);
     let proj = Mat4::from_cols_array(&dof.proj_mat);
     let jvp = (proj * jittered_view).to_cols_array();
     (jvp, jittered_eye.to_array())
@@ -490,7 +500,8 @@ impl VulkanContext {
         unsafe {
             self.device.cmd_pipeline_barrier(
                 cmd,
-                vk::PipelineStageFlags::LATE_FRAGMENT_TESTS | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::LATE_FRAGMENT_TESTS
+                    | vk::PipelineStageFlags::FRAGMENT_SHADER,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::DependencyFlags::empty(),
                 &[],
@@ -2597,9 +2608,29 @@ impl VulkanContext {
         // DOF aperture-disk jitter, or the pinhole pass-through. The bokeh
         // rationale and the #1525 degenerate-`focus_dist` guard live in
         // `dof_effective_view_proj`.
-        let (effective_vp, effective_cam_pos) =
-            dof_effective_view_proj(&dof, self.frame_counter, camera_pos, render_origin, view_proj);
+        let (effective_vp, effective_cam_pos) = dof_effective_view_proj(
+            &dof,
+            self.frame_counter,
+            camera_pos,
+            render_origin,
+            view_proj,
+        );
         let vp = &effective_vp;
+        // Automatic camera-cut detection catches debug teleports and scripted
+        // snaps that do not flow through the cell-transition reset hooks.
+        let camera_delta = byroredux_core::math::Vec3::from_array(camera_pos).distance(
+            byroredux_core::math::Vec3::from_array(self.prev_camera_position),
+        );
+        let vp_max_abs_delta = vp
+            .iter()
+            .zip(self.prev_view_proj.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        let camera_cut =
+            self.frame_counter > 0 && (camera_delta > 256.0 || vp_max_abs_delta > 0.75);
+        if camera_cut {
+            self.signal_temporal_discontinuity(8);
+        }
         // #1489 / REN2-04 — `prev_view_proj` is relative to LAST frame's
         // render origin O₁; this frame's geometry (per-instance models, bone
         // palettes) is rebased by the CURRENT origin O₂. On a 4096-grid
@@ -2609,11 +2640,18 @@ impl VulkanContext {
         // uploaded matrix consume current-origin positions exactly:
         // `M·(x − O₂) = prev_vp·(x − O₁)`. Off the jump frame ΔO = 0 and
         // the correction is the identity.
-        let pvp = origin_corrected_prev_view_proj(
-            &self.prev_view_proj,
-            self.prev_render_origin,
-            [render_origin.x, render_origin.y, render_origin.z],
-        );
+        let pvp = if camera_cut {
+            // Reset history and emit zero velocity on the cut frame. Keeping
+            // the old matrix here would feed extreme motion into the
+            // disocclusion filters even though their history was flushed.
+            *vp
+        } else {
+            origin_corrected_prev_view_proj(
+                &self.prev_view_proj,
+                self.prev_render_origin,
+                [render_origin.x, render_origin.y, render_origin.z],
+            )
+        };
         // Precompute inverse(viewProj) once on the CPU so shaders
         // (cluster culling, SSAO) can read it directly from the UBO
         // instead of computing a ~100 ALU-op matrix inverse per invocation.
@@ -2825,6 +2863,7 @@ impl VulkanContext {
         // built against, so next frame's upload can origin-correct it
         // (#1489 / REN2-04).
         self.prev_view_proj = *vp;
+        self.prev_camera_position = camera_pos;
         self.prev_render_origin = [render_origin.x, render_origin.y, render_origin.z];
 
         // #1874 diagnostic — ghosted diagonal double-image investigation.
@@ -2844,10 +2883,7 @@ impl VulkanContext {
             render_origin.x - self.prev_render_origin[0],
             render_origin.y - self.prev_render_origin[1],
             render_origin.z - self.prev_render_origin[2],
-            vp.iter()
-                .zip(self.prev_view_proj.iter())
-                .map(|(a, b)| (a - b).abs())
-                .fold(0.0_f32, f32::max),
+            vp_max_abs_delta,
         );
 
         // D6-04 / #1811 — track how many consecutive frames had no
@@ -3260,7 +3296,10 @@ impl VulkanContext {
             // The mean is computed once at DDS upload and cached per
             // handle, so this is a cheap lookup + multiply. Untextured /
             // normal-map / BC7 handles return `None` and keep the tint.
-            let gi_albedo = match self.texture_registry.handle_avg_rgb(draw_cmd.texture_handle) {
+            let gi_albedo = match self
+                .texture_registry
+                .handle_avg_rgb(draw_cmd.texture_handle)
+            {
                 Some(mean) => [
                     draw_cmd.avg_albedo[0] * mean[0],
                     draw_cmd.avg_albedo[1] * mean[1],
@@ -3294,7 +3333,10 @@ impl VulkanContext {
                 vertex_count: mesh.vertex_count,
                 flags,
                 material_id: draw_cmd.material_id,
-                _pad_id0: 0.0,
+                // Reuse the layout's former padding lane for per-material IOR.
+                // caustic_splat.comp names this offset `ior`; other shaders
+                // keep treating it as padding, so the std430 ABI is unchanged.
+                _pad_id0: draw_cmd.ior,
                 avg_albedo_r: gi_albedo[0],
                 avg_albedo_g: gi_albedo[1],
                 avg_albedo_b: gi_albedo[2],
@@ -3787,7 +3829,6 @@ impl VulkanContext {
         // recording-order contract; this is the same single `unsafe` scope
         // `draw_frame` opened before the geometry pass was extracted (#1748).
         unsafe {
-
             // Soft-particle depth fade: snapshot this frame's opaque depth
             // into the sampleable history image so next frame's effect-shader
             // FX can feather their alpha against the geometry behind them.
@@ -4195,10 +4236,22 @@ mod dof_view_proj_tests {
         let cam = [1000.0, 200.0, 3000.0];
         for fc in 0..64u32 {
             let (vp, eye) = dof_effective_view_proj(&dof_view(0.5, 0.0), fc, cam, Vec3::ZERO, &pin);
-            assert!(vp.iter().all(|x| x.is_finite()), "frame {fc}: non-finite vp {vp:?}");
-            assert!(eye.iter().all(|x| x.is_finite()), "frame {fc}: non-finite eye {eye:?}");
-            assert_eq!(vp, pin, "frame {fc}: degenerate focus_dist must use the pinhole matrix");
-            assert_eq!(eye, cam, "frame {fc}: degenerate focus_dist must keep the un-jittered eye");
+            assert!(
+                vp.iter().all(|x| x.is_finite()),
+                "frame {fc}: non-finite vp {vp:?}"
+            );
+            assert!(
+                eye.iter().all(|x| x.is_finite()),
+                "frame {fc}: non-finite eye {eye:?}"
+            );
+            assert_eq!(
+                vp, pin,
+                "frame {fc}: degenerate focus_dist must use the pinhole matrix"
+            );
+            assert_eq!(
+                eye, cam,
+                "frame {fc}: degenerate focus_dist must keep the un-jittered eye"
+            );
         }
     }
 
@@ -4223,8 +4276,14 @@ mod dof_view_proj_tests {
         assert!(vp.iter().all(|x| x.is_finite()));
         assert!(eye.iter().all(|x| x.is_finite()));
         assert_ne!(vp, pin, "valid DOF must not equal the pinhole matrix");
-        assert!(eye[2].abs() < 1e-6, "jitter stays in the right/up plane (z unchanged)");
-        assert!(eye[0] != 0.0 || eye[1] != 0.0, "eye should move on the aperture disk");
+        assert!(
+            eye[2].abs() < 1e-6,
+            "jitter stays in the right/up plane (z unchanged)"
+        );
+        assert!(
+            eye[0] != 0.0 || eye[1] != 0.0,
+            "eye should move on the aperture disk"
+        );
     }
 
     /// The guard threshold is a real positive floor, so exact-zero and
@@ -4234,9 +4293,17 @@ mod dof_view_proj_tests {
         assert!(DOF_MIN_FOCUS_DIST > 0.0);
         let pin = pinhole();
         let cam = [0.0, 0.0, 0.0];
-        let (vp, _) =
-            dof_effective_view_proj(&dof_view(0.5, DOF_MIN_FOCUS_DIST * 0.5), 3, cam, Vec3::ZERO, &pin);
-        assert_eq!(vp, pin, "focus_dist below the floor must fall back to pinhole");
+        let (vp, _) = dof_effective_view_proj(
+            &dof_view(0.5, DOF_MIN_FOCUS_DIST * 0.5),
+            3,
+            cam,
+            Vec3::ZERO,
+            &pin,
+        );
+        assert_eq!(
+            vp, pin,
+            "focus_dist below the floor must fall back to pinhole"
+        );
     }
 }
 

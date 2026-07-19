@@ -247,6 +247,11 @@ void main() {
     float metalness = mat.metalness;
     float emissiveMult = mat.emissiveMult;
     vec3 emissiveColor = vec3(mat.emissiveR, mat.emissiveG, mat.emissiveB);
+    // Emission is shaped by the dedicated glow map when present, otherwise
+    // by the base texture. It is deliberately independent from diffuse
+    // albedo: multiplying both maps together nullifies bright tubes/runes
+    // authored over a dark base material.
+    vec3 emissiveMask = texColor.rgb;
     // #695 / O4-03 — `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`
     // means the authored per-vertex `fragColor.rgb` IS the emissive
     // payload (flickering torches, glowing signs, baked emissive cards).
@@ -484,7 +489,11 @@ void main() {
     // (roughness < 0.6) to fire the ray at all.
     const float RT_LOD_REFLECT = 3.0;
     const float RT_LOD_GI      = 2.0;  // GI ray ceiling
-    const float RT_LOD_IOR     = 1.0;  // Phase-3 glass IOR ceiling (budget-gated)
+    // Room-scale glass must keep resolved transmission. Many FNV cups and
+    // broken pitchers are authored as opaque-pipeline NiTriShapes, so their
+    // fallback alpha cannot reveal the framebuffer; the old tier-0-only gate
+    // turned them into flat blue solids at ordinary table-view distances.
+    const float RT_LOD_IOR     = 2.0;  // Phase-3 glass IOR ceiling (budget-gated)
     float rtFootprint = max(length(dFdx(fragWorldPosRel)), length(dFdy(fragWorldPosRel)));  // #1496 — derivative on relative pos
     float rtLOD = clamp(log2(rtFootprint * RT_LOD_SCALE), 0.0, 3.0);
 
@@ -819,7 +828,7 @@ void main() {
             textures[nonuniformEXT(mat.glowMapIndex)],
             sampleUV
         ).rgb;
-        emissiveColor *= glowSample;
+        emissiveMask = glowSample;
     }
 
     // ── #562 Skyrim+ BSLightingShaderProperty variant ladder ────────
@@ -964,12 +973,14 @@ void main() {
     //   (2) zeroed outRawIndirect, which fed SVGF with zero indirect on
     //       lantern pixels and bled darkness into neighbors via the
     //       spatial filter.
-    // Modulate by albedo so textured glass globes tint/shape the glow,
-    // and clamp to tame HDR blowout on bright emissive texels before ACES.
+    // Keep emission in HDR radiance units so bloom/tone mapping can preserve
+    // the authored source. A high safety cap only contains malformed assets;
+    // the former 1.5 clamp erased the distinction between a glowing surface
+    // and the light it was meant to emit.
     float emissiveLum = dot(emissiveColor, vec3(0.2126, 0.7152, 0.0722));
     vec3 emissive = vec3(0.0);
     if (emissiveMult > 0.01 && emissiveLum > 0.01) {
-        emissive = min(emissiveColor * emissiveMult * albedo, vec3(1.5));
+        emissive = min(emissiveColor * emissiveMult * emissiveMask, vec3(64.0));
     }
 
     // #695 / O4-03 — additive per-vertex emissive contribution from
@@ -982,7 +993,7 @@ void main() {
     // Skipped on the BSEffectShader early-out path above — that branch
     // already returns from the function with its own emissive math.
     if (vertexColorEmissive) {
-        emissive = min(emissive + fragColor * texColor.rgb, vec3(1.5));
+        emissive = min(emissive + fragColor * texColor.rgb, vec3(64.0));
     }
 
     // ── Glass / transparent refraction ──────────────────────────────
@@ -1022,7 +1033,16 @@ void main() {
     // nested under a stable parent classification. See Tier C Phase 2.
     bool isAlphaBlend = (inst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u;
     bool isGlass = mat.materialKind == MATERIAL_KIND_GLASS && roughness < 0.35;
-    bool isWindow = isGlass && texColor.a < 0.5 && texColor.a > 0.02;
+    uint renderLayer =
+        (inst.flags >> INSTANCE_RENDER_LAYER_SHIFT) & INSTANCE_RENDER_LAYER_MASK;
+    bool isArchitecturalGlass = renderLayer == 0u;
+    // Low alpha is not enough to identify a window: Bethesda cups, bottles,
+    // pitchers and broken mirrors use the same alpha range. Their portal ray
+    // can escape through an unrelated gap in the cell and paint the whole prop
+    // with flat sky colour. Only architectural-layer glass may be a portal;
+    // clutter-layer glass always uses object IOR/refraction.
+    bool isWindow = isGlass && isArchitecturalGlass
+        && texColor.a < 0.5 && texColor.a > 0.02;
 
     // RT mipmap glass tier downgrade:
     //   Tier 3 (rtLOD ≥ 3.0): plain alpha-blend — glass effects disabled entirely.
@@ -1040,7 +1060,8 @@ void main() {
     // pattern on Bethesda glass cups reads as crosshatch when multiple
     // semi-transparent layers are composited. mip 4 erases mid-frequency
     // ribbing (~8×8 px footprint on a 256² texture) while keeping hue.
-    // texColor.a is preserved — it drives decalWeight and finalAlpha.
+    // texColor.a is preserved for alpha-test coverage, portal detection, and
+    // the bounded non-IOR fallback below.
     // albedo is re-derived from the blurred colour so the Fresnel-path
     // PBR sees a clean base. Dark-map modulation is intentionally skipped
     // for glass (lightmaps are never baked onto transparent objects).
@@ -1148,12 +1169,15 @@ void main() {
         // diverge (water 1.33 → 0.02, dense window glass 1.52 → 0.044).
         vec3 glassF0 = vec3(f0Dielectric);
         glassFresnel = fresnelSchlick(NdotV, glassF0).r;
-        specStrength = max(specStrength, 3.0);
+        // Dielectric Fresnel already defines the correct specular energy.
+        // Boosting legacy specular strength to 3× made the bounded fallback
+        // read as chrome whenever the IOR budget was exhausted.
+        specStrength = min(specStrength, 1.0);
         F0 = glassF0;
     }
 
     // RT glass Phase 3: IOR refraction + reflection for tier-0 fragments
-    // (rtLOD < RT_LOD_IOR = 1.0, i.e. arm's-reach glass objects).
+    // (rtLOD < RT_LOD_IOR = 2.0, i.e. arm's-reach and room-scale glass).
     // Gated by the per-frame ray budget counter — atomicAdd claims the
     // WORST-CASE ray cost upfront and falls back to the Fresnel-highlight
     // path when the budget is exhausted (glassFresnel + specStrength still
@@ -1180,14 +1204,10 @@ void main() {
     // tightens from ~10% to ~5% of glass fragments under the documented
     // load model — accepted trade for honest accounting.
     //
-    // Budget sized for a typical interior cell with ~15-20 small glass
-    // props (chem tables, drinking glass clusters, vial racks). At 1080p
-    // that's roughly 80k visible glass fragments; 1048576 ray slots cover
-    // ~262k IOR fragments at the worst-case 4-units-per-fragment claim
-    // before degrading to Fresnel — a stable cliff over time as TAA
-    // accumulates. Pre-fix value was 512 (128 fragments at the post-#916
-    // claim rate), exhausted in ~16×16 px and visibly producing
-    // flat-translucent beakers across the frame.
+    // The budget covers 524,288 IOR fragments at the worst-case four-ray
+    // claim. This is enough for close hero glass while bounding pathological
+    // full-screen bottle overdraw; the old full-1080p-layer budget allowed
+    // reflection-hit shading to push those views below 20 FPS.
     // GLASS_RAY_BUDGET and GLASS_RAY_COST from shader_constants.glsl.
     // REFRACT_PASSTHRU_BUDGET declared inside the IOR block below.
     bool glassIORAllowed = isGlass && rtEnabled && !isWindow && rtLOD < RT_LOD_IOR;
@@ -1231,31 +1251,24 @@ void main() {
 
         // Two view-aligned normals — one bump-mapped, one smooth:
         //
-        //   N_view:      bump-mapped micro-surface normal. Used for reflection
-        //                and Fresnel — specular highlights correctly respond to
-        //                micro-surface detail authored in the normal map.
-        //
-        //   N_geom_view: smooth interpolated vertex normal. Used for refraction.
-        //                Feeding the bump map into Snell's law at IOR 1.5
-        //                amplifies every micro-surface deviation into a visible
-        //                UV offset in the refracted image — a waffle-texture
-        //                bump map produces a crosshatch refraction that looks
-        //                like wire mesh rather than glass. The macro surface
-        //                shape should drive the transmitted ray; micro-detail
-        //                contributes via the roughness spread below.
-        vec3 N_view = dot(N, V) < 0.0 ? -N : N;
+        //   N_geom_view: smooth interpolated vertex normal. Legacy bottle
+        //                normal maps encode strong ribbing and compression
+        //                noise rather than a physically meaningful glass
+        //                microsurface. Feeding that normal to either Snell or
+        //                Fresnel turns every texel into a tiny mirror and gives
+        //                the whole bottle a faceted chrome finish. Use the
+        //                macro normal for reflection, Fresnel, and refraction;
+        //                roughness still controls the reflected/refracted blur.
         vec3 _Ngeom = normalize(fragNormalEffective);
         vec3 N_geom_view = dot(_Ngeom, V) < 0.0 ? -_Ngeom : _Ngeom;
-        float NdotV_v = max(dot(N_view, V), 0.05);
+        float NdotV_v = max(dot(N_geom_view, V), 0.05);
         // #1248 — per-material dielectric F0 (same source as glassF0
         // above; the IOR block runs inside the isGlass branch).
         float fresnelScalar = fresnelSchlick(NdotV_v, vec3(f0Dielectric)).r;
 
-        // Reflection ray — micro-surface normal is correct here. Glass is
-        // smooth, so a sharp mirror reflection (mipBias scaled by its low
-        // roughness) — no jitter, no noise.
-        vec3 R = reflect(-V, N_view);
-        vec4 reflRay = traceReflection(fragWorldPos + N_bias * 0.05, R, 3000.0,
+        // Reflection ray — use the smooth macro surface normal (see above).
+        vec3 R = reflect(-V, N_geom_view);
+        vec4 reflRay = traceReflection(fragWorldPos + N_geom_view * 0.05, R, 3000.0,
                                        roughness * 8.0, fragInstanceIndex);
         vec3 reflColor = reflRay.rgb;
 
@@ -1297,6 +1310,7 @@ void main() {
         bool totalInternalReflection = dot(refractDir, refractDir) < 0.0001;
 
         vec3 refrColor;
+        float glassDistance = 0.0;
         if (totalInternalReflection) {
             refrColor = reflColor;
         } else {
@@ -1349,10 +1363,12 @@ void main() {
                 rayQueryEXT refrRQ;
                 rayQueryInitializeEXT(
                     refrRQ, topLevelAS,
-                    gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
+                    gl_RayFlagsOpaqueEXT, 0xFF,
                     rayOrigin, rayTMin, refractDir, 2000.0
                 );
-                rayQueryProceedEXT(refrRQ);
+                // Refraction shades the committed surface; traversal-order
+                // any-hit is only valid for visibility queries.
+                while (rayQueryProceedEXT(refrRQ)) {}
 
                 if (rayQueryGetIntersectionTypeEXT(refrRQ, true)
                     == gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -1417,6 +1433,7 @@ void main() {
                         if (dot(exitN, refractDir) < 0.0) exitN = -exitN; // outward
                         vec3 exitDir = refract(refractDir, -exitN, GLASS_IOR);
                         if (dot(exitDir, exitDir) > 1e-4) refractDir = normalize(exitDir);
+                        glassDistance += hDist;
                     }
                     rayOrigin = exitPoint + refractDir * 0.05;
                     rayTMin = 0.0;
@@ -1452,7 +1469,7 @@ void main() {
                     dbgColor = vec3(1.0, 0.0, 1.0); // magenta — budget exhausted, still glass
                 }
                 outColor = vec4(dbgColor, 1.0);
-                outNormal = octEncode(N_view);
+                outNormal = octEncode(N_geom_view);
                 outRawIndirect = vec4(0.0);
                 outAlbedo = vec4(albedo, 1.0);
                 return;
@@ -1559,9 +1576,8 @@ void main() {
                 // oriented to face back along the refraction ray.
                 vec3 tHitN = getHitTriNormal(uint(tIdx), uint(tPrim));
                 if (dot(tHitN, refractDir) > 0.0) tHitN = -tHitN;
-                vec3 tIrr = giHitIrradiance(tHitPos, tHitN, dbgFlags);
-                vec3 tEmissive = vec3(tMat.emissiveR, tMat.emissiveG, tMat.emissiveB)
-                               * tMat.emissiveMult;
+                vec3 tIrr = reflectionHitIrradiance(tHitPos, tHitN, dbgFlags);
+                vec3 tEmissive = rayHitEmission(tMat, tUV, tAlbedo, refrMip);
                 refrColor = tColor * (tIrr * (1.0 / PI) + sceneFlags.yzw) + tEmissive;
 
                 // Distance attenuation — faraway refracted content
@@ -1586,51 +1602,47 @@ void main() {
         //     sample the texture at a blurred mip level for absorption
         //     and multiply the refracted view by that.
         //
-        //   Case B — clear pane with decals (broken windows, etched
-        //     glass, dirt patches): alpha is bimodal — ~0 in clear
-        //     regions, ~1 where the decal lives. Diffuse carries the
-        //     decal content (leaves, cracks, painted sign). Decal
-        //     pixels need to render AS-IS on the glass surface; the
-        //     clear pixels around them refract as usual.
-        //
-        // Per-texel `smoothstep(0.3, 0.7, α)` drives the mix:
-        // low α → pure clear-glass (refracted + mip-tinted), high α →
-        // pure decal (raw texel), intermediate → soft transition. The
-        // mip-6 sample erases the fine crosshatch pattern on
+        // Painted labels and other opaque overlays are separate NiTriShapes
+        // in Bethesda bottle meshes, so they take the ordinary material path
+        // and do not need to be reconstructed here.  Using diffuse alpha as a
+        // decal weight was actively harmful: many alpha-blended bottle-body
+        // textures store alpha=1 over most texels, which replaced the traced
+        // transmission with raw bright diffuse colour and produced the
+        // characteristic white/chrome bottles. Alpha test already preserves
+        // holes and broken-pane coverage before this branch. The mip-6 sample
+        // below erases the fine crosshatch pattern on
         // drinkingglass01.dds that was overlaying every refracted pixel
         // at ~29 FPS — visible as a wire-mesh shimmer on transparent
         // cups.
-        // Decal split only applies to ALPHA-BLENDED glass panes (real
-        // Bethesda windows/etched glass, where the texture's bimodal alpha
-        // separates painted-on decal texels from clear regions). OPAQUE
-        // solid glass — a drinking glass, a bottle, the Cornell hero sphere
-        // — has no decal layer: its texture is opaque (the neutral white
-        // fallback for untextured probes → texColor.a = 1.0), which would
-        // otherwise smoothstep to decalWeight = 1.0 and replace the entire
-        // refracted view with the raw white texel — the "milky opaque glass"
-        // bug. Gate on the stable CPU-classified alpha-blend flag so opaque
-        // glass shows pure refraction.
-        float decalWeight = isAlphaBlend ? smoothstep(0.3, 0.7, texColor.a) : 0.0;
-        vec3 glassTint = textureLod(
-            textures[nonuniformEXT(mat.textureIndex)],
+        vec3 glassTint = clamp(textureLod(
+            textures[nonuniformEXT(inst.textureIndex)],
             sampleUV,
             6.0
-        ).rgb;
-        vec3 clearGlass = refrColor * glassTint;
-        vec3 transmission = mix(clearGlass, texColor.rgb, decalWeight);
+        ).rgb * vec3(mat.diffuseR, mat.diffuseG, mat.diffuseB),
+            vec3(0.02), vec3(1.0));
+        // Beer-style bulk absorption. Diffuse alpha controls tint strength,
+        // not a second framebuffer blend, while measured in-glass travel
+        // keeps thin panes clear and thicker bottles visibly coloured.
+        float opticalThickness = clamp(glassDistance * 0.02, 0.05, 0.75);
+        float tintWeight = opticalThickness
+            * mix(0.25, 1.0, clamp(texColor.a, 0.0, 1.0));
+        vec3 transmission = refrColor
+            * mix(vec3(1.0), glassTint, tintWeight);
 
         // Fresnel mix. At normal incidence F ≈ 0.04 — mostly transmitted.
         // At grazing F → 1.0 — near-mirror. Classic "see-through
         // straight on, shiny at the edges" glass look.
         vec3 glassSurface = mix(transmission, reflColor, fresnelScalar);
 
-        // Alpha: lift toward opaque at grazing angles so the glass
-        // silhouette always reads. At normal incidence, honor the
-        // authored texColor.a so the glass stays genuinely see-through.
-        float outAlpha = mix(texColor.a, 1.0, fresnelScalar * 0.8);
-
-        outColor = vec4(glassSurface, outAlpha);
-        outNormal = octEncode(N_view);
+        // `glassSurface` is already resolved radiance: it contains both the
+        // traced scene behind the glass and the reflected scene. Sending the
+        // authored material alpha to the fixed-function SRC_ALPHA blend
+        // mixed the raster framebuffer into that result a second time,
+        // suppressing normal-incidence reflection and producing ghostly
+        // see-through objects. Replace the covered pixel with the resolved
+        // radiance. Alpha test/MSAA coverage still handles cutout edges.
+        outColor = vec4(glassSurface, 1.0);
+        outNormal = octEncode(N_geom_view);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(albedo, 1.0);
         return;
@@ -1760,30 +1772,14 @@ void main() {
     // would otherwise apply via `indirect * albedo`. The direct path is
     // not albedo-modulated by composite (Lo already bakes in albedo per
     // dielectric kD), so this addition stays at full intensity.
-    // Pre-fix gated on `metalness > 0.3 && roughness < 0.6` AND
-    // multiplied the final contribution by `metalness`. That double-
-    // jeopardy locked every dielectric out of RT environment
-    // reflections: glass classified as MATERIAL_KIND_GLASS got the
-    // dedicated refraction path, but every OTHER smooth dielectric
-    // (Institute lab glass partitions where the alpha-blend didn't
-    // fire, polished marble floors, the chrome / control-terminal
-    // pillars whose texture paths don't match `classify_pbr`'s
-    // metal-keyword list) fell through to "ambient-only" shading
-    // and read as flat matte gray. Visible symptom: Bioscience
-    // gorilla-habitat glass + Institute architecture control pillars
-    // showing zero specular response, regardless of viewing angle.
-    //
-    // The Fresnel-Schlick term `F` already encodes the metal-vs-
-    // dielectric energy split via `F0`:
-    //   * Metals: `F0 = mix(0.04, albedo, metalness)` → `F` at normal
-    //     incidence ≈ `albedo`, which colours the reflection by the
-    //     conductor's complex IOR (correctly).
-    //   * Dielectrics: `F0 ≈ 0.04` → `F` at normal ≈ 4% (subtle),
-    //     `F` at grazing → near 1.0 (strong — the "polished floor
-    //     reflects the room at low angle" effect).
-    // So weighting the RT environment reflection by `F` alone is
-    // correct for both classes — the metalness gate / multiplier is
-    // redundant with `F`'s own metalness dependence through `F0`.
+    // Only conductors and explicitly environment-mapped materials enter this
+    // path. Fresnel alone is not a sufficient eligibility signal: every
+    // dielectric reaches F→1 at grazing angles, so the previous
+    // `roughness < 0.6` gate sent legacy skin, cloth, hair and painted props
+    // through a room-reflection ray and made the entire scene look chrome.
+    // Ordinary dielectrics retain their local GGX 4% specular lobe below;
+    // polished dielectric mirrors/windows are classified into the dedicated
+    // glass path instead.
     //
     // The roughness gate stays at `< 0.6`: above that, the GGX cone
     // is wide enough that single-sample RT noise dominates the
@@ -1807,7 +1803,16 @@ void main() {
     // the last octave, so ray result and fallback meet without a seam.
     // Mirrors the GI gate's giLodFade. (Most surfaces are matte post-material-
     // default and never enter this block, so the wider reach stays cheap.)
-    if (rtEnabled && roughness < 0.6) {
+    // Glass either returned from the budgeted IOR branch (which already cast
+    // its reflection ray) or is on the deliberately cheap Fresnel fallback.
+    // Do not let fallback glass escape the glass ray budget through this
+    // general glossy-surface path.
+    bool hasExplicitEnvironment =
+        mat.envMapIndex != 0u || mat.materialKind == 1u;
+    bool needsEnvironmentReflection =
+        metalness > 0.3 || hasExplicitEnvironment;
+    if (rtEnabled && roughness < 0.6 && !isGlass
+        && needsEnvironmentReflection) {
         // V-aligned normal flip (#668). The bump map at line 638 can perturb
         // `N` such that dot(N, V) < 0 on grazing views or noisy normal maps;
         // raw `N * 0.1` would then bias the ray origin BEHIND the macro
@@ -2555,7 +2560,7 @@ void main() {
                 // slow", spending the 4070 Ti's 300+ fps headroom. (The EMA
                 // below still refines further over parked frames via 1/N.)
                 const int SHADOW_RAYS = 4;
-                float visSum = 0.0;
+                vec3 transmissionSum = vec3(0.0);
                 for (int sr = 0; sr < SHADOW_RAYS; sr++) {
                     vec2 dRand = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
                         (uint(frameCount) * uint(SHADOW_RAYS) + uint(sr)) * 9u + i);
@@ -2575,21 +2580,16 @@ void main() {
                         rayDir = normalize(jitteredDir);
                         rayDist = 100000.0;
                     }
-                    rayQueryEXT rqR;
-                    rayQueryInitializeEXT(rqR, topLevelAS,
-                        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF,
-                        rayOrigin, 0.05, rayDir, max(rayDist, 0.01));
-                    rayQueryProceedEXT(rqR);
-                    visSum += (rayQueryGetIntersectionTypeEXT(rqR, true)
-                        != gl_RayQueryCommittedIntersectionNoneEXT) ? 0.0 : 1.0;
+                    transmissionSum += traceShadowTransmittance(
+                        rayOrigin, rayDir, max(rayDist, 0.01), lights[i].params.y);
                 }
-                float visFrame = visSum / float(SHADOW_RAYS);
+                vec3 transmissionFrame = transmissionSum / float(SHADOW_RAYS);
                 vec3 rad = shadowableLightRadiance(
                     i, N, V, NdotV, F0, albedo, roughness, metalness,
                     specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
                 // This frame's unbiased ReSTIR estimate of the pixel's direct
                 // shadowed radiance: rad·W·V̄ (V̄ = K-ray averaged visibility).
-                frameContribution = rad * restirW * visFrame * shadowFade;
+                frameContribution = rad * restirW * transmissionFrame * shadowFade;
             }
 
             // EMA-accumulate the colour estimate. alpha = 1/N (0.05 floor):
@@ -2732,24 +2732,14 @@ void main() {
                 rayDist = 100000.0;
             }
 
-            rayQueryEXT rayQuery;
-            rayQueryInitializeEXT(
-                rayQuery,
-                topLevelAS,
-                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-                0xFF,
-                rayOrigin,
-                0.05,  // tMin matches N_bias offset above; was 0.001 (50x smaller than bias)
-                rayDir,
-                max(rayDist, 0.01)
-            );
-            rayQueryProceedEXT(rayQuery);
-            
-            bool occluded = rayQueryGetIntersectionTypeEXT(rayQuery, true) != gl_RayQueryCommittedIntersectionNoneEXT;
-            if (occluded) {
-                // Unbiased shadow subtraction: W compensates for the
-                // WRS sampling probability. Clamp to prevent negative
-                // radiance from rounding / fill overlap. #1369 — the
+            vec3 transmission = traceShadowTransmittance(
+                rayOrigin, rayDir, max(rayDist, 0.01), lights[i].params.y);
+            if (any(lessThan(transmission, vec3(0.999)))) {
+                // Unbiased shadow attenuation: W compensates for the
+                // WRS sampling probability. Opaque blockers subtract the
+                // full sample; glass subtracts only the absorbed/reflected
+                // RGB fraction. Clamp to prevent negative radiance from
+                // rounding / fill overlap. #1369 — the
                 // radiance is recomputed here (only on a shadow hit) via
                 // the same shadowableLightRadiance() the streaming pass
                 // accumulated, so the subtraction cancels bit-for-bit
@@ -2757,7 +2747,9 @@ void main() {
                 vec3 shadowable = shadowableLightRadiance(
                     i, N, V, NdotV, F0, albedo, roughness, metalness,
                     specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
-                Lo = max(Lo - shadowable * W * shadowFade, vec3(0.0));
+                Lo = max(
+                    Lo - shadowable * W * (vec3(1.0) - transmission) * shadowFade,
+                    vec3(0.0));
             }
         }
         } // end legacy WRS pass-2 (else of useRestir)
@@ -2838,93 +2830,123 @@ void main() {
             vec3 giDir = cosineWeightedHemisphere(N_geom, n1, n2);
             vec3 giOrigin = fragWorldPos + N_bias * 0.1;
 
-            // tMin = 0.05 matches the bias and the rest of the ray
-            // sites (grep `rayQueryInitializeEXT` — refraction loop,
-            // window portal). Pre-#669 tMin was 0.5 — five times the
-            // bias — so grazing GI rays
-            // skipped any close-clutter intersections inside the first
-            // 0.5u of travel and registered a false-far hit instead,
-            // producing chronically over-bright AO on populated tables
-            // and shelf clutter. Tighter tMin + bias keeps both
-            // self-intersect protection AND near-clutter occlusion.
-            rayQueryEXT giRQ;
-            rayQueryInitializeEXT(
-                giRQ, topLevelAS,
-                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF,
-                giOrigin, 0.05, giDir, 6000.0  // tMax raised to match fade-end (was 3000, fade ends at 6000)
-            );
-            rayQueryProceedEXT(giRQ);
+            // Bounded diffuse/specular path. Two diffuse events provide real
+            // second-bounce illumination and colour bleeding. Glass
+            // interfaces do not consume that diffuse budget: they redirect
+            // throughput with Fresnel reflection/refraction, so illumination
+            // can travel through a closed bottle or pane before reaching a
+            // diffuse receiver.
+            const int MAX_PATH_SEGMENTS = 6;
+            const int MAX_DIFFUSE_BOUNCES = 2;
+            vec3 pathOrigin = giOrigin;
+            vec3 pathDir = giDir;
+            vec3 throughput = vec3(1.0);
+            vec3 pathRadiance = vec3(0.0);
+            float pathDistance = 0.0;
+            int diffuseBounces = 0;
+            bool measuredAo = false;
 
-            if (rayQueryGetIntersectionTypeEXT(giRQ, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+            for (int segment = 0; segment < MAX_PATH_SEGMENTS; ++segment) {
+                rayQueryEXT giRQ;
+                rayQueryInitializeEXT(
+                    giRQ, topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF,
+                    pathOrigin, 0.05, pathDir, 6000.0);
+                while (rayQueryProceedEXT(giRQ)) {}
+
+                if (rayQueryGetIntersectionTypeEXT(giRQ, true)
+                    == gl_RayQueryCommittedIntersectionNoneEXT) {
+                    pathRadiance += throughput * sceneFlags.yzw * 0.5;
+                    break;
+                }
+
                 int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(giRQ, true);
+                int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(giRQ, true);
                 float hitDist = rayQueryGetIntersectionTEXT(giRQ, true);
-
-                // RT AO: near hits = strong occlusion, far hits = open.
-                // Range tuned for Bethesda interior scale — a corner/wall
-                // within ~120 units (~1.7 m) drives rtAO toward 0.3,
-                // surfaces with 500+ unit clearance stay ~1.0.
-                rtAO = smoothstep(60.0, 500.0, hitDist);
-                rtAO = mix(0.3, 1.0, rtAO);
-
+                pathDistance += hitDist;
+                vec3 hitPos = pathOrigin + pathDir * hitDist;
                 GpuInstance hitInst = instances[hitIdx];
-                vec3 hitAlbedo = vec3(hitInst.avgAlbedoR, hitInst.avgAlbedoG, hitInst.avgAlbedoB);
-
-                // ── True one-bounce GI (engine-wide) ──────────────────
-                // Evaluate the DIRECT light actually reaching the bounce
-                // surface and carry its albedo-tinted reflection back to
-                // the primary fragment. Replaces the legacy
-                // `cell_ambient × hitAlbedo` approximation, which
-                // transported no real light and produced no colour
-                // bleeding in low-ambient scenes (Cornell box, night
-                // exteriors). `indirect` is the incoming radiance; the
-                // composite pass multiplies it by the PRIMARY fragment
-                // albedo (`final = direct + indirect * albedo`).
-                vec3 hitPos = giOrigin + giDir * hitDist;
-                // Receiver normal for the bounce surface — the TRUE geometric
-                // face normal of the hit triangle, fetched from its vertex
-                // positions via `getHitTriNormal` (the same proven SSBO fetch
-                // the glass-refraction path uses, see giHitIrradiance call at
-                // the tHitN site), oriented to face back along the incoming
-                // GI ray. Replaces the old `-giDir` stand-in, which assumed
-                // every bounce surface faced straight back at the ray and so
-                // over-lit grazing hits and washed out directional colour-
-                // bleed. `giHitIrradiance` biases the shadow-ray origin by
-                // `p + n*0.1`, so a real surface normal also corrects the bias
-                // direction for free.
-                int giPrim = rayQueryGetIntersectionPrimitiveIndexEXT(giRQ, true);
-                vec3 hitN = getHitTriNormal(uint(hitIdx), uint(giPrim));
-                if (dot(hitN, giDir) > 0.0) hitN = -hitN;
-
                 GpuMaterial hitMat = materials[hitInst.materialId];
-                vec3 hitEmissive = vec3(hitMat.emissiveR, hitMat.emissiveG, hitMat.emissiveB)
-                                 * hitMat.emissiveMult;
+                vec3 rawHitN = getHitTriNormal(uint(hitIdx), uint(hitPrim));
+                bool frontFace = dot(pathDir, rawHitN) < 0.0;
+                vec3 hitN = frontFace ? rawHitN : -rawHitN;
 
-                vec3 hitIrradiance = giHitIrradiance(hitPos, hitN, dbgFlags);
-                // Lambertian bounce: outgoing = albedo/PI · irradiance.
-                // Emissive surfaces (light panels) act as area lights and
-                // add their radiance directly. The cosine-weighted GI
-                // sample's pdf already cancelled the wrap cosine upstream.
-                indirect = hitAlbedo * hitIrradiance * (1.0 / PI) + hitEmissive;
-                // Soft clamp tames the occasional near-light firefly
-                // without flattening bright bleed.
-                indirect = min(indirect, vec3(8.0));
-            } else {
-                // Ray escaped (no geometry within 6000u) — fall back to
-                // the per-cell ambient color, NOT a hardcoded sky blue.
-                // Pre-fix used `vec3(0.6, 0.75, 1.0) * 0.06` regardless
-                // of cell mood, which injected unauthored blue into
-                // red-lit caves / sunset interiors / magic-tinted
-                // dungeons. The GI miss semantically means "open void
-                // around me" — in interiors that's the cell's
-                // ambient-fill direction, in exteriors it's already
-                // sky-derived from CLMT/WTHR via `sceneFlags.yzw` (the
-                // worldspace sets ambient to the sky tone). The 0.5
-                // factor is the audit's recommendation for "open areas
-                // get extra fill"; matches the hit-path's `* 0.3` scale
-                // since misses imply less occlusion than near-bounces.
-                // See #671 / RT-8.
-                indirect = sceneFlags.yzw * 0.5;
+                vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(giRQ, true);
+                vec2 hitUV = transformRayHitUV(
+                    hitMat, getHitUV(uint(hitIdx), uint(hitPrim), hitBary));
+                vec4 hitBase;
+                if (!rayHitHasCoverage(hitInst, hitMat, hitUV, hitBase)) {
+                    pathOrigin = hitPos + pathDir * 0.1;
+                    continue;
+                }
+
+                vec3 hitEmission = rayHitEmission(hitMat, hitUV, hitBase.rgb, 0.0);
+                if (hitMat.materialKind == MATERIAL_KIND_EFFECT_SHADER) {
+                    pathRadiance += throughput * hitEmission;
+                    break;
+                }
+
+                if (hitMat.materialKind == MATERIAL_KIND_GLASS) {
+                    vec3 glassTint = clamp(
+                        hitBase.rgb
+                        * vec3(hitMat.diffuseR, hitMat.diffuseG, hitMat.diffuseB),
+                        vec3(0.05), vec3(1.0));
+                    float ior = max(hitMat.ior, 1.001);
+                    float eta = frontFace ? (1.0 / ior) : ior;
+                    float cosTheta = clamp(dot(-pathDir, hitN), 0.0, 1.0);
+                    float f0 = dielectricF0FromIor(ior);
+                    float fresnel = fresnelSchlick(cosTheta, vec3(f0)).r;
+                    vec3 transmittedDir = refract(pathDir, hitN, eta);
+                    vec2 eventRand = hash2_pixel_frame(
+                        uvec2(gl_FragCoord.xy),
+                        uint(giSeed) + uint(segment + 1) * 0x9E3779B9u);
+                    if (dot(transmittedDir, transmittedDir) < 1e-6
+                        || eventRand.x < fresnel) {
+                        pathDir = normalize(reflect(pathDir, hitN));
+                    } else {
+                        pathDir = normalize(transmittedDir);
+                        throughput *= mix(vec3(1.0), glassTint, 0.25);
+                    }
+                    pathOrigin = hitPos + pathDir * 0.1;
+                    continue;
+                }
+
+                // Glass does not count as ambient occlusion. Measure AO at
+                // the first actual diffuse blocker using total travelled
+                // distance, including any transparent interfaces crossed.
+                if (!measuredAo) {
+                    rtAO = mix(
+                        0.3, 1.0,
+                        smoothstep(60.0, 500.0, pathDistance));
+                    measuredAo = true;
+                }
+
+                vec3 hitAlbedo = clamp(
+                    rayHitAlbedo(hitMat, hitBase.rgb), vec3(0.0), vec3(1.0));
+                vec3 hitEmissive = hitEmission;
+                // The first diffuse event gets the two strongest local lights
+                // with glass-aware visibility. A second diffuse event is much
+                // lower energy and uses the bounded one-light/one-shadow
+                // evaluator; otherwise two-bounce GI can explode into dozens
+                // of nested ray queries per full-resolution pixel.
+                vec3 hitIrradiance = diffuseBounces == 0
+                    ? giHitIrradiance(hitPos, hitN, dbgFlags)
+                    : reflectionHitIrradiance(hitPos, hitN, dbgFlags);
+                pathRadiance += throughput
+                    * (hitAlbedo * hitIrradiance * (1.0 / PI) + hitEmissive);
+
+                diffuseBounces++;
+                if (diffuseBounces >= MAX_DIFFUSE_BOUNCES) break;
+                throughput *= hitAlbedo;
+                if (max(max(throughput.r, throughput.g), throughput.b) < 0.02) break;
+
+                vec2 bounceRand = hash2_pixel_frame(
+                    uvec2(gl_FragCoord.xy),
+                    uint(giSeed) + uint(segment + 1) * 0x85EBCA6Bu);
+                pathDir = cosineWeightedHemisphere(
+                    hitN, bounceRand.x, bounceRand.y);
+                pathOrigin = hitPos + hitN * 0.1;
             }
+            indirect = min(pathRadiance, vec3(8.0));
             // Smooth distance fade: attenuate GI contribution at range
             // to prevent a visible boundary at the cutoff distance.
             indirect *= giFade;
@@ -3026,10 +3048,25 @@ void main() {
 
     // Glass compositing: Fresnel controls the output alpha.
     float finalAlpha = texColor.a;
+    // Most legacy lit alpha-blend geometry uses texture alpha as binary
+    // coverage, not optical transmission (round tables, paintings, trim).
+    // Preserve materialAlpha for animated whole-object fades, but do not let
+    // noisy diffuse alpha make solid furniture see-through. Glass, decals and
+    // HairTint retain their dedicated blend semantics.
+    bool coverageOnlyBlend = isAlphaBlend && !isGlass
+        && renderLayer != 3u && mat.materialKind != 6u;
+    if (coverageOnlyBlend) {
+        finalAlpha = clamp(mat.materialAlpha, 0.0, 1.0);
+    }
     if (isGlass) {
-        finalAlpha = mix(texColor.a, 1.0, glassFresnel * 0.7);
-        // Glass tint adds to the direct-light output.
-        directLight = directLight + albedo * 0.15;
+        // This is the non-IOR fallback. Bottle-body textures frequently store
+        // alpha=1 even though the NiTriShape uses alpha blending; trusting that
+        // texel alpha makes the fallback a solid white/chrome object. Use a
+        // bounded dielectric coverage instead. Alpha-tested panes use an
+        // opaque pipeline, so their coverage is still controlled by discard.
+        if (isAlphaBlend) {
+            finalAlpha = mix(0.12, 0.70, glassFresnel);
+        }
 
         // ── Stylized Fresnel rim (Tier 8 visual fidelity) ──────────
         //
@@ -3059,8 +3096,8 @@ void main() {
         //                    show some rim cue.
         float oneMinusCos = 1.0 - max(dot(N, V), 0.0);
         float rimFactor = oneMinusCos * oneMinusCos * oneMinusCos;
-        vec3 rimAmbient = (sceneFlags.yzw + vec3(0.05)) * 1.2;
-        directLight += rimAmbient * rimFactor * 0.5;
+        vec3 rimAmbient = sceneFlags.yzw;
+        directLight += rimAmbient * rimFactor * 0.15;
     }
 
     // Additive emissive on the direct path (Gamebryo FFP model). Composite

@@ -34,7 +34,7 @@
 #define SHADOW_MASK_GLASS 2u
 
 // Glass / IOR ray budget
-#define GLASS_RAY_BUDGET 1048576u
+#define GLASS_RAY_BUDGET 2097152u
 #define GLASS_RAY_COST 4u
 
 // One-bounce GI light cap (shadow ray per light at a bounce hit)

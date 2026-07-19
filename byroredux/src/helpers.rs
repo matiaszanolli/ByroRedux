@@ -35,6 +35,9 @@ const GLASS_ROUGHNESS: f32 = 0.10;
 /// "glass". The alpha gate is what keeps an opaque `PawnShopWindow`
 /// (name has "window", but no blend) OUT of the glass path — pane vs.
 /// frame is disambiguated by blend state, never by the keyword alone.
+/// Alpha-tested glass is deliberately allowed: broken-pane sheets use
+/// alpha test for shard coverage but still need dielectric shading on the
+/// surviving fragments. Alpha test is coverage, not a decal classification.
 ///
 /// On a match, `material_kind` becomes `MATERIAL_KIND_GLASS` and
 /// `roughness` is forced glass-smooth ([`GLASS_ROUGHNESS`]) as a
@@ -45,7 +48,7 @@ pub(crate) fn classify_glass_into_material(
     material: &mut Material,
     mesh_name: Option<&str>,
     texture_path: Option<&str>,
-    has_alpha: bool,
+    has_transparent_coverage: bool,
     is_decal: bool,
     bgem_glass: bool,
 ) {
@@ -53,7 +56,7 @@ pub(crate) fn classify_glass_into_material(
     if material.material_kind >= 100 {
         return;
     }
-    if !has_alpha || is_decal {
+    if !has_transparent_coverage || is_decal {
         return;
     }
     // Conductors are never glass; `resolve_pbr` has already marked
@@ -130,6 +133,26 @@ mod glass_classification_tests {
             &mut m,
             Some("DrinkingGlass:0"),
             Some("textures/clutter/junk/kitchenutensils01.dds"),
+            true,
+            false,
+            false,
+        );
+        assert_eq!(m.material_kind, GLASS);
+        assert!(m.roughness <= 0.11);
+    }
+
+    #[test]
+    fn alpha_tested_broken_glass_is_still_dielectric() {
+        // FNV restroom mirrors/broken panes use alpha test to cut holes in
+        // the sheet. The surviving shards are glass, not ordinary glossy
+        // opaque geometry and not decals.
+        let mut m = mat();
+        m.alpha_test = true;
+        m.roughness = 0.80;
+        classify_glass_into_material(
+            &mut m,
+            Some("RestroomMirror01:1"),
+            Some("textures/clutter/junk/brokenglasssheet01.dds"),
             true,
             false,
             false,

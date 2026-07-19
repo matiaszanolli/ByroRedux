@@ -335,18 +335,11 @@ void main() {
     // shadow visibility. HG normalisation already includes 1/4π.
     vec3 inscatter = scattering_coef * phase * params.sun_color.rgb * visibility;
 
-    // Phase 2b — point/spot light in-scattering (real lantern glow in
-    // the fog), reusing the SAME per-frame cluster grid the fragment
-    // shader builds rather than a separate froxel-space light-culling
-    // structure. Deliberately UNSHADOWED: a per-light shadow ray here,
-    // across up to `MAX_FROXEL_LIGHTS` lights for every one of the
-    // ~1.8M froxels in the grid, would be far more ray queries than
-    // the single sun shadow ray above — lanterns get an ambient-style
-    // glow in the fog instead of crisp shadowed shafts (the sun above
-    // is the one that produces real, wall-occluded god rays). Isotropic
-    // scattering (not the sun's HG `phase` value, which is specific to
-    // the sun's own incoming direction) since each point light has its
-    // own direction to the sample point.
+    // Phase 2b — point/spot light in-scattering, reusing the same cluster
+    // grid as surface shading. The two most influential cluster entries get
+    // real opaque/glass visibility rays; the bounded count keeps the froxel
+    // pass predictable while allowing lanterns and spotlights to form local
+    // wall-occluded shafts instead of uniform ambient fog glow.
     {
         // Mirrors `getClusterIndex` (`include/clusters.glsl`) exactly,
         // so a froxel maps to the SAME cluster the fragment shader
@@ -368,6 +361,7 @@ void main() {
 
         const float ISOTROPIC_PHASE = 1.0 / (4.0 * PI);
         const uint MAX_FROXEL_LIGHTS = 4u;
+        const uint MAX_SHADOWED_FROXEL_LIGHTS = 2u;
         ClusterEntry cluster = clusters[clusterIdx];
         uint lightLoopCount = min(cluster.count, MAX_FROXEL_LIGHTS);
         for (uint ci = 0u; ci < lightLoopCount; ++ci) {
@@ -392,7 +386,28 @@ void main() {
                 float spotFactor = dot(-Ldir, spotDir);
                 atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
             }
-            inscatter += scattering_coef * ISOTROPIC_PHASE * lights[li].color_type.rgb * atten;
+            float localVisibility = 1.0;
+            if (ci < MAX_SHADOWED_FROXEL_LIGHTS && atten > 1.0e-4) {
+                vec3 toLightDir = toLight / max(dist, 0.001);
+                // Stop at the finite luminous shell (`params.y`) instead of
+                // tracing into the middle of a bulb/flame and letting the
+                // fixture nullify its own volumetric glow.
+                float shadowDist = max(dist - lights[li].params.y, 0.05);
+                if (traceOcclusion(
+                        world_pos, toLightDir, 0.05, shadowDist,
+                        SHADOW_MASK_OPAQUE)) {
+                    localVisibility = 0.0;
+                } else if (traceOcclusion(
+                        world_pos, toLightDir, 0.05, shadowDist,
+                        SHADOW_MASK_GLASS)) {
+                    // This pass does not bind the material/texture tables;
+                    // use a conservative neutral interface transmission.
+                    // Surface lighting performs full RGB glass transport.
+                    localVisibility = 0.75;
+                }
+            }
+            inscatter += scattering_coef * ISOTROPIC_PHASE
+                * lights[li].color_type.rgb * atten * localVisibility;
         }
     }
 

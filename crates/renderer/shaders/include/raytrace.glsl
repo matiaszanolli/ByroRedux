@@ -5,6 +5,12 @@
 // SSBO/UBO bindings, helper functions, constants) defined in shader_constants.glsl
 // and in earlier includes. Do not compile on its own.
 
+// Defined by lighting.glsl later in triangle.frag's include sequence. A
+// prototype lets reflection-hit shading use its deliberately bounded
+// one-light evaluator. Diffuse GI and refraction termini retain the wider
+// locally-selected light set in `giHitIrradiance`.
+vec3 reflectionHitIrradiance(vec3 p, vec3 n, uint dbgFlags);
+
 // ── RT Reflection ───────────────────────────────────────────────────
 
 // Look up UV coordinates at a ray hit point using barycentrics + vertex data.
@@ -57,6 +63,71 @@ vec3 getHitTriNormal(uint instanceIdx, uint primitiveIdx) {
     return normalize(cross(w1 - w0, w2 - w0));
 }
 
+// Shared material sampling for every secondary-ray path. Keeping these rules
+// here prevents reflection, refraction, GI and shadow traversal from each
+// inventing a different meaning for diffuse alpha or glow maps.
+vec2 transformRayHitUV(GpuMaterial mat, vec2 uv) {
+    return uv * vec2(mat.uvScaleU, mat.uvScaleV)
+         + vec2(mat.uvOffsetU, mat.uvOffsetV);
+}
+
+vec4 sampleRayHitBase(GpuInstance inst, GpuMaterial mat, vec2 uv, float lod) {
+    return textureLod(textures[nonuniformEXT(inst.textureIndex)], uv, lod);
+}
+
+bool alphaComparePass(float alpha, float threshold, uint func) {
+    if (threshold <= 0.0 || func == 0u) return true;
+    if (func == 1u) return alpha < threshold;
+    if (func == 2u) return abs(alpha - threshold) < (1.0 / 255.0);
+    if (func == 3u) return alpha <= threshold;
+    if (func == 4u) return alpha > threshold;
+    if (func == 5u) return abs(alpha - threshold) >= (1.0 / 255.0);
+    if (func == 6u) return alpha >= threshold;
+    return false; // NEVER
+}
+
+bool rayHitHasCoverage(
+    GpuInstance inst, GpuMaterial mat, vec2 uv, out vec4 baseSample
+) {
+    baseSample = sampleRayHitBase(inst, mat, uv, 0.0);
+    float alpha = baseSample.a;
+    // Match the primary BC1 contract: without an authored alpha channel,
+    // BC1's index-3 zero is an encoder choice except on explicit alpha-test
+    // materials.
+    if ((inst.flags & INSTANCE_FLAG_DIFFUSE_ALPHA) == 0u
+        && mat.alphaThreshold == 0.0) {
+        alpha = 1.0;
+    }
+    alpha *= mat.materialAlpha;
+    if (!alphaComparePass(alpha, mat.alphaThreshold, mat.alphaTestFunc)) {
+        return false;
+    }
+    // Pure blend geometry uses alpha as binary coverage for ray traversal.
+    // Physical dielectric transmission is reserved for MATERIAL_KIND_GLASS;
+    // furniture/paintings with noisy authored alpha remain solid blockers.
+    if ((inst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u
+        && mat.materialKind != MATERIAL_KIND_GLASS) {
+        return alpha >= (1.0 / 255.0);
+    }
+    return true;
+}
+
+vec3 rayHitAlbedo(GpuMaterial mat, vec3 baseRgb) {
+    return max(baseRgb * vec3(mat.diffuseR, mat.diffuseG, mat.diffuseB), vec3(0.0));
+}
+
+vec3 rayHitEmission(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod) {
+    vec3 mask = baseRgb;
+    if (mat.glowMapIndex != 0u) {
+        mask = textureLod(
+            textures[nonuniformEXT(mat.glowMapIndex)], uv, lod).rgb;
+    }
+    return max(
+        vec3(mat.emissiveR, mat.emissiveG, mat.emissiveB)
+        * mat.emissiveMult * mask,
+        vec3(0.0));
+}
+
 // Cast a reflection ray and return the reflected color.
 //
 // Return contract (#1029 / REN-D9-NEW-06):
@@ -74,13 +145,13 @@ vec3 getHitTriNormal(uint instanceIdx, uint primitiveIdx) {
 //     that only makes sense on hits). The reflection rgb is already
 //     correct without it.
 //
-// Uses gl_RayFlagsTerminateOnFirstHitEXT — we only need ANY opaque hit
-// (the first one becomes the reflection surface). Without the flag the
-// driver pays "find closest hit" cost across the full maxDist=5000 unit
-// reach. Fix #420.
+// Reflection is a shading ray, so it must resolve the CLOSEST opaque hit.
+// `TerminateOnFirstHit` returns a traversal-order candidate, which is only
+// valid for binary visibility. Sampling that candidate's material made
+// mirrors and smooth walls look semi-transparent whenever it was geometry
+// behind the actual reflector.
 vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
                      int selfInstance) {
-    rayQueryEXT rq;
     // Miss / self-hit fallback colour — sky-tinted ambient (exterior) or
     // cell ambient (interior). Hoisted so a self-intersection hit (below)
     // can reuse it.
@@ -103,14 +174,57 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     // (1486/1633/1702/2049/2408/2472/2484) but Session 34's split
     // and subsequent refactors drift them every release; #1158 fix
     // (2026-05-18) replaces them with grep-friendly anchors.
-    rayQueryInitializeEXT(
-        rq, topLevelAS,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFF,
-        origin, 0.05, direction, maxDist
-    );
-    rayQueryProceedEXT(rq);
+    const int MAX_TRANSPARENT_SKIPS = 8;
+    vec3 rayOrigin = origin;
+    float remaining = maxDist;
+    float travelled = 0.0;
+    int hitInstanceIdx = -1;
+    int hitPrimitiveIdx = 0;
+    vec2 hitBary = vec2(0.0);
+    vec2 hitUV = vec2(0.0);
+    vec4 hitBase = vec4(0.0);
 
-    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+    for (int layer = 0; layer < MAX_TRANSPARENT_SKIPS; ++layer) {
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(
+            rq, topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF,
+            rayOrigin, 0.05, direction, remaining);
+        while (rayQueryProceedEXT(rq)) {}
+        if (rayQueryGetIntersectionTypeEXT(rq, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT) break;
+
+        int candidateIdx =
+            rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+        int candidatePrim = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+        vec2 candidateBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+        float candidateT = rayQueryGetIntersectionTEXT(rq, true);
+        GpuInstance candidateInst = instances[candidateIdx];
+        GpuMaterial candidateMat = materials[candidateInst.materialId];
+        vec2 candidateUV = transformRayHitUV(
+            candidateMat,
+            getHitUV(uint(candidateIdx), uint(candidatePrim), candidateBary));
+        vec4 candidateBase;
+        bool covered = rayHitHasCoverage(
+            candidateInst, candidateMat, candidateUV, candidateBase);
+
+        if (candidateIdx != selfInstance && covered) {
+            hitInstanceIdx = candidateIdx;
+            hitPrimitiveIdx = candidatePrim;
+            hitBary = candidateBary;
+            hitUV = candidateUV;
+            hitBase = candidateBase;
+            travelled += candidateT;
+            break;
+        }
+
+        float advance = candidateT + 0.1;
+        travelled += advance;
+        remaining -= advance;
+        if (remaining <= 0.05) break;
+        rayOrigin += direction * advance;
+    }
+
+    if (hitInstanceIdx < 0) {
         // Miss — return sky tint / ambient mix.
         //
         // For exterior cells the ray escaping the BVH IS escaping into
@@ -133,34 +247,10 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
         return vec4(missCol, 0.0);
     }
 
-    // Hit — get SSBO instance index via custom index (encodes the draw
-    // command position, which matches the SSBO layout). InstanceId would
-    // give the TLAS-internal index, which diverges when some meshes lack BLAS.
-    int hitInstanceIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
-    // Self-intersection rejection (Issue C). At grazing incidence the
-    // reflected ray goes nearly tangent to a curved glass surface and
-    // re-hits the originating instance's own mesh — a convex surface can't
-    // legitimately reflect itself, so this hit is the self-intersection
-    // that paints the tessellation moire on the glass rim. Treat it as a
-    // miss (ambient) instead of sampling the glass's own surface. Scale-
-    // independent (no epsilon to tune): keyed on instance identity.
-    if (selfInstance >= 0 && hitInstanceIdx == selfInstance) {
-        return vec4(missCol, 0.0);
-    }
-    int hitPrimitiveIdx = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
-    vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
-
-    // Look up the hit surface's texture and UV.
+    // Look up the committed surface. Transparent alpha holes and the source
+    // reflector itself were skipped by the bounded traversal above.
     GpuInstance hitInst = instances[hitInstanceIdx];
     GpuMaterial hitMat = materials[hitInst.materialId];
-    uint hitTexIdx = hitMat.textureIndex;
-    vec2 hitUV = getHitUV(uint(hitInstanceIdx), uint(hitPrimitiveIdx), hitBary);
-    // #494 — apply the hit instance's own BGSM UV transform before
-    // sampling. Each hit carries its own per-material offset/scale;
-    // the primary path's `baseUV` transform doesn't propagate.
-    // R1 Phase 6 — UV transform now lives on the material table.
-    hitUV = hitUV * vec2(hitMat.uvScaleU, hitMat.uvScaleV)
-          + vec2(hitMat.uvOffsetU, hitMat.uvOffsetV);
 
     // Sample the hit surface's texture × its canonical avgAlbedo (material
     // diffuse_color). The texture alone is the neutral white fallback for
@@ -173,15 +263,25 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
     // GGX-cone jitter, so rough-metal reflections carry no per-frame
     // sampling noise (the caller passes roughness-scaled mip and a sharp
     // reflection ray). Smooth surfaces pass mipBias 0 → razor-sharp.
-    vec3 hitColor = textureLod(textures[nonuniformEXT(hitTexIdx)], hitUV, mipBias).rgb
-        * vec3(hitInst.avgAlbedoR, hitInst.avgAlbedoG, hitInst.avgAlbedoB);
+    vec3 hitBaseRgb = sampleRayHitBase(hitInst, hitMat, hitUV, mipBias).rgb;
+    vec3 hitColor = rayHitAlbedo(hitMat, hitBaseRgb);
 
-    // Exponential distance attenuation: distant reflections gracefully fade
-    // into ambient rather than persisting at near-full strength. The old
-    // 1/(1+d*0.005) barely attenuated over the 5000-unit ray length. #320.
-    float hitDist = rayQueryGetIntersectionTEXT(rq, true);
+    float hitDist = travelled;
+    vec3 hitPos = origin + direction * hitDist;
+    vec3 hitN = getHitTriNormal(uint(hitInstanceIdx), uint(hitPrimitiveIdx));
+    if (dot(hitN, direction) > 0.0) hitN = -hitN;
+    vec3 hitIrradiance = reflectionHitIrradiance(
+        hitPos, hitN, floatBitsToUint(jitter.z));
+    vec3 hitEmissive = rayHitEmission(hitMat, hitUV, hitBaseRgb, mipBias);
+    vec3 hitRadiance = hitColor
+        * (hitIrradiance * (1.0 / 3.14159265359) + sceneFlags.yzw)
+        + hitEmissive;
+
+    // Exponential distance attenuation: distant reflection detail fades into
+    // ambient rather than persisting at near-full strength.
     float distFade = exp(-hitDist * 0.0015);
 
-    return vec4(hitColor * distFade, 1.0);
+    // Fade distant surface detail into the correct miss radiance. Fading to
+    // black made long indoor reflection rays look like dark transparency.
+    return vec4(mix(missCol, hitRadiance, distFade), 1.0);
 }
-

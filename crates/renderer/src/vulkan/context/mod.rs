@@ -1040,6 +1040,9 @@ pub struct VulkanContext {
     /// upload site right-multiplies by `translation(O₂ − O₁)` so the matrix
     /// consumes current-origin-rebased positions (#1489 / REN2-04).
     pub prev_view_proj: [f32; 16],
+    /// Absolute position paired with `prev_view_proj`, used to distinguish
+    /// ordinary camera motion from a teleport/cut that must flush history.
+    pub prev_camera_position: [f32; 3],
     /// The render origin `prev_view_proj` was built against (last frame's
     /// 4096-grid snap). Tracked so the uploaded previous-frame matrix can be
     /// origin-corrected on grid-crossing frames instead of producing one
@@ -1102,7 +1105,8 @@ pub struct VulkanContext {
     /// command buffer is pure wasted work, not a correctness
     /// requirement — `accel`'s BLAS entry is already complete after
     /// the BUILD.
-    skin_built_this_frame_scratch: std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
+    skin_built_this_frame_scratch:
+        std::collections::HashSet<byroredux_core::ecs::storage::EntityId>,
 
     // ── Screenshot capture ──────────────────────────────────────────
     screenshot_requested: Arc<AtomicBool>,
@@ -2609,6 +2613,7 @@ impl VulkanContext {
             prev_view_proj: [
                 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
             ],
+            prev_camera_position: [0.0; 3],
             prev_render_origin: [0.0; 3],
             gpu_instances_scratch: Vec::new(),
             batches_scratch: Vec::new(),
