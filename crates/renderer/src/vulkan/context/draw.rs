@@ -2226,6 +2226,19 @@ impl VulkanContext {
         // #1796 / D6-02 — reset before either early-return guard below so
         // a bailed frame reads `false`; see the field doc on `skin_dispatch_ran`.
         self.skin_dispatch_ran = false;
+        // #2112 / D6-01 — same reasoning as `skin_dispatch_ran` above: reset
+        // before the early-return guard so a bailed frame reads zero
+        // instead of retaining the previous frame's counters. Frame without
+        // a skinned section (no RT, no bone buffer) also reads zero.
+        // Section-local increments below populate `last_skin_coverage_frame`;
+        // `fill_skin_coverage_stats` snapshots it after `Scheduler::run`.
+        self.last_skin_coverage_frame = super::super::skin_compute::SkinCoverageFrame::default();
+        // Reset per-frame draw-call counts. Populated after the batch
+        // merge (`batch_count`) and inside the indirect-grouping draw
+        // loop below (`indirect_call_count`). Read by the app's stats
+        // wiring after `draw_frame` returns to populate `DebugStats`.
+        // #1258 / PERF-D3-NEW-03.
+        self.last_draw_call_stats = super::DrawCallStats::default();
         // #1211 / REN-SAFETY — skip the frame when the main framebuffers
         // Vec is empty. `recreate_swapchain` destroys framebuffers up
         // front and only rebuilds them at the end (`resize.rs:564`);
@@ -2247,19 +2260,6 @@ impl VulkanContext {
         let frame = self.current_frame;
         // Use a local to avoid borrow complexity; copy out at end.
         let mut t = FrameTimings::default();
-
-        // Reset skinned-BLAS coverage counters at frame start so a
-        // frame without a skinned section (no RT, no bone buffer)
-        // reads zero instead of holding the previous frame's counts.
-        // Section-local increments below populate it; `fill_skin_
-        // coverage_stats` snapshots it after `Scheduler::run`.
-        self.last_skin_coverage_frame = super::super::skin_compute::SkinCoverageFrame::default();
-        // Reset per-frame draw-call counts. Populated after the batch
-        // merge (`batch_count`) and inside the indirect-grouping draw
-        // loop below (`indirect_call_count`). Read by the app's stats
-        // wiring after `draw_frame` returns to populate `DebugStats`.
-        // #1258 / PERF-D3-NEW-03.
-        self.last_draw_call_stats = super::DrawCallStats::default();
         // #1197 / PERF-DIM7-03 — reset per-frame descriptor-writes
         // counters on both skin compute pipelines. The dispatch
         // bodies bump these only when they actually call

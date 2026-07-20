@@ -1242,7 +1242,10 @@ pub struct VulkanContext {
     /// Per-frame counters for the skinned-BLAS coverage path, written
     /// by `draw_frame` and copied into the [`byroredux_core::ecs::
     /// SkinCoverageStats`] resource by [`Self::fill_skin_coverage_stats`].
-    /// Reset at the entry of every skinned section in `draw_frame`.
+    /// #2112 / D6-01 — reset at the top of `draw_frame`, before the
+    /// early-return framebuffers-empty guard (same reasoning as
+    /// `skin_dispatch_ran` below), so a bailed frame reads zero instead
+    /// of retaining the previous frame's counts.
     pub last_skin_coverage_frame: super::skin_compute::SkinCoverageFrame,
     /// Per-frame draw-call counts written by `draw_frame` and read by
     /// the app's per-frame stats wiring to populate `DebugStats`. Distinct
