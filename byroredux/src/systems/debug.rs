@@ -44,6 +44,17 @@ pub(crate) fn crosses_one_second_boundary(total: f32, dt: f32) -> bool {
     prev < 0.0 || total.floor() != prev.floor()
 }
 
+/// Should the current frame log the per-frame SLOW-FRAME warning? Pulled
+/// out of `log_stats_system` as a pure predicate (#2115 / D9-01) so the
+/// `gpu`/`cpu` breakdown-gating decision it feeds into is testable without
+/// standing up a `World`. Skips the first few frames: the initial scene
+/// load (parse ESM + load the startup cell ring) is counted as one giant
+/// "frame 0" delta (seconds), with all per-pass timers still zero — a
+/// benign false-positive, not an in-game hitch.
+fn is_slow_frame(frame_time_ms: f32, frame_index: usize) -> bool {
+    frame_time_ms > SLOW_FRAME_WARN_MS && frame_index > 3
+}
+
 /// Format the per-pass GPU timer breakdown from [`SkinCoverageStats`] (the
 /// canonical landing pad for every `GpuPerFrameTimers` bracket, #1194).
 /// Values lag the live frame by `MAX_FRAMES_IN_FLIGHT` (≈2 frames) — so on
@@ -96,26 +107,37 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
     let dt = world.resource::<DeltaTime>().0;
 
     let stats = world.resource::<DebugStats>();
+
+    // #2115 / D9-01 — decide once whether either consumer below will
+    // actually read the breakdown Strings, so `gpu_breakdown` /
+    // `cpu_breakdown` only run `format!` on a slow frame or the
+    // once-a-second boundary line. Pre-fix both were built
+    // unconditionally every frame and discarded on the overwhelming
+    // majority (~120 wasted String allocs/s at 60 fps) — erosion of the
+    // once-a-second gating intent the surrounding comments describe.
+    //
+    let slow_frame = is_slow_frame(stats.frame_time_ms, stats.frame_index());
+    let boundary = crosses_one_second_boundary(total, dt);
+    let want_breakdown = slow_frame || boundary;
+
     // GPU per-pass timers live on `SkinCoverageStats` (absent on the
     // headless / no-renderer demo path — then the breakdown is skipped).
-    let gpu = world
-        .try_resource::<SkinCoverageStats>()
+    let gpu = want_breakdown
+        .then(|| world.try_resource::<SkinCoverageStats>())
+        .flatten()
         .map(|cov| gpu_breakdown(&cov));
     // CPU per-phase wall-clock — the decisive localizer for a slow frame
     // whose GPU passes are cheap (is the stall a GPU-hang fence_wait or
     // CPU cell-load atw_post?).
-    let cpu = world
-        .try_resource::<CpuFrameTimings>()
+    let cpu = want_breakdown
+        .then(|| world.try_resource::<CpuFrameTimings>())
+        .flatten()
         .map(|t| cpu_breakdown(&t));
 
     // Per-frame slow-frame warning — fires on hitches regardless of the
     // once-per-second boundary, so a cell-load / RT-cost spike that walks
     // the frame toward the GPU watchdog is visible right before a crash.
-    // Skip the first few frames: the initial scene load (parse ESM + load
-    // the startup cell ring) is counted as one giant "frame 0" delta
-    // (seconds), with all per-pass timers still zero — a benign
-    // false-positive, not an in-game hitch.
-    if stats.frame_time_ms > SLOW_FRAME_WARN_MS && stats.frame_index() > 3 {
+    if slow_frame {
         log::warn!(
             target: "engine::stats",
             "SLOW FRAME dt={:.1}ms (watchdog ~2000ms)\n  gpu[lag~2f]: {}\n  cpu_ms: {}",
@@ -125,7 +147,7 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
         );
     }
 
-    if crosses_one_second_boundary(total, dt) {
+    if boundary {
         // #1258 — `draws=N/Mb/Kc` = N input DrawCommands / M post-merge
         // batches / K actual GPU calls. Pre-fix this was a single `draws=N`
         // that read like a GPU call count but stored the batcher input.
@@ -213,5 +235,30 @@ mod tests {
             refresh_count, seconds_to_simulate,
             "expected exactly one refresh per whole second crossed"
         );
+    }
+
+    // ── #2115 / D9-01 — breakdown-gating predicate ──────────────────
+
+    #[test]
+    fn is_slow_frame_false_under_threshold() {
+        assert!(!is_slow_frame(SLOW_FRAME_WARN_MS - 1.0, 100));
+    }
+
+    #[test]
+    fn is_slow_frame_true_over_threshold_past_startup() {
+        assert!(is_slow_frame(SLOW_FRAME_WARN_MS + 1.0, 100));
+    }
+
+    #[test]
+    fn is_slow_frame_false_during_startup_grace_window() {
+        // Frame 0's giant startup-load delta must not fire the warning
+        // even though it's far over the threshold.
+        assert!(!is_slow_frame(SLOW_FRAME_WARN_MS + 5000.0, 0));
+        assert!(!is_slow_frame(SLOW_FRAME_WARN_MS + 5000.0, 3));
+    }
+
+    #[test]
+    fn is_slow_frame_true_first_frame_past_grace_window() {
+        assert!(is_slow_frame(SLOW_FRAME_WARN_MS + 1.0, 4));
     }
 }
