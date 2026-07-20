@@ -910,6 +910,7 @@ mod tests {
         src.insert(
             e,
             LightFlicker {
+                animation_flags: byroredux_core::ecs::LIGHT_FLAG_FLICKER,
                 period_secs: 0.5,
                 intensity_amplitude: 0.25,
                 movement_amplitude: 1.5,

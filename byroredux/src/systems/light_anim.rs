@@ -27,6 +27,24 @@ use byroredux_core::ecs::{
     EntityId, LightFlicker, LightSource, World, LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW,
     LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
 };
+use byroredux_plugin::esm::reader::GameKind;
+
+const SHARED_LIGHT_ANIMATION_MASK: u32 =
+    LIGHT_FLAG_FLICKER | LIGHT_FLAG_FLICKER_SLOW | LIGHT_FLAG_PULSE | LIGHT_FLAG_PULSE_SLOW;
+
+/// Decode a game's raw LIGH flags into the shared runtime animation behavior.
+///
+/// The bits are not portable source data. Fallout 4 retains `0x08` Flicker
+/// and `0x80` Pulse, but its `0x40` bit is unrelated and `0x400` means Shadow
+/// Spotlight. Keeping this conversion at the game boundary prevents those
+/// rendering flags from becoming continuous whole-scene light animation.
+pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32) -> u32 {
+    let source_animation_mask = match game {
+        GameKind::Fallout4 => LIGHT_FLAG_FLICKER | LIGHT_FLAG_PULSE,
+        _ => SHARED_LIGHT_ANIMATION_MASK,
+    };
+    source_flags & source_animation_mask
+}
 
 /// Damping multiplier applied to the raw `intensity_amplitude`
 /// before composing the final modulation. Skyrim authors candles
@@ -55,13 +73,14 @@ fn hash_to_unit(seed: u32) -> f32 {
 }
 
 /// Compute the procedural intensity multiplier for one flickering
-/// light from its flags, FNAM parameters, and the global clock. Pure
-/// and deterministic in `(entity, flags, flicker, total_time)` so it
+/// light from its shared behavior, FNAM parameters, and the global clock.
+/// Pure and deterministic in `(entity, flicker, total_time)` so it
 /// is unit-testable without a `World` (PERF-D4-NEW-04 / #1380).
 ///
 /// Returns the value written to `LightSource.intensity`: `1.0` when no
 /// animation bit is set, otherwise `1 + modulation · amplitude · damping`.
-fn flicker_intensity(entity: EntityId, flags: u32, flicker: &LightFlicker, total_time: f32) -> f32 {
+fn flicker_intensity(entity: EntityId, flicker: &LightFlicker, total_time: f32) -> f32 {
+    let flags = flicker.animation_flags;
     // Slow variants run at half rate by halving the angular velocity.
     // Cheaper than reading period at half the FNAM authored value
     // because some lights set both bits.
@@ -123,11 +142,11 @@ pub(crate) fn animate_lights_system(world: &World, _dt: f32) {
         let Some(light) = light_q.get_mut(entity) else {
             continue;
         };
-        // Read flags + write intensity through the same `&mut LightSource`.
         // Intensity modulation rides the same field `NiLightIntensityController`
         // writes; the renderer reads `color · dimmer · intensity` and doesn't
-        // care which authored it.
-        light.intensity = flicker_intensity(entity, light.flags, flicker, total_time);
+        // care which authored it. Source-format flags remain untouched on
+        // `LightSource`; only the decoded shared behavior drives animation.
+        light.intensity = flicker_intensity(entity, flicker, total_time);
     }
 
     // Position jitter is DISABLED (Phase 19.5): pure-random hash noise at
@@ -145,8 +164,9 @@ pub(crate) fn animate_lights_system(world: &World, _dt: f32) {
 mod tests {
     use super::*;
 
-    fn flicker(amplitude: f32, period: f32) -> LightFlicker {
+    fn flicker(flags: u32, amplitude: f32, period: f32) -> LightFlicker {
         LightFlicker {
+            animation_flags: flags,
             period_secs: period,
             intensity_amplitude: amplitude,
             movement_amplitude: 0.0,
@@ -158,29 +178,30 @@ mod tests {
     #[test]
     fn no_animation_flag_holds_unit_intensity() {
         // No FLICKER/PULSE bit → modulation 0 → exactly 1.0.
-        let f = flicker(0.25, 0.5);
-        assert_eq!(flicker_intensity(1, 0, &f, 0.0), 1.0);
-        assert_eq!(flicker_intensity(1, 0, &f, 3.7), 1.0);
+        let f = flicker(0, 0.25, 0.5);
+        assert_eq!(flicker_intensity(1, &f, 0.0), 1.0);
+        assert_eq!(flicker_intensity(1, &f, 3.7), 1.0);
     }
 
     #[test]
     fn pulse_is_sine_of_phase() {
-        let f = flicker(0.4, 1.0); // amplitude 0.4, period 1 s
-                                   // total_time 0 → phase 0 → sin(0) = 0 → unit.
-        assert!((flicker_intensity(1, LIGHT_FLAG_PULSE, &f, 0.0) - 1.0).abs() < 1e-6);
+        let f = flicker(LIGHT_FLAG_PULSE, 0.4, 1.0); // amplitude 0.4, period 1 s
+        // total_time 0 → phase 0 → sin(0) = 0 → unit.
+        assert!((flicker_intensity(1, &f, 0.0) - 1.0).abs() < 1e-6);
         // total_time = period/4 → phase 0.25 → sin(TAU·0.25) = 1
         // → 1 + 1·0.4·0.5 = 1.2.
-        let peak = flicker_intensity(1, LIGHT_FLAG_PULSE, &f, 0.25);
+        let peak = flicker_intensity(1, &f, 0.25);
         assert!((peak - 1.2).abs() < 1e-6, "expected 1.2, got {peak}");
     }
 
     #[test]
     fn pulse_slow_runs_at_half_angular_velocity() {
-        let f = flicker(0.4, 1.0);
+        let fast_flicker = flicker(LIGHT_FLAG_PULSE, 0.4, 1.0);
+        let slow_flicker = flicker(LIGHT_FLAG_PULSE_SLOW, 0.4, 1.0);
         // At t = period/4: fast PULSE reaches sin(90°)=1 (peak),
         // PULSE_SLOW only sin(45°)=√2/2 — strictly less than the peak.
-        let fast = flicker_intensity(1, LIGHT_FLAG_PULSE, &f, 0.25);
-        let slow = flicker_intensity(1, LIGHT_FLAG_PULSE_SLOW, &f, 0.25);
+        let fast = flicker_intensity(1, &fast_flicker, 0.25);
+        let slow = flicker_intensity(1, &slow_flicker, 0.25);
         assert!((fast - 1.2).abs() < 1e-6);
         let expected_slow = 1.0 + std::f32::consts::FRAC_1_SQRT_2 * 0.4 * FLICKER_INTENSITY_DAMPING;
         assert!((slow - expected_slow).abs() < 1e-6, "slow={slow}");
@@ -189,9 +210,9 @@ mod tests {
 
     #[test]
     fn flicker_is_deterministic_and_bounded() {
-        let f = flicker(0.4, 0.5);
-        let a = flicker_intensity(42, LIGHT_FLAG_FLICKER, &f, 1.234);
-        let b = flicker_intensity(42, LIGHT_FLAG_FLICKER, &f, 1.234);
+        let f = flicker(LIGHT_FLAG_FLICKER, 0.4, 0.5);
+        let a = flicker_intensity(42, &f, 1.234);
+        let b = flicker_intensity(42, &f, 1.234);
         assert_eq!(a, b, "same inputs must be deterministic");
         // modulation ∈ [-1, 1] → intensity ∈ [1 ± amplitude·damping].
         let half = 0.4 * FLICKER_INTENSITY_DAMPING;
@@ -201,7 +222,32 @@ mod tests {
         );
         // Distinct entity seeds generally diverge → confirm the seed
         // actually feeds the hash (not a constant).
-        let other = flicker_intensity(43, LIGHT_FLAG_FLICKER, &f, 1.234);
+        let other = flicker_intensity(43, &f, 1.234);
         assert_ne!(a, other, "entity seed must influence the noise");
+    }
+
+    #[test]
+    fn fallout4_shadow_spotlight_is_not_slow_pulse() {
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Fallout4, LIGHT_FLAG_PULSE_SLOW),
+            0,
+        );
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Fallout4, LIGHT_FLAG_FLICKER_SLOW),
+            0,
+        );
+    }
+
+    #[test]
+    fn fallout4_real_flicker_and_pulse_map_to_shared_behavior() {
+        let source = LIGHT_FLAG_FLICKER | LIGHT_FLAG_PULSE | LIGHT_FLAG_PULSE_SLOW;
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Fallout4, source),
+            LIGHT_FLAG_FLICKER | LIGHT_FLAG_PULSE,
+        );
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Skyrim, source),
+            source,
+        );
     }
 }

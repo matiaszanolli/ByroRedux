@@ -7,6 +7,34 @@
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
 
+/// Generic dielectric IOR used when a source format does not author a more
+/// specific optical behavior. This preserves the renderer's historical
+/// `F0 ~= 0.04` fallback.
+pub const DEFAULT_DIELECTRIC_IOR: f32 = 1.5;
+
+/// Source-format-independent optical behavior applied before authored texture
+/// maps and scalar overlays are bound.
+///
+/// BGSM/BGEM, NIF texture sets, and future material formats describe how a
+/// surface is textured; they must not each invent a separate implementation of
+/// glass. Importers select one shared behavior, then retain their own map set on
+/// the [`Material`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceBehavior {
+    pub roughness: f32,
+    pub metalness: f32,
+    pub ior: f32,
+}
+
+/// Canonical glass behavior used by legacy FNV/FO3 NIF glass and FO4+ BGEM
+/// glass alike. A small non-zero roughness suppresses aliasing while remaining
+/// below the clear-glass scatter threshold in the shared shader.
+pub const GLASS_SURFACE_BEHAVIOR: SurfaceBehavior = SurfaceBehavior {
+    roughness: 0.10,
+    metalness: 0.0,
+    ior: 1.45,
+};
+
 /// Surface material properties extracted from NIF shader/property blocks.
 ///
 /// SparseSetStorage: most static geometry shares a small set of unique
@@ -219,8 +247,13 @@ pub struct Material {
     /// [`Self::metalness`], same resolve-once contract. The BGSM
     /// translator sets it as `1.0 - bgsm.smoothness`; the keyword
     /// classifier supplies it otherwise; glass classification
-    /// (`classify_glass_into_material`) forces it to `GLASS_ROUGHNESS`.
+    /// (`classify_glass_into_material`) applies [`GLASS_SURFACE_BEHAVIOR`].
     pub roughness: f32,
+    /// Refractive index used by dielectric Fresnel and the glass IOR path.
+    /// Source-format-independent behavior selection owns the fallback; texture
+    /// maps remain independent overlays. Generic materials default to 1.5,
+    /// while canonical glass uses [`GLASS_SURFACE_BEHAVIOR`]'s 1.45.
+    pub ior: f32,
 }
 
 /// View-angle + soft-depth falloff cone captured from
@@ -315,6 +348,7 @@ impl Default for Material {
             // fallback (`static_meshes.rs`): dielectric, mid roughness.
             metalness: 0.0,
             roughness: 0.5,
+            ior: DEFAULT_DIELECTRIC_IOR,
         }
     }
 }
@@ -653,6 +687,14 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
 }
 
 impl Material {
+    /// Apply source-format-independent optical behavior without disturbing the
+    /// material's authored texture paths, UVs, alpha state, tints, or flags.
+    pub fn apply_surface_behavior(&mut self, behavior: SurfaceBehavior) {
+        self.roughness = behavior.roughness;
+        self.metalness = behavior.metalness;
+        self.ior = behavior.ior;
+    }
+
     /// Explicit "this surface is glass / crystal / ice / gem / window"
     /// classifier for use by [`crate::ecs::components::Material`]-less
     /// glass-path gating in the renderer. Required because the
@@ -821,6 +863,32 @@ mod tests {
         assert_eq!(m.alpha, 1.0);
         assert!(m.normal_map.is_none());
         assert!(m.texture_path.is_none());
+        assert_eq!(m.ior, DEFAULT_DIELECTRIC_IOR);
+    }
+
+    #[test]
+    fn glass_behavior_preserves_authored_map_overlay() {
+        let mut m = Material {
+            texture_path: Some("textures/fo4/glass_d.dds".into()),
+            normal_map: Some("textures/fo4/glass_n.dds".into()),
+            glow_map: Some("textures/fo4/glass_g.dds".into()),
+            uv_scale: [2.0, 3.0],
+            alpha: 0.25,
+            roughness: 0.8,
+            metalness: 0.4,
+            ..Default::default()
+        };
+
+        m.apply_surface_behavior(GLASS_SURFACE_BEHAVIOR);
+
+        assert_eq!(m.roughness, GLASS_SURFACE_BEHAVIOR.roughness);
+        assert_eq!(m.metalness, GLASS_SURFACE_BEHAVIOR.metalness);
+        assert_eq!(m.ior, GLASS_SURFACE_BEHAVIOR.ior);
+        assert_eq!(m.texture_path.as_deref(), Some("textures/fo4/glass_d.dds"));
+        assert_eq!(m.normal_map.as_deref(), Some("textures/fo4/glass_n.dds"));
+        assert_eq!(m.glow_map.as_deref(), Some("textures/fo4/glass_g.dds"));
+        assert_eq!(m.uv_scale, [2.0, 3.0]);
+        assert_eq!(m.alpha, 0.25);
     }
 
     #[test]

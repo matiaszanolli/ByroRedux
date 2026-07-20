@@ -10,10 +10,7 @@
 //! path), expanding container placements, resolving base records,
 //! and committing the per-cell NifImportRegistry deltas.
 
-use byroredux_core::ecs::{
-    LightFlicker, World, LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE,
-    LIGHT_FLAG_PULSE_SLOW,
-};
+use byroredux_core::ecs::{LightFlicker, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 
@@ -403,10 +400,9 @@ pub(super) fn attach_light_flicker_if_needed(
     entity: byroredux_core::ecs::EntityId,
     ld: &byroredux_plugin::esm::cell::LightData,
     base_translation: byroredux_core::math::Vec3,
+    animation_flags: u32,
 ) {
-    const FLICKER_MASK: u32 =
-        LIGHT_FLAG_FLICKER | LIGHT_FLAG_FLICKER_SLOW | LIGHT_FLAG_PULSE | LIGHT_FLAG_PULSE_SLOW;
-    if ld.flags & FLICKER_MASK == 0 {
+    if animation_flags == 0 {
         return;
     }
     // Pre-Skyrim LIGH records truncate after byte 16 — `period_secs`
@@ -426,6 +422,7 @@ pub(super) fn attach_light_flicker_if_needed(
     world.insert(
         entity,
         LightFlicker {
+            animation_flags,
             period_secs,
             intensity_amplitude: ld.intensity_amplitude,
             movement_amplitude: ld.movement_amplitude,

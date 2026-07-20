@@ -9,8 +9,7 @@
 use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::{
     BSXFlags, Billboard, GlobalTransform, LightFlicker, LightSource, LocalBound, MeshHandle,
-    ParticleEmitter, SceneFlags, TextureHandle, Transform, World, WorldBound, LIGHT_FLAG_FLICKER,
-    LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
+    ParticleEmitter, SceneFlags, TextureHandle, Transform, World, WorldBound,
 };
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
@@ -187,6 +186,10 @@ pub(super) fn spawn_placed_instances(
     ref_rot: Quat,
     ref_scale: f32,
     light_data: Option<&esm::cell::LightData>,
+    // Shared light-animation behavior already decoded from the active
+    // game's raw LIGH flag layout. Kept separate from `light_data.flags`,
+    // whose non-animation bits retain their source-game meanings.
+    light_animation_flags: u32,
     refr_overlay: Option<&RefrTextureOverlay>,
     clip_handle: Option<u32>,
     // #renderlayer — base content-class derived from the REFR's base
@@ -287,6 +290,7 @@ pub(super) fn spawn_placed_instances(
         mesh_cache_key,
         refr_overlay,
         light_data,
+        light_animation_flags,
         placement_root,
         collisions_empty: collisions.is_empty(),
         spawned_nif_lights,
@@ -812,6 +816,7 @@ struct PlacementCtx<'a> {
     mesh_cache_key: Option<&'a str>,
     refr_overlay: Option<&'a RefrTextureOverlay>,
     light_data: Option<&'a esm::cell::LightData>,
+    light_animation_flags: u32,
     placement_root: byroredux_core::ecs::EntityId,
     collisions_empty: bool,
     spawned_nif_lights: usize,
@@ -845,6 +850,7 @@ fn spawn_mesh_instance(
         mesh_cache_key,
         refr_overlay,
         light_data,
+        light_animation_flags,
         placement_root,
         collisions_empty,
         spawned_nif_lights,
@@ -1405,13 +1411,10 @@ fn spawn_mesh_instance(
                     ..Default::default()
                 },
             );
-            // Phase 17 — flicker companion at the placement
-            // root, same position as the mesh entity.
-            const FLICKER_MASK: u32 = LIGHT_FLAG_FLICKER
-                | LIGHT_FLAG_FLICKER_SLOW
-                | LIGHT_FLAG_PULSE
-                | LIGHT_FLAG_PULSE_SLOW;
-            if ld.flags & FLICKER_MASK != 0 {
+            // Phase 17 — animation companion at the placement root,
+            // same position as the mesh entity. The caller has already
+            // decoded source-game LIGH flags into shared behavior.
+            if light_animation_flags != 0 {
                 let period_secs = if ld.period_secs > 0.0 {
                     ld.period_secs
                 } else {
@@ -1422,6 +1425,7 @@ fn spawn_mesh_instance(
                 world.insert(
                     entity,
                     LightFlicker {
+                        animation_flags: light_animation_flags,
                         period_secs,
                         intensity_amplitude: ld.intensity_amplitude,
                         movement_amplitude: ld.movement_amplitude,

@@ -1,17 +1,9 @@
 //! Small utility functions used across the application.
 
-use byroredux_core::ecs::components::material::is_glass_keyword_path;
+use byroredux_core::ecs::components::material::{is_glass_keyword_path, GLASS_SURFACE_BEHAVIOR};
 use byroredux_core::ecs::components::Material;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Children, World};
-
-/// Glass-smooth roughness forced on a surface once it is classified
-/// `MATERIAL_KIND_GLASS`. Roughness is a *consequence* of being glass,
-/// not a gate for it — this value clears both the CPU glass gate
-/// (`render/static_meshes.rs` `< 0.4`) and the shader gate
-/// (`triangle.frag` `roughness < 0.35`) so the surface renders through
-/// the IOR refraction path. Glass is microfacet-smooth (~0.05–0.1).
-const GLASS_ROUGHNESS: f32 = 0.10;
 
 /// Polished metal backing used for legacy mirror panes. A mirror is an
 /// opaque conductor, not a transmissive dielectric: alpha test only cuts
@@ -57,11 +49,17 @@ fn is_mirror_pane(
 /// opaque reflective backing even when the shared cutout texture contains a
 /// `glass` keyword.
 ///
-/// On a match, `material_kind` becomes `MATERIAL_KIND_GLASS` and
-/// `roughness` is forced glass-smooth ([`GLASS_ROUGHNESS`]) as a
-/// consequence. Engine-synthesized kinds (≥ 100, e.g. EFFECT_SHADER) are
-/// never overridden. Call AFTER `Material::resolve_pbr` so the glass
-/// write wins over the keyword-derived roughness.
+/// On a match, `material_kind` becomes `MATERIAL_KIND_GLASS` and the shared
+/// [`GLASS_SURFACE_BEHAVIOR`] supplies metalness, roughness, and IOR. Authored
+/// texture-map paths and their parameters remain untouched overlays.
+///
+/// Existing engine-synthesized kinds are normally preserved. The exception is
+/// a transparent `BSEffectShaderProperty` carrier with either an explicit glass
+/// keyword or an authoritative FO4+ `bgem_glass` flag. Effect shader is the NIF
+/// source format for several FO4 glass surfaces (including Nuka-Cola and
+/// magnifying-glass meshes); that carrier must not outrank the semantic glass
+/// behavior. Call AFTER `Material::resolve_pbr` so the behavior write wins over
+/// source-derived PBR scalars.
 pub(crate) fn classify_glass_into_material(
     material: &mut Material,
     mesh_name: Option<&str>,
@@ -70,8 +68,19 @@ pub(crate) fn classify_glass_into_material(
     is_decal: bool,
     bgem_glass: bool,
 ) {
-    // Already an engine-synthesized kind (glass / effect-shader / …) — leave it.
-    if material.material_kind >= 100 {
+    let keyword_match = texture_path.is_some_and(is_glass_keyword_path)
+        || mesh_name.is_some_and(is_glass_keyword_path);
+    let effect_glass_carrier = material.material_kind
+        == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+        && (keyword_match || bgem_glass);
+
+    // Engine-synthesized behavior already selected — preserve it unless this
+    // is the source-format effect carrier used to author an explicit glass
+    // surface. The transparency/dielectric/decal gates below still apply.
+    if material.material_kind >= 100
+        && material.material_kind != byroredux_renderer::MATERIAL_KIND_GLASS
+        && !effect_glass_carrier
+    {
         return;
     }
     if is_mirror_pane(mesh_name, texture_path, has_transparent_coverage) {
@@ -88,13 +97,11 @@ pub(crate) fn classify_glass_into_material(
     if material.metalness >= 0.3 {
         return;
     }
-    let keyword_match = texture_path.is_some_and(is_glass_keyword_path)
-        || mesh_name.is_some_and(is_glass_keyword_path);
     if !keyword_match && !bgem_glass {
         return;
     }
     material.material_kind = byroredux_renderer::MATERIAL_KIND_GLASS;
-    material.roughness = GLASS_ROUGHNESS;
+    material.apply_surface_behavior(GLASS_SURFACE_BEHAVIOR);
 }
 
 /// Add a child entity to a parent's Children component, creating it if needed.
@@ -241,14 +248,15 @@ mod glass_classification_tests {
     }
 
     #[test]
-    fn effect_shader_kind_is_preserved() {
-        // Engine-synthesized kinds (≥ 100) win — never demote a fire plane.
+    fn unrelated_effect_shader_kind_is_preserved() {
+        // Engine-synthesized kinds (≥ 100) win when there is no explicit
+        // glass signal — never demote an ordinary fire plane.
         let mut m = mat();
         m.material_kind = byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
         classify_glass_into_material(
             &mut m,
-            Some("glassfire"),
-            Some("glass.dds"),
+            Some("fireplane"),
+            Some("textures/effects/fire.dds"),
             true,
             false,
             false,
@@ -256,6 +264,34 @@ mod glass_classification_tests {
         assert_eq!(
             m.material_kind,
             byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+        );
+    }
+
+    #[test]
+    fn glass_keyword_promotes_effect_shader_carrier() {
+        // FO4 commonly authors ordinary glass on a BSEffectShaderProperty
+        // without a BGEM glass_enabled flag. The carrier describes the source
+        // map layout; the explicit semantic name selects shared glass optics.
+        let mut m = mat();
+        m.material_kind = byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
+        m.texture_path = Some("textures/clutter/nukacola_glass.dds".into());
+        let texture_path = m.texture_path.clone();
+
+        classify_glass_into_material(
+            &mut m,
+            Some("NukaCola_Glass:3"),
+            texture_path.as_deref(),
+            true,
+            false,
+            false,
+        );
+
+        assert_eq!(m.material_kind, GLASS);
+        assert_eq!(m.roughness, GLASS_SURFACE_BEHAVIOR.roughness);
+        assert_eq!(m.ior, GLASS_SURFACE_BEHAVIOR.ior);
+        assert_eq!(
+            m.texture_path.as_deref(),
+            Some("textures/clutter/nukacola_glass.dds")
         );
     }
 
@@ -312,6 +348,45 @@ mod glass_classification_tests {
         assert!(
             m.roughness <= 0.11,
             "BGEM glass must still be forced glass-smooth"
+        );
+    }
+
+    #[test]
+    fn bgem_glass_promotes_effect_carrier_and_preserves_texture_overlays() {
+        // Real FO4 path: the NIF's BSEffectShaderProperty first selects kind
+        // 101, then the referenced BGEM supplies glass_enabled plus its map
+        // set. The carrier kind must not prevent the shared glass behavior.
+        let mut m = mat();
+        m.material_kind = byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
+        m.texture_path = Some("textures/clutter/clutter01.dds".into());
+        m.normal_map = Some("textures/clutter/clutter01_n.dds".into());
+        m.glow_map = Some("textures/clutter/clutter01_g.dds".into());
+        let texture_path = m.texture_path.clone();
+
+        classify_glass_into_material(
+            &mut m,
+            Some("Bottle:0"),
+            texture_path.as_deref(),
+            true,
+            false,
+            true,
+        );
+
+        assert_eq!(m.material_kind, GLASS);
+        assert_eq!(m.roughness, GLASS_SURFACE_BEHAVIOR.roughness);
+        assert_eq!(m.metalness, GLASS_SURFACE_BEHAVIOR.metalness);
+        assert_eq!(m.ior, GLASS_SURFACE_BEHAVIOR.ior);
+        assert_eq!(
+            m.texture_path.as_deref(),
+            Some("textures/clutter/clutter01.dds")
+        );
+        assert_eq!(
+            m.normal_map.as_deref(),
+            Some("textures/clutter/clutter01_n.dds")
+        );
+        assert_eq!(
+            m.glow_map.as_deref(),
+            Some("textures/clutter/clutter01_g.dds")
         );
     }
 

@@ -156,6 +156,10 @@ pub(crate) fn translate_material(
         // from the keyword classifier and clamps to the renderer ranges.
         metalness: mesh.metalness_override.unwrap_or(f32::NAN),
         roughness: mesh.roughness_override.unwrap_or(f32::NAN),
+        // Generic dielectric until canonical behavior selection below. Glass
+        // promotion replaces this with the shared glass IOR while preserving
+        // the source material's texture-map overlay.
+        ior: byroredux_core::ecs::components::material::DEFAULT_DIELECTRIC_IOR,
     };
     material.resolve_pbr();
     crate::helpers::classify_glass_into_material(

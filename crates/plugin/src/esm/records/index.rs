@@ -700,6 +700,14 @@ impl EsmIndex {
         self.form_lists.extend(other.form_lists);
         self.trees.extend(other.trees);
 
+        // Skyrim+ equipment graph. These maps are not optional metadata:
+        // NPC.DOFT resolves through `outfits`, and both that outfit armor and
+        // RACE.WNAM's fallback skin resolve their gendered mesh through
+        // `armor_addons`. Dropping them while merging even a one-plugin load
+        // leaves only the pre-baked FaceGen head visible.
+        self.outfits.extend(other.outfits);
+        self.armor_addons.extend(other.armor_addons);
+
         // #966 / OBL-D3-NEW-02 — Oblivion-unique base records.
         self.birthsigns.extend(other.birthsigns);
         self.clothing.extend(other.clothing);
@@ -718,6 +726,38 @@ impl EsmIndex {
 mod tests {
     use super::*;
     use crate::esm::records::ActiRecord;
+
+    #[test]
+    fn merge_from_preserves_skyrim_plus_equipment_graph() {
+        use crate::esm::records::{ArmaRecord, OtftRecord};
+
+        let mut plugin = EsmIndex::default();
+        plugin.outfits.insert(
+            0x000D_96D6,
+            OtftRecord {
+                form_id: 0x000D_96D6,
+                editor_id: "DesdemonaOutfit".into(),
+                items: vec![0x0011_53D9],
+            },
+        );
+        plugin.armor_addons.insert(
+            0x0011_53D8,
+            ArmaRecord {
+                form_id: 0x0011_53D8,
+                female_biped_model: r"actors\character\characterassets\desdemona.nif".into(),
+                ..Default::default()
+            },
+        );
+
+        let mut merged = EsmIndex::default();
+        merged.merge_from(plugin);
+
+        assert_eq!(merged.outfits[&0x000D_96D6].items, vec![0x0011_53D9]);
+        assert_eq!(
+            merged.armor_addons[&0x0011_53D8].female_biped_model,
+            r"actors\character\characterassets\desdemona.nif"
+        );
+    }
 
     #[test]
     fn base_record_script_returns_none_for_unknown_id() {

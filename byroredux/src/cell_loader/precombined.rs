@@ -282,6 +282,7 @@ pub(super) fn spawn_precombined_meshes(
             rot,
             scale,
             /* light_data = */ None,
+            /* light_animation_flags = */ 0,
             /* refr_overlay = */ None,
             /* clip_handle = */ None,
             RenderLayer::Architecture,

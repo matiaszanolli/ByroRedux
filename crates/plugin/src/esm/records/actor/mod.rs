@@ -720,6 +720,25 @@ fn parse_npc_core(
             // disposition_base / template_flags stay at their
             // constructor defaults — Oblivion ACBS carries neither.
         }
+        // Fallout 4 ACBS is a distinct 20-byte layout (xEdit
+        // `wbDefinitionsFO4.pas`, NPC_ Configuration):
+        //   flags(u32), xp_offset(i16), level(i16), calc_min(u16),
+        //   calc_max(u16), disposition(i16), template_flags(u16),
+        //   bleedout_override(u16), unknown(u16).
+        //
+        // It must precede the 24-byte FNV arm. Pre-fix the generic guard
+        // rejected every vanilla FO4 NPC ACBS, leaving flags=0 (all actors
+        // resolved Male), level=1, and template_flags=0. Female-only outfit
+        // ARMAs then had no male mesh to attach, producing floating heads.
+        b"ACBS" if matches!(game, GameKind::Fallout4) && sub.data.len() >= 20 => {
+            let mut r = SubReader::new(&sub.data);
+            record.acbs_flags = r.u32_or_default();
+            r.skip_or_eof(2); // XP value offset (i16)
+            record.level = r.i16_or_default();
+            r.skip_or_eof(4); // calc_min + calc_max (u16 x2)
+            record.disposition_base = r.i16_or_default();
+            record.template_flags = r.u16_or_default();
+        }
         // ACBS (FNV NPC_): flags(u32), fatigue(u16), barter(u16), level(i16),
         // calc_min(u16), calc_max(u16), speed_mult(u16), karma(f32),
         // disposition_base(i16), template_flags(u16)

@@ -952,7 +952,8 @@ fn spawn_synth_child(
                     ..Default::default()
                 },
             );
-            attach_light_flicker_if_needed(world, entity, ld, ref_pos);
+            let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
+            attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
             accum.entity_count += 1;
         }
         return;
@@ -1174,6 +1175,10 @@ fn spawn_synth_child(
         ref_rot,
         ref_scale,
         stat.light_data.as_ref(),
+        stat.light_data
+            .as_ref()
+            .map(|ld| crate::systems::canonical_light_animation_flags(game, ld.flags))
+            .unwrap_or(0),
         refr_overlay.as_ref(),
         clip_handle,
         stat.record_type.render_layer(),

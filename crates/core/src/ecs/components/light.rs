@@ -63,13 +63,12 @@ impl Component for LightSource {
     type Storage = SparseSetStorage<Self>;
 }
 
-// ── FNAM flicker / pulse flag bits ───────────────────────────────────
+// ── Shared flicker / pulse behavior bits ─────────────────────────────
 //
-// `LightSource.flags` packs the LIGH record's FNAM field. Layout per
-// UESP / xEdit `wbDefinitionsSkyrim`. Only the flicker/pulse bits the
-// `animate_lights_system` reads are pulled out as constants; the rest
-// (Dynamic, CanCarry, Spot/SpotShadow, etc.) stay implicit until a
-// consumer needs them.
+// The values retain Skyrim's LIGH layout, but runtime animation reads them
+// from `LightFlicker.animation_flags`, not directly from the raw
+// `LightSource.flags`. Loaders must translate each game's source layout;
+// unrelated flags (Dynamic, CanCarry, Spot/SpotShadow, etc.) remain raw.
 
 /// `0x08` — Skyrim candle/torch flicker. Random per-frame intensity
 /// noise + position jitter at the LIGH's authored period. Most vanilla
@@ -85,10 +84,10 @@ pub const LIGHT_FLAG_PULSE: u32 = 0x0000_0080;
 /// `0x400` — slower sinusoidal modulation; ambience-style lights.
 pub const LIGHT_FLAG_PULSE_SLOW: u32 = 0x0000_0400;
 
-/// Procedural light-animation parameters sourced from the LIGH DATA
-/// subrecord (`period_secs`, `intensity_amplitude`,
+/// Procedural light-animation behavior plus the parameters sourced from
+/// the LIGH DATA subrecord (`period_secs`, `intensity_amplitude`,
 /// `movement_amplitude`). Attached at spawn time to every light whose
-/// `LightSource.flags` contains one of the Flicker / Pulse bits;
+/// game-specific source flags decode to a shared Flicker / Pulse behavior;
 /// other lights skip the attachment so the
 /// [`animate_lights_system`](../../../byroredux/src/systems/light_anim.rs)
 /// can use the component presence as the iteration filter.
@@ -98,6 +97,12 @@ pub const LIGHT_FLAG_PULSE_SLOW: u32 = 0x0000_0400;
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct LightFlicker {
+    /// Shared animation behavior flags decoded from the source game's
+    /// LIGH flag layout. This is deliberately separate from
+    /// [`LightSource::flags`]: identical raw bits have different meanings
+    /// between games (for example, Fallout 4 uses `0x400` for a shadow
+    /// spotlight, while Skyrim uses it for slow pulse).
+    pub animation_flags: u32,
     /// LIGH FNAM `period` field — flicker / pulse cycle time in
     /// seconds. Defaults to `0.5` when the LIGH record was
     /// truncated (pre-Skyrim layouts that ship only the 16-byte

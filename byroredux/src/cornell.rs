@@ -321,14 +321,15 @@ fn pbr(color: [f32; 3], metalness: f32, roughness: f32) -> Material {
 /// transmissive alpha so the IOR refraction path engages, matching the
 /// spawn-time `classify_glass_into_material` contract.
 fn glass(color: [f32; 3]) -> Material {
-    Material {
+    let mut material = Material {
         diffuse_color: color,
         material_kind: MATERIAL_KIND_GLASS,
-        roughness: 0.10,
-        metalness: 0.0,
         alpha: 0.25,
         ..Default::default()
-    }
+    };
+    material
+        .apply_surface_behavior(byroredux_core::ecs::components::material::GLASS_SURFACE_BEHAVIOR);
+    material
 }
 
 /// Self-illuminated probe. `mult` scales `emissive_color`.

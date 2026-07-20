@@ -302,6 +302,7 @@ pub(super) fn collect_static_mesh_draws(
                     // at spawn). The render path no longer mutates it.
                     roughness,
                     metalness,
+                    ior,
                     emissive_mult,
                     emissive_color,
                     specular_strength,
@@ -323,6 +324,7 @@ pub(super) fn collect_static_mesh_draws(
                     (
                         m.roughness,
                         m.metalness,
+                        m.ior,
                         m.emissive_mult,
                         m.emissive_color,
                         m.specular_strength,
@@ -335,7 +337,17 @@ pub(super) fn collect_static_mesh_draws(
                 } else {
                     // No Material → identity tint, identity ambient.
                     (
-                        0.5, 0.0, 0.0, [0.0; 3], 1.0, [1.0; 3], [1.0; 3], [1.0; 3], 0.0, 0u32,
+                        0.5,
+                        0.0,
+                        byroredux_core::ecs::components::material::DEFAULT_DIELECTRIC_IOR,
+                        0.0,
+                        [0.0; 3],
+                        1.0,
+                        [1.0; 3],
+                        [1.0; 3],
+                        [1.0; 3],
+                        0.0,
+                        0u32,
                     )
                 };
 
@@ -604,14 +616,11 @@ pub(super) fn collect_static_mesh_draws(
                     alpha_test_func,
                     roughness,
                     metalness,
-                    // #1248 — Material struct has no IOR field today
-                    // (NIF/BGSM v<9 doesn't author one), so every
-                    // static mesh uses the GpuMaterial default 1.5.
-                    // Mirrors the pre-#1248 hardcoded vec3(0.04)
-                    // dielectric F0 byte-for-byte. Plumbing for
-                    // BGSM v9+ / Starfield .mat IOR routes through
-                    // Material → here when the importer surfaces it.
-                    ior: 1.5,
+                    // Source-format-independent optical behavior. Generic
+                    // dielectrics retain 1.5; FNV NIF glass and FO4 BGEM
+                    // glass both arrive with the canonical 1.45 behavior.
+                    // Texture handles above remain source-authored overlays.
+                    ior,
                     // #1249 — Disney diffuse defaults zero so the
                     // shader-side Lambert/Disney branch picks Lambert
                     // (every NIF without MAT_FLAG_BGSM_PBR). BGSM v9+

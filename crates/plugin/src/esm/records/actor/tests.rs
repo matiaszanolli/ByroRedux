@@ -101,6 +101,37 @@
         assert_eq!(n.acbs_flags, 0);
     }
 
+    /// Fallout 4 uses a 20-byte ACBS layout rather than FNV's 24-byte
+    /// configuration. This fixture is the byte shape authored on vanilla
+    /// Desdemona: Female flag, level 1, disposition 35, Use Stats template
+    /// bit. Dropping it makes female-only outfit ARMAs resolve through their
+    /// empty male path and leaves only the FaceGen head visible.
+    #[test]
+    fn fallout4_20byte_acbs_parses_gender_level_and_template_flags() {
+        use crate::equip::Gender;
+
+        let acbs = [
+            0x21, 0x08, 0x00, 0x00, // flags = 0x821 (Female included)
+            0x00, 0x00, // XP value offset
+            0x01, 0x00, // level = 1
+            0x00, 0x00, // calc min
+            0x00, 0x00, // calc max
+            0x23, 0x00, // disposition = 35
+            0x02, 0x00, // template flags = Use Stats
+            0x00, 0x00, // bleedout override
+            0x00, 0x00, // unknown
+        ];
+        let subs = vec![sub(b"EDID", b"Desdemona\0"), sub(b"ACBS", &acbs)];
+
+        let n = parse_npc(0x0004_5AD1, &subs, GameKind::Fallout4, &None);
+
+        assert_eq!(n.acbs_flags, 0x821);
+        assert_eq!(Gender::from_acbs_flags(n.acbs_flags), Gender::Female);
+        assert_eq!(n.level, 1);
+        assert_eq!(n.disposition_base, 35);
+        assert_eq!(n.template_flags, 0x0002);
+    }
+
     /// Regression for #1273 — `SCRI` attached-script FormID on NPC_
     /// and CREA records was silently dropped. 24 % of FO3 named NPCs
     /// + 27 % of FO3 creatures author SCRI; FNV similar. The audit

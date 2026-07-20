@@ -27,6 +27,7 @@
 //! until #1583/#1590 lifted it into the shared include).
 
 use super::scene_buffer::MAX_MATERIALS;
+use byroredux_core::ecs::components::material::{DEFAULT_DIELECTRIC_IOR, GLASS_SURFACE_BEHAVIOR};
 use rustc_hash::FxHashMap;
 use std::sync::Once;
 
@@ -366,7 +367,7 @@ impl Default for GpuMaterial {
             // ≈ 0.04 — reproduces the pre-#1248 hardcoded vec3(0.04)
             // shader behaviour so legacy NIF content with no authored
             // IOR renders byte-identical.
-            ior: 1.5,
+            ior: DEFAULT_DIELECTRIC_IOR,
             // #1249 — Disney diffuse lobe defaults all zero: legacy
             // content (every NIF without MAT_FLAG_BGSM_PBR) routes
             // through the Lambert branch and never touches these
@@ -579,7 +580,7 @@ impl Eq for GpuMaterial {}
 /// changes the default of any field the presets touch, the
 /// per-preset tests pin the expected output.
 pub mod presets {
-    use super::GpuMaterial;
+    use super::{GpuMaterial, GLASS_SURFACE_BEHAVIOR};
 
     /// Silver-class polished metal. Hyperion table:
     /// `color = (0.9, 0.9, 0.9)`, `roughness = 0.001`,
@@ -602,17 +603,18 @@ pub mod presets {
     }
 
     /// Generic glass — η = 1.45 (soda-lime / window glass authored at the
-    /// Hyperion-table edge of the typical glass range). `roughness = 0.0`
-    /// (perfectly smooth surface), `metalness = 0`. A reference preset (its
+    /// Hyperion-table edge of the typical glass range). The canonical shared
+    /// behavior uses a small `roughness = 0.10` anti-aliasing floor and
+    /// `metalness = 0`. A reference preset (its
     /// canonical values are pinned by the Hyperion-table + caustic-source
     /// tests); `spec_trans = 1.0` is a Disney-BSDF transmission extension not
     /// yet on `GpuMaterial`, so it renders as a smooth dielectric until that
     /// lobe is plumbed in.
     pub fn glass() -> GpuMaterial {
         GpuMaterial {
-            roughness: 0.0,
-            metalness: 0.0,
-            ior: 1.45,
+            roughness: GLASS_SURFACE_BEHAVIOR.roughness,
+            metalness: GLASS_SURFACE_BEHAVIOR.metalness,
+            ior: GLASS_SURFACE_BEHAVIOR.ior,
             diffuse_r: 1.0,
             diffuse_g: 1.0,
             diffuse_b: 1.0,
@@ -708,9 +710,9 @@ pub mod presets {
         #[test]
         fn glass_matches_hyperion_table() {
             let m = glass();
-            assert_eq!(m.roughness, 0.0);
-            assert_eq!(m.metalness, 0.0);
-            assert_eq!(m.ior, 1.45);
+            assert_eq!(m.roughness, GLASS_SURFACE_BEHAVIOR.roughness);
+            assert_eq!(m.metalness, GLASS_SURFACE_BEHAVIOR.metalness);
+            assert_eq!(m.ior, GLASS_SURFACE_BEHAVIOR.ior);
         }
 
         #[test]
