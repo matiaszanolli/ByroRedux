@@ -405,12 +405,12 @@ pub(crate) fn particle_system(world: &World, dt: f32) {
                 ];
 
                 // Build a velocity vector inside the declination cone around
-                // local +Z, then jitter speed.
+                // local +Y (the engine's up axis), then jitter speed.
                 let phi = rng() * std::f32::consts::TAU;
                 let dec = em.declination + (rng() - 0.5) * em.declination_variation;
                 let sin_dec = dec.sin();
                 let cos_dec = dec.cos();
-                let dir = [sin_dec * phi.cos(), sin_dec * phi.sin(), cos_dec];
+                let dir = [sin_dec * phi.cos(), cos_dec, sin_dec * phi.sin()];
                 let speed = em.speed + (rng() - 0.5) * em.speed_variation;
                 let vel = [dir[0] * speed, dir[1] * speed, dir[2] * speed];
 
@@ -906,5 +906,24 @@ mod tests {
             assert!((p[1] - host.y).abs() < 1e-4);
             assert!((p[2] - host.z).abs() < 1e-4);
         }
+    }
+
+    #[test]
+    fn zero_declination_spawns_upward_in_y_up_world() {
+        let mut em = ParticleEmitter::default();
+        em.rate = 1.0;
+        em.life = 100.0;
+        em.speed = 10.0;
+        em.speed_variation = 0.0;
+        em.declination = 0.0;
+        em.declination_variation = 0.0;
+        let (world, e) = world_with_emitter(em, Vec3::ZERO);
+        particle_system(&world, 1.0);
+        let q = world.query::<ParticleEmitter>().unwrap();
+        let em = q.get(e).unwrap();
+        assert_eq!(em.particles.len(), 1);
+        assert!(em.particles.velocities[0][0].abs() < 1e-5);
+        assert!((em.particles.velocities[0][1] - 10.0).abs() < 1e-5);
+        assert!(em.particles.velocities[0][2].abs() < 1e-5);
     }
 }

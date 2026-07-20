@@ -14,8 +14,8 @@
 //! output buffer is unused by raster + RT (Phase 2 wires AcceleratedManager).
 //!
 //! See `shaders/skin_vertices.comp` for the shader-side contract +
-//! per-vertex layout (matches `vertex.rs::Vertex`, 25 floats / 100 B
-//! post-#783; tangent slot at floats 21..24 added for M-NORMALS).
+//! per-vertex layout (matches `vertex.rs::Vertex`, 26 floats / 104 B;
+//! RGBA colour at 3..6 and tangent at 22..25).
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
@@ -988,7 +988,7 @@ mod tests {
     use super::*;
 
     /// Pin the per-vertex stride against the Rust `Vertex` size — the
-    /// shader hardcodes 25 floats / 100 bytes per vertex post-#783; if
+    /// shader uses 26 floats / 104 bytes per vertex; if
     /// a vertex field is added without bumping `VERTEX_STRIDE_FLOATS`
     /// here AND `VERTEX_STRIDE_FLOATS` in the shader, the compute pass
     /// would read past the end of each vertex and write the wrong
@@ -1004,7 +1004,7 @@ mod tests {
              skin_vertices.comp will read garbage if these drift",
             VERTEX_STRIDE_FLOATS,
         );
-        assert_eq!(VERTEX_STRIDE_BYTES, 100);
+        assert_eq!(VERTEX_STRIDE_BYTES, 104);
     }
 
     /// Push constant payload size must fit in the conservative 128 B

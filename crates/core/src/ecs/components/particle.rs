@@ -28,8 +28,8 @@ pub enum EmitterShape {
     Box { half_extents: [f32; 3] },
     /// Sphere centered on the emitter origin.
     Sphere { radius: f32 },
-    /// Cylinder along local +Z; `radius` is the disc radius, `height`
-    /// is the length along Z.
+    /// Cylinder along local +Y; `radius` is the disc radius, `height`
+    /// is the length along Y. The ECS/render world is Y-up.
     Cylinder { radius: f32, height: f32 },
 }
 
@@ -59,7 +59,7 @@ impl EmitterShape {
             Self::Cylinder { radius, height } => {
                 let phi = rng() * std::f32::consts::TAU;
                 let r = radius * rng().sqrt();
-                [r * phi.cos(), r * phi.sin(), (rng() - 0.5) * height]
+                [r * phi.cos(), (rng() - 0.5) * height, r * phi.sin()]
             }
         }
     }
@@ -228,12 +228,12 @@ pub struct ParticleEmitter {
     pub speed: f32,
     /// Per-particle speed jitter (uniform `[speed - var/2, speed + var/2)`).
     pub speed_variation: f32,
-    /// Local +Z opening angle in radians. 0 = straight up; π/2 = full hemisphere.
+    /// Local +Y opening angle in radians. 0 = straight up; π/2 = full hemisphere.
     pub declination: f32,
     /// Declination jitter in radians.
     pub declination_variation: f32,
     /// Per-frame world acceleration applied to every live particle (e.g.
-    /// `[0, 0, -9.8]` for true gravity, `[0, 0, +1.5]` for a buoyant
+    /// `[0, -9.8, 0]` for true gravity, `[0, +1.5, 0]` for a buoyant
     /// flame that floats upward).
     pub gravity: [f32; 3],
     /// Spawn color (sampled at spawn — particles linearly fade alpha to
@@ -331,12 +331,12 @@ impl ParticleEmitter {
             speed_variation: 1.0,
             declination: 0.25,
             declination_variation: 0.15,
-            gravity: [0.0, 0.0, 12.0], // upward buoyancy
+            gravity: [0.0, 12.0, 0.0], // upward buoyancy (engine Y-up)
             start_color: [1.0, 0.65, 0.18, 1.0],
             end_color: [0.9, 0.15, 0.0, 0.0],
             start_size: 5.0,
             end_size: 9.0,
-            texture_path: None,
+            texture_path: Some("textures\\effects\\flameshape_d.dds".to_string()),
             src_blend: 6,
             dst_blend: 0, // ONE (Gamebryo enum) — true additive
             spawn_accumulator: 0.0,
@@ -367,12 +367,12 @@ impl ParticleEmitter {
             speed_variation: 1.2,
             declination: 0.1,
             declination_variation: 0.1,
-            gravity: [0.0, 0.0, 6.0],
+            gravity: [0.0, 6.0, 0.0],
             start_color: [0.65, 0.55, 0.45, 0.7],
             end_color: [0.25, 0.25, 0.27, 0.0],
             start_size: 8.0,
             end_size: 22.0,
-            texture_path: None,
+            texture_path: Some("textures\\effects\\smokevapor01tile.dds".to_string()),
             src_blend: 6, // SRC_ALPHA
             dst_blend: 7, // ONE_MINUS_SRC_ALPHA — non-additive smoke
             spawn_accumulator: 0.0,
@@ -405,12 +405,12 @@ impl ParticleEmitter {
             speed_variation: 1.5,
             declination: 0.15,
             declination_variation: 0.1,
-            gravity: [0.0, 0.0, 8.0], // strong upward buoyancy
+            gravity: [0.0, 8.0, 0.0], // strong upward buoyancy (engine Y-up)
             start_color: [1.0, 0.55, 0.18, 1.0],
             end_color: [0.6, 0.05, 0.0, 0.0],
             start_size: 1.5,
             end_size: 0.5,
-            texture_path: None,
+            texture_path: Some("textures\\effects\\embers_d.dds".to_string()),
             src_blend: 6,
             dst_blend: 0, // ONE (Gamebryo enum) — additive, glints against smoke
             spawn_accumulator: 0.0,
@@ -438,7 +438,7 @@ impl ParticleEmitter {
             end_color: [0.1, 0.3, 0.9, 0.0],
             start_size: 3.0,
             end_size: 1.0,
-            texture_path: None,
+            texture_path: Some("textures\\effects\\glowsoft01.dds".to_string()),
             src_blend: 6,
             dst_blend: 0, // ONE (Gamebryo enum) — additive
             spawn_accumulator: 0.0,
@@ -520,7 +520,36 @@ mod tests {
             assert!(preset.max_particles > 0);
             assert!(preset.start_size > 0.0);
             assert!(preset.start_color[3] > 0.0);
+            assert!(
+                preset.texture_path.is_some(),
+                "a heuristic particle must have a real sprite fallback; an untextured billboard becomes a white beam"
+            );
         }
+    }
+
+    #[test]
+    fn buoyant_presets_use_engine_y_up() {
+        for preset in [
+            ParticleEmitter::torch_flame(),
+            ParticleEmitter::smoke(),
+            ParticleEmitter::embers(),
+        ] {
+            assert!(preset.gravity[1] > 0.0);
+            assert_eq!(preset.gravity[2], 0.0);
+        }
+    }
+
+    #[test]
+    fn cylinder_height_uses_engine_y_axis() {
+        let shape = EmitterShape::Cylinder {
+            radius: 2.0,
+            height: 10.0,
+        };
+        // phi=0, sqrt radius sample=1, height sample=1.
+        let p = shape.sample(deterministic_rng(vec![0.0, 1.0, 1.0]));
+        assert!((p[0] - 2.0).abs() < 1e-5);
+        assert!((p[1] - 5.0).abs() < 1e-5);
+        assert!(p[2].abs() < 1e-5);
     }
 
     /// #707 (band-aid) — embers must be visually distinguishable from

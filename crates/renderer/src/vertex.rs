@@ -16,7 +16,11 @@ use ash::vk;
 #[derive(Debug, Clone, Copy)]
 pub struct Vertex {
     pub position: [f32; 3],
-    pub color: [f32; 3],
+    /// Authored vertex colour, including opacity. Bethesda effect meshes
+    /// use the alpha lane to fade large additive beam/soft-particle proxy
+    /// volumes to zero at their boundary; dropping it turns those proxies
+    /// into screen-sized white wedges and needlessly feeds bloom/TAA.
+    pub color: [f32; 4],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
     /// Per-vertex bone indices (up to 4). Used only when `bone_weights`
@@ -59,6 +63,28 @@ impl Vertex {
     pub const fn new(position: [f32; 3], color: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Self {
         Self {
             position,
+            color: [color[0], color[1], color[2], 1.0],
+            normal,
+            uv,
+            bone_indices: [0, 0, 0, 0],
+            bone_weights: [0.0, 0.0, 0.0, 0.0],
+            splat_weights_0: [0, 0, 0, 0],
+            splat_weights_1: [0, 0, 0, 0],
+            tangent: [0.0, 0.0, 0.0, 0.0],
+        }
+    }
+
+    /// Construct a rigid vertex while preserving authored RGBA vertex
+    /// colour. NIF meshes should use this constructor; synthetic renderer
+    /// geometry can keep using [`Self::new`] and receives opaque alpha.
+    pub const fn new_rgba(
+        position: [f32; 3],
+        color: [f32; 4],
+        normal: [f32; 3],
+        uv: [f32; 2],
+    ) -> Self {
+        Self {
+            position,
             color,
             normal,
             uv,
@@ -75,6 +101,28 @@ impl Vertex {
     pub const fn new_skinned(
         position: [f32; 3],
         color: [f32; 3],
+        normal: [f32; 3],
+        uv: [f32; 2],
+        bone_indices: [u32; 4],
+        bone_weights: [f32; 4],
+    ) -> Self {
+        Self {
+            position,
+            color: [color[0], color[1], color[2], 1.0],
+            normal,
+            uv,
+            bone_indices,
+            bone_weights,
+            splat_weights_0: [0, 0, 0, 0],
+            splat_weights_1: [0, 0, 0, 0],
+            tangent: [0.0, 0.0, 0.0, 0.0],
+        }
+    }
+
+    /// Skinned counterpart to [`Self::new_rgba`].
+    pub const fn new_skinned_rgba(
+        position: [f32; 3],
+        color: [f32; 4],
         normal: [f32; 3],
         uv: [f32; 2],
         bone_indices: [u32; 4],
@@ -107,7 +155,7 @@ impl Vertex {
     ) -> Self {
         Self {
             position,
-            color,
+            color: [color[0], color[1], color[2], 1.0],
             normal,
             uv,
             bone_indices: [0, 0, 0, 0],
@@ -134,7 +182,7 @@ impl Vertex {
         // prefix-sum math matches the struct layout.
         const OFF_POSITION: u32 = 0;
         const OFF_COLOR: u32 = OFF_POSITION + 12; // after [f32; 3]
-        const OFF_NORMAL: u32 = OFF_COLOR + 12;
+        const OFF_NORMAL: u32 = OFF_COLOR + 16;
         const OFF_UV: u32 = OFF_NORMAL + 12;
         const OFF_BONE_INDICES: u32 = OFF_UV + 8; // after [f32; 2]
         const OFF_BONE_WEIGHTS: u32 = OFF_BONE_INDICES + 16; // after [u32; 4]
@@ -149,11 +197,11 @@ impl Vertex {
                 format: vk::Format::R32G32B32_SFLOAT,
                 offset: OFF_POSITION,
             },
-            // location 1: color (vec3)
+            // location 1: color (vec4 RGBA)
             vk::VertexInputAttributeDescription {
                 location: 1,
                 binding: 0,
-                format: vk::Format::R32G32B32_SFLOAT,
+                format: vk::Format::R32G32B32A32_SFLOAT,
                 offset: OFF_COLOR,
             },
             // location 2: normal (vec3)
@@ -216,7 +264,7 @@ impl Vertex {
 /// Lightweight UI vertex: position + UV only (20 bytes).
 ///
 /// The UI overlay just needs position (already in NDC) and texture
-/// coordinates. Using this instead of the full 100-byte `Vertex` (post-
+/// coordinates. Using this instead of the full 104-byte `Vertex` (post-
 /// M-NORMALS, #783) avoids feeding unused color / normal / bone /
 /// tangent attributes through the vertex input.
 #[repr(C)]
@@ -266,23 +314,23 @@ mod tests {
 
     #[test]
     fn vertex_size_matches_attribute_stride() {
-        // 12 (pos) + 12 (color) + 12 (normal) + 8 (uv) + 16 (indices) +
-        // 16 (weights) + 4 (splat_0) + 4 (splat_1) + 16 (tangent) = 100.
+        // 12 (pos) + 16 (color) + 12 (normal) + 8 (uv) + 16 (indices) +
+        // 16 (weights) + 4 (splat_0) + 4 (splat_1) + 16 (tangent) = 104.
         // Tangent slot added in #783 / M-NORMALS.
-        assert_eq!(size_of::<Vertex>(), 100);
+        assert_eq!(size_of::<Vertex>(), 104);
     }
 
     #[test]
     fn attribute_offsets_match_struct_layout() {
         assert_eq!(offset_of!(Vertex, position), 0);
         assert_eq!(offset_of!(Vertex, color), 12);
-        assert_eq!(offset_of!(Vertex, normal), 24);
-        assert_eq!(offset_of!(Vertex, uv), 36);
-        assert_eq!(offset_of!(Vertex, bone_indices), 44);
-        assert_eq!(offset_of!(Vertex, bone_weights), 60);
-        assert_eq!(offset_of!(Vertex, splat_weights_0), 76);
-        assert_eq!(offset_of!(Vertex, splat_weights_1), 80);
-        assert_eq!(offset_of!(Vertex, tangent), 84); // #783
+        assert_eq!(offset_of!(Vertex, normal), 28);
+        assert_eq!(offset_of!(Vertex, uv), 40);
+        assert_eq!(offset_of!(Vertex, bone_indices), 48);
+        assert_eq!(offset_of!(Vertex, bone_weights), 64);
+        assert_eq!(offset_of!(Vertex, splat_weights_0), 80);
+        assert_eq!(offset_of!(Vertex, splat_weights_1), 84);
+        assert_eq!(offset_of!(Vertex, tangent), 88); // #783
     }
 
     #[test]
@@ -290,6 +338,17 @@ mod tests {
         let v = Vertex::new([0.0; 3], [1.0; 3], [0.0, 1.0, 0.0], [0.0; 2]);
         let sum: f32 = v.bone_weights.iter().sum();
         assert_eq!(sum, 0.0, "rigid marker: sum-of-weights must be exactly 0");
+    }
+
+    #[test]
+    fn rgba_constructor_preserves_authored_opacity() {
+        let v = Vertex::new_rgba(
+            [0.0; 3],
+            [0.25, 0.5, 0.75, 0.125],
+            [0.0, 1.0, 0.0],
+            [0.0; 2],
+        );
+        assert_eq!(v.color, [0.25, 0.5, 0.75, 0.125]);
     }
 
     #[test]

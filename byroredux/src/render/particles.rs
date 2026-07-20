@@ -20,11 +20,12 @@
 //! (src=SRC_ALPHA=6, dst=ONE=0) per ParticleEmitter defaults; per-emitter
 //! overrides ride through the existing pipeline cache from #392.
 
-use byroredux_core::ecs::{ParticleEmitter, RenderLayer, World};
+use byroredux_core::ecs::{ParticleEmitter, RenderLayer, TextureHandle, World};
 use byroredux_core::math::{Mat4, Quat, Vec3, Vec4};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
 
+use super::camera::FrustumPlanes;
 use super::f32_sortable_u32;
 
 /// Quantization step count for the particle color fade (#1795 / D2-NEW-02).
@@ -58,6 +59,7 @@ pub(super) fn emit_particles(
     particle_quad_handle: Option<u32>,
     cam_pos: Vec3,
     vp_mat: Mat4,
+    frustum: &FrustumPlanes,
     draw_commands: &mut Vec<DrawCommand>,
     material_table: &mut MaterialTable,
 ) {
@@ -67,10 +69,19 @@ pub(super) fn emit_particles(
     let Some(eq) = world.query::<ParticleEmitter>() else {
         return;
     };
+    let Some(texture_q) = world.query::<TextureHandle>() else {
+        return;
+    };
     for (entity, em) in eq.iter() {
         if em.particles.is_empty() {
             continue;
         }
+        // Never turn a missing sprite into bindless slot zero. Slot zero is
+        // a diagnostic/fallback texture, and drawing hundreds of those quads
+        // was the source of Railroad HQ's opaque white "fog" bands.
+        let Some(texture_handle) = texture_q.get(entity).map(|h| h.0) else {
+            continue;
+        };
         let particle_count = em.particles.len();
         for i in 0..particle_count {
             let p = em.particles.positions[i];
@@ -101,6 +112,12 @@ pub(super) fn emit_particles(
                 start_c[3] + (end_c[3] - start_c[3]) * color_t,
             ];
             let size = em.start_size + (em.end_size - em.start_size) * t;
+            if !size.is_finite()
+                || size <= 0.0
+                || !frustum.contains_sphere(world_pos, size * std::f32::consts::SQRT_2)
+            {
+                continue;
+            }
 
             let model = Mat4::from_scale_rotation_translation(Vec3::splat(size), rot, world_pos);
             let pos_clip = vp_mat * Vec4::new(world_pos.x, world_pos.y, world_pos.z, 1.0);
@@ -108,7 +125,7 @@ pub(super) fn emit_particles(
 
             let mut cmd = DrawCommand {
                 mesh_handle: particle_mesh,
-                texture_handle: 0,
+                texture_handle,
                 model_matrix: model.to_cols_array(),
                 alpha_blend: true,
                 src_blend: em.src_blend,
@@ -150,12 +167,10 @@ pub(super) fn emit_particles(
                 sheen_tint: 0.0,
                 // #1250 — isotropic GGX (legacy ax = ay = roughness²).
                 anisotropic: 0.0,
-                // Emissive carries the particle color * alpha so the
-                // existing fragment-shader emissive add lights the quad
-                // with no scene-light dependency. Alpha is folded into
-                // emissive_mult so the LERP-to-0 end-color drives a
-                // true fade-out.
-                emissive_mult: color[3],
+                // RGB tint is emitted directly. Fade alpha belongs in
+                // material_alpha so both additive and alpha-over pipelines
+                // weight the sprite correctly without double-dimming RGB.
+                emissive_mult: 1.0,
                 emissive_color: [color[0], color[1], color[2]],
                 specular_strength: 0.0,
                 specular_color: [0.0, 0.0, 0.0],
@@ -169,8 +184,8 @@ pub(super) fn emit_particles(
                 vertex_count: 0,
                 sort_depth,
                 in_tlas: false,
-                // Particles are drawn every frame they're alive; no
-                // frustum cull here (small, transient).
+                // Per-particle sphere/frustum test above prevents offscreen
+                // emitters from inflating command/material counts.
                 in_raster: true,
                 // Deterministic tiebreaker for same-emitter particles
                 // sharing depth bucket and color. XOR keeps the emitter
@@ -183,9 +198,11 @@ pub(super) fn emit_particles(
                 // / emissive_mult above.
                 uv_offset: [0.0, 0.0],
                 uv_scale: [1.0, 1.0],
-                material_alpha: 1.0,
+                material_alpha: color[3],
                 avg_albedo: [0.0, 0.0, 0.0],
-                material_kind: 0,
+                // Particle sprites are emit-only effects, not PBR surfaces.
+                // This avoids the full direct/GI/caustic material path.
+                material_kind: byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER,
                 // Particles render with depth test on, depth write off
                 // (alpha-blended billboards). Default LESSEQUAL.
                 // See #398.
@@ -234,7 +251,43 @@ pub(super) fn emit_particles(
 
 #[cfg(test)]
 mod quantize_fade_tests {
-    use super::{quantize_fade, COLOR_FADE_STEPS};
+    use super::{emit_particles, quantize_fade, FrustumPlanes, COLOR_FADE_STEPS};
+    use byroredux_core::ecs::{ParticleEmitter, TextureHandle, World};
+    use byroredux_core::math::{Mat4, Vec3};
+    use byroredux_renderer::MaterialTable;
+
+    fn world_with_one_particle(texture: Option<u32>, position: [f32; 3]) -> World {
+        let mut world = World::new();
+        let entity = world.spawn();
+        let mut emitter = ParticleEmitter::torch_flame();
+        emitter.particles.push(
+            position,
+            [0.0; 3],
+            1.0,
+            emitter.start_color,
+            emitter.start_size,
+        );
+        world.insert(entity, emitter);
+        if let Some(texture) = texture {
+            world.insert(entity, TextureHandle(texture));
+        }
+        world
+    }
+
+    fn emit(world: &World) -> Vec<byroredux_renderer::vulkan::context::DrawCommand> {
+        let mut commands = Vec::new();
+        let mut materials = MaterialTable::new();
+        emit_particles(
+            world,
+            Some(77),
+            Vec3::new(0.0, 0.0, 5.0),
+            Mat4::IDENTITY,
+            &FrustumPlanes::from_view_proj(Mat4::IDENTITY),
+            &mut commands,
+            &mut materials,
+        );
+        commands
+    }
 
     #[test]
     fn snaps_nearby_values_to_the_same_step() {
@@ -286,5 +339,28 @@ mod quantize_fade_tests {
             COLOR_FADE_STEPS as usize + 1,
             seen.len()
         );
+    }
+
+    #[test]
+    fn unresolved_particle_texture_emits_no_white_fallback_quad() {
+        assert!(emit(&world_with_one_particle(None, [0.0; 3])).is_empty());
+    }
+
+    #[test]
+    fn textured_particle_uses_emit_only_material_and_fade_alpha() {
+        let commands = emit(&world_with_one_particle(Some(42), [0.0; 3]));
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].texture_handle, 42);
+        assert_eq!(
+            commands[0].material_kind,
+            byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+        );
+        assert_eq!(commands[0].material_alpha, 1.0);
+        assert!(!commands[0].in_tlas);
+    }
+
+    #[test]
+    fn offscreen_particle_is_frustum_culled() {
+        assert!(emit(&world_with_one_particle(Some(42), [100.0, 0.0, 0.0])).is_empty());
     }
 }

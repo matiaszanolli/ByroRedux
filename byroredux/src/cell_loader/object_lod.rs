@@ -263,14 +263,10 @@ fn spawn_object_lod_quad(
         }
         let verts: Vec<Vertex> = (0..mesh.positions.len())
             .map(|i| {
-                let color3 = mesh
-                    .colors
-                    .get(i)
-                    .map(|c| [c[0], c[1], c[2]])
-                    .unwrap_or([1.0, 1.0, 1.0]);
+                let color = mesh.colors.get(i).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]);
                 let normal = mesh.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
                 let uv = mesh.uvs.get(i).copied().unwrap_or([0.0, 0.0]);
-                let mut v = Vertex::new(mesh.positions[i], color3, normal, uv);
+                let mut v = Vertex::new_rgba(mesh.positions[i], color, normal, uv);
                 if let Some(t) = mesh.tangents.get(i) {
                     v.tangent = *t;
                 }

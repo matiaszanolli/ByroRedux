@@ -442,6 +442,7 @@ pub(crate) fn build_render_data(
         particle_quad_handle,
         cam_pos,
         vp_mat,
+        &frustum,
         draw_commands,
         material_table,
     );

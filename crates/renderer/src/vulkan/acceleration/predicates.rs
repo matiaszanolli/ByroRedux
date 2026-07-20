@@ -428,11 +428,16 @@ pub(super) fn blas_over_budget(
 ///   exclusion explicit on the consumer side so a future BLAS-add
 ///   on the same mesh handle can't silently reintroduce self-hits.
 ///
+/// - effect-shader draws are raster proxy volumes and never physical
+///   occluders, even if an upstream producer accidentally sets `in_tlas`.
+///
 /// Pure function so the unit test can pin the contract without a
 /// live Vulkan device.
 #[inline]
 pub(super) fn draw_command_eligible_for_tlas(draw_cmd: &DrawCommand) -> bool {
-    draw_cmd.in_tlas && !draw_cmd.is_water
+    draw_cmd.in_tlas
+        && !draw_cmd.is_water
+        && draw_cmd.material_kind != crate::MATERIAL_KIND_EFFECT_SHADER
 }
 
 /// Prior writer to the shared `blas_scratch_buffer` within the current

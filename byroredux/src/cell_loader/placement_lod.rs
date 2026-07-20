@@ -464,14 +464,10 @@ fn spawn_placement_lod_cell(
             }
             let verts: Vec<Vertex> = (0..mesh.positions.len())
                 .map(|i| {
-                    let color3 = mesh
-                        .colors
-                        .get(i)
-                        .map(|c| [c[0], c[1], c[2]])
-                        .unwrap_or([1.0, 1.0, 1.0]);
+                    let color = mesh.colors.get(i).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]);
                     let normal = mesh.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
                     let uv = mesh.uvs.get(i).copied().unwrap_or([0.0, 0.0]);
-                    let mut v = Vertex::new(mesh.positions[i], color3, normal, uv);
+                    let mut v = Vertex::new_rgba(mesh.positions[i], color, normal, uv);
                     if let Some(t) = mesh.tangents.get(i) {
                         v.tangent = *t;
                     }
@@ -492,7 +488,9 @@ fn spawn_placement_lod_cell(
             mesh_handles.push(handle);
 
             // Diffuse texture from the `_far.nif`'s own shader texture set.
-            let tex_str = mesh.texture_path.and_then(|fs| pool.resolve(fs).map(str::to_owned));
+            let tex_str = mesh
+                .texture_path
+                .and_then(|fs| pool.resolve(fs).map(str::to_owned));
             let raw = resolve_texture(ctx, tex_provider, tex_str.as_deref());
             let texture = if raw == ctx.texture_registry.fallback() {
                 0
@@ -534,8 +532,10 @@ fn spawn_placement_lod_cell(
                 let scale = p_scale * sub.local_scale;
                 let rot = p_rot * sub.local_rot;
                 let pos = p_pos + p_rot * (sub.local_pos * p_scale);
-                let bound =
-                    WorldBound::new(pos + rot * (sub.local_centre * scale), sub.local_radius * scale);
+                let bound = WorldBound::new(
+                    pos + rot * (sub.local_centre * scale),
+                    sub.local_radius * scale,
+                );
 
                 let entity = world.spawn();
                 world.insert(entity, Transform::new(pos, rot, scale));
@@ -631,7 +631,7 @@ mod tests {
         let push_f32 = |b: &mut Vec<u8>, v: f32| b.extend_from_slice(&v.to_le_bytes());
 
         push_u32(&mut b, 2); // num_groups
-        // group 0: form 0x10, 1 placement
+                             // group 0: form 0x10, 1 placement
         push_u32(&mut b, 0x10);
         push_u32(&mut b, 1);
         push_f32(&mut b, 100.0); // pos

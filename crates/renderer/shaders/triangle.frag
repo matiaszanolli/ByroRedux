@@ -29,7 +29,7 @@
 //   course notes; no Disney code or assets are used here.
 // ─────────────────────────────────────────────────────────────────────
 
-layout(location = 0) in vec3 fragColor;
+layout(location = 0) in vec4 fragColor;
 layout(location = 1) in vec2 fragUV;
 layout(location = 2) in vec3 fragNormal;
 layout(location = 3) in vec3 fragWorldPosRel;  // #1496 — render-origin-RELATIVE; main() reconstructs absolute `fragWorldPos`
@@ -186,12 +186,19 @@ void main() {
     if ((inst.flags & INSTANCE_FLAG_DIFFUSE_ALPHA) == 0u && mat.alphaThreshold == 0.0) {
         texColor.a = 1.0;
     }
+    // Keep the texture-only alpha for effect-palette lookup below. The LUT
+    // coordinate is authored from the source atlas; vertex opacity must fade
+    // the resulting effect, not select a different palette entry.
+    float sourceTextureAlpha = texColor.a;
     // #494 — BGSM `materialAlpha` multiplier. Applied **before** the
     // alpha-test discard so the authored `alphaThreshold` still
     // operates on the final blended alpha (matching FO4's in-engine
     // order of operations). Identity default is `1.0` so pre-BGSM
     // content is unchanged.
-    texColor.a *= mat.materialAlpha;
+    // Vertex alpha is a first-class coverage input. In particular, FO4's
+    // additive light-beam proxies carry near-zero alpha over most vertices;
+    // dropping this lane exposes the proxy mesh as a saturated white wedge.
+    texColor.a *= mat.materialAlpha * fragColor.a;
 
     // Terrain splat blending (#470). When the instance has the
     // TERRAIN_SPLAT flag set, BTXT (read above via `fragTexIndex`)
@@ -570,13 +577,12 @@ void main() {
         // the flag but lack a resolved LUT (missing BSA / FX content
         // mod) fall through to the legacy raw-texture path instead of
         // sampling slot 0 (the magenta-checker placeholder).
-        vec4 sourceColor = texColor;
         if ((mat.materialFlags & (MAT_FLAG_EFFECT_PALETTE_COLOR
                                   | MAT_FLAG_EFFECT_PALETTE_ALPHA)) != 0u
             && mat.greyscaleLutIndex != 0u) {
             vec4 lut = texture(
                 textures[nonuniformEXT(mat.greyscaleLutIndex)],
-                vec2(sourceColor.a, 0.5));
+                vec2(sourceTextureAlpha, 0.5));
             if ((mat.materialFlags & MAT_FLAG_EFFECT_PALETTE_COLOR) != 0u) {
                 texColor.rgb = lut.rgb;
             }
@@ -588,7 +594,7 @@ void main() {
                 texColor.a *= lut.a;
             }
         }
-        vec3 emit = texColor.rgb
+        vec3 emit = texColor.rgb * fragColor.rgb
                   * vec3(mat.emissiveR, mat.emissiveG, mat.emissiveB)
                   * mat.emissiveMult;
         // #890 Stage 2 — `SLSF2::Effect_Lighting`. The vanilla engine
@@ -612,7 +618,7 @@ void main() {
             // pitch-black in scene light; 255 = full scene modulation (default for
             // most authored content). See #890 Stage 2 / MAT_FLAG_EFFECT_LI_SHIFT.
             float liScale = float((mat.materialFlags >> MAT_FLAG_EFFECT_LI_SHIFT) & 0xFFu) / 255.0;
-            vec3 surf = texColor.rgb;
+            vec3 surf = texColor.rgb * fragColor.rgb;
             // Cell ambient — same payload the main lit path reads.
             vec3 lit = sceneFlags.yzw * surf;
             // First directional light only — `color_type.w == 2.0`
@@ -692,6 +698,12 @@ void main() {
                       - length(fragSceneWorld - camRel);
             finalAlpha *= clamp(gap / mat.softFalloffDepth, 0.0, 1.0);
         }
+        // Cone and soft-depth fades are applied after the generic blend-path
+        // alpha test. Cull their fully invisible tail here so zero-opacity
+        // triangles do not continue into additive blending and bloom history.
+        if (finalAlpha < (1.0 / 255.0)) {
+            discard;
+        }
         outColor = vec4(emit, finalAlpha);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(emit, 1.0);
@@ -724,7 +736,7 @@ void main() {
     // per-vertex value is itself the emit and shouldn't double-multiply).
     if (mat.materialKind == MATERIAL_KIND_NO_LIGHTING) {
         bool vcEmissive = (mat.materialFlags & MAT_FLAG_VERTEX_COLOR_EMISSIVE) != 0u;
-        vec3 emit = vcEmissive ? texColor.rgb : texColor.rgb * fragColor;
+        vec3 emit = vcEmissive ? texColor.rgb : texColor.rgb * fragColor.rgb;
         outColor = vec4(emit, texColor.a);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(emit, 1.0);
@@ -770,7 +782,7 @@ void main() {
     bool bypassVertexColor = (dbgFlags & DBG_BYPASS_VERTEX_COLOR) != 0u;
     vec3 albedo = (vertexColorEmissive || bypassVertexColor)
         ? texColor.rgb
-        : texColor.rgb * fragColor;
+        : texColor.rgb * fragColor.rgb;
 
     // #221 — `NiMaterialProperty.diffuse` per-material multiplicative
     // tint. Default `[1.0; 3]` for every BSShader-only Skyrim+/FO4
@@ -1007,7 +1019,7 @@ void main() {
     // Skipped on the BSEffectShader early-out path above — that branch
     // already returns from the function with its own emissive math.
     if (vertexColorEmissive) {
-        emissive = min(emissive + fragColor * texColor.rgb, vec3(64.0));
+        emissive = min(emissive + fragColor.rgb * texColor.rgb, vec3(64.0));
     }
 
     // ── Glass / transparent refraction ──────────────────────────────
@@ -1083,7 +1095,7 @@ void main() {
         vec3 glassBase = textureLod(
             textures[nonuniformEXT(fragTexIndex)], sampleUV, 4.0).rgb;
         texColor = vec4(glassBase, texColor.a);
-        albedo   = glassBase * fragColor;
+        albedo   = glassBase * fragColor.rgb;
     }
 
     if (isWindow && rtEnabled) {

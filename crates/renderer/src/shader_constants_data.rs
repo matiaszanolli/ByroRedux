@@ -33,10 +33,11 @@ pub const CLUSTER_FAR_FALLBACK: f32 = 50_000.0;
 pub const MAX_LIGHTS_PER_CLUSTER: u32 = 128;
 
 // Vertex layout (global SSBO)
-pub const VERTEX_STRIDE_FLOATS: u32 = 25;
-// position(0..3) color(3..6) normal(6..9) uv(9..11) — see crates/renderer/src/vertex.rs.
-pub const VERTEX_NORMAL_OFFSET_FLOATS: u32 = 6;
-pub const VERTEX_UV_OFFSET_FLOATS: u32 = 9;
+pub const VERTEX_STRIDE_FLOATS: u32 = 26;
+// position(0..3) color RGBA(3..7) normal(7..10) uv(10..12) — see
+// crates/renderer/src/vertex.rs.
+pub const VERTEX_NORMAL_OFFSET_FLOATS: u32 = 7;
+pub const VERTEX_UV_OFFSET_FLOATS: u32 = 10;
 
 // Skinning — see `byroredux_core::ecs::components::skinned_mesh::MAX_BONES_PER_MESH`
 // for the vanilla-content survey that fixes this ceiling at 144 (FO76 prewardress = 133).

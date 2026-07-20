@@ -77,11 +77,15 @@ pub fn import_nif_particle_emitters(scene: &NifScene) -> Vec<ImportedParticleEmi
     let Some(root_idx) = scene.root_index else {
         return out;
     };
+    let mut inherited_props = Vec::new();
+    let mut pool = StringPool::new();
     walk::walk_node_particle_emitters_flat(
         scene,
         root_idx,
         &NiTransform::default(),
         None,
+        &mut inherited_props,
+        &mut pool,
         &mut out,
     );
     out

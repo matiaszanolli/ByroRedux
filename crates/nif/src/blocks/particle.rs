@@ -1019,6 +1019,14 @@ pub struct NiParticleSystem {
     /// anchor the emitter. (`NiParticles` carries the same base; the
     /// field is harmless there.)
     pub transform: crate::types::NiTransform,
+    /// Legacy (FO3/FNV and older) material/property chain carried by the
+    /// particle system's NiAVObject base.
+    pub properties: Vec<BlockRef>,
+    /// Skyrim+ dedicated shader property. Particle billboards need this
+    /// just as geometry does: it owns the authored sprite texture.
+    pub shader_property_ref: BlockRef,
+    /// Skyrim+ dedicated alpha property (blend factors / alpha test).
+    pub alpha_property_ref: BlockRef,
     pub modifier_refs: Vec<BlockRef>,
 }
 
@@ -1091,10 +1099,12 @@ pub fn parse_particle_system(
     // Shader / alpha refs land on every BSVER > 34 path. Use raw bsver()
     // rather than a variant predicate so non-Bethesda Gamebryo content at
     // BSVER > 34 stays aligned (matches base.rs:73 and node.rs:107).
-    if stream.bsver() > crate::version::bsver::FO3_FNV {
-        let _shader_ref = stream.read_block_ref()?;
-        let _alpha_ref = stream.read_block_ref()?;
-    }
+    let (shader_property_ref, alpha_property_ref) =
+        if stream.bsver() > crate::version::bsver::FO3_FNV {
+            (stream.read_block_ref()?, stream.read_block_ref()?)
+        } else {
+            (BlockRef::NULL, BlockRef::NULL)
+        };
 
     // NiParticleSystem-specific fields (NiParticles has none).
     let mut modifier_refs: Vec<BlockRef> = Vec::new();
@@ -1132,6 +1142,9 @@ pub fn parse_particle_system(
     Ok(NiParticleSystem {
         original_type: type_name.to_string(),
         transform: av.transform,
+        properties: av.properties,
+        shader_property_ref,
+        alpha_property_ref,
         modifier_refs,
     })
 }

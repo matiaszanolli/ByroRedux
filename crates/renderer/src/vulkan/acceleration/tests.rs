@@ -134,6 +134,16 @@ fn water_and_non_tlas_both_excluded() {
     assert!(!draw_command_eligible_for_tlas(&cmd));
 }
 
+/// Additive BSEffectShader proxy volumes (light beams, glow shells, soft
+/// particles) are not physical geometry. They must remain raster-only even
+/// if an upstream draw producer accidentally leaves `in_tlas=true`.
+#[test]
+fn effect_shader_proxy_is_excluded_from_tlas() {
+    let mut cmd = make_draw_command(true, false);
+    cmd.material_kind = crate::MATERIAL_KIND_EFFECT_SHADER;
+    assert!(!draw_command_eligible_for_tlas(&cmd));
+}
+
 /// Regression for #679 / AS-8-9. The skinned-BLAS rebuild
 /// predicate must fire only when the in-place refit chain has
 /// reached the configured threshold; below the threshold the

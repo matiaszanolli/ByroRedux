@@ -106,7 +106,7 @@ pub(super) fn spawn_water_plane(
         // space UV derivatives behave.
         Vertex {
             position: [-1.0, 0.0, -1.0],
-            color: [1.0, 1.0, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
             normal: [0.0, 1.0, 0.0],
             uv: [-uv, -uv],
             bone_indices: [0, 0, 0, 0],
@@ -119,7 +119,7 @@ pub(super) fn spawn_water_plane(
         },
         Vertex {
             position: [1.0, 0.0, -1.0],
-            color: [1.0, 1.0, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
             normal: [0.0, 1.0, 0.0],
             uv: [uv, -uv],
             bone_indices: [0, 0, 0, 0],
@@ -130,7 +130,7 @@ pub(super) fn spawn_water_plane(
         },
         Vertex {
             position: [-1.0, 0.0, 1.0],
-            color: [1.0, 1.0, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
             normal: [0.0, 1.0, 0.0],
             uv: [-uv, uv],
             bone_indices: [0, 0, 0, 0],
@@ -141,7 +141,7 @@ pub(super) fn spawn_water_plane(
         },
         Vertex {
             position: [1.0, 0.0, 1.0],
-            color: [1.0, 1.0, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
             normal: [0.0, 1.0, 0.0],
             uv: [uv, uv],
             bone_indices: [0, 0, 0, 0],

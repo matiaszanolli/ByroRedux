@@ -23,7 +23,7 @@
 // reusable without a second `VertexInputState`.
 
 layout(location = 0) in vec3 inPosition;
-layout(location = 1) in vec3 inColor;       // unused on water — kept for VAO compat
+layout(location = 1) in vec4 inColor;       // unused on water — kept for VAO compat
 layout(location = 2) in vec3 inNormal;
 layout(location = 3) in vec2 inUV;
 layout(location = 4) in uvec4 inBoneIndices; // unused

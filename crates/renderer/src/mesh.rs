@@ -17,7 +17,7 @@ use std::sync::Once;
 /// resident scene's geometry; a broken cell-unload path leaks placements and
 /// grows the pool unbounded.
 ///
-/// Soft cap (~400 MB at `Vertex` = 100 B post-M-NORMALS) fires a one-shot
+/// Soft cap (~416 MB at `Vertex` = 104 B) fires a one-shot
 /// `warn!` so a regression in cell unload becomes visible without crashing
 /// the engine. Hard cap (~1.6 GB) returns `Err` from `upload_scene_mesh` so
 /// the caller can skip the placement and continue, rather than letting the
@@ -1246,7 +1246,7 @@ mod pool_growth_cap_tests {
         // future edit accidentally setting hard < soft).
         assert!(VERTEX_POOL_HARD_CAP > VERTEX_POOL_SOFT_CAP);
         assert!(INDEX_POOL_HARD_CAP > INDEX_POOL_SOFT_CAP);
-        // At Vertex = 100 B, hard cap 16M = 1.6 GB. At u32 indices,
+        // At Vertex = 104 B, hard cap 16M = 1.66 GB. At u32 indices,
         // hard cap 64M = 256 MB. Sanity-check: vertex cap is the bigger
         // memory commitment of the two.
         let vertex_bytes = VERTEX_POOL_HARD_CAP * std::mem::size_of::<Vertex>();

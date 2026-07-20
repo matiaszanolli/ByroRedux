@@ -255,7 +255,15 @@ pub(super) fn spawn_placed_instances(
 
     spawn_nif_lights(world, nif_lights, ref_pos, ref_rot, ref_scale, light_data);
 
-    spawn_particle_emitters(world, cached, ref_pos, ref_rot, ref_scale);
+    spawn_particle_emitters(
+        world,
+        ctx,
+        tex_provider,
+        cached,
+        ref_pos,
+        ref_rot,
+        ref_scale,
+    );
 
     spawn_collision_shapes(
         world,
@@ -518,6 +526,8 @@ fn spawn_nif_lights(
 /// Split out of `spawn_placed_instances` (#2057).
 fn spawn_particle_emitters(
     world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
     cached: &CachedNifImport,
     ref_pos: Vec3,
     ref_rot: Quat,
@@ -565,9 +575,34 @@ fn spawn_particle_emitters(
             em.emitter_rate,
             &em.force_fields,
         );
+        if let Some(path) = &em.texture_path {
+            preset.texture_path = Some(path.clone());
+        }
+        if let Some(src) = em.src_blend {
+            preset.src_blend = src;
+        }
+        if let Some(dst) = em.dst_blend {
+            preset.dst_blend = dst;
+        }
+
+        // A particle without a real sprite is not a valid white quad. The
+        // old renderer hardcoded bindless slot zero, turning every such
+        // billboard into the giant white streaks seen in Railroad HQ.
+        let texture_handle = resolve_texture(ctx, tex_provider, preset.texture_path.as_deref());
+        if texture_handle == ctx.texture_registry.fallback()
+            || texture_handle == ctx.texture_registry.neutral_fallback()
+        {
+            log::debug!(
+                "skipping particle emitter {:?}: no resolvable sprite texture {:?}",
+                em.original_type,
+                preset.texture_path,
+            );
+            continue;
+        }
         let entity = world.spawn();
         world.insert(entity, Transform::from_translation(world_pos));
         world.insert(entity, GlobalTransform::new(world_pos, Quat::IDENTITY, 1.0));
+        world.insert(entity, TextureHandle(texture_handle));
         world.insert(entity, preset);
     }
 }
@@ -837,18 +872,18 @@ fn spawn_mesh_instance(
     } else {
         let vertices: Vec<Vertex> = (0..num_verts)
             .map(|i| {
-                // Drop alpha — current `Vertex` color is 3-channel; the
-                // alpha lane lives on `ImportedMesh::colors[i][3]` for
-                // when the renderer extends to a 4-channel vertex (#618).
-                let color3 = if i < mesh.colors.len() {
-                    let c = mesh.colors[i];
-                    [c[0], c[1], c[2]]
+                // Preserve authored vertex opacity. Large additive effect
+                // proxies (light beams, soft glow volumes) use this lane to
+                // fade their boundary to zero; treating them as opaque makes
+                // the proxy geometry visible and floods bloom/TAA.
+                let color = if i < mesh.colors.len() {
+                    mesh.colors[i]
                 } else {
-                    [1.0, 1.0, 1.0]
+                    [1.0, 1.0, 1.0, 1.0]
                 };
-                let mut v = Vertex::new(
+                let mut v = Vertex::new_rgba(
                     mesh.positions[i],
-                    color3,
+                    color,
                     if i < mesh.normals.len() {
                         mesh.normals[i]
                     } else {
@@ -880,12 +915,18 @@ fn spawn_mesh_instance(
             queue: &ctx.graphics_queue,
             command_pool: ctx.transfer_pool,
         };
+        // BSEffectShader meshes are raster proxy volumes (light shafts,
+        // soft glows, particles), not physical surfaces. Building BLAS for
+        // them both wastes memory/load time and lets shadow/GI rays hit the
+        // proxy hull as if it were solid geometry.
+        let for_rt = ctx.device_caps.ray_query_supported
+            && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
         let upload_result = match mesh_cache_key {
             Some(key) => ctx.mesh_registry.register_scene_mesh_keyed(
                 upload_ctx,
                 &vertices,
                 &mesh.indices,
-                ctx.device_caps.ray_query_supported,
+                for_rt,
                 None,
                 (key, sub_mesh_index_u32),
             ),
@@ -893,7 +934,7 @@ fn spawn_mesh_instance(
                 upload_ctx,
                 &vertices,
                 &mesh.indices,
-                ctx.device_caps.ray_query_supported,
+                for_rt,
                 None,
             ),
         };
@@ -905,10 +946,12 @@ fn spawn_mesh_instance(
             }
         };
 
-        // Fresh upload — this handle needs a BLAS. Subsequent
+        // Fresh physical-surface upload — this handle needs a BLAS. Subsequent
         // cache hits for the same `(path, sub_mesh_index)` reuse
         // this BLAS entry without re-submitting.
-        blas_specs.push((handle, num_verts as u32, mesh.indices.len() as u32));
+        if for_rt {
+            blas_specs.push((handle, num_verts as u32, mesh.indices.len() as u32));
+        }
         handle
     };
 

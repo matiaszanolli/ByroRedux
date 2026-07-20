@@ -27,6 +27,35 @@ use crate::blocks::extra_data::BsPackedCombinedGeomDataExtra;
 use crate::blocks::node::BsRangeKind;
 use byroredux_core::string::StringPool;
 
+/// Extract the sprite texture and blend factors attached to a particle
+/// system. Particle systems carry the same shader/property references as
+/// geometry, so route them through the shared material walker instead of
+/// silently replacing the authored sprite with bindless slot zero.
+fn extract_particle_material(
+    scene: &NifScene,
+    ps: &crate::blocks::particle::NiParticleSystem,
+    inherited_props: &[BlockRef],
+    pool: &mut StringPool,
+) -> (Option<String>, Option<u8>, Option<u8>) {
+    let info = super::material::extract_material_info_from_refs(
+        scene,
+        ps.shader_property_ref,
+        ps.alpha_property_ref,
+        &ps.properties,
+        inherited_props,
+        pool,
+    );
+    let texture_path = info
+        .texture_path
+        .and_then(|path| pool.resolve(path).map(str::to_owned));
+    let authored_blend = info.alpha_blend || info.alpha_blend_authored;
+    (
+        texture_path,
+        authored_blend.then_some(info.src_blend_mode),
+        authored_blend.then_some(info.dst_blend_mode),
+    )
+}
+
 /// SK-D4-04 / #564 — return `true` when any of `node`'s extra_data refs
 /// resolves to a `BSPackedCombinedGeomDataExtra` (or its Shared
 /// variant). Used by the walkers to skip the host BSMultiBoundNode
@@ -508,6 +537,8 @@ pub(super) fn walk_node_hierarchical(
         .as_any()
         .downcast_ref::<crate::blocks::particle::NiParticleSystem>()
     {
+        let (texture_path, src_blend, dst_blend) =
+            extract_particle_material(scene, ps, ctx.inherited_props, ctx.pool);
         // Retain the block's own local TRS (#1333). The host node's
         // world transform reaches us as the host entity's GlobalTransform
         // in the scene builder; these fields carry the offset *within*
@@ -518,6 +549,9 @@ pub(super) fn walk_node_hierarchical(
             .push(crate::import::ImportedParticleEmitter {
                 parent_node: parent_node_idx,
                 original_type: ps.original_type.clone(),
+                texture_path,
+                src_blend,
+                dst_blend,
                 local_translation: zup_point_to_yup(&ps.transform.translation),
                 local_rotation: zup_matrix_to_yup_quat(&ps.transform.rotation),
                 local_scale: ps.transform.scale,
@@ -1217,6 +1251,8 @@ pub(super) fn walk_node_particle_emitters_flat(
     block_idx: usize,
     parent_transform: &NiTransform,
     parent_node_name: Option<std::sync::Arc<str>>,
+    inherited_props: &mut Vec<BlockRef>,
+    pool: &mut StringPool,
     out: &mut Vec<crate::import::ImportedParticleEmitterFlat>,
 ) {
     let Some(block) = scene.get(block_idx) else {
@@ -1230,15 +1266,20 @@ pub(super) fn walk_node_particle_emitters_flat(
         }
         let world_transform = compose_transforms(parent_transform, &node.av.transform);
         let new_parent_name = node.av.net.name.clone().or(parent_node_name);
+        let prev_len = inherited_props.len();
+        inherited_props.extend_from_slice(&node.av.properties);
         for idx in active_children {
             walk_node_particle_emitters_flat(
                 scene,
                 idx,
                 &world_transform,
                 new_parent_name.clone(),
+                inherited_props,
+                pool,
                 out,
             );
         }
+        inherited_props.truncate(prev_len);
         return;
     }
 
@@ -1251,6 +1292,8 @@ pub(super) fn walk_node_particle_emitters_flat(
         // sensible host name even when the emitter block itself is
         // unnamed (the common case in vanilla content).
         let new_parent_name = node.av.net.name.clone().or(parent_node_name);
+        let prev_len = inherited_props.len();
+        inherited_props.extend_from_slice(&node.av.properties);
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
                 walk_node_particle_emitters_flat(
@@ -1258,10 +1301,13 @@ pub(super) fn walk_node_particle_emitters_flat(
                     idx,
                     &world_transform,
                     new_parent_name.clone(),
+                    inherited_props,
+                    pool,
                     out,
                 );
             }
         }
+        inherited_props.truncate(prev_len);
         return;
     }
 
@@ -1279,10 +1325,15 @@ pub(super) fn walk_node_particle_emitters_flat(
         // host world) was used, zeroing any authored emitter offset —
         // smoke spawned inside the fire instead of above it.
         let world_transform = compose_transforms(parent_transform, &ps.transform);
+        let (texture_path, src_blend, dst_blend) =
+            extract_particle_material(scene, ps, inherited_props, pool);
         out.push(crate::import::ImportedParticleEmitterFlat {
             local_position: zup_point_to_yup(&world_transform.translation),
             host_name: parent_node_name,
             original_type: ps.original_type.clone(),
+            texture_path,
+            src_blend,
+            dst_blend,
             color_curve: extract_first_color_curve(scene),
             force_fields: collect_force_fields(scene, &ps.modifier_refs),
             emitter_params: extract_emitter_params(scene),

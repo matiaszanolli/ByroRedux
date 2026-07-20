@@ -707,6 +707,9 @@ mod particle_local_transform_tests {
         Box::new(NiParticleSystem {
             original_type: "NiParticleSystem".to_string(),
             transform,
+            properties: Vec::new(),
+            shader_property_ref: BlockRef::NULL,
+            alpha_property_ref: BlockRef::NULL,
             modifier_refs: Vec::new(),
         })
     }
@@ -728,7 +731,17 @@ mod particle_local_transform_tests {
     fn flat_walker_composes_block_local_offset() {
         let scene = scene_with_offset_emitter();
         let mut out = Vec::new();
-        walk_node_particle_emitters_flat(&scene, 0, &NiTransform::default(), None, &mut out);
+        let mut inherited_props = Vec::new();
+        let mut pool = StringPool::new();
+        walk_node_particle_emitters_flat(
+            &scene,
+            0,
+            &NiTransform::default(),
+            None,
+            &mut inherited_props,
+            &mut pool,
+            &mut out,
+        );
         assert_eq!(
             out.len(),
             1,

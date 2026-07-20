@@ -539,18 +539,18 @@ fn composite_screen_to_world_dir_subtracts_camera_pos() {
 /// reinterprets the bytes as IEEE-754 float. Per the layout
 /// table at the SSBO declaration in triangle.frag:
 ///
-///   - safe float offsets: `position` (0..2), `color` (3..5),
-///     `normal` (6..8), `uv` (9..10), `bone_weights` (15..18).
+///   - safe float offsets: `position` (0..2), `color` (3..6),
+///     `normal` (7..9), `uv` (10..11), `bone_weights` (16..19).
 ///   - **unsafe** offsets (require `floatBitsToUint` /
-///     `unpackUnorm4x8` recovery): `bone_indices` (11..14),
-///     `splat_weights_0/1` (19..20).
+///     `unpackUnorm4x8` recovery): `bone_indices` (12..15),
+///     `splat_weights_0/1` (20..21).
 ///
 /// Pre-fix, a future RT shader author following the existing
 /// `vertexData[base + N]` pattern could silently read u32 /
 /// packed-u8 bit patterns as floats. This test grep-checks the
 /// only shader that currently reads `vertexData` (triangle.frag)
-/// for any forbidden offset — `+ 11` through `+ 14` (bone
-/// indices) or `+ 19` / `+ 20` (splat weights) — that ISN'T
+/// for any forbidden offset — `+ 12` through `+ 15` (bone
+/// indices) or `+ 20` / `+ 21` (splat weights) — that ISN'T
 /// wrapped in `floatBitsToUint(…)` or `unpackUnorm4x8(…)`.
 ///
 /// `caustic_splat.comp` and `ui.vert` don't bind GlobalVertices
@@ -577,10 +577,10 @@ fn triangle_frag_no_unsafe_vertex_data_reads() {
         {
             continue;
         }
-        // Look for `vertexData[ ... + N ]` where N is 11-14 or
-        // 19-20. Tolerate whitespace and the `(vOff + iN)` outer
+        // Look for `vertexData[ ... + N ]` where N is 12-15 or
+        // 20-21. Tolerate whitespace and the `(vOff + iN)` outer
         // expression that the existing `getHitUV` site uses.
-        for forbidden in [11, 12, 13, 14, 19, 20] {
+        for forbidden in [12, 13, 14, 15, 20, 21] {
             let needle_simple = format!("+ {}]", forbidden);
             let needle_alt = format!("+{}]", forbidden);
             if line.contains(&needle_simple) || line.contains(&needle_alt) {
@@ -600,7 +600,7 @@ fn triangle_frag_no_unsafe_vertex_data_reads() {
                     lineno + 1,
                     forbidden,
                     forbidden,
-                    if (11..=14).contains(&forbidden) {
+                    if (12..=15).contains(&forbidden) {
                         "u32 (bone index)"
                     } else {
                         "packed 4× u8 unorm (splat weight)"
@@ -652,7 +652,9 @@ fn parse_rust_struct_fields(src: &str) -> Vec<String> {
         if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
             continue;
         }
-        let Some(colon) = line.find(':') else { continue };
+        let Some(colon) = line.find(':') else {
+            continue;
+        };
         let lhs = line[..colon].trim();
         let ident = lhs.strip_prefix("pub ").unwrap_or(lhs).trim();
         if is_ident(ident) {

@@ -220,12 +220,11 @@ pub(super) fn collect_static_mesh_draws(
                     .copied()
                     .unwrap_or_default();
                 let is_decal = render_layer_for_entity == RenderLayer::Decal;
-                // Distant-terrain LOD blocks stay out of the TLAS; everything
-                // else rides the TLAS. Synthesized collision-only colliders are
-                // separate MeshHandle-free ghost entities (see spawn.rs) and
-                // never reach this render-mesh query. See IsLodTerrain.
+                // Distant-terrain LOD blocks stay out of the TLAS. Effect
+                // shader proxy volumes are excluded below once material_kind
+                // is known. Synthesized collision-only colliders are separate
+                // MeshHandle-free ghost entities and never reach this query.
                 let is_lod = lod_q.as_ref().is_some_and(|q| q.get(entity).is_some());
-                let in_tlas = !is_lod;
                 let bone_offset = skin_offsets.get(&entity).copied().unwrap_or(0);
                 let (normal_map_index, normal_has_alpha) = nmap_q
                     .as_ref()
@@ -387,6 +386,11 @@ pub(super) fn collect_static_mesh_draws(
                 // translation-completeness harness (zero drift in
                 // per-game m_kind% / mat_path% pre/post deletion).
                 let material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
+                // Additive beams/glows are view-facing raster volumes, not
+                // solid occluders. Keeping them out of the TLAS prevents fake
+                // shadows/GI hits and avoids traversing their large hulls.
+                let in_tlas =
+                    !is_lod && material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
 
                 // Step 2 — normal-alpha-as-spec gloss-flag BINDING (Skyrim/
                 // Gamebryo convention). When a lit Skyrim-era surface

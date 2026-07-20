@@ -218,42 +218,42 @@ layout(set = 1, binding = 15) uniform sampler2D depthHistoryTex;
 
 // Global geometry SSBOs for RT reflection UV lookups.
 //
-// Vertex layout (100 B = 25 floats per vertex, mirrors Rust `Vertex`
+// Vertex layout (104 B = 26 floats per vertex, mirrors Rust `Vertex`
 // struct in `crates/renderer/src/vertex.rs`):
 //
 //   float offset │ bytes  │ field           │ type     │ safe-as-float?
 //   ─────────────┼────────┼─────────────────┼──────────┼───────────────
 //        0..2    │  0..11 │ position        │ vec3     │ ✓
-//        3..5    │ 12..23 │ color           │ vec3     │ ✓
-//        6..8    │ 24..35 │ normal          │ vec3     │ ✓
-//        9..10   │ 36..43 │ uv              │ vec2     │ ✓
-//       11..14   │ 44..59 │ bone_indices    │ uvec4    │ ✗ u32 bits
-//       15..18   │ 60..75 │ bone_weights    │ vec4     │ ✓
-//       19       │ 76..79 │ splat_weights_0 │ 4× u8    │ ✗ packed unorm
-//       20       │ 80..83 │ splat_weights_1 │ 4× u8    │ ✗ packed unorm
-//       21..24   │ 84..99 │ tangent (#783)  │ vec4     │ ✓ (xyz + sign)
+//        3..6    │ 12..27 │ color           │ vec4     │ ✓ (RGBA)
+//        7..9    │ 28..39 │ normal          │ vec3     │ ✓
+//       10..11   │ 40..47 │ uv              │ vec2     │ ✓
+//       12..15   │ 48..63 │ bone_indices    │ uvec4    │ ✗ u32 bits
+//       16..19   │ 64..79 │ bone_weights    │ vec4     │ ✓
+//       20       │ 80..83 │ splat_weights_0 │ 4× u8    │ ✗ packed unorm
+//       21       │ 84..87 │ splat_weights_1 │ 4× u8    │ ✗ packed unorm
+//       22..25   │ 88..103│ tangent (#783)  │ vec4     │ ✓ (xyz + sign)
 //
-// **WARNING (#575 / SH-1)**: only float offsets 0..10, 15..18, and
-// 21..24 may be read directly as `vertexData[base + N]`. Bone indices
-// (11..14) and splat weights (19..20) are NOT IEEE-754 floats —
+// **WARNING (#575 / SH-1)**: only float offsets 0..11, 16..19, and
+// 22..25 may be read directly as `vertexData[base + N]`. Bone indices
+// (12..15) and splat weights (20..21) are NOT IEEE-754 floats —
 // reinterpreting their bit patterns silently produces NaN / denormal
 // garbage.
 //
 // To recover the unsafe slots, use the same pattern
 // `skin_vertices.comp:101-106` uses for bone indices:
-//   `uvec4 idx = uvec4(floatBitsToUint(vertexData[base + 11]), …);`
+//   `uvec4 idx = uvec4(floatBitsToUint(vertexData[base + 12]), …);`
 //
 // or for splat unorms (4× u8 packed into one float-aliased u32):
-//   `vec4 splat = unpackUnorm4x8(floatBitsToUint(vertexData[base + 19]));`
+//   `vec4 splat = unpackUnorm4x8(floatBitsToUint(vertexData[base + 20]));`
 //
 // The current RT hit shader (`getHitUV` below) only reads UV at
-// offsets 9..10 and is safe; this comment is the pit-of-failure
+// offsets 10..11 and is safe; this comment is the pit-of-failure
 // guardrail for future RT shader authors. The
 // `triangle_frag_no_unsafe_vertex_data_reads` test (scene_buffer.rs)
 // statically grep-checks the source so the next forbidden read
 // fails CI immediately.
 layout(std430, set = 1, binding = 8) readonly buffer GlobalVertices {
-    // flat array, stride = `VERTEX_STRIDE_FLOATS` floats (100 bytes) — #783.
+    // flat array, stride = `VERTEX_STRIDE_FLOATS` floats (104 bytes).
     // The named const lives below so RT hit-fetch sites have one source of
     // truth for the vertex layout. See REN-D6-NEW-01 (audit 2026-05-09).
     float vertexData[];
@@ -265,7 +265,7 @@ layout(std430, set = 1, binding = 8) readonly buffer GlobalVertices {
 // big comment block above the `GlobalVertices` SSBO). Pulled out to
 // file scope so every RT hit-fetch site — `getHitUV` and any future
 // hit-shader code — reads from the same named source. Pre-fix
-// `getHitUV` carried its own local `const uint STRIDE = 25;` (REN-D6-
+// `getHitUV` once carried its own local stride literal (REN-D6-
 // NEW-01); the inline literal worked but each new hit-fetch site
 // VERTEX_STRIDE_FLOATS and VERTEX_UV_OFFSET_FLOATS from shader_constants.glsl.
 layout(std430, set = 1, binding = 9) readonly buffer GlobalIndices {

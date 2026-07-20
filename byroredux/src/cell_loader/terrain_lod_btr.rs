@@ -162,13 +162,9 @@ pub(crate) fn spawn_btr_block(
             // level)): inverse-transpose = diag(1/level, 1, 1/level).
             let ln = mesh.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
             let wn = Vec3::new(ln[0] / lvl, ln[1], ln[2] / lvl).normalize_or_zero();
-            let color3 = mesh
-                .colors
-                .get(i)
-                .map(|c| [c[0], c[1], c[2]])
-                .unwrap_or([1.0, 1.0, 1.0]);
+            let color = mesh.colors.get(i).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]);
             let uv = mesh.uvs.get(i).copied().unwrap_or([0.0, 0.0]);
-            let mut v = Vertex::new(wp, color3, [wn.x, wn.y, wn.z], uv);
+            let mut v = Vertex::new_rgba(wp, color, [wn.x, wn.y, wn.z], uv);
             if let Some(tg) = mesh.tangents.get(i) {
                 // Tangent is a surface direction → scales like positions (XZ
                 // ×level), renormalized; the bitangent sign is preserved.
@@ -293,7 +289,7 @@ mod tests {
         // 4×4-cell world region cells [0,4)×[-4,0): world X∈[0,16384],
         // world Z∈[0,16384] (Z = −world_y_zup, cells [-4,0) → Z [0,16384]).
         let cell = EXTERIOR_CELL_UNITS; // 4096
-        // SW local corner (0,0,0) → world (0, _, 16384).
+                                        // SW local corner (0,0,0) → world (0, _, 16384).
         let sw = btr_local_to_world([0.0, 10.0, 0.0], 4, 0, -4);
         assert_eq!(sw, [0.0, 10.0, 4.0 * cell]);
         // Opposite local corner (4096, _, -4096) → world (16384, _, 0).
@@ -309,7 +305,8 @@ mod tests {
 
     #[test]
     fn world_bound_spans_vertices() {
-        let v = |x: f32, y: f32, z: f32| Vertex::new([x, y, z], [1.0; 3], [0.0, 1.0, 0.0], [0.0; 2]);
+        let v =
+            |x: f32, y: f32, z: f32| Vertex::new([x, y, z], [1.0; 3], [0.0, 1.0, 0.0], [0.0; 2]);
         let verts = vec![v(0.0, 0.0, 0.0), v(2.0, 0.0, 0.0), v(0.0, 0.0, 2.0)];
         let b = world_bound(&verts);
         assert_eq!(b.center, Vec3::new(1.0, 0.0, 1.0));

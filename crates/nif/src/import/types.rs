@@ -1191,6 +1191,14 @@ pub struct ImportedParticleEmitter {
     /// host node's name (`torch` / `fire` → flame, `smoke` → smoke,
     /// `magic` / `enchant` → sparkles, fallback → flame).
     pub original_type: String,
+    /// Authored billboard sprite texture resolved from the particle
+    /// system's shader/property chain. `None` means the source omitted a
+    /// texture; consumers may use a named preset fallback, but must not
+    /// render the bindless diagnostic/white slot as a particle sprite.
+    pub texture_path: Option<String>,
+    /// Authored Gamebryo source/destination blend factors.
+    pub src_blend: Option<u8>,
+    pub dst_blend: Option<u8>,
     /// Authored start / end RGBA from a `NiPSysColorModifier ->
     /// NiColorData` chain when the NIF carries one. `None` falls back
     /// to the name-heuristic preset; `Some` overrides the preset's
@@ -1343,6 +1351,12 @@ pub struct ImportedParticleEmitterFlat {
     pub host_name: Option<std::sync::Arc<str>>,
     /// Original NIF block type name — used only for telemetry.
     pub original_type: String,
+    /// Authored billboard sprite texture (owned because this flat import
+    /// does not retain the temporary string pool used during extraction).
+    pub texture_path: Option<String>,
+    /// Authored Gamebryo source/destination blend factors.
+    pub src_blend: Option<u8>,
+    pub dst_blend: Option<u8>,
     /// Authored colour curve from `NiPSysColorModifier -> NiColorData`,
     /// when the NIF carries one. Overrides the heuristic preset's
     /// start / end colour at spawn time. `None` falls back to the

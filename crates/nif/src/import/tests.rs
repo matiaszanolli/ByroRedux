@@ -1055,6 +1055,9 @@ fn synthetic_particle_block(type_name: &str) -> Box<dyn crate::blocks::NiObject>
             Box::new(crate::blocks::particle::NiParticleSystem {
                 original_type: type_name.to_string(),
                 transform: crate::types::NiTransform::default(),
+                properties: Vec::new(),
+                shader_property_ref: BlockRef::NULL,
+                alpha_property_ref: BlockRef::NULL,
                 modifier_refs: Vec::new(),
             })
         }

@@ -548,6 +548,27 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             emitter.emitter_rate,
             &emitter.force_fields,
         );
+        if let Some(path) = &emitter.texture_path {
+            preset.texture_path = Some(path.clone());
+        }
+        if let Some(src) = emitter.src_blend {
+            preset.src_blend = src;
+        }
+        if let Some(dst) = emitter.dst_blend {
+            preset.dst_blend = dst;
+        }
+
+        let texture_handle = resolve_texture(ctx, tex_provider, preset.texture_path.as_deref());
+        if texture_handle == ctx.texture_registry.fallback()
+            || texture_handle == ctx.texture_registry.neutral_fallback()
+        {
+            log::debug!(
+                "skipping particle emitter {:?}: no resolvable sprite texture {:?}",
+                emitter.original_type,
+                preset.texture_path,
+            );
+            continue;
+        }
 
         // #1333: when the particle block authored a non-zero local offset
         // (relative to the host node), spawn a dedicated child entity
@@ -579,6 +600,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             add_child(world, host_entity, child);
             child
         };
+        world.insert(target_entity, TextureHandle(texture_handle));
         world.insert(target_entity, preset);
     }
 
@@ -623,16 +645,13 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         let vertices: Vec<Vertex> = (0..num_verts)
             .map(|i| {
                 let position = mesh.positions[i];
-                // Drop alpha — current `Vertex` color is 3-channel.
-                // Imported colors carry RGBA so alpha is preserved on
-                // the import side for a future 4-channel vertex format
-                // (#618). Hair-tip / eyelash modulation will become
-                // visible once the renderer's Vertex extends.
+                // Preserve the complete imported colour. Vertex alpha is
+                // load-bearing for hair tips and additive effect-volume
+                // boundary fades.
                 let color = if i < mesh.colors.len() {
-                    let c = mesh.colors[i];
-                    [c[0], c[1], c[2]]
+                    mesh.colors[i]
                 } else {
-                    [1.0, 1.0, 1.0]
+                    [1.0, 1.0, 1.0, 1.0]
                 };
                 let normal = if i < mesh.normals.len() {
                     mesh.normals[i]
@@ -665,7 +684,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                     if i < skin.vertex_bone_indices.len() && i < skin.vertex_bone_weights.len() {
                         let idx = skin.vertex_bone_indices[i];
                         let w = skin.vertex_bone_weights[i];
-                        let mut v = Vertex::new_skinned(
+                        let mut v = Vertex::new_skinned_rgba(
                             position,
                             color,
                             normal,
@@ -677,7 +696,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                         return v;
                     }
                 }
-                let mut v = Vertex::new(position, color, normal, uv);
+                let mut v = Vertex::new_rgba(position, color, normal, uv);
                 v.tangent = tangent;
                 v
             })
@@ -690,6 +709,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             queue: &ctx.graphics_queue,
             command_pool: ctx.transfer_pool,
         };
+        // Effect-shader geometry is a raster-only proxy volume, never a
+        // surface that should occlude shadow/GI/reflection rays.
+        let for_rt = ctx.device_caps.ray_query_supported
+            && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
         // upload_scene_mesh registers the vertices/indices into the global
         // geometry SSBO that RT ray queries sample for reflection UVs.
         // See #371.
@@ -697,7 +720,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             upload_ctx,
             &vertices,
             &mesh.indices,
-            ctx.device_caps.ray_query_supported,
+            for_rt,
             None,
         ) {
             Ok(h) => h,
@@ -711,8 +734,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             }
         };
 
-        // Collect BLAS specs for batched build after the loop.
-        blas_specs.push((mesh_handle, num_verts as u32, mesh.indices.len() as u32));
+        // Collect BLAS specs for physical surfaces only.
+        if for_rt {
+            blas_specs.push((mesh_handle, num_verts as u32, mesh.indices.len() as u32));
+        }
 
         // Mesh paths are interned `FixedString` handles (#609). Resolve
         // each populated slot to an owned `String` once for the
