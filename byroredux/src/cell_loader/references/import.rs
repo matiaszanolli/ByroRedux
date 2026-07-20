@@ -82,12 +82,10 @@ pub(super) fn parse_and_import_nif(
     // `marker_*`, `MarkerX`, `marker:*`, `MapMarker` — every shipping
     // FO4 editor-marker NIF authored a name in that family.
     let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
-    // NifScene doesn't retain the header, so re-parse the header
-    // (~60 bytes) to read `bs_version`. Cheap relative to the full
-    // scene parse we already did.
-    let bsver = byroredux_nif::header::NifHeader::parse(nif_data)
-        .map(|(h, _)| h.user_version_2)
-        .unwrap_or(0);
+    // `NifScene` already retains BSVER as `scene.bsver` (set from the
+    // header during the `parse_nif` call above) — no need to re-parse
+    // the header. #2111.
+    let bsver = scene.bsver;
     let bsx_editor_marker = bsx & 0x20 != 0 && bsver < byroredux_nif::version::bsver::FALLOUT4;
     if bsx_editor_marker {
         log::debug!(

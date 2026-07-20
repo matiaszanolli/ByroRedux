@@ -514,12 +514,10 @@ fn parse_one_nif((path, bytes): (String, Option<Vec<u8>>)) -> (String, Option<Pa
             }
         };
         let bsx = byroredux_nif::import::extract_bsx_flags(&scene);
-        // NifScene doesn't retain the header, so re-parse it (~60 bytes)
-        // to read BSVER for the game-era-gated BSXFlags bit-5 check
-        // the drain step applies — mirrors `parse_and_import_nif`.
-        let bsver = byroredux_nif::header::NifHeader::parse(&bytes)
-            .map(|(h, _)| h.user_version_2)
-            .unwrap_or(0);
+        // `NifScene` already retains BSVER as `scene.bsver` (set from the
+        // header during the `parse_nif` call above) — no need to re-parse
+        // the header. #2111.
+        let bsver = scene.bsver;
         let root_flags = byroredux_nif::import::extract_root_flags(&scene);
         let lights = byroredux_nif::import::import_nif_lights(&scene);
         let particle_emitters = byroredux_nif::import::import_nif_particle_emitters(&scene);
@@ -758,6 +756,33 @@ pub fn compute_streaming_deltas(
     to_unload.sort();
 
     StreamingDeltas { to_load, to_unload }
+}
+
+/// Cells with an in-flight worker request that have left the unload
+/// radius around the player's current grid position — #2113 / D7-01.
+///
+/// `compute_streaming_deltas` only diffs `loaded` against the desired
+/// set, so a cell dispatched to the worker but not yet spawned (still
+/// only in `pending`) is invisible to it: if the player leaves before
+/// the request completes, the payload would otherwise still classify
+/// as [`PayloadDecision::Apply`] and pay a full main-thread spawn just
+/// before the next boundary crossing unloads it again. The caller
+/// removes each returned coord from `pending`, so `classify_payload`
+/// sees no entry for it and returns `StaleNoPending` — the payload is
+/// discarded before spawn.
+pub fn stale_pending_coords(
+    pending: &HashMap<(i32, i32), u64>,
+    player_grid: (i32, i32),
+    radius_unload: i32,
+) -> Vec<(i32, i32)> {
+    let (px, py) = player_grid;
+    let mut stale: Vec<(i32, i32)> = pending
+        .keys()
+        .copied()
+        .filter(|(gx, gy)| (gx - px).abs().max((gy - py).abs()) > radius_unload)
+        .collect();
+    stale.sort();
+    stale
 }
 
 /// Convert a Y-up world-space translation into Bethesda exterior grid
