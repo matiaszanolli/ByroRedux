@@ -8,7 +8,8 @@
 
 use super::{
     classify_payload, compute_streaming_deltas, join_with_timeout, pre_parse_cell_panic_safe,
-    world_pos_to_grid, JoinTimeout, LoadCellPayload, LoadedCell, PayloadDecision, StreamingDeltas,
+    stale_pending_coords, world_pos_to_grid, JoinTimeout, LoadCellPayload, LoadedCell,
+    PayloadDecision, StreamingDeltas,
 };
 use byroredux_core::ecs::storage::EntityId;
 use std::collections::HashMap;
@@ -256,6 +257,38 @@ fn payload_decision_does_not_consult_unrelated_coords() {
         classify_payload(&pending, (0, 0), 7),
         PayloadDecision::StaleNoPending
     );
+}
+
+// ── Pending-request cancellation on ring exit (#2113 / D7-01) ──
+
+#[test]
+fn stale_pending_coords_drops_requests_outside_unload_radius() {
+    // Player at (0,0); a request for (5,5) was dispatched while the
+    // player was nearby but has since fallen well outside radius_unload.
+    // It must be flagged stale so the eventual payload is discarded
+    // instead of spawning a cell the player already left.
+    let mut pending = HashMap::new();
+    pending.insert((5, 5), 3u64);
+    assert_eq!(stale_pending_coords(&pending, (0, 0), 2), vec![(5, 5)]);
+}
+
+#[test]
+fn stale_pending_coords_keeps_requests_inside_unload_radius() {
+    // A request still within the hysteresis band must not be cancelled —
+    // it's still expected to complete and spawn.
+    let mut pending = HashMap::new();
+    pending.insert((1, 1), 3u64);
+    assert!(stale_pending_coords(&pending, (0, 0), 2).is_empty());
+}
+
+#[test]
+fn stale_pending_coords_boundary_is_inclusive() {
+    // Exactly at radius_unload must stay pending — matches
+    // `compute_streaming_deltas`'s `d > radius_unload` unload gate
+    // (hysteresis boundary is inclusive of radius_unload itself).
+    let mut pending = HashMap::new();
+    pending.insert((2, 0), 3u64);
+    assert!(stale_pending_coords(&pending, (0, 0), 2).is_empty());
 }
 
 // ── Worker panic recovery (#854) ────────────────────────────────

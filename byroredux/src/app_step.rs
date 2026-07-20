@@ -105,9 +105,15 @@ impl App {
                 );
                 unloaded_any = true;
             }
-            // If a load was in flight for this cell, leave the
-            // pending entry; the drain step compares generation and
-            // drops the stale payload when it eventually arrives.
+        }
+        // #2113 / D7-01 — a cell can have an in-flight worker request
+        // (tracked only in `pending`, not yet in `loaded`) that the
+        // `to_unload` diff above never sees. Drop any such request whose
+        // coord has left the unload radius so the payload classifies as
+        // `PayloadDecision::StaleNoPending` and is discarded on arrival
+        // instead of paying a full spawn one boundary crossing too late.
+        for coord in streaming::stale_pending_coords(&state.pending, player_grid, state.radius_unload) {
+            state.pending.remove(&coord);
         }
         // Cell unload despawns instances and forces a TLAS rebuild on
         // the next frame; the SVGF/TAA history is now stale for the
