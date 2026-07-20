@@ -23,8 +23,9 @@ use crate::asset_provider::{
     derive_normal_map_path, resolve_texture, resolve_texture_with_clamp, TextureProvider,
 };
 use crate::components::{
-    texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, DoorTeleport, ExtraTextureMaps,
-    GreyscaleLutHandle, IsFxMesh, NormalMapHandle, TwoSided,
+    decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle,
+    DoorTeleport, ExtraTextureMaps, GreyscaleLutHandle, IsDecalMesh, IsFxMesh, NormalMapHandle,
+    TwoSided,
 };
 
 use super::nif_import_registry::CachedNifImport;
@@ -920,7 +921,8 @@ fn spawn_mesh_instance(
         // them both wastes memory/load time and lets shadow/GI rays hit the
         // proxy hull as if it were solid geometry.
         let for_rt = ctx.device_caps.ray_query_supported
-            && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
+            && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+            && !mesh.is_decal;
         let upload_result = match mesh_cache_key {
             Some(key) => ctx.mesh_registry.register_scene_mesh_keyed(
                 upload_ctx,
@@ -1211,14 +1213,31 @@ fn spawn_mesh_instance(
     // draw in the render path. Reads the same components the renderer
     // reads, so the value is identical — only canonical + tooling-visible.
     crate::material_translate::resolve_normal_alpha_spec_roughness(world, entity);
-    if mesh.has_alpha {
+    let implicit_decal_blend = decal_uses_implicit_alpha_blend(
+        mesh.is_decal,
+        mesh.has_alpha,
+        mesh.alpha_test,
+        mesh.alpha_threshold,
+    );
+    if mesh.has_alpha || implicit_decal_blend {
+        // FO4's dedicated decal pass composites texture alpha even when the
+        // BGSM generic blend function is `None` for low-threshold soft
+        // decals. Preserve explicit factors; otherwise use alpha-over.
+        let (src_blend, dst_blend) = if mesh.has_alpha {
+            (mesh.src_blend_mode, mesh.dst_blend_mode)
+        } else {
+            (6, 7)
+        };
         world.insert(
             entity,
             AlphaBlend {
-                src_blend: mesh.src_blend_mode,
-                dst_blend: mesh.dst_blend_mode,
+                src_blend,
+                dst_blend,
             },
         );
+    }
+    if mesh.is_decal {
+        world.insert(entity, IsDecalMesh);
     }
     if mesh.two_sided {
         world.insert(entity, TwoSided);

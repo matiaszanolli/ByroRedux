@@ -87,6 +87,37 @@ impl Component for IsFxMesh {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Marker for an authored decal surface, distinct from the broader
+/// [`RenderLayer::Decal`](byroredux_core::ecs::RenderLayer::Decal) depth-bias
+/// class which also contains ordinary alpha-tested cutouts. FO4 BGSM decals
+/// need dedicated depth/RT handling even when their generic blend state is
+/// disabled. The low-threshold soft-coverage subset is classified separately
+/// by [`decal_uses_implicit_alpha_blend`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct IsDecalMesh;
+impl Component for IsDecalMesh {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// FO4's dedicated decal pass treats low-threshold alpha-tested BGSM decals as
+/// texture-alpha coverage even when the material's generic blend function is
+/// `None`. High-threshold decals are binary cutouts (posters/signs) and must
+/// remain opaque after their alpha test; applying alpha-over to those washes
+/// them out.
+///
+/// The 0.25 boundary deliberately sits between the authored clusters observed
+/// in vanilla FO4: grime/damage/mud decals use references 6..44 (0.024..0.173),
+/// while poster/sign cutouts use 128 (0.502). Explicitly blended decals never
+/// need this compatibility path because their authored factors take priority.
+pub(crate) fn decal_uses_implicit_alpha_blend(
+    is_decal: bool,
+    has_alpha_blend: bool,
+    alpha_test: bool,
+    alpha_threshold: f32,
+) -> bool {
+    is_decal && !has_alpha_blend && alpha_test && alpha_threshold < 0.25
+}
+
 /// Marker component for distant-terrain LOD blocks (engine-generated from
 /// the worldspace heightmaps beyond the full-detail streamed ring). These
 /// are coarse multi-cell meshes with a single base texture, no splat
@@ -149,12 +180,10 @@ pub(crate) fn texture_path_is_fx_mesh(texture_path: &str) -> bool {
         || contains_ci(texture_path, "fxlightrays")
 }
 
-// `Decal` marker retired in #renderlayer — its semantic ("renders on
-// top of coplanar surfaces via depth bias") is now expressed as
-// `RenderLayer::Decal` from `byroredux_core::ecs::components::RenderLayer`.
-// The render-side `is_decal: bool` on `DrawCommand` (consumed by
-// shader / GpuInstance flag paths) is now derived from
-// `render_layer == RenderLayer::Decal` at DrawCommand construction.
+// The old generic `Decal` marker was retired in #renderlayer: depth ordering
+// is expressed by `RenderLayer::Decal`. `IsDecalMesh` above is intentionally
+// narrower and retains only authored decal-surface semantics needed for
+// alpha compositing, depth writes, and RT participation.
 
 /// Bindless texture handle for a normal map (parallels TextureHandle for
 /// diffuse). `.1` = whether the loaded DDS carries an alpha channel — Skyrim/
@@ -1201,5 +1230,53 @@ mod fx_mesh_classification_tests {
                 "expected NO FX classification on {path}",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod decal_blend_classification_tests {
+    use super::decal_uses_implicit_alpha_blend;
+
+    #[test]
+    fn low_threshold_fo4_decal_uses_texture_alpha_coverage() {
+        assert!(decal_uses_implicit_alpha_blend(
+            true,
+            false,
+            true,
+            6.0 / 255.0
+        ));
+        assert!(decal_uses_implicit_alpha_blend(
+            true,
+            false,
+            true,
+            44.0 / 255.0
+        ));
+    }
+
+    #[test]
+    fn high_threshold_poster_remains_an_opaque_cutout() {
+        assert!(!decal_uses_implicit_alpha_blend(
+            true,
+            false,
+            true,
+            128.0 / 255.0,
+        ));
+    }
+
+    #[test]
+    fn non_decal_or_explicit_blend_does_not_use_compatibility_path() {
+        assert!(!decal_uses_implicit_alpha_blend(
+            false,
+            false,
+            true,
+            6.0 / 255.0
+        ));
+        assert!(!decal_uses_implicit_alpha_blend(
+            true,
+            true,
+            true,
+            6.0 / 255.0
+        ));
+        assert!(!decal_uses_implicit_alpha_blend(true, false, false, 0.0));
     }
 }

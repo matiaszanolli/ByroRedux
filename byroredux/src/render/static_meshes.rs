@@ -28,7 +28,7 @@ use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
 
 use crate::components::{
-    AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, IsFxMesh,
+    AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, IsDecalMesh, IsFxMesh,
     IsLodTerrain, NormalMapHandle, TerrainTileSlot, TwoSided,
 };
 
@@ -125,6 +125,10 @@ pub(super) fn collect_static_mesh_draws(
     // per draw per frame. Entities tagged at spawn by `cell_loader::spawn`
     // + `scene::nif_loader` when the texture path matches an FX needle.
     let fx_q = world.query::<IsFxMesh>();
+    // Authored decal surfaces need alpha-over compositing but must not become
+    // coplanar depth/TLAS occluders. This is deliberately separate from the
+    // RenderLayer::Decal class, which also includes ordinary alpha cutouts.
+    let decal_mesh_q = world.query::<IsDecalMesh>();
     // Distant-terrain LOD blocks (#view-dist) — coarse raster-only meshes
     // with no BLAS. They flow through this same loop (single-texture, no
     // material → identity-PBR fallback) but are forced `in_tlas = false`
@@ -220,6 +224,9 @@ pub(super) fn collect_static_mesh_draws(
                     .copied()
                     .unwrap_or_default();
                 let is_decal = render_layer_for_entity == RenderLayer::Decal;
+                let is_decal_mesh = decal_mesh_q
+                    .as_ref()
+                    .is_some_and(|q| q.get(entity).is_some());
                 // Distant-terrain LOD blocks stay out of the TLAS. Effect
                 // shader proxy volumes are excluded below once material_kind
                 // is known. Synthesized collision-only colliders are separate
@@ -336,9 +343,12 @@ pub(super) fn collect_static_mesh_draws(
                 // Defaults match the Gamebryo runtime defaults the
                 // pre-#398 hardcoded pipeline state used: depth test+
                 // write on, LESSEQUAL.
-                let (z_test, z_write, z_function) = mat
+                let (z_test, mut z_write, z_function) = mat
                     .map(|m| (m.z_test, m.z_write, m.z_function))
                     .unwrap_or((true, true, 3));
+                if is_decal_mesh && alpha_blend {
+                    z_write = false;
+                }
 
                 // Geometry SSBO offsets for RT reflection UV lookups.
                 let (v_off, i_off, v_count) = {
@@ -389,8 +399,9 @@ pub(super) fn collect_static_mesh_draws(
                 // Additive beams/glows are view-facing raster volumes, not
                 // solid occluders. Keeping them out of the TLAS prevents fake
                 // shadows/GI hits and avoids traversing their large hulls.
-                let in_tlas =
-                    !is_lod && material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
+                let in_tlas = !is_lod
+                    && !is_decal_mesh
+                    && material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
 
                 // Step 2 — normal-alpha-as-spec gloss-flag BINDING (Skyrim/
                 // Gamebryo convention). When a lit Skyrim-era surface

@@ -1,5 +1,5 @@
 use super::*;
-use crate::components::IsFxMesh;
+use crate::components::{AlphaBlend, IsDecalMesh, IsFxMesh};
 use byroredux_core::ecs::{ActiveCamera, Camera, GlobalTransform, MeshHandle, World};
 
 fn run_build(world: &World) -> Vec<DrawCommand> {
@@ -77,4 +77,29 @@ fn non_fx_entity_draws_exactly_once_with_single_transform_lookup() {
         1,
         "the single-lookup transform binding must not drop or duplicate the entity"
     );
+}
+
+#[test]
+fn authored_decal_is_alpha_composited_without_depth_or_tlas_occlusion() {
+    let mut world = world_with_mesh(false);
+    let mesh_entity = {
+        let meshes = world.query::<MeshHandle>().expect("mesh query");
+        let entity = meshes.iter().next().expect("test mesh").0;
+        entity
+    };
+    world.insert(mesh_entity, IsDecalMesh);
+    world.insert(
+        mesh_entity,
+        AlphaBlend {
+            src_blend: 6,
+            dst_blend: 7,
+        },
+    );
+
+    let cmds = run_build(&world);
+    assert_eq!(cmds.len(), 1);
+    assert!(cmds[0].alpha_blend);
+    assert_eq!((cmds[0].src_blend, cmds[0].dst_blend), (6, 7));
+    assert!(!cmds[0].z_write);
+    assert!(!cmds[0].in_tlas);
 }

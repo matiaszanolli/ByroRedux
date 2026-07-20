@@ -27,8 +27,8 @@ use crate::asset_provider::{
     resolve_texture, MaterialProvider, TextureProvider,
 };
 use crate::components::{
-    texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle,
-    IsFxMesh, NormalMapHandle, TwoSided,
+    decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle,
+    ExtraTextureMaps, GreyscaleLutHandle, IsDecalMesh, IsFxMesh, NormalMapHandle, TwoSided,
 };
 use crate::helpers::add_child;
 
@@ -594,7 +594,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 emitter.local_rotation[2],
                 emitter.local_rotation[3],
             );
-            world.insert(child, Transform::new(translation, rotation, emitter.local_scale));
+            world.insert(
+                child,
+                Transform::new(translation, rotation, emitter.local_scale),
+            );
             world.insert(child, GlobalTransform::IDENTITY);
             world.insert(child, Parent(host_entity));
             add_child(world, host_entity, child);
@@ -712,7 +715,8 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // Effect-shader geometry is a raster-only proxy volume, never a
         // surface that should occlude shadow/GI/reflection rays.
         let for_rt = ctx.device_caps.ray_query_supported
-            && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
+            && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+            && !mesh.is_decal;
         // upload_scene_mesh registers the vertices/indices into the global
         // geometry SSBO that RT ray queries sample for reflection UVs.
         // See #371.
@@ -829,14 +833,28 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             ),
         );
         world.insert(entity, WorldBound::ZERO);
-        if mesh.has_alpha {
+        let implicit_decal_blend = decal_uses_implicit_alpha_blend(
+            mesh.is_decal,
+            mesh.has_alpha,
+            mesh.alpha_test,
+            mesh.alpha_threshold,
+        );
+        if mesh.has_alpha || implicit_decal_blend {
+            let (src_blend, dst_blend) = if mesh.has_alpha {
+                (mesh.src_blend_mode, mesh.dst_blend_mode)
+            } else {
+                (6, 7)
+            };
             world.insert(
                 entity,
                 AlphaBlend {
-                    src_blend: mesh.src_blend_mode,
-                    dst_blend: mesh.dst_blend_mode,
+                    src_blend,
+                    dst_blend,
                 },
             );
+        }
+        if mesh.is_decal {
+            world.insert(entity, IsDecalMesh);
         }
         if mesh.two_sided {
             world.insert(entity, TwoSided);
@@ -1127,9 +1145,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // builds the live Rapier multibody from it. Self-gating: facegen /
         // armor / clutter loads have `ragdoll: None`, so nothing attaches.
         if let Some(ragdoll) = imported.ragdoll.as_ref() {
-            if let Some(template) =
-                crate::ragdoll::template_from_imported(ragdoll, &node_by_name)
-            {
+            if let Some(template) = crate::ragdoll::template_from_imported(ragdoll, &node_by_name) {
                 let bodies = template.bodies.len();
                 world.insert(root_entity, template);
                 log::info!(
