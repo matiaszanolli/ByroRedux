@@ -236,6 +236,141 @@ fn bs_tri_shape_block() -> Vec<u8> {
     d
 }
 
+// ── #2114 / D8-02 — non-zero packed-vertex BSTriShape fixture ───────
+//
+// The zero-vertex `bs_tri_shape_block()` above never exercises
+// `decode_bs_vertex_stream`'s per-vertex loop (`bs_tri_shape.rs:903`)
+// — the actual #833/#831 packed-vertex allocation site. A revert of
+// the `allocate_vec(nv)?` output-vec reservations back to `Vec::new()`
+// + per-`push` growth would pass every gate above undetected. This
+// fixture builds an FO4 (BSVER 130) BSTriShape with 16 real packed
+// half-float-position vertices so the loop actually runs.
+
+/// FO4-era BSTriShape body carrying 16 packed half-float-position
+/// vertices, no triangles. `vertex_desc` sets only `VF_VERTEX`
+/// (0x001) with a 2-quad (8-byte) stride: 3×f16 position + 1×f16
+/// unused-W padding (nif.xml `BSVertexData`, no `VF_TANGENTS` so the
+/// trailing slot is discarded, not `Bitangent X`). All coordinates
+/// are `0x0000` (half-float zero) — content doesn't matter, only that
+/// `num_vertices` is non-zero so `decode_bs_vertex_stream`'s
+/// allocate-then-push path actually executes.
+fn bs_tri_shape_block_with_vertices(num_vertices: u16) -> Vec<u8> {
+    const VF_VERTEX: u64 = 0x001;
+    let vertex_size_quads: u64 = 2; // 8 bytes/vertex ÷ 4
+    let vertex_desc = (VF_VERTEX << 44) | vertex_size_quads;
+
+    let mut d = Vec::new();
+    // NiObjectNET: name=-1 (no string), extra_data count=0, controller=-1
+    w32(&mut d, 0xFFFFFFFF);
+    w32(&mut d, 0);
+    w32(&mut d, 0xFFFFFFFF);
+    // NiAVObject (FO4+, no properties): flags + transform + collision_ref
+    w32(&mut d, 0); // flags
+    for _ in 0..3 {
+        wf32(&mut d, 0.0); // translation
+    }
+    for row in 0..3 {
+        for col in 0..3 {
+            wf32(&mut d, if row == col { 1.0 } else { 0.0 }); // identity rotation
+        }
+    }
+    wf32(&mut d, 1.0); // scale
+    w32(&mut d, 0xFFFFFFFF); // collision_ref
+    // BSTriShape: center(3) + radius + skin/shader/alpha refs + vertex_desc
+    for _ in 0..3 {
+        wf32(&mut d, 0.0); // bound center
+    }
+    wf32(&mut d, 0.0); // bound radius
+    w32(&mut d, 0xFFFFFFFF); // skin_ref
+    w32(&mut d, 0xFFFFFFFF); // shader_property_ref
+    w32(&mut d, 0xFFFFFFFF); // alpha_property_ref
+    d.extend_from_slice(&vertex_desc.to_le_bytes());
+    w32(&mut d, 0); // num_triangles (FO4+ BSVER>=130: u32)
+    w16(&mut d, num_vertices);
+    let data_size = 8u32 * num_vertices as u32; // stride(8) × num_vertices + 0 triangles
+    w32(&mut d, data_size);
+    // Packed vertex stream: per vertex, 3×half position + 1×half padding.
+    for _ in 0..num_vertices {
+        w16(&mut d, 0x0000); // x (half 0.0)
+        w16(&mut d, 0x0000); // y
+        w16(&mut d, 0x0000); // z
+        w16(&mut d, 0x0000); // unused W (no VF_TANGENTS)
+    }
+    // No trailing particle_data_size field — FO4+ (BSVER >= 130) drops it
+    // (`stream.bsver() < bsver::FALLOUT4` gate in `bs_tri_shape.rs`).
+    d
+}
+
+/// Build a minimal FO4 NIF containing a single non-zero-vertex
+/// BSTriShape. `parse_nif` walks every declared block regardless of
+/// scene-graph connectivity, so no NiNode wrapper is needed (mirrors
+/// `build_skyrim_se_minimal_nif`'s single-block minimalism).
+fn build_fo4_packed_vertex_nif(num_vertices: u16) -> Vec<u8> {
+    let mut nif = Vec::new();
+    nif.extend_from_slice(b"Gamebryo File Format, Version 20.2.0.7\n");
+    w32(&mut nif, 0x14020007); // version 20.2.0.7
+    w8(&mut nif, 1); // little-endian
+    w32(&mut nif, 12); // user_version
+    let num_blocks: u32 = 1;
+    w32(&mut nif, num_blocks);
+    w32(&mut nif, 130); // bsver = 130 (FO4) — selects the half-float position path
+    wshort(&mut nif, "ByroRedux Test"); // author
+    wshort(&mut nif, ""); // process_script (bsver <= FALLOUT4)
+    wshort(&mut nif, ""); // export_script
+    wshort(&mut nif, ""); // max_filepath (bsver >= 103)
+    w16(&mut nif, 1); // block type count
+    wsstr(&mut nif, "BSTriShape");
+    w16(&mut nif, 0); // block 0 → type 0
+    let block_sizes_offset = nif.len();
+    w32(&mut nif, 0); // block size placeholder
+    w32(&mut nif, 0); // string table: num_strings = 0
+    w32(&mut nif, 0); // string table: max_string_length = 0
+    w32(&mut nif, 0); // num_groups
+
+    let block_start = nif.len();
+    nif.extend_from_slice(&bs_tri_shape_block_with_vertices(num_vertices));
+    let block_size = (nif.len() - block_start) as u32;
+    nif[block_sizes_offset..block_sizes_offset + 4].copy_from_slice(&block_size.to_le_bytes());
+    nif
+}
+
+/// #2114 / D8-02 — packed-vertex allocation-bound gate. Parses an FO4
+/// BSTriShape with 16 real (non-zero) vertices under dhat so a future
+/// regression in `decode_bs_vertex_stream`'s allocate-then-push
+/// discipline (reverting `allocate_vec` to `Vec::new()` + per-element
+/// `push` growth) fails at CI cadence — the sibling zero-vertex
+/// fixtures above never execute that loop body at all.
+#[test]
+fn parse_fo4_packed_vertices_stays_within_heap_budget() {
+    let nif_bytes = build_fo4_packed_vertex_nif(16);
+
+    let _dhat_guard = DHAT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _profiler = dhat::Profiler::builder().testing().build();
+    let scene = parse_nif(&nif_bytes).expect("synthetic FO4 packed-vertex NIF should parse");
+    let stats = dhat::HeapStats::get();
+
+    assert_eq!(scene.blocks.len(), 1, "fixture has one BSTriShape block");
+
+    // Measured 10 blocks / 1230 bytes on 2026-07-20 (16 vertices × 4
+    // pre-reserved output vecs + NIF header/string-table overhead). Same
+    // loose-headroom philosophy as the sibling gates (~5× blocks, ~6.5×
+    // bytes) — catch an order-of-magnitude regression, not micro-shifts.
+    assert!(
+        stats.max_blocks < 50,
+        "max_blocks regression: {} >= 50 (measured 10) — decode_bs_vertex_stream \
+         likely reverted an allocate_vec(nv) reservation to Vec::new() + \
+         per-element push growth. See #2114 / D8-02 + #833 / #831.",
+        stats.max_blocks
+    );
+    assert!(
+        stats.max_bytes < 8 * 1024,
+        "max_bytes regression: {} >= 8192 (measured 1230) — decode_bs_vertex_stream \
+         likely reverted an allocate_vec(nv) reservation to Vec::new() + \
+         per-element push growth. See #2114 / D8-02 + #833 / #831.",
+        stats.max_bytes
+    );
+}
+
 /// Minimal v20.2.0.7 NiPSysSphereEmitter body — 77 bytes:
 /// modifier base(13) + emitter base 14×f32(56) + volume object ref(4) +
 /// sphere radius(4). Mirrors `parse_sphere_emitter_consumes_full_block`.
