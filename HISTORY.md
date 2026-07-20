@@ -24,6 +24,70 @@ Commits hold that record.
 
 ---
 
+## Session 58 — Renderer quality pass (ReSTIR spatial close-out, TAA/glass/volumetrics/decals) + audit bug-bash  (2026-07-18 → 2026-07-20, `42cf7641..86035f51`, 21 commits)
+
+Split roughly evenly between a renderer-quality pass and the standing
+audit-bug-bash cadence. On the renderer side, several shading paths that
+had been carrying known rough edges got real fixes rather than further
+deferral: TAA's history reprojection had no way to tell a moved surface
+from a static one, so it gained octahedral-normal surface validation and
+bounded history accumulation to kill ghosting; ReSTIR-DI's spatial-reuse
+fusion — already implemented but never reflected in the roadmap table —
+got its M37.3 entry formally closed alongside independent
+temporal/spatial debug gates and a new Cornell + FNV renderer-evaluation
+harness to make future shading changes measurable. Glass and
+volumetric/water shaders got alpha-blending and ray-precision passes, and
+the `Vertex` struct grew a full RGBA color channel to back a new decal
+system. On the audit side, a fresh zero-CRITICAL/HIGH performance audit
+(9 dimensions) found only audit-generated residue and its five findings
+were fixed same-day, while a parallel doc/traceability sweep drained more
+of the standing FNV/FO3/Oblivion/Starfield/NIF-doc backlog.
+
+- **Renderer shading fixes** — TAA surface-validated history + bounded
+  accumulation to prevent ghosting (`e5d02f83`); ReSTIR-DI M37.3 closed
+  out in ROADMAP as fully landed (spatial fusion + independent
+  temporal/spatial debug gates) with a new Cornell + FNV
+  renderer-evaluation harness (`e414249f`,
+  `docs/engine/renderer-evaluation.md`); glass alpha blending +
+  `GLASS_RAY_BUDGET` increase (`a09d2b76`); volumetric point/spot
+  in-scattering switched from uniform ambient glow to wall-occluded
+  local shafts, plus water RT closest-intersection precision
+  (`6c56e311`); `Vertex.color` widened `vec3`→`vec4` (26 floats / 104 B)
+  and `IsDecalMesh` + decal alpha blending introduced (`cd2b5fe4`,
+  `388b9969`).
+- **Performance audit bug-bash (2026-07-19 audit, #2111–#2115)** —
+  streaming worker no longer re-parses the full NIF header just to read
+  `bsver` (#2111); `skin.coverage` counters reset moved above the
+  framebuffers-empty guard so a bailed frame doesn't retain stale data
+  (#2112); pending stream requests now cancelled via
+  `stale_pending_coords` when their cell leaves `radius_unload` before
+  the parse completes, instead of spawning-then-immediately-unloading
+  (#2113); dhat geometry-bound fixtures gained a real 16-vertex FO4
+  `BSTriShape` case so the packed-vertex allocation loop actually runs
+  under CI (#2114); per-frame telemetry `format!` strings gated behind
+  the existing 1 Hz check (#2115).
+- **Standing audit/doc backlog** — Starfield CDB provider replaced a
+  retained multi-GB instance-tree parse with a header-only
+  `probe_header` + `peek_magic` reject, and hardened
+  `read_primitive_string` NUL-truncation (#2100–#2103); two genuine
+  Vulkan descriptor leaks on constructor error paths fixed
+  (`TextureRegistry::new`, scene-descriptor creation — #203 RL-13/RL-14);
+  `load_references` finished its TD1 split (~1015→635 lines) via a new
+  `spawn_synth_child` + `RefLoadAccum`/`CellLoadCtx` extraction
+  (#2055–#2058); FNV/FO3/Oblivion doc and traceability fixes
+  (#1982–#1984, #2081/#2082/#2087/#2088); `nif-parser.md` brought back in
+  sync with the live `NifVariant` doctrine and dispatch-arm counts
+  (#2005–#2008); `BsOrderedNode.alpha_sort_bound` now converts Z-up→Y-up
+  at extraction like every sibling position field (#2008/`6e5b0518`).
+
+Net: tests 3708→3738 (+30), Rust src LOC ~280 945→282 661 (+1 716),
+total LOC ~296 514→298 365 (+1 851), open issue dirs 1972→1983 (+11).
+Bench-of-record unchanged (`8a668eff`, R6a-stale-15) but now 38 commits
+stale with real shader changes landed this session — flagged as
+R6a-stale-16, re-run recommended next session.
+
+---
+
 ## Session 57 — M42 AI-behavior rollout (Wander→Patrol) + audit bug-bash + CI recovery  (2026-07-15 → 2026-07-18, `7b1fefac..b5e38c22`, 42 commits)
 
 Picked up the NPC-liveliness arc where Session 56 left it — Sandbox could
