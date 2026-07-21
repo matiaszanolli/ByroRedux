@@ -597,8 +597,12 @@ pub enum ShaderTypeData {
     None,
     /// Type 1 (Skyrim/FO4): Environment Map.
     EnvironmentMap { env_map_scale: f32 },
-    /// Type 5 (Skyrim/FO4): Skin Tint (Color3).
-    SkinTint { skin_tint_color: [f32; 3] },
+    /// Type 5 (Skyrim/FO4): Skin Tint. Skyrim stores Color3; FO4 appends
+    /// an authored alpha that controls how strongly the runtime tint applies.
+    SkinTint {
+        skin_tint_color: [f32; 3],
+        skin_tint_alpha: Option<f32>,
+    },
     /// Type 6 (Skyrim/FO4): Hair Tint.
     HairTint { hair_tint_color: [f32; 3] },
     /// Type 7 (Skyrim/FO4): Parallax Occlusion.
@@ -1320,7 +1324,10 @@ fn parse_shader_type_data(stream: &mut NifStream, shader_type: u32) -> io::Resul
                 stream.read_f32_le()?,
                 stream.read_f32_le()?,
             ];
-            Ok(ShaderTypeData::SkinTint { skin_tint_color })
+            Ok(ShaderTypeData::SkinTint {
+                skin_tint_color,
+                skin_tint_alpha: None,
+            })
         }
         6 => {
             // Hair Tint
@@ -1420,13 +1427,21 @@ fn parse_shader_type_data_fo4(
                 stream.read_f32_le()?,
                 stream.read_f32_le()?,
             ];
-            // FO4-specific: skin tint alpha (BSVER 130–139).
-            if (crate::version::bsver::FALLOUT4..crate::version::bsver::FO4_DLC_UPPER)
-                .contains(&bsver)
-            {
-                let _skin_tint_alpha = stream.read_f32_le()?;
-            }
-            Ok(ShaderTypeData::SkinTint { skin_tint_color })
+            // FO4-specific: skin tint alpha (BSVER 130–139). This is semantic
+            // material data, not padding: zero leaves the source skin texture
+            // unchanged while one fully applies the RGB tint.
+            let skin_tint_alpha =
+                if (crate::version::bsver::FALLOUT4..crate::version::bsver::FO4_DLC_UPPER)
+                    .contains(&bsver)
+                {
+                    Some(stream.read_f32_le()?)
+                } else {
+                    None
+                };
+            Ok(ShaderTypeData::SkinTint {
+                skin_tint_color,
+                skin_tint_alpha,
+            })
         }
         // All other types same as Skyrim.
         6 => {

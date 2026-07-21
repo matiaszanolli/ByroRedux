@@ -139,6 +139,7 @@ mod tests {
             ("MAT_FLAG_MODEL_SPACE_NORMALS", format!("#define MAT_FLAG_MODEL_SPACE_NORMALS {MAT_FLAG_MODEL_SPACE_NORMALS}u")),
             ("MAT_FLAG_TRANSLUCENCY_THICK_OBJECT", format!("#define MAT_FLAG_TRANSLUCENCY_THICK_OBJECT {MAT_FLAG_TRANSLUCENCY_THICK_OBJECT}u")),
             ("MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO", format!("#define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO {MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO}u")),
+            ("MAT_FLAG_THIN_GLASS", format!("#define MAT_FLAG_THIN_GLASS {MAT_FLAG_THIN_GLASS}u")),
             ("MAT_FLAG_EFFECT_LI_SHIFT", format!("#define MAT_FLAG_EFFECT_LI_SHIFT {MAT_FLAG_EFFECT_LI_SHIFT}u")),
             // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
         ] {
@@ -370,6 +371,7 @@ mod tests {
             "MAT_FLAG_EFFECT_PALETTE_COLOR",
             "MAT_FLAG_EFFECT_PALETTE_ALPHA",
             "MAT_FLAG_EFFECT_LIT",
+            "MAT_FLAG_THIN_GLASS",
         ] {
             let needle = format!("const uint {name}");
             assert!(
@@ -577,6 +579,7 @@ mod tests {
             MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO,
             material_flag::TRANSLUCENCY_MIX_ALBEDO
         );
+        assert_eq!(MAT_FLAG_THIN_GLASS, material_flag::THIN_GLASS);
         // Lighting-influence shift — a byte-field offset, not a single-bit flag.
         assert_eq!(MAT_FLAG_EFFECT_LI_SHIFT, material_flag::EFFECT_LI_SHIFT);
         // BGSM_AUTHORED intentionally NOT mirrored to GLSL — see build.rs.
@@ -645,6 +648,27 @@ mod tests {
         assert!(
             src.contains("if (useTemporal && shadowFade > 0.01"),
             "temporal reprojection must be conditional on useTemporal"
+        );
+    }
+
+    /// Thin glass must be a surface-wide behavior decision. A regression to
+    /// the per-fragment IOR budget gate recreates the close-range checkerboard
+    /// when a large dome consumes the remaining budget non-uniformly.
+    #[test]
+    fn triangle_frag_thin_glass_bypasses_volume_ior_and_faces_viewer() {
+        let src = include_str!("../shaders/triangle.frag");
+
+        assert!(
+            src.contains("bool glassIORAllowed = isGlass && !isThinGlass"),
+            "thin glass must be excluded before the per-fragment ray-budget claim"
+        );
+        assert!(
+            src.contains("if (dot(glassViewNormal, V) < 0.0)"),
+            "two-sided glass must orient its smooth coverage normal toward the viewer"
+        );
+        assert!(
+            src.contains("N = glassViewNormal;"),
+            "the non-IOR glass base path must use the same view-facing macro normal"
         );
     }
 }

@@ -49,10 +49,14 @@ fn parse_bs_lighting_skin_tint_trailing() {
 
     let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
     match prop.shader_type_data {
-        ShaderTypeData::SkinTint { skin_tint_color } => {
+        ShaderTypeData::SkinTint {
+            skin_tint_color,
+            skin_tint_alpha,
+        } => {
             assert!((skin_tint_color[0] - 0.9).abs() < 1e-6);
             assert!((skin_tint_color[1] - 0.7).abs() < 1e-6);
             assert!((skin_tint_color[2] - 0.5).abs() < 1e-6);
+            assert_eq!(skin_tint_alpha, None);
         }
         _ => panic!("expected SkinTint"),
     }

@@ -219,6 +219,9 @@ pub const MAT_FLAG_TRANSLUCENCY: u32 = 1 << 6;
 pub const MAT_FLAG_MODEL_SPACE_NORMALS: u32 = 1 << 7;
 pub const MAT_FLAG_TRANSLUCENCY_THICK_OBJECT: u32 = 1 << 8;
 pub const MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO: u32 = 1 << 9;
+// Non-occluding glass sheet/shell. This is a canonical behavior flag, not a
+// BGEM provenance bit: any source translator may select it.
+pub const MAT_FLAG_THIN_GLASS: u32 = 1 << 11;
 // `MAT_FLAG_EFFECT_LI_SHIFT` — bit offset for the 8-bit
 // `BSEffectShaderProperty.lighting_influence` byte packed into bits
 // 16-23 of `materialFlags`. Extract via

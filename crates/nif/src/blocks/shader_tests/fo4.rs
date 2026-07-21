@@ -279,6 +279,37 @@ fn parse_bs_lighting_fo4_bsver130_consumes_exactly_140_bytes() {
     );
 }
 
+/// FO4 appends a blend alpha to the legacy SkinTint RGB triple. It must
+/// survive parsing: character base meshes commonly carry a placeholder RGB
+/// with alpha zero, meaning "leave the actor's resolved skin texture alone."
+/// Dropping the alpha made the renderer substitute one and black out bodies.
+#[test]
+fn parse_bs_lighting_fo4_skin_tint_preserves_alpha() {
+    let header = make_fo4_header();
+    let mut data = build_bs_lighting_fo4_env_map();
+    // The common BSVER=130 body is 140 bytes. Replace the EnvironmentMap
+    // trailing payload with SkinTint's RGB + alpha payload.
+    data.truncate(140);
+    data[0..4].copy_from_slice(&5u32.to_le_bytes());
+    for value in [0.0f32, 0.0, 0.0, 0.0] {
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSLightingShaderProperty::parse(&mut stream).unwrap();
+    match prop.shader_type_data {
+        ShaderTypeData::SkinTint {
+            skin_tint_color,
+            skin_tint_alpha,
+        } => {
+            assert_eq!(skin_tint_color, [0.0; 3]);
+            assert_eq!(skin_tint_alpha, Some(0.0));
+        }
+        other => panic!("expected SkinTint, got {other:?}"),
+    }
+    assert_eq!(stream.position(), data.len() as u64);
+}
+
 
 #[test]
 fn parse_bs_lighting_fo4_env_map_with_wetness() {

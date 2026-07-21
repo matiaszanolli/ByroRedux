@@ -246,6 +246,7 @@ pub fn extract_bs_tri_shape(
         model_space_normals: mat.model_space_normals,
         from_bgsm: false,
         bgem_glass: false,
+        thin_glass: false,
         // Stage 2 — legacy PBR translation. BGSM merge overwrites for
         // BGSM-resolved Skyrim+/FO4 meshes; non-BGSM BSLightingShader-
         // Property paths keep these classifier-derived values.

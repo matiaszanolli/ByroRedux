@@ -182,8 +182,12 @@ pub(crate) fn capture_shader_type_fields(data: &ShaderTypeData) -> ShaderTypeFie
     let mut f = ShaderTypeFields::default();
     match *data {
         ShaderTypeData::None | ShaderTypeData::EnvironmentMap { .. } => {}
-        ShaderTypeData::SkinTint { skin_tint_color } => {
+        ShaderTypeData::SkinTint {
+            skin_tint_color,
+            skin_tint_alpha,
+        } => {
             f.skin_tint_color = Some(skin_tint_color);
+            f.skin_tint_alpha = skin_tint_alpha;
         }
         ShaderTypeData::Fo76SkinTint { skin_tint_color } => {
             f.skin_tint_color = Some([skin_tint_color[0], skin_tint_color[1], skin_tint_color[2]]);

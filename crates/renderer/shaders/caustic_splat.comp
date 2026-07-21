@@ -31,7 +31,10 @@ layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y) in;
 // ── G-buffer inputs (previous pass already wrote these) ─────────────
 layout(set = 0, binding = 0) uniform sampler2D depthTex;
 layout(set = 0, binding = 1) uniform sampler2D normalTex;   // RG16_SNORM octahedral
-layout(set = 0, binding = 2) uniform usampler2D meshIdTex;  // R32_UINT, id + 1
+// Alpha-blended pixels keep current-frame instance index + 1 in the low
+// bits. Opaque pixels carry a stable temporal surface ID, but cannot pass
+// the alpha/caustic gate below.
+layout(set = 0, binding = 2) uniform usampler2D meshIdTex;
 
 // ── Scene (copied from triangle.{vert,frag}) ────────────────────────
 struct GpuLight {
@@ -79,7 +82,7 @@ layout(set = 0, binding = 4) uniform CameraUBO {
 // Deferred work (tracked under closed #1098 / REN-D13-001, #1111):
 // migrate `avgAlbedoR/G/B` to GpuMaterial and read via
 // `materials[inst.materialId]`. Saves 16 B per instance (avgAlbedo +
-// _padAlbedo at offsets 96..112). Requires adding the MaterialBuffer
+// avgAlbedo + surfaceId at offsets 96..112). Requires adding the MaterialBuffer
 // binding to the caustic compute pipeline's descriptor set + updating
 // the 5 GpuInstance struct mirrors in lockstep (see
 // `feedback_shader_struct_sync.md`).
@@ -93,7 +96,8 @@ struct GpuInstance {
     uint flags;
     uint materialId;
     float ior; // former padding lane; populated per draw without ABI growth
-    float avgAlbedoR, avgAlbedoG, avgAlbedoB, _padAlbedo;
+    float avgAlbedoR, avgAlbedoG, avgAlbedoB;
+    uint surfaceId;
 };
 
 layout(std430, set = 0, binding = 5) readonly buffer InstanceBuffer {

@@ -158,7 +158,7 @@ fn compute_directional_upload(
 /// to fold into single instanced draws. Owned here so the field order
 /// can't silently drift from an assert in a downstream crate.
 ///
-/// Both branches return the same 10-tuple shape so the compiler accepts
+/// All branches return the same 11-tuple shape so the compiler accepts
 /// a single key closure. Per-branch semantics:
 ///   Slot 0       = `!in_raster` priority bit — `0` for in-frustum
 ///                 (rasterized) draws, `1` for off-frustum RT-only
@@ -174,43 +174,45 @@ fn compute_directional_upload(
 ///                 to shadow / reflection / GI from beyond the
 ///                 frustum). See `MAX_INSTANCES` doc + Option B of
 ///                 the transparent-draw-flicker root-cause writeup.
-///   Slots 1–9    same as the pre-Option-B key:
-///   Opaque      — slot 4/5 = 0 (blend factors unused); slot 6 = depth_state;
-///                 slot 7 = mesh (cluster key); slot 8 = sort_depth
-///                 (front-to-back); slot 9 = entity_id tiebreaker (#506).
-///   Transparent — slot 4/5 = (src_blend, dst_blend); slot 9 = entity_id.
-///                 Slots 6/7/8 vary by blend mode:
-///                 * alpha-over (dst != ONE) → slot 6 = !sort_depth
-///                   (back-to-front — compositing correctness must win
-///                   even over the pipeline-bind boundary), slot 7 =
-///                   depth_state (tie-break only), slot 8 = mesh.
-///                 * additive (Gamebryo dst_blend == ONE == 0) is
-///                   order-independent → slot 6 = depth_state (the
-///                   pipeline-bind boundary dominates, mirroring the
-///                   Opaque branch — #1994/DIM2-01), slot 7 = mesh
-///                   (cluster key), slot 8 = sort_depth, so same-mesh
-///                   particles of one pipeline state stay contiguous and
-///                   instance-batch (#1649).
+///   Slot 1       = opaque/transparent class (`0`/`1`).
+///   Slot 2       = transparent blend class: additive (`0`) before true
+///                 alpha-over (`1`). Opaque also uses `0`.
+///   Opaque      — slots 3/4 = render layer/two-sided; slots 5/6 = 0
+///                 (blend factors unused); slot 7 = depth_state; slot 8 =
+///                 mesh (cluster key); slot 9 = sort_depth
+///                 (front-to-back); slot 10 = entity_id tiebreaker (#506).
+///   Additive    — order-independent, so slots 3–9 retain state/mesh
+///                 clustering: render layer, two-sided, blend factors,
+///                 depth_state, mesh, then sort_depth. This keeps particles
+///                 instance-batchable (#1649/#1994).
+///   Alpha-over  — slot 3 = !sort_depth (global back-to-front order), then
+///                 render layer, two-sided, blend factors, depth_state and
+///                 mesh as tie-breakers in slots 4–9. Depth must precede
+///                 every raster-state boundary: grouping by render layer
+///                 first lets a distant puddle/decal draw after nearer
+///                 glass and appear as a rectangular patch on the glass.
 ///
-/// D2-NEW-05 (#1806): every branch's `depth_state` slot (6 for Opaque and
-/// additive Transparent, 7 for alpha-over Transparent) also carries the
+/// D2-NEW-05 (#1806): every branch's `depth_state` slot (7 for Opaque and
+/// additive Transparent, 8 for alpha-over Transparent) also carries the
 /// `wireframe` pipeline-bind boundary, packed into `pack_depth_state`'s
 /// spare bit 2 — see that function's doc comment. Without it a wireframe
 /// draw could land mid-run among fill draws of the same mesh/depth state
 /// and split the batch.
 ///
-/// Slot 2 widened from `is_decal as u8` to `render_layer as u8`
-/// (#renderlayer): same shape, but consecutive same-layer draws now
-/// cluster as one of `{0..3}` rather than `{0,1}`, matching the new
-/// per-layer depth-bias state-change boundary in `DrawBatch`.
+/// Opaque/additive slot 3 widened from `is_decal as u8` to
+/// `render_layer as u32` (#renderlayer), matching the per-layer depth-bias
+/// state-change boundary in `DrawBatch`. Alpha-over deliberately places
+/// this boundary after depth for correct compositing.
 ///
 /// The entity_id final slot makes `par_sort_unstable_by_key` behave
 /// deterministically across runs: without it, rayon's work-stealing
-/// could reorder commands whose 10-tuple prefix tied, breaking
+/// could reorder commands whose 11-tuple prefix tied, breaking
 /// capture/replay and screenshot-diff workflows on scenes with many
 /// identical-mesh / identical-depth entries (e.g. exterior rock
 /// fields at a fixed camera distance).
-pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u8, u32, u32, u32, u32, u32, u32) {
+pub(crate) fn draw_sort_key(
+    cmd: &DrawCommand,
+) -> (u8, u8, u8, u32, u32, u32, u32, u32, u32, u32, u32) {
     // Off-frustum RT-only entries cluster at the END of the sorted
     // array. Cap-on-overflow at `upload_instances` drops them first,
     // never raster draws. See the doc comment above + the
@@ -233,33 +235,47 @@ pub(crate) fn draw_sort_key(cmd: &DrawCommand) -> (u8, u8, u8, u8, u32, u32, u32
         // over even the pipeline-bind boundary — its compositing order is
         // visible, so correctness wins over bind-count efficiency there.
         const GAMEBRYO_BLEND_ONE: u8 = 0;
-        let (slot6, slot7, slot8) = if cmd.dst_blend == GAMEBRYO_BLEND_ONE {
-            // depth_state dominates → contiguous fill/wireframe runs;
-            // mesh clusters within each; sort_depth is front-to-back.
-            (pack_depth_state(cmd) as u32, cmd.mesh_handle, cmd.sort_depth)
+        if cmd.dst_blend == GAMEBRYO_BLEND_ONE {
+            // State dominates → contiguous fill/wireframe and mesh runs;
+            // sort_depth is only a deterministic within-mesh tiebreaker.
+            (
+                rt_only,
+                1u8, // after opaque
+                0u8, // additive before alpha-over
+                cmd.render_layer as u32,
+                cmd.two_sided as u32,
+                cmd.src_blend as u32,
+                cmd.dst_blend as u32,
+                pack_depth_state(cmd) as u32,
+                cmd.mesh_handle,
+                cmd.sort_depth,
+                cmd.entity_id,
+            )
         } else {
-            // depth dominates → back-to-front; depth_state only breaks
-            // ties within a depth bucket; mesh is the final tiebreaker.
-            (!cmd.sort_depth, pack_depth_state(cmd) as u32, cmd.mesh_handle)
-        };
-        (
-            rt_only,
-            1u8, // after opaque
-            cmd.render_layer as u8,
-            cmd.two_sided as u8,
-            cmd.src_blend as u32,
-            cmd.dst_blend as u32,
-            slot6,
-            slot7,
-            slot8,
-            cmd.entity_id,
-        )
+            // Global depth dominates → back-to-front across render layers,
+            // cull modes, blend factors and depth states. Those state axes
+            // only break ties within one quantized depth bucket.
+            (
+                rt_only,
+                1u8, // after opaque
+                1u8, // after additive transparent draws
+                !cmd.sort_depth,
+                cmd.render_layer as u32,
+                cmd.two_sided as u32,
+                cmd.src_blend as u32,
+                cmd.dst_blend as u32,
+                pack_depth_state(cmd) as u32,
+                cmd.mesh_handle,
+                cmd.entity_id,
+            )
+        }
     } else {
         (
             rt_only,
             0u8,
-            cmd.render_layer as u8,
-            cmd.two_sided as u8,
+            0u8,
+            cmd.render_layer as u32,
+            cmd.two_sided as u32,
             0,
             0,
             pack_depth_state(cmd) as u32,

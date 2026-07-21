@@ -200,7 +200,7 @@ pub(crate) fn pack_effect_shader_flags(
 pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMesh) -> u32 {
     use byroredux_renderer::vulkan::material::material_flag::{
         BGSM_AUTHORED, EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR, MODEL_SPACE_NORMALS, PBR_BSDF,
-        TRANSLUCENCY, TRANSLUCENCY_MIX_ALBEDO, TRANSLUCENCY_THICK_OBJECT,
+        THIN_GLASS, TRANSLUCENCY, TRANSLUCENCY_MIX_ALBEDO, TRANSLUCENCY_THICK_OBJECT,
     };
     let mut flags = 0u32;
     // `BGSM_AUTHORED` — set when `merge_bgsm_into_mesh` resolved a
@@ -225,6 +225,9 @@ pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMes
     }
     if mesh.model_space_normals {
         flags |= MODEL_SPACE_NORMALS;
+    }
+    if mesh.thin_glass {
+        flags |= THIN_GLASS;
     }
     // #1353 / FO4-D8-07 — FO4 BGSM grayscale-to-palette. EFFECT_PALETTE_COLOR
     // IS `SLSF1::Greyscale_To_PaletteColor`; setting it on a BGSM lit material
@@ -272,7 +275,7 @@ mod pack_bgsm_material_flags_tests {
     use super::pack_bgsm_material_flags;
     use byroredux_nif::import::ImportedMesh;
     use byroredux_renderer::vulkan::material::material_flag::{
-        EFFECT_PALETTE_COLOR, MODEL_SPACE_NORMALS, PBR_BSDF, TRANSLUCENCY,
+        EFFECT_PALETTE_COLOR, MODEL_SPACE_NORMALS, PBR_BSDF, THIN_GLASS, TRANSLUCENCY,
     };
 
     /// Build an empty-but-valid `ImportedMesh` with all 3 BGSM flags
@@ -320,6 +323,7 @@ mod pack_bgsm_material_flags_tests {
             model_space_normals: false,
             from_bgsm: false,
             bgem_glass: false,
+            thin_glass: false,
             metalness_override: None,
             roughness_override: None,
             // #1147 Phase 2b — translucency suite (zero default).
@@ -411,6 +415,10 @@ mod pack_bgsm_material_flags_tests {
         let mut mesh = empty_mesh();
         mesh.model_space_normals = true;
         assert_eq!(pack_bgsm_material_flags(&mesh), MODEL_SPACE_NORMALS);
+
+        let mut mesh = empty_mesh();
+        mesh.thin_glass = true;
+        assert_eq!(pack_bgsm_material_flags(&mesh), THIN_GLASS);
     }
 
     /// #1353 / FO4-D8-07 — a BGSM that authored a greyscale-to-palette LUT

@@ -182,9 +182,10 @@ mod tests {
             "spatial reuse may borrow light candidates, never old surface radiance"
         );
         assert!(
-            src.contains("histLen = min(histPrev + 1.0, 16.0)")
-                && src.contains("max(1.0 / histLen, 0.1)"),
-            "direct-light history must remain bounded and responsive"
+            src.contains("bool cameraStatic = dofParams.w > 0.5")
+                && src.contains("cameraStatic ? 64.0 : 16.0")
+                && src.contains("cameraStatic ? 0.025 : 0.1"),
+            "direct-light history must converge when parked and remain responsive in motion"
         );
     }
 

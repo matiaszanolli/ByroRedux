@@ -312,18 +312,17 @@ pub(super) fn group_state(
 /// Whether a batch needs the two-pass (FRONT-cull then BACK-cull)
 /// two-sided alpha-blend split (#1804 / D2-NEW-03).
 ///
-/// The split exists so back faces write depth before front faces blend
-/// on top, stabilizing TAA's depth-winner pick on order-dependent
-/// volumetric glass. That rationale requires depth writes: with
-/// `z_write == false` (particles are currently the only such batches,
-/// see `byroredux/src/render/particles.rs`) neither pass writes depth,
-/// so splitting buys nothing — the FRONT-cull pass rasterizes ~nothing
-/// for camera-facing billboards while still shading the whole instanced
-/// batch. Gating on `z_write` removes that dead pass without touching
-/// the depth-writing glass case the split was built for.
+/// The split establishes stable back-face-before-front-face compositing
+/// for order-dependent glass. It is required even when depth writes are
+/// disabled: FO4 BGEM glass commonly uses `z_write == false`, and a single
+/// CULL_NONE draw otherwise interleaves the dome's front/back triangles in
+/// mesh index order. TAA jitter then exposes a different blend winner and
+/// produces crawling blocks/cross-hatch. The extra FRONT-cull pass remains
+/// cheap for planar particles because it rasterizes no camera-facing
+/// fragments; their normal BACK-cull pass still supplies the visible quad.
 pub(super) fn needs_two_sided_blend_split(b: &DrawBatch) -> bool {
     let is_blend = matches!(b.pipeline_key, PipelineKey::Blended { .. });
-    is_blend && b.two_sided && b.z_write
+    is_blend && b.two_sided
 }
 
 /// All per-frame inputs consumed by [`VulkanContext::draw_frame`].
@@ -3340,7 +3339,9 @@ impl VulkanContext {
                 avg_albedo_r: gi_albedo[0],
                 avg_albedo_g: gi_albedo[1],
                 avg_albedo_b: gi_albedo[2],
-                _pad_albedo: 0.0,
+                // Stable across per-frame sort/batch changes. Zero remains
+                // reserved for synthetic/default instances.
+                surface_id: draw_cmd.entity_id.wrapping_add(1),
             });
 
             // Frustum-culled draws still need an SSBO entry so RT hit
@@ -4747,12 +4748,11 @@ mod group_state_tests {
 
 #[cfg(test)]
 mod needs_two_sided_blend_split_tests {
-    //! #1804 / D2-NEW-03 — the two-sided alpha-blend split must only run
-    //! when the batch actually writes depth. Particles are `two_sided +
-    //! alpha-blend` but `z_write: false`
-    //! (`byroredux/src/render/particles.rs`); pre-fix they still hit the
-    //! split and paid for a FRONT-cull pass that rasterizes ~nothing for
-    //! camera-facing billboards.
+    //! #1804 / D2-NEW-03 — every two-sided alpha-blend batch is split into
+    //! stable back/front passes. FO4 BGEM glass is commonly `z_write: false`,
+    //! so depth-write state cannot be used to distinguish glass from planar
+    //! particles. The latter pay only an extra vertex walk because their
+    //! FRONT-cull pass produces no camera-facing fragments.
     use super::*;
     use byroredux_core::ecs::components::RenderLayer;
 
@@ -4777,19 +4777,17 @@ mod needs_two_sided_blend_split_tests {
         }
     }
 
-    /// Depth-writing two-sided blend (order-dependent glass) still splits.
+    /// Depth-writing two-sided blend (order-dependent glass) splits.
     #[test]
     fn splits_when_blended_two_sided_and_z_write() {
         assert!(needs_two_sided_blend_split(&blended_two_sided_batch(true)));
     }
 
-    /// `z_write: false` (the particle case) must NOT split — neither pass
-    /// writes depth, so the FRONT-cull pass is dead work.
+    /// Non-depth-writing two-sided blend must also split: this is the normal
+    /// authored state for FO4 BGEM glass.
     #[test]
-    fn does_not_split_when_z_write_false() {
-        assert!(!needs_two_sided_blend_split(&blended_two_sided_batch(
-            false
-        )));
+    fn splits_when_z_write_false() {
+        assert!(needs_two_sided_blend_split(&blended_two_sided_batch(false)));
     }
 
     /// Single-sided blend never splits, regardless of z_write.

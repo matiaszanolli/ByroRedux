@@ -25,7 +25,7 @@ struct GpuInstance {
     float avgAlbedoR;      // offset 96 — kept for caustic_splat.comp
     float avgAlbedoG;      // offset 100
     float avgAlbedoB;      // offset 104
-    float _padAlbedo;      // offset 108 → total 112
+    uint surfaceId;        // offset 108 — stable temporal-shadow identity
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

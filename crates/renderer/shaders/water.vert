@@ -54,7 +54,7 @@ struct GpuInstance {
     float avgAlbedoR;
     float avgAlbedoG;
     float avgAlbedoB;
-    float _padAlbedo;
+    uint surfaceId;
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

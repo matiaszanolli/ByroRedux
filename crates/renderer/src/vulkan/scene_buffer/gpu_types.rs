@@ -108,7 +108,10 @@ pub struct GpuInstance {
     pub avg_albedo_r: f32, // 4 B, offset 96
     pub avg_albedo_g: f32,    // 4 B, offset 100
     pub avg_albedo_b: f32,    // 4 B, offset 104
-    pub _pad_albedo: f32,     // 4 B, offset 108 → total 112
+    /// Stable draw identity used by temporal direct-shadow reservoirs.
+    /// Unlike the per-frame instance-buffer index, this follows the ECS
+    /// entity when depth sorting or animated actors reorder draw commands.
+    pub surface_id: u32, // 4 B, offset 108 → total 112
                               // Struct is 112 bytes (7×16), 16-byte aligned for std430.
 }
 
@@ -139,7 +142,7 @@ impl Default for GpuInstance {
             avg_albedo_r: 0.5,
             avg_albedo_g: 0.5,
             avg_albedo_b: 0.5,
-            _pad_albedo: 0.0,
+            surface_id: 0,
         }
     }
 }

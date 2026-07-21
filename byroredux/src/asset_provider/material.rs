@@ -97,6 +97,60 @@ pub(crate) fn bgsm_metalness(spec: [f32; 3], pbr: bool) -> f32 {
     }
 }
 
+/// Select the shared transmissive-glass behavior from BGEM authoring.
+///
+/// Modern BGEM v21+ files expose `glass_enabled`, while older FO4 BGEMs
+/// predate that field. Vanilla still authors clear hard-surface shells in
+/// those files through a coherent feature set: standard alpha blending,
+/// no depth write, two-sided/non-occluding geometry, lit view-angle falloff,
+/// and an environment-map + mask + normal-map stack. The Port-A-Diner dome
+/// is the canonical v2 example. Treat that feature bundle as the legacy
+/// spelling of the same shared glass behavior; the individual maps remain
+/// material overlays after classification.
+pub(crate) fn bgem_uses_glass_behavior(bgem: &BgemFile) -> bool {
+    if bgem.glass_enabled || bgem.base.refraction {
+        return true;
+    }
+
+    let blend = bgem.base.alpha_blend_mode;
+    let standard_alpha = blend.function > 0 && blend.src_blend == 6 && blend.dst_blend == 7;
+    let hard_transparent_shell = standard_alpha
+        && bgem.base.alpha > 0.0
+        && bgem.base.alpha < 1.0
+        && !bgem.base.alpha_test
+        && !bgem.base.z_buffer_write
+        && bgem.base.z_buffer_test
+        && bgem.base.two_sided
+        && bgem.base.non_occluder
+        && !bgem.base.decal;
+    let reflective_surface_maps = bgem.base.environment_mapping
+        && !bgem.envmap_texture.is_empty()
+        && !bgem.envmap_mask_texture.is_empty()
+        && !bgem.normal_texture.is_empty();
+    let lit_fresnel_falloff = bgem.effect_lighting_enabled
+        && bgem.falloff_enabled
+        && !bgem.soft_enabled
+        && !bgem.blood_enabled
+        && !bgem.base.grayscale_to_palette_color
+        && !bgem.grayscale_to_palette_alpha
+        && bgem.grayscale_texture.is_empty();
+
+    bgem.base.version < 21
+        && hard_transparent_shell
+        && reflective_surface_maps
+        && lit_fresnel_falloff
+}
+
+/// Select the thin-shell variant of the shared glass behavior.
+///
+/// `non_occluder` is behavioral authoring, not merely a culling hint: the
+/// surface is meant to composite over geometry behind it and does not define
+/// the boundary of a closed optical volume. Keep this decision in the source
+/// translator so downstream rendering stays format-agnostic.
+pub(crate) fn bgem_uses_thin_glass_behavior(bgem: &BgemFile) -> bool {
+    bgem.base.non_occluder && bgem_uses_glass_behavior(bgem)
+}
+
 /// Build a MaterialProvider from CLI arguments. Accepts repeated
 /// `--materials-ba2 <path>` flags so a user can layer modded materials
 /// on top of the vanilla `Fallout4 - Materials.ba2`. Silently returns
@@ -1109,17 +1163,21 @@ pub(crate) fn merge_bgsm_into_mesh(
             mesh.src_blend_mode = bgsm_blend_to_gamebryo(bgem.base.alpha_blend_mode.src_blend);
             mesh.dst_blend_mode = bgsm_blend_to_gamebryo(bgem.base.alpha_blend_mode.dst_blend);
         }
-        // #1280 sub-step 3b — forward BGEM `glass_enabled` so the
+        // #1280 sub-step 3b — forward BGEM glass semantics so the
         // spawn-time classifier in `helpers::classify_glass_into_material`
         // can fire the glass path even when neither the texture path nor
-        // the mesh name carries a glass keyword. FO4 ships BGEM glass
-        // bottles whose atlas texture (e.g. `clutter01.dds`) and node
-        // name (e.g. `Bottle:0`) match nothing in the keyword list; the
-        // BGEM file itself is the only authoritative authoring of "this
-        // material is glass". Pre-fix those bottles rendered as opaque
-        // plastic (`material_kind = 0`, default roughness 0.80).
-        if bgem.glass_enabled {
+        // the mesh name carries a glass keyword. v21+ files expose the
+        // direct `glass_enabled` field; older FO4 files use the equivalent
+        // blend/depth/falloff/environment-map feature bundle recognized by
+        // `bgem_uses_glass_behavior` (Port-A-Diner's v2 dome).
+        if bgem_uses_glass_behavior(&bgem) {
             mesh.bgem_glass = true;
+            // `non_occluder` is the authored behavioral distinction between
+            // a thin transmissive shell (display dome/window sheet) and a
+            // closed glass volume. Preserve it independently of BGEM so the
+            // shared glass shader can choose a surface-consistent base path;
+            // texture maps remain ordinary overlays either way.
+            mesh.thin_glass = bgem_uses_thin_glass_behavior(&bgem);
         }
         // Soft-particle depth fade + view-angle falloff cone. The NIF
         // `BSEffectShaderProperty` path fills `mesh.effect_shader` from the

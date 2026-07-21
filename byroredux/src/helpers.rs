@@ -92,9 +92,14 @@ pub(crate) fn classify_glass_into_material(
     if !has_transparent_coverage || is_decal {
         return;
     }
-    // Conductors are never glass; `resolve_pbr` has already marked
-    // obvious metal in `metalness` (BGSM or keyword classifier).
-    if material.metalness >= 0.3 {
+    // Conductors are never inferred as glass from a keyword. An authored
+    // BGEM glass signal is stronger than the source carrier's fallback PBR
+    // values, however: legacy BSEffect defaults to metalness 0.4 even for
+    // clear shells such as Port-A-Diner. The shared behavior overwrites that
+    // placeholder metalness below.
+    let bgem_effect_fallback = bgem_glass
+        && material.material_kind == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
+    if material.metalness >= 0.3 && !bgem_effect_fallback {
         return;
     }
     if !keyword_match && !bgem_glass {
@@ -358,6 +363,8 @@ mod glass_classification_tests {
         // set. The carrier kind must not prevent the shared glass behavior.
         let mut m = mat();
         m.material_kind = byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
+        // Real BSEffect fallback before shared glass behavior is applied.
+        m.metalness = 0.40;
         m.texture_path = Some("textures/clutter/clutter01.dds".into());
         m.normal_map = Some("textures/clutter/clutter01_n.dds".into());
         m.glow_map = Some("textures/clutter/clutter01_g.dds".into());

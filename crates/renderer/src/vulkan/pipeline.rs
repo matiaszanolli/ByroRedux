@@ -495,10 +495,13 @@ fn triangle_pipeline_inner(
 ///
 /// Shares the same render pass, pipeline layout, and shader pair as the
 /// opaque pipelines. `src` / `dst` are raw Gamebryo AlphaFunction enum
-/// values; [`gamebryo_to_vk_blend_factor`] maps them. Only the HDR
-/// attachment (0) blends — G-buffer attachments (normal/motion/mesh_id/
-/// raw_indirect/albedo) overwrite, matching the behaviour the old
-/// `Alpha` / `Additive` static pipelines had.
+/// values; [`gamebryo_to_vk_blend_factor`] maps them. HDR uses the authored
+/// Gamebryo blend factors. Raw indirect and albedo
+/// use conventional source-alpha blending so a transmissive surface cannot
+/// replace the opaque receiver's indirect-light state with an opaque glass
+/// G-buffer record. Normal/motion/mesh_id still overwrite: they carry the
+/// frontmost transparent surface state used by diagnostics, TAA rejection,
+/// and glass caustics rather than composited radiance.
 /// The shared Vulkan state a blend-pipeline build reuses from the opaque
 /// pipelines: device, render pass, extent, pipeline cache, and layout.
 /// Groups the handles that travel together into [`create_blend_pipeline`].
@@ -602,13 +605,22 @@ pub fn create_blend_pipeline(
     let overwrite = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(false);
+    let auxiliary_blend = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+        .color_blend_op(vk::BlendOp::ADD)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .alpha_blend_op(vk::BlendOp::ADD);
     let attachments = [
         hdr_blend, // 0 HDR color (blends)
         overwrite, // 1 normal
         overwrite, // 2 motion
         overwrite, // 3 mesh_id
-        overwrite, // 4 raw_indirect
-        overwrite, // 5 albedo
+        auxiliary_blend, // 4 raw_indirect (coverage blend)
+        auxiliary_blend, // 5 albedo (coverage blend)
     ];
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)

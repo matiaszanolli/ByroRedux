@@ -81,7 +81,7 @@ fn gpu_instance_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuInstance, avg_albedo_r), 96);
     assert_eq!(offset_of!(GpuInstance, avg_albedo_g), 100);
     assert_eq!(offset_of!(GpuInstance, avg_albedo_b), 104);
-    assert_eq!(offset_of!(GpuInstance, _pad_albedo), 108);
+    assert_eq!(offset_of!(GpuInstance, surface_id), 108);
 }
 
 /// R1 Phase 6 sentinel — list of fields that USED to live on
@@ -253,6 +253,9 @@ fn every_shader_struct_gpu_instance_names_material_kind_slot() {
             // copy declares the slot so the std430 stride stays
             // byte-identical across the four.
             "materialId",
+            // Stable temporal-shadow identity. Must occupy the former
+            // avg-albedo padding lane in every mirror.
+            "surfaceId",
         ] {
             assert!(
                 src.contains(needle),
@@ -309,6 +312,29 @@ fn every_shader_struct_gpu_instance_names_material_kind_slot() {
             }
         }
     }
+}
+
+#[test]
+fn restir_history_uses_stable_surface_id_not_instance_order() {
+    let src = include_str!("../../../shaders/triangle.frag");
+    assert!(
+        src.contains("uint surfaceId = inst.surfaceId & RESERVOIR_SURFACE_MASK;"),
+        "ReSTIR history must key surfaces by stable GpuInstance.surfaceId"
+    );
+    assert!(
+        !src.contains("uint surfaceId = uint(fragInstanceIndex) + 1u;"),
+        "per-frame sorted instance indices invalidate shadow history when actors reorder"
+    );
+}
+
+#[test]
+fn gbuffer_history_uses_stable_surface_id_but_caustics_keep_draw_lookup() {
+    let src = include_str!("../../../shaders/triangle.frag");
+    assert!(
+        src.contains("uint stableSurfaceId = inst.surfaceId & 0x7FFFFFFFu;")
+            && src.contains("alphaBlendFrag ? sortedInstanceId : stableSurfaceId"),
+        "opaque TAA/SVGF history must use stable identity while alpha caustics keep the current draw index"
+    );
 }
 
 /// Regression: #776 / #785 — `ui.vert` must read its texture index

@@ -118,6 +118,7 @@ fn bs_tri_shape_captures_skin_tint_color() {
         5,
         ShaderTypeData::SkinTint {
             skin_tint_color: [0.87, 0.65, 0.54],
+            skin_tint_alpha: None,
         },
     )));
     let shape = renderable_shape(0);

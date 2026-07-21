@@ -260,6 +260,7 @@ fn main() {
         "#define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO {MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO}u"
     )
     .unwrap();
+    writeln!(out, "#define MAT_FLAG_THIN_GLASS {MAT_FLAG_THIN_GLASS}u").unwrap();
     // Lighting-influence byte-field shift (#890 Stage 2).
     writeln!(
         out,

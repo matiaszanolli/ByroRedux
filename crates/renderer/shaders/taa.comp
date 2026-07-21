@@ -113,7 +113,7 @@ void main() {
     // Motion vector is written as (current_uv - prev_uv). Reproject.
     //
     // 5-tap, surface-constrained dilation: use the longest vector only from
-    // the SAME instance. Unconstrained MV-max lets foreground motion leak
+    // the SAME stable surface. Unconstrained MV-max lets foreground motion leak
     // into a background pixel at silhouettes; if both reprojected locations
     // happen to carry the same large wall instance, the mesh-ID test below
     // cannot detect the bad tap and TAA preserves a translucent double image.
@@ -141,21 +141,21 @@ void main() {
     // Offscreen reprojection → no history.
     bool offscreen = any(lessThan(prevUv, vec2(0.0))) || any(greaterThan(prevUv, vec2(1.0)));
 
-    // Disocclusion: current fragment belongs to a different instance than
+    // Disocclusion: current fragment belongs to a different stable surface than
     // the one that was on-screen at prevUv. Uses nearest sample.
     ivec2 prevPix = ivec2(prevUv * params.screen.xy);
     prevPix = clamp(prevPix, ivec2(0), dim - 1);
     uint prevMid = texelFetch(uPrevMeshId, prevPix, 0).r;
     // #904 — bit 31 is `ALPHA_BLEND_NO_HISTORY` (post-#992 R32_UINT
     // encoding; was bit 15 on the pre-#992 R16_UINT format), not part
-    // of the instance ID. Mask to bits 0-30 so a same-instance opacity
+    // of the surface ID. Mask to bits 0-30 so a same-surface opacity
     // transition (alpha-blended ↔ opaque) doesn't force a one-frame
     // history reset on bit-31 toggle alone. The dedicated `alphaBlend`
     // path below covers the actual transparency case.
     bool background = currSurface == 0u;
     bool disocclusion = currSurface != (prevMid & 0x7FFFFFFFu);
 
-    // Instance IDs alone do not reject history at folds within a single mesh
+    // Surface IDs alone do not reject history at folds within a single mesh
     // (walls/furniture are commonly batched into one instance). Compare the
     // octahedral G-buffer normals at the reprojected location as the missing
     // surface-consistency test.

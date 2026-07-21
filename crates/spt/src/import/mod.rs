@@ -332,6 +332,7 @@ fn placeholder_billboard_mesh(
         model_space_normals: false,
         from_bgsm: false,
         bgem_glass: false,
+        thin_glass: false,
         // #1819 / SPT-NEW-05 — classify at import like every NIF path,
         // instead of leaving both `None` and falling through to
         // `classify_pbr_keyword`'s texture-path substring classifier.

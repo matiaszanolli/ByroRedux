@@ -1025,6 +1025,84 @@ fn bgem_merge_forwards_specular_and_lighting_slots() {
     assert_eq!(lighting_map.as_deref(), Some("fx_lighting.dds"));
 }
 
+#[test]
+fn legacy_bgem_transmissive_feature_bundle_selects_shared_glass() {
+    use byroredux_bgsm::{AlphaBlendMode, BaseMaterial};
+
+    // Vanilla FO4 PortADiner02.bgem (v2) predates `glass_enabled` but
+    // authors the dome as a hard transparent, environment-mapped shell.
+    let bgem = BgemFile {
+        base: BaseMaterial {
+            version: 2,
+            alpha: 0.9,
+            alpha_blend_mode: AlphaBlendMode {
+                function: 1,
+                src_blend: 6,
+                dst_blend: 7,
+            },
+            z_buffer_write: false,
+            z_buffer_test: true,
+            two_sided: true,
+            non_occluder: true,
+            environment_mapping: true,
+            ..Default::default()
+        },
+        envmap_texture: "Shared/Cubemaps/mipblur_DefaultOutside1.dds".into(),
+        envmap_mask_texture: "SetDressing/FoodVendingMachines/PortADiner02_s.dds".into(),
+        normal_texture: "SetDressing/FoodVendingMachines/PortADiner02_n.dds".into(),
+        effect_lighting_enabled: true,
+        falloff_enabled: true,
+        ..Default::default()
+    };
+
+    assert!(bgem_uses_glass_behavior(&bgem));
+    assert!(
+        bgem_uses_thin_glass_behavior(&bgem),
+        "Port-A-Diner's non-occluding dome must select thin shared glass"
+    );
+}
+
+#[test]
+fn closed_bgem_glass_does_not_select_thin_surface_behavior() {
+    let bgem = BgemFile {
+        glass_enabled: true,
+        base: byroredux_bgsm::BaseMaterial {
+            non_occluder: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    assert!(bgem_uses_glass_behavior(&bgem));
+    assert!(!bgem_uses_thin_glass_behavior(&bgem));
+}
+
+#[test]
+fn legacy_bgem_effect_cards_do_not_become_glass() {
+    use byroredux_bgsm::{AlphaBlendMode, BaseMaterial};
+
+    let fire = BgemFile {
+        base: BaseMaterial {
+            version: 2,
+            alpha: 0.8,
+            alpha_blend_mode: AlphaBlendMode {
+                function: 1,
+                src_blend: 6,
+                dst_blend: 0,
+            },
+            z_buffer_write: false,
+            two_sided: true,
+            non_occluder: true,
+            ..Default::default()
+        },
+        grayscale_texture: "Effects/Gradients/FireGradient.dds".into(),
+        soft_enabled: true,
+        ..Default::default()
+    };
+
+    assert!(!bgem_uses_glass_behavior(&fire));
+}
+
 /// Regression for #1358 — BGEM `base_color` / `base_color_scale` must
 /// forward to `mesh.emissive_color` / `mesh.emissive_mult` with
 /// `emissive_source = EmissiveSource::Effect`. Pre-fix the BGEM merge
@@ -1521,6 +1599,7 @@ fn imported_mesh_with_material_path(
         model_space_normals: false,
         from_bgsm: false,
         bgem_glass: false,
+        thin_glass: false,
         metalness_override: None,
         roughness_override: None,
         translucency_subsurface_color: [0.0; 3],

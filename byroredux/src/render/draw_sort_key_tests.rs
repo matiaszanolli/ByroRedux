@@ -186,6 +186,32 @@ fn transparent_within_cluster_sorts_back_to_front() {
     assert_eq!(cmds[1].sort_depth, 100);
 }
 
+/// FO4 glass and the transparent surfaces visible through it frequently
+/// occupy different render layers. Alpha-over compositing must remain
+/// globally back-to-front across that state boundary; otherwise a distant
+/// floor puddle/decal is submitted after the nearer glass and appears as a
+/// rectangular patch on the dome.
+#[test]
+fn alpha_over_sorts_back_to_front_across_render_layers() {
+    use byroredux_core::ecs::components::RenderLayer;
+
+    let mut near_glass = cmd(true, false, true);
+    near_glass.render_layer = RenderLayer::Architecture;
+    near_glass.sort_depth = 100;
+    near_glass.entity_id = 1;
+
+    let mut far_puddle = cmd(true, true, false);
+    far_puddle.render_layer = RenderLayer::Decal;
+    far_puddle.sort_depth = 900;
+    far_puddle.entity_id = 2;
+
+    let mut cmds = vec![near_glass, far_puddle];
+    cmds.sort_by_key(draw_sort_key);
+
+    assert_eq!(cmds[0].entity_id, 2, "far alpha-over surface draws first");
+    assert_eq!(cmds[1].entity_id, 1, "near glass composites last");
+}
+
 /// Regression for #499: interleaved additive and alpha-blend draws
 /// sort into separate `(src_blend, dst_blend)` cohorts so the
 /// blend-pipeline cache doesn't thrash on every depth alternation.
@@ -306,7 +332,7 @@ fn alpha_over_same_mesh_draws_stay_depth_sorted() {
     assert_eq!(order, vec![900, 900, 300, 300, 100, 100]);
 }
 
-/// Regression for #506: with ties in the 9-tuple prefix (same
+/// Regression for #506: with ties in the 10-tuple prefix (same
 /// mesh, same pipeline state, same depth bucket) the `entity_id`
 /// final slot must break them deterministically so two sorts of
 /// the same input produce byte-identical output. Pre-#506 the

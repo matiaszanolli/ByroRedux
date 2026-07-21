@@ -482,6 +482,11 @@ pub mod material_flag {
     /// also set.
     pub const TRANSLUCENCY_MIX_ALBEDO: u32 = 1 << 9;
 
+    /// Glass is an authored non-occluding shell/sheet, not a closed volume.
+    /// Thin glass uses framebuffer transmission plus the shared dielectric
+    /// Fresnel surface response; it must never enter the thick Snell/RT path.
+    pub const THIN_GLASS: u32 = 1 << 11;
+
     /// Bit-shift for the 8-bit `BSEffectShaderProperty.lighting_influence`
     /// byte packed into `material_flags` bits 16–23. Extract in GLSL as
     /// `float((materialFlags >> MAT_FLAG_EFFECT_LI_SHIFT) & 0xFFu) / 255.0`.

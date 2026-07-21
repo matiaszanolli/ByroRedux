@@ -13,8 +13,9 @@
 // to estimate variance for the À-trous filter.
 //
 // The consistency test is intentionally minimal: we reject taps whose
-// previous-frame mesh_id differs from the current one. mesh_id is the
-// strongest disocclusion signal and avoids needing a previous-frame
+// previous-frame surface ID differs from the current one. The opaque
+// mesh_id payload is stable across draw sorting and is the strongest
+// disocclusion signal, avoiding the need for a previous-frame
 // depth/normal buffer.
 //
 // Motion vector convention (from triangle.frag):
@@ -80,9 +81,11 @@ void main() {
     // consistency loop's normal-cone rejection.
     vec3 currN = octDecode(texelFetch(currNormalTex, p, 0).rg);
 
-    // mesh_id encoding: R32_UINT, bits 0-30 = instance id + 1, bit 31
-    // (0x80000000u) = ALPHA_BLEND_NO_HISTORY flag. Full contract in
-    // triangle.frag::computeMeshId and gbuffer.rs::MESH_ID_FORMAT. (#1091)
+    // mesh_id encoding: opaque bits 0-30 = stable surface ID; alpha-blended
+    // bits 0-30 = current draw index + 1 for caustics. Bit 31
+    // (0x80000000u) = ALPHA_BLEND_NO_HISTORY, so temporal code only ever
+    // compares the stable representation. Full contract in triangle.frag's
+    // G-buffer output and gbuffer.rs::MESH_ID_FORMAT. (#1091)
     //
     // Background pixels (mesh_id 0 = sky/clear): no accumulation needed.
     // Alpha-blend fragments (mesh_id bit 31 set by triangle.frag) take
@@ -146,14 +149,14 @@ void main() {
             if (q.x < 0 || q.y < 0 || q.x >= int(screen.x) || q.y >= int(screen.y)) continue;
             uint prevID = texelFetch(prevMeshIdTex, q, 0).r;
             // #904 — bit 31 is `ALPHA_BLEND_NO_HISTORY` (post-#992
-            // R32_UINT encoding), not part of the instance ID. The
+            // R32_UINT encoding), not part of the surface ID. The
             // early-out at line 93 already skips the case where
             // currID's bit 31 is set, but the current-opaque /
             // prev-alpha-blended case still reaches here and would
             // reject the bilinear tap on bit-31 toggle alone even
-            // when the 31-bit instance ID matches. Mask to bits 0-30.
+            // when the 31-bit surface ID matches. Mask to bits 0-30.
             if ((prevID & 0x7FFFFFFFu) != (currID & 0x7FFFFFFFu)) continue;
-            // #650 / SH-5 — same-mesh disocclusion rejection. mesh_id
+            // #650 / SH-5 — same-surface disocclusion rejection. mesh_id
             // alone misses the case where the camera orbit reveals a
             // previously-self-occluded part of a long static wall:
             // both the new and old taps share the wall's mesh_id, but

@@ -95,6 +95,7 @@ fn capture_helper_parity_with_apply() {
         ShaderTypeData::EnvironmentMap { env_map_scale: 2.5 },
         ShaderTypeData::SkinTint {
             skin_tint_color: [0.8, 0.6, 0.5],
+            skin_tint_alpha: None,
         },
         ShaderTypeData::Fo76SkinTint {
             skin_tint_color: [0.9, 0.7, 0.55, 0.25],
@@ -139,10 +140,25 @@ fn skin_tint_writes_rgb() {
         &mut info,
         &ShaderTypeData::SkinTint {
             skin_tint_color: [0.8, 0.6, 0.5],
+            skin_tint_alpha: None,
         },
     );
     assert_eq!(info.skin_tint_color, Some([0.8, 0.6, 0.5]));
     assert_eq!(info.skin_tint_alpha, None);
+}
+
+#[test]
+fn fo4_skin_tint_writes_authored_alpha() {
+    let mut info = MaterialInfo::default();
+    apply_shader_type_data(
+        &mut info,
+        &ShaderTypeData::SkinTint {
+            skin_tint_color: [0.0, 0.0, 0.0],
+            skin_tint_alpha: Some(0.0),
+        },
+    );
+    assert_eq!(info.skin_tint_color, Some([0.0, 0.0, 0.0]));
+    assert_eq!(info.skin_tint_alpha, Some(0.0));
 }
 
 #[test]
@@ -197,6 +213,7 @@ fn skyrim_skin_tint_preserves_material_kind() {
         &mut info,
         &ShaderTypeData::SkinTint {
             skin_tint_color: [0.8, 0.6, 0.5],
+            skin_tint_alpha: None,
         },
     );
     assert_eq!(info.material_kind, 5);

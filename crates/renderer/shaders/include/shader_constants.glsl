@@ -80,6 +80,7 @@
 #define MAT_FLAG_MODEL_SPACE_NORMALS 128u
 #define MAT_FLAG_TRANSLUCENCY_THICK_OBJECT 256u
 #define MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO 512u
+#define MAT_FLAG_THIN_GLASS 2048u
 #define MAT_FLAG_EFFECT_LI_SHIFT 16u
 
 // Normal-alpha-as-spec marker bit (OR'd into `GpuMaterial.glossMapIndex`).

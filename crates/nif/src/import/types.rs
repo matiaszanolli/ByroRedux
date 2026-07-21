@@ -489,6 +489,13 @@ pub struct ImportedMesh {
     /// keyword. Closes the FO4-BGEM-glass-bottle-with-no-keyword class
     /// flagged in #1280 sub-step 3b (canonical material convergence).
     pub bgem_glass: bool,
+    /// Canonical thin-surface glass behavior selected by the source
+    /// translator. Unlike [`Self::bgem_glass`], this is not a format
+    /// provenance flag: it records that the authored glass is a
+    /// non-occluding shell/sheet rather than a closed refractive volume.
+    /// The renderer uses it to choose stable Fresnel alpha transmission
+    /// instead of the thick-object Snell/RT path.
+    pub thin_glass: bool,
     /// PBR metalness `[0, 1]` computed by the translation layer from
     /// authored source data — a **raw-tier** field read only at the
     /// `translate_material` boundary; the renderer never sees it. `Some`
@@ -832,6 +839,7 @@ impl ImportedMesh {
             model_space_normals: false,
             from_bgsm: false,
             bgem_glass: false,
+            thin_glass: false,
             metalness_override: None,
             roughness_override: None,
             translucency_subsurface_color: [0.0; 3],

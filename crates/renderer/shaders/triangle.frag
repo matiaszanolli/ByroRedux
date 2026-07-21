@@ -68,6 +68,7 @@ layout(location = 5) out vec4 outAlbedo;       // surface color (composite re-mu
 // plus an explicit 1023 invalid value; the remaining 22 bits hold the
 // raster surface ID (instance index + 1), comfortably above MAX_INSTANCES.
 const uint RESERVOIR_LIGHT_MASK = 0x3FFu;
+const uint RESERVOIR_SURFACE_MASK = 0x3FFFFFu;
 uint reservoirLightIndex(uint lightAndSurface) {
     return lightAndSurface & RESERVOIR_LIGHT_MASK;
 }
@@ -75,7 +76,8 @@ uint reservoirSurfaceId(uint lightAndSurface) {
     return lightAndSurface >> 10u;
 }
 uint packReservoirLightAndSurface(uint lightIndex, uint surfaceId) {
-    return (surfaceId << 10u) | (lightIndex & RESERVOIR_LIGHT_MASK);
+    return ((surfaceId & RESERVOIR_SURFACE_MASK) << 10u)
+        | (lightIndex & RESERVOIR_LIGHT_MASK);
 }
 
 // ── Main ────────────────────────────────────────────────────────────
@@ -369,20 +371,21 @@ void main() {
     vec2 prevNDC = fragPrevClipPos.xy / fragPrevClipPos.w;
     outMotion = (currNDC - prevNDC) * 0.5;
 
-    // Mesh ID: instance index + 1 so that "0" (clear value for background
-    // pixels) is distinct from "instance 0". G-buffer is `R32_UINT`
-    // post-#992 — bit 31 (`0x80000000`) is the ALPHA_BLEND_NO_HISTORY
-    // flag that forces TAA + SVGF to disable temporal reuse on
-    // transparent fragments (Phase 1 of Tier C glass — without this
-    // the TAA history reprojects the wrong source pixel across glass
-    // z-fight flips, amplifying sub-pixel jitter into cross-hatch
-    // moiré). Bits 0..30 carry the instance ID + 1, capping the
-    // encoding at ~2.1G addressable instances. Pre-#992 the format
-    // was `R16_UINT` (bit 15 = flag, ceiling 32767); dense Skyrim/
-    // FO4 city cells exceeded that ceiling and wrap-collapsed to the
-    // sky sentinel.
-    uint meshIdBase = (uint(fragInstanceIndex) + 1u) & 0x7FFFFFFFu;
+    // Stable surface ID for temporal history. `fragInstanceIndex` follows
+    // the per-frame sorted draw order, so actor depth-bucket changes used to
+    // make static architecture appear to become a different surface and
+    // reset TAA + SVGF across the room. Opaque draws use the ECS-derived ID
+    // uploaded in `inst.surfaceId`; "0" remains the clear/background value.
+    //
+    // Alpha-blended draws deliberately bypass both histories (bit 31) and
+    // retain the sorted instance index in the low bits. The caustic compute
+    // pass consumes that index to look up the current-frame instance SSBO;
+    // no temporal consumer is allowed to reuse an alpha-blended pixel.
+    // `R32_UINT` leaves bits 0..30 for either representation.
     bool alphaBlendFrag = (inst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u;
+    uint sortedInstanceId = (uint(fragInstanceIndex) + 1u) & 0x7FFFFFFFu;
+    uint stableSurfaceId = inst.surfaceId & 0x7FFFFFFFu;
+    uint meshIdBase = alphaBlendFrag ? sortedInstanceId : stableSurfaceId;
     outMeshID = meshIdBase | (alphaBlendFrag ? 0x80000000u : 0u);
 
     // Debug normal-visualization exit. World-space N is fully resolved
@@ -706,7 +709,9 @@ void main() {
         }
         outColor = vec4(emit, finalAlpha);
         outRawIndirect = vec4(0.0);
-        outAlbedo = vec4(emit, 1.0);
+        // Effects contribute through HDR only. Alpha zero preserves the
+        // opaque receiver's auxiliary G-buffer state in blended pipelines.
+        outAlbedo = vec4(emit, 0.0);
         return;
     }
 
@@ -739,7 +744,7 @@ void main() {
         vec3 emit = vcEmissive ? texColor.rgb : texColor.rgb * fragColor.rgb;
         outColor = vec4(emit, texColor.a);
         outRawIndirect = vec4(0.0);
-        outAlbedo = vec4(emit, 1.0);
+        outAlbedo = vec4(emit, 0.0);
         return;
     }
 
@@ -1059,6 +1064,8 @@ void main() {
     // nested under a stable parent classification. See Tier C Phase 2.
     bool isAlphaBlend = (inst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u;
     bool isGlass = mat.materialKind == MATERIAL_KIND_GLASS && roughness < 0.35;
+    bool isThinGlass = isGlass
+        && (mat.materialFlags & MAT_FLAG_THIN_GLASS) != 0u;
     uint renderLayer =
         (inst.flags >> INSTANCE_RENDER_LAYER_SHIFT) & INSTANCE_RENDER_LAYER_MASK;
     bool isArchitecturalGlass = renderLayer == 0u;
@@ -1171,8 +1178,8 @@ void main() {
             // frame border areas. The alpha blend pipeline composites:
             //   result = transmitted × alpha + framebuffer × (1 - alpha)
             outColor = vec4(transmitted, texColor.a);
-            outRawIndirect = vec4(0.0);
-            outAlbedo = vec4(albedo, 1.0);
+            outRawIndirect = vec4(0.0, 0.0, 0.0, texColor.a);
+            outAlbedo = vec4(albedo, texColor.a);
             return;
         }
 
@@ -1189,12 +1196,24 @@ void main() {
     }
 
     float glassFresnel = 0.0;
+    vec3 glassViewNormal = normalize(fragNormalEffective);
     if (isGlass) {
+        // Glass is frequently authored two-sided so a thin shell remains
+        // visible from either side. Orient the smooth macro normal toward
+        // the viewer before computing optical coverage. Using the raw
+        // back-face normal forces NdotV to its 0.05 floor, which becomes a
+        // 65%-opaque layer; drawing the front face over that made clear
+        // domes and cups look like smoked plastic. Normal maps remain a
+        // surface-lighting overlay and must not punch opacity into coverage.
+        if (dot(glassViewNormal, V) < 0.0) {
+            glassViewNormal = -glassViewNormal;
+        }
+        float glassNdotV = max(dot(glassViewNormal, V), 0.05);
         // #1248 — pull dielectric F0 from the per-material IOR.
         // mat.ior defaults to 1.5 (glass); BGSM-authored glass can
         // diverge (water 1.33 → 0.02, dense window glass 1.52 → 0.044).
         vec3 glassF0 = vec3(f0Dielectric);
-        glassFresnel = fresnelSchlick(NdotV, glassF0).r;
+        glassFresnel = fresnelSchlick(glassNdotV, glassF0).r;
         // Dielectric Fresnel already defines the correct specular energy.
         // Boosting legacy specular strength to 3× made the bounded fallback
         // read as chrome whenever the IOR budget was exhausted.
@@ -1236,7 +1255,14 @@ void main() {
     // reflection-hit shading to push those views below 20 FPS.
     // GLASS_RAY_BUDGET and GLASS_RAY_COST from shader_constants.glsl.
     // REFRACT_PASSTHRU_BUDGET declared inside the IOR block below.
-    bool glassIORAllowed = isGlass && rtEnabled && !isWindow && rtLOD < RT_LOD_IOR;
+    // Thin non-occluding shells have only one authored optical interface.
+    // Sending them through the thick-object Snell path bends the view on
+    // entry but can never resolve an exit interface, making them dark lenses.
+    // More importantly, a per-fragment ray-budget race split a large shell
+    // between this path and the fallback, producing screen-space checkerboard
+    // blocks. Thin glass stays wholly on the shared, zero-ray Fresnel path.
+    bool glassIORAllowed = isGlass && !isThinGlass
+        && rtEnabled && !isWindow && rtLOD < RT_LOD_IOR;
     if (glassIORAllowed) {
         // IOR-03 — the atomicAdd claims GLASS_RAY_COST UNCONDITIONALLY, then
         // tests the returned value. Threads that lose the race (old + cost >
@@ -1285,8 +1311,7 @@ void main() {
         //                the whole bottle a faceted chrome finish. Use the
         //                macro normal for reflection, Fresnel, and refraction;
         //                roughness still controls the reflected/refracted blur.
-        vec3 _Ngeom = normalize(fragNormalEffective);
-        vec3 N_geom_view = dot(_Ngeom, V) < 0.0 ? -_Ngeom : _Ngeom;
+        vec3 N_geom_view = glassViewNormal;
         float NdotV_v = max(dot(N_geom_view, V), 0.05);
         // #1248 — per-material dielectric F0 (same source as glassF0
         // above; the IOR block runs inside the isGlass branch).
@@ -1719,8 +1744,12 @@ void main() {
         }
         outColor = vec4(glassSurface, resolvedAlpha);
         outNormal = octEncode(N_geom_view);
-        outRawIndirect = vec4(0.0);
-        outAlbedo = vec4(albedo, 1.0);
+        // Keep all MRTs on the same optical-coverage contract. The blend
+        // pipeline uses these alpha lanes to preserve the opaque receiver's
+        // indirect/albedo when transmission is unresolved; a fully-resolved
+        // RT terminus (alpha=1) replaces them alongside HDR.
+        outRawIndirect = vec4(0.0, 0.0, 0.0, resolvedAlpha);
+        outAlbedo = vec4(albedo, resolvedAlpha);
         return;
     }
 
@@ -1741,7 +1770,7 @@ void main() {
             outAlbedo = vec4(albedo, 1.0);
             return;
         }
-        N = normalize(fragNormalEffective);
+        N = glassViewNormal;
 
         // Diffuse mip-bias for fresnel-fallback glass — erase the
         // fine cross-hatch detail authored into Bethesda drinking-
@@ -2440,7 +2469,13 @@ void main() {
             float histPrev = 0.0;
             bool reprojValid = false;
             vec3 geomN = normalize(fragNormalEffective);
-            uint surfaceId = uint(fragInstanceIndex) + 1u;
+            // `fragInstanceIndex` follows the per-frame sorted SSBO order and
+            // changes when animated actors move between depth buckets. Keying
+            // history with it invalidated otherwise-static architecture (or,
+            // worse, accepted another draw that reused the slot), producing
+            // room-wide shadow flicker in actor-dense interiors. The CPU now
+            // uploads a stable ECS-derived identity in the former padding lane.
+            uint surfaceId = inst.surfaceId & RESERVOIR_SURFACE_MASK;
             bool stableTemporalSurface = !isAlphaBlend && !isGlass;
             bool useTemporal = (dbgFlags & DBG_DISABLE_TEMPORAL) == 0u;
 
@@ -2639,14 +2674,21 @@ void main() {
             }
 
             // EMA-accumulate the colour estimate with a bounded history. Four
-            // fresh visibility rays already reduce variance per frame; an
-            // ever-growing 1/N window makes light/material changes linger as
-            // illumination ghosts and is not acceptable in a real-time path.
+            // fresh visibility rays already reduce variance per frame. While
+            // the camera moves, keep the short responsive window so animated
+            // occluders do not leave long illumination ghosts. Once the camera
+            // is parked, direct-light noise is the only thing changing on a
+            // static receiver, so let the validated per-surface history
+            // converge instead of forcing a permanent 10% frame-to-frame
+            // update (visible as whole-room shadow flicker in dense interiors).
             vec3 accum;
             float histLen;
             if (reprojValid) {
-                histLen = min(histPrev + 1.0, 16.0);
-                float alpha = max(1.0 / histLen, 0.1);
+                bool cameraStatic = dofParams.w > 0.5;
+                float historyCap = cameraStatic ? 64.0 : 16.0;
+                float alphaFloor = cameraStatic ? 0.025 : 0.1;
+                histLen = min(histPrev + 1.0, historyCap);
+                float alpha = max(1.0 / histLen, alphaFloor);
                 accum = mix(prevAccum, frameContribution, alpha);
             } else {
                 histLen = 1.0;
@@ -3179,8 +3221,9 @@ void main() {
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
     } else {
+        float auxiliaryAlpha = isAlphaBlend ? finalAlpha : 1.0;
         outColor = vec4(directLight, finalAlpha);
-        outRawIndirect = vec4(indirectLight, 1.0);
-        outAlbedo = vec4(albedo, 1.0);
+        outRawIndirect = vec4(indirectLight, auxiliaryAlpha);
+        outAlbedo = vec4(albedo, auxiliaryAlpha);
     }
 }
