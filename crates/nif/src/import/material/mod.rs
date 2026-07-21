@@ -43,6 +43,8 @@ pub(super) fn intern_texture_path(pool: &mut StringPool, path: &str) -> Option<F
     }
 }
 
+mod dedicated_shader;
+mod legacy_properties;
 mod shader_data;
 mod walker;
 

@@ -652,8 +652,12 @@ mod dalc_cube_tests {
 /// one per TOD slot — sunrise / day / sunset / night). The original
 /// authoring is Bethesda Z-up; the converter
 /// [`DalcCubeYup::from_skyrim_zup`] applies the same `(x, y, z) →
-/// (x, z, -y)` axis swap used by every other importer
-/// (`crates/nif/src/import/coord.rs:18`).
+/// (x, z, -y)` permutation as
+/// [`byroredux_core::math::coord::zup_to_yup_pos`] (also wrapped by
+/// `crates/nif/src/import/coord.rs:18` for every other importer) — just
+/// spread across 6 named cube-face fields instead of one `[f32; 3]`, so
+/// it isn't a `zup_to_yup_pos` *call site* and won't turn up by grepping
+/// for its callers (#2062).
 ///
 /// Engine sampling semantics:
 /// - `pos_y` = sky-fill (was Bethesda +Z, the "up" axis)
@@ -685,7 +689,9 @@ impl DalcCubeYup {
     /// Convert a Bethesda-Z-up `SkyrimAmbientCube` into engine Y-up
     /// axes. The byte→field mapping in the WTHR parser is literal
     /// (no axis swap), so we apply the swap here once per TOD slot,
-    /// not per fragment.
+    /// not per fragment. Same `(x, y, z) → (x, z, -y)` permutation as
+    /// [`byroredux_core::math::coord::zup_to_yup_pos`] (see the struct
+    /// doc above for why this can't just call it directly).
     ///
     /// Mapping:
     /// - Bethesda +Z (sky) → engine +Y

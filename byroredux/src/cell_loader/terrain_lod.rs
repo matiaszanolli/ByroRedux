@@ -26,7 +26,7 @@ use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{
     GlobalTransform, MeshHandle, TextureHandle, Transform, World, WorldBound,
 };
-use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
 use byroredux_core::math::Vec3;
 use byroredux_plugin::esm::cell::CellData;
 use byroredux_plugin::esm::reader::GameKind;
@@ -461,7 +461,7 @@ fn spawn_lod_block(
                 // Placeholder vertex at y=0 (finite — never referenced by
                 // an emitted index, but keeps the buffer free of NaN).
                 vertices.push(Vertex::new(
-                    [world_x, 0.0, -world_y_zup],
+                    zup_to_yup_pos([world_x, world_y_zup, 0.0]),
                     [1.0, 1.0, 1.0],
                     [0.0, 1.0, 0.0],
                     [0.0, 0.0],
@@ -474,14 +474,14 @@ fn spawn_lod_block(
             let height = land.heights[li];
 
             // Normal: same Z-up→Y-up decode as the full-detail terrain
-            // path (center at 128, then (nx, nz, -ny)).
+            // path (center at 128, then the canonical helper).
             let normal = if let Some(ref nml) = land.normals {
                 let ni = li * 3;
                 let nx = (nml[ni] as f32 - 128.0) / 127.0;
                 let ny = (nml[ni + 1] as f32 - 128.0) / 127.0;
                 let nz = (nml[ni + 2] as f32 - 128.0) / 127.0;
                 let len = (nx * nx + nz * nz + ny * ny).sqrt().max(0.001);
-                [nx / len, nz / len, -ny / len]
+                zup_to_yup_pos([nx / len, ny / len, nz / len])
             } else {
                 [0.0, 1.0, 0.0]
             };
@@ -497,7 +497,7 @@ fn spawn_lod_block(
             ];
 
             vertices.push(Vertex::new(
-                [world_x, height, -world_y_zup],
+                zup_to_yup_pos([world_x, world_y_zup, height]),
                 [1.0, 1.0, 1.0],
                 normal,
                 uv,
@@ -580,7 +580,9 @@ fn spawn_lod_block(
 
     // Re-map UVs for the baked quad: the texture spans the whole 32×32-cell
     // quad, so each vertex samples it by world position rather than the
-    // per-cell tiling the LTEX path uses. `world_y_zup = -position.z`.
+    // per-cell tiling the LTEX path uses. `world_y_zup = -position.z` is the
+    // algebraic inverse of `zup_to_yup_pos`'s Z component (`z_yup = -y_zup`),
+    // not a fresh derivation — no forward swizzle to replace here.
     if baked {
         let q = LOD_TEXTURE_QUAD_CELLS;
         let quad_origin_x = (bx0.div_euclid(q) * q) as f32 * EXTERIOR_CELL_UNITS;
@@ -700,6 +702,34 @@ mod tests {
         assert_eq!(span, LOD_BLOCK_CELLS as f32 * EXTERIOR_CELL_UNITS);
         // Vertex spacing equals stride × per-vertex spacing (128 BU).
         assert_eq!(VERT_SPACING, STRIDE as f32 * 128.0);
+    }
+
+    /// #2061 — the LOD terrain builder now calls the canonical
+    /// `zup_to_yup_pos` helper instead of hand-deriving the same
+    /// `(x, y, z) → (x, z, -y)` swizzle inline. Pin that both position
+    /// forms (main vertex + placeholder + normal) remain bit-identical to
+    /// the pre-fix manual literals for representative inputs.
+    #[test]
+    fn zup_to_yup_pos_matches_old_inline_swizzle() {
+        let world_x = 123.5_f32;
+        let world_y_zup = -456.25_f32;
+        let height = 78.0_f32;
+
+        // Main vertex position: old inline literal was `[world_x, height, -world_y_zup]`.
+        assert_eq!(
+            zup_to_yup_pos([world_x, world_y_zup, height]),
+            [world_x, height, -world_y_zup]
+        );
+
+        // Placeholder vertex: old inline literal was `[world_x, 0.0, -world_y_zup]`.
+        assert_eq!(
+            zup_to_yup_pos([world_x, world_y_zup, 0.0]),
+            [world_x, 0.0, -world_y_zup]
+        );
+
+        // Normal: old inline literal was `[nx, nz, -ny]`.
+        let (nx, ny, nz) = (0.25_f32, 0.5_f32, -0.75_f32);
+        assert_eq!(zup_to_yup_pos([nx, ny, nz]), [nx, nz, -ny]);
     }
 
     #[test]
