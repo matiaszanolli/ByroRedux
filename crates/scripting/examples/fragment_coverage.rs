@@ -61,6 +61,8 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::SetObjectiveCompleted { .. } => "SetObjectiveCompleted",
         Effect::SetObjectiveFailed { .. } => "SetObjectiveFailed",
         Effect::CompleteAllObjectives { .. } => "CompleteAllObjectives",
+        Effect::AddItem { .. } => "AddItem",
+        Effect::MoveTo { .. } => "MoveTo",
     }
 }
 

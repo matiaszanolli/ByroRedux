@@ -41,7 +41,7 @@ use std::collections::{HashMap, HashSet};
 use byroredux_papyrus::ast::{Expr, Stmt};
 use byroredux_papyrus::span::Spanned;
 
-use crate::translate::compose::{as_num, int_arg, method_call, quest_via, QuestRef};
+use crate::translate::compose::{as_num, int_arg, method_call, quest_via, ObjectRef, QuestRef};
 
 /// A canonical, quest-scoped effect a fragment statement lowers to. The
 /// runtime applies these against [`QuestStageState`] /
@@ -74,19 +74,26 @@ pub enum Effect {
     },
     /// `<quest>.CompleteAllObjectives()`.
     CompleteAllObjectives { quest: QuestRef },
-}
-
-impl Effect {
-    /// The quest this effect targets (every variant is quest-scoped).
-    pub fn quest_ref(&self) -> &QuestRef {
-        match self {
-            Effect::SetStage { quest, .. }
-            | Effect::SetObjectiveDisplayed { quest, .. }
-            | Effect::SetObjectiveCompleted { quest, .. }
-            | Effect::SetObjectiveFailed { quest, .. }
-            | Effect::CompleteAllObjectives { quest } => quest,
-        }
-    }
+    /// `<container>.AddItem(<item>, <count>)`. The optional 3rd
+    /// (`abSilent`) argument is accepted (parsed, not applied — no pickup
+    /// notification UI exists to suppress) but only as a literal; a
+    /// non-literal 3rd arg, or a 4th, declines the whole fragment (the
+    /// `bool_arg` discipline `SetObjectiveDisplayed` already uses).
+    /// `item` resolves only to a FormID at dispatch, never to an entity —
+    /// it names a *base record* (the item type), not a placed reference.
+    AddItem {
+        container: ObjectRef,
+        item: ObjectRef,
+        count: u32,
+    },
+    /// `<moved>.MoveTo(<destination>)` — the conservative 2-arg shape
+    /// only. A 3rd+ argument (offsets / match-rotation) declines the
+    /// whole fragment rather than silently dropping the offset and
+    /// misplacing the object.
+    MoveTo {
+        moved: ObjectRef,
+        destination: ObjectRef,
+    },
 }
 
 /// The local-variable scope built while lowering a fragment body.
@@ -211,6 +218,8 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_objective_completed,
     prim_set_objective_failed,
     prim_complete_all_objectives,
+    prim_add_item,
+    prim_move_to,
 ];
 
 // ── Effect primitives ────────────────────────────────────────────────
@@ -265,6 +274,39 @@ fn prim_complete_all_objectives(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+fn prim_add_item(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "AddItem")?;
+    let container = receiver_object(object, scope)?;
+    let item = receiver_object(&args.first()?.value.node, scope)?;
+    let count = u32::try_from(int_arg(args, 1)?).ok()?;
+    // Optional 3rd arg (`abSilent`) — accepted only as a literal (parsed,
+    // not applied; see the `Effect::AddItem` doc). A present-but-
+    // non-literal 3rd arg declines via `bool_arg`'s `None`; a 4th arg
+    // entirely is outside this primitive's understood shape.
+    bool_arg(args, 2)?;
+    if args.len() > 3 {
+        return None;
+    }
+    Some(Effect::AddItem {
+        container,
+        item,
+        count,
+    })
+}
+
+fn prim_move_to(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "MoveTo")?;
+    // The conservative 2-arg shape only (receiver + destination) — a 3rd+
+    // argument (offsets / match-rotation) declines rather than silently
+    // dropping it and misplacing the object.
+    if args.len() != 1 {
+        return None;
+    }
+    let moved = receiver_object(object, scope)?;
+    let destination = receiver_object(&args[0].value.node, scope)?;
+    Some(Effect::MoveTo { moved, destination })
+}
+
 // ── Receiver / quest-expr resolution ─────────────────────────────────
 
 /// Resolve a call receiver to a [`QuestRef`]:
@@ -290,6 +332,27 @@ fn receiver_quest(object: &Expr, scope: &Scope) -> Option<QuestRef> {
 /// resolving a local-to-local copy through `scope`.
 fn quest_expr_ref(value: &Expr, scope: &Scope) -> Option<QuestRef> {
     receiver_quest(value, scope)
+}
+
+/// Resolve an object-targeting effect's receiver or argument to an
+/// [`ObjectRef`]. Unlike [`receiver_quest`], there is no unambiguous
+/// bare-identifier case (no `Self`/`GetOwningQuest()` equivalent — see
+/// [`ObjectRef`]'s doc) — a bare property name is the *only* shape
+/// accepted; a local variable (quest-bound or otherwise) declines,
+/// because this increment doesn't track which property a local was
+/// copied from.
+fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
+    let Expr::Ident(name) = object else {
+        return None;
+    };
+    let key = name.0.to_ascii_lowercase();
+    // `Self` is never the object here (see `ObjectRef`'s doc) — decline
+    // explicitly rather than relying on no VMAD ever naming a property
+    // "self".
+    if key == "self" || scope.quest_locals.contains_key(&key) || scope.decl_locals.contains(&key) {
+        return None;
+    }
+    Some(ObjectRef::Property(name.0.clone()))
 }
 
 /// A boolean positional argument — `Bool`/`Int` literal, unwrapping a
@@ -487,6 +550,92 @@ mod tests {
                 stage: 20
             }])
         );
+    }
+
+    #[test]
+    fn lowers_add_item_on_bare_properties() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_7()\n\
+             SomeContainer.AddItem(SomeItem, 5)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::AddItem {
+                container: ObjectRef::Property("SomeContainer".into()),
+                item: ObjectRef::Property("SomeItem".into()),
+                count: 5,
+            }])
+        );
+    }
+
+    #[test]
+    fn lowers_add_item_with_literal_silent_arg() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             SomeContainer.AddItem(SomeItem, 5, true)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::AddItem {
+                container: ObjectRef::Property("SomeContainer".into()),
+                item: ObjectRef::Property("SomeItem".into()),
+                count: 5,
+            }])
+        );
+    }
+
+    #[test]
+    fn add_item_declines_with_non_literal_silent_arg() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_9()\n\
+             Bool bQuiet = true\n\
+             SomeContainer.AddItem(SomeItem, 5, bQuiet)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn add_item_declines_on_local_receiver() {
+        // A local copy of a property is not tracked back to its name in
+        // this increment — the receiver must be a bare property.
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_10()\n\
+             ObjectReference k = SomeContainer\n\
+             k.AddItem(SomeItem, 5)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn lowers_move_to_two_arg() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_11()\n\
+             SomeRef.MoveTo(SomeMarker)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::MoveTo {
+                moved: ObjectRef::Property("SomeRef".into()),
+                destination: ObjectRef::Property("SomeMarker".into()),
+            }])
+        );
+    }
+
+    #[test]
+    fn move_to_declines_with_offset_args() {
+        // The conservative 2-arg shape only — offsets/match-rotation
+        // decline rather than silently misplacing the object.
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_12()\n\
+             SomeRef.MoveTo(SomeMarker, 0.0, 0.0, 10.0)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
     }
 
     #[test]

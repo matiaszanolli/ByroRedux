@@ -35,9 +35,10 @@
 
 use std::collections::HashMap;
 
+use byroredux_core::ecs::components::{GlobalTransform, Inventory, ItemStack, Transform};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::world::World;
-use byroredux_plugin::esm::records::script_instance::ScriptInstanceData;
+use byroredux_plugin::esm::records::script_instance::{PropertyValue, ScriptInstanceData};
 
 use crate::quest_stages::{
     QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
@@ -45,7 +46,7 @@ use crate::quest_stages::{
 use byroredux_papyrus::ast::{Script, ScriptItem, StateItem, Stmt};
 use byroredux_papyrus::span::Spanned;
 
-use crate::translate::compose::QuestRef;
+use crate::translate::compose::{ObjectRef, QuestRef};
 use crate::translate::effects::{lower_fragment, Effect};
 
 /// Lowered quest-stage fragments, keyed by `(quest, stage)`. Populated at
@@ -119,22 +120,134 @@ fn resolve_quest(
     }
 }
 
-/// Apply one effect to the canonical stage/objective state. Returns a
+/// Resolve a `Quest`/`Self`-typed effect's `QuestRef`, logging a `debug`
+/// line on failure. Shared by every quest-scoped `apply_effect` arm so
+/// the "skip, never guess" contract has one call site.
+fn resolve_quest_logged(
+    via: &QuestRef,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+) -> Option<QuestFormId> {
+    let quest = resolve_quest(via, context, vmad);
+    if quest.is_none() {
+        log::debug!("fragment effect skipped: unresolved quest ref {via:?}");
+    }
+    quest
+}
+
+/// Resolve an [`ObjectRef::Property`] to its VMAD-bound FormID. Requires
+/// an `Object`-typed property with `alias == -1` — an alias-bound entry
+/// (`ReferenceAlias Property`) needs the quest-alias-fill subsystem to
+/// resolve correctly, so it declines here rather than trusting the raw
+/// `form_id` sitting next to a live alias index.
+fn resolve_property_form_id(vmad: Option<&ScriptInstanceData>, name: &str) -> Option<u32> {
+    vmad?.scripts.iter().find_map(|s| match s.property(name)?.value {
+        PropertyValue::Object { form_id, alias: -1 } => Some(form_id),
+        _ => None,
+    })
+}
+
+/// Resolve an [`ObjectRef`] all the way to a live entity: VMAD property →
+/// FormID (`resolve_property_form_id`) → the currently-loaded entity
+/// carrying that FormID (`resolve_entity_by_global_form_id`, the same
+/// resolver the M42.5–8 AI packages and M47.1 condition functions use).
+/// `debug`-logs and returns `None` at whichever hop fails — an unresolved
+/// object is a runtime data fact (not loaded, not spawned yet), not a
+/// shape the fragment failed to understand.
+fn resolve_object(
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    via: &ObjectRef,
+) -> Option<byroredux_core::ecs::storage::EntityId> {
+    let name = via.property_name();
+    let Some(form_id) = resolve_property_form_id(vmad, name) else {
+        log::debug!("fragment effect skipped: object ref '{name}' has no VMAD FormID binding");
+        return None;
+    };
+    let entity = crate::condition::resolve_entity_by_global_form_id(world, form_id);
+    if entity.is_none() {
+        log::debug!(
+            "fragment effect skipped: object ref '{name}' (FormID {form_id:08X}) has no live entity"
+        );
+    }
+    entity
+}
+
+/// Apply one effect to the canonical stage/objective state (or, for the
+/// object-targeting variants, to the live ECS world). Returns a
 /// [`QuestStageAdvanced`] when the effect was a `SetStage` (so the caller
-/// can cascade), or `None` otherwise / when the target can't resolve.
+/// can cascade), or `None` otherwise / when a target can't resolve.
 pub fn apply_effect(
+    effect: &Effect,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    stages: &mut QuestStageState,
+    objectives: &mut QuestObjectiveState,
+) -> Option<QuestStageAdvanced> {
+    match effect {
+        Effect::AddItem { container, item, count } => {
+            let container_entity = resolve_object(vmad, world, container)?;
+            let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
+            let Some(mut inventories) = world.query_mut::<Inventory>() else {
+                log::debug!("fragment AddItem skipped: Inventory component never registered");
+                return None;
+            };
+            if inventories.get_mut(container_entity).is_none() {
+                // The container doesn't carry an Inventory yet — every
+                // object can receive items in Bethesda's runtime, so
+                // create one on demand (an interior-mutable insert onto
+                // an already-registered storage, not a structural
+                // `&mut World` mutation).
+                inventories.insert(container_entity, Inventory::new());
+            }
+            inventories
+                .get_mut(container_entity)
+                .expect("just present or inserted above")
+                .push(ItemStack::new(item_form_id, *count));
+            None
+        }
+        Effect::MoveTo { moved, destination } => {
+            let moved_entity = resolve_object(vmad, world, moved)?;
+            let destination_entity = resolve_object(vmad, world, destination)?;
+            let Some(translation) = world
+                .get::<GlobalTransform>(destination_entity)
+                .map(|gt| gt.translation)
+            else {
+                log::debug!("fragment MoveTo skipped: destination entity has no GlobalTransform");
+                return None;
+            };
+            let Some(mut transforms) = world.query_mut::<Transform>() else {
+                log::debug!("fragment MoveTo skipped: Transform component never registered");
+                return None;
+            };
+            // Unlike AddItem, a "moved" entity with no Transform isn't a
+            // container the effect can adopt — it isn't a placed spatial
+            // entity at all, so this declines rather than fabricating one.
+            let Some(transform) = transforms.get_mut(moved_entity) else {
+                log::debug!("fragment MoveTo skipped: moved entity has no Transform");
+                return None;
+            };
+            transform.translation = translation;
+            None
+        }
+        _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives),
+    }
+}
+
+/// The original quest-scoped effect arms (`SetStage`/objectives), split
+/// out so [`apply_effect`]'s object-targeting arms — which need `world`
+/// but no `QuestRef` resolution — read cleanly above.
+fn apply_quest_scoped_effect(
     effect: &Effect,
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
     stages: &mut QuestStageState,
     objectives: &mut QuestObjectiveState,
 ) -> Option<QuestStageAdvanced> {
-    let Some(quest) = resolve_quest(effect.quest_ref(), context, vmad) else {
-        log::debug!("fragment effect skipped: unresolved quest ref {:?}", effect.quest_ref());
-        return None;
-    };
     match effect {
-        Effect::SetStage { stage, .. } => {
+        Effect::SetStage { quest, stage } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
             let previous_stage = stages.set_stage(quest, *stage);
             Some(QuestStageAdvanced {
                 quest,
@@ -142,21 +255,28 @@ pub fn apply_effect(
                 new_stage: *stage,
             })
         }
-        Effect::SetObjectiveDisplayed { objective, displayed, .. } => {
+        Effect::SetObjectiveDisplayed { quest, objective, displayed } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
             objectives.set_displayed(quest, *objective, *displayed);
             None
         }
-        Effect::SetObjectiveCompleted { objective, completed, .. } => {
+        Effect::SetObjectiveCompleted { quest, objective, completed } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
             objectives.set_completed(quest, *objective, *completed);
             None
         }
-        Effect::SetObjectiveFailed { objective, failed, .. } => {
+        Effect::SetObjectiveFailed { quest, objective, failed } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
             objectives.set_failed(quest, *objective, *failed);
             None
         }
-        Effect::CompleteAllObjectives { .. } => {
+        Effect::CompleteAllObjectives { quest } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
             objectives.complete_all(quest);
             None
+        }
+        Effect::AddItem { .. } | Effect::MoveTo { .. } => {
+            unreachable!("object-targeting effects are handled by apply_effect directly")
         }
     }
 }
@@ -167,12 +287,13 @@ pub fn apply_effects(
     effects: &[Effect],
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
+    world: &World,
     stages: &mut QuestStageState,
     objectives: &mut QuestObjectiveState,
 ) -> Vec<QuestStageAdvanced> {
     effects
         .iter()
-        .filter_map(|e| apply_effect(e, context, vmad, stages, objectives))
+        .filter_map(|e| apply_effect(e, context, vmad, world, stages, objectives))
         .collect()
 }
 
@@ -360,6 +481,7 @@ pub fn quest_fragment_dispatch_system(world: &World) {
                 effects,
                 quest,
                 frags.vmad(quest),
+                world,
                 &mut stages,
                 &mut objectives,
             );

@@ -49,6 +49,29 @@ pub enum QuestRef {
     Property(String),
 }
 
+/// The object-targeting sibling of [`QuestRef`] — how an `AddItem`/
+/// `MoveTo`-family effect names its `ObjectReference`/`Actor` receiver or
+/// argument.
+///
+/// Unlike a quest reference, there is no unambiguous bare-receiver case
+/// (no `Self`/`GetOwningQuest()` equivalent): the fragment script
+/// (`QF_…`) always `extends Quest`, so `Self` is never itself the object
+/// being acted on. Every object reference is therefore VMAD-or-decline —
+/// see [`super::effects`]'s resolution helpers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObjectRef {
+    /// A property (`ObjectReference`/`Actor`/`Form`-typed) bound via
+    /// VMAD by name.
+    Property(String),
+}
+
+impl ObjectRef {
+    pub fn property_name(&self) -> &str {
+        let ObjectRef::Property(name) = self;
+        name
+    }
+}
+
 /// If `e` is `<object>.<method>(args)`, return `(&object, args)`.
 pub fn method_call<'a>(e: &'a Expr, method: &str) -> Option<(&'a Expr, &'a [CallArg])> {
     let Expr::Call { callee, args } = e else {

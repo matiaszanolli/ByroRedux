@@ -54,6 +54,7 @@ fn emit_advances(world: &World, advances: &[(QuestFormId, u16)]) {
 
 #[test]
 fn apply_effects_writes_stage_and_objectives() {
+    let world = World::new();
     let mut stages = QuestStageState::default();
     let mut objectives = QuestObjectiveState::default();
     let effects = vec![
@@ -72,7 +73,7 @@ fn apply_effects_writes_stage_and_objectives() {
             stage: 30,
         },
     ];
-    let advances = apply_effects(&effects, Q, None, &mut stages, &mut objectives);
+    let advances = apply_effects(&effects, Q, None, &world, &mut stages, &mut objectives);
 
     assert_eq!(stages.get_stage(Q), 30);
     assert!(objectives.get(Q, 10).completed);
@@ -86,13 +87,14 @@ fn apply_effects_writes_stage_and_objectives() {
 fn property_targeted_effect_skipped_without_vmad() {
     // A Quest Property reference can't resolve with no VMAD on hand — the
     // effect is skipped, never guessed against a wrong quest.
+    let world = World::new();
     let mut stages = QuestStageState::default();
     let mut objectives = QuestObjectiveState::default();
     let effects = vec![Effect::SetStage {
         quest: QuestRef::Property("SomeOtherQuest".into()),
         stage: 99,
     }];
-    let advances = apply_effects(&effects, Q, None, &mut stages, &mut objectives);
+    let advances = apply_effects(&effects, Q, None, &world, &mut stages, &mut objectives);
     assert!(advances.is_empty());
     assert_eq!(stages.get_stage(Q), 0, "no quest was touched");
 }
@@ -363,6 +365,241 @@ fn dispatch_resolves_property_targeted_effect_via_registered_vmad() {
         10,
         "Q itself must be untouched — the effect targeted OTHER, not Q"
     );
+}
+
+/// Spawn an entity carrying a `FormIdComponent` resolving to `form_id_raw`
+/// — the fixture every object-targeting-effect dispatch test needs so
+/// `resolve_entity_by_global_form_id` can find it. Mirrors the identical
+/// helper in `byroredux/src/systems/escort.rs`'s tests.
+fn spawn_with_form_id(
+    world: &mut World,
+    form_id_raw: u32,
+) -> byroredux_core::ecs::storage::EntityId {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+    world.register::<FormIdComponent>();
+    let mut pool = world
+        .remove_resource::<FormIdPool>()
+        .unwrap_or_else(FormIdPool::new);
+    let fid = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(form_id_raw),
+    });
+    world.insert_resource(pool);
+
+    let entity = world.spawn();
+    world.insert(entity, FormIdComponent(fid));
+    entity
+}
+
+#[test]
+fn dispatch_add_item_via_registered_vmad() {
+    use byroredux_core::ecs::components::Inventory;
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const CONTAINER_FORM: u32 = 0x0000_5000;
+    const ITEM_FORM: u32 = 0x0000_1234;
+
+    let mut world = fixture();
+    world.register::<Inventory>();
+    let container = spawn_with_form_id(&mut world, CONTAINER_FORM);
+
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_Test".into(),
+                    status: 0,
+                    properties: vec![
+                        ScriptProperty {
+                            name: "SomeContainer".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: CONTAINER_FORM,
+                                alias: -1,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "SomeItem".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: ITEM_FORM,
+                                alias: -1,
+                            },
+                        },
+                    ],
+                }],
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::AddItem {
+                container: crate::translate::compose::ObjectRef::Property("SomeContainer".into()),
+                item: crate::translate::compose::ObjectRef::Property("SomeItem".into()),
+                count: 3,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    let inv = world
+        .get::<Inventory>(container)
+        .expect("AddItem inserted an Inventory on demand");
+    assert_eq!(inv.items.len(), 1);
+    assert_eq!(inv.items[0].base_form_id, ITEM_FORM);
+    assert_eq!(inv.items[0].count, 3);
+}
+
+#[test]
+fn dispatch_add_item_pushes_onto_an_existing_inventory() {
+    use byroredux_core::ecs::components::{Inventory, ItemStack};
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const CONTAINER_FORM: u32 = 0x0000_5001;
+    const ITEM_FORM: u32 = 0x0000_1235;
+
+    let mut world = fixture();
+    world.register::<Inventory>();
+    let container = spawn_with_form_id(&mut world, CONTAINER_FORM);
+    world.insert(
+        container,
+        Inventory {
+            items: vec![ItemStack::new(0x0000_9999, 1)],
+        },
+    );
+
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_Test".into(),
+                    status: 0,
+                    properties: vec![
+                        ScriptProperty {
+                            name: "SomeContainer".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: CONTAINER_FORM,
+                                alias: -1,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "SomeItem".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: ITEM_FORM,
+                                alias: -1,
+                            },
+                        },
+                    ],
+                }],
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::AddItem {
+                container: crate::translate::compose::ObjectRef::Property("SomeContainer".into()),
+                item: crate::translate::compose::ObjectRef::Property("SomeItem".into()),
+                count: 3,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    let inv = world.get::<Inventory>(container).expect("still present");
+    assert_eq!(inv.items.len(), 2, "pushed onto the existing stack list");
+    assert_eq!(inv.items[0].base_form_id, 0x0000_9999, "prior stack untouched");
+    assert_eq!(inv.items[1].base_form_id, ITEM_FORM);
+    assert_eq!(inv.items[1].count, 3);
+}
+
+#[test]
+fn dispatch_move_to_via_registered_vmad() {
+    use byroredux_core::ecs::components::{GlobalTransform, Transform};
+    use byroredux_core::math::{Quat, Vec3};
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const MOVED_FORM: u32 = 0x0000_6000;
+    const DEST_FORM: u32 = 0x0000_7000;
+
+    let mut world = fixture();
+    world.register::<Transform>();
+    world.register::<GlobalTransform>();
+    let moved = spawn_with_form_id(&mut world, MOVED_FORM);
+    world.insert(moved, Transform::from_translation(Vec3::ZERO));
+    let destination = spawn_with_form_id(&mut world, DEST_FORM);
+    world.insert(
+        destination,
+        GlobalTransform::new(Vec3::new(10.0, 20.0, 30.0), Quat::IDENTITY, 1.0),
+    );
+
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_Test".into(),
+                    status: 0,
+                    properties: vec![
+                        ScriptProperty {
+                            name: "SomeRef".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: MOVED_FORM,
+                                alias: -1,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "SomeMarker".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: DEST_FORM,
+                                alias: -1,
+                            },
+                        },
+                    ],
+                }],
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::MoveTo {
+                moved: crate::translate::compose::ObjectRef::Property("SomeRef".into()),
+                destination: crate::translate::compose::ObjectRef::Property("SomeMarker".into()),
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    let transform = world.get::<Transform>(moved).expect("still present");
+    assert_eq!(transform.translation, Vec3::new(10.0, 20.0, 30.0));
 }
 
 #[test]

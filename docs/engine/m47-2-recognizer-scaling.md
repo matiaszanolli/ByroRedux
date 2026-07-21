@@ -1,8 +1,11 @@
 # M47.2 — Recognizer-catalog scaling: corpus characterization + tiered design
 
 **Status:** engine landing in progress (corpus measured 2026-06-22; b1 guard
-engine + b2 fragment lowerer + QUST VMAD property-table wiring shipped;
-Start/Stop + object-targeting effects remain — see Backlog)
+engine + b2 fragment lowerer + QUST VMAD property-table wiring +
+`AddItem`/`MoveTo` object-targeting effects all shipped 2026-07-21 —
+the latter measured at ~0% real-corpus yield pending alias resolution,
+see "Shipped" below. `Enable`/`Disable`, `EvaluatePackage`, `Start`/`Stop`
+remain out of scope — see Backlog)
 **Companion to:** [`m47-2-design.md`](m47-2-design.md) (the `.pex` decompiler +
 recognizer-chain that this scales)
 
@@ -252,11 +255,22 @@ increments landed:
 - **Correction — the FormID→entity resolver already exists.** This doc
   previously said object-targeting effects (`Enable`/`Disable`/`MoveTo`/
   `AddItem`/`EvaluatePackage`) were blocked on a FormID→entity resolver
-  that didn't exist. That premise is stale: `World::find_by_form_id`
-  (`crates/core/src/ecs/world.rs`) already ships and is used in production
-  by the M42.5–8 Follow/Escort/Guard/Travel AI packages (landed
-  2026-07-16, after this doc was written). The resolver is not the
-  blocker for object-targeting effects — see below for what actually is.
+  that didn't exist. That premise is stale, though not for the function
+  first suspected: `World::find_by_form_id` (`crates/core/src/ecs/world.rs`)
+  is test-only today (a plain `FormIdComponent` equality scan, no
+  `FormIdPool` hop — never called from production code). The real,
+  in-production resolver is
+  [`byroredux_scripting::condition::resolve_entity_by_global_form_id`]
+  (`crates/scripting/src/condition.rs`) — it resolves a raw plugin-local
+  form ID through `FormIdPool` before matching against each entity's
+  `FormIdComponent` (the multi-master-safe path `find_by_form_id` skips),
+  and is already the load-bearing resolver for the M42.5–8 Follow/Escort/
+  Guard/Travel AI packages (landed 2026-07-16, after this doc was
+  written) and for M47.1's `GetIsID`/`GetDistance` condition functions.
+  Being already in the `scripting` crate, it's directly callable from
+  `fragment.rs`/`effects.rs` with no new cross-crate wiring. The resolver
+  is not the blocker for object-targeting effects — see below for what
+  actually is.
 
 - **More b2 effect primitives → the ~78% target.** Still the
   highest-value continuation, but the next tier needs new modelling, not
@@ -277,10 +291,180 @@ increments landed:
     quest-scoped only — every variant carries a `QuestRef`) plus an
     object-reference resolution path: bind the property name to a FormID
     via the (now-available) VMAD, then to a live `EntityId` via
-    `find_by_form_id` at *apply* time (the entity may not be spawned/loaded
-    when the fragment lowers). That's a real design increment — a second
-    `Ref` enum parallel to `QuestRef`, new `Effect` variants, and the
-    dispatch-time resolve-and-apply wiring — not a one-line unblock.
+    `resolve_entity_by_global_form_id` at *apply* time (the entity may not
+    be spawned/loaded when the fragment lowers). That's a real design
+    increment — a second `Ref` enum parallel to `QuestRef`, new `Effect`
+    variants, and the dispatch-time resolve-and-apply wiring — not a
+    one-line unblock. Full design below.
+
+## Design: object-targeting fragment effects
+
+Scoped 2026-07-21, not yet implemented. Covers `AddItem` and `MoveTo` —
+the two object-targeting effects with a real ECS consumer today.
+`Enable`/`Disable`/`EvaluatePackage` are deliberately **not** designed
+here; see "Explicitly out of scope," below.
+
+### The two-hop resolution model
+
+An object-targeting effect's receiver is always a bare `Property` — there
+is no `Self`/`GetOwningQuest()`-equivalent unambiguous case the way a
+`Quest`-typed receiver has, because the fragment script (`QF_…`, `extends
+Quest`) is never itself the `ObjectReference`/`Actor` being acted on. So
+resolution is VMAD-or-nothing, in two hops that happen at *different
+times*:
+
+1. **Lowering time** (`lower_fragment`, AST only, no `World`): resolve the
+   call's receiver/argument name to a **symbolic** reference —
+   `ObjectRef::Property(String)`, the exact shape `QuestRef::Property`
+   already uses. No FormID lookup yet; lowering never sees a VMAD or a
+   `World`.
+2. **Dispatch time** (`apply_effect`, has both the quest's VMAD and
+   `&World`): resolve the property name to a FormID, then to a live
+   entity —
+   ```
+   fn resolve_object(vmad: &ScriptInstanceData, world: &World, name: &str) -> Option<EntityId> {
+       let form_id = resolve_property_form_id(vmad, name)?;
+       resolve_entity_by_global_form_id(world, form_id)  // crates/scripting/src/condition.rs
+   }
+   ```
+   `resolve_property_form_id` is `receiver_quest`'s object-typed sibling:
+   look up the named property, require `PropertyValue::Object { alias, .. }`,
+   and **decline when `alias != -1`**. An alias-bound VMAD entry (a
+   `ReferenceAlias Property`, common in Radiant/companion quests) needs
+   the quest-alias-fill subsystem to resolve correctly — the raw `form_id`
+   sitting next to a live alias index is not reliably the intended
+   target, so guessing it would risk a wrong-object application. Declining
+   is the same discipline the corpus survey's data justified everywhere
+   else: a partial understanding is a full decline, never a guess.
+
+   An entity not being found (unloaded cell, not-yet-spawned REFR, wrong
+   FormID) also declines the *effect application* (not the whole
+   fragment — see below), logged at `debug`, matching `resolve_quest`'s
+   existing "skip, never guess" contract.
+
+### Signature change
+
+`apply_effect`/`apply_effects` gain a `world: &World` parameter. This is
+**not** the disruptive `&mut World` ripple it might look like — the
+engine's established convention (per the ECS architecture invariants) is
+that systems take `&World` and mutate through `world.query_mut::<T>()`'s
+interior-mutable `RwLock`-backed storage, exactly how `trigger_detection_system`
+inserts `OnTriggerEnterEvent` today. `quest_fragment_dispatch_system`
+already holds `world: &World`; it just starts threading it one level
+deeper.
+
+A per-effect apply failure (target unresolved, component missing) skips
+*that effect* and continues the rest of the fragment's effects — unlike
+`lower_fragment`'s decline-the-whole-fragment contract. This matches the
+existing `resolve_quest` behavior for `Property`-targeted quest effects
+(one skip in `apply_effects`'s `filter_map` chain, not an abort), and is
+the correct level: lowering is static (either the *shape* is understood
+or not), while dispatch-time resolution failure is a runtime data fact
+(this particular save/cell/load order didn't have the target loaded) that
+one fragment can't retroactively un-recognize.
+
+### New `Effect` variants
+
+```rust
+pub enum Effect {
+    // ...existing quest-scoped variants unchanged...
+
+    /// `<container>.AddItem(<item>, <count>[, abSilent])`. `abSilent` is
+    /// parsed (declines if a 4th arg or a non-literal count/silent value
+    /// is present — same over-conservative-decline discipline as
+    /// `SetObjectiveDisplayed`'s `bool_arg`) but not applied — no pickup
+    /// notification UI exists yet, so a silent vs. noisy AddItem look
+    /// identical today. `item` resolves only to a FormID (never to an
+    /// entity — it names a *base record*, not a placed reference).
+    AddItem { container: ObjectRef, item_form_id_ref: ObjectRef, count: u32 },
+
+    /// `<moved>.MoveTo(<destination>)`. The conservative 2-arg shape only
+    /// — declines if offset/match-rotation args are present (a snap with
+    /// silently-dropped offsets would misplace the object). Both operands
+    /// are `ObjectRef`s resolved to full entities: `moved`'s `Transform`
+    /// is overwritten with `destination`'s `GlobalTransform` translation,
+    /// mirroring `resolve_destination`'s existing
+    /// `GlobalTransform.translation` read in `byroredux/src/systems/travel.rs`.
+    MoveTo { moved: ObjectRef, destination: ObjectRef },
+}
+
+/// The object-targeting sibling of `QuestRef` — see "Design" above.
+/// Always VMAD-or-decline; no unambiguous bare-receiver case exists.
+pub enum ObjectRef {
+    Property(String),
+}
+```
+
+`AddItem`'s apply: resolve `container` to an entity, resolve
+`item_form_id_ref` to a bare FormID (stop at hop 1 — no entity lookup),
+then `world.query_mut::<Inventory>().get_mut(container_entity)?.push(ItemStack::new(item_form_id, count))`
+— reusing `Inventory::push` (`crates/core/src/ecs/components/inventory.rs`)
+exactly as written today, no new inventory-side code.
+
+`MoveTo`'s apply: resolve both operands to entities, read
+`destination`'s `GlobalTransform.translation`, write it onto `moved`'s
+`Transform.translation` via `world.query_mut::<Transform>()`.
+
+### Shipped (2026-07-21) — and an empirical yield finding
+
+`AddItem`/`MoveTo` landed exactly as designed above: `ObjectRef` in
+`compose.rs`, the two lowering primitives + `receiver_object` (bare-
+property-only, declining any local-variable receiver — including a
+side-effect-free ident copy, since this increment doesn't trace a local
+back to the property it came from) in `effects.rs`, and the dispatch-time
+`resolve_property_form_id` / `resolve_object` pair in `fragment.rs` using
+`resolve_entity_by_global_form_id`. `AddItem` creates an `Inventory` on
+the container on demand (an interior-mutable `QueryWrite::insert`, not a
+structural `&mut World` mutation — every object can receive items in
+Bethesda's runtime, so this is the correct default); `MoveTo` requires a
+pre-existing `Transform` on the moved entity and declines otherwise (a
+"moved" entity with no `Transform` isn't a placed spatial entity, so
+nothing to snap). 9 new tests (lowering shapes + decline cases + full
+dispatch through a live `World` with `FormIdComponent`-bound entities),
+all green; full workspace suite unaffected.
+
+**Live-corpus measurement, though, found the real yield is ~0% today** —
+`fragment_coverage` against both `Skyrim - Misc.bsa` (14,026 `.pex`) and
+`Fallout4 - Misc.ba2` (7,875 `.pex`) claimed zero `AddItem`/`MoveTo`
+effects in either corpus (all lowered effects were still the original
+five quest-scoped ones). The mechanism is correct and dispatch-tested,
+but real quest content's dominant idiom binds the object via an alias
+accessor first — `ObjectReference k = SomeAlias.GetActorRef()` (the
+`$=$.getactorref()` primitive at 2.5% frequency in the original corpus
+survey), *then* `k.AddItem(...)` — not a bare `ObjectReference Property`
+receiver. `bind_local` already declines that binding's *whole fragment*
+regardless (`GetActorRef()` is a side-effecting call, #1907's discipline),
+so extending `receiver_object` to trace local-to-property copies (a
+smaller change) would not have helped — the real blocker is the same one
+flagged in the resolution model above: alias-bound references need the
+quest-alias-fill subsystem, which does not exist yet. **This makes
+alias resolution the highest-leverage next step for object-targeting
+effects** — more so than adding further effect primitives to a
+receiver-resolution shape the live corpus rarely uses directly. The
+implementation ships now (correct, tested, and dormant) so it activates
+immediately once alias resolution lands, rather than needing to be built
+twice.
+
+### Explicitly out of scope (not designed here)
+
+- **`Enable`/`Disable`.** No visibility/collision-suppression component
+  exists anywhere in the ECS, renderer, or physics today — grepped for
+  `Disabled`/`Hidden`/an enabled marker and found nothing. Wiring this
+  correctly means a new marker component **and** teaching the renderer's
+  draw collection, the physics world, and (for skinned meshes) BLAS
+  build/eviction to skip a disabled entity — a real feature in its own
+  right (visible in-game, not just an internal effect), not a fragment-
+  effect primitive. Do this as its own scoped milestone if/when a real
+  workload needs object visibility toggling, not as a rider on this
+  design.
+- **`EvaluatePackage`.** Per the AI-package Known Issue, packages are
+  selected once at NPC spawn with no re-evaluation trigger as game time
+  or world state advances — `EvaluatePackage`'s entire meaning (force an
+  immediate re-pick) has no hook to attach to. Needs the AI package
+  system's re-evaluation mechanism built first (a Tier 7 concern), not a
+  fragment-effect addition.
+- **`Quest.Start()`/`Quest.Stop()`** — covered above; blocked on a
+  currently-nonexistent "quest running" state, not on resolution.
 
 - **OnHit emit site (item 3) — blocked on a combat system.** 376 scripts
   define `OnHit`, and the `HitEvent` marker + cleanup already exist, but
