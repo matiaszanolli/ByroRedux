@@ -24,6 +24,96 @@ Commits hold that record.
 
 ---
 
+## Session 59 — M47.2 quest aliases + object-targeting effects, renderer surface-ID/light-animation quality pass, audit bug-bash  (2026-07-20 → 2026-07-21, `dfcf74c1..c2336ee1`, 16 commits)
+
+Three threads running in parallel rather than one driver: continuing
+M47.2's scripting vertical slice into quest aliases and object-targeting
+effects; a same-day renderer audit triggered by two feature refactors
+(stable surface ID, canonical light-animation flags) that turned up real
+bugs before the day was out; and the standing audit-bug-bash cadence
+closing 20 more tech-debt and audit findings across NIF, ESM, and the
+Vulkan renderer.
+
+- **Quest scripting (M47.2)** — Phase 0 of the QUST alias system shipped:
+  `ALST`/`ALLS` decode plus a runtime alias-fill pass for dynamic content
+  targeting, cross-validated against real ESM files and catching a spec
+  error in `ALFI` along the way (`a2bdbab8`, `f967aa0f`). New
+  `Effect::AddItem`/`Effect::MoveTo` object-targeting effects (plus an
+  `ObjectRef` resolver) let quest fragments manipulate object inventories
+  and positions, threading a `World` reference through `apply_effect`/
+  `apply_effects` for entity resolution (`97bc3b94`). VMAD's
+  scripts-section now registers for property-targeted effect resolution,
+  wiring the new effects into the existing fragment pipeline (`ece712ba`).
+- **Renderer — stable surface ID + light animation, audited same-day** —
+  `GpuInstance`'s unused padding became a stable per-entity surface ID,
+  replacing the draw-index-keyed TAA/SVGF disocclusion check with real
+  identity across frame reordering; a new thin-glass material flag
+  distinguishes occluding from non-occluding glass (`883f57cd`).
+  `canonical_light_animation_flags` decodes game-specific `LIGH`
+  animation bits into shared behavior, separating `LightFlicker`'s source
+  flags from runtime state, and glass IOR/surface-behavior consolidated
+  into `DEFAULT_DIELECTRIC_IOR`/`GLASS_SURFACE_BEHAVIOR` (`41eedfe1`). A
+  same-day audit of both refactors (`docs/audits/AUDIT_RENDERER_2026-07-20.md`)
+  found 6 real issues and fixed them same day: `caustic_splat.comp` read
+  an unrelated or out-of-range instance-SSBO slot for every opaque pixel
+  because it derived the index from the mesh-ID without checking the
+  alpha-blend marker bit the surface-ID refactor had repurposed
+  (#2116/#2117/#2119, `2cd44502`); `LIGHT_FLAG_PULSE_SLOW` was defined as
+  `0x400` — actually Shadow Spotlight in both Skyrim's and FO4's `LIGH`
+  layout per xEdit/F4Edit — instead of the real `0x100`, so every
+  non-FO4 game slow-pulsed its shadow-spotlights while genuine
+  Pulse-Slow lights never animated anywhere; fx-light meshes
+  (fxlight/fxlightrays/fxfog) never attached `LightFlicker`, silently
+  dropping authored flicker/pulse; and `spawn.rs` had hand-duplicated
+  `attach_light_flicker_if_needed`'s body instead of calling the shared
+  helper (#2118/#2120/#2121, `7b587a86`).
+- **Tech-debt / audit bug-bash (20 issues)** — split the 4808-line
+  `draw.rs` into `geometry_pass.rs`/`post_passes.rs`/`skinned_blas_refit.rs`
+  (draw_frame moved verbatim, no barrier reordering); deleted the fully
+  dead `ShaderFlags`/`NifStream::variant()` chain; fixed RL-03, where the
+  exterior sun's ambient fill had no `lightType` gate despite its own
+  comment promising point/spot-only, giving every exterior fragment an
+  unshadowed, N·L-ignoring ambient term that bypassed RT shadows; and
+  corrected 4 stale entries in shader-pipeline.md
+  (#1857/#1897/#1914/#1915, `9a9a4c5d`). Fixed a CFG `block_key`
+  staleness bug in backward-jump handling (real-world unreachable but a
+  hardening gap on the untrusted VMAD-attach path); wired
+  `RunOn::Reference` in the condition evaluator to the already-existing
+  `resolve_entity_by_global_form_id` resolver — every "Run on: Reference"
+  CTDA had silently and permanently evaluated false; fixed the
+  quest-fragment cascade re-queue guard comparing against the wrong
+  stage variable; and gave `parse_state`/`parse_group`/`parse_struct`
+  their own per-child error recovery so one bad function no longer
+  discards an entire sibling-populated `State` block
+  (#2122/#2123/#2124/#2125, `cacc9935`). Fixed two Starfield doc-rot
+  comments, a real archive-loading gap (two-digit zero-padded mesh
+  series like `MeshesPatch01.ba2` weren't auto-loading siblings 02-09),
+  and a real NIF parser bug (`BSWeakReferenceNode` missing an
+  undocumented 2-byte gap on Starfield, truncating 325 of 29,849 real
+  files) (#2104/#2105/#2106/#2107, `b7e0318f`). Split the 1008-line NIF
+  material-property walker into `dedicated_shader.rs`/
+  `legacy_properties.rs` and the 949-line, 110-arm ESM dispatch table
+  into 8 per-domain files; deduped a hand-rolled Z-up→Y-up swizzle onto
+  the canonical `zup_to_yup_pos` helper (#2059/#2060/#2061/#2062,
+  `aa377d14`). Added `image_barrier_general_write_to_read` and
+  `write_combined_image_sampler_at` descriptor/barrier builders,
+  swapping 9 hand-rolled call sites across 5 compute passes and the
+  bindless texture registry onto them; migrated the last 3 compute
+  pipelines (caustic/TAA/SVGF) off a long-lived `shader_module` field
+  onto the shared immediate-free `create_compute_pipeline` helper; and
+  fixed a decimal-MB/binary-MiB arithmetic mismatch in a VRAM-budget
+  comment (#2071/#2072/#2073/#2074, `c2336ee1`).
+
+Net: tests 3738 → 3785 (+47); Rust LOC (non-test) ~282 661 → 285 396
+(+2 735); source files 696 → 711 (+15). Bench-of-record unchanged at
+`8a668eff`, now 55 commits stale (R6a-stale-16 still open) — this
+session's renderer touches are structurally-equivalent refactors
+confirmed byte-for-byte by the unchanged test suite, not logic changes,
+so they don't independently re-trip the threshold, but the standing
+breach is still unresolved.
+
+---
+
 ## Session 58 — Renderer quality pass (ReSTIR spatial close-out, TAA/glass/volumetrics/decals) + audit bug-bash  (2026-07-18 → 2026-07-20, `42cf7641..86035f51`, 21 commits)
 
 Split roughly evenly between a renderer-quality pass and the standing
