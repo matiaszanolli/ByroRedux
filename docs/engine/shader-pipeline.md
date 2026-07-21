@@ -174,6 +174,7 @@ One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 | 4–5 | render layer | 2-bit packed layer index: `(flags >> 4) & 0x3` |
 | 6 | `INSTANCE_FLAG_PRESKINNED` | Reserved: pre-skinned vertex offset |
 | 7 | `INSTANCE_FLAG_FLAT_SHADING` | Flat shading via screen-space derivative normal |
+| 8 | `INSTANCE_FLAG_DIFFUSE_ALPHA` | BC1 diffuse texture carries alpha (guards `NiAlphaProperty`-less alpha test) |
 | 16–31 | terrain tile index | `(flags >> 16) & 0xFFFF` (when bit 3 set) |
 
 ### `GpuMaterial` — 300 bytes, SSBO (Set 1, Binding 13)
@@ -224,7 +225,8 @@ Selected fields (full layout in `gpu_types.rs`):
 
 ### `GpuLight` — 64 bytes, SSBO (Set 1, Binding 0)
 
-Prefixed by a `u32 lightCount`. Up to `MAX_LIGHTS` = 512 entries per frame.
+Prefixed by a 16-byte header (`u32 count` + 3 × `u32` padding). Up to
+`MAX_LIGHTS` = 512 entries per frame.
 
 | Offset | Field | Contents |
 |---|---|---|
@@ -277,11 +279,18 @@ pipeline. Defined in
 | 1 | 8 | `STORAGE_BUFFER` | Global vertex SSBO (RT UV fetch) | triangle |
 | 1 | 9 | `STORAGE_BUFFER` | Global index SSBO (RT UV fetch) | triangle |
 | 1 | 10 | `STORAGE_BUFFER` | Terrain tile buffer | triangle |
-| 1 | 11 | `STORAGE_BUFFER` | Ray budget counter (`u32`) | triangle, volumetrics |
+| 1 | 11 | `STORAGE_BUFFER` | Ray budget counter (`u32`) | triangle |
 | 1 | 12 | `STORAGE_BUFFER` | Bone palette (previous frame) | triangle |
 | 1 | 13 | `STORAGE_BUFFER` | Material table (`GpuMaterial[]`) | triangle |
 | 1 | 14 | `UNIFORM_BUFFER` | DALC cube (6-axis ambient) | triangle |
+| 1 | 15 | `COMBINED_IMAGE_SAMPLER` | Depth history texture (previous frame, D32) | triangle (soft-particle feather) |
+| 1 | 16 | `STORAGE_BUFFER` | ReSTIR reservoir buffer (current frame) | triangle (Session-49 ReSTIR) |
+| 1 | 17 | `STORAGE_BUFFER` | ReSTIR reservoir buffer (previous frame) | triangle (Session-49 ReSTIR) |
 | 2 | 0 | `STORAGE_IMAGE` (`R32_UINT`) | Water caustic accumulator | water.frag (atomic add) |
+
+Volumetrics (`volumetrics_inject.comp`/`volumetrics_integrate.comp`) uses its
+own private `set = 0` layout (froxel image, `VolumetricsParams`/`IntegrationParams`
+UBO, TLAS) — it does not bind any Set-1 resource above.
 
 Per-pass private sets (SVGF, TAA, bloom, composite, SSAO, volumetrics,
 egui) hold their own input/output images and are not shared.

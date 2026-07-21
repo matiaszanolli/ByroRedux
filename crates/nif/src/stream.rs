@@ -6,7 +6,7 @@
 
 use crate::header::NifHeader;
 use crate::types::{BlockRef, NiColor, NiMatrix3, NiPoint3, NiQuatTransform, NiTransform};
-use crate::version::{NifVariant, NifVersion};
+use crate::version::NifVersion;
 use std::io::{self, Cursor, Read};
 use std::sync::Arc;
 
@@ -70,7 +70,6 @@ impl_any_bit_pattern!(
 pub struct NifStream<'a> {
     cursor: Cursor<&'a [u8]>,
     header: &'a NifHeader,
-    variant: NifVariant,
 }
 
 /// Hard cap on any single file-driven allocation. A corrupt or malicious
@@ -86,12 +85,9 @@ pub const MAX_SINGLE_ALLOC_BYTES: usize = 256 * 1024 * 1024;
 
 impl<'a> NifStream<'a> {
     pub fn new(data: &'a [u8], header: &'a NifHeader) -> Self {
-        let variant =
-            NifVariant::detect(header.version, header.user_version, header.user_version_2);
         Self {
             cursor: Cursor::new(data),
             header,
-            variant,
         }
     }
 
@@ -105,11 +101,6 @@ impl<'a> NifStream<'a> {
 
     pub fn user_version_2(&self) -> u32 {
         self.header.user_version_2
-    }
-
-    /// The detected game variant — use this for feature queries instead of raw version numbers.
-    pub fn variant(&self) -> NifVariant {
-        self.variant
     }
 
     /// Actual BSVER from the header (user_version_2).

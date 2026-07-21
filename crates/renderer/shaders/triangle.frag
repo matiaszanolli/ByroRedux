@@ -2305,12 +2305,21 @@ void main() {
             // the single brightest nearby light's contribution, not the
             // count of lights in range.
             const float LIGHT_AMBIENT_FILL_FACTOR = 0.15;
-            lightAmbientFill = max(
-                lightAmbientFill,
-                lightColor * atten * albedo
-                    * vec3(mat.ambientR, mat.ambientG, mat.ambientB)
-                    * LIGHT_AMBIENT_FILL_FACTOR
-            );
+            // Gate promised by the comment above but missing until #1914:
+            // a true directional sun (lightType >= 1.5, and NOT the
+            // isInteriorFill case already `continue`d above) has no
+            // "ambient" component in the Gamebryo model — without this
+            // gate every exterior fragment picked up an unshadowed,
+            // normal-independent `sunColor * albedo * 0.15` term added
+            // directly to `Lo`, washing out RT sun-shadow contrast.
+            if (lightType < 1.5) {
+                lightAmbientFill = max(
+                    lightAmbientFill,
+                    lightColor * atten * albedo
+                        * vec3(mat.ambientR, mat.ambientG, mat.ambientB)
+                        * LIGHT_AMBIENT_FILL_FACTOR
+                );
+            }
 
             float NdotL = max(dot(N, L), 0.0);
             float contribution = NdotL * atten;

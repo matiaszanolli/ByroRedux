@@ -557,9 +557,13 @@ impl NifVariant {
     //
     // #938 / NIF-D2-NEW-04 removed three predicates (compact_material,
     // has_emissive_mult, has_shader_emissive_color); #1511 removed six more;
-    // #1840 removed the last seven (has_material_crc, has_properties_list,
+    // #1840 removed seven more (has_material_crc, has_properties_list,
     // avobject_flags_u32, has_shader_alpha_refs, has_effects_list,
-    // uses_bs_tri_shape, has_culling_mode). All had zero production call
+    // uses_bs_tri_shape, has_culling_mode); #1897 removed the last
+    // survivor, `has_shader_property_fo3_fields` — its sole claimed
+    // consumer (`ShaderFlags::classify` in `shader_flags.rs`) was itself
+    // transitively dead (test-only), so the predicate had zero production
+    // call sites like every one before it. All had zero production call
     // sites — every parser queries `stream.bsver()` directly per the
     // raw-bsver doctrine (base.rs / node.rs, #160 / #1331 / #1838 / #1839).
     // Keeping a call-site-less predicate as an "approved helper" alongside
@@ -567,15 +571,8 @@ impl NifVariant {
     // adopting one (e.g. the Fallout3-vs-FalloutNV `avobject_flags_u32`, or
     // any variant helper that answers `false` on the `Unknown` hybrid-header
     // corner) reintroduces the one-bsver-step transitional-export mis-parse
-    // those call sites were fixed to avoid. `has_shader_property_fo3_fields`
-    // is the sole surviving predicate — it still has a live consumer
-    // (`shader_flags.rs`).
-
-    /// BSShaderProperty has ShaderType, ShaderFlags, ShaderFlags2, EnvMapScale.
-    /// nif.xml: `#NI_BS_LTE_FO3#` (BSVER ≤ 34). Only FO3/FNV.
-    pub fn has_shader_property_fo3_fields(self) -> bool {
-        matches!(self, Self::Fallout3 | Self::FalloutNV)
-    }
+    // those call sites were fixed to avoid. No feature-flag predicates
+    // remain on `NifVariant` — this doctrine is fully enforced now.
 }
 
 #[cfg(test)]
@@ -912,12 +909,12 @@ mod tests {
         assert_eq!(NifVariant::Unknown.bsver(), 0);
     }
 
-    // #938 / #1511 / #1840 — the per-feature predicate tests
+    // #938 / #1511 / #1840 / #1897 — the per-feature predicate tests
     // (feature_properties_list / _shader_alpha_refs / _effects_list /
-    // _material_crc / _culling_mode, and earlier _compact_material /
-    // _has_emissive_mult) were deleted alongside the call-site-less
-    // predicates they exercised. Every parser queries `stream.bsver()`
-    // directly; see the comment block on the `Feature flags` section in
-    // the impl. `has_shader_property_fo3_fields` (the one surviving
-    // predicate) is covered by its live consumer in `shader_flags.rs`.
+    // _material_crc / _culling_mode / _has_shader_property_fo3_fields,
+    // and earlier _compact_material / _has_emissive_mult) were deleted
+    // alongside the call-site-less predicates they exercised. Every
+    // parser queries `stream.bsver()` directly; see the comment block on
+    // the `Feature flags` section in the impl. No feature-flag predicates
+    // remain on `NifVariant`.
 }

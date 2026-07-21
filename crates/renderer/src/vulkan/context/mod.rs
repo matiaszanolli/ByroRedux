@@ -2980,10 +2980,13 @@ impl VulkanContext {
 // Method implementations split across submodules:
 mod draw;
 pub use draw::FrameInputs;
+mod geometry_pass;
 mod helpers;
+mod post_passes;
 mod resize;
 mod resources;
 mod screenshot;
+mod skinned_blas_refit;
 
 impl Drop for VulkanContext {
     fn drop(&mut self) {
