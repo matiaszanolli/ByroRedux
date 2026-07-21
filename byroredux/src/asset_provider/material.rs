@@ -704,13 +704,14 @@ pub(crate) fn merge_bgsm_into_mesh(
         mesh.is_pbr = true;
         // `from_bgsm` deliberately NOT set — that flag gates BGSM
         // spec-glossiness translation (FO4-specific format convention).
-        // Starfield .mat authors metalness/roughness directly, but
-        // `metalness_override`/`roughness_override` stay `None` until
-        // Phase 2 walks the CDB. The unset overrides become `f32::NAN`
-        // in `translate_material`, and `Material::resolve_pbr`'s
-        // NaN-sentinel classifier fills them at the canonical NIFAL
-        // boundary (#1480) — there is no shader-side / render-time
-        // classify_pbr fallback anymore (#1522).
+        // Starfield .mat authors metalness/roughness directly, but this
+        // `.mat` arm returns early without touching them — NIF import
+        // (`bs_geometry.rs`) already set `metalness_override`/
+        // `roughness_override` to `Some(classify_legacy_pbr(...))` before
+        // this function ever runs, so the NaN-sentinel path in
+        // `Material::resolve_pbr` never fires for Starfield content.
+        // Phase 2 must *overwrite* those `Some` values with CDB-authored
+        // ones rather than relying on that unreachable fallback.
         return true;
     }
 

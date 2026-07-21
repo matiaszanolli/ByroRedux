@@ -35,7 +35,7 @@ but Fallout 3 / FNV / Skyrim SE).
 | Skyrim SE         | BSA v105 (LZ4)     | **100%** (18 862)         | 100%        | — |
 | Fallout 4         | BA2 BTDX v1/v7/v8  | **100%** (34 995 + 124 871 MeshesExtra) | 100% | FaceGen truncation tail resolved (#1457, 2026-06-14). |
 | Fallout 76        | BA2 BTDX v1 GNRL   | **100%** (58 469)         | 100%        | — |
-| Starfield         | BA2 BTDX v2/v3 LZ4 | **99.64%** aggregate      | 100%        | Per-archive (all 5): Meshes01 100% (31 058), Meshes02 100% (7 552), MeshesPatch 98.91% (29 849), LODMeshes 100% (19 535), FaceMeshes 100% (1 282). Truncation tail in MeshesPatch is residual drift (#746/#747). |
+| Starfield         | BA2 BTDX v2/v3 LZ4 | **99.99%** aggregate      | 100%        | Per-archive (all 5): Meshes01 100% (31 058), Meshes02 100% (7 552), MeshesPatch 99.98% (29 849), LODMeshes 100% (19 535), FaceMeshes 100% (1 282). MeshesPatch's populated-`BSWeakReferenceNode` truncation tail (was 325/29 849, mis-attributed to closed #746/#747) fixed by #2105 — an undocumented 2-byte field between the weak-ref array and `unkInt1`, gated on the same `bsver >= SF_FORM_ID` threshold as the per-entry `formID`. A residual 6/29 849 files with a distinct, still-unexplained cause remain truncated. |
 
 The full multi-game sweep runs the seven `Game` variants in
 [`crates/nif/tests/common/mod.rs`](../../crates/nif/tests/common/mod.rs)
@@ -244,6 +244,9 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
 cargo run -- --esm Starfield.esm \
              --cell citycydoniamainlevel \
              --bsa "Starfield - Meshes01.ba2" \
+             --bsa "Starfield - MeshesPatch.ba2" \
+             --bsa "Starfield - LODMeshes.ba2" \
+             --bsa "Starfield - FaceMeshes.ba2" \
              --textures-bsa "Starfield - Textures01.ba2" \
              --materials-ba2 "Starfield - Materials.ba2"
 ```

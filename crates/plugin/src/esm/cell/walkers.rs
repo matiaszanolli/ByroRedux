@@ -41,7 +41,7 @@ use crate::esm::sub_reader::SubReader;
 ///     ambient cube / specular / fresnel): Fog Color Far, Fog Max,
 ///     Light Fade, Near/Far Height Mid/Range, Fog Color High Near/Far,
 ///     four fog scales, and an Interior Type enum. It gets a dedicated
-///     decode (`game == Starfield && len == 108`) per xEdit SF1
+///     decode (`game == Starfield && len >= 108`, #1579) per xEdit SF1
 ///     `wbStruct(XCLL,'Lighting')`, byte-verified against Starfield.esm.
 ///     The ~11 985 vanilla Starfield.esm cells all ship at exactly 108.
 const XCLL_SIZES_OBLIVION: &[usize] = &[28, 32, 36];
@@ -157,7 +157,7 @@ mod xcll_gate_tests {
     /// does NOT decode "through 92 bytes" as Skyrim — it shares only
     /// bytes 0-39 and then diverges into a volumetric height-fog model
     /// (no ambient cube). The `b"XCLL"` arm now has a dedicated
-    /// `game == Starfield && len == 108` branch decoding the full SF
+    /// `game == Starfield && len >= 108` branch (#1579) decoding the full SF
     /// layout (xEdit SF1, byte-verified against Starfield.esm); see
     /// `parse_cell_starfield_xcll_decodes_volumetric_height_fog_tail`.
     /// Adding 108 to the canonical set keeps the sanity-warn quiet.

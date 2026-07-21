@@ -911,6 +911,27 @@ impl BsWeakReferenceNode {
             }
         }
 
+        // #2105 — undocumented 2-byte field between the weak-ref array and
+        // `unkInt1`, gated the same as the per-entry `formID` above (nifly's
+        // `Sync` has no such field and nif.xml has no entry for this block
+        // at all). Found by byte-diffing real content: 18/18 sampled
+        // `Starfield - MeshesPatch.ba2` NIFs with a populated water-ref list
+        // (bsver 175, formID present) decode cleanly only when these 2 bytes
+        // are skipped here — without them `unkInt1`/the water-ref count are
+        // read 2 bytes early, producing a huge garbage count whose implied
+        // `skip()` runs past EOF and drops the block to `NiUnknown`
+        // (325/29 849 MeshesPatch.ba2 files). Confirmed by locating each
+        // sample's real `materials/water/*.mat` resource string and walking
+        // backward through `BSWaterReferenceStruct`'s known field sizes to
+        // the count — it lines up only 2 bytes later than nifly predicts.
+        // The gate matters: bsver-172 "packin" composite nodes (no per-entry
+        // `formID`) do NOT carry this field — an earlier unconditional skip
+        // regressed a different 20/29 849 files that previously parsed
+        // clean. Distinct from #1882's tail (after the *whole* struct).
+        if stream.bsver() >= crate::version::bsver::SF_FORM_ID {
+            stream.skip(2)?;
+        }
+
         // unkInt1: u32
         let _unk_int1 = stream.read_u32_le()?;
 

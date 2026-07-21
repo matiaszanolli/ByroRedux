@@ -147,7 +147,10 @@ fn starfield_header() -> NifHeader {
 /// Minimal Starfield (v20.2.0.7 / bsver 172) `BSWeakReferenceNode` body with
 /// empty weak-ref and water-ref lists — the NiNode base (76 B, same modern
 /// layout as `build_bs_multi_bound_node_body`) + num_weak_refs(0) + unk_int1 +
-/// num_water_refs(0) = 88 B. Callers append the #1882 trailing tail.
+/// num_water_refs(0) = 88 B. bsver 172 is below `SF_FORM_ID` (173), so the
+/// #2105 2-byte gap (gated the same as `formID`) does NOT apply here — see
+/// `bs_weak_reference_node_parses_populated_lists_with_undocumented_gap` for
+/// the bsver-175 shape that does. Callers append the #1882 trailing tail.
 fn build_empty_starfield_weakref_body() -> Vec<u8> {
     let mut b = Vec::new();
     // NiObjectNET
@@ -222,6 +225,79 @@ fn bs_weak_reference_node_captures_starfield_trailing_tail() {
         .downcast_ref::<BsWeakReferenceNode>()
         .expect("BSWeakReferenceNode");
     assert_eq!(downcast.starfield_tail, tail);
+}
+
+/// #2105 — the populated-list case #1882 didn't cover. Real retail
+/// `Starfield - MeshesPatch.ba2` NIFs (bsver 175 → `formID` present per
+/// entry) with a non-empty `BSWeakReference[]` truncated 325/29 849 files to
+/// `NiUnknown`: without the #2105 2-byte gap, `unkInt1`/`numWaterRefs` are
+/// read 2 bytes early, producing a huge garbage water-ref count whose
+/// implied `skip()` runs past EOF. Byte-verified against 18 independent real
+/// files by locating each one's actual `materials/water/*.mat` resource
+/// string and walking backward through the known-sized
+/// `BSWaterReferenceStruct` fields to the count — it only lines up once
+/// these 2 bytes are accounted for. This fixture mirrors that shape: one
+/// populated weak-ref entry (with `formID`, one transform, no materials)
+/// followed by one water-ref carrying a short material path.
+#[test]
+fn bs_weak_reference_node_parses_populated_lists_with_undocumented_gap() {
+    use crate::blocks::node::BsWeakReferenceNode;
+
+    let header = NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: 175, // >= SF_FORM_ID — real retail Starfield content
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: vec![Arc::from("")],
+        max_string_length: 0,
+        num_groups: 0,
+    };
+
+    let mut b = build_empty_starfield_weakref_body();
+    // Truncate back to the bare NiNode base (drop num_weak_refs(0),
+    // unk_int1(0), num_water_refs(0)) so we can rebuild the tail with a
+    // populated weak-ref entry inserted first.
+    b.truncate(b.len() - 4 - 4 - 4);
+    b.extend_from_slice(&1u32.to_le_bytes()); // num_weak_refs = 1
+                                              // BSWeakReference[0]
+    b.extend_from_slice(&0u32.to_le_bytes()); // formID (bsver >= SF_FORM_ID)
+    b.extend_from_slice(&[0u8; 12]); // BSResourceID (blank)
+    b.extend_from_slice(&1u32.to_le_bytes()); // num_transforms = 1
+    b.extend_from_slice(&[0u8; 64]); // one Matrix4 transform
+    b.extend_from_slice(&0u32.to_le_bytes()); // num_materials = 0
+                                              // #2105 undocumented 2-byte gap.
+    b.extend_from_slice(&0u16.to_le_bytes());
+    // unkInt1
+    b.extend_from_slice(&0u32.to_le_bytes());
+    // BSWaterReferenceStruct[0]
+    b.extend_from_slice(&1u32.to_le_bytes()); // num_water_refs = 1
+    b.extend_from_slice(&[0u8; 64]); // transform
+    b.extend_from_slice(&[0u8; 12]); // BSResourceID (blank)
+    b.extend_from_slice(&0u32.to_le_bytes()); // unkInt1
+    let material = b"materials/water/watercalm.mat";
+    b.extend_from_slice(&(material.len() as u32).to_le_bytes());
+    b.extend_from_slice(material);
+
+    let mut stream = NifStream::new(&b, &header);
+    let node = BsWeakReferenceNode::parse(&mut stream).expect("populated lists must parse");
+    assert_eq!(
+        stream.position(),
+        b.len() as u64,
+        "consumes exactly — no drift once the 2-byte gap is skipped"
+    );
+    assert!(node.starfield_tail.is_empty());
+
+    // The dispatcher path must also resolve to a real node, not NiUnknown.
+    let mut s2 = NifStream::new(&b, &header);
+    let block_size = b.len() as u32;
+    let boxed = crate::blocks::parse_block("BSWeakReferenceNode", &mut s2, Some(block_size))
+        .expect("dispatch must parse");
+    assert_eq!(boxed.block_type_name(), "BSWeakReferenceNode");
+    assert_eq!(s2.position(), b.len() as u64);
 }
 
 /// Regression test for issue #142: NiNode subtypes with trailing fields.

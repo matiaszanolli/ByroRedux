@@ -53,6 +53,27 @@ fn siblings_ba2_zero_start() {
     assert!(s.iter().all(|p| p.ends_with(".ba2")));
 }
 
+/// SF-D7-NEW-02 / #2106 — Starfield's two-digit zero-padded series start
+/// (`…01`) must offer `…02`..`…09`, not fall into the mid-series
+/// "don't expand" bucket (its last char `'1'` is a digit, same as `…2`).
+/// Without this, `Starfield - Meshes01.ba2` (the project's own documented
+/// launch command) silently never loads `Meshes02.ba2`.
+#[test]
+fn siblings_starfield_two_digit_zero_start_offers_02_through_09() {
+    let s = numeric_sibling_paths("Starfield - Meshes01.ba2");
+    assert_eq!(s.len(), 8);
+    assert_eq!(s[0], "Starfield - Meshes02.ba2");
+    assert_eq!(s[7], "Starfield - Meshes09.ba2");
+    assert!(s.iter().all(|p| p.ends_with(".ba2")));
+}
+
+/// `…101` (a digit before the two-digit `01` tail) is an explicit 3-digit
+/// member, NOT a two-digit series start — must not expand to `…102`..`…109`.
+#[test]
+fn siblings_three_digit_101_suffix_is_not_a_two_digit_series_start() {
+    assert!(numeric_sibling_paths("Mod - Meshes101.bsa").is_empty());
+}
+
 // ── #1591 — conductor diffuse-tint must use mult-free chromaticity ──
 
 /// The blend uses `specular_color` (chromaticity), not
