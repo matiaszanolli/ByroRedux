@@ -529,22 +529,50 @@ impl Parser {
                         body,
                     });
                 }
-                Some(Token::KwEvent) => {
-                    let ev = self.parse_event()?;
-                    let span = ev.name.span;
-                    body.push(Spanned::new(StateItem::Event(ev), span));
-                }
-                Some(Token::KwFunction) => {
-                    let func = self.parse_function(None)?;
-                    let span = func.name.span;
-                    body.push(Spanned::new(StateItem::Function(func), span));
-                }
+                Some(Token::KwEvent) => match self.parse_event() {
+                    Ok(ev) => {
+                        let span = ev.name.span;
+                        body.push(Spanned::new(StateItem::Event(ev), span));
+                    }
+                    // #2125 — recover per-item, mirroring parse_script's
+                    // top-level loop: one bad function must not discard
+                    // the whole State (including sibling functions parsed
+                    // fine before/after it).
+                    Err(e) => {
+                        self.push_error(e);
+                        self.skip_to_next_line();
+                    }
+                },
+                Some(Token::KwFunction) => match self.parse_function(None) {
+                    Ok(func) => {
+                        let span = func.name.span;
+                        body.push(Spanned::new(StateItem::Function(func), span));
+                    }
+                    Err(e) => {
+                        self.push_error(e);
+                        self.skip_to_next_line();
+                    }
+                },
                 _ => {
                     // Try type-prefixed function (returning function).
-                    let ty = self.parse_type()?;
-                    let func = self.parse_function(Some(ty))?;
-                    let span = func.name.span;
-                    body.push(Spanned::new(StateItem::Function(func), span));
+                    let ty = match self.parse_type() {
+                        Ok(ty) => ty,
+                        Err(e) => {
+                            self.push_error(e);
+                            self.skip_to_next_line();
+                            continue;
+                        }
+                    };
+                    match self.parse_function(Some(ty)) {
+                        Ok(func) => {
+                            let span = func.name.span;
+                            body.push(Spanned::new(StateItem::Function(func), span));
+                        }
+                        Err(e) => {
+                            self.push_error(e);
+                            self.skip_to_next_line();
+                        }
+                    }
                 }
             }
         }
@@ -567,8 +595,22 @@ impl Parser {
                     return Ok(Struct { name, members });
                 }
                 _ => {
-                    let var = self.parse_variable_body()?;
-                    self.expect_eol()?;
+                    // #2125 — recover per-member rather than propagating
+                    // via `?`, which would discard the whole Struct
+                    // (including members parsed fine before/after it).
+                    let var = match self.parse_variable_body() {
+                        Ok(var) => var,
+                        Err(e) => {
+                            self.push_error(e);
+                            self.skip_to_next_line();
+                            continue;
+                        }
+                    };
+                    if let Err(e) = self.expect_eol() {
+                        self.push_error(e);
+                        self.skip_to_next_line();
+                        continue;
+                    }
                     members.push(var);
                 }
             }
@@ -609,10 +651,28 @@ impl Parser {
                     });
                 }
                 _ => {
-                    let ty = self.parse_type()?;
-                    let prop = self.parse_property(ty)?;
-                    let span = prop.name.span;
-                    properties.push(Spanned::new(prop, span));
+                    // #2125 — recover per-property rather than
+                    // propagating via `?`, which would discard the whole
+                    // Group (including properties parsed fine before/
+                    // after it).
+                    let ty = match self.parse_type() {
+                        Ok(ty) => ty,
+                        Err(e) => {
+                            self.push_error(e);
+                            self.skip_to_next_line();
+                            continue;
+                        }
+                    };
+                    match self.parse_property(ty) {
+                        Ok(prop) => {
+                            let span = prop.name.span;
+                            properties.push(Spanned::new(prop, span));
+                        }
+                        Err(e) => {
+                            self.push_error(e);
+                            self.skip_to_next_line();
+                        }
+                    }
                 }
             }
         }
@@ -812,6 +872,72 @@ EndState
             }
             other => panic!("expected State, got {other:?}"),
         }
+    }
+
+    /// #2125 — a parser-level error in ONE function inside a `State` must
+    /// not discard the whole `State`. Pre-fix, `parse_state`'s bare `?`
+    /// propagation on the child-function parse unwound the entire
+    /// `ScriptItem::State`, including `FunctionA` (which parses with zero
+    /// errors) — the state never appeared in `s.body` at all, and
+    /// `FunctionC` only survived by accident (misparsed as a top-level
+    /// function outside the state once line-recovery happened to resync
+    /// on its `Function` keyword).
+    #[test]
+    fn parser_error_in_one_state_function_does_not_drop_sibling_functions_or_the_state() {
+        let src = "\
+ScriptName Test Extends ObjectReference
+
+State MyState
+    Function FunctionA()
+        int a = 1
+    EndFunction
+    Function FunctionB()
+        int x = )
+    EndFunction
+    Function FunctionC()
+        int c = 3
+    EndFunction
+EndState
+";
+        let (preprocessed, _map) = preprocess(src);
+        let (tokens, _errs) = lex(&preprocessed);
+        let mut parser = Parser::new(tokens);
+        let script = parser.parse_script().expect("header parses");
+
+        assert!(
+            !parser.errors().is_empty(),
+            "FunctionB's malformed literal must still recover an error"
+        );
+
+        let state = script
+            .body
+            .iter()
+            .find_map(|item| match &item.node {
+                ScriptItem::State(state) if state.name.node.0 == "MyState" => Some(state),
+                _ => None,
+            })
+            .expect(
+                "MyState must still appear in the script body — a bad function \
+                 inside it must not discard the whole State",
+            );
+
+        let fn_names: Vec<&str> = state
+            .body
+            .iter()
+            .filter_map(|item| match &item.node {
+                StateItem::Function(f) => Some(f.name.node.0.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            fn_names.contains(&"FunctionA"),
+            "FunctionA has zero errors and must survive inside MyState; got {fn_names:?}"
+        );
+        assert!(
+            fn_names.contains(&"FunctionC"),
+            "FunctionC must survive inside MyState (not re-parented to \
+             top level); got {fn_names:?}"
+        );
     }
 
     #[test]

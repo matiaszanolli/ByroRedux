@@ -487,8 +487,15 @@ pub fn quest_fragment_dispatch_system(world: &World) {
             );
             for adv in advances {
                 // Only cascade genuine transitions (skip a no-op re-set of
-                // the same stage to avoid trivial self-loops).
-                if adv.new_stage != stage {
+                // the same stage to avoid trivial self-loops). #2124 — this
+                // must compare `adv`'s own previous/new stage, not the
+                // *currently-dispatching* fragment's `(quest, stage)` pair:
+                // comparing against `stage` alone let a different quest's
+                // genuine transition collide (false negative, silently
+                // dropped) or a same-fragment double-`SetStage` re-queue
+                // (false positive, duplicate effect application) whenever
+                // `adv.new_stage` happened to numerically equal `stage`.
+                if adv.previous_stage != adv.new_stage {
                     queue.push((adv.quest, adv.new_stage));
                 }
                 chained.push(adv);

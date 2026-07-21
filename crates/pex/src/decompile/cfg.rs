@@ -229,7 +229,15 @@ pub fn build_cfg(function: &Function) -> Result<Cfg, DecompileError> {
                     split_block(&mut blocks, containing, target);
                 }
 
-                let block = blocks.get_mut(&block_key).expect("block exists");
+                // `block_key` was resolved before either split above ran.
+                // A backward `target` landing strictly inside this block's
+                // own `[begin, ip]` range makes the second split subdivide
+                // the *same* block a second time, leaving `block_key`
+                // pointing at the leftover head piece rather than the tail
+                // piece that actually contains `ip`. Re-resolve rather than
+                // trusting the stale key — see #2122.
+                let current_key = find_block_for_instruction(&blocks, ip);
+                let block = blocks.get_mut(&current_key).expect("block exists");
                 // jmpf jumps to `target` when the condition is FALSE, so
                 // the fall-through (ip+1) is the true edge; jmpt is mirror.
                 let (on_true, on_false) = if ins.op == OpCode::JmpF {
@@ -381,6 +389,81 @@ mod tests {
 
         // After-loop block [4,4] → exit(5).
         assert_eq!(cfg.block(4).unwrap().next, 5);
+    }
+
+    /// #2122 — a `jmpf` whose backward target lands strictly *inside* its
+    /// own originating block (`begin < target < ip`) must condition the
+    /// block that actually contains `ip`, not a stale pre-split key. Before
+    /// the fix, `block_key` was resolved before the target-split ran; when
+    /// that split subdivided the same block a second time, the condition
+    /// landed on the leftover head piece (an unrelated earlier statement)
+    /// and the real conditional block silently lost its `on_false` edge.
+    #[test]
+    fn backward_jmpf_target_inside_own_block_conditions_the_right_block() {
+        // 0: assign x, y            (unrelated to the jump)
+        // 1: assign z, w
+        // 2: jmpf t, -1   -> target 1  (begin=0 < target=1 < ip=2)
+        // 3: return x
+        let f = func(vec![
+            (OpCode::Assign, vec![id("x"), id("y")]),
+            (OpCode::Assign, vec![id("z"), id("w")]),
+            (OpCode::JmpF, vec![id("t"), Value::Integer(-1)]),
+            (OpCode::Return, vec![id("x")]),
+        ]);
+        let cfg = build_cfg(&f).unwrap();
+
+        // Instruction 0 is untouched by the jump — must stay unconditional.
+        let b0 = cfg.block(0).unwrap();
+        assert_eq!((b0.begin, b0.end), (0, 0));
+        assert!(
+            !b0.is_conditional(),
+            "the block containing the unrelated instruction 0 must not \
+             pick up the jmpf's condition"
+        );
+        assert_eq!(b0.next, 1);
+
+        // Block [1,2] contains the real jmpf (ip=2) and must carry the
+        // condition, with the false edge looping back to its own begin (1).
+        let b1 = cfg.block(1).unwrap();
+        assert_eq!((b1.begin, b1.end), (1, 2));
+        assert!(
+            b1.is_conditional(),
+            "the block actually containing the jmpf must be the one \
+             conditioned"
+        );
+        assert_eq!(b1.condition.as_deref(), Some("t"));
+        assert_eq!(b1.on_true(), 3);
+        assert_eq!(b1.on_false, 1);
+    }
+
+    /// Symmetric `jmpt` variant of the above — same backward-interior
+    /// target shape, mirrored true/false edges.
+    #[test]
+    fn backward_jmpt_target_inside_own_block_conditions_the_right_block() {
+        // 0: assign x, y
+        // 1: assign z, w
+        // 2: jmpt t, -1   -> target 1  (begin=0 < target=1 < ip=2)
+        // 3: return x
+        let f = func(vec![
+            (OpCode::Assign, vec![id("x"), id("y")]),
+            (OpCode::Assign, vec![id("z"), id("w")]),
+            (OpCode::JmpT, vec![id("t"), Value::Integer(-1)]),
+            (OpCode::Return, vec![id("x")]),
+        ]);
+        let cfg = build_cfg(&f).unwrap();
+
+        let b0 = cfg.block(0).unwrap();
+        assert_eq!((b0.begin, b0.end), (0, 0));
+        assert!(!b0.is_conditional());
+        assert_eq!(b0.next, 1);
+
+        let b1 = cfg.block(1).unwrap();
+        assert_eq!((b1.begin, b1.end), (1, 2));
+        assert!(b1.is_conditional());
+        assert_eq!(b1.condition.as_deref(), Some("t"));
+        // jmpt: true → target (loop back to 1), false → fall-through (3).
+        assert_eq!(b1.on_true(), 1);
+        assert_eq!(b1.on_false, 3);
     }
 
     #[test]

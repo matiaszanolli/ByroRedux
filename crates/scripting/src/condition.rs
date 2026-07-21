@@ -249,23 +249,18 @@ impl ConditionContext {
     /// Resolve a [`RunOn`] choice to a concrete EntityId. Returns
     /// `None` when the slot isn't populated or the choice references
     /// data M47.1 doesn't yet plumb (alias / package / event data).
-    fn resolve(&self, run_on: RunOn, condition: &Condition, _world: &World) -> Option<EntityId> {
+    fn resolve(&self, run_on: RunOn, condition: &Condition, world: &World) -> Option<EntityId> {
         match run_on {
             RunOn::Subject => Some(self.subject),
             RunOn::Target => self.target,
             RunOn::CombatTarget => self.combat_target,
             RunOn::LinkedReference => self.linked_reference,
-            RunOn::Reference => {
-                // FormID→EntityId resolver not yet wired: condition.reference_form_id
-                // is a raw u32 ESM form ID; find_by_form_id requires an interned FormId.
-                // Returns None until a u32→FormId pool lookup is plumbed here.
-                log::trace!(
-                    "M47.1: RunOn::Reference for form_id {:08X} — \
-                     FormID→EntityId resolver not yet wired",
-                    condition.reference_form_id,
-                );
-                None
-            }
+            // #2123 — `condition.reference_form_id` goes through the same
+            // parse-time global-form-id remap as `GetDistance`'s `param_1`
+            // below; `resolve_entity_by_global_form_id` is the shared
+            // resolver for that space, not a FormID-pool lookup unique to
+            // this arm.
+            RunOn::Reference => resolve_entity_by_global_form_id(world, condition.reference_form_id),
             RunOn::QuestAlias | RunOn::PackageData | RunOn::EventData => {
                 log::trace!(
                     "M47.1: RunOn::{:?} (extra_data_id={:08X}) — \
@@ -1207,6 +1202,58 @@ mod tests {
         // proximity gate `GetDistance < 100` fails.
         let lt = cond(1, ComparisonOp::Lt, 100.0, false).with_param_1(0x0001_59E2);
         assert!(!evaluate(&vec![lt], &world, &ctx(subject)));
+    }
+
+    // ── RunOn::Reference (#2123) ─────────────────────────────────────────
+
+    #[test]
+    fn run_on_reference_resolves_the_entity_carrying_the_form_id() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+        let mut world = World::new();
+        let mut pool = FormIdPool::new();
+        let referenced_fid = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV.esm"),
+            local: LocalFormId(0x0002_ABCD),
+        });
+        world.insert_resource(pool);
+
+        let subject = world.spawn();
+        let referenced = world.spawn();
+        world.insert(referenced, FormIdComponent(referenced_fid));
+
+        let mut condition = cond(0, ComparisonOp::Eq, 0.0, false);
+        condition.run_on = RunOn::Reference;
+        condition.reference_form_id = 0x0002_ABCD;
+
+        let resolved = ctx(subject).resolve(RunOn::Reference, &condition, &world);
+        assert_eq!(
+            resolved,
+            Some(referenced),
+            "RunOn::Reference must resolve to the entity whose FormIdComponent \
+             maps to reference_form_id via the FormIdPool (#2123)"
+        );
+    }
+
+    #[test]
+    fn run_on_reference_unresolved_form_id_is_none() {
+        use byroredux_core::form_id::FormIdPool;
+
+        let mut world = World::new();
+        world.insert_resource(FormIdPool::new());
+        let subject = world.spawn();
+
+        let mut condition = cond(0, ComparisonOp::Eq, 0.0, false);
+        condition.run_on = RunOn::Reference;
+        condition.reference_form_id = 0x0002_ABCD;
+
+        // No entity carries this FormID — must decline (None), not panic
+        // or fall back to subject.
+        assert_eq!(
+            ctx(subject).resolve(RunOn::Reference, &condition, &world),
+            None
+        );
     }
 
     // ── GetFactionRank (#1665) ──────────────────────────────────────────

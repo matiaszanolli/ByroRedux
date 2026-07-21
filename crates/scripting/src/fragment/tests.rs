@@ -367,6 +367,84 @@ fn dispatch_resolves_property_targeted_effect_via_registered_vmad() {
     );
 }
 
+#[test]
+fn cascade_does_not_drop_a_different_quests_transition_that_collides_on_stage_number() {
+    // #2124 — regression for the cascade guard comparing `adv.new_stage`
+    // against the *currently-dispatching* fragment's own stage instead of
+    // `adv.previous_stage`. Here Q's stage-10 fragment sets a DIFFERENT
+    // quest (OTHER) to stage 10 too — the same numeric value Q is
+    // currently dispatching at, purely by coincidence (quest stage
+    // numbers cluster around round values across independently-authored
+    // quests). Pre-fix, `adv.new_stage(10) != stage(10)` was false, so
+    // OTHER's genuine 0→10 transition was silently never queued and its
+    // stage-10 fragment never ran.
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const OTHER: QuestFormId = QuestFormId(0x0009_9999);
+
+    let world = fixture();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_TestQuest_00012345".into(),
+                    status: 0,
+                    properties: vec![ScriptProperty {
+                        name: "OtherQuest".into(),
+                        status: 1,
+                        value: PropertyValue::Object {
+                            form_id: OTHER.0,
+                            alias: -1,
+                        },
+                    }],
+                }],
+            },
+        );
+        // Q's own stage-10 fragment: set OTHER to stage 10 — the same
+        // number Q is currently dispatching at.
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::SetStage {
+                quest: QuestRef::Property("OtherQuest".into()),
+                stage: 10,
+            }],
+        );
+        // OTHER's stage-10 fragment: an observable, unmistakably genuine
+        // side effect that must run once the cascade reaches it.
+        frags.insert(
+            OTHER,
+            10,
+            vec![Effect::SetObjectiveCompleted {
+                quest: QuestRef::SelfRef,
+                objective: 42,
+                completed: true,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(OTHER),
+        10,
+        "OTHER's SetStage still lands even though the cascade guard was buggy"
+    );
+    assert!(
+        world.resource::<QuestObjectiveState>().get(OTHER, 42).completed,
+        "OTHER's stage-10 fragment must have been cascaded into and run — \
+         the pre-#2124 guard compared against Q's own dispatching stage and \
+         silently dropped this transition on the 10==10 coincidence"
+    );
+}
+
 /// Spawn an entity carrying a `FormIdComponent` resolving to `form_id_raw`
 /// — the fixture every object-targeting-effect dispatch test needs so
 /// `resolve_entity_by_global_form_id` can find it. Mirrors the identical
