@@ -72,9 +72,17 @@ those here.
 - `docs/engine/m47-2-design.md` — the `.pex` decompiler + recognizer-chain spec,
   the `.psc`-vs-`.pex` fidelity gate, "no opcode semantics guessed" rule.
 - `docs/engine/m47-2-recognizer-scaling.md` — corpus characterization
-  (26,641 `.pex`; handler vs fragment populations; decline-the-tail thesis).
+  (26,641 `.pex`; handler vs fragment populations; decline-the-tail thesis);
+  its "Shipped (2026-07-21)" section documents the `AddItem`/`MoveTo` object-
+  targeting effects and the real-corpus ~0%-yield finding — read before
+  flagging anything about those two effects.
+- `docs/engine/m47-3-quest-alias-design.md` — QUST alias (`ALST`/`ALLS`)
+  decode + the future alias-fill runtime. Out of this skill's crate scope,
+  but explains the *current* alias-bound `Property`-resolution decline (see
+  Future-phase gaps) — read before flagging that decline as a bug.
 - The crate module docstrings: `crates/pex/src/lib.rs`,
-  `crates/pex/src/decompile/mod.rs`, `crates/scripting/src/translate/mod.rs`.
+  `crates/pex/src/decompile/mod.rs`, `crates/scripting/src/translate/mod.rs`,
+  `crates/scripting/src/fragment.rs`.
 
 **Doc-rot check**: `docs/feature-matrix.md:139` was already corrected (independent
 of this skill) to reflect the shipped `.pex` recognizer slice; only line ~175
@@ -106,10 +114,51 @@ before reporting any doc-rot here.
   2026-06-29→07-04; re-verified `AUDIT_SCRIPTING_2026-07-16.md` Dimension 6,
   27 passing unit tests). Re-verification against a live headless cell with
   real CTDA data (not just unit tests) remains outstanding — a gap, not a stub.
-- The fragment lowerer (b2) as a *wired runtime dispatch* — `effects::lower_fragment`
-  + `QuestStageFragments` + `quest_fragment_dispatch_system` exist, but the
-  decompiled-`.pex`-fragment → `QuestStageFragments` *population* path may be
-  partial; confirm before flagging as a bug vs. a designed Phase-3 gap.
+- The fragment lowerer (b2) is **no longer a "may be partial" gap — it is
+  fully wired and live-data-verified** (2026-07-21). `populate_quest_fragments`
+  (`byroredux/src/asset_provider/script.rs`) resolves each scripted quest's
+  `QF_` `.pex` from `--scripts-bsa`, decompiles, and registers into
+  `QuestStageFragments` at cell load; `quest_fragment_dispatch_system`
+  consumes `QuestStageAdvanced` and applies. Verified against real
+  `Skyrim.esm`: 845 scripted quests → 5,108 stage bindings → 742 fragments
+  fully lowered and registered. Do not re-flag this as unwired.
+- **QUST `VMAD` property-table wiring (2026-07-21, same-session fix)**:
+  `QuestRef::Property`/the new `ObjectRef::Property` (see Dim 5) used to
+  always decline at dispatch because `quest_fragment_dispatch_system` passed
+  `vmad: None` unconditionally — `parse_quest_fragments` decoded the QUST's
+  own VMAD scripts-section internally (to find the fragment-section offset)
+  and then discarded it. Fixed: `QustRecord.script_instance` now retains it,
+  `QuestStageFragments::insert_vmad`/`vmad()` store it per-quest, and
+  `resolve_quest`/`resolve_object` (Dim 6) receive the real VMAD. Verified
+  live: 969 Skyrim quests now have a resolvable property table. A
+  `Property`-targeted effect that still declines with a *populated* VMAD on
+  hand is a real regression; declining with no VMAD registered (no
+  `--scripts-bsa`, or the quest's VMAD carried no scripts section) is correct.
+- **Object-targeting fragment effects (`AddItem`/`MoveTo`, 2026-07-21)** — see
+  Dim 5/6 for the mechanism. Real, tested, dispatch-wired — but *live-corpus
+  measured at ~0% real yield* today (`fragment_coverage` found zero hits in
+  both `Skyrim - Misc.bsa` and `Fallout4 - Misc.ba2`): real content
+  overwhelmingly binds the object receiver via an alias accessor
+  (`ObjectReference k = SomeAlias.GetActorRef()`) rather than a bare
+  `ObjectReference Property`, and `bind_local` already declines that whole
+  fragment regardless (a side-effecting call, #1907's discipline) — not a
+  bug in the new effects, a real dormant-until-alias-resolution state.
+  Documented in `docs/engine/m47-2-recognizer-scaling.md` §"Shipped
+  (2026-07-21)". Do not flag the low yield as a defect; do flag it if the
+  *mechanism itself* (lowering or dispatch-time resolution) regresses.
+- **QUST alias decode (M47.3 Phase 0, 2026-07-21, `crates/plugin`)** —
+  `QustRecord.aliases: Vec<QuestAlias>` (`ALST`/`ALLS`/fill-types/`FNAM`/
+  injected data/`ALFI` "Force Into Alias") is now decoded, live-verified
+  against `Skyrim.esm`/`Fallout4.esm` (`crates/plugin/examples/
+  qust_alias_survey.rs` + `qust_alias_rawdump.rs`). This is **pure parser
+  data with zero fill-and-apply runtime** — out of this skill's crate scope
+  (`crates/plugin`, not `pex`/`papyrus`/`scripting`), but directly explains
+  why `QuestRef::Property`/`ObjectRef::Property` still decline on an
+  *alias-bound* VMAD entry (`alias != -1` in `PropertyValue::Object`) even
+  after the VMAD-wiring fix above — that's M47.3 Phase 2, not built. See
+  `docs/engine/m47-3-quest-alias-design.md`. Do not flag the alias-bound
+  decline as a bug, and do not expand this skill's dimensions to cover
+  `quest.rs`'s alias parser — it belongs to a future ESM/quest-focused audit.
 
 ## Parameters (from $ARGUMENTS)
 
@@ -479,9 +528,12 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
 `crates/scripting/src/translate/source.rs` (`ScriptSource`);
 `crates/scripting/src/translate/compose.rs` (`split_and`, `classify_guard_atom`,
 `GuardPrimitive`, `GUARD_PRIMITIVES`, `GuardMatch`, `quest_via`, `QuestRef`,
-`prim_player_gate`, `prim_stage_done`); `crates/scripting/src/translate/effects.rs`
+`ObjectRef`, `prim_player_gate`, `prim_stage_done`);
+`crates/scripting/src/translate/effects.rs`
 (`lower_fragment`, `classify_effect`, `EffectPrimitive`, `EFFECT_PRIMITIVES`,
-`Effect`); `crates/scripting/src/translate/tables.rs` (`CanonicalEvent::from_papyrus`);
+`Effect` incl. the `AddItem`/`MoveTo` object-targeting variants (2026-07-21),
+`receiver_object`, `prim_add_item`, `prim_move_to`);
+`crates/scripting/src/translate/tables.rs` (`CanonicalEvent::from_papyrus`);
 `crates/scripting/src/translate/recognizers/quest_stage_gate.rs` (`recognize`,
 `extract_stage_gate`, `classify_if_condition`);
 `crates/scripting/src/translate/recognizers/rumble.rs` (`recognize`).
@@ -519,6 +571,36 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
   `declines_when_quest_property_unbound`); `SelfRef` on a REFR is declined
   (quest scripts attach to a quest, not a REFR). Verify each binding failure
   declines, never defaults to form-id 0.
+- **`ObjectRef` hole binding (2026-07-21, object-targeting effects)**: unlike
+  `QuestRef`, `ObjectRef` has **no unambiguous bare-receiver case at all** —
+  no `Self`/`GetOwningQuest()` equivalent, since the fragment script always
+  `extends Quest` and is never itself the `ObjectReference`/`Actor` being
+  acted on. `receiver_object` (`effects.rs`) must: (a) explicitly reject a
+  bare `Self` identifier (does NOT rely on no VMAD property ever being named
+  "self" — verify the explicit `key == "self"` guard is still there); (b)
+  decline any local-variable receiver, including a side-effect-free ident
+  copy (`ObjectReference k = SomeProperty; k.AddItem(...)`) — this increment
+  deliberately doesn't trace a local back to the property it aliases, so a
+  local receiver must decline via `scope.quest_locals`/`scope.decl_locals`,
+  not silently resolve. At *dispatch* time (`fragment.rs`),
+  `resolve_property_form_id` must decline (not guess) when the VMAD
+  `PropertyValue::Object`'s `alias != -1` — an alias-bound property needs
+  the (unbuilt) quest-alias-fill subsystem, and resolving it from the raw
+  `form_id` next to a live alias index would risk a wrong-object
+  application. Then `resolve_object` composes that with
+  `resolve_entity_by_global_form_id` (the same M42.5–8/M47.1 resolver) —
+  verify no path bypasses either hop. Guards: `add_item_declines_on_local_receiver`,
+  `declines_on_unmodeled_effect`, `dispatch_add_item_via_registered_vmad`,
+  `dispatch_move_to_via_registered_vmad` (`crates/scripting/src/fragment/tests.rs`).
+- **`AddItem`/`MoveTo` conservative-shape declines**: `AddItem`'s optional
+  3rd arg (`abSilent`) is accepted only as a literal (`bool_arg`'s `None` on
+  a present-but-non-literal value must decline the whole primitive, mirroring
+  `SetObjectiveDisplayed`'s existing discipline) and a 4th+ arg declines
+  outright; `MoveTo` accepts *only* the 2-arg shape (receiver + destination)
+  — any offset/match-rotation argument declines rather than silently
+  dropping it and misplacing the object. Guards:
+  `add_item_declines_with_non_literal_silent_arg`,
+  `move_to_declines_with_offset_args` (`crates/scripting/src/translate/effects.rs`).
 - **`quest_stage_gate` cross-check**: when the condition's quest and the
   `SetStage` target's quest disagree, the recognizer declines (don't advance the
   wrong quest). Verify `recognizes_da10_and_reproduces_hand_builder` (`.psc`-side,
@@ -572,7 +654,9 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
 `TriggerShape`, `contains`); `crates/scripting/src/quest_stages.rs`
 (`QuestStageState`, `QuestObjectiveState`, `set_stage`, `get_stage_done`);
 `crates/scripting/src/fragment.rs` (`quest_fragment_dispatch_system`,
-`QuestStageFragments`, `apply_effects`, `MAX_CASCADE`);
+`QuestStageFragments` incl. `insert_vmad`/`vmad` (2026-07-21), `apply_effects`,
+`apply_effect`, `apply_quest_scoped_effect`, `resolve_quest_logged`,
+`resolve_property_form_id`, `resolve_object`, `MAX_CASCADE`);
 `crates/scripting/src/recurring_update.rs` (`recurring_update_tick_system`,
 `RecurringUpdate`, `OnUpdateEvent`); `crates/scripting/src/registry.rs`
 (`ScriptRegistry`).
@@ -585,8 +669,26 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
   component-mut locks at once forces the TypeId-sorted-acquisition contract and is
   a deadlock vector. `quest_fragment_dispatch_system` holds three *resource* locks
   (`QuestStageFragments` read + `QuestStageState` mut + `QuestObjectiveState` mut)
-  — verify they're acquired in a single scoped block with no component lock held
-  across them.
+  across its whole dispatch loop.
+- **NEW nested-lock surface (2026-07-21, `AddItem`/`MoveTo`) — verify, don't
+  assume**: `apply_effect` now ALSO takes `world: &World` and, for the two
+  object-targeting variants, acquires a *component* lock
+  (`world.query_mut::<Inventory>()` for `AddItem`; `world.get::<GlobalTransform>()`
+  then `world.query_mut::<Transform>()` for `MoveTo`) **while the three resource
+  locks above are still held** (they're bound in the outer scope for the whole
+  `while let Some((quest, stage)) = queue.pop()` loop). This is a real change
+  to the lock-nesting shape this dimension previously described as
+  "resource-locks-only, no component lock held across them" — that framing is
+  now stale. Investigate rather than assume safe: (a) does any *other* code
+  path acquire `Inventory`/`Transform` first and then try to acquire
+  `QuestStageFragments`/`QuestStageState`/`QuestObjectiveState` — the reverse
+  order — on a path the scheduler could run concurrently with this one; (b)
+  does the engine's scheduler ever run `quest_fragment_dispatch_system`
+  concurrently with anything else that touches these same resources/components
+  (check `sys.accesses` / the scheduler's declared-access report for this
+  system — Dimension 6's own §"ECS lock held across a second resource/component
+  mutation" severity row already rates this class HIGH if it's a real
+  deadlock vector, not merely theoretical).
 - **Marker single-frame semantics**: all transient markers
   (`ActivateEvent`, `HitEvent`, `TimerExpired`, `AnimationTextKeyEvents`,
   `OnUpdateEvent`, `OnTriggerEnterEvent`, `OnCellLoadEvent`, `OnEquipEvent`,
@@ -730,9 +832,13 @@ dimensions covers it.
 2. Combine into `docs/audits/AUDIT_SCRIPTING_<TODAY>.md` with structure:
    - **Executive Summary** — what shipped (M30.2 `.psc` parser; M47.0 event
      hooks; M47.1 condition eval; M47.2 `.pex` reader + 5-phase decompiler +
-     recognizer chain + dynamic attach path + XPRM trigger volumes) vs. deferred
-     (Obscript/SCTX Phase 5; the M47.1 condition resolvers #1663–#1668; the wired
-     fragment-lowerer dispatch). Findings count by severity. **Untrusted-input
+     recognizer chain + dynamic attach path + XPRM trigger volumes + the
+     fragment-lowerer wired-and-live-verified dispatch + the QUST VMAD
+     property-table fix + the `AddItem`/`MoveTo` object-targeting effects, all
+     2026-07-21) vs. deferred (Obscript/SCTX Phase 5; the M47.1 condition
+     resolvers' live-cell re-verification; M47.3 quest-alias-fill — the
+     `Property`-resolution decline on an alias-bound VMAD entry). Findings
+     count by severity. **Untrusted-input
      robustness verdict** (can a hostile/corrupt `.pex` or `.psc` panic, OOB, or
      OOM the cell loader — MUST be NO). **The 99.996% decompile-rate claim
      verdict** (is the corpus-smoke harness measuring what it claims). **The
