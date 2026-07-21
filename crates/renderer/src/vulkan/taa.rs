@@ -33,8 +33,9 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
-    image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
-    write_uniform_buffer, DescriptorPoolBuilder,
+    image_barrier_general_write_to_read, image_barrier_undef_to_general,
+    write_combined_image_sampler, write_storage_image, write_uniform_buffer,
+    DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::svgf::should_force_history_reset;
@@ -86,7 +87,6 @@ pub struct TaaPipeline {
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    shader_module: vk::ShaderModule,
 
     /// Per-frame-in-flight RGBA16F images. Used simultaneously as
     /// "this frame's output" (storage write) and "next frame's history"
@@ -202,7 +202,6 @@ impl TaaPipeline {
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_sets: Vec::new(),
-            shader_module: vk::ShaderModule::null(),
             history: Vec::new(),
             linear_sampler: vk::Sampler::null(),
             point_sampler: vk::Sampler::null(),
@@ -365,35 +364,16 @@ impl TaaPipeline {
                 .context("TAA pipeline layout")
         });
 
-        partial.shader_module =
-            try_or_cleanup!(super::pipeline::load_shader_module(device, TAA_COMP_SPV));
-        let stage = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(partial.shader_module)
-            .name(c"main");
-        // SAFETY: stage references `partial.shader_module` (loaded above)
-        // and `partial.pipeline_layout` (just created above); pipeline
-        // cache is the caller-provided handle (may be null — valid per spec).
-        partial.pipeline = match unsafe {
-            device
-                .create_compute_pipelines(
-                    pipeline_cache,
-                    &[vk::ComputePipelineCreateInfo::default()
-                        .stage(stage)
-                        .layout(partial.pipeline_layout)],
-                    None,
-                )
-                .map_err(|(_, e)| e)
-                .context("TAA compute pipeline")
-        } {
-            Ok(p) => p[0],
-            Err(e) => {
-                // SAFETY: cleanup-on-error. Note: `shader_module` survives
-                // on `partial.shader_module` and is freed by `destroy`.
-                unsafe { partial.destroy(device, allocator) };
-                return Err(e);
-            }
-        };
+        // Shared builder (#1751); frees the shader module immediately —
+        // its SPIR-V is already baked into `partial.pipeline` by the time
+        // this returns, so there's no live consumer to keep it around for.
+        partial.pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
+            device,
+            pipeline_cache,
+            TAA_COMP_SPV,
+            partial.pipeline_layout,
+            "TAA",
+        ));
 
         // Pool sizes derived from `bindings` (#1030 / REN-D10-NEW-09).
         partial.descriptor_pool = try_or_cleanup!(DescriptorPoolBuilder::from_layout_bindings(
@@ -772,13 +752,7 @@ impl TaaPipeline {
         device.cmd_dispatch(cmd, gx, gy, 1);
 
         // Expose the result to composite's fragment shader read.
-        let post = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(out_img)
-            .subresource_range(super::descriptors::color_subresource_single_mip());
+        let post = image_barrier_general_write_to_read(out_img);
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -914,14 +888,6 @@ impl TaaPipeline {
                 // created by this `device` (non-null per the guard) and, per the
                 // whole-function contract, unreferenced by any in-flight command buffer.
                 device.destroy_pipeline(self.pipeline, None)
-            };
-        }
-        if self.shader_module != vk::ShaderModule::null() {
-            unsafe {
-                // SAFETY: `self.shader_module` was created by this `device`
-                // (non-null per the guard) and is not in use by any in-flight
-                // command buffer at teardown.
-                device.destroy_shader_module(self.shader_module, None)
             };
         }
         if self.pipeline_layout != vk::PipelineLayout::null() {

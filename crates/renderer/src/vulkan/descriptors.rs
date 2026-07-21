@@ -49,6 +49,26 @@ pub fn write_combined_image_sampler<'a>(
         .image_info(info)
 }
 
+/// `COMBINED_IMAGE_SAMPLER` write at a specific array element — the
+/// bindless-texture-registry shape (a single `info` landing at
+/// `array_element` within binding 0's descriptor array), as opposed to
+/// `write_combined_image_sampler`'s "one write starting at element 0"
+/// shape.
+#[inline]
+pub fn write_combined_image_sampler_at<'a>(
+    dst_set: vk::DescriptorSet,
+    binding: u32,
+    array_element: u32,
+    info: &'a vk::DescriptorImageInfo,
+) -> vk::WriteDescriptorSet<'a> {
+    vk::WriteDescriptorSet::default()
+        .dst_set(dst_set)
+        .dst_binding(binding)
+        .dst_array_element(array_element)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .image_info(std::slice::from_ref(info))
+}
+
 /// `STORAGE_IMAGE` write — view + layout per element in `info`, sampler
 /// field unused (storage images don't carry samplers).
 #[inline]
@@ -198,6 +218,25 @@ pub fn image_barrier_undef_to_general(image: vk::Image) -> vk::ImageMemoryBarrie
         .src_access_mask(vk::AccessFlags::empty())
         .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
         .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::GENERAL)
+        .image(image)
+        .subresource_range(color_subresource_single_mip())
+}
+
+/// GENERAL → GENERAL compute-write-to-shader-read handoff on a
+/// single-mip COLOR image — the shape shared by svgf/taa/caustic/
+/// volumetrics/water_caustic at their compute→composite barrier:
+///   src_access = SHADER_WRITE
+///   dst_access = SHADER_READ
+/// Layout stays GENERAL (composite's descriptor sets sample it as such).
+/// Caller owns the surrounding `cmd_pipeline_barrier` stage masks — those
+/// legitimately vary per site (COMPUTE_SHADER vs COMPUTE|FRAGMENT, etc).
+#[inline]
+pub fn image_barrier_general_write_to_read(image: vk::Image) -> vk::ImageMemoryBarrier<'static> {
+    vk::ImageMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        .old_layout(vk::ImageLayout::GENERAL)
         .new_layout(vk::ImageLayout::GENERAL)
         .image(image)
         .subresource_range(color_subresource_single_mip())

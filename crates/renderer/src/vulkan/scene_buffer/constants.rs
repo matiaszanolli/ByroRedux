@@ -165,8 +165,8 @@ pub const MAX_INDIRECT_DRAWS: usize = MAX_INSTANCES;
 pub const MAX_TERRAIN_TILES: usize = 1024;
 
 /// Maximum number of unique materials per frame in the
-/// [`super::super::material::MaterialTable`] SSBO. 16384 × 300 B ≈ 4.7 MB
-/// per frame × MAX_FRAMES_IN_FLIGHT (2) ≈ 9.4 MB total — well inside the
+/// [`super::super::material::MaterialTable`] SSBO. 16384 × 300 B ≈ 4.9 MB
+/// per frame × MAX_FRAMES_IN_FLIGHT (2) ≈ 9.8 MB total — well inside the
 /// 4 GB total VRAM budget (`feedback_vram_baseline.md`).
 ///
 /// Observed unique-material counts (post-Disney-PBR; #1248-#1251 added

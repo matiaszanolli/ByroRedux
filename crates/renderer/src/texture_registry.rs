@@ -16,6 +16,7 @@
 
 use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::StagingPool;
+use crate::vulkan::descriptors::write_combined_image_sampler_at;
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::vulkan::texture::Texture;
 use crate::vulkan::GpuUploadCtx;
@@ -1230,14 +1231,7 @@ impl TextureRegistry {
         let writes: Vec<vk::WriteDescriptorSet> = drained
             .iter()
             .enumerate()
-            .map(|(i, w)| {
-                vk::WriteDescriptorSet::default()
-                    .dst_set(set)
-                    .dst_binding(0)
-                    .dst_array_element(w.handle)
-                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .image_info(std::slice::from_ref(&image_infos[i]))
-            })
+            .map(|(i, w)| write_combined_image_sampler_at(set, 0, w.handle, &image_infos[i]))
             .collect();
         // SAFETY: caller contract (see doc comment above) guarantees the
         // caller already waited on `slot`'s fence, so no in-flight command
@@ -1266,12 +1260,12 @@ impl TextureRegistry {
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
             .image_view(image_view)
             .sampler(sampler);
-        let write = vk::WriteDescriptorSet::default()
-            .dst_set(self.bindless_sets[self.current_slot])
-            .dst_binding(0)
-            .dst_array_element(handle)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(std::slice::from_ref(&image_info));
+        let write = write_combined_image_sampler_at(
+            self.bindless_sets[self.current_slot],
+            0,
+            handle,
+            &image_info,
+        );
         // SAFETY: `self.current_slot` is being recorded by the CPU right
         // now (see the comment above) — no submitted command buffer can be
         // reading `bindless_sets[self.current_slot]` concurrently.

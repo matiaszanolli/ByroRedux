@@ -171,49 +171,15 @@ impl ClusterCullPipeline {
                 .context("Failed to create cluster cull pipeline layout")
         });
 
-        // Load compute shader.
-        let shader_module = try_or_cleanup!(super::pipeline::load_shader_module(
+        // Load + build the compute pipeline (#1751 shared helper — see
+        // `pipeline::create_compute_pipeline`'s doc comment).
+        partial.pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
             device,
-            CLUSTER_CULL_COMP_SPV
+            pipeline_cache,
+            CLUSTER_CULL_COMP_SPV,
+            partial.pipeline_layout,
+            "cluster cull",
         ));
-
-        // SAFETY: `device` is live; `shader_module` was just loaded above
-        // and `partial.pipeline_layout` was just created above — both
-        // outlive this call.
-        partial.pipeline = match unsafe {
-            device
-                .create_compute_pipelines(
-                    pipeline_cache,
-                    &[vk::ComputePipelineCreateInfo::default()
-                        .stage(
-                            vk::PipelineShaderStageCreateInfo::default()
-                                .stage(vk::ShaderStageFlags::COMPUTE)
-                                .module(shader_module)
-                                .name(c"main"),
-                        )
-                        .layout(partial.pipeline_layout)],
-                    None,
-                )
-                .map_err(|(_, e)| e)
-                .context("Failed to create cluster cull compute pipeline")
-        } {
-            Ok(pipelines) => {
-                // SAFETY: `shader_module` is no longer needed once the
-                // pipeline that consumed it is created — Vulkan permits
-                // destroying it immediately after pipeline creation.
-                unsafe { device.destroy_shader_module(shader_module, None) };
-                pipelines[0]
-            }
-            Err(e) => {
-                // SAFETY: same as the success arm above — the module is
-                // unused whether pipeline creation succeeded or failed.
-                unsafe { device.destroy_shader_module(shader_module, None) };
-                // SAFETY: `partial` is still under construction — see the
-                // `try_or_cleanup!` macro's SAFETY note above.
-                unsafe { partial.destroy(device, allocator) };
-                return Err(e);
-            }
-        };
 
         // Descriptor pool + sets — sizes derived from `bindings`
         // (#1030 / REN-D10-NEW-09).

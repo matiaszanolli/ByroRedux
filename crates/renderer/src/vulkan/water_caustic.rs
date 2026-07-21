@@ -30,7 +30,10 @@
 
 use super::allocator::SharedAllocator;
 use super::caustic::CAUSTIC_FORMAT;
-use super::descriptors::{color_subresource_single_mip, image_barrier_undef_to_general};
+use super::descriptors::{
+    color_subresource_single_mip, image_barrier_general_write_to_read,
+    image_barrier_undef_to_general,
+};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -368,13 +371,7 @@ impl WaterCausticAccum {
     ) {
         debug_assert!(frame < self.slots.len(), "frame index out of range");
         let slot = &self.slots[frame];
-        let bar = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(slot.image)
-            .subresource_range(color_subresource_single_mip());
+        let bar = image_barrier_general_write_to_read(slot.image);
         // SAFETY: caller's unsafe-fn contract — `cmd` recording.
         unsafe {
             device.cmd_pipeline_barrier(

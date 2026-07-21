@@ -42,9 +42,9 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
-    image_barrier_undef_to_general, memory_barrier, write_combined_image_sampler,
-    write_acceleration_structure, write_storage_buffer, write_storage_image, write_uniform_buffer,
-    DescriptorPoolBuilder,
+    image_barrier_general_write_to_read, image_barrier_undef_to_general, memory_barrier,
+    write_acceleration_structure, write_combined_image_sampler, write_storage_buffer,
+    write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -97,7 +97,6 @@ pub struct CausticPipeline {
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    shader_module: vk::ShaderModule,
 
     /// Per-FIF accumulator images.
     slots: Vec<CausticSlot>,
@@ -190,7 +189,6 @@ impl CausticPipeline {
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_sets: Vec::new(),
-            shader_module: vk::ShaderModule::null(),
             slots: Vec::new(),
             point_sampler: vk::Sampler::null(),
             param_buffers: Vec::new(),
@@ -359,36 +357,16 @@ impl CausticPipeline {
         });
 
         // ── 5. Compute pipeline ───────────────────────────────────────
-        partial.shader_module = try_or_cleanup!(super::pipeline::load_shader_module(
+        // Shared builder (#1751); frees the shader module immediately —
+        // its SPIR-V is already baked into `partial.pipeline` by the time
+        // this returns, so there's no live consumer to keep it around for.
+        partial.pipeline = try_or_cleanup!(super::pipeline::create_compute_pipeline(
             device,
-            CAUSTIC_SPLAT_COMP_SPV
+            pipeline_cache,
+            CAUSTIC_SPLAT_COMP_SPV,
+            partial.pipeline_layout,
+            "caustic",
         ));
-        let stage = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(partial.shader_module)
-            .name(c"main");
-        // SAFETY: `stage` references `partial.shader_module` (loaded
-        // above) and `partial.pipeline_layout` (just created above).
-        partial.pipeline = match unsafe {
-            device
-                .create_compute_pipelines(
-                    pipeline_cache,
-                    &[vk::ComputePipelineCreateInfo::default()
-                        .stage(stage)
-                        .layout(partial.pipeline_layout)],
-                    None,
-                )
-                .map_err(|(_, e)| e)
-                .context("caustic compute pipeline")
-        } {
-            Ok(p) => p[0],
-            Err(e) => {
-                // SAFETY: cleanup-on-error; shader_module on `partial`
-                // is freed by destroy().
-                unsafe { partial.destroy(device, allocator) };
-                return Err(e);
-            }
-        };
 
         // ── 6. Descriptor pool + sets ─────────────────────────────────
         // Pool sizes derived from `bindings` (#1030 / REN-D10-NEW-09).
@@ -905,13 +883,7 @@ impl CausticPipeline {
         device.cmd_dispatch(cmd, gx, gy, 1);
 
         // ── COMPUTE → FRAGMENT barrier for composite sample ───────────
-        let out_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(slot_img)
-            .subresource_range(clear_range);
+        let out_barrier = image_barrier_general_write_to_read(slot_img);
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1025,10 +997,6 @@ impl CausticPipeline {
         if self.pipeline != vk::Pipeline::null() {
             // SAFETY: `self.pipeline` was built by this `device` in `initialize_layouts`, is non-null (guarded above), and per the whole-function contract is unreferenced by any in-flight command buffer.
             unsafe { device.destroy_pipeline(self.pipeline, None) };
-        }
-        if self.shader_module != vk::ShaderModule::null() {
-            // SAFETY: `self.shader_module` was loaded by this `device`, is non-null (guarded above), and its code is already baked into `self.pipeline` — no live consumer remains.
-            unsafe { device.destroy_shader_module(self.shader_module, None) };
         }
         if self.pipeline_layout != vk::PipelineLayout::null() {
             // SAFETY: `self.pipeline_layout` was created by this `device`, is non-null (guarded above), and its dependent pipeline is destroyed first (above); no in-flight command references it.

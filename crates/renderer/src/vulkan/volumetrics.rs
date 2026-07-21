@@ -45,8 +45,9 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
-    image_barrier_undef_to_general, memory_barrier, write_acceleration_structure,
-    write_storage_buffer, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
+    image_barrier_general_write_to_read, image_barrier_undef_to_general, memory_barrier,
+    write_acceleration_structure, write_storage_buffer, write_storage_image, write_uniform_buffer,
+    DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -933,13 +934,7 @@ impl VolumetricsPipeline {
         // shader reads every froxel of the lighting volume; without
         // this barrier the recurrence reads stale (or partially-
         // written) data.
-        let inj_to_int = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.lighting_volumes[frame].image)
-            .subresource_range(subresource);
+        let inj_to_int = image_barrier_general_write_to_read(self.lighting_volumes[frame].image);
         // Plus a barrier on the integrated volume so last frame's
         // composite READ (sampler3D in fragment shader) is sequenced
         // against this frame's integration WRITE.
@@ -983,13 +978,7 @@ impl VolumetricsPipeline {
         // ── Stage F: post-integration barrier ────────────────────────
         // Make the integrated-volume WRITE visible to the composite
         // fragment shader's sampler3D READ.
-        let post_int = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.integrated_volumes[frame].image)
-            .subresource_range(subresource);
+        let post_int = image_barrier_general_write_to_read(self.integrated_volumes[frame].image);
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,

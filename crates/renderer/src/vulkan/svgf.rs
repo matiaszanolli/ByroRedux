@@ -57,8 +57,9 @@
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
-    image_barrier_undef_to_general, write_combined_image_sampler, write_storage_image,
-    write_uniform_buffer, DescriptorPoolBuilder,
+    image_barrier_general_write_to_read, image_barrier_undef_to_general,
+    write_combined_image_sampler, write_storage_image, write_uniform_buffer,
+    DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -246,7 +247,6 @@ pub struct SvgfPipeline {
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
-    shader_module: vk::ShaderModule,
 
     indirect_history: Vec<HistorySlot>,
     moments_history: Vec<HistorySlot>,
@@ -297,7 +297,6 @@ pub struct SvgfPipeline {
     atrous_pipeline_layout: vk::PipelineLayout,
     atrous_descriptor_set_layout: vk::DescriptorSetLayout,
     atrous_descriptor_pool: vk::DescriptorPool,
-    atrous_shader_module: vk::ShaderModule,
     /// One descriptor set per (frame, iteration): index
     /// `frame * ATROUS_ITERATIONS + iter`.
     atrous_descriptor_sets: Vec<vk::DescriptorSet>,
@@ -366,7 +365,6 @@ impl SvgfPipeline {
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_sets: Vec::new(),
-            shader_module: vk::ShaderModule::null(),
             indirect_history: Vec::new(),
             moments_history: Vec::new(),
             point_sampler: vk::Sampler::null(),
@@ -379,7 +377,6 @@ impl SvgfPipeline {
             atrous_pipeline_layout: vk::PipelineLayout::null(),
             atrous_descriptor_set_layout: vk::DescriptorSetLayout::null(),
             atrous_descriptor_pool: vk::DescriptorPool::null(),
-            atrous_shader_module: vk::ShaderModule::null(),
             atrous_descriptor_sets: Vec::new(),
             atrous_color: Vec::new(),
         };
@@ -571,33 +568,20 @@ impl SvgfPipeline {
         });
 
         // ── 5. Compute pipeline ───────────────────────────────────────
-        partial.shader_module = try_or_cleanup!(super::pipeline::load_shader_module(
+        // Shared builder (#1751); frees the shader module immediately —
+        // its SPIR-V is already baked into `partial.pipeline` by the time
+        // this returns, so there's no live consumer to keep it around for.
+        partial.pipeline = match super::pipeline::create_compute_pipeline(
             device,
-            SVGF_TEMPORAL_COMP_SPV
-        ));
-        let stage = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(partial.shader_module)
-            .name(c"main");
-        // SAFETY: `stage` references `partial.shader_module` (loaded above)
-        // and `partial.pipeline_layout` (just created above). pipeline_cache
-        // is caller-provided (may be null per spec).
-        partial.pipeline = match unsafe {
-            device
-                .create_compute_pipelines(
-                    pipeline_cache,
-                    &[vk::ComputePipelineCreateInfo::default()
-                        .stage(stage)
-                        .layout(partial.pipeline_layout)],
-                    None,
-                )
-                .map_err(|(_, e)| e)
-                .context("SVGF temporal compute pipeline")
-        } {
-            Ok(p) => p[0],
+            pipeline_cache,
+            SVGF_TEMPORAL_COMP_SPV,
+            partial.pipeline_layout,
+            "SVGF temporal",
+        ) {
+            Ok(p) => p,
             Err(e) => {
-                // SAFETY: cleanup-on-error. shader_module survives on
-                // `partial.shader_module` and is freed by destroy.
+                // SAFETY: cleanup-on-error; no shader module survives to free
+                // now that pipeline creation owns that lifecycle itself.
                 unsafe { partial.destroy(device, allocator) };
                 return Err(e);
             }
@@ -919,26 +903,17 @@ impl SvgfPipeline {
                 .context("SVGF à-trous pipeline layout")?
         };
 
-        self.atrous_shader_module =
-            super::pipeline::load_shader_module(device, SVGF_ATROUS_COMP_SPV)?;
-        let stage = vk::PipelineShaderStageCreateInfo::default()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(self.atrous_shader_module)
-            .name(c"main");
-        // SAFETY: `stage` references the shader module + pipeline layout
-        // just created on `self`.
-        self.atrous_pipeline = unsafe {
-            device
-                .create_compute_pipelines(
-                    pipeline_cache,
-                    &[vk::ComputePipelineCreateInfo::default()
-                        .stage(stage)
-                        .layout(self.atrous_pipeline_layout)],
-                    None,
-                )
-                .map_err(|(_, e)| e)
-                .context("SVGF à-trous compute pipeline")?[0]
-        };
+        // Shared builder (#1751); frees the shader module immediately —
+        // its SPIR-V is already baked into `self.atrous_pipeline` by the
+        // time this returns, so there's no live consumer to keep it
+        // around for.
+        self.atrous_pipeline = super::pipeline::create_compute_pipeline(
+            device,
+            pipeline_cache,
+            SVGF_ATROUS_COMP_SPV,
+            self.atrous_pipeline_layout,
+            "SVGF à-trous",
+        )?;
 
         // One descriptor set per (frame, iteration).
         let set_count = (ATROUS_ITERATIONS * MAX_FRAMES_IN_FLIGHT) as u32;
@@ -1224,16 +1199,10 @@ impl SvgfPipeline {
 
         // Barrier: compute write → composite's fragment shader sampling.
         // Keeps layout in GENERAL — composite's descriptor sets use GENERAL.
-        let out_barrier = |img: vk::Image| {
-            vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .image(img)
-                .subresource_range(super::descriptors::color_subresource_single_mip())
-        };
-        let out_barriers = [out_barrier(out_ind_img), out_barrier(out_mom_img)];
+        let out_barriers = [
+            image_barrier_general_write_to_read(out_ind_img),
+            image_barrier_general_write_to_read(out_mom_img),
+        ];
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1301,13 +1270,7 @@ impl SvgfPipeline {
             } else {
                 vk::PipelineStageFlags::COMPUTE_SHADER
             };
-            let bar = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .image(written)
-                .subresource_range(super::descriptors::color_subresource_single_mip());
+            let bar = image_barrier_general_write_to_read(written);
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1513,14 +1476,6 @@ impl SvgfPipeline {
                 device.destroy_pipeline(self.pipeline, None)
             };
         }
-        if self.shader_module != vk::ShaderModule::null() {
-            unsafe {
-                // SAFETY: `self.shader_module` was created by this `device`
-                // (non-null per the guard) and is not in use by any in-flight
-                // command buffer at teardown.
-                device.destroy_shader_module(self.shader_module, None)
-            };
-        }
         if self.pipeline_layout != vk::PipelineLayout::null() {
             unsafe {
                 // SAFETY: `self.pipeline_layout` was created by this `device`
@@ -1560,14 +1515,6 @@ impl SvgfPipeline {
                 // created by this `device` (non-null per the guard) and unreferenced
                 // by any in-flight command buffer at teardown.
                 device.destroy_pipeline(self.atrous_pipeline, None)
-            };
-        }
-        if self.atrous_shader_module != vk::ShaderModule::null() {
-            unsafe {
-                // SAFETY: `self.atrous_shader_module` was created by this `device`
-                // (non-null per the guard) and is not in use by any in-flight
-                // command buffer at teardown.
-                device.destroy_shader_module(self.atrous_shader_module, None)
             };
         }
         if self.atrous_pipeline_layout != vk::PipelineLayout::null() {
