@@ -26,10 +26,10 @@ use super::spawn::{light_radius_or_default, spawn_placed_instances};
 mod attach;
 mod import;
 
-use attach::{
-    attach_container_inventory, attach_light_flicker_if_needed, attach_script_for_refr,
-    trigger_volume_from_primitive,
-};
+use attach::{attach_container_inventory, attach_script_for_refr, trigger_volume_from_primitive};
+// Re-exported (not just `use`d) so the sibling `spawn` module can share this
+// helper instead of duplicating its body (D22-3 / #2121).
+pub(crate) use attach::attach_light_flicker_if_needed;
 pub(super) use import::parse_and_import_nif_pub;
 // Consumed only by the sibling `attach_points_spawn_tests` (#[cfg(test)]);
 // gate the re-export so it isn't an unused import in the non-test build.
@@ -1002,6 +1002,8 @@ fn spawn_synth_child(
                     ..Default::default()
                 },
             );
+            let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
+            attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
             accum.entity_count += 1;
         }
         return;

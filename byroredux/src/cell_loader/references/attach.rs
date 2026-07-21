@@ -395,7 +395,7 @@ pub(super) fn attach_vmad_scripts(
 /// entity id so a room full of identical candles doesn't flicker in
 /// lockstep — deterministic per session, scene-stable across cell
 /// reloads since EntityIds reset on cell unload.
-pub(super) fn attach_light_flicker_if_needed(
+pub(crate) fn attach_light_flicker_if_needed(
     world: &mut World,
     entity: byroredux_core::ecs::EntityId,
     ld: &byroredux_plugin::esm::cell::LightData,

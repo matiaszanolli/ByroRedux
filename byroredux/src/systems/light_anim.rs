@@ -10,7 +10,7 @@
 //! | `FLICKER`     (0x08) | hash noise | normal  | candles, torches
 //! | `FLICKER_SLOW`(0x40) | hash noise | half    | dying flames, low oil
 //! | `PULSE`       (0x80) | sine       | normal  | crystals, mage-lights
-//! | `PULSE_SLOW`  (0x400)| sine       | half    | ambience set-pieces
+//! | `PULSE_SLOW`  (0x100)| sine       | half    | ambience set-pieces
 //!
 //! Intensity modulation rides on `LightSource.intensity` (the same
 //! field the NIF `NiLightIntensityController` writes to). Both
@@ -34,10 +34,16 @@ const SHARED_LIGHT_ANIMATION_MASK: u32 =
 
 /// Decode a game's raw LIGH flags into the shared runtime animation behavior.
 ///
-/// The bits are not portable source data. Fallout 4 retains `0x08` Flicker
-/// and `0x80` Pulse, but its `0x40` bit is unrelated and `0x400` means Shadow
-/// Spotlight. Keeping this conversion at the game boundary prevents those
-/// rendering flags from becoming continuous whole-scene light animation.
+/// The bits are not portable source data. `0x400` (Shadow Spotlight) is
+/// never an animation flag in any game — verified directly against xEdit's
+/// `wbDefinitionsTES5.pas` and F4Edit's `wbDefinitionsFO4.pas`, both of
+/// which agree `0x400` = Shadow Spotlight, not slow-pulse. Fallout 4's LIGH
+/// layout separately leaves the slow-variant bits themselves undefined —
+/// `0x40` and `0x100` are reserved/unknown there (F4Edit shows no
+/// Flicker-Slow or Pulse-Slow flag for Fallout 4 at all), so it only ever
+/// decodes `Flicker`/`Pulse`. Keeping this conversion at the game boundary
+/// prevents rendering-only flags from becoming continuous whole-scene
+/// light animation.
 pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32) -> u32 {
     let source_animation_mask = match game {
         GameKind::Fallout4 => LIGHT_FLAG_FLICKER | LIGHT_FLAG_PULSE,
@@ -227,7 +233,32 @@ mod tests {
     }
 
     #[test]
-    fn fallout4_shadow_spotlight_is_not_slow_pulse() {
+    fn shadow_spotlight_bit_never_leaks_into_animation_on_any_game() {
+        // 0x400 is Shadow Spotlight in both Skyrim's and Fallout 4's LIGH
+        // layout (xEdit wbDefinitionsTES5.pas / F4Edit wbDefinitionsFO4.pas
+        // agree) — it must never decode as an animation flag anywhere. This
+        // was the actual bug: LIGHT_FLAG_PULSE_SLOW used to be defined as
+        // 0x400, so every non-Fallout4 game slow-pulsed its shadow spotlights.
+        const SHADOW_SPOTLIGHT: u32 = 0x0000_0400;
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Fallout4, SHADOW_SPOTLIGHT),
+            0,
+        );
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Skyrim, SHADOW_SPOTLIGHT),
+            0,
+        );
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Fallout3NV, SHADOW_SPOTLIGHT),
+            0,
+        );
+    }
+
+    #[test]
+    fn fallout4_slow_variant_bits_are_reserved_not_animated() {
+        // Fallout 4's LIGH layout leaves 0x40 and 0x100 reserved/unknown
+        // (F4Edit shows no Flicker-Slow or Pulse-Slow flag for FO4 at all) —
+        // only Flicker (0x08) and Pulse (0x80) exist there.
         assert_eq!(
             canonical_light_animation_flags(GameKind::Fallout4, LIGHT_FLAG_PULSE_SLOW),
             0,
@@ -235,6 +266,19 @@ mod tests {
         assert_eq!(
             canonical_light_animation_flags(GameKind::Fallout4, LIGHT_FLAG_FLICKER_SLOW),
             0,
+        );
+    }
+
+    #[test]
+    fn genuine_pulse_slow_animates_on_non_fallout4_games() {
+        // 0x100 is the real Pulse-Slow bit (Skyrim + FO3-lineage, per xEdit).
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Skyrim, LIGHT_FLAG_PULSE_SLOW),
+            LIGHT_FLAG_PULSE_SLOW,
+        );
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Fallout3NV, LIGHT_FLAG_PULSE_SLOW),
+            LIGHT_FLAG_PULSE_SLOW,
         );
     }
 

@@ -8,8 +8,8 @@
 
 use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::{
-    BSXFlags, Billboard, GlobalTransform, LightFlicker, LightSource, LocalBound, MeshHandle,
-    ParticleEmitter, SceneFlags, TextureHandle, Transform, World, WorldBound,
+    BSXFlags, Billboard, GlobalTransform, LightSource, LocalBound, MeshHandle, ParticleEmitter,
+    SceneFlags, TextureHandle, Transform, World, WorldBound,
 };
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
@@ -29,6 +29,7 @@ use crate::components::{
 
 use super::nif_import_registry::CachedNifImport;
 use super::refr::RefrTextureOverlay;
+use super::references::attach_light_flicker_if_needed;
 
 /// `true` when an `ImportedLight` has a non-trivial diffuse colour
 /// contribution and therefore would actually spawn a `LightSource`
@@ -1414,26 +1415,7 @@ fn spawn_mesh_instance(
             // Phase 17 — animation companion at the placement root,
             // same position as the mesh entity. The caller has already
             // decoded source-game LIGH flags into shared behavior.
-            if light_animation_flags != 0 {
-                let period_secs = if ld.period_secs > 0.0 {
-                    ld.period_secs
-                } else {
-                    0.5
-                };
-                let phase_offset_secs =
-                    (entity.wrapping_mul(2654435761) as f32 / u32::MAX as f32) * period_secs;
-                world.insert(
-                    entity,
-                    LightFlicker {
-                        animation_flags: light_animation_flags,
-                        period_secs,
-                        intensity_amplitude: ld.intensity_amplitude,
-                        movement_amplitude: ld.movement_amplitude,
-                        base_translation: [ref_pos.x, ref_pos.y, ref_pos.z],
-                        phase_offset_secs,
-                    },
-                );
-            }
+            attach_light_flicker_if_needed(world, entity, ld, ref_pos, light_animation_flags);
         }
     }
     true

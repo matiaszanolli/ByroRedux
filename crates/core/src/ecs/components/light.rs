@@ -81,8 +81,12 @@ pub const LIGHT_FLAG_FLICKER_SLOW: u32 = 0x0000_0040;
 /// `0x80` — smooth sinusoidal modulation. Used by glowing crystals,
 /// some mage-light spells, dragon shouts.
 pub const LIGHT_FLAG_PULSE: u32 = 0x0000_0080;
-/// `0x400` — slower sinusoidal modulation; ambience-style lights.
-pub const LIGHT_FLAG_PULSE_SLOW: u32 = 0x0000_0400;
+/// `0x100` — same as `PULSE` but at half angular velocity; ambience-style
+/// lights. (Was previously mis-defined as `0x400`, which is actually the
+/// unrelated Shadow-Spotlight flag in both Skyrim's and Fallout 4's LIGH
+/// layout, per direct verification against xEdit/F4Edit's own record
+/// definitions — see `LightFlicker::animation_flags` below.)
+pub const LIGHT_FLAG_PULSE_SLOW: u32 = 0x0000_0100;
 
 /// Procedural light-animation behavior plus the parameters sourced from
 /// the LIGH DATA subrecord (`period_secs`, `intensity_amplitude`,
@@ -99,9 +103,13 @@ pub const LIGHT_FLAG_PULSE_SLOW: u32 = 0x0000_0400;
 pub struct LightFlicker {
     /// Shared animation behavior flags decoded from the source game's
     /// LIGH flag layout. This is deliberately separate from
-    /// [`LightSource::flags`]: identical raw bits have different meanings
-    /// between games (for example, Fallout 4 uses `0x400` for a shadow
-    /// spotlight, while Skyrim uses it for slow pulse).
+    /// [`LightSource::flags`]: `0x400` is Shadow Spotlight in both Skyrim's
+    /// and Fallout 4's LIGH layout (verified against xEdit's
+    /// `wbDefinitionsTES5.pas` and F4Edit's `wbDefinitionsFO4.pas`), never
+    /// slow-pulse — the two games instead diverge on whether the
+    /// slow-variant bits (`0x40` Flicker-Slow, `0x100` Pulse-Slow) exist at
+    /// all: Fallout 4 leaves both reserved/unused, so it only ever decodes
+    /// `Flicker`/`Pulse` (see `canonical_light_animation_flags`).
     pub animation_flags: u32,
     /// LIGH FNAM `period` field — flicker / pulse cycle time in
     /// seconds. Defaults to `0.5` when the LIGH record was
