@@ -53,7 +53,10 @@ pub use pack::{
     active_travel_location, active_wander_location, parse_pack, PackLocation, PackLocationTarget,
     PackRecord, PackSchedule, PackTarget, PackTargetKind,
 };
-pub use quest::{parse_qust, QustRecord};
+pub use quest::{
+    parse_qust, AliasFillType, AliasFlags, AliasInjectedData, QuestAlias, QuestObjective,
+    QuestStage, QustRecord,
+};
 pub use effects::{
     parse_avif, parse_efsh, parse_expl, parse_imod, parse_ipct, parse_ipds, parse_proj, parse_repu,
     AvifRecord, EfshRecord, ExplRecord, ImodRecord, IpctRecord, IpdsRecord, ProjRecord, RepuRecord,

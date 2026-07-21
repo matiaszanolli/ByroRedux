@@ -71,6 +71,7 @@ pub use misc::{
     InfoRecord, IpctRecord, IpdsRecord, LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord,
     NaviRecord, NavmRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RegnRecord, RepuRecord,
     SlgmRecord, SpelRecord, TermRecord, WatrRecord,
+    AliasFillType, AliasFlags, AliasInjectedData, QuestAlias, QuestObjective, QuestStage,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use tree::{parse_tree, TreeRecord};

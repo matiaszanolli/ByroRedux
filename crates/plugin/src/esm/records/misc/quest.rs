@@ -62,12 +62,183 @@ pub struct QuestObjective {
     pub target_refs: Vec<u32>,
 }
 
+/// One quest alias, defined by an `ALST` (Reference alias) or `ALLS`
+/// (Location alias) block. Aliases are Radiant Story's targeting
+/// mechanism — a quest names a *role* ("QuestGiver", "Location") rather
+/// than a specific reference, and this is filled in at runtime per
+/// [`AliasFillType`]. Parser-side only: this is pure data, decoded and
+/// cross-validated against the field table in
+/// [`docs/engine/m47-3-quest-alias-design.md`]; the fill-and-apply
+/// runtime is that milestone's later phases.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QuestAlias {
+    /// `ALST`/`ALLS` payload — the numerical id Papyrus/VMAD reference
+    /// this alias by (the parameter to `LocAliasHasKeyword` and
+    /// friends). Kept at the on-disk `int32` width rather than narrowed
+    /// to VMAD's `i16` alias-index field — the consumer widens/narrows
+    /// for comparison; this layer doesn't guess a range is safe.
+    pub alias_id: i32,
+    /// `true` for an `ALLS` (Location) alias, `false` for `ALST`
+    /// (Reference). Most fill-type fields are exclusive to one kind
+    /// (documented per-variant on [`AliasFillType`]).
+    pub is_location: bool,
+    /// `ALID` — the alias name (e.g. `"Location"`, `"QuestGiver"`),
+    /// substituted into dynamically-generated journal/dialogue text.
+    pub name: String,
+    /// How this alias's value is determined at runtime — the fill-type
+    /// field that was present on disk (mutually exclusive per the
+    /// source). `None` for the "Find Matching Reference/Location" case,
+    /// which has no dedicated fill field — only `match_conditions`.
+    pub fill_type: Option<AliasFillType>,
+    /// `FNAM` flags — see the `ALIAS_FLAG_*` constants below.
+    pub flags: AliasFlags,
+    /// `ALFI` — "Force Into Alias": once this alias fills (via its own
+    /// `fill_type`/`match_conditions`), its resolved value is *also*
+    /// propagated onto the alias index named here (last writer wins if
+    /// multiple aliases force into the same target). The source's field
+    /// table only says "Unknown, int32"; the propagation behavior comes
+    /// from separately-sourced CK documentation, not this sub-record —
+    /// carried raw, the M47.3 runtime resolves the propagation. Real-data
+    /// finding (2026-07-21, verified against raw bytes via
+    /// `qust_alias_rawdump` on `Skyrim.esm` quest `0002C258`): the
+    /// *target* of a Force Into Alias typically carries no
+    /// `fill_type`/`match_conditions` of its own — its value comes
+    /// entirely from the propagation. Concretely: alias 1 (`Nurelion`,
+    /// `ALFR`-filled) carries `ALFI = 8`; alias 8 (`NurelionEssential`)
+    /// has no fill field and no `CTDA` at all — it exists purely to
+    /// receive alias 1's value under the Essential flag. Detecting this
+    /// from a single `QuestAlias` in isolation isn't possible; the
+    /// runtime must cross-reference every alias's `force_into_alias`
+    /// against sibling aliases' `alias_id` within the same `QustRecord`.
+    pub force_into_alias: Option<i32>,
+    /// `CTDA` conditions attached to this alias. The "Match Conditions"
+    /// fill type's predicate list (reusing M47.1's `ConditionList`
+    /// verbatim) — also legal alongside another fill type per the
+    /// source ("multiple CTDA fields can be used together").
+    pub match_conditions: ConditionList,
+    /// Data applied to the alias's target for the duration of the quest,
+    /// once filled (factions/packages/spells/keywords/inventory/display
+    /// name/voice type/combat override).
+    pub injected: AliasInjectedData,
+}
+
+/// How an [`QuestAlias`]'s runtime value is determined — the fill-type
+/// field present in its `ALST`/`ALLS` block. Raw FormIds; the M47.3
+/// alias-fill runtime resolves and applies these, this layer only
+/// decodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AliasFillType {
+    /// `ALFR` (Reference alias only) — a fixed `ACHR`/`REFR`.
+    ForcedReference(u32),
+    /// `ALFL` (Location alias only) — a fixed `LCTN`.
+    ForcedLocation(u32),
+    /// `ALUA` (Reference alias only) — an `NPC_`'s existing unique
+    /// `ACHR` instance (not a spawn).
+    UniqueActor(u32),
+    /// `ALCO` (Reference alias only) — instantiate a new reference to
+    /// this base record. `alca`/`alcl` are the companion `ALCA`/`ALCL`
+    /// fields, whose meaning the source itself doesn't know ("Unknown.
+    /// Associated with ALCO") — carried raw rather than interpreted.
+    CreatedObject { base: u32, alca: i32, alcl: i32 },
+    /// `ALEQ` + `ALEA` — copy the value from another quest's alias
+    /// (`quest`'s alias `alias_id`).
+    ExternalAlias { quest: u32, alias_id: i32 },
+    /// `ALRT` (Reference alias only) — an `LCRT` lookup against the
+    /// quest's location. `alfa` (`ALFA`) is unconfirmed by the source
+    /// ("may be a formid, but with first byte(s) co-opted as a flag?")
+    /// — carried raw rather than interpreted.
+    LocationAliasReference { lcrt: u32, alfa: i32 },
+    /// `ALFE` + `ALFD` — filled from a Story Manager event.
+    FromEvent { event_type: [u8; 4], data: i32 },
+}
+
+/// `ALST`/`ALLS` `FNAM` alias flags. A plain bit-constant newtype
+/// (mirrors `LIGHT_FLAG_*` in `components/light.rs`), not a `bitflags!`
+/// type — matches this crate's existing convention for parsed on-disk
+/// flag fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AliasFlags(pub u32);
+
+// The full bit catalog ships now even though it has no *production*
+// consumer yet — the M47.3 alias-fill runtime (reservation tracking,
+// essential/protected, allow-dead/disabled/destroyed relaxations, …) is
+// a later phase. Every constant is exercised by an `AliasFlags::has`
+// assertion in the test module below (dead-code analysis just doesn't
+// credit test-only usage for the non-test build), so all are
+// `dead_code`-allowed here rather than left to warn.
+/// Reserves Location (`ALLS`) / Reserves Reference (`ALST`).
+#[allow(dead_code)]
+pub const ALIAS_FLAG_RESERVES: u32 = 0x0000_0001;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_OPTIONAL: u32 = 0x0000_0002;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_QUEST_OBJECT: u32 = 0x0000_0004;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_ALLOW_REUSE: u32 = 0x0000_0008;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_ALLOW_DEAD: u32 = 0x0000_0010;
+/// "Find Matching Reference" sub-option.
+#[allow(dead_code)]
+pub const ALIAS_FLAG_IN_LOADED_AREA: u32 = 0x0000_0020;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_ESSENTIAL: u32 = 0x0000_0040;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_ALLOW_DISABLED: u32 = 0x0000_0080;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_STORES_TEXT: u32 = 0x0000_0100;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_ALLOW_RESERVED: u32 = 0x0000_0200;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_PROTECTED: u32 = 0x0000_0400;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_ALLOW_DESTROYED: u32 = 0x0000_1000;
+/// "Find Matching Reference" sub-option; requires [`ALIAS_FLAG_IN_LOADED_AREA`].
+#[allow(dead_code)]
+pub const ALIAS_FLAG_CLOSEST: u32 = 0x0000_2000;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_USES_STORED_TEXT: u32 = 0x0000_4000;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_INITIALLY_DISABLED: u32 = 0x0000_8000;
+/// `ALLS` only.
+#[allow(dead_code)]
+pub const ALIAS_FLAG_ALLOW_CLEARED: u32 = 0x0001_0000;
+
+impl AliasFlags {
+    pub fn has(self, bit: u32) -> bool {
+        self.0 & bit != 0
+    }
+}
+
+/// Data applied to an alias's target for the duration of the quest, once
+/// filled. Raw FormIds — the M47.3 runtime resolves and applies; this
+/// parser stays a pure decode.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AliasInjectedData {
+    /// `ALDN` → `MESG`, dynamically renames the alias target.
+    pub display_name: Option<u32>,
+    /// `VTCK` → `NPC_`/`FLST`, additional valid voice types for export.
+    pub voice_type: Option<u32>,
+    /// `ECOR` → `FLST`, combat override package list.
+    pub combat_override: Option<u32>,
+    /// `ALFC` → `FACT`, added on fill, removed on clear.
+    pub factions: Vec<u32>,
+    /// `ALPC` → `PACK`, stacked on top of the target's base packages.
+    pub packages: Vec<u32>,
+    /// `ALSP` → `SPEL`, added on fill, removed on clear.
+    pub spells: Vec<u32>,
+    /// `KWDA` → `KYWD`, added while in the alias.
+    pub keywords: Vec<u32>,
+    /// `CNTO` → `(item FormId, count)`. Added on fill; per the source,
+    /// **not** removed on clear (a permanent grant, unlike factions/
+    /// spells) — the eventual runtime must not "fix" this into symmetry
+    /// it doesn't have.
+    pub inventory: Vec<(u32, u32)>,
+}
+
 /// `QUST` quest record. Lifecycle container for the Story Manager and
-/// Radiant Story systems. Stages + objectives are decoded; aliases
-/// (ALST) and CTDA conditions remain deferred — alias decoding is its
-/// own multi-file follow-up (`quest_alias_system.md` lists 6 ref fill
-/// types), and CTDA is already handled by M47.1's `ConditionList`
-/// at the script-consumer side rather than per-stage here.
+/// Radiant Story systems. Stages, objectives, and aliases are decoded;
+/// CTDA conditions are already handled by M47.1's `ConditionList` at the
+/// script-consumer side rather than per-stage here.
 #[derive(Debug, Clone, Default)]
 pub struct QustRecord {
     pub form_id: u32,
@@ -109,17 +280,22 @@ pub struct QustRecord {
     /// `SomeOtherQuest.SetStage(..)` call bound via a `Quest Property`)
     /// resolves through at dispatch time.
     pub script_instance: Option<ScriptInstanceData>,
+    /// All defined aliases (`ALST`/`ALLS` blocks), in authoring order.
+    /// M47.3 Phase 0 substrate — pure data, no fill-and-apply runtime
+    /// yet. See [`QuestAlias`].
+    pub aliases: Vec<QuestAlias>,
 }
 
 /// Which block-structured sub-record we're currently inside while
-/// walking the QUST sub-record stream. Stage and objective blocks
-/// are mutually exclusive at any point — `INDX` opens a stage block,
-/// `QOBJ` opens an objective block, and either closes whatever was
-/// open before.
+/// walking the QUST sub-record stream. Stage, objective, and alias
+/// blocks are mutually exclusive at any point — `INDX` opens a stage
+/// block, `QOBJ` opens an objective block, `ALST`/`ALLS` opens an alias
+/// block, and any of the three closes whatever was open before.
 enum QustBlock {
     None,
     Stage(QuestStage),
     Objective(QuestObjective),
+    Alias(QuestAlias),
 }
 
 pub fn parse_qust(
@@ -145,6 +321,7 @@ pub fn parse_qust(
                 out.stages.push(stage);
             }
             QustBlock::Objective(obj) => out.objectives.push(obj),
+            QustBlock::Alias(alias) => out.aliases.push(alias),
             QustBlock::None => {}
         }
     }
@@ -211,7 +388,7 @@ pub fn parse_qust(
                 QustBlock::Objective(obj) => {
                     obj.text = read_lstring_or_zstring(&sub.data);
                 }
-                QustBlock::None => {}
+                QustBlock::Alias(_) | QustBlock::None => {}
             },
             // NNAM is Skyrim+ objective text. FO3/FNV objectives use
             // CNAM (handled above); both arms are defensive — an
@@ -245,12 +422,243 @@ pub fn parse_qust(
                     stage.has_script = true;
                 }
             }
-            b"CTDA" => {
-                if let QustBlock::Stage(stage) = &mut block {
+            // CTDA also appears inside an alias block ("Match
+            // Conditions" — the Find Matching Reference/Location fill
+            // type's predicate list, or an additional gate alongside
+            // another fill type). Stage and Alias are the two block
+            // kinds that currently collect conditions here.
+            b"CTDA" => match &mut block {
+                QustBlock::Stage(stage) => {
                     if let Some(mut cond) = parse_ctda(sub) {
                         remap_condition_form_ids(&mut cond, remap);
                         stage.conditions.push(cond);
                     }
+                }
+                QustBlock::Alias(alias) => {
+                    if let Some(mut cond) = parse_ctda(sub) {
+                        remap_condition_form_ids(&mut cond, remap);
+                        alias.match_conditions.push(cond);
+                    }
+                }
+                QustBlock::Objective(_) | QustBlock::None => {}
+            },
+            // ALST/ALLS opens an alias block — a Reference alias or a
+            // Location alias respectively. Same flush rule as INDX/QOBJ.
+            b"ALST" if sub.data.len() >= 4 => {
+                let prev = std::mem::replace(&mut block, QustBlock::None);
+                flush_block(&mut out, prev);
+                let alias_id = SubReader::new(&sub.data).i32_or_default();
+                block = QustBlock::Alias(QuestAlias {
+                    alias_id,
+                    is_location: false,
+                    ..Default::default()
+                });
+            }
+            b"ALLS" if sub.data.len() >= 4 => {
+                let prev = std::mem::replace(&mut block, QustBlock::None);
+                flush_block(&mut out, prev);
+                let alias_id = SubReader::new(&sub.data).i32_or_default();
+                block = QustBlock::Alias(QuestAlias {
+                    alias_id,
+                    is_location: true,
+                    ..Default::default()
+                });
+            }
+            // ALED is the explicit "end of this alias" terminator (the
+            // source: "always the final field in a set of ALID
+            // entries") — flush now rather than waiting for the next
+            // block-opener or end of stream.
+            b"ALED" => {
+                let prev = std::mem::replace(&mut block, QustBlock::None);
+                flush_block(&mut out, prev);
+            }
+            b"ALID" => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.name = read_zstring(&sub.data);
+                }
+            }
+            // ── Fill-type fields (mutually exclusive on disk) ──
+            b"ALFR" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    let fid = SubReader::new(&sub.data).u32_or_default();
+                    alias.fill_type = Some(AliasFillType::ForcedReference(fid));
+                }
+            }
+            b"ALFL" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    let fid = SubReader::new(&sub.data).u32_or_default();
+                    alias.fill_type = Some(AliasFillType::ForcedLocation(fid));
+                }
+            }
+            b"ALUA" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    let fid = SubReader::new(&sub.data).u32_or_default();
+                    alias.fill_type = Some(AliasFillType::UniqueActor(fid));
+                }
+            }
+            b"ALCO" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    let fid = SubReader::new(&sub.data).u32_or_default();
+                    alias.fill_type = Some(AliasFillType::CreatedObject {
+                        base: fid,
+                        alca: 0,
+                        alcl: 0,
+                    });
+                }
+            }
+            b"ALEQ" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    let fid = SubReader::new(&sub.data).u32_or_default();
+                    alias.fill_type = Some(AliasFillType::ExternalAlias {
+                        quest: fid,
+                        alias_id: 0,
+                    });
+                }
+            }
+            b"ALRT" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    let fid = SubReader::new(&sub.data).u32_or_default();
+                    alias.fill_type = Some(AliasFillType::LocationAliasReference {
+                        lcrt: fid,
+                        alfa: 0,
+                    });
+                }
+            }
+            b"ALFE" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    let mut event_type = [0u8; 4];
+                    event_type.copy_from_slice(&sub.data[..4]);
+                    alias.fill_type = Some(AliasFillType::FromEvent {
+                        event_type,
+                        data: 0,
+                    });
+                }
+            }
+            // ── Fill-type companion fields — arrive after their
+            // primary field per the source's documented order; a no-op
+            // if the primary field somehow didn't land first (declines
+            // rather than fabricating a fill type from a companion
+            // alone). ──
+            b"ALCA" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    if let Some(AliasFillType::CreatedObject { alca, .. }) = &mut alias.fill_type {
+                        *alca = SubReader::new(&sub.data).i32_or_default();
+                    }
+                }
+            }
+            b"ALCL" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    if let Some(AliasFillType::CreatedObject { alcl, .. }) = &mut alias.fill_type {
+                        *alcl = SubReader::new(&sub.data).i32_or_default();
+                    }
+                }
+            }
+            b"ALEA" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    if let Some(AliasFillType::ExternalAlias { alias_id, .. }) =
+                        &mut alias.fill_type
+                    {
+                        *alias_id = SubReader::new(&sub.data).i32_or_default();
+                    }
+                }
+            }
+            b"ALFA" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    if let Some(AliasFillType::LocationAliasReference { alfa, .. }) =
+                        &mut alias.fill_type
+                    {
+                        *alfa = SubReader::new(&sub.data).i32_or_default();
+                    }
+                }
+            }
+            b"ALFD" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    if let Some(AliasFillType::FromEvent { data, .. }) = &mut alias.fill_type {
+                        *data = SubReader::new(&sub.data).i32_or_default();
+                    }
+                }
+            }
+            // ALFI — "Force Into Alias" (see `QuestAlias::force_into_alias`
+            // doc). Independent of `fill_type`: an alias can carry an
+            // ALFI propagation target alongside its own fill type (the
+            // common real-data shape — a real fill type propagating its
+            // value onto a fill-type-less "shadow" alias elsewhere in
+            // the same quest, verified via `qust_alias_rawdump`).
+            b"ALFI" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.force_into_alias = Some(SubReader::new(&sub.data).i32_or_default());
+                }
+            }
+            // ── FNAM flags + injected data. FNAM also appears at QOBJ
+            // level (a different meaning, "ORed With Previous") — not
+            // yet decoded there, so only the Alias arm fires today. ──
+            b"FNAM" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.flags = AliasFlags(SubReader::new(&sub.data).u32_or_default());
+                }
+            }
+            b"ALDN" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.injected.display_name = Some(SubReader::new(&sub.data).u32_or_default());
+                }
+            }
+            b"VTCK" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.injected.voice_type = Some(SubReader::new(&sub.data).u32_or_default());
+                }
+            }
+            b"ECOR" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.injected.combat_override =
+                        Some(SubReader::new(&sub.data).u32_or_default());
+                }
+            }
+            b"ALFC" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias
+                        .injected
+                        .factions
+                        .push(SubReader::new(&sub.data).u32_or_default());
+                }
+            }
+            b"ALPC" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias
+                        .injected
+                        .packages
+                        .push(SubReader::new(&sub.data).u32_or_default());
+                }
+            }
+            b"ALSP" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias
+                        .injected
+                        .spells
+                        .push(SubReader::new(&sub.data).u32_or_default());
+                }
+            }
+            // KWDA holds `KSIZ` concatenated keyword FormIds in one
+            // sub-record (not one KWDA per keyword) — read every u32 in
+            // the payload. KSIZ itself is redundant with the payload
+            // length (same "read what's there" approach QSTA/CTDA use
+            // elsewhere in this parser) so it isn't separately tracked.
+            b"KWDA" => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    let mut r = SubReader::new(&sub.data);
+                    while r.remaining() >= 4 {
+                        alias.injected.keywords.push(r.u32_or_default());
+                    }
+                }
+            }
+            // CNTO: {formid item, uint32 count}. COCT (the count of
+            // CNTO records) is likewise redundant with just reading each
+            // CNTO sub-record as it appears.
+            b"CNTO" if sub.data.len() >= 8 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    let mut r = SubReader::new(&sub.data);
+                    let item = r.u32_or_default();
+                    let count = r.u32_or_default();
+                    alias.injected.inventory.push((item, count));
                 }
             }
             _ => {}
@@ -452,5 +860,360 @@ mod tests {
         assert_eq!(q.stages.len(), 1);
         assert_eq!(q.stages[0].conditions.len(), 1);
         assert_eq!(q.stages[0].conditions[0].function_index, 9);
+    }
+
+    /// Minimal 28-byte FO3/FNV-layout CTDA (see
+    /// `parse_qust_stage_ctda_attaches_to_its_stage` for the field-by-
+    /// field byte breakdown) carrying only `function_index` — enough to
+    /// tell one synthetic condition apart from another in the alias
+    /// tests below.
+    fn minimal_ctda(function_index: u32) -> Vec<u8> {
+        let mut ctda = Vec::new();
+        ctda.push(0x00u8);
+        ctda.extend_from_slice(&[0u8; 3]);
+        ctda.extend_from_slice(&1.0f32.to_le_bytes());
+        ctda.extend_from_slice(&function_index.to_le_bytes());
+        ctda.extend_from_slice(&0u32.to_le_bytes());
+        ctda.extend_from_slice(&0u32.to_le_bytes());
+        ctda.extend_from_slice(&0u32.to_le_bytes());
+        ctda.extend_from_slice(&0u32.to_le_bytes());
+        ctda
+    }
+
+    #[test]
+    fn parse_qust_alias_forced_reference() {
+        // The cheapest fill type (M47.3 Phase 1's first target): ALST +
+        // ALID + ALFR + FNAM + ALED, no companions.
+        let subs = vec![
+            sub(b"EDID", b"TestQuest\0"),
+            sub(b"ALST", &7i32.to_le_bytes()),
+            sub(b"ALID", b"QuestGiver\0"),
+            sub(b"ALFR", &0x0001_2345u32.to_le_bytes()),
+            sub(b"FNAM", &ALIAS_FLAG_ESSENTIAL.to_le_bytes()),
+            sub(b"ALED", &[]),
+        ];
+        let q = parse_qust(0xFEED, &subs, &None);
+        assert_eq!(q.aliases.len(), 1);
+        let alias = &q.aliases[0];
+        assert_eq!(alias.alias_id, 7);
+        assert!(!alias.is_location);
+        assert_eq!(alias.name, "QuestGiver");
+        assert_eq!(
+            alias.fill_type,
+            Some(AliasFillType::ForcedReference(0x0001_2345))
+        );
+        assert!(alias.flags.has(ALIAS_FLAG_ESSENTIAL));
+        assert!(!alias.flags.has(ALIAS_FLAG_OPTIONAL));
+    }
+
+    #[test]
+    fn parse_qust_alias_unique_actor() {
+        let subs = vec![
+            sub(b"ALST", &0i32.to_le_bytes()),
+            sub(b"ALID", b"Bandit\0"),
+            sub(b"ALUA", &0x000A_0001u32.to_le_bytes()),
+        ];
+        let q = parse_qust(0x1, &subs, &None);
+        assert_eq!(
+            q.aliases[0].fill_type,
+            Some(AliasFillType::UniqueActor(0x000A_0001))
+        );
+    }
+
+    #[test]
+    fn parse_qust_alias_created_object_with_companions() {
+        // ALCO opens the fill type; ALCA/ALCL are companion fields that
+        // arrive after it and must attach to the SAME fill_type variant.
+        let subs = vec![
+            sub(b"ALST", &1i32.to_le_bytes()),
+            sub(b"ALCO", &0x000B_0002u32.to_le_bytes()),
+            sub(b"ALCA", &11i32.to_le_bytes()),
+            sub(b"ALCL", &22i32.to_le_bytes()),
+        ];
+        let q = parse_qust(0x2, &subs, &None);
+        assert_eq!(
+            q.aliases[0].fill_type,
+            Some(AliasFillType::CreatedObject {
+                base: 0x000B_0002,
+                alca: 11,
+                alcl: 22,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_qust_alias_external_reference_with_companion() {
+        let subs = vec![
+            sub(b"ALST", &2i32.to_le_bytes()),
+            sub(b"ALEQ", &0x000C_0003u32.to_le_bytes()),
+            sub(b"ALEA", &4i32.to_le_bytes()),
+        ];
+        let q = parse_qust(0x3, &subs, &None);
+        assert_eq!(
+            q.aliases[0].fill_type,
+            Some(AliasFillType::ExternalAlias {
+                quest: 0x000C_0003,
+                alias_id: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_qust_alias_from_event_with_companion() {
+        let subs = vec![
+            sub(b"ALST", &3i32.to_le_bytes()),
+            sub(b"ALFE", b"Scri"),
+            sub(b"ALFD", &99i32.to_le_bytes()),
+        ];
+        let q = parse_qust(0x4, &subs, &None);
+        assert_eq!(
+            q.aliases[0].fill_type,
+            Some(AliasFillType::FromEvent {
+                event_type: *b"Scri",
+                data: 99,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_qust_alias_forced_location_is_alls_only() {
+        let subs = vec![
+            sub(b"ALLS", &5i32.to_le_bytes()),
+            sub(b"ALID", b"Location\0"),
+            sub(b"ALFL", &0x000D_0004u32.to_le_bytes()),
+        ];
+        let q = parse_qust(0x5, &subs, &None);
+        assert!(q.aliases[0].is_location);
+        assert_eq!(
+            q.aliases[0].fill_type,
+            Some(AliasFillType::ForcedLocation(0x000D_0004))
+        );
+    }
+
+    #[test]
+    fn parse_qust_alias_location_alias_reference_with_companion() {
+        let subs = vec![
+            sub(b"ALST", &6i32.to_le_bytes()),
+            sub(b"ALRT", &0x000E_0005u32.to_le_bytes()),
+            sub(b"ALFA", &(-1i32).to_le_bytes()),
+        ];
+        let q = parse_qust(0x6, &subs, &None);
+        assert_eq!(
+            q.aliases[0].fill_type,
+            Some(AliasFillType::LocationAliasReference {
+                lcrt: 0x000E_0005,
+                alfa: -1,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_qust_alias_find_matching_reference_has_no_fill_type() {
+        // No fill-type field at all — only Match Conditions. The alias
+        // still decodes; `fill_type` stays `None`, exactly the "Find
+        // Matching Reference/Location" shape the source describes.
+        let subs = vec![
+            sub(b"ALST", &8i32.to_le_bytes()),
+            sub(b"ALID", b"AnyBandit\0"),
+            sub(b"CTDA", &minimal_ctda(60)),
+            sub(b"CTDA", &minimal_ctda(61)),
+            sub(b"FNAM", &(ALIAS_FLAG_IN_LOADED_AREA | ALIAS_FLAG_CLOSEST).to_le_bytes()),
+        ];
+        let q = parse_qust(0x7, &subs, &None);
+        let alias = &q.aliases[0];
+        assert_eq!(alias.fill_type, None);
+        assert_eq!(alias.match_conditions.len(), 2);
+        assert_eq!(alias.match_conditions[0].function_index, 60);
+        assert_eq!(alias.match_conditions[1].function_index, 61);
+        assert!(alias.flags.has(ALIAS_FLAG_IN_LOADED_AREA));
+        assert!(alias.flags.has(ALIAS_FLAG_CLOSEST));
+    }
+
+    #[test]
+    fn parse_qust_alias_match_conditions_alongside_a_fill_type() {
+        // The source notes CTDA can accompany another fill type too
+        // (not just Find Matching) — both must land.
+        let subs = vec![
+            sub(b"ALST", &9i32.to_le_bytes()),
+            sub(b"ALFR", &0x0001_0000u32.to_le_bytes()),
+            sub(b"CTDA", &minimal_ctda(71)),
+        ];
+        let q = parse_qust(0x8, &subs, &None);
+        let alias = &q.aliases[0];
+        assert_eq!(alias.fill_type, Some(AliasFillType::ForcedReference(0x0001_0000)));
+        assert_eq!(alias.match_conditions.len(), 1);
+        assert_eq!(alias.match_conditions[0].function_index, 71);
+    }
+
+    #[test]
+    fn parse_qust_alias_force_into_alias_target_has_no_fill_type() {
+        // The real, raw-byte-verified shape from Skyrim.esm quest
+        // `0002C258` (`qust_alias_rawdump`): alias 1 ("Nurelion") is
+        // ALFR-filled and carries `ALFI = 8`; alias 8
+        // ("NurelionEssential") is the *target* — it has no fill-type
+        // field and no CTDA at all, existing purely to receive alias 1's
+        // value. Both sides decode correctly and independently; nothing
+        // about alias 8 alone reveals *why* it has no fill type — that
+        // requires cross-referencing alias 1's `force_into_alias`
+        // (deferred to the M47.3 runtime, not this parser).
+        let subs = vec![
+            sub(b"ALST", &1i32.to_le_bytes()),
+            sub(b"ALID", b"Nurelion\0"),
+            sub(b"FNAM", &0u32.to_le_bytes()),
+            sub(b"ALFI", &8i32.to_le_bytes()),
+            sub(b"ALFR", &0x0001_B115u32.to_le_bytes()),
+            sub(b"ALED", &[]),
+            sub(b"ALST", &8i32.to_le_bytes()),
+            sub(b"ALID", b"NurelionEssential\0"),
+            sub(b"FNAM", &(ALIAS_FLAG_ESSENTIAL | ALIAS_FLAG_OPTIONAL).to_le_bytes()),
+            sub(b"ALED", &[]),
+        ];
+        let q = parse_qust(0x2C258, &subs, &None);
+        assert_eq!(q.aliases.len(), 2);
+
+        let nurelion = &q.aliases[0];
+        assert_eq!(nurelion.name, "Nurelion");
+        assert_eq!(nurelion.fill_type, Some(AliasFillType::ForcedReference(0x0001_B115)));
+        assert_eq!(nurelion.force_into_alias, Some(8));
+
+        let essential = &q.aliases[1];
+        assert_eq!(essential.name, "NurelionEssential");
+        assert_eq!(essential.fill_type, None);
+        assert_eq!(essential.force_into_alias, None);
+        assert!(essential.match_conditions.is_empty());
+        assert!(essential.flags.has(ALIAS_FLAG_ESSENTIAL));
+    }
+
+    #[test]
+    fn parse_qust_alias_force_into_alias_alongside_a_fill_type() {
+        // ALFI can also accompany a real fill type — both must land.
+        let subs = vec![
+            sub(b"ALST", &9i32.to_le_bytes()),
+            sub(b"ALFR", &0x0001_0000u32.to_le_bytes()),
+            sub(b"ALFI", &2i32.to_le_bytes()),
+        ];
+        let q = parse_qust(0x1, &subs, &None);
+        let alias = &q.aliases[0];
+        assert_eq!(alias.fill_type, Some(AliasFillType::ForcedReference(0x0001_0000)));
+        assert_eq!(alias.force_into_alias, Some(2));
+    }
+
+    #[test]
+    fn parse_qust_alias_injected_data() {
+        let subs = vec![
+            sub(b"ALST", &10i32.to_le_bytes()),
+            sub(b"ALFR", &0x0002_0000u32.to_le_bytes()),
+            sub(b"ALDN", &0x0000_AAAAu32.to_le_bytes()),
+            sub(b"VTCK", &0x0000_BBBBu32.to_le_bytes()),
+            sub(b"ECOR", &0x0000_CCCCu32.to_le_bytes()),
+            sub(b"ALFC", &0x0000_1111u32.to_le_bytes()),
+            sub(b"ALFC", &0x0000_2222u32.to_le_bytes()),
+            sub(b"ALPC", &0x0000_3333u32.to_le_bytes()),
+            sub(b"ALSP", &0x0000_4444u32.to_le_bytes()),
+            sub(
+                b"KWDA",
+                &[
+                    0x0000_5555u32.to_le_bytes(),
+                    0x0000_6666u32.to_le_bytes(),
+                ]
+                .concat(),
+            ),
+            sub(b"CNTO", &[0x0000_7777u32.to_le_bytes(), 3u32.to_le_bytes()].concat()),
+        ];
+        let q = parse_qust(0x9, &subs, &None);
+        let injected = &q.aliases[0].injected;
+        assert_eq!(injected.display_name, Some(0x0000_AAAA));
+        assert_eq!(injected.voice_type, Some(0x0000_BBBB));
+        assert_eq!(injected.combat_override, Some(0x0000_CCCC));
+        assert_eq!(injected.factions, vec![0x0000_1111, 0x0000_2222]);
+        assert_eq!(injected.packages, vec![0x0000_3333]);
+        assert_eq!(injected.spells, vec![0x0000_4444]);
+        assert_eq!(injected.keywords, vec![0x0000_5555, 0x0000_6666]);
+        assert_eq!(injected.inventory, vec![(0x0000_7777, 3)]);
+    }
+
+    #[test]
+    fn parse_qust_multiple_aliases_flush_independently() {
+        // Three ALST blocks in a row, each with its own fill type — the
+        // flush-on-next-opener rule must not bleed one alias's fields
+        // into the next.
+        let subs = vec![
+            sub(b"ALST", &0i32.to_le_bytes()),
+            sub(b"ALID", b"First\0"),
+            sub(b"ALFR", &0x0000_1000u32.to_le_bytes()),
+            sub(b"ALST", &1i32.to_le_bytes()),
+            sub(b"ALID", b"Second\0"),
+            sub(b"ALUA", &0x0000_2000u32.to_le_bytes()),
+            sub(b"ALED", &[]),
+            sub(b"ALLS", &2i32.to_le_bytes()),
+            sub(b"ALID", b"Third\0"),
+            sub(b"ALFL", &0x0000_3000u32.to_le_bytes()),
+        ];
+        let q = parse_qust(0xA, &subs, &None);
+        assert_eq!(q.aliases.len(), 3);
+        assert_eq!(q.aliases[0].name, "First");
+        assert_eq!(
+            q.aliases[0].fill_type,
+            Some(AliasFillType::ForcedReference(0x0000_1000))
+        );
+        assert_eq!(q.aliases[1].name, "Second");
+        assert_eq!(
+            q.aliases[1].fill_type,
+            Some(AliasFillType::UniqueActor(0x0000_2000))
+        );
+        assert!(!q.aliases[1].is_location);
+        assert_eq!(q.aliases[2].name, "Third");
+        assert!(q.aliases[2].is_location);
+        assert_eq!(
+            q.aliases[2].fill_type,
+            Some(AliasFillType::ForcedLocation(0x0000_3000))
+        );
+    }
+
+    #[test]
+    fn parse_qust_alias_companion_without_primary_is_a_noop() {
+        // A companion field with no matching primary fill-type field
+        // beforehand must not fabricate a fill type — the alias just
+        // stays `fill_type: None`.
+        let subs = vec![sub(b"ALST", &0i32.to_le_bytes()), sub(b"ALCA", &5i32.to_le_bytes())];
+        let q = parse_qust(0xB, &subs, &None);
+        assert_eq!(q.aliases[0].fill_type, None);
+    }
+
+    #[test]
+    fn alias_flags_has_recognizes_every_named_bit() {
+        // Every `ALIAS_FLAG_*` constant, individually — guards against a
+        // copy-paste bit-value typo in the catalog (each must be its own
+        // distinct, correctly-shifted bit).
+        const ALL_FLAGS: &[u32] = &[
+            ALIAS_FLAG_RESERVES,
+            ALIAS_FLAG_OPTIONAL,
+            ALIAS_FLAG_QUEST_OBJECT,
+            ALIAS_FLAG_ALLOW_REUSE,
+            ALIAS_FLAG_ALLOW_DEAD,
+            ALIAS_FLAG_IN_LOADED_AREA,
+            ALIAS_FLAG_ESSENTIAL,
+            ALIAS_FLAG_ALLOW_DISABLED,
+            ALIAS_FLAG_STORES_TEXT,
+            ALIAS_FLAG_ALLOW_RESERVED,
+            ALIAS_FLAG_PROTECTED,
+            ALIAS_FLAG_ALLOW_DESTROYED,
+            ALIAS_FLAG_CLOSEST,
+            ALIAS_FLAG_USES_STORED_TEXT,
+            ALIAS_FLAG_INITIALLY_DISABLED,
+            ALIAS_FLAG_ALLOW_CLEARED,
+        ];
+        let combined = AliasFlags(ALL_FLAGS.iter().fold(0u32, |acc, &f| acc | f));
+        for &flag in ALL_FLAGS {
+            assert!(combined.has(flag), "bit {flag:#x} not set in the combined mask");
+        }
+        // Every constant is a distinct bit — the fold above didn't
+        // silently collapse two identical values.
+        let mut sorted = ALL_FLAGS.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ALL_FLAGS.len(), "duplicate flag value in the catalog");
+        // A bit outside the catalog is correctly absent.
+        assert!(!combined.has(0x0000_0800));
     }
 }

@@ -1,9 +1,12 @@
 # M47.3 — Quest Alias System: ALST/ALLS decode + alias-fill runtime
 
-**Status:** scoping (2026-07-21). Tier 3 (extends the M47 scripting family);
-cross-cuts Tier 7's `PACK` backlog (alias-injected packages) and tonight's
-M47.2 landing (`QuestRef`/`ObjectRef` `Property` resolution already declines
-on any alias-bound VMAD entry, pending this milestone).
+**Status:** Phase 0 shipped (2026-07-21) — `ALST`/`ALLS` decode landed and
+cross-validated against real `Skyrim.esm`/`Fallout4.esm` bytes, including one
+real spec correction (`ALFI`/Force Into Alias — see "Phase 0 shipped" below).
+Phases 1+ (the fill-and-apply runtime) remain. Tier 3 (extends the M47
+scripting family); cross-cuts Tier 7's `PACK` backlog (alias-injected
+packages) and M47.2's `QuestRef`/`ObjectRef` `Property` resolution (already
+built, still declines on any alias-bound VMAD entry pending Phase 2 here).
 
 **Goal:** decode the `QUST` record's `ALST`/`ALLS` alias sections and build
 the runtime that fills them with live references at quest start — the
@@ -218,21 +221,85 @@ with zero new spawn/search/location machinery.
 
 ---
 
+## Phase 0 shipped (2026-07-21)
+
+`QustBlock` gained an `Alias(QuestAlias)` variant (mirrors the existing
+`INDX`/`QOBJ` state machine exactly); `QuestAlias`/`AliasFillType`/
+`AliasFlags`/`AliasInjectedData` decode the full shape from the field
+table above. 15 new unit tests (one per fill type + companion-field
+attachment + multi-alias flush independence + a full flag-catalog
+round-trip); the whole workspace (3,000 tests) stays green.
+
+**Cross-validated against real bytes, as required — and it caught a real
+spec gap.** Two tools landed alongside the parser:
+[`qust_alias_survey`](../../crates/plugin/examples/qust_alias_survey.rs)
+(fill-type frequency + sanity counters over a whole ESM) and
+[`qust_alias_rawdump`](../../crates/plugin/examples/qust_alias_rawdump.rs)
+(every raw sub-record for one `QUST` by FormID — the tool that actually
+resolved the finding below).
+
+**The real distribution, measured, not assumed:**
+
+| Fill type | Skyrim.esm | Fallout4.esm |
+|---|---:|---:|
+| UniqueActor | 22.5% | 13.6% |
+| ForcedReference | 20.8% | 8.6% |
+| FromEvent | 16.0% | 8.6% |
+| LocationAliasReference | 15.8% | 18.2% |
+| FindMatching (conditions only) | 10.9% | 23.8% |
+| *(no fill type, no conditions)* | 7.2% | 8.7% |
+| CreatedObject | 4.9% | 11.6% |
+| ForcedLocation | 1.3% | (negligible) |
+| ExternalAlias | 0.6% | (negligible) |
+
+Phase 1's chosen pair (Forced Reference + Unique Actor) covers **43.3%**
+of Skyrim's aliases — better than assumed — but only **22.2%** of FO4's,
+where `FindMatching`/`LocationAliasReference` dominate instead. Sequencing
+should account for this per-game skew rather than assuming Skyrim's curve
+generalizes; FO4 content will lean on the harder fill types sooner than
+Skyrim does.
+
+**Spec correction: `ALFI` is "Force Into Alias," not a bare unknown.**
+The UESP/xEdit source table lists `ALFI` as `int32, unknown`. Raw-byte
+inspection (`qust_alias_rawdump` on `Skyrim.esm` quest `0002C258`) showed
+it's the mechanism from a separately-known CK feature: once an alias
+fills, it can *also* propagate its resolved value onto another alias by
+index. Concretely: alias 1 (`Nurelion`, `ALFR`-filled to a real NPC
+reference) carries `ALFI = 8`; alias 8 (`NurelionEssential`) has **no**
+fill-type field and **no** `CTDA` at all — it exists solely to receive
+alias 1's value under the Essential flag (the same pattern repeats for
+`Quintus`/`QuintusEssential`, aliases 5→9). This is now decoded as
+`QuestAlias::force_into_alias: Option<i32>`, independent of `fill_type`.
+
+An important correctness implication for Phase 1+: **a `None` `fill_type`
+does not mean "this alias never resolves."** ~926 Skyrim aliases (7.2%)
+and ~1,011 FO4 aliases (8.7%) have neither a fill-type field nor Match
+Conditions — but only 2 of those, in each game, carry their *own* `ALFI`.
+The rest are Force-Into-Alias *targets*: nothing in the target alias's own
+data reveals this — the runtime must scan every alias in the same
+`QustRecord` for a `force_into_alias` pointing at it. Confirmed only 123
+(Skyrim) / 467 (FO4) aliases carry a non-`None` `force_into_alias` at
+all, so this is a real, if secondary, mechanism worth a Phase 1/2 line
+item, not primarily what explains the "no fill" bucket's bulk (most of
+that bulk is still unaccounted for — likely aliases genuinely filled by
+something outside this record, e.g. a `PLDT`-attached quest-giver
+resolved via the parent quest's Story Manager event, not decoded here;
+flag for the Phase-1 fill-and-apply pass to re-examine with live data
+rather than guessing further from static bytes alone).
+
+Also confirmed empirically: `ALCA`/`ALCL` (companions to `ALCO`) really
+are opaque — one real sample decoded to `0x8000_0001` as a raw `i32`,
+not a plausible count or flag-clean value, matching the source's own
+"Unknown" admission. Carrying them raw (rather than guessing a meaning)
+was the right call.
+
+---
+
 ## Phased plan
 
-### Phase 0 — Parser (`crates/plugin`)
-Extend `QustBlock` with an `Alias(QuestAlias)` variant; decode the shape
-above. Ship as pure data — no runtime behavior yet, matching M47.2's own
-"measure before building" discipline. Add a corpus-frequency survey
-(fill-type distribution across real `Skyrim.esm`/`Fallout4.esm`, mirroring
-`pex_corpus_shapes`) to confirm the Phase-1 fill types are actually the
-majority before investing further, and to catch any real-content shape
-the source table didn't anticipate.
-**Deliverable:** `QustRecord.aliases: Vec<QuestAlias>`, decoded and
-cross-validated against real Skyrim.esm bytes (offsets/field presence
-checked by hand against `nif_stats`-style tooling, not trusted from the
-wiki table alone). Unit tests per fill-type shape, mirroring
-`parse_qust_decodes_vmad_stage_fragment_bindings`'s style.
+### Phase 0 — Parser (`crates/plugin`) — done
+See "Phase 0 shipped" above for the deliverable, the tools, and the
+`ALFI` spec correction.
 
 ### Phase 1 — Fill the cheap 20% (`crates/scripting`)
 `FilledAlias` resource + reservation set (a `HashSet<u32>` of
@@ -279,15 +346,18 @@ corpus survey shows is actually load-bearing on real content.
 
 ## Verification checklist for "M47.3 done" (per phase)
 
-**Phase 0**
-- [ ] `QustBlock::Alias` decodes `ALST`/`ALLS`/`ALID`/all fill-type
-      fields/`FNAM`/`CTDA`/injected-data fields/`ALED`
-- [ ] Byte layout cross-validated against real `Skyrim.esm` (not trusted
-      from the wiki table alone)
-- [ ] Corpus-frequency survey run; Phase 1's fill types confirmed as the
-      practical majority (or the phase plan revised if not)
-- [ ] Unit tests per fill-type shape + the "no fill field → Find Matching"
-      case
+**Phase 0** — done (2026-07-21)
+- [x] `QustBlock::Alias` decodes `ALST`/`ALLS`/`ALID`/all fill-type
+      fields/`FNAM`/`CTDA`/injected-data fields/`ALED` (+ `ALFI`, a real
+      addition beyond the original scoping — see "Phase 0 shipped")
+- [x] Byte layout cross-validated against real `Skyrim.esm`/`Fallout4.esm`
+      (`qust_alias_survey` + `qust_alias_rawdump`), not trusted from the
+      wiki table alone — this is exactly what caught the `ALFI` gap
+- [x] Corpus-frequency survey run; Phase 1's fill types are the majority
+      on Skyrim (43.3%) but not FO4 (22.2%) — phase plan updated to flag
+      the per-game skew rather than assuming Skyrim's curve generalizes
+- [x] Unit tests per fill-type shape + the "no fill field → Find Matching"
+      case (15 new tests, 3,000 total workspace tests passing)
 
 **Phase 1**
 - [ ] `FilledAlias` resource + reservation set
@@ -325,3 +395,4 @@ Internal:
 - [`docs/engine/m47-2-recognizer-scaling.md`](m47-2-recognizer-scaling.md) — the `AddItem`/`MoveTo` empirical-yield finding that motivated this scoping pass
 - [`docs/engine/npc-spawn-ai-packages.md`](npc-spawn-ai-packages.md) — the `PACK` runtime this milestone's alias-injected packages eventually feed (Tier 7, not touched directly here)
 - Code: `crates/plugin/src/esm/records/misc/quest.rs` (parser substrate), `crates/scripting/src/condition.rs` (`RunOn::QuestAlias` stub + `resolve_entity_by_global_form_id`), `crates/scripting/src/fragment.rs` (the `alias != -1` decline this milestone activates)
+- Tools: [`crates/plugin/examples/qust_alias_survey.rs`](../../crates/plugin/examples/qust_alias_survey.rs) (fill-type frequency over a whole ESM), [`crates/plugin/examples/qust_alias_rawdump.rs`](../../crates/plugin/examples/qust_alias_rawdump.rs) (raw sub-records for one `QUST` by FormID — reuse for any future "does the wiki table match reality" question)
