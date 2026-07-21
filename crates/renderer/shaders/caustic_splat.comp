@@ -163,14 +163,20 @@ void main() {
     }
 
     // Reject background (meshId = 0 means "empty").
-    // Mask off the ALPHA_BLEND_NO_HISTORY flag (bit 31) that
-    // triangle.frag sets on transparent fragments — caustic sources
-    // are always alpha-blend (the post-#922 CPU gate restricts the
-    // bit to MATERIAL_KIND_GLASS and MultiLayerParallax refraction,
-    // both of which require alpha-blend upstream), so every
-    // caustic-splat pixel carries this bit. Without the mask the
-    // derived instIdx would overflow the instance SSBO.
+    // Bit 31 is the ALPHA_BLEND_NO_HISTORY marker that triangle.frag
+    // sets on transparent fragments only — caustic sources are always
+    // alpha-blend (the post-#922 CPU gate restricts CAUSTIC_SOURCE to
+    // MATERIAL_KIND_GLASS and MultiLayerParallax refraction, both of
+    // which require alpha-blend upstream). Since #883f57cd the low 31
+    // bits carry different identities depending on that bit: alpha-blend
+    // pixels keep the live per-frame instance index + 1 (a valid
+    // instances[] slot), but OPAQUE pixels (bit 31 clear) instead carry
+    // the entity-based stable surface ID — NOT an instance index. An
+    // opaque pixel must be rejected on the bit-31 check below, before
+    // ever deriving an instance index from the low bits, or it reads
+    // instances[entity_id], an unrelated/out-of-range slot (REN-D14-01).
     uint meshIdRaw = texelFetch(meshIdTex, pixel, 0).r;
+    if ((meshIdRaw & 0x80000000u) == 0u) return; // opaque pixel — never a caustic source
     // R32_UINT bit 31 is the alpha-blend marker (post-#992); the
     // low 31 bits carry the instance id. The mask below clamps the
     // value to 0..=0x7FFFFFFF — the structural ceiling of the

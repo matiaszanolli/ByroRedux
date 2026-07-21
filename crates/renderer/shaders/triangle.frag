@@ -66,7 +66,14 @@ layout(location = 5) out vec4 outAlbedo;       // surface color (composite re-mu
 
 // ReSTIR reservoir word packing. Ten low bits cover all 512 scene lights
 // plus an explicit 1023 invalid value; the remaining 22 bits hold the
-// raster surface ID (instance index + 1), comfortably above MAX_INSTANCES.
+// stable per-entity surface ID (`GpuInstance.surface_id` = entity_id + 1,
+// #883f57cd). Unlike the pre-#883f57cd instance index, this is NOT bounded
+// by MAX_INSTANCES — it grows with cumulative session spawns (entity IDs
+// are never recycled) and can alias past ~4.19M (2^22) spawns. Aliasing
+// only lets spatial reuse mis-accept a neighbour reservoir on a coplanar
+// but distinct surface; the per-sample final visibility ray still
+// re-validates, so this is a soft, self-correcting bound, not a hard
+// safety requirement (REN-RESTIR-01).
 const uint RESERVOIR_LIGHT_MASK = 0x3FFu;
 const uint RESERVOIR_SURFACE_MASK = 0x3FFFFFu;
 uint reservoirLightIndex(uint lightAndSurface) {
@@ -1210,8 +1217,10 @@ void main() {
         }
         float glassNdotV = max(dot(glassViewNormal, V), 0.05);
         // #1248 — pull dielectric F0 from the per-material IOR.
-        // mat.ior defaults to 1.5 (glass); BGSM-authored glass can
-        // diverge (water 1.33 → 0.02, dense window glass 1.52 → 0.044).
+        // Canonical glass carries mat.ior = 1.45 (GLASS_SURFACE_BEHAVIOR,
+        // #41eedfe1); 1.5 is DEFAULT_DIELECTRIC_IOR, the generic-dielectric
+        // fallback, no longer glass-specific. BGSM-authored glass can
+        // diverge further (water 1.33 → 0.02, dense window glass 1.52 → 0.044).
         vec3 glassF0 = vec3(f0Dielectric);
         glassFresnel = fresnelSchlick(glassNdotV, glassF0).r;
         // Dielectric Fresnel already defines the correct specular energy.
