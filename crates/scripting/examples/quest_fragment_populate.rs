@@ -71,9 +71,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut total_bindings = 0usize;
     let mut pex_missing = 0usize;
     let mut inserted = 0usize;
+    let mut vmads_registered = 0usize;
     let mut examples: Vec<String> = Vec::new();
 
     for (&form_id, quest) in index.quests.iter() {
+        // Register the quest's own VMAD scripts-section (property table)
+        // regardless of whether it also carries fragment bindings — a
+        // cross-quest `Property`-targeted effect needs it to resolve.
+        if let Some(vmad) = &quest.script_instance {
+            let before = frags.vmad(QuestFormId(form_id)).is_some();
+            frags.insert_vmad(QuestFormId(form_id), vmad.clone());
+            if !before && frags.vmad(QuestFormId(form_id)).is_some() {
+                vmads_registered += 1;
+            }
+        }
         if quest.fragments.is_empty() {
             continue;
         }
@@ -112,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("quests whose .pex was missing:            {pex_missing}");
     println!("stage fragments fully lowered + registered: {inserted}");
     println!("QuestStageFragments map size:             {}", frags.len());
+    println!("quests with a registered VMAD (property table): {vmads_registered}");
     println!("-- examples --");
     for e in &examples {
         println!("  {e}");

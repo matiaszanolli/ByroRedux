@@ -1,6 +1,8 @@
 # M47.2 — Recognizer-catalog scaling: corpus characterization + tiered design
 
-**Status:** design (corpus measured 2026-06-22; engine landing in progress)
+**Status:** engine landing in progress (corpus measured 2026-06-22; b1 guard
+engine + b2 fragment lowerer + QUST VMAD property-table wiring shipped;
+Start/Stop + object-targeting effects remain — see Backlog)
 **Companion to:** [`m47-2-design.md`](m47-2-design.md) (the `.pex` decompiler +
 recognizer-chain that this scales)
 
@@ -231,18 +233,54 @@ onequipped 78 ...
 Status after the b1 (compositional guard engine) and b2 (fragment lowerer)
 increments landed:
 
-- **More b2 effect primitives → the ~78% target.** Unblocked and the
-  highest-value continuation. The next quest-scoped primitives are
-  *polymorphic-named*, though: `Quest.Stop()` / `Quest.Start()` share the
-  `Stop`/`Start` names with `Scene`/`Sound`/`Package`/`ObjectReference`,
-  so claiming them on a *bare property* receiver (whose type the AST
-  doesn't carry) risks a misread. Adding them safely needs a stricter
-  receiver resolver that accepts only provably-quest receivers (`Self`,
-  `GetOwningQuest()`, a `Quest`-declared local), declining a bare
-  property — worth a focused, reviewed change rather than an unsupervised
-  one. Object-targeting effects (`Enable`/`Disable`/`MoveTo`/`AddItem`/
-  `EvaluatePackage`) need a runtime **FormID→entity resolver** that does
-  not exist yet; they stay declined until it lands.
+- **QUST VMAD property table wired (landed).** The `Property`-targeted
+  branch of `QuestRef` resolution (`SomeOtherQuest.SetStage(..)` bound via
+  a `Quest Property`) was shipped in `effects.rs`/`fragment.rs` from day
+  one, but `quest_fragment_dispatch_system` always called `resolve_quest`
+  with `vmad: None` — the QUST record's own VMAD *scripts section* (its
+  declared property bindings) was decoded by `parse_quest_fragments`
+  internally (via `ScriptInstanceData::parse_with_consumed`) and then
+  discarded, only the fragment section's byte offset was kept. Fixed by
+  decoding the same VMAD bytes a second time into `QustRecord.script_instance`
+  and registering it via `QuestStageFragments::insert_vmad`, so dispatch now
+  passes the real VMAD. Verified against live `Skyrim.esm`: 969 quests have
+  a registered property table (of 845 with fragment bindings + others with
+  VMAD but no fragments); the 742-fragments-lowered figure is unchanged (a
+  pure resolution fix, not a lowering change). This does **not** add new
+  effect primitives — it fixes a dead branch in already-shipped ones.
+
+- **Correction — the FormID→entity resolver already exists.** This doc
+  previously said object-targeting effects (`Enable`/`Disable`/`MoveTo`/
+  `AddItem`/`EvaluatePackage`) were blocked on a FormID→entity resolver
+  that didn't exist. That premise is stale: `World::find_by_form_id`
+  (`crates/core/src/ecs/world.rs`) already ships and is used in production
+  by the M42.5–8 Follow/Escort/Guard/Travel AI packages (landed
+  2026-07-16, after this doc was written). The resolver is not the
+  blocker for object-targeting effects — see below for what actually is.
+
+- **More b2 effect primitives → the ~78% target.** Still the
+  highest-value continuation, but the next tier needs new modelling, not
+  just a resolver:
+  - `Quest.Stop()` / `Quest.Start()` are *polymorphic-named* — shared with
+    `Scene`/`Sound`/`Package`/`ObjectReference` — so claiming them on a
+    bare property receiver (whose declared type the AST alone doesn't
+    carry) risks a misread; safe only for `Self`/`GetOwningQuest()`
+    receivers (unambiguous — the fragment script always extends `Quest`)
+    or now, with VMAD wired, a `Property` receiver whose VMAD entry is
+    confirmed `Object`-typed. Also: even resolved correctly, there is
+    nowhere to apply it — no "quest running" state exists anywhere in the
+    engine yet, so `Start`/`Stop` effects would be inert bookkeeping until
+    something consumes that state. Do this once a real consumer exists,
+    not speculatively.
+  - Object-targeting effects (`Enable`/`Disable`/`MoveTo`/`AddItem`/
+    `EvaluatePackage`) need a new `Effect` shape (today's `Effect` enum is
+    quest-scoped only — every variant carries a `QuestRef`) plus an
+    object-reference resolution path: bind the property name to a FormID
+    via the (now-available) VMAD, then to a live `EntityId` via
+    `find_by_form_id` at *apply* time (the entity may not be spawned/loaded
+    when the fragment lowers). That's a real design increment — a second
+    `Ref` enum parallel to `QuestRef`, new `Effect` variants, and the
+    dispatch-time resolve-and-apply wiring — not a one-line unblock.
 
 - **OnHit emit site (item 3) — blocked on a combat system.** 376 scripts
   define `OnHit`, and the `HitEvent` marker + cleanup already exist, but

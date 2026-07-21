@@ -3,7 +3,7 @@
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
 use super::super::condition::{parse_ctda, remap_condition_form_ids, ConditionList};
-use super::super::script_instance::{parse_quest_fragments, QuestScriptFragment};
+use super::super::script_instance::{parse_quest_fragments, QuestScriptFragment, ScriptInstanceData};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -101,6 +101,14 @@ pub struct QustRecord {
     /// (pre-Papyrus; they use `script_ref`) and on Skyrim+ quests whose
     /// VMAD attaches only non-fragment utility scripts.
     pub fragments: Vec<QuestScriptFragment>,
+    /// The QUST `VMAD` scripts section — the compiled `QF_` script's own
+    /// attached-script + property bindings (e.g. a `Quest Property
+    /// OtherQuest Auto` a fragment targets). `None` on FO3/FNV (no VMAD)
+    /// or when the VMAD carries no scripts section. This is the property
+    /// table a fragment's cross-quest `Property`-targeted effect (a
+    /// `SomeOtherQuest.SetStage(..)` call bound via a `Quest Property`)
+    /// resolves through at dispatch time.
+    pub script_instance: Option<ScriptInstanceData>,
 }
 
 /// Which block-structured sub-record we're currently inside while
@@ -152,12 +160,15 @@ pub fn parse_qust(
                 out.quest_flags = sub.data[0];
                 out.priority = sub.data[1];
             }
-            // Skyrim+ Papyrus attachment. The scripts section is decoded
-            // by the generic path elsewhere; here we only want the QUST-
-            // specific trailing fragment section (stage→`Fragment_N`),
-            // the M47.2 fragment-dispatch input.
+            // Skyrim+ Papyrus attachment. Two independent decodes of the
+            // same bytes: the trailing fragment section (stage→
+            // `Fragment_N`, the M47.2 fragment-dispatch input) and the
+            // leading scripts section (the QF_ script's own property
+            // table — how a fragment's cross-quest `Quest Property`
+            // effect resolves to a FormID).
             b"VMAD" => {
                 out.fragments = parse_quest_fragments(&sub.data);
+                out.script_instance = Some(ScriptInstanceData::parse(&sub.data));
             }
             // INDX opens a stage block. Anything still open (a prior
             // stage or objective) is flushed first. Skyrim widened

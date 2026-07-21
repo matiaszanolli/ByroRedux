@@ -25,10 +25,13 @@
 //! ## Quest-ref resolution
 //!
 //! A fragment's effect targets `Self` / `Self.GetOwningQuest()` (→ the
-//! advancing quest, known at dispatch) or a `Quest Property` (→ the
-//! quest's VMAD binding). Only the former resolves without the QUST VMAD;
-//! a `Property`-targeted effect with no VMAD on hand is skipped (logged),
-//! never guessed.
+//! advancing quest, known at dispatch) or a `Quest Property` (→ a *different*
+//! quest bound by the QUST's own VMAD). The former always resolves; the
+//! latter needs the quest's VMAD scripts-section registered via
+//! [`QuestStageFragments::insert_vmad`] (the same bytes the fragment-binding
+//! decoder reads, decoded a second time for its property table) — a
+//! `Property`-targeted effect with no VMAD on hand, or naming a property the
+//! VMAD doesn't carry, is skipped (logged), never guessed.
 
 use std::collections::HashMap;
 
@@ -52,6 +55,12 @@ use crate::translate::effects::{lower_fragment, Effect};
 #[derive(Debug, Default)]
 pub struct QuestStageFragments {
     map: HashMap<(QuestFormId, u16), Vec<Effect>>,
+    /// The QF_ script's own property table per quest — the same VMAD
+    /// scripts-section bytes the QUST record's fragment section is read
+    /// alongside. Lets a fragment's cross-quest `Property`-targeted
+    /// effect (`SomeOtherQuest.SetStage(..)` via a `Quest Property`)
+    /// resolve at dispatch time instead of always skipping.
+    vmad: HashMap<QuestFormId, ScriptInstanceData>,
 }
 
 impl Resource for QuestStageFragments {}
@@ -65,6 +74,21 @@ impl QuestStageFragments {
     /// The lowered effects for a `(quest, stage)`, if any.
     pub fn get(&self, quest: QuestFormId, stage: u16) -> Option<&[Effect]> {
         self.map.get(&(quest, stage)).map(Vec::as_slice)
+    }
+
+    /// Register a quest's own VMAD scripts section (its declared
+    /// property bindings), so `Property`-targeted effects in its
+    /// fragments can resolve. A no-op for a VMAD with no attached
+    /// scripts — nothing a `Property` lookup could ever match.
+    pub fn insert_vmad(&mut self, quest: QuestFormId, vmad: ScriptInstanceData) {
+        if vmad.has_script() {
+            self.vmad.insert(quest, vmad);
+        }
+    }
+
+    /// The registered VMAD for `quest`, if any.
+    pub fn vmad(&self, quest: QuestFormId) -> Option<&ScriptInstanceData> {
+        self.vmad.get(&quest)
     }
 
     /// Number of registered stage fragments.
@@ -280,11 +304,15 @@ pub fn populate_quest_fragments_from_script(
 /// (bounded by [`MAX_CASCADE`]). Runs after `quest_advance_system` (which
 /// emits the initial markers) and before end-of-frame cleanup.
 ///
-/// Effect resolution passes no QUST VMAD, so only `Self`/owning-quest-
-/// targeted effects apply — which is exactly the set [`lower_fragment`]
-/// emits today (object-targeting effects decline pending a FormID→entity
-/// resolver), so nothing is silently dropped. The table is empty (and this
-/// a no-op) on loads without `--scripts-bsa` or on pre-Papyrus games.
+/// Effect resolution passes the quest's own registered VMAD (see
+/// [`QuestStageFragments::insert_vmad`]), when one was registered, so
+/// `Self`/owning-quest-targeted effects always apply and a cross-quest
+/// `Property`-targeted effect resolves too, as long as the named property
+/// is an `Object`-typed binding on the quest's own VMAD. Object-targeting
+/// effects (`Enable`/`Disable`/`MoveTo`/…) still decline at the *lowering*
+/// stage — [`lower_fragment`] doesn't emit them yet, a separate gap from
+/// VMAD resolution. The table is empty (and this a no-op) on loads
+/// without `--scripts-bsa` or on pre-Papyrus games.
 pub fn quest_fragment_dispatch_system(world: &World) {
     // Snapshot the stage advances this frame. #1864 / SCR-D7-NEW-01 — a
     // batch can hold >1 advance from the same frame; iterate every entry,
@@ -328,8 +356,13 @@ pub fn quest_fragment_dispatch_system(world: &World) {
             let Some(effects) = frags.get(quest, stage) else {
                 continue;
             };
-            // QUST VMAD is not decoded yet → no property binding available.
-            let advances = apply_effects(effects, quest, None, &mut stages, &mut objectives);
+            let advances = apply_effects(
+                effects,
+                quest,
+                frags.vmad(quest),
+                &mut stages,
+                &mut objectives,
+            );
             for adv in advances {
                 // Only cascade genuine transitions (skip a no-op re-set of
                 // the same stage to avoid trivial self-loops).

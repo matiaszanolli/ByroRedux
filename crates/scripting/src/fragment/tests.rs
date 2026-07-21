@@ -306,6 +306,66 @@ fn populate_from_script_skips_absent_and_declined_fragments() {
 }
 
 #[test]
+fn dispatch_resolves_property_targeted_effect_via_registered_vmad() {
+    // The counterpart to `property_targeted_effect_skipped_without_vmad`:
+    // once the quest's own VMAD scripts-section is registered (what a real
+    // cell load does from `QustRecord.script_instance`), a fragment's
+    // `Quest Property OtherQuest` reference resolves to the bound quest and
+    // its SetStage actually lands — on the OTHER quest, not Q.
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const OTHER: QuestFormId = QuestFormId(0x0009_9999);
+
+    let world = fixture();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_TestQuest_00012345".into(),
+                    status: 0,
+                    properties: vec![ScriptProperty {
+                        name: "OtherQuest".into(),
+                        status: 1,
+                        value: PropertyValue::Object {
+                            form_id: OTHER.0,
+                            alias: -1,
+                        },
+                    }],
+                }],
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::SetStage {
+                quest: QuestRef::Property("OtherQuest".into()),
+                stage: 77,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(OTHER),
+        77,
+        "the Property-bound OTHER quest advanced"
+    );
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(Q),
+        10,
+        "Q itself must be untouched — the effect targeted OTHER, not Q"
+    );
+}
+
+#[test]
 fn dispatch_ignores_stage_without_a_fragment() {
     let world = fixture();
     {

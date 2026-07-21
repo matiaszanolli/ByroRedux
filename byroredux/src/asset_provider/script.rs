@@ -97,6 +97,14 @@ pub(crate) fn populate_quest_fragments(
             continue;
         }
         quests_with_fragments += 1;
+        // Register the quest's own VMAD scripts-section (its declared
+        // `Quest Property` bindings) so a fragment's cross-quest
+        // `Property`-targeted effect can resolve at dispatch time,
+        // independent of whether any fragment below lowers successfully.
+        if let Some(vmad) = &quest.script_instance {
+            let mut frags = world.resource_mut::<byroredux_scripting::QuestStageFragments>();
+            frags.insert_vmad(byroredux_scripting::QuestFormId(form_id), vmad.clone());
+        }
         // All of a quest's fragments share one QF_ script, but group by
         // script name defensively (and resolve each `.pex` once).
         let mut by_script: std::collections::HashMap<&str, Vec<(u16, &str)>> =
