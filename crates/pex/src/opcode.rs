@@ -190,4 +190,77 @@ mod tests {
         assert!(OpCode::TryLockGuards.has_varargs());
         assert_eq!(OpCode::CmpEq.name(), "cmp_eq");
     }
+
+    /// Full-table pin for #2127/SCR-D1-NEW2-01 — the spot-check above only
+    /// covered 7 of 51 rows, so a typo'd arg-count digit or a reordered row
+    /// elsewhere in `OPCODES` would pass `cargo test` silently. This checks
+    /// every discriminant's `(name, arg_count, has_varargs)` against a
+    /// literal expected table (independently transcribed from Champollion,
+    /// not copy-pasted from `OPCODES` itself).
+    #[test]
+    fn metadata_matches_champollion_full_table() {
+        const EXPECTED: [(&str, usize, bool); MAX_OPCODE as usize] = [
+            ("nop", 0, false),
+            ("iadd", 3, false),
+            ("fadd", 3, false),
+            ("isub", 3, false),
+            ("fsub", 3, false),
+            ("imul", 3, false),
+            ("fmul", 3, false),
+            ("idiv", 3, false),
+            ("fdiv", 3, false),
+            ("imod", 3, false),
+            ("not", 2, false),
+            ("ineg", 2, false),
+            ("fneg", 2, false),
+            ("assign", 2, false),
+            ("cast", 2, false),
+            ("cmp_eq", 3, false),
+            ("cmp_lt", 3, false),
+            ("cmp_lte", 3, false),
+            ("cmp_gt", 3, false),
+            ("cmp_gte", 3, false),
+            ("jmp", 1, false),
+            ("jmpt", 2, false),
+            ("jmpf", 2, false),
+            ("callmethod", 3, true),
+            ("callparent", 2, true),
+            ("callstatic", 3, true),
+            ("return", 1, false),
+            ("strcat", 3, false),
+            ("propget", 3, false),
+            ("propset", 3, false),
+            ("array_create", 2, false),
+            ("array_length", 2, false),
+            ("array_getelement", 3, false),
+            ("array_setelement", 3, false),
+            ("array_findelement", 4, false),
+            ("array_rfindelement", 4, false),
+            ("is", 3, false),
+            ("struct_create", 1, false),
+            ("struct_get", 3, false),
+            ("struct_set", 3, false),
+            ("array_findstruct", 5, false),
+            ("array_rfindstruct", 5, false),
+            ("array_add", 3, false),
+            ("array_insert", 3, false),
+            ("array_removelast", 1, false),
+            ("array_remove", 3, false),
+            ("array_clear", 1, false),
+            ("array_getallmatchingstructs", 6, false),
+            ("lock_guards", 0, true),
+            ("unlock_guards", 0, true),
+            ("try_lock_guards", 1, true),
+        ];
+        for (byte, (name, arg_count, has_varargs)) in EXPECTED.into_iter().enumerate() {
+            let op = OpCode::from_u8(byte as u8).unwrap();
+            assert_eq!(op.name(), name, "opcode {byte} name mismatch");
+            assert_eq!(op.arg_count(), arg_count, "opcode {byte} ({name}) arg_count mismatch");
+            assert_eq!(
+                op.has_varargs(),
+                has_varargs,
+                "opcode {byte} ({name}) has_varargs mismatch"
+            );
+        }
+    }
 }

@@ -334,53 +334,72 @@ pub(super) fn attach_vmad_scripts(
     }
     let game = index.game;
     let mut any = false;
-    // REFR-own VMAD first so it wins name collisions; then the base record.
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let scripts = dedup_vmad_scripts(refr_script_instance, base_script_instance);
+    for (script_instance, script) in scripts {
+        // Scope the provider borrow: extract the owned `.pex` bytes,
+        // then drop the resource read before the `&mut World` spawn.
+        let bytes = {
+            let provider = world.resource::<crate::asset_provider::ScriptProvider>();
+            provider.extract_pex(&script.name)
+        };
+        let Some(bytes) = bytes else {
+            log::trace!(
+                "M47.2: .pex '{}' not in script archive (base {base_form_id:08X})",
+                script.name,
+            );
+            continue;
+        };
+        // `script_instance` borrows `index` / the placed ref (not
+        // `world`), so it stays valid across the `&mut World` spawn.
+        match byroredux_scripting::translate_pex(&bytes, game, Some(script_instance), None) {
+            Some(recognized) => {
+                log::debug!(
+                    "M47.2: recognized '{}' from .pex '{}' on base {base_form_id:08X} → entity {entity:?}",
+                    recognized.archetype,
+                    script.name,
+                );
+                (recognized.spawn)(world, entity);
+                any = true;
+            }
+            None => {
+                log::trace!(
+                    "M47.2: .pex '{}' decompiled but unrecognized (base {base_form_id:08X})",
+                    script.name,
+                );
+            }
+        }
+    }
+    any
+}
+
+/// Case-insensitively deduplicate the REFR-own and base-record VMAD script
+/// lists, REFR-own first so it wins name collisions (Papyrus identifiers
+/// are case-insensitive — as honored everywhere else in this codebase:
+/// `eq_ignore_ascii_case` name comparisons, the `.pex` path normaliser,
+/// `translate/tables.rs` — so the dedup key is lowercased rather than the
+/// raw byte string, #1769 / D7-NEW-01). Each surviving [`ScriptInstance`]
+/// is paired with its owning [`ScriptInstanceData`] (needed downstream for
+/// VMAD property resolution).
+fn dedup_vmad_scripts<'a>(
+    refr_script_instance: Option<&'a esm::records::script_instance::ScriptInstanceData>,
+    base_script_instance: Option<&'a esm::records::script_instance::ScriptInstanceData>,
+) -> Vec<(
+    &'a esm::records::script_instance::ScriptInstanceData,
+    &'a esm::records::script_instance::ScriptInstance,
+)> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
     for script_instance in [refr_script_instance, base_script_instance]
         .into_iter()
         .flatten()
     {
         for script in &script_instance.scripts {
-            if !seen.insert(script.name.as_str()) {
-                // Same script name already attached from the REFR override —
-                // skip the base record's copy (REFR wins).
-                continue;
-            }
-            // Scope the provider borrow: extract the owned `.pex` bytes,
-            // then drop the resource read before the `&mut World` spawn.
-            let bytes = {
-                let provider = world.resource::<crate::asset_provider::ScriptProvider>();
-                provider.extract_pex(&script.name)
-            };
-            let Some(bytes) = bytes else {
-                log::trace!(
-                    "M47.2: .pex '{}' not in script archive (base {base_form_id:08X})",
-                    script.name,
-                );
-                continue;
-            };
-            // `script_instance` borrows `index` / the placed ref (not
-            // `world`), so it stays valid across the `&mut World` spawn.
-            match byroredux_scripting::translate_pex(&bytes, game, Some(script_instance), None) {
-                Some(recognized) => {
-                    log::debug!(
-                        "M47.2: recognized '{}' from .pex '{}' on base {base_form_id:08X} → entity {entity:?}",
-                        recognized.archetype,
-                        script.name,
-                    );
-                    (recognized.spawn)(world, entity);
-                    any = true;
-                }
-                None => {
-                    log::trace!(
-                        "M47.2: .pex '{}' decompiled but unrecognized (base {base_form_id:08X})",
-                        script.name,
-                    );
-                }
+            if seen.insert(script.name.to_ascii_lowercase()) {
+                out.push((script_instance, script));
             }
         }
     }
-    any
+    out
 }
 
 /// Phase 17 — attach a [`LightFlicker`] component when the light's
@@ -430,6 +449,54 @@ pub(crate) fn attach_light_flicker_if_needed(
             phase_offset_secs,
         },
     );
+}
+
+#[cfg(test)]
+mod dedup_vmad_scripts_tests {
+    use super::*;
+
+    fn instance(scripts: &[&str]) -> esm::records::script_instance::ScriptInstanceData {
+        esm::records::script_instance::ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: scripts
+                .iter()
+                .map(|name| esm::records::script_instance::ScriptInstance {
+                    name: name.to_string(),
+                    status: 0,
+                    properties: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    /// #1769 / D7-NEW-01 — Papyrus identifiers are case-insensitive, so a
+    /// REFR VMAD naming `MyScript` and the base record naming `myscript`
+    /// are the *same* script; the base copy must be skipped (REFR wins),
+    /// not attached a second time under the old case-sensitive `HashSet<&str>`.
+    #[test]
+    fn refr_and_base_names_differing_only_by_case_collapse_to_one_attach() {
+        let refr = instance(&["MyScript"]);
+        let base = instance(&["myscript"]);
+
+        let out = dedup_vmad_scripts(Some(&refr), Some(&base));
+
+        assert_eq!(out.len(), 1, "case-insensitive collision must yield exactly one attach");
+        assert_eq!(out[0].1.name, "MyScript", "the REFR-own copy must win the collision");
+    }
+
+    /// Distinct names (even case-insensitively) both survive, REFR-first.
+    #[test]
+    fn distinct_names_from_both_sources_all_survive() {
+        let refr = instance(&["RefrOnlyScript"]);
+        let base = instance(&["BaseOnlyScript"]);
+
+        let out = dedup_vmad_scripts(Some(&refr), Some(&base));
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].1.name, "RefrOnlyScript");
+        assert_eq!(out[1].1.name, "BaseOnlyScript");
+    }
 }
 
 #[cfg(test)]

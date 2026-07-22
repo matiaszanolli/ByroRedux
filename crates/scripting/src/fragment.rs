@@ -177,6 +177,19 @@ fn resolve_object(
 /// object-targeting variants, to the live ECS world). Returns a
 /// [`QuestStageAdvanced`] when the effect was a `SetStage` (so the caller
 /// can cascade), or `None` otherwise / when a target can't resolve.
+///
+/// **Nested-lock safety depends on exclusive scheduling.** The
+/// `AddItem`/`MoveTo` arms take `Inventory`/`GlobalTransform`/`Transform`
+/// component locks while the caller ([`quest_fragment_dispatch_system`])
+/// still holds the `QuestStageFragments`/`QuestStageState`/
+/// `QuestObjectiveState` resource locks for the whole cascade loop. This is
+/// only safe because every system that touches those quest resources is
+/// registered `add_exclusive` in `byroredux/src/boot.rs` (parallel systems
+/// never run concurrently with an exclusive one), so no other holder can
+/// ever form the other half of an ABBA cycle. Adding a new nested
+/// component/resource lock here, or moving `quest_fragment_dispatch_system`
+/// (or any sibling quest-resource system) onto the parallel lane, needs the
+/// same analysis re-derived — see SCR-D6-NEW3-03 / #2126.
 pub fn apply_effect(
     effect: &Effect,
     context: QuestFormId,
@@ -429,11 +442,12 @@ pub fn populate_quest_fragments_from_script(
 /// [`QuestStageFragments::insert_vmad`]), when one was registered, so
 /// `Self`/owning-quest-targeted effects always apply and a cross-quest
 /// `Property`-targeted effect resolves too, as long as the named property
-/// is an `Object`-typed binding on the quest's own VMAD. Object-targeting
-/// effects (`Enable`/`Disable`/`MoveTo`/…) still decline at the *lowering*
-/// stage — [`lower_fragment`] doesn't emit them yet, a separate gap from
-/// VMAD resolution. The table is empty (and this a no-op) on loads
-/// without `--scripts-bsa` or on pre-Papyrus games.
+/// is an `Object`-typed binding on the quest's own VMAD. `AddItem`/`MoveTo`
+/// are lowered and applied directly against the live ECS world; other
+/// object-targeting effects (`Enable`/`Disable`/…) still decline at the
+/// *lowering* stage — [`lower_fragment`] doesn't emit them yet. The table
+/// is empty (and this a no-op) on loads without `--scripts-bsa` or on
+/// pre-Papyrus games.
 pub fn quest_fragment_dispatch_system(world: &World) {
     // Snapshot the stage advances this frame. #1864 / SCR-D7-NEW-01 — a
     // batch can hold >1 advance from the same frame; iterate every entry,

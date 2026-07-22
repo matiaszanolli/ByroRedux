@@ -153,6 +153,9 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
 # points at the archive holding the .pex bytecode (Skyrim - Misc.bsa,
 # Fallout4 - Misc.ba2, …); the cell loader decompiles each scripted
 # REFR's VMAD-named .pex and attaches its recognized ECS behavior.
+# Repeatable: FIRST-listed archive wins on a name collision, so list
+# mod/override archives BEFORE the vanilla one — the inverse of
+# mod-manager load order (there, later = higher priority).
 cargo run -- --esm Skyrim.esm --cell <editor_id> \
              --bsa "Skyrim - Meshes0.bsa" \
              --textures-bsa "Skyrim - Textures0.bsa" \

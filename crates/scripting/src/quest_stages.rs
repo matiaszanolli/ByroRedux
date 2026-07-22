@@ -19,21 +19,20 @@
 //!
 //! ## What's deliberately NOT here yet
 //!
-//! - **Stage-fragment dispatch.** Papyrus quests carry per-stage
-//!   "fragment scripts" that run when the stage advances. That's
-//!   M47.0 territory — the runtime here exposes a
-//!   [`QuestStageAdvanced`] marker event that fragment systems will
-//!   consume once they land, but the dispatch loop itself stays
-//!   future work.
-//! - **Stage objectives.** Papyrus also has `SetObjectiveDisplayed` /
-//!   `SetObjectiveCompleted` / `SetObjectiveFailed` — these mutate a
-//!   parallel objectives state separate from stages. Same shape will
-//!   land next to [`QuestStageState`] when a quest-UI consumer needs
-//!   it; today the renderer has no journal UI to feed.
 //! - **`OnStageSet` event handlers.** Papyrus scripts can declare
-//!   `Event OnStageSet(int auiStageID, int auiItemID)` callbacks.
-//!   M47.0 emits these as marker components consumed by
-//!   per-quest-fragment systems.
+//!   `Event OnStageSet(int auiStageID, int auiItemID)` callbacks on
+//!   arbitrary (non-quest) scripts observing another quest's stage
+//!   changes. Only the QUST-owned `Fragment_N` stage-fragment path
+//!   (see [`crate::fragment::quest_fragment_dispatch_system`]) is
+//!   wired today; generic cross-script `OnStageSet` subscription
+//!   stays future work.
+//!
+//! Stage-fragment dispatch itself (the per-stage "fragment scripts"
+//! that run when a stage advances, driven by the [`QuestStageAdvanced`]
+//! marker this module emits) and stage objectives
+//! (`SetObjectiveDisplayed` / `SetObjectiveCompleted` /
+//! `SetObjectiveFailed`, held in [`QuestObjectiveState`] below) have
+//! both shipped — see [`crate::fragment`].
 
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;

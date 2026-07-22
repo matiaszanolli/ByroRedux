@@ -36,8 +36,13 @@ impl ScriptProvider {
     /// authored in a `VMAD`) to its compiled `.pex` bytes. Normalises to
     /// the archive key `scripts\<lowercase-name>.pex`; a name that
     /// already carries the folder and/or extension is accepted too.
-    /// Returns the first archive hit, or `None` when no archive carries
-    /// the script.
+    ///
+    /// **Precedence: first-listed `--scripts-bsa` archive wins** on a name
+    /// collision (searched in flag order, first hit returned) — list
+    /// override/mod archives *before* the vanilla one. This is the
+    /// inverse of typical mod-manager load order (there, later = higher
+    /// priority) — see #1743 / SCR-D7-03. Returns `None` when no archive
+    /// carries the script.
     pub(crate) fn extract_pex(&self, script_name: &str) -> Option<Vec<u8>> {
         let name = pex_archive_path(script_name);
         for archive in &self.archives {
