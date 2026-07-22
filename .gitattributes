@@ -1,0 +1,3 @@
+# Preserve upstream FidelityFX/generated formatting verbatim. Local patches are
+# documented separately in third_party/fidelityfx-sdk-v1.1.4/UPSTREAM.md.
+third_party/fidelityfx-sdk-v1.1.4/** -whitespace
