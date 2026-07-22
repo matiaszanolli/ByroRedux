@@ -7,6 +7,7 @@ members = [
     "crates/plugin",
     "crates/physics",
     "crates/renderer",
+    "crates/fsr3-sys",
     "crates/platform",
     "crates/scripting",
     "crates/cxx-bridge",
@@ -36,6 +37,7 @@ license = "MIT"
 byroredux-core = { path = "crates/core" }
 byroredux-save = { path = "crates/save" }
 byroredux-renderer = { path = "crates/renderer" }
+byroredux-fsr3-sys = { path = "crates/fsr3-sys" }
 byroredux-platform = { path = "crates/platform" }
 byroredux-plugin = { path = "crates/plugin" }
 byroredux-scripting = { path = "crates/scripting" }
@@ -144,6 +146,7 @@ kira = "0.10"
 # C++ interop
 cxx = "1"
 cxx-build = "1"
+cc = "1"
 
 # Heap profiling — opt-in regression-test gate for the NIF-PERF-01/02/03
 # + #408 architectural pins (#1247). Off by default; enabled via the

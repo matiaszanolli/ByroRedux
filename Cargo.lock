@@ -531,6 +531,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "byroredux-fsr3-sys"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "cc",
+]
+
+[[package]]
 name = "byroredux-nif"
 version = "0.1.0"
 dependencies = [
