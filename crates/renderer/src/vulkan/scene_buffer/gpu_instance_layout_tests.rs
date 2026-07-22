@@ -155,13 +155,9 @@ fn indirect_buffer_capacity_matches_max_draw_constant() {
 #[test]
 fn max_instances_stays_within_mesh_id_encoding_ceiling() {
     const MESH_ID_ENCODING_CEILING: usize = 0x7FFF_FFFF;
-    assert!(
-        MAX_INSTANCES <= MESH_ID_ENCODING_CEILING,
-        "MAX_INSTANCES ({}) exceeds the R32_UINT mesh_id encoding ceiling \
-             (0x7FFFFFFF, with bit 31 reserved for ALPHA_BLEND_NO_HISTORY). \
-             Widen `MESH_ID_FORMAT` past 32 bits before bumping past this value.",
-        MAX_INSTANCES
-    );
+    const {
+        assert!(MAX_INSTANCES <= MESH_ID_ENCODING_CEILING);
+    }
 }
 
 /// Regression: pin `MESH_ID_FORMAT` at `R32_UINT` so a future

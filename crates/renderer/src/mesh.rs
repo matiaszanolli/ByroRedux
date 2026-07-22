@@ -1244,8 +1244,10 @@ mod pool_growth_cap_tests {
         // The hard caps must be strictly greater than the soft caps,
         // and both must fit in usize comfortably (defence against a
         // future edit accidentally setting hard < soft).
-        assert!(VERTEX_POOL_HARD_CAP > VERTEX_POOL_SOFT_CAP);
-        assert!(INDEX_POOL_HARD_CAP > INDEX_POOL_SOFT_CAP);
+        const {
+            assert!(VERTEX_POOL_HARD_CAP > VERTEX_POOL_SOFT_CAP);
+            assert!(INDEX_POOL_HARD_CAP > INDEX_POOL_SOFT_CAP);
+        }
         // At Vertex = 104 B, hard cap 16M = 1.66 GB. At u32 indices,
         // hard cap 64M = 256 MB. Sanity-check: vertex cap is the bigger
         // memory commitment of the two.

@@ -2512,7 +2512,9 @@ mod dof_view_proj_tests {
     /// tiny-positive focus distances both fall back to pinhole.
     #[test]
     fn guard_threshold_is_positive_floor() {
-        assert!(DOF_MIN_FOCUS_DIST > 0.0);
+        const {
+            assert!(DOF_MIN_FOCUS_DIST > 0.0);
+        }
         let pin = pinhole();
         let cam = [0.0, 0.0, 0.0];
         let (vp, _) = dof_effective_view_proj(

@@ -9,12 +9,13 @@ use super::super::material::GpuMaterial;
 use super::descriptors::hash_material_slice;
 
 fn sample_material(seed: u32) -> GpuMaterial {
-    let mut m = GpuMaterial::default();
     // Touch a representative subset of fields so the hash
     // depends on real material content rather than padding.
-    m.material_flags = seed;
-    m.material_kind = (seed & 0xff) as u32;
-    m
+    GpuMaterial {
+        material_flags: seed,
+        material_kind: seed & 0xff,
+        ..Default::default()
+    }
 }
 
 /// Pin: identical slices produce identical hashes — the steady-

@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(sizes[0].ty, vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
         assert_eq!(sizes[0].descriptor_count, 7 * 2);
         assert_eq!(sizes[1].ty, vk::DescriptorType::UNIFORM_BUFFER);
-        assert_eq!(sizes[1].descriptor_count, 1 * 2);
+        assert_eq!(sizes[1].descriptor_count, 2);
     }
 
     /// Multi-descriptor-count bindings (the bindless case) must scale

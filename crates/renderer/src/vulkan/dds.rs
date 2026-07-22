@@ -604,6 +604,7 @@ mod tests {
     ///      alpha reaches alpha-test cutouts (2aac5351), AND
     ///   2. `format_has_alpha` still reports `false` for that format —
     ///      BC1 punch-through is NOT an authored alpha channel.
+    ///
     /// Together these keep `INSTANCE_FLAG_DIFFUSE_ALPHA` clear for BC1
     /// blend meshes (so the pure-blend implicit discard is suppressed and
     /// 3-colour-block opaque texels survive) while it stays set for

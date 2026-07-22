@@ -1199,12 +1199,12 @@ mod tests {
     /// Grew 260 → 280 under #1147 / FO4-D6-003 Phase 2b (+20 B for
     /// `translucency_subsurface_r/g/b` + `translucency_transmissive_scale`
     /// + `translucency_turbulence`), then 280 → 284 under #1248 (+4 B
-    /// for `ior`, the per-material refractive index that drives
-    /// Schlick F0 derivation), then 284 → 296 under #1249 (+12 B for
-    /// the Disney diffuse lobe — `subsurface` + `sheen` + `sheen_tint`),
-    /// then 296 → 300 under #1250 (+4 B for `anisotropic`, the GGX
-    /// ax/ay aspect ratio driver). Test name includes the size so a future
-    /// size shift updates it in lockstep with the assertion.
+    ///   for `ior`, the per-material refractive index that drives
+    ///   Schlick F0 derivation), then 284 → 296 under #1249 (+12 B for
+    ///   the Disney diffuse lobe — `subsurface` + `sheen` + `sheen_tint`),
+    ///   then 296 → 300 under #1250 (+4 B for `anisotropic`, the GGX
+    ///   ax/ay aspect ratio driver). Test name includes the size so a future
+    ///   size shift updates it in lockstep with the assertion.
     #[test]
     fn gpu_material_size_is_300_bytes() {
         assert_eq!(std::mem::size_of::<GpuMaterial>(), 300);
@@ -1543,8 +1543,10 @@ mod tests {
         );
         assert_eq!(table.len(), 1, "sanity: len() still counts the seeded slot");
 
-        let mut user = GpuMaterial::default();
-        user.roughness = 0.7;
+        let user = GpuMaterial {
+            roughness: 0.7,
+            ..Default::default()
+        };
         table.intern(user);
         assert_eq!(
             table.unique_user_count(),
@@ -1578,8 +1580,10 @@ mod tests {
     #[test]
     fn clear_re_seeds_neutral_default() {
         let mut table = MaterialTable::new();
-        let mut user = GpuMaterial::default();
-        user.roughness = 0.7;
+        let user = GpuMaterial {
+            roughness: 0.7,
+            ..Default::default()
+        };
         table.intern(user); // slot 1
         assert_eq!(table.len(), 2);
 
@@ -1609,8 +1613,10 @@ mod tests {
     fn distinct_materials_get_distinct_ids() {
         let mut table = MaterialTable::new();
         let a = GpuMaterial::default();
-        let mut b = GpuMaterial::default();
-        b.roughness = 0.7;
+        let b = GpuMaterial {
+            roughness: 0.7,
+            ..Default::default()
+        };
 
         let id_a = table.intern(a);
         let id_b = table.intern(b);
@@ -1622,8 +1628,10 @@ mod tests {
         assert_eq!(table.len(), 2);
 
         // Repeats still dedup to the original id.
-        let mut a2 = GpuMaterial::default();
-        a2.roughness = 0.5; // same as default
+        let a2 = GpuMaterial {
+            roughness: 0.5, // same as default
+            ..Default::default()
+        };
         assert_eq!(table.intern(a2), id_a);
         assert_eq!(table.intern(b), id_b);
         assert_eq!(table.len(), 2);
@@ -1705,8 +1713,10 @@ mod tests {
         // i=1..9 each push a fresh slot. Total len = 1 (neutral) + 9
         // (user) = 10. #807.
         for i in 0..10 {
-            let mut m = GpuMaterial::default();
-            m.texture_index = i;
+            let m = GpuMaterial {
+                texture_index: i,
+                ..Default::default()
+            };
             table.intern(m);
         }
         assert_eq!(table.len(), 10);
@@ -1740,8 +1750,10 @@ mod tests {
         assert_eq!(table.len(), 1);
 
         let a = GpuMaterial::default();
-        let mut b = GpuMaterial::default();
-        b.roughness = 0.7;
+        let b = GpuMaterial {
+            roughness: 0.7,
+            ..Default::default()
+        };
 
         table.intern(a); // hit on seeded slot 0
         assert_eq!(table.interned_count(), 1);
@@ -1764,8 +1776,10 @@ mod tests {
 
         // Tweaking a fresh local must not retroactively count against
         // the original — byte-equal to default still hits slot 0.
-        let mut a2 = GpuMaterial::default();
-        a2.roughness = 0.5; // same as default
+        let a2 = GpuMaterial {
+            roughness: 0.5, // same as default
+            ..Default::default()
+        };
         table.intern(a2);
         assert_eq!(table.interned_count(), 9);
         assert_eq!(table.len(), 2);
@@ -1826,16 +1840,20 @@ mod tests {
         // neutral has `texture_index = 0`, and `intern` of i=0 hits
         // it. Subsequent i=1..MAX_MATERIALS-1 each push a fresh slot.
         for i in 0..MAX_MATERIALS as u32 {
-            let mut m = GpuMaterial::default();
-            m.texture_index = i;
+            let m = GpuMaterial {
+                texture_index: i,
+                ..Default::default()
+            };
             let id = table.intern(m);
             assert_eq!(id, i, "in-cap intern must return sequential ids");
         }
         assert_eq!(table.len(), MAX_MATERIALS);
 
         // Over-cap intern: distinct material, but no slot to land in.
-        let mut overflow = GpuMaterial::default();
-        overflow.texture_index = MAX_MATERIALS as u32;
+        let overflow = GpuMaterial {
+            texture_index: MAX_MATERIALS as u32,
+            ..Default::default()
+        };
         let overflow_id = table.intern(overflow);
         assert_eq!(
             overflow_id, 0,
@@ -1852,15 +1870,19 @@ mod tests {
 
         // Subsequent over-cap interns also fold to id 0 — the warn
         // is `Once`-gated so the second call is silent.
-        let mut overflow2 = GpuMaterial::default();
-        overflow2.texture_index = MAX_MATERIALS as u32 + 1;
+        let overflow2 = GpuMaterial {
+            texture_index: MAX_MATERIALS as u32 + 1,
+            ..Default::default()
+        };
         assert_eq!(table.intern(overflow2), 0);
         assert_eq!(table.len(), MAX_MATERIALS);
 
         // Already-interned materials still resolve to their original
         // id — the cap path doesn't poison the dedup map.
-        let mut existing = GpuMaterial::default();
-        existing.texture_index = 42; // interned at id 42 in the loop above
+        let existing = GpuMaterial {
+            texture_index: 42, // interned at id 42 in the loop above
+            ..Default::default()
+        };
         assert_eq!(
             table.intern(existing),
             42,
@@ -1877,20 +1899,26 @@ mod tests {
     fn intern_overflow_persists_across_clear() {
         let mut table = MaterialTable::new();
         for i in 0..MAX_MATERIALS as u32 {
-            let mut m = GpuMaterial::default();
-            m.texture_index = i;
+            let m = GpuMaterial {
+                texture_index: i,
+                ..Default::default()
+            };
             table.intern(m);
         }
-        let mut overflow = GpuMaterial::default();
-        overflow.texture_index = u32::MAX;
+        let overflow = GpuMaterial {
+            texture_index: u32::MAX,
+            ..Default::default()
+        };
         assert_eq!(table.intern(overflow), 0);
 
         table.clear();
         // After clear the seeded neutral default re-occupies slot 0
         // (#807). A user intern of a material distinct from neutral
         // pushes at slot 1 — NOT slot 0, since slot 0 is reserved.
-        let mut first = GpuMaterial::default();
-        first.texture_index = 1;
+        let first = GpuMaterial {
+            texture_index: 1,
+            ..Default::default()
+        };
         assert_eq!(table.intern(first), 1);
         assert_eq!(table.len(), 2);
 

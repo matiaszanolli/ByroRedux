@@ -254,8 +254,10 @@ fn validate_refit_flags_rejects_allow_compaction_drift() {
 #[test]
 fn skinned_blas_threshold_is_in_sane_range() {
     // 5 s ≤ threshold ≤ 30 s at 60 FPS.
-    assert!(SKINNED_BLAS_REFIT_THRESHOLD >= 300);
-    assert!(SKINNED_BLAS_REFIT_THRESHOLD <= 1800);
+    const {
+        assert!(SKINNED_BLAS_REFIT_THRESHOLD >= 300);
+        assert!(SKINNED_BLAS_REFIT_THRESHOLD <= 1800);
+    }
 }
 
 /// Regression for #504: the scratch-shrink helper must reclaim
@@ -1522,5 +1524,7 @@ fn shadow_mask_bucket_selection_is_pinned() {
     assert_ne!(SHADOW_MASK_OPAQUE, 0);
     assert_ne!(SHADOW_MASK_GLASS, 0);
     assert_ne!(SHADOW_MASK_OPAQUE, SHADOW_MASK_GLASS);
-    assert!(SHADOW_MASK_OPAQUE <= 0xFF && SHADOW_MASK_GLASS <= 0xFF);
+    const {
+        assert!(SHADOW_MASK_OPAQUE <= 0xFF && SHADOW_MASK_GLASS <= 0xFF);
+    }
 }

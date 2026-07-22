@@ -8,13 +8,14 @@ use super::descriptors::hash_instance_slice;
 use super::gpu_types::GpuInstance;
 
 fn sample_instance(seed: u32) -> GpuInstance {
-    let mut g = GpuInstance::default();
     // Touch a representative subset of fields so the hash depends on
     // real instance content rather than padding.
-    g.texture_index = seed;
-    g.material_id = seed & 0xff;
-    g.bone_offset = seed.wrapping_mul(31);
-    g
+    GpuInstance {
+        texture_index: seed,
+        material_id: seed & 0xff,
+        bone_offset: seed.wrapping_mul(31),
+        ..Default::default()
+    }
 }
 
 /// Identical slices produce identical hashes — the steady-state case

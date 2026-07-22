@@ -8,13 +8,14 @@ use super::descriptors::hash_light_slice;
 use super::gpu_types::GpuLight;
 
 fn sample_light(seed: u32) -> GpuLight {
-    let mut g = GpuLight::default();
     // Touch a representative subset of fields so the hash depends on
     // real light content rather than padding.
-    g.position_radius = [seed as f32, 0.0, 0.0, 10.0];
-    g.color_type = [1.0, 1.0, 1.0, (seed % 3) as f32];
-    g.params = [seed as f32 * 0.1, 0.0, 0.0, 0.0];
-    g
+    GpuLight {
+        position_radius: [seed as f32, 0.0, 0.0, 10.0],
+        color_type: [1.0, 1.0, 1.0, (seed % 3) as f32],
+        params: [seed as f32 * 0.1, 0.0, 0.0, 0.0],
+        ..Default::default()
+    }
 }
 
 /// Identical slices produce identical hashes — the steady-state case

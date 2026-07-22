@@ -193,7 +193,9 @@ mod tests {
     /// MAX_FRAMES_IN_FLIGHT == 2 (else temporal history aliases the write).
     #[test]
     fn ping_pong_slots_differ() {
-        assert!(MAX_FRAMES_IN_FLIGHT >= 2);
+        const {
+            assert!(MAX_FRAMES_IN_FLIGHT >= 2);
+        }
         for f in 0..MAX_FRAMES_IN_FLIGHT {
             assert_ne!(f, (f + 1) % MAX_FRAMES_IN_FLIGHT);
         }
