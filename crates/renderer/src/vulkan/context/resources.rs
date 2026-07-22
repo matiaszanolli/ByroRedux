@@ -221,6 +221,15 @@ impl VulkanContext {
         )
     }
 
+    /// Get the scene-render extent. This differs from the swapchain extent
+    /// when an FSR quality preset renders below output resolution.
+    pub fn render_extent(&self) -> (u32, u32) {
+        (
+            self.frame_extents.render.width,
+            self.frame_extents.render.height,
+        )
+    }
+
     /// Log current GPU memory allocation statistics. Threshold for the
     /// "high usage" WARN scales with the physical device's smallest
     /// DEVICE_LOCAL heap — see #505.

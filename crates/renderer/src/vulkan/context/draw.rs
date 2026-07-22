@@ -733,7 +733,7 @@ impl VulkanContext {
             .framebuffer(self.framebuffers[frame])
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: self.swapchain_state.extent,
+                extent: self.frame_extents.render,
             })
             .clear_values(&clear_values);
 
@@ -804,8 +804,8 @@ impl VulkanContext {
             self.taa.is_some(),
             self.taa_failed,
             self.frame_counter,
-            self.swapchain_state.extent.width as f32,
-            self.swapchain_state.extent.height as f32,
+            self.frame_extents.render.width as f32,
+            self.frame_extents.render.height as f32,
         );
 
         // Camera-relative render origin (#markarth-precision). Computed
@@ -953,8 +953,8 @@ impl VulkanContext {
                 ambient_color[2],
             ],
             screen: [
-                self.swapchain_state.extent.width as f32,
-                self.swapchain_state.extent.height as f32,
+                self.frame_extents.render.width as f32,
+                self.frame_extents.render.height as f32,
                 fog_near,
                 fog_far,
             ],

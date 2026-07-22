@@ -22,7 +22,7 @@ use super::swapchain::{self, SwapchainState};
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
 use super::taa::TaaPipeline;
 use super::texture::Texture;
-use super::upscaling::{FrameExtentSet, RendererConfig};
+use super::upscaling::{FrameExtentSet, RendererConfig, UpscalerMode};
 use super::volumetrics::VolumetricsPipeline;
 use super::water::WaterPipeline;
 use crate::mesh::MeshRegistry;
@@ -1646,12 +1646,13 @@ impl VulkanContext {
             frame_extents.output.height,
             renderer_config.upscaler,
         );
+        let render_extent = frame_extents.render;
 
         // 9. Depth resources
         let (depth_image, depth_image_view, depth_allocation) = create_depth_resources(
             &device,
             &gpu_allocator,
-            swapchain_state.extent,
+            render_extent,
             depth_format,
             // TRANSFER_SRC: the soft-particle depth-history copy uses the depth
             // buffer as a `vkCmdCopyImage` source each frame (#1583 validation).
@@ -1673,7 +1674,7 @@ impl VulkanContext {
             create_depth_resources(
                 &device,
                 &gpu_allocator,
-                swapchain_state.extent,
+                render_extent,
                 depth_format,
                 vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
                 "depth_history",
@@ -1952,7 +1953,7 @@ impl VulkanContext {
         let pipelines = pipeline::create_triangle_pipeline(
             &device,
             render_pass,
-            swapchain_state.extent,
+            render_extent,
             texture_registry.descriptor_set_layout,
             scene_buffers.descriptor_set_layout,
             pipeline_cache,
@@ -1963,7 +1964,7 @@ impl VulkanContext {
         let pipeline_ui = pipeline::create_ui_pipeline(
             &device,
             render_pass,
-            swapchain_state.extent,
+            render_extent,
             pipelines.layout,
             pipeline_cache,
         )?;
@@ -2020,8 +2021,8 @@ impl VulkanContext {
         let water_caustic_accum = match super::water_caustic::WaterCausticAccum::new(
             &device,
             &gpu_allocator,
-            swapchain_state.extent.width,
-            swapchain_state.extent.height,
+            render_extent.width,
+            render_extent.height,
         ) {
             Ok(a) => {
                 // One-time UNDEFINED → GENERAL transition so the first
@@ -2083,8 +2084,8 @@ impl VulkanContext {
             &gpu_allocator,
             pipeline_cache,
             depth_image_view,
-            swapchain_state.extent.width,
-            swapchain_state.extent.height,
+            render_extent.width,
+            render_extent.height,
         ) {
             Ok(s) => {
                 // Transition AO image from UNDEFINED to SHADER_READ_ONLY_OPTIMAL
@@ -2172,8 +2173,8 @@ impl VulkanContext {
         let gbuffer = Some(GBuffer::new(
             &device,
             &gpu_allocator,
-            swapchain_state.extent.width,
-            swapchain_state.extent.height,
+            render_extent.width,
+            render_extent.height,
         )?);
         let gbuffer_ref = gbuffer.as_ref().expect("gbuffer must exist");
 
@@ -2225,8 +2226,8 @@ impl VulkanContext {
                 mesh_id_views: &mesh_id_views_seed,
                 normal_views: &normal_views_for_svgf,
             },
-            swapchain_state.extent.width,
-            swapchain_state.extent.height,
+            render_extent.width,
+            render_extent.height,
         ) {
             Ok(s) => Some(s),
             Err(e) => {
@@ -2265,8 +2266,8 @@ impl VulkanContext {
         let reservoir_buffers = super::restir::ReservoirBuffers::new(
             &device,
             &gpu_allocator,
-            swapchain_state.extent.width,
-            swapchain_state.extent.height,
+            render_extent.width,
+            render_extent.height,
         )?;
         for i in 0..n_frames {
             scene_buffers.write_reservoir_buffers(
@@ -2309,8 +2310,8 @@ impl VulkanContext {
             scene_buffers.camera_buffer_size(),
             scene_buffers.instance_buffers(),
             scene_buffers.instance_buffer_size(),
-            swapchain_state.extent.width,
-            swapchain_state.extent.height,
+            render_extent.width,
+            render_extent.height,
         ) {
             Ok(c) => Some(c),
             Err(e) => {
@@ -2390,7 +2391,7 @@ impl VulkanContext {
             &device,
             &gpu_allocator,
             pipeline_cache,
-            swapchain_state.extent,
+            render_extent,
         ) {
             Ok(b) => {
                 if let Err(e) = unsafe {
@@ -2448,8 +2449,7 @@ impl VulkanContext {
             &volumetric_views,
             &bloom_views,
             texture_registry.descriptor_set_layout,
-            swapchain_state.extent.width,
-            swapchain_state.extent.height,
+            frame_extents,
         ) {
             Ok(c) => Some(c),
             Err(e) => {
@@ -2470,24 +2470,32 @@ impl VulkanContext {
         // and normal for surface-valid history reprojection.
         // If creation succeeds, composite's HDR descriptor is rewired to
         // sample TAA's output; otherwise we keep the raw HDR path.
-        let mut taa = match TaaPipeline::new(
-            &device,
-            &gpu_allocator,
-            pipeline_cache,
-            super::taa::TaaInputViews {
-                hdr_views: &hdr_views_owned,
-                motion_views: &motion_views_seed,
-                mesh_id_views: &mesh_id_views_seed,
-                normal_views: &normal_views_seed,
-            },
-            swapchain_state.extent.width,
-            swapchain_state.extent.height,
-        ) {
-            Ok(t) => Some(t),
-            Err(e) => {
-                log::warn!("TAA pipeline creation failed: {e} — falling back to raw HDR");
-                None
+        let mut taa = if renderer_config.upscaler == UpscalerMode::Taa {
+            match TaaPipeline::new(
+                &device,
+                &gpu_allocator,
+                pipeline_cache,
+                super::taa::TaaInputViews {
+                    hdr_views: &hdr_views_owned,
+                    motion_views: &motion_views_seed,
+                    mesh_id_views: &mesh_id_views_seed,
+                    normal_views: &normal_views_seed,
+                },
+                render_extent.width,
+                render_extent.height,
+            ) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    log::warn!("TAA pipeline creation failed: {e} — falling back to raw HDR");
+                    None
+                }
             }
+        } else {
+            log::info!(
+                "FSR scaffold active: TAA history/resolve disabled; raw render-resolution HDR \
+                 is presented until FSR dispatch lands"
+            );
+            None
         };
         if let Some(ref t) = taa {
             if let Err(e) = unsafe {
@@ -2539,7 +2547,7 @@ impl VulkanContext {
                 albedo_views: &albedo_views,
             },
             depth_image_view,
-            swapchain_state.extent,
+            render_extent,
         )?;
 
         // 16. Command buffers — one per frame-in-flight (NOT per swapchain
@@ -2760,7 +2768,7 @@ impl VulkanContext {
             pipeline::BlendPipelineCtx {
                 device: &self.device,
                 render_pass: self.render_pass,
-                extent: self.swapchain_state.extent,
+                extent: self.frame_extents.render,
                 pipeline_cache: self.pipeline_cache,
                 pipeline_layout: self.pipeline_layout,
             },

@@ -33,6 +33,7 @@ use super::descriptors::{
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use super::upscaling::FrameExtentSet;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -164,8 +165,10 @@ pub struct CompositePipeline {
     /// Per-frame parameter UBOs.
     param_buffers: Vec<GpuBuffer>,
 
-    pub width: u32,
-    pub height: u32,
+    /// Extent of the HDR scene inputs owned by this pipeline.
+    pub render_extent: vk::Extent2D,
+    /// Extent of the swapchain presentation framebuffers.
+    pub output_extent: vk::Extent2D,
 }
 
 impl CompositePipeline {
@@ -195,8 +198,7 @@ impl CompositePipeline {
         volumetric_views: &[vk::ImageView],
         bloom_views: &[vk::ImageView],
         bindless_layout: vk::DescriptorSetLayout,
-        width: u32,
-        height: u32,
+        extents: FrameExtentSet,
     ) -> Result<Self> {
         let result = Self::new_inner(
             device,
@@ -213,8 +215,7 @@ impl CompositePipeline {
             volumetric_views,
             bloom_views,
             bindless_layout,
-            width,
-            height,
+            extents,
         );
         if let Err(ref e) = result {
             log::debug!("Composite pipeline creation failed at: {e}");
@@ -238,8 +239,7 @@ impl CompositePipeline {
         volumetric_views: &[vk::ImageView],
         bloom_views: &[vk::ImageView],
         bindless_layout: vk::DescriptorSetLayout,
-        width: u32,
-        height: u32,
+        extents: FrameExtentSet,
     ) -> Result<Self> {
         debug_assert_eq!(indirect_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(albedo_views.len(), MAX_FRAMES_IN_FLIGHT);
@@ -266,8 +266,8 @@ impl CompositePipeline {
             hdr_sampler: vk::Sampler::null(),
             nearest_sampler: vk::Sampler::null(),
             param_buffers: Vec::new(),
-            width,
-            height,
+            render_extent: extents.render,
+            output_extent: extents.output,
         };
 
         // Macro to clean up partial state on any fallible call.
@@ -296,8 +296,8 @@ impl CompositePipeline {
                 .image_type(vk::ImageType::TYPE_2D)
                 .format(HDR_FORMAT)
                 .extent(vk::Extent3D {
-                    width,
-                    height,
+                    width: extents.render.width,
+                    height: extents.render.height,
                     depth: 1,
                 })
                 .mip_levels(1)
@@ -519,8 +519,8 @@ impl CompositePipeline {
             let fb_info = vk::FramebufferCreateInfo::default()
                 .render_pass(partial.composite_render_pass)
                 .attachments(&attachments)
-                .width(width)
-                .height(height)
+                .width(extents.output.width)
+                .height(extents.output.height)
                 .layers(1);
             // SAFETY: `fb_info` references `partial.composite_render_pass` (live)
             // and the caller-borrowed swapchain `view` (live for this call); the new
@@ -852,7 +852,13 @@ impl CompositePipeline {
             }
         };
 
-        log::info!("Composite pipeline created: {}x{} HDR", width, height);
+        log::info!(
+            "Composite pipeline created: {}x{} HDR -> {}x{} output",
+            extents.render.width,
+            extents.render.height,
+            extents.output.width,
+            extents.output.height,
+        );
 
         Ok(partial)
     }
@@ -884,10 +890,7 @@ impl CompositePipeline {
             .framebuffer(self.composite_framebuffers[swapchain_image_index])
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: vk::Extent2D {
-                    width: self.width,
-                    height: self.height,
-                },
+                extent: self.output_extent,
             })
             .clear_values(&clear_values);
         // SAFETY: caller of `dispatch` (unsafe fn) guarantees `cmd` is a
@@ -901,18 +904,15 @@ impl CompositePipeline {
             let viewport = vk::Viewport {
                 x: 0.0,
                 y: 0.0,
-                width: self.width as f32,
-                height: self.height as f32,
+                width: self.output_extent.width as f32,
+                height: self.output_extent.height as f32,
                 min_depth: 0.0,
                 max_depth: 1.0,
             };
             device.cmd_set_viewport(cmd, 0, &[viewport]);
             let scissor = vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: vk::Extent2D {
-                    width: self.width,
-                    height: self.height,
-                },
+                extent: self.output_extent,
             };
             device.cmd_set_scissor(cmd, 0, &[scissor]);
 
@@ -964,8 +964,7 @@ impl CompositePipeline {
         water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
         volumetric_views: &[vk::ImageView],
         bloom_views: &[vk::ImageView],
-        width: u32,
-        height: u32,
+        extents: FrameExtentSet,
     ) -> Result<()> {
         // Destroy old framebuffers
         // SAFETY (the three destroy loops below): `recreate_on_resize`
@@ -1000,8 +999,8 @@ impl CompositePipeline {
             allocator.lock().expect("allocator lock").free(a).ok();
         }
 
-        self.width = width;
-        self.height = height;
+        self.render_extent = extents.render;
+        self.output_extent = extents.output;
 
         // Recreate HDR images. On partial failure, clean up any
         // already-allocated new resources. See #283.
@@ -1011,8 +1010,8 @@ impl CompositePipeline {
                     .image_type(vk::ImageType::TYPE_2D)
                     .format(HDR_FORMAT)
                     .extent(vk::Extent3D {
-                        width,
-                        height,
+                        width: extents.render.width,
+                        height: extents.render.height,
                         depth: 1,
                     })
                     .mip_levels(1)
@@ -1135,8 +1134,8 @@ impl CompositePipeline {
                 let fb_info = vk::FramebufferCreateInfo::default()
                     .render_pass(self.composite_render_pass)
                     .attachments(&attachments)
-                    .width(width)
-                    .height(height)
+                    .width(extents.output.width)
+                    .height(extents.output.height)
                     .layers(1);
                 // SAFETY: `fb_info` references `self.composite_render_pass`
                 // (live) and the caller-borrowed swapchain `view` (live
@@ -1399,5 +1398,14 @@ mod composite_params_layout_tests {
             272 + 16,
             "CompositeParams must be 288 bytes (14 × vec4 + mat4)"
         );
+    }
+
+    #[test]
+    fn integer_scene_inputs_are_addressed_in_render_space() {
+        let shader = include_str!("../../shaders/composite.frag");
+        assert!(shader.contains("ivec2 causticSize = textureSize(causticTex, 0);"));
+        assert!(shader.contains("texelFetch(causticTex, causticPixel, 0)"));
+        assert!(!shader.contains("texelFetch(causticTex, ivec2(gl_FragCoord.xy), 0)"));
+        assert!(!shader.contains("texelFetch(waterCausticTex, ivec2(gl_FragCoord.xy), 0)"));
     }
 }

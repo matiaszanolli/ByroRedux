@@ -65,8 +65,8 @@ impl VulkanContext {
             .src_subresource(layers)
             .dst_subresource(layers)
             .extent(vk::Extent3D {
-                width: self.swapchain_state.extent.width,
-                height: self.swapchain_state.extent.height,
+                width: self.frame_extents.render.width,
+                height: self.frame_extents.render.height,
                 depth: 1,
             });
 

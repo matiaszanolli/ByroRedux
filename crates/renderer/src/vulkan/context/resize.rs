@@ -148,6 +148,19 @@ impl VulkanContext {
             window_size,
             old_swapchain, // atomic handoff — avoids flicker during resize
         )?;
+        let max_image_dimension_2d = unsafe {
+            // SAFETY: `self.physical_device` was selected from `self.instance`
+            // and both remain live for the context lifetime.
+            self.instance
+                .get_physical_device_properties(self.physical_device)
+                .limits
+                .max_image_dimension2_d
+        };
+        self.frame_extents = super::super::upscaling::FrameExtentSet::for_output(
+            self.swapchain_state.extent,
+            self.renderer_config.upscaler,
+            max_image_dimension_2d,
+        )?;
 
         // Decide whether to rebuild the render pass + rasterization
         // pipelines. Both reference attachment formats only — extent
@@ -224,7 +237,7 @@ impl VulkanContext {
         let (depth_image, depth_image_view, depth_allocation) = create_depth_resources(
             &self.device,
             self.allocator.as_ref().expect("allocator missing"),
-            self.swapchain_state.extent,
+            self.frame_extents.render,
             self.depth_format,
             // TRANSFER_SRC: soft-particle depth-history copy source (#1583).
             vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
@@ -244,7 +257,7 @@ impl VulkanContext {
             create_depth_resources(
                 &self.device,
                 self.allocator.as_ref().expect("allocator missing"),
-                self.swapchain_state.extent,
+                self.frame_extents.render,
                 self.depth_format,
                 vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
                 "depth_history",
@@ -295,7 +308,7 @@ impl VulkanContext {
             let pipelines = pipeline::recreate_triangle_pipelines(
                 &self.device,
                 self.render_pass,
-                self.swapchain_state.extent,
+                self.frame_extents.render,
                 self.pipeline_cache,
                 self.pipeline_layout,
                 self.device_caps.fill_mode_non_solid_supported,
@@ -306,7 +319,7 @@ impl VulkanContext {
             self.pipeline_ui = pipeline::create_ui_pipeline(
                 &self.device,
                 self.render_pass,
-                self.swapchain_state.extent,
+                self.frame_extents.render,
                 self.pipeline_layout,
                 self.pipeline_cache,
             )?;
@@ -383,8 +396,8 @@ impl VulkanContext {
                 allocator,
                 self.pipeline_cache,
                 self.depth_image_view,
-                self.swapchain_state.extent.width,
-                self.swapchain_state.extent.height,
+                self.frame_extents.render.width,
+                self.frame_extents.render.height,
             ) {
                 Ok(new_ssao) => {
                     // Transition AO image to valid layout before first use.
@@ -436,8 +449,8 @@ impl VulkanContext {
                 self.allocator
                     .as_ref()
                     .expect("allocator missing during resize"),
-                self.swapchain_state.extent.width,
-                self.swapchain_state.extent.height,
+                self.frame_extents.render.width,
+                self.frame_extents.render.height,
             )?;
             // New images start UNDEFINED — transition to SHADER_READ_ONLY so
             // the "prev" frame slot is valid on the first frame after resize.
@@ -497,8 +510,8 @@ impl VulkanContext {
                     mesh_id_views: &mesh_id_views_in,
                     normal_views: &normal_views_in,
                 },
-                self.swapchain_state.extent.width,
-                self.swapchain_state.extent.height,
+                self.frame_extents.render.width,
+                self.frame_extents.render.height,
             )?;
         }
 
@@ -515,8 +528,8 @@ impl VulkanContext {
             self.reservoir_buffers.recreate_on_resize(
                 &self.device,
                 allocator,
-                self.swapchain_state.extent.width,
-                self.swapchain_state.extent.height,
+                self.frame_extents.render.width,
+                self.frame_extents.render.height,
             )?;
             for i in 0..MAX_FRAMES_IN_FLIGHT {
                 self.scene_buffers.write_reservoir_buffers(
@@ -569,8 +582,8 @@ impl VulkanContext {
                 self.scene_buffers.camera_buffer_size(),
                 self.scene_buffers.instance_buffers(),
                 self.scene_buffers.instance_buffer_size(),
-                self.swapchain_state.extent.width,
-                self.swapchain_state.extent.height,
+                self.frame_extents.render.width,
+                self.frame_extents.render.height,
             )?;
         }
         // #1255 / Phase C of #1210 — water-caustic accumulator
@@ -590,8 +603,8 @@ impl VulkanContext {
                 if let Err(e) = wca.recreate_on_resize(
                     &self.device,
                     allocator,
-                    self.swapchain_state.extent.width,
-                    self.swapchain_state.extent.height,
+                    self.frame_extents.render.width,
+                    self.frame_extents.render.height,
                 ) {
                     log::warn!(
                         "Water-caustic accumulator resize failed: {e} — disabling for the rest of the session"
@@ -651,7 +664,7 @@ impl VulkanContext {
                 &self.device,
                 allocator,
                 self.pipeline_cache,
-                self.swapchain_state.extent,
+                self.frame_extents.render,
             ) {
                 Ok(new_bloom) => {
                     if let Err(e) = unsafe {
@@ -730,8 +743,7 @@ impl VulkanContext {
                 &water_caustic_views,
                 &volumetric_views,
                 &bloom_views,
-                self.swapchain_state.extent.width,
-                self.swapchain_state.extent.height,
+                self.frame_extents,
             )?;
         }
 
@@ -777,8 +789,8 @@ impl VulkanContext {
                     mesh_id_views: &mesh_id_views_in,
                     normal_views: &normal_views_in,
                 },
-                self.swapchain_state.extent.width,
-                self.swapchain_state.extent.height,
+                self.frame_extents.render.width,
+                self.frame_extents.render.height,
             )?;
         }
         // Rewire composite's HDR binding to TAA output (if TAA is active).
@@ -818,7 +830,7 @@ impl VulkanContext {
                 albedo_views: &albedo_views,
             },
             self.depth_image_view,
-            self.swapchain_state.extent,
+            self.frame_extents.render,
         )?;
 
         // Command buffers are per frame-in-flight (fixed count), so they
@@ -864,9 +876,11 @@ impl VulkanContext {
         self.signal_temporal_discontinuity(RESIZE_RECOVERY_FRAMES);
 
         log::info!(
-            "Swapchain recreated: {}x{}",
-            self.swapchain_state.extent.width,
-            self.swapchain_state.extent.height
+            "Swapchain recreated: render={}x{}, output={}x{}",
+            self.frame_extents.render.width,
+            self.frame_extents.render.height,
+            self.frame_extents.output.width,
+            self.frame_extents.output.height,
         );
         Ok(())
     }

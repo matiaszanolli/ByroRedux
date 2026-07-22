@@ -45,8 +45,8 @@ impl VulkanContext {
             let viewports = [vk::Viewport {
                 x: 0.0,
                 y: 0.0,
-                width: self.swapchain_state.extent.width as f32,
-                height: self.swapchain_state.extent.height as f32,
+                width: self.frame_extents.render.width as f32,
+                height: self.frame_extents.render.height as f32,
                 min_depth: 0.0,
                 max_depth: 1.0,
             }];
@@ -54,7 +54,7 @@ impl VulkanContext {
 
             let scissors = [vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: self.swapchain_state.extent,
+                extent: self.frame_extents.render,
             }];
             self.device.cmd_set_scissor(cmd, 0, &scissors);
 
@@ -596,15 +596,15 @@ impl VulkanContext {
                     let viewports = [vk::Viewport {
                         x: 0.0,
                         y: 0.0,
-                        width: self.swapchain_state.extent.width as f32,
-                        height: self.swapchain_state.extent.height as f32,
+                        width: self.frame_extents.render.width as f32,
+                        height: self.frame_extents.render.height as f32,
                         min_depth: 0.0,
                         max_depth: 1.0,
                     }];
                     self.device.cmd_set_viewport(cmd, 0, &viewports);
                     let scissors = [vk::Rect2D {
                         offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: self.swapchain_state.extent,
+                        extent: self.frame_extents.render,
                     }];
                     self.device.cmd_set_scissor(cmd, 0, &scissors);
                     let vb = mesh

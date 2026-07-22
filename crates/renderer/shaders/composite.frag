@@ -380,8 +380,18 @@ void main() {
         // generated `#define` in `shader_constants.glsl`) so their
         // fixed-point sums are on a unified luminance basis; one
         // `causticLum` carries the combined contribution downstream.
-        uint causticRaw = texelFetch(causticTex, ivec2(gl_FragCoord.xy), 0).r;
-        uint waterCausticRaw = texelFetch(waterCausticTex, ivec2(gl_FragCoord.xy), 0).r;
+        // Composite runs at output resolution while these accumulators are
+        // scene/render-resolution resources. Convert normalized UV to a
+        // clamped render pixel; using output-space gl_FragCoord would read
+        // out of bounds for every reduced-resolution FSR preset.
+        ivec2 causticSize = textureSize(causticTex, 0);
+        ivec2 causticPixel = clamp(
+            ivec2(fragUV * vec2(causticSize)),
+            ivec2(0),
+            causticSize - ivec2(1)
+        );
+        uint causticRaw = texelFetch(causticTex, causticPixel, 0).r;
+        uint waterCausticRaw = texelFetch(waterCausticTex, causticPixel, 0).r;
         // #1575 — promote each accumulator to float BEFORE the add so the sum
         // can't wrap u32. Each raw can independently climb toward the
         // 0xFFFFFFFF per-deposit ceiling (caustic_splat.comp clamps each
