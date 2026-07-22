@@ -618,6 +618,7 @@ dependencies = [
  "ash",
  "ash-window",
  "byroredux-core",
+ "byroredux-fsr3-sys",
  "byroredux-platform",
  "egui",
  "egui-ash-renderer",

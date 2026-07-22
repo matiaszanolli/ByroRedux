@@ -22,6 +22,7 @@ use super::swapchain::{self, SwapchainState};
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
 use super::taa::TaaPipeline;
 use super::texture::Texture;
+use super::upscaling::{FrameExtentSet, RendererConfig};
 use super::volumetrics::VolumetricsPipeline;
 use super::water::WaterPipeline;
 use crate::mesh::MeshRegistry;
@@ -954,6 +955,10 @@ fn couple_skin_compute_to_palette<T>(skin_compute: Option<T>, skin_palette_ok: b
 pub struct VulkanContext {
     // Ordered for drop safety — later fields are destroyed first.
     pub current_frame: usize,
+    /// Immutable runtime renderer selection parsed by the application.
+    pub renderer_config: RendererConfig,
+    /// Central scene-render and presentation extents for this swapchain.
+    pub frame_extents: FrameExtentSet,
     /// Monotonic frame counter for temporal effects (jitter seed,
     /// accumulation). Wraps at `u32::MAX` (~2.3 years at 60 FPS). When
     /// uploaded to `GpuCamera.position[3]` in `draw_frame` the value
@@ -1589,6 +1594,7 @@ impl VulkanContext {
         display_handle: RawDisplayHandle,
         window_handle: RawWindowHandle,
         window_size: [u32; 2],
+        renderer_config: RendererConfig,
     ) -> Result<Self> {
         let CoreDevice {
             entry,
@@ -1619,6 +1625,27 @@ impl VulkanContext {
             window_size,
             vk::SwapchainKHR::null(), // no old swapchain on initial creation
         )?;
+        let max_image_dimension_2d = unsafe {
+            // SAFETY: `physical_device` was selected from `vk_instance` and
+            // both remain live for the duration of context construction.
+            vk_instance
+                .get_physical_device_properties(physical_device)
+                .limits
+                .max_image_dimension2_d
+        };
+        let frame_extents = FrameExtentSet::for_output(
+            swapchain_state.extent,
+            renderer_config.upscaler,
+            max_image_dimension_2d,
+        )?;
+        log::info!(
+            "Frame extents: render={}x{}, output={}x{} ({})",
+            frame_extents.render.width,
+            frame_extents.render.height,
+            frame_extents.output.width,
+            frame_extents.output.height,
+            renderer_config.upscaler,
+        );
 
         // 9. Depth resources
         let (depth_image, depth_image_view, depth_allocation) = create_depth_resources(
@@ -2605,6 +2632,8 @@ impl VulkanContext {
             command_buffers,
             frame_sync,
             current_frame: 0,
+            renderer_config,
+            frame_extents,
             frame_counter: 0,
             render_debug_flags: parse_render_debug_flags_env(),
             // REND-#1451 — default knee = 0.5 (authored radius at half

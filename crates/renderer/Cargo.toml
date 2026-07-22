@@ -6,6 +6,7 @@ build = "build.rs"
 
 [dependencies]
 byroredux-core = { workspace = true }
+byroredux-fsr3-sys = { workspace = true }
 byroredux-platform = { workspace = true }
 ash = { workspace = true }
 ash-window = { workspace = true }

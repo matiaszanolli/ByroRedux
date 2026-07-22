@@ -13,7 +13,7 @@ use byroredux_core::ecs::{
 use byroredux_core::string::StringPool;
 use winit::event_loop::{ControlFlow, EventLoop};
 
-use crate::cli_args::{parse_string_arg, parse_vec3_arg};
+use crate::cli_args::{parse_renderer_config, parse_string_arg, parse_vec3_arg};
 use crate::commands::build_command_registry;
 use crate::components::{CellRootIndex, FootstepConfig, InputState, NameIndex, SubtreeCache};
 use crate::systems::{
@@ -143,6 +143,9 @@ pub(crate) fn run() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     init_tracing();
 
+    let renderer_config = parse_renderer_config(&args)?;
+    log::info!("Renderer upscaler selection: {}", renderer_config.upscaler);
+
     log::info!("ByroRedux starting");
     log::info!("{}", byroredux_cxx_bridge::ffi::native_hello());
 
@@ -234,7 +237,7 @@ pub(crate) fn run() -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new(debug_mode, &args);
+    let mut app = App::new(debug_mode, &args, renderer_config);
     app.bench_frames_target = bench_frames;
     app.bench_hold = bench_hold;
     app.screenshot_path = screenshot_path;

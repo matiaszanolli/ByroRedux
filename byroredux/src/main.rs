@@ -47,7 +47,7 @@ use byroredux_core::string::StringPool;
 use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::{DrawCommand, FrameInputs};
 use byroredux_renderer::vulkan::GpuUploadCtx;
-use byroredux_renderer::VulkanContext;
+use byroredux_renderer::{RendererConfig, VulkanContext};
 use byroredux_ui::UiManager;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -73,6 +73,7 @@ fn main() -> Result<()> {
 struct App {
     window: Option<Window>,
     renderer: Option<VulkanContext>,
+    renderer_config: RendererConfig,
     world: World,
     scheduler: Scheduler,
     last_frame: Instant,
@@ -244,7 +245,7 @@ impl Drop for App {
 }
 
 impl App {
-    fn new(debug_mode: bool, args: &[String]) -> Self {
+    fn new(debug_mode: bool, args: &[String], renderer_config: RendererConfig) -> Self {
         // Three-phase construction (#1670) — see the helpers in `boot`.
         let mut world = boot::build_world(debug_mode, args);
         let mut scheduler = boot::build_scheduler();
@@ -279,6 +280,7 @@ impl App {
         Self {
             window: None,
             renderer: None,
+            renderer_config,
             world,
             scheduler,
             last_frame: Instant::now(),
@@ -747,7 +749,12 @@ impl ApplicationHandler for App {
             }
         };
 
-        match VulkanContext::new(display, window_handle, [size.width, size.height]) {
+        match VulkanContext::new(
+            display,
+            window_handle,
+            [size.width, size.height],
+            self.renderer_config,
+        ) {
             Ok(ctx) => {
                 // Create screenshot bridge for debug server access.
                 let ss_handle = ctx.screenshot_handle();
@@ -1519,4 +1526,3 @@ fn apply_debug_ui_outputs(
         }
     }
 }
-

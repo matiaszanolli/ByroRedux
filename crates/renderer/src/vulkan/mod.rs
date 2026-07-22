@@ -27,6 +27,7 @@ pub mod swapchain;
 pub mod sync;
 pub mod taa;
 pub mod texture;
+pub mod upscaling;
 pub mod volumetrics;
 pub mod water;
 pub mod water_caustic;
