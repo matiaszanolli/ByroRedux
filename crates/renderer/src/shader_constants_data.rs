@@ -483,6 +483,13 @@ pub const DBG_VIZ_MATERIAL_STATE: u32 = 0x100000;
 /// energy in a real-content scene.
 pub const DBG_VIZ_GI_BOUNCE: u32 = 0x200000;
 
+/// 0x400000 — display the projection jitter and FSR reset contract as a
+/// uniform diagnostic colour. Red/green encode the exact render-pixel jitter
+/// mapped from `[-0.5, 0.5]` to `[0, 1]`; blue is 1 while an FSR history reset
+/// is pending and 0 otherwise. This makes projection/dispatch phase drift and
+/// forgotten camera-cut resets visible without a RenderDoc capture.
+pub const DBG_VIZ_FSR_TEMPORAL: u32 = 0x400000;
+
 /// Single source of truth for every `DBG_*` debug-viz bit, in emit order.
 /// Both `build.rs` (GLSL header emit) and `shader_constants.rs`'s test
 /// module (`generated_header_contains_all_defines` value-pin,
@@ -522,6 +529,7 @@ pub const DBG_BITS: &[(&str, u32)] = &[
     ("DBG_VIZ_RAW_INDIRECT", DBG_VIZ_RAW_INDIRECT),
     ("DBG_VIZ_MATERIAL_STATE", DBG_VIZ_MATERIAL_STATE),
     ("DBG_VIZ_GI_BOUNCE", DBG_VIZ_GI_BOUNCE),
+    ("DBG_VIZ_FSR_TEMPORAL", DBG_VIZ_FSR_TEMPORAL),
 ];
 
 /// #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot WRS

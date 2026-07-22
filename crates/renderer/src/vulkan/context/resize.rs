@@ -156,11 +156,20 @@ impl VulkanContext {
                 .limits
                 .max_image_dimension2_d
         };
-        self.frame_extents = super::super::upscaling::FrameExtentSet::for_output(
+        let frame_extents = super::super::upscaling::FrameExtentSet::for_output(
             self.swapchain_state.extent,
             self.renderer_config.upscaler,
             max_image_dimension_2d,
         )?;
+        let fsr_temporal = match self.renderer_config.upscaler {
+            super::super::upscaling::UpscalerMode::Taa => None,
+            super::super::upscaling::UpscalerMode::Fsr3(_) => Some(
+                super::super::upscaling::FsrTemporalState::new(frame_extents)
+                    .context("query resized FSR temporal jitter sequence")?,
+            ),
+        };
+        self.frame_extents = frame_extents;
+        self.fsr_temporal = fsr_temporal;
 
         // Decide whether to rebuild the render pass + rasterization
         // pipelines. Both reference attachment formats only — extent

@@ -22,7 +22,7 @@ use super::swapchain::{self, SwapchainState};
 use super::sync::{self, FrameSync, MAX_FRAMES_IN_FLIGHT};
 use super::taa::TaaPipeline;
 use super::texture::Texture;
-use super::upscaling::{FrameExtentSet, RendererConfig, UpscalerMode};
+use super::upscaling::{FrameExtentSet, FsrTemporalState, RendererConfig, UpscalerMode};
 use super::volumetrics::VolumetricsPipeline;
 use super::water::WaterPipeline;
 use crate::mesh::MeshRegistry;
@@ -969,6 +969,9 @@ pub struct VulkanContext {
     /// SVGF read the raw u32 directly (no precision issue on the
     /// Rust side).
     pub frame_counter: u32,
+    /// FSR-authored jitter sequence and one-frame reset state. Present only
+    /// for the FSR path; TAA retains its independent legacy sequence.
+    pub fsr_temporal: Option<FsrTemporalState>,
     /// Debug-only fragment-shader bypass flags piped through
     /// `GpuCamera.jitter[2]`. Read once from `BYROREDUX_RENDER_DEBUG`
     /// at construction; stays put for the process lifetime. Bits:
@@ -1647,6 +1650,13 @@ impl VulkanContext {
             renderer_config.upscaler,
         );
         let render_extent = frame_extents.render;
+        let fsr_temporal = match renderer_config.upscaler {
+            UpscalerMode::Taa => None,
+            UpscalerMode::Fsr3(_) => Some(
+                FsrTemporalState::new(frame_extents)
+                    .context("query FSR temporal jitter sequence")?,
+            ),
+        };
 
         // 9. Depth resources
         let (depth_image, depth_image_view, depth_allocation) = create_depth_resources(
@@ -2393,12 +2403,8 @@ impl VulkanContext {
         // allocations are universally supported on all Vulkan 1.1+ GPUs).
         // Tracked: #1081 — if a real dummy is ever needed, implement it
         // in `CompositePipeline::new` with an optional `bloom_views`.
-        let bloom = match BloomPipeline::new(
-            &device,
-            &gpu_allocator,
-            pipeline_cache,
-            render_extent,
-        ) {
+        let bloom = match BloomPipeline::new(&device, &gpu_allocator, pipeline_cache, render_extent)
+        {
             Ok(b) => {
                 if let Err(e) = unsafe {
                     // SAFETY: `device` + `graphics_queue` are live and
@@ -2649,6 +2655,7 @@ impl VulkanContext {
             renderer_config,
             frame_extents,
             frame_counter: 0,
+            fsr_temporal,
             render_debug_flags: parse_render_debug_flags_env(),
             // REND-#1451 — default knee = 0.5 (authored radius at half
             // the cull radius). `light_atten_legacy` starts false; the
@@ -2814,6 +2821,9 @@ impl VulkanContext {
         self.svgf_recovery_frames = self.svgf_recovery_frames.max(frames);
         if let Some(ref mut taa) = self.taa {
             taa.signal_history_reset();
+        }
+        if let Some(ref mut fsr) = self.fsr_temporal {
+            fsr.signal_reset();
         }
     }
 

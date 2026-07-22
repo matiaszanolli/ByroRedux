@@ -76,7 +76,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 skyTint;        // xyz = TOD/weather zenith colour, w = reserved. #1028.
     vec4 sunDirection;
     vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
-    vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin (cell-grid snapped); add to worldPos_rel for the absolute world position. w unused.
+    vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin (cell-grid snapped); add to worldPos_rel for the absolute world position. w = FSR reset diagnostic.
 };
 
 // Bone palette SSBO (set 1, binding 3) — skinning matrices for the

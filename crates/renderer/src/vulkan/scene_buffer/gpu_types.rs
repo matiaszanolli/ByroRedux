@@ -268,7 +268,8 @@ pub struct GpuCamera {
     pub dof_params: [f32; 4],
     /// **Camera-relative render origin** (#markarth-precision). xyz = the
     /// world-space origin all GPU clip-space math is performed relative to;
-    /// w = unused **in this struct**. The same field name is separately
+    /// w = FSR history-reset-pending diagnostic bit (zero on the TAA path).
+    /// The same field name is separately
     /// overloaded in `VolumetricsParams::render_origin` (`volumetrics.rs`),
     /// where w packs `is_exterior` (read by `volumetrics_inject.comp`) — a
     /// distinct struct with its own layout, not a shared UBO slot. Don't

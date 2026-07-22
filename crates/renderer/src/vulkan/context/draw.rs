@@ -800,13 +800,26 @@ impl VulkanContext {
         // (per #479's fallback) while geometry kept rendering with a
         // per-frame Halton sub-pixel offset — full-frame shimmer instead of
         // a stable pinhole fallback image.
-        let (jx, jy) = taa_jitter(
-            self.taa.is_some(),
-            self.taa_failed,
-            self.frame_counter,
-            self.frame_extents.render.width as f32,
-            self.frame_extents.render.height as f32,
-        );
+        let (jx, jy, fsr_reset_pending) = match self.renderer_config.upscaler {
+            super::super::upscaling::UpscalerMode::Taa => {
+                let (jx, jy) = taa_jitter(
+                    self.taa.is_some(),
+                    self.taa_failed,
+                    self.frame_counter,
+                    self.frame_extents.render.width as f32,
+                    self.frame_extents.render.height as f32,
+                );
+                (jx, jy, false)
+            }
+            super::super::upscaling::UpscalerMode::Fsr3(_) => {
+                let fsr = self
+                    .fsr_temporal
+                    .as_ref()
+                    .expect("FSR mode must own temporal state");
+                let sample = fsr.current();
+                (sample.ndc[0], sample.ndc[1], fsr.reset_pending())
+            }
+        };
 
         // Camera-relative render origin (#markarth-precision). Computed
         // ONCE by `render::camera::assemble_camera` (the same un-jittered
@@ -828,8 +841,21 @@ impl VulkanContext {
         // DOF aperture-disk jitter, or the pinhole pass-through. The bokeh
         // rationale and the #1525 degenerate-`focus_dist` guard live in
         // `dof_effective_view_proj`.
+        // The initial FSR validation path is pinhole-only. Combining the
+        // independent Halton(5,7) lens sequence with FSR's projection jitter
+        // would violate the motion/reprojection contract before it has been
+        // validated. Preserve every other authored DOF field for the future
+        // output-resolution implementation, but force aperture to zero here.
+        let active_dof = if self.fsr_temporal.is_some() {
+            DofView {
+                aperture: 0.0,
+                ..dof
+            }
+        } else {
+            dof
+        };
         let (effective_vp, effective_cam_pos) = dof_effective_view_proj(
-            &dof,
+            &active_dof,
             self.frame_counter,
             camera_pos,
             render_origin,
@@ -1034,15 +1060,21 @@ impl VulkanContext {
             // to advance the GI noise seed every frame when parked, so the
             // dark indirect-lit floor converges ~4× faster (TARGET 1).
             dof_params: [
-                dof.aperture,
-                dof.focus_dist,
+                active_dof.aperture,
+                active_dof.focus_dist,
                 self.light_atten_knee,
                 if camera_static { 1.0 } else { 0.0 },
             ],
             // #markarth-precision — camera-relative render origin (xyz; w
             // unused). Vertex/deferred shaders add this back to recover the
             // absolute world position from the relative `view_proj` space.
-            render_origin: [render_origin.x, render_origin.y, render_origin.z, 0.0],
+            // w exposes FSR's one-frame reset state to the diagnostic view.
+            render_origin: [
+                render_origin.x,
+                render_origin.y,
+                render_origin.z,
+                if fsr_reset_pending { 1.0 } else { 0.0 },
+            ],
         };
         self.scene_buffers
             .upload_camera(&self.device, frame, &camera)

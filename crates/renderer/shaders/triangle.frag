@@ -460,6 +460,26 @@ void main() {
         outAlbedo = vec4(mViz, 1.0);
         return;
     }
+    // FSR temporal-input diagnostic. `jitter.xy` is the exact projection
+    // offset and `renderOrigin.w` mirrors the CPU reset-pending bit. Convert
+    // NDC back to SDK render-pixel units (including the Vulkan Y flip) so the
+    // view directly exposes the dispatch contract rather than an extent-
+    // dependent tiny NDC value. See BYROREDUX_RENDER_DEBUG=0x400000.
+    if ((dbgFlags & DBG_VIZ_FSR_TEMPORAL) != 0u) {
+        vec2 pixelJitter = vec2(
+            jitter.x * screen.x * 0.5,
+            -jitter.y * screen.y * 0.5
+        );
+        vec3 temporalViz = vec3(
+            clamp(0.5 + pixelJitter.x, 0.0, 1.0),
+            clamp(0.5 + pixelJitter.y, 0.0, 1.0),
+            clamp(renderOrigin.w, 0.0, 1.0)
+        );
+        outColor = vec4(temporalViz, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(temporalViz, 1.0);
+        return;
+    }
 
     // View direction. NdotV is clamped to 0.05 (~87°) to prevent the
     // Cook-Torrance `D*G*F / (4*NdotV*NdotL)` specular term from blowing
