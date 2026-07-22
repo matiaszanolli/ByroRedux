@@ -24,6 +24,26 @@ use anyhow::{Context, Result};
 use ash::vk;
 use std::collections::{HashMap, VecDeque};
 
+/// Gamebryo `TexClampMode` address pairs in their on-disk enum order.
+const SAMPLER_ADDRESS_MODES: [(vk::SamplerAddressMode, vk::SamplerAddressMode); 4] = [
+    (
+        vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        vk::SamplerAddressMode::CLAMP_TO_EDGE,
+    ),
+    (
+        vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        vk::SamplerAddressMode::REPEAT,
+    ),
+    (
+        vk::SamplerAddressMode::REPEAT,
+        vk::SamplerAddressMode::CLAMP_TO_EDGE,
+    ),
+    (
+        vk::SamplerAddressMode::REPEAT,
+        vk::SamplerAddressMode::REPEAT,
+    ),
+];
+
 /// Handle into the TextureRegistry (index into the bindless array).
 pub type TextureHandle = u32;
 
@@ -151,6 +171,12 @@ pub struct TextureRegistry {
     /// authored decals / Oblivion architecture trim rendered with
     /// bleeding edges.
     samplers: [vk::Sampler; 4],
+    /// Device-clamped anisotropy used to build every clamp-mode sampler.
+    /// Retained so swapchain recreation can rebuild the set when an FSR
+    /// quality preset changes the material mip bias.
+    max_sampler_anisotropy: f32,
+    /// Current device-clamped material-texture mip bias.
+    mip_lod_bias: f32,
     max_textures: u32,
     /// Monotonic frame counter for deferred-destroy aging (issue #134).
     current_frame_id: u64,
@@ -266,6 +292,7 @@ impl TextureRegistry {
         allocator: &SharedAllocator,
         max_textures: u32,
         max_sampler_anisotropy: f32,
+        mip_lod_bias: f32,
     ) -> Result<Self> {
         // Descriptor set layout: binding 0 = sampler2D[max_textures].
         // PARTIALLY_BOUND allows uninitialized array elements (the shader
@@ -342,6 +369,8 @@ impl TextureRegistry {
             bindless_sets: Vec::new(),
             shared_sampler: vk::Sampler::null(),
             samplers: [vk::Sampler::null(); 4],
+            max_sampler_anisotropy,
+            mip_lod_bias,
             max_textures,
             current_frame_id: 0,
             staging_pool: None,
@@ -354,17 +383,16 @@ impl TextureRegistry {
         // SAFETY: `device` is a live logical device (constructor precondition);
         // `layout_info` + `binding_flags_info` are valid structs built above,
         // and the `push_next` chain outlives this call.
-        partial.descriptor_set_layout = match unsafe {
-            device.create_descriptor_set_layout(&layout_info, None)
-        }
-        .context("Failed to create bindless texture descriptor set layout")
-        {
-            Ok(layout) => layout,
-            Err(e) => {
-                partial.destroy(device, allocator);
-                return Err(e);
-            }
-        };
+        partial.descriptor_set_layout =
+            match unsafe { device.create_descriptor_set_layout(&layout_info, None) }
+                .context("Failed to create bindless texture descriptor set layout")
+            {
+                Ok(layout) => layout,
+                Err(e) => {
+                    partial.destroy(device, allocator);
+                    return Err(e);
+                }
+            };
 
         // Pool: 2 sets (per frame-in-flight), each with max_textures samplers.
         let pool_size = vk::DescriptorPoolSize {
@@ -379,10 +407,8 @@ impl TextureRegistry {
         // SAFETY: `device` is live; `pool_info` sizes cover exactly
         // `MAX_FRAMES_IN_FLIGHT` sets of `max_textures` samplers each,
         // matching the allocation below.
-        partial.descriptor_pool = match unsafe {
-            device.create_descriptor_pool(&pool_info, None)
-        }
-        .context("Failed to create bindless texture descriptor pool")
+        partial.descriptor_pool = match unsafe { device.create_descriptor_pool(&pool_info, None) }
+            .context("Failed to create bindless texture descriptor pool")
         {
             Ok(pool) => pool,
             Err(e) => {
@@ -399,10 +425,8 @@ impl TextureRegistry {
             .set_layouts(&layouts);
         // SAFETY: `descriptor_pool` was just created above with capacity for
         // exactly `layouts.len()` sets of `descriptor_set_layout`.
-        partial.bindless_sets = match unsafe {
-            device.allocate_descriptor_sets(&alloc_info)
-        }
-        .context("Failed to allocate bindless texture descriptor sets")
+        partial.bindless_sets = match unsafe { device.allocate_descriptor_sets(&alloc_info) }
+            .context("Failed to allocate bindless texture descriptor sets")
         {
             Ok(sets) => sets,
             Err(e) => {
@@ -417,39 +441,6 @@ impl TextureRegistry {
         // VkSamplerAddressMode pair. All four share the LINEAR /
         // anisotropic / mipmap-LINEAR filtering setup; only U/V wrap
         // axes differ. See #610 / D4-NEW-02.
-        let anisotropy_enable = max_sampler_anisotropy > 1.0;
-        let max_anisotropy = if anisotropy_enable {
-            max_sampler_anisotropy
-        } else {
-            1.0
-        };
-        let make_sampler = |u_mode: vk::SamplerAddressMode,
-                            v_mode: vk::SamplerAddressMode|
-         -> Result<vk::Sampler> {
-            let info = vk::SamplerCreateInfo::default()
-                .mag_filter(vk::Filter::LINEAR)
-                .min_filter(vk::Filter::LINEAR)
-                .address_mode_u(u_mode)
-                .address_mode_v(v_mode)
-                // W axis is unused on 2D bindless reads — set to REPEAT
-                // for consistency with the pre-#610 single-sampler shape.
-                .address_mode_w(vk::SamplerAddressMode::REPEAT)
-                .anisotropy_enable(anisotropy_enable)
-                .max_anisotropy(max_anisotropy)
-                .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
-                .unnormalized_coordinates(false)
-                .compare_enable(false)
-                .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-                .min_lod(0.0)
-                .max_lod(16.0);
-            // SAFETY: `device` is live; `info` is a fully-populated
-            // `SamplerCreateInfo` with no dangling `p_next` chain.
-            unsafe {
-                device
-                    .create_sampler(&info, None)
-                    .context("Failed to create texture sampler")
-            }
-        };
         // Index order matches `TexClampMode` from nif.xml. The lower 4
         // bits of `TexDesc.flags` are written in this exact encoding by
         // the parser at `properties.rs:464`, and BSEffectShaderProperty
@@ -464,42 +455,23 @@ impl TextureRegistry {
         // ships the same): 0 = CLAMP/CLAMP (decals / scope reticles / skybox
         // seams, the audit's primary fix target), 1 = CLAMP_S/WRAP_T,
         // 2 = WRAP_S/CLAMP_T, 3 = WRAP/WRAP (pre-#610 default). See #610.
-        let sampler_modes = [
-            (
-                vk::SamplerAddressMode::CLAMP_TO_EDGE,
-                vk::SamplerAddressMode::CLAMP_TO_EDGE,
-            ),
-            (
-                vk::SamplerAddressMode::CLAMP_TO_EDGE,
-                vk::SamplerAddressMode::REPEAT,
-            ),
-            (
-                vk::SamplerAddressMode::REPEAT,
-                vk::SamplerAddressMode::CLAMP_TO_EDGE,
-            ),
-            (
-                vk::SamplerAddressMode::REPEAT,
-                vk::SamplerAddressMode::REPEAT,
-            ),
-        ];
-        for (i, (u_mode, v_mode)) in sampler_modes.into_iter().enumerate() {
-            partial.samplers[i] = match make_sampler(u_mode, v_mode) {
-                Ok(sampler) => sampler,
+        partial.samplers =
+            match create_material_samplers(device, max_sampler_anisotropy, mip_lod_bias) {
+                Ok(samplers) => samplers,
                 Err(e) => {
-                    // Frees the pool + layout + any earlier samplers. RL-14 / #203.
                     partial.destroy(device, allocator);
                     return Err(e);
                 }
             };
-        }
         // Legacy public field — kept as an alias on `samplers[3]` (the
         // REPEAT/REPEAT entry) so any non-bindless caller that reads
         // it (composite.rs's HDR sampler path) keeps the pre-#610
         // wrap behaviour.
         partial.shared_sampler = partial.samplers[3];
+        let anisotropy_enable = max_sampler_anisotropy > 1.0;
 
         log::info!(
-            "TextureRegistry created: bindless array[{}] × {} frames, anisotropy {}",
+            "TextureRegistry created: bindless array[{}] × {} frames, anisotropy {}, mip bias {:.3}",
             max_textures,
             MAX_FRAMES_IN_FLIGHT,
             if anisotropy_enable {
@@ -507,6 +479,7 @@ impl TextureRegistry {
             } else {
                 "disabled".to_string()
             },
+            mip_lod_bias,
         );
 
         // Staging pool owns cloned device + allocator handles so that
@@ -866,14 +839,12 @@ impl TextureRegistry {
                     // pixels) — these are UI/font atlases, never diffuse
                     // albedo anyway.
                     if meta.expand.is_none() {
-                        if let Some(avg) =
-                            super::vulkan::dds::average_rgb(&meta, &upload.dds_bytes)
+                        if let Some(avg) = super::vulkan::dds::average_rgb(&meta, &upload.dds_bytes)
                         {
                             self.texture_avg_rgb.insert(upload.handle, avg);
                         }
                     }
-                    let pixel_data =
-                        super::vulkan::dds::upload_pixels(&meta, &upload.dds_bytes);
+                    let pixel_data = super::vulkan::dds::upload_pixels(&meta, &upload.dds_bytes);
                     let sampler = self.samplers[upload.clamp_mode as usize];
                     let (texture, staging, staging_capacity) =
                         match super::vulkan::texture::Texture::record_dds_upload(
@@ -1392,13 +1363,49 @@ impl TextureRegistry {
         &mut self,
         device: &ash::Device,
         _new_swapchain_image_count: u32,
+        mip_lod_bias: f32,
     ) -> Result<()> {
+        let replacement_samplers = if (self.mip_lod_bias - mip_lod_bias).abs() > f32::EPSILON {
+            Some(create_material_samplers(
+                device,
+                self.max_sampler_anisotropy,
+                mip_lod_bias,
+            )?)
+        } else {
+            None
+        };
+
         // SAFETY: caller contract (swapchain recreation only runs after
         // `device_wait_idle`) guarantees no command buffer is still
         // referencing `self.descriptor_pool`'s sets. Destroying the pool
         // implicitly frees all sets allocated from it.
         unsafe {
             device.destroy_descriptor_pool(self.descriptor_pool, None);
+        }
+
+        if let Some(new_samplers) = replacement_samplers {
+            let old_samplers = self.samplers;
+            for entry in &mut self.textures {
+                if let Some(texture) = entry.texture.as_mut() {
+                    let clamp_mode = old_samplers
+                        .iter()
+                        .position(|&sampler| sampler == texture.sampler)
+                        .unwrap_or(3);
+                    texture.sampler = new_samplers[clamp_mode];
+                }
+            }
+            self.samplers = new_samplers;
+            self.shared_sampler = self.samplers[3];
+            self.mip_lod_bias = mip_lod_bias;
+
+            // SAFETY: swapchain recreation waits for device idle before this
+            // method and the old descriptor pool was destroyed above. No live
+            // descriptor or command buffer can still reference these handles.
+            unsafe {
+                for sampler in old_samplers {
+                    device.destroy_sampler(sampler, None);
+                }
+            }
         }
 
         // Recreate pool + sets (must match new() flags: UPDATE_AFTER_BIND).
@@ -1458,8 +1465,9 @@ impl TextureRegistry {
         }
 
         log::info!(
-            "TextureRegistry descriptor sets recreated: {} textures (bindless)",
+            "TextureRegistry descriptor sets recreated: {} textures (bindless), mip bias {:.3}",
             self.textures.len(),
+            self.mip_lod_bias,
         );
 
         Ok(())
@@ -1500,11 +1508,11 @@ impl TextureRegistry {
         // SAFETY: caller contract (`destroy()` runs only during shutdown,
         // after `device_wait_idle`) guarantees none of these handles are
         // referenced by any in-flight command buffer. `self.samplers`
-        // holds 4 distinct handles (`shared_sampler` aliases `samplers[0]`,
+        // holds 4 distinct handles (`shared_sampler` aliases `samplers[3]`,
         // not a separate handle), so the loop destroys each exactly once.
         unsafe {
             // #610 — destroy every clamp-mode sampler. `shared_sampler`
-            // aliases `samplers[0]` so iterating the array covers it
+            // aliases `samplers[3]` so iterating the array covers it
             // too; don't double-destroy.
             for sampler in self.samplers {
                 device.destroy_sampler(sampler, None);
@@ -1581,6 +1589,64 @@ fn clamp_keyed_path(path: &str, clamp_mode: u8) -> String {
 
 fn should_destroy_pending(current_frame: u64, queued_frame: u64) -> bool {
     current_frame.wrapping_sub(queued_frame) >= MAX_FRAMES_IN_FLIGHT as u64
+}
+
+fn material_sampler_info(
+    max_sampler_anisotropy: f32,
+    mip_lod_bias: f32,
+    u_mode: vk::SamplerAddressMode,
+    v_mode: vk::SamplerAddressMode,
+) -> vk::SamplerCreateInfo<'static> {
+    let anisotropy_enable = max_sampler_anisotropy > 1.0;
+    vk::SamplerCreateInfo::default()
+        .mag_filter(vk::Filter::LINEAR)
+        .min_filter(vk::Filter::LINEAR)
+        .address_mode_u(u_mode)
+        .address_mode_v(v_mode)
+        // W is unused by 2D bindless reads; retain the legacy setting.
+        .address_mode_w(vk::SamplerAddressMode::REPEAT)
+        .mip_lod_bias(mip_lod_bias)
+        .anisotropy_enable(anisotropy_enable)
+        .max_anisotropy(if anisotropy_enable {
+            max_sampler_anisotropy
+        } else {
+            1.0
+        })
+        .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+        .unnormalized_coordinates(false)
+        .compare_enable(false)
+        .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+        .min_lod(0.0)
+        .max_lod(16.0)
+}
+
+fn create_material_samplers(
+    device: &ash::Device,
+    max_sampler_anisotropy: f32,
+    mip_lod_bias: f32,
+) -> Result<[vk::Sampler; 4]> {
+    let mut samplers = [vk::Sampler::null(); 4];
+    for (index, &(u_mode, v_mode)) in SAMPLER_ADDRESS_MODES.iter().enumerate() {
+        let info = material_sampler_info(max_sampler_anisotropy, mip_lod_bias, u_mode, v_mode);
+        // SAFETY: `device` is live and `info` contains no borrowed extension
+        // structures. On failure, destroy every handle already created here.
+        match unsafe { device.create_sampler(&info, None) }
+            .context("Failed to create texture sampler")
+        {
+            Ok(sampler) => samplers[index] = sampler,
+            Err(error) => {
+                // SAFETY: these are the sampler handles successfully created
+                // by this function; null entries are valid no-op destroys.
+                unsafe {
+                    for sampler in samplers {
+                        device.destroy_sampler(sampler, None);
+                    }
+                }
+                return Err(error);
+            }
+        }
+    }
+    Ok(samplers)
 }
 
 #[cfg(test)]

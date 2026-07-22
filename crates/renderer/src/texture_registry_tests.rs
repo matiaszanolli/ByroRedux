@@ -104,6 +104,8 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         bindless_sets: Vec::new(),
         shared_sampler: vk::Sampler::null(),
         samplers: [vk::Sampler::null(); 4],
+        max_sampler_anisotropy: 1.0,
+        mip_lod_bias: 0.0,
         max_textures,
         current_frame_id: 0,
         // Unit-test path: `check_slot_available` doesn't touch the
@@ -114,6 +116,33 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         pending_dds_uploads: Vec::new(),
         slot_capacity_warning_emitted: false,
     }
+}
+
+#[test]
+fn material_sampler_profiles_preserve_clamp_modes_and_apply_mip_bias() {
+    for (index, &(expected_u, expected_v)) in SAMPLER_ADDRESS_MODES.iter().enumerate() {
+        let info = material_sampler_info(16.0, -1.585, expected_u, expected_v);
+        assert_eq!(info.address_mode_u, expected_u, "sampler {index} U mode");
+        assert_eq!(info.address_mode_v, expected_v, "sampler {index} V mode");
+        assert_eq!(info.address_mode_w, vk::SamplerAddressMode::REPEAT);
+        assert_eq!(info.mipmap_mode, vk::SamplerMipmapMode::LINEAR);
+        assert_eq!(info.anisotropy_enable, vk::TRUE);
+        assert_eq!(info.max_anisotropy, 16.0);
+        assert!((info.mip_lod_bias + 1.585).abs() < f32::EPSILON);
+    }
+}
+
+#[test]
+fn native_sampler_profile_retains_zero_bias_and_anisotropy_fallback() {
+    let info = material_sampler_info(
+        0.0,
+        0.0,
+        vk::SamplerAddressMode::REPEAT,
+        vk::SamplerAddressMode::REPEAT,
+    );
+    assert_eq!(info.mip_lod_bias, 0.0);
+    assert_eq!(info.anisotropy_enable, vk::FALSE);
+    assert_eq!(info.max_anisotropy, 1.0);
 }
 
 #[test]

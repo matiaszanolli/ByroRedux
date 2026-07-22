@@ -1728,6 +1728,12 @@ impl VulkanContext {
             &gpu_allocator,
             device_caps.max_bindless_sampled_images,
             device_caps.max_sampler_anisotropy,
+            frame_extents
+                .material_mip_bias(renderer_config.upscaler)
+                .clamp(
+                    -device_caps.max_sampler_lod_bias,
+                    device_caps.max_sampler_lod_bias,
+                ),
         )?;
         let checkerboard = super::texture::generate_checkerboard(256, 256, 32);
         // One-shot 256×256 fallback — `None` pool skips the overhead of

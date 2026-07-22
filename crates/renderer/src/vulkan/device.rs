@@ -29,6 +29,11 @@ pub struct DeviceCapabilities {
     /// clamped to our configured target (16×). Zero when
     /// `sampler_anisotropy_supported` is false.
     pub max_sampler_anisotropy: f32,
+    /// Absolute `mipLodBias` limit accepted by `vkCreateSampler`, from
+    /// `VkPhysicalDeviceLimits::maxSamplerLodBias`. FSR render-resolution
+    /// presets request a negative material-texture bias; clamp against this
+    /// value before rebuilding the bindless sampler set.
+    pub max_sampler_lod_bias: f32,
     /// True if the physical device exposes `multiDrawIndirect` in
     /// `VkPhysicalDeviceFeatures`. Enables `vkCmdDrawIndexedIndirect`
     /// with `drawCount > 1` — one API call dispatches an arbitrary
@@ -446,6 +451,7 @@ fn is_device_suitable(
                 ray_query_supported,
                 sampler_anisotropy_supported,
                 max_sampler_anisotropy,
+                max_sampler_lod_bias: properties.limits.max_sampler_lod_bias,
                 multi_draw_indirect_supported,
                 fill_mode_non_solid_supported,
                 max_bindless_sampled_images,

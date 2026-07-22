@@ -360,8 +360,18 @@ impl VulkanContext {
     /// verbatim from `recreate_swapchain`; reads only `self` state.
     fn recreate_texture_ssao_bindings(&mut self) -> Result<()> {
         // Recreate descriptor sets for existing textures (new swapchain image count).
-        self.texture_registry
-            .recreate_descriptor_sets(&self.device, self.swapchain_state.images.len() as u32)?;
+        let material_mip_bias = self
+            .frame_extents
+            .material_mip_bias(self.renderer_config.upscaler)
+            .clamp(
+                -self.device_caps.max_sampler_lod_bias,
+                self.device_caps.max_sampler_lod_bias,
+            );
+        self.texture_registry.recreate_descriptor_sets(
+            &self.device,
+            self.swapchain_state.images.len() as u32,
+            material_mip_bias,
+        )?;
 
         // Recreate SSAO pipeline with the new depth image view and dimensions.
         // The old pipeline's descriptor sets still reference the destroyed depth
