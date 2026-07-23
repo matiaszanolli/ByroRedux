@@ -207,8 +207,37 @@ const RT_EXTENSIONS: &[&CStr] = &[
     ash::khr::deferred_host_operations::NAME,
 ];
 
+/// Preference key for otherwise-suitable physical devices. Device type is the
+/// primary policy: a discrete GPU always outranks every non-discrete device,
+/// regardless of reported heap size. Device-local memory only breaks ties
+/// between devices of the same type.
+fn device_preference_key(
+    device_type: vk::PhysicalDeviceType,
+    device_local_bytes: vk::DeviceSize,
+) -> (u8, vk::DeviceSize) {
+    let type_priority = match device_type {
+        vk::PhysicalDeviceType::DISCRETE_GPU => 4,
+        vk::PhysicalDeviceType::INTEGRATED_GPU => 3,
+        vk::PhysicalDeviceType::VIRTUAL_GPU => 2,
+        vk::PhysicalDeviceType::OTHER => 1,
+        vk::PhysicalDeviceType::CPU => 0,
+        _ => 1,
+    };
+    (type_priority, device_local_bytes)
+}
+
+struct PhysicalDeviceCandidate {
+    device: vk::PhysicalDevice,
+    indices: QueueFamilyIndices,
+    caps: DeviceCapabilities,
+    properties: vk::PhysicalDeviceProperties,
+    device_local_bytes: vk::DeviceSize,
+    preference: (u8, vk::DeviceSize),
+}
+
 /// Picks a suitable physical device that supports our required extensions
-/// and has graphics + present queue families for the given surface.
+/// and has graphics + present queue families for the given surface. Among
+/// suitable devices, discrete GPUs are always preferred.
 pub fn pick_physical_device(
     instance: &ash::Instance,
     surface_loader: &ash::khr::surface::Instance,
@@ -226,32 +255,68 @@ pub fn pick_physical_device(
         anyhow::bail!("No Vulkan-capable GPU found");
     }
 
+    let mut selected: Option<PhysicalDeviceCandidate> = None;
     for &device in &devices {
         if let Some((indices, caps)) =
             is_device_suitable(instance, surface_loader, surface, device)?
         {
-            let props = unsafe {
+            let properties = unsafe {
                 // SAFETY: `instance` is live and `device` was enumerated from it
                 // above; the query writes only into the returned properties struct.
                 instance.get_physical_device_properties(device)
             };
-            // SAFETY: device_name is a fixed-size [c_char; 256] array null-terminated by the
-            // Vulkan driver. The pointer is valid for the lifetime of `props` (stack-local).
-            let name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) };
+            let device_local_bytes = total_device_local_bytes(instance, device);
+            let preference = device_preference_key(properties.device_type, device_local_bytes);
+            // SAFETY: device_name is a fixed-size [c_char; 256] array
+            // null-terminated by the Vulkan driver. The pointer remains valid
+            // while `properties` is in scope.
+            let name = unsafe { CStr::from_ptr(properties.device_name.as_ptr()) };
             log::info!(
-                "Selected GPU: {:?} (ray query: {}, sync2: {})",
+                "Suitable GPU: {:?} ({:?}, {} MiB device-local, ray query: {}, sync2: {})",
                 name,
+                properties.device_type,
+                device_local_bytes / (1024 * 1024),
                 caps.ray_query_supported,
                 caps.synchronization2_supported,
             );
-            return Ok((device, indices, caps));
+
+            let candidate = PhysicalDeviceCandidate {
+                device,
+                indices,
+                caps,
+                properties,
+                device_local_bytes,
+                preference,
+            };
+            if selected
+                .as_ref()
+                .is_none_or(|current| candidate.preference > current.preference)
+            {
+                selected = Some(candidate);
+            }
         }
     }
 
-    anyhow::bail!(
-        "No suitable GPU found (need graphics + present queues, swapchain support, \
-         and Vulkan 1.3 synchronization2 — RTX 20-series / RDNA1 / Arc or newer required)"
-    )
+    let Some(selected) = selected else {
+        anyhow::bail!(
+            "No suitable GPU found (need graphics + present queues, swapchain support, \
+             and Vulkan 1.3 synchronization2 — RTX 20-series / RDNA1 / Arc or newer required)"
+        );
+    };
+
+    // SAFETY: device_name is owned by the selected properties value and is
+    // null-terminated by the Vulkan driver.
+    let name = unsafe { CStr::from_ptr(selected.properties.device_name.as_ptr()) };
+    log::info!(
+        "Selected GPU: {:?} ({:?}, {} MiB device-local, ray query: {}, sync2: {})",
+        name,
+        selected.properties.device_type,
+        selected.device_local_bytes / (1024 * 1024),
+        selected.caps.ray_query_supported,
+        selected.caps.synchronization2_supported,
+    );
+
+    Ok((selected.device, selected.indices, selected.caps))
 }
 
 fn is_device_suitable(
@@ -657,7 +722,34 @@ pub fn create_logical_device(
 
 #[cfg(test)]
 mod caps_tests {
-    use super::DeviceCapabilities;
+    use super::{device_preference_key, DeviceCapabilities};
+    use ash::vk;
+
+    #[test]
+    fn discrete_gpu_outranks_integrated_regardless_of_reported_memory() {
+        let discrete = device_preference_key(vk::PhysicalDeviceType::DISCRETE_GPU, 1);
+        let integrated = device_preference_key(vk::PhysicalDeviceType::INTEGRATED_GPU, u64::MAX);
+        assert!(discrete > integrated);
+    }
+
+    #[test]
+    fn same_type_prefers_more_device_local_memory() {
+        let smaller =
+            device_preference_key(vk::PhysicalDeviceType::DISCRETE_GPU, 4 * 1024 * 1024 * 1024);
+        let larger =
+            device_preference_key(vk::PhysicalDeviceType::DISCRETE_GPU, 8 * 1024 * 1024 * 1024);
+        assert!(larger > smaller);
+    }
+
+    #[test]
+    fn non_discrete_fallback_order_is_stable() {
+        let key = |device_type| device_preference_key(device_type, 0);
+        assert!(
+            key(vk::PhysicalDeviceType::INTEGRATED_GPU) > key(vk::PhysicalDeviceType::VIRTUAL_GPU)
+        );
+        assert!(key(vk::PhysicalDeviceType::VIRTUAL_GPU) > key(vk::PhysicalDeviceType::OTHER));
+        assert!(key(vk::PhysicalDeviceType::OTHER) > key(vk::PhysicalDeviceType::CPU));
+    }
 
     /// #1636 / #1478 — the GPU-timer gate must require BOTH `timestamp` and
     /// `host_query_reset`, and must NOT depend on ray-query. A regression to
