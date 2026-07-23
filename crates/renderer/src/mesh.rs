@@ -106,6 +106,23 @@ pub struct GpuMesh {
     /// UI overlays (uploaded via plain [`MeshRegistry::upload`]) are
     /// `false`; scene meshes (terrain, NIF, clutter) are `true`.
     pub is_scene_mesh: bool,
+    /// Mirrors the `rt_enabled` argument this mesh was uploaded with —
+    /// i.e. whether its per-mesh vertex/index buffers carry
+    /// `SHADER_DEVICE_ADDRESS | ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR`.
+    ///
+    /// **Load-bearing**: a BLAS may only be built over a mesh with this
+    /// set. Taking the buffer device address of a mesh without it — or
+    /// naming it as AS build-input geometry — violates
+    /// VUID-VkBufferDeviceAddressInfo-buffer-02601 and
+    /// VUID-vkCmdBuildAccelerationStructuresKHR-geometry-03673.
+    ///
+    /// The upload side deliberately clears this for effect-shader proxy
+    /// volumes, decals, water, and global-SSBO-only LOD blocks so rays
+    /// don't hit their non-physical hulls as solid geometry. The static
+    /// BLAS path has always honoured that via its own `for_rt` gate; the
+    /// skinned path now reads this flag instead of assuming every
+    /// skinned mesh is RT-capable.
+    pub rt_capable: bool,
 }
 
 impl GpuMesh {
@@ -316,6 +333,7 @@ impl MeshRegistry {
             global_index_offset: 0,
             vertex_count: vertices.len() as u32,
             is_scene_mesh: false,
+            rt_capable: rt_enabled,
         }));
         // Parallel-indexed refcount; lockstep with `meshes` push.
         self.mesh_ref_counts.push(1);
@@ -509,6 +527,9 @@ impl MeshRegistry {
             global_index_offset: i_offset,
             vertex_count: vertices.len() as u32,
             is_scene_mesh: true,
+            // No per-mesh buffers at all, so there is nothing a BLAS could
+            // be built from — the strongest form of "not RT-capable".
+            rt_capable: false,
         }));
         // Parallel-indexed refcount; lockstep with `meshes` push (mirrors
         // `upload`).
@@ -1406,6 +1427,40 @@ mod refcount_tests {
         assert_eq!(reg.acquire_cached("chair.nif", 0), None);
         assert_eq!(reg.refcount(0), None);
         assert!(!reg.drop_mesh(0), "drop on unknown handle is a no-op");
+    }
+
+    /// Global-SSBO-only meshes carry no per-mesh buffers at all, so no BLAS
+    /// can legally be built over them. `rt_capable` must report that, since
+    /// it is the flag every BLAS path now gates on — the skinned path used
+    /// to assume "skinned ⇒ RT-capable" and would take the device address of
+    /// an index buffer created without `SHADER_DEVICE_ADDRESS`, tripping
+    /// VUID-VkBufferDeviceAddressInfo-buffer-02601 (and then
+    /// -geometry-03673 on the build itself).
+    ///
+    /// This path is device-free, so it is the one upload route the pure-Rust
+    /// tests can drive end to end; the `rt_enabled`-mirroring behaviour of
+    /// the buffer-backed `upload` is exercised by every live cell load.
+    #[test]
+    fn global_only_meshes_are_never_rt_capable() {
+        let mut reg = MeshRegistry::new();
+        let vertices = [
+            Vertex::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0]),
+            Vertex::new([1.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0]),
+            Vertex::new([0.0, 1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [0.0, 1.0]),
+        ];
+        let handle = reg
+            .upload_scene_mesh_global_only(&vertices, &[0, 1, 2])
+            .expect("global-only upload needs no device");
+
+        let mesh = reg.get(handle).expect("handle just returned by upload");
+        assert!(
+            !mesh.rt_capable,
+            "a mesh with no per-mesh buffers must never be reported RT-capable",
+        );
+        assert!(
+            mesh.index_buffer.is_none() && mesh.vertex_buffer.is_none(),
+            "global-only meshes intentionally carry no per-mesh buffers",
+        );
     }
 
     /// 40 chairs sharing one `chair.nif` cache entry: the first

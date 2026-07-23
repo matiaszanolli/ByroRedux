@@ -109,6 +109,21 @@ impl VulkanContext {
                         let Some(mesh) = self.mesh_registry.get(dc.mesh_handle) else {
                             continue;
                         };
+                        // Only meshes uploaded RT-capable may back a BLAS: their
+                        // index buffer is the AS build input, and without
+                        // `SHADER_DEVICE_ADDRESS |
+                        // ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR` both
+                        // the device-address query and the build are invalid
+                        // (VUID-VkBufferDeviceAddressInfo-buffer-02601 /
+                        // -geometry-03673). Skinned effect-shader proxies and
+                        // decals are uploaded `for_rt = false` precisely so rays
+                        // don't hit their non-physical hulls; the static BLAS
+                        // path already gates on the same flag, so this keeps the
+                        // two paths consistent instead of ray-tracing a proxy
+                        // only when it happens to be skinned.
+                        if !mesh.rt_capable {
+                            continue;
+                        }
                         let push = super::super::skin_compute::SkinPushConstants {
                             vertex_offset: mesh.global_vertex_offset,
                             vertex_count: mesh.vertex_count,
