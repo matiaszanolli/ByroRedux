@@ -98,6 +98,41 @@ fn synthesize_static_trimesh(
     Some((shape, RigidBodyData::STATIC))
 }
 
+/// Synthesise a static trimesh collider from render geometry and attach it
+/// to a physics-only ghost entity.
+///
+/// This is the single collider-synthesis path for *all* renderable static
+/// geometry, whatever kind of cell it came from. Gamebryo/Creation split
+/// collision by cell type — interiors got authored `bhk` bodies while
+/// exterior landscape was a separate engine-side heightfield subsystem —
+/// but that split is an artifact of their architecture, not a property of
+/// the data: a triangle is a triangle. ByroRedux keeps one path so terrain
+/// and architecture cannot drift apart (pre-fix, exterior LAND tiles
+/// rendered with no collider at all and the player fell through the world).
+///
+/// The ghost carries no `MeshHandle`, so it takes no BLAS entry, no TLAS
+/// instance, and no render cost — Rapier only needs `CollisionShape` +
+/// `RigidBodyData` + `GlobalTransform`. Returns `true` when a collider was
+/// actually spawned. See R6a-stale-14-collider-partial.
+pub(crate) fn spawn_trimesh_collider_ghost(
+    world: &mut World,
+    positions: &[[f32; 3]],
+    mesh_indices: &[u32],
+    pos: Vec3,
+    rot: Quat,
+    scale: f32,
+) -> bool {
+    let Some((shape, body)) = synthesize_static_trimesh(positions, mesh_indices, scale) else {
+        return false;
+    };
+    let ghost = world.spawn();
+    world.insert(ghost, Transform::new(pos, rot, scale));
+    world.insert(ghost, GlobalTransform::new(pos, rot, scale));
+    world.insert(ghost, shape);
+    world.insert(ghost, body);
+    true
+}
+
 /// Count NIF lights that would survive `is_spawnable_nif_light`. The
 /// ESM-fallback gate uses this instead of `nif_lights.is_empty()` so
 /// a NIF carrying only zero-colour placeholders still receives the
@@ -1350,26 +1385,18 @@ fn spawn_mesh_instance(
         && mesh.positions.len() >= 3
         && mesh.indices.len() >= 3
     {
-        if let Some((shape, body)) =
-            synthesize_static_trimesh(&mesh.positions, &mesh.indices, final_scale)
-        {
-            // Spawn a separate physics-only ghost entity — matches the bhk
-            // collision pattern at the top of this function (lines 479-487).
-            // The render `entity` keeps its MeshHandle and enters BLAS+TLAS
-            // normally (restoring RT shadows/GI on FO4/Starfield architecture).
-            // The ghost has no MeshHandle → no BLAS entry, no TLAS instance,
-            // no render cost. Rapier only needs CollisionShape + RigidBodyData
-            // + GlobalTransform, which the ghost carries.
-            // R6a-stale-14-collider-partial fix.
-            let ghost = world.spawn();
-            world.insert(ghost, Transform::new(final_pos, final_rot, final_scale));
-            world.insert(
-                ghost,
-                GlobalTransform::new(final_pos, final_rot, final_scale),
-            );
-            world.insert(ghost, shape);
-            world.insert(ghost, body);
-        }
+        // Shared with the exterior LAND path — see
+        // `spawn_trimesh_collider_ghost`. The render `entity` keeps its
+        // MeshHandle and enters BLAS+TLAS normally (RT shadows/GI on
+        // FO4/Starfield architecture); the ghost is physics-only.
+        spawn_trimesh_collider_ghost(
+            world,
+            &mesh.positions,
+            &mesh.indices,
+            final_pos,
+            final_rot,
+            final_scale,
+        );
     }
     // Attach ESM light_data ONLY if the NIF didn't actually spawn
     // any lights (avoids duplicates) and only on the first mesh

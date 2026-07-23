@@ -17,6 +17,7 @@ use std::collections::HashMap;
 
 use byroredux_core::ecs::{GlobalTransform, MeshHandle, TextureHandle, Transform, World};
 use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
+use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
@@ -523,6 +524,33 @@ pub(super) fn spawn_terrain_mesh(
         entity,
         byroredux_core::ecs::components::RenderLayer::Architecture,
     );
+
+    // ...and being the floor, it is also collision. Terrain goes through the
+    // exact same collider synthesis as every other static mesh — Gamebryo
+    // treated exterior landscape as a separate physics subsystem from
+    // interior `bhk` bodies, but that distinction buys us nothing and only
+    // created a class of geometry that rendered without being solid.
+    //
+    // The tile's vertices are already world-space Y-up (`zup_to_yup_pos`
+    // above) and the render entity sits at `Transform::IDENTITY`, so the
+    // ghost takes an identity placement at unit scale and its collider
+    // lands exactly on the drawn surface.
+    let positions: Vec<[f32; 3]> = vertices.iter().map(|v| v.position).collect();
+    if !crate::cell_loader::spawn::spawn_trimesh_collider_ghost(
+        world,
+        &positions,
+        &indices,
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+    ) {
+        log::warn!(
+            "Terrain ({},{}): collider synthesis produced no triangles — \
+             tile renders but is not solid",
+            grid_x,
+            grid_y,
+        );
+    }
 
     log::debug!(
         "Terrain mesh ({},{}): {} verts, {} tris, height range {:.0}–{:.0}",
