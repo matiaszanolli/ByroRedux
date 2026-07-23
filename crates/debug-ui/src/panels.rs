@@ -11,6 +11,8 @@
 
 use egui::{Color32, Context, Window};
 
+use byroredux_core::settings::{SettingChange, SettingControl, SettingEntry, SettingValue};
+
 use crate::PanelState;
 
 /// Read-only snapshot of the engine-side state the panels render.
@@ -20,6 +22,9 @@ use crate::PanelState;
 #[derive(Default, Clone)]
 pub struct PanelSnapshot {
     pub metrics: Option<MetricsSnapshotView>,
+    /// Deterministically ordered clone of the universal settings registry.
+    /// Settings are small and only cloned while the overlay is visible.
+    pub settings: Vec<SettingEntry>,
     /// `(entity_id, name)` pairs. `None` until the operator opens
     /// the Entities panel — populating this on every frame would
     /// be unnecessary work for an overlay that's hidden most of
@@ -62,6 +67,8 @@ pub struct PanelOutputs {
     /// `CommandRegistry`. The binary translates each into the same
     /// path the debug-server's `Eval` request takes.
     pub console_evals: Vec<String>,
+    /// Validated by the universal registry after the egui frame completes.
+    pub setting_changes: Vec<SettingChange>,
     /// True when the operator asked to refresh the entity list.
     /// The binary rebuilds the snapshot's `entities` next frame.
     pub refresh_entities: bool,
@@ -76,7 +83,7 @@ pub enum QueuedLoad {
     Nif { path: String, label: Option<String> },
 }
 
-/// Top-level draw — orchestrates the four panel windows. Called by
+/// Top-level draw — orchestrates the five panel tabs. Called by
 /// the binary inside `DebugUiState::run`'s closure.
 pub fn draw(
     ctx: &Context,
@@ -94,6 +101,7 @@ pub fn draw(
                 ui.selectable_value(&mut state.active_tab, PanelTab::Loader, "Loader");
                 ui.selectable_value(&mut state.active_tab, PanelTab::Entities, "Entities");
                 ui.selectable_value(&mut state.active_tab, PanelTab::Console, "Console");
+                ui.selectable_value(&mut state.active_tab, PanelTab::Settings, "Settings");
             });
             ui.separator();
 
@@ -102,6 +110,7 @@ pub fn draw(
                 PanelTab::Loader => draw_loader(ui, state, outputs),
                 PanelTab::Entities => draw_entities(ui, snapshot.entities.as_deref(), outputs),
                 PanelTab::Console => draw_console(ui, state, outputs),
+                PanelTab::Settings => draw_settings(ui, &snapshot.settings, state, outputs),
             }
         });
 }
@@ -115,6 +124,7 @@ pub enum PanelTab {
     Loader,
     Entities,
     Console,
+    Settings,
 }
 
 fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
@@ -354,6 +364,154 @@ fn draw_console(ui: &mut egui::Ui, state: &mut PanelState, outputs: &mut PanelOu
     }
 }
 
+fn draw_settings(
+    ui: &mut egui::Ui,
+    settings: &[SettingEntry],
+    state: &mut PanelState,
+    outputs: &mut PanelOutputs,
+) {
+    ui.label("Universal engine settings — shared across every supported game.");
+    ui.add_space(4.0);
+    ui.add(
+        egui::TextEdit::singleline(&mut state.settings_filter)
+            .hint_text("Filter settings…")
+            .desired_width(f32::INFINITY),
+    );
+    ui.separator();
+
+    if settings.is_empty() {
+        ui.label("No settings are registered yet.");
+        return;
+    }
+
+    let filter = state.settings_filter.trim().to_lowercase();
+    let mut visible_count = 0usize;
+    let mut current_section = String::new();
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for entry in settings {
+                if !setting_matches(entry, &filter) {
+                    continue;
+                }
+                visible_count += 1;
+                if current_section != entry.section {
+                    if !current_section.is_empty() {
+                        ui.add_space(8.0);
+                    }
+                    current_section.clone_from(&entry.section);
+                    ui.heading(&entry.section);
+                }
+
+                ui.group(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            let mut title = egui::RichText::new(&entry.label).strong();
+                            if entry.restart_required {
+                                title = title.color(Color32::YELLOW);
+                            }
+                            ui.label(title);
+                            if !entry.description.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(&entry.description)
+                                        .small()
+                                        .color(Color32::GRAY),
+                                );
+                            }
+                            ui.label(
+                                egui::RichText::new(&entry.id)
+                                    .small()
+                                    .monospace()
+                                    .color(Color32::DARK_GRAY),
+                            );
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if entry.value != entry.default && ui.small_button("Reset").clicked() {
+                                outputs
+                                    .setting_changes
+                                    .push(SettingChange::new(&entry.id, entry.default.clone()));
+                            }
+                            if let Some(value) = draw_setting_control(ui, entry) {
+                                outputs
+                                    .setting_changes
+                                    .push(SettingChange::new(&entry.id, value));
+                            }
+                        });
+                    });
+                    if entry.restart_required {
+                        ui.label(
+                            egui::RichText::new("Applied on next launch")
+                                .small()
+                                .color(Color32::YELLOW),
+                        );
+                    }
+                });
+                ui.add_space(4.0);
+            }
+        });
+
+    if visible_count == 0 {
+        ui.label("No settings match this filter.");
+    }
+}
+
+fn draw_setting_control(ui: &mut egui::Ui, entry: &SettingEntry) -> Option<SettingValue> {
+    match (&entry.control, &entry.value) {
+        (SettingControl::Toggle, SettingValue::Bool(current)) => {
+            let mut value = *current;
+            ui.checkbox(&mut value, "")
+                .changed()
+                .then_some(SettingValue::Bool(value))
+        }
+        (
+            SettingControl::Slider {
+                min,
+                max,
+                step,
+                unit,
+            },
+            SettingValue::Number(current),
+        ) => {
+            let mut value = *current;
+            let response = ui.add(
+                egui::Slider::new(&mut value, *min..=*max)
+                    .step_by(*step as f64)
+                    .suffix(unit.as_str()),
+            );
+            response.changed().then_some(SettingValue::Number(value))
+        }
+        (SettingControl::Choice { options }, SettingValue::Choice(current)) => {
+            let mut value = current.clone();
+            let selected_label = options
+                .iter()
+                .find(|option| option.value == value)
+                .map(|option| option.label.clone())
+                .unwrap_or_else(|| value.clone());
+            egui::ComboBox::from_id_salt(("universal_setting", &entry.id))
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    for option in options {
+                        ui.selectable_value(&mut value, option.value.clone(), &option.label);
+                    }
+                });
+            (value != *current).then_some(SettingValue::Choice(value))
+        }
+        _ => {
+            ui.colored_label(Color32::RED, "Invalid setting");
+            None
+        }
+    }
+}
+
+fn setting_matches(entry: &SettingEntry, filter: &str) -> bool {
+    filter.is_empty()
+        || entry.id.to_lowercase().contains(filter)
+        || entry.section.to_lowercase().contains(filter)
+        || entry.label.to_lowercase().contains(filter)
+        || entry.description.to_lowercase().contains(filter)
+}
+
 /// Safe `used / total` clamped to [0, 1]. Zero `total` collapses to
 /// zero so the progress bar doesn't NaN.
 fn ratio(used: u64, total: u64) -> f64 {
@@ -361,4 +519,24 @@ fn ratio(used: u64, total: u64) -> f64 {
         return 0.0;
     }
     (used as f64 / total as f64).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_filter_matches_metadata_case_insensitively() {
+        let entry = SettingEntry::toggle(
+            "interface.show_fps",
+            "Interface",
+            "Show FPS",
+            "Display the current frame rate.",
+            false,
+        );
+        assert!(setting_matches(&entry, "fps"));
+        assert!(setting_matches(&entry, "interface"));
+        assert!(setting_matches(&entry, "frame rate"));
+        assert!(!setting_matches(&entry, "audio"));
+    }
 }

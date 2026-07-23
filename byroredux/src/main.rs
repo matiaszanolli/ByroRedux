@@ -43,6 +43,7 @@ use byroredux_core::ecs::{
     ActiveCamera, Camera, DebugStats, DeltaTime, EngineConfig, Scheduler, ScratchTelemetry,
     SkinCoverageStats, TotalTime, World,
 };
+use byroredux_core::settings::SettingsRegistry;
 use byroredux_core::string::StringPool;
 use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::{DrawCommand, FrameInputs};
@@ -276,6 +277,14 @@ impl App {
         };
 
         boot::install_runtime_registries(&mut world, &scheduler);
+
+        // Universal settings live in core and are presented by the on-screen
+        // overlay. Subsystems can register additional entries here without
+        // teaching the Settings tab about renderer/game-specific resources.
+        let mut settings = SettingsRegistry::default();
+        byroredux_debug_ui::register_builtin_settings(&mut settings)
+            .expect("debug-UI built-in settings must be valid and unique");
+        world.insert_resource(settings);
 
         Self {
             window: None,
@@ -806,6 +815,7 @@ impl ApplicationHandler for App {
                     log::warn!("debug-UI overlay init failed: {e:#}");
                 }
                 let debug_ui_state = byroredux_debug_ui::DebugUiState::new(event_loop, &win);
+                debug_ui_state.sync_registered_settings(&self.world.resource::<SettingsRegistry>());
                 self.debug_ui = Some(debug_ui_state);
 
                 self.renderer = Some(ctx);
@@ -1472,24 +1482,30 @@ fn build_debug_ui_snapshot(
         None
     };
 
-    byroredux_debug_ui::PanelSnapshot { metrics, entities }
+    let settings = world
+        .try_resource::<SettingsRegistry>()
+        .map(|registry| registry.entries().cloned().collect())
+        .unwrap_or_default();
+
+    byroredux_debug_ui::PanelSnapshot {
+        metrics,
+        settings,
+        entities,
+    }
 }
 
-/// Phase 4b — apply the [`PanelOutputs`] the overlay produced back
-/// to the world: queued loads go onto the same
-/// `PendingDebugLoadSlot` the debug-server's `Load*` handlers
-/// write, console expressions dispatch through the
-/// `CommandRegistry`. The refresh flag latches for the next frame's
-/// snapshot build. Each console eval's response lines are appended
-/// to the overlay's scrollback so the operator sees the output
-/// inline in the Console tab (without it the eval was a black hole —
-/// the input echo showed but nothing came back).
+/// Apply the [`PanelOutputs`] the overlay produced back to the world. Queued
+/// loads use the debug server's `PendingDebugLoadSlot`, setting changes are
+/// validated by the universal registry, and console expressions dispatch
+/// through the shared `CommandRegistry`. Refresh requests latch for the next
+/// snapshot. Console responses are appended to the overlay scrollback.
 fn apply_debug_ui_outputs(
     world: &mut World,
     outputs: byroredux_debug_ui::PanelOutputs,
     refresh_entities_flag: &mut bool,
     debug_ui: Option<&mut byroredux_debug_ui::DebugUiState>,
 ) {
+    let mut debug_ui = debug_ui;
     if outputs.refresh_entities {
         *refresh_entities_flag = true;
     }
@@ -1500,6 +1516,27 @@ fn apply_debug_ui_outputs(
                 byroredux_debug_ui::QueuedLoad::Nif { path, label } => {
                     slot.push(byroredux_core::ecs::PendingDebugLoad::Nif { path, label });
                 }
+            }
+        }
+    }
+    for change in outputs.setting_changes {
+        let result = {
+            let mut settings = world.resource_mut::<SettingsRegistry>();
+            settings.set(&change.id, change.value.clone())
+        };
+        match result {
+            Ok(_) => {
+                if let Some(ui) = debug_ui.as_deref_mut() {
+                    ui.apply_setting_change(&change);
+                }
+                log::info!(
+                    "universal setting changed: {} = {:?}",
+                    change.id,
+                    change.value
+                );
+            }
+            Err(error) => {
+                log::warn!("rejected universal setting change: {error}");
             }
         }
     }

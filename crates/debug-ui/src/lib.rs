@@ -4,7 +4,7 @@
 //! that runs on every frame, an `egui-ash-renderer`-backed Vulkan
 //! pipeline that draws over the composite output, an F-key toggle,
 //! and a stub panel that proves the round trip. Phase 4b fills in
-//! the actual Metrics / Loader / Entities / Console panels.
+//! the actual Metrics / Loader / Entities / Console / Settings panels.
 //!
 //! The overlay is driven through three touch points on the binary's
 //! main loop:
@@ -33,12 +33,36 @@
 pub mod panels;
 
 use byroredux_core::ecs::Resource;
+use byroredux_core::settings::{
+    SettingChange, SettingEntry, SettingValue, SettingsError, SettingsRegistry,
+};
 use egui_winit::winit;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 pub use panels::{PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad};
+
+/// Stable registry key for the overlay's own scale control. Other engine
+/// modules can register settings beside it without depending on this crate.
+pub const OVERLAY_SCALE_SETTING_ID: &str = "interface.overlay_scale";
+
+/// Register settings owned by the overlay itself. The binary calls this while
+/// assembling the universal [`SettingsRegistry`]; renderer, audio, input, and
+/// gameplay modules can add their own entries through the same API over time.
+pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), SettingsError> {
+    registry.register(SettingEntry::slider(
+        OVERLAY_SCALE_SETTING_ID,
+        "Interface",
+        "Overlay scale",
+        "Scale the complete on-screen console and settings interface.",
+        1.0,
+        0.75,
+        2.0,
+        0.05,
+        "×",
+    ))
+}
 
 /// Persistent egui state shared between the App's event loop and
 /// the renderer's draw pass.
@@ -74,6 +98,8 @@ pub struct PanelState {
     pub loader_path: String,
     pub loader_label: String,
     pub console_input: String,
+    /// Case-insensitive filter for the universal Settings tab.
+    pub settings_filter: String,
     /// Bounded scrollback for the Console tab.
     pub console_history: Vec<String>,
 }
@@ -121,6 +147,25 @@ impl DebugUiState {
         if self.panels.console_history.len() > CONSOLE_HISTORY_CAP {
             let overflow = self.panels.console_history.len() - CONSOLE_HISTORY_CAP;
             self.panels.console_history.drain(..overflow);
+        }
+    }
+
+    /// Apply settings that are owned by the overlay presentation layer.
+    /// Unknown IDs deliberately no-op so every universal setting change can
+    /// flow through this hook without coupling the UI to other subsystems.
+    pub fn apply_setting_change(&self, change: &SettingChange) {
+        if change.id == OVERLAY_SCALE_SETTING_ID {
+            if let SettingValue::Number(scale) = &change.value {
+                self.egui_ctx.set_zoom_factor(*scale);
+            }
+        }
+    }
+
+    /// Reapply overlay-owned values after egui is recreated, for example when
+    /// the platform resumes and creates a new window/context.
+    pub fn sync_registered_settings(&self, registry: &SettingsRegistry) {
+        if let Some(entry) = registry.get(OVERLAY_SCALE_SETTING_ID) {
+            self.apply_setting_change(&SettingChange::new(&entry.id, entry.value.clone()));
         }
     }
 

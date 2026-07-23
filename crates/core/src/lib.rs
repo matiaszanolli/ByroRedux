@@ -18,6 +18,7 @@ pub mod console;
 pub mod ecs;
 pub mod form_id;
 pub mod math;
+pub mod settings;
 pub mod stealth;
 pub mod string;
 pub mod types;
