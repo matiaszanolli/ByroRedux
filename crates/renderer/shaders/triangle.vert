@@ -56,6 +56,13 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
     GpuInstance instances[];
 };
 
+// Previous rigid transforms aligned to the CURRENT frame's sorted instance
+// array. Keeping this separate avoids expanding GpuInstance for fragment and
+// ray-query consumers. New instances are seeded with their current transform.
+layout(std430, set = 1, binding = 18) readonly buffer PreviousModelBuffer {
+    mat4 previousModels[];
+};
+
 // Camera UBO (set 1, binding 1) — per-frame, shared across all draws.
 // MUST match `GpuCamera` in `crates/renderer/src/vulkan/scene_buffer.rs`
 // in both field order AND field count. Pre-#1028 (R-D6-01) this block
@@ -106,9 +113,8 @@ layout(location = 5) flat out int fragInstanceIndex;
 // varyings (not the motion vector itself) avoids perspective interpolation
 // artifacts near edges. Skinned vertices reproject through last frame's
 // bone palette via `bones_prev` (SH-3 / #641); rigid vertices reuse the
-// per-instance model matrix (treated as static across the frame pair —
-// fast-moving rigid actors / decals would still mis-reproject, tracked
-// separately).
+// per-instance previous-model buffer, keyed CPU-side by stable entity id before
+// being realigned to this frame's instance order.
 layout(location = 6) out vec4 fragCurrClipPos;
 layout(location = 7) out vec4 fragPrevClipPos;
 // Splat weights forwarded flat — terrain tile data is constant across
@@ -128,16 +134,14 @@ void main() {
 
     // Rigid vs skinned vertex selection. `xform` is the current-frame
     // transform; `xformPrev` is the same composition through the prior
-    // frame's bone palette (SH-3 / #641). For rigid vertices we reuse
-    // the per-instance model matrix on both frames — `GpuInstance` is
-    // rebuilt every frame with the current transform, so this is exact
-    // for static geometry and a one-frame lag on moving rigid bodies.
+    // frame's bone palette (SH-3 / #641). Rigid vertices read the previous
+    // model from a parallel SSBO realigned to the current draw order.
     float wsum = inBoneWeights.x + inBoneWeights.y + inBoneWeights.z + inBoneWeights.w;
     mat4 xform;
     mat4 xformPrev;
     if (wsum < 0.001) {
         xform = inst.model;
-        xformPrev = inst.model;
+        xformPrev = previousModels[gl_InstanceIndex];
     } else {
         uint base = inst.boneOffset;
         // #651 / SH-6 SIBLING — same per-vertex bone-index clamp as

@@ -4,7 +4,7 @@
 //! PERF-D8-NEW-01). Each test mirrors a counterpart in
 //! `material_hash_tests.rs`.
 
-use super::descriptors::hash_instance_slice;
+use super::descriptors::{hash_instance_slice, hash_previous_model_slice};
 use super::gpu_types::GpuInstance;
 
 fn sample_instance(seed: u32) -> GpuInstance {
@@ -75,4 +75,19 @@ fn empty_slice_hash_is_deterministic() {
     let h1 = hash_instance_slice(&[]);
     let h2 = hash_instance_slice(&[]);
     assert_eq!(h1, h2);
+}
+
+#[test]
+fn previous_model_hash_tracks_transform_and_length_changes() {
+    let identity = GpuInstance::default().model;
+    let mut moved = identity;
+    moved[3][0] = 1.0;
+    assert_ne!(
+        hash_previous_model_slice(&[identity]),
+        hash_previous_model_slice(&[moved]),
+    );
+    assert_ne!(
+        hash_previous_model_slice(&[identity]),
+        hash_previous_model_slice(&[identity, identity]),
+    );
 }

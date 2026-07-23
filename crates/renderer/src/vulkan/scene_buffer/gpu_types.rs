@@ -13,6 +13,12 @@ pub struct GpuTerrainTile {
     pub layer_texture_index: [u32; 8],
 }
 
+/// Previous rigid-instance transform, aligned one-for-one with the current
+/// frame's [`GpuInstance`] array. Kept in a vertex-only SSBO so adding motion
+/// history does not inflate the hot instance record read by fragment and ray
+/// hit paths.
+pub type GpuPreviousModel = [[f32; 4]; 4];
+
 /// Per-instance data uploaded to the instance SSBO each frame.
 ///
 /// The vertex shader reads `instances[gl_InstanceIndex]` instead of push

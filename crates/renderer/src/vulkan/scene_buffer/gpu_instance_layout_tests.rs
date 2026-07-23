@@ -461,6 +461,23 @@ fn triangle_vert_uses_bones_prev_for_motion_vectors() {
     );
 }
 
+#[test]
+fn triangle_vert_uses_previous_rigid_model_buffer() {
+    let src = include_str!("../../../shaders/triangle.vert");
+    assert!(
+        src.contains("binding = 18) readonly buffer PreviousModelBuffer"),
+        "rigid motion requires the vertex-only previous-model SSBO"
+    );
+    assert!(
+        src.contains("xformPrev = previousModels[gl_InstanceIndex]"),
+        "rigid vertices must use the previous transform aligned to the current instance index"
+    );
+    assert!(
+        !src.contains("xformPrev = inst.model"),
+        "reusing the current model erases rigid object motion"
+    );
+}
+
 /// #1486 / REN2-01 regression. Bone palettes are uploaded in ABSOLUTE
 /// world space (`skin_vertices.comp` builds the skinned BLAS from the
 /// same palette and the TLAS is absolute), but `viewProj` has been

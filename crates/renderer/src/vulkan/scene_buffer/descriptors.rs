@@ -260,6 +260,10 @@ impl super::buffers::SceneBuffers {
             buf.destroy(device, allocator);
         }
         self.instance_buffers.clear();
+        for buf in &mut self.previous_model_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.previous_model_buffers.clear();
         for buf in &mut self.material_buffers {
             buf.destroy(device, allocator);
         }
@@ -328,6 +332,19 @@ pub(super) fn hash_instance_slice(instances: &[super::gpu_types::GpuInstance]) -
     // so an unintended padding insert would surface there first.
     let bytes: &[u8] =
         unsafe { std::slice::from_raw_parts(instances.as_ptr() as *const u8, byte_size) };
+    hasher.write(bytes);
+    hasher.finish()
+}
+
+/// Content hash for the previous-rigid-model upload dirty gate. The payload is
+/// a tightly packed slice of 16 `f32` matrix lanes with no implicit padding.
+pub(super) fn hash_previous_model_slice(models: &[super::gpu_types::GpuPreviousModel]) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = rustc_hash::FxHasher::default();
+    let byte_size = std::mem::size_of_val(models);
+    // SAFETY: nested fixed-size f32 arrays are contiguous and contain no
+    // padding; `byte_size` is exactly the slice footprint.
+    let bytes = unsafe { std::slice::from_raw_parts(models.as_ptr().cast::<u8>(), byte_size) };
     hasher.write(bytes);
     hasher.finish()
 }

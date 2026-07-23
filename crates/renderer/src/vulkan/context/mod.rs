@@ -1072,6 +1072,13 @@ pub struct VulkanContext {
     /// heap-allocating fresh each `draw_frame`. Cleared + reserved at the
     /// top of draw_frame. See issue #243.
     gpu_instances_scratch: Vec<scene_buffer::GpuInstance>,
+    /// Previous rigid transforms keyed by stable draw/entity id. Updated only
+    /// after queue submission succeeds, matching temporal GPU history.
+    previous_rigid_models: HashMap<u32, [f32; 16]>,
+    /// Current-frame map reused while assembling the next submitted history.
+    current_rigid_models_scratch: HashMap<u32, [f32; 16]>,
+    /// Previous transforms realigned to this frame's sorted instance indices.
+    previous_models_scratch: Vec<scene_buffer::GpuPreviousModel>,
     /// Per-frame scratch buffer for draw batch metadata. Same lifecycle
     /// as `gpu_instances_scratch`. See issue #243.
     batches_scratch: Vec<draw::DrawBatch>,
@@ -2671,6 +2678,9 @@ impl VulkanContext {
             prev_camera_position: [0.0; 3],
             prev_render_origin: [0.0; 3],
             gpu_instances_scratch: Vec::new(),
+            previous_rigid_models: HashMap::new(),
+            current_rigid_models_scratch: HashMap::new(),
+            previous_models_scratch: Vec::new(),
             batches_scratch: Vec::new(),
             indirect_draws_scratch: Vec::new(),
             skin_dispatch_seen_scratch: std::collections::HashSet::new(),
@@ -2825,6 +2835,9 @@ impl VulkanContext {
         if let Some(ref mut fsr) = self.fsr_temporal {
             fsr.signal_reset();
         }
+        // The first frame after a discontinuity must not encode object motion
+        // against transforms from the retired scene/camera history.
+        self.previous_rigid_models.clear();
     }
 
     /// Snapshot every persistent CPU-side scratch `Vec` owned by the
@@ -2851,6 +2864,12 @@ impl VulkanContext {
             len: self.gpu_instances_scratch.len(),
             capacity: self.gpu_instances_scratch.capacity(),
             elem_size_bytes: size_of::<scene_buffer::GpuInstance>(),
+        });
+        rows.push(ScratchRow {
+            name: "previous_models_scratch",
+            len: self.previous_models_scratch.len(),
+            capacity: self.previous_models_scratch.capacity(),
+            elem_size_bytes: size_of::<scene_buffer::GpuPreviousModel>(),
         });
         rows.push(ScratchRow {
             name: "batches_scratch",

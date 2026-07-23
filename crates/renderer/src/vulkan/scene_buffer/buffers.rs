@@ -95,6 +95,10 @@ pub struct SceneBuffers {
     /// One SSBO per frame-in-flight (per-instance data for instanced drawing).
     /// Each entry contains model matrix + texture index + bone offset.
     pub(super) instance_buffers: Vec<GpuBuffer>,
+    /// Vertex-only previous rigid transforms, indexed exactly like
+    /// [`Self::instance_buffers`]. A separate buffer preserves the compact
+    /// instance ABI used by fragment and ray-query paths.
+    pub(super) previous_model_buffers: Vec<GpuBuffer>,
     /// One UBO per frame-in-flight holding the per-TOD-interpolated
     /// 6-axis directional ambient cube (`GpuDalcCube`). Sourced from
     /// Skyrim WTHR.DALC; the cube's `flags.x` gates the consumer so
@@ -121,6 +125,7 @@ pub struct SceneBuffers {
     /// interiors recompute the same byte-identical slice each frame.
     /// See #1134 / PERF-D8-NEW-01 and #878 for the template.
     pub(super) last_uploaded_instance_hash: [Option<u64>; MAX_FRAMES_IN_FLIGHT],
+    pub(super) last_uploaded_previous_model_hash: [Option<u64>; MAX_FRAMES_IN_FLIGHT],
     /// One `INDIRECT_BUFFER`-usage buffer per frame-in-flight for
     /// `vkCmdDrawIndexedIndirect`. Holds
     /// `VkDrawIndexedIndirectCommand` entries uploaded CPU-side each
@@ -366,6 +371,17 @@ pub(crate) fn build_scene_descriptor_bindings(
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT),
     );
+    // Binding 18: previous rigid-instance model matrices (vertex shader).
+    // Entries align with binding 4's current-frame instance array after
+    // sorting/batching, so gl_InstanceIndex addresses both without relying on
+    // last frame's unstable draw order.
+    bindings.push(
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(18)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX),
+    );
     bindings
 }
 
@@ -393,6 +409,8 @@ struct SceneRenderBuffers {
     bone_buf_size: vk::DeviceSize,
     instance_buffers: Vec<GpuBuffer>,
     instance_buf_size: vk::DeviceSize,
+    previous_model_buffers: Vec<GpuBuffer>,
+    previous_model_buf_size: vk::DeviceSize,
     indirect_buffers: Vec<GpuBuffer>,
     material_buffers: Vec<GpuBuffer>,
     material_buf_size: vk::DeviceSize,
@@ -424,6 +442,8 @@ fn allocate_scene_render_buffers(
     let bone_buf_size = (std::mem::size_of::<[[f32; 4]; 4]>() * MAX_TOTAL_BONES) as vk::DeviceSize;
     // Instance SSBO: per-instance model matrix + texture index + bone offset.
     let instance_buf_size = (std::mem::size_of::<GpuInstance>() * MAX_INSTANCES) as vk::DeviceSize;
+    let previous_model_buf_size =
+        (std::mem::size_of::<GpuPreviousModel>() * MAX_INSTANCES) as vk::DeviceSize;
     // Material SSBO: deduplicated `GpuMaterial` table (R1 Phase 4).
     let material_buf_size = (std::mem::size_of::<super::super::material::GpuMaterial>()
         * MAX_MATERIALS) as vk::DeviceSize;
@@ -446,6 +466,7 @@ fn allocate_scene_render_buffers(
     let mut bone_world_staging_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut bone_world_device_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    let mut previous_model_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut indirect_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut material_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut dalc_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -492,6 +513,12 @@ fn allocate_scene_render_buffers(
             device,
             allocator,
             instance_buf_size,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+        )?);
+        previous_model_buffers.push(GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            previous_model_buf_size,
             vk::BufferUsageFlags::STORAGE_BUFFER,
         )?);
         indirect_buffers.push(GpuBuffer::create_host_visible(
@@ -573,6 +600,8 @@ fn allocate_scene_render_buffers(
         bone_buf_size,
         instance_buffers,
         instance_buf_size,
+        previous_model_buffers,
+        previous_model_buf_size,
         indirect_buffers,
         material_buffers,
         material_buf_size,
@@ -742,6 +771,11 @@ fn create_scene_descriptors(
             offset: 0,
             range: bufs.instance_buf_size,
         }];
+        let previous_model_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.previous_model_buffers[i].buffer,
+            offset: 0,
+            range: bufs.previous_model_buf_size,
+        }];
         let terrain_tile_buf_info = [vk::DescriptorBufferInfo {
             buffer: bufs.terrain_tile_buffer.buffer,
             offset: 0,
@@ -773,6 +807,7 @@ fn create_scene_descriptors(
             write_storage_buffer(set, 12, &bone_prev_buf_info),
             write_storage_buffer(set, 13, &material_buf_info),
             write_uniform_buffer(set, 14, &dalc_buf_info),
+            write_storage_buffer(set, 18, &previous_model_buf_info),
         ];
         unsafe {
             // SAFETY: `device` is live; `set` is one of the just-allocated device-owned
@@ -859,6 +894,7 @@ impl SceneBuffers {
             bind_inverse_upload_staging: bufs.bind_inverse_upload_staging,
             bone_input_upload_bytes,
             instance_buffers: bufs.instance_buffers,
+            previous_model_buffers: bufs.previous_model_buffers,
             dalc_buffers: bufs.dalc_buffers,
             material_buffers: bufs.material_buffers,
             indirect_buffers: bufs.indirect_buffers,
@@ -871,6 +907,7 @@ impl SceneBuffers {
             tlas_written: vec![false; MAX_FRAMES_IN_FLIGHT],
             last_uploaded_material_hash: [None; MAX_FRAMES_IN_FLIGHT],
             last_uploaded_instance_hash: [None; MAX_FRAMES_IN_FLIGHT],
+            last_uploaded_previous_model_hash: [None; MAX_FRAMES_IN_FLIGHT],
             last_uploaded_indirect_hash: [None; MAX_FRAMES_IN_FLIGHT],
             last_uploaded_light_hash: [None; MAX_FRAMES_IN_FLIGHT],
         })

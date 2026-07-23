@@ -1415,6 +1415,13 @@ impl VulkanContext {
         let mut gpu_instances: Vec<GpuInstance> = std::mem::take(&mut self.gpu_instances_scratch);
         gpu_instances.clear();
         gpu_instances.reserve(draw_commands.len() + 1); // +1 for optional UI quad
+        let mut previous_models = std::mem::take(&mut self.previous_models_scratch);
+        previous_models.clear();
+        previous_models.reserve(draw_commands.len() + 1);
+        let mut current_rigid_models =
+            std::mem::take(&mut self.current_rigid_models_scratch);
+        current_rigid_models.clear();
+        current_rigid_models.reserve(draw_commands.len());
         let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);
         batches.clear();
         batches.reserve(draw_commands.len());
@@ -1433,6 +1440,18 @@ impl VulkanContext {
             let instance_idx = gpu_instances.len() as u32;
             let m = &draw_cmd.model_matrix;
             let skip_batch = !draw_cmd.in_raster || draw_cmd.is_water;
+            let current_model = rebase_model_matrix(m, render_origin);
+            let previous_source = if draw_cmd.bone_offset == 0 && !camera_cut {
+                self.previous_rigid_models
+                    .get(&draw_cmd.entity_id)
+                    .unwrap_or(m)
+            } else {
+                m
+            };
+            previous_models.push(rebase_model_matrix(previous_source, render_origin));
+            if draw_cmd.bone_offset == 0 {
+                current_rigid_models.insert(draw_cmd.entity_id, *m);
+            }
 
             // #1260 / PERF-D3-NEW-05 — flag-bit assembly is rasterizer-
             // only state. The non-uniform-scale dot products feed the
@@ -1567,17 +1586,7 @@ impl VulkanContext {
                 // into spikes). The shader adds render_origin back for the
                 // absolute world position. Columns 0-2 (rotation/scale) are
                 // unchanged; only the translation column (m[12..14]) shifts.
-                model: [
-                    [m[0], m[1], m[2], m[3]],
-                    [m[4], m[5], m[6], m[7]],
-                    [m[8], m[9], m[10], m[11]],
-                    [
-                        m[12] - render_origin.x,
-                        m[13] - render_origin.y,
-                        m[14] - render_origin.z,
-                        m[15],
-                    ],
-                ],
+                model: current_model,
                 texture_index: draw_cmd.texture_handle,
                 bone_offset: draw_cmd.bone_offset,
                 vertex_offset: mesh.global_vertex_offset,
@@ -1687,10 +1696,12 @@ impl VulkanContext {
         let ui_instance_idx =
             if let (Some(ui_tex), Some(_)) = (ui_texture_handle, self.ui_quad_handle) {
                 let idx = gpu_instances.len() as u32;
-                gpu_instances.push(GpuInstance {
+                let instance = GpuInstance {
                     texture_index: ui_tex,
                     ..GpuInstance::default()
-                });
+                };
+                previous_models.push(instance.model);
+                gpu_instances.push(instance);
                 Some(idx)
             } else {
                 None
@@ -1722,9 +1733,13 @@ impl VulkanContext {
         }
         // Upload all instance data (scene + UI) to the SSBO in one flush.
         if !gpu_instances.is_empty() {
+            debug_assert_eq!(gpu_instances.len(), previous_models.len());
             self.scene_buffers
                 .upload_instances(&self.device, frame, &gpu_instances)
                 .unwrap_or_else(|e| log::warn!("Failed to upload instances: {e}"));
+            self.scene_buffers
+                .upload_previous_models(&self.device, frame, &previous_models)
+                .unwrap_or_else(|e| log::warn!("Failed to upload previous models: {e}"));
         }
 
         // R1 Phase 4 — upload the deduplicated material table. The
@@ -2275,6 +2290,15 @@ impl VulkanContext {
         if let Some(ref mut taa) = self.taa {
             taa.mark_frame_completed();
         }
+        // Object-transform history follows successful GPU submission, not
+        // command recording or presentation. This mirrors TAA/SVGF history:
+        // a failed submit cannot advance the source frame motion reprojects.
+        std::mem::swap(
+            &mut self.previous_rigid_models,
+            &mut current_rigid_models,
+        );
+        current_rigid_models.clear();
+        self.current_rigid_models_scratch = current_rigid_models;
 
         // Present.
         let swapchains = [self.swapchain_state.swapchain];
@@ -2319,6 +2343,7 @@ impl VulkanContext {
         let working_instances = gpu_instances.len();
         let working_batches = batches.len();
         self.gpu_instances_scratch = gpu_instances;
+        self.previous_models_scratch = previous_models;
         self.batches_scratch = batches;
         super::super::acceleration::shrink_scratch_if_oversized(
             &mut self.gpu_instances_scratch,
@@ -2379,6 +2404,26 @@ impl VulkanContext {
     }
 }
 
+/// Rebase an absolute column-major model matrix into the current camera-relative
+/// render-origin space. Current and previous rigid transforms use the same
+/// origin so [`origin_corrected_prev_view_proj`] can project both coherently.
+fn rebase_model_matrix(
+    model: &[f32; 16],
+    render_origin: byroredux_core::math::Vec3,
+) -> scene_buffer::GpuPreviousModel {
+    [
+        [model[0], model[1], model[2], model[3]],
+        [model[4], model[5], model[6], model[7]],
+        [model[8], model[9], model[10], model[11]],
+        [
+            model[12] - render_origin.x,
+            model[13] - render_origin.y,
+            model[14] - render_origin.z,
+            model[15],
+        ],
+    ]
+}
+
 /// #1489 / REN2-04 — re-express last frame's camera-relative view-projection
 /// (built against render origin `prev_origin` = O₁) in the CURRENT frame's
 /// render-origin space (O₂). Geometry uploaded this frame is rebased by O₂,
@@ -2406,7 +2451,7 @@ fn origin_corrected_prev_view_proj(
 
 #[cfg(test)]
 mod prev_view_proj_origin_tests {
-    use super::origin_corrected_prev_view_proj;
+    use super::{origin_corrected_prev_view_proj, rebase_model_matrix};
     use byroredux_core::math::{Mat4, Vec3, Vec4};
 
     /// Build a plausible camera-relative view-projection for an eye near
@@ -2455,6 +2500,81 @@ mod prev_view_proj_origin_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn current_and_previous_rigid_models_share_current_render_origin() {
+        let origin = Vec3::new(4096.0, -8192.0, 12_288.0);
+        let current = Mat4::from_translation(Vec3::new(4106.0, -8172.0, 12_318.0));
+        let previous = Mat4::from_translation(Vec3::new(4104.0, -8172.0, 12_318.0));
+
+        let current_rebased = Mat4::from_cols_array_2d(&rebase_model_matrix(
+            &current.to_cols_array(),
+            origin,
+        ));
+        let previous_rebased = Mat4::from_cols_array_2d(&rebase_model_matrix(
+            &previous.to_cols_array(),
+            origin,
+        ));
+        assert_eq!(current_rebased.w_axis.truncate(), Vec3::new(10.0, 20.0, 30.0));
+        assert_eq!(previous_rebased.w_axis.truncate(), Vec3::new(8.0, 20.0, 30.0));
+    }
+}
+
+#[cfg(test)]
+mod rigid_motion_contract_tests {
+    use super::super::super::upscaling::engine_motion_to_fsr_pixels;
+    use ash::vk;
+    use byroredux_core::math::{Mat4, Vec3, Vec4};
+
+    fn uv(clip: Vec4) -> [f32; 2] {
+        let ndc = clip.truncate() / clip.w;
+        [ndc.x * 0.5 + 0.5, ndc.y * 0.5 + 0.5]
+    }
+
+    #[test]
+    fn stationary_rigid_vertex_has_zero_engine_and_fsr_motion() {
+        let point = Vec4::new(0.25, -0.5, 0.0, 1.0);
+        let model = Mat4::from_translation(Vec3::new(0.1, 0.2, 0.0));
+        let current_uv = uv(model * point);
+        let previous_uv = uv(model * point);
+        let engine = [
+            current_uv[0] - previous_uv[0],
+            current_uv[1] - previous_uv[1],
+        ];
+        assert_eq!(engine, [0.0, 0.0]);
+        assert_eq!(
+            engine_motion_to_fsr_pixels(
+                engine,
+                vk::Extent2D {
+                    width: 1920,
+                    height: 1080,
+                },
+            ),
+            [0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn moving_rigid_vertex_converts_to_previous_minus_current_pixels() {
+        let point = Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let previous_uv = uv(Mat4::IDENTITY * point);
+        let current_uv = uv(Mat4::from_translation(Vec3::new(0.02, -0.04, 0.0)) * point);
+        let engine = [
+            current_uv[0] - previous_uv[0],
+            current_uv[1] - previous_uv[1],
+        ];
+        let fsr = engine_motion_to_fsr_pixels(
+            engine,
+            vk::Extent2D {
+                width: 1000,
+                height: 500,
+            },
+        );
+        assert!((engine[0] - 0.01).abs() < 1.0e-6);
+        assert!((engine[1] + 0.02).abs() < 1.0e-6);
+        assert!((fsr[0] + 10.0).abs() < 1.0e-4);
+        assert!((fsr[1] - 10.0).abs() < 1.0e-4);
     }
 }
 

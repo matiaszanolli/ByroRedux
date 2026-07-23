@@ -11,6 +11,7 @@ use super::super::buffer::GpuBuffer;
 use super::buffers::LightHeader;
 use super::descriptors::{
     hash_indirect_slice, hash_instance_slice, hash_light_slice, hash_material_slice,
+    hash_previous_model_slice,
 };
 use super::*;
 use anyhow::{Context, Result};
@@ -576,6 +577,49 @@ impl super::buffers::SceneBuffers {
         // F8 (#1587) — flush only the written byte range, not the full allocation.
         buf.flush_range(device, 0, byte_size as vk::DeviceSize)?;
         self.last_uploaded_instance_hash[frame_index] = Some(hash);
+        Ok(())
+    }
+
+    /// Upload previous rigid transforms aligned with the current instance
+    /// array. New entities carry their current transform, producing zero
+    /// object velocity on first sight.
+    pub fn upload_previous_models(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        models: &[GpuPreviousModel],
+    ) -> Result<()> {
+        let count = models.len().min(MAX_INSTANCES);
+        if models.len() > MAX_INSTANCES {
+            log::warn!(
+                "Previous-model SSBO overflow: {} transforms submitted, capped at {}",
+                models.len(),
+                MAX_INSTANCES,
+            );
+        }
+        if count == 0 {
+            return Ok(());
+        }
+
+        let hash = hash_previous_model_slice(&models[..count]);
+        if self.last_uploaded_previous_model_hash[frame_index] == Some(hash) {
+            return Ok(());
+        }
+
+        let buf = &mut self.previous_model_buffers[frame_index];
+        let mapped = buf.mapped_slice_mut()?;
+        let byte_size = std::mem::size_of::<GpuPreviousModel>() * count;
+        // SAFETY: `GpuPreviousModel` is a tightly packed nested f32 array;
+        // the destination is sized for MAX_INSTANCES and count is clamped.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                models.as_ptr().cast::<u8>(),
+                mapped.as_mut_ptr(),
+                byte_size,
+            );
+        }
+        buf.flush_range(device, 0, byte_size as vk::DeviceSize)?;
+        self.last_uploaded_previous_model_hash[frame_index] = Some(hash);
         Ok(())
     }
 
