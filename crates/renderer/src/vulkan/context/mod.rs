@@ -12,6 +12,7 @@ use super::gbuffer::{
     GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT,
 };
 use super::instance;
+use super::exposure::ExposureResource;
 use super::material::GpuMaterial;
 use super::pipeline;
 use super::scene_buffer;
@@ -1294,6 +1295,13 @@ pub struct VulkanContext {
     /// upload section for the read side.
     pub clean_skin_frames: u32,
     pub ssao: Option<SsaoPipeline>,
+    /// FSR/composite exposure producer — a persistent 1x1 `R32_SFLOAT`
+    /// texture holding the single fixed HDR exposure value. It is the source
+    /// of truth the composite tonemap reads and the future FSR dispatch
+    /// (Phase 5) will sample, so the two cannot drift into independent
+    /// constants. `None` if allocation failed; composite falls back to
+    /// [`super::exposure::DEFAULT_EXPOSURE`].
+    pub exposure: Option<ExposureResource>,
     pub composite: Option<CompositePipeline>,
     pub gbuffer: Option<GBuffer>,
     pub svgf: Option<SvgfPipeline>,
@@ -2135,6 +2143,20 @@ impl VulkanContext {
             }
         };
 
+        // 14b. Exposure producer (1x1 R32_SFLOAT). Cleared to the fixed HDR
+        // exposure so composite and the future FSR dispatch share one value.
+        let exposure =
+            match ExposureResource::new(&device, &gpu_allocator, &graphics_queue, transfer_pool) {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    log::warn!(
+                        "Exposure resource creation failed: {e} — composite falls back to the \
+                         default exposure constant"
+                    );
+                    None
+                }
+            };
+
         // Soft-particle depth-history descriptor (set 1, binding 15). The
         // image view is stable per swapchain generation, so it's written once
         // here (and again on resize) rather than per-frame — only the image
@@ -2631,6 +2653,7 @@ impl VulkanContext {
             skin_dispatch_ran: false,
             clean_skin_frames: 0,
             ssao,
+            exposure,
             composite,
             gbuffer,
             svgf,
@@ -3191,6 +3214,16 @@ impl Drop for VulkanContext {
                 // guard.
                 if let Some(ref mut ssao) = self.ssao {
                     ssao.destroy(&self.device, alloc);
+                }
+                // The exposure resource owns its own device + allocator (an
+                // `Arc` clone of the shared allocator), so it self-frees via
+                // stored handles rather than the `alloc` local. It MUST be
+                // destroyed here — before the `self.allocator.take()` +
+                // `Arc::try_unwrap` below — or its lingering allocator clone
+                // trips the outstanding-reference leak guard (#665). `destroy`
+                // is idempotent, so the field's own `Drop` later is a no-op.
+                if let Some(ref mut exposure) = self.exposure {
+                    exposure.destroy();
                 }
                 if let Some(ref mut composite) = self.composite {
                     composite.destroy(&self.device, alloc);

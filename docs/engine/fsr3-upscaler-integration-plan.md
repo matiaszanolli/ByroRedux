@@ -1,6 +1,14 @@
 # FSR 3.1 upscaler integration plan
 
-Status: **Phase 0 complete; Phase 1 awaiting approval. No renderer implementation has started.**
+Status: **Execution phases 1–3 complete (SDK/build proof, extent model, temporal
+input contracts). Phase 4 (frame-graph split + reactive/T&C masks) is next. TAA
+remains the functional default; no FSR dispatch path exists yet (Phase 5).**
+
+Phase 3 landed the deterministic jitter/reset state (`FsrTemporalState`), previous
+rigid-instance motion history, the boundary motion adapter + scale, the shared
+`signal_temporal_discontinuity` reset dispatcher (SVGF + TAA + FSR + rigid-history
+clear), the 1×1 `R32_SFLOAT` exposure producer consumed by the composite tonemap,
+and the `DBG_VIZ_MOTION` / `DBG_VIZ_FSR_TEMPORAL` (jitter + reset-bit) debug views.
 
 Date: 2026-07-21
 

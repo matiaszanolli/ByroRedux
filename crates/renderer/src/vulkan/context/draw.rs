@@ -1892,7 +1892,14 @@ impl VulkanContext {
                 fog_params: [fog_near, fog_far, fog_clip, fog_power],
                 depth_params: [
                     if sky_params.is_exterior { 1.0 } else { 0.0 },
-                    0.85, // exposure — default Bethesda-era HDR target; promote to WTHR field (#743)
+                    // Exposure — sourced from the shared exposure producer so
+                    // composite and the future FSR dispatch consume one value
+                    // (default Bethesda-era HDR target; promote to WTHR field
+                    // #743). Falls back to the const when the 1x1 resource
+                    // failed to allocate.
+                    self.exposure
+                        .as_ref()
+                        .map_or(super::super::exposure::DEFAULT_EXPOSURE, |e| e.value()),
                     // #1013 — host-side mirror of the volumetric-output
                     // gate. Composite reads this slot to decide whether
                     // to consume `vol.a` (transmittance) and `vol.rgb`
