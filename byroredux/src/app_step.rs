@@ -231,6 +231,39 @@ impl App {
         crate::debug_load::execute_pending_debug_loads(&mut self.world, ctx, &mut self.streaming);
     }
 
+    /// Apply a queued runtime upscaler switch (`r.upscaler`, or the settings
+    /// panel). Runs at the frame boundary alongside the other deferred ops,
+    /// which is the only safe point: the switch waits for both frame slots to
+    /// retire and then rebuilds every render-resolution target.
+    ///
+    /// A rejected spec or a failed rebuild logs and leaves the previous
+    /// upscaler running — the request is dropped either way, so a bad value
+    /// cannot retry itself into a loop.
+    pub(crate) fn step_upscaler_switch(&mut self) {
+        let Some(spec) = self
+            .world
+            .try_resource_mut::<byroredux_core::ecs::PendingUpscalerSwitch>()
+            .and_then(|mut slot| slot.take())
+        else {
+            return;
+        };
+        let (Some(ctx), Some(window)) = (self.renderer.as_mut(), self.window.as_ref()) else {
+            log::warn!("upscaler switch to '{spec}' dropped — no renderer or window");
+            return;
+        };
+        let mode = match crate::cli_args::parse_upscaler_spec(&spec) {
+            Ok(mode) => mode,
+            Err(error) => {
+                log::warn!("upscaler switch to '{spec}' rejected: {error}");
+                return;
+            }
+        };
+        let size = window.inner_size();
+        if let Err(error) = ctx.set_upscaler_mode(mode, [size.width, size.height]) {
+            log::error!("upscaler switch to {mode} failed: {error:#}");
+        }
+    }
+
     /// Drain a queued live save-load (M45.1). Reloads the saved interior
     /// cell through the existing loader (full GPU/physics/camera setup),
     /// then overlays the form-id-keyed mutable game-state deltas. No-op

@@ -34,7 +34,7 @@ pub mod panels;
 
 use byroredux_core::ecs::Resource;
 use byroredux_core::settings::{
-    SettingChange, SettingEntry, SettingValue, SettingsError, SettingsRegistry,
+    SettingChange, SettingChoice, SettingEntry, SettingValue, SettingsError, SettingsRegistry,
 };
 use egui_winit::winit;
 use winit::event::WindowEvent;
@@ -46,6 +46,12 @@ pub use panels::{PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad};
 /// Stable registry key for the overlay's own scale control. Other engine
 /// modules can register settings beside it without depending on this crate.
 pub const OVERLAY_SCALE_SETTING_ID: &str = "interface.overlay_scale";
+
+/// Stable registry key for the temporal reconstruction path. The value is the
+/// same spec string the `r.upscaler` console command and the `--upscaler` /
+/// `--fsr-quality` CLI pair accept, so all three routes share one grammar and
+/// the binary parses it in exactly one place.
+pub const UPSCALER_SETTING_ID: &str = "render.upscaler";
 
 /// Register settings owned by the overlay itself. The binary calls this while
 /// assembling the universal [`SettingsRegistry`]; renderer, audio, input, and
@@ -61,6 +67,23 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
         2.0,
         0.05,
         "×",
+    ))?;
+    registry.register(SettingEntry::choice(
+        UPSCALER_SETTING_ID,
+        "Rendering",
+        "Upscaler",
+        "Temporal reconstruction path. FSR renders the scene below output \
+         resolution and reconstructs it; TAA renders at native resolution. \
+         Switching rebuilds every render-resolution target and resets \
+         temporal history.",
+        "taa",
+        vec![
+            SettingChoice::new("taa", "TAA (native resolution)"),
+            SettingChoice::new("fsr3/native-aa", "FSR 3.1 — Native AA"),
+            SettingChoice::new("fsr3/quality", "FSR 3.1 — Quality"),
+            SettingChoice::new("fsr3/balanced", "FSR 3.1 — Balanced"),
+            SettingChoice::new("fsr3/performance", "FSR 3.1 — Performance"),
+        ],
     ))
 }
 

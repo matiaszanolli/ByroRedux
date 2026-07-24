@@ -842,6 +842,7 @@ impl VulkanContext {
                 allocator,
                 &self.graphics_queue,
                 self.transfer_pool,
+                self.renderer_config.upscaler,
                 self.frame_extents,
             )?;
             upscaler.output_views().to_vec()
@@ -959,6 +960,148 @@ impl VulkanContext {
         self.recreate_texture_ssao_bindings()?;
         self.recreate_screen_passes()?;
         Ok(())
+    }
+
+    /// Switch the temporal reconstruction path at runtime.
+    ///
+    /// The render extent, the FSR context, the jitter sequence, the material
+    /// mip bias, and every render-sized target are all derived from
+    /// `renderer_config.upscaler`, so the switch is "set the mode, then take
+    /// the resize path" — with the TAA pipeline as the one resource the
+    /// resize path cannot decide about on its own, because it recreates a TAA
+    /// that exists rather than creating or retiring one.
+    ///
+    /// The two paths are mutually exclusive by construction: leaving TAA
+    /// destroys its history and hands composite's HDR binding back to the raw
+    /// attachment, and entering TAA builds it only after the resize settled
+    /// the new render extent. Neither upscaler ever sees the other's output.
+    ///
+    /// Runs at a frame boundary: `device_wait_idle` first, so no in-flight
+    /// command buffer references the resources being replaced.
+    pub fn set_upscaler_mode(
+        &mut self,
+        mode: super::super::upscaling::UpscalerMode,
+        window_size: [u32; 2],
+    ) -> Result<()> {
+        if self.renderer_config.upscaler == mode {
+            return Ok(());
+        }
+        let previous = self.renderer_config.upscaler;
+
+        // SAFETY: the only wait strong enough for what follows — both frame
+        // slots retire before any descriptor, image, or pipeline they
+        // reference is destroyed below.
+        unsafe { self.device.device_wait_idle() }.context("wait idle before upscaler switch")?;
+
+        if let Some(mut taa) = self.taa.take() {
+            let allocator = self
+                .allocator
+                .as_ref()
+                .expect("allocator missing during upscaler switch")
+                .clone();
+            // SAFETY: the device is idle, so no submitted command buffer can
+            // still reference the TAA history images or descriptor sets.
+            unsafe { taa.destroy(&self.device, &allocator) };
+            // Composite has been sampling TAA's output; hand it back to the
+            // raw HDR attachment before that output disappears.
+            if let Some(ref mut composite) = self.composite {
+                let raw_hdr_views = composite.hdr_image_views.clone();
+                composite.rebind_hdr_views(
+                    &self.device,
+                    &raw_hdr_views,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                );
+            }
+        }
+
+        self.renderer_config.upscaler = mode;
+        self.recreate_swapchain(window_size)
+            .with_context(|| format!("rebuild render targets for upscaler {mode}"))?;
+
+        if mode == super::super::upscaling::UpscalerMode::Taa {
+            self.build_taa_pipeline();
+        }
+
+        // Every history the old path accumulated describes a different render
+        // extent, so none of it survives the switch.
+        // Same window the resize path uses — the switch invalidates history
+        // for exactly the same reason a resize does.
+        const SWITCH_RECOVERY_FRAMES: u32 = 8;
+        self.signal_temporal_discontinuity(SWITCH_RECOVERY_FRAMES);
+        log::info!(
+            "Upscaler switched {previous} -> {mode} (render {}x{}, output {}x{})",
+            self.frame_extents.render.width,
+            self.frame_extents.render.height,
+            self.frame_extents.output.width,
+            self.frame_extents.output.height,
+        );
+        Ok(())
+    }
+
+    /// Build the TAA pipeline for the current render extent and point
+    /// composite at its output. Mirrors the construction block in
+    /// `VulkanContext::new`, which cannot be shared because that one runs
+    /// before `self` exists. A failure here is non-fatal in exactly the same
+    /// way it is at startup: composite keeps sampling raw HDR and the frame
+    /// renders without temporal anti-aliasing.
+    fn build_taa_pipeline(&mut self) {
+        let Some(hdr_views) = self
+            .composite
+            .as_ref()
+            .map(|composite| composite.hdr_image_views.clone())
+        else {
+            log::warn!("composite missing — TAA left disabled after upscaler switch");
+            return;
+        };
+        let Some(gbuffer) = self.gbuffer.as_ref() else {
+            log::warn!("G-buffer missing — TAA left disabled after upscaler switch");
+            return;
+        };
+        let n = MAX_FRAMES_IN_FLIGHT;
+        let motion_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer.motion_view(i)).collect();
+        let mesh_id_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer.mesh_id_view(i)).collect();
+        let normal_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer.normal_view(i)).collect();
+        let allocator = self
+            .allocator
+            .as_ref()
+            .expect("allocator missing during upscaler switch")
+            .clone();
+
+        let mut taa = match super::super::taa::TaaPipeline::new(
+            &self.device,
+            &allocator,
+            self.pipeline_cache,
+            super::super::taa::TaaInputViews {
+                hdr_views: &hdr_views,
+                motion_views: &motion_views,
+                mesh_id_views: &mesh_id_views,
+                normal_views: &normal_views,
+            },
+            self.frame_extents.render.width,
+            self.frame_extents.render.height,
+        ) {
+            Ok(taa) => taa,
+            Err(error) => {
+                log::warn!("TAA pipeline creation failed: {error} — falling back to raw HDR");
+                return;
+            }
+        };
+        if let Err(error) = unsafe {
+            // SAFETY: the pipeline's images were just created by this device
+            // and no frame command buffer has referenced them yet.
+            taa.initialize_layouts(&self.device, &self.graphics_queue, self.transfer_pool)
+        } {
+            log::warn!("TAA layout init failed: {error} — disabling TAA");
+            // SAFETY: same as above — nothing has referenced these images.
+            unsafe { taa.destroy(&self.device, &allocator) };
+            return;
+        }
+        if let Some(ref mut composite) = self.composite {
+            let taa_views: Vec<vk::ImageView> = (0..n).map(|i| taa.output_view(i)).collect();
+            composite.rebind_hdr_views(&self.device, &taa_views, vk::ImageLayout::GENERAL);
+        }
+        self.taa = Some(taa);
+        self.taa_failed = false;
     }
 }
 

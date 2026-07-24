@@ -46,6 +46,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(MeshCacheCommand);
     registry.register(CtxScratchCommand);
     registry.register(CtxUpscalerCommand);
+    registry.register(UpscalerSwitchCommand);
     registry.register(SkinCoverageCommand);
     registry.register(PridCommand);
     registry.register(CamWhereCommand);

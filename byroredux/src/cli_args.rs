@@ -81,6 +81,45 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
     Ok(RendererConfig { upscaler })
 }
 
+/// Parse an upscaler spec — the same grammar the CLI accepts, minus the flag
+/// names: `taa`, `fsr3`, or `fsr3 <quality>`.
+///
+/// Shared by `--upscaler`/`--fsr-quality` and by the runtime switch (the
+/// `r.upscaler` console command and the settings panel), so there is exactly
+/// one place that decides what a valid selection looks like.
+///
+/// `/` separates as well as whitespace, which makes `UpscalerMode`'s own
+/// `Display` output (`fsr3/quality`) a valid input. The settings registry
+/// stores that canonical spelling, so a mode round-trips through the panel
+/// without a second name mapping to drift out of sync.
+pub fn parse_upscaler_spec(spec: &str) -> Result<UpscalerMode> {
+    let mut parts = spec
+        .split(|c: char| c.is_whitespace() || c == '/')
+        .filter(|part| !part.is_empty());
+    let Some(name) = parts.next() else {
+        bail!("expected an upscaler name: taa or fsr3");
+    };
+    let quality = parts.next().map(str::parse::<FsrQuality>).transpose()?;
+    if parts.next().is_some() {
+        bail!("expected at most 'fsr3/<quality>', got '{spec}'");
+    }
+    match name {
+        "taa" => {
+            if let Some(inactive) = quality {
+                log::warn!("upscaler quality {inactive} is inactive because taa is selected");
+            }
+            Ok(UpscalerMode::Taa)
+        }
+        "fsr3" => Ok(UpscalerMode::Fsr3(quality.unwrap_or(FsrQuality::Quality))),
+        value => bail!(
+            "{}",
+            byroredux_renderer::vulkan::upscaling::ParseRendererOptionError::Upscaler(
+                value.to_owned()
+            )
+        ),
+    }
+}
+
 /// Parse `x,y,z` into a `(f32, f32, f32)` tuple — stored as a plain
 /// triple here to avoid leaking the renderer's `Vec3` into main.rs.
 pub fn parse_vec3_arg(args: &[String], flag: &str) -> Option<(f32, f32, f32)> {
@@ -101,6 +140,48 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    /// Every mode must survive `Display` -> `parse_upscaler_spec`. The
+    /// settings registry stores the `Display` spelling and the main loop
+    /// parses it back, so a divergence would silently reject the panel's own
+    /// values — and the seed at startup would log a warning on every boot.
+    #[test]
+    fn every_upscaler_mode_round_trips_through_its_display_form() {
+        let modes = [
+            UpscalerMode::Taa,
+            UpscalerMode::Fsr3(FsrQuality::NativeAa),
+            UpscalerMode::Fsr3(FsrQuality::Quality),
+            UpscalerMode::Fsr3(FsrQuality::Balanced),
+            UpscalerMode::Fsr3(FsrQuality::Performance),
+        ];
+        for mode in modes {
+            let spec = mode.to_string();
+            assert_eq!(
+                parse_upscaler_spec(&spec).unwrap(),
+                mode,
+                "'{spec}' did not parse back to {mode}"
+            );
+        }
+    }
+
+    /// The console command accepts the space-separated form operators are
+    /// likely to type; bare `fsr3` keeps the CLI's Quality default.
+    #[test]
+    fn upscaler_spec_accepts_space_separated_and_bare_forms() {
+        assert_eq!(
+            parse_upscaler_spec("fsr3 balanced").unwrap(),
+            UpscalerMode::Fsr3(FsrQuality::Balanced)
+        );
+        assert_eq!(
+            parse_upscaler_spec("fsr3").unwrap(),
+            UpscalerMode::Fsr3(FsrQuality::Quality)
+        );
+        assert_eq!(parse_upscaler_spec("taa").unwrap(), UpscalerMode::Taa);
+        assert!(parse_upscaler_spec("dlss").is_err());
+        assert!(parse_upscaler_spec("fsr3/ultra").is_err());
+        assert!(parse_upscaler_spec("").is_err());
+        assert!(parse_upscaler_spec("fsr3 quality extra").is_err());
     }
 
     #[test]

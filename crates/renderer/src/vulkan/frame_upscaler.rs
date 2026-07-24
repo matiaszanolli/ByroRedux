@@ -440,6 +440,10 @@ impl FrameUpscaler {
             );
             self.dispatch_failure = Some(error.to_string());
             unsafe {
+                // SAFETY: same contract as the dispatch path above — `cmd` is
+                // recording outside a render pass, and both helpers only
+                // record into it. `record_fsr_barriers_before` established the
+                // exact layouts these two transition out of.
                 self.record_fsr_depth_restore(device, cmd, inputs.depth);
                 self.record_native_blit(
                     device,
@@ -741,9 +745,14 @@ impl FrameUpscaler {
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
+        mode: UpscalerMode,
         extents: FrameExtentSet,
     ) -> Result<()> {
-        let mode = self.mode;
+        // `mode` is a parameter rather than `self.mode` because a runtime
+        // upscaler switch reaches this through the resize path: reusing the
+        // old mode would rebuild the outputs at the new extents while leaving
+        // the FSR context uncreated (or stale), which reads as "the switch
+        // resized the frame but never engaged the new upscaler".
         // SAFETY: resize calls this only after `device_wait_idle`.
         unsafe { self.destroy(device, allocator) };
         *self = Self::new(

@@ -245,6 +245,50 @@ impl ConsoleCommand for CtxUpscalerCommand {
     }
 }
 
+/// `r.upscaler <taa|fsr3> [quality]` — switch the reconstruction path live.
+///
+/// Staged rather than applied: switching rebuilds every render-resolution
+/// target and needs `&mut VulkanContext` plus the window size, neither of
+/// which a console command can reach. The main loop drains the request at the
+/// next frame boundary. With no argument, reports what is active.
+pub(crate) struct UpscalerSwitchCommand;
+impl ConsoleCommand for UpscalerSwitchCommand {
+    fn name(&self) -> &str {
+        "r.upscaler"
+    }
+    fn description(&self) -> &str {
+        "Switch upscaler live: r.upscaler taa | fsr3 [native-aa|quality|balanced|performance]"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let spec = args.trim();
+        if spec.is_empty() {
+            let active = world
+                .try_resource::<byroredux_core::ecs::UpscalerTelemetry>()
+                .filter(|telemetry| !telemetry.summary.is_empty())
+                .map(|telemetry| telemetry.summary.clone())
+                .unwrap_or_else(|| "not initialized".to_string());
+            return CommandOutput::lines(vec![
+                format!("  active: {active}"),
+                "  usage: r.upscaler taa | fsr3 [native-aa|quality|balanced|performance]"
+                    .to_string(),
+            ]);
+        }
+        // Validate here so a typo reports at the prompt rather than as a log
+        // line one frame later, when the operator has stopped looking.
+        if let Err(error) = crate::cli_args::parse_upscaler_spec(spec) {
+            return CommandOutput::line(format!("rejected: {error}"));
+        }
+        let Some(mut slot) = world.try_resource_mut::<byroredux_core::ecs::PendingUpscalerSwitch>()
+        else {
+            return CommandOutput::line("PendingUpscalerSwitch resource not present");
+        };
+        slot.request(spec);
+        CommandOutput::line(format!(
+            "queued upscaler switch to '{spec}' (applies next frame)"
+        ))
+    }
+}
+
 /// `sys.accesses` — print the scheduler's declared-access report.
 ///
 /// For each stage, lists every system + its declared (or undeclared)

@@ -80,9 +80,44 @@ impl PendingDebugLoadSlot {
     }
 }
 
+/// Requested runtime upscaler change, staged for the main loop.
+///
+/// Same deferred shape as [`PendingDebugLoadSlot`], and for the same reason:
+/// the console and the settings panel only reach `&World`, while switching
+/// the reconstruction path needs `&mut VulkanContext` plus the live window
+/// size. The value is the CLI spelling (`taa`, `fsr3`, `fsr3 quality`, …) so
+/// there is exactly one grammar for selecting an upscaler; core cannot name
+/// the renderer's `UpscalerMode` type directly.
+///
+/// Last request wins — clicking through three presets in the settings panel
+/// should perform one switch, not three.
+#[derive(Debug, Default)]
+pub struct PendingUpscalerSwitch(pub Option<String>);
+
+impl Resource for PendingUpscalerSwitch {}
+
+impl PendingUpscalerSwitch {
+    pub fn request(&mut self, spec: impl Into<String>) {
+        self.0 = Some(spec.into());
+    }
+
+    pub fn take(&mut self) -> Option<String> {
+        self.0.take()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upscaler_switch_keeps_only_the_last_request() {
+        let mut slot = PendingUpscalerSwitch::default();
+        slot.request("fsr3 quality");
+        slot.request("fsr3 performance");
+        assert_eq!(slot.take().as_deref(), Some("fsr3 performance"));
+        assert!(slot.take().is_none());
+    }
 
     /// Two pushes drain in insertion order and leave an empty slot —
     /// the only contract `App::step_debug_loads` actually relies on.

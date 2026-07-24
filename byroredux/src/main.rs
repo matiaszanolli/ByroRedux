@@ -284,6 +284,18 @@ impl App {
         let mut settings = SettingsRegistry::default();
         byroredux_debug_ui::register_builtin_settings(&mut settings)
             .expect("debug-UI built-in settings must be valid and unique");
+        // Seed the upscaler entry from what the CLI actually selected, so the
+        // panel opens describing the running configuration instead of the
+        // registry's `taa` default. A spec the choice list doesn't offer
+        // (nothing today, but the CLI grammar is the looser of the two) is
+        // reported and left at the default rather than silently accepted.
+        let active_upscaler = renderer_config.upscaler.to_string();
+        if let Err(error) = settings.set(
+            byroredux_debug_ui::UPSCALER_SETTING_ID,
+            byroredux_core::settings::SettingValue::Choice(active_upscaler.clone()),
+        ) {
+            log::warn!("could not seed the upscaler setting from '{active_upscaler}': {error}");
+        }
         world.insert_resource(settings);
 
         Self {
@@ -1205,6 +1217,7 @@ impl ApplicationHandler for App {
         // `door.teleport` doesn't trample the transition's mid-load
         // state.
         self.step_debug_loads();
+        self.step_upscaler_switch();
 
         // M45.1 refinement — snapshot the player/camera pose now that the
         // scheduler's camera systems have published this frame's Transform,
@@ -1549,6 +1562,17 @@ fn apply_debug_ui_outputs(
             Ok(_) => {
                 if let Some(ui) = debug_ui.as_deref_mut() {
                     ui.apply_setting_change(&change);
+                }
+                // The upscaler entry cannot be applied here: switching
+                // rebuilds every render-resolution target and needs
+                // `&mut VulkanContext`. Stage it for the frame boundary,
+                // where `step_upscaler_switch` drains it.
+                if change.id == byroredux_debug_ui::UPSCALER_SETTING_ID {
+                    if let byroredux_core::settings::SettingValue::Choice(ref spec) = change.value {
+                        world
+                            .resource_mut::<byroredux_core::ecs::PendingUpscalerSwitch>()
+                            .request(spec.clone());
+                    }
                 }
                 log::info!(
                     "universal setting changed: {} = {:?}",

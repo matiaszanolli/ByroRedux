@@ -32,7 +32,7 @@ pub use components::{
     RenderLayer, SceneFlags, SkinnedMesh, TextureHandle, Transform, WorldBound, LIGHT_FLAG_FLICKER,
     LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW, MAX_BONES_PER_MESH,
 };
-pub use debug_load::{PendingDebugLoad, PendingDebugLoadSlot};
+pub use debug_load::{PendingDebugLoad, PendingDebugLoadSlot, PendingUpscalerSwitch};
 pub use game_profiles::{GameProfileEntry, GameProfileRegistry};
 pub use metrics::MetricsSnapshot;
 pub use packed::PackedStorage;
