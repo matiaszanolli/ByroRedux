@@ -333,11 +333,19 @@ fn triangle_pipeline_inner(
         .sample_shading_enable(false)
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
-    // Phase 2: main render pass has 6 color attachments (HDR + normal +
-    // motion + mesh_id + raw_indirect + albedo). Each needs a blend state
-    // entry. Opaque pipeline never blends any of them.
+    // Main render pass has 8 color attachments (HDR + normal + motion +
+    // mesh_id + raw_indirect + albedo + the two FSR masks). Each needs a
+    // blend state entry. The opaque pipeline never blends any of them.
     let color_blend_none = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(false);
+    // Opaque and alpha-tested geometry is fully described by depth and
+    // motion, which is exactly the "leave the mask at its zero clear" case.
+    // Masking the writes off (rather than writing zero) also keeps the
+    // cleared attachment untouched where an opaque draw covers a
+    // transparent one that already MAX-blended a value in.
+    let fsr_mask_off = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::empty())
         .blend_enable(false);
     let color_blend_attachment = [
         color_blend_none, // 0 HDR color
@@ -346,6 +354,8 @@ fn triangle_pipeline_inner(
         color_blend_none, // 3 mesh_id
         color_blend_none, // 4 raw_indirect
         color_blend_none, // 5 albedo
+        fsr_mask_off,     // 6 fsr_reactive
+        fsr_mask_off,     // 7 fsr_transparency
     ];
 
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
@@ -614,6 +624,19 @@ pub fn create_blend_pipeline(
         .src_alpha_blend_factor(vk::BlendFactor::ONE)
         .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
         .alpha_blend_op(vk::BlendOp::ADD);
+    // MAX over ONE/ONE: a stack of overlapping translucent surfaces reports
+    // the most reactive coverage in the stack rather than whichever happened
+    // to draw last. AMD's integration contract asks for exactly this
+    // accumulation rule for both masks.
+    let fsr_mask_max = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::R)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::ONE)
+        .dst_color_blend_factor(vk::BlendFactor::ONE)
+        .color_blend_op(vk::BlendOp::MAX)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+        .alpha_blend_op(vk::BlendOp::MAX);
     let attachments = [
         hdr_blend,       // 0 HDR color (blends)
         overwrite,       // 1 normal
@@ -621,6 +644,8 @@ pub fn create_blend_pipeline(
         overwrite,       // 3 mesh_id
         auxiliary_blend, // 4 raw_indirect (coverage blend)
         auxiliary_blend, // 5 albedo (coverage blend)
+        fsr_mask_max,    // 6 fsr_reactive
+        fsr_mask_max,    // 7 fsr_transparency
     ];
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
@@ -794,7 +819,7 @@ pub fn create_ui_pipeline(
         .stencil_test_enable(false);
 
     // Alpha blending for UI transparency.
-    // Main render pass has 6 color attachments. UI writes to HDR (slot 0)
+    // Main render pass has 8 color attachments. UI writes to HDR (slot 0)
     // with alpha blending and masks out writes to normal/motion/mesh_id
     // via color_write_mask(empty) so UI doesn't pollute the G-buffer.
     let ui_hdr_blend = vk::PipelineColorBlendAttachmentState::default()
@@ -816,6 +841,12 @@ pub fn create_ui_pipeline(
         ui_noop_blend, // 3 mesh_id
         ui_noop_blend, // 4 raw_indirect
         ui_noop_blend, // 5 albedo
+        // The Scaleform overlay writes no FSR mask. Marking it reactive
+        // would only paper over the real fix, which is moving the overlay
+        // out of the render-resolution pass entirely so it is composited
+        // after upscale and never enters temporal reconstruction.
+        ui_noop_blend, // 6 fsr_reactive
+        ui_noop_blend, // 7 fsr_transparency
     ];
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)

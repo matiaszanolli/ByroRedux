@@ -698,9 +698,9 @@ impl VulkanContext {
             }
         }
 
-        // 6 color attachments + depth. Order must match the render pass:
+        // 8 color attachments + depth. Order must match the render pass:
         //   0 HDR, 1 normal, 2 motion, 3 mesh_id, 4 raw_indirect, 5 albedo,
-        //   6 depth.
+        //   6 fsr_reactive, 7 fsr_transparency, 8 depth.
         let zero_f = vk::ClearValue {
             color: vk::ClearColorValue {
                 float32: [0.0, 0.0, 0.0, 0.0],
@@ -722,6 +722,10 @@ impl VulkanContext {
             },
             zero_f, // raw_indirect (background: no light)
             zero_f, // albedo (background: no color)
+            // Both FSR masks clear to zero — "fully described by depth and
+            // motion" — and only transparent draws MAX-blend a value in.
+            zero_f, // fsr_reactive
+            zero_f, // fsr_transparency
             vk::ClearValue {
                 depth_stencil: vk::ClearDepthStencilValue {
                     depth: 1.0,

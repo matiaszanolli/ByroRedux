@@ -550,11 +550,17 @@ impl VulkanContext {
                 .as_ref()
                 .expect("composite must exist while recording")
                 .scene_image(frame);
-            let motion_vectors = self
-                .gbuffer
-                .as_ref()
-                .expect("G-buffer must exist while recording")
-                .motion_image(frame);
+            let (motion_vectors, reactive_mask, transparency_mask) = {
+                let gbuffer = self
+                    .gbuffer
+                    .as_ref()
+                    .expect("G-buffer must exist while recording");
+                (
+                    gbuffer.motion_image(frame),
+                    gbuffer.reactive_image(frame),
+                    gbuffer.transparency_image(frame),
+                )
+            };
             let exposure_image = self.exposure.as_ref().map(|exposure| exposure.image());
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_upscale_start(&self.device, cmd, frame);
@@ -573,6 +579,8 @@ impl VulkanContext {
                         depth_format: self.depth_format,
                         motion_vectors,
                         exposure: exposure_image,
+                        reactive: reactive_mask,
+                        transparency: transparency_mask,
                     },
                     fsr_frame,
                 );

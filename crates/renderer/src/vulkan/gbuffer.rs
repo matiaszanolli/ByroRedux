@@ -11,6 +11,8 @@
 //! | mesh_id       | R32_UINT           | Stable surface ID / alpha draw lookup         |
 //! | raw_indirect  | B10G11R11_UFLOAT   | Pre-denoise indirect light (albedo-demod)     |
 //! | albedo        | B10G11R11_UFLOAT   | Surface color for composite re-multiplication |
+//! | reactive      | R8_UNORM           | FSR reactive mask (transparent coverage)      |
+//! | transparency  | R8_UNORM           | FSR transparency & composition mask           |
 //!
 //! ## Per-frame-in-flight
 //!
@@ -59,6 +61,15 @@ pub const RAW_INDIRECT_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
 /// render pass and re-multiplied in the composite pass to recover
 /// texture detail after SVGF blurs the demodulated indirect light.
 pub const ALBEDO_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
+/// FSR reactive and transparency-and-composition masks (AMD's FSR 3.1
+/// upscaler integration contract). Both are single-channel 0..1 coverage
+/// signals cleared to zero and MAX-blended by transparent draws, so a stack
+/// of overlapping translucent surfaces reports the most reactive one rather
+/// than the last one drawn.
+///
+/// `R8_UNORM` is what the SDK's own samples use; the mask is a hint that
+/// biases history rejection, so 8 bits of coverage is ample.
+pub const FSR_MASK_FORMAT: vk::Format = vk::Format::R8_UNORM;
 
 /// A single G-buffer attachment slot (one image per frame-in-flight).
 struct Attachment {
@@ -226,6 +237,8 @@ pub struct GBuffer {
     mesh_id: Attachment,
     raw_indirect: Attachment,
     albedo: Attachment,
+    reactive: Attachment,
+    transparency: Attachment,
     pub width: u32,
     pub height: u32,
 }
@@ -244,6 +257,8 @@ impl GBuffer {
             mesh_id: Attachment::new_empty(),
             raw_indirect: Attachment::new_empty(),
             albedo: Attachment::new_empty(),
+            reactive: Attachment::new_empty(),
+            transparency: Attachment::new_empty(),
             width,
             height,
         };
@@ -274,7 +289,23 @@ impl GBuffer {
         let r5 = gb
             .albedo
             .allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo");
-        if let Err(e) = r1.and(r2).and(r3).and(r4).and(r5) {
+        let r6 = gb.reactive.allocate(
+            device,
+            allocator,
+            FSR_MASK_FORMAT,
+            width,
+            height,
+            "gb_fsr_reactive",
+        );
+        let r7 = gb.transparency.allocate(
+            device,
+            allocator,
+            FSR_MASK_FORMAT,
+            width,
+            height,
+            "gb_fsr_transparency",
+        );
+        if let Err(e) = r1.and(r2).and(r3).and(r4).and(r5).and(r6).and(r7) {
             // SAFETY: `gb` is local to this function; no command buffer or
             // descriptor set has had a chance to reference it yet because
             // we never returned the partial result. Cleanup path on
@@ -284,8 +315,11 @@ impl GBuffer {
         }
 
         log::info!(
-            "G-buffer created: {}x{} (normal + motion + mesh_id + raw_indirect + albedo, {} frames)",
-            width, height, MAX_FRAMES_IN_FLIGHT
+            "G-buffer created: {}x{} (normal + motion + mesh_id + raw_indirect + albedo \
+             + fsr reactive/transparency, {} frames)",
+            width,
+            height,
+            MAX_FRAMES_IN_FLIGHT
         );
         Ok(gb)
     }
@@ -314,6 +348,22 @@ impl GBuffer {
     pub fn albedo_view(&self, frame: usize) -> vk::ImageView {
         self.albedo.views[frame]
     }
+    /// Image view for the FSR reactive mask in the given frame slot.
+    pub fn reactive_view(&self, frame: usize) -> vk::ImageView {
+        self.reactive.views[frame]
+    }
+    /// Image handle for the FSR reactive-mask dispatch input.
+    pub fn reactive_image(&self, frame: usize) -> vk::Image {
+        self.reactive.images[frame]
+    }
+    /// Image view for the FSR transparency-and-composition mask.
+    pub fn transparency_view(&self, frame: usize) -> vk::ImageView {
+        self.transparency.views[frame]
+    }
+    /// Image handle for the FSR transparency-and-composition dispatch input.
+    pub fn transparency_image(&self, frame: usize) -> vk::Image {
+        self.transparency.images[frame]
+    }
 
     /// One-time layout transition UNDEFINED → SHADER_READ_ONLY_OPTIMAL for
     /// every G-buffer image across all frame-in-flight slots. Call once after
@@ -338,6 +388,8 @@ impl GBuffer {
                 &self.mesh_id,
                 &self.raw_indirect,
                 &self.albedo,
+                &self.reactive,
+                &self.transparency,
             ];
             let mut barriers = Vec::with_capacity(attachments.len() * MAX_FRAMES_IN_FLIGHT);
             for att in &attachments {
@@ -392,6 +444,8 @@ impl GBuffer {
             self.mesh_id.destroy(device, allocator);
             self.raw_indirect.destroy(device, allocator);
             self.albedo.destroy(device, allocator);
+            self.reactive.destroy(device, allocator);
+            self.transparency.destroy(device, allocator);
         }
         self.width = width;
         self.height = height;
@@ -425,6 +479,26 @@ impl GBuffer {
             .and_then(|()| {
                 self.albedo
                     .allocate(device, allocator, ALBEDO_FORMAT, width, height, "gb_albedo")
+            })
+            .and_then(|()| {
+                self.reactive.allocate(
+                    device,
+                    allocator,
+                    FSR_MASK_FORMAT,
+                    width,
+                    height,
+                    "gb_fsr_reactive",
+                )
+            })
+            .and_then(|()| {
+                self.transparency.allocate(
+                    device,
+                    allocator,
+                    FSR_MASK_FORMAT,
+                    width,
+                    height,
+                    "gb_fsr_transparency",
+                )
             });
         if let Err(ref e) = result {
             log::error!("G-buffer recreate partial failure: {e} — destroying partial state");
@@ -455,6 +529,8 @@ impl GBuffer {
             self.mesh_id.destroy(device, allocator);
             self.raw_indirect.destroy(device, allocator);
             self.albedo.destroy(device, allocator);
+            self.reactive.destroy(device, allocator);
+            self.transparency.destroy(device, allocator);
         }
     }
 }

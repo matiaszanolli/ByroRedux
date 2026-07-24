@@ -10,7 +10,7 @@ use super::allocator::SharedAllocator;
 use super::composite::HDR_FORMAT;
 use super::descriptors::color_subresource_single_mip;
 use super::exposure::EXPOSURE_FORMAT;
-use super::gbuffer::MOTION_FORMAT;
+use super::gbuffer::{FSR_MASK_FORMAT, MOTION_FORMAT};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::{fsr_motion_vector_scale, FrameExtentSet, UpscalerMode};
 use anyhow::{Context, Result};
@@ -39,6 +39,12 @@ pub struct UpscaleDispatchInputs {
     pub depth_format: vk::Format,
     pub motion_vectors: vk::Image,
     pub exposure: Option<vk::Image>,
+    /// FSR reactive mask — transparent coverage the reprojected history
+    /// cannot predict.
+    pub reactive: vk::Image,
+    /// FSR transparency-and-composition mask — shading whose evolution
+    /// depth and motion do not describe.
+    pub transparency: vk::Image,
 }
 
 /// Owns the output-resolution HDR images and, in FSR mode, the SDK context.
@@ -385,8 +391,18 @@ impl FrameUpscaler {
                         [1, 1],
                     )
                 }),
-                reactive: None,
-                transparency_and_composition: None,
+                reactive: Some(vulkan_image(
+                    inputs.reactive,
+                    FSR_MASK_FORMAT,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                    render_size,
+                )),
+                transparency_and_composition: Some(vulkan_image(
+                    inputs.transparency,
+                    FSR_MASK_FORMAT,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                    render_size,
+                )),
                 output: vulkan_image(
                     output,
                     HDR_FORMAT,
@@ -584,6 +600,20 @@ impl FrameUpscaler {
                 .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image(inputs.motion_vectors)
+                .subresource_range(color),
+            vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(inputs.reactive)
+                .subresource_range(color),
+            vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image(inputs.transparency)
                 .subresource_range(color),
             vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::SHADER_READ)

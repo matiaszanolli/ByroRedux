@@ -11,7 +11,8 @@ use super::device::{self, QueueFamilyIndices};
 use super::exposure::ExposureResource;
 use super::frame_upscaler::FrameUpscaler;
 use super::gbuffer::{
-    GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT,
+    GBuffer, ALBEDO_FORMAT, FSR_MASK_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT,
+    RAW_INDIRECT_FORMAT,
 };
 use super::instance;
 use super::material::GpuMaterial;
@@ -1724,6 +1725,7 @@ impl VulkanContext {
                 mesh_id_format: MESH_ID_FORMAT,
                 raw_indirect_format: RAW_INDIRECT_FORMAT,
                 albedo_format: ALBEDO_FORMAT,
+                fsr_mask_format: FSR_MASK_FORMAT,
                 depth_format,
             },
         )?;
@@ -2604,6 +2606,12 @@ impl VulkanContext {
             (0..n_frames).map(|i| gbuffer_ref.motion_view(i)).collect();
         let mesh_id_views: Vec<vk::ImageView> =
             (0..n_frames).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
+        let reactive_views: Vec<vk::ImageView> = (0..n_frames)
+            .map(|i| gbuffer_ref.reactive_view(i))
+            .collect();
+        let transparency_views: Vec<vk::ImageView> = (0..n_frames)
+            .map(|i| gbuffer_ref.transparency_view(i))
+            .collect();
         let framebuffers = create_main_framebuffers(
             &device,
             render_pass,
@@ -2614,6 +2622,8 @@ impl VulkanContext {
                 mesh_id_views: &mesh_id_views,
                 raw_indirect_views: &raw_indirect_views,
                 albedo_views: &albedo_views,
+                reactive_views: &reactive_views,
+                transparency_views: &transparency_views,
             },
             depth_image_view,
             render_extent,

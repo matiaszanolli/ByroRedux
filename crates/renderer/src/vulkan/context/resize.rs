@@ -2,7 +2,8 @@
 
 use super::super::composite::HDR_FORMAT;
 use super::super::gbuffer::{
-    ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT,
+    ALBEDO_FORMAT, FSR_MASK_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT,
+    RAW_INDIRECT_FORMAT,
 };
 use super::super::ssao::SsaoPipeline;
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -308,6 +309,7 @@ impl VulkanContext {
                     mesh_id_format: MESH_ID_FORMAT,
                     raw_indirect_format: RAW_INDIRECT_FORMAT,
                     albedo_format: ALBEDO_FORMAT,
+                    fsr_mask_format: FSR_MASK_FORMAT,
                     depth_format: self.depth_format,
                 },
             )?;
@@ -874,6 +876,10 @@ impl VulkanContext {
         let motion_views: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.motion_view(i)).collect();
         let mesh_id_views: Vec<vk::ImageView> =
             (0..n).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
+        let reactive_views: Vec<vk::ImageView> =
+            (0..n).map(|i| gbuffer_ref.reactive_view(i)).collect();
+        let transparency_views: Vec<vk::ImageView> =
+            (0..n).map(|i| gbuffer_ref.transparency_view(i)).collect();
         self.framebuffers = create_main_framebuffers(
             &self.device,
             self.render_pass,
@@ -884,6 +890,8 @@ impl VulkanContext {
                 mesh_id_views: &mesh_id_views,
                 raw_indirect_views: &raw_indirect_views,
                 albedo_views: &albedo_views,
+                reactive_views: &reactive_views,
+                transparency_views: &transparency_views,
             },
             self.depth_image_view,
             self.frame_extents.render,

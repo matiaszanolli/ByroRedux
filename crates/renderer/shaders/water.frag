@@ -97,6 +97,14 @@ layout(location = 3) in float vWorldBitangentSign;
 // normal / motion / mesh-ID writes from water — RT denoising stays on
 // the opaque pass).
 layout(location = 0) out vec4 outColor;
+// FSR reconstruction masks (attachments 6 and 7). Water writes both at full
+// strength: its surface colour comes from reflection and refraction of
+// geometry that its own depth and motion vectors do not describe, which is
+// precisely the transparency-and-composition case. The blend state MAX-
+// accumulates these, and the intermediate G-buffer attachments stay masked
+// off as before.
+layout(location = 6) out float outFsrReactive;
+layout(location = 7) out float outFsrTransparency;
 
 // Bindless texture array — normal maps + foam mask sample here.
 layout(set = 0, binding = 0) uniform sampler2D textures[];
@@ -355,6 +363,9 @@ float foamCrest(vec3 perturbedNormal, vec3 surfaceNormal) {
 }
 
 void main() {
+    outFsrReactive = 1.0;
+    outFsrTransparency = 1.0;
+
     // ── Setup ──
     float time = push.timing.x;
     uint  kind = uint(push.timing.y + 0.5);

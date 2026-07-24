@@ -603,15 +603,35 @@ fn build_pipeline(
     let masked_off = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::empty())
         .blend_enable(false);
-    // Six entries to match the main render pass's six color attachments
-    // (0 HDR + 1..5 G-buffer). The array length sets `attachmentCount`;
-    // it must equal the subpass color-attachment count exactly, or the
-    // driver reads missing entries out of bounds / the pipeline fails
-    // creation with a count mismatch (VUID-VkGraphicsPipelineCreateInfo-
-    // renderPass-07609). See #647 / RP-1; the 7th (reservoir) attachment
-    // was removed under #1583.
+    // Water is the canonical transparency-and-composition case: its surface
+    // colour comes from reflection and refraction that neither depth nor
+    // motion describes, so it writes both FSR masks at full strength with
+    // the same MAX accumulation the alpha-blend pipeline uses.
+    let fsr_mask_max = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::R)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::ONE)
+        .dst_color_blend_factor(vk::BlendFactor::ONE)
+        .color_blend_op(vk::BlendOp::MAX)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+        .alpha_blend_op(vk::BlendOp::MAX);
+    // Eight entries to match the main render pass's eight color attachments
+    // (0 HDR + 1..5 G-buffer + 6/7 FSR masks). The array length sets
+    // `attachmentCount`; it must equal the subpass color-attachment count
+    // exactly, or the driver reads missing entries out of bounds / the
+    // pipeline fails creation with a count mismatch
+    // (VUID-VkGraphicsPipelineCreateInfo-renderPass-07609). See #647 / RP-1;
+    // the reservoir attachment was removed under #1583.
     let attachments = [
-        hdr_blend, masked_off, masked_off, masked_off, masked_off, masked_off,
+        hdr_blend,
+        masked_off,
+        masked_off,
+        masked_off,
+        masked_off,
+        masked_off,
+        fsr_mask_max,
+        fsr_mask_max,
     ];
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)

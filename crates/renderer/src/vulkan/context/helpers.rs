@@ -62,6 +62,9 @@ pub(super) struct GBufferFormats {
     pub raw_indirect_format: vk::Format,
     /// Albedo (attachment 5).
     pub albedo_format: vk::Format,
+    /// FSR reactive + transparency masks (attachments 6 and 7 — both
+    /// single-channel, so one format covers the pair).
+    pub fsr_mask_format: vk::Format,
     /// Depth attachment.
     pub depth_format: vk::Format,
 }
@@ -77,9 +80,10 @@ pub(super) fn create_render_pass(
         mesh_id_format,
         raw_indirect_format,
         albedo_format,
+        fsr_mask_format,
         depth_format,
     } = formats;
-    // Main render pass writes to 6 color attachments + depth.
+    // Main render pass writes to 8 color attachments + depth.
     // Formats are the authoritative constants in `vulkan/gbuffer.rs`; the
     // list below names them for orientation.
     //   0 — HDR color    (RGBA16F)        — direct lighting only
@@ -105,7 +109,17 @@ pub(super) fn create_render_pass(
     //                                       See #318 / R34-02 / #992.
     //   4 — raw_indirect (B10G11R11_UFLOAT) — demodulated indirect light (for SVGF)
     //   5 — albedo       (B10G11R11_UFLOAT) — surface color (re-multiplied at composite)
-    //   6 — depth        (D32)
+    //   6 — reactive     (R8_UNORM)       — FSR reactive mask. Cleared to 0;
+    //                                       MAX-blended by transparent draws
+    //                                       so overlapping translucents report
+    //                                       the most reactive coverage, not the
+    //                                       last one drawn.
+    //   7 — transparency (R8_UNORM)       — FSR transparency & composition mask,
+    //                                       same blend rule. Flags shading whose
+    //                                       color evolution depth+motion cannot
+    //                                       describe (refraction, water, animated
+    //                                       UV/emissive layers).
+    //   8 — depth        (D32)
     //
     // All color attachments use final_layout SHADER_READ_ONLY_OPTIMAL so
     // the composite pass and SVGF compute passes can sample them.
@@ -126,6 +140,8 @@ pub(super) fn create_render_pass(
     let mesh_id_attachment = make_color(mesh_id_format);
     let raw_indirect_attachment = make_color(raw_indirect_format);
     let albedo_attachment = make_color(albedo_format);
+    let reactive_attachment = make_color(fsr_mask_format);
+    let transparency_attachment = make_color(fsr_mask_format);
 
     // Depth is STORED (not DONT_CARE) so the SSAO compute pass can read it
     // after the render pass. Final layout is READ_ONLY for shader sampling.
@@ -139,7 +155,7 @@ pub(super) fn create_render_pass(
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .final_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
-    // Attachments 0..=5 are color, attachment 6 is depth.
+    // Attachments 0..=7 are color, attachment 8 is depth.
     let make_color_ref = |i: u32| vk::AttachmentReference {
         attachment: i,
         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
@@ -151,10 +167,12 @@ pub(super) fn create_render_pass(
         make_color_ref(3), // mesh_id
         make_color_ref(4), // raw_indirect
         make_color_ref(5), // albedo
+        make_color_ref(6), // FSR reactive mask
+        make_color_ref(7), // FSR transparency & composition mask
     ];
 
     let depth_ref = vk::AttachmentReference {
-        attachment: 6,
+        attachment: 8,
         layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
@@ -235,6 +253,8 @@ pub(super) fn create_render_pass(
         mesh_id_attachment,
         raw_indirect_attachment,
         albedo_attachment,
+        reactive_attachment,
+        transparency_attachment,
         depth_attachment,
     ];
     let subpasses = [subpass];
@@ -255,7 +275,7 @@ pub(super) fn create_render_pass(
             .context("Failed to create render pass")?
     };
 
-    log::info!("Render pass created (6 color + depth)");
+    log::info!("Render pass created (8 color + depth)");
     Ok(render_pass)
 }
 
@@ -280,6 +300,10 @@ pub(super) struct GBufferViews<'a> {
     pub raw_indirect_views: &'a [vk::ImageView],
     /// Albedo views (attachment 5).
     pub albedo_views: &'a [vk::ImageView],
+    /// FSR reactive-mask views (attachment 6).
+    pub reactive_views: &'a [vk::ImageView],
+    /// FSR transparency-and-composition views (attachment 7).
+    pub transparency_views: &'a [vk::ImageView],
 }
 
 pub(super) fn create_main_framebuffers(
@@ -296,12 +320,16 @@ pub(super) fn create_main_framebuffers(
         mesh_id_views,
         raw_indirect_views,
         albedo_views,
+        reactive_views,
+        transparency_views,
     } = views;
     debug_assert_eq!(hdr_views.len(), normal_views.len());
     debug_assert_eq!(hdr_views.len(), motion_views.len());
     debug_assert_eq!(hdr_views.len(), mesh_id_views.len());
     debug_assert_eq!(hdr_views.len(), raw_indirect_views.len());
     debug_assert_eq!(hdr_views.len(), albedo_views.len());
+    debug_assert_eq!(hdr_views.len(), reactive_views.len());
+    debug_assert_eq!(hdr_views.len(), transparency_views.len());
 
     (0..hdr_views.len())
         .map(|i| {
@@ -312,6 +340,8 @@ pub(super) fn create_main_framebuffers(
                 mesh_id_views[i],
                 raw_indirect_views[i],
                 albedo_views[i],
+                reactive_views[i],
+                transparency_views[i],
                 depth_view,
             ];
             let create_info = vk::FramebufferCreateInfo::default()

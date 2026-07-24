@@ -867,28 +867,49 @@ mod tests {
         );
     }
 
-    /// REN-D11-03 / #1564 (count updated by #1583): the main geometry pass
-    /// writes 6 color attachments (HDR, normal, motion, mesh_id, raw_indirect,
-    /// albedo) — the write-only ReSTIR-DI reservoir attachment (location 6) was
-    /// removed under #1583. The "6" is hand-replicated across the render pass
-    /// (`context/helpers.rs` `color_refs`) and the blend arrays in `pipeline.rs`
-    /// / `water.rs`, all of which live inside device-requiring factories and so
-    /// aren't host-readable. The compiled fragment shader is the single source
-    /// of truth those sites must match; reflect its `Location`-decorated Output
-    /// variables and pin them. A G-buffer add/remove that forgets to mirror the
-    /// blend arrays now fails here at `cargo test` instead of as a runtime VUID
-    /// / OOB blend read.
+    /// REN-D11-03 / #1564 (count updated by #1583, then by the FSR Phase-5
+    /// masks): the main geometry pass writes 8 color attachments — HDR,
+    /// normal, motion, mesh_id, raw_indirect, albedo, and the FSR reactive /
+    /// transparency-and-composition masks. (The write-only ReSTIR-DI
+    /// reservoir attachment that once sat at location 6 was removed under
+    /// #1583; the masks are unrelated new attachments, not its return.)
+    ///
+    /// The count is hand-replicated across the render pass
+    /// (`context/helpers.rs` `color_refs`) and the blend arrays in
+    /// `pipeline.rs` / `water.rs`, all of which live inside device-requiring
+    /// factories and so aren't host-readable. The compiled fragment shader is
+    /// the single source of truth those sites must match; reflect its
+    /// `Location`-decorated Output variables and pin them. A G-buffer
+    /// add/remove that forgets to mirror the blend arrays fails here at
+    /// `cargo test` instead of as a runtime VUID / OOB blend read.
     #[test]
-    fn triangle_frag_declares_six_color_outputs() {
+    fn triangle_frag_declares_eight_color_outputs() {
         let spv: &[u8] = include_bytes!("../../shaders/triangle.frag.spv");
         let locs = reflect_output_locations(spv).expect("reflect triangle.frag.spv outputs");
         assert_eq!(
             locs,
-            vec![0, 1, 2, 3, 4, 5],
+            vec![0, 1, 2, 3, 4, 5, 6, 7],
             "triangle.frag.spv declares color outputs at {locs:?} but the main render pass has \
-             6 color attachments at locations 0..=5 — a G-buffer attachment was added/removed \
+             8 color attachments at locations 0..=7 — a G-buffer attachment was added/removed \
              without mirroring the blend arrays in pipeline.rs / water.rs and color_refs in \
              context/helpers.rs (#1564 / #1583)."
+        );
+    }
+
+    /// Water shares the main render pass, so its fragment shader must also
+    /// account for the FSR mask attachments. It writes HDR (0) and both masks
+    /// (6, 7) while leaving the intermediate G-buffer slots to the opaque
+    /// pass — a gap in the declared locations that is intentional, and that
+    /// the blend array in `water.rs` masks off.
+    #[test]
+    fn water_frag_declares_hdr_and_both_fsr_masks() {
+        let spv: &[u8] = include_bytes!("../../shaders/water.frag.spv");
+        let locs = reflect_output_locations(spv).expect("reflect water.frag.spv outputs");
+        assert_eq!(
+            locs,
+            vec![0, 6, 7],
+            "water.frag.spv declares color outputs at {locs:?}; water must write HDR plus the \
+             two FSR masks, and its 8-entry blend array in water.rs must match the render pass."
         );
     }
 }

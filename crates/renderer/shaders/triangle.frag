@@ -55,6 +55,12 @@ layout(location = 2) out vec2 outMotion;       // screen-space motion vector
 layout(location = 3) out uint outMeshID;       // per-instance ID + 1
 layout(location = 4) out vec4 outRawIndirect;  // demodulated indirect light (for SVGF)
 layout(location = 5) out vec4 outAlbedo;       // surface color (composite re-multiplies)
+// FSR 3.1 reconstruction masks. Both are cleared to zero and MAX-blended,
+// and the opaque pipeline masks its writes off entirely, so what lands here
+// is "the most reactive translucent coverage at this pixel". See the
+// attachment table in `context/helpers.rs::create_render_pass`.
+layout(location = 6) out float outFsrReactive;
+layout(location = 7) out float outFsrTransparency;
 
 #include "include/bindings.glsl"
 #include "include/math_common.glsl"
@@ -98,6 +104,13 @@ uint packReservoirLightAndSurface(uint lightIndex, uint surfaceId) {
 // See #1162, #2045.
 
 void main() {
+    // Both FSR masks default to "fully described by depth and motion" so
+    // that every early-out path below — the debug visualizations, the
+    // sky/background arms — leaves a defined value in the attachment. The
+    // real policy is applied from the authored coverage at the end of main.
+    outFsrReactive = 0.0;
+    outFsrTransparency = 0.0;
+
     // #1496 — reconstruct the ABSOLUTE world position from the
     // render-origin-relative varying. Every absolute consumer below
     // (lighting `lightPos - fragWorldPos`, RT ray origins, view dir,
@@ -3206,4 +3219,26 @@ void main() {
         outRawIndirect = vec4(indirectLight, auxiliaryAlpha);
         outAlbedo = vec4(albedo, auxiliaryAlpha);
     }
+
+    // ── FSR reactive / transparency-and-composition masks ─────────────
+    //
+    // Reactive marks pixels whose colour the reprojected history cannot
+    // predict from the opaque surface behind them. AMD's baseline policy is
+    // the authored transparent coverage clamped to 0.9 — never a full 1.0,
+    // which would throw away all history and reintroduce the aliasing the
+    // upscaler exists to remove. `finalAlpha` is the same coverage the HDR
+    // blend uses, so vertex-colour alpha and animated whole-object fades
+    // participate without a second code path.
+    //
+    // Transparency & composition marks shading whose evolution depth and
+    // motion cannot describe at all. Refractive glass is the clear case:
+    // the pixel's colour tracks what is *behind* it through an IOR bend, so
+    // its motion vector describes the wrong surface entirely. Ordinary
+    // coverage blending stays on the reactive term alone.
+    //
+    // The opaque pipeline masks both writes off, so alpha-tested cutouts —
+    // which do have coherent depth and motion — never reach here.
+    float fsrCoverage = min(finalAlpha, 0.9);
+    outFsrReactive = isAlphaBlend ? fsrCoverage : 0.0;
+    outFsrTransparency = isGlass ? 1.0 : (isAlphaBlend ? fsrCoverage : 0.0);
 }
