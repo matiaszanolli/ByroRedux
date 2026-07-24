@@ -93,6 +93,12 @@ pub(super) struct CameraView {
     /// Stored separately so the renderer can apply a DOF-jittered view matrix and
     /// recompute view_proj without re-running the full camera assembly.
     pub proj_mat: Mat4,
+    /// Authored perspective parameters. These are kept separately because
+    /// recovering a very distant far plane from the f32 projection matrix is
+    /// numerically unstable, while temporal upscalers need the exact values.
+    pub camera_near: f32,
+    pub camera_far: f32,
+    pub camera_fov_y: f32,
     /// Lens aperture half-radius (world units). `0.0` = pinhole / DOF disabled.
     pub aperture: f32,
     /// Focal distance (world units). Surfaces at this depth are in sharp focus.
@@ -120,6 +126,9 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
     let mut cam_up = Vec3::Y;
     let mut cam_forward = -Vec3::Z;
     let mut proj_mat = Mat4::IDENTITY;
+    let mut camera_near = 0.0f32;
+    let mut camera_far = 0.0f32;
+    let mut camera_fov_y = 0.0f32;
     let mut aperture = 0.0f32;
     let mut focus_dist = 20.0f32;
     let mut render_origin = Vec3::ZERO;
@@ -149,6 +158,9 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
                         cam_up = rot * Vec3::Y;
                         cam_forward = rot * (-Vec3::Z);
                         proj_mat = c.projection_matrix();
+                        camera_near = c.near;
+                        camera_far = c.far;
+                        camera_fov_y = c.fov_y;
                         aperture = c.aperture;
                         focus_dist = c.focus_dist;
                         proj_mat * Camera::view_matrix(t)
@@ -190,6 +202,9 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
         cam_up,
         cam_forward,
         proj_mat,
+        camera_near,
+        camera_far,
+        camera_fov_y,
         aperture,
         focus_dist,
     }

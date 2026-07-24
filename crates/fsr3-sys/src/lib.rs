@@ -1,8 +1,7 @@
 //! Narrow Rust ABI for AMD FidelityFX FSR 3.1's Vulkan upscaler provider.
 //!
-//! This crate intentionally exposes context creation/destruction and pure
-//! queries only. Frame dispatch resources are added when the renderer's input
-//! contracts are implemented; no frame-generation provider is compiled.
+//! This crate intentionally exposes only context lifecycle, pure queries, and
+//! the upscaler dispatch. No frame-generation provider is compiled.
 
 use std::ffi::{c_char, c_void, CStr};
 use std::fmt;
@@ -36,6 +35,46 @@ struct RawCreateDesc {
     debug_checking: bool,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct RawImage {
+    vk_image: u64,
+    vk_format: u32,
+    vk_usage: u32,
+    width: u32,
+    height: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct RawDispatchDesc {
+    vk_command_buffer: usize,
+    color: RawImage,
+    depth: RawImage,
+    motion_vectors: RawImage,
+    exposure: RawImage,
+    reactive: RawImage,
+    transparency_and_composition: RawImage,
+    output: RawImage,
+    jitter_x: f32,
+    jitter_y: f32,
+    motion_vector_scale_x: f32,
+    motion_vector_scale_y: f32,
+    render_width: u32,
+    render_height: u32,
+    upscale_width: u32,
+    upscale_height: u32,
+    frame_time_delta_ms: f32,
+    pre_exposure: f32,
+    reset: bool,
+    camera_near: f32,
+    camera_far: f32,
+    camera_fov_angle_vertical: f32,
+    view_space_to_meters_factor: f32,
+    enable_sharpening: bool,
+    sharpness: f32,
+}
+
 extern "C" {
     fn byro_fsr3_query_version(out_version: *mut RawVersion) -> u32;
     fn byro_fsr3_query_render_resolution(
@@ -60,6 +99,7 @@ extern "C" {
         out_context: *mut *mut RawContext,
         desc: *const RawCreateDesc,
     ) -> u32;
+    fn byro_fsr3_context_dispatch(context: *mut RawContext, desc: *const RawDispatchDesc) -> u32;
     fn byro_fsr3_context_destroy(context: *mut *mut RawContext) -> u32;
     fn byro_fsr3_error_string(error_code: u32) -> *const c_char;
 }
@@ -193,6 +233,51 @@ pub struct VulkanCreateInfo {
     pub debug_checking: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VulkanImage {
+    pub image: u64,
+    pub format: u32,
+    pub usage: u32,
+    pub size: [u32; 2],
+}
+
+impl From<VulkanImage> for RawImage {
+    fn from(image: VulkanImage) -> Self {
+        Self {
+            vk_image: image.image,
+            vk_format: image.format,
+            vk_usage: image.usage,
+            width: image.size[0],
+            height: image.size[1],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DispatchDescription {
+    pub command_buffer: usize,
+    pub color: VulkanImage,
+    pub depth: VulkanImage,
+    pub motion_vectors: VulkanImage,
+    pub exposure: Option<VulkanImage>,
+    pub reactive: Option<VulkanImage>,
+    pub transparency_and_composition: Option<VulkanImage>,
+    pub output: VulkanImage,
+    pub jitter_offset: [f32; 2],
+    pub motion_vector_scale: [f32; 2],
+    pub render_size: [u32; 2],
+    pub upscale_size: [u32; 2],
+    pub frame_time_delta_ms: f32,
+    pub pre_exposure: f32,
+    pub reset: bool,
+    pub camera_near: f32,
+    pub camera_far: f32,
+    pub camera_fov_angle_vertical: f32,
+    pub view_space_to_meters_factor: f32,
+    pub enable_sharpening: bool,
+    pub sharpness: f32,
+}
+
 /// Owns an FSR 3.1 upscaler context and its SDK-managed Vulkan resources.
 ///
 /// The Vulkan device, physical device, and loader function passed to
@@ -227,6 +312,51 @@ impl Context {
         unsafe { check(byro_fsr3_context_create(&mut raw, &desc))? };
         let raw = NonNull::new(raw).ok_or(Error { code: 5 })?;
         Ok(Self { raw })
+    }
+
+    /// Records one FSR upscaler dispatch into the caller's live Vulkan command
+    /// buffer. The native shim wraps the supplied ash handles as FFX resources;
+    /// it does not submit the command buffer.
+    ///
+    /// # Safety
+    ///
+    /// Every handle in `desc` must belong to the device used to create this
+    /// context, remain live through command-buffer execution, and be in the
+    /// layouts represented by the renderer-side FSR boundary contract.
+    pub unsafe fn dispatch(&mut self, desc: DispatchDescription) -> Result<(), Error> {
+        let raw = RawDispatchDesc {
+            vk_command_buffer: desc.command_buffer,
+            color: desc.color.into(),
+            depth: desc.depth.into(),
+            motion_vectors: desc.motion_vectors.into(),
+            exposure: desc.exposure.unwrap_or_default().into(),
+            reactive: desc.reactive.unwrap_or_default().into(),
+            transparency_and_composition: desc
+                .transparency_and_composition
+                .unwrap_or_default()
+                .into(),
+            output: desc.output.into(),
+            jitter_x: desc.jitter_offset[0],
+            jitter_y: desc.jitter_offset[1],
+            motion_vector_scale_x: desc.motion_vector_scale[0],
+            motion_vector_scale_y: desc.motion_vector_scale[1],
+            render_width: desc.render_size[0],
+            render_height: desc.render_size[1],
+            upscale_width: desc.upscale_size[0],
+            upscale_height: desc.upscale_size[1],
+            frame_time_delta_ms: desc.frame_time_delta_ms,
+            pre_exposure: desc.pre_exposure,
+            reset: desc.reset,
+            camera_near: desc.camera_near,
+            camera_far: desc.camera_far,
+            camera_fov_angle_vertical: desc.camera_fov_angle_vertical,
+            view_space_to_meters_factor: desc.view_space_to_meters_factor,
+            enable_sharpening: desc.enable_sharpening,
+            sharpness: desc.sharpness,
+        };
+        // SAFETY: upheld by this method's contract. The native layer copies the
+        // POD descriptor and records into (but never submits) the command buffer.
+        unsafe { check(byro_fsr3_context_dispatch(self.raw.as_ptr(), &raw)) }
     }
 }
 
@@ -280,5 +410,19 @@ mod tests {
         assert_eq!(first, jitter_offset(0, phases).unwrap());
         assert_ne!(first, [0.0, 0.0]);
         assert!(first.into_iter().all(|component| component.abs() <= 1.0));
+    }
+
+    #[test]
+    fn dispatch_abi_structs_are_plain_and_pointer_width_stable() {
+        assert_eq!(
+            std::mem::align_of::<RawImage>(),
+            std::mem::align_of::<u64>()
+        );
+        assert_eq!(std::mem::size_of::<RawImage>(), 24);
+        assert_eq!(
+            std::mem::offset_of!(RawDispatchDesc, color),
+            std::mem::size_of::<usize>()
+        );
+        assert!(std::mem::size_of::<RawDispatchDesc>() >= 7 * std::mem::size_of::<RawImage>());
     }
 }

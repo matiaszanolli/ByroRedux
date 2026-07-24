@@ -7,17 +7,18 @@
 //   glslangValidator -V -I crates/renderer/shaders composite.frag -o composite.frag.spv
 #include "include/shader_constants.glsl"
 
-// Composite pass: combines the main render pass outputs into the final
-// tone-mapped swapchain image, with sky rendering for background pixels.
+// Scene-composition pass: combines the main render-pass outputs into one
+// render-resolution linear-HDR image, with sky rendering for background
+// pixels. Upscaling and display mapping happen in later frame-graph passes.
 //
 //   For geometry pixels (depth < 1.0):
 //     final = direct + indirect
-//     output = aces(final * exposure)
+//     output = final
 //
 //   For sky pixels (depth == 1.0, exterior only):
 //     Reconstruct world-space view direction from screen UV + inv_view_proj.
 //     Compute sky gradient (horizon → zenith) + cloud layer + sun disc.
-//     output = aces(sky * exposure)
+//     output = sky
 //
 // Direct and indirect are separated so SVGF can filter only the noisy
 // indirect signal without blurring crisp direct-light shadows. The
@@ -99,15 +100,6 @@ layout(set = 1, binding = 0) uniform sampler2D textures[];
 
 layout(location = 0) in vec2 fragUV;
 layout(location = 0) out vec4 outColor;
-
-vec3 aces(vec3 x) {
-    const float a = 2.51;
-    const float b = 0.03;
-    const float c = 2.43;
-    const float d = 0.59;
-    const float e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
 
 // Reconstruct world-space view direction from screen UV and inverse VP.
 vec3 screen_to_world_dir(vec2 uv) {
@@ -336,7 +328,6 @@ void main() {
         vec3 dir = screen_to_world_dir(fragUV);
         vec3 sky = compute_sky(dir);
 
-        float exposure = params.depth_params.y;  // host-set; default 0.85 (DEN-10)
         // Pass `direct4.a` through (mirroring the geometry branch at
         // line 279) so the alpha-blend marker bit `DEN-6 / #676`
         // preserves through TAA stays consistent across both sky and
@@ -349,17 +340,7 @@ void main() {
         // contract that's harder to reason about than the symmetric
         // "alpha is the marker bit, branch on it the same way."
         // DEN-11.
-        vec3 sky_tonemapped = aces(sky * exposure);
-        // Underwater post-FX on the sky branch — the camera looking
-        // up through the water surface should also see the deep tint
-        // when submerged. Same model as the geometry branch (see the
-        // matching block at the end of the geometry path).
-        if (params.underwater.w > 0.0) {
-            float extinction = clamp(1.0 - exp(-params.underwater.w / 120.0), 0.0, 0.85);
-            vec3 underwater_tonemap = aces(params.underwater.xyz * exposure);
-            sky_tonemapped = mix(sky_tonemapped, underwater_tonemap, extinction);
-        }
-        outColor = vec4(sky_tonemapped, direct4.a);
+        outColor = vec4(sky, direct4.a);
     } else {
         // Geometry pixel: combine direct + (indirect × albedo) and tone map.
         // The shader wrote lighting-only indirect (no local albedo) so
@@ -380,10 +361,9 @@ void main() {
         // generated `#define` in `shader_constants.glsl`) so their
         // fixed-point sums are on a unified luminance basis; one
         // `causticLum` carries the combined contribution downstream.
-        // Composite runs at output resolution while these accumulators are
-        // scene/render-resolution resources. Convert normalized UV to a
-        // clamped render pixel; using output-space gl_FragCoord would read
-        // out of bounds for every reduced-resolution FSR preset.
+        // Composite and these accumulators are render-resolution resources.
+        // Convert normalized UV to a clamped render pixel so integer fetches
+        // remain well-defined at the right and bottom edges.
         ivec2 causticSize = textureSize(causticTex, 0);
         ivec2 causticPixel = clamp(
             ivec2(fragUV * vec2(causticSize)),
@@ -474,24 +454,6 @@ void main() {
         vec3 bloom = texture(bloomTex, fragUV).rgb;
         combined += bloom * BLOOM_INTENSITY;
 
-        float exposure = params.depth_params.y;  // host-set; default 0.85 (DEN-10)
-
-        // Tone-map the unfogged combined HDR to display space FIRST,
-        // then apply fog as a display-space mix. Pre-#784 the fog
-        // was mixed into HDR-linear `combined` and then both went
-        // through ACES together — XCLL-authored `fog_color` values
-        // (raw monitor-space floats per `feedback_color_space.md`,
-        // typically 0.05-0.4 on interior cells) blended in linear
-        // HDR appear perceptually amplified once the result is
-        // tone-mapped, producing a visible yellow / sepia distance
-        // wash on distant interior surfaces. Display-space mix
-        // matches the perceptual intent of the authored fog values
-        // and preserves #428's SVGF-coherence goal (fog applied at
-        // composite, not in the geometry pass) since SVGF reads
-        // un-fogged HDR upstream regardless of where the mix lands
-        // on the post-tone-map side.
-        vec3 tonemapped = aces(combined * exposure);
-
         // Aerial-perspective fog fallback (Markarth probe 2026-05-10)
         // stood in for the volumetric froxel pipeline while M-LIGHT v2
         // was gated off. `VOLUMETRIC_OUTPUT_CONSUMED` (volumetrics.rs)
@@ -505,33 +467,6 @@ void main() {
         // volumetric density tint (M55 Phase 6) — nothing in this
         // shader reads them today.
 
-        // ── Underwater post-FX ────────────────────────────────────────
-        //
-        // Drives a depth-based tint toward the active water material's
-        // `deep_color` when the camera is submerged. The CPU sets
-        // `params.underwater.xyz` to the deep-color tint and
-        // `params.underwater.w` to the camera's depth below the
-        // surface; `w == 0` keeps the branch a no-op.
-        //
-        // Extinction model: Beer-Lambert with a 1/120-wu falloff,
-        // chosen so a 60-wu submersion (head just under) sits at
-        // ~40% tint and a 240-wu submersion saturates at ~85% tint.
-        // The cap at 0.85 prevents full black when the player dives
-        // arbitrarily deep — the scene stays legible.
-        if (params.underwater.w > 0.0) {
-            float extinction = 1.0 - exp(-params.underwater.w / 120.0);
-            extinction = clamp(extinction, 0.0, 0.85);
-            // Tone-map the underwater colour with the same exposure
-            // so the mix doesn't drag the scene into HDR space where
-            // ACES would re-bend it. The underwater colour is
-            // already authored in display-linear (per the
-            // `feedback_color_space.md` policy on Gamebryo colour
-            // bytes), so an ACES pass on a tone-mapped target is
-            // visually correct here.
-            vec3 underwater_tonemap = aces(params.underwater.xyz * exposure);
-            tonemapped = mix(tonemapped, underwater_tonemap, extinction);
-        }
-
-        outColor = vec4(tonemapped, direct4.a);
+        outColor = vec4(combined, direct4.a);
     }
 }

@@ -582,6 +582,9 @@ impl App {
                 cam_up: frame.cam_up,
                 cam_forward: frame.cam_forward,
                 proj_mat: frame.proj_mat,
+                camera_near: frame.camera_near,
+                camera_far: frame.camera_far,
+                camera_fov_y: frame.camera_fov_y,
             };
             // REND-#1451 — push live point/spot attenuation tuning
             // (LightTuning resource, mutated by the `light.atten`
@@ -592,6 +595,10 @@ impl App {
                 ctx.light_atten_knee = lt.knee_frac;
                 ctx.light_atten_legacy = lt.legacy;
             }
+            let frame_time_delta_ms = self
+                .world
+                .try_resource::<DeltaTime>()
+                .map_or(1000.0 / 60.0, |delta| delta.0 * 1000.0);
             match ctx.draw_frame(FrameInputs {
                 clear_color,
                 view_proj: &frame.view_proj,
@@ -611,6 +618,7 @@ impl App {
                 ui_texture_handle: ui_tex,
                 sky_params: &frame.sky,
                 dof,
+                frame_time_delta_ms,
                 timings: frame_timings.as_mut(),
                 water_commands: &self.water_commands,
                 underwater: compute_underwater_params(&self.world),

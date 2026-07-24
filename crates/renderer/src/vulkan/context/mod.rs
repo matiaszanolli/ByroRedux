@@ -8,13 +8,15 @@ use super::composite::{CompositePipeline, HDR_FORMAT};
 use super::compute::ClusterCullPipeline;
 use super::debug;
 use super::device::{self, QueueFamilyIndices};
+use super::exposure::ExposureResource;
+use super::frame_upscaler::FrameUpscaler;
 use super::gbuffer::{
     GBuffer, ALBEDO_FORMAT, MESH_ID_FORMAT, MOTION_FORMAT, NORMAL_FORMAT, RAW_INDIRECT_FORMAT,
 };
 use super::instance;
-use super::exposure::ExposureResource;
 use super::material::GpuMaterial;
 use super::pipeline;
+use super::presentation::PresentationPipeline;
 use super::scene_buffer;
 use super::ssao::SsaoPipeline;
 use super::surface;
@@ -747,6 +749,10 @@ pub struct DofView {
     pub cam_forward: [f32; 3],
     /// Perspective projection matrix (column-major, Vulkan clip space with Y-flip).
     pub proj_mat: [f32; 16],
+    /// Exact authored perspective parameters used by temporal reconstruction.
+    pub camera_near: f32,
+    pub camera_far: f32,
+    pub camera_fov_y: f32,
 }
 
 impl Default for DofView {
@@ -758,6 +764,9 @@ impl Default for DofView {
             cam_up: [0.0, 1.0, 0.0],
             cam_forward: [0.0, 0.0, -1.0],
             proj_mat: byroredux_core::math::Mat4::IDENTITY.to_cols_array(),
+            camera_near: 0.1,
+            camera_far: 1_000.0,
+            camera_fov_y: std::f32::consts::FRAC_PI_4,
         }
     }
 }
@@ -1286,14 +1295,21 @@ pub struct VulkanContext {
     /// upload section for the read side.
     pub clean_skin_frames: u32,
     pub ssao: Option<SsaoPipeline>,
-    /// FSR/composite exposure producer — a persistent 1x1 `R32_SFLOAT`
+    /// FSR/presentation exposure producer — a persistent 1x1 `R32_SFLOAT`
     /// texture holding the single fixed HDR exposure value. It is the source
-    /// of truth the composite tonemap reads and the future FSR dispatch
-    /// (Phase 5) will sample, so the two cannot drift into independent
-    /// constants. `None` if allocation failed; composite falls back to
+    /// of truth the FSR dispatch samples and the presentation tonemap reads,
+    /// so the two cannot drift into independent constants. `None` if
+    /// allocation failed; presentation falls back to
     /// [`super::exposure::DEFAULT_EXPOSURE`].
     pub exposure: Option<ExposureResource>,
     pub composite: Option<CompositePipeline>,
+    /// Render-resolution scene → output-resolution HDR reconstruction.
+    /// In TAA mode (and if FSR initialization fails), this records the native
+    /// Vulkan bridge through the same explicit frame-graph seam.
+    pub frame_upscaler: Option<FrameUpscaler>,
+    /// Output-resolution exposure/tone-map pass into the acquired swapchain
+    /// image. Kept separate from scene composition so FSR sees linear HDR.
+    pub presentation: Option<PresentationPipeline>,
     pub gbuffer: Option<GBuffer>,
     pub svgf: Option<SvgfPipeline>,
     /// ReSTIR-DI direct-shadow reservoir buffers (screen-sized, ping-pong
@@ -2135,13 +2151,13 @@ impl VulkanContext {
         };
 
         // 14b. Exposure producer (1x1 R32_SFLOAT). Cleared to the fixed HDR
-        // exposure so composite and the future FSR dispatch share one value.
+        // exposure so presentation and the FSR dispatch share one value.
         let exposure =
             match ExposureResource::new(&device, &gpu_allocator, &graphics_queue, transfer_pool) {
                 Ok(e) => Some(e),
                 Err(e) => {
                     log::warn!(
-                        "Exposure resource creation failed: {e} — composite falls back to the \
+                        "Exposure resource creation failed: {e} — presentation falls back to the \
                          default exposure constant"
                     );
                     None
@@ -2386,7 +2402,8 @@ impl VulkanContext {
             None => mesh_id_views_seed.clone(),
         };
 
-        // 14c. Composite pipeline: owns HDR intermediates + tone-map pass.
+        // 14c. Composite pipeline: owns HDR intermediates + scene-composition
+        // pass. Tone mapping now happens at output resolution in presentation.
         // Its descriptor sets sample HDR (owned by composite), indirect
         // (from SVGF or raw G-buffer), and albedo (G-buffer).
         // Volumetric views (M55 Phase 3) — composite samples the
@@ -2470,8 +2487,6 @@ impl VulkanContext {
             &device,
             &gpu_allocator,
             pipeline_cache,
-            swapchain_state.format.format,
-            &swapchain_state.image_views,
             &composite_indirect_views,
             indirect_is_general,
             &albedo_views,
@@ -2524,8 +2539,7 @@ impl VulkanContext {
             }
         } else {
             log::info!(
-                "FSR scaffold active: TAA history/resolve disabled; raw render-resolution HDR \
-                 is presented until FSR dispatch lands"
+                "FSR mode active: TAA history/resolve disabled; FSR owns temporal reconstruction"
             );
             None
         };
@@ -2549,13 +2563,36 @@ impl VulkanContext {
                 }
             }
         }
-        // Swap composite's HDR binding to TAA output so tone-map samples
-        // the anti-aliased image. When TAA is disabled composite keeps its
-        // original raw-HDR descriptors.
+        // Swap composite's HDR binding to TAA output so scene composition
+        // samples the anti-aliased image. When TAA is disabled composite keeps
+        // its original raw-HDR descriptors.
         if let (Some(t), Some(ref mut c)) = (taa.as_ref(), composite.as_mut()) {
             let taa_views: Vec<vk::ImageView> = (0..n_frames).map(|i| t.output_view(i)).collect();
             c.rebind_hdr_views(&device, &taa_views, vk::ImageLayout::GENERAL);
         }
+
+        let frame_upscaler = FrameUpscaler::new(
+            &vk_instance,
+            &device,
+            physical_device,
+            &gpu_allocator,
+            &graphics_queue,
+            transfer_pool,
+            renderer_config.upscaler,
+            frame_extents,
+        )
+        .context("create frame upscaler")?;
+        let presentation = PresentationPipeline::new(
+            &device,
+            pipeline_cache,
+            swapchain_state.format.format,
+            &swapchain_state.image_views,
+            frame_upscaler.output_views(),
+            frame_extents.output,
+        )
+        .context("create presentation pipeline")?;
+        let frame_upscaler = Some(frame_upscaler);
+        let presentation = Some(presentation);
 
         // 15. Main framebuffers: one per frame-in-flight slot, binding that
         // slot's HDR + normal + motion + mesh_id + raw_indirect + albedo
@@ -2646,6 +2683,8 @@ impl VulkanContext {
             ssao,
             exposure,
             composite,
+            frame_upscaler,
+            presentation,
             gbuffer,
             svgf,
             reservoir_buffers,
@@ -3089,6 +3128,9 @@ impl Drop for VulkanContext {
             if let Some(mut pass) = self.egui_pass.take() {
                 pass.destroy(&self.device);
             }
+            if let Some(mut presentation) = self.presentation.take() {
+                presentation.destroy(&self.device);
+            }
 
             // ── Allocator-independent teardown (#1483 / REN-D23-NEW-02
             // + sibling scan) ─────────────────────────────────────────
@@ -3215,6 +3257,11 @@ impl Drop for VulkanContext {
                 // is idempotent, so the field's own `Drop` later is a no-op.
                 if let Some(ref mut exposure) = self.exposure {
                     exposure.destroy();
+                }
+                // The SDK context and output views must be retired after
+                // presentation descriptors and before composed-scene inputs.
+                if let Some(ref mut upscaler) = self.frame_upscaler {
+                    upscaler.destroy(&self.device, alloc);
                 }
                 if let Some(ref mut composite) = self.composite {
                     composite.destroy(&self.device, alloc);

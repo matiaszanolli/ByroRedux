@@ -735,8 +735,8 @@ impl VulkanContext {
             }
         };
 
-        // Recreate composite pipeline's HDR images + swapchain framebuffers
-        // with the new extent. Also rewrites descriptor sets to point at
+        // Recreate composite pipeline's raw + composed HDR images and
+        // per-frame framebuffers. Also rewrites descriptor sets to point at
         // the new indirect + albedo + caustic + volumetric + bloom views.
         // #1257 / Phase E of #1210 — gather the resized water-caustic
         // sampled views. Same fall-back-to-existing-caustic shape as
@@ -753,7 +753,6 @@ impl VulkanContext {
                 self.allocator
                     .as_ref()
                     .expect("allocator missing during resize"),
-                &self.swapchain_state.image_views,
                 &composite_indirect_views,
                 indirect_is_general,
                 &albedo_views,
@@ -818,6 +817,44 @@ impl VulkanContext {
             let taa_views: Vec<vk::ImageView> = (0..n).map(|i| t.output_view(i)).collect();
             c.rebind_hdr_views(&self.device, &taa_views, vk::ImageLayout::GENERAL);
         }
+
+        // Presentation descriptors reference the upscaler's output views, so
+        // retire presentation before replacing those views. The resize entry
+        // point paid device_wait_idle before reaching this method.
+        if let Some(mut presentation) = self.presentation.take() {
+            unsafe { presentation.destroy(&self.device) };
+        }
+        let allocator = self
+            .allocator
+            .as_ref()
+            .expect("allocator missing during resize");
+        let upscaled_views = {
+            let upscaler = self
+                .frame_upscaler
+                .as_mut()
+                .expect("frame upscaler must exist during resize");
+            upscaler.recreate(
+                &self.instance,
+                &self.device,
+                self.physical_device,
+                allocator,
+                &self.graphics_queue,
+                self.transfer_pool,
+                self.frame_extents,
+            )?;
+            upscaler.output_views().to_vec()
+        };
+        self.presentation = Some(
+            super::super::presentation::PresentationPipeline::new(
+                &self.device,
+                self.pipeline_cache,
+                self.swapchain_state.format.format,
+                &self.swapchain_state.image_views,
+                &upscaled_views,
+                self.frame_extents.output,
+            )
+            .context("recreate presentation pipeline")?,
+        );
 
         // Reset permanent-failure latches — every downstream pass has
         // just been recreated so any previous lost-device state is no

@@ -298,6 +298,10 @@ impl GBuffer {
     pub fn motion_view(&self, frame: usize) -> vk::ImageView {
         self.motion.views[frame]
     }
+    /// Image handle for FSR motion-vector input in the given frame slot.
+    pub fn motion_image(&self, frame: usize) -> vk::Image {
+        self.motion.images[frame]
+    }
     /// Image view for the mesh ID attachment in the given frame slot.
     pub fn mesh_id_view(&self, frame: usize) -> vk::ImageView {
         self.mesh_id.views[frame]

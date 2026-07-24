@@ -1,9 +1,8 @@
 //! Runtime upscaler selection and the render/output extent contract.
 //!
-//! Phase 2 deliberately stops short of dispatching FSR. This module is the
-//! single source of truth for preset sizing and the temporal input contract so
-//! extent, jitter, and motion-vector conversion math cannot drift between the
-//! renderer and the future SDK dispatch boundary.
+//! This module is the single source of truth for preset sizing and the temporal
+//! input contract so extent, jitter, and motion-vector conversion math cannot
+//! drift from the SDK dispatch boundary.
 
 use ash::vk;
 use byroredux_fsr3_sys::{self as fsr3, QualityMode};
@@ -58,8 +57,7 @@ impl FromStr for FsrQuality {
 /// Temporal reconstruction path selected for the renderer.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum UpscalerMode {
-    /// Existing native-resolution TAA fallback. This remains the default until
-    /// every FSR validation gate has passed.
+    /// Existing native-resolution TAA path and compatibility fallback.
     #[default]
     Taa,
     /// FSR 3.1 upscaler-only path. Frame generation is not represented here.
@@ -148,7 +146,7 @@ impl FrameExtentSet {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FsrJitterSample {
     /// SDK sample in render-resolution pixel units. This exact value is passed
-    /// to the future FSR dispatch.
+    /// to the FSR dispatch.
     pub pixel: [f32; 2],
     /// Matching Vulkan projection offset. ByroRedux's projection is Y-flipped,
     /// so the SDK's positive pixel Y becomes negative NDC Y.
@@ -159,7 +157,7 @@ pub struct FsrJitterSample {
 ///
 /// The complete SDK sequence is queried once for the active scale ratio. The
 /// index advances only through [`Self::mark_dispatch_completed`], which the
-/// Phase 5 dispatch path will call after a successfully submitted FSR frame.
+/// renderer calls after a successfully submitted FSR frame.
 /// Recording failures therefore cannot silently desynchronise projection and
 /// reconstruction history.
 #[derive(Debug)]
@@ -250,6 +248,36 @@ pub fn fsr_motion_vector_scale(render: vk::Extent2D) -> [f32; 2] {
 pub fn engine_motion_to_fsr_pixels(motion_uv: [f32; 2], render: vk::Extent2D) -> [f32; 2] {
     let scale = fsr_motion_vector_scale(render);
     [motion_uv[0] * scale[0], motion_uv[1] * scale[1]]
+}
+
+/// Camera values required by FSR, validated at the renderer boundary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FsrCameraParameters {
+    pub near: f32,
+    pub far: f32,
+    pub fov_y_radians: f32,
+}
+
+pub fn fsr_camera_parameters(
+    near: f32,
+    far: f32,
+    fov_y_radians: f32,
+) -> Option<FsrCameraParameters> {
+    let values = [near, far, fov_y_radians];
+    if values.into_iter().all(f32::is_finite)
+        && near > 0.0
+        && far > near
+        && fov_y_radians > 0.0
+        && fov_y_radians < std::f32::consts::PI
+    {
+        Some(FsrCameraParameters {
+            near,
+            far,
+            fov_y_radians,
+        })
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -411,5 +439,16 @@ mod tests {
             [-10.0, 10.0]
         );
         assert_eq!(engine_motion_to_fsr_pixels([0.0, 0.0], render), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn authored_camera_parameters_survive_a_large_depth_range_exactly() {
+        let near = 0.1;
+        let far = 300_000.0;
+        let fov = 70.0_f32.to_radians();
+        let params = fsr_camera_parameters(near, far, fov).unwrap();
+        assert_eq!(params.near, near);
+        assert_eq!(params.far, far);
+        assert_eq!(params.fov_y_radians, fov);
     }
 }

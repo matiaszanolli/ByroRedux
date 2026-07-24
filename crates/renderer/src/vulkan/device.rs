@@ -207,6 +207,33 @@ const RT_EXTENSIONS: &[&CStr] = &[
     ash::khr::deferred_host_operations::NAME,
 ];
 
+/// Extensions inspected by the FidelityFX Vulkan backend.
+///
+/// FidelityFX SDK 1.1.4 enumerates the *physical* device rather than the
+/// logical-device extension list when it chooses shader permutations and
+/// optional backend paths. Enable every advertised extension it recognizes so
+/// those choices match the device we actually create. Core-promoted feature
+/// bits are enabled separately in the Vulkan 1.2/1.3 feature chain below.
+const FFX_OPTIONAL_EXTENSIONS: &[&CStr] = &[
+    ash::ext::subgroup_size_control::NAME,
+    ash::khr::shader_float16_int8::NAME,
+    ash::khr::dedicated_allocation::NAME,
+    ash::khr::get_memory_requirements2::NAME,
+    ash::amd::device_coherent_memory::NAME,
+    ash::amd::buffer_marker::NAME,
+    ash::khr::synchronization2::NAME,
+    ash::ext::descriptor_indexing::NAME,
+];
+
+fn has_device_extension(available: &[vk::ExtensionProperties], name: &CStr) -> bool {
+    available.iter().any(|ext| {
+        // SAFETY: `extension_name` is a fixed-size, null-terminated Vulkan
+        // driver result and its pointer remains valid for the lifetime of
+        // `ext`.
+        unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) == name }
+    })
+}
+
 /// Preference key for otherwise-suitable physical devices. Device type is the
 /// primary policy: a discrete GPU always outranks every non-discrete device,
 /// regardless of reported heap size. Device-local memory only breaks ties
@@ -333,14 +360,7 @@ fn is_device_suitable(
             .context("Failed to enumerate device extensions")?
     };
 
-    let has_extension = |name: &CStr| -> bool {
-        available_extensions.iter().any(|ext| {
-            // SAFETY: extension_name is a fixed-size null-terminated [c_char; 256]
-            // from the Vulkan driver. Pointer valid for lifetime of `ext` (in Vec).
-            let ext_name = unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) };
-            ext_name == name
-        })
-    };
+    let has_extension = |name: &CStr| has_device_extension(&available_extensions, name);
 
     // Check required extensions.
     for required in REQUIRED_EXTENSIONS {
@@ -567,7 +587,7 @@ pub fn create_logical_device(
     // use different blend states per color attachment (HDR blends, G-buffer
     // attachments overwrite). Without this feature the validation layer
     // rejects any pipeline where pAttachments[i] != pAttachments[0].
-    let device_features = vk::PhysicalDeviceFeatures::default()
+    let mut device_features = vk::PhysicalDeviceFeatures::default()
         .sampler_anisotropy(caps.sampler_anisotropy_supported)
         .texture_compression_bc(caps.texture_compression_bc)
         .independent_blend(true)
@@ -590,7 +610,7 @@ pub fn create_logical_device(
         // VUID-RuntimeSpirv-NonWritable-06340.
         .fragment_stores_and_atomics(true);
 
-    // Build extension list: required + optional RT.
+    // Build extension list: required + optional RT/FidelityFX facilities.
     let mut extensions: Vec<*const i8> = REQUIRED_EXTENSIONS.iter().map(|e| e.as_ptr()).collect();
     if caps.ray_query_supported {
         for ext in RT_EXTENSIONS {
@@ -605,6 +625,49 @@ pub fn create_logical_device(
         log::info!("Enabling VK_EXT_memory_budget for live VRAM usage queries");
     }
 
+    let available_extensions = unsafe {
+        // SAFETY: `instance` is live and `physical_device` was enumerated from
+        // it; the query writes only into the returned extension-properties Vec.
+        instance
+            .enumerate_device_extension_properties(physical_device)
+            .context("Failed to enumerate FidelityFX device extensions")?
+    };
+    let mut enabled_ffx_extensions = 0;
+    for extension in FFX_OPTIONAL_EXTENSIONS {
+        if has_device_extension(&available_extensions, extension) {
+            extensions.push(extension.as_ptr());
+            enabled_ffx_extensions += 1;
+        }
+    }
+
+    // FidelityFX's capability query also reads these physical-device feature
+    // bits before choosing FP16 shaders, non-uniform storage-buffer access,
+    // and wave64 pipelines. Mirror every supported bit into the logical
+    // device. The AMD coherent-memory feature is extension-specific, so only
+    // put that structure in the query/create chains when the extension exists.
+    let coherent_memory_extension = has_device_extension(
+        &available_extensions,
+        ash::amd::device_coherent_memory::NAME,
+    );
+    let mut supported_vulkan12_features = vk::PhysicalDeviceVulkan12Features::default();
+    let mut supported_vulkan13_features = vk::PhysicalDeviceVulkan13Features::default();
+    let mut supported_coherent_memory = vk::PhysicalDeviceCoherentMemoryFeaturesAMD::default();
+    let mut supported_features2 = vk::PhysicalDeviceFeatures2::default()
+        .push_next(&mut supported_vulkan12_features)
+        .push_next(&mut supported_vulkan13_features);
+    if coherent_memory_extension {
+        supported_features2 = supported_features2.push_next(&mut supported_coherent_memory);
+    }
+    unsafe {
+        // SAFETY: the physical device belongs to this live instance and every
+        // pNext structure is stack-local and outlives the feature query.
+        instance.get_physical_device_features2(physical_device, &mut supported_features2);
+    }
+    // FidelityFX's Vulkan shader blobs use the Int16 SPIR-V capability even
+    // when FP16 arithmetic is disabled. Mirror the physical-device bit into
+    // the core feature set so those modules are legal to create.
+    device_features.shader_int16 = supported_features2.features.shader_int16;
+
     // Feature chain (pNext): Vulkan 1.2 features.
     // - buffer_device_address: required for RT acceleration structures.
     // - descriptor_indexing features: required for bindless texture arrays.
@@ -616,6 +679,14 @@ pub fn create_logical_device(
         .runtime_descriptor_array(true)
         .descriptor_binding_partially_bound(true)
         .descriptor_binding_sampled_image_update_after_bind(true)
+        // FidelityFX chooses its FP16 permutation and storage-buffer
+        // descriptor indexing from physical-device capabilities.
+        .descriptor_indexing(supported_vulkan12_features.descriptor_indexing == vk::TRUE)
+        .shader_float16(supported_vulkan12_features.shader_float16 == vk::TRUE)
+        .shader_storage_buffer_array_non_uniform_indexing(
+            supported_vulkan12_features.shader_storage_buffer_array_non_uniform_indexing
+                == vk::TRUE,
+        )
         // Host-side `vkResetQueryPool`. Two consumers: the BLAS-compaction
         // path (`blas_static.rs`, RT-only) AND the per-pass GPU timers
         // (`gpu_timers.rs`, #1194 — RT-independent). It was previously
@@ -640,16 +711,27 @@ pub fn create_logical_device(
     // `vkCmdPipelineBarrier` calls (bloom, SSAO, caustic, texture,
     // volumetrics all use NONE as the "no prior writes" form since
     // #1160 / #949 / #1100 / #1121 / #1122).
-    let mut vulkan13_features =
-        vk::PhysicalDeviceVulkan13Features::default().synchronization2(true);
+    let mut vulkan13_features = vk::PhysicalDeviceVulkan13Features::default()
+        .synchronization2(true)
+        // FidelityFX requests a required subgroup size for wave64 shader
+        // permutations when the physical device advertises it.
+        .subgroup_size_control(supported_vulkan13_features.subgroup_size_control == vk::TRUE)
+        .compute_full_subgroups(supported_vulkan13_features.compute_full_subgroups == vk::TRUE);
 
-    // Always push Vulkan 1.2 + 1.3 features. RT features are only pushed when available.
+    let mut coherent_memory_features = vk::PhysicalDeviceCoherentMemoryFeaturesAMD::default()
+        .device_coherent_memory(supported_coherent_memory.device_coherent_memory == vk::TRUE);
+
+    // Always push Vulkan 1.2 + 1.3 features. Extension-specific feature
+    // structures are only pushed when their extension is available.
     let mut create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_create_infos)
         .enabled_features(&device_features)
         .enabled_extension_names(&extensions)
         .push_next(&mut vulkan12_features)
         .push_next(&mut vulkan13_features);
+    if coherent_memory_extension {
+        create_info = create_info.push_next(&mut coherent_memory_features);
+    }
     if caps.ray_query_supported {
         create_info = create_info
             .push_next(&mut accel_features)
@@ -711,10 +793,11 @@ pub fn create_logical_device(
     };
 
     log::info!(
-        "Logical device created (graphics queue family: {}, present: {}, sync2: {})",
+        "Logical device created (graphics queue family: {}, present: {}, sync2: {}, FidelityFX extensions: {})",
         indices.graphics,
         indices.present,
         caps.synchronization2_supported,
+        enabled_ffx_extensions,
     );
 
     Ok((device, graphics_queue, present_queue))

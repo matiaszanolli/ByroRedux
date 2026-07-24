@@ -7,6 +7,7 @@
 
 #include <new>
 #include <cstdlib>
+#include <type_traits>
 
 #ifdef _WIN32
 #include <malloc.h>
@@ -40,6 +41,40 @@ void aligned_deallocate(void*, void* memory) {
 
 ffxAllocationCallbacks allocation_callbacks() {
     return {nullptr, aligned_allocate, aligned_deallocate};
+}
+
+template <typename Handle>
+Handle vk_handle(uint64_t raw) {
+    if constexpr (std::is_pointer_v<Handle>) {
+        return reinterpret_cast<Handle>(static_cast<uintptr_t>(raw));
+    } else {
+        return static_cast<Handle>(raw);
+    }
+}
+
+FfxApiResource wrap_image(const ByroFsr3Image& image, uint32_t state) {
+    if (!image.vk_image) {
+        return {};
+    }
+
+    VkImageCreateInfo create_info{};
+    create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    create_info.imageType = VK_IMAGE_TYPE_2D;
+    create_info.format = static_cast<VkFormat>(image.vk_format);
+    create_info.extent = {image.width, image.height, 1};
+    create_info.mipLevels = 1;
+    create_info.arrayLayers = 1;
+    create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    create_info.usage = static_cast<VkImageUsageFlags>(image.vk_usage);
+    create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    const VkImage vk_image = vk_handle<VkImage>(image.vk_image);
+    return ffxApiGetResourceVK(
+        reinterpret_cast<void*>(static_cast<uintptr_t>(image.vk_image)),
+        ffxApiGetImageResourceDescriptionVK(vk_image, create_info, 0),
+        state);
 }
 
 uint32_t query_single_version(ByroFsr3Version* out_version) {
@@ -167,6 +202,59 @@ extern "C" uint32_t byro_fsr3_context_create(
 
     *out_context = wrapper;
     return FFX_API_RETURN_OK;
+}
+
+extern "C" uint32_t byro_fsr3_context_dispatch(
+    ByroFsr3Context* context,
+    const ByroFsr3DispatchDesc* desc) {
+    if (!context || !context->context || !desc || !desc->vk_command_buffer ||
+        !desc->color.vk_image || !desc->depth.vk_image ||
+        !desc->motion_vectors.vk_image || !desc->output.vk_image ||
+        !desc->render_width || !desc->render_height ||
+        !desc->upscale_width || !desc->upscale_height ||
+        desc->frame_time_delta_ms <= 0.0f || desc->pre_exposure <= 0.0f ||
+        desc->camera_near <= 0.0f || desc->camera_far <= desc->camera_near ||
+        desc->camera_fov_angle_vertical <= 0.0f ||
+        desc->view_space_to_meters_factor <= 0.0f ||
+        desc->sharpness < 0.0f || desc->sharpness > 1.0f) {
+        return FFX_API_RETURN_ERROR_PARAMETER;
+    }
+
+    ffxDispatchDescUpscale dispatch{};
+    dispatch.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
+    dispatch.commandList =
+        reinterpret_cast<void*>(desc->vk_command_buffer);
+    dispatch.color = wrap_image(desc->color, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    dispatch.depth = wrap_image(desc->depth, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    dispatch.motionVectors =
+        wrap_image(desc->motion_vectors, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    dispatch.exposure =
+        wrap_image(desc->exposure, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    dispatch.reactive =
+        wrap_image(desc->reactive, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    dispatch.transparencyAndComposition = wrap_image(
+        desc->transparency_and_composition,
+        FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    dispatch.output =
+        wrap_image(desc->output, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+    dispatch.jitterOffset = {desc->jitter_x, desc->jitter_y};
+    dispatch.motionVectorScale = {
+        desc->motion_vector_scale_x,
+        desc->motion_vector_scale_y,
+    };
+    dispatch.renderSize = {desc->render_width, desc->render_height};
+    dispatch.upscaleSize = {desc->upscale_width, desc->upscale_height};
+    dispatch.enableSharpening = desc->enable_sharpening;
+    dispatch.sharpness = desc->sharpness;
+    dispatch.frameTimeDelta = desc->frame_time_delta_ms;
+    dispatch.preExposure = desc->pre_exposure;
+    dispatch.reset = desc->reset;
+    dispatch.cameraNear = desc->camera_near;
+    dispatch.cameraFar = desc->camera_far;
+    dispatch.cameraFovAngleVertical = desc->camera_fov_angle_vertical;
+    dispatch.viewSpaceToMetersFactor = desc->view_space_to_meters_factor;
+    dispatch.flags = 0;
+    return ffxDispatch(&context->context, &dispatch.header);
 }
 
 extern "C" uint32_t byro_fsr3_context_destroy(ByroFsr3Context** context) {

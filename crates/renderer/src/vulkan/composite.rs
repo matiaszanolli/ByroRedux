@@ -1,16 +1,17 @@
-//! HDR composite + tone-mapping pass.
+//! Render-resolution linear-HDR scene-composition pass.
 //!
 //! Owns the HDR color intermediate images that the main render pass writes
 //! to, and the fullscreen composite pipeline that samples those images,
-//! applies ACES tone mapping, and writes the result to the sRGB swapchain.
+//! combines all scene lighting, and writes one complete linear-HDR image for
+//! the frame upscaler. Tone mapping and swapchain presentation happen after
+//! the upscale boundary.
 //!
-//! This is the last pass of the frame. Runs as a dedicated render pass
-//! after the main render pass ends:
+//! Runs as a dedicated render pass after the main render pass ends:
 //!
 //!   main render pass → (HDR image in SHADER_READ_ONLY layout)
-//!   composite render pass → (swapchain image in PRESENT_SRC_KHR layout)
-//!   SSAO dispatch (reads depth, unchanged)
-//!   submit + present
+//!   scene composition → (linear HDR in SHADER_READ_ONLY layout)
+//!   frame upscale → output-resolution HDR
+//!   presentation → swapchain
 //!
 //! ## Per-frame HDR images
 //!
@@ -19,12 +20,8 @@
 //! while frame N+1's main render pass writes it. We use one HDR image
 //! per frame-in-flight slot. Memory cost: ~16 MB at 1080p (2 × RGBA16F).
 //!
-//! ## Per-swapchain-image composite framebuffers
-//!
-//! The composite render pass writes to the swapchain, which has its own
-//! image per swapchain slot (typically 3). We create one composite
-//! framebuffer per swapchain image, binding just the swapchain view (no
-//! depth needed — fullscreen triangle, depth test disabled).
+//! The composed scene is also per-frame-in-flight, avoiding overlap between
+//! a frame being reconstructed and the next frame being composed.
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
@@ -135,13 +132,19 @@ pub struct CompositePipeline {
     /// GPU-local allocations backing hdr_images.
     hdr_allocations: Vec<Option<vk_alloc::Allocation>>,
 
+    /// Complete render-resolution linear-HDR scene, one per frame slot.
+    pub scene_images: Vec<vk::Image>,
+    /// Views parallel to `scene_images`.
+    pub scene_image_views: Vec<vk::ImageView>,
+    scene_allocations: Vec<Option<vk_alloc::Allocation>>,
+
     /// Dedicated render pass for the composite step. Single color attachment
-    /// = swapchain format, no depth.
+    /// = RGBA16F scene output, no depth.
     pub composite_render_pass: vk::RenderPass,
-    /// Per-swapchain-image composite framebuffer (binds just swapchain view).
+    /// Per-frame composite framebuffer (binds that frame's scene view).
     composite_framebuffers: Vec<vk::Framebuffer>,
 
-    /// Graphics pipeline: fullscreen triangle + ACES tone map fragment shader.
+    /// Graphics pipeline: fullscreen triangle + linear scene composition.
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
@@ -167,13 +170,11 @@ pub struct CompositePipeline {
 
     /// Extent of the HDR scene inputs owned by this pipeline.
     pub render_extent: vk::Extent2D,
-    /// Extent of the swapchain presentation framebuffers.
-    pub output_extent: vk::Extent2D,
 }
 
 impl CompositePipeline {
     /// Create all HDR intermediate images, the composite render pass +
-    /// pipeline, and the per-swapchain-image composite framebuffers.
+    /// pipeline, and the per-frame scene-composition framebuffers.
     ///
     /// `indirect_views` comes from the SVGF denoiser (Phase 3+) in layout
     /// GENERAL, or from the raw G-buffer output (Phase 2) in layout
@@ -182,13 +183,10 @@ impl CompositePipeline {
     /// at write time — callers must pass `indirect_is_general=true` when
     /// wiring up the SVGF output.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        swapchain_format: vk::Format,
-        swapchain_views: &[vk::ImageView],
         indirect_views: &[vk::ImageView],
         indirect_is_general: bool,
         albedo_views: &[vk::ImageView],
@@ -204,8 +202,6 @@ impl CompositePipeline {
             device,
             allocator,
             pipeline_cache,
-            swapchain_format,
-            swapchain_views,
             indirect_views,
             indirect_is_general,
             albedo_views,
@@ -228,8 +224,6 @@ impl CompositePipeline {
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        swapchain_format: vk::Format,
-        swapchain_views: &[vk::ImageView],
         indirect_views: &[vk::ImageView],
         indirect_is_general: bool,
         albedo_views: &[vk::ImageView],
@@ -254,6 +248,9 @@ impl CompositePipeline {
             hdr_images: Vec::new(),
             hdr_image_views: Vec::new(),
             hdr_allocations: Vec::new(),
+            scene_images: Vec::new(),
+            scene_image_views: Vec::new(),
+            scene_allocations: Vec::new(),
             composite_render_pass: vk::RenderPass::null(),
             composite_framebuffers: Vec::new(),
             pipeline: vk::Pipeline::null(),
@@ -267,7 +264,6 @@ impl CompositePipeline {
             nearest_sampler: vk::Sampler::null(),
             param_buffers: Vec::new(),
             render_extent: extents.render,
-            output_extent: extents.output,
         };
 
         // Macro to clean up partial state on any fallible call.
@@ -358,6 +354,71 @@ impl CompositePipeline {
             partial.hdr_image_views.push(view);
         }
 
+        // The main HDR attachment above is deliberately still a distinct
+        // resource: TAA may replace it before this pass. Scene composition
+        // resolves every render-resolution contribution into the single image
+        // that either FSR or the native bridge consumes.
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            let img_info = vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(HDR_FORMAT)
+                .extent(vk::Extent3D {
+                    width: extents.render.width,
+                    height: extents.render.height,
+                    depth: 1,
+                })
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_SRC,
+                )
+                .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .initial_layout(vk::ImageLayout::UNDEFINED);
+            let image = try_or_cleanup!(unsafe {
+                device
+                    .create_image(&img_info, None)
+                    .context("create composed scene image")
+            });
+            partial.scene_images.push(image);
+            partial.scene_allocations.push(None);
+
+            let allocation = try_or_cleanup!(allocator
+                .lock()
+                .expect("allocator lock")
+                .allocate(&vk_alloc::AllocationCreateDesc {
+                    name: &format!("composed_scene_{i}"),
+                    requirements: unsafe { device.get_image_memory_requirements(image) },
+                    location: gpu_allocator::MemoryLocation::GpuOnly,
+                    linear: false,
+                    allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
+                })
+                .context("allocate composed scene image"));
+            try_or_cleanup!(unsafe {
+                device
+                    .bind_image_memory(image, allocation.memory(), allocation.offset())
+                    .context("bind composed scene image")
+            });
+            partial.scene_allocations[i] = Some(allocation);
+
+            let view = try_or_cleanup!(unsafe {
+                device
+                    .create_image_view(
+                        &vk::ImageViewCreateInfo::default()
+                            .image(image)
+                            .view_type(vk::ImageViewType::TYPE_2D)
+                            .format(HDR_FORMAT)
+                            .subresource_range(super::descriptors::color_subresource_single_mip()),
+                        None,
+                    )
+                    .context("create composed scene image view")
+            });
+            partial.scene_image_views.push(view);
+        }
+
         // ── 2. HDR sampler (linear filter for slight bilinear smoothing) ──
         // SAFETY: `device` is live for this call; the new sampler handle is
         // stored in `partial.hdr_sampler`, freed by `destroy` on later error.
@@ -398,17 +459,18 @@ impl CompositePipeline {
         });
 
         // ── 3. Composite render pass ─────────────────────────────────
-        // Single color attachment = swapchain. Load DONT_CARE (fullscreen
-        // triangle covers every pixel). Final layout PRESENT_SRC_KHR.
+        // Single color attachment = render-resolution linear HDR. The final
+        // shader-read layout is the common input state for both FSR and the
+        // native blit bridge.
         let composite_color = vk::AttachmentDescription::default()
-            .format(swapchain_format)
+            .format(HDR_FORMAT)
             .samples(vk::SampleCountFlags::TYPE_1)
             .load_op(vk::AttachmentLoadOp::DONT_CARE)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
             .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+            .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
 
         let composite_color_ref = vk::AttachmentReference {
             attachment: 0,
@@ -480,22 +542,17 @@ impl CompositePipeline {
                     | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
             );
 
-        // Outgoing dependency: ensure swapchain write finishes before present.
-        //
-        // #1160 / REN-D10-NEW-13 — DST-side `NONE` is the Vulkan 1.3
-        // canonical form for "no further synchronization required";
-        // mirrors the SVGF / SSAO / caustic `initialize_layouts` sites
-        // already migrated under #949 / #1100 / #1121 / #1122 on the
-        // SRC side. `BOTTOM_OF_PIPE` is still accepted under the spec's
-        // compatibility clause, but `NONE` makes the "no downstream
-        // stage to wait on" intent explicit.
+        // Outgoing dependency: make the completed scene visible to either the
+        // compute SDK dispatch or the transfer-based native bridge.
         let composite_dep_out = vk::SubpassDependency::default()
             .src_subpass(0)
             .dst_subpass(vk::SUBPASS_EXTERNAL)
             .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
             .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags::NONE)
-            .dst_access_mask(vk::AccessFlags::empty());
+            .dst_stage_mask(
+                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
+            )
+            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::TRANSFER_READ);
 
         let attachments = [composite_color];
         let subpasses = [composite_subpass];
@@ -513,18 +570,18 @@ impl CompositePipeline {
                 .context("composite render pass")
         });
 
-        // ── 4. Composite framebuffers (one per swapchain image) ─────
-        for &view in swapchain_views {
+        // ── 4. Composite framebuffers (one per frame slot) ──────────
+        for &view in &partial.scene_image_views {
             let attachments = [view];
             let fb_info = vk::FramebufferCreateInfo::default()
                 .render_pass(partial.composite_render_pass)
                 .attachments(&attachments)
-                .width(extents.output.width)
-                .height(extents.output.height)
+                .width(extents.render.width)
+                .height(extents.render.height)
                 .layers(1);
             // SAFETY: `fb_info` references `partial.composite_render_pass` (live)
-            // and the caller-borrowed swapchain `view` (live for this call); the new
-            // framebuffer is owned by `partial.composite_framebuffers`.
+            // and the scene `view` owned by `partial`; the new framebuffer is
+            // owned by `partial.composite_framebuffers`.
             let fb = try_or_cleanup!(unsafe {
                 device
                     .create_framebuffer(&fb_info, None)
@@ -853,7 +910,7 @@ impl CompositePipeline {
         };
 
         log::info!(
-            "Composite pipeline created: {}x{} HDR -> {}x{} output",
+            "Scene-composition pipeline created at {}x{} (output {}x{} handled downstream)",
             extents.render.width,
             extents.render.height,
             extents.output.width,
@@ -863,21 +920,18 @@ impl CompositePipeline {
         Ok(partial)
     }
 
-    /// Begin composite render pass + draw fullscreen triangle + end.
+    /// Compose the complete render-resolution linear-HDR scene.
     /// Call after the main render pass ends and before submit.
     ///
     /// # Safety
     ///
-    /// `cmd` must be a valid recording command buffer. Frame index must be
-    /// < `MAX_FRAMES_IN_FLIGHT`. Swapchain image index must be valid. The
-    /// device must not be lost and the touched images must not be in use by
-    /// another in-flight command buffer.
+    /// `cmd` must be a valid recording command buffer and `frame` must be
+    /// smaller than `MAX_FRAMES_IN_FLIGHT`.
     pub unsafe fn dispatch(
         &self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
-        swapchain_image_index: usize,
         bindless_set: vk::DescriptorSet,
     ) {
         let clear_values = [vk::ClearValue {
@@ -887,16 +941,15 @@ impl CompositePipeline {
         }];
         let rp_begin = vk::RenderPassBeginInfo::default()
             .render_pass(self.composite_render_pass)
-            .framebuffer(self.composite_framebuffers[swapchain_image_index])
+            .framebuffer(self.composite_framebuffers[frame])
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: self.output_extent,
+                extent: self.render_extent,
             })
             .clear_values(&clear_values);
         // SAFETY: caller of `dispatch` (unsafe fn) guarantees `cmd` is a
-        // recording command buffer, `frame < MAX_FRAMES_IN_FLIGHT`, and
-        // `swapchain_image_index` is a valid swapchain index. The render
-        // pass + pipeline + descriptor sets are owned by `self`.
+        // recording command buffer and `frame < MAX_FRAMES_IN_FLIGHT`. The
+        // render pass + pipeline + descriptor sets are owned by `self`.
         unsafe {
             device.cmd_begin_render_pass(cmd, &rp_begin, vk::SubpassContents::INLINE);
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
@@ -904,15 +957,15 @@ impl CompositePipeline {
             let viewport = vk::Viewport {
                 x: 0.0,
                 y: 0.0,
-                width: self.output_extent.width as f32,
-                height: self.output_extent.height as f32,
+                width: self.render_extent.width as f32,
+                height: self.render_extent.height as f32,
                 min_depth: 0.0,
                 max_depth: 1.0,
             };
             device.cmd_set_viewport(cmd, 0, &[viewport]);
             let scissor = vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
-                extent: self.output_extent,
+                extent: self.render_extent,
             };
             device.cmd_set_scissor(cmd, 0, &[scissor]);
 
@@ -932,9 +985,8 @@ impl CompositePipeline {
         }
     }
 
-    /// Recreate framebuffers and pipeline viewport-dependent state on
-    /// swapchain resize. The HDR images themselves are recreated because
-    /// their size matches the swapchain. Caller must also pass the new
+    /// Recreate render-resolution images and framebuffers on resize. Caller
+    /// must also pass the new
     /// indirect + albedo views (SVGF/GBuffer just recreated them).
     ///
     /// **Signature parity with [`Self::new`]** (REN-D10-NEW-08, audit
@@ -946,16 +998,14 @@ impl CompositePipeline {
     /// when the volumetrics + bloom views were missing from the
     /// recreate path; the parity is restored. The parameters
     /// [`Self::new`] takes but this method does NOT (pipeline_cache,
-    /// swapchain_format, bindless_layout) are device-owned immutable
+    /// bindless_layout) are device-owned immutable
     /// state that survives the swapchain resize, so re-passing them
     /// would be redundant.
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub fn recreate_on_resize(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
-        swapchain_views: &[vk::ImageView],
         indirect_views: &[vk::ImageView],
         indirect_is_general: bool,
         albedo_views: &[vk::ImageView],
@@ -998,9 +1048,23 @@ impl CompositePipeline {
         for a in self.hdr_allocations.drain(..).flatten() {
             allocator.lock().expect("allocator lock").free(a).ok();
         }
+        for &view in &self.scene_image_views {
+            unsafe { device.destroy_image_view(view, None) };
+        }
+        self.scene_image_views.clear();
+        for &image in &self.scene_images {
+            unsafe { device.destroy_image(image, None) };
+        }
+        self.scene_images.clear();
+        for allocation in self.scene_allocations.drain(..).flatten() {
+            allocator
+                .lock()
+                .expect("allocator lock")
+                .free(allocation)
+                .ok();
+        }
 
         self.render_extent = extents.render;
-        self.output_extent = extents.output;
 
         // Recreate HDR images. On partial failure, clean up any
         // already-allocated new resources. See #283.
@@ -1055,6 +1119,57 @@ impl CompositePipeline {
                     )?
                 };
                 self.hdr_image_views.push(view);
+            }
+
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                let info = vk::ImageCreateInfo::default()
+                    .image_type(vk::ImageType::TYPE_2D)
+                    .format(HDR_FORMAT)
+                    .extent(vk::Extent3D {
+                        width: extents.render.width,
+                        height: extents.render.height,
+                        depth: 1,
+                    })
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(vk::SampleCountFlags::TYPE_1)
+                    .tiling(vk::ImageTiling::OPTIMAL)
+                    .usage(
+                        vk::ImageUsageFlags::COLOR_ATTACHMENT
+                            | vk::ImageUsageFlags::SAMPLED
+                            | vk::ImageUsageFlags::TRANSFER_SRC,
+                    )
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                    .initial_layout(vk::ImageLayout::UNDEFINED);
+                let image = unsafe { device.create_image(&info, None)? };
+                self.scene_images.push(image);
+                self.scene_allocations.push(None);
+
+                let allocation = allocator.lock().expect("allocator lock").allocate(
+                    &vk_alloc::AllocationCreateDesc {
+                        name: &format!("composed_scene_{i}"),
+                        requirements: unsafe { device.get_image_memory_requirements(image) },
+                        location: gpu_allocator::MemoryLocation::GpuOnly,
+                        linear: false,
+                        allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
+                    },
+                )?;
+                unsafe {
+                    device.bind_image_memory(image, allocation.memory(), allocation.offset())?
+                };
+                self.scene_allocations[i] = Some(allocation);
+
+                let view = unsafe {
+                    device.create_image_view(
+                        &vk::ImageViewCreateInfo::default()
+                            .image(image)
+                            .view_type(vk::ImageViewType::TYPE_2D)
+                            .format(HDR_FORMAT)
+                            .subresource_range(super::descriptors::color_subresource_single_mip()),
+                        None,
+                    )?
+                };
+                self.scene_image_views.push(view);
             }
 
             // Rewrite descriptor sets to point at the new HDR, indirect,
@@ -1128,18 +1243,17 @@ impl CompositePipeline {
                 unsafe { device.update_descriptor_sets(&writes, &[]) };
             }
 
-            // Recreate composite framebuffers (bound to swapchain views).
-            for &view in swapchain_views {
+            // Recreate per-frame scene-composition framebuffers.
+            for &view in &self.scene_image_views {
                 let attachments = [view];
                 let fb_info = vk::FramebufferCreateInfo::default()
                     .render_pass(self.composite_render_pass)
                     .attachments(&attachments)
-                    .width(extents.output.width)
-                    .height(extents.output.height)
+                    .width(extents.render.width)
+                    .height(extents.render.height)
                     .layers(1);
                 // SAFETY: `fb_info` references `self.composite_render_pass`
-                // (live) and the caller-borrowed swapchain `view` (live
-                // until the next swapchain recreate, which we are inside).
+                // (live) and `view` owned by this pipeline.
                 let fb = unsafe { device.create_framebuffer(&fb_info, None)? };
                 self.composite_framebuffers.push(fb);
             }
@@ -1178,6 +1292,21 @@ impl CompositePipeline {
             self.hdr_images.clear();
             for a in self.hdr_allocations.drain(..).flatten() {
                 allocator.lock().expect("allocator lock").free(a).ok();
+            }
+            for &view in &self.scene_image_views {
+                unsafe { device.destroy_image_view(view, None) };
+            }
+            self.scene_image_views.clear();
+            for &image in &self.scene_images {
+                unsafe { device.destroy_image(image, None) };
+            }
+            self.scene_images.clear();
+            for allocation in self.scene_allocations.drain(..).flatten() {
+                allocator
+                    .lock()
+                    .expect("allocator lock")
+                    .free(allocation)
+                    .ok();
             }
         }
         result
@@ -1243,6 +1372,10 @@ impl CompositePipeline {
         params: &CompositeParams,
     ) -> Result<()> {
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(params))
+    }
+
+    pub fn scene_image(&self, frame: usize) -> vk::Image {
+        self.scene_images[frame]
     }
 
     /// Destroy all Vulkan objects. Must be called before the device/allocator
@@ -1340,6 +1473,21 @@ impl CompositePipeline {
         self.hdr_images.clear();
         for a in self.hdr_allocations.drain(..).flatten() {
             allocator.lock().expect("allocator lock").free(a).ok();
+        }
+        for &view in &self.scene_image_views {
+            unsafe { device.destroy_image_view(view, None) };
+        }
+        self.scene_image_views.clear();
+        for &image in &self.scene_images {
+            unsafe { device.destroy_image(image, None) };
+        }
+        self.scene_images.clear();
+        for allocation in self.scene_allocations.drain(..).flatten() {
+            allocator
+                .lock()
+                .expect("allocator lock")
+                .free(allocation)
+                .ok();
         }
     }
 }

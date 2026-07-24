@@ -1,6 +1,7 @@
 //! Frame recording and submission — the per-frame hot path.
 
 use super::super::descriptors::memory_barrier;
+use super::super::frame_upscaler::FsrFrameParameters;
 use super::super::material::GpuMaterial;
 use super::super::pipeline::PipelineKey;
 use super::super::scene_buffer::{
@@ -10,6 +11,7 @@ use super::super::scene_buffer::{
     INSTANCE_TERRAIN_TILE_MASK, INSTANCE_TERRAIN_TILE_SHIFT, MATERIAL_KIND_GLASS,
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
+use super::super::upscaling::fsr_camera_parameters;
 use super::super::water::WaterDrawCommand;
 use super::{DofView, DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use anyhow::{Context, Result};
@@ -399,6 +401,8 @@ pub struct FrameInputs<'a> {
     /// frame by a Halton(5,7)-sampled concentric disk of radius `aperture`;
     /// TAA accumulates the samples into a spatially-varying bokeh blur.
     pub dof: DofView,
+    /// CPU frame delta supplied to temporal reconstruction, in milliseconds.
+    pub frame_time_delta_ms: f32,
     /// Optional per-frame GPU timing sink.
     pub timings: Option<&'a mut FrameTimings>,
     /// Water-surface draws for this frame. Each entry must match a
@@ -438,6 +442,7 @@ impl VulkanContext {
             ui_texture_handle,
             sky_params,
             dof,
+            frame_time_delta_ms,
             timings,
             water_commands,
             underwater,
@@ -800,7 +805,7 @@ impl VulkanContext {
         // (per #479's fallback) while geometry kept rendering with a
         // per-frame Halton sub-pixel offset — full-frame shimmer instead of
         // a stable pinhole fallback image.
-        let (jx, jy, fsr_reset_pending) = match self.renderer_config.upscaler {
+        let (jx, jy, fsr_jitter_pixel, fsr_reset_pending) = match self.renderer_config.upscaler {
             super::super::upscaling::UpscalerMode::Taa => {
                 let (jx, jy) = taa_jitter(
                     self.taa.is_some(),
@@ -809,15 +814,28 @@ impl VulkanContext {
                     self.frame_extents.render.width as f32,
                     self.frame_extents.render.height as f32,
                 );
-                (jx, jy, false)
+                (jx, jy, None, false)
             }
             super::super::upscaling::UpscalerMode::Fsr3(_) => {
-                let fsr = self
-                    .fsr_temporal
+                if !self
+                    .frame_upscaler
                     .as_ref()
-                    .expect("FSR mode must own temporal state");
-                let sample = fsr.current();
-                (sample.ndc[0], sample.ndc[1], fsr.reset_pending())
+                    .is_some_and(|upscaler| upscaler.is_fsr_dispatch_active())
+                {
+                    (0.0, 0.0, None, false)
+                } else {
+                    let fsr = self
+                        .fsr_temporal
+                        .as_ref()
+                        .expect("FSR mode must own temporal state");
+                    let sample = fsr.current();
+                    (
+                        sample.ndc[0],
+                        sample.ndc[1],
+                        Some(sample.pixel),
+                        fsr.reset_pending(),
+                    )
+                }
             }
         };
 
@@ -862,6 +880,29 @@ impl VulkanContext {
             view_proj,
         );
         let vp = &effective_vp;
+        let mut fsr_frame = if let Some(jitter_offset) = fsr_jitter_pixel {
+            let Some(camera) = fsr_camera_parameters(
+                active_dof.camera_near,
+                active_dof.camera_far,
+                active_dof.camera_fov_y,
+            ) else {
+                let _ = unsafe {
+                    self.frame_sync
+                        .recreate_image_available_for_frame(&self.device, frame)
+                };
+                anyhow::bail!("FSR requires a finite perspective projection");
+            };
+            Some(FsrFrameParameters {
+                jitter_offset,
+                reset: fsr_reset_pending,
+                frame_time_delta_ms,
+                camera_near: camera.near,
+                camera_far: camera.far,
+                camera_fov_angle_vertical: camera.fov_y_radians,
+            })
+        } else {
+            None
+        };
         // Automatic camera-cut detection catches debug teleports and scripted
         // snaps that do not flow through the cell-transition reset hooks.
         let camera_delta = byroredux_core::math::Vec3::from_array(camera_pos).distance(
@@ -876,6 +917,9 @@ impl VulkanContext {
             self.frame_counter > 0 && (camera_delta > 256.0 || vp_max_abs_delta > 0.75);
         if camera_cut {
             self.signal_temporal_discontinuity(8);
+            if let Some(ref mut frame) = fsr_frame {
+                frame.reset = true;
+            }
         }
         // #1489 / REN2-04 — `prev_view_proj` is relative to LAST frame's
         // render origin O₁; this frame's geometry (per-instance models, bone
@@ -1418,8 +1462,7 @@ impl VulkanContext {
         let mut previous_models = std::mem::take(&mut self.previous_models_scratch);
         previous_models.clear();
         previous_models.reserve(draw_commands.len() + 1);
-        let mut current_rigid_models =
-            std::mem::take(&mut self.current_rigid_models_scratch);
+        let mut current_rigid_models = std::mem::take(&mut self.current_rigid_models_scratch);
         current_rigid_models.clear();
         current_rigid_models.reserve(draw_commands.len());
         let mut batches: Vec<DrawBatch> = std::mem::take(&mut self.batches_scratch);
@@ -2122,7 +2165,7 @@ impl VulkanContext {
             // sync for color-attachment writes; descriptor-image
             // atomic writes need an explicit barrier. Skipped when
             // the accumulator failed init.
-            self.record_post_passes(
+            if let Err(e) = self.record_post_passes(
                 cmd,
                 frame,
                 img,
@@ -2133,7 +2176,14 @@ impl VulkanContext {
                 inv_vp_arr,
                 sky_params,
                 fog_far,
-            );
+                fsr_frame,
+                underwater,
+            ) {
+                let _ = self
+                    .frame_sync
+                    .recreate_image_available_for_frame(&self.device, frame);
+                return Err(e);
+            }
 
             // Debug-UI overlay (Phase 4 of the debug-UI plan).
             // Composite already wrote the swapchain image and left
@@ -2297,13 +2347,20 @@ impl VulkanContext {
         if let Some(ref mut taa) = self.taa {
             taa.mark_frame_completed();
         }
+        if self
+            .frame_upscaler
+            .as_mut()
+            .is_some_and(|upscaler| upscaler.take_submitted_dispatch())
+        {
+            self.fsr_temporal
+                .as_mut()
+                .expect("submitted FSR dispatch requires temporal state")
+                .mark_dispatch_completed();
+        }
         // Object-transform history follows successful GPU submission, not
         // command recording or presentation. This mirrors TAA/SVGF history:
         // a failed submit cannot advance the source frame motion reprojects.
-        std::mem::swap(
-            &mut self.previous_rigid_models,
-            &mut current_rigid_models,
-        );
+        std::mem::swap(&mut self.previous_rigid_models, &mut current_rigid_models);
         current_rigid_models.clear();
         self.current_rigid_models_scratch = current_rigid_models;
 
@@ -2515,16 +2572,18 @@ mod prev_view_proj_origin_tests {
         let current = Mat4::from_translation(Vec3::new(4106.0, -8172.0, 12_318.0));
         let previous = Mat4::from_translation(Vec3::new(4104.0, -8172.0, 12_318.0));
 
-        let current_rebased = Mat4::from_cols_array_2d(&rebase_model_matrix(
-            &current.to_cols_array(),
-            origin,
-        ));
-        let previous_rebased = Mat4::from_cols_array_2d(&rebase_model_matrix(
-            &previous.to_cols_array(),
-            origin,
-        ));
-        assert_eq!(current_rebased.w_axis.truncate(), Vec3::new(10.0, 20.0, 30.0));
-        assert_eq!(previous_rebased.w_axis.truncate(), Vec3::new(8.0, 20.0, 30.0));
+        let current_rebased =
+            Mat4::from_cols_array_2d(&rebase_model_matrix(&current.to_cols_array(), origin));
+        let previous_rebased =
+            Mat4::from_cols_array_2d(&rebase_model_matrix(&previous.to_cols_array(), origin));
+        assert_eq!(
+            current_rebased.w_axis.truncate(),
+            Vec3::new(10.0, 20.0, 30.0)
+        );
+        assert_eq!(
+            previous_rebased.w_axis.truncate(),
+            Vec3::new(8.0, 20.0, 30.0)
+        );
     }
 }
 
@@ -2602,6 +2661,9 @@ mod dof_view_proj_tests {
             cam_up: [0.0, 1.0, 0.0],
             cam_forward: [0.0, 0.0, -1.0],
             proj_mat: pinhole(),
+            camera_near: 0.1,
+            camera_far: 300_000.0,
+            camera_fov_y: 60f32.to_radians(),
         }
     }
 

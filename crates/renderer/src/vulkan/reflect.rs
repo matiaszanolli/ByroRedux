@@ -636,11 +636,12 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 12,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 12 — \
+            count, 10,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 10 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
-             crates/renderer/shaders). See #1917."
+             crates/renderer/shaders). The presentation-only underwater branch moved to \
+             presentation.frag with the output-resolution frame split. See #1917."
         );
     }
 

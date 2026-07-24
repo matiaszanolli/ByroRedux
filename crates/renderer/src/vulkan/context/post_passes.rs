@@ -8,7 +8,9 @@
 //! post-pass sequence.
 
 use super::super::descriptors::memory_barrier;
+use super::super::frame_upscaler::{FsrFrameParameters, UpscaleDispatchInputs};
 use super::{SkyParams, VulkanContext};
+use anyhow::Result;
 use ash::vk;
 
 impl VulkanContext {
@@ -124,8 +126,8 @@ impl VulkanContext {
     }
 
     /// Record the post-geometry passes: water-caustic barrier, SVGF
-    /// denoise, caustic splat, volumetrics, TAA, SSAO, bloom, and the
-    /// final composite, in that fixed order. Extracted verbatim from
+    /// denoise, caustic splat, volumetrics, TAA, SSAO, bloom, scene
+    /// composition, reconstruction, and presentation, in that fixed order.
     /// `draw_frame` (#1748 / TD1-001) to shrink that function; recording
     /// order and the per-pass permanent-failure latches are preserved
     /// exactly. Call after the main render pass ends and before
@@ -143,7 +145,9 @@ impl VulkanContext {
         inv_vp_arr: [[f32; 4]; 4],
         sky_params: &SkyParams,
         fog_far: f32,
-    ) {
+        fsr_frame: Option<FsrFrameParameters>,
+        underwater: [f32; 4],
+    ) -> Result<()> {
         // SAFETY: `cmd` is in the recording state — opened by
         // `begin_command_buffer` in `draw_frame` and not yet closed — and
         // this chain runs once per frame between the main render pass end
@@ -525,8 +529,8 @@ impl VulkanContext {
             // host writes consumed by the render pass / composite pass
             // share one execution dependency.
 
-            // Composite pass: sample HDR + indirect + albedo, combine, ACES
-            // tone map, write to swapchain. Runs in its own render pass.
+            // Compose the complete render-resolution linear-HDR scene. The
+            // upscale boundary and display mapping are explicit later passes.
             // The main render pass's outgoing subpass dependency handles
             // the layout transitions of all input attachments to
             // SHADER_READ_ONLY_OPTIMAL.
@@ -535,11 +539,51 @@ impl VulkanContext {
                 if let Some(ref mut timers) = self.gpu_timers {
                     timers.cmd_composite_start(&self.device, cmd, frame);
                 }
-                composite.dispatch(&self.device, cmd, frame, img, bindless_set);
+                composite.dispatch(&self.device, cmd, frame, bindless_set);
                 if let Some(ref mut timers) = self.gpu_timers {
                     timers.cmd_composite_end(&self.device, cmd, frame);
                 }
             }
+
+            let scene_color = self
+                .composite
+                .as_ref()
+                .expect("composite must exist while recording")
+                .scene_image(frame);
+            let motion_vectors = self
+                .gbuffer
+                .as_ref()
+                .expect("G-buffer must exist while recording")
+                .motion_image(frame);
+            let exposure_image = self.exposure.as_ref().map(|exposure| exposure.image());
+            self.frame_upscaler
+                .as_mut()
+                .expect("frame upscaler must exist while recording")
+                .record(
+                    &self.device,
+                    cmd,
+                    frame,
+                    UpscaleDispatchInputs {
+                        scene_color,
+                        depth: self.depth_image,
+                        depth_format: self.depth_format,
+                        motion_vectors,
+                        exposure: exposure_image,
+                    },
+                    fsr_frame,
+                )?;
+
+            let exposure = self
+                .exposure
+                .as_ref()
+                .map_or(super::super::exposure::DEFAULT_EXPOSURE, |value| {
+                    value.value()
+                });
+            self.presentation
+                .as_ref()
+                .expect("presentation pipeline must exist while recording")
+                .dispatch(&self.device, cmd, frame, img, exposure, underwater);
         }
+        Ok(())
     }
 }

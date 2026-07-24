@@ -589,11 +589,14 @@ static FfxErrorCode fsr3upscalerCreate(FfxFsr3UpscalerContext_Private* context, 
         {   FFX_FSR3UPSCALER_RESOURCE_IDENTIFIER_FARTHEST_DEPTH_MIP1, L"FSR3UPSCALER_FarthestDepthMip1", FFX_RESOURCE_TYPE_TEXTURE2D, FFX_RESOURCE_USAGE_UAV,
             FFX_SURFACE_FORMAT_R16_FLOAT, maxRenderSizeDiv2.width, maxRenderSizeDiv2.height, 1, FFX_RESOURCE_FLAGS_ALIASABLE, {FFX_RESOURCE_INIT_DATA_TYPE_UNINITIALIZED} },
 
+        // The Vulkan luma-instability shader declares rw_luma_history as
+        // rgba8. SDK 1.1.4 shipped these two resources as RGBA16F, which makes
+        // every imageStore undefined under Vulkan's typed-storage contract.
         {   FFX_FSR3UPSCALER_RESOURCE_IDENTIFIER_LUMA_HISTORY_1, L"FSR3UPSCALER_LumaHistory1", FFX_RESOURCE_TYPE_TEXTURE2D, (FfxResourceUsage)(FFX_RESOURCE_USAGE_RENDERTARGET | FFX_RESOURCE_USAGE_UAV),
-            FFX_SURFACE_FORMAT_R16G16B16A16_FLOAT, contextDescription->maxRenderSize.width, contextDescription->maxRenderSize.height, 1, FFX_RESOURCE_FLAGS_NONE, {FFX_RESOURCE_INIT_DATA_TYPE_UNINITIALIZED} },
+            FFX_SURFACE_FORMAT_R8G8B8A8_UNORM, contextDescription->maxRenderSize.width, contextDescription->maxRenderSize.height, 1, FFX_RESOURCE_FLAGS_NONE, {FFX_RESOURCE_INIT_DATA_TYPE_UNINITIALIZED} },
 
         {   FFX_FSR3UPSCALER_RESOURCE_IDENTIFIER_LUMA_HISTORY_2, L"FSR3UPSCALER_LumaHistory2", FFX_RESOURCE_TYPE_TEXTURE2D, (FfxResourceUsage)(FFX_RESOURCE_USAGE_RENDERTARGET | FFX_RESOURCE_USAGE_UAV),
-            FFX_SURFACE_FORMAT_R16G16B16A16_FLOAT, contextDescription->maxRenderSize.width, contextDescription->maxRenderSize.height, 1, FFX_RESOURCE_FLAGS_NONE, {FFX_RESOURCE_INIT_DATA_TYPE_UNINITIALIZED} },
+            FFX_SURFACE_FORMAT_R8G8B8A8_UNORM, contextDescription->maxRenderSize.width, contextDescription->maxRenderSize.height, 1, FFX_RESOURCE_FLAGS_NONE, {FFX_RESOURCE_INIT_DATA_TYPE_UNINITIALIZED} },
 
         {   FFX_FSR3UPSCALER_RESOURCE_IDENTIFIER_SPD_ATOMIC_COUNT, L"FSR3UPSCALER_SpdAtomicCounter", FFX_RESOURCE_TYPE_TEXTURE2D, (FfxResourceUsage)(FFX_RESOURCE_USAGE_UAV),
             FFX_SURFACE_FORMAT_R32_UINT, 1, 1, 1, FFX_RESOURCE_FLAGS_NONE, FfxResourceInitData::FfxResourceInitValue(sizeof(atomicInitData), 0) },

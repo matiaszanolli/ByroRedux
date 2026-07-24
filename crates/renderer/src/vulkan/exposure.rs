@@ -61,16 +61,15 @@ impl ExposureResource {
             // SAFETY: `image` was just created by this device and remains live.
             device.get_image_memory_requirements(image)
         };
-        let allocation_result = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&vk_alloc::AllocationCreateDesc {
+        let allocation_result = allocator.lock().expect("allocator lock poisoned").allocate(
+            &vk_alloc::AllocationCreateDesc {
                 name: "fsr_exposure_1x1",
                 requirements,
                 location: MemoryLocation::GpuOnly,
                 linear: false,
                 allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            });
+            },
+        );
         let allocation = match allocation_result {
             Ok(allocation) => allocation,
             Err(error) => {
@@ -182,7 +181,7 @@ impl ExposureResource {
                 .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
                 .dst_access_mask(vk::AccessFlags::SHADER_READ)
                 .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image(self.image)
                 .subresource_range(range);
             unsafe {
@@ -213,7 +212,7 @@ impl ExposureResource {
     }
 
     pub const fn layout(&self) -> vk::ImageLayout {
-        vk::ImageLayout::GENERAL
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
     }
 
     pub const fn extent(&self) -> vk::Extent2D {

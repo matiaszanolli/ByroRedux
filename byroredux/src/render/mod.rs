@@ -312,6 +312,10 @@ pub(crate) struct RenderFrameView {
     /// Stored separately so the renderer can apply a DOF-jittered view
     /// matrix and recompute view_proj without reassembling the camera.
     pub proj_mat: [f32; 16],
+    /// Exact authored perspective parameters for temporal reconstruction.
+    pub camera_near: f32,
+    pub camera_far: f32,
+    pub camera_fov_y: f32,
     /// Lens aperture half-radius (world units). `0.0` = pinhole / no DOF.
     pub aperture: f32,
     /// Focal distance (world units). Surfaces at this depth are sharp.
@@ -423,6 +427,9 @@ pub(crate) fn build_render_data(
         cam_up,
         cam_forward,
         proj_mat,
+        camera_near,
+        camera_far,
+        camera_fov_y,
         aperture,
         focus_dist,
     } = camera::assemble_camera(world);
@@ -617,6 +624,9 @@ pub(crate) fn build_render_data(
         cam_up: cam_up.to_array(),
         cam_forward: cam_forward.to_array(),
         proj_mat: proj_mat.to_cols_array(),
+        camera_near,
+        camera_far,
+        camera_fov_y,
         aperture,
         focus_dist,
     }
