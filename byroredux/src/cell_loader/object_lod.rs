@@ -32,7 +32,7 @@ use byroredux_core::ecs::{
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm::reader::GameKind;
-use byroredux_renderer::{Vertex, VulkanContext};
+use byroredux_renderer::VulkanContext;
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
 use crate::components::IsLodTerrain;
@@ -261,18 +261,7 @@ fn spawn_object_lod_quad(
         if mesh.positions.is_empty() || mesh.indices.is_empty() {
             continue;
         }
-        let verts: Vec<Vertex> = (0..mesh.positions.len())
-            .map(|i| {
-                let color = mesh.colors.get(i).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                let normal = mesh.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
-                let uv = mesh.uvs.get(i).copied().unwrap_or([0.0, 0.0]);
-                let mut v = Vertex::new_rgba(mesh.positions[i], color, normal, uv);
-                if let Some(t) = mesh.tangents.get(i) {
-                    v.tangent = *t;
-                }
-                v
-            })
-            .collect();
+        let verts = super::lod_support::imported_mesh_to_vertices(mesh);
 
         // Lean global-only upload (no per-mesh buffers / no BLAS) — same path
         // terrain LOD uses: LOD geometry rasterizes from the global SSBO and
@@ -299,15 +288,7 @@ fn spawn_object_lod_quad(
 
         // World-space bound from the local AABB through the transform (rotation
         // preserves length, so the radius just scales).
-        let mut lmin = Vec3::splat(f32::INFINITY);
-        let mut lmax = Vec3::splat(f32::NEG_INFINITY);
-        for p in &mesh.positions {
-            let v = Vec3::from_array(*p);
-            lmin = lmin.min(v);
-            lmax = lmax.max(v);
-        }
-        let lc = (lmin + lmax) * 0.5;
-        let lr = (lmax - lc).length();
+        let (lc, lr) = super::lod_support::local_aabb_center_radius(&mesh.positions);
         let bound = WorldBound::new(pos + rot * (lc * scale), lr * scale);
 
         let entity = world.spawn();

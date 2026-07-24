@@ -57,7 +57,7 @@ use byroredux_core::ecs::{
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm::reader::GameKind;
-use byroredux_renderer::{Vertex, VulkanContext};
+use byroredux_renderer::VulkanContext;
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
 use crate::components::IsLodTerrain;
@@ -462,18 +462,7 @@ fn spawn_placement_lod_cell(
             if mesh.positions.is_empty() || mesh.indices.is_empty() {
                 continue;
             }
-            let verts: Vec<Vertex> = (0..mesh.positions.len())
-                .map(|i| {
-                    let color = mesh.colors.get(i).copied().unwrap_or([1.0, 1.0, 1.0, 1.0]);
-                    let normal = mesh.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
-                    let uv = mesh.uvs.get(i).copied().unwrap_or([0.0, 0.0]);
-                    let mut v = Vertex::new_rgba(mesh.positions[i], color, normal, uv);
-                    if let Some(t) = mesh.tangents.get(i) {
-                        v.tangent = *t;
-                    }
-                    v
-                })
-                .collect();
+            let verts = super::lod_support::imported_mesh_to_vertices(mesh);
 
             let handle = match ctx
                 .mesh_registry
@@ -499,15 +488,8 @@ fn spawn_placement_lod_cell(
                 raw
             };
 
-            let mut lmin = Vec3::splat(f32::INFINITY);
-            let mut lmax = Vec3::splat(f32::NEG_INFINITY);
-            for p in &mesh.positions {
-                let v = Vec3::from_array(*p);
-                lmin = lmin.min(v);
-                lmax = lmax.max(v);
-            }
-            let local_centre = (lmin + lmax) * 0.5;
-            let local_radius = (lmax - local_centre).length();
+            let (local_centre, local_radius) =
+                super::lod_support::local_aabb_center_radius(&mesh.positions);
 
             subs.push(FarSubMesh {
                 handle,
@@ -529,9 +511,14 @@ fn spawn_placement_lod_cell(
         for placement in &group.placements {
             let (p_pos, p_rot, p_scale) = placement_world_transform(placement);
             for sub in &subs {
-                let scale = p_scale * sub.local_scale;
-                let rot = p_rot * sub.local_rot;
-                let pos = p_pos + p_rot * (sub.local_pos * p_scale);
+                let (pos, rot, scale) = GlobalTransform::compose_trs(
+                    p_pos,
+                    p_rot,
+                    p_scale,
+                    sub.local_pos,
+                    sub.local_rot,
+                    sub.local_scale,
+                );
                 let bound = WorldBound::new(
                     pos + rot * (sub.local_centre * scale),
                     sub.local_radius * scale,

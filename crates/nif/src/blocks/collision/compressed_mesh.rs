@@ -2,6 +2,7 @@
 //!
 //! BhkCompressedMeshShape + Data + chunk / big-tri / transform sub-types.
 
+use super::read_vec4;
 use crate::impl_ni_object;
 use crate::stream::NifStream;
 use crate::types::BlockRef;
@@ -23,19 +24,9 @@ impl BhkCompressedMeshShape {
         let user_data = stream.read_u32_le()?;
         let radius = stream.read_f32_le()?;
         let _unknown_float = stream.read_f32_le()?;
-        let scale = [
-            stream.read_f32_le()?,
-            stream.read_f32_le()?,
-            stream.read_f32_le()?,
-            stream.read_f32_le()?,
-        ];
+        let scale = read_vec4(stream)?;
         let _radius_copy = stream.read_f32_le()?;
-        let _scale_copy = [
-            stream.read_f32_le()?,
-            stream.read_f32_le()?,
-            stream.read_f32_le()?,
-            stream.read_f32_le()?,
-        ];
+        let _scale_copy = read_vec4(stream)?;
         let data_ref = stream.read_block_ref()?;
         Ok(Self {
             target_ref,
@@ -107,18 +98,8 @@ impl BhkCompressedMeshShapeData {
         let error = stream.read_f32_le()?;
 
         // AABB
-        let aabb_min = [
-            stream.read_f32_le()?,
-            stream.read_f32_le()?,
-            stream.read_f32_le()?,
-            stream.read_f32_le()?,
-        ];
-        let aabb_max = [
-            stream.read_f32_le()?,
-            stream.read_f32_le()?,
-            stream.read_f32_le()?,
-            stream.read_f32_le()?,
-        ];
+        let aabb_min = read_vec4(stream)?;
+        let aabb_max = read_vec4(stream)?;
 
         let _welding_type = stream.read_u8()?;
         let _material_type = stream.read_u8()?;
@@ -144,18 +125,8 @@ impl BhkCompressedMeshShapeData {
         let num_transforms = stream.read_u32_le()?;
         let mut chunk_transforms = stream.allocate_vec(num_transforms)?;
         for _ in 0..num_transforms {
-            let translation = [
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-            ];
-            let rotation = [
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-            ];
+            let translation = read_vec4(stream)?;
+            let rotation = read_vec4(stream)?;
             chunk_transforms.push(CmsTransform {
                 translation,
                 rotation,
@@ -188,12 +159,7 @@ impl BhkCompressedMeshShapeData {
         let num_chunks = stream.read_u32_le()?;
         let mut chunks = stream.allocate_vec(num_chunks)?;
         for _ in 0..num_chunks {
-            let translation = [
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-            ];
+            let translation = read_vec4(stream)?;
             let material_index = stream.read_u32_le()?;
             let _reference = stream.read_u16_le()?;
             let transform_index = stream.read_u16_le()?;

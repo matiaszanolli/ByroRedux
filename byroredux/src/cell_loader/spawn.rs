@@ -513,7 +513,7 @@ fn spawn_nif_lights(
             light.translation[1],
             light.translation[2],
         );
-        let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
+        let final_pos = GlobalTransform::compose_translation(ref_pos, ref_rot, ref_scale, nif_pos);
         // Pick the authored radius source, then sanitise. Pre-#672
         // an `esm_radius == Some(0.0)` slipped through as a real
         // `0 * ref_scale = 0` and the light became invisible at
@@ -580,7 +580,7 @@ fn spawn_particle_emitters(
             em.local_position[1],
             em.local_position[2],
         );
-        let world_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
+        let world_pos = GlobalTransform::compose_translation(ref_pos, ref_rot, ref_scale, nif_pos);
         let host = em.host_name.as_deref().unwrap_or("").to_ascii_lowercase();
         let mut preset =
             if host.contains("spark") || host.contains("ember") || host.contains("cinder") {
@@ -671,9 +671,9 @@ fn spawn_collision_shapes(
             coll.rotation[2],
             coll.rotation[3],
         );
-        let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
-        let final_rot = ref_rot * nif_quat;
-        let final_scale = ref_scale * coll.scale;
+        let (final_pos, final_rot, final_scale) = GlobalTransform::compose_trs(
+            ref_pos, ref_rot, ref_scale, nif_pos, nif_quat, coll.scale,
+        );
 
         // parry3d panics on nested Compound shapes. Clone inside
         // catch_unwind so a bad shape doesn't kill the entire load.
@@ -1061,13 +1061,12 @@ fn spawn_mesh_instance(
         mesh.translation[2],
     );
 
-    // World-space placement (parent_rot * (parent_scale *
-    // child_pos) + parent_pos) — used only to seed the initial
+    // World-space placement — used only to seed the initial
     // `GlobalTransform`. `Transform` itself stays NIF-local so
-    // the propagation pass produces the same value next tick.
-    let final_pos = ref_rot * (ref_scale * nif_pos) + ref_pos;
-    let final_rot = ref_rot * nif_quat;
-    let final_scale = ref_scale * mesh.scale;
+    // the propagation pass produces the same value next tick. The
+    // parent→child composition order lives in `compose_trs`.
+    let (final_pos, final_rot, final_scale) =
+        GlobalTransform::compose_trs(ref_pos, ref_rot, ref_scale, nif_pos, nif_quat, mesh.scale);
 
     // Diagnostic: log meshes with significant NIF-internal offsets
     // (these are wall/structural pieces most likely to show positioning issues)

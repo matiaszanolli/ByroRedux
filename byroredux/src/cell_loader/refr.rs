@@ -21,6 +21,7 @@
 //! `cell_loader_refr_texture_overlay_tests`); each picks up these items
 //! through the `pub(crate) use` re-exports in `cell_loader`.
 
+use byroredux_core::ecs::GlobalTransform;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
 use byroredux_plugin::esm;
@@ -496,9 +497,14 @@ fn expand_scol_placements_with_depth(
             let local_pos =
                 Vec3::from_array(byroredux_core::math::coord::zup_to_yup_pos(p.pos));
             let local_rot = euler_zup_to_quat_yup_refr(p.rot[0], p.rot[1], p.rot[2]);
-            let final_pos = outer_rot * (outer_scale * local_pos) + outer_pos;
-            let final_rot = outer_rot * local_rot;
-            let final_scale = outer_scale * p.scale;
+            let (final_pos, final_rot, final_scale) = GlobalTransform::compose_trs(
+                outer_pos,
+                outer_rot,
+                outer_scale,
+                local_pos,
+                local_rot,
+                p.scale,
+            );
             // #1182 / FO4-D4-005 — recurse into nested SCOLs up to
             // the shared depth cap. Past the cap, fall through to the
             // leaf path so the synthetic placement at least gets

@@ -44,6 +44,31 @@ use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
 use super::spawn::spawn_placed_instances;
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 
+/// Resolve the effective absorbed-REFR set for a cell load's per-REFR pass.
+///
+/// When the precombine actually spawned geometry (`pc_spawned > 0`), the
+/// cell's `absorbed_refs` list suppresses per-REFR rendering of the baked
+/// REFRs (the combined NIF already carries them). When nothing spawned,
+/// those XPRI-flagged REFRs are the only carrier of the architecture and
+/// must load normally, so the effective set is empty — the same fallback
+/// real Bethesda games take under `bUseCombinedObjects=0` (#1188).
+///
+/// Shared by the interior (`load.rs`) and exterior (`exterior.rs`) loaders
+/// so the gate cannot drift between them (TD2-104 / #2063). The empty set
+/// is a process-lifetime singleton, so the borrow is valid for any caller.
+pub(crate) fn absorbed_refs_or_empty(
+    absorbed_refs: &std::collections::HashSet<u32>,
+    pc_spawned: usize,
+) -> &std::collections::HashSet<u32> {
+    static EMPTY_ABSORBED: std::sync::OnceLock<std::collections::HashSet<u32>> =
+        std::sync::OnceLock::new();
+    if pc_spawned > 0 {
+        absorbed_refs
+    } else {
+        EMPTY_ABSORBED.get_or_init(std::collections::HashSet::new)
+    }
+}
+
 /// Spawn the precombined `_oc.nif` files referenced by `cell.precombined_mesh_hashes`.
 ///
 /// `cell_origin` is the world-space position the bake should land at:

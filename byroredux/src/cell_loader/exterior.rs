@@ -407,18 +407,9 @@ pub fn load_one_exterior_cell(
     // share the process-lifetime `NifImportRegistry` so cross-cell mesh
     // re-use still hits the cache (#381).
     //
-    // Honour `cell.absorbed_refs` only when the precombined spawn
-    // produced at least one entity — same fallback path the interior
-    // loader takes (#1188): with no precombined geometry rendered,
-    // those XPRI-listed REFRs are the only carrier of the architecture
-    // and must load normally. Mirrors `bUseCombinedObjects=0`.
-    static EMPTY_ABSORBED: std::sync::OnceLock<std::collections::HashSet<u32>> =
-        std::sync::OnceLock::new();
-    let absorbed = if pc_spawned > 0 {
-        &cell.absorbed_refs
-    } else {
-        EMPTY_ABSORBED.get_or_init(std::collections::HashSet::new)
-    };
+    // The absorbed-REFR gate lives in the shared helper so interior +
+    // exterior can't drift (#1188 / TD2-104).
+    let absorbed = super::precombined::absorbed_refs_or_empty(&cell.absorbed_refs, pc_spawned);
     let label = format!("exterior({},{})", gx, gy);
     let result = load_references(
         &cell.references,

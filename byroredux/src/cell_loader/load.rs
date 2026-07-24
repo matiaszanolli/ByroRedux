@@ -370,20 +370,10 @@ pub fn load_cell_with_masters(
         &plugin_paths,
     );
 
-    // 3b. Load placed references. Honor `cell.absorbed_refs` only
-    // when the precombined spawn produced at least one entity — the
-    // XPRI list marks REFRs whose geometry is supposed to come from
-    // the precombine. With no precombine actually rendered, those
-    // REFRs are the only carrier of the architecture and must load
-    // normally (real Bethesda games take the same fallback path when
-    // `bUseCombinedObjects=0`).
-    static EMPTY_ABSORBED: std::sync::OnceLock<std::collections::HashSet<u32>> =
-        std::sync::OnceLock::new();
-    let absorbed = if pc_spawned > 0 {
-        &cell.absorbed_refs
-    } else {
-        EMPTY_ABSORBED.get_or_init(std::collections::HashSet::new)
-    };
+    // 3b. Load placed references. The absorbed-REFR gate (honour
+    // `cell.absorbed_refs` only when the precombine actually spawned)
+    // lives in the shared helper so interior + exterior can't drift.
+    let absorbed = super::precombined::absorbed_refs_or_empty(&cell.absorbed_refs, pc_spawned);
     let result = load_references(
         &cell.references,
         &index.cells,
