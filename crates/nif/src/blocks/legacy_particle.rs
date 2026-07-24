@@ -1,16 +1,27 @@
-//! Legacy (pre-NiPSys) particle system — Oblivion / Morrowind / FO3 path.
+//! Legacy (pre-NiPSys) particle system — pre-10.1 NetImmerse path.
 //!
-//! Oblivion, Morrowind, and early FO3 ship with the pre-10.1 particle
-//! stack: a `NiParticleSystemController` hangs off a `NiBSParticleNode`
-//! and drives one of `NiAutoNormalParticles` / `NiRotatingParticles`,
-//! feeding through a linked chain of `NiParticleModifier` subclasses
-//! (grow/fade, color, rotation, gravity, bomb, planar/spherical collider).
+//! The pre-10.1 particle stack is a `NiParticleSystemController` hanging
+//! off a `NiBSParticleNode`, driving one of `NiAutoNormalParticles` /
+//! `NiRotatingParticles`, fed through a linked chain of
+//! `NiParticleModifier` subclasses (grow/fade, color, rotation, gravity,
+//! bomb, planar/spherical collider).
 //!
-//! Bethesda kept these types alive well past nif.xml's `until="10.0.1.0"`
-//! — Oblivion is v20.0.0.5 and still serializes them — so the parsers
-//! here target the "fields-present" superset that v3.3.0.13+ sees
-//! without the "until 3.1" / "until 4.2.2.0" legacy quirks that were
-//! already removed before Oblivion shipped.
+//! **Scope is nif.xml-completeness / defensive, not a vanilla-corpus
+//! dependency.** The checked-in per-block-type baselines for all 7
+//! supported games contain zero occurrences of any legacy-stack block
+//! type — Oblivion's own 8032-NIF sweep shows only `NiParticleSystem 547`
+//! (the *modern* stack, routed to the renderer), and no
+//! `NiAutoNormalParticles` / `NiRotatingParticles` /
+//! `NiParticleSystemController` rows. So none of the target games' vanilla
+//! `Meshes` archives require these parsers; they exist for nif.xml
+//! coverage and for older NetImmerse-era / mod / non-`Meshes.bsa` content
+//! that may still author them. Do not read this module as evidence that
+//! vanilla Oblivion ships legacy particle FX — the corpus refutes that
+//! (the legacy-emitter surfacing arm was confirmed dead code and removed
+//! in #1327; see also `feedback_audit_findings.md` on stale premises).
+//! The parsers target the "fields-present" superset that v3.3.0.13+ sees,
+//! without the "until 3.1" / "until 4.2.2.0" legacy quirks removed before
+//! the v20-era titles shipped.
 //!
 //! Oblivion has no `block_sizes` table, so a single field-width mistake
 //! cascades into total parse failure for an entire mesh. Every parser

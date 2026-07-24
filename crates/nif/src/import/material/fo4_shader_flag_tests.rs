@@ -10,6 +10,7 @@
 
 use super::*;
 use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
+use crate::blocks::properties::NiAlphaProperty;
 use crate::blocks::shader::{BSLightingShaderProperty, ShaderTypeData};
 use crate::blocks::tri_shape::NiTriShape;
 use crate::blocks::NiObject;
@@ -133,6 +134,52 @@ fn fo4_alpha_test_flag_sets_field() {
         "expected Bethesda's conventional 128/255 cutout threshold (#1985)"
     );
     assert!(!info.model_space_normals, "MSN bit was not set");
+}
+
+/// #2091 (FO4-D5-01 residual) — a blend-only / opaque `NiAlphaProperty`
+/// runs `apply_alpha_flags`, which sets `alpha_property_consumed = true`
+/// but leaves `alpha_threshold` at 0.0 (it only writes a threshold when the
+/// property's own test bit fired). Combined with the FO4 `F4SF2::Alpha_Test`
+/// shader flag, the old `!alpha_property_consumed` guard skipped the 128/255
+/// seed, leaving `alpha_test = true` with a 0.0 threshold — an inert cutout
+/// (`triangle.frag` gates the discard on `alphaThreshold > 0.0`). The seed
+/// must fire whenever the resolved threshold is still 0.0.
+#[test]
+fn fo4_alpha_test_flag_seeds_threshold_over_blend_only_alpha_property() {
+    let shader = make_bslsp(0, fo4_slsf2::ALPHA_TEST, Vec::new());
+    // Blend-only NiAlphaProperty: bit 0 (blend) set, bit 9 (0x200, test) clear.
+    // `apply_alpha_flags` consumes it (alpha_property_consumed = true) but
+    // authors no threshold, so alpha_threshold stays at its 0.0 default.
+    let alpha = NiAlphaProperty {
+        net: empty_net(),
+        flags: 0x0001,
+        threshold: 0,
+    };
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(shader), Box::new(alpha)];
+    let scene = NifScene {
+        blocks,
+        bsver: bsver::FALLOUT4,
+        ..NifScene::default()
+    };
+    let mut shape = shape_with_shader_ref(0);
+    shape.alpha_property_ref = BlockRef(1);
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    assert!(
+        info.alpha_property_consumed,
+        "the blend-only NiAlphaProperty must be consumed (precondition)"
+    );
+    assert!(
+        info.alpha_test,
+        "FO4 F4SF2::Alpha_Test must still set alpha_test with a property present"
+    );
+    assert_eq!(
+        info.alpha_threshold,
+        128.0 / 255.0,
+        "shader-flag cutout must seed 128/255 even when a non-test NiAlphaProperty \
+         was already consumed — not leave the discard inert at 0.0 (#2091)"
+    );
 }
 
 /// The gate is exclusive: a Skyrim (BSVER 100) property with the SAME

@@ -262,14 +262,27 @@ fn apply_bs_lighting_shader(
             // (`apply_dedicated_alpha_property` ran earlier and owns the authored threshold/func);
             // this catches inline FO4 NIFs that signal cutout via the
             // shader flag alone. Seed Bethesda's conventional 128/255
-            // cutout threshold when no NiAlphaProperty supplied one:
-            // `triangle.frag` gates the discard on `alphaThreshold > 0.0`,
-            // so the `MaterialInfo::default()` 0.0 would leave the flag
-            // inert (a solid opaque quad). `alpha_test_func` stays at its
-            // GREATEREQUAL default. See #1985 (FO4-D5-01).
+            // cutout threshold whenever the resolved threshold is still
+            // 0.0: `triangle.frag` gates the discard on
+            // `alphaThreshold > 0.0`, so the `MaterialInfo::default()` 0.0
+            // would leave the flag inert (a solid opaque quad).
+            //
+            // Gating on `alpha_threshold == 0.0` rather than
+            // `!alpha_property_consumed` (#2091 / FO4-D5-01 residual): a
+            // blend-only or explicit-opaque `NiAlphaProperty` runs
+            // `apply_alpha_flags`, which sets `alpha_property_consumed = true`
+            // but leaves `alpha_threshold` at 0.0 (it only writes a
+            // threshold when the property's own test bit fired). The old
+            // `!consumed` guard skipped the seed in that case, leaving
+            // `alpha_test = true` with a 0.0 threshold — the exact inert
+            // state #1985 fixed for the no-property case. A property that
+            // authored a real test threshold already has
+            // `alpha_threshold > 0.0`, so this never overrides authored
+            // intent (#1201/#1202). `alpha_test_func` stays at its
+            // GREATEREQUAL default. See #1985 (FO4-D5-01) and #2091.
             if shader.shader_flags_2 & crate::shader_flags::fo4_slsf2::ALPHA_TEST != 0 {
                 info.alpha_test = true;
-                if !info.alpha_property_consumed {
+                if info.alpha_threshold == 0.0 {
                     info.alpha_threshold = 128.0 / 255.0;
                 }
             }

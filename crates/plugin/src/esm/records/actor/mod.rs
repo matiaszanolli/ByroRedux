@@ -473,6 +473,14 @@ pub struct ClassRecord {
     /// = Playable. `None` outside Oblivion (the FNV 35-byte arm
     /// reads its own `flags` into a different position; not split
     /// out here because it's not a current consumer).
+    ///
+    /// Parsed and real-data-verified (`clas_oblivion_knight_against_vanilla`)
+    /// but intentionally has **no production consumer yet** — this is
+    /// forward-sequencing for CHARAL (the per-game character-rules
+    /// abstraction layer, `docs/engine/charal.md`), whose Oblivion
+    /// class-flag pass is the consumer (e.g. a playable/spellmaking-
+    /// eligibility gate). Flagged here so it reads as deliberate, not
+    /// as a rediscovered "surprise" gap. See #2089 (DIM3-OBL-02).
     pub flags_oblivion: Option<u32>,
 }
 
