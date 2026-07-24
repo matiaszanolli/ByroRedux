@@ -164,12 +164,110 @@ fn fsr_presets_track_the_native_reference_on_every_camera_path() {
     );
 }
 
+/// Same matrix, against real game content instead of Cornell.
+///
+/// Opt-in through `BYROREDUX_QUALITY_GAME` / `BYROREDUX_QUALITY_CELL` (a
+/// `--game` profile key and a cell editor ID), because game data cannot be
+/// redistributed and is not present on every machine. Cornell is what the
+/// committed thresholds fence; this exists because a Cornell box is a
+/// generous scene for an upscaler — no alpha-tested foliage, no dense
+/// high-frequency texture detail, no decals — and a preset that only holds up
+/// there has not been shown to hold up at all.
+///
+/// Prints the table and asserts nothing. Thresholds calibrated on one
+/// person's copy of one game would fence nobody else's checkout, and a test
+/// that silently skips for most contributors is worse than an explicit
+/// reporting tool. The numbers belong in the plan doc; the frames stay local.
+///
+/// ```bash
+/// BYROREDUX_QUALITY_GAME=fo4 BYROREDUX_QUALITY_CELL=DmndDugoutInn01 \
+///   cargo test --release -p byroredux --test upscaler_quality -- --ignored --nocapture game
+/// ```
+#[test]
+#[ignore = "requires game data on disk; opt-in via --ignored + BYROREDUX_QUALITY_GAME"]
+fn fsr_presets_on_game_content_report_only() {
+    let (Ok(game), Ok(cell)) = (
+        std::env::var("BYROREDUX_QUALITY_GAME"),
+        std::env::var("BYROREDUX_QUALITY_CELL"),
+    ) else {
+        eprintln!(
+            "skipped: set BYROREDUX_QUALITY_GAME and BYROREDUX_QUALITY_CELL              (e.g. fo4 / DmndDugoutInn01) to score real game content"
+        );
+        return;
+    };
+
+    let workdir = std::env::temp_dir().join("byroredux_upscaler_quality_game");
+    std::fs::create_dir_all(&workdir).expect("create work dir");
+    let scene = SceneArgs::Game {
+        game: game.clone(),
+        cell: cell.clone(),
+    };
+
+    println!(
+        "
+FSR quality matrix — {game}/{cell}, reference: TAA at native, {FRAMES} frames"
+    );
+    println!("{:<9} {:<13} {}", "path", "preset", "metrics");
+    for path in PATHS {
+        let reference_png = workdir.join(format!("{path}_reference_taa.png"));
+        capture_scene(&reference_png, &scene, path, "taa", None);
+        let reference = load(&reference_png);
+
+        for preset in PRESETS {
+            let candidate_png = workdir.join(format!("{path}_fsr_{preset}.png"));
+            capture_scene(&candidate_png, &scene, path, "fsr3", Some(preset));
+            let candidate = load(&candidate_png);
+            match compare(&reference, &candidate) {
+                Ok(metrics) => println!("{path:<9} {preset:<13} {metrics}"),
+                Err(error) => println!("{path:<9} {preset:<13} FAILED: {error}"),
+            }
+        }
+    }
+    println!(
+        "captures retained in {} (local artifact — do not commit)",
+        workdir.display()
+    );
+}
+
+/// Which scene a capture loads.
+enum SceneArgs {
+    /// The engine-owned Cornell box. Redistributable, so it is what the
+    /// committed thresholds are calibrated against.
+    Cornell,
+    /// A `--game <profile> --cell <editor id>` load. Local only.
+    Game { game: String, cell: String },
+}
+
+impl SceneArgs {
+    fn to_args(&self) -> Vec<String> {
+        match self {
+            Self::Cornell => vec!["--cornell".to_owned()],
+            Self::Game { game, cell } => vec![
+                "--game".to_owned(),
+                game.clone(),
+                "--cell".to_owned(),
+                cell.clone(),
+            ],
+        }
+    }
+}
+
 /// Run the engine once and capture its final frame.
 ///
 /// `BYROREDUX_FIXED_DT=0` freezes animation so the only thing varying between
 /// two captures of the same frame index is the upscaler under test — the
 /// camera path is already frame-indexed rather than time-driven.
 fn capture(out: &Path, camera_path: &str, upscaler: &str, quality: Option<&str>) {
+    capture_scene(out, &SceneArgs::Cornell, camera_path, upscaler, quality);
+}
+
+fn capture_scene(
+    out: &Path,
+    scene: &SceneArgs,
+    camera_path: &str,
+    upscaler: &str,
+    quality: Option<&str>,
+) {
     if out.exists() {
         let _ = std::fs::remove_file(out);
     }
@@ -186,19 +284,25 @@ fn capture(out: &Path, camera_path: &str, upscaler: &str, quality: Option<&str>)
         "--bin",
         "byroredux",
         "--",
-        "--cornell",
-        "--bench-frames",
-        &frames,
-        "--bench-camera",
-        camera_path,
-        "--upscaler",
-        upscaler,
-        "--screenshot",
-        out_s,
     ]
     .iter()
     .map(|s| (*s).to_owned())
     .collect();
+    args.extend(scene.to_args());
+    args.extend(
+        [
+            "--bench-frames",
+            &frames,
+            "--bench-camera",
+            camera_path,
+            "--upscaler",
+            upscaler,
+            "--screenshot",
+            out_s,
+        ]
+        .iter()
+        .map(|s| (*s).to_owned()),
+    );
     if let Some(quality) = quality {
         args.push("--fsr-quality".to_owned());
         args.push(quality.to_owned());
