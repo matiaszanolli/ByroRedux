@@ -7,6 +7,14 @@ use crate::math::{Mat4, Vec3};
 
 use super::transform::Transform;
 
+/// Shared geometry render distance for every scene type.
+///
+/// Interior cells do not get a shorter projection: they use the same camera
+/// and frustum contract as streamed exterior worldspaces. Exterior LOD
+/// production decides what geometry exists at long range; it does not change
+/// the camera far plane.
+pub const DEFAULT_RENDER_DISTANCE: f32 = 300_000.0;
+
 /// Perspective camera parameters.
 ///
 /// Attach to an entity that also has a [`Transform`] component.
@@ -82,7 +90,7 @@ impl Default for Camera {
             // range — distant z-precision is the limiting factor; reversed-Z
             // (or a larger near) is the proper follow-up if distant
             // z-fighting appears on the LOD ring.
-            far: 300000.0,
+            far: DEFAULT_RENDER_DISTANCE,
             aspect: 16.0 / 9.0,
             aperture: 0.0,
             focus_dist: 20.0,
@@ -109,7 +117,7 @@ mod tests {
         let cam = Camera::default();
         assert!((cam.fov_y - FRAC_PI_4).abs() < 1e-6);
         assert!((cam.near - 0.1).abs() < 1e-6);
-        assert!((cam.far - 300000.0).abs() < 1e-6);
+        assert!((cam.far - DEFAULT_RENDER_DISTANCE).abs() < 1e-6);
     }
 
     #[test]

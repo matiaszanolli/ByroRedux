@@ -66,9 +66,8 @@ float pointSpotAtten(float dist, float R, float shape, uint dbgFlags) {
 // suppressing WRS occupancy. The body is copied verbatim from the
 // pass-1 attenuation + BRDF so both call sites evaluate the identical
 // expression and the unshadowed accumulation cancels bit-for-bit
-// against the shadowed subtraction. Assumes a non-interior-fill
-// point/spot/directional light that already cleared the contribution
-// gate — callers own the fill early-out and the gate.
+// against the shadowed subtraction. Assumes a point/spot/directional
+// light that already cleared the contribution gate.
 vec3 shadowableLightRadiance(
     uint i, vec3 N, vec3 V, float NdotV, vec3 F0,
     vec3 albedo, float roughness, float metalness,
@@ -103,7 +102,7 @@ vec3 shadowableLightRadiance(
     } else {
         // Directional light.
         L = normalize(lights[i].direction_angle.xyz);
-        dist = 10000.0;
+        dist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
         atten = 1.0;
     }
 

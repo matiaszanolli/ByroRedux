@@ -115,6 +115,9 @@ mod tests {
             ("VERTEX_UV_OFFSET_FLOATS", format!("#define VERTEX_UV_OFFSET_FLOATS {VERTEX_UV_OFFSET_FLOATS}u")),
             ("SHADOW_MASK_OPAQUE", format!("#define SHADOW_MASK_OPAQUE {SHADOW_MASK_OPAQUE}u")),
             ("SHADOW_MASK_GLASS", format!("#define SHADOW_MASK_GLASS {SHADOW_MASK_GLASS}u")),
+            ("SHADOW_FADE_START", format!("#define SHADOW_FADE_START {SHADOW_FADE_START:?}")),
+            ("SHADOW_FADE_END", format!("#define SHADOW_FADE_END {SHADOW_FADE_END:?}")),
+            ("DIRECTIONAL_SHADOW_TRACE_DISTANCE", format!("#define DIRECTIONAL_SHADOW_TRACE_DISTANCE {DIRECTIONAL_SHADOW_TRACE_DISTANCE:?}")),
             ("GI_HIT_LIGHT_CAP", format!("#define GI_HIT_LIGHT_CAP {GI_HIT_LIGHT_CAP}u")),
             ("CAUSTIC_FIXED_SCALE", format!("#define CAUSTIC_FIXED_SCALE {CAUSTIC_FIXED_SCALE:?}")),
             ("ENABLE_LEGACY_WRS", format!("#define ENABLE_LEGACY_WRS {ENABLE_LEGACY_WRS}")),
@@ -155,6 +158,31 @@ mod tests {
             assert!(
                 header.contains(&expected),
                 "shader_constants.glsl missing or wrong value for {name}: expected `{expected}`",
+            );
+        }
+    }
+
+    /// Direct-light shadow reach is scene policy, not cell-kind policy.
+    /// Pin every directional-shadow consumer to the generated constants so
+    /// interior geometry, exterior terrain, water, and volumetrics cannot
+    /// quietly grow different trace/fade distances.
+    #[test]
+    fn directional_shadow_consumers_share_distance_contract() {
+        let triangle = include_str!("../shaders/triangle.frag");
+        let lighting = include_str!("../shaders/include/lighting.glsl");
+        let water = include_str!("../shaders/water.frag");
+        let volumetrics = include_str!("../shaders/volumetrics_inject.comp");
+
+        assert!(triangle.contains("smoothstep(SHADOW_FADE_START, SHADOW_FADE_END, worldDist)"));
+        for (name, source) in [
+            ("triangle.frag", triangle),
+            ("lighting.glsl", lighting),
+            ("water.frag", water),
+            ("volumetrics_inject.comp", volumetrics),
+        ] {
+            assert!(
+                source.contains("DIRECTIONAL_SHADOW_TRACE_DISTANCE"),
+                "{name} must use the shared directional shadow distance"
             );
         }
     }

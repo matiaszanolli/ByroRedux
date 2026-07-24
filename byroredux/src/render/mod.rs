@@ -97,15 +97,9 @@ const SUN_INTENSITY_PEAK: f32 = 4.0;
 /// Project the cell's authored directional colour into the value the
 /// renderer pushes to the per-frame `GpuLight` SSBO.
 ///
-/// Interior arm: 0.6× constant fill, `radius = -1` so the shader skips
-/// shadow rays (sealed-wall leak protection). Independent of `sun_intensity`
-/// because interior XCLL is a subtle aesthetic fill — not a physical sun.
-/// The fragment shader applies an additional 0.4× isotropic factor on
-/// top (`INTERIOR_FILL_AMBIENT_FACTOR` in `triangle.frag`), so the
-/// surface receives `directional × 0.24 × albedo` — uniform low-key
-/// fill, no Lambert wrap. The cumulative dim-down vs the legacy
-/// half-Lambert path is intentional; see the shader-side comment for
-/// the corrugated-metal regression context.
+/// Interior arm: 0.6× constant source strength, independent of
+/// `sun_intensity` because interior XCLL is authored cell lighting rather
+/// than the exterior weather sun.
 ///
 /// Exterior arm: ramp the contribution by `sun_intensity / SUN_INTENSITY_PEAK`
 /// so surfaces fade in lockstep with the composite sun disc
@@ -118,38 +112,32 @@ const SUN_INTENSITY_PEAK: f32 = 4.0;
 /// of TOD; at midnight `sun_dir = (0, -1, 0)` per `systems.rs:1437-1442`
 /// and ceilings/overhangs received the full TOD-NIGHT `SKY_SUNLIGHT`
 /// colour. The WRS shadow ray subtracts when occluded, but at distances
-/// > 4000 units `shadowFade` decays to zero, leaving the unshadowed
-/// > contribution un-cancelled.
+/// Beyond the renderer's shared shadow fade start, `shadowFade` decays
+/// to zero, leaving the unshadowed contribution un-cancelled.
 ///
-/// Returns `(color, radius)` where `radius == -1` flags the shader to
-/// skip shadow rays (interior fill) and `radius == 0` is the standard
-/// directional contract.
+/// Both arms return `radius == 0`, the renderer's standard directional
+/// contract. Environment decides the source colour and strength here;
+/// Lambert/GGX evaluation, RT shadows, and distance fading are identical
+/// in the shader for interior and exterior directionals.
 fn compute_directional_upload(
     directional_color: &[f32; 3],
     is_interior: bool,
     sun_intensity: f32,
 ) -> ([f32; 3], f32) {
-    if is_interior {
-        const INTERIOR_FILL_SCALE: f32 = 0.6;
-        (
-            [
-                directional_color[0] * INTERIOR_FILL_SCALE,
-                directional_color[1] * INTERIOR_FILL_SCALE,
-                directional_color[2] * INTERIOR_FILL_SCALE,
-            ],
-            -1.0,
-        )
+    let source_scale = if is_interior {
+        const INTERIOR_DIRECTIONAL_SOURCE_SCALE: f32 = 0.6;
+        INTERIOR_DIRECTIONAL_SOURCE_SCALE
     } else {
-        let ramp = (sun_intensity / SUN_INTENSITY_PEAK).clamp(0.0, 1.0);
-        (
-            [
-                directional_color[0] * ramp,
-                directional_color[1] * ramp,
-                directional_color[2] * ramp,
-            ],
-            0.0,
-        )
-    }
+        (sun_intensity / SUN_INTENSITY_PEAK).clamp(0.0, 1.0)
+    };
+    (
+        [
+            directional_color[0] * source_scale,
+            directional_color[1] * source_scale,
+            directional_color[2] * source_scale,
+        ],
+        0.0,
+    )
 }
 
 /// Sort key for `DrawCommand`s — the batch-merge pass in
@@ -523,7 +511,7 @@ pub(crate) fn build_render_data(
     // `byroredux_renderer::vulkan::water::water_commands_match_draw_slots`
     // — see the function's doc-comment for the predicate.
 
-    // Collect lights from ECS — directional fill + placed point lights.
+    // Collect lights from ECS — cell directional + placed point lights.
     // See `render::lights::collect_lights`.
     let t_lights = mark(profile);
     lights::collect_lights(world, gpu_lights);

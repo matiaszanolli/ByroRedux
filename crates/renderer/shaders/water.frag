@@ -589,7 +589,11 @@ void main() {
         rayQueryInitializeEXT(
             shadowRq, topLevelAS,
             gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-            0xFF, vWorldPos + N * 0.05, 0.05, sunDir, 10000.0
+            0xFF,
+            vWorldPos + N * 0.05,
+            0.05,
+            sunDir,
+            DIRECTIONAL_SHADOW_TRACE_DISTANCE
         );
         rayQueryProceedEXT(shadowRq);
         bool sunVisible =

@@ -319,7 +319,13 @@ void main() {
     vec3 ray_dir = -light_in;
     float visibility;
     bool isExterior = params.render_origin.w > 0.5;
-    bool opaqueHit = traceOcclusion(ray_origin, ray_dir, 0.05, 10000.0, SHADOW_MASK_OPAQUE);
+    bool opaqueHit = traceOcclusion(
+        ray_origin,
+        ray_dir,
+        0.05,
+        DIRECTIONAL_SHADOW_TRACE_DISTANCE,
+        SHADOW_MASK_OPAQUE
+    );
     if (opaqueHit) {
         visibility = 0.0;
     } else if (isExterior) {
@@ -368,10 +374,9 @@ void main() {
             uint li = clusterLightIndices[cluster.offset + ci];
             float radius = lights[li].position_radius.w;
             float lightType = lights[li].color_type.w;
-            // Directional / interior-fill-directional sentinel (radius
-            // < 0, per the fragment-shader loop's own convention) — the
-            // sun above already covers directional light; skip here.
-            if (lightType > 1.5 || radius < 0.0) {
+            // The sun path above already covers the environment's
+            // directional source; this loop handles local lights.
+            if (lightType > 1.5) {
                 continue;
             }
             vec3 toLight = lights[li].position_radius.xyz - world_pos;

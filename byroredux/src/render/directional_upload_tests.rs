@@ -64,26 +64,24 @@ fn exterior_out_of_range_intensity_is_clamped() {
     );
 }
 
-/// Interior fill: 0.6× constant scale, `radius == -1` for
-/// shader-side shadow-skip. Independent of `sun_intensity` — the
-/// XCLL fill is an aesthetic constant, not a TOD-driven sun. Pin
-/// the independence: if a future change accidentally couples the
-/// interior arm to the sun ramp, every interior would dim/brighten
-/// with the wall-clock hour.
+/// Interior source: 0.6× constant scale, independent of
+/// `sun_intensity` — XCLL is authored cell lighting, not a TOD-driven
+/// weather sun. Its renderer contract is nevertheless the same
+/// shadowed directional used outside (`radius == 0`).
 #[test]
-fn interior_uses_fixed_fill_independent_of_sun_intensity() {
+fn interior_uses_fixed_source_with_standard_directional_contract() {
     let (noon_color, noon_radius) =
         compute_directional_upload(&[0.5, 0.5, 0.5], true, SUN_INTENSITY_PEAK);
     let (midnight_color, midnight_radius) = compute_directional_upload(&[0.5, 0.5, 0.5], true, 0.0);
     assert_eq!(
         noon_color, midnight_color,
-        "interior fill must NOT vary with sun_intensity"
+        "interior XCLL source must NOT vary with sun_intensity"
     );
     assert_eq!(
-        noon_radius, -1.0,
-        "interior radius must be -1 (unshadowed fill)"
+        noon_radius, 0.0,
+        "interior directionals must use the standard shadowed contract"
     );
-    assert_eq!(midnight_radius, -1.0);
+    assert_eq!(midnight_radius, 0.0);
     // 0.6× scale per the established convention.
     assert!((noon_color[0] - 0.30).abs() < 1e-6);
 }

@@ -72,6 +72,20 @@ pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
 pub const SHADOW_MASK_OPAQUE: u32 = 0x01;
 pub const SHADOW_MASK_GLASS: u32 = 0x02;
 
+// Shared direct-shadow distance contract. These values apply to every
+// environment; cell kind may change light sources and GI inputs, never the
+// direct-light shadow reach. The trace distance covers the complete fade
+// interval so the last shadowed samples taper out instead of ending early.
+pub const SHADOW_FADE_START: f32 = 8_000.0;
+pub const SHADOW_FADE_END: f32 = 12_000.0;
+pub const DIRECTIONAL_SHADOW_TRACE_DISTANCE: f32 = SHADOW_FADE_END;
+
+const _: () = {
+    assert!(SHADOW_FADE_START >= 0.0);
+    assert!(SHADOW_FADE_START < SHADOW_FADE_END);
+    assert!(DIRECTIONAL_SHADOW_TRACE_DISTANCE >= SHADOW_FADE_END);
+};
+
 // #1913 — these buckets are declared `u32` here but packed into the 8-bit
 // `mask` field of `Packed24_8` at the TLAS instance build
 // (`acceleration/tlas.rs`) via `as u8`, which silently truncates anything
@@ -337,17 +351,11 @@ pub const DBG_VIZ_GLASS_PASSTHRU: u32 = 0x80;
 /// itself. Default-on; this bit is the opt-out.
 pub const DBG_DISABLE_SPECULAR_AA: u32 = 0x100;
 
-/// 0x200 — disable half-Lambert wrap on interior-fill directional.
-/// Interior cells upload the XCLL directional with `radius == -1` as
-/// a "subtle aesthetic fill" (`render::compute_directional_upload`).
-/// The default-on path uses half-Lambert (`dot(N,L) * 0.5 + 0.5`) for
-/// the diffuse term so corrugated normal maps don't produce pitch-
-/// black grooves where `NdotL → 0` (Nellis Museum was the canonical
-/// regression — bright/dark stripes following corrugation period
-/// across the entire hut interior). Specular still uses plain
-/// `NdotL` so back-facing fragments don't get fake highlights.
-/// Set this bit to A/B against the legacy Lambert path.
-pub const DBG_DISABLE_HALF_LAMBERT_FILL: u32 = 0x200;
+/// 0x200 — reserved. Formerly disabled the interior-only isotropic
+/// directional-fill path. Interior and exterior directionals now share
+/// the standard BRDF + RT-shadow contract, so keep the bit vacant rather
+/// than renumbering the externally visible debug flags above it.
+pub const DBG_RESERVED_200: u32 = 0x200;
 
 /// 0x400 — bypass the per-vertex color modulation of albedo
 /// (`albedo *= fragColor`). Bethesda bakes per-vertex lighting / AO into
@@ -513,10 +521,7 @@ pub const DBG_BITS: &[(&str, u32)] = &[
     ("DBG_VIZ_RENDER_LAYER", DBG_VIZ_RENDER_LAYER),
     ("DBG_VIZ_GLASS_PASSTHRU", DBG_VIZ_GLASS_PASSTHRU),
     ("DBG_DISABLE_SPECULAR_AA", DBG_DISABLE_SPECULAR_AA),
-    (
-        "DBG_DISABLE_HALF_LAMBERT_FILL",
-        DBG_DISABLE_HALF_LAMBERT_FILL,
-    ),
+    ("DBG_RESERVED_200", DBG_RESERVED_200),
     ("DBG_BYPASS_VERTEX_COLOR", DBG_BYPASS_VERTEX_COLOR),
     ("DBG_DISABLE_AO", DBG_DISABLE_AO),
     ("DBG_LEGACY_LIGHT_ATTEN", DBG_LEGACY_LIGHT_ATTEN),

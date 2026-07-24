@@ -1,7 +1,7 @@
 //! Light collection — extracted from `build_render_data` per #1115.
 //!
 //! Appends to the caller-owned `gpu_lights` Vec in two passes:
-//!   1. Directional fill light (XCLL-authored, interior or exterior).
+//!   1. Directional light (XCLL-authored, interior or exterior).
 //!   2. Placed point lights (LIGH records, animated dimmer/intensity/radius).
 //!
 //! This module is the **translation layer** between game-format light
@@ -97,9 +97,10 @@ fn gi_priority_score(light: &byroredux_renderer::GpuLight) -> f32 {
 /// `giHitIrradiance`'s fixed-prefix GI scan does, and the once-per-session
 /// info log below references the first three slots post-sort.
 pub(super) fn collect_lights(world: &World, gpu_lights: &mut Vec<byroredux_renderer::GpuLight>) {
-    // Cell directional light. For interior cells the XCLL directional
-    // acts as a subtle fill light (not a physical sun), so we scale it
-    // down to avoid hard shadow leakage through unsealed interior walls.
+    // Cell directional light. Source selection remains environment-specific
+    // (`compute_directional_upload` uses authored XCLL strength indoors and
+    // the weather/TOD ramp outdoors), but both produce the same standard
+    // directional-light contract for BRDF evaluation and RT shadows.
     // Snapshot `sun_intensity` BEFORE acquiring `CellLightingRes` so the
     // two resource locks are never held simultaneously. The weather path
     // touches the same pair in the opposite (Sky→Cell) order, so nesting
@@ -249,24 +250,17 @@ pub(super) fn collect_lights(world: &World, gpu_lights: &mut Vec<byroredux_rende
 }
 
 #[cfg(test)]
-mod interior_sun_gate_tests {
-    //! Regression guard for #1282 — interior sun-shaft leak.
+mod directional_source_contract_tests {
+    //! Regression guards for source selection plus shared shading policy.
     //!
-    //! The architecture has three independent gates that together
-    //! prevent the exterior sun from creating a hard-edged light shaft
-    //! on an interior cell's floor:
+    //! Interior and exterior cells intentionally differ only at the
+    //! source-selection boundary:
     //!
-    //!   1. `compute_directional_upload(_, is_interior=true, _)` returns
-    //!      0.6× scale of `cell_lit.directional_color` (independent of
-    //!      `sun_intensity` — the XCLL value is the fill source, NOT
-    //!      the weather sun) and the `radius = -1` sentinel.
-    //!   2. The shader (`triangle.frag::isInteriorFill = radius < 0.0`)
-    //!      treats the directional as an ISOTROPIC fill — no Lambert,
-    //!      no N·L term — so the surface receives `directional × 0.24 ×
-    //!      albedo` uniformly with no shadow boundary possible.
-    //!   3. The RT shadow-ray loop skips the directional when
-    //!      `isInteriorFill` is true (no `vkRayQuery` cast for
-    //!      sealed-wall protection).
+    //!   1. Interior XCLL stays independent of the exterior weather
+    //!      `sun_intensity` and retains its 0.6 source calibration.
+    //!   2. Exterior directional colour continues to follow the TOD ramp.
+    //!   3. Both upload `radius = 0`, so the shader applies the identical
+    //!      Lambert/GGX, shadow-ray, and distance-fade paths.
     //!
     //! Plus a fourth gate at the resource level: `weather_system`
     //! mutations to `cell_lit.directional_color` are themselves gated
@@ -275,11 +269,11 @@ mod interior_sun_gate_tests {
     //! interior's XCLL via `weather_system` re-running on the persisted
     //! `CellLightingRes`.
     //!
-    //! This module pins the FIRST gate at the light-list-assembly
-    //! integration level. The unit-level coverage of
+    //! This module pins that split at the light-list-assembly integration
+    //! level. The unit-level coverage of
     //! `compute_directional_upload` lives in
     //! [`super::super::directional_upload_tests`] (interior path:
-    //! `interior_uses_fixed_fill_independent_of_sun_intensity`); this
+    //! `interior_uses_fixed_source_with_standard_directional_contract`); this
     //! file complements it by verifying the full `collect_lights`
     //! pipeline respects `is_interior` even when a `SkyParamsRes` from
     //! a prior exterior load persists with a high `sun_intensity` —
@@ -344,14 +338,11 @@ mod interior_sun_gate_tests {
         }
     }
 
-    /// The headline regression guard: an interior cell with
-    /// `SkyParamsRes` present (high sun_intensity, simulating a prior
-    /// exterior load) must produce a SCALED + UNSHADOWED directional —
-    /// not a full-intensity sun. Pre-gate the XCLL directional would
-    /// have been pushed at full strength because the interior arm
-    /// wouldn't fire.
+    /// An interior cell with persistent exterior `SkyParamsRes` must keep
+    /// its XCLL source calibration, while still emitting a standard
+    /// shadowed directional light.
     #[test]
-    fn interior_with_persistent_sky_params_does_not_emit_full_sun() {
+    fn interior_with_persistent_sky_params_uses_shared_directional_contract() {
         let mut world = World::new();
         world.insert_resource(interior_cell_lit([0.8, 0.7, 0.5]));
         world.insert_resource(full_sun_sky_params());
@@ -362,7 +353,7 @@ mod interior_sun_gate_tests {
         assert_eq!(
             lights.len(),
             1,
-            "interior with no LIGH refs must emit exactly one GpuLight (the directional fill)"
+            "interior with no LIGH refs must emit exactly one directional GpuLight"
         );
         let l = &lights[0];
         assert!(
@@ -371,10 +362,9 @@ mod interior_sun_gate_tests {
             l.color_type[3]
         );
         assert!(
-            (l.position_radius[3] - (-1.0)).abs() < 1e-6,
-            "interior fill must use radius=-1 sentinel so the shader's \
-             `isInteriorFill` branch fires (skipping RT shadow + using \
-             isotropic fill instead of N·L Lambert). got {}",
+            (l.position_radius[3] - 0.0).abs() < 1e-6,
+            "interior directional must use radius=0 so it follows the same \
+             BRDF and RT-shadow path as exterior directionals. got {}",
             l.position_radius[3]
         );
         // Color must be SCALED — 0.6× the authored directional_color,
@@ -402,7 +392,7 @@ mod interior_sun_gate_tests {
     /// sentinel radius). Pins that the gate hasn't slipped to "always
     /// scaled" — exterior cells must still receive proper sun.
     #[test]
-    fn exterior_with_full_sun_emits_unshadowed_full_directional() {
+    fn exterior_with_full_sun_emits_standard_directional() {
         let mut world = World::new();
         world.insert_resource(exterior_cell_lit([0.8, 0.7, 0.5]));
         world.insert_resource(full_sun_sky_params());
@@ -424,13 +414,10 @@ mod interior_sun_gate_tests {
         assert!((l.color_type[2] - 0.5).abs() < 1e-5);
     }
 
-    /// Interior without SkyParamsRes (no prior exterior load): same
-    /// behavior as the persistent-SkyParams case — `sun_intensity`
-    /// falls back to `SUN_INTENSITY_PEAK` but the interior arm ignores
-    /// it anyway. Pins that the absent-resource fallback doesn't
-    /// accidentally promote the cell to "exterior" semantics.
+    /// Interior without SkyParamsRes (no prior exterior load) keeps the
+    /// same source calibration and standard directional contract.
     #[test]
-    fn interior_without_sky_params_still_uses_fixed_fill() {
+    fn interior_without_sky_params_uses_standard_directional() {
         let mut world = World::new();
         world.insert_resource(interior_cell_lit([1.0, 1.0, 1.0]));
         // No SkyParamsRes — fresh-boot or interior-only session.
@@ -440,7 +427,7 @@ mod interior_sun_gate_tests {
 
         assert_eq!(lights.len(), 1);
         let l = &lights[0];
-        assert!((l.position_radius[3] - (-1.0)).abs() < 1e-6);
+        assert!((l.position_radius[3] - 0.0).abs() < 1e-6);
         // 1.0 × 0.6 = 0.6.
         assert!((l.color_type[0] - 0.6).abs() < 1e-5);
         assert!((l.color_type[1] - 0.6).abs() < 1e-5);
@@ -613,7 +600,7 @@ mod gi_light_priority_tests {
             specular_alpha: None,
             fresnel_power: None,
         });
-        // A point light far brighter than the directional fill.
+        // A point light far brighter than the directional source.
         spawn_point_light(&mut world, [5.0, 0.0, 0.0], [1.0, 1.0, 1.0], 5000.0);
 
         let mut lights = Vec::new();

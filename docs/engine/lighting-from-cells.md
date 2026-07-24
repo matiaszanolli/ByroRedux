@@ -235,21 +235,26 @@ with the engine default.
 `collect_lights` reads `CellLightingRes` and pushes one directional
 `GpuLight` (`color_type.w = 2.0` marks it directional).
 `compute_directional_upload` ([`byroredux/src/render/mod.rs`](../../byroredux/src/render/mod.rs))
-splits interior vs exterior:
+splits source selection between interior and exterior:
 
-- **Interior:** `0.6×` of `cell_lit.directional_color` as a constant
-  *fill* (independent of weather `sun_intensity` — the XCLL value is the
-  fill source, not a physical sun) and a `radius = -1.0` sentinel.
+- **Interior:** `0.6×` of `cell_lit.directional_color`, independent of
+  weather `sun_intensity` — XCLL is the authored cell source.
 - **Exterior:** ramp the contribution by
   `sun_intensity / SUN_INTENSITY_PEAK` (`SUN_INTENSITY_PEAK = 4.0`),
   so the directional tracks the TOD sun.
 
-Three independent gates keep the exterior sun from drawing a hard-edged
-light shaft on an interior floor (regression-guarded by #1282 tests):
-the `0.6×` interior scale + `radius = -1` sentinel; the shader treating
-`radius < 0` as an isotropic fill (no Lambert / N·L term); and the RT
-shadow-ray loop skipping the directional when it's an interior fill (no
-`vkRayQuery` cast).
+After that source boundary, both upload the standard directional
+`radius = 0` contract and run through the same Lambert/GGX evaluation,
+ReSTIR shadow reservoir, ray query, and distance fade. GI inputs remain
+a separate policy surface: sharing direct-light and shadow behavior does
+not require interiors and exteriors to share sky/weather bounce sources.
+
+The shadow reach is likewise scene-independent. `SHADOW_FADE_START`,
+`SHADOW_FADE_END`, and `DIRECTIONAL_SHADOW_TRACE_DISTANCE` live in the
+generated renderer constants and are consumed by opaque geometry, water,
+and volumetrics. The directional trace covers the complete fade interval,
+so no environment loses occlusion before its shadow contribution has
+tapered to zero.
 
 ### TOD clock — `weather_system`
 

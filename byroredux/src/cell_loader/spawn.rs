@@ -1450,8 +1450,14 @@ fn spawn_mesh_instance(
 
 #[cfg(test)]
 mod synthesize_trimesh_tests {
-    use super::synthesize_static_trimesh;
-    use byroredux_core::ecs::components::{CollisionShape, MotionType};
+    use super::{spawn_trimesh_collider_ghost, synthesize_static_trimesh};
+    use byroredux_core::{
+        ecs::{
+            components::{CollisionShape, MeshHandle, MotionType, RigidBodyData},
+            World,
+        },
+        math::{Quat, Vec3},
+    };
 
     /// A single unit triangle synthesizes into a 1-triangle TriMesh
     /// with a Static body. Baseline that the geometry round-trips.
@@ -1469,6 +1475,48 @@ mod synthesize_trimesh_tests {
             other => panic!("expected TriMesh, got {other:?}"),
         }
         assert_eq!(body.motion_type, MotionType::Static);
+    }
+
+    /// LAND terrain and NIF architecture both call this helper for missing
+    /// authored collision. Pin the shared floor contract: one static physics
+    /// proxy, with no render mesh/BLAS payload of its own.
+    #[test]
+    fn floor_collider_ghost_is_static_and_renderer_free() {
+        let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let indices = [0u32, 1, 2];
+        let mut world = World::new();
+
+        assert!(spawn_trimesh_collider_ghost(
+            &mut world,
+            &positions,
+            &indices,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+        ));
+
+        let shape_q = world
+            .query::<CollisionShape>()
+            .expect("ghost must carry CollisionShape");
+        let (entity, _) = shape_q.iter().next().expect("one collider ghost");
+        assert_eq!(shape_q.iter().count(), 1);
+
+        let body_q = world
+            .query::<RigidBodyData>()
+            .expect("ghost must carry RigidBodyData");
+        assert_eq!(
+            body_q
+                .get(entity)
+                .expect("same ghost owns the body")
+                .motion_type,
+            MotionType::Static
+        );
+
+        let mesh_q = world.query::<MeshHandle>();
+        assert!(
+            mesh_q.as_ref().is_none_or(|q| !q.contains(entity)),
+            "physics floor proxy must not create an extra raster/TLAS instance"
+        );
     }
 
     /// `world_scale` bakes into the vertex positions — the physics sync

@@ -2117,7 +2117,8 @@ void main() {
         //     12 lights in a cluster missed contribution from
         //     ~33% of lights per pixel; the 16-reservoir set
         //     samples every light at 16/12 oversample.
-        float shadowFade = 1.0 - smoothstep(8000.0, 12000.0, worldDist);
+        float shadowFade =
+            1.0 - smoothstep(SHADOW_FADE_START, SHADOW_FADE_END, worldDist);
         // Cap per-reservoir unbiasing weight to tame fireflies when a
         // dim light is sampled in a cluster dominated by bright ones.
         // 64× matches the ratio of a dim fill light to a hero light.
@@ -2190,10 +2191,8 @@ void main() {
             // `.w` is the CPU-translated effective visible range (post
             // `LIGHT_RANGE_EXTENSION`), NOT the raw LIGH radius. The
             // shader doesn't know about LIGH or its `radius` semantic —
-            // see `byroredux/src/render/lights.rs`. The negative-value
-            // sentinel for interior-fill directional (radius = -1)
-            // still routes to the directional arm below where it's
-            // re-checked via `isInteriorFill`.
+            // see `byroredux/src/render/lights.rs`. Directionals use the
+            // shared radius=0 renderer contract in every scene type.
             float radius = lights[i].position_radius.w;
             vec3 lightColor = lights[i].color_type.rgb;
             float lightType = lights[i].color_type.w;
@@ -2238,64 +2237,13 @@ void main() {
             } else {
                 // Directional light.
                 L = normalize(lights[i].direction_angle.xyz);
-                dist = 10000.0;
+                dist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
                 atten = 1.0;
             }
 
-            // Interior-fill directional (uploaded with
-            // `radius == -1` per `compute_directional_upload`) is the
-            // XCLL "subtle aesthetic fill" — explicitly NOT a
-            // physical sun. The previous Lambert + GGX path made
-            // every per-fragment normal-map perturbation (corrugated
-            // metal, brick mortar, tile grout, fence cutouts) bias
-            // the output: bright stripes on ridges + dark stripes in
-            // grooves, regardless of whether the diffuse term was
-            // plain Lambert (commit 96b1f30 era) or half-Lambert
-            // (commit cdc3b01). Half-Lambert helped the diffuse
-            // term but not the GGX specular lobe, which still
-            // banded on metalness > 0 walls — the visible Quonset
-            // hut regression (Nellis Museum). Spec AA was the wrong
-            // knob for the pathology too (texel-scale, not
-            // sub-pixel).
-            //
-            // The actual semantic of "subtle aesthetic fill" is
-            // normal-INDEPENDENT injection: every fragment receives
-            // `lightColor * albedo * factor` regardless of where its
-            // normal points, so the high-frequency normal map can't
-            // amplify into stripes. Skip the BRDF entirely for the
-            // interior-fill case. The legacy Lambert path is
-            // preserved behind the existing `0x200` debug bit for
-            // A/B against this isotropic-fill change.
-            bool isInteriorFill = radius < 0.0;
-            if (isInteriorFill
-                && (dbgFlags & DBG_DISABLE_HALF_LAMBERT_FILL) == 0u) {
-                // INTERIOR_FILL_AMBIENT_FACTOR — half-Lambert + GGX
-                // was dropped above (BRDF skipped for interior fill).
-                // `0.4` was tuned by visual judgment on the
-                // corrugated-metal regression bench, NOT derived to
-                // match a specific NdotL midpoint. Cumulative interior
-                // fill at the surface is `directional × 0.6 (CPU
-                // `INTERIOR_FILL_SCALE` in
-                // `compute_directional_upload`) × 0.4 (this) × albedo
-                // = 0.24 × directional × albedo` — visibly dimmer than
-                // the legacy half-Lambert path at any NdotL but
-                // uniform across the surface. The dim-down is
-                // intentional: uniform low-key fill beats banded
-                // "chrome" stripes on high-frequency normal maps
-                // (Nellis Museum was the canonical regression).
-                // Tunable: raise to brighten interiors, lower to
-                // darken. Pinned here so a future operator-tuning UI
-                // can surface the scalar.
-                const float INTERIOR_FILL_AMBIENT_FACTOR = 0.4;
-                Lo += lightColor * atten * albedo
-                    * INTERIOR_FILL_AMBIENT_FACTOR;
-                continue;
-            }
-
-            // RL-03 — per-light ambient fill (point/spot only; the
-            // interior-fill directional above already carries its own
-            // dim ambient-like term, and a true directional sun has no
-            // "ambient" component in the Gamebryo model). Gamebryo's
+            // RL-03 — per-light ambient fill (point/spot only; a
+            // directional source has no "ambient" component in the
+            // Gamebryo model). Gamebryo's
             // original D3D9 lighting adds `Material.Ambient ×
             // Light.Ambient` on top of diffuse for every active light —
             // ByroRedux had no equivalent, so a fragment merely NEAR a
@@ -2326,9 +2274,8 @@ void main() {
             // count of lights in range.
             const float LIGHT_AMBIENT_FILL_FACTOR = 0.15;
             // Gate promised by the comment above but missing until #1914:
-            // a true directional sun (lightType >= 1.5, and NOT the
-            // isInteriorFill case already `continue`d above) has no
-            // "ambient" component in the Gamebryo model — without this
+            // a directional source (lightType >= 1.5) has no "ambient"
+            // component in the Gamebryo model — without this
             // gate every exterior fragment picked up an unshadowed,
             // normal-independent `sunColor * albedo * 0.15` term added
             // directly to `Lo`, washing out RT sun-shadow contrast.
@@ -2433,14 +2380,9 @@ void main() {
             // areas get consistent fill regardless of nearby light count
             // and dense rooms no longer stack into overdrive.
 
-            // Stream this light into every reservoir (WRS). Interior
-            // fill (`radius < 0`) already `continue`'d before
-            // reaching this block, so `!isInteriorFill` is
-            // belt-and-suspenders — kept explicit so a future edit
-            // that changes the early-exit doesn't silently start
-            // casting shadow rays for fill lights (the `radius == -1`
-            // contract from `compute_directional_upload`).
-            if (rtEnabled && !isInteriorFill && shadowFade > 0.01) {
+            // Stream this light into the shared shadow reservoir. Both
+            // interior and exterior sources reach this exact path.
+            if (rtEnabled && shadowFade > 0.01) {
                 // Target pdf: luminance of the to-be-subtracted radiance
                 // (`shadowableRadiance` computed above). Sampling
                 // proportional to this approximates the optimal

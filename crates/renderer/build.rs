@@ -107,6 +107,13 @@ fn main() {
     .unwrap();
     writeln!(out, "#define SHADOW_MASK_OPAQUE {SHADOW_MASK_OPAQUE}u").unwrap();
     writeln!(out, "#define SHADOW_MASK_GLASS {SHADOW_MASK_GLASS}u").unwrap();
+    writeln!(out, "#define SHADOW_FADE_START {SHADOW_FADE_START:?}").unwrap();
+    writeln!(out, "#define SHADOW_FADE_END {SHADOW_FADE_END:?}").unwrap();
+    writeln!(
+        out,
+        "#define DIRECTIONAL_SHADOW_TRACE_DISTANCE {DIRECTIONAL_SHADOW_TRACE_DISTANCE:?}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "// Glass / IOR ray budget").unwrap();
