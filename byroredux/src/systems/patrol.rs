@@ -91,7 +91,12 @@ fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
                     let home = transform.translation;
                     PatrolState {
                         home,
-                        target: super::wander::pick_wander_target(home, radius, behavior.form_id, 0),
+                        target: super::wander::pick_wander_target(
+                            home,
+                            radius,
+                            behavior.form_id,
+                            0,
+                        ),
                         phase: WanderPhase::Walking,
                         pick_count: 0,
                     }
@@ -182,7 +187,10 @@ mod tests {
         world.insert(entity, Transform::from_translation(Vec3::ZERO));
         world.insert(
             entity,
-            PatrolBehavior { patrol_radius: Some(200.0), form_id: 0x000D_0001 },
+            PatrolBehavior {
+                patrol_radius: Some(200.0),
+                form_id: 0x000D_0001,
+            },
         );
 
         patrol_system(&world, 0.5);
@@ -193,7 +201,9 @@ mod tests {
             "actor should have moved from the origin on the first tick"
         );
 
-        let sq = world.query::<PatrolState>().expect("PatrolState registered");
+        let sq = world
+            .query::<PatrolState>()
+            .expect("PatrolState registered");
         assert!(
             sq.get(entity).is_some(),
             "patrol_system must lazily insert PatrolState on first tick"
@@ -209,10 +219,16 @@ mod tests {
 
         let entity = world.spawn();
         // Seed state already at its own target — arrival is immediate.
-        world.insert(entity, Transform::from_translation(Vec3::new(10.0, 0.0, 10.0)));
         world.insert(
             entity,
-            PatrolBehavior { patrol_radius: Some(200.0), form_id: 0x000D_0002 },
+            Transform::from_translation(Vec3::new(10.0, 0.0, 10.0)),
+        );
+        world.insert(
+            entity,
+            PatrolBehavior {
+                patrol_radius: Some(200.0),
+                form_id: 0x000D_0002,
+            },
         );
         world.insert(
             entity,
@@ -226,7 +242,9 @@ mod tests {
 
         patrol_system(&world, 0.5);
 
-        let sq = world.query::<PatrolState>().expect("PatrolState registered");
+        let sq = world
+            .query::<PatrolState>()
+            .expect("PatrolState registered");
         assert!(
             matches!(sq.get(entity).unwrap().phase, WanderPhase::Paused { .. }),
             "actor already at its target must transition to Paused, not keep walking in place"

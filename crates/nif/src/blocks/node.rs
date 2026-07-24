@@ -866,10 +866,7 @@ impl BsWeakReferenceNode {
     /// the undocumented Starfield trailing tail (#1882) is captured opaquely up
     /// to the block boundary — mirroring #1606 on `BSLightingShaderProperty`.
     /// The dispatcher passes `Some(block_size)`; `parse(stream)` passes `None`.
-    pub fn parse_with_size(
-        stream: &mut NifStream,
-        block_size: Option<u32>,
-    ) -> io::Result<Self> {
+    pub fn parse_with_size(stream: &mut NifStream, block_size: Option<u32>) -> io::Result<Self> {
         let block_start = stream.position();
         let bsver = stream.bsver();
         let mut me = Self::parse_inner(stream)?;

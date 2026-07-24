@@ -58,10 +58,16 @@ fn assert_structural(game: Game, ragdoll: &ImportedRagdoll) {
     );
 
     // A ragdoll needs ≥2 bodies and ≥1 joint to articulate at all.
-    assert!(ragdoll.bodies.len() >= 2, "{game:?}: need ≥2 ragdoll bodies");
+    assert!(
+        ragdoll.bodies.len() >= 2,
+        "{game:?}: need ≥2 ragdoll bodies"
+    );
     assert!(!ragdoll.constraints.is_empty(), "{game:?}: need ≥1 joint");
     for b in &ragdoll.bodies {
-        assert!(!b.bone_name.is_empty(), "{game:?}: body missing a bone name");
+        assert!(
+            !b.bone_name.is_empty(),
+            "{game:?}: body missing a bone name"
+        );
         assert!(b.mass >= 0.0, "{game:?}: negative mass on {}", b.bone_name);
     }
     for c in &ragdoll.constraints {
@@ -138,9 +144,15 @@ fn fnv_humanoid_skeleton_threads_ragdoll() {
         .count();
     assert!(hinges > 0, "FNV elbows/knees should decode as LimitedHinge");
 
-    let names: Vec<&str> = ragdoll.bodies.iter().map(|b| b.bone_name.as_ref()).collect();
+    let names: Vec<&str> = ragdoll
+        .bodies
+        .iter()
+        .map(|b| b.bone_name.as_ref())
+        .collect();
     assert!(
-        names.iter().any(|n| n.contains("Bip01") || n.contains("Spine")),
+        names
+            .iter()
+            .any(|n| n.contains("Bip01") || n.contains("Spine")),
         "expected a Bip01/Spine bone among {names:?}",
     );
 }
@@ -221,7 +233,10 @@ fn synthetic_ragdoll(n_bodies: usize, n_joints: usize) -> ImportedRagdoll {
             },
         })
         .collect();
-    ImportedRagdoll { bodies, constraints }
+    ImportedRagdoll {
+        bodies,
+        constraints,
+    }
 }
 
 /// The floor passes exactly at the measured count and on any larger graph

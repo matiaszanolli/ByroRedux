@@ -610,8 +610,14 @@ mod tests {
         waters.insert(rec.form_id, rec);
 
         let (mat, kind, _flow, _normal) = resolve_water_material(&waters, Some(0x000A_0001));
-        assert_eq!(mat.wave_amplitude, 1.5, "wave_amplitude must round-trip from WATR");
-        assert_eq!(mat.wave_frequency, 2.0, "wave_frequency must round-trip from WATR");
+        assert_eq!(
+            mat.wave_amplitude, 1.5,
+            "wave_amplitude must round-trip from WATR"
+        );
+        assert_eq!(
+            mat.wave_frequency, 2.0,
+            "wave_frequency must round-trip from WATR"
+        );
         assert!(matches!(kind, WaterKind::Calm));
     }
 
@@ -659,22 +665,43 @@ mod tests {
         let def = WaterMaterial::default();
 
         // AUTHORED fields differ (proves the two records are distinct).
-        assert_ne!(ob.fog_far, sk.fog_far, "authored fog must differ between the two records");
+        assert_ne!(
+            ob.fog_far, sk.fog_far,
+            "authored fog must differ between the two records"
+        );
 
         // SENTINEL fields no game authors must be identical across games
         // AND equal to the canonical default — the translate-up invariant.
         for (label, a, b, d) in [
             ("ior", ob.ior, sk.ior, def.ior),
-            ("shoreline_width", ob.shoreline_width, sk.shoreline_width, def.shoreline_width),
+            (
+                "shoreline_width",
+                ob.shoreline_width,
+                sk.shoreline_width,
+                def.shoreline_width,
+            ),
             ("uv_scale_a", ob.uv_scale_a, sk.uv_scale_a, def.uv_scale_a),
             ("uv_scale_b", ob.uv_scale_b, sk.uv_scale_b, def.uv_scale_b),
-            ("foam_strength", ob.foam_strength, sk.foam_strength, def.foam_strength),
+            (
+                "foam_strength",
+                ob.foam_strength,
+                sk.foam_strength,
+                def.foam_strength,
+            ),
         ] {
             assert_eq!(a, b, "SENTINEL `{label}` must be game-invariant");
             assert_eq!(a, d, "SENTINEL `{label}` must equal the canonical default");
         }
-        assert_eq!(ob.normal_map_index, u32::MAX, "no texture authored → procedural sentinel");
-        assert_eq!(sk.normal_map_index, u32::MAX, "no texture authored → procedural sentinel");
+        assert_eq!(
+            ob.normal_map_index,
+            u32::MAX,
+            "no texture authored → procedural sentinel"
+        );
+        assert_eq!(
+            sk.normal_map_index,
+            u32::MAX,
+            "no texture authored → procedural sentinel"
+        );
         // Calm water authors no flow — a real distinction, not a leak.
         assert!(matches!(ob_kind, WaterKind::Calm));
         assert!(ob_flow.is_none(), "calm water has no synthesized flow");
@@ -697,7 +724,10 @@ mod tests {
     fn resolve_water_material_procedural_default_classification() {
         // Case 1: no XCWT at all.
         let (_, _, _, normal_none) = resolve_water_material(&HashMap::new(), None);
-        assert!(normal_none.is_none(), "no XCWT must classify as procedural default");
+        assert!(
+            normal_none.is_none(),
+            "no XCWT must classify as procedural default"
+        );
 
         // Case 2: XCWT present but unresolvable form.
         let (_, _, _, normal_unresolved) =

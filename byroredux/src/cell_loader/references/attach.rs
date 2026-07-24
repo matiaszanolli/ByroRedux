@@ -481,8 +481,15 @@ mod dedup_vmad_scripts_tests {
 
         let out = dedup_vmad_scripts(Some(&refr), Some(&base));
 
-        assert_eq!(out.len(), 1, "case-insensitive collision must yield exactly one attach");
-        assert_eq!(out[0].1.name, "MyScript", "the REFR-own copy must win the collision");
+        assert_eq!(
+            out.len(),
+            1,
+            "case-insensitive collision must yield exactly one attach"
+        );
+        assert_eq!(
+            out[0].1.name, "MyScript",
+            "the REFR-own copy must win the collision"
+        );
     }
 
     /// Distinct names (even case-insensitively) both survive, REFR-first.
@@ -567,14 +574,17 @@ mod container_inventory_tests {
     #[test]
     fn attaches_inventory_from_container_record() {
         let mut index = EsmIndex::default();
-        index
-            .containers
-            .insert(0x1234, container_with_contents(0x1234, &[(0xAAAA, 5), (0xBBBB, 1)]));
+        index.containers.insert(
+            0x1234,
+            container_with_contents(0x1234, &[(0xAAAA, 5), (0xBBBB, 1)]),
+        );
 
         let mut world = World::new();
         let entity = world.spawn();
 
-        assert!(attach_container_inventory(&mut world, entity, 0x1234, &index));
+        assert!(attach_container_inventory(
+            &mut world, entity, 0x1234, &index
+        ));
 
         let inv = world.get::<Inventory>(entity).expect("Inventory attached");
         assert_eq!(inv.items.len(), 2);
@@ -605,13 +615,18 @@ mod container_inventory_tests {
     #[test]
     fn empty_container_still_attaches() {
         let mut index = EsmIndex::default();
-        index.containers.insert(0x1, container_with_contents(0x1, &[]));
+        index
+            .containers
+            .insert(0x1, container_with_contents(0x1, &[]));
 
         let mut world = World::new();
         let entity = world.spawn();
 
         assert!(attach_container_inventory(&mut world, entity, 0x1, &index));
-        assert!(world.get::<Inventory>(entity).expect("Inventory attached").is_empty());
+        assert!(world
+            .get::<Inventory>(entity)
+            .expect("Inventory attached")
+            .is_empty());
     }
 
     #[test]
@@ -620,7 +635,9 @@ mod container_inventory_tests {
         let mut world = World::new();
         let entity = world.spawn();
 
-        assert!(!attach_container_inventory(&mut world, entity, 0xFFFF, &index));
+        assert!(!attach_container_inventory(
+            &mut world, entity, 0xFFFF, &index
+        ));
         assert!(world.get::<Inventory>(entity).is_none());
     }
 }

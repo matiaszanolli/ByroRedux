@@ -21,7 +21,13 @@ fn hexdump(bytes: &[u8]) {
         let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
         let ascii: String = chunk
             .iter()
-            .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
+            .map(|&b| {
+                if (0x20..0x7f).contains(&b) {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         println!("    {:04x}  {:<47}  {}", i * 16, hex.join(" "), ascii);
     }
@@ -35,12 +41,16 @@ type OwnedSub = ([u8; 4], Vec<u8>);
 fn walk(reader: &mut EsmReader, end: usize, want: &[u8; 4], f: &mut dyn FnMut(u32, &[OwnedSub])) {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
-            let Ok(g) = reader.read_group_header() else { return };
+            let Ok(g) = reader.read_group_header() else {
+                return;
+            };
             let sub_end = reader.group_content_end(&g);
             walk(reader, sub_end, want, f);
             continue;
         }
-        let Ok(header) = reader.read_record_header() else { return };
+        let Ok(header) = reader.read_record_header() else {
+            return;
+        };
         if &header.record_type == want {
             match reader.read_sub_records(&header) {
                 Ok(subs) => {

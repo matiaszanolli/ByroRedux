@@ -44,10 +44,6 @@ mod bs_geometry_sentinel_slot_tests;
 #[cfg(test)]
 mod bs_geometry_skin_tests;
 #[cfg(test)]
-mod decode_half_float_tests;
-#[cfg(test)]
-mod dismember_body_part_flags_tests;
-#[cfg(test)]
 mod bs_geometry_tangent_tests;
 #[cfg(test)]
 mod bs_tri_shape_kind_passthrough_tests;
@@ -55,6 +51,10 @@ mod bs_tri_shape_kind_passthrough_tests;
 mod bs_tri_shape_partition_remap_tests;
 #[cfg(test)]
 mod bs_tri_shape_shader_flag_tests;
+#[cfg(test)]
+mod decode_half_float_tests;
+#[cfg(test)]
+mod dismember_body_part_flags_tests;
 #[cfg(test)]
 mod material_path_capture_tests;
 #[cfg(test)]

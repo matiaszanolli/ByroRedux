@@ -22,8 +22,14 @@ fn half_to_f32_pins_ieee754_binary16_edge_classes() {
     );
 
     // +Inf / -Inf (exp == 31, mant == 0)
-    assert!(half_to_f32(0x7C00).is_infinite() && half_to_f32(0x7C00) > 0.0, "+Inf");
-    assert!(half_to_f32(0xFC00).is_infinite() && half_to_f32(0xFC00) < 0.0, "-Inf");
+    assert!(
+        half_to_f32(0x7C00).is_infinite() && half_to_f32(0x7C00) > 0.0,
+        "+Inf"
+    );
+    assert!(
+        half_to_f32(0xFC00).is_infinite() && half_to_f32(0xFC00) < 0.0,
+        "-Inf"
+    );
 
     // NaN with a payload (exp == 31, mant != 0); payload preserved in mantissa.
     let nan = half_to_f32(0x7E00);

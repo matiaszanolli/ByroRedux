@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 /// Regression for #409: at `BSVER == 131` the parser must read
 /// neither the u32 flag pair (gated on `bsver <= crate::version::bsver::FALLOUT4`) nor the
 /// CRC-array counts (gated on `bsver >= crate::version::bsver::FO4_CRC_FLAGS`). This is NOT a bug —
@@ -91,7 +90,6 @@ fn bs_lighting_bsver_131_skips_flag_pair_and_crc_counts() {
     );
 }
 
-
 /// Regression for #409: at `BSVER == 132` the parser must skip the
 /// flag pair AND read `Num SF1` + the SF1 CRC array (but NOT
 /// `Num SF2` which is gated on `>= 152`). Exercises the other side
@@ -161,7 +159,6 @@ fn bs_lighting_bsver_132_reads_crc_counts_but_not_flag_pair() {
     );
 }
 
-
 /// Regression for #2002: BSVER 140+ no longer carries the legacy shader
 /// type before `NiObjectNETData`. Reading it shifts Name and every following
 /// field by four bytes.
@@ -207,7 +204,6 @@ fn bs_lighting_bsver_140_skips_legacy_shader_type() {
     assert!(prop.sf2_crcs.is_empty());
     assert_eq!(stream.position() as usize, expected_len);
 }
-
 
 /// #1223 / D4-NEW-01 regression — the BSVER=130 BSLSP wire format does
 /// NOT carry `env_map_scale` in the wetness block. Pre-#1223 the
@@ -310,7 +306,6 @@ fn parse_bs_lighting_fo4_skin_tint_preserves_alpha() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
-
 #[test]
 fn parse_bs_lighting_fo4_env_map_with_wetness() {
     let header = make_fo4_header();
@@ -353,7 +348,6 @@ fn parse_bs_lighting_fo4_env_map_with_wetness() {
     }
     assert_eq!(stream.position(), data.len() as u64);
 }
-
 
 /// #1175 — pin the inverted-case Backlight Power gate. Per nif.xml 6609,
 /// Backlight Power is present iff Rimlight Power is the FLT_MAX sentinel.
@@ -403,7 +397,6 @@ fn parse_bs_lighting_fo4_finite_rimlight_skips_backlight() {
     assert!((prop.fresnel_power - 5.0).abs() < 1e-6);
     assert_eq!(stream.position(), data.len() as u64);
 }
-
 
 /// #1080 / FO4-D3-009 — pin the BSVER 130 (FO4) BGSM-stopcond boundary.
 ///

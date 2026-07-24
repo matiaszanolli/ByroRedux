@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn pulse_is_sine_of_phase() {
         let f = flicker(LIGHT_FLAG_PULSE, 0.4, 1.0); // amplitude 0.4, period 1 s
-        // total_time 0 → phase 0 → sin(0) = 0 → unit.
+                                                     // total_time 0 → phase 0 → sin(0) = 0 → unit.
         assert!((flicker_intensity(1, &f, 0.0) - 1.0).abs() < 1e-6);
         // total_time = period/4 → phase 0.25 → sin(TAU·0.25) = 1
         // → 1 + 1·0.4·0.5 = 1.2.

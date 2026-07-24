@@ -121,7 +121,10 @@ impl Cfg {
     /// `std::map` iterator `++`. `None` when `key` is the last block.
     pub fn next_key(&self, key: usize) -> Option<usize> {
         use std::ops::Bound::{Excluded, Unbounded};
-        self.blocks.range((Excluded(key), Unbounded)).next().map(|(&k, _)| k)
+        self.blocks
+            .range((Excluded(key), Unbounded))
+            .next()
+            .map(|(&k, _)| k)
     }
 }
 
@@ -217,7 +220,9 @@ pub fn build_cfg(function: &Function) -> Result<Cfg, DecompileError> {
                 };
                 let target = checked_target(ip, offset, count)?;
                 let condition = condition_name(
-                    ins.args.first().ok_or(DecompileError::BadJumpCondition { ip })?,
+                    ins.args
+                        .first()
+                        .ok_or(DecompileError::BadJumpCondition { ip })?,
                     ip,
                 )?;
 
@@ -284,7 +289,11 @@ mod tests {
         Function {
             instructions: instrs
                 .into_iter()
-                .map(|(op, args)| Instruction { op, args, var_args: Vec::new() })
+                .map(|(op, args)| Instruction {
+                    op,
+                    args,
+                    var_args: Vec::new(),
+                })
                 .collect(),
             ..Function::default()
         }

@@ -795,8 +795,8 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
         );
     }
     for p in pending {
-        let mut track_builder = SpatialTrackBuilder::new()
-            .distances(p.attenuation.distance_range());
+        let mut track_builder =
+            SpatialTrackBuilder::new().distances(p.attenuation.distance_range());
         // Phase 6: route a fraction of this track's signal to the
         // global reverb send if one exists and the level isn't
         // muted. with_send takes a Decibels-convertible f32; the
@@ -913,8 +913,8 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
         // exclusive `..` range we use elsewhere doesn't impl
         // `Into<SpatialTrackDistances>`. The values are min..=max
         // game-units, falloff between is linear (kira default).
-        let mut track_builder = SpatialTrackBuilder::new()
-            .distances(p.attenuation.distance_range());
+        let mut track_builder =
+            SpatialTrackBuilder::new().distances(p.attenuation.distance_range());
         // Phase 6: route a fraction of this track's signal to the
         // global reverb send if one exists and the level isn't
         // muted. with_send takes a Decibels-convertible f32; the

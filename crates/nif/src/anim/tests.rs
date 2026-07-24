@@ -1794,9 +1794,7 @@ fn import_embedded_animations_captures_inline_transform_controller() {
 #[cfg(test)]
 mod sanitize_keyframe_streams {
     use super::*;
-    use crate::blocks::interpolator::{
-        Color4Key, NiColorData, NiColorInterpolator, QuatKey,
-    };
+    use crate::blocks::interpolator::{Color4Key, NiColorData, NiColorInterpolator, QuatKey};
     use crate::types::BlockRef;
 
     fn all_finite3(v: [f32; 3]) -> bool {
@@ -1845,7 +1843,11 @@ mod sanitize_keyframe_streams {
             }],
         };
         let (keys, _) = convert_vec3_keys(&group);
-        assert_eq!(keys.len(), 1, "clean value keeps the key despite bad tangents");
+        assert_eq!(
+            keys.len(),
+            1,
+            "clean value keeps the key despite bad tangents"
+        );
         assert!(all_finite3(keys[0].forward), "forward tangent sanitized");
         assert!(all_finite3(keys[0].backward), "backward tangent sanitized");
     }
@@ -1915,7 +1917,11 @@ mod sanitize_keyframe_streams {
             ],
         };
         let (keys, _) = convert_float_keys(&group);
-        assert_eq!(keys.len(), 1, "only the finite, sub-sentinel value survives");
+        assert_eq!(
+            keys.len(),
+            1,
+            "only the finite, sub-sentinel value survives"
+        );
         assert_eq!(keys[0].value, 1.0);
         assert!(keys[0].forward.is_finite(), "NaN tangent clamped to 0");
         assert_eq!(keys[0].forward, 0.0);
@@ -1952,8 +1958,8 @@ mod sanitize_keyframe_streams {
             blocks: vec![Box::new(data), Box::new(interp)],
             ..NifScene::default()
         };
-        let channel = extract_float_channel_at(&scene, 1, FloatTarget::Alpha)
-            .expect("one clean key remains");
+        let channel =
+            extract_float_channel_at(&scene, 1, FloatTarget::Alpha).expect("one clean key remains");
         assert_eq!(channel.keys.len(), 1);
         assert_eq!(channel.keys[0].value, 0.5);
     }

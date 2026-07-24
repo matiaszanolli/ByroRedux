@@ -312,13 +312,13 @@ fn fo4_ni_texture_effect_skips_dynamic_effect_tail() {
         bytes.extend_from_slice(&0.0f32.to_le_bytes());
     }
     bytes.extend_from_slice(&2u32.to_le_bytes()); // texture_filtering = 2
-    // NO max_anisotropy at 20.2.0.7 (< 20.5.0.4)
+                                                  // NO max_anisotropy at 20.2.0.7 (< 20.5.0.4)
     bytes.extend_from_slice(&0u32.to_le_bytes()); // texture_clamping = 0
     bytes.extend_from_slice(&4u32.to_le_bytes()); // texture_type = 4 (env map)
     bytes.extend_from_slice(&0u32.to_le_bytes()); // coordinate_generation_type = 0
     bytes.extend_from_slice(&17i32.to_le_bytes()); // source_texture_ref = 17
     bytes.push(0u8); // enable_plane = 0
-    // plane: normal (0, 1, 0), constant 0.5
+                     // plane: normal (0, 1, 0), constant 0.5
     bytes.extend_from_slice(&0.0f32.to_le_bytes());
     bytes.extend_from_slice(&1.0f32.to_le_bytes());
     bytes.extend_from_slice(&0.0f32.to_le_bytes());

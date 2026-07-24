@@ -122,7 +122,9 @@ fn validate_hierarchy(world: &World, next_entity: EntityId, errors: &mut Vec<Val
                 errors.push(ValidationError {
                     entity: child,
                     kind: ValidationKind::DanglingEntity,
-                    detail: format!("Parent({parent}) was never spawned (next_entity={next_entity})"),
+                    detail: format!(
+                        "Parent({parent}) was never spawned (next_entity={next_entity})"
+                    ),
                 });
                 continue;
             }
@@ -148,7 +150,9 @@ fn validate_hierarchy(world: &World, next_entity: EntityId, errors: &mut Vec<Val
                     errors.push(ValidationError {
                         entity: parent,
                         kind: ValidationKind::DanglingEntity,
-                        detail: format!("Children lists {child}, never spawned (next_entity={next_entity})"),
+                        detail: format!(
+                            "Children lists {child}, never spawned (next_entity={next_entity})"
+                        ),
                     });
                 } else if parent_of.get(&child) != Some(&parent) {
                     errors.push(ValidationError {
@@ -166,7 +170,9 @@ fn validate_hierarchy(world: &World, next_entity: EntityId, errors: &mut Vec<Val
                 errors.push(ValidationError {
                     entity: child,
                     kind: ValidationKind::DanglingEntity,
-                    detail: format!("Parent({parent}) was never spawned (next_entity={next_entity})"),
+                    detail: format!(
+                        "Parent({parent}) was never spawned (next_entity={next_entity})"
+                    ),
                 });
             }
         }
@@ -182,20 +188,28 @@ fn validate_equipment(world: &World, errors: &mut Vec<ValidationError>) {
     let inv = world.query::<Inventory>();
 
     for (entity, slots) in q_equip.iter() {
-        let item_count = inv
-            .as_ref()
-            .and_then(|q| q.iter().find(|(e, _)| *e == entity).map(|(_, i)| i.items.len()));
+        let item_count = inv.as_ref().and_then(|q| {
+            q.iter()
+                .find(|(e, _)| *e == entity)
+                .map(|(_, i)| i.items.len())
+        });
         for occupant in slots.occupants.iter().flatten() {
             match item_count {
                 None => errors.push(ValidationError {
                     entity,
                     kind: ValidationKind::Equipment,
-                    detail: format!("equips inventory[{}] but entity has no Inventory", occupant.0),
+                    detail: format!(
+                        "equips inventory[{}] but entity has no Inventory",
+                        occupant.0
+                    ),
                 }),
                 Some(n) if (occupant.0 as usize) >= n => errors.push(ValidationError {
                     entity,
                     kind: ValidationKind::Equipment,
-                    detail: format!("equips inventory[{}] but Inventory holds {n} items", occupant.0),
+                    detail: format!(
+                        "equips inventory[{}] but Inventory holds {n} items",
+                        occupant.0
+                    ),
                 }),
                 Some(_) => {}
             }
@@ -217,7 +231,10 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
                 errors.push(ValidationError {
                     entity,
                     kind: ValidationKind::AnimationClip,
-                    detail: format!("clip_handle {} not in AnimationClipRegistry", player.clip_handle),
+                    detail: format!(
+                        "clip_handle {} not in AnimationClipRegistry",
+                        player.clip_handle
+                    ),
                 });
             }
         }
@@ -315,7 +332,11 @@ mod tests {
         inv.push(stack);
         world.insert(e, inv);
 
-        assert!(validate_world(&world).is_empty(), "{:?}", validate_world(&world));
+        assert!(
+            validate_world(&world).is_empty(),
+            "{:?}",
+            validate_world(&world)
+        );
     }
 
     /// SAVE-D4-01 regression: a dangling `ItemInstanceId` (the pool entry

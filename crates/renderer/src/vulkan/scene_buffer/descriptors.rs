@@ -367,7 +367,8 @@ pub(super) fn hash_indirect_slice(draws: &[ash::vk::DrawIndexedIndirectCommand])
     let byte_size = std::mem::size_of_val(draws);
     // SAFETY: see hash_material_slice — same invariant on the producer
     // side; `VkDrawIndexedIndirectCommand` has no implicit padding.
-    let bytes: &[u8] = unsafe { std::slice::from_raw_parts(draws.as_ptr() as *const u8, byte_size) };
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(draws.as_ptr() as *const u8, byte_size) };
     hasher.write(bytes);
     hasher.finish()
 }
@@ -392,7 +393,8 @@ pub(super) fn hash_light_slice(lights: &[super::gpu_types::GpuLight]) -> u64 {
     let byte_size = std::mem::size_of_val(lights);
     // SAFETY: see hash_material_slice — same invariant on the producer
     // side; `GpuLight` has no implicit padding (four `[f32; 4]` fields).
-    let bytes: &[u8] = unsafe { std::slice::from_raw_parts(lights.as_ptr() as *const u8, byte_size) };
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(lights.as_ptr() as *const u8, byte_size) };
     hasher.write(bytes);
     hasher.finish()
 }

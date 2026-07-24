@@ -384,8 +384,8 @@ fn nigeometry_data_reads_material_crc_on_hybrid_unknown_bsver_over_34() {
     data.extend_from_slice(&(-1i32).to_le_bytes()); // additional_data_ref
 
     let mut stream = crate::stream::NifStream::new(&data, &header);
-    let _ = parse_geometry_data_base(&mut stream)
-        .expect("hybrid-header NiGeometryData should parse");
+    let _ =
+        parse_geometry_data_base(&mut stream).expect("hybrid-header NiGeometryData should parse");
     assert_eq!(
         stream.position() as usize,
         data.len(),

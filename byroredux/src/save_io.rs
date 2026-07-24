@@ -484,7 +484,10 @@ impl ConsoleCommand for SaveCommand {
                 issues.len()
             )];
             for issue in issues.iter().take(20) {
-                lines.push(format!("  [{:?}] entity {}: {}", issue.kind, issue.entity, issue.detail));
+                lines.push(format!(
+                    "  [{:?}] entity {}: {}",
+                    issue.kind, issue.entity, issue.detail
+                ));
             }
             if issues.len() > 20 {
                 lines.push(format!("  … and {} more", issues.len() - 20));
@@ -515,7 +518,11 @@ impl ConsoleCommand for SaveCommand {
                     snapshot.components.len(),
                     snapshot.resources.len()
                 ),
-                format!("  {} bytes (next_entity={})", bytes.len(), snapshot.next_entity),
+                format!(
+                    "  {} bytes (next_entity={})",
+                    bytes.len(),
+                    snapshot.next_entity
+                ),
             ]),
             Err(e) => CommandOutput::error(format!("write failed: {e}")),
         }
@@ -583,7 +590,11 @@ impl ConsoleCommand for SaveInfoCommand {
                         pose.position[2],
                         pose.yaw,
                         pose.pitch,
-                        if pose.character_mode { "character" } else { "flycam" },
+                        if pose.character_mode {
+                            "character"
+                        } else {
+                            "flycam"
+                        },
                     ));
                 }
                 for (name, col) in &snap.components {
@@ -803,7 +814,11 @@ pub fn execute_pending_save_loads(
             pose.position[2],
             pose.yaw,
             pose.pitch,
-            if pose.character_mode { "character" } else { "flycam" },
+            if pose.character_mode {
+                "character"
+            } else {
+                "flycam"
+            },
         );
     }
 }
@@ -894,8 +909,20 @@ mod tests {
         let e = src.spawn();
         let other = src.spawn();
         src.insert(e, Transform::from_translation(Vec3::new(4.0, 5.0, 6.0)));
-        src.insert(e, ScriptTimer { id: 42, remaining: 3.5 });
-        src.insert(other, ScriptTimer { id: 7, remaining: 0.25 });
+        src.insert(
+            e,
+            ScriptTimer {
+                id: 42,
+                remaining: 3.5,
+            },
+        );
+        src.insert(
+            other,
+            ScriptTimer {
+                id: 7,
+                remaining: 0.25,
+            },
+        );
         src.insert(
             e,
             LightSource {
@@ -935,7 +962,10 @@ mod tests {
         assert_eq!(timers[&1], (7, 0.25));
 
         let qt = dst.query::<Transform>().unwrap();
-        assert_eq!(qt.iter().next().unwrap().1.translation, Vec3::new(4.0, 5.0, 6.0));
+        assert_eq!(
+            qt.iter().next().unwrap().1.translation,
+            Vec3::new(4.0, 5.0, 6.0)
+        );
 
         let light = dst.query::<LightSource>().unwrap().get(0).copied().unwrap();
         assert_eq!(light.radius, 512.0);
@@ -945,7 +975,12 @@ mod tests {
         assert_eq!(light.intensity, 1.25);
         assert_eq!(light.falloff_exponent, 2.0);
 
-        let flicker = dst.query::<LightFlicker>().unwrap().get(0).copied().unwrap();
+        let flicker = dst
+            .query::<LightFlicker>()
+            .unwrap()
+            .get(0)
+            .copied()
+            .unwrap();
         assert_eq!(flicker.period_secs, 0.5);
         assert_eq!(flicker.intensity_amplitude, 0.25);
         assert_eq!(flicker.movement_amplitude, 1.5);
@@ -1039,7 +1074,10 @@ mod tests {
         let (_, restored_wander) = wq.iter().next().expect("WanderState must round-trip");
         assert_eq!(restored_wander.home, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(restored_wander.target, Vec3::new(4.0, 5.0, 6.0));
-        assert_eq!(restored_wander.phase, WanderPhase::Paused { remaining: 2.5 });
+        assert_eq!(
+            restored_wander.phase,
+            WanderPhase::Paused { remaining: 2.5 }
+        );
         assert_eq!(restored_wander.pick_count, 7);
 
         let tq = dst.query::<Traveled>().unwrap();
@@ -1311,7 +1349,10 @@ mod tests {
         });
 
         let cam = world.spawn();
-        world.insert(cam, Transform::from_translation(Vec3::new(10.0, 20.0, 30.0)));
+        world.insert(
+            cam,
+            Transform::from_translation(Vec3::new(10.0, 20.0, 30.0)),
+        );
         world.insert_resource(ActiveCamera(cam));
 
         capture_player_pose(&world);
@@ -1334,7 +1375,10 @@ mod tests {
         apply_player_pose(&mut world, &pose);
 
         let tq = world.query::<Transform>().unwrap();
-        assert_eq!(tq.get(cam).unwrap().translation, Vec3::new(10.0, 20.0, 30.0));
+        assert_eq!(
+            tq.get(cam).unwrap().translation,
+            Vec3::new(10.0, 20.0, 30.0)
+        );
         let i = world.resource::<InputState>();
         assert!((i.yaw - 1.25).abs() < 1e-6);
         assert!((i.pitch + 0.4).abs() < 1e-6);
@@ -1355,8 +1399,14 @@ mod tests {
         world.insert_resource(PlayerPose::default());
         world.insert_resource(InputState::default());
         let body = world.spawn();
-        world.insert(body, Transform::from_translation(Vec3::new(-5.0, 64.0, 12.0)));
-        world.insert(body, GlobalTransform::new(Vec3::new(-5.0, 64.0, 12.0), Quat::IDENTITY, 1.0));
+        world.insert(
+            body,
+            Transform::from_translation(Vec3::new(-5.0, 64.0, 12.0)),
+        );
+        world.insert(
+            body,
+            GlobalTransform::new(Vec3::new(-5.0, 64.0, 12.0), Quat::IDENTITY, 1.0),
+        );
         world.insert_resource(PlayerEntity(Some(body)));
 
         capture_player_pose(&world);
@@ -1374,7 +1424,10 @@ mod tests {
         };
         apply_player_pose(&mut world, &restored);
         let tq = world.query::<Transform>().unwrap();
-        assert_eq!(tq.get(body).unwrap().translation, Vec3::new(100.0, 50.0, -25.0));
+        assert_eq!(
+            tq.get(body).unwrap().translation,
+            Vec3::new(100.0, 50.0, -25.0)
+        );
     }
 
     /// #2018 / SAVE-D6-03 — a pose saved in FlyCam mode (`pose.position` is
@@ -1471,7 +1524,9 @@ mod tests {
     /// live M45.1 overlay load uses.
     #[test]
     fn quest_stage_and_objective_state_survive_snapshot_round_trip() {
-        use byroredux_scripting::quest_stages::{QuestFormId, QuestObjectiveState, QuestStageState};
+        use byroredux_scripting::quest_stages::{
+            QuestFormId, QuestObjectiveState, QuestStageState,
+        };
 
         let reg = build_save_registry();
         let mut world = World::new();
@@ -1500,7 +1555,10 @@ mod tests {
         assert_eq!(restored_stages.get_stage(quest), 40);
         assert!(restored_stages.get_stage_done(quest, 37));
         assert!(restored_stages.get_stage_done(quest, 40));
-        assert!(!restored_stages.get_stage_done(quest, 20), "never-visited stage stays false");
+        assert!(
+            !restored_stages.get_stage_done(quest, 20),
+            "never-visited stage stays false"
+        );
 
         let restored_objectives = restored_world.resource::<QuestObjectiveState>();
         let status = restored_objectives.get(quest, 10);
@@ -1529,9 +1587,9 @@ mod tests {
     /// defining file here so the SAVE-D2-01 guard below scans it.
     /// Paths are relative to `CARGO_MANIFEST_DIR` (the `byroredux/` crate).
     const SAVE_TYPE_SOURCES: &[&str] = &[
-        "../crates/core/src/ecs/packed.rs",               // Transform
-        "../crates/core/src/ecs/components/name.rs",      // Name
-        "../crates/core/src/ecs/components/hierarchy.rs", // Parent, Children
+        "../crates/core/src/ecs/packed.rs",                  // Transform
+        "../crates/core/src/ecs/components/name.rs",         // Name
+        "../crates/core/src/ecs/components/hierarchy.rs",    // Parent, Children
         "../crates/core/src/ecs/components/inventory.rs", // Inventory, EquipmentSlots, ItemStack, InventoryIndex
         "../crates/core/src/ecs/components/light.rs",     // LightSource, LightFlicker
         "../crates/core/src/ecs/components/form_id.rs",   // FormIdComponent
@@ -1541,16 +1599,16 @@ mod tests {
         "../crates/core/src/animation/stack.rs",          // AnimationStack, AnimationLayer
         "../crates/core/src/ecs/resources/mod.rs",        // ItemInstancePool, ItemInstance
         "../crates/scripting/src/timer.rs",               // ScriptTimer
-        "../crates/scripting/src/quest_stages.rs",        // QuestStageState, QuestObjectiveState + nested types
-        "src/cell_loader/transition.rs",                  // CurrentCellContext
-        "src/save_io.rs",                                 // PlayerPose
-        "../crates/core/src/ecs/components/wander.rs",    // WanderState (+ WanderBehavior, WanderPhase)
-        "../crates/core/src/ecs/components/travel.rs",    // TravelState, Traveled (+ TravelBehavior)
-        "../crates/core/src/ecs/components/follow.rs",    // FollowState (+ FollowBehavior)
-        "../crates/core/src/ecs/components/escort.rs",    // EscortState, Escorted (+ EscortBehavior)
-        "../crates/core/src/ecs/components/guard.rs",     // GuardState (+ GuardBehavior)
-        "../crates/core/src/ecs/components/patrol.rs",    // PatrolState (+ PatrolBehavior)
-        "../crates/core/src/ecs/components/sandbox.rs",   // Seated (+ SandboxBehavior)
+        "../crates/scripting/src/quest_stages.rs", // QuestStageState, QuestObjectiveState + nested types
+        "src/cell_loader/transition.rs",           // CurrentCellContext
+        "src/save_io.rs",                          // PlayerPose
+        "../crates/core/src/ecs/components/wander.rs", // WanderState (+ WanderBehavior, WanderPhase)
+        "../crates/core/src/ecs/components/travel.rs", // TravelState, Traveled (+ TravelBehavior)
+        "../crates/core/src/ecs/components/follow.rs", // FollowState (+ FollowBehavior)
+        "../crates/core/src/ecs/components/escort.rs", // EscortState, Escorted (+ EscortBehavior)
+        "../crates/core/src/ecs/components/guard.rs",  // GuardState (+ GuardBehavior)
+        "../crates/core/src/ecs/components/patrol.rs", // PatrolState (+ PatrolBehavior)
+        "../crates/core/src/ecs/components/sandbox.rs", // Seated (+ SandboxBehavior)
     ];
 
     /// SAVE-D2-01 (#1714) — a save-participating struct must not gain a

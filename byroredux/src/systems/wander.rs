@@ -164,7 +164,8 @@ pub(crate) fn step_oscillating_wander(
             let (new_pos, rotation) =
                 step_toward(current, current_rotation, target_xz, dt, physics);
 
-            let horiz_delta = Vec3::new(new_pos.x - state.target.x, 0.0, new_pos.z - state.target.z);
+            let horiz_delta =
+                Vec3::new(new_pos.x - state.target.x, 0.0, new_pos.z - state.target.z);
             if horiz_delta.length_squared()
                 <= super::locomotion::LOCOMOTION_ARRIVAL_EPSILON
                     * super::locomotion::LOCOMOTION_ARRIVAL_EPSILON
@@ -334,7 +335,10 @@ mod tests {
                 horiz.length() <= radius + 1e-3,
                 "target {t:?} escaped radius {radius} around {home:?}"
             );
-            assert_eq!(t.y, home.y, "target Y must stay at home.y (re-derived from terrain by the caller)");
+            assert_eq!(
+                t.y, home.y,
+                "target Y must stay at home.y (re-derived from terrain by the caller)"
+            );
             targets.push(t);
         }
         // Sequential picks diverge (avalanche hash, not a fixed offset).
@@ -377,10 +381,7 @@ mod tests {
         world.register::<Transform>();
 
         let entity = world.spawn();
-        world.insert(
-            entity,
-            Transform::from_translation(Vec3::ZERO),
-        );
+        world.insert(entity, Transform::from_translation(Vec3::ZERO));
         world.insert(
             entity,
             WanderBehavior {
@@ -398,7 +399,9 @@ mod tests {
             "actor should have moved from the origin on the first tick"
         );
 
-        let sq = world.query::<WanderState>().expect("WanderState registered");
+        let sq = world
+            .query::<WanderState>()
+            .expect("WanderState registered");
         assert!(
             sq.get(entity).is_some(),
             "wander_system must lazily insert WanderState on first tick"

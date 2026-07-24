@@ -180,8 +180,7 @@ fn nigeommorpher_v10_2_bsver9_skips_trailing_unknown_ints() {
     data.extend_from_slice(&5u32.to_le_bytes());
 
     let mut stream = NifStream::new(&data, &header);
-    NiGeomMorpherController::parse(&mut stream)
-        .expect("v10.2.0.0/bsver=9 morpher parses");
+    NiGeomMorpherController::parse(&mut stream).expect("v10.2.0.0/bsver=9 morpher parses");
     assert_eq!(
         stream.position(),
         original_len as u64,

@@ -96,7 +96,11 @@ pub struct LeveledList {
 /// Without it, a container defined in a non-base plugin whose entries
 /// reference content in that same plugin resolves against the wrong
 /// (global-keyed) map and the container spawns empty.
-pub fn parse_cont(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ContainerRecord {
+pub fn parse_cont(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<FormIdRemap>,
+) -> ContainerRecord {
     // Pre-populate the universal named fields (EDID / FULL / MODL / SCRI /
     // VMAD) in one pass via the shared helper (TD3-006 / #1045). `SCRI` is
     // remapped below, overriding the helper's raw value — mirrors

@@ -293,8 +293,12 @@ pub fn parse_quest_fragments(vmad: &[u8]) -> Vec<QuestScriptFragment> {
         let (Some(_unk0), Some(_unk1), Some(_flags)) = (c.i16(), c.i32(), c.u8()) else {
             break;
         };
-        let Some(script_name) = c.wstring() else { break };
-        let Some(fragment_name) = c.wstring() else { break };
+        let Some(script_name) = c.wstring() else {
+            break;
+        };
+        let Some(fragment_name) = c.wstring() else {
+            break;
+        };
         out.push(QuestScriptFragment {
             stage,
             script_name,
@@ -609,12 +613,18 @@ mod tests {
         ));
         let frags = parse_quest_fragments(&vmad);
         assert_eq!(frags.len(), 3);
-        assert_eq!((frags[0].stage, &*frags[0].fragment_name), (0, "Fragment_6"));
+        assert_eq!(
+            (frags[0].stage, &*frags[0].fragment_name),
+            (0, "Fragment_6")
+        );
         assert_eq!(
             (frags[1].stage, &*frags[1].fragment_name),
             (200, "Fragment_3")
         );
-        assert_eq!((frags[2].stage, &*frags[2].fragment_name), (10, "Fragment_5"));
+        assert_eq!(
+            (frags[2].stage, &*frags[2].fragment_name),
+            (10, "Fragment_5")
+        );
     }
 
     #[test]

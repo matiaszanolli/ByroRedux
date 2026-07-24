@@ -267,7 +267,11 @@ fn additive_same_mesh_draws_stay_contiguous_for_instancing() {
     // depth-driven interleaving that would break the same-mesh run the
     // batch-merge depends on.
     let meshes: Vec<u32> = cmds.iter().map(|c| c.mesh_handle).collect();
-    assert_eq!(meshes, vec![7, 7, 7, 9, 9, 9], "additive draws group by mesh");
+    assert_eq!(
+        meshes,
+        vec![7, 7, 7, 9, 9, 9],
+        "additive draws group by mesh"
+    );
 }
 
 /// Regression for #1994 (DIM2-01): the additive-blend branch must put the
@@ -297,7 +301,10 @@ fn additive_wireframe_and_fill_draws_do_not_interleave_across_meshes() {
     // together, then wireframe draws of both meshes together (or vice
     // versa), never interleaved by mesh.
     let first = flags[0];
-    let boundary = flags.iter().position(|&w| w != first).unwrap_or(flags.len());
+    let boundary = flags
+        .iter()
+        .position(|&w| w != first)
+        .unwrap_or(flags.len());
     assert!(
         flags[boundary..].iter().all(|&w| w != first),
         "additive wireframe={} and wireframe={} draws must not interleave \
@@ -606,7 +613,10 @@ fn wireframe_and_fill_draws_of_same_mesh_do_not_interleave() {
     // value and everything after shares the other — i.e. exactly one
     // run per wireframe value, never more.
     let first = flags[0];
-    let boundary = flags.iter().position(|&w| w != first).unwrap_or(flags.len());
+    let boundary = flags
+        .iter()
+        .position(|&w| w != first)
+        .unwrap_or(flags.len());
     assert!(
         flags[boundary..].iter().all(|&w| w != first),
         "wireframe={} and wireframe={} draws must not interleave; got {:?}",

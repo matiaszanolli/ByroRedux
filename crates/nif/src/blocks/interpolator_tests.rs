@@ -938,7 +938,7 @@ fn parse_blend_transform_interpolator_legacy_10_1_0_106() {
     data.extend_from_slice(&u16::MAX.to_le_bytes()); // Single Index (u16)
     data.extend_from_slice(&i32::MIN.to_le_bytes()); // High Priority (int)
     data.extend_from_slice(&i32::MIN.to_le_bytes()); // Next High Priority (int)
-    // --- NiBlendTransformInterpolator.Value = NiQuatTransform (until 10.1.0.109) ---
+                                                     // --- NiBlendTransformInterpolator.Value = NiQuatTransform (until 10.1.0.109) ---
     for _ in 0..3 {
         data.extend_from_slice(&f32::MIN.to_le_bytes()); // Translation
     }
@@ -948,7 +948,11 @@ fn parse_blend_transform_interpolator_legacy_10_1_0_106() {
     data.extend_from_slice(&f32::MIN.to_le_bytes()); // Scale
     data.extend_from_slice(&[0u8, 0u8, 0u8]); // TRS Valid bool[3] (#1506)
 
-    assert_eq!(data.len(), 97, "v10.1.0.106 NiBlendTransformInterpolator is 97 B");
+    assert_eq!(
+        data.len(),
+        97,
+        "v10.1.0.106 NiBlendTransformInterpolator is 97 B"
+    );
 
     let mut stream = NifStream::new(&data, &header);
     let block = NiBlendTransformInterpolator::parse(&mut stream).unwrap();

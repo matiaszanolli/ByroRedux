@@ -215,8 +215,7 @@ struct DispatchedBlocks {
     dropped_block_count: usize,
     recovered_blocks: usize,
     drift_histogram: std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
-    stubbed_drift_histogram:
-        std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
+    stubbed_drift_histogram: std::collections::HashMap<String, std::collections::HashMap<i64, u32>>,
 }
 
 /// Phase 1 (#1672) — parse and validate the NIF header. Rejects big-endian

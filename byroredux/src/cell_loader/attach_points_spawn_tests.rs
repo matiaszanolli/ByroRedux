@@ -100,7 +100,10 @@ fn stamp_attach_components_materializes_onto_root_entity() {
         let stamped = world
             .get::<AttachPoints>(root)
             .expect("AttachPoints stamped onto the placement root");
-        assert!(stamped.find(con_scope).is_some(), "CON_Scope reachable on the entity");
+        assert!(
+            stamped.find(con_scope).is_some(),
+            "CON_Scope reachable on the entity"
+        );
 
         let conns = world
             .get::<byroredux_core::ecs::components::ChildAttachConnections>(root)

@@ -399,7 +399,11 @@ pub fn load_one_exterior_cell(
         // per cell form-id selects the actual `<Plugin> - Geometry.csg` and
         // the `_oc.nif` path. #1590.
         &wctx.plugin_path,
-        &wctx.plugin_paths.iter().map(String::as_str).collect::<Vec<_>>(),
+        &wctx
+            .plugin_paths
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
     );
 
     // Spawn placed references. Pre-#M40 every grid load went through a

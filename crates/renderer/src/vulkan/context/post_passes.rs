@@ -556,7 +556,11 @@ impl VulkanContext {
                 .expect("G-buffer must exist while recording")
                 .motion_image(frame);
             let exposure_image = self.exposure.as_ref().map(|exposure| exposure.image());
-            self.frame_upscaler
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_upscale_start(&self.device, cmd, frame);
+            }
+            let upscale_result = self
+                .frame_upscaler
                 .as_mut()
                 .expect("frame upscaler must exist while recording")
                 .record(
@@ -571,7 +575,11 @@ impl VulkanContext {
                         exposure: exposure_image,
                     },
                     fsr_frame,
-                )?;
+                );
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_upscale_end(&self.device, cmd, frame);
+            }
+            upscale_result?;
 
             let exposure = self
                 .exposure

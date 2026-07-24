@@ -251,8 +251,10 @@ mod tests {
 
     #[test]
     fn no_event_when_player_outside() {
-        let (_w, _t, fired) =
-            run_once(Vec3::new(10.0, 0.0, 0.0), axis_box(Vec3::ZERO, Vec3::splat(1.0)));
+        let (_w, _t, fired) = run_once(
+            Vec3::new(10.0, 0.0, 0.0),
+            axis_box(Vec3::ZERO, Vec3::splat(1.0)),
+        );
         assert!(!fired, "player outside the volume must not emit");
     }
 
@@ -344,7 +346,10 @@ mod tests {
         crate::register(&mut world);
         let player = world.spawn();
         world.insert(player, Transform::from_translation(Vec3::ZERO));
-        world.insert(player, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(
+            player,
+            GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
+        );
         world.insert_resource(PlayerEntity(player));
         let trigger = world.spawn();
         world.insert(trigger, axis_box(Vec3::ZERO, Vec3::splat(1.0)));

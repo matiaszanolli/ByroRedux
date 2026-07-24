@@ -87,7 +87,12 @@ impl Resource for PhysicsWaterConstants {}
 /// `density_ratio · fraction == 1` the returned force exactly equals the
 /// body's weight (`mass · |gravity|`), cancelling gravity.
 #[inline]
-pub fn buoyancy_force(mass: f32, submerged_fraction: f32, gravity_y: f32, density_ratio: f32) -> Vec3 {
+pub fn buoyancy_force(
+    mass: f32,
+    submerged_fraction: f32,
+    gravity_y: f32,
+    density_ratio: f32,
+) -> Vec3 {
     let f = submerged_fraction.clamp(0.0, 1.0) * density_ratio * mass * gravity_y.abs();
     Vec3::new(0.0, f, 0.0)
 }
@@ -474,9 +479,15 @@ mod tests {
         assert!((f.y - 2.0 * weight).abs() < 1e-3, "F = {}", f.y);
         // Half-submerged at ratio 2 → exactly cancels gravity (neutral).
         let f_neutral = buoyancy_force(10.0, 0.5, G_Y, 2.0);
-        assert!((f_neutral.y - weight).abs() < 1e-3, "neutral F = {f_neutral:?}");
+        assert!(
+            (f_neutral.y - weight).abs() < 1e-3,
+            "neutral F = {f_neutral:?}"
+        );
         // submerged_fraction clamps — 1.5 must not exceed full submersion.
-        assert_eq!(buoyancy_force(10.0, 1.5, G_Y, 2.0).y, buoyancy_force(10.0, 1.0, G_Y, 2.0).y);
+        assert_eq!(
+            buoyancy_force(10.0, 1.5, G_Y, 2.0).y,
+            buoyancy_force(10.0, 1.0, G_Y, 2.0).y
+        );
     }
 
     /// End-to-end against the real Rapier solver: a dense-clutter-shaped
@@ -500,11 +511,8 @@ mod tests {
                 .position(iso_from_trs(Vec3::new(0.0, -50.0, 0.0), Quat::IDENTITY))
                 .build(),
         );
-        w.colliders.insert_with_parent(
-            ColliderBuilder::ball(radius).build(),
-            h,
-            &mut w.bodies,
-        );
+        w.colliders
+            .insert_with_parent(ColliderBuilder::ball(radius).build(), h, &mut w.bodies);
         // Submerged drag so the float settles instead of bobbing forever.
         w.bodies[h].set_linear_damping(consts.linear_damping_in);
         let mass = w.body_mass(h).expect("mass");
@@ -537,7 +545,10 @@ mod tests {
         }
 
         let y = w.bodies[h].translation().y;
-        assert!(y > y_start, "body must rise from its release depth; {y} !> {y_start}");
+        assert!(
+            y > y_start,
+            "body must rise from its release depth; {y} !> {y_start}"
+        );
         // Neutral point for ratio 1.67: density_ratio · frac == 1 → frac ≈ 0.6,
         // centre ≈ 2.5 BU below the surface. Confirm it floats there, neither
         // sunk (frac == 1, still deep) nor launched out (frac == 0, airborne).
@@ -610,7 +621,10 @@ mod tests {
             body,
             GlobalTransform::new(Vec3::new(0.0, start_y, 0.0), Quat::IDENTITY, 1.0),
         );
-        world.insert(body, Transform::from_translation(Vec3::new(0.0, start_y, 0.0)));
+        world.insert(
+            body,
+            Transform::from_translation(Vec3::new(0.0, start_y, 0.0)),
+        );
 
         // ~10 s through the live system (registers on the first call, then
         // wakes-on-entry + applies buoyancy every tick until it sleeps).
@@ -636,13 +650,18 @@ mod tests {
             "must settle near the surface; y={y}"
         );
 
-        let contact = world.get::<WaterContact>(body).expect("WaterContact written");
+        let contact = world
+            .get::<WaterContact>(body)
+            .expect("WaterContact written");
         assert!(
             contact.submerged_fraction > 0.0 && contact.submerged_fraction <= 1.0,
             "submerged_fraction out of range: {}",
             contact.submerged_fraction
         );
-        assert!(contact.material.is_some(), "contact carries the plane material");
+        assert!(
+            contact.material.is_some(),
+            "contact carries the plane material"
+        );
     }
 
     /// A buoyant body settling at equilibrium must fall asleep, and once
@@ -653,8 +672,12 @@ mod tests {
     #[test]
     fn buoyant_body_sleeps_so_static_fast_path_re_engages() {
         use crate::{physics_sync_system, RapierHandles};
-        use byroredux_core::ecs::components::collision::{CollisionShape, MotionType, RigidBodyData};
-        use byroredux_core::ecs::components::water::{WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume};
+        use byroredux_core::ecs::components::collision::{
+            CollisionShape, MotionType, RigidBodyData,
+        };
+        use byroredux_core::ecs::components::water::{
+            WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+        };
         use byroredux_core::ecs::components::{GlobalTransform, Transform};
         use byroredux_core::ecs::World;
 
@@ -669,16 +692,44 @@ mod tests {
 
         let surface_y = 0.0_f32;
         let water = world.spawn();
-        world.insert(water, WaterPlane { kind: WaterKind::Calm, material: WaterMaterial::default() });
-        world.insert(water, WaterVolume { min: [-500.0, -200.0, -500.0], max: [500.0, surface_y, 500.0] });
+        world.insert(
+            water,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+            },
+        );
+        world.insert(
+            water,
+            WaterVolume {
+                min: [-500.0, -200.0, -500.0],
+                max: [500.0, surface_y, 500.0],
+            },
+        );
 
         let radius = 10.0_f32;
         let start_y = -5.0_f32;
         let body = world.spawn();
         world.insert(body, CollisionShape::Ball { radius });
-        world.insert(body, RigidBodyData { motion_type: MotionType::Dynamic, mass: 20.0, friction: 0.5, restitution: 0.0, linear_damping: 0.0, angular_damping: 0.0 });
-        world.insert(body, GlobalTransform::new(Vec3::new(0.0, start_y, 0.0), Quat::IDENTITY, 1.0));
-        world.insert(body, Transform::from_translation(Vec3::new(0.0, start_y, 0.0)));
+        world.insert(
+            body,
+            RigidBodyData {
+                motion_type: MotionType::Dynamic,
+                mass: 20.0,
+                friction: 0.5,
+                restitution: 0.0,
+                linear_damping: 0.0,
+                angular_damping: 0.0,
+            },
+        );
+        world.insert(
+            body,
+            GlobalTransform::new(Vec3::new(0.0, start_y, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(
+            body,
+            Transform::from_translation(Vec3::new(0.0, start_y, 0.0)),
+        );
 
         // Run long enough to settle.
         for _ in 0..2000 {
@@ -690,8 +741,17 @@ mod tests {
         }
         let (ad, _ak) = world.resource::<PhysicsWorld>().awake_counts();
         // Now confirm the static-scene fast path: further steps return 0.
-        let steps = { let mut pw = world.resource_mut::<PhysicsWorld>(); pw.step(PHYSICS_DT) };
-        assert_eq!(ad, 0, "buoyant body must sleep at equilibrium so the fast path re-engages");
-        assert_eq!(steps, 0, "static-scene fast path must skip stepping once the float sleeps");
+        let steps = {
+            let mut pw = world.resource_mut::<PhysicsWorld>();
+            pw.step(PHYSICS_DT)
+        };
+        assert_eq!(
+            ad, 0,
+            "buoyant body must sleep at equilibrium so the fast path re-engages"
+        );
+        assert_eq!(
+            steps, 0,
+            "static-scene fast path must skip stepping once the float sleeps"
+        );
     }
 }

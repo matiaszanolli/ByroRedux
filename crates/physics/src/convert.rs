@@ -159,9 +159,7 @@ fn flatten_to_parts(
             // fallback). A NaN/±Inf vertex makes `trimesh_with_flags` build a
             // Qbvh with NaN AABB bounds, corrupting the broadphase; fall back
             // to a tiny ball instead.
-            if vertices.is_empty()
-                || indices.is_empty()
-                || vertices.iter().any(|v| !v.is_finite())
+            if vertices.is_empty() || indices.is_empty() || vertices.iter().any(|v| !v.is_finite())
             {
                 out.push((parent_iso, SharedShape::ball(1e-3)));
                 return;

@@ -174,7 +174,10 @@ fn dispatch_is_noop_with_no_registered_fragments() {
     // No fragments registered (the runtime-today state) — must not panic
     // and must leave objective state untouched.
     quest_fragment_dispatch_system(&world);
-    assert_eq!(world.resource::<QuestObjectiveState>().get(Q, 1), Default::default());
+    assert_eq!(
+        world.resource::<QuestObjectiveState>().get(Q, 1),
+        Default::default()
+    );
 }
 
 #[test]
@@ -207,7 +210,9 @@ fn end_to_end_lower_then_dispatch() {
     let effects = lower_fragment(&body).expect("fragment lowers");
 
     let world = fixture();
-    world.resource_mut::<QuestStageFragments>().insert(Q, 50, effects);
+    world
+        .resource_mut::<QuestStageFragments>()
+        .insert(Q, 50, effects);
     world.resource_mut::<QuestStageState>().set_stage(Q, 50);
     emit_advance(&world, Q, 50);
     quest_fragment_dispatch_system(&world);
@@ -241,7 +246,11 @@ fn populate_from_script_binds_stages_to_the_right_fragments() {
 
     // Bindings as the VMAD decoder would surface them: stage → Fragment_N,
     // deliberately out of ordinal order.
-    let bindings = [(0u16, "Fragment_6"), (200, "Fragment_3"), (10, "Fragment_5")];
+    let bindings = [
+        (0u16, "Fragment_6"),
+        (200, "Fragment_3"),
+        (10, "Fragment_5"),
+    ];
 
     let world = fixture();
     let inserted = {
@@ -291,9 +300,9 @@ fn populate_from_script_skips_absent_and_declined_fragments() {
     assert!(errs.is_empty(), "{errs:?}");
 
     let bindings = [
-        (5u16, "Fragment_0"),  // lowers cleanly
-        (6, "Fragment_1"),     // unmodeled call → declines
-        (7, "Fragment_99"),    // absent → skipped
+        (5u16, "Fragment_0"), // lowers cleanly
+        (6, "Fragment_1"),    // unmodeled call → declines
+        (7, "Fragment_99"),   // absent → skipped
     ];
     let world = fixture();
     let inserted = {
@@ -303,7 +312,10 @@ fn populate_from_script_skips_absent_and_declined_fragments() {
     assert_eq!(inserted, 1, "only the fully-lowered fragment registers");
     let frags = world.resource::<QuestStageFragments>();
     assert!(frags.get(Q, 5).is_some());
-    assert!(frags.get(Q, 6).is_none(), "declined fragment not registered");
+    assert!(
+        frags.get(Q, 6).is_none(),
+        "declined fragment not registered"
+    );
     assert!(frags.get(Q, 7).is_none(), "absent fragment not registered");
 }
 
@@ -438,7 +450,10 @@ fn cascade_does_not_drop_a_different_quests_transition_that_collides_on_stage_nu
         "OTHER's SetStage still lands even though the cascade guard was buggy"
     );
     assert!(
-        world.resource::<QuestObjectiveState>().get(OTHER, 42).completed,
+        world
+            .resource::<QuestObjectiveState>()
+            .get(OTHER, 42)
+            .completed,
         "OTHER's stage-10 fragment must have been cascaded into and run — \
          the pre-#2124 guard compared against Q's own dispatching stage and \
          silently dropped this transition on the 10==10 coincidence"
@@ -605,7 +620,10 @@ fn dispatch_add_item_pushes_onto_an_existing_inventory() {
 
     let inv = world.get::<Inventory>(container).expect("still present");
     assert_eq!(inv.items.len(), 2, "pushed onto the existing stack list");
-    assert_eq!(inv.items[0].base_form_id, 0x0000_9999, "prior stack untouched");
+    assert_eq!(
+        inv.items[0].base_form_id, 0x0000_9999,
+        "prior stack untouched"
+    );
     assert_eq!(inv.items[1].base_form_id, ITEM_FORM);
     assert_eq!(inv.items[1].count, 3);
 }

@@ -85,10 +85,16 @@ pub fn extract_tangents_from_extra_data(
             // After the swap, our `t_yup` is ∂P/∂U (read from
             // Bethesda's bitangent half) and `b_yup` is ∂P/∂V
             // (read from Bethesda's tangent half).
-            let t_yup =
-                byroredux_core::math::coord::zup_to_yup_pos([bethesda_bx, bethesda_by, bethesda_bz]);
-            let b_yup =
-                byroredux_core::math::coord::zup_to_yup_pos([bethesda_tx, bethesda_ty, bethesda_tz]);
+            let t_yup = byroredux_core::math::coord::zup_to_yup_pos([
+                bethesda_bx,
+                bethesda_by,
+                bethesda_bz,
+            ]);
+            let b_yup = byroredux_core::math::coord::zup_to_yup_pos([
+                bethesda_tx,
+                bethesda_ty,
+                bethesda_tz,
+            ]);
 
             // Normal in Y-up — use the matching vertex normal.
             let n_yup = byroredux_core::math::coord::zup_to_yup_pos([n_zup.x, n_zup.y, n_zup.z]);

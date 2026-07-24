@@ -243,7 +243,8 @@ fn match_guarded_if(
     // Decline if the condition mixes in any term we don't model
     // (e.g. `GetStage() < N`, a `HasPerk`, an `||`) — recognizing it
     // as a plain AND-of-GetStageDone would change its behavior.
-    let (conditions, quest_via, inner_player) = classify_if_condition(&condition.node, player_param)?;
+    let (conditions, quest_via, inner_player) =
+        classify_if_condition(&condition.node, player_param)?;
     let (target_stage, set_via) = single_set_stage(body)?;
     let quest_via = quest_via.unwrap_or_else(|| set_via.clone());
     // If both the predicate and the SetStage name a quest, they must
@@ -500,10 +501,7 @@ mod tests {
                 properties: vec![ScriptProperty {
                     name: "MyQuest".into(),
                     status: 1,
-                    value: PropertyValue::Object {
-                        form_id,
-                        alias: -1,
-                    },
+                    value: PropertyValue::Object { form_id, alias: -1 },
                 }],
             }],
         }

@@ -291,10 +291,10 @@ impl SaveRegistry {
         h.finish()
     }
 
-    pub(crate) fn component_entries(&self) -> impl Iterator<Item = (&'static str, &SaveFn, &LoadFn)> {
-        self.components
-            .iter()
-            .map(|e| (e.name, &e.save, &e.load))
+    pub(crate) fn component_entries(
+        &self,
+    ) -> impl Iterator<Item = (&'static str, &SaveFn, &LoadFn)> {
+        self.components.iter().map(|e| (e.name, &e.save, &e.load))
     }
 
     /// Names of every registered component column, in registration order.
@@ -304,7 +304,9 @@ impl SaveRegistry {
         self.components.iter().map(|e| e.name)
     }
 
-    pub(crate) fn resource_entries(&self) -> impl Iterator<Item = (&'static str, &SaveFn, &LoadFn)> {
+    pub(crate) fn resource_entries(
+        &self,
+    ) -> impl Iterator<Item = (&'static str, &SaveFn, &LoadFn)> {
         self.resources.iter().map(|e| (e.name, &e.save, &e.load))
     }
 

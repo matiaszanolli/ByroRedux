@@ -873,4 +873,3 @@ mod skin_slot_pool_tests {
         );
     }
 }
-

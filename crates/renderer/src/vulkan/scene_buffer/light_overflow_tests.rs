@@ -36,9 +36,7 @@ fn upload_lights_warns_on_overflow_like_upload_instances() {
     let warn_idx = lights_fn_body
         .find("log::warn!")
         .expect("upload_lights must emit a log::warn! on overflow (PERF-D4-NEW-02 / #1808)");
-    let guard_idx = lights_fn_body
-        .find("lights.len() > MAX_LIGHTS")
-        .unwrap();
+    let guard_idx = lights_fn_body.find("lights.len() > MAX_LIGHTS").unwrap();
     assert!(
         guard_idx < warn_idx,
         "the length-vs-MAX_LIGHTS check must precede the log::warn! call"

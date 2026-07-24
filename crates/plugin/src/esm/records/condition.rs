@@ -599,7 +599,10 @@ mod tests {
             ..Default::default()
         };
         remap_condition_form_ids(&mut cond, &Some(remap));
-        assert_eq!(cond.param_1, 0x0200_0ABC, "GetIsID param_1 promoted to slot 2");
+        assert_eq!(
+            cond.param_1, 0x0200_0ABC,
+            "GetIsID param_1 promoted to slot 2"
+        );
     }
 
     #[test]

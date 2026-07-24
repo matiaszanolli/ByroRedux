@@ -185,7 +185,11 @@ mod tests {
         av.apply_damage(AV_HEALTH, 30.0);
         assert_eq!(av.current(AV_HEALTH), 70.0);
         av.restore(AV_HEALTH, 50.0); // over-restore
-        assert_eq!(av.current(AV_HEALTH), 100.0, "damage floors at 0, not negative");
+        assert_eq!(
+            av.current(AV_HEALTH),
+            100.0,
+            "damage floors at 0, not negative"
+        );
         assert_eq!(av.get(AV_HEALTH).unwrap().damage, 0.0);
     }
 
@@ -195,7 +199,11 @@ mod tests {
         av.set_base(AV_HEALTH, 100.0);
         av.set_base(AV_SNEAK, 25.0);
         av.mod_permanent(AV_SNEAK, 15.0);
-        assert_eq!(av.current(AV_HEALTH), 100.0, "Sneak mod must not touch Health");
+        assert_eq!(
+            av.current(AV_HEALTH),
+            100.0,
+            "Sneak mod must not touch Health"
+        );
         assert_eq!(av.current(AV_SNEAK), 40.0);
     }
 }

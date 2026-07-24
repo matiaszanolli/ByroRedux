@@ -665,8 +665,11 @@ pub fn compare_histograms(
     baseline: &PerBlockHistogram,
 ) -> Vec<BaselineRegression> {
     let mut regressions = Vec::new();
-    let names: std::collections::BTreeSet<&String> =
-        baseline.counts.keys().chain(current.counts.keys()).collect();
+    let names: std::collections::BTreeSet<&String> = baseline
+        .counts
+        .keys()
+        .chain(current.counts.keys())
+        .collect();
     for name in names {
         let base_counts = baseline.counts.get(name).copied().unwrap_or_default();
         let cur_counts = current.counts.get(name).copied().unwrap_or_default();

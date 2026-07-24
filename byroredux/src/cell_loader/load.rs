@@ -730,7 +730,8 @@ mod tests {
             "engine-default fallback must not carry over the previous cell's directional color"
         );
         assert_ne!(
-            res.ambient, [0.5, 0.5, 0.6],
+            res.ambient,
+            [0.5, 0.5, 0.6],
             "engine-default fallback must not carry over the previous (exterior) cell's ambient"
         );
     }

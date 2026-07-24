@@ -34,8 +34,7 @@ use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
     image_barrier_general_write_to_read, image_barrier_undef_to_general,
-    write_combined_image_sampler, write_storage_image, write_uniform_buffer,
-    DescriptorPoolBuilder,
+    write_combined_image_sampler, write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::svgf::should_force_history_reset;

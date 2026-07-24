@@ -939,7 +939,10 @@ mod tests {
         );
         assert!(panel.roughness > 0.6);
 
-        let shingles = classify(&m, r"textures\architecture\megaton\metalscrapshingles04.dds");
+        let shingles = classify(
+            &m,
+            r"textures\architecture\megaton\metalscrapshingles04.dds",
+        );
         assert_eq!(shingles.metalness, 0.0);
 
         let beams = classify(&m, r"textures\architecture\megaton\metalscrapbeams01.dds");

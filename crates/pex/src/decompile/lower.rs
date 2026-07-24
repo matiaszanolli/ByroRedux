@@ -122,7 +122,11 @@ fn lower_expr(node: &Node) -> Spanned<Expr> {
             right: Box::new(lower_expr(right)),
         },
         NodeKind::UnaryOp { op, operand } => Expr::UnaryOp {
-            op: if op == "!" { UnaryOp::Not } else { UnaryOp::Neg },
+            op: if op == "!" {
+                UnaryOp::Not
+            } else {
+                UnaryOp::Neg
+            },
             operand: Box::new(lower_expr(operand)),
         },
         // `Copy` is a transparent value wrapper — unwrap it.
@@ -131,14 +135,22 @@ fn lower_expr(node: &Node) -> Spanned<Expr> {
             expr: Box::new(lower_expr(value)),
             target_type: sp(lower_type(target_type)),
         },
-        NodeKind::CallMethod { object, method, params, .. } => Expr::Call {
+        NodeKind::CallMethod {
+            object,
+            method,
+            params,
+            ..
+        } => Expr::Call {
             callee: Box::new(sp(Expr::MemberAccess {
                 object: Box::new(lower_expr(object)),
                 member: ident(method),
             })),
             args: params
                 .iter()
-                .map(|p| CallArg { name: None, value: lower_expr(p) })
+                .map(|p| CallArg {
+                    name: None,
+                    value: lower_expr(p),
+                })
                 .collect(),
         },
         NodeKind::PropertyAccess { object, property } => Expr::MemberAccess {
@@ -180,10 +192,13 @@ fn lower_stmt(node: &Node) -> Spanned<Stmt> {
             op: past::AssignOp::Eq,
             value: lower_expr(value),
         },
-        NodeKind::Return { value } => {
-            Stmt::Return(value.as_ref().map(|v| lower_expr(v)))
-        }
-        NodeKind::IfElse { condition, body, else_body, .. } => Stmt::If {
+        NodeKind::Return { value } => Stmt::Return(value.as_ref().map(|v| lower_expr(v))),
+        NodeKind::IfElse {
+            condition,
+            body,
+            else_body,
+            ..
+        } => Stmt::If {
             condition: lower_expr(condition),
             body: lower_body(body),
             elseif_clauses: Vec::new(),
@@ -208,7 +223,10 @@ fn lower_body(nodes: &[Node]) -> Vec<Spanned<Stmt>> {
 
 /// Decompile one `.pex` function to a Papyrus body. The public seam the
 /// tests and the script assembly share.
-fn decompile_body(object: &Object, func: &PexFunction) -> Result<Vec<Spanned<Stmt>>, DecompileError> {
+fn decompile_body(
+    object: &Object,
+    func: &PexFunction,
+) -> Result<Vec<Spanned<Stmt>>, DecompileError> {
     let mut cfg = build_cfg(func)?;
     let mut scopes = lift_function(object, func, &cfg)?;
     // Collapse `&&`/`||` short-circuits before control-flow reconstruction
@@ -258,7 +276,11 @@ enum Handler {
 /// Decompile a function and classify it as a Papyrus `Event` or `Function`
 /// (Champollion's rule: an `on…`-prefixed name in the built-in event set,
 /// or an `::remote_` custom-event thunk, is an event).
-fn build_handler(object: &Object, func: &PexFunction, name: &str) -> Result<Handler, DecompileError> {
+fn build_handler(
+    object: &Object,
+    func: &PexFunction,
+    name: &str,
+) -> Result<Handler, DecompileError> {
     let body = decompile_body(object, func)?;
     let params = lower_params(func);
     let flags = function_flags(func);
@@ -270,7 +292,8 @@ fn build_handler(object: &Object, func: &PexFunction, name: &str) -> Result<Hand
     // `is_event_name` lowercases the whole name and binary-searches the engine
     // event set, so it already rejects anything ≤ 2 chars — the old length
     // guard was redundant.
-    let is_event = (name.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("on")) && is_event_name(name))
+    let is_event = (name.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("on"))
+        && is_event_name(name))
         || name.starts_with("::remote_");
     let display = name.strip_prefix("::remote_").unwrap_or(name);
 
@@ -310,7 +333,11 @@ fn handler_to_state_item(h: Handler) -> StateItem {
 
 /// Build a named Papyrus `Function` (used for property getters/setters,
 /// which carry no name of their own in the `.pex`).
-fn build_named_function(object: &Object, func: &PexFunction, name: &str) -> Result<Function, DecompileError> {
+fn build_named_function(
+    object: &Object,
+    func: &PexFunction,
+    name: &str,
+) -> Result<Function, DecompileError> {
     Ok(Function {
         return_type: lower_return_type(func),
         name: ident(name),
@@ -321,7 +348,10 @@ fn build_named_function(object: &Object, func: &PexFunction, name: &str) -> Resu
     })
 }
 
-fn lower_property(object: &Object, prop: &crate::model::Property) -> Result<Property, DecompileError> {
+fn lower_property(
+    object: &Object,
+    prop: &crate::model::Property,
+) -> Result<Property, DecompileError> {
     let mut flags = PropertyFlags::empty();
     let (getter, setter) = if prop.has_auto_var() {
         flags |= if prop.is_readable() && !prop.is_writable() {
@@ -376,7 +406,9 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
     }
 
     for p in &object.properties {
-        body.push(sp(ScriptItem::Property(Box::new(lower_property(object, p)?))));
+        body.push(sp(ScriptItem::Property(Box::new(lower_property(
+            object, p,
+        )?))));
     }
 
     for state in &object.states {
@@ -389,7 +421,9 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
         } else {
             let mut items: Vec<Spanned<StateItem>> = Vec::new();
             for f in &state.functions {
-                items.push(sp(handler_to_state_item(build_handler(object, f, &f.name)?)));
+                items.push(sp(handler_to_state_item(build_handler(
+                    object, f, &f.name,
+                )?)));
             }
             body.push(sp(ScriptItem::State(State {
                 name: ident(&state.name),
@@ -427,7 +461,11 @@ mod tests {
     use crate::OpCode;
 
     fn ins(op: OpCode, args: Vec<Value>) -> Instruction {
-        Instruction { op, args, var_args: Vec::new() }
+        Instruction {
+            op,
+            args,
+            var_args: Vec::new(),
+        }
     }
     fn ins_v(op: OpCode, args: Vec<Value>, var_args: Vec<Value>) -> Instruction {
         Instruction { op, args, var_args }
@@ -448,7 +486,10 @@ mod tests {
                 name: "MyScript".into(),
                 parent_class_name: "ObjectReference".into(),
                 auto_state_name: String::new(),
-                states: vec![PexState { name: String::new(), functions: vec![func] }],
+                states: vec![PexState {
+                    name: String::new(),
+                    functions: vec![func],
+                }],
                 ..Object::default()
             }],
         }
@@ -467,7 +508,11 @@ mod tests {
                 type_name: "ObjectReference".into(),
             }],
             instructions: vec![
-                ins_v(OpCode::CallMethod, vec![id("Foo"), id("self"), id("::NoneVar")], vec![]),
+                ins_v(
+                    OpCode::CallMethod,
+                    vec![id("Foo"), id("self"), id("::NoneVar")],
+                    vec![],
+                ),
                 ins(OpCode::Return, vec![id("::NoneVar")]),
             ],
             ..PexFunction::default()
@@ -541,24 +586,54 @@ mod tests {
         let func = PexFunction {
             name: "Check".into(),
             return_type_name: "None".into(),
-            locals: vec![TypedName { name: "::temp0".into(), type_name: "Bool".into() }],
+            locals: vec![TypedName {
+                name: "::temp0".into(),
+                type_name: "Bool".into(),
+            }],
             instructions: vec![
                 ins(OpCode::CmpEq, vec![id("::temp0"), id("a"), id("b")]),
                 ins(OpCode::JmpF, vec![id("::temp0"), Value::Integer(2)]),
-                ins_v(OpCode::CallMethod, vec![id("DoThing"), id("obj"), id("::NoneVar")], vec![]),
+                ins_v(
+                    OpCode::CallMethod,
+                    vec![id("DoThing"), id("obj"), id("::NoneVar")],
+                    vec![],
+                ),
                 ins(OpCode::Return, vec![id("::NoneVar")]),
             ],
             ..PexFunction::default()
         };
         let script = decompile_script(&pex_with_function(func)).unwrap();
-        let ScriptItem::Function(f) = &script.body[0].node else { panic!() };
-        let if_stmt = f.body.iter().find(|s| matches!(s.node, Stmt::If { .. })).unwrap();
-        let Stmt::If { condition, body, .. } = &if_stmt.node else { panic!() };
-        assert!(matches!(condition.node, Expr::BinaryOp { op: BinaryOp::Eq, .. }));
+        let ScriptItem::Function(f) = &script.body[0].node else {
+            panic!()
+        };
+        let if_stmt = f
+            .body
+            .iter()
+            .find(|s| matches!(s.node, Stmt::If { .. }))
+            .unwrap();
+        let Stmt::If {
+            condition, body, ..
+        } = &if_stmt.node
+        else {
+            panic!()
+        };
+        assert!(matches!(
+            condition.node,
+            Expr::BinaryOp {
+                op: BinaryOp::Eq,
+                ..
+            }
+        ));
         // the call inside is `obj.DoThing()`
-        let Stmt::ExprStmt(call) = &body[0].node else { panic!("expected call stmt") };
-        let Expr::Call { callee, .. } = &call.node else { panic!("expected Call") };
-        assert!(matches!(&callee.node, Expr::MemberAccess { member, .. } if member.node.0 == "DoThing"));
+        let Stmt::ExprStmt(call) = &body[0].node else {
+            panic!("expected call stmt")
+        };
+        let Expr::Call { callee, .. } = &call.node else {
+            panic!("expected Call")
+        };
+        assert!(
+            matches!(&callee.node, Expr::MemberAccess { member, .. } if member.node.0 == "DoThing")
+        );
     }
 
     #[test]
@@ -584,7 +659,9 @@ mod tests {
             }],
         };
         let script = decompile_script(&pex).unwrap();
-        let ScriptItem::Property(p) = &script.body[0].node else { panic!() };
+        let ScriptItem::Property(p) = &script.body[0].node else {
+            panic!()
+        };
         assert_eq!(p.name.node.0, "MyQuest");
         assert_eq!(p.ty.node, Type::Object(past::Identifier::new("Quest")));
         assert!(p.flags.contains(PropertyFlags::AUTO));

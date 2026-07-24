@@ -97,7 +97,13 @@ impl Archive {
 /// receiver collapses to `$`. Small on purpose — an unlisted namespace
 /// still keeps its *function* name, only the receiver collapses.
 const GLOBALS: &[&str] = &[
-    "game", "utility", "debug", "math", "ui", "input", "wornobject",
+    "game",
+    "utility",
+    "debug",
+    "math",
+    "ui",
+    "input",
+    "wornobject",
 ];
 
 /// Normalize an expression to its structural token.
@@ -263,7 +269,11 @@ fn norm_stmt(s: &Stmt, out: &mut String) {
 
 /// A handler's `(event, arity)` signature + its body skeleton.
 fn handler_fingerprint(e: &Event) -> String {
-    let mut s = format!("{}/{}=>", e.name.node.0.to_ascii_lowercase(), e.params.len());
+    let mut s = format!(
+        "{}/{}=>",
+        e.name.node.0.to_ascii_lowercase(),
+        e.params.len()
+    );
     norm_body(&e.body, &mut s);
     s
 }
@@ -295,7 +305,10 @@ fn guard_atoms(e: &Expr, out: &mut Vec<String>) {
             guard_atoms(&left.node, out);
             guard_atoms(&right.node, out);
         }
-        Expr::UnaryOp { op: UnaryOp::Not, operand } => guard_atoms(&operand.node, out),
+        Expr::UnaryOp {
+            op: UnaryOp::Not,
+            operand,
+        } => guard_atoms(&operand.node, out),
         other => {
             let mut s = String::from("G:");
             norm_expr(other, &mut s);
@@ -576,7 +589,10 @@ fn main() {
         }
     }
 
-    for path in args.iter().filter(|a| !a.to_ascii_lowercase().ends_with(".psc")) {
+    for path in args
+        .iter()
+        .filter(|a| !a.to_ascii_lowercase().ends_with(".psc"))
+    {
         let arch = match Archive::open(path) {
             Ok(a) => a,
             Err(e) => {
@@ -705,7 +721,11 @@ fn compositional_report(
     unit: &str,
 ) {
     println!("\n==== {title} ====");
-    println!("distinct primitives: {}   {unit}: {}", freq.len(), population);
+    println!(
+        "distinct primitives: {}   {unit}: {}",
+        freq.len(),
+        population
+    );
 
     let mut prims: Vec<(&String, usize)> = freq.iter().map(|(k, &c)| (k, c)).collect();
     prims.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
@@ -721,7 +741,9 @@ fn compositional_report(
         .collect();
     let total = population.max(1);
     println!("vocabulary size K → {unit} FULLY covered:");
-    for k in [10usize, 25, 50, 100, 150, 200, 300, 500, 750, 1000, 1500, 2000] {
+    for k in [
+        10usize, 25, 50, 100, 150, 200, 300, 500, 750, 1000, 1500, 2000,
+    ] {
         let covered = max_rank.iter().filter(|&&r| r < k).count();
         println!(
             "  K={:>4} → {:>5} / {} ({:5.1}%)",

@@ -1227,7 +1227,11 @@ impl AccelerationManager {
         // follow-up once a non-`unsafe` signature is threaded through callers.
         let _ = (device, allocator);
 
-        if !blas_over_budget(self.static_blas_bytes, pending_bytes, self.blas_budget_bytes) {
+        if !blas_over_budget(
+            self.static_blas_bytes,
+            pending_bytes,
+            self.blas_budget_bytes,
+        ) {
             return;
         }
 
@@ -1268,7 +1272,11 @@ impl AccelerationManager {
         let mut evicted = 0usize;
         let mut freed = 0u64;
         for (idx, _, _size) in candidates {
-            if !blas_over_budget(self.static_blas_bytes, pending_bytes, self.blas_budget_bytes) {
+            if !blas_over_budget(
+                self.static_blas_bytes,
+                pending_bytes,
+                self.blas_budget_bytes,
+            ) {
                 break;
             }
             if let Some(entry) = self.blas_entries[idx].take() {

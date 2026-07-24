@@ -152,7 +152,10 @@ pub fn template_from_imported(
     if constraints.is_empty() {
         return None;
     }
-    Some(RagdollTemplate { bodies, constraints })
+    Some(RagdollTemplate {
+        bodies,
+        constraints,
+    })
 }
 
 fn joint_from_imported(k: &ImportedJointKind) -> RagdollJointSpec {
@@ -261,7 +264,10 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
                 joint: c.joint.clone(),
             })
             .collect();
-        RagdollSpec { bodies, constraints }
+        RagdollSpec {
+            bodies,
+            constraints,
+        }
     };
 
     // 1.5. #2083 — capture any ragdoll from a prior activation of this actor.
@@ -684,7 +690,12 @@ mod tests {
 
         // Exactly one `Ragdoll` component remains attached, and it references
         // the newly-built bodies (not the freed ones).
-        let ragdoll = world.query::<Ragdoll>().unwrap().get(actor).unwrap().clone();
+        let ragdoll = world
+            .query::<Ragdoll>()
+            .unwrap()
+            .get(actor)
+            .unwrap()
+            .clone();
         assert_eq!(ragdoll.bodies.len(), 3);
         assert!(
             world.query::<RagdollActive>().unwrap().get(actor).is_some(),
@@ -738,11 +749,7 @@ mod tests {
         // must recover the original bone pose exactly (modulo float epsilon).
         ragdoll_writeback_system(&world, 0.0);
 
-        let gt = *world
-            .query::<GlobalTransform>()
-            .unwrap()
-            .get(bone)
-            .unwrap();
+        let gt = *world.query::<GlobalTransform>().unwrap().get(bone).unwrap();
         assert!(
             (gt.translation - orig.translation).length() < 1e-2,
             "bone translation must round-trip: {:?} vs {:?}",
@@ -820,11 +827,7 @@ mod tests {
         // epsilon), despite the live scale mutation above.
         ragdoll_writeback_system(&world, 0.0);
 
-        let gt = *world
-            .query::<GlobalTransform>()
-            .unwrap()
-            .get(bone)
-            .unwrap();
+        let gt = *world.query::<GlobalTransform>().unwrap().get(bone).unwrap();
         assert!(
             (gt.translation - orig.translation).length() < 1e-2,
             "bone translation must round-trip using the seed-time scale, not \
@@ -1153,8 +1156,7 @@ mod tests {
             bodies: vec![body("Spine"), body("Head")],
             constraints: vec![hinge_constraint(0, 1)],
         };
-        let template =
-            template_from_imported(&imported, &skel_map).expect("both bones resolve");
+        let template = template_from_imported(&imported, &skel_map).expect("both bones resolve");
         assert_eq!(template.bodies.len(), 2);
         assert_eq!(template.constraints.len(), 1);
         assert_eq!(template.bodies[0].bone, spine);

@@ -5,9 +5,7 @@
 //! storage — only actors carry them. (Defined here, with the rest of CHARAL,
 //! mirroring how `AnimationPlayer` lives in the `animation` module.)
 
-use crate::character::reputation::{
-    FactionRepThresholds, ReputationStanding, REPUTATION_AXIS_MAX,
-};
+use crate::character::reputation::{FactionRepThresholds, ReputationStanding, REPUTATION_AXIS_MAX};
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
 
@@ -241,7 +239,10 @@ mod tests {
 
     #[test]
     fn defaults_are_empty() {
-        assert_eq!(CharacterLevel::default(), CharacterLevel { level: 0, xp: 0 });
+        assert_eq!(
+            CharacterLevel::default(),
+            CharacterLevel { level: 0, xp: 0 }
+        );
         assert!(Perks::default().is_empty());
         assert_eq!(Background::default().race_form_id, 0);
         assert!(FactionReputation::default().entries.is_empty());
@@ -263,7 +264,10 @@ mod tests {
         assert_eq!(rep.fame(F), 12);
         assert_eq!(rep.infamy(F), 4);
         // (Fame 2, Infamy 1) → Smiling Troublemaker.
-        assert_eq!(rep.standing(F, &BOS), ReputationStanding::SmilingTroublemaker);
+        assert_eq!(
+            rep.standing(F, &BOS),
+            ReputationStanding::SmilingTroublemaker
+        );
 
         // Monotonic: adding never lowers; clamps at the per-axis max of 100.
         rep.add_fame(F, u16::MAX);

@@ -236,13 +236,19 @@ pub(super) fn spawn_precombined_meshes(
                                 // architecture stays opaque.
                                 if let Some(provider) = mat_provider.as_deref_mut() {
                                     for mesh in &mut meshes {
-                                        let blend =
-                                            (mesh.has_alpha, mesh.src_blend_mode, mesh.dst_blend_mode);
+                                        let blend = (
+                                            mesh.has_alpha,
+                                            mesh.src_blend_mode,
+                                            mesh.dst_blend_mode,
+                                        );
                                         crate::asset_provider::merge_bgsm_into_mesh(
                                             mesh, provider, &mut pool,
                                         );
-                                        (mesh.has_alpha, mesh.src_blend_mode, mesh.dst_blend_mode) =
-                                            blend;
+                                        (
+                                            mesh.has_alpha,
+                                            mesh.src_blend_mode,
+                                            mesh.dst_blend_mode,
+                                        ) = blend;
                                     }
                                 }
                                 meshes
@@ -710,7 +716,11 @@ mod tests {
             .find(|n| n.contains("\\dlccoast.esm\\") && n.ends_with("_oc.nif"))
             .expect("a DLCCoast-owned precombine name")
             .to_string();
-        let stem = on_disk.rsplit('\\').next().unwrap().trim_end_matches("_oc.nif");
+        let stem = on_disk
+            .rsplit('\\')
+            .next()
+            .unwrap()
+            .trim_end_matches("_oc.nif");
         let (low24_hex, hash_hex) = stem.split_once('_').expect("<low24>_<hash>");
         let low24 = u32::from_str_radix(low24_hex, 16).unwrap();
         let hash = u32::from_str_radix(hash_hex, 16).unwrap();
@@ -725,11 +735,17 @@ mod tests {
 
         let (owning_path, subdir) =
             resolve_precombine_owner(remapped_form_id, &load_order, load_order[1]);
-        assert_eq!(owning_path, load_order[1], "owner is DLCCoast, not the master");
+        assert_eq!(
+            owning_path, load_order[1],
+            "owner is DLCCoast, not the master"
+        );
         assert_eq!(subdir.as_deref(), Some("dlccoast.esm"));
 
         let built = precombine_oc_nif_path(remapped_form_id, hash, subdir.as_deref());
-        assert_eq!(built, on_disk, "reconstructed path matches the on-disk name");
+        assert_eq!(
+            built, on_disk,
+            "reconstructed path matches the on-disk name"
+        );
 
         // And the geometry decodes against the OWNING plugin's CSG.
         let bytes = ba2.extract(&built).expect("extract via reconstructed path");
@@ -740,6 +756,9 @@ mod tests {
             !meshes.is_empty(),
             "DLC precombine decodes against its own DLCCoast - Geometry.csg"
         );
-        eprintln!("dlc path '{built}' → {} mesh(es) from DLCCoast CSG", meshes.len());
+        eprintln!(
+            "dlc path '{built}' → {} mesh(es) from DLCCoast CSG",
+            meshes.len()
+        );
     }
 }

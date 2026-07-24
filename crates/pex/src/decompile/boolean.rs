@@ -52,7 +52,12 @@ pub fn rebuild_boolean_operators(
         return Ok(());
     }
     let (entry, exit) = (cfg.entry, cfg.exit);
-    BoolPass { cfg, scopes, func_name }.rebuild(entry, exit, 0)
+    BoolPass {
+        cfg,
+        scopes,
+        func_name,
+    }
+    .rebuild(entry, exit, 0)
 }
 
 struct BoolPass<'a> {
@@ -107,7 +112,8 @@ fn combine(left: Node, op: &str, right: Node, cond: &str) -> Node {
     let prec = if op == "&&" { 7 } else { 8 };
     match left.kind {
         NodeKind::Assign { dest, value } => {
-            let combined = Node::binary_op(SYNTH_IP, prec, Some(cond.to_string()), *value, op, right);
+            let combined =
+                Node::binary_op(SYNTH_IP, prec, Some(cond.to_string()), *value, op, right);
             Node::assign(SYNTH_IP, *dest, combined)
         }
         _ => Node::binary_op(SYNTH_IP, prec, Some(cond.to_string()), left, op, right),
@@ -164,7 +170,11 @@ impl BoolPass<'_> {
     /// `op`. Returns `true` when a collapse merged a non-exit rejoin block
     /// (so `current` should be re-processed for a further chain).
     fn collapse(&mut self, current: usize, cond: &str, op: BoolOp) -> Result<bool, DecompileError> {
-        let src = self.cfg.block(current).cloned().expect("source block exists");
+        let src = self
+            .cfg
+            .block(current)
+            .cloned()
+            .expect("source block exists");
         // For `&&` the operand is the true block and the rejoin is the
         // false block; for `||` they swap.
         let (operand_key, rejoin_key) = match op {
@@ -191,7 +201,9 @@ impl BoolPass<'_> {
 
         // Build the combined expression onto the source scope.
         let mut src_scope = self.scopes.remove(&current).unwrap_or_default();
-        let left = src_scope.pop().expect("conditional source has a last statement");
+        let left = src_scope
+            .pop()
+            .expect("conditional source has a last statement");
         src_scope.push(combine(left, op.as_str(), right, cond));
 
         // The operand block is now folded into the expression — drop it.
@@ -261,7 +273,11 @@ mod tests {
     use crate::OpCode;
 
     fn ins(op: OpCode, args: Vec<Value>) -> Instruction {
-        Instruction { op, args, var_args: Vec::new() }
+        Instruction {
+            op,
+            args,
+            var_args: Vec::new(),
+        }
     }
     fn ins_v(op: OpCode, args: Vec<Value>, var_args: Vec<Value>) -> Instruction {
         Instruction { op, args, var_args }
@@ -270,7 +286,10 @@ mod tests {
         Value::Identifier(s.to_string())
     }
     fn local(n: &str, t: &str) -> TypedName {
-        TypedName { name: n.to_string(), type_name: t.to_string() }
+        TypedName {
+            name: n.to_string(),
+            type_name: t.to_string(),
+        }
     }
 
     /// Full pipeline including the boolean pass.
@@ -292,7 +311,10 @@ mod tests {
         here || node.child_nodes().iter().any(|c| node_has_binop(c, op))
     }
     fn child_ifs(nodes: &[Node]) -> usize {
-        nodes.iter().filter(|n| matches!(n.kind, NodeKind::IfElse { .. })).count()
+        nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::IfElse { .. }))
+            .count()
     }
 
     #[test]
@@ -382,7 +404,11 @@ mod tests {
         let f = Function {
             return_type_name: "None".into(),
             instructions: vec![
-                ins_v(OpCode::CallMethod, vec![id("Foo"), id("self"), id("::NoneVar")], vec![]),
+                ins_v(
+                    OpCode::CallMethod,
+                    vec![id("Foo"), id("self"), id("::NoneVar")],
+                    vec![],
+                ),
                 ins(OpCode::Return, vec![id("::NoneVar")]),
             ],
             ..Function::default()
@@ -397,7 +423,11 @@ mod tests {
     /// than remove the shared block and leave `current`'s edges dangling.
     #[test]
     fn collapse_declines_when_operand_and_rejoin_keys_are_equal() {
-        let mut cfg = Cfg { blocks: BTreeMap::new(), entry: 0, exit: 2 };
+        let mut cfg = Cfg {
+            blocks: BTreeMap::new(),
+            entry: 0,
+            exit: 2,
+        };
         cfg.blocks.insert(
             0,
             CodeBlock {
@@ -410,7 +440,13 @@ mod tests {
         );
         cfg.blocks.insert(
             1,
-            CodeBlock { begin: 1, end: 1, next: 2, on_false: END, condition: None },
+            CodeBlock {
+                begin: 1,
+                end: 1,
+                next: 2,
+                on_false: END,
+                condition: None,
+            },
         );
         let mut scopes: BTreeMap<usize, Vec<Node>> = BTreeMap::new();
         scopes.insert(
@@ -429,11 +465,18 @@ mod tests {
                 Node::constant(SYNTH_IP, id("b")),
             )],
         );
-        let mut pass = BoolPass { cfg: &mut cfg, scopes: &mut scopes, func_name: "Degenerate" };
+        let mut pass = BoolPass {
+            cfg: &mut cfg,
+            scopes: &mut scopes,
+            func_name: "Degenerate",
+        };
         let collapsed = pass
             .collapse(0, "t", BoolOp::And)
             .expect("degenerate shape must decline, not error");
-        assert!(!collapsed, "must not report a merge for operand_key == rejoin_key");
+        assert!(
+            !collapsed,
+            "must not report a merge for operand_key == rejoin_key"
+        );
         assert!(
             pass.cfg.blocks.contains_key(&1),
             "the shared operand/rejoin block must remain intact when declined"
@@ -451,9 +494,17 @@ mod tests {
     /// guard fires before any CFG access, so a trivial pass exercises it.
     #[test]
     fn rebuild_rejects_excessive_recursion_depth() {
-        let mut cfg = Cfg { blocks: BTreeMap::new(), entry: 0, exit: 0 };
+        let mut cfg = Cfg {
+            blocks: BTreeMap::new(),
+            entry: 0,
+            exit: 0,
+        };
         let mut scopes = BTreeMap::new();
-        let mut pass = BoolPass { cfg: &mut cfg, scopes: &mut scopes, func_name: "Deep" };
+        let mut pass = BoolPass {
+            cfg: &mut cfg,
+            scopes: &mut scopes,
+            func_name: "Deep",
+        };
         let err = pass
             .rebuild(0, 0, MAX_REBUILD_DEPTH + 1)
             .expect_err("over-deep recursion must error, not overflow");

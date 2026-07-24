@@ -576,7 +576,6 @@ mod tests {
         }
     }
 
-
     /// Regression: #1493. The volumetrics UBOs grew a `render_origin`
     /// vec4 for #markarth-precision but — unlike `CameraUBO` (#1447) —
     /// had no committed-`.spv` block-size pin, only `validate_set_layout`
@@ -717,18 +716,12 @@ mod tests {
                 "volumetrics_integrate.comp",
                 include_bytes!("../../shaders/volumetrics_integrate.comp.spv"),
             ),
-            (
-                "water.frag",
-                include_bytes!("../../shaders/water.frag.spv"),
-            ),
-            (
-                "water.vert",
-                include_bytes!("../../shaders/water.vert.spv"),
-            ),
+            ("water.frag", include_bytes!("../../shaders/water.frag.spv")),
+            ("water.vert", include_bytes!("../../shaders/water.vert.spv")),
         ];
         for (name, spv) in shaders {
-            let (major, minor) =
-                spirv_version(spv).unwrap_or_else(|e| panic!("{name}: reflect version failed: {e}"));
+            let (major, minor) = spirv_version(spv)
+                .unwrap_or_else(|e| panic!("{name}: reflect version failed: {e}"));
             assert_eq!(
                 (major, minor),
                 (1, 0),

@@ -858,10 +858,7 @@ impl BSLightingShaderProperty {
     /// captured opaquely up to the block boundary. The dispatcher passes
     /// `Some(block_size)`; the legacy `parse(stream)` entry passes `None`
     /// (no tail capture — drift recovery handles it as before).
-    pub fn parse_with_size(
-        stream: &mut NifStream,
-        block_size: Option<u32>,
-    ) -> io::Result<Self> {
+    pub fn parse_with_size(stream: &mut NifStream, block_size: Option<u32>) -> io::Result<Self> {
         let block_start = stream.position();
         let bsver = stream.bsver();
         let mut me = if bsver >= crate::version::bsver::FO76 {
@@ -1287,13 +1284,12 @@ impl BSLightingShaderProperty {
         // #1510 — `unknown_2` is FO76-only (a9c7bc9e baseline gated it
         // `bsver == 155`); Starfield (bsver >= 172) omits it. The old
         // `>= FO76` gate over-read 4 B on every Starfield BSLSP.
-        let unknown_2 = if (crate::version::bsver::FO76..crate::version::bsver::STARFIELD)
-            .contains(&bsver)
-        {
-            stream.read_f32_le()?
-        } else {
-            0.0
-        };
+        let unknown_2 =
+            if (crate::version::bsver::FO76..crate::version::bsver::STARFIELD).contains(&bsver) {
+                stream.read_f32_le()?
+            } else {
+                0.0
+            };
         Ok(WetnessParams {
             spec_scale,
             spec_power,
@@ -1430,14 +1426,14 @@ fn parse_shader_type_data_fo4(
             // FO4-specific: skin tint alpha (BSVER 130–139). This is semantic
             // material data, not padding: zero leaves the source skin texture
             // unchanged while one fully applies the RGB tint.
-            let skin_tint_alpha =
-                if (crate::version::bsver::FALLOUT4..crate::version::bsver::FO4_DLC_UPPER)
-                    .contains(&bsver)
-                {
-                    Some(stream.read_f32_le()?)
-                } else {
-                    None
-                };
+            let skin_tint_alpha = if (crate::version::bsver::FALLOUT4
+                ..crate::version::bsver::FO4_DLC_UPPER)
+                .contains(&bsver)
+            {
+                Some(stream.read_f32_le()?)
+            } else {
+                None
+            };
             Ok(ShaderTypeData::SkinTint {
                 skin_tint_color,
                 skin_tint_alpha,
@@ -1667,10 +1663,7 @@ impl BSEffectShaderProperty {
     /// opaquely up to the block boundary — mirroring #1606 on the
     /// `BSLightingShaderProperty` sibling. The dispatcher passes
     /// `Some(block_size)`; the legacy `parse(stream)` entry passes `None`.
-    pub fn parse_with_size(
-        stream: &mut NifStream,
-        block_size: Option<u32>,
-    ) -> io::Result<Self> {
+    pub fn parse_with_size(stream: &mut NifStream, block_size: Option<u32>) -> io::Result<Self> {
         let block_start = stream.position();
         let bsver = stream.bsver();
         let mut me = Self::parse_inner(stream, bsver)?;

@@ -139,13 +139,30 @@ mod tests {
         assert_eq!(terrain_out.len(), 2, "both terrain LOD blocks collected");
         assert_eq!(object_out.len(), 1, "the object LOD quad collected");
         assert_eq!(placement_out.len(), 1, "the placement LOD cell collected");
-        assert!(terrain.is_empty(), "terrain ring drained — no leak left behind");
-        assert!(objects.is_empty(), "object ring drained — no leak left behind");
-        assert!(placements.is_empty(), "placement ring drained — no leak left behind");
+        assert!(
+            terrain.is_empty(),
+            "terrain ring drained — no leak left behind"
+        );
+        assert!(
+            objects.is_empty(),
+            "object ring drained — no leak left behind"
+        );
+        assert!(
+            placements.is_empty(),
+            "placement ring drained — no leak left behind"
+        );
         // Mesh handles that the reclaim loop will `drop_mesh` are preserved.
         let mut meshes: Vec<u32> = terrain_out.iter().map(|b| b.mesh_handle).collect();
-        meshes.extend(object_out.iter().flat_map(|b| b.mesh_handles.iter().copied()));
-        meshes.extend(placement_out.iter().flat_map(|b| b.mesh_handles.iter().copied()));
+        meshes.extend(
+            object_out
+                .iter()
+                .flat_map(|b| b.mesh_handles.iter().copied()),
+        );
+        meshes.extend(
+            placement_out
+                .iter()
+                .flat_map(|b| b.mesh_handles.iter().copied()),
+        );
         meshes.sort_unstable();
         assert_eq!(meshes, vec![10, 11, 12, 13, 14]);
     }
@@ -174,7 +191,10 @@ mod tests {
             }
         }
 
-        assert_eq!(spawned, CAP, "exactly CAP real spawns are applied this frame");
+        assert_eq!(
+            spawned, CAP,
+            "exactly CAP real spawns are applied this frame"
+        );
         assert_eq!(
             pulled, 4,
             "stale drops are pulled for free; loop stops on the 2nd apply"

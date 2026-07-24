@@ -268,7 +268,9 @@ fn dump_awake_fallers(world: &World) {
     let mut entries: Vec<FallerEntry> = Vec::with_capacity(awake.len());
     let (mut vy_min, mut vy_max) = (f32::INFINITY, f32::NEG_INFINITY);
     for h in &awake {
-        let Some(body) = pw.bodies.get(*h) else { continue };
+        let Some(body) = pw.bodies.get(*h) else {
+            continue;
+        };
         let vy = body.linvel().y;
         vy_min = vy_min.min(vy);
         vy_max = vy_max.max(vy);
@@ -308,7 +310,9 @@ fn dump_awake_fallers(world: &World) {
             "  entity {} layer={} form={} y={:.0} vy={:.0}",
             f.entity,
             f.layer.unwrap_or("?"),
-            f.form.map(|id| format!("{id:#08X}")).unwrap_or_else(|| "?".into()),
+            f.form
+                .map(|id| format!("{id:#08X}"))
+                .unwrap_or_else(|| "?".into()),
             f.y,
             f.vy,
         );
@@ -648,7 +652,10 @@ mod faller_diag_tests {
         let entries = vec![entry(-10.0), entry(-700.0), entry(0.5), entry(-100.0)];
         let worst = worst_fallers(entries, 2);
         assert_eq!(worst.len(), 2, "capped to n");
-        assert_eq!(worst[0].vy, -700.0, "most-negative vy (fastest faller) first");
+        assert_eq!(
+            worst[0].vy, -700.0,
+            "most-negative vy (fastest faller) first"
+        );
         assert_eq!(worst[1].vy, -100.0);
     }
 

@@ -101,7 +101,11 @@ impl super::buffers::SceneBuffers {
 
         // F8 (#1587) — flush only the written prefix (header + live lights),
         // not the whole allocation, on non-coherent host-visible memory.
-        buf.flush_range(device, 0, (header_size + light_size * count) as vk::DeviceSize)?;
+        buf.flush_range(
+            device,
+            0,
+            (header_size + light_size * count) as vk::DeviceSize,
+        )?;
         // Stamp the hash AFTER a successful flush — a flush failure
         // leaves the buffer in an indeterminate state, so we want the
         // next call to re-upload rather than skip.

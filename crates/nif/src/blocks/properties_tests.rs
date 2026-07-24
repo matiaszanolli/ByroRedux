@@ -871,8 +871,8 @@ fn num_decals_above_fixed_maximum_is_parse_error() {
     data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
     data.extend_from_slice(&0u16.to_le_bytes()); // flags
     data.extend_from_slice(&13u32.to_le_bytes()); // texture_count = 13 -> num_decals = 5
-    // Slots 0..=7 (base/dark/detail/gloss/glow/bump/normal/parallax), all
-    // empty — must be fully consumed before the decal-count check runs.
+                                                  // Slots 0..=7 (base/dark/detail/gloss/glow/bump/normal/parallax), all
+                                                  // empty — must be fully consumed before the decal-count check runs.
     for _ in 0..8 {
         data.push(0); // has = 0
     }

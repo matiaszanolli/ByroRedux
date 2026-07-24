@@ -326,14 +326,22 @@ mod tests {
     fn skyrim_has_eighteen_ungoverned_skills() {
         assert_eq!(SkillSet::SKYRIM.len(), 18);
         for s in SkillSet::SKYRIM.skills() {
-            assert!(s.governing.is_none(), "{} should be ungoverned", s.editor_id);
+            assert!(
+                s.governing.is_none(),
+                "{} should be ungoverned",
+                s.editor_id
+            );
         }
         // The two renamed-internal skills resolve by CK name.
         assert!(SkillSet::SKYRIM.get("Marksman").is_some()); // Archery
         assert!(SkillSet::SKYRIM.get("Speechcraft").is_some()); // Speech
         assert_eq!(SkillSet::SKYRIM.governing("OneHanded"), None);
         // No duplicate editor ids.
-        let mut ids: Vec<_> = SkillSet::SKYRIM.skills().iter().map(|s| s.editor_id).collect();
+        let mut ids: Vec<_> = SkillSet::SKYRIM
+            .skills()
+            .iter()
+            .map(|s| s.editor_id)
+            .collect();
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), 18);
@@ -344,7 +352,7 @@ mod tests {
         use crate::character::AttributeSet;
         let fo = SkillSet::FALLOUT_FO3_FNV;
         assert_eq!(fo.len(), 15); // FO3 ∪ FNV
-        // Spot-check the governing map (GECK auto-calc).
+                                  // Spot-check the governing map (GECK auto-calc).
         assert_eq!(fo.governing("Barter"), Some(Attribute::Charisma));
         assert_eq!(fo.governing("Guns"), Some(Attribute::Agility)); // FNV
         assert_eq!(fo.governing("BigGuns"), Some(Attribute::Endurance)); // FO3
@@ -352,7 +360,11 @@ mod tests {
         // Every governor is a Fallout SPECIAL attribute; Luck governs none.
         for s in fo.skills() {
             let g = s.governing.expect("governed");
-            assert!(AttributeSet::FALLOUT.contains(g), "{} → non-SPECIAL", s.editor_id);
+            assert!(
+                AttributeSet::FALLOUT.contains(g),
+                "{} → non-SPECIAL",
+                s.editor_id
+            );
             assert_ne!(g, Attribute::Luck, "{} claims Luck governor", s.editor_id);
         }
     }

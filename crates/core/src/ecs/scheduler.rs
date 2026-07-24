@@ -64,12 +64,7 @@ impl SystemEntry {
     /// steady-state path with no `SchedulerSystemTimings` resource — the
     /// `Instant::now()` probe and the owned-`String` name allocation are
     /// both skipped entirely (#1647).
-    fn run_tracked(
-        &mut self,
-        world: &World,
-        dt: f32,
-        timings: Option<&Mutex<Vec<(String, u64)>>>,
-    ) {
+    fn run_tracked(&mut self, world: &World, dt: f32, timings: Option<&Mutex<Vec<(String, u64)>>>) {
         match timings {
             Some(timings) => {
                 // Take an owned name up front — `name()` borrows

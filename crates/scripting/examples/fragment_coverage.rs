@@ -105,7 +105,13 @@ fn main() {
                 let ScriptItem::Function(func) = &item.node else {
                     continue;
                 };
-                if !func.name.node.0.to_ascii_lowercase().starts_with("fragment") {
+                if !func
+                    .name
+                    .node
+                    .0
+                    .to_ascii_lowercase()
+                    .starts_with("fragment")
+                {
                     continue;
                 }
                 if func.body.is_empty() {
@@ -124,7 +130,13 @@ fn main() {
         }
     }
 
-    let pct = |n: usize, d: usize| if d == 0 { 0.0 } else { 100.0 * n as f64 / d as f64 };
+    let pct = |n: usize, d: usize| {
+        if d == 0 {
+            0.0
+        } else {
+            100.0 * n as f64 / d as f64
+        }
+    };
     println!("\n######## b2 fragment-lowerer coverage ########");
     println!("empty fragments (trivial no-op): {empty}");
     println!("behavioral fragments: {behavioral}");
@@ -132,7 +144,11 @@ fn main() {
         "fully lowered (claimed): {claimed} ({:.1}% of behavioral)",
         pct(claimed, behavioral)
     );
-    println!("declined: {} ({:.1}%)", behavioral - claimed, pct(behavioral - claimed, behavioral));
+    println!(
+        "declined: {} ({:.1}%)",
+        behavioral - claimed,
+        pct(behavioral - claimed, behavioral)
+    );
     println!("\ncanonical effects emitted: {claimed_effects}");
     for (k, n) in &effect_hist {
         println!("  {k:<24} {n}");

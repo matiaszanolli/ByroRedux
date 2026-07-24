@@ -699,23 +699,21 @@ fn create_scene_descriptors(
     // ── Descriptor pool + set allocation ─────────────────────────────────
     // Pool sizes derived from `bindings` so conditional TLAS slot flows
     // through automatically (#1030 / REN-D10-NEW-09).
-    let descriptor_pool = match DescriptorPoolBuilder::from_layout_bindings(
-        &bindings,
-        MAX_FRAMES_IN_FLIGHT as u32,
-    )
-    .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
-    .build(device, "Failed to create scene descriptor pool")
-    {
-        Ok(pool) => pool,
-        Err(e) => {
-            // RL-13 / #203 — the layout above was created successfully; free
-            // it before returning so a pool-create failure doesn't leak it.
-            // SAFETY: `descriptor_set_layout` is a live handle just created
-            // above and referenced by nothing yet.
-            unsafe { device.destroy_descriptor_set_layout(descriptor_set_layout, None) };
-            return Err(e);
-        }
-    };
+    let descriptor_pool =
+        match DescriptorPoolBuilder::from_layout_bindings(&bindings, MAX_FRAMES_IN_FLIGHT as u32)
+            .max_sets(MAX_FRAMES_IN_FLIGHT as u32)
+            .build(device, "Failed to create scene descriptor pool")
+        {
+            Ok(pool) => pool,
+            Err(e) => {
+                // RL-13 / #203 — the layout above was created successfully; free
+                // it before returning so a pool-create failure doesn't leak it.
+                // SAFETY: `descriptor_set_layout` is a live handle just created
+                // above and referenced by nothing yet.
+                unsafe { device.destroy_descriptor_set_layout(descriptor_set_layout, None) };
+                return Err(e);
+            }
+        };
 
     let layouts = vec![descriptor_set_layout; MAX_FRAMES_IN_FLIGHT];
     let alloc_info = vk::DescriptorSetAllocateInfo::default()

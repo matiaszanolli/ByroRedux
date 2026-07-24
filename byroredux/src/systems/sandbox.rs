@@ -151,8 +151,7 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
     // wasn't archived). Resolved once per cell into this resource as
     // `(handle, hold_time)` — `hold_time` is the clip duration; parking the
     // player there with `playing = false` holds the final seated frame.
-    let Some((sit_handle, hold_time)) =
-        world.try_resource::<SandboxSitClip>().and_then(|r| r.0)
+    let Some((sit_handle, hold_time)) = world.try_resource::<SandboxSitClip>().and_then(|r| r.0)
     else {
         return;
     };
@@ -192,7 +191,9 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
                     continue;
                 }
                 let seat_id = (furn_e, idx as u32);
-                scratch.seats.push((seat_id, seat_world_transform(furn_g, marker)));
+                scratch
+                    .seats
+                    .push((seat_id, seat_world_transform(furn_g, marker)));
                 scratch
                     .seat_meta
                     .insert(seat_id, (marker.local_offset, furn_g.translation));
@@ -228,11 +229,20 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
                      furn_world=({:.1},{:.1},{:.1}) marker_offset=({:.1},{:.1},{:.1}) \
                      seat_world=({:.1},{:.1},{:.1}) dist={:.1}",
                     npc,
-                    npc_g.translation.x, npc_g.translation.y, npc_g.translation.z,
-                    furn_e, marker_idx,
-                    furn_world.x, furn_world.y, furn_world.z,
-                    offset[0], offset[1], offset[2],
-                    seat.translation.x, seat.translation.y, seat.translation.z,
+                    npc_g.translation.x,
+                    npc_g.translation.y,
+                    npc_g.translation.z,
+                    furn_e,
+                    marker_idx,
+                    furn_world.x,
+                    furn_world.y,
+                    furn_world.z,
+                    offset[0],
+                    offset[1],
+                    offset[2],
+                    seat.translation.x,
+                    seat.translation.y,
+                    seat.translation.z,
                     (seat.translation - npc_g.translation).length(),
                 );
                 scratch.assignments.push((npc, furn_e, seat));
@@ -401,8 +411,11 @@ mod tests {
     fn seat_world_legacy_degenerate_offset_inherits_furniture_rotation() {
         // Marker at the furniture pivot (near-zero XZ) → no centre direction;
         // fall back to the furniture's own facing.
-        let furn =
-            GlobalTransform::new(Vec3::ZERO, Quat::from_rotation_y(core::f32::consts::FRAC_PI_2), 1.0);
+        let furn = GlobalTransform::new(
+            Vec3::ZERO,
+            Quat::from_rotation_y(core::f32::consts::FRAC_PI_2),
+            1.0,
+        );
         let seat = seat_world_transform(&furn, &marker([0.0, -30.0, 0.0], None, 0));
         let furn_fwd = furn.rotation * Vec3::Z;
         let seat_fwd = seat.rotation * Vec3::Z;
@@ -418,15 +431,27 @@ mod tests {
         let furn = GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0);
         let seat = seat_world_transform(&furn, &marker([0.0, -30.0, 0.0], Some(0.0), 1));
         let fwd = seat.rotation * Vec3::Z;
-        assert!((fwd - Vec3::Z).length() < 1e-5, "heading 0 faces +Z, got {fwd:?}");
+        assert!(
+            (fwd - Vec3::Z).length() < 1e-5,
+            "heading 0 faces +Z, got {fwd:?}"
+        );
     }
 
     #[test]
     fn pick_nearest_seat_picks_closest_free_in_range() {
         let seats = vec![
-            (1, GlobalTransform::new(Vec3::new(100.0, 0.0, 0.0), Quat::IDENTITY, 1.0)),
-            (2, GlobalTransform::new(Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0)),
-            (3, GlobalTransform::new(Vec3::new(5000.0, 0.0, 0.0), Quat::IDENTITY, 1.0)),
+            (
+                1,
+                GlobalTransform::new(Vec3::new(100.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+            ),
+            (
+                2,
+                GlobalTransform::new(Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+            ),
+            (
+                3,
+                GlobalTransform::new(Vec3::new(5000.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+            ),
         ];
         let mut reserved = HashSet::new();
         // Nearest free is entity 2.
@@ -447,7 +472,10 @@ mod tests {
 
     #[test]
     fn pick_nearest_seat_respects_per_actor_radius() {
-        let seats = vec![(1, GlobalTransform::new(Vec3::new(300.0, 0.0, 0.0), Quat::IDENTITY, 1.0))];
+        let seats = vec![(
+            1,
+            GlobalTransform::new(Vec3::new(300.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+        )];
         let reserved = HashSet::new();
         // A small authored radius excludes a seat the default 512 would include.
         assert!(pick_nearest_seat(Vec3::ZERO, &seats, &reserved, 128.0).is_none());
@@ -475,8 +503,14 @@ mod tests {
         // the other — a second actor takes marker 1 of the same furniture.
         let furn = 42; // one furniture entity, two sit markers
         let seats = vec![
-            ((furn, 0u32), GlobalTransform::new(Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0)),
-            ((furn, 1u32), GlobalTransform::new(Vec3::new(20.0, 0.0, 0.0), Quat::IDENTITY, 1.0)),
+            (
+                (furn, 0u32),
+                GlobalTransform::new(Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+            ),
+            (
+                (furn, 1u32),
+                GlobalTransform::new(Vec3::new(20.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
+            ),
         ];
         let mut reserved: HashSet<(EntityId, u32)> = HashSet::new();
         // Actor A near marker 0 claims it.

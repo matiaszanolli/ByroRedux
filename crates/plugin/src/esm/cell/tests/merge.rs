@@ -98,18 +98,40 @@ fn merge_from_interior_override_keeps_base_refrs() {
     let mut child = EsmCellIndex::default();
     child.cells.insert(
         "kagrenzel01".into(),
-        cell_with_refs("Kagrenzel01", vec![placed(0x11, 0xBEEF), placed(0x20, 0xDD)]),
+        cell_with_refs(
+            "Kagrenzel01",
+            vec![placed(0x11, 0xBEEF), placed(0x20, 0xDD)],
+        ),
     );
 
     master.merge_from(child);
 
     let cell = master.cells.get("kagrenzel01").unwrap();
-    let by_id: std::collections::HashMap<u32, u32> =
-        cell.references.iter().map(|r| (r.form_id, r.base_form_id)).collect();
-    assert_eq!(cell.references.len(), 4, "3 base REFRs + 1 added, none dropped");
-    assert_eq!(by_id.get(&0x10), Some(&0xAA), "untouched base REFR survives");
-    assert_eq!(by_id.get(&0x12), Some(&0xCC), "untouched base REFR survives");
-    assert_eq!(by_id.get(&0x11), Some(&0xBEEF), "re-emitted REFR takes the override");
+    let by_id: std::collections::HashMap<u32, u32> = cell
+        .references
+        .iter()
+        .map(|r| (r.form_id, r.base_form_id))
+        .collect();
+    assert_eq!(
+        cell.references.len(),
+        4,
+        "3 base REFRs + 1 added, none dropped"
+    );
+    assert_eq!(
+        by_id.get(&0x10),
+        Some(&0xAA),
+        "untouched base REFR survives"
+    );
+    assert_eq!(
+        by_id.get(&0x12),
+        Some(&0xCC),
+        "untouched base REFR survives"
+    );
+    assert_eq!(
+        by_id.get(&0x11),
+        Some(&0xBEEF),
+        "re-emitted REFR takes the override"
+    );
     assert_eq!(by_id.get(&0x20), Some(&0xDD), "newly-added REFR appears");
 }
 
@@ -143,7 +165,10 @@ fn merge_from_exterior_override_keeps_base_refrs() {
         .exterior_cells
         .entry("tamriel".into())
         .or_default()
-        .insert((5, 7), cell_with_refs("Ext", vec![placed(0x30, 0x01), placed(0x31, 0x02)]));
+        .insert(
+            (5, 7),
+            cell_with_refs("Ext", vec![placed(0x30, 0x01), placed(0x31, 0x02)]),
+        );
 
     let mut child = EsmCellIndex::default();
     child
@@ -155,11 +180,22 @@ fn merge_from_exterior_override_keeps_base_refrs() {
     master.merge_from(child);
 
     let cell = &master.exterior_cells["tamriel"][&(5, 7)];
-    assert_eq!(cell.references.len(), 2, "base exterior REFR 0x30 survives the override");
-    let by_id: std::collections::HashMap<u32, u32> =
-        cell.references.iter().map(|r| (r.form_id, r.base_form_id)).collect();
+    assert_eq!(
+        cell.references.len(),
+        2,
+        "base exterior REFR 0x30 survives the override"
+    );
+    let by_id: std::collections::HashMap<u32, u32> = cell
+        .references
+        .iter()
+        .map(|r| (r.form_id, r.base_form_id))
+        .collect();
     assert_eq!(by_id.get(&0x30), Some(&0x01));
-    assert_eq!(by_id.get(&0x31), Some(&0xFEED), "re-emitted exterior REFR overrides");
+    assert_eq!(
+        by_id.get(&0x31),
+        Some(&0xFEED),
+        "re-emitted exterior REFR overrides"
+    );
 }
 
 #[test]

@@ -83,7 +83,10 @@ mod tests {
         src.insert(0x0100_0001, rec(0x0100_0001, SettingValue::Int(7)));
         src.insert(0x0100_0002, rec(0x0100_0002, SettingValue::Float(2.5)));
         src.insert(0x0100_0003, rec(0x0100_0003, SettingValue::Short(-3)));
-        src.insert(0x0100_0004, rec(0x0100_0004, SettingValue::String("x".into())));
+        src.insert(
+            0x0100_0004,
+            rec(0x0100_0004, SettingValue::String("x".into())),
+        );
 
         let globals = Globals::from_records(&src);
         assert_eq!(globals.get(0x0100_0001), Some(7.0));

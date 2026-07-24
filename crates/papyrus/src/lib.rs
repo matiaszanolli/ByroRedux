@@ -138,9 +138,9 @@ mod tests {
             !errors.is_empty(),
             "the out-of-range literal must still surface as a reported error"
         );
-        let has_function_b = script.body.iter().any(|item| {
-            matches!(&item.node, ScriptItem::Function(f) if f.name.node.0 == "FunctionB")
-        });
+        let has_function_b = script.body.iter().any(
+            |item| matches!(&item.node, ScriptItem::Function(f) if f.name.node.0 == "FunctionB"),
+        );
         assert!(
             has_function_b,
             "FunctionB is valid and unrelated to FunctionA's bad literal — it must still \

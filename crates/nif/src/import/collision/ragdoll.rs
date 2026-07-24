@@ -104,8 +104,7 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
             // of vanishing silently: a breakable-wrapped limb link that detaches
             // and free-falls is then diagnosable from the log.
             if let Some(bc) = block.as_any().downcast_ref::<BhkBreakableConstraint>() {
-                if let Some((bone_a, bone_b)) =
-                    breakable_dropped_edge(bc, &block_to_body, &bodies)
+                if let Some((bone_a, bone_b)) = breakable_dropped_edge(bc, &block_to_body, &bodies)
                 {
                     log::warn!(
                         "extract_ragdoll: dropping bhkBreakableConstraint \
@@ -195,12 +194,21 @@ fn breakable_dropped_edge<'a>(
     block_to_body: &HashMap<usize, usize>,
     bodies: &'a [ImportedRagdollBody],
 ) -> Option<(&'a str, &'a str)> {
-    let body_a = bc.entity_a.index().and_then(|i| block_to_body.get(&i).copied())?;
-    let body_b = bc.entity_b.index().and_then(|i| block_to_body.get(&i).copied())?;
+    let body_a = bc
+        .entity_a
+        .index()
+        .and_then(|i| block_to_body.get(&i).copied())?;
+    let body_b = bc
+        .entity_b
+        .index()
+        .and_then(|i| block_to_body.get(&i).copied())?;
     if body_a == body_b {
         return None;
     }
-    Some((bodies[body_a].bone_name.as_ref(), bodies[body_b].bone_name.as_ref()))
+    Some((
+        bodies[body_a].bone_name.as_ref(),
+        bodies[body_b].bone_name.as_ref(),
+    ))
 }
 
 /// Map each `BhkRigidBody` block index → the name of the bone NiNode that
@@ -572,7 +580,11 @@ mod ragdoll_extract_tests {
 
     // ── #1850 — bhkBreakableConstraint is invisible to the joint loop ──
 
-    fn breakable_constraint(entity_a: usize, entity_b: usize, wrapped_type: u32) -> BhkBreakableConstraint {
+    fn breakable_constraint(
+        entity_a: usize,
+        entity_b: usize,
+        wrapped_type: u32,
+    ) -> BhkBreakableConstraint {
         BhkBreakableConstraint {
             entity_a: BlockRef(entity_a as u32),
             entity_b: BlockRef(entity_b as u32),
@@ -623,10 +635,16 @@ mod ragdoll_extract_tests {
         );
         // self-loop (both entities map to the same body) → not an inter-limb edge.
         let self_loop = breakable_constraint(2, 2, 7);
-        assert_eq!(breakable_dropped_edge(&self_loop, &block_to_body, &bodies), None);
+        assert_eq!(
+            breakable_dropped_edge(&self_loop, &block_to_body, &bodies),
+            None
+        );
         // ref to an unmapped body (block 99 was never collected) → dropped quietly.
         let dangling = breakable_constraint(2, 99, 7);
-        assert_eq!(breakable_dropped_edge(&dangling, &block_to_body, &bodies), None);
+        assert_eq!(
+            breakable_dropped_edge(&dangling, &block_to_body, &bodies),
+            None
+        );
     }
 
     /// End-to-end: a 2-body scene whose only articulation link is a
@@ -649,9 +667,7 @@ mod ragdoll_extract_tests {
         scene.blocks.push(coll_obj(6)); // [5]
         scene.blocks.push(rigid_body(7)); // [6]
         scene.blocks.push(sphere(1.0)); // [7]
-        scene
-            .blocks
-            .push(Box::new(breakable_constraint(2, 6, 7))); // [8] wrapped Ragdoll
+        scene.blocks.push(Box::new(breakable_constraint(2, 6, 7))); // [8] wrapped Ragdoll
 
         assert!(
             extract_ragdoll(&scene).is_none(),

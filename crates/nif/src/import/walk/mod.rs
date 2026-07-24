@@ -1623,17 +1623,14 @@ pub(super) fn extract_bs_value_node(block: &dyn NiObject) -> Option<super::BsVal
 /// `BsBound.dimensions` uses. `radius` is a magnitude and is unaffected
 /// by the rotation.
 pub(super) fn extract_bs_ordered_node(block: &dyn NiObject) -> Option<super::BsOrderedNodeData> {
-    block
-        .as_any()
-        .downcast_ref::<BsOrderedNode>()
-        .map(|n| {
-            let [x, y, z, radius] = n.alpha_sort_bound;
-            let center = byroredux_core::math::coord::zup_to_yup_pos([x, y, z]);
-            super::BsOrderedNodeData {
-                alpha_sort_bound: [center[0], center[1], center[2], radius],
-                is_static_bound: n.is_static_bound,
-            }
-        })
+    block.as_any().downcast_ref::<BsOrderedNode>().map(|n| {
+        let [x, y, z, radius] = n.alpha_sort_bound;
+        let center = byroredux_core::math::coord::zup_to_yup_pos([x, y, z]);
+        super::BsOrderedNodeData {
+            alpha_sort_bound: [center[0], center[1], center[2], radius],
+            is_static_bound: n.is_static_bound,
+        }
+    })
 }
 
 /// Solve `1 / (const + lin·d + quad·d²) = THRESHOLD` for distance.

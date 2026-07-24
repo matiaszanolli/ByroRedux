@@ -102,7 +102,10 @@ fn conductor_tint_is_mult_free() {
 fn conductor_tint_clamps_to_unit_range() {
     // Both inputs in range → result in range (no overshoot).
     let in_range = conductor_diffuse_tint([1.0, 1.0, 1.0], [1.0, 0.467, 0.318]);
-    assert!(in_range.iter().all(|&c| (0.0..=1.0).contains(&c)), "{in_range:?}");
+    assert!(
+        in_range.iter().all(|&c| (0.0..=1.0).contains(&c)),
+        "{in_range:?}"
+    );
     // A >1 diffuse input (defensive) is clamped.
     let clamped = conductor_diffuse_tint([2.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
     assert_eq!(clamped[0], 1.0, "0.5*2.0 + 0.5*1.0 = 1.5 → clamped to 1.0");
@@ -136,21 +139,30 @@ fn bgsm_metalness_legacy_tinted_spec_is_conductor() {
 #[test]
 fn bgsm_metalness_legacy_near_zero_spec_is_dielectric() {
     let m = bgsm_metalness([0.0, 0.0, 0.0], false);
-    assert_eq!(m, 0.0, "near-zero spec magnitude must not divide-by-zero into metallic");
+    assert_eq!(
+        m, 0.0,
+        "near-zero spec magnitude must not divide-by-zero into metallic"
+    );
 }
 
 /// pbr branch: F0 at the dielectric floor (0.04 achromatic) reads ~0.0.
 #[test]
 fn bgsm_metalness_pbr_dielectric_floor_is_zero() {
     let m = bgsm_metalness([0.04, 0.04, 0.04], true);
-    assert!(m.abs() < 1.0e-5, "F0=0.04 must read as dielectric floor: {m}");
+    assert!(
+        m.abs() < 1.0e-5,
+        "F0=0.04 must read as dielectric floor: {m}"
+    );
 }
 
 /// pbr branch: full-white F0 is a fully metallic conductor.
 #[test]
 fn bgsm_metalness_pbr_white_f0_is_metallic() {
     let m = bgsm_metalness([1.0, 1.0, 1.0], true);
-    assert!((m - 1.0).abs() < 1.0e-6, "F0=1.0 must read as fully metallic: {m}");
+    assert!(
+        (m - 1.0).abs() < 1.0e-6,
+        "F0=1.0 must read as fully metallic: {m}"
+    );
 }
 
 // ── `normalize_mesh_path` — regression for unclothed NPCs in
@@ -272,8 +284,7 @@ fn strip_build_prefix_handles_skyrim_hd_prefix() {
     // The headline case from the Markarth render: Skyrim AE bundles
     // the HD juniper / reach branches / driftwood with the full
     // pipeline-internal prefix.
-    let out =
-        strip_build_prefix("skyrimhd\\build\\pc\\data\\textures\\plants\\florajuniper.dds");
+    let out = strip_build_prefix("skyrimhd\\build\\pc\\data\\textures\\plants\\florajuniper.dds");
     assert_eq!(out.as_ref(), "textures\\plants\\florajuniper.dds");
 }
 
@@ -343,8 +354,7 @@ fn normalize_material_path_strips_fo4_build_prefix() {
 /// because it requires a separator BEFORE the `data` segment.
 #[test]
 fn normalize_material_path_strips_leading_data_segment() {
-    let out =
-        normalize_material_path("data\\materials\\setdressing\\metaltrashcan01alpha.bgsm");
+    let out = normalize_material_path("data\\materials\\setdressing\\metaltrashcan01alpha.bgsm");
     assert_eq!(
         out.as_ref(),
         "materials\\setdressing\\metaltrashcan01alpha.bgsm"
@@ -1202,7 +1212,10 @@ fn bgem_merge_forwards_soft_particle_depth() {
         "soft_depth must forward to soft_falloff_depth"
     );
     assert!(es.effect_soft, "soft_enabled must map to effect_soft");
-    assert_eq!(es.lighting_influence, 255, "1.0 influence → 255 on u8 payload");
+    assert_eq!(
+        es.lighting_influence, 255,
+        "1.0 influence → 255 on u8 payload"
+    );
     let flags = crate::cell_loader::pack_effect_shader_flags(Some(&es));
     assert_ne!(
         flags & EFFECT_SOFT,
@@ -1302,7 +1315,10 @@ fn bgem_merge_forwards_grayscale_to_palette_alpha_bool() {
         lut_is_alpha = bgem.grayscale_to_palette_alpha;
     }
 
-    assert_eq!(lut_path.as_deref(), Some("textures\\effects\\gradients\\electricity.dds"));
+    assert_eq!(
+        lut_path.as_deref(),
+        Some("textures\\effects\\gradients\\electricity.dds")
+    );
     assert!(
         lut_is_alpha,
         "grayscale_to_palette_alpha=true must forward to bgsm_greyscale_lut_is_alpha"
@@ -1321,7 +1337,10 @@ fn bgem_merge_forwards_grayscale_to_palette_alpha_bool() {
         lut_is_alpha2 = bgem_color_only.grayscale_to_palette_alpha;
     }
     assert!(lut_path2.is_some());
-    assert!(!lut_is_alpha2, "default BGEM/BGSM path must stay the color variant");
+    assert!(
+        !lut_is_alpha2,
+        "default BGEM/BGSM path must stay the color variant"
+    );
 }
 
 /// Every failing-to-resolve path logs at most once, so a broken
@@ -1376,10 +1395,7 @@ fn pex_archive_path_normalises_every_authored_form() {
         "scripts\\da10maindoorscript.pex"
     );
     // Extension present, folder missing.
-    assert_eq!(
-        pex_archive_path("MyScript.pex"),
-        "scripts\\myscript.pex"
-    );
+    assert_eq!(pex_archive_path("MyScript.pex"), "scripts\\myscript.pex");
     // Forward slashes are converted to the archive's backslashes.
     assert_eq!(
         pex_archive_path("scripts/Sub/MyScript"),
@@ -1705,9 +1721,7 @@ fn minimal_cdb_bytes() -> Vec<u8> {
 #[test]
 fn is_materialsbeta_cdb_path_matches_base_and_dlc() {
     // Base game.
-    assert!(is_materialsbeta_cdb_path(
-        "materials\\materialsbeta.cdb"
-    ));
+    assert!(is_materialsbeta_cdb_path("materials\\materialsbeta.cdb"));
     // DLC / Creations — the paths the hardcoded extract missed.
     assert!(is_materialsbeta_cdb_path(
         "materials\\creations\\shatteredspace\\materialsbeta.cdb"
@@ -1723,9 +1737,7 @@ fn is_materialsbeta_cdb_path_matches_base_and_dlc() {
         "Materials/Creations/ShatteredSpace/MaterialsBeta.cdb"
     ));
     // Non-CDB / wrong-root paths are rejected.
-    assert!(!is_materialsbeta_cdb_path(
-        "materials\\foo\\bar.bgsm"
-    ));
+    assert!(!is_materialsbeta_cdb_path("materials\\foo\\bar.bgsm"));
     assert!(!is_materialsbeta_cdb_path(
         "meshes\\materialsbeta.cdb" // right filename, wrong root
     ));
@@ -1747,8 +1759,7 @@ fn discovered_cdbs_accumulate_in_load_order() {
     provider.register_starfield_cdb(&minimal_cdb_bytes());
     assert!(provider.has_starfield_cdb());
     assert_eq!(
-        provider.sf_cdb_count,
-        2,
+        provider.sf_cdb_count, 2,
         "a second CDB must increment the count, not replace the first (was \
          the single-Option bug that dropped DLC CDBs)"
     );
@@ -1757,8 +1768,7 @@ fn discovered_cdbs_accumulate_in_load_order() {
     // the count intact.
     provider.register_starfield_cdb(b"not a cdb");
     assert_eq!(
-        provider.sf_cdb_count,
-        2,
+        provider.sf_cdb_count, 2,
         "a rejected CDB must not change the already-counted CDBs"
     );
 }
@@ -1777,8 +1787,7 @@ fn merge_sets_is_pbr_on_mat_path_when_cdb_loaded() {
         "minimal CDB payload must mark the provider as Starfield-loaded"
     );
 
-    let mut mesh =
-        imported_mesh_with_material_path(&mut pool, "materials/setpieces/cargobay.mat");
+    let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/setpieces/cargobay.mat");
     assert!(!mesh.is_pbr, "fresh ImportedMesh defaults to is_pbr=false");
 
     let touched = merge_bgsm_into_mesh(&mut mesh, &mut provider, &mut pool);

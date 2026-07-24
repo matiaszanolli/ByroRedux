@@ -28,8 +28,8 @@ use crate::components::{
 };
 
 use super::nif_import_registry::CachedNifImport;
-use super::refr::RefrTextureOverlay;
 use super::references::attach_light_flicker_if_needed;
+use super::refr::RefrTextureOverlay;
 
 /// `true` when an `ImportedLight` has a non-trivial diffuse colour
 /// contribution and therefore would actually spawn a `LightSource`

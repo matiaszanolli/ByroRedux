@@ -255,7 +255,11 @@ mod tests {
         for (byte, (name, arg_count, has_varargs)) in EXPECTED.into_iter().enumerate() {
             let op = OpCode::from_u8(byte as u8).unwrap();
             assert_eq!(op.name(), name, "opcode {byte} name mismatch");
-            assert_eq!(op.arg_count(), arg_count, "opcode {byte} ({name}) arg_count mismatch");
+            assert_eq!(
+                op.arg_count(),
+                arg_count,
+                "opcode {byte} ({name}) arg_count mismatch"
+            );
             assert_eq!(
                 op.has_varargs(),
                 has_varargs,

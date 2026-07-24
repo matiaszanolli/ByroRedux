@@ -87,9 +87,18 @@ fn cpu_breakdown(t: &CpuFrameTimings) -> String {
         "fence_wait={:.0} acquire={:.0} submit_present={:.0} ssbo_build={:.0} \
          tlas_build={:.0} cmd_record={:.0} rof_pre_draw={:.0} rof_draw_call={:.0} \
          rof_post_draw={:.0} atw_pre={:.0} atw_scheduler={:.0} atw_post={:.0}",
-        t.fence_wait_ms, t.acquire_ms, t.submit_present_ms, t.ssbo_build_ms,
-        t.tlas_build_ms, t.cmd_record_ms, t.rof_pre_draw_ms, t.rof_draw_call_ms,
-        t.rof_post_draw_ms, t.atw_pre_ms, t.atw_scheduler_ms, t.atw_post_ms,
+        t.fence_wait_ms,
+        t.acquire_ms,
+        t.submit_present_ms,
+        t.ssbo_build_ms,
+        t.tlas_build_ms,
+        t.cmd_record_ms,
+        t.rof_pre_draw_ms,
+        t.rof_draw_call_ms,
+        t.rof_post_draw_ms,
+        t.atw_pre_ms,
+        t.atw_scheduler_ms,
+        t.atw_post_ms,
     )
 }
 

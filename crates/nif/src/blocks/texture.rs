@@ -759,7 +759,7 @@ mod tests {
         data.extend_from_slice(&2u32.to_le_bytes()); // mipmap height
         data.extend_from_slice(&0u32.to_le_bytes()); // mipmap offset
         data.extend_from_slice(&16u32.to_le_bytes()); // num_pixels
-                                                       // No Pad Num Pixels — v20.0.0.5 < 20.2.0.6.
+                                                      // No Pad Num Pixels — v20.0.0.5 < 20.2.0.6.
         data.extend_from_slice(&1u32.to_le_bytes()); // num_faces
         data.extend_from_slice(&0xABu32.to_le_bytes()); // Platform tag
         data.extend_from_slice(&[

@@ -191,7 +191,10 @@ fn bs_weak_reference_node_captures_starfield_trailing_tail() {
     {
         let mut s = NifStream::new(&body, &header);
         let n = BsWeakReferenceNode::parse(&mut s).expect("body must parse");
-        assert!(n.starfield_tail.is_empty(), "no block_size → no tail capture");
+        assert!(
+            n.starfield_tail.is_empty(),
+            "no block_size → no tail capture"
+        );
         assert_eq!(s.position(), body.len() as u64, "body consumes exactly");
     }
 
@@ -856,7 +859,7 @@ fn bs_multi_bound_node_reads_culling_mode_on_hybrid_unknown_bsver_ge_83() {
         }
     }
     bytes.extend_from_slice(&1.0f32.to_le_bytes()); // scale
-    // properties list omitted (bsver 90 > 34)
+                                                    // properties list omitted (bsver 90 > 34)
     bytes.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref
     bytes.extend_from_slice(&0u32.to_le_bytes()); // NiNode children count
     bytes.extend_from_slice(&0u32.to_le_bytes()); // NiNode effects count

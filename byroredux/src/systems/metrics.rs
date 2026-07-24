@@ -125,6 +125,7 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         gpu_pass_ms.insert("svgf".to_string(), cov.gpu_svgf_ms);
         gpu_pass_ms.insert("taa".to_string(), cov.gpu_taa_ms);
         gpu_pass_ms.insert("tlas_build".to_string(), cov.gpu_tlas_build_ms);
+        gpu_pass_ms.insert("upscale".to_string(), cov.gpu_upscale_ms);
         gpu_pass_ms.insert("volumetrics".to_string(), cov.gpu_volumetrics_ms);
     }
 

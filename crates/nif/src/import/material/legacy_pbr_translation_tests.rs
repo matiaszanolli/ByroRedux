@@ -94,7 +94,10 @@ fn classifier_unauthored_specular_default_does_not_chrome_flyer() {
         pbr.metalness, 0.0,
         "unauthored specular_color default must not be read as chrome"
     );
-    assert!(pbr.roughness >= 0.6, "must stay above the RT reflection gate");
+    assert!(
+        pbr.roughness >= 0.6,
+        "must stay above the RT reflection gate"
+    );
 }
 
 #[test]

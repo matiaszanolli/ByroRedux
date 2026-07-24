@@ -1291,7 +1291,7 @@ impl ApplicationHandler for App {
                     // Surfaces `gpu_skin_disp` / `gpu_blas_refit` /
                     // `gpu_taa` so PERF-DIM7-01/-02/-03 (#1195/#1196/
                     // #1197) can measure rather than guess.
-                    let (gpu_skin_disp_ms, gpu_blas_refit_ms, gpu_taa_ms) = self
+                    let (gpu_skin_disp_ms, gpu_blas_refit_ms, gpu_taa_ms, gpu_upscale_ms) = self
                         .world
                         .try_resource::<byroredux_core::ecs::SkinCoverageStats>()
                         .map(|s| {
@@ -1299,14 +1299,16 @@ impl ApplicationHandler for App {
                                 s.gpu_skin_dispatch_ms,
                                 s.gpu_skin_blas_refit_ms,
                                 s.gpu_taa_ms,
+                                s.gpu_upscale_ms,
                             )
                         })
-                        .unwrap_or((0.0, 0.0, 0.0));
+                        .unwrap_or((0.0, 0.0, 0.0, 0.0));
                     println!(
                         "bench: frames={} wall_fps={:.1} wall_ms={:.2} \
                          brd_ms={:.2} ui_ms={:.2} draw_ms={:.2} \
                          [fence={:.2} tlas={:.2} ssbo={:.2} cmd={:.2} submit={:.2}] \
-                         [gpu_skin_disp={:.3} gpu_blas_refit={:.3} gpu_taa={:.3}] \
+                         [gpu_skin_disp={:.3} gpu_blas_refit={:.3} gpu_taa={:.3} \
+                         gpu_upscale={:.3}] \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          entities={} meshes={} textures={} draws={}/{}b/{}c",
                         self.bench_frames_count,
@@ -1323,6 +1325,7 @@ impl ApplicationHandler for App {
                         gpu_skin_disp_ms,
                         gpu_blas_refit_ms,
                         gpu_taa_ms,
+                        gpu_upscale_ms,
                         systems_ms,
                         ticks_per_frame,
                         unaccounted_ms,

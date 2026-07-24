@@ -199,7 +199,11 @@ pub struct ObjectiveStatus {
 
 impl QuestObjectiveState {
     fn entry(&mut self, quest: QuestFormId, objective: u16) -> &mut ObjectiveStatus {
-        self.quests.entry(quest).or_default().entry(objective).or_default()
+        self.quests
+            .entry(quest)
+            .or_default()
+            .entry(objective)
+            .or_default()
     }
 
     /// Papyrus `Quest.SetObjectiveDisplayed(idx, displayed)`.

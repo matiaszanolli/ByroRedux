@@ -296,9 +296,7 @@ pub fn load_sit_clip(
 /// enter for all sit markers (per-type mapping is Phase C).
 pub fn sandbox_sit_enter_kf_path(game: GameKind) -> Option<&'static str> {
     match game {
-        GameKind::Fallout3NV => {
-            Some(r"meshes\characters\_male\idleanims\chairskirt_leftenter.kf")
-        }
+        GameKind::Fallout3NV => Some(r"meshes\characters\_male\idleanims\chairskirt_leftenter.kf"),
         GameKind::Oblivion
         | GameKind::Skyrim
         | GameKind::Fallout4
@@ -486,7 +484,9 @@ pub fn idle_desync(form_id: u32, duration: f32) -> (f32, f32) {
     // fractions. Cheap, allocation-free, good bit diffusion so adjacent
     // FormIds (Bethesda hands them out sequentially within a plugin)
     // don't produce near-identical phases.
-    let mut z = (form_id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0x1234_5678);
+    let mut z = (form_id as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(0x1234_5678);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^= z >> 31;
@@ -681,11 +681,7 @@ fn build_npc_equip_state<'a>(
     // OTFT slot) — this pass makes the mesh set agree with that
     // resolution instead of spawning every candidate regardless of
     // whether it was displaced.
-    armor_to_spawn.retain(|armor| {
-        equipment_slots
-            .occupants
-            .contains(&Some(armor.inv_idx))
-    });
+    armor_to_spawn.retain(|armor| equipment_slots.occupants.contains(&Some(armor.inv_idx)));
 
     NpcEquipState {
         inventory,
@@ -1443,11 +1439,7 @@ pub fn spawn_npc_entity(
     // overlapping entry). A candidate that kept at least one bit still
     // needs its mesh — partial displacement just means a different
     // item now owns the other bit.
-    candidates.retain(|c| {
-        equipment_slots
-            .occupants
-            .contains(&Some(c.inv_idx))
-    });
+    candidates.retain(|c| equipment_slots.occupants.contains(&Some(c.inv_idx)));
 
     for c in &candidates {
         match tex_provider.extract_mesh(c.model_path) {
@@ -1630,7 +1622,9 @@ fn apply_ai_package_behavior(
     // insert here is a borrow-checker conflict, since `condition_met`
     // closes over `world: &World`.
     let active_pkg = byroredux_plugin::esm::records::active_package(
-        npc.ai_packages.iter().filter_map(|pk| index.packages.get(pk)),
+        npc.ai_packages
+            .iter()
+            .filter_map(|pk| index.packages.get(pk)),
         game_hour,
         condition_met,
     );
@@ -1666,7 +1660,10 @@ fn apply_ai_package_behavior(
             // sidesteps the spawn-ordering half of this problem; Sandbox
             // could adopt the same approach here if a future session wants
             // the search *center* to do the same.
-            let search_radius = pk.location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+            let search_radius = pk
+                .location
+                .map(|loc| loc.radius as f32)
+                .filter(|r| *r > 0.0);
             world.insert(
                 placement_root,
                 byroredux_core::ecs::components::SandboxBehavior { search_radius },
@@ -1675,7 +1672,10 @@ fn apply_ai_package_behavior(
             // M42.3: same PLDT-radius-or-default pattern as Sandbox above,
             // same v0 "actor's own position is the center approximation"
             // rationale.
-            let wander_radius = pk.location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+            let wander_radius = pk
+                .location
+                .map(|loc| loc.radius as f32)
+                .filter(|r| *r > 0.0);
             world.insert(
                 placement_root,
                 byroredux_core::ecs::components::WanderBehavior {
@@ -1696,11 +1696,12 @@ fn apply_ai_package_behavior(
             // FormID that fn can resolve; other location types leave
             // `travel_target_form_id` `None` and fall straight to
             // `travel_system`'s hash-picked fallback.
-            let travel_radius = pk.location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+            let travel_radius = pk
+                .location
+                .map(|loc| loc.radius as f32)
+                .filter(|r| *r > 0.0);
             let travel_target_form_id = pk.location.and_then(|loc| match loc.target {
-                byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => {
-                    Some(fid)
-                }
+                byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => Some(fid),
                 _ => None,
             });
             world.insert(
@@ -1720,7 +1721,10 @@ fn apply_ai_package_behavior(
             // and (unlike Travel) there's no hash-picked fallback — a
             // Follow package with no resolvable target simply never moves
             // (see `follow.rs`'s module docs).
-            let follow_distance = pk.target.map(|t| t.count_or_distance as f32).filter(|d| *d > 0.0);
+            let follow_distance = pk
+                .target
+                .map(|t| t.count_or_distance as f32)
+                .filter(|d| *d > 0.0);
             let follow_target_form_id = pk.target.and_then(|t| match t.target {
                 byroredux_plugin::esm::records::PackTargetKind::SpecificReference(fid)
                 | byroredux_plugin::esm::records::PackTargetKind::ObjectId(fid) => Some(fid),
@@ -1744,12 +1748,12 @@ fn apply_ai_package_behavior(
                 | byroredux_plugin::esm::records::PackTargetKind::ObjectId(fid) => Some(fid),
                 byroredux_plugin::esm::records::PackTargetKind::Other(_) => None,
             });
-            let escort_destination_radius =
-                pk.location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+            let escort_destination_radius = pk
+                .location
+                .map(|loc| loc.radius as f32)
+                .filter(|r| *r > 0.0);
             let escort_destination_form_id = pk.location.and_then(|loc| match loc.target {
-                byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => {
-                    Some(fid)
-                }
+                byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => Some(fid),
                 _ => None,
             });
             world.insert(
@@ -1764,11 +1768,12 @@ fn apply_ai_package_behavior(
         } else if pk.is_guard() {
             // M42.7: same PLDT-only reads as Travel (no PTDT — Guard has
             // nothing to collect, just a post to hold).
-            let guard_radius = pk.location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+            let guard_radius = pk
+                .location
+                .map(|loc| loc.radius as f32)
+                .filter(|r| *r > 0.0);
             let guard_anchor_form_id = pk.location.and_then(|loc| match loc.target {
-                byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => {
-                    Some(fid)
-                }
+                byroredux_plugin::esm::records::PackLocationTarget::NearReference(fid) => Some(fid),
                 _ => None,
             });
             world.insert(
@@ -1783,7 +1788,10 @@ fn apply_ai_package_behavior(
             // M42.8: same PLDT-only reads as Wander (no target resolution
             // — v0 Patrol is Wander's algorithm under a different tag, see
             // `systems::patrol` module docs).
-            let patrol_radius = pk.location.map(|loc| loc.radius as f32).filter(|r| *r > 0.0);
+            let patrol_radius = pk
+                .location
+                .map(|loc| loc.radius as f32)
+                .filter(|r| *r > 0.0);
             world.insert(
                 placement_root,
                 byroredux_core::ecs::components::PatrolBehavior {
@@ -2420,7 +2428,10 @@ mod tests {
              pre-fix the inventory was empty (naked actor)"
         );
         assert_eq!(
-            state.inventory.get(InventoryIndex(0)).map(|s| s.base_form_id),
+            state
+                .inventory
+                .get(InventoryIndex(0))
+                .map(|s| s.base_form_id),
             Some(GEAR),
             "the inherited gear form must be the one that landed in the inventory"
         );
@@ -2452,7 +2463,10 @@ mod tests {
 
         let state = build_npc_equip_state(&npc, &index, GameKind::Skyrim, Gender::Male);
         assert_eq!(
-            state.inventory.get(InventoryIndex(0)).map(|s| s.base_form_id),
+            state
+                .inventory
+                .get(InventoryIndex(0))
+                .map(|s| s.base_form_id),
             Some(GEAR),
             "no-template NPC equips from its own inventory unchanged"
         );
@@ -2535,10 +2549,11 @@ mod tests {
 
         let mut npc = test_npc(0x0100_0025, "SkinFallbackNpc");
         npc.race_form_id = RACE;
-        npc.inventory.push(byroredux_plugin::esm::records::NpcInventoryEntry {
-            item_form_id: FEET,
-            count: 1,
-        });
+        npc.inventory
+            .push(byroredux_plugin::esm::records::NpcInventoryEntry {
+                item_form_id: FEET,
+                count: 1,
+            });
 
         let mut index = EsmIndex {
             game: GameKind::Skyrim,
@@ -2621,10 +2636,11 @@ mod tests {
 
         let mut npc = test_npc(0x0100_0035, "SkinDisplacedNpc");
         npc.race_form_id = RACE;
-        npc.inventory.push(byroredux_plugin::esm::records::NpcInventoryEntry {
-            item_form_id: TORSO,
-            count: 1,
-        });
+        npc.inventory
+            .push(byroredux_plugin::esm::records::NpcInventoryEntry {
+                item_form_id: TORSO,
+                count: 1,
+            });
 
         let mut index = EsmIndex {
             game: GameKind::Skyrim,
@@ -2637,10 +2653,9 @@ mod tests {
         index
             .armor_addons
             .insert(SKIN_ARMA, arma(SKIN_ARMA, r"actors\character\skin.nif"));
-        index.items.insert(
-            TORSO,
-            skyrim_armor_item(TORSO, TORSO_BIT, vec![TORSO_ARMA]),
-        );
+        index
+            .items
+            .insert(TORSO, skyrim_armor_item(TORSO, TORSO_BIT, vec![TORSO_ARMA]));
         index
             .armor_addons
             .insert(TORSO_ARMA, arma(TORSO_ARMA, r"armor\robe\robe.nif"));
@@ -2668,7 +2683,10 @@ mod tests {
     // `World` + `NpcRecord` + `EsmIndex`, no Vulkan device, so it's
     // testable in isolation unlike the two spawn functions themselves.
 
-    fn pack_with_procedure(form_id: u32, procedure_type: u32) -> byroredux_plugin::esm::records::PackRecord {
+    fn pack_with_procedure(
+        form_id: u32,
+        procedure_type: u32,
+    ) -> byroredux_plugin::esm::records::PackRecord {
         byroredux_plugin::esm::records::PackRecord {
             form_id,
             procedure_type,
@@ -2687,7 +2705,10 @@ mod tests {
         let mut index = EsmIndex::default();
         index.packages.insert(
             0xAAAA,
-            pack_with_procedure(0xAAAA, byroredux_plugin::esm::records::misc::pack::PROCEDURE_SANDBOX),
+            pack_with_procedure(
+                0xAAAA,
+                byroredux_plugin::esm::records::misc::pack::PROCEDURE_SANDBOX,
+            ),
         );
 
         apply_ai_package_behavior(&mut world, placement_root, &npc, &index);

@@ -263,7 +263,11 @@ mod tests {
         assert_eq!(table.band_for(200.0), Some(0));
         assert_eq!(table.band_for(599.9), Some(0));
         assert_eq!(table.band_for(600.0), Some(1));
-        assert_eq!(table.band_for(9000.0), Some(1), "no cap — stays in the top band");
+        assert_eq!(
+            table.band_for(9000.0),
+            Some(1),
+            "no cap — stays in the top band"
+        );
     }
 
     #[test]
@@ -353,7 +357,11 @@ mod tests {
         reevaluate_affliction(&mut status, &mut avs, &poison);
 
         assert_eq!(avs.current(STR), -1.0, "radiation band 0");
-        assert_eq!(avs.current(AGI), -2.0, "poison band 0 (radiation contributes 0 here)");
+        assert_eq!(
+            avs.current(AGI),
+            -2.0,
+            "poison band 0 (radiation contributes 0 here)"
+        );
         assert_eq!(status.entries.len(), 2);
 
         // Curing radiation must not touch poison's tracked band.
@@ -403,7 +411,10 @@ mod tests {
 
         affliction_tick_system(&world, &[stand_in_radiation_table()]);
 
-        assert_eq!(world.get::<ActorValues>(tracked).unwrap().current(STR), -1.0);
+        assert_eq!(
+            world.get::<ActorValues>(tracked).unwrap().current(STR),
+            -1.0
+        );
         assert_eq!(
             world.get::<ActorValues>(untracked).unwrap().current(STR),
             0.0,

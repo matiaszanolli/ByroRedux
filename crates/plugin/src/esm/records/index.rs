@@ -897,7 +897,10 @@ mod tests {
         vmad.push(0); // script status
         vmad.extend_from_slice(&0u16.to_le_bytes()); // propCount = 0
 
-        let acti = parse_acti(0xAAAA_0003, &[sub(b"EDID", b"VmadActi\0"), sub(b"VMAD", &vmad)]);
+        let acti = parse_acti(
+            0xAAAA_0003,
+            &[sub(b"EDID", b"VmadActi\0"), sub(b"VMAD", &vmad)],
+        );
 
         let mut idx = EsmIndex::default();
         idx.activators.insert(0xAAAA_0003, acti);

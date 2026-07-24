@@ -228,10 +228,18 @@ mod tests {
         // damage to just the offending statement.
         let src = format!("a = {} + 1", "9".repeat(40));
         let (tokens, errors) = lex(&src);
-        assert_eq!(errors.len(), 1, "the oversized literal is the only lex error");
+        assert_eq!(
+            errors.len(),
+            1,
+            "the oversized literal is the only lex error"
+        );
         // Ident("a"), Assign, IntLit(0) [placeholder], Plus, IntLit(1) —
         // same token count as if the literal had lexed cleanly.
-        assert_eq!(tokens.len(), 5, "the placeholder keeps the stream contiguous: {tokens:?}");
+        assert_eq!(
+            tokens.len(),
+            5,
+            "the placeholder keeps the stream contiguous: {tokens:?}"
+        );
         assert!(
             matches!(&tokens[2].token, Token::IntLit(0)),
             "expected an IntLit(0) placeholder at the error's position, got {:?}",

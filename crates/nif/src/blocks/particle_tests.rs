@@ -257,8 +257,8 @@ fn parse_sphere_emitter_consumes_full_block() {
     assert_eq!(d.len(), 77);
 
     let mut stream = NifStream::new(&d, &header);
-    let block = parse_sphere_emitter(&mut stream)
-        .expect("FNV NiPSysSphereEmitter should parse cleanly");
+    let block =
+        parse_sphere_emitter(&mut stream).expect("FNV NiPSysSphereEmitter should parse cleanly");
     assert_eq!(stream.position() as usize, d.len());
     assert_eq!(block.original_type, "NiPSysSphereEmitter");
 }
@@ -422,7 +422,7 @@ fn read_emitter_base_reads_life_span_variation_below_10_4_0_1() {
         d.extend_from_slice(&1.0f32.to_le_bytes());
     }
     d.extend_from_slice(&1.15f32.to_le_bytes()); // initial_radius
-    // radius_variation ABSENT at v10.2 (since 10.4.0.1)
+                                                 // radius_variation ABSENT at v10.2 (since 10.4.0.1)
     d.extend_from_slice(&1.5f32.to_le_bytes()); // life_span
     d.extend_from_slice(&0.25f32.to_le_bytes()); // life_span_variation (always present)
 
@@ -436,7 +436,10 @@ fn read_emitter_base_reads_life_span_variation_below_10_4_0_1() {
         d.len(),
         "v10.2 emitter base must consume 52 B — life_span_variation present, radius_variation absent"
     );
-    assert_eq!(params.radius_variation, 0.0, "radius_variation absent < 10.4.0.1");
+    assert_eq!(
+        params.radius_variation, 0.0,
+        "radius_variation absent < 10.4.0.1"
+    );
     assert_eq!(params.life_span, 1.5);
     assert_eq!(
         params.life_span_variation, 0.25,
@@ -777,8 +780,7 @@ fn parse_rotation_modifier_reads_fo76_interleaved_fields() {
     assert_eq!(d.len(), 60);
 
     let mut stream = NifStream::new(&d, &header);
-    parse_rotation_modifier(&mut stream)
-        .expect("FO76 NiPSysRotationModifier should parse cleanly");
+    parse_rotation_modifier(&mut stream).expect("FO76 NiPSysRotationModifier should parse cleanly");
     assert_eq!(
         stream.position() as usize,
         d.len(),

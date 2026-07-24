@@ -514,7 +514,7 @@ mod tests {
         buf.push(OpCode::LockGuards as u8); // opcode 48
         buf.push(3); // Value tag 3 = Integer (the var-arg count)
         buf.extend_from_slice(&i32::MAX.to_le_bytes()); // count = 2_147_483_647
-        // Deliberately no further bytes: the first element read must EOF.
+                                                        // Deliberately no further bytes: the first element read must EOF.
 
         let result = Reader::new(&buf).read_instructions();
         assert!(

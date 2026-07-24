@@ -267,8 +267,8 @@ pub fn strip_not(e: &Expr) -> &Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_papyrus::parse_script;
     use byroredux_papyrus::ast::{ScriptItem, Stmt};
+    use byroredux_papyrus::parse_script;
 
     /// Parse a one-event script and hand back the `If` condition of its
     /// single statement, for primitive-level unit tests.

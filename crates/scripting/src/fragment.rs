@@ -141,10 +141,13 @@ fn resolve_quest_logged(
 /// resolve correctly, so it declines here rather than trusting the raw
 /// `form_id` sitting next to a live alias index.
 fn resolve_property_form_id(vmad: Option<&ScriptInstanceData>, name: &str) -> Option<u32> {
-    vmad?.scripts.iter().find_map(|s| match s.property(name)?.value {
-        PropertyValue::Object { form_id, alias: -1 } => Some(form_id),
-        _ => None,
-    })
+    vmad?
+        .scripts
+        .iter()
+        .find_map(|s| match s.property(name)?.value {
+            PropertyValue::Object { form_id, alias: -1 } => Some(form_id),
+            _ => None,
+        })
 }
 
 /// Resolve an [`ObjectRef`] all the way to a live entity: VMAD property →
@@ -199,7 +202,11 @@ pub fn apply_effect(
     objectives: &mut QuestObjectiveState,
 ) -> Option<QuestStageAdvanced> {
     match effect {
-        Effect::AddItem { container, item, count } => {
+        Effect::AddItem {
+            container,
+            item,
+            count,
+        } => {
             let container_entity = resolve_object(vmad, world, container)?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
             let Some(mut inventories) = world.query_mut::<Inventory>() else {
@@ -268,17 +275,29 @@ fn apply_quest_scoped_effect(
                 new_stage: *stage,
             })
         }
-        Effect::SetObjectiveDisplayed { quest, objective, displayed } => {
+        Effect::SetObjectiveDisplayed {
+            quest,
+            objective,
+            displayed,
+        } => {
             let quest = resolve_quest_logged(quest, context, vmad)?;
             objectives.set_displayed(quest, *objective, *displayed);
             None
         }
-        Effect::SetObjectiveCompleted { quest, objective, completed } => {
+        Effect::SetObjectiveCompleted {
+            quest,
+            objective,
+            completed,
+        } => {
             let quest = resolve_quest_logged(quest, context, vmad)?;
             objectives.set_completed(quest, *objective, *completed);
             None
         }
-        Effect::SetObjectiveFailed { quest, objective, failed } => {
+        Effect::SetObjectiveFailed {
+            quest,
+            objective,
+            failed,
+        } => {
             let quest = resolve_quest_logged(quest, context, vmad)?;
             objectives.set_failed(quest, *objective, *failed);
             None
@@ -379,7 +398,10 @@ pub fn populate_quest_fragments_from_pex(
     let pex = match byroredux_pex::parse(pex_bytes) {
         Ok(p) => p,
         Err(e) => {
-            log::debug!("populate_quest_fragments: .pex parse failed (quest {:08X}): {e}", quest.0);
+            log::debug!(
+                "populate_quest_fragments: .pex parse failed (quest {:08X}): {e}",
+                quest.0
+            );
             return 0;
         }
     };
@@ -388,11 +410,17 @@ pub fn populate_quest_fragments_from_pex(
     })) {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            log::debug!("populate_quest_fragments: decompile failed (quest {:08X}): {e}", quest.0);
+            log::debug!(
+                "populate_quest_fragments: decompile failed (quest {:08X}): {e}",
+                quest.0
+            );
             return 0;
         }
         Err(_) => {
-            log::debug!("populate_quest_fragments: decompile panicked (quest {:08X})", quest.0);
+            log::debug!(
+                "populate_quest_fragments: decompile panicked (quest {:08X})",
+                quest.0
+            );
             return 0;
         }
     };

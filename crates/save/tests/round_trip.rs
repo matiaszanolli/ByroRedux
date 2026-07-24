@@ -299,8 +299,16 @@ fn delta_apply_reroutes_by_form_id_after_cell_reload() {
     let qt = live.query::<Transform>().unwrap();
     let tf: std::collections::HashMap<u32, Vec3> =
         qt.iter().map(|(e, t)| (e, t.translation)).collect();
-    assert_eq!(tf[&l_a], Vec3::new(100.0, 0.0, 0.0), "A's saved move applied to live A");
-    assert_eq!(tf[&l_b], Vec3::new(0.0, 50.0, 0.0), "B's saved move applied to live B");
+    assert_eq!(
+        tf[&l_a],
+        Vec3::new(100.0, 0.0, 0.0),
+        "A's saved move applied to live A"
+    );
+    assert_eq!(
+        tf[&l_b],
+        Vec3::new(0.0, 50.0, 0.0),
+        "B's saved move applied to live B"
+    );
 
     let qi = live.query::<Inventory>().unwrap();
     let (e, inv) = qi.iter().next().unwrap();
@@ -365,7 +373,10 @@ fn player_body_inventory_survives_live_load() {
     let qi = live.query::<Inventory>().unwrap();
     let (e, inv) = qi.iter().next().unwrap();
     assert_eq!(e, live_player, "inventory landed on the live player entity");
-    assert_eq!(inv.items[0].base_form_id, 0xBEEF, "the saved item survived the live load");
+    assert_eq!(
+        inv.items[0].base_form_id, 0xBEEF,
+        "the saved item survived the live load"
+    );
 }
 
 /// #1696 — `apply_deltas` remaps each row's entity *key* (saved id → live id)
@@ -515,7 +526,9 @@ fn animation_stack_round_trips_through_container() {
     dst.insert_resource(FormIdPool::new());
     restore_world(&mut dst, &reg, &decoded).expect("restore");
 
-    let q = dst.query::<AnimationStack>().expect("AnimationStack storage");
+    let q = dst
+        .query::<AnimationStack>()
+        .expect("AnimationStack storage");
     let (e, restored) = q.iter().next().expect("one AnimationStack row");
     assert_eq!(e, actor, "stack restored at the same entity id");
     assert_eq!(
@@ -728,7 +741,10 @@ fn delta_apply_skips_unresolvable_form_id_without_disturbing_others() {
     saved_world.insert_resource(FormIdPool::new());
     let s_kept = saved_world.spawn();
     let s_removed = saved_world.spawn();
-    saved_world.insert(s_kept, Transform::from_translation(Vec3::new(7.0, 0.0, 0.0)));
+    saved_world.insert(
+        s_kept,
+        Transform::from_translation(Vec3::new(7.0, 0.0, 0.0)),
+    );
     saved_world.insert(
         s_removed,
         Transform::from_translation(Vec3::new(9.0, 0.0, 0.0)),
@@ -747,7 +763,10 @@ fn delta_apply_skips_unresolvable_form_id_without_disturbing_others() {
     let mut live = World::new();
     live.insert_resource(FormIdPool::new());
     let l_kept = live.spawn();
-    live.insert(l_kept, Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)));
+    live.insert(
+        l_kept,
+        Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
+    );
     let fid = live.resource_mut::<FormIdPool>().intern(pair_kept);
     live.insert(l_kept, FormIdComponent(fid));
 

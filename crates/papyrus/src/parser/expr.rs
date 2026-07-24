@@ -402,7 +402,10 @@ mod tests {
         // (#1906 — the lexer no longer swallows the sign into the literal).
         let e = parse_expr_str("-10").unwrap();
         match &e.node {
-            Expr::UnaryOp { op: UnaryOp::Neg, operand } => assert_int(&operand.node, 10),
+            Expr::UnaryOp {
+                op: UnaryOp::Neg,
+                operand,
+            } => assert_int(&operand.node, 10),
             other => panic!("expected Neg(IntLit(10)), got {other:?}"),
         }
     }
@@ -413,7 +416,11 @@ mod tests {
         // the `-3` silently dropped (#1906).
         let e = parse_expr_str("5-3").unwrap();
         match &e.node {
-            Expr::BinaryOp { op: BinaryOp::Sub, left, right } => {
+            Expr::BinaryOp {
+                op: BinaryOp::Sub,
+                left,
+                right,
+            } => {
                 assert_int(&left.node, 5);
                 assert_int(&right.node, 3);
             }

@@ -369,9 +369,15 @@ mod mesh_path_tests {
     #[test]
     fn formid_shaped_u32_rejected() {
         // 0x0003652D little-endian = [0x2D, 0x65, 0x03, 0x00].
-        assert_eq!(read_mesh_path(&[0x2D, 0x65, 0x03, 0x00]), Err("-e\u{3}".to_string()));
+        assert_eq!(
+            read_mesh_path(&[0x2D, 0x65, 0x03, 0x00]),
+            Err("-e\u{3}".to_string())
+        );
         // 0x00012E6A little-endian = [0x6A, 0x2E, 0x01, 0x00].
-        assert_eq!(read_mesh_path(&[0x6A, 0x2E, 0x01, 0x00]), Err("j.\u{1}".to_string()));
+        assert_eq!(
+            read_mesh_path(&[0x6A, 0x2E, 0x01, 0x00]),
+            Err("j.\u{1}".to_string())
+        );
         // A tab (0x09) mid-string is equally invalid for a mesh path.
         assert!(read_mesh_path(b"meshes\\a\tb.nif").is_err());
     }

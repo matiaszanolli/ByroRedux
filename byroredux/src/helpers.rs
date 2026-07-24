@@ -97,8 +97,8 @@ pub(crate) fn classify_glass_into_material(
     // values, however: legacy BSEffect defaults to metalness 0.4 even for
     // clear shells such as Port-A-Diner. The shared behavior overwrites that
     // placeholder metalness below.
-    let bgem_effect_fallback = bgem_glass
-        && material.material_kind == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
+    let bgem_effect_fallback =
+        bgem_glass && material.material_kind == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
     if material.metalness >= 0.3 && !bgem_effect_fallback {
         return;
     }

@@ -282,9 +282,10 @@ pub fn apply_deltas(
 ) -> Result<usize, SaveError> {
     let mut applied = 0;
     for &name in columns {
-        let (Some(value), Some(apply)) =
-            (snapshot.components.get(name), registry.component_apply(name))
-        else {
+        let (Some(value), Some(apply)) = (
+            snapshot.components.get(name),
+            registry.component_apply(name),
+        ) else {
             continue;
         };
         applied += apply(world, value.clone(), remap)?;

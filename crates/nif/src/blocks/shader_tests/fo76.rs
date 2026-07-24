@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 #[test]
 fn parse_bs_lighting_fo76_minimal() {
     let header = make_fo76_header(""); // empty name → stopcond does NOT fire
@@ -47,7 +46,6 @@ fn parse_bs_lighting_fo76_minimal() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
-
 #[test]
 fn parse_bs_lighting_fo76_stopcond_short_circuits() {
     // Non-empty name at BSVER >= 155 → stopcond fires, block body is absent.
@@ -76,7 +74,6 @@ fn parse_bs_lighting_fo76_stopcond_short_circuits() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
-
 #[test]
 fn parse_bs_lighting_fo76_skin_tint_color4() {
     let header = make_fo76_header("");
@@ -101,7 +98,6 @@ fn parse_bs_lighting_fo76_skin_tint_color4() {
     }
     assert_eq!(stream.position(), data.len() as u64);
 }
-
 
 #[test]
 fn parse_bs_lighting_fo76_sf1_crcs() {
@@ -166,7 +162,6 @@ fn parse_bs_lighting_fo76_sf1_crcs() {
     assert_eq!(prop.sf2_crcs, vec![348504749]);
     assert_eq!(stream.position(), data.len() as u64);
 }
-
 
 #[test]
 fn parse_bs_effect_fo76_trailing_textures() {
@@ -246,7 +241,6 @@ fn parse_bs_effect_fo76_trailing_textures() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
-
 #[test]
 fn parse_bs_effect_fo76_stopcond_short_circuits() {
     let header = make_fo76_header("materials/effects/glow.bgem");
@@ -264,7 +258,6 @@ fn parse_bs_effect_fo76_stopcond_short_circuits() {
     );
     assert_eq!(stream.position(), data.len() as u64);
 }
-
 
 /// FO76 (BSVER=155) routes `BSSkyShaderProperty` through the CRC32
 /// flag-array branch — the legacy u32 pair is absent on disk and the
@@ -311,7 +304,6 @@ fn bs_sky_shader_property_fo76_reads_crc_arrays_not_legacy_flags() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
-
 /// Regression for #749 / SF-D3-01: a FO76+ BSLightingShaderProperty
 /// whose Name is a non-path editor label must NOT trigger the BGSM
 /// stopcond — the trailing PBR body still has to parse. Pre-fix the
@@ -339,7 +331,6 @@ fn parse_bs_lighting_fo76_editor_label_does_not_short_circuit() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
-
 /// Regression for #749 / SF-D3-01: a Starfield `.mat` reference
 /// (the new SF material format) must trigger the stopcond. The
 /// pre-#749 gate happened to do the right thing here as a side
@@ -360,7 +351,6 @@ fn parse_bs_lighting_fo76_mat_extension_triggers_stopcond() {
     assert_eq!(prop.net.name.as_deref(), Some("materials/sf/armor.mat"));
     assert_eq!(stream.position(), data.len() as u64);
 }
-
 
 /// Sibling regression: BSEffectShaderProperty must apply the same
 /// suffix gate. Pre-#749 it shared the bug 1:1 with

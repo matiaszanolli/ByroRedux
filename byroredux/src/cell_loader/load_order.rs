@@ -175,9 +175,9 @@ pub(super) fn parse_record_indexes_in_load_order(
         // .STRINGS guard, #1553).
         let header = {
             let mut reader = esm::reader::EsmReader::new(&bytes);
-            reader.read_file_header().map_err(|e| {
-                anyhow::anyhow!("Failed to read TES4 header for '{}': {}", path, e)
-            })?
+            reader
+                .read_file_header()
+                .map_err(|e| anyhow::anyhow!("Failed to read TES4 header for '{}': {}", path, e))?
         };
 
         let plugin_slot = if header.light_master {
@@ -287,7 +287,12 @@ mod tests {
     /// A single-WEAP plugin (FULL = lstring id 0x0001) with TES4 `flags`
     /// and the WEAP at raw `weap_form_id`, written to `dir/<stem>.esm`.
     /// Returns the path.
-    fn write_weap_plugin(dir: &Path, stem: &str, flags: u32, weap_form_id: u32) -> std::path::PathBuf {
+    fn write_weap_plugin(
+        dir: &Path,
+        stem: &str,
+        flags: u32,
+        weap_form_id: u32,
+    ) -> std::path::PathBuf {
         let mut weap_subs = Vec::<(&[u8; 4], Vec<u8>)>::new();
         weap_subs.push((b"EDID", b"TestBlade\0".to_vec()));
         weap_subs.push((b"FULL", 0x0001u32.to_le_bytes().to_vec()));

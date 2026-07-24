@@ -30,8 +30,7 @@ use collision::{
     BhkConvexSweepShape, BhkConvexVerticesShape, BhkCylinderShape, BhkLiquidAction, BhkListShape,
     BhkMeshShape, BhkMoppBvTreeShape, BhkMultiSphereShape, BhkNiTriStripsShape,
     BhkOrientHingedBodyAction, BhkPCollisionObject, BhkPackedNiTriStripsShape, BhkPlaneShape,
-    BhkPoseArray,
-    BhkRagdollTemplate, BhkRagdollTemplateData, BhkRigidBody, BhkSimpleShapePhantom,
+    BhkPoseArray, BhkRagdollTemplate, BhkRagdollTemplateData, BhkRigidBody, BhkSimpleShapePhantom,
     BhkSphereShape, BhkTransformShape, HkPackedNiTriStripsData, NiCollisionObjectBase,
 };
 use controller::{

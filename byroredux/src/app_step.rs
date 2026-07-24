@@ -112,7 +112,9 @@ impl App {
         // coord has left the unload radius so the payload classifies as
         // `PayloadDecision::StaleNoPending` and is discarded on arrival
         // instead of paying a full spawn one boundary crossing too late.
-        for coord in streaming::stale_pending_coords(&state.pending, player_grid, state.radius_unload) {
+        for coord in
+            streaming::stale_pending_coords(&state.pending, player_grid, state.radius_unload)
+        {
             state.pending.remove(&coord);
         }
         // Cell unload despawns instances and forces a TLAS rebuild on

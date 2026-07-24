@@ -79,10 +79,12 @@
 use super::PlayerEntity;
 use crate::condition::{evaluate as evaluate_condition_list, ConditionContext};
 use crate::events::{ActivateEvent, OnTriggerEnterEvent};
-use byroredux_core::ecs::storage::EntityId;
-use crate::quest_stages::{QuestFormId, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState};
+use crate::quest_stages::{
+    QuestFormId, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
+};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
+use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::condition::{
     ComparisonOp, Condition, ConditionList, ConditionValue, RunOn,

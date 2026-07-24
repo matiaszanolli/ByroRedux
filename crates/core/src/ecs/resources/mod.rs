@@ -545,6 +545,10 @@ pub struct SkinCoverageStats {
     pub gpu_bloom_ms: f32,
     pub gpu_caustic_splat_ms: f32,
     pub gpu_volumetrics_ms: f32,
+    /// Render-to-output reconstruction (FSR 3.1 dispatch, or the native
+    /// blit that stands in for it). The upscaler's own cost, which the
+    /// bench report subtracts from the render-resolution savings.
+    pub gpu_upscale_ms: f32,
 }
 
 /// CPU-side per-frame wall-clock breakdown — populated by the
@@ -1043,7 +1047,10 @@ mod tests {
 
         // B's own capture, recorded after the claim, IS current.
         let b_gen = bridge.generation();
-        assert!(bridge.readback_is_current(b_gen), "B's fresh capture is current");
+        assert!(
+            bridge.readback_is_current(b_gen),
+            "B's fresh capture is current"
+        );
     }
 
     /// #1011 — `cancel()` must clear both the AtomicBool `requested`

@@ -91,7 +91,10 @@ fn main() {
         grand_errors += errors;
     }
 
-    println!("\n=== TOTAL: {} files, {} errors ===", grand_total, grand_errors);
+    println!(
+        "\n=== TOTAL: {} files, {} errors ===",
+        grand_total, grand_errors
+    );
     if grand_errors > 0 {
         std::process::exit(1);
     }

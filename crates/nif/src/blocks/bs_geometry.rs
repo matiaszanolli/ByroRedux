@@ -480,8 +480,8 @@ impl BSGeometryMeshData {
         {
             Some(outer_len) => {
                 let weights_per_vert = weights_per_vert as usize;
-                let flat = stream
-                    .read_pod_vec::<BoneWeight>(outer_len as usize * weights_per_vert)?;
+                let flat =
+                    stream.read_pod_vec::<BoneWeight>(outer_len as usize * weights_per_vert)?;
                 flat.chunks_exact(weights_per_vert)
                     .map(|c| c.to_vec())
                     .collect()

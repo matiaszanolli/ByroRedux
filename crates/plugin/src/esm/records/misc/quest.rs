@@ -3,7 +3,9 @@
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
 use super::super::condition::{parse_ctda, remap_condition_form_ids, ConditionList};
-use super::super::script_instance::{parse_quest_fragments, QuestScriptFragment, ScriptInstanceData};
+use super::super::script_instance::{
+    parse_quest_fragments, QuestScriptFragment, ScriptInstanceData,
+};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -518,10 +520,8 @@ pub fn parse_qust(
             b"ALRT" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
                     let fid = SubReader::new(&sub.data).u32_or_default();
-                    alias.fill_type = Some(AliasFillType::LocationAliasReference {
-                        lcrt: fid,
-                        alfa: 0,
-                    });
+                    alias.fill_type =
+                        Some(AliasFillType::LocationAliasReference { lcrt: fid, alfa: 0 });
                 }
             }
             b"ALFE" if sub.data.len() >= 4 => {
@@ -1017,7 +1017,10 @@ mod tests {
             sub(b"ALID", b"AnyBandit\0"),
             sub(b"CTDA", &minimal_ctda(60)),
             sub(b"CTDA", &minimal_ctda(61)),
-            sub(b"FNAM", &(ALIAS_FLAG_IN_LOADED_AREA | ALIAS_FLAG_CLOSEST).to_le_bytes()),
+            sub(
+                b"FNAM",
+                &(ALIAS_FLAG_IN_LOADED_AREA | ALIAS_FLAG_CLOSEST).to_le_bytes(),
+            ),
         ];
         let q = parse_qust(0x7, &subs, &None);
         let alias = &q.aliases[0];
@@ -1040,7 +1043,10 @@ mod tests {
         ];
         let q = parse_qust(0x8, &subs, &None);
         let alias = &q.aliases[0];
-        assert_eq!(alias.fill_type, Some(AliasFillType::ForcedReference(0x0001_0000)));
+        assert_eq!(
+            alias.fill_type,
+            Some(AliasFillType::ForcedReference(0x0001_0000))
+        );
         assert_eq!(alias.match_conditions.len(), 1);
         assert_eq!(alias.match_conditions[0].function_index, 71);
     }
@@ -1065,7 +1071,10 @@ mod tests {
             sub(b"ALED", &[]),
             sub(b"ALST", &8i32.to_le_bytes()),
             sub(b"ALID", b"NurelionEssential\0"),
-            sub(b"FNAM", &(ALIAS_FLAG_ESSENTIAL | ALIAS_FLAG_OPTIONAL).to_le_bytes()),
+            sub(
+                b"FNAM",
+                &(ALIAS_FLAG_ESSENTIAL | ALIAS_FLAG_OPTIONAL).to_le_bytes(),
+            ),
             sub(b"ALED", &[]),
         ];
         let q = parse_qust(0x2C258, &subs, &None);
@@ -1073,7 +1082,10 @@ mod tests {
 
         let nurelion = &q.aliases[0];
         assert_eq!(nurelion.name, "Nurelion");
-        assert_eq!(nurelion.fill_type, Some(AliasFillType::ForcedReference(0x0001_B115)));
+        assert_eq!(
+            nurelion.fill_type,
+            Some(AliasFillType::ForcedReference(0x0001_B115))
+        );
         assert_eq!(nurelion.force_into_alias, Some(8));
 
         let essential = &q.aliases[1];
@@ -1094,7 +1106,10 @@ mod tests {
         ];
         let q = parse_qust(0x1, &subs, &None);
         let alias = &q.aliases[0];
-        assert_eq!(alias.fill_type, Some(AliasFillType::ForcedReference(0x0001_0000)));
+        assert_eq!(
+            alias.fill_type,
+            Some(AliasFillType::ForcedReference(0x0001_0000))
+        );
         assert_eq!(alias.force_into_alias, Some(2));
     }
 
@@ -1112,13 +1127,12 @@ mod tests {
             sub(b"ALSP", &0x0000_4444u32.to_le_bytes()),
             sub(
                 b"KWDA",
-                &[
-                    0x0000_5555u32.to_le_bytes(),
-                    0x0000_6666u32.to_le_bytes(),
-                ]
-                .concat(),
+                &[0x0000_5555u32.to_le_bytes(), 0x0000_6666u32.to_le_bytes()].concat(),
             ),
-            sub(b"CNTO", &[0x0000_7777u32.to_le_bytes(), 3u32.to_le_bytes()].concat()),
+            sub(
+                b"CNTO",
+                &[0x0000_7777u32.to_le_bytes(), 3u32.to_le_bytes()].concat(),
+            ),
         ];
         let q = parse_qust(0x9, &subs, &None);
         let injected = &q.aliases[0].injected;
@@ -1175,7 +1189,10 @@ mod tests {
         // A companion field with no matching primary fill-type field
         // beforehand must not fabricate a fill type — the alias just
         // stays `fill_type: None`.
-        let subs = vec![sub(b"ALST", &0i32.to_le_bytes()), sub(b"ALCA", &5i32.to_le_bytes())];
+        let subs = vec![
+            sub(b"ALST", &0i32.to_le_bytes()),
+            sub(b"ALCA", &5i32.to_le_bytes()),
+        ];
         let q = parse_qust(0xB, &subs, &None);
         assert_eq!(q.aliases[0].fill_type, None);
     }
@@ -1205,14 +1222,21 @@ mod tests {
         ];
         let combined = AliasFlags(ALL_FLAGS.iter().fold(0u32, |acc, &f| acc | f));
         for &flag in ALL_FLAGS {
-            assert!(combined.has(flag), "bit {flag:#x} not set in the combined mask");
+            assert!(
+                combined.has(flag),
+                "bit {flag:#x} not set in the combined mask"
+            );
         }
         // Every constant is a distinct bit — the fold above didn't
         // silently collapse two identical values.
         let mut sorted = ALL_FLAGS.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted.len(), ALL_FLAGS.len(), "duplicate flag value in the catalog");
+        assert_eq!(
+            sorted.len(),
+            ALL_FLAGS.len(),
+            "duplicate flag value in the catalog"
+        );
         // A bit outside the catalog is correctly absent.
         assert!(!combined.has(0x0000_0800));
     }

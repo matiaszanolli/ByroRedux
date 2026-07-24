@@ -4,7 +4,6 @@
 
 use super::shared::*;
 
-
 pub(crate) struct HelpCommand;
 impl ConsoleCommand for HelpCommand {
     fn name(&self) -> &str {

@@ -84,7 +84,7 @@ fn fnv_ragdoll_decodes_typed_cinfo() {
     bytes.extend(vec4(5.0, 0.0, 0.0, 0.0)); // plane_b
     bytes.extend(vec4(6.0, 0.0, 0.0, 0.0)); // motor_b
     bytes.extend(vec4(7.0, -10.0, 5.0, 1.0)); // pivot_b
-    // 6 × f32 limits.
+                                              // 6 × f32 limits.
     for v in [0.5f32, -0.25, 0.75, -1.5, 1.5, 100.0] {
         bytes.extend_from_slice(&v.to_le_bytes());
     }
@@ -130,7 +130,7 @@ fn fnv_limited_hinge_decodes_typed_cinfo() {
     bytes.extend(vec4(0.0, 1.0, 0.0, 0.0)); // perp_axis_in_b1
     bytes.extend(vec4(0.0, 0.0, 1.0, 0.0)); // perp_axis_in_b2
     bytes.extend(vec4(44.0, 55.0, 66.0, 1.0)); // pivot_b
-    // 3 × f32: min, max, friction.
+                                               // 3 × f32: min, max, friction.
     for v in [-1.0f32, 1.0, 10.0] {
         bytes.extend_from_slice(&v.to_le_bytes());
     }
@@ -163,7 +163,7 @@ fn fnv_limited_hinge_decodes_typed_cinfo() {
 fn fnv_malleable_wrapping_ragdoll_surfaces_as_ragdoll() {
     let mut bytes = base(); // outer base: real bodies (entity_a=1, entity_b=2)
     bytes.extend_from_slice(&7u32.to_le_bytes()); // wrapped Type = 7 (Ragdoll)
-    // inner bhkConstraintCInfo: num=2, entity_a=-1, entity_b=-1, priority=1
+                                                  // inner bhkConstraintCInfo: num=2, entity_a=-1, entity_b=-1, priority=1
     bytes.extend_from_slice(&2u32.to_le_bytes());
     bytes.extend_from_slice(&(-1i32).to_le_bytes());
     bytes.extend_from_slice(&(-1i32).to_le_bytes());
@@ -184,7 +184,10 @@ fn fnv_malleable_wrapping_ragdoll_surfaces_as_ragdoll() {
     assert_eq!(c.entity_a.index(), Some(1));
     assert_eq!(c.entity_b.index(), Some(2));
     let BhkConstraintData::Ragdoll(r) = c.data else {
-        panic!("malleable-wrapped Ragdoll must surface as Ragdoll, got {:?}", c.data);
+        panic!(
+            "malleable-wrapped Ragdoll must surface as Ragdoll, got {:?}",
+            c.data
+        );
     };
     assert_eq!(r.twist_a, [0.0, 0.0, 0.0, 0.0]);
     assert_eq!(r.pivot_b, [7.0, 0.0, 0.0, 0.0]);
@@ -221,7 +224,7 @@ fn oblivion_ragdoll_decodes_typed_cinfo() {
     bytes.extend(vec4(3.0, -10.0, 5.0, 1.0)); // pivot_b
     bytes.extend(vec4(4.0, 0.0, 0.0, 0.0)); // plane_b
     bytes.extend(vec4(5.0, 0.0, 1.0, 0.0)); // twist_b
-    // 6 × f32 limits (same shared trailer as FNV).
+                                            // 6 × f32 limits (same shared trailer as FNV).
     for v in [0.5f32, -0.25, 0.75, -1.5, 1.5, 10.0] {
         bytes.extend_from_slice(&v.to_le_bytes());
     }
@@ -295,7 +298,7 @@ fn oblivion_limited_hinge_decodes_typed_cinfo() {
 fn oblivion_malleable_wrapping_ragdoll_surfaces_as_ragdoll() {
     let mut bytes = base(); // outer base: real bodies (entity_a=1, entity_b=2)
     bytes.extend_from_slice(&7u32.to_le_bytes()); // wrapped Type = 7 (Ragdoll)
-    // nested bhkConstraintCInfo: num=2, entity_a=-1, entity_b=-1, priority=1
+                                                  // nested bhkConstraintCInfo: num=2, entity_a=-1, entity_b=-1, priority=1
     bytes.extend_from_slice(&2u32.to_le_bytes());
     bytes.extend_from_slice(&(-1i32).to_le_bytes());
     bytes.extend_from_slice(&(-1i32).to_le_bytes());
@@ -318,7 +321,10 @@ fn oblivion_malleable_wrapping_ragdoll_surfaces_as_ragdoll() {
     assert_eq!(c.entity_a.index(), Some(1));
     assert_eq!(c.entity_b.index(), Some(2));
     let BhkConstraintData::Ragdoll(r) = c.data else {
-        panic!("Oblivion malleable-wrapped Ragdoll must surface as Ragdoll, got {:?}", c.data);
+        panic!(
+            "Oblivion malleable-wrapped Ragdoll must surface as Ragdoll, got {:?}",
+            c.data
+        );
     };
     // Oblivion order: index 0 = pivot_a, index 2 = twist_a.
     assert_eq!(r.pivot_a, [0.0, 0.0, 0.0, 0.0]);
@@ -358,7 +364,10 @@ fn skyrim_ragdoll_uses_fo3_layout() {
     let c = BhkConstraint::parse(&mut stream, "bhkRagdollConstraint").unwrap();
 
     let BhkConstraintData::Ragdoll(r) = c.data else {
-        panic!("Skyrim Ragdoll must decode via the FO3+ path, got {:?}", c.data);
+        panic!(
+            "Skyrim Ragdoll must decode via the FO3+ path, got {:?}",
+            c.data
+        );
     };
     assert_eq!(r.pivot_a, [3.0, 10.0, 20.0, 1.0]);
     assert_eq!(r.pivot_b, [7.0, -10.0, 5.0, 1.0]);
@@ -424,7 +433,7 @@ fn fo3_malleable_wrapped_hinge_consumes_inner_body() {
     let mut bytes = base(); // outer bhkConstraintCInfo (16)
     bytes.extend_from_slice(&1u32.to_le_bytes()); // wrapped_type = Hinge
     bytes.extend_from_slice(&base()); // inner bhkConstraintCInfo (16)
-    // Hinge FNV fixed body — 8 × Vec4 = 128 B.
+                                      // Hinge FNV fixed body — 8 × Vec4 = 128 B.
     for i in 0..8 {
         bytes.extend(vec4(i as f32, 0.0, 0.0, 1.0));
     }

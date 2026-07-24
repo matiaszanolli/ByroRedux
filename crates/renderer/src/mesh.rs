@@ -1444,9 +1444,24 @@ mod refcount_tests {
     fn global_only_meshes_are_never_rt_capable() {
         let mut reg = MeshRegistry::new();
         let vertices = [
-            Vertex::new([0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0]),
-            Vertex::new([1.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0]),
-            Vertex::new([0.0, 1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [0.0, 1.0]),
+            Vertex::new(
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0],
+            ),
+            Vertex::new(
+                [1.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0],
+            ),
+            Vertex::new(
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 1.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0],
+            ),
         ];
         let handle = reg
             .upload_scene_mesh_global_only(&vertices, &[0, 1, 2])

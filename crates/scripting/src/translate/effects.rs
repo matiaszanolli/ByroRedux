@@ -650,9 +650,8 @@ mod tests {
 
     #[test]
     fn empty_fragment_is_understood_as_noop() {
-        let body = first_fn_body(
-            "ScriptName QF extends Quest\n Function Fragment_6()\n EndFunction\n",
-        );
+        let body =
+            first_fn_body("ScriptName QF extends Quest\n Function Fragment_6()\n EndFunction\n");
         assert_eq!(lower_fragment(&body), Some(vec![]));
     }
 }

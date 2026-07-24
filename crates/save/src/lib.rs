@@ -35,15 +35,13 @@
 //! system can't get — so the binary drains a load request between frames,
 //! exactly like the existing `PendingDebugLoadSlot` path.
 
+pub mod disk;
 mod driver;
 mod registry;
 mod snapshot;
-pub mod disk;
 pub mod validate;
 
-pub use driver::{
-    apply_deltas, build_form_id_remap, restore_resources, restore_world, save_world,
-};
+pub use driver::{apply_deltas, build_form_id_remap, restore_resources, restore_world, save_world};
 pub use registry::SaveRegistry;
 pub use snapshot::{decode, encode, Snapshot, FORMAT_MAGIC, FORMAT_MAJOR, FORMAT_MINOR};
 

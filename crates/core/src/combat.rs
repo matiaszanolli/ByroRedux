@@ -57,7 +57,11 @@ pub fn oblivion_weapon_damage_multiplier(attribute: f32, weapon_skill: f32, luck
 /// Damage section, not repeated for Hand-to-Hand, so this function doesn't
 /// assume it applies (no-guessing).
 #[must_use]
-pub fn oblivion_hand_to_hand_damage(strength: f32, hand_to_hand_skill: f32, luck: f32) -> (f32, f32) {
+pub fn oblivion_hand_to_hand_damage(
+    strength: f32,
+    hand_to_hand_skill: f32,
+    luck: f32,
+) -> (f32, f32) {
     let skill = modified_skill(hand_to_hand_skill, luck);
     let health = 1.0 + 10.5 * (strength / 100.0) * (skill / 100.0);
     let fatigue = 1.0 + 0.5 * health;

@@ -57,7 +57,11 @@ pub fn reconstruct(
     }
     let entry = cfg.entry;
     let exit = cfg.exit;
-    let mut r = Reconstructor { cfg, scopes, func_name: func_name.to_string() };
+    let mut r = Reconstructor {
+        cfg,
+        scopes,
+        func_name: func_name.to_string(),
+    };
     r.rebuild(entry, exit, 0)
 }
 
@@ -69,7 +73,9 @@ struct Reconstructor {
 
 impl Reconstructor {
     fn fail(&self) -> DecompileError {
-        DecompileError::ControlFlowFailed { function: self.func_name.clone() }
+        DecompileError::ControlFlowFailed {
+            function: self.func_name.clone(),
+        }
     }
 
     /// Drain a block's lifted scope (Champollion `mergeChildren` clears the
@@ -93,7 +99,12 @@ impl Reconstructor {
     ///
     /// `depth` bounds nested-body recursion against a malformed / adversarial
     /// `.pex` (SAFE-2026-06-23-02) — see [`MAX_REBUILD_DEPTH`].
-    fn rebuild(&mut self, start: usize, end: usize, depth: usize) -> Result<Vec<Node>, DecompileError> {
+    fn rebuild(
+        &mut self,
+        start: usize,
+        end: usize,
+        depth: usize,
+    ) -> Result<Vec<Node>, DecompileError> {
         if depth > MAX_REBUILD_DEPTH {
             return Err(DecompileError::RecursionLimit {
                 function: self.func_name.clone(),
@@ -107,11 +118,18 @@ impl Reconstructor {
         let mut it = start;
         while it != end {
             let current = it;
-            let block = self.cfg.block(current).cloned().ok_or_else(|| self.fail())?;
+            let block = self
+                .cfg
+                .block(current)
+                .cloned()
+                .ok_or_else(|| self.fail())?;
             let mut jump_to: Option<usize> = None;
 
             if block.is_conditional() {
-                let cond_name = block.condition.clone().expect("conditional block has a condition");
+                let cond_name = block
+                    .condition
+                    .clone()
+                    .expect("conditional block has a condition");
                 let mut on_true = block.on_true();
                 let mut on_false = block.on_false;
                 let mut exit = on_false;
@@ -122,10 +140,8 @@ impl Reconstructor {
 
                 // The condition placeholder; the trailing comparison folds
                 // into it during the final rebuild_expression.
-                let mut condition = Node::constant(
-                    super::node::SYNTH_IP,
-                    Value::Identifier(cond_name.clone()),
-                );
+                let mut condition =
+                    Node::constant(super::node::SYNTH_IP, Value::Identifier(cond_name.clone()));
 
                 // jmpt shape: the block before the false exit is *this*
                 // block ⇒ the false branch is the immediate fall-through.
@@ -220,7 +236,11 @@ mod tests {
     use crate::OpCode;
 
     fn ins(op: OpCode, args: Vec<Value>) -> Instruction {
-        Instruction { op, args, var_args: Vec::new() }
+        Instruction {
+            op,
+            args,
+            var_args: Vec::new(),
+        }
     }
     fn ins_v(op: OpCode, args: Vec<Value>, var_args: Vec<Value>) -> Instruction {
         Instruction { op, args, var_args }
@@ -229,7 +249,10 @@ mod tests {
         Value::Identifier(s.to_string())
     }
     fn local(n: &str, t: &str) -> TypedName {
-        TypedName { name: n.to_string(), type_name: t.to_string() }
+        TypedName {
+            name: n.to_string(),
+            type_name: t.to_string(),
+        }
     }
 
     /// SAFE-2026-06-23-02 — an adversarial / malformed `.pex` that would nest
@@ -270,18 +293,40 @@ mod tests {
         let mut blocks = BTreeMap::new();
         blocks.insert(
             0,
-            CodeBlock { begin: 0, end: 0, next: 1, on_false: 2, condition: Some("c0".into()) },
+            CodeBlock {
+                begin: 0,
+                end: 0,
+                next: 1,
+                on_false: 2,
+                condition: Some("c0".into()),
+            },
         );
         blocks.insert(
             1,
-            CodeBlock { begin: 1, end: 1, next: 2, on_false: 2, condition: Some("c1".into()) },
+            CodeBlock {
+                begin: 1,
+                end: 1,
+                next: 2,
+                on_false: 2,
+                condition: Some("c1".into()),
+            },
         );
         blocks.insert(
             2,
-            CodeBlock { begin: 2, end: 2, next: END, on_false: END, condition: None },
+            CodeBlock {
+                begin: 2,
+                end: 2,
+                next: END,
+                on_false: END,
+                condition: None,
+            },
         );
         let mut r = Reconstructor {
-            cfg: Cfg { blocks, entry: 0, exit: 2 },
+            cfg: Cfg {
+                blocks,
+                entry: 0,
+                exit: 2,
+            },
             scopes: BTreeMap::new(),
             func_name: "OrGuard".to_string(),
         };
@@ -320,8 +365,19 @@ mod tests {
         };
         let tree = decompile(f);
         // [ IfElse(a == b, [ x = 1 ]), Return ]
-        let if_node = tree.iter().find(|n| matches!(n.kind, NodeKind::IfElse { .. })).unwrap();
-        let NodeKind::IfElse { condition, body, else_body, .. } = &if_node.kind else { panic!() };
+        let if_node = tree
+            .iter()
+            .find(|n| matches!(n.kind, NodeKind::IfElse { .. }))
+            .unwrap();
+        let NodeKind::IfElse {
+            condition,
+            body,
+            else_body,
+            ..
+        } = &if_node.kind
+        else {
+            panic!()
+        };
         assert!(matches!(&condition.kind, NodeKind::BinaryOp { op, .. } if op == "=="));
         assert!(else_body.is_empty(), "simple if has no else");
         assert_eq!(body.len(), 1);
@@ -351,8 +407,16 @@ mod tests {
             ..Function::default()
         };
         let tree = decompile(f);
-        let if_node = tree.iter().find(|n| matches!(n.kind, NodeKind::IfElse { .. })).unwrap();
-        let NodeKind::IfElse { body, else_body, .. } = &if_node.kind else { panic!() };
+        let if_node = tree
+            .iter()
+            .find(|n| matches!(n.kind, NodeKind::IfElse { .. }))
+            .unwrap();
+        let NodeKind::IfElse {
+            body, else_body, ..
+        } = &if_node.kind
+        else {
+            panic!()
+        };
         assert_eq!(body.len(), 1, "if body");
         assert_eq!(else_body.len(), 1, "else body");
     }
@@ -369,15 +433,24 @@ mod tests {
             instructions: vec![
                 ins(OpCode::CmpEq, vec![id("::temp0"), id("a"), id("b")]),
                 ins(OpCode::JmpF, vec![id("::temp0"), Value::Integer(3)]),
-                ins_v(OpCode::CallMethod, vec![id("foo"), id("self"), id("::NoneVar")], vec![]),
+                ins_v(
+                    OpCode::CallMethod,
+                    vec![id("foo"), id("self"), id("::NoneVar")],
+                    vec![],
+                ),
                 ins(OpCode::Jmp, vec![Value::Integer(-3)]),
                 ins(OpCode::Return, vec![id("::NoneVar")]),
             ],
             ..Function::default()
         };
         let tree = decompile(f);
-        let while_node = tree.iter().find(|n| matches!(n.kind, NodeKind::While { .. })).unwrap();
-        let NodeKind::While { condition, body } = &while_node.kind else { panic!() };
+        let while_node = tree
+            .iter()
+            .find(|n| matches!(n.kind, NodeKind::While { .. }))
+            .unwrap();
+        let NodeKind::While { condition, body } = &while_node.kind else {
+            panic!()
+        };
         assert!(matches!(&condition.kind, NodeKind::BinaryOp { op, .. } if op == "=="));
         assert_eq!(body.len(), 1);
         assert!(matches!(&body[0].kind, NodeKind::CallMethod { .. }));
@@ -403,13 +476,30 @@ mod tests {
             ..Function::default()
         };
         let tree = decompile(f);
-        let outer = tree.iter().find(|n| matches!(n.kind, NodeKind::IfElse { .. })).unwrap();
-        let NodeKind::IfElse { condition, body, .. } = &outer.kind else { panic!() };
+        let outer = tree
+            .iter()
+            .find(|n| matches!(n.kind, NodeKind::IfElse { .. }))
+            .unwrap();
+        let NodeKind::IfElse {
+            condition, body, ..
+        } = &outer.kind
+        else {
+            panic!()
+        };
         // outer condition is the bare identifier `a`
         assert!(matches!(&condition.kind, NodeKind::Constant(Value::Identifier(s)) if s == "a"));
         // body contains the inner if on `b`
-        let inner = body.iter().find(|n| matches!(n.kind, NodeKind::IfElse { .. })).unwrap();
-        let NodeKind::IfElse { condition: inner_cond, .. } = &inner.kind else { panic!() };
+        let inner = body
+            .iter()
+            .find(|n| matches!(n.kind, NodeKind::IfElse { .. }))
+            .unwrap();
+        let NodeKind::IfElse {
+            condition: inner_cond,
+            ..
+        } = &inner.kind
+        else {
+            panic!()
+        };
         assert!(matches!(&inner_cond.kind, NodeKind::Constant(Value::Identifier(s)) if s == "b"));
     }
 
@@ -425,9 +515,8 @@ mod tests {
             ..Function::default()
         };
         let tree = decompile(f);
-        assert!(tree.iter().all(|n| !matches!(
-            n.kind,
-            NodeKind::IfElse { .. } | NodeKind::While { .. }
-        )));
+        assert!(tree
+            .iter()
+            .all(|n| !matches!(n.kind, NodeKind::IfElse { .. } | NodeKind::While { .. })));
     }
 }

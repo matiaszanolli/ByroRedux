@@ -2,7 +2,7 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, 24 TIMESTAMP queries each:
+//! per frame-in-flight slot, 26 TIMESTAMP queries each:
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -30,6 +30,8 @@
 //! | 21   | caustic splat compute — end            |
 //! | 22   | volumetrics inject+integrate — start   |
 //! | 23   | volumetrics inject+integrate — end     |
+//! | 24   | frame upscale (FSR / native blit) — start |
+//! | 25   | frame upscale (FSR / native blit) — end   |
 //!
 //! The original three brackets (skin / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work. The four added in debug-UI
@@ -77,8 +79,8 @@ use ash::vk;
 
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 
-/// One TIMESTAMP query per bracket endpoint × twelve brackets.
-const QUERIES_PER_FRAME: u32 = 24;
+/// One TIMESTAMP query per bracket endpoint × thirteen brackets.
+const QUERIES_PER_FRAME: u32 = 26;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -104,6 +106,8 @@ const Q_CAUSTIC_SPLAT_START: u32 = 20;
 const Q_CAUSTIC_SPLAT_END: u32 = 21;
 const Q_VOLUMETRICS_START: u32 = 22;
 const Q_VOLUMETRICS_END: u32 = 23;
+const Q_UPSCALE_START: u32 = 24;
+const Q_UPSCALE_END: u32 = 25;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -156,6 +160,11 @@ pub struct GpuTimerSnapshot {
     /// composite multiplies the result by 0). Phase-7 bracket
     /// confirms the gate is actually holding.
     pub volumetrics_ms: f32,
+    /// Render-to-output reconstruction: the FSR 3.1 upscale dispatch, or
+    /// the native blit that stands in for it under `--upscaler taa` and
+    /// after a latched dispatch failure. Reads `0.0` only when the
+    /// upscaler is absent entirely.
+    pub upscale_ms: f32,
 }
 
 /// Per-frame-in-flight TIMESTAMP query pools.
@@ -189,6 +198,7 @@ const BIT_SSAO: u16 = 0x0100;
 const BIT_BLOOM: u16 = 0x0200;
 const BIT_CAUSTIC_SPLAT: u16 = 0x0400;
 const BIT_VOLUMETRICS: u16 = 0x0800;
+const BIT_UPSCALE: u16 = 0x1000;
 
 impl GpuPerFrameTimers {
     /// Create one TIMESTAMP query pool per frame-in-flight slot.
@@ -329,6 +339,9 @@ impl GpuPerFrameTimers {
         }
         if bits & BIT_VOLUMETRICS != 0 {
             snap.volumetrics_ms = bracket_ms(Q_VOLUMETRICS_START);
+        }
+        if bits & BIT_UPSCALE != 0 {
+            snap.upscale_ms = bracket_ms(Q_UPSCALE_START);
         }
         self.last_snapshot = snap;
 
@@ -754,6 +767,43 @@ impl GpuPerFrameTimers {
             );
         }
         self.active_bits[frame] |= BIT_VOLUMETRICS;
+    }
+
+    /// Write the frame-upscale START timestamp. Brackets whichever
+    /// render-to-output path ran: the FSR compute dispatch, or the native
+    /// blit that stands in for it.
+    pub fn cmd_upscale_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_UPSCALE_START,
+            );
+        }
+    }
+
+    /// Write the frame-upscale END timestamp. `BOTTOM_OF_PIPE` rather than
+    /// this bracket's producer stage: `vkCmdWriteTimestamp` takes a single
+    /// `VkPipelineStageFlagBits`, and the two paths this bracket covers end
+    /// in different stages (an SDK compute dispatch vs. a `cmd_blit_image`).
+    pub fn cmd_upscale_end(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.pools[frame],
+                Q_UPSCALE_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_UPSCALE;
     }
 
     /// Destroy every query pool. Caller must wait for queue idle

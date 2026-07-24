@@ -614,7 +614,10 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // `OnUpdateEvent`. It sits between the demo's OnInit (which
     // subscribes via `RegisterForUpdate`) and its OnUpdate consumer so
     // a fired event is handled the same frame, before cleanup drains it.
-    scheduler.add_exclusive(Stage::Update, byroredux_scripting::recurring_update_tick_system);
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::recurring_update_tick_system,
+    );
     // CHARAL pool regen (Fatigue/Magicka) — a fixed 60 Hz tick decoupled
     // from the variable frame rate, mirroring `physics_sync_system`'s
     // accumulator (`crates/core/src/character/regen.rs`). No-ops today:
@@ -622,7 +625,10 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // wiring reaches Oblivion (`build_character_ruleset` currently returns
     // `None` for it, per `npc_spawn.rs`) — registered now so the tick is
     // already live the moment that wiring lands.
-    scheduler.add_exclusive(Stage::Update, byroredux_core::character::pool_regen_tick_system);
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_core::character::pool_regen_tick_system,
+    );
     scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_update_dispatch);
     scheduler.add_exclusive(Stage::Update, mg07_on_load_dispatch);
     scheduler.add_exclusive(Stage::Update, mg07_on_activate_dispatch);
@@ -726,7 +732,10 @@ pub(crate) fn build_scheduler() -> Scheduler {
             "BYRO_SANDBOX_SIT set — enabling sandbox seat-snap \
              (grounded sit-enter pose on FNV/FO3; see systems::sandbox docs for other games)"
         );
-        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::make_sandbox_seat_system());
+        scheduler.add_exclusive(
+            Stage::PostUpdate,
+            crate::systems::make_sandbox_seat_system(),
+        );
     }
     // M42.3 — Wander locomotion. GATED OFF by default (opt in with
     // `BYRO_WANDER=1`), mirroring `BYRO_SANDBOX_SIT` above. Straight-line

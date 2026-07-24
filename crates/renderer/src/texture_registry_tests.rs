@@ -211,13 +211,15 @@ fn live_slot_count_reflects_positive_ref_count() {
 fn slot_capacity_warning_latches_after_first_emit() {
     let mut reg = make_registry_for_overflow_test(100, 90); // 90% — at threshold
     assert!(!reg.slot_capacity_warning_emitted);
-    reg.check_slot_available().expect("still under the hard bound");
+    reg.check_slot_available()
+        .expect("still under the hard bound");
     assert!(
         reg.slot_capacity_warning_emitted,
         "crossing the 90% threshold must latch the warning flag"
     );
     // Second call must not panic or re-derive anything — flag stays set.
-    reg.check_slot_available().expect("still under the hard bound");
+    reg.check_slot_available()
+        .expect("still under the hard bound");
     assert!(reg.slot_capacity_warning_emitted);
 }
 
@@ -225,7 +227,8 @@ fn slot_capacity_warning_latches_after_first_emit() {
 #[test]
 fn slot_capacity_warning_does_not_fire_below_threshold() {
     let mut reg = make_registry_for_overflow_test(100, 50);
-    reg.check_slot_available().expect("well under the hard bound");
+    reg.check_slot_available()
+        .expect("well under the hard bound");
     assert!(!reg.slot_capacity_warning_emitted);
 }
 

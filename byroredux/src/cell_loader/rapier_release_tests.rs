@@ -179,9 +179,7 @@ fn ball_body(entity: byroredux_core::ecs::storage::EntityId, x: f32) -> RagdollB
 /// clone of the `Ragdoll` (its joint handles drive post-release liveness
 /// checks via `MultibodyJointSet::get`, which is panic-safe where `iter()`
 /// is not).
-fn spawn_ragdoll_actor(
-    world: &mut World,
-) -> (byroredux_core::ecs::storage::EntityId, Ragdoll) {
+fn spawn_ragdoll_actor(world: &mut World) -> (byroredux_core::ecs::storage::EntityId, Ragdoll) {
     let actor = world.spawn();
     let bone_a = world.spawn();
     let bone_b = world.spawn();
@@ -224,7 +222,10 @@ fn release_removes_ragdoll_bodies_colliders_and_joints() {
         assert_eq!(pw.body_count(), 2, "ragdoll registered both bodies");
         assert_eq!(pw.colliders.len(), 2, "one collider per ragdoll body");
         assert!(
-            ragdoll.joints.iter().all(|&h| pw.multibody_joints.get(h).is_some()),
+            ragdoll
+                .joints
+                .iter()
+                .all(|&h| pw.multibody_joints.get(h).is_some()),
             "the multibody joint is live before unload",
         );
     }
@@ -243,7 +244,10 @@ fn release_removes_ragdoll_bodies_colliders_and_joints() {
         "removing each ragdoll body cascades its collider",
     );
     assert!(
-        ragdoll.joints.iter().all(|&h| pw.multibody_joints.get(h).is_none()),
+        ragdoll
+            .joints
+            .iter()
+            .all(|&h| pw.multibody_joints.get(h).is_none()),
         "ragdoll multibody joints must not survive in the solver",
     );
 }
@@ -264,9 +268,16 @@ fn release_sweeps_both_ragdoll_and_rapier_handles() {
     release_victim_rapier_bodies(&mut world, &[actor, collider]);
 
     let pw = world.resource::<PhysicsWorld>();
-    assert_eq!(pw.body_count(), 0, "both the ragdoll and the handle body cleared");
+    assert_eq!(
+        pw.body_count(),
+        0,
+        "both the ragdoll and the handle body cleared"
+    );
     assert!(
-        ragdoll.joints.iter().all(|&h| pw.multibody_joints.get(h).is_none()),
+        ragdoll
+            .joints
+            .iter()
+            .all(|&h| pw.multibody_joints.get(h).is_none()),
         "the ragdoll's joints are gone too",
     );
 }

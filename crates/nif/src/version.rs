@@ -761,11 +761,19 @@ mod tests {
         let oblivion = header(NifVersion::V20_0_0_4, 11, 11);
         let fallout3 = header(NifVersion::V20_2_0_7, 11, 21);
         assert_eq!(
-            NifVariant::detect(oblivion.version, oblivion.user_version, oblivion.user_version_2),
+            NifVariant::detect(
+                oblivion.version,
+                oblivion.user_version,
+                oblivion.user_version_2
+            ),
             NifVariant::Oblivion,
         );
         assert_eq!(
-            NifVariant::detect(fallout3.version, fallout3.user_version, fallout3.user_version_2),
+            NifVariant::detect(
+                fallout3.version,
+                fallout3.user_version,
+                fallout3.user_version_2
+            ),
             NifVariant::Fallout3,
         );
         assert_eq!(

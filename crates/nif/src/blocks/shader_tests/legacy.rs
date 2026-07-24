@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 /// Regression: #459 — `BSShaderTextureSet::parse` previously read
 /// `Num Textures` as `i32` and clamped `.max(0) as u32`, silently
 /// dropping any negative-interpreted length to an empty set. When
@@ -47,7 +46,6 @@ fn parse_bsshader_texture_set_num_textures_as_u32() {
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
 }
 
-
 #[test]
 fn parse_bsshader_fnv_reads_refraction_parallax() {
     // FNV (bsver=34): reads refraction (bsver>=15) + parallax (bsver>=24) = 16 bytes.
@@ -64,7 +62,6 @@ fn parse_bsshader_fnv_reads_refraction_parallax() {
     // All data consumed: 38 base + 16 refraction/parallax = 54 bytes
     assert_eq!(stream.position(), 54);
 }
-
 
 /// Regression: #455 — `TileShaderProperty` parses the FO3
 /// `BSShaderLightingProperty` base (NET + shader data + texture
@@ -106,7 +103,6 @@ fn parse_tile_shader_property_fo3() {
     assert_eq!(prop.shader.shader_type, 1);
 }
 
-
 /// Regression for #774 / FO3-1-PARGATE — nif.xml:6247-6248 specifies
 /// `vercond="#BSVER# #GT# 24"` (strictly greater) for the parallax
 /// fields. FO3 ships content at bsver=24 which must NOT carry the
@@ -131,7 +127,6 @@ fn parse_bsshader_fo3_bsver24_skips_parallax() {
     assert_eq!(stream.position(), 46);
 }
 
-
 #[test]
 fn parse_bsshader_oblivion_no_extra_fields() {
     // Oblivion (bsver=0): no refraction or parallax fields.
@@ -148,7 +143,6 @@ fn parse_bsshader_oblivion_no_extra_fields() {
     // Only 38 bytes consumed (no extras)
     assert_eq!(stream.position(), 38);
 }
-
 
 // ── #749 / SF-D3-01: BGSM/BGEM/MAT stopcond suffix gate ───────────────
 
@@ -183,7 +177,6 @@ fn is_material_reference_recognises_known_suffixes() {
     assert!(!is_material_reference("   "));
 }
 
-
 /// FO3/FNV (bsver=34) must NOT read the emissive color field — it is absent
 /// on pre-Skyrim PPLighting blocks.  Verifies the bsver > crate::version::bsver::FO3_FNV gate is strict.
 #[test]
@@ -204,7 +197,6 @@ fn bsshader_pplighting_fnv_has_no_emissive_color() {
     // Default emissive when absent: [0,0,0,1]
     assert_eq!(prop.emissive_color, [0.0, 0.0, 0.0, 1.0]);
 }
-
 
 /// #1331 sibling — nif.xml (line 6236) gates the four falloff fields on
 /// `#BSVER# #GT# 26`. A transitional v20.2.0.7/bsver=11 export detects as
@@ -229,7 +221,6 @@ fn no_lighting_falloff_absent_when_bsver_le_26() {
         "bsver ≤ 26 must NOT read the four falloff floats"
     );
 }
-
 
 /// #1331 sibling — retail FO3/FNV (bsver=34 > 26) reads all four falloff
 /// floats. Pins the upper branch so the fix doesn't regress sized games.

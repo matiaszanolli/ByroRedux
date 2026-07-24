@@ -857,7 +857,9 @@ fn parse_npc_fo4_facemorph(
             fmri_forms.push(remap_fid(raw, remap));
         }
         b"FMRS" if sub.data.len() >= 36 => {
-            let s = SubReader::new(&sub.data).f32_array::<9>().unwrap_or([0.0; 9]);
+            let s = SubReader::new(&sub.data)
+                .f32_array::<9>()
+                .unwrap_or([0.0; 9]);
             fmrs_settings.push(s);
         }
         // MSDK / MSDV are parallel arrays of u32 / f32 entries; on
@@ -883,7 +885,9 @@ fn parse_npc_fo4_facemorph(
         // length-only `>= 16` heuristic — Skyrim WTHR-record
         // siblings sharing the QNAM tag never reach this parser.
         b"QNAM" if sub.data.len() >= 16 => {
-            let t = SubReader::new(&sub.data).f32_array::<4>().unwrap_or([0.0; 4]);
+            let t = SubReader::new(&sub.data)
+                .f32_array::<4>()
+                .unwrap_or([0.0; 4]);
             face.texture_lighting = Some(t);
         }
         // HCLF/BCLF/PNAM (FO4+ head-parts) are embedded FormIDs too —
@@ -926,7 +930,9 @@ fn parse_npc_actor_values(record: &mut NpcRecord, sub: &SubRecord, remap: &Optio
             for chunk in sub.data.chunks_exact(8) {
                 let avif = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                 let value = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
-                record.actor_value_props.push((remap_fid(avif, remap), value));
+                record
+                    .actor_value_props
+                    .push((remap_fid(avif, remap), value));
             }
         }
         // DNAM (FO4+): 8-byte struct whose head is two u16 baked

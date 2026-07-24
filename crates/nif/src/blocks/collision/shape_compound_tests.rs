@@ -34,8 +34,8 @@ fn hybrid_header(bsver: u32) -> NifHeader {
 #[test]
 fn mopp_bv_tree_reads_build_type_on_hybrid_unknown_bsver_over_34() {
     let header = hybrid_header(50); // Unknown variant, bsver > 34
-    // `Unknown` is the hybrid corner where a game-variant helper would answer
-    // `false` and drop the field; the production gate reads raw bsver (#1839 / #1840).
+                                    // `Unknown` is the hybrid corner where a game-variant helper would answer
+                                    // `false` and drop the field; the production gate reads raw bsver (#1839 / #1840).
     let variant = NifVariant::detect(header.version, 11, 50);
     assert_eq!(variant, NifVariant::Unknown);
 

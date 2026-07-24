@@ -4,9 +4,7 @@
 //! which re-exports the external types the commands reference plus the
 //! formatting helpers shared across command groups (#1323 / TD9-NEW-03).
 
-pub(crate) use crate::components::{
-    AlphaBlend, DoorTeleport, InputState, IsFxMesh, TwoSided,
-};
+pub(crate) use crate::components::{AlphaBlend, DoorTeleport, InputState, IsFxMesh, TwoSided};
 pub(crate) use crate::helpers::world_resource_set;
 pub(crate) use byroredux_core::console::{CommandOutput, CommandRegistry, ConsoleCommand};
 pub(crate) use byroredux_core::ecs::components::{

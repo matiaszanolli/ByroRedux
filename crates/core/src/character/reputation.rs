@@ -561,7 +561,13 @@ mod tests {
     fn standing_sentiment_matches_grid_colours() {
         use ReputationStanding::*;
         // Green (positive).
-        for s in [Accepted, Liked, Idolized, SmilingTroublemaker, GoodNaturedRascal] {
+        for s in [
+            Accepted,
+            Liked,
+            Idolized,
+            SmilingTroublemaker,
+            GoodNaturedRascal,
+        ] {
             assert_eq!(s.sentiment(), ReputationSentiment::Positive, "{}", s.name());
         }
         // Red (negative).
@@ -569,7 +575,14 @@ mod tests {
             assert_eq!(s.sentiment(), ReputationSentiment::Negative, "{}", s.name());
         }
         // Black (mixed).
-        for s in [Neutral, Mixed, Unpredictable, DarkHero, SoftHeartedDevil, WildChild] {
+        for s in [
+            Neutral,
+            Mixed,
+            Unpredictable,
+            DarkHero,
+            SoftHeartedDevil,
+            WildChild,
+        ] {
             assert_eq!(s.sentiment(), ReputationSentiment::Mixed, "{}", s.name());
         }
     }

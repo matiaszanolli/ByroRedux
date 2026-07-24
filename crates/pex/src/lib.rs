@@ -89,22 +89,44 @@ mod tests {
 
     impl PexWriter {
         fn new() -> Self {
-            Self { buf: Vec::new(), strings: Vec::new(), big_endian: false }
+            Self {
+                buf: Vec::new(),
+                strings: Vec::new(),
+                big_endian: false,
+            }
         }
         fn new_be() -> Self {
-            Self { buf: Vec::new(), strings: Vec::new(), big_endian: true }
+            Self {
+                buf: Vec::new(),
+                strings: Vec::new(),
+                big_endian: true,
+            }
         }
-        fn u8(&mut self, v: u8) { self.buf.push(v); }
+        fn u8(&mut self, v: u8) {
+            self.buf.push(v);
+        }
         fn u16(&mut self, v: u16) {
-            let b = if self.big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
+            let b = if self.big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            };
             self.buf.extend_from_slice(&b);
         }
         fn u32(&mut self, v: u32) {
-            let b = if self.big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
+            let b = if self.big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            };
             self.buf.extend_from_slice(&b);
         }
         fn i64(&mut self, v: i64) {
-            let b = if self.big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
+            let b = if self.big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            };
             self.buf.extend_from_slice(&b);
         }
         /// Magic is always little-endian on disk regardless of dialect.
@@ -137,8 +159,16 @@ mod tests {
         // that references it (the on-disk order: table first, then refs).
         let mut w = PexWriter::new();
         for s in [
-            "Foo", "ObjectReference", "MyProp", "Int", "OnActivate",
-            "akActivator", "None", "::temp0", "Self", "Bar",
+            "Foo",
+            "ObjectReference",
+            "MyProp",
+            "Int",
+            "OnActivate",
+            "akActivator",
+            "None",
+            "::temp0",
+            "Self",
+            "Bar",
         ] {
             w.intern(s);
         }
@@ -175,7 +205,7 @@ mod tests {
         w.u8(0); // const flag (FO4)
         w.u32(0); // user flags
         w.sidx("None"); // auto-state name
-        // struct infos (FO4): 0
+                        // struct infos (FO4): 0
         w.u16(0);
         // variables: 0
         w.u16(0);
@@ -188,17 +218,17 @@ mod tests {
         w.u32(0); // user flags
         w.u8(property_flag::READ | property_flag::WRITE | property_flag::AUTOVAR);
         w.sidx("Bar"); // auto var name
-        // states: 1 (the empty default state) with one function
+                       // states: 1 (the empty default state) with one function
         w.u16(1);
         w.sidx("None"); // state name (reuse "None" as a non-empty token)
         w.u16(1); // function count
         w.sidx("OnActivate"); // function name
-        // function body:
+                              // function body:
         w.sidx("None"); // return type
         w.sidx("None"); // doc
         w.u32(0); // user flags
         w.u8(0); // flags
-        // params: 1
+                 // params: 1
         w.u16(1);
         w.sidx("akActivator");
         w.sidx("ObjectReference");
@@ -224,7 +254,7 @@ mod tests {
         w.sidx("Self"); // object
         w.u8(1);
         w.sidx("::temp0"); // result dest
-        // varargs: count=1
+                           // varargs: count=1
         w.u8(3);
         w.u32(1i32 as u32);
         w.u8(5); // bool arg
@@ -314,19 +344,19 @@ mod tests {
         w.u32(0); // size (ignored)
         w.sidx("Actor"); // parent
         w.sidx("None"); // doc string
-        // NO const_flag byte on Skyrim.
+                        // NO const_flag byte on Skyrim.
         w.u32(0); // user flags
         w.sidx("None"); // auto-state name
-        // NO struct_infos count on Skyrim.
-        // variables: 1, NO const_flag byte per variable on Skyrim.
+                        // NO struct_infos count on Skyrim.
+                        // variables: 1, NO const_flag byte per variable on Skyrim.
         w.u16(1);
         w.sidx("MyProp");
         w.sidx("Int");
         w.u32(0); // user flags
         w.u8(3); // Value tag = Integer
         w.u32(7i32 as u32); // default value = 7
-        // NO guards on Skyrim.
-        // properties: 0
+                            // NO guards on Skyrim.
+                            // properties: 0
         w.u16(0);
         // states: 1 (default state) with one no-op function
         w.u16(1);
@@ -357,7 +387,10 @@ mod tests {
         let obj = pex.main_object().expect("one object");
         assert_eq!(obj.name, "Foo");
         assert_eq!(obj.parent_class_name, "Actor");
-        assert_eq!(obj.const_flag, 0, "Skyrim has no const-flag field, reader defaults to 0");
+        assert_eq!(
+            obj.const_flag, 0,
+            "Skyrim has no const-flag field, reader defaults to 0"
+        );
         assert!(obj.struct_infos.is_empty(), "Skyrim has no struct infos");
         assert!(obj.guards.is_empty(), "Skyrim has no guards");
 
@@ -365,7 +398,10 @@ mod tests {
         let var = &obj.variables[0];
         assert_eq!(var.name, "MyProp");
         assert_eq!(var.default_value, Value::Integer(7));
-        assert_eq!(var.const_flag, 0, "Skyrim variables have no const-flag field");
+        assert_eq!(
+            var.const_flag, 0,
+            "Skyrim variables have no const-flag field"
+        );
 
         let func = &obj.states[0].functions[0];
         assert_eq!(func.name, "OnActivate");
@@ -378,7 +414,15 @@ mod tests {
     /// `const_flag`, and the Starfield-only `guards` list.
     fn build_sample_starfield_with_guards() -> Vec<u8> {
         let mut w = PexWriter::new();
-        for s in ["Foo", "ScriptObject", "MyProp", "Int", "OnInit", "None", "SomeGuard"] {
+        for s in [
+            "Foo",
+            "ScriptObject",
+            "MyProp",
+            "Int",
+            "OnInit",
+            "None",
+            "SomeGuard",
+        ] {
             w.intern(s);
         }
 
@@ -410,7 +454,7 @@ mod tests {
         w.u32(0); // user flags
         w.sidx("None"); // auto-state name
         w.u16(0); // struct_infos: 0
-        // variables: 1, WITH const_flag byte per variable.
+                  // variables: 1, WITH const_flag byte per variable.
         w.u16(1);
         w.sidx("MyProp");
         w.sidx("Int");
@@ -418,7 +462,7 @@ mod tests {
         w.u8(3); // Value tag = Integer
         w.u32(9i32 as u32); // default value = 9
         w.u8(1); // const_flag
-        // guards: 1 (Starfield-only)
+                 // guards: 1 (Starfield-only)
         w.u16(1);
         w.sidx("SomeGuard");
         // properties: 0
@@ -449,12 +493,18 @@ mod tests {
         let obj = pex.main_object().expect("one object");
         assert_eq!(obj.name, "Foo");
         assert_eq!(obj.const_flag, 1, "Starfield reads the const_flag byte");
-        assert!(obj.struct_infos.is_empty(), "0 struct infos, but the count field was read");
+        assert!(
+            obj.struct_infos.is_empty(),
+            "0 struct infos, but the count field was read"
+        );
 
         assert_eq!(obj.variables.len(), 1);
         let var = &obj.variables[0];
         assert_eq!(var.default_value, Value::Integer(9));
-        assert_eq!(var.const_flag, 1, "Starfield variables carry a const_flag byte");
+        assert_eq!(
+            var.const_flag, 1,
+            "Starfield variables carry a const_flag byte"
+        );
 
         assert_eq!(obj.guards.len(), 1, "Starfield-only guards list");
         assert_eq!(obj.guards[0].name, "SomeGuard");

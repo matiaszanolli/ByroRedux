@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 
 use byroredux_bsa::{Ba2Archive, BsaArchive};
-use byroredux_pex::{decompile::decompile_script, parse, OpCode, MAX_OPCODE, ScriptType};
+use byroredux_pex::{decompile::decompile_script, parse, OpCode, ScriptType, MAX_OPCODE};
 
 /// Minimal archive abstraction over the two container formats — both
 /// expose `list_files` + `extract`.
@@ -81,13 +81,11 @@ fn tally(pex: &byroredux_pex::Pex, name: &str, stats: &mut Stats) {
         stats.objects_with_no_object += 1;
     }
     for obj in &pex.objects {
-        let func_iter = obj
-            .states
-            .iter()
-            .flat_map(|s| s.functions.iter())
-            .chain(obj.properties.iter().flat_map(|p| {
-                p.read_function.iter().chain(p.write_function.iter())
-            }));
+        let func_iter = obj.states.iter().flat_map(|s| s.functions.iter()).chain(
+            obj.properties
+                .iter()
+                .flat_map(|p| p.read_function.iter().chain(p.write_function.iter())),
+        );
         for f in func_iter {
             if f.instructions.len() > stats.max_instr_fn.1 {
                 stats.max_instr_fn = (format!("{name}:{}", f.name), f.instructions.len());
@@ -154,7 +152,9 @@ fn main() {
                         Err(_) => {
                             stats.decompiled_panic += 1;
                             if stats.decompile_failures.len() < 25 {
-                                stats.decompile_failures.push((f.clone(), "PANIC".to_string()));
+                                stats
+                                    .decompile_failures
+                                    .push((f.clone(), "PANIC".to_string()));
                             }
                         }
                     }
@@ -170,7 +170,10 @@ fn main() {
     }
 
     println!("\n==== .pex corpus smoke ====");
-    println!("total {}  ok {}  failed {}", stats.total, stats.ok, stats.failed);
+    println!(
+        "total {}  ok {}  failed {}",
+        stats.total, stats.ok, stats.failed
+    );
     println!("by script type: {:?}", stats.by_type);
     println!(
         "largest function: {} ({} instructions)",
@@ -210,7 +213,10 @@ fn main() {
             stats.decompiled_ok, stats.decompiled_err, stats.decompiled_panic
         );
         if !stats.decompile_failures.is_empty() {
-            println!("first {} decompile failures:", stats.decompile_failures.len());
+            println!(
+                "first {} decompile failures:",
+                stats.decompile_failures.len()
+            );
             for (name, err) in &stats.decompile_failures {
                 println!("  {name}: {err}");
             }

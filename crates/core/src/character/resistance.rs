@@ -149,7 +149,10 @@ mod tests {
         assert_eq!(damage_multiplier(0.0, 85.0), 1.0);
         // The 85 % rad cap floors the multiplier at 0.15, even past the cap.
         assert!((damage_multiplier(85.0, 85.0) - 0.15).abs() < 1e-6);
-        assert!((damage_multiplier(200.0, 85.0) - 0.15).abs() < 1e-6, "over-cap clamps to cap");
+        assert!(
+            (damage_multiplier(200.0, 85.0) - 0.15).abs() < 1e-6,
+            "over-cap clamps to cap"
+        );
         // ≥100 % uncapped resistance → immunity, never a negative (heal).
         assert_eq!(damage_multiplier(120.0, f32::INFINITY), 0.0);
     }

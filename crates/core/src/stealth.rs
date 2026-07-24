@@ -452,8 +452,16 @@ mod tests {
     #[test]
     fn classify_matches_the_documented_bands() {
         assert_eq!(classify(-25.0), DetectionState::Undetected);
-        assert_eq!(classify(-20.0), DetectionState::Suspicious, "boundary is inclusive");
-        assert_eq!(classify(0.0), DetectionState::Suspicious, "boundary is inclusive");
+        assert_eq!(
+            classify(-20.0),
+            DetectionState::Suspicious,
+            "boundary is inclusive"
+        );
+        assert_eq!(
+            classify(0.0),
+            DetectionState::Suspicious,
+            "boundary is inclusive"
+        );
         assert_eq!(classify(0.1), DetectionState::Detected);
     }
 

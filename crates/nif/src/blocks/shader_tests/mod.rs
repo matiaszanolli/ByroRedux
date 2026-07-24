@@ -5,7 +5,6 @@
 //! its `#[test]` functions and reaches the helpers via `use super::*`.
 //! Included from `shader.rs` via `#[path = "shader_tests/mod.rs"] mod tests;`.
 
-
 use super::*;
 use crate::header::NifHeader;
 use crate::stream::NifStream;
@@ -28,12 +27,10 @@ fn make_header(user_version: u32, user_version_2: u32) -> NifHeader {
     }
 }
 
-
 /// Build bytes for BSShaderPPLightingProperty, optionally including emissive color.
 fn build_bsshader_bytes(user_version_2: u32) -> Vec<u8> {
     build_bsshader_bytes_with_emissive(user_version_2, None)
 }
-
 
 fn build_bsshader_bytes_with_emissive(user_version_2: u32, emissive: Option<[f32; 4]>) -> Vec<u8> {
     let mut data = Vec::new();
@@ -79,7 +76,6 @@ fn build_bsshader_bytes_with_emissive(user_version_2: u32, emissive: Option<[f32
     data
 }
 
-
 fn make_skyrim_header() -> NifHeader {
     NifHeader {
         version: NifVersion::V20_2_0_7,
@@ -95,7 +91,6 @@ fn make_skyrim_header() -> NifHeader {
         num_groups: 0,
     }
 }
-
 
 /// Build the common bytes for BSLightingShaderProperty (Skyrim LE, BSVER=83).
 fn build_bs_lighting_common(shader_type: u32) -> Vec<u8> {
@@ -145,7 +140,6 @@ fn build_bs_lighting_common(shader_type: u32) -> Vec<u8> {
     data
 }
 
-
 fn make_fo4_header() -> NifHeader {
     NifHeader {
         version: NifVersion::V20_2_0_7,
@@ -161,7 +155,6 @@ fn make_fo4_header() -> NifHeader {
         num_groups: 0,
     }
 }
-
 
 /// Build FO4 BSLightingShaderProperty bytes (BSVER=130, shader_type=1 env map).
 fn build_bs_lighting_fo4_env_map() -> Vec<u8> {
@@ -234,7 +227,6 @@ fn build_bs_lighting_fo4_env_map() -> Vec<u8> {
     data
 }
 
-
 // ── #409 BSVER-131 / 132 boundary regression tests ───────────────
 
 /// Build a header with a custom BSVER — share the version number
@@ -258,7 +250,6 @@ fn make_fo4_header_with_bsver(bsver: u32) -> NifHeader {
     }
 }
 
-
 // ── N23.9: FO76/Starfield tests ──────────────────────────────────
 
 fn make_fo76_header(name: &str) -> NifHeader {
@@ -276,7 +267,6 @@ fn make_fo76_header(name: &str) -> NifHeader {
         num_groups: 0,
     }
 }
-
 
 /// Build a BSLightingShaderProperty body with FO76 layout (BSVER=155), empty
 /// name (so stopcond does NOT fire), shader_type=0 (Default → no trailing),
@@ -348,7 +338,6 @@ fn build_fo76_bs_lighting_minimal() -> Vec<u8> {
     data
 }
 
-
 // ── #713 / NIF-D3-01 — Skyrim BSSkyShaderProperty / BSWaterShaderProperty ──
 
 /// Build a synthetic Skyrim LE (BSVER=83) `BSSkyShaderProperty`. Layout:
@@ -376,7 +365,6 @@ fn build_bs_sky_shader_property(source_texture: &str, sky_object_type: u32) -> V
     data
 }
 
-
 /// Build a synthetic Skyrim LE `BSWaterShaderProperty`. Same prefix as
 /// the sky variant but the per-block tail is just `Water Shader Flags`
 /// (single u32).
@@ -394,7 +382,6 @@ fn build_bs_water_shader_property(water_shader_flags: u32) -> Vec<u8> {
     data.extend_from_slice(&water_shader_flags.to_le_bytes());
     data
 }
-
 
 // ── #746 + #747 Starfield BSVER 172 regressions ─────────────────────
 
@@ -416,7 +403,6 @@ fn make_starfield_header(name: &str) -> NifHeader {
         num_groups: 0,
     }
 }
-
 
 /// Build a minimal **Starfield** (BSVER 172) `BSLightingShaderProperty`
 /// body — the FO76 shape MINUS every `#BS_F76#`-gated field. Per
@@ -461,7 +447,6 @@ fn build_starfield_bs_lighting_minimal() -> Vec<u8> {
     // shader_type 0 → ShaderTypeData::None (no trailing fields).
     data
 }
-
 
 /// Build a minimal **Starfield** (BSVER 172) full-body `BSEffectShaderProperty`.
 /// Name index 0 is "" so the block takes the full-body path (a non-empty
@@ -510,7 +495,6 @@ fn build_starfield_bs_effect_minimal() -> Vec<u8> {
     data
 }
 
-
 // ── #1331 sibling: BSShaderNoLightingProperty falloff width per-file BSVER ──
 
 /// Build a `BSShaderNoLightingProperty` block: NiObjectNET (name idx 0) +
@@ -541,8 +525,8 @@ fn build_no_lighting_bytes(file_name: &str, falloff: Option<[f32; 4]>) -> Vec<u8
     d
 }
 
-mod legacy;
-mod skyrim;
 mod fo4;
 mod fo76;
+mod legacy;
+mod skyrim;
 mod starfield;

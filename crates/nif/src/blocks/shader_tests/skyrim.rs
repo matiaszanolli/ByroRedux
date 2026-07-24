@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 #[test]
 fn parse_bs_lighting_default_no_trailing() {
     let header = make_skyrim_header();
@@ -17,7 +16,6 @@ fn parse_bs_lighting_default_no_trailing() {
     // All common data consumed, no trailing fields.
     assert_eq!(stream.position(), data.len() as u64);
 }
-
 
 #[test]
 fn parse_bs_lighting_env_map_trailing() {
@@ -36,7 +34,6 @@ fn parse_bs_lighting_env_map_trailing() {
     }
     assert_eq!(stream.position(), data.len() as u64);
 }
-
 
 #[test]
 fn parse_bs_lighting_skin_tint_trailing() {
@@ -62,7 +59,6 @@ fn parse_bs_lighting_skin_tint_trailing() {
     }
     assert_eq!(stream.position(), data.len() as u64);
 }
-
 
 #[test]
 fn parse_bs_lighting_eye_envmap_trailing() {
@@ -96,7 +92,6 @@ fn parse_bs_lighting_eye_envmap_trailing() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
-
 #[test]
 fn parse_bs_lighting_multilayer_parallax_trailing() {
     let header = make_skyrim_header();
@@ -122,7 +117,6 @@ fn parse_bs_lighting_multilayer_parallax_trailing() {
     }
     assert_eq!(stream.position(), data.len() as u64);
 }
-
 
 #[test]
 fn parse_bs_effect_shader_soft_falloff_and_greyscale() {
@@ -176,7 +170,6 @@ fn parse_bs_effect_shader_soft_falloff_and_greyscale() {
     assert_eq!(stream.position(), data.len() as u64);
 }
 
-
 /// Pre-#713 `BSSkyShaderProperty` was aliased to
 /// `BSShaderPPLightingProperty::parse`, which read the FO3 PP trailer
 /// (`texture_clamp_mode + texture_set_ref + refraction + parallax`)
@@ -205,7 +198,6 @@ fn bs_sky_shader_property_parses_skyrim_layout_exactly() {
     );
 }
 
-
 /// `BSWaterShaderProperty` regression — same root cause as the sky
 /// variant. Per-block tail is the single `Water Shader Flags` u32 per
 /// nif.xml line 6705 (`WaterShaderPropertyFlags`, default 0xC4 =
@@ -226,7 +218,6 @@ fn bs_water_shader_property_parses_skyrim_layout_exactly() {
     assert_eq!(prop.water_shader_flags, 0xC4);
     assert_eq!(stream.position(), data.len() as u64);
 }
-
 
 /// Dispatch routes both names through the dedicated parsers. Pre-#713
 /// the dispatch arm in `blocks/mod.rs:305-312` listed both alongside
@@ -283,7 +274,6 @@ fn dispatch_routes_bs_sky_and_water_to_dedicated_parsers() {
         );
     }
 }
-
 
 /// Regression for #716 — BSShaderPPLightingProperty.Emissive Color (Color4)
 /// is gated by `#BS_GT_FO3#` (bsver > crate::version::bsver::FO3_FNV).  Pre-fix the field was never read,

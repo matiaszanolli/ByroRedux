@@ -214,7 +214,8 @@ mod tests {
 
     #[test]
     fn resume_on_empty_dir_starts_at_zero() {
-        let dir = std::env::temp_dir().join(format!("byro_save_resume_empty_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("byro_save_resume_empty_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let ring = SaveRing::resume(3, &dir);
         assert_eq!(ring.peek(), 0, "no slots on disk → cursor starts at 0");
@@ -232,10 +233,7 @@ mod tests {
 
     #[test]
     fn write_read_round_trip_and_atomic_rename() {
-        let dir = std::env::temp_dir().join(format!(
-            "byro_save_disk_test_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("byro_save_disk_test_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
 
         let payload = b"BYRSAVE\0 some bytes here";

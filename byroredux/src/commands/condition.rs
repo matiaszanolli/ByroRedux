@@ -89,8 +89,7 @@ fn parse_opt_u32(tok: Option<&str>) -> Result<u32, String> {
 }
 
 fn catalog_output() -> CommandOutput {
-    let mut lines =
-        vec!["Condition functions (cond <entity|.> <Func> [p1] [p2]):".to_string()];
+    let mut lines = vec!["Condition functions (cond <entity|.> <Func> [p1] [p2]):".to_string()];
     for f in ConditionFunction::CATALOG {
         lines.push(format!("  {}", f.name()));
     }

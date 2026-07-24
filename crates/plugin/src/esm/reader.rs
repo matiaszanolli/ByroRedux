@@ -313,7 +313,10 @@ impl FormIdRemap {
     pub fn regular(plugin_index: u8, master_indices: Vec<u8>) -> Self {
         Self {
             plugin_slot: GlobalSlot::Regular(plugin_index),
-            master_slots: master_indices.into_iter().map(GlobalSlot::Regular).collect(),
+            master_slots: master_indices
+                .into_iter()
+                .map(GlobalSlot::Regular)
+                .collect(),
         }
     }
 

@@ -47,7 +47,10 @@ fn add_fnv_fo3_shared<F: Fn(&str) -> Option<u32>>(rs: &mut CharacterRuleset, res
     }
     // Critical Chance = 0.01·Luck, capped at 0.10.
     if let (Some(out), Some(l)) = (resolve("CritChance"), resolve("Luck")) {
-        rs.push_derived(out, DerivedStatFormula::affine(av(l), 0.01, 0.0).capped(0.10));
+        rs.push_derived(
+            out,
+            DerivedStatFormula::affine(av(l), 0.01, 0.0).capped(0.10),
+        );
     }
     // Unarmed Damage = ceil((10 + Unarmed)/20) = ceil(0.5 + 0.05·Unarmed).
     if let (Some(out), Some(u)) = (resolve("UnarmedDamage"), resolve("Unarmed")) {
@@ -58,9 +61,10 @@ fn add_fnv_fo3_shared<F: Fn(&str) -> Option<u32>>(rs: &mut CharacterRuleset, res
     // coefficients live in the `Affliction` descriptors (single source); armor
     // / chems / perks layer on via the AV mods, not the base formula.
     for aff in Affliction::ALL {
-        if let (Some(out), Some(gov)) =
-            (resolve(aff.resist_editor_id), resolve(aff.governing_editor_id))
-        {
+        if let (Some(out), Some(gov)) = (
+            resolve(aff.resist_editor_id),
+            resolve(aff.governing_editor_id),
+        ) {
             rs.push_derived(out, aff.fo3_fnv_resistance_formula(gov));
         }
     }
@@ -184,9 +188,15 @@ mod tests {
         assert_eq!(rs.derived_value(0x2C9, &avs, 1), Some(105.0)); // Health floor(105)
         assert_eq!(rs.derived_value(0x2D0, &avs, 1), Some(120.0)); // AP 60 + 10·6
         assert_eq!(rs.derived_value(0x2D1, &avs, 1), Some(270.0)); // CW 200 + 10·7
-        // Scopes: Health player-only; Carry Weight actor-general.
-        assert_eq!(rs.derived_formula(0x2C9).unwrap().scope, DerivedScope::PlayerOnly);
-        assert_eq!(rs.derived_formula(0x2D1).unwrap().scope, DerivedScope::ActorGeneral);
+                                                                   // Scopes: Health player-only; Carry Weight actor-general.
+        assert_eq!(
+            rs.derived_formula(0x2C9).unwrap().scope,
+            DerivedScope::PlayerOnly
+        );
+        assert_eq!(
+            rs.derived_formula(0x2D1).unwrap().scope,
+            DerivedScope::ActorGeneral
+        );
     }
 
     #[test]
@@ -196,10 +206,10 @@ mod tests {
         assert_eq!(fnv.derived_len(), 8);
         assert_eq!(fo3.derived_len(), 8);
         let avs = ActorValues::from_pairs([
-            (0x07, 5.0), // END
-            (0x0A, 5.0), // AGI
-            (0x05, 5.0), // STR
-            (0x0B, 5.0), // Luck
+            (0x07, 5.0),  // END
+            (0x0A, 5.0),  // AGI
+            (0x05, 5.0),  // STR
+            (0x0B, 5.0),  // Luck
             (0x2C, 90.0), // Unarmed skill
         ]);
         // Radiation Resistance = (END−1)·2 → (5−1)·2 = 8 %, identical FO3==FNV.
@@ -212,7 +222,7 @@ mod tests {
         // (uncapped — no documented FO3/FNV cap, so it keeps scaling).
         assert_eq!(fo3.derived_value(0x2D6, &avs, 1), Some(20.0));
         assert_eq!(fnv.derived_value(0x2D6, &high_end, 1), Some(245.0)); // (50−1)·5
-        // Health: FO3 90+100+10 = 200; FNV 95+100+5 = 200 (different formulas, same here).
+                                                                         // Health: FO3 90+100+10 = 200; FNV 95+100+5 = 200 (different formulas, same here).
         assert_eq!(fo3.derived_value(0x2C9, &avs, 1), Some(200.0));
         assert_eq!(fnv.derived_value(0x2C9, &avs, 1), Some(200.0));
         // AP differs: FO3 65+2·5 = 75; FNV 65+3·5 = 80.

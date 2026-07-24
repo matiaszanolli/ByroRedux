@@ -759,7 +759,12 @@ mod tests {
 
     #[test]
     fn parse_pack_no_pldt_leaves_location_none() {
-        let p = parse_pack(0x1, &[sub(b"EDID", b"NoLocation\0")], &None, GameKind::default());
+        let p = parse_pack(
+            0x1,
+            &[sub(b"EDID", b"NoLocation\0")],
+            &None,
+            GameKind::default(),
+        );
         assert!(p.location.is_none());
     }
 
@@ -817,7 +822,12 @@ mod tests {
         // mod_index 1 == master_slots.len() → self-reference.
         let raw = (1u32 << 24) | 0x0000_5678;
         let data = pldt(0, raw, 512);
-        let p = parse_pack(0x1, &[sub(b"PLDT", &data)], &Some(remap), GameKind::default());
+        let p = parse_pack(
+            0x1,
+            &[sub(b"PLDT", &data)],
+            &Some(remap),
+            GameKind::default(),
+        );
         assert_eq!(
             p.location.unwrap().target,
             PackLocationTarget::NearReference((2u32 << 24) | 0x0000_5678)
@@ -835,7 +845,12 @@ mod tests {
 
     #[test]
     fn parse_pack_no_ptdt_leaves_target_none() {
-        let p = parse_pack(0x1, &[sub(b"EDID", b"NoTarget\0")], &None, GameKind::default());
+        let p = parse_pack(
+            0x1,
+            &[sub(b"EDID", b"NoTarget\0")],
+            &None,
+            GameKind::default(),
+        );
         assert!(p.target.is_none());
     }
 
@@ -846,7 +861,10 @@ mod tests {
         let p = parse_pack(0x1, &[sub(b"PTDT", &data)], &None, GameKind::default());
         let target = p.target.expect("PTDT should populate target");
         assert_eq!(target.target_type, 0);
-        assert_eq!(target.target, PackTargetKind::SpecificReference(0x0001_2345));
+        assert_eq!(
+            target.target,
+            PackTargetKind::SpecificReference(0x0001_2345)
+        );
         assert_eq!(target.count_or_distance, 256);
     }
 
@@ -854,7 +872,10 @@ mod tests {
     fn parse_pack_reads_ptdt_object_id_and_other_types() {
         let obj = ptdt(1, 0x0003_1111, 128);
         let p = parse_pack(0x1, &[sub(b"PTDT", &obj)], &None, GameKind::default());
-        assert_eq!(p.target.unwrap().target, PackTargetKind::ObjectId(0x0003_1111));
+        assert_eq!(
+            p.target.unwrap().target,
+            PackTargetKind::ObjectId(0x0003_1111)
+        );
 
         for target_type in [2u32, 3] {
             let data = ptdt(target_type, 0x0009_9999, 0);
@@ -868,7 +889,12 @@ mod tests {
         let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
         let raw = (1u32 << 24) | 0x0000_5678; // mod_index 1 == master_slots.len() → self-reference
         let data = ptdt(0, raw, 0);
-        let p = parse_pack(0x1, &[sub(b"PTDT", &data)], &Some(remap), GameKind::default());
+        let p = parse_pack(
+            0x1,
+            &[sub(b"PTDT", &data)],
+            &Some(remap),
+            GameKind::default(),
+        );
         assert_eq!(
             p.target.unwrap().target,
             PackTargetKind::SpecificReference((2u32 << 24) | 0x0000_5678)
@@ -903,14 +929,26 @@ mod tests {
         // Bartender's daytime package outranks an evening Sandbox fallback.
         let bartender = pack(6, sched(Some(8), 12)); // Travel/AtBar 08–20
         let evening = pack(PROCEDURE_SANDBOX, sched(Some(20), 2)); // sandbox 20–22
-        // 10:00 → bartender active → NOT treated as sandbox (the Trudy bug).
-        assert!(!active_package_is_sandbox([&bartender, &evening], 10.0, |_| true));
+                                                                   // 10:00 → bartender active → NOT treated as sandbox (the Trudy bug).
+        assert!(!active_package_is_sandbox(
+            [&bartender, &evening],
+            10.0,
+            |_| true
+        ));
         // 21:00 → bartender off-shift, evening sandbox active.
-        assert!(active_package_is_sandbox([&bartender, &evening], 21.0, |_| true));
+        assert!(active_package_is_sandbox(
+            [&bartender, &evening],
+            21.0,
+            |_| true
+        ));
         // Any-time saloon sandbox behind an inactive sleep package → sandbox.
         let sleep = pack(4, sched(Some(22), 10));
         let anytime_sandbox = pack(PROCEDURE_SANDBOX, None);
-        assert!(active_package_is_sandbox([&sleep, &anytime_sandbox], 10.0, |_| true));
+        assert!(active_package_is_sandbox(
+            [&sleep, &anytime_sandbox],
+            10.0,
+            |_| true
+        ));
         // No resolvable packages → not sandbox.
         assert!(!active_package_is_sandbox(
             std::iter::empty::<&PackRecord>(),
@@ -933,11 +971,15 @@ mod tests {
             ..Default::default()
         }];
         let fallback = pack(PROCEDURE_SANDBOX, None); // no conditions
-        // Predicate: a package passes iff it has no conditions (models the
-        // caller's fail path for the gated one).
+                                                      // Predicate: a package passes iff it has no conditions (models the
+                                                      // caller's fail path for the gated one).
         let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
         // Still sandbox overall — the fallback wins.
-        assert!(active_package_is_sandbox([&gated, &fallback], 10.0, cond_met));
+        assert!(active_package_is_sandbox(
+            [&gated, &fallback],
+            10.0,
+            cond_met
+        ));
         // With only the gated package, its failing condition drops it → no
         // active package → not sandbox. Contrast `|_| true` which passes it.
         assert!(!active_package_is_sandbox([&gated], 10.0, cond_met));
@@ -950,14 +992,26 @@ mod tests {
         // with Wander swapped in for Sandbox.
         let bartender = pack(6, sched(Some(8), 12)); // Travel/AtBar 08–20
         let evening = pack(PROCEDURE_WANDER, sched(Some(20), 2)); // wander 20–22
-        // 10:00 → bartender active → NOT treated as wander.
-        assert!(!active_package_is_wander([&bartender, &evening], 10.0, |_| true));
+                                                                  // 10:00 → bartender active → NOT treated as wander.
+        assert!(!active_package_is_wander(
+            [&bartender, &evening],
+            10.0,
+            |_| true
+        ));
         // 21:00 → bartender off-shift, evening wander active.
-        assert!(active_package_is_wander([&bartender, &evening], 21.0, |_| true));
+        assert!(active_package_is_wander(
+            [&bartender, &evening],
+            21.0,
+            |_| true
+        ));
         // Any-time wander behind an inactive sleep package → wander.
         let sleep = pack(4, sched(Some(22), 10));
         let anytime_wander = pack(PROCEDURE_WANDER, None);
-        assert!(active_package_is_wander([&sleep, &anytime_wander], 10.0, |_| true));
+        assert!(active_package_is_wander(
+            [&sleep, &anytime_wander],
+            10.0,
+            |_| true
+        ));
         // No resolvable packages → not wander.
         assert!(!active_package_is_wander(
             std::iter::empty::<&PackRecord>(),
@@ -977,7 +1031,11 @@ mod tests {
         }];
         let fallback = pack(PROCEDURE_WANDER, None); // no conditions
         let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
-        assert!(active_package_is_wander([&gated, &fallback], 10.0, cond_met));
+        assert!(active_package_is_wander(
+            [&gated, &fallback],
+            10.0,
+            cond_met
+        ));
         assert!(!active_package_is_wander([&gated], 10.0, cond_met));
         assert!(active_package_is_wander([&gated], 10.0, |_| true));
     }
@@ -1004,14 +1062,26 @@ mod tests {
         // generic "some other procedure" placeholder anymore.
         let bartender = pack(1, sched(Some(8), 12)); // Follow/AtBar 08–20
         let evening = pack(PROCEDURE_TRAVEL, sched(Some(20), 2)); // travel 20–22
-        // 10:00 → bartender active → NOT treated as travel.
-        assert!(!active_package_is_travel([&bartender, &evening], 10.0, |_| true));
+                                                                  // 10:00 → bartender active → NOT treated as travel.
+        assert!(!active_package_is_travel(
+            [&bartender, &evening],
+            10.0,
+            |_| true
+        ));
         // 21:00 → bartender off-shift, evening travel active.
-        assert!(active_package_is_travel([&bartender, &evening], 21.0, |_| true));
+        assert!(active_package_is_travel(
+            [&bartender, &evening],
+            21.0,
+            |_| true
+        ));
         // Any-time travel behind an inactive sleep package → travel.
         let sleep = pack(4, sched(Some(22), 10));
         let anytime_travel = pack(PROCEDURE_TRAVEL, None);
-        assert!(active_package_is_travel([&sleep, &anytime_travel], 10.0, |_| true));
+        assert!(active_package_is_travel(
+            [&sleep, &anytime_travel],
+            10.0,
+            |_| true
+        ));
         // No resolvable packages → not travel.
         assert!(!active_package_is_travel(
             std::iter::empty::<&PackRecord>(),
@@ -1031,7 +1101,11 @@ mod tests {
         }];
         let fallback = pack(PROCEDURE_TRAVEL, None); // no conditions
         let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
-        assert!(active_package_is_travel([&gated, &fallback], 10.0, cond_met));
+        assert!(active_package_is_travel(
+            [&gated, &fallback],
+            10.0,
+            cond_met
+        ));
         assert!(!active_package_is_travel([&gated], 10.0, cond_met));
         assert!(active_package_is_travel([&gated], 10.0, |_| true));
     }
@@ -1073,11 +1147,23 @@ mod tests {
         // Follow itself, so it can't stand in as the generic placeholder.
         let bartender = pack(2, sched(Some(8), 12)); // Escort/AtBar 08–20
         let evening = pack(PROCEDURE_FOLLOW, sched(Some(20), 2)); // follow 20–22
-        assert!(!active_package_is_follow([&bartender, &evening], 10.0, |_| true));
-        assert!(active_package_is_follow([&bartender, &evening], 21.0, |_| true));
+        assert!(!active_package_is_follow(
+            [&bartender, &evening],
+            10.0,
+            |_| true
+        ));
+        assert!(active_package_is_follow(
+            [&bartender, &evening],
+            21.0,
+            |_| true
+        ));
         let sleep = pack(4, sched(Some(22), 10));
         let anytime_follow = pack(PROCEDURE_FOLLOW, None);
-        assert!(active_package_is_follow([&sleep, &anytime_follow], 10.0, |_| true));
+        assert!(active_package_is_follow(
+            [&sleep, &anytime_follow],
+            10.0,
+            |_| true
+        ));
         assert!(!active_package_is_follow(
             std::iter::empty::<&PackRecord>(),
             10.0,
@@ -1095,7 +1181,11 @@ mod tests {
         }];
         let fallback = pack(PROCEDURE_FOLLOW, None);
         let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
-        assert!(active_package_is_follow([&gated, &fallback], 10.0, cond_met));
+        assert!(active_package_is_follow(
+            [&gated, &fallback],
+            10.0,
+            cond_met
+        ));
         assert!(!active_package_is_follow([&gated], 10.0, cond_met));
         assert!(active_package_is_follow([&gated], 10.0, |_| true));
     }
@@ -1107,11 +1197,23 @@ mod tests {
         // Escort itself, so it can't stand in as the generic placeholder.
         let bartender = pack(PROCEDURE_WANDER, sched(Some(8), 12)); // Wander/AtBar 08–20
         let evening = pack(PROCEDURE_ESCORT, sched(Some(20), 2)); // escort 20–22
-        assert!(!active_package_is_escort([&bartender, &evening], 10.0, |_| true));
-        assert!(active_package_is_escort([&bartender, &evening], 21.0, |_| true));
+        assert!(!active_package_is_escort(
+            [&bartender, &evening],
+            10.0,
+            |_| true
+        ));
+        assert!(active_package_is_escort(
+            [&bartender, &evening],
+            21.0,
+            |_| true
+        ));
         let sleep = pack(4, sched(Some(22), 10));
         let anytime_escort = pack(PROCEDURE_ESCORT, None);
-        assert!(active_package_is_escort([&sleep, &anytime_escort], 10.0, |_| true));
+        assert!(active_package_is_escort(
+            [&sleep, &anytime_escort],
+            10.0,
+            |_| true
+        ));
         assert!(!active_package_is_escort(
             std::iter::empty::<&PackRecord>(),
             10.0,
@@ -1129,7 +1231,11 @@ mod tests {
         }];
         let fallback = pack(PROCEDURE_ESCORT, None);
         let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
-        assert!(active_package_is_escort([&gated, &fallback], 10.0, cond_met));
+        assert!(active_package_is_escort(
+            [&gated, &fallback],
+            10.0,
+            cond_met
+        ));
         assert!(!active_package_is_escort([&gated], 10.0, cond_met));
         assert!(active_package_is_escort([&gated], 10.0, |_| true));
     }
@@ -1155,11 +1261,23 @@ mod tests {
         // Guard itself, so it can't stand in as the generic placeholder.
         let bartender = pack(PROCEDURE_FOLLOW, sched(Some(8), 12)); // Follow/AtBar 08–20
         let evening = pack(PROCEDURE_GUARD, sched(Some(20), 2)); // guard 20–22
-        assert!(!active_package_is_guard([&bartender, &evening], 10.0, |_| true));
-        assert!(active_package_is_guard([&bartender, &evening], 21.0, |_| true));
+        assert!(!active_package_is_guard(
+            [&bartender, &evening],
+            10.0,
+            |_| true
+        ));
+        assert!(active_package_is_guard(
+            [&bartender, &evening],
+            21.0,
+            |_| true
+        ));
         let sleep = pack(4, sched(Some(22), 10));
         let anytime_guard = pack(PROCEDURE_GUARD, None);
-        assert!(active_package_is_guard([&sleep, &anytime_guard], 10.0, |_| true));
+        assert!(active_package_is_guard(
+            [&sleep, &anytime_guard],
+            10.0,
+            |_| true
+        ));
         assert!(!active_package_is_guard(
             std::iter::empty::<&PackRecord>(),
             10.0,
@@ -1189,11 +1307,23 @@ mod tests {
         // now Patrol itself, so it can't stand in as the generic placeholder.
         let bartender = pack(PROCEDURE_GUARD, sched(Some(8), 12)); // Guard/AtBar 08–20
         let evening = pack(PROCEDURE_PATROL, sched(Some(20), 2)); // patrol 20–22
-        assert!(!active_package_is_patrol([&bartender, &evening], 10.0, |_| true));
-        assert!(active_package_is_patrol([&bartender, &evening], 21.0, |_| true));
+        assert!(!active_package_is_patrol(
+            [&bartender, &evening],
+            10.0,
+            |_| true
+        ));
+        assert!(active_package_is_patrol(
+            [&bartender, &evening],
+            21.0,
+            |_| true
+        ));
         let sleep = pack(4, sched(Some(22), 10));
         let anytime_patrol = pack(PROCEDURE_PATROL, None);
-        assert!(active_package_is_patrol([&sleep, &anytime_patrol], 10.0, |_| true));
+        assert!(active_package_is_patrol(
+            [&sleep, &anytime_patrol],
+            10.0,
+            |_| true
+        ));
         assert!(!active_package_is_patrol(
             std::iter::empty::<&PackRecord>(),
             10.0,
@@ -1211,7 +1341,11 @@ mod tests {
         }];
         let fallback = pack(PROCEDURE_PATROL, None);
         let cond_met = |pk: &PackRecord| pk.conditions.is_empty();
-        assert!(active_package_is_patrol([&gated, &fallback], 10.0, cond_met));
+        assert!(active_package_is_patrol(
+            [&gated, &fallback],
+            10.0,
+            cond_met
+        ));
         assert!(!active_package_is_patrol([&gated], 10.0, cond_met));
         assert!(active_package_is_patrol([&gated], 10.0, |_| true));
     }

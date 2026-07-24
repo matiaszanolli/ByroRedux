@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 /// #1510 / NIF-NEW-05 — nif.xml `#BS_F76# = (BSVER == 155)` ("Fallout 76
 /// stream 155 only"): the `BSShaderType155` field, WetnessParams
 /// `unknown_2`, and the Luminance / Translucency / texture-array tail are
@@ -19,14 +18,17 @@ fn parse_bs_lighting_starfield_minimal_omits_fo76_only_tail() {
     let data = build_starfield_bs_lighting_minimal();
     let mut stream = NifStream::new(&data, &header);
 
-    let prop = BSLightingShaderProperty::parse(&mut stream)
-        .expect("Starfield BLSP full body must parse");
+    let prop =
+        BSLightingShaderProperty::parse(&mut stream).expect("Starfield BLSP full body must parse");
     assert_eq!(
         stream.position(),
         data.len() as u64,
         "Starfield body must consume exactly — no FO76-only tail reads",
     );
-    let w = prop.wetness.as_ref().expect("wetness present (BSVER >= 130)");
+    let w = prop
+        .wetness
+        .as_ref()
+        .expect("wetness present (BSVER >= 130)");
     assert_eq!(
         w.unknown_2, 0.0,
         "unknown_2 is FO76-only (== 155); absent on Starfield",
@@ -37,7 +39,6 @@ fn parse_bs_lighting_starfield_minimal_omits_fo76_only_tail() {
     assert!(prop.texture_arrays.is_empty());
     assert!(matches!(prop.shader_type_data, ShaderTypeData::None));
 }
-
 
 /// #1606 — Starfield full-body `BSLightingShaderProperty` carries a
 /// trailing block (byte-audited as 38 B = 9× f32 + 2 B, constant across
@@ -73,7 +74,6 @@ fn parse_bs_lighting_starfield_captures_trailing_tail() {
     assert!(matches!(prop.shader_type_data, ShaderTypeData::None));
 }
 
-
 /// #1606 — the tail is captured ONLY when a `block_size` is supplied and
 /// there are trailing bytes. The legacy `parse(stream)` entry (no size)
 /// and a block that consumed exactly to its boundary both yield an empty
@@ -86,18 +86,19 @@ fn parse_bs_lighting_starfield_tail_empty_without_size_or_drift() {
     // (a) legacy parse(stream): no block_size → no tail capture.
     let mut s1 = NifStream::new(&body, &header);
     let p1 = BSLightingShaderProperty::parse(&mut s1).unwrap();
-    assert!(p1.starfield_tail.is_empty(), "no block_size → no tail capture");
+    assert!(
+        p1.starfield_tail.is_empty(),
+        "no block_size → no tail capture"
+    );
 
     // (b) parse_with_size with the exact body size (no trailing bytes).
     let mut s2 = NifStream::new(&body, &header);
-    let p2 =
-        BSLightingShaderProperty::parse_with_size(&mut s2, Some(body.len() as u32)).unwrap();
+    let p2 = BSLightingShaderProperty::parse_with_size(&mut s2, Some(body.len() as u32)).unwrap();
     assert!(
         p2.starfield_tail.is_empty(),
         "consumed == block_size → empty tail",
     );
 }
-
 
 /// #1510 — Starfield material references are content-hash paths with NO
 /// `.mat`/`.bgsm` suffix, so `is_material_reference` misses them. For
@@ -114,8 +115,8 @@ fn parse_bs_lighting_starfield_hashpath_name_stubs() {
     let data = build_starfield_bs_lighting_minimal(); // name idx 0 → the hash-path
     let mut stream = NifStream::new(&data, &header);
 
-    let prop = BSLightingShaderProperty::parse(&mut stream)
-        .expect("Starfield hash-path BLSP must stub");
+    let prop =
+        BSLightingShaderProperty::parse(&mut stream).expect("Starfield hash-path BLSP must stub");
     assert!(
         prop.material_reference,
         "a non-empty (hash-path) Starfield name must take the stub path",
@@ -126,7 +127,6 @@ fn parse_bs_lighting_starfield_hashpath_name_stubs() {
         "stub consumes only the NiObjectNET base (name + extra + controller)",
     );
 }
-
 
 /// #1721 — sibling of `parse_bs_lighting_starfield_hashpath_name_stubs`.
 /// Starfield material references are content-hash paths with NO
@@ -152,8 +152,8 @@ fn parse_bs_effect_starfield_hashpath_name_stubs() {
     data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = -1
     let mut stream = NifStream::new(&data, &header);
 
-    let prop = BSEffectShaderProperty::parse(&mut stream)
-        .expect("Starfield hash-path BSEffect must stub");
+    let prop =
+        BSEffectShaderProperty::parse(&mut stream).expect("Starfield hash-path BSEffect must stub");
     assert!(
         prop.material_reference,
         "a non-empty (hash-path) Starfield name must take the stub path",
@@ -164,7 +164,6 @@ fn parse_bs_effect_starfield_hashpath_name_stubs() {
         "stub consumes only the NiObjectNET base (name + extra + controller)",
     );
 }
-
 
 /// #1881 — Starfield full-body `BSEffectShaderProperty` carries a trailing
 /// tail (byte-audited as a constant +32 B across 166 LODMeshes/MeshesPatch
@@ -208,7 +207,6 @@ fn parse_bs_effect_starfield_captures_trailing_tail() {
     );
 }
 
-
 /// #1881 — the tail is captured ONLY with a `block_size` and trailing bytes.
 /// The legacy `parse(stream)` (no size) and a block consumed exactly to its
 /// boundary both yield an empty tail — drift recovery handles the no-size case
@@ -221,12 +219,14 @@ fn parse_bs_effect_starfield_tail_empty_without_size_or_drift() {
     // (a) legacy parse(stream): no block_size → no tail capture.
     let mut s1 = NifStream::new(&body, &header);
     let p1 = BSEffectShaderProperty::parse(&mut s1).unwrap();
-    assert!(p1.starfield_tail.is_empty(), "no block_size → no tail capture");
+    assert!(
+        p1.starfield_tail.is_empty(),
+        "no block_size → no tail capture"
+    );
 
     // (b) parse_with_size with the exact body size (no trailing bytes).
     let mut s2 = NifStream::new(&body, &header);
-    let p2 =
-        BSEffectShaderProperty::parse_with_size(&mut s2, Some(body.len() as u32)).unwrap();
+    let p2 = BSEffectShaderProperty::parse_with_size(&mut s2, Some(body.len() as u32)).unwrap();
     assert!(
         p2.starfield_tail.is_empty(),
         "consumed == block_size → empty tail",

@@ -131,7 +131,12 @@ fn chebyshev(a: (i32, i32), b: (i32, i32)) -> i32 {
 /// un-holed once it's provably beyond any possible full-cell residency.
 /// Single source of truth for both [`block_hole_mask`] and
 /// [`spawn_lod_block`]'s per-vertex hole test, so the two can't drift apart.
-fn cell_is_full_detail(gx: i32, gy: i32, player_grid: (i32, i32), max_full_cell_radius: i32) -> bool {
+fn cell_is_full_detail(
+    gx: i32,
+    gy: i32,
+    player_grid: (i32, i32),
+    max_full_cell_radius: i32,
+) -> bool {
     chebyshev((gx, gy), player_grid) <= max_full_cell_radius
 }
 
@@ -772,7 +777,12 @@ mod tests {
         );
 
         // A cell safely beyond the hysteresis band is still LOD-eligible.
-        assert!(!cell_is_full_detail(radius_unload + 1, 0, player, radius_unload));
+        assert!(!cell_is_full_detail(
+            radius_unload + 1,
+            0,
+            player,
+            radius_unload
+        ));
     }
 
     /// #1373 — a boundary block's hole mask shifts as the player crosses

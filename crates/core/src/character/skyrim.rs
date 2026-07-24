@@ -158,7 +158,11 @@ mod tests {
         assert!(rs.attributes.is_empty(), "Skyrim has no attributes");
         assert_eq!(rs.skills.len(), 18);
         assert_eq!(rs.leveling, LM::SKYRIM);
-        assert_eq!(rs.derived_len(), 0, "unresolved AVIFs mean nothing populates");
+        assert_eq!(
+            rs.derived_len(),
+            0,
+            "unresolved AVIFs mean nothing populates"
+        );
     }
 
     fn full(id: &str) -> Option<u32> {
@@ -257,9 +261,7 @@ mod tests {
     fn skill_xp_between_is_sum_of_steps() {
         let c = SKYRIM_SKILL_USE_CURVE;
         let (m, o) = (0.5, 200.0);
-        let manual: f32 = (15..18)
-            .map(|l| skyrim_skill_xp_to_next(l, m, o, c))
-            .sum();
+        let manual: f32 = (15..18).map(|l| skyrim_skill_xp_to_next(l, m, o, c)).sum();
         assert_eq!(skyrim_skill_xp_between(15, 18, m, o, c), manual);
     }
 }

@@ -112,7 +112,9 @@ fn rt_disabled_layout_matches_water_shaders_with_optional_tlas() {
         "scene (set=1, rt=off, water)",
         &[2],
     )
-    .expect("scene descriptor layout (rt=off) must match triangle + water shaders with optional TLAS");
+    .expect(
+        "scene descriptor layout (rt=off) must match triangle + water shaders with optional TLAS",
+    );
 }
 
 /// Synthetic drift: dropping binding 4 (instance SSBO) from the

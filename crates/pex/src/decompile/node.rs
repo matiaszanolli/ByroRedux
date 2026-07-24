@@ -44,14 +44,21 @@ pub enum NodeKind {
     IdentifierString(String),
     /// `left <op> right` — `op` is the source operator (`"+"`, `"=="`,
     /// `"is"`, …), kept as a string to match Champollion.
-    BinaryOp { left: Box<Node>, op: String, right: Box<Node> },
+    BinaryOp {
+        left: Box<Node>,
+        op: String,
+        right: Box<Node>,
+    },
     /// `<op> operand` (`"!"`, `"-"`).
     UnaryOp { op: String, operand: Box<Node> },
     /// A plain value copy (the `assign` opcode, and casts that turn out to
     /// be same-type). Eliminated during cleanup in a later commit.
     Copy { value: Box<Node> },
     /// `value as TargetType`.
-    Cast { value: Box<Node>, target_type: String },
+    Cast {
+        value: Box<Node>,
+        target_type: String,
+    },
     /// `dest = value` (a statement).
     Assign { dest: Box<Node>, value: Box<Node> },
     /// `object.method(params...)`. `experimental` flags the unverified
@@ -68,7 +75,10 @@ pub enum NodeKind {
     /// used as an assignment target the [`Node::result`] is `None`.
     PropertyAccess { object: Box<Node>, property: String },
     /// `new ElementType[size]`.
-    ArrayCreate { element_type: String, size: Box<Node> },
+    ArrayCreate {
+        element_type: String,
+        size: Box<Node>,
+    },
     /// `array.length`.
     ArrayLength { array: Box<Node> },
     /// `array[index]`.
@@ -87,7 +97,10 @@ pub enum NodeKind {
         else_if: Vec<Node>,
     },
     /// `While condition … EndWhile`.
-    While { condition: Box<Node>, body: Vec<Node> },
+    While {
+        condition: Box<Node>,
+        body: Vec<Node>,
+    },
 }
 
 impl Node {
@@ -118,7 +131,11 @@ impl Node {
         right: Node,
     ) -> Node {
         Node::new(
-            NodeKind::BinaryOp { left: Box::new(left), op: op.into(), right: Box::new(right) },
+            NodeKind::BinaryOp {
+                left: Box::new(left),
+                op: op.into(),
+                right: Box::new(right),
+            },
             result,
             ip,
             precedence,
@@ -133,7 +150,10 @@ impl Node {
         operand: Node,
     ) -> Node {
         Node::new(
-            NodeKind::UnaryOp { op: op.into(), operand: Box::new(operand) },
+            NodeKind::UnaryOp {
+                op: op.into(),
+                operand: Box::new(operand),
+            },
             result,
             ip,
             precedence,
@@ -141,12 +161,27 @@ impl Node {
     }
 
     pub(crate) fn copy(ip: usize, result: Option<String>, value: Node) -> Node {
-        Node::new(NodeKind::Copy { value: Box::new(value) }, result, ip, 0)
+        Node::new(
+            NodeKind::Copy {
+                value: Box::new(value),
+            },
+            result,
+            ip,
+            0,
+        )
     }
 
-    pub(crate) fn cast(ip: usize, result: Option<String>, value: Node, target_type: String) -> Node {
+    pub(crate) fn cast(
+        ip: usize,
+        result: Option<String>,
+        value: Node,
+        target_type: String,
+    ) -> Node {
         Node::new(
-            NodeKind::Cast { value: Box::new(value), target_type },
+            NodeKind::Cast {
+                value: Box::new(value),
+                target_type,
+            },
             result,
             ip,
             0,
@@ -156,7 +191,10 @@ impl Node {
     pub(crate) fn assign(ip: usize, dest: Node, value: Node) -> Node {
         // Champollion gives Assign precedence 10 (statement level).
         Node::new(
-            NodeKind::Assign { dest: Box::new(dest), value: Box::new(value) },
+            NodeKind::Assign {
+                dest: Box::new(dest),
+                value: Box::new(value),
+            },
             None,
             ip,
             10,
@@ -186,7 +224,9 @@ impl Node {
 
     pub(crate) fn ret(ip: usize, value: Option<Node>) -> Node {
         Node::new(
-            NodeKind::Return { value: value.map(Box::new) },
+            NodeKind::Return {
+                value: value.map(Box::new),
+            },
             None,
             ip,
             0,
@@ -200,16 +240,27 @@ impl Node {
         property: impl Into<String>,
     ) -> Node {
         Node::new(
-            NodeKind::PropertyAccess { object: Box::new(object), property: property.into() },
+            NodeKind::PropertyAccess {
+                object: Box::new(object),
+                property: property.into(),
+            },
             result,
             ip,
             0,
         )
     }
 
-    pub(crate) fn array_create(ip: usize, result: Option<String>, element_type: String, size: Node) -> Node {
+    pub(crate) fn array_create(
+        ip: usize,
+        result: Option<String>,
+        element_type: String,
+        size: Node,
+    ) -> Node {
         Node::new(
-            NodeKind::ArrayCreate { element_type, size: Box::new(size) },
+            NodeKind::ArrayCreate {
+                element_type,
+                size: Box::new(size),
+            },
             result,
             ip,
             0,
@@ -217,12 +268,27 @@ impl Node {
     }
 
     pub(crate) fn array_length(ip: usize, result: Option<String>, array: Node) -> Node {
-        Node::new(NodeKind::ArrayLength { array: Box::new(array) }, result, ip, 0)
+        Node::new(
+            NodeKind::ArrayLength {
+                array: Box::new(array),
+            },
+            result,
+            ip,
+            0,
+        )
     }
 
-    pub(crate) fn array_access(ip: usize, result: Option<String>, array: Node, index: Node) -> Node {
+    pub(crate) fn array_access(
+        ip: usize,
+        result: Option<String>,
+        array: Node,
+        index: Node,
+    ) -> Node {
         Node::new(
-            NodeKind::ArrayAccess { array: Box::new(array), index: Box::new(index) },
+            NodeKind::ArrayAccess {
+                array: Box::new(array),
+                index: Box::new(index),
+            },
             result,
             ip,
             0,
@@ -249,7 +315,10 @@ impl Node {
 
     pub(crate) fn while_node(condition: Node, body: Vec<Node>) -> Node {
         Node::new(
-            NodeKind::While { condition: Box::new(condition), body },
+            NodeKind::While {
+                condition: Box::new(condition),
+                body,
+            },
             None,
             SYNTH_IP,
             10,
@@ -294,7 +363,12 @@ impl Node {
             NodeKind::ArrayCreate { size, .. } => vec![size],
             NodeKind::ArrayLength { array } => vec![array],
             NodeKind::ArrayAccess { array, index } => vec![array, index],
-            NodeKind::IfElse { condition, body, else_body, else_if } => {
+            NodeKind::IfElse {
+                condition,
+                body,
+                else_body,
+                else_if,
+            } => {
                 let mut v: Vec<&Node> = vec![condition];
                 v.extend(body.iter());
                 v.extend(else_body.iter());
@@ -330,7 +404,12 @@ impl Node {
             NodeKind::ArrayCreate { size, .. } => vec![size],
             NodeKind::ArrayLength { array } => vec![array],
             NodeKind::ArrayAccess { array, index } => vec![array, index],
-            NodeKind::IfElse { condition, body, else_body, else_if } => {
+            NodeKind::IfElse {
+                condition,
+                body,
+                else_body,
+                else_if,
+            } => {
                 let mut v: Vec<&mut Node> = vec![condition.as_mut()];
                 v.extend(body.iter_mut());
                 v.extend(else_body.iter_mut());

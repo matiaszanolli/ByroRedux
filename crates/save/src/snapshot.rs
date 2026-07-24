@@ -171,7 +171,10 @@ mod tests {
 
     fn sample() -> Snapshot {
         let mut components = BTreeMap::new();
-        components.insert("Transform".to_string(), serde_json::json!([[0, {"x": 1.0}]]));
+        components.insert(
+            "Transform".to_string(),
+            serde_json::json!([[0, {"x": 1.0}]]),
+        );
         Snapshot {
             next_entity: 7,
             strings: vec!["scene root".into(), "bip01".into()],
@@ -211,7 +214,10 @@ mod tests {
         let bytes = encode(&sample(), 1).unwrap();
         // Drop the last payload byte — header says more than is present.
         let chopped = &bytes[..bytes.len() - 1];
-        assert!(matches!(decode(chopped, 1), Err(SaveError::Truncated(_, _))));
+        assert!(matches!(
+            decode(chopped, 1),
+            Err(SaveError::Truncated(_, _))
+        ));
     }
 
     #[test]

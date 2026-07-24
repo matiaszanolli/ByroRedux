@@ -260,8 +260,12 @@ impl DerivedStatFormula {
     /// gracefully rather than panicking.
     #[inline]
     pub fn eval(&self, avs: &ActorValues, level: u16) -> f32 {
-        let a = self.a.read(avs, level, self.base_reads & READ_A_FROM_BASE != 0);
-        let b = self.b.read(avs, level, self.base_reads & READ_B_FROM_BASE != 0);
+        let a = self
+            .a
+            .read(avs, level, self.base_reads & READ_A_FROM_BASE != 0);
+        let b = self
+            .b
+            .read(avs, level, self.base_reads & READ_B_FROM_BASE != 0);
         let raw = self.bias + self.coeff_a * a + self.coeff_b * b + self.cross * a * b;
         let rounded = match self.round {
             RoundMode::None => raw,
@@ -324,7 +328,7 @@ mod tests {
         let fnv = DerivedStatFormula::bilinear(av(END), 20.0, DerivedInput::LEVEL, 5.0, 0.0, 95.0);
         assert_eq!(fnv.eval(&avs(&[(END, 5.0)]), 1), 200.0);
         assert_eq!(fnv.eval(&avs(&[(END, 10.0)]), 30), 445.0); // 95+200+150
-        // FO3: 90 + 20·END + 10·L. END 5, L 1 → 200.
+                                                               // FO3: 90 + 20·END + 10·L. END 5, L 1 → 200.
         let fo3 = DerivedStatFormula::bilinear(av(END), 20.0, DerivedInput::LEVEL, 10.0, 0.0, 90.0);
         assert_eq!(fo3.eval(&avs(&[(END, 5.0)]), 1), 200.0);
     }
@@ -369,7 +373,10 @@ mod tests {
         // FO3/FNV Critical Chance: 0.01·Luck, cap 0.10. Luck 5 → 0.05; 15 → 0.10.
         let crit = DerivedStatFormula::affine(av(LUCK), 0.01, 0.0).capped(0.10);
         assert!((crit.eval(&avs(&[(LUCK, 5.0)]), 1) - 0.05).abs() < 1e-6);
-        assert!((crit.eval(&avs(&[(LUCK, 15.0)]), 1) - 0.10).abs() < 1e-6, "cap");
+        assert!(
+            (crit.eval(&avs(&[(LUCK, 15.0)]), 1) - 0.10).abs() < 1e-6,
+            "cap"
+        );
         // FO4 XP multiplier: ×(1 + 0.03·INT). INT 10 → 1.30×.
         let xp = DerivedStatFormula::affine(av(0x09), 0.03, 1.0).as_multiplier();
         assert!((xp.eval(&avs(&[(0x09, 10.0)]), 1) - 1.30).abs() < 1e-6);

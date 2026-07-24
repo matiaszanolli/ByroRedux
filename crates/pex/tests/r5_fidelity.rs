@@ -40,7 +40,12 @@ fn stmt_has_call(stmt: &Stmt, method: &str) -> bool {
         Stmt::ExprStmt(e) | Stmt::Assign { value: e, .. } => expr_has_call(&e.node, method),
         Stmt::Return(Some(e)) => expr_has_call(&e.node, method),
         Stmt::Return(None) => false,
-        Stmt::If { condition, body, elseif_clauses, else_body } => {
+        Stmt::If {
+            condition,
+            body,
+            elseif_clauses,
+            else_body,
+        } => {
             expr_has_call(&condition.node, method)
                 || body_has_call(body, method)
                 || elseif_clauses
@@ -89,13 +94,20 @@ fn stmt_has_binary_op(stmt: &Stmt, target: BinaryOp) -> bool {
         Stmt::ExprStmt(e) | Stmt::Assign { value: e, .. } => expr_has_binary_op(&e.node, target),
         Stmt::Return(Some(e)) => expr_has_binary_op(&e.node, target),
         Stmt::Return(None) => false,
-        Stmt::If { condition, body, elseif_clauses, else_body } => {
+        Stmt::If {
+            condition,
+            body,
+            elseif_clauses,
+            else_body,
+        } => {
             expr_has_binary_op(&condition.node, target)
                 || body_has_binary_op(body, target)
                 || elseif_clauses.iter().any(|(c, b)| {
                     expr_has_binary_op(&c.node, target) || body_has_binary_op(b, target)
                 })
-                || else_body.as_ref().is_some_and(|b| body_has_binary_op(b, target))
+                || else_body
+                    .as_ref()
+                    .is_some_and(|b| body_has_binary_op(b, target))
         }
         Stmt::While { condition, body } => {
             expr_has_binary_op(&condition.node, target) || body_has_binary_op(body, target)
@@ -115,7 +127,9 @@ fn expr_has_binary_op(expr: &Expr, target: BinaryOp) -> bool {
         Expr::Cast { expr, .. } => expr_has_binary_op(&expr.node, target),
         Expr::Call { callee, args } => {
             expr_has_binary_op(&callee.node, target)
-                || args.iter().any(|a| expr_has_binary_op(&a.value.node, target))
+                || args
+                    .iter()
+                    .any(|a| expr_has_binary_op(&a.value.node, target))
         }
         Expr::MemberAccess { object, .. } => expr_has_binary_op(&object.node, target),
         Expr::Index { object, index } => {
@@ -147,16 +161,26 @@ fn da10_main_door_decompiles_to_the_r5_reference_shape() {
     let script = decompile_script(&pex).expect("DA10 decompiles");
 
     // Header matches the .psc reference (ScriptName … Extends ReferenceAlias).
-    assert!(script.name.node.0.eq_ignore_ascii_case("DA10MainDoorScript"));
+    assert!(script
+        .name
+        .node
+        .0
+        .eq_ignore_ascii_case("DA10MainDoorScript"));
     assert_eq!(
-        script.parent.as_ref().map(|p| p.node.0.to_ascii_lowercase()),
+        script
+            .parent
+            .as_ref()
+            .map(|p| p.node.0.to_ascii_lowercase()),
         Some("referencealias".to_string()),
     );
 
     // The OnActivate handler is an Event whose body carries the stage-gate
     // logic: GetStageDone reads guarding a SetStage(40) write.
     let body = on_activate_body(&script).expect("OnActivate event present");
-    assert!(body_has_call(body, "GetStageDone"), "guards on GetStageDone");
+    assert!(
+        body_has_call(body, "GetStageDone"),
+        "guards on GetStageDone"
+    );
     assert!(body_has_call(body, "SetStage"), "writes via SetStage");
 
     // The two GetStageDone checks are joined by `&&` in the source — the
@@ -175,6 +199,13 @@ fn da10_main_door_decompiles_to_the_r5_reference_shape() {
     ))
     .expect("R5 fixture readable");
     let (reference, _errs) = byroredux_papyrus::parse_script(&psc).expect("fixture parses");
-    assert!(reference.name.node.0.eq_ignore_ascii_case("DA10MainDoorScript"));
-    assert!(on_activate_body(&reference).is_some(), "reference has OnActivate");
+    assert!(reference
+        .name
+        .node
+        .0
+        .eq_ignore_ascii_case("DA10MainDoorScript"));
+    assert!(
+        on_activate_body(&reference).is_some(),
+        "reference has OnActivate"
+    );
 }

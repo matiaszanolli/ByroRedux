@@ -409,7 +409,9 @@ impl BhkConstraint {
                 let _nested = Self::parse_base(stream)?;
                 let data = match wrapped_type {
                     7 => BhkConstraintData::Ragdoll(RagdollCInfo::parse_oblivion(stream)?),
-                    2 => BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_oblivion(stream)?),
+                    2 => {
+                        BhkConstraintData::LimitedHinge(LimitedHingeCInfo::parse_oblivion(stream)?)
+                    }
                     other => {
                         let inner_size: u64 = match other {
                             0 => 32,  // Ball and Socket

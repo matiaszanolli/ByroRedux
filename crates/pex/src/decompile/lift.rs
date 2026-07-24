@@ -139,7 +139,10 @@ impl LiftCtx {
                     Node::copy(ip, Some(result), val(1))
                 } else if !matches!(src, Value::Identifier(_))
                     || (self.type_of(&result) != self.type_of(src.as_identifier().unwrap())
-                        && !src.as_identifier().unwrap().eq_ignore_ascii_case("::nonevar"))
+                        && !src
+                            .as_identifier()
+                            .unwrap()
+                            .eq_ignore_ascii_case("::nonevar"))
                 {
                     let ty = self.type_of(&result);
                     Node::cast(ip, Some(result), val(1), ty)
@@ -156,9 +159,14 @@ impl LiftCtx {
             OpCode::CmpGte => Node::binary_op(ip, 5, Some(id(0)?), val(1), ">=", val(2)),
 
             // Calls: object.method(varargs...). Result in args[last].
-            OpCode::CallMethod => {
-                Node::call_method(ip, Some(id(2)?), val(1), id(0)?, self.varargs(ip, ins), false)
-            }
+            OpCode::CallMethod => Node::call_method(
+                ip,
+                Some(id(2)?),
+                val(1),
+                id(0)?,
+                self.varargs(ip, ins),
+                false,
+            ),
             OpCode::CallParent => Node::call_method(
                 ip,
                 Some(id(1)?),
@@ -167,9 +175,14 @@ impl LiftCtx {
                 self.varargs(ip, ins),
                 false,
             ),
-            OpCode::CallStatic => {
-                Node::call_method(ip, Some(id(2)?), val(0), id(1)?, self.varargs(ip, ins), false)
-            }
+            OpCode::CallStatic => Node::call_method(
+                ip,
+                Some(id(2)?),
+                val(0),
+                id(1)?,
+                self.varargs(ip, ins),
+                false,
+            ),
 
             OpCode::Return => {
                 if self.return_none {
@@ -198,12 +211,22 @@ impl LiftCtx {
                 Node::assign(ip, target, val(2))
             }
             // Array search → synthetic `array.find(value, start)` etc.
-            OpCode::ArrayFindElement => {
-                Node::call_method(ip, Some(id(1)?), val(0), "find", vec![val(2), val(3)], false)
-            }
-            OpCode::ArrayRFindElement => {
-                Node::call_method(ip, Some(id(1)?), val(0), "rfind", vec![val(2), val(3)], false)
-            }
+            OpCode::ArrayFindElement => Node::call_method(
+                ip,
+                Some(id(1)?),
+                val(0),
+                "find",
+                vec![val(2), val(3)],
+                false,
+            ),
+            OpCode::ArrayRFindElement => Node::call_method(
+                ip,
+                Some(id(1)?),
+                val(0),
+                "rfind",
+                vec![val(2), val(3)],
+                false,
+            ),
 
             OpCode::Is => Node::binary_op(ip, 0, Some(id(0)?), val(1), "is", val(2)),
 
@@ -240,7 +263,9 @@ impl LiftCtx {
             OpCode::ArrayInsert => {
                 Node::call_method(ip, None, val(0), "insert", vec![val(1), val(2)], false)
             }
-            OpCode::ArrayRemoveLast => Node::call_method(ip, None, val(0), "removelast", vec![], false),
+            OpCode::ArrayRemoveLast => {
+                Node::call_method(ip, None, val(0), "removelast", vec![], false)
+            }
             OpCode::ArrayRemove => {
                 Node::call_method(ip, None, val(0), "remove", vec![val(1), val(2)], false)
             }
@@ -341,8 +366,12 @@ pub(super) fn rebuild_expression(
     // quadratic (~4x time per doubling) with only (1) fixed. A crafted
     // `.pex` could stall the synchronous cell-loader VMAD-attach path
     // for seconds to tens of seconds without ever erroring.
-    let mut next: Vec<usize> = (0..len).map(|i| if i + 1 < len { i + 1 } else { NO_LINK }).collect();
-    let mut prev: Vec<usize> = (0..len).map(|i| if i == 0 { NO_LINK } else { i - 1 }).collect();
+    let mut next: Vec<usize> = (0..len)
+        .map(|i| if i + 1 < len { i + 1 } else { NO_LINK })
+        .collect();
+    let mut prev: Vec<usize> = (0..len)
+        .map(|i| if i == 0 { NO_LINK } else { i - 1 })
+        .collect();
     let mut removed = vec![false; len];
 
     let mut i = 0usize;
@@ -358,7 +387,10 @@ pub(super) fn rebuild_expression(
             break;
         }
         // Non-final ⇒ result is a temp/nonevar identifier.
-        let temp = scope[i].result.clone().expect("non-final node has a result");
+        let temp = scope[i]
+            .result
+            .clone()
+            .expect("non-final node has a result");
         match count_constant_id(&scope[j], &temp) {
             0 => i = next[i],
             1 => {
@@ -410,7 +442,11 @@ pub(super) fn rebuild_expression(
 /// Count `Constant(Identifier(name))` occurrences in a node tree.
 fn count_constant_id(node: &Node, name: &str) -> usize {
     let here = matches!(&node.kind, NodeKind::Constant(Value::Identifier(s)) if s == name) as usize;
-    here + node.child_nodes().iter().map(|c| count_constant_id(c, name)).sum::<usize>()
+    here + node
+        .child_nodes()
+        .iter()
+        .map(|c| count_constant_id(c, name))
+        .sum::<usize>()
 }
 
 /// Replace the first `Constant(Identifier(name))` in `node` with the
@@ -439,7 +475,11 @@ mod tests {
     use crate::model::{Function, Instruction, Object, TypedName, Variable};
 
     fn ins(op: OpCode, args: Vec<Value>) -> Instruction {
-        Instruction { op, args, var_args: Vec::new() }
+        Instruction {
+            op,
+            args,
+            var_args: Vec::new(),
+        }
     }
     fn ins_v(op: OpCode, args: Vec<Value>, var_args: Vec<Value>) -> Instruction {
         Instruction { op, args, var_args }
@@ -448,7 +488,10 @@ mod tests {
         Value::Identifier(s.to_string())
     }
     fn local(name: &str, ty: &str) -> TypedName {
-        TypedName { name: name.to_string(), type_name: ty.to_string() }
+        TypedName {
+            name: name.to_string(),
+            type_name: ty.to_string(),
+        }
     }
 
     /// Lift a single-block function and return its scope.
@@ -507,9 +550,15 @@ mod tests {
         let scope = lift_single(f);
         assert_eq!(scope.len(), 1);
         // x = Copy( (a + b) * c )
-        let NodeKind::Assign { value, .. } = &scope[0].kind else { panic!() };
-        let NodeKind::Copy { value: mul } = &value.kind else { panic!() };
-        let NodeKind::BinaryOp { left, op, .. } = &mul.kind else { panic!() };
+        let NodeKind::Assign { value, .. } = &scope[0].kind else {
+            panic!()
+        };
+        let NodeKind::Copy { value: mul } = &value.kind else {
+            panic!()
+        };
+        let NodeKind::BinaryOp { left, op, .. } = &mul.kind else {
+            panic!()
+        };
         assert_eq!(op, "*");
         // left of the * is the (a + b) subtree.
         assert!(matches!(&left.kind, NodeKind::BinaryOp { op, .. } if op == "+"));
@@ -553,13 +602,18 @@ mod tests {
         };
         let scope = lift_single(f);
         assert_eq!(scope.len(), 1);
-        let NodeKind::Assign { dest, value } = &scope[0].kind else { panic!() };
+        let NodeKind::Assign { dest, value } = &scope[0].kind else {
+            panic!()
+        };
         let NodeKind::PropertyAccess { object, property } = &dest.kind else {
             panic!("expected PropertyAccess dest, got {:?}", dest.kind);
         };
         assert_eq!(property, "Health");
         assert!(matches!(&object.kind, NodeKind::Constant(Value::Identifier(s)) if s == "obj"));
-        assert!(matches!(&value.kind, NodeKind::Constant(Value::Integer(100))));
+        assert!(matches!(
+            &value.kind,
+            NodeKind::Constant(Value::Integer(100))
+        ));
     }
 
     #[test]
@@ -578,13 +632,20 @@ mod tests {
             instructions: vec![
                 ins(OpCode::Cast, vec![id("dest"), id("actor")]),
                 // consume dest so it survives as a real assign target
-                ins_v(OpCode::CallMethod, vec![id("Foo"), id("dest"), id("::NoneVar")], vec![]),
+                ins_v(
+                    OpCode::CallMethod,
+                    vec![id("Foo"), id("dest"), id("::NoneVar")],
+                    vec![],
+                ),
             ],
             return_type_name: "None".into(),
             ..Function::default()
         };
         let cfg = build_cfg(&f).unwrap();
-        let scope = lift_function(&object, &f, &cfg).unwrap().remove(&0).unwrap();
+        let scope = lift_function(&object, &f, &cfg)
+            .unwrap()
+            .remove(&0)
+            .unwrap();
         // First statement: dest = Cast(actor as ObjectReference)
         let NodeKind::Assign { value, .. } = &scope[0].kind else {
             panic!("expected Assign, got {:?}", scope[0].kind);

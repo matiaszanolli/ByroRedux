@@ -206,7 +206,11 @@ impl PhysicsWorld {
     /// the only body mutation exposed was `set_linear_velocity`, so
     /// buoyancy/flow/drag had no application path (see
     /// `docs/engine/watal.md` §7 Phase 2).
-    pub fn add_force(&mut self, handle: RigidBodyHandle, force: byroredux_core::math::Vec3) -> bool {
+    pub fn add_force(
+        &mut self,
+        handle: RigidBodyHandle,
+        force: byroredux_core::math::Vec3,
+    ) -> bool {
         if let Some(b) = self.bodies.get_mut(handle) {
             if b.body_type() == RigidBodyType::Dynamic {
                 b.add_force(vector![force.x, force.y, force.z], true);
@@ -825,9 +829,9 @@ mod tests {
     fn ample_budget_allows_full_catchup() {
         let mut w = PhysicsWorld::new();
         w.substep_time_budget = f32::INFINITY; // never trips
-        // Empty world still steps on the first frame (constructor arms
-        // `pending_wake`); cheap substeps all fit, so the accumulator cap is
-        // the only limit.
+                                               // Empty world still steps on the first frame (constructor arms
+                                               // `pending_wake`); cheap substeps all fit, so the accumulator cap is
+                                               // the only limit.
         let steps = w.step(100.0);
         assert_eq!(steps, MAX_SUBSTEPS, "ample budget must allow full catch-up");
     }
@@ -961,8 +965,14 @@ mod tests {
             w.step(PHYSICS_DT);
         }
         let y = w.bodies[h].translation().y;
-        assert!((y - 1000.0).abs() < 1.0, "asleep dynamic must not free-fall; y={y}");
-        assert!(w.bodies[h].is_sleeping(), "must remain asleep without contact/force");
+        assert!(
+            (y - 1000.0).abs() < 1.0,
+            "asleep dynamic must not free-fall; y={y}"
+        );
+        assert!(
+            w.bodies[h].is_sleeping(),
+            "must remain asleep without contact/force"
+        );
         // And the scene quiesces — asleep newcomers don't keep the sim stepping.
         assert_eq!(
             w.step(PHYSICS_DT),
@@ -1071,7 +1081,10 @@ mod tests {
         let fh = w.bodies.insert(RigidBodyBuilder::fixed().build());
         let up = byroredux_core::math::Vec3::new(0.0, 1.0, 0.0);
         assert!(!w.add_force(fh, up), "static body must reject add_force");
-        assert!(!w.apply_impulse(fh, up), "static body must reject apply_impulse");
+        assert!(
+            !w.apply_impulse(fh, up),
+            "static body must reject apply_impulse"
+        );
         // Dead handle → all no-op.
         let mut w2 = PhysicsWorld::new();
         let dead = w2.bodies.insert(RigidBodyBuilder::dynamic().build());

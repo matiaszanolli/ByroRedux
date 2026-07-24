@@ -126,7 +126,10 @@ mod xcll_gate_tests {
     /// vanilla interior (e.g. HalluciGen01's 136-byte XCLL).
     #[test]
     fn fo4_xcll_sizes_pinned() {
-        assert_eq!(xcll_canonical_sizes(GameKind::Fallout4), &[28, 92, 128, 136]);
+        assert_eq!(
+            xcll_canonical_sizes(GameKind::Fallout4),
+            &[28, 92, 128, 136]
+        );
         // The FNV 40-byte tail is NOT a vanilla FO4 shape.
         assert!(!xcll_canonical_sizes(GameKind::Fallout4).contains(&40));
     }
@@ -257,7 +260,10 @@ mod xcll_gate_tests {
     #[test]
     fn starfield_xcll_above_108_still_takes_sf_arm() {
         let takes_sf_arm = |game: GameKind, len: usize| game == GameKind::Starfield && len >= 108;
-        assert!(takes_sf_arm(GameKind::Starfield, 108), "vanilla 108 still SF");
+        assert!(
+            takes_sf_arm(GameKind::Starfield, 108),
+            "vanilla 108 still SF"
+        );
         assert!(
             takes_sf_arm(GameKind::Starfield, 112),
             "112-byte SF cell must stay SF, not fall to the Skyrim arm",

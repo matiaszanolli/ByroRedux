@@ -621,8 +621,7 @@ impl CausticPipeline {
         let accel_structs = [tlas];
         let mut accel_write = vk::WriteDescriptorSetAccelerationStructureKHR::default()
             .acceleration_structures(&accel_structs);
-        let write =
-            write_acceleration_structure(self.descriptor_sets[frame], 6, &mut accel_write);
+        let write = write_acceleration_structure(self.descriptor_sets[frame], 6, &mut accel_write);
         // SAFETY: `write` references `accel_write` (which carries the
         // caller-provided `tlas` handle, live for the call duration) and
         // `self.descriptor_sets[frame]` (live for `self`'s lifetime).

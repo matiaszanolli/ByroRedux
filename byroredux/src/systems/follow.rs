@@ -114,7 +114,12 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
                 Some(s) => (s.target_entity, None),
                 None => {
                     let resolved = resolve_follow_target(world, behavior);
-                    (resolved, Some(FollowState { target_entity: resolved }))
+                    (
+                        resolved,
+                        Some(FollowState {
+                            target_entity: resolved,
+                        }),
+                    )
                 }
             };
 
@@ -143,7 +148,13 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
             let horiz_delta = Vec3::new(target_xz.x - current.x, 0.0, target_xz.z - current.z);
 
             let movement = if horiz_delta.length() > distance + LOCOMOTION_ARRIVAL_EPSILON {
-                Some(step_toward(current, transform.rotation, target_xz, dt, physics.as_deref()))
+                Some(step_toward(
+                    current,
+                    transform.rotation,
+                    target_xz,
+                    dt,
+                    physics.as_deref(),
+                ))
             } else {
                 None
             };
@@ -223,12 +234,20 @@ mod tests {
         follow_system(&world, 0.5);
 
         let tq = world.query::<Transform>().expect("Transform registered");
-        assert_eq!(tq.get(entity).unwrap().translation, Vec3::ZERO, "no target — actor must not move");
+        assert_eq!(
+            tq.get(entity).unwrap().translation,
+            Vec3::ZERO,
+            "no target — actor must not move"
+        );
 
-        let sq = world.query::<FollowState>().expect("FollowState registered");
+        let sq = world
+            .query::<FollowState>()
+            .expect("FollowState registered");
         assert_eq!(
             sq.get(entity).copied(),
-            Some(FollowState { target_entity: None }),
+            Some(FollowState {
+                target_entity: None
+            }),
             "must persist a resolved-to-None state on first tick, not retry every frame"
         );
     }
@@ -275,14 +294,19 @@ mod tests {
         // Transform before FollowState — matches `follow_system_inner`'s
         // acquisition order for this pair (#313).
         let tq = world.query::<Transform>().expect("Transform registered");
-        let sq = world.query::<FollowState>().expect("FollowState registered");
+        let sq = world
+            .query::<FollowState>()
+            .expect("FollowState registered");
         assert!(
             sq.get(actor).unwrap().target_entity.is_some(),
             "target must resolve on first tick"
         );
 
         let pos = tq.get(actor).unwrap().translation;
-        assert!(pos.x > 0.0, "actor should have started closing toward the target");
+        assert!(
+            pos.x > 0.0,
+            "actor should have started closing toward the target"
+        );
     }
 
     #[test]

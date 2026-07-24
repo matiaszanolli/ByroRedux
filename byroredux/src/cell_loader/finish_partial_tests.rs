@@ -186,9 +186,7 @@ fn finish_partial_import_oblivion_bsx_bit5_is_still_editor_marker() {
     finish_partial_import(&mut world, None, None, "xmarkerheading.nif", partial);
 
     let reg = world.resource::<NifImportRegistry>();
-    let entry = reg
-        .get("xmarkerheading.nif")
-        .expect("cache entry inserted");
+    let entry = reg.get("xmarkerheading.nif").expect("cache entry inserted");
     assert!(
         entry.is_none(),
         "Oblivion-era BSXFlags bit 5 is a genuine editor marker and must \

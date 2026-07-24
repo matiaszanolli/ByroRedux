@@ -745,7 +745,10 @@ mod tests {
         match ChunkType::from_raw(0xDEAD_BEEF, 7) {
             Err(Error::UnknownChunkType { raw, index }) => {
                 assert_eq!(raw, 0xDEAD_BEEF);
-                assert_eq!(index, 7, "the failing chunk index must be carried for diagnostics");
+                assert_eq!(
+                    index, 7,
+                    "the failing chunk index must be carried for diagnostics"
+                );
             }
             other => panic!("expected UnknownChunkType, got {other:?}"),
         }

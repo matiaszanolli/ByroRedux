@@ -100,10 +100,7 @@ impl NiGeomMorpherController {
         // and Skyrim+ skip it on the version gate as before.
         let version = stream.version();
         let bsver = stream.bsver();
-        if version >= NifVersion::V10_2_0_0
-            && version <= NifVersion::V20_0_0_5
-            && bsver > 9
-        {
+        if version >= NifVersion::V10_2_0_0 && version <= NifVersion::V20_0_0_5 && bsver > 9 {
             let num_unknown_ints = stream.read_u32_le()?;
             // Sanity bound: `num_unknown_ints` is a count that has
             // never been observed > a handful in practice. A drifted

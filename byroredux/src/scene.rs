@@ -629,7 +629,12 @@ pub(crate) fn setup_scene(
             let near_door_floor_y = {
                 let pw = world.resource::<byroredux_physics::PhysicsWorld>();
                 let probe_origin = Vec3::new(nudged_x, door_pos.y + 50.0, nudged_z);
-                pw.cast_capsule_down(probe_origin, cc.half_height, cc.radius, FLOOR_PROBE_RANGE_BU)
+                pw.cast_capsule_down(
+                    probe_origin,
+                    cc.half_height,
+                    cc.radius,
+                    FLOOR_PROBE_RANGE_BU,
+                )
             };
             // Second rung — the near-door probe can legitimately miss when
             // the nudge lands over a stairwell gap, balcony edge, or

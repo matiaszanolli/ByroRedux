@@ -22,7 +22,7 @@ mod lower;
 mod node;
 
 pub use boolean::rebuild_boolean_operators;
-pub use cfg::{build_cfg, CodeBlock, Cfg, END};
+pub use cfg::{build_cfg, Cfg, CodeBlock, END};
 pub use control_flow::reconstruct;
 pub use lift::lift_function;
 pub use lower::decompile_script;

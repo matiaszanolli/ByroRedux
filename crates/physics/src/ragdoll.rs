@@ -146,7 +146,9 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
             // "less floppy than Havok" lever — extra angular damping on top
             // of the authored value (inert at the 0.0 default). See
             // ContactConfig::ragdoll_extra_angular_damping.
-            .angular_damping(b.angular_damping.max(0.0) + cfg.ragdoll_extra_angular_damping.max(0.0))
+            .angular_damping(
+                b.angular_damping.max(0.0) + cfg.ragdoll_extra_angular_damping.max(0.0),
+            )
             .build();
         let h = pw.bodies.insert(body);
 
@@ -303,11 +305,18 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
             // direction reverses, so the twist limit range negates+swaps.
             let (t1, p1, pv1, t2, p2, pv2, tmin, tmax) = if !flip {
                 (
-                    *twist_a, *plane_a, *pivot_a, *twist_b, *plane_b, *pivot_b, *twist_min, *twist_max,
+                    *twist_a, *plane_a, *pivot_a, *twist_b, *plane_b, *pivot_b, *twist_min,
+                    *twist_max,
                 )
             } else {
                 (
-                    *twist_b, *plane_b, *pivot_b, *twist_a, *plane_a, *pivot_a, -*twist_max,
+                    *twist_b,
+                    *plane_b,
+                    *pivot_b,
+                    *twist_a,
+                    *plane_a,
+                    *pivot_a,
+                    -*twist_max,
                     -*twist_min,
                 )
             };
@@ -331,18 +340,23 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
             let (a1, pv1, a2, pv2, amin, amax) = if !flip {
                 (*axis_a, *pivot_a, *axis_b, *pivot_b, *min_angle, *max_angle)
             } else {
-                (*axis_b, *pivot_b, *axis_a, *pivot_a, -*max_angle, -*min_angle)
+                (
+                    *axis_b,
+                    *pivot_b,
+                    *axis_a,
+                    *pivot_a,
+                    -*max_angle,
+                    -*min_angle,
+                )
             };
             // No authored perp on the hinge spec (slice 1) — synthesize one
             // orthogonal to the axis. The hinge still rotates about the
             // correct axis; only the limit's zero-reference is offset.
-            GenericJointBuilder::new(
-                lin_locked() | JointAxesMask::ANG_Y | JointAxesMask::ANG_Z,
-            )
-            .local_frame1(iso_from_trs(pv1, frame_rot(a1, any_perp(a1))))
-            .local_frame2(iso_from_trs(pv2, frame_rot(a2, any_perp(a2))))
-            .limits(JointAxis::AngX, [amin, amax])
-            .build()
+            GenericJointBuilder::new(lin_locked() | JointAxesMask::ANG_Y | JointAxesMask::ANG_Z)
+                .local_frame1(iso_from_trs(pv1, frame_rot(a1, any_perp(a1))))
+                .local_frame2(iso_from_trs(pv2, frame_rot(a2, any_perp(a2))))
+                .limits(JointAxis::AngX, [amin, amax])
+                .build()
         }
     }
 }
@@ -401,7 +415,10 @@ pub fn body_translation(pw: &PhysicsWorld, h: RigidBodyHandle) -> Option<Vec3> {
 pub fn body_pose(pw: &PhysicsWorld, h: RigidBodyHandle) -> Option<(Vec3, Quat)> {
     pw.bodies.get(h).map(|b| {
         let iso = b.position();
-        (vec3_from_na(iso.translation.vector), quat_from_na(iso.rotation))
+        (
+            vec3_from_na(iso.translation.vector),
+            quat_from_na(iso.rotation),
+        )
     })
 }
 
@@ -522,7 +539,11 @@ mod tests {
                 ball_body(2, 50.0, 0.0),
                 ball_body(3, 100.0, 0.0),
             ],
-            constraints: vec![loose_ragdoll(0, 1), loose_ragdoll(1, 2), loose_ragdoll(2, 0)],
+            constraints: vec![
+                loose_ragdoll(0, 1),
+                loose_ragdoll(1, 2),
+                loose_ragdoll(2, 0),
+            ],
         };
         let edges = orient_tree(&spec);
         assert_eq!(edges.len(), 2, "3-body cycle → spanning tree of 2 edges");
@@ -537,7 +558,11 @@ mod tests {
     fn forest_is_detected_by_edge_deficit() {
         // Connected: 3 bodies, 2 edges → 1 component (a single tree).
         let connected = RagdollSpec {
-            bodies: vec![ball_body(1, 0.0, 0.0), ball_body(2, 50.0, 0.0), ball_body(3, 100.0, 0.0)],
+            bodies: vec![
+                ball_body(1, 0.0, 0.0),
+                ball_body(2, 50.0, 0.0),
+                ball_body(3, 100.0, 0.0),
+            ],
             constraints: vec![loose_ragdoll(0, 1), loose_ragdoll(1, 2)],
         };
         let comps = connected.bodies.len() - orient_tree(&connected).len();
@@ -545,7 +570,11 @@ mod tests {
 
         // Fragmented: the sole link to body 2 is gone → {0-1} and {2}.
         let forest = RagdollSpec {
-            bodies: vec![ball_body(1, 0.0, 0.0), ball_body(2, 50.0, 0.0), ball_body(3, 100.0, 0.0)],
+            bodies: vec![
+                ball_body(1, 0.0, 0.0),
+                ball_body(2, 50.0, 0.0),
+                ball_body(3, 100.0, 0.0),
+            ],
             constraints: vec![loose_ragdoll(0, 1)],
         };
         let comps = forest.bodies.len() - orient_tree(&forest).len();
@@ -585,7 +614,10 @@ mod tests {
         };
         match ragdoll_dynamic_shape(&compound) {
             CollisionShape::Compound { children } => {
-                assert!(matches!(children[0].2.as_ref(), CollisionShape::ConvexHull { .. }));
+                assert!(matches!(
+                    children[0].2.as_ref(),
+                    CollisionShape::ConvexHull { .. }
+                ));
             }
             other => panic!("Compound must stay a Compound, got {other:?}"),
         }
@@ -605,7 +637,10 @@ mod tests {
         };
         let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
         let h = rag.bodies[0].1;
-        let pi = pw.bodies[h].mass_properties().local_mprops.principal_inertia();
+        let pi = pw.bodies[h]
+            .mass_properties()
+            .local_mprops
+            .principal_inertia();
         assert!(
             pi.x.is_finite() && pi.y.is_finite() && pi.z.is_finite(),
             "principal inertia must be finite: {pi:?}"

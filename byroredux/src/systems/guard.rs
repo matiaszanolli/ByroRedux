@@ -139,7 +139,13 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
             let horiz_delta = Vec3::new(anchor.x - current.x, 0.0, anchor.z - current.z);
             let movement = if horiz_delta.length() > leash {
                 let target_xz = Vec3::new(anchor.x, current.y, anchor.z);
-                Some(step_toward(current, transform.rotation, target_xz, dt, physics.as_deref()))
+                Some(step_toward(
+                    current,
+                    transform.rotation,
+                    target_xz,
+                    dt,
+                    physics.as_deref(),
+                ))
             } else {
                 None
             };
@@ -214,7 +220,11 @@ mod tests {
         world.insert(entity, Transform::from_translation(Vec3::ZERO));
         world.insert(
             entity,
-            GuardBehavior { anchor_form_id: None, radius: Some(200.0), form_id: 0x000A_0001 },
+            GuardBehavior {
+                anchor_form_id: None,
+                radius: Some(200.0),
+                form_id: 0x000A_0001,
+            },
         );
 
         guard_system(&world, 0.5);
@@ -223,8 +233,14 @@ mod tests {
         // acquisition order for this pair (#313).
         let tq = world.query::<Transform>().expect("Transform registered");
         let sq = world.query::<GuardState>().expect("GuardState registered");
-        let state = sq.get(entity).expect("guard_system must lazily insert GuardState on first tick");
-        assert_eq!(state.anchor, Vec3::ZERO, "fallback anchor must be the actor's own spawn position");
+        let state = sq
+            .get(entity)
+            .expect("guard_system must lazily insert GuardState on first tick");
+        assert_eq!(
+            state.anchor,
+            Vec3::ZERO,
+            "fallback anchor must be the actor's own spawn position"
+        );
 
         assert_eq!(
             tq.get(entity).unwrap().translation,
@@ -251,13 +267,20 @@ mod tests {
 
         let anchor = world.spawn();
         world.insert(anchor, FormIdComponent(anchor_fid));
-        world.insert(anchor, GlobalTransform::new(Vec3::new(300.0, 10.0, 400.0), Quat::IDENTITY, 1.0));
+        world.insert(
+            anchor,
+            GlobalTransform::new(Vec3::new(300.0, 10.0, 400.0), Quat::IDENTITY, 1.0),
+        );
 
         let actor = world.spawn();
         world.insert(actor, Transform::from_translation(Vec3::ZERO));
         world.insert(
             actor,
-            GuardBehavior { anchor_form_id: Some(0x000B_0001), radius: None, form_id: 0x000B_0002 },
+            GuardBehavior {
+                anchor_form_id: Some(0x000B_0001),
+                radius: None,
+                form_id: 0x000B_0002,
+            },
         );
 
         guard_system(&world, 0.001);
@@ -279,12 +302,24 @@ mod tests {
 
         let entity = world.spawn();
         // Seed the actor already at its anchor, well inside the leash.
-        world.insert(entity, Transform::from_translation(Vec3::new(50.0, 0.0, 50.0)));
         world.insert(
             entity,
-            GuardBehavior { anchor_form_id: None, radius: Some(20.0), form_id: 0x000C_0001 },
+            Transform::from_translation(Vec3::new(50.0, 0.0, 50.0)),
         );
-        world.insert(entity, GuardState { anchor: Vec3::new(50.0, 0.0, 50.0) });
+        world.insert(
+            entity,
+            GuardBehavior {
+                anchor_form_id: None,
+                radius: Some(20.0),
+                form_id: 0x000C_0001,
+            },
+        );
+        world.insert(
+            entity,
+            GuardState {
+                anchor: Vec3::new(50.0, 0.0, 50.0),
+            },
+        );
 
         guard_system(&world, 0.5);
         {

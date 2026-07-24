@@ -56,9 +56,7 @@ fn edit_av(world: &World, args: &str, cmd: &str, edit: AvEdit) -> CommandOutput 
     let mut tok = args.split_whitespace();
     let (Some(entity_tok), Some(av_tok), Some(val_tok)) = (tok.next(), tok.next(), tok.next())
     else {
-        return CommandOutput::error(format!(
-            "usage: {cmd} <entity|.> <av_formid> <value>"
-        ));
+        return CommandOutput::error(format!("usage: {cmd} <entity|.> <av_formid> <value>"));
     };
 
     let entity = match resolve_console_entity(world, entity_tok) {

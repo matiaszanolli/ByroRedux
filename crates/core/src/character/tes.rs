@@ -156,7 +156,9 @@ pub fn oblivion_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
 /// [`oblivion_ruleset`], and the tick system already no-ops cleanly when the
 /// resource is simply absent.
 #[must_use]
-pub fn oblivion_pool_regen_config<F: Fn(&str) -> Option<u32>>(resolve: F) -> Option<PoolRegenConfig> {
+pub fn oblivion_pool_regen_config<F: Fn(&str) -> Option<u32>>(
+    resolve: F,
+) -> Option<PoolRegenConfig> {
     Some(PoolRegenConfig {
         fatigue_avif: resolve("Fatigue")?,
         magicka_avif: resolve("Magicka")?,
@@ -268,8 +270,8 @@ mod tests {
 
     #[test]
     fn oblivion_ruleset_assembles_and_evaluates_end_to_end() {
-        use crate::character::{AttributeSet, LevelingModel, SkillSet};
         use super::oblivion_ruleset;
+        use crate::character::{AttributeSet, LevelingModel, SkillSet};
 
         // Resolver: the pool outputs + the attribute inputs the builder asks
         // for (what the Oblivion loader supplies from legacy AV indices).
@@ -311,7 +313,7 @@ mod tests {
         assert_eq!(rs.derived_value(0x90, &avs, 1), Some(90.0)); // Health 2·END
         assert_eq!(rs.derived_value(0x92, &avs, 1), Some(100.0)); // Magicka 2·INT
         assert_eq!(rs.derived_value(0x93, &avs, 1), Some(150.0)); // Fatigue STR+WIL+AGI+END
-        // Armor Rating multiplier: 0.35+0.0065·skill. Light 50 → 0.675; Heavy 20 → 0.48.
+                                                                  // Armor Rating multiplier: 0.35+0.0065·skill. Light 50 → 0.675; Heavy 20 → 0.48.
         assert!((rs.derived_value(0x94, &avs, 1).unwrap() - 0.675).abs() < 1e-6);
         assert!((rs.derived_value(0x95, &avs, 1).unwrap() - 0.48).abs() < 1e-6);
     }

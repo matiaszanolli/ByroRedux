@@ -4,7 +4,6 @@
 
 use super::shared::*;
 
-
 pub(crate) struct TexMissingCommand;
 impl ConsoleCommand for TexMissingCommand {
     fn name(&self) -> &str {
@@ -504,6 +503,10 @@ impl ConsoleCommand for SkinCoverageCommand {
             cov.gpu_skin_blas_refit_ms,
         ));
         lines.push(format!("  gpu_taa_ms             = {:.3}", cov.gpu_taa_ms,));
+        lines.push(format!(
+            "  gpu_upscale_ms         = {:.3}",
+            cov.gpu_upscale_ms,
+        ));
         if cov.dispatches_total == 0 {
             lines.push("  coverage: n/a (no skinned entities this frame)".to_string());
         } else if cov.fully_covered() {

@@ -276,7 +276,7 @@ fn bs_tri_shape_block_with_vertices(num_vertices: u16) -> Vec<u8> {
     }
     wf32(&mut d, 1.0); // scale
     w32(&mut d, 0xFFFFFFFF); // collision_ref
-    // BSTriShape: center(3) + radius + skin/shader/alpha refs + vertex_desc
+                             // BSTriShape: center(3) + radius + skin/shader/alpha refs + vertex_desc
     for _ in 0..3 {
         wf32(&mut d, 0.0); // bound center
     }

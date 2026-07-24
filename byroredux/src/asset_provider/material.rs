@@ -1223,7 +1223,10 @@ pub(crate) fn merge_bgsm_into_mesh(
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if set.insert(path.to_owned()) {
-            log::warn!("{}", unresolved_material_warning(&path, provider.has_starfield_cdb()));
+            log::warn!(
+                "{}",
+                unresolved_material_warning(&path, provider.has_starfield_cdb())
+            );
         }
         return false;
     }

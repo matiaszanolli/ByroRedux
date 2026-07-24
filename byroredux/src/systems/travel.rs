@@ -54,7 +54,9 @@
 
 use super::locomotion::{step_toward, LOCOMOTION_ARRIVAL_EPSILON};
 use super::wander::pick_wander_target;
-use byroredux_core::ecs::components::{GlobalTransform, Transform, TravelBehavior, Traveled, TravelState};
+use byroredux_core::ecs::components::{
+    GlobalTransform, Transform, TravelBehavior, TravelState, Traveled,
+};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_scripting::condition::resolve_entity_by_global_form_id;
@@ -158,11 +160,17 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             };
 
             let target_xz = Vec3::new(destination.x, current.y, destination.z);
-            let (new_pos, rotation) =
-                step_toward(current, transform.rotation, target_xz, dt, physics.as_deref());
+            let (new_pos, rotation) = step_toward(
+                current,
+                transform.rotation,
+                target_xz,
+                dt,
+                physics.as_deref(),
+            );
 
             let horiz_delta = Vec3::new(new_pos.x - destination.x, 0.0, new_pos.z - destination.z);
-            let arrived = horiz_delta.length_squared() <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
+            let arrived = horiz_delta.length_squared()
+                <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
 
             scratch.decisions.push(TravelDecision {
                 entity,
@@ -228,8 +236,8 @@ pub(crate) fn travel_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
     use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 
     #[test]
     fn travel_system_falls_back_to_hash_pick_with_no_target_and_no_physics() {
@@ -257,15 +265,26 @@ mod tests {
 
         let tq = world.query::<Transform>().expect("Transform registered");
         let t = tq.get(entity).expect("actor transform");
-        assert!(t.translation.length() > 0.0, "actor should have moved from the origin");
+        assert!(
+            t.translation.length() > 0.0,
+            "actor should have moved from the origin"
+        );
 
         // Traveled before TravelState — matches `travel_system_inner`'s
         // acquisition order for this pair (#313).
         let travq = world.query::<Traveled>().expect("Traveled registered");
-        let sq = world.query::<TravelState>().expect("TravelState registered");
-        assert!(sq.get(entity).is_some(), "travel_system must lazily insert TravelState on first tick");
+        let sq = world
+            .query::<TravelState>()
+            .expect("TravelState registered");
+        assert!(
+            sq.get(entity).is_some(),
+            "travel_system must lazily insert TravelState on first tick"
+        );
 
-        assert!(travq.get(entity).is_none(), "should not have arrived in one 0.5s tick from a 200-unit radius pick");
+        assert!(
+            travq.get(entity).is_none(),
+            "should not have arrived in one 0.5s tick from a 200-unit radius pick"
+        );
     }
 
     #[test]
@@ -305,7 +324,9 @@ mod tests {
 
         travel_system(&world, 0.001); // tiny dt: just enough to resolve, not arrive
 
-        let sq = world.query::<TravelState>().expect("TravelState registered");
+        let sq = world
+            .query::<TravelState>()
+            .expect("TravelState registered");
         let state = sq.get(actor).expect("destination resolved on first tick");
         assert_eq!(
             state.destination,
@@ -327,7 +348,10 @@ mod tests {
         // destination isn't guaranteed by construction, so instead seed
         // TravelState directly at a destination equal to the actor's
         // current position — arrival is immediate on tick 1.
-        world.insert(entity, Transform::from_translation(Vec3::new(50.0, 0.0, 50.0)));
+        world.insert(
+            entity,
+            Transform::from_translation(Vec3::new(50.0, 0.0, 50.0)),
+        );
         world.insert(
             entity,
             TravelBehavior {
@@ -336,13 +360,21 @@ mod tests {
                 form_id: 0x0005_0005,
             },
         );
-        world.insert(entity, TravelState { destination: Vec3::new(50.0, 0.0, 50.0) });
+        world.insert(
+            entity,
+            TravelState {
+                destination: Vec3::new(50.0, 0.0, 50.0),
+            },
+        );
 
         travel_system(&world, 0.5);
 
         {
             let travq = world.query::<Traveled>().expect("Traveled registered");
-            assert!(travq.get(entity).is_some(), "actor at its destination must be tagged Traveled");
+            assert!(
+                travq.get(entity).is_some(),
+                "actor at its destination must be tagged Traveled"
+            );
         }
 
         let pos_after_first = {
@@ -356,6 +388,9 @@ mod tests {
             let tq = world.query::<Transform>().expect("Transform registered");
             tq.get(entity).expect("actor transform").translation
         };
-        assert_eq!(pos_after_first, pos_after_second, "Traveled actors must not move on later ticks");
+        assert_eq!(
+            pos_after_first, pos_after_second,
+            "Traveled actors must not move on later ticks"
+        );
     }
 }

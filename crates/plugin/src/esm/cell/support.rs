@@ -176,10 +176,26 @@ pub(crate) fn build_static_object_from_subs(
                 } else {
                     0
                 };
-                let falloff_exponent = if sub.data.len() >= 20 { read_f32(16) } else { 0.0 };
-                let period_secs = if sub.data.len() >= 32 { read_f32(28) } else { 0.0 };
-                let intensity_amplitude = if sub.data.len() >= 36 { read_f32(32) } else { 0.0 };
-                let movement_amplitude = if sub.data.len() >= 40 { read_f32(36) } else { 0.0 };
+                let falloff_exponent = if sub.data.len() >= 20 {
+                    read_f32(16)
+                } else {
+                    0.0
+                };
+                let period_secs = if sub.data.len() >= 32 {
+                    read_f32(28)
+                } else {
+                    0.0
+                };
+                let intensity_amplitude = if sub.data.len() >= 36 {
+                    read_f32(32)
+                } else {
+                    0.0
+                };
+                let movement_amplitude = if sub.data.len() >= 40 {
+                    read_f32(36)
+                } else {
+                    0.0
+                };
                 light_data = Some(LightData {
                     radius,
                     color: [r, g, b],
@@ -678,7 +694,7 @@ mod ligh_dat2_tests {
         d[10] = rgb[2]; //         B
         d[11] = 255; //  A (unused for color)
         d[12..14].copy_from_slice(&flags.to_le_bytes()); // {12} U16 Flags
-        // {14} Unused(2)
+                                                         // {14} Unused(2)
         d[16..20].copy_from_slice(&2.0f32.to_le_bytes()); // {16} Falloff Exponent
         d[20..24].copy_from_slice(&90.0f32.to_le_bytes()); // {20} FOV
         d[28..32].copy_from_slice(&1.5f32.to_le_bytes()); // {28} Flicker Period
@@ -712,8 +728,14 @@ mod ligh_dat2_tests {
         assert_eq!(ld.flags, 0x0010, "Flags is a U16 at offset 12");
         assert_eq!(ld.falloff_exponent, 2.0, "Falloff Exponent at offset 16");
         assert_eq!(ld.period_secs, 1.5, "Flicker Period at offset 28");
-        assert_eq!(ld.intensity_amplitude, 0.25, "Intensity Amplitude at offset 32");
-        assert_eq!(ld.movement_amplitude, 0.5, "Movement Amplitude at offset 36");
+        assert_eq!(
+            ld.intensity_amplitude, 0.25,
+            "Intensity Amplitude at offset 32"
+        );
+        assert_eq!(
+            ld.movement_amplitude, 0.5,
+            "Movement Amplitude at offset 36"
+        );
         assert!(obj.model_path.is_empty(), "Starfield LIGH carries no MODL");
     }
 

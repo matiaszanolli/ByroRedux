@@ -260,7 +260,9 @@ impl ConditionContext {
             // below; `resolve_entity_by_global_form_id` is the shared
             // resolver for that space, not a FormID-pool lookup unique to
             // this arm.
-            RunOn::Reference => resolve_entity_by_global_form_id(world, condition.reference_form_id),
+            RunOn::Reference => {
+                resolve_entity_by_global_form_id(world, condition.reference_form_id)
+            }
             RunOn::QuestAlias | RunOn::PackageData | RunOn::EventData => {
                 log::trace!(
                     "M47.1: RunOn::{:?} (extra_data_id={:08X}) — \
@@ -1126,11 +1128,17 @@ mod tests {
 
         // Carry Weight is actor-general → derived on demand: 200 + 10·7 = 270.
         let list = vec![cond(14, ComparisonOp::Eq, 270.0, false).with_param_1(0x2D1)];
-        assert!(evaluate(&list, &world, &ctx(actor)), "Carry Weight derived from SPECIAL");
+        assert!(
+            evaluate(&list, &world, &ctx(actor)),
+            "Carry Weight derived from SPECIAL"
+        );
 
         // Health is player-only → NOT computed for an NPC; absent default 0.
         let list = vec![cond(14, ComparisonOp::Eq, 0.0, false).with_param_1(0x2C9)];
-        assert!(evaluate(&list, &world, &ctx(actor)), "Health stays 0 (player-only)");
+        assert!(
+            evaluate(&list, &world, &ctx(actor)),
+            "Health stays 0 (player-only)"
+        );
     }
 
     #[test]

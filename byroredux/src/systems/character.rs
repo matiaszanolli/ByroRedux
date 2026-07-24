@@ -523,7 +523,9 @@ pub fn snap_character_body_to_camera(world: &mut byroredux_core::ecs::World) -> 
             return false;
         };
         let Some(cam_t) = tq.get(cam_entity) else {
-            log::warn!("snap_character_body_to_camera: ActiveCamera entity has no Transform. Aborting.");
+            log::warn!(
+                "snap_character_body_to_camera: ActiveCamera entity has no Transform. Aborting."
+            );
             return false;
         };
         let pos = cam_t.translation;

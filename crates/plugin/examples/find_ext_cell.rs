@@ -20,16 +20,31 @@ fn main() -> anyhow::Result<()> {
         let mut hits: Vec<(&(i32, i32), &str, usize, bool)> = cells
             .iter()
             .filter(|(_, c)| c.editor_id.to_ascii_lowercase().contains(&cell_sub))
-            .map(|(g, c)| (g, c.editor_id.as_str(), c.references.len(), c.landscape.is_some()))
+            .map(|(g, c)| {
+                (
+                    g,
+                    c.editor_id.as_str(),
+                    c.references.len(),
+                    c.landscape.is_some(),
+                )
+            })
             .collect();
         if hits.is_empty() {
             continue;
         }
         hits.sort_by_key(|(g, _, _, _)| (g.1, g.0));
-        println!("worldspace '{}' ({} ext cells) — matches for '{}':", wkey, cells.len(), cell_sub);
+        println!(
+            "worldspace '{}' ({} ext cells) — matches for '{}':",
+            wkey,
+            cells.len(),
+            cell_sub
+        );
         let (mut sx, mut sy, mut n) = (0i64, 0i64, 0i64);
         for (g, edid, refs, land) in &hits {
-            println!("  grid ({:>4},{:>4})  refs={:<4} land={}  edid='{}'", g.0, g.1, refs, land, edid);
+            println!(
+                "  grid ({:>4},{:>4})  refs={:<4} land={}  edid='{}'",
+                g.0, g.1, refs, land, edid
+            );
             sx += g.0 as i64;
             sy += g.1 as i64;
             n += 1;

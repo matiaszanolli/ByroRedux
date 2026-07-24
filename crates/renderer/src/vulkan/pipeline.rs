@@ -615,10 +615,10 @@ pub fn create_blend_pipeline(
         .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
         .alpha_blend_op(vk::BlendOp::ADD);
     let attachments = [
-        hdr_blend, // 0 HDR color (blends)
-        overwrite, // 1 normal
-        overwrite, // 2 motion
-        overwrite, // 3 mesh_id
+        hdr_blend,       // 0 HDR color (blends)
+        overwrite,       // 1 normal
+        overwrite,       // 2 motion
+        overwrite,       // 3 mesh_id
         auxiliary_blend, // 4 raw_indirect (coverage blend)
         auxiliary_blend, // 5 albedo (coverage blend)
     ];

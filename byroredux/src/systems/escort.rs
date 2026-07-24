@@ -160,11 +160,17 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
             // ── Already leading: walk toward the frozen destination. ──
             if let Some(destination) = existing_state.and_then(|s| s.destination) {
                 let target_xz = Vec3::new(destination.x, current.y, destination.z);
-                let (new_pos, rotation) =
-                    step_toward(current, transform.rotation, target_xz, dt, physics.as_deref());
-                let horiz_delta = Vec3::new(new_pos.x - destination.x, 0.0, new_pos.z - destination.z);
-                let arrived =
-                    horiz_delta.length_squared() <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
+                let (new_pos, rotation) = step_toward(
+                    current,
+                    transform.rotation,
+                    target_xz,
+                    dt,
+                    physics.as_deref(),
+                );
+                let horiz_delta =
+                    Vec3::new(new_pos.x - destination.x, 0.0, new_pos.z - destination.z);
+                let arrived = horiz_delta.length_squared()
+                    <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
                 scratch.decisions.push(EscortDecision {
                     entity,
                     translation: new_pos,
@@ -193,31 +199,46 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                 // travel_system moving on the very tick it resolves.
                 let destination = resolve_destination(world, behavior, current);
                 let target_xz = Vec3::new(destination.x, current.y, destination.z);
-                let (new_pos, rotation) =
-                    step_toward(current, transform.rotation, target_xz, dt, physics.as_deref());
-                let horiz_delta = Vec3::new(new_pos.x - destination.x, 0.0, new_pos.z - destination.z);
-                let arrived =
-                    horiz_delta.length_squared() <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
+                let (new_pos, rotation) = step_toward(
+                    current,
+                    transform.rotation,
+                    target_xz,
+                    dt,
+                    physics.as_deref(),
+                );
+                let horiz_delta =
+                    Vec3::new(new_pos.x - destination.x, 0.0, new_pos.z - destination.z);
+                let arrived = horiz_delta.length_squared()
+                    <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
                 scratch.decisions.push(EscortDecision {
                     entity,
                     translation: new_pos,
                     rotation,
-                    state: Some(EscortState { target_entity, destination: Some(destination) }),
+                    state: Some(EscortState {
+                        target_entity,
+                        destination: Some(destination),
+                    }),
                     arrived,
                 });
             } else {
                 // Still collecting: walk toward the target's live position.
                 let pos = live_target_pos.expect("collected == false implies Some");
                 let target_xz = Vec3::new(pos.x, current.y, pos.z);
-                let (new_pos, rotation) =
-                    step_toward(current, transform.rotation, target_xz, dt, physics.as_deref());
+                let (new_pos, rotation) = step_toward(
+                    current,
+                    transform.rotation,
+                    target_xz,
+                    dt,
+                    physics.as_deref(),
+                );
                 scratch.decisions.push(EscortDecision {
                     entity,
                     translation: new_pos,
                     rotation,
-                    state: existing_state
-                        .is_none()
-                        .then_some(EscortState { target_entity, destination: None }),
+                    state: existing_state.is_none().then_some(EscortState {
+                        target_entity,
+                        destination: None,
+                    }),
                     arrived: false,
                 });
             }
@@ -328,10 +349,15 @@ mod tests {
             "no target to collect — actor should skip straight to the lead phase and move"
         );
 
-        let sq = world.query::<EscortState>().expect("EscortState registered");
+        let sq = world
+            .query::<EscortState>()
+            .expect("EscortState registered");
         let state = sq.get(entity).expect("state written on first tick");
         assert_eq!(state.target_entity, None);
-        assert!(state.destination.is_some(), "must resolve a lead-phase destination immediately");
+        assert!(
+            state.destination.is_some(),
+            "must resolve a lead-phase destination immediately"
+        );
     }
 
     #[test]
@@ -358,10 +384,15 @@ mod tests {
         // Transform before EscortState — matches `escort_system_inner`'s
         // acquisition order for this pair (#313).
         let tq = world.query::<Transform>().expect("Transform registered");
-        let sq = world.query::<EscortState>().expect("EscortState registered");
+        let sq = world
+            .query::<EscortState>()
+            .expect("EscortState registered");
         let state = sq.get(actor).expect("state written on first tick");
         assert_eq!(state.target_entity, Some(target));
-        assert!(state.destination.is_none(), "still collecting — must not have a destination yet");
+        assert!(
+            state.destination.is_none(),
+            "still collecting — must not have a destination yet"
+        );
 
         assert!(
             tq.get(actor).unwrap().translation.x > 0.0,
@@ -390,7 +421,9 @@ mod tests {
 
         escort_system(&world, 0.1);
 
-        let sq = world.query::<EscortState>().expect("EscortState registered");
+        let sq = world
+            .query::<EscortState>()
+            .expect("EscortState registered");
         let state = sq.get(actor).expect("state written on first tick");
         assert!(
             state.destination.is_some(),
@@ -404,7 +437,10 @@ mod tests {
         register_all(&mut world);
 
         let entity = world.spawn();
-        world.insert(entity, Transform::from_translation(Vec3::new(50.0, 0.0, 50.0)));
+        world.insert(
+            entity,
+            Transform::from_translation(Vec3::new(50.0, 0.0, 50.0)),
+        );
         world.insert(
             entity,
             EscortBehavior {
@@ -418,14 +454,20 @@ mod tests {
         // arrival is immediate — mirrors travel_system's arrival test.
         world.insert(
             entity,
-            EscortState { target_entity: None, destination: Some(Vec3::new(50.0, 0.0, 50.0)) },
+            EscortState {
+                target_entity: None,
+                destination: Some(Vec3::new(50.0, 0.0, 50.0)),
+            },
         );
 
         escort_system(&world, 0.5);
 
         {
             let eq = world.query::<Escorted>().expect("Escorted registered");
-            assert!(eq.get(entity).is_some(), "actor at its destination must be tagged Escorted");
+            assert!(
+                eq.get(entity).is_some(),
+                "actor at its destination must be tagged Escorted"
+            );
         }
 
         let pos_after_first = {
@@ -439,6 +481,9 @@ mod tests {
             let tq = world.query::<Transform>().expect("Transform registered");
             tq.get(entity).expect("actor transform").translation
         };
-        assert_eq!(pos_after_first, pos_after_second, "Escorted actors must not move on later ticks");
+        assert_eq!(
+            pos_after_first, pos_after_second,
+            "Escorted actors must not move on later ticks"
+        );
     }
 }

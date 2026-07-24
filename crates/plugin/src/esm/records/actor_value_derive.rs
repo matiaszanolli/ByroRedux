@@ -84,9 +84,7 @@ const SKILL_LUCK_MULT: f32 = 0.5; // fAVDSkillLuckBonusMult
 
 /// `skill = 2 + 2 × governing + ceil(Luck × 0.5)`.
 fn base_skill(governing: u8, luck: u8) -> f32 {
-    SKILL_BASE
-        + SKILL_ATTR_MULT * f32::from(governing)
-        + (SKILL_LUCK_MULT * f32::from(luck)).ceil()
+    SKILL_BASE + SKILL_ATTR_MULT * f32::from(governing) + (SKILL_LUCK_MULT * f32::from(luck)).ceil()
 }
 
 /// Derive an NPC's `(AVIF FormID, value)` actor-value pairs for the
@@ -271,10 +269,15 @@ mod tests {
     fn empty_without_class_or_wrong_game() {
         let index = fnv_index_with_class(0x2000, [5; 7]);
         // NPC referencing an unparsed class → empty.
-        assert!(derive_npc_actor_values(&npc_with_class(0x9999), &index, GameKind::Fallout3NV).is_empty());
+        assert!(
+            derive_npc_actor_values(&npc_with_class(0x9999), &index, GameKind::Fallout3NV)
+                .is_empty()
+        );
         // Right NPC, not-yet-modelled game → empty (Skyrim has neither the
         // FNV auto-calc class model nor the FO4 PRPS property model).
-        assert!(derive_npc_actor_values(&npc_with_class(0x2000), &index, GameKind::Skyrim).is_empty());
+        assert!(
+            derive_npc_actor_values(&npc_with_class(0x2000), &index, GameKind::Skyrim).is_empty()
+        );
     }
 
     #[test]
@@ -283,7 +286,9 @@ mod tests {
         // DNAM Health/AP resolve via their AVIF EditorIDs.
         let mut index = EsmIndex::default();
         index.actor_values.insert(0x900, avif(0x900, "Health"));
-        index.actor_values.insert(0x901, avif(0x901, "ActionPoints"));
+        index
+            .actor_values
+            .insert(0x901, avif(0x901, "ActionPoints"));
 
         let npc = NpcRecord {
             actor_value_props: vec![(0x2A0, 7.0), (0x2A6, 5.0)], // Strength 7, Luck 5
@@ -295,8 +300,14 @@ mod tests {
 
         assert!(pairs.contains(&(0x2A0, 7.0)), "Strength prop passthrough");
         assert!(pairs.contains(&(0x2A6, 5.0)), "Luck prop passthrough");
-        assert!(pairs.contains(&(0x900, 240.0)), "Calculated Health → Health AVIF");
-        assert!(pairs.contains(&(0x901, 90.0)), "Calculated AP → ActionPoints AVIF");
+        assert!(
+            pairs.contains(&(0x900, 240.0)),
+            "Calculated Health → Health AVIF"
+        );
+        assert!(
+            pairs.contains(&(0x901, 90.0)),
+            "Calculated AP → ActionPoints AVIF"
+        );
         assert_eq!(pairs.len(), 4, "2 PRPS + 2 baked derived");
     }
 
