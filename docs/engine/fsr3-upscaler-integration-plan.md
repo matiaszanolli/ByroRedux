@@ -1,10 +1,13 @@
 # FSR 3.1 upscaler integration plan
 
-Status: **Execution phases 1–5 complete. FSR 3.1.4 dispatches on every preset;
-TAA remains the default pending the phase 6/7 image-quality and benchmark
-gates.** Phases 6 (image-quality stabilization) and 7 (benchmark + default
-switch) are next; the default flip to FSR Quality is phase 7's decision and
-has not been made.
+Status: **Execution phases 1–6 complete. FSR 3.1.4 dispatches on every preset
+and every preset passes its measured image-quality thresholds; TAA remains the
+default pending the phase 7 benchmark.** Phase 7 (benchmark matrix, default
+switch, documentation) is next; the flip to FSR Quality is its decision and
+has not been made. Two items are carried as known scope rather than done: the
+FP32 shader permutation is unexercised for want of a device that lacks
+`shaderFloat16`, and the two phase-4 items below (transparency split, UI after
+upscale) remain open.
 
 Phase 3 landed the deterministic jitter/reset state (`FsrTemporalState`), previous
 rigid-instance motion history, the boundary motion adapter + scale, the shared
@@ -696,22 +699,109 @@ Measured on an RTX 4070 Ti, Cornell, 1280×720 output: upscale cost 0.16 ms at
 Quality (853×480) against 0.012 ms for the native blit, with 31.8 MB of SDK
 working memory; Performance (640×360) reserves 25.3 MB.
 
-Deferred out of this phase, deliberately: goldens/SSIM are phase 6's item 1,
+Deferred out of this phase, deliberately: goldens/SSIM are phase 6's item 1 (now done),
 and the two carried phase-4 items above (transparency split, UI after upscale)
 remain open. Until the UI moves, the Scaleform overlay is temporally
 reconstructed along with the scene and writes no mask — marking it reactive
 would paper over that rather than fix it.
 
-#### Execution phase 6 — image-quality stabilization
+#### Execution phase 6 — image-quality stabilization — **COMPLETE (2026-07-24)**, with one item deferred for want of hardware
 
-1. Complete synthetic SSIM/golden scenes and local Dugout/FNV/Skyrim runs.
-2. Tune only documented mask/material policy and supported FSR parameters; do
-   not modify FSR shaders.
-3. Validate the FP32 path and FP16 path where supported.
-4. Decide the DOF path from evidence and document the decision.
+1. ✅ **Quality matrix.** `byroredux/tests/upscaler_quality.rs` scores every
+   preset against the native-resolution TAA render of the same frame across
+   five deterministic camera paths (`--bench-camera static|pan|orbit|dolly|cut`,
+   a new frame-indexed camera driver — a headless bench previously had no way
+   to move the camera at all, so every prior capture measured a parked view).
+   Metrics are SSIM plus outlier rate, with max- and mean-delta reported
+   alongside; the split matters because SSIM averages, and a small
+   catastrophic region hides behind a good mean.
 
-Gate: every preset passes static, pan, disocclusion, transparent, decal, and
-camera-cut thresholds on the bench GPUs, with no new validation errors.
+   Cornell (engine-owned, committed thresholds), worst case across all paths:
+
+   | preset      | worst SSIM | worst outliers |
+   |-------------|-----------:|---------------:|
+   | native-aa   |     0.9906 |         0.429% |
+   | quality     |     0.9554 |         1.681% |
+   | balanced    |     0.9460 |         3.183% |
+   | performance |     0.9199 |         5.387% |
+
+   FO4 `DmndDugoutInn01` (local artifact, reported not gated):
+
+   | preset      | worst SSIM | worst outliers |
+   |-------------|-----------:|---------------:|
+   | native-aa   |     0.9968 |         0.165% |
+   | quality     |     0.9899 |         1.140% |
+   | balanced    |     0.9811 |         4.518% |
+   | performance |     0.9772 |         8.156% |
+
+   Real content scores *higher* on SSIM and *worse* on outliers than Cornell.
+   Both are expected and the pair is worth keeping: dense texture gives SSIM
+   local variance to lock onto, while its high-frequency detail is exactly
+   what shifts past the outlier threshold when reconstructed from fewer
+   samples. Cornell's flat gradients and smooth specular spheres are the
+   opposite case.
+
+   Run-to-run spread over three full matrices was |Δssim| ≤ 0.0001 and
+   |Δoutlier| ≤ 0.05 pp, so the committed thresholds sit two orders of
+   magnitude above the noise.
+
+2. ✅ **No tuning applied — the data did not call for any.** Native AA scores
+   0.99 SSIM against TAA, which says the two resolves substantially agree; the
+   reduced presets degrade monotonically with upscale ratio, which is the
+   honest expectation rather than a defect. No ghosting or smearing was
+   observed on the pan, orbit, or dolly paths, and the post-cut frame recovers.
+   Changing mask policy or FSR parameters against evidence that shows no
+   problem would be tuning for its own sake, and would invalidate the
+   thresholds just measured.
+
+3. ⚠️ **FP16 validated; FP32 deferred for want of hardware.** The SDK picks
+   its permutation from the *physical* device
+   (`ffx_vk.cpp` `GetDeviceCapabilitiesVK` enumerates available extensions,
+   despite its comment claiming otherwise), which makes the engine's
+   `shaderFloat16` enable load-bearing: a device advertising FP16 while the
+   engine leaves the feature off would run FP16 shaders against a disabled
+   feature. That coupling is now recorded on
+   `DeviceCapabilities::shader_float16_supported`, asserted at device creation,
+   and surfaced by `ctx.upscaler` (`FSR 3.1.4 (fp16)`).
+
+   The FP32 path is **not** exercised. The SDK offers no override, so it needs
+   either a GPU without `shaderFloat16` or the Khronos profiles layer masking
+   the feature — neither available here, and forking the vendored SDK to force
+   it is what §1.1 rules out. Retained as known scope rather than claimed.
+
+4. ✅ **DOF decision: move it to an output-resolution post-upscale pass.**
+
+   The naive reading — "the lens jitter is unreported, so motion vectors are
+   wrong" — is incorrect, and worth recording so it does not mislead a future
+   implementer. `dof_effective_view_proj` bakes the aperture-disk offset into
+   the uploaded view-projection, and `prev_view_proj` stores that same jittered
+   matrix, so `triangle.vert` differences two lens-jittered matrices against
+   each vertex's own world position. The resulting motion vector describes the
+   true screen-space displacement of that surface point, depth-dependent
+   component included. Reprojection is correct.
+
+   The incompatibility is in accumulation. FSR places accumulated samples on
+   the output grid assuming the only sub-pixel variation between frames is the
+   `jitterOffset` it reported. A lens offset adds a further displacement that
+   grows with |depth − focus_dist|, and it *cannot* be reported: `jitterOffset`
+   is a single uniform 2D value per frame, while the lens contribution varies
+   per pixel with depth. There is no way to express it through the dispatch
+   API, so the choice is between fighting the upscaler and moving the effect.
+
+   Post-upscale DOF is therefore the only coherent option, and matches §1.2's
+   target frame graph, which already places presentation post-processing after
+   the upscale. Until that pass exists the current guard stands: `draw.rs`
+   forces `aperture = 0.0` whenever FSR owns reconstruction. Note this guard is
+   presently defensive rather than active — nothing in the engine authors a
+   non-zero aperture today (`Camera::default()` is 0.0 and there is no runtime
+   control), so stochastic DOF is dormant and the decision constrains future
+   work rather than changing current output.
+
+Gate: **met on the available hardware.** Every preset passes its threshold on
+all five camera paths on an RTX 4070 Ti with no new validation errors, and the
+same matrix runs clean on real FO4 content. Not met in the "bench GPUs"
+(plural) sense — only one GPU was available, and the FP32 permutation is
+unexercised.
 
 #### Execution phase 7 — benchmark, default switch, and documentation
 

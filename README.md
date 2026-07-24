@@ -173,6 +173,9 @@ cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored
 cargo run --release -- --cornell --upscaler fsr3 --fsr-quality quality
 #   presets: native-aa (1.0x) | quality (1.5x) | balanced (1.7x) | performance (2.0x)
 
+# Upscaler image-quality matrix (SSIM vs the native TAA render, 5 camera paths)
+cargo test --release -p byroredux --test upscaler_quality -- --ignored --nocapture
+
 # Debug CLI — connect to a running engine (TCP, port 9876)
 cargo run -p byro-dbg
 ```
@@ -191,6 +194,13 @@ the intended way to A/B presets on one scene. `ctx.upscaler` reports the
 active path, its render/output extents, the FSR provider version, and the
 GPU memory the SDK reserved for itself (which is invisible to
 `ctx.memory`, since the FSR backend allocates it directly).
+
+**Deterministic bench camera.** `--bench-camera <static|pan|orbit|dolly|cut>`
+drives the camera along a frame-indexed path for the length of a
+`--bench-frames` run. Temporal reconstruction only misbehaves when the camera
+moves, and neither the fly camera (needs mouse capture) nor the character rig
+(needs a player) runs headless — so this is what makes a motion capture
+reproducible across upscaler presets.
 
 **Sibling archive auto-load.** When `--bsa` / `--textures-bsa` points
 at an unsuffixed `.bsa` / `.ba2` (e.g. `Fallout - Textures.bsa`), the
