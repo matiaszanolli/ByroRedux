@@ -66,6 +66,11 @@ pub struct FrameUpscaler {
     /// for the life of a context — re-querying it per frame would be an FFI
     /// round-trip for a value that cannot change.
     summary: String,
+    /// Whether the device enabled `shaderFloat16`, which is what decides
+    /// between the SDK's FP16 and FP32 shader permutations. Reported rather
+    /// than chosen — the SDK reads the physical device directly and offers no
+    /// override, so this records which path is live.
+    shader_float16: bool,
 }
 
 impl FrameUpscaler {
@@ -79,9 +84,11 @@ impl FrameUpscaler {
         command_pool: vk::CommandPool,
         mode: UpscalerMode,
         extents: FrameExtentSet,
+        shader_float16: bool,
     ) -> Result<Self> {
         let mut upscaler = Self {
             mode,
+            shader_float16,
             context: None,
             output_images: Vec::new(),
             output_views: Vec::new(),
@@ -304,6 +311,7 @@ impl FrameUpscaler {
         let version = fsr3::version()
             .map(|version| version.to_string())
             .unwrap_or_else(|_| "unknown".to_owned());
+        let permutation = if self.shader_float16 { "fp16" } else { "fp32" };
         let memory = match context.memory_usage() {
             Ok(usage) => format!(
                 "{:.1} MB SDK working memory ({:.1} MB aliasable)",
@@ -312,7 +320,10 @@ impl FrameUpscaler {
             ),
             Err(error) => format!("working memory unavailable ({error})"),
         };
-        format!("{} · FSR {version} · {extents} · {memory}", self.mode)
+        format!(
+            "{} · FSR {version} ({permutation}) · {extents} · {memory}",
+            self.mode
+        )
     }
 
     /// Record either the real FSR dispatch or the native blit bridge.
@@ -748,6 +759,7 @@ impl FrameUpscaler {
         mode: UpscalerMode,
         extents: FrameExtentSet,
     ) -> Result<()> {
+        let shader_float16 = self.shader_float16;
         // `mode` is a parameter rather than `self.mode` because a runtime
         // upscaler switch reaches this through the resize path: reusing the
         // old mode would rebuild the outputs at the new extents while leaving
@@ -764,6 +776,7 @@ impl FrameUpscaler {
             command_pool,
             mode,
             extents,
+            shader_float16,
         )?;
         Ok(())
     }

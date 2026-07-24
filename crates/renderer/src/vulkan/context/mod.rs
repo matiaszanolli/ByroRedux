@@ -2582,6 +2582,7 @@ impl VulkanContext {
             transfer_pool,
             renderer_config.upscaler,
             frame_extents,
+            device_caps.shader_float16_supported,
         )
         .context("create frame upscaler")?;
         let presentation = PresentationPipeline::new(

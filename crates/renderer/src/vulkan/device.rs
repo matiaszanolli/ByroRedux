@@ -111,6 +111,23 @@ pub struct DeviceCapabilities {
     /// Vulkan 1.2 core; universally available on every RT-capable
     /// desktop GPU, so the BLAS-compaction path is unaffected.
     pub host_query_reset_supported: bool,
+    /// True if the physical device advertises `VK_KHR_shader_float16_int8`
+    /// *and* the `shaderFloat16` feature.
+    ///
+    /// Load-bearing for FSR. FidelityFX SDK 1.1.4's Vulkan backend decides
+    /// whether to compile FP16 shader permutations by calling
+    /// `vkEnumerateDeviceExtensionProperties` on the **physical** device
+    /// (`ffx_vk.cpp` `GetDeviceCapabilitiesVK`) — despite the comment there
+    /// reading "check if extensions are enabled", it inspects what the device
+    /// *supports*, not what this engine *enabled*. So if the device advertises
+    /// FP16 and `create_logical_device` fails to enable `shaderFloat16`, the
+    /// SDK still dispatches FP16 shaders against a device where the feature is
+    /// off, which is undefined behaviour rather than a clean error.
+    ///
+    /// `create_logical_device` therefore enables `shaderFloat16` whenever this
+    /// is true, and asserts the pairing at startup so the coupling cannot be
+    /// broken silently.
+    pub shader_float16_supported: bool,
     /// `VK_EXT_memory_budget` exposes a live per-heap usage / budget
     /// pair via `vkGetPhysicalDeviceMemoryProperties2` chained with
     /// `VkPhysicalDeviceMemoryBudgetPropertiesEXT`. Without it, the
@@ -429,6 +446,10 @@ fn is_device_suitable(
         return Ok(None);
     }
     let host_query_reset_supported = vulkan12_features.host_query_reset == vk::TRUE;
+    // Both limbs matter: the SDK keys its FP16 permutation off the extension
+    // being advertised, and the feature bit is what makes enabling it legal.
+    let shader_float16_supported = vulkan12_features.shader_float16 == vk::TRUE
+        && has_device_extension(&available_extensions, ash::khr::shader_float16_int8::NAME);
 
     // Query descriptor indexing properties for the UPDATE_AFTER_BIND bindless
     // array ceiling. Vulkan 1.2 core exposes this via the pNext chain on
@@ -549,6 +570,7 @@ fn is_device_suitable(
                 timestamp_supported: properties.limits.timestamp_compute_and_graphics == vk::TRUE,
                 synchronization2_supported,
                 host_query_reset_supported,
+                shader_float16_supported,
                 memory_budget_supported,
                 texture_compression_bc,
             },
@@ -680,7 +702,9 @@ pub fn create_logical_device(
         .descriptor_binding_partially_bound(true)
         .descriptor_binding_sampled_image_update_after_bind(true)
         // FidelityFX chooses its FP16 permutation and storage-buffer
-        // descriptor indexing from physical-device capabilities.
+        // descriptor indexing from physical-device capabilities. See
+        // `DeviceCapabilities::shader_float16_supported` for why the FP16
+        // limb is load-bearing rather than an optimization.
         .descriptor_indexing(supported_vulkan12_features.descriptor_indexing == vk::TRUE)
         .shader_float16(supported_vulkan12_features.shader_float16 == vk::TRUE)
         .shader_storage_buffer_array_non_uniform_indexing(
@@ -697,6 +721,23 @@ pub fn create_logical_device(
         // both consumers are correct; `GpuPerFrameTimers::new` gates on the
         // same flag so it self-disables on a device that lacks it.
         .host_query_reset(caps.host_query_reset_supported);
+
+    // The FSR backend picks FP16 shader permutations off the *physical*
+    // device, so a device that advertises FP16 while this chain leaves
+    // `shaderFloat16` disabled would run FP16 code with the feature off —
+    // undefined behaviour, and silent. Assert the pairing here so a future
+    // edit to the chain above fails loudly at startup instead.
+    let shader_float16_enabled = supported_vulkan12_features.shader_float16 == vk::TRUE;
+    debug_assert!(
+        !caps.shader_float16_supported || shader_float16_enabled,
+        "device advertises FP16 (so the FSR backend will compile FP16 permutations) \
+         but this device chain left shaderFloat16 disabled"
+    );
+    if caps.shader_float16_supported {
+        log::debug!("shaderFloat16 enabled — FSR will use its FP16 shader permutations");
+    } else {
+        log::debug!("shaderFloat16 unavailable — FSR will use its FP32 shader permutations");
+    }
 
     let mut accel_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default()
         .acceleration_structure(caps.ray_query_supported);
