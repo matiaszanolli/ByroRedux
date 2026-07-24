@@ -176,6 +176,9 @@ impl BenchCameraPath {
         frame == cut_frame
     }
 
+    /// Every path, in the order they are documented. Drives the CLI's
+    /// error message and the harness matrix, so both stay complete by
+    /// construction rather than by remembering to update a second list.
     pub const ALL: [Self; 5] = [Self::Static, Self::Pan, Self::Orbit, Self::Dolly, Self::Cut];
 }
 
@@ -201,9 +204,15 @@ impl FromStr for BenchCameraPath {
             "orbit" => Ok(Self::Orbit),
             "dolly" => Ok(Self::Dolly),
             "cut" => Ok(Self::Cut),
-            other => Err(format!(
-                "unknown --bench-camera '{other}'; expected static, pan, orbit, dolly, or cut"
-            )),
+            other => {
+                // Derive the expected list from `ALL` so a new variant cannot
+                // be added without the error message learning about it.
+                let names: Vec<String> = Self::ALL.iter().map(Self::to_string).collect();
+                Err(format!(
+                    "unknown --bench-camera '{other}'; expected one of: {}",
+                    names.join(", ")
+                ))
+            }
         }
     }
 }
