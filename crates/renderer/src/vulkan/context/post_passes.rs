@@ -595,10 +595,16 @@ impl VulkanContext {
                 .map_or(super::super::exposure::DEFAULT_EXPOSURE, |value| {
                     value.value()
                 });
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_presentation_start(&self.device, cmd, frame);
+            }
             self.presentation
                 .as_ref()
                 .expect("presentation pipeline must exist while recording")
                 .dispatch(&self.device, cmd, frame, img, exposure, underwater);
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_presentation_end(&self.device, cmd, frame);
+            }
         }
         Ok(())
     }

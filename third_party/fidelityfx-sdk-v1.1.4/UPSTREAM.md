@@ -37,6 +37,22 @@ scripts/generate-fsr3-vulkan-shaders.sh /path/to/FidelityFX-SDK-1.1.4
 
 The compiler binary is not redistributed here.
 
+## ByroRedux correctness patches
+
+Distinct from the portability deltas below, because these change *behaviour*
+rather than making upstream compile — and because a future SDK bump that drops
+one of them reintroduces a real defect rather than a build break.
+
+1. `ffx_fsr3upscaler.cpp` allocates `LUMA_HISTORY_1` / `LUMA_HISTORY_2` as
+   `R8G8B8A8_UNORM` instead of upstream's `R16G16B16A16_FLOAT`. The Vulkan
+   luma-instability shader declares the matching UAV as `rgba8`
+   (`ffx_fsr3upscaler_callbacks_glsl.h:398`), so upstream's 16-bit-float
+   allocation makes every `imageStore` through that binding undefined under
+   Vulkan's typed-storage-image rules. Landed in `33d6a18e`.
+
+   **Check this first if a pinned-SDK update regresses reconstruction**: the
+   symptom is format-dependent and may not reproduce on every driver.
+
 ## ByroRedux portability patches
 
 The upstream source is preserved except for these narrowly scoped deltas:
@@ -62,5 +78,5 @@ The upstream source is preserved except for these narrowly scoped deltas:
    callback rather than linking the frame-interpolation swapchain backend.
 
 Every delta is marked either `ByroRedux portability patch` in upstream-derived
-source or lives under `crates/fsr3-sys/native`. Re-audit all nine items when
-updating the pinned SDK.
+source or lives under `crates/fsr3-sys/native`. Re-audit all nine portability
+items **and the correctness patch above** when updating the pinned SDK.

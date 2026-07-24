@@ -3066,6 +3066,7 @@ impl VulkanContext {
             stats.gpu_caustic_splat_ms = snap.caustic_splat_ms;
             stats.gpu_volumetrics_ms = snap.volumetrics_ms;
             stats.gpu_upscale_ms = snap.upscale_ms;
+            stats.gpu_presentation_ms = snap.presentation_ms;
         } else {
             stats.gpu_skin_dispatch_ms = 0.0;
             stats.gpu_skin_blas_refit_ms = 0.0;
@@ -3080,6 +3081,7 @@ impl VulkanContext {
             stats.gpu_caustic_splat_ms = 0.0;
             stats.gpu_volumetrics_ms = 0.0;
             stats.gpu_upscale_ms = 0.0;
+            stats.gpu_presentation_ms = 0.0;
         }
         stats.slots_active = self.skin_slots.len() as u32;
         stats.slot_pool_capacity = if self.skin_compute.is_some() {

@@ -1333,24 +1333,44 @@ impl ApplicationHandler for App {
                     // Surfaces `gpu_skin_disp` / `gpu_blas_refit` /
                     // `gpu_taa` so PERF-DIM7-01/-02/-03 (#1195/#1196/
                     // #1197) can measure rather than guess.
-                    let (gpu_skin_disp_ms, gpu_blas_refit_ms, gpu_taa_ms, gpu_upscale_ms) = self
+                    // Full per-pass GPU breakdown. The FSR benchmark matrix
+                    // (execution phase 7) needs the render-resolution passes
+                    // and the output-resolution ones separable, because only
+                    // the former shrink with a preset — reporting a frame-time
+                    // win without netting out presentation and the upscale
+                    // dispatch would overstate what a player actually gets.
+                    let gpu = self
                         .world
                         .try_resource::<byroredux_core::ecs::SkinCoverageStats>()
                         .map(|s| {
-                            (
+                            // Copy just the timing fields out from under the
+                            // resource read guard; the resource itself carries
+                            // non-Copy diagnostic state we do not need here.
+                            [
                                 s.gpu_skin_dispatch_ms,
                                 s.gpu_skin_blas_refit_ms,
                                 s.gpu_taa_ms,
                                 s.gpu_upscale_ms,
-                            )
+                                s.gpu_main_render_ms,
+                                s.gpu_svgf_ms,
+                                s.gpu_composite_ms,
+                                s.gpu_ssao_ms,
+                                s.gpu_bloom_ms,
+                                s.gpu_volumetrics_ms,
+                                s.gpu_cluster_cull_ms,
+                                s.gpu_presentation_ms,
+                            ]
                         })
-                        .unwrap_or((0.0, 0.0, 0.0, 0.0));
+                        .unwrap_or([0.0; 12]);
                     println!(
                         "bench: frames={} wall_fps={:.1} wall_ms={:.2} \
                          brd_ms={:.2} ui_ms={:.2} draw_ms={:.2} \
                          [fence={:.2} tlas={:.2} ssbo={:.2} cmd={:.2} submit={:.2}] \
                          [gpu_skin_disp={:.3} gpu_blas_refit={:.3} gpu_taa={:.3} \
-                         gpu_upscale={:.3}] \
+                         gpu_upscale={:.3} gpu_main_render={:.3} gpu_svgf={:.3} \
+                         gpu_composite={:.3} gpu_ssao={:.3} gpu_bloom={:.3} \
+                         gpu_volumetrics={:.3} gpu_cluster_cull={:.3} \
+                         gpu_presentation={:.3}] \
                          systems_ms={:.2} ticks_per_frame={:.1} unaccounted_ms={:.2} \
                          entities={} meshes={} textures={} draws={}/{}b/{}c",
                         self.bench_frames_count,
@@ -1364,10 +1384,18 @@ impl ApplicationHandler for App {
                         ssbo_ms,
                         cmd_ms,
                         submit_ms,
-                        gpu_skin_disp_ms,
-                        gpu_blas_refit_ms,
-                        gpu_taa_ms,
-                        gpu_upscale_ms,
+                        gpu[0],
+                        gpu[1],
+                        gpu[2],
+                        gpu[3],
+                        gpu[4],
+                        gpu[5],
+                        gpu[6],
+                        gpu[7],
+                        gpu[8],
+                        gpu[9],
+                        gpu[10],
+                        gpu[11],
                         systems_ms,
                         ticks_per_frame,
                         unaccounted_ms,

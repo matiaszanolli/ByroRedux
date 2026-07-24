@@ -321,6 +321,20 @@ skin.coverage               → last-frame skinned-BLAS coverage — dispatches 
                              first-sight / refit counters + slot-pool gauges.
                              Green-bar: `coverage: full` (M29.3 closure)
 mem.frag                    → GPU memory fragmentation report
+ctx.upscaler                → active reconstruction path: mode, render→output
+                             extents, FSR provider version + FP16/FP32
+                             permutation, and the GPU memory the SDK reserved
+                             for itself (invisible to `mem.frag`, since the FSR
+                             backend allocates it directly rather than through
+                             gpu-allocator). Plus last frame's `gpu_upscale_ms`
+r.upscaler [spec]           → switch reconstruction path live, no relaunch:
+                             `r.upscaler taa` or
+                             `r.upscaler fsr3 [native-aa|quality|balanced|
+                             performance]`. Bare `r.upscaler` reports the
+                             active one. Applied at the next frame boundary
+                             (the switch rebuilds every render-resolution
+                             target), so it prints "queued" and takes effect
+                             one frame later
 
 # Skinning + lighting diagnostics
 skin.list                   → list SkinnedMesh entities + slot status
@@ -532,6 +546,37 @@ it doesn't need to).
 Observability resources are refreshed each frame by the engine binary after
 `Scheduler::run` and surfaced via console commands (and, for metrics, the
 `Metrics` protocol request + TUI dashboard).
+
+### `ctx.upscaler` / `r.upscaler` — temporal reconstruction path
+
+`ctx.upscaler` reports what is actually reconstructing the frame:
+
+```
+byro> ctx.upscaler
+  fsr3/quality · FSR 3.1.4 (fp16) · 853x480 -> 1280x720 · 31.8 MB SDK working memory (4.6 MB aliasable)
+  gpu_upscale_ms = 0.163
+```
+
+Three parts are worth reading carefully:
+
+- **The extents** are `render -> output`. If they are equal under an `fsr3`
+  mode you are on Native AA (1.0×), not a reduced preset.
+- **The permutation** (`fp16` / `fp32`) is chosen by the SDK from *physical*
+  device capabilities, not by the engine — see
+  `DeviceCapabilities::shader_float16_supported` for why the engine's
+  `shaderFloat16` enable has to agree with it.
+- **SDK working memory** is allocated by the FidelityFX Vulkan backend, not by
+  `gpu-allocator`. `mem.frag` and the allocator's own totals cannot see it, so
+  this line is the only place that reservation is observable. It scales with
+  render resolution: 31.8 MB at Quality, 25.3 MB at Performance, ~97 MB at
+  Native AA on a 1853×1013 window.
+
+A latched dispatch failure is reported here too — the frame graph degrades to
+a native blit rather than dropping frames, which is otherwise silent.
+
+`r.upscaler <spec>` switches live so presets can be A/B'd on one scene instead
+of relaunching per data point. Same grammar as `--upscaler` / `--fsr-quality`,
+and the same grammar the F3 settings panel stores.
 
 ### `ctx.scratch` — scratch-buffer growth (R6)
 

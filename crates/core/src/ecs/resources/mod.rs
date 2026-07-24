@@ -567,6 +567,9 @@ pub struct SkinCoverageStats {
     /// blit that stands in for it). The upscaler's own cost, which the
     /// bench report subtracts from the render-resolution savings.
     pub gpu_upscale_ms: f32,
+    /// Output-resolution presentation (exposure + ACES → swapchain). The part
+    /// of the frame an FSR preset does *not* shrink.
+    pub gpu_presentation_ms: f32,
 }
 
 /// CPU-side per-frame wall-clock breakdown — populated by the

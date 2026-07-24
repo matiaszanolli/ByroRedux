@@ -166,14 +166,22 @@ these calls feed.
 ## 10. Vulkan `draw_frame` → present
 
 `VulkanContext::draw_frame` (`crates/renderer/src/vulkan/context/draw.rs:2182`):
-fence wait → `acquire_next_image` → TAA Halton jitter computed → the
-`upload_*` calls above → `record_geometry_pass(...)` (`draw.rs:943`,
-called at `draw.rs:3764` — PBR + RT ray queries for shadows,
-reflections, and 1-bounce GI) → `record_post_passes(...)` (`draw.rs:523`,
-called at `draw.rs:3797`), which records, in fixed order per its own doc
+fence wait → `acquire_next_image` → projection jitter computed (TAA's own
+Halton sequence, or the phase/offset FSR queried from the SDK) → the
+`upload_*` calls above → `record_geometry_pass(...)` (`draw.rs:943` — PBR +
+RT ray queries for shadows, reflections, and 1-bounce GI) →
+`record_post_passes(...)`, which records, in fixed order per its own doc
 comment: water-caustic barrier → SVGF temporal + à-trous denoise →
-caustic splat → volumetrics → TAA resolve → SSAO → bloom → final
-composite (ACES tone map) → `queue_submit` → `queue_present`.
+caustic splat → volumetrics → TAA resolve (FSR mode skips this) → SSAO →
+bloom → scene composition → frame upscale → presentation →
+`queue_submit` → `queue_present`.
+
+Everything up to and including scene composition runs at **render**
+resolution; the upscale reconstructs to **output** resolution and
+presentation (exposure + ACES → swapchain) runs there. Under
+`--upscaler taa` the two extents are equal and the upscale slot records a
+native blit, so the graph has one shape regardless of the selected
+upscaler.
 
 This matches [Vulkan Renderer](renderer.md)'s `draw_frame` walkthrough and
 [Shader Pipeline](shader-pipeline.md)'s pass table; neither currently

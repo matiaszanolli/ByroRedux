@@ -293,16 +293,29 @@ the allocator fires after the logical device has already been destroyed.
     when no TLAS handle is available — #640).
 17. Dispatch the volumetric inject + integrate passes (M55 — scaffold; the
     output is multiplied by 0.0 in composite until Phase 2 lands).
-18. Dispatch `taa.comp` for temporal AA; ping-pong history images.
+18. Dispatch `taa.comp` for temporal AA; ping-pong history images. **Skipped
+    entirely under `--upscaler fsr3`** — FSR owns temporal reconstruction and
+    the two are mutually exclusive (the TAA pipeline is not even created).
 19. Dispatch `ssao.comp` for screen-space ambient occlusion.
 20. Dispatch the bloom down/up pyramid over the active HDR view.
-21. Dispatch the composite pass to assemble
-    `direct + indirect * albedo + caustic + bloom` with ACES tone mapping,
-    writing the swapchain image.
-22. If the egui overlay is active, record its LOAD-op render pass over the
+21. Dispatch the **scene-composition** pass to assemble
+    `direct + indirect * albedo + caustic + bloom` into a
+    **render-resolution linear-HDR** image. This pass no longer tone-maps and
+    no longer writes the swapchain — both moved downstream when the
+    render/output resolution split landed.
+22. Record the **frame upscale**: the FSR 3.1 dispatch, or a native blit
+    under `--upscaler taa` (where render and output extents are equal). Either
+    way the result is an output-resolution HDR image, which gives FSR one
+    explicit frame-graph slot instead of letting a later pass silently
+    bilinear-scale its inputs.
+23. Dispatch the **presentation** pass: exposure + ACES tone map from that
+    output-resolution HDR image into the swapchain image. This is the first
+    pass that runs at output resolution, and the part of the frame an FSR
+    preset does *not* shrink.
+24. If the egui overlay is active, record its LOAD-op render pass over the
     swapchain image.
-23. Record the optional screenshot copy.
-24. End command buffer, submit to the graphics queue with semaphore sync
+25. Record the optional screenshot copy.
+26. End command buffer, submit to the graphics queue with semaphore sync
     (`reset_fences` moved to immediately-before-submit per #952), present
     to the swapchain.
 

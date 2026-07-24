@@ -2,7 +2,7 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, 26 TIMESTAMP queries each:
+//! per frame-in-flight slot, 28 TIMESTAMP queries each:
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -32,6 +32,8 @@
 //! | 23   | volumetrics inject+integrate — end     |
 //! | 24   | frame upscale (FSR / native blit) — start |
 //! | 25   | frame upscale (FSR / native blit) — end   |
+//! | 26   | presentation (exposure + ACES → swapchain) — start |
+//! | 27   | presentation (exposure + ACES → swapchain) — end   |
 //!
 //! The original three brackets (skin / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work. The four added in debug-UI
@@ -79,8 +81,8 @@ use ash::vk;
 
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 
-/// One TIMESTAMP query per bracket endpoint × thirteen brackets.
-const QUERIES_PER_FRAME: u32 = 26;
+/// One TIMESTAMP query per bracket endpoint × fourteen brackets.
+const QUERIES_PER_FRAME: u32 = 28;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -108,6 +110,8 @@ const Q_VOLUMETRICS_START: u32 = 22;
 const Q_VOLUMETRICS_END: u32 = 23;
 const Q_UPSCALE_START: u32 = 24;
 const Q_UPSCALE_END: u32 = 25;
+const Q_PRESENTATION_START: u32 = 26;
+const Q_PRESENTATION_END: u32 = 27;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -165,6 +169,14 @@ pub struct GpuTimerSnapshot {
     /// after a latched dispatch failure. Reads `0.0` only when the
     /// upscaler is absent entirely.
     pub upscale_ms: f32,
+    /// Presentation pass — exposure + ACES tone-map from the upscaled HDR
+    /// image into the swapchain, at **output** resolution.
+    ///
+    /// Reported separately from the render-resolution passes because it is
+    /// the part of the frame that does *not* shrink with an FSR preset.
+    /// Netting it out is what separates "render work recovered" from "frame
+    /// time recovered" in the benchmark report.
+    pub presentation_ms: f32,
 }
 
 /// Per-frame-in-flight TIMESTAMP query pools.
@@ -199,6 +211,7 @@ const BIT_BLOOM: u16 = 0x0200;
 const BIT_CAUSTIC_SPLAT: u16 = 0x0400;
 const BIT_VOLUMETRICS: u16 = 0x0800;
 const BIT_UPSCALE: u16 = 0x1000;
+const BIT_PRESENTATION: u16 = 0x2000;
 
 impl GpuPerFrameTimers {
     /// Create one TIMESTAMP query pool per frame-in-flight slot.
@@ -342,6 +355,9 @@ impl GpuPerFrameTimers {
         }
         if bits & BIT_UPSCALE != 0 {
             snap.upscale_ms = bracket_ms(Q_UPSCALE_START);
+        }
+        if bits & BIT_PRESENTATION != 0 {
+            snap.presentation_ms = bracket_ms(Q_PRESENTATION_START);
         }
         self.last_snapshot = snap;
 
@@ -804,6 +820,43 @@ impl GpuPerFrameTimers {
             );
         }
         self.active_bits[frame] |= BIT_UPSCALE;
+    }
+
+    /// Write the presentation START timestamp.
+    pub fn cmd_presentation_start(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                self.pools[frame],
+                Q_PRESENTATION_START,
+            );
+        }
+    }
+
+    /// Write the presentation END timestamp.
+    pub fn cmd_presentation_end(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
+        unsafe {
+            device.cmd_write_timestamp(
+                cmd,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                self.pools[frame],
+                Q_PRESENTATION_END,
+            );
+        }
+        self.active_bits[frame] |= BIT_PRESENTATION;
     }
 
     /// Destroy every query pool. Caller must wait for queue idle

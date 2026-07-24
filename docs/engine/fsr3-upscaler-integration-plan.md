@@ -416,6 +416,21 @@ Preset contract:
 | Balanced | 1.7x | 0.588 | -1.766 |
 | Performance | 2.0x | 0.500 | -2.000 |
 
+**Measured (1280×720 output, SDK query — not the table above).** The ratios are
+approximate and the SDK's own rounding is authoritative, which is why
+`FrameExtentSet::for_output` queries rather than computes:
+
+| Preset | Render extent | SDK working memory |
+| --- | --- | ---: |
+| Native AA | 1280×720 | — |
+| Quality | 853×480 | 31.8 MB |
+| Balanced | 752×423 | — |
+| Performance | 640×360 | 25.3 MB |
+
+Balanced lands on 752×423, not the 753×424 the 0.588 ratio would give — the
+kind of off-by-one that would silently mismatch a hand-computed resource
+extent against the extent FSR actually dispatches with.
+
 Compute dimensions using the SDK query/ratio contract and a single tested
 rounding function; do not scatter integer division around resource constructors.
 Balanced dimensions are approximate and must not be hard-coded from the rounded
