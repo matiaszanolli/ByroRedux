@@ -167,6 +167,12 @@ cargo run -- path/to/mesh.nif [--kf path/to/anim.kf]
 # Per-game NIF parse-rate sweep (requires game data)
 cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored
 
+# FSR 3.1 upscaling (AMD FidelityFX, upscaler-only — no frame generation).
+# Renders the scene below output resolution and reconstructs it. Default is
+# `taa`, which renders at native resolution.
+cargo run --release -- --cornell --upscaler fsr3 --fsr-quality quality
+#   presets: native-aa (1.0x) | quality (1.5x) | balanced (1.7x) | performance (2.0x)
+
 # Debug CLI — connect to a running engine (TCP, port 9876)
 cargo run -p byro-dbg
 ```
@@ -176,6 +182,15 @@ raise/lower (fly mode) or jump (walk mode), Ctrl for speed boost. Press
 `F` to toggle walk ↔ fly. Walk mode is the M28.5 kinematic capsule
 (gravity + collide-and-slide + autostep); fly mode keeps the legacy
 no-clip cam.
+
+**Upscaler.** `--upscaler taa|fsr3` picks the temporal reconstruction
+path, and `--fsr-quality` picks the FSR preset. Both are also switchable
+at runtime without a relaunch — `r.upscaler fsr3 balanced` over
+`byro-dbg`, or the Rendering section of the F3 settings panel — which is
+the intended way to A/B presets on one scene. `ctx.upscaler` reports the
+active path, its render/output extents, the FSR provider version, and the
+GPU memory the SDK reserved for itself (which is invisible to
+`ctx.memory`, since the FSR backend allocates it directly).
 
 **Sibling archive auto-load.** When `--bsa` / `--textures-bsa` points
 at an unsuffixed `.bsa` / `.ba2` (e.g. `Fallout - Textures.bsa`), the

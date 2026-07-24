@@ -1,8 +1,10 @@
 # FSR 3.1 upscaler integration plan
 
-Status: **Execution phases 1–3 complete (SDK/build proof, extent model, temporal
-input contracts). Phase 4 (frame-graph split + reactive/T&C masks) is next. TAA
-remains the functional default; no FSR dispatch path exists yet (Phase 5).**
+Status: **Execution phases 1–5 complete. FSR 3.1.4 dispatches on every preset;
+TAA remains the default pending the phase 6/7 image-quality and benchmark
+gates.** Phases 6 (image-quality stabilization) and 7 (benchmark + default
+switch) are next; the default flip to FSR Quality is phase 7's decision and
+has not been made.
 
 Phase 3 landed the deterministic jitter/reset state (`FsrTemporalState`), previous
 rigid-instance motion history, the boundary motion adapter + scale, the shared
@@ -10,7 +12,22 @@ rigid-instance motion history, the boundary motion adapter + scale, the shared
 clear), the 1×1 `R32_SFLOAT` exposure producer consumed by the composite tonemap,
 and the `DBG_VIZ_MOTION` / `DBG_VIZ_FSR_TEMPORAL` (jitter + reset-bit) debug views.
 
-Date: 2026-07-21
+Phase 4 landed the output-resolution split: a render-resolution scene-composition
+pass, an explicit reconstruction slot in the frame graph, and an
+output-resolution presentation pass that owns exposure + ACES. Two of its five
+items are **not** done and are carried as known scope below: transparency is
+still recorded inside the main render pass rather than split out of it (4.1),
+and the Scaleform/Ruffle overlay + reticle are still composited before upscale
+rather than after (4.5).
+
+Phase 5 landed the dispatch itself: engine images wrapped as FFX Vulkan
+resources with explicit boundary barriers, every required input fed (including
+the reactive and transparency/composition masks), a GPU-timed upscale bracket,
+provider-version + SDK-working-memory telemetry behind `ctx.upscaler`, a
+dispatch-failure latch that degrades to the native blit instead of dropping the
+frame, and runtime TAA↔FSR selection via `r.upscaler` / the settings panel.
+
+Date: 2026-07-21 (phase 5 closed 2026-07-24)
 
 Scope: replace the default temporal antialiasing path with AMD FidelityFX Super
 Resolution 3.1 in upscaler-only mode. Keep the existing TAA implementation as an
@@ -654,17 +671,36 @@ correct, and FSR debug input checks show the expected sign/scale/jitter.
 Gate: native-copy/TAA reference images demonstrate no unrelated material or
 lighting change; mask debug goldens pass; no new blend/depth/validation errors.
 
-#### Execution phase 5 — FSR upscale dispatch and fallback
+#### Execution phase 5 — FSR upscale dispatch and fallback — **COMPLETE (2026-07-24)**
 
-1. Wrap engine images as FFX Vulkan resources with explicit boundary barriers.
-2. Dispatch upscaling only and feed every required input/parameter.
-3. Add GPU timing, memory/version telemetry, failure handling, and live runtime
-   TAA/FSR selection.
-4. Keep TAA mutually exclusive and native-resolution only.
+1. ✅ Wrap engine images as FFX Vulkan resources with explicit boundary barriers.
+2. ✅ Dispatch upscaling only and feed every required input/parameter — including
+   the reactive and transparency/composition masks, which are produced as two
+   MAX-blended `R8_UNORM` render-pass attachments (6 and 7).
+3. ✅ GPU timing (`gpu_upscale` bracket), memory/version telemetry
+   (`ctx.upscaler`, over the SDK's GPU-memory query), failure handling (a
+   dispatch error latches and degrades to the native blit rather than dropping
+   the frame), and live runtime TAA/FSR selection (`r.upscaler`, the settings
+   panel, and `--upscaler`, all through one spec grammar).
+4. ✅ TAA stays mutually exclusive and native-resolution only — it is destroyed
+   when leaving TAA and rebuilt when entering it, and composite's HDR binding
+   follows.
 
-Gate: FSR Native AA and all three reduced-resolution presets pass validation,
-debug checker, reset/camera-cut tests, and cold/warm goldens. No frame-generation
-code is present.
+Gate: **met.** All four presets pass Vulkan sync validation with zero errors on
+Cornell and on FO4 `DmndDugoutInn01` (6978 entities), in debug builds where the
+FFX debug checker is enabled (`debug_checking: cfg!(debug_assertions)`); camera
+cuts and repeated runtime switches leave no ghost and no validation error; no
+frame-generation provider is compiled or linked.
+
+Measured on an RTX 4070 Ti, Cornell, 1280×720 output: upscale cost 0.16 ms at
+Quality (853×480) against 0.012 ms for the native blit, with 31.8 MB of SDK
+working memory; Performance (640×360) reserves 25.3 MB.
+
+Deferred out of this phase, deliberately: goldens/SSIM are phase 6's item 1,
+and the two carried phase-4 items above (transparency split, UI after upscale)
+remain open. Until the UI moves, the Scaleform overlay is temporally
+reconstructed along with the scene and writes no mask — marking it reactive
+would paper over that rather than fix it.
 
 #### Execution phase 6 — image-quality stabilization
 
