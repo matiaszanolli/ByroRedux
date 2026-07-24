@@ -121,6 +121,24 @@ pub(crate) fn run() -> Result<()> {
     let camera_pos = parse_vec3_arg(&args, "--camera-pos");
     let camera_forward = parse_vec3_arg(&args, "--camera-forward");
 
+    // --bench-camera <static|pan|orbit|dolly|cut> — drive the camera along a
+    // deterministic, frame-indexed path for the length of a `--bench-frames`
+    // run. Temporal reconstruction only misbehaves when the camera moves, and
+    // neither the fly camera (needs mouse capture) nor the character rig
+    // (needs a player) runs in a headless bench, so without this the image-
+    // quality harness can only ever measure a parked camera. No-op without
+    // `--bench-frames`, since the path is normalized on the run length.
+    let bench_camera = match parse_string_arg(&args, "--bench-camera") {
+        Some(spec) => match spec.parse::<crate::bench_camera::BenchCameraPath>() {
+            Ok(path) => Some(path),
+            Err(error) => anyhow::bail!("{error}"),
+        },
+        None => None,
+    };
+    if bench_camera.is_some() && bench_frames.is_none() {
+        log::warn!("--bench-camera is inactive without --bench-frames (the path is normalized over the run length)");
+    }
+
     // --rotation-mode 0..=3 — diagnostic switch for the REFR
     // Euler→Y-up conversion. See `cell_loader::euler_zup_to_quat_yup_refr`
     // doc for what each mode means. Used to triage the "large statics
@@ -241,6 +259,7 @@ pub(crate) fn run() -> Result<()> {
     app.bench_frames_target = bench_frames;
     app.bench_hold = bench_hold;
     app.screenshot_path = screenshot_path;
+    app.bench_camera = bench_camera;
     app.camera_pos_override = camera_pos;
     app.camera_forward_override = camera_forward;
     event_loop.run_app(&mut app)?;

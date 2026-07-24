@@ -12,6 +12,7 @@ static DHAT_ALLOC: dhat::Alloc = dhat::Alloc;
 mod anim_convert;
 mod app_step;
 mod asset_provider;
+mod bench_camera;
 mod boot;
 mod cell_loader;
 mod cli_args;
@@ -133,8 +134,17 @@ struct App {
     /// `about_to_wait` and the screenshot path would re-fire forever.
     bench_summary_printed: bool,
     /// Frames rendered since startup. Paired with `bench_frames_target`
-    /// to drive the automated benchmark exit.
+    /// to drive the automated benchmark exit, and — via `--bench-camera` —
+    /// to index the deterministic camera path.
     bench_frames_count: u32,
+    /// Deterministic camera path driven during a `--bench-frames` run.
+    /// `None` leaves the authored pose alone, which is the default and what
+    /// every pre-existing bench does. See `bench_camera`.
+    bench_camera: Option<crate::bench_camera::BenchCameraPath>,
+    /// Camera pose the bench path starts from — captured on the first bench
+    /// frame rather than read from the CLI, so a path composes with whatever
+    /// the scene (or `--camera-pos`) authored.
+    bench_camera_origin: Option<crate::bench_camera::CameraPose>,
     /// Wall-clock start of the bench window (set on first bench frame).
     /// Used to compute real elapsed time independent of the rolling stats
     /// window, which measures per-AboutToWait dt and can miss CPU phases.
@@ -330,6 +340,8 @@ impl App {
             bench_hold: false,
             bench_summary_printed: false,
             bench_frames_count: 0,
+            bench_camera: None,
+            bench_camera_origin: None,
             bench_start: None,
             bench_systems_ns: 0,
             bench_systems_ticks: 0,
@@ -1186,6 +1198,13 @@ impl ApplicationHandler for App {
                 .resource_mut::<byroredux_core::ecs::UpscalerTelemetry>();
             ctx.fill_upscaler_telemetry(&mut telemetry);
         }
+
+        // Deterministic bench camera (`--bench-camera`). Before the
+        // scheduler so the pose this frame renders from is the pose for
+        // this frame index. `fly_camera_system` cannot fight it: that
+        // system early-returns without mouse capture, which a headless
+        // bench never has.
+        self.step_bench_camera();
 
         // End of pre-scheduler phase (Phase 10 bracket).
         let atw_pre_ns = atw_pre_t0.elapsed().as_nanos() as u64;

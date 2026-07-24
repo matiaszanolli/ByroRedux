@@ -8,6 +8,11 @@ use crate::streaming;
 use crate::streaming_helpers::{consume_streaming_payload, SVGF_TAA_STREAMING_RECOVERY_FRAMES};
 use crate::App;
 
+/// SVGF/upscaler recovery window after a `--bench-camera cut`. Matches the
+/// window the streaming and cell-transition paths use, so the harness
+/// measures the engine's real recovery rather than a bench-only one.
+const BENCH_CUT_RECOVERY_FRAMES: u32 = SVGF_TAA_STREAMING_RECOVERY_FRAMES;
+
 impl App {
     /// #1586 / F7 — cap the steady-state spawn budget. Each applied
     /// payload runs the full main-thread spawn (terrain mesh + batched
@@ -229,6 +234,78 @@ impl App {
             return;
         };
         crate::debug_load::execute_pending_debug_loads(&mut self.world, ctx, &mut self.streaming);
+    }
+
+    /// Drive the active camera along the `--bench-camera` path.
+    ///
+    /// Runs before the scheduler so the pose the systems observe — and the
+    /// one `build_render_data` turns into this frame's view matrix — is the
+    /// pose for this frame index. Indexing on `bench_frames_count` rather
+    /// than elapsed time is what makes a capture at frame N comparable across
+    /// upscaler presets running at different frame rates.
+    ///
+    /// A path that teleports also signals the camera cut explicitly. The
+    /// renderer's automatic detection would catch this one (the jump is far
+    /// past its distance threshold), but relying on that would make the
+    /// harness measure the detector rather than the recovery it is supposed
+    /// to be testing.
+    pub(crate) fn step_bench_camera(&mut self) {
+        let (Some(path), Some(total_frames)) = (self.bench_camera, self.bench_frames_target) else {
+            return;
+        };
+        let Some(active) = self
+            .world
+            .try_resource::<byroredux_core::ecs::ActiveCamera>()
+            .map(|active| active.0)
+        else {
+            return;
+        };
+
+        // Capture the authored pose on the first bench frame so the path
+        // composes with whatever the scene or `--camera-pos` set up.
+        let origin = match self.bench_camera_origin {
+            Some(origin) => origin,
+            None => {
+                let Some(transform) = self
+                    .world
+                    .query::<byroredux_core::ecs::Transform>()
+                    .and_then(|q| q.get(active).map(|t| *t))
+                else {
+                    return;
+                };
+                let origin = crate::bench_camera::CameraPose {
+                    position: transform.translation,
+                    forward: transform.rotation * -byroredux_core::math::Vec3::Z,
+                };
+                self.bench_camera_origin = Some(origin);
+                log::info!(
+                    "bench camera '{path}' over {total_frames} frames from ({:.2}, {:.2}, {:.2})",
+                    origin.position.x,
+                    origin.position.y,
+                    origin.position.z,
+                );
+                origin
+            }
+        };
+
+        let frame = self.bench_frames_count;
+        let pose = path.pose(frame, total_frames, origin.position, origin.forward);
+        let rotation = byroredux_core::math::Quat::from_rotation_arc(
+            -byroredux_core::math::Vec3::Z,
+            pose.forward,
+        );
+        if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>() {
+            if let Some(transform) = transforms.get_mut(active) {
+                transform.translation = pose.position;
+                transform.rotation = rotation;
+            }
+        }
+
+        if path.is_cut_frame(frame, total_frames) {
+            if let Some(ctx) = self.renderer.as_mut() {
+                ctx.signal_temporal_discontinuity(BENCH_CUT_RECOVERY_FRAMES);
+            }
+        }
     }
 
     /// Apply a queued runtime upscaler switch (`r.upscaler`, or the settings
