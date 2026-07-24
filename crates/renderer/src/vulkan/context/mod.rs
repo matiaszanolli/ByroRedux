@@ -2907,6 +2907,25 @@ impl VulkanContext {
     /// Reuses the caller's `Vec` to avoid a per-frame allocation in
     /// the telemetry path itself. Capacity stabilises at the number of
     /// declared scratches after the first frame.
+    /// Refresh the world-visible upscaler telemetry. Only rewrites the
+    /// string when the described state actually changed (context creation,
+    /// resize, preset switch, or a latched dispatch failure), so the steady
+    /// state costs one string compare per frame rather than an allocation.
+    pub fn fill_upscaler_telemetry(&self, telemetry: &mut byroredux_core::ecs::UpscalerTelemetry) {
+        telemetry.gpu_ms = self
+            .gpu_timers
+            .as_ref()
+            .map_or(0.0, |timers| timers.last_snapshot().upscale_ms);
+        let Some(ref upscaler) = self.frame_upscaler else {
+            telemetry.summary.clear();
+            return;
+        };
+        let summary = upscaler.telemetry();
+        if telemetry.summary != summary {
+            telemetry.summary = summary;
+        }
+    }
+
     pub fn fill_scratch_telemetry(&self, rows: &mut Vec<byroredux_core::ecs::ScratchRow>) {
         use byroredux_core::ecs::ScratchRow;
         use std::mem::size_of;

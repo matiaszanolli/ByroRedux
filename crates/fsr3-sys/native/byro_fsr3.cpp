@@ -257,6 +257,27 @@ extern "C" uint32_t byro_fsr3_context_dispatch(
     return ffxDispatch(&context->context, &dispatch.header);
 }
 
+extern "C" uint32_t byro_fsr3_context_memory_usage(
+    ByroFsr3Context* context,
+    ByroFsr3MemoryUsage* out_usage) {
+    if (!context || !context->context || !out_usage) {
+        return FFX_API_RETURN_ERROR_PARAMETER;
+    }
+
+    FfxApiEffectMemoryUsage usage{};
+    ffxQueryDescUpscaleGetGPUMemoryUsage query{};
+    query.header.type = FFX_API_QUERY_DESC_TYPE_UPSCALE_GPU_MEMORY_USAGE;
+    query.gpuMemoryUsageUpscaler = &usage;
+    const uint32_t result = ffxQuery(&context->context, &query.header);
+    if (result != FFX_API_RETURN_OK) {
+        return result;
+    }
+
+    out_usage->total_bytes = usage.totalUsageInBytes;
+    out_usage->aliasable_bytes = usage.aliasableUsageInBytes;
+    return FFX_API_RETURN_OK;
+}
+
 extern "C" uint32_t byro_fsr3_context_destroy(ByroFsr3Context** context) {
     if (!context || !*context) {
         return FFX_API_RETURN_ERROR_PARAMETER;

@@ -1165,6 +1165,16 @@ impl ApplicationHandler for App {
             ctx.fill_skin_coverage_stats(&mut cov);
         }
 
+        // Refresh the upscaler line `ctx.upscaler` prints — the FSR provider
+        // version and the SDK's own GPU reservation, which live outside
+        // `gpu-allocator` and so never appear in `ctx.memory`.
+        if let Some(ref ctx) = self.renderer {
+            let mut telemetry = self
+                .world
+                .resource_mut::<byroredux_core::ecs::UpscalerTelemetry>();
+            ctx.fill_upscaler_telemetry(&mut telemetry);
+        }
+
         // End of pre-scheduler phase (Phase 10 bracket).
         let atw_pre_ns = atw_pre_t0.elapsed().as_nanos() as u64;
 

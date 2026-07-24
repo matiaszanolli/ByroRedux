@@ -41,6 +41,7 @@ pub use resource::{Resource, ResourceRead, ResourceWrite};
 pub use resources::{
     CpuFrameTimings, DebugStats, DeltaTime, EngineConfig, SchedulerAccessReport, ScratchRow,
     ScratchTelemetry, ScreenshotBridge, SelectedRef, SkinCoverageStats, SystemList, TotalTime,
+    UpscalerTelemetry,
 };
 pub use scheduler::{
     AccessReport, Scheduler, SchedulerSystemTimings, Stage, StageConflictRow, StageReport,

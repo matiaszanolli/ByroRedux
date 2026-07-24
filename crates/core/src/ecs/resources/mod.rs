@@ -453,6 +453,24 @@ pub struct ScratchTelemetry {
 
 impl Resource for ScratchTelemetry {}
 
+/// One-line description of the active render-to-output reconstruction path,
+/// refreshed by the renderer each frame and printed by `ctx.upscaler`.
+///
+/// Carries the FSR provider version and the SDK's own GPU memory reservation,
+/// neither of which appears in `gpu-allocator`'s accounting because the
+/// official backend allocates them itself. Empty until the renderer's first
+/// frame.
+#[derive(Debug, Default)]
+pub struct UpscalerTelemetry {
+    pub summary: String,
+    /// Milliseconds the upscale bracket measured on the last snapshot frame.
+    /// Mirrors `SkinCoverageStats::gpu_upscale_ms`, repeated here so the
+    /// upscaler command is a single stop.
+    pub gpu_ms: f32,
+}
+
+impl Resource for UpscalerTelemetry {}
+
 impl ScratchTelemetry {
     pub fn total_bytes(&self) -> usize {
         self.rows.iter().map(ScratchRow::bytes_used).sum()

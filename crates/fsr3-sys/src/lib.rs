@@ -37,6 +37,13 @@ struct RawCreateDesc {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
+struct RawMemoryUsage {
+    total_bytes: u64,
+    aliasable_bytes: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
 struct RawImage {
     vk_image: u64,
     vk_format: u32,
@@ -100,6 +107,10 @@ extern "C" {
         desc: *const RawCreateDesc,
     ) -> u32;
     fn byro_fsr3_context_dispatch(context: *mut RawContext, desc: *const RawDispatchDesc) -> u32;
+    fn byro_fsr3_context_memory_usage(
+        context: *mut RawContext,
+        out_usage: *mut RawMemoryUsage,
+    ) -> u32;
     fn byro_fsr3_context_destroy(context: *mut *mut RawContext) -> u32;
     fn byro_fsr3_error_string(error_code: u32) -> *const c_char;
 }
@@ -278,6 +289,16 @@ pub struct DispatchDescription {
     pub sharpness: f32,
 }
 
+/// GPU memory the SDK reserved for one upscaler context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MemoryUsage {
+    /// Every byte the provider reserved for this context.
+    pub total_bytes: u64,
+    /// The subset an application could alias with other transient
+    /// resources. Reported for completeness; ByroRedux does not alias.
+    pub aliasable_bytes: u64,
+}
+
 /// Owns an FSR 3.1 upscaler context and its SDK-managed Vulkan resources.
 ///
 /// The Vulkan device, physical device, and loader function passed to
@@ -357,6 +378,18 @@ impl Context {
         // SAFETY: upheld by this method's contract. The native layer copies the
         // POD descriptor and records into (but never submits) the command buffer.
         unsafe { check(byro_fsr3_context_dispatch(self.raw.as_ptr(), &raw)) }
+    }
+
+    /// GPU memory the provider reserved for this context.
+    pub fn memory_usage(&self) -> Result<MemoryUsage, Error> {
+        let mut raw = RawMemoryUsage::default();
+        // SAFETY: `self.raw` is the live context this value owns and `raw` is
+        // valid writable storage for the duration of the call.
+        unsafe { check(byro_fsr3_context_memory_usage(self.raw.as_ptr(), &mut raw))? };
+        Ok(MemoryUsage {
+            total_bytes: raw.total_bytes,
+            aliasable_bytes: raw.aliasable_bytes,
+        })
     }
 }
 

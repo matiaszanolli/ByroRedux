@@ -214,6 +214,37 @@ impl ConsoleCommand for CtxScratchCommand {
         CommandOutput::lines(lines)
     }
 }
+/// `ctx.upscaler` — print the active render-to-output reconstruction path.
+///
+/// Names the selected mode, the render/output extents, and, when FSR is
+/// dispatching, the provider version plus the GPU memory the SDK reserved for
+/// its own resources. That reservation is made by the official Vulkan backend,
+/// not by `gpu-allocator`, so `ctx.memory` and `mem.frag` cannot see it — this
+/// is the only place the total is observable. A latched dispatch failure
+/// (which silently degrades the frame graph to the native blit) reports here
+/// too.
+pub(crate) struct CtxUpscalerCommand;
+impl ConsoleCommand for CtxUpscalerCommand {
+    fn name(&self) -> &str {
+        "ctx.upscaler"
+    }
+    fn description(&self) -> &str {
+        "Show the active upscaler, its extents, SDK version and working memory"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(telemetry) = world.try_resource::<byroredux_core::ecs::UpscalerTelemetry>() else {
+            return CommandOutput::line("UpscalerTelemetry resource not present");
+        };
+        if telemetry.summary.is_empty() {
+            return CommandOutput::line("Upscaler not initialized yet (no frame drawn)");
+        }
+        CommandOutput::lines(vec![
+            format!("  {}", telemetry.summary),
+            format!("  gpu_upscale_ms = {:.3}", telemetry.gpu_ms),
+        ])
+    }
+}
+
 /// `sys.accesses` — print the scheduler's declared-access report.
 ///
 /// For each stage, lists every system + its declared (or undeclared)

@@ -55,6 +55,11 @@ pub struct FrameUpscaler {
     /// dispatched again for this swapchain generation; the native blit takes
     /// over so the frame graph keeps producing frames.
     dispatch_failure: Option<String>,
+    /// Cached one-line telemetry for this swapchain generation. Built once
+    /// after context creation because the SDK's memory reservation is fixed
+    /// for the life of a context — re-querying it per frame would be an FFI
+    /// round-trip for a value that cannot change.
+    summary: String,
 }
 
 impl FrameUpscaler {
@@ -78,6 +83,7 @@ impl FrameUpscaler {
             extents,
             dispatched_this_frame: false,
             dispatch_failure: None,
+            summary: String::new(),
         };
 
         if let Err(error) = upscaler.create_outputs(device, allocator) {
@@ -110,19 +116,9 @@ impl FrameUpscaler {
                 })
             };
             match create {
-                Ok(context) => {
-                    log::info!(
-                        "FSR {} dispatch context active ({}x{} -> {}x{})",
-                        fsr3::version()
-                            .map(|version| version.to_string())
-                            .unwrap_or_else(|_| "unknown".to_owned()),
-                        extents.render.width,
-                        extents.render.height,
-                        extents.output.width,
-                        extents.output.height,
-                    );
-                    upscaler.context = Some(context);
-                }
+                // Version, extents, and SDK memory are reported once by the
+                // `build_summary` line below, which covers both paths.
+                Ok(context) => upscaler.context = Some(context),
                 Err(error) => {
                     // Keep the frame graph alive through the Phase-4 native
                     // bridge. This is intentionally loud: the selected FSR
@@ -133,6 +129,9 @@ impl FrameUpscaler {
                 }
             }
         }
+
+        upscaler.summary = upscaler.build_summary();
+        log::info!("Frame upscaler: {}", upscaler.summary);
 
         Ok(upscaler)
     }
@@ -264,6 +263,50 @@ impl FrameUpscaler {
     /// The SDK error that permanently disabled dispatch, if one occurred.
     pub fn dispatch_failure(&self) -> Option<&str> {
         self.dispatch_failure.as_deref()
+    }
+
+    /// One-line description of the active reconstruction path: the selected
+    /// mode, the render/output extents, and — in FSR mode — the provider
+    /// version plus the GPU memory the SDK reserved for its own resources.
+    ///
+    /// That SDK memory is allocated by the official backend, not by
+    /// `gpu-allocator`, so it is invisible to `ctx.memory` unless reported
+    /// here. The string is built once per swapchain generation (the
+    /// reservation is fixed for a context) and re-derived on failure so the
+    /// degraded state is visible without another SDK round-trip.
+    pub fn telemetry(&self) -> String {
+        if let Some(error) = self.dispatch_failure() {
+            return format!(
+                "{} — DISPATCH FAILED ({error}), on native blit",
+                self.summary
+            );
+        }
+        self.summary.clone()
+    }
+
+    fn build_summary(&self) -> String {
+        let extents = format!(
+            "{}x{} -> {}x{}",
+            self.extents.render.width,
+            self.extents.render.height,
+            self.extents.output.width,
+            self.extents.output.height,
+        );
+        let Some(ref context) = self.context else {
+            return format!("{} · native HDR blit · {extents}", self.mode);
+        };
+        let version = fsr3::version()
+            .map(|version| version.to_string())
+            .unwrap_or_else(|_| "unknown".to_owned());
+        let memory = match context.memory_usage() {
+            Ok(usage) => format!(
+                "{:.1} MB SDK working memory ({:.1} MB aliasable)",
+                usage.total_bytes as f64 / 1.0e6,
+                usage.aliasable_bytes as f64 / 1.0e6,
+            ),
+            Err(error) => format!("working memory unavailable ({error})"),
+        };
+        format!("{} · FSR {version} · {extents} · {memory}", self.mode)
     }
 
     /// Record either the real FSR dispatch or the native blit bridge.

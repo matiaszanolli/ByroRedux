@@ -28,6 +28,11 @@ typedef struct ByroFsr3CreateDesc {
     bool debug_checking;
 } ByroFsr3CreateDesc;
 
+typedef struct ByroFsr3MemoryUsage {
+    uint64_t total_bytes;
+    uint64_t aliasable_bytes;
+} ByroFsr3MemoryUsage;
+
 typedef struct ByroFsr3Image {
     uint64_t vk_image;
     uint32_t vk_format;
@@ -86,6 +91,9 @@ uint32_t byro_fsr3_context_create(
 uint32_t byro_fsr3_context_dispatch(
     ByroFsr3Context* context,
     const ByroFsr3DispatchDesc* desc);
+uint32_t byro_fsr3_context_memory_usage(
+    ByroFsr3Context* context,
+    ByroFsr3MemoryUsage* out_usage);
 uint32_t byro_fsr3_context_destroy(ByroFsr3Context** context);
 const char* byro_fsr3_error_string(uint32_t error_code);
 
