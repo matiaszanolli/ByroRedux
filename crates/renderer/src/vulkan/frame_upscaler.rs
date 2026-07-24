@@ -50,6 +50,11 @@ pub struct FrameUpscaler {
     output_allocations: Vec<Option<vk_alloc::Allocation>>,
     extents: FrameExtentSet,
     dispatched_this_frame: bool,
+    /// Set when a recorded dispatch returned an SDK error. The context is kept
+    /// alive (in-flight frames may still reference its resources) but is never
+    /// dispatched again for this swapchain generation; the native blit takes
+    /// over so the frame graph keeps producing frames.
+    dispatch_failure: Option<String>,
 }
 
 impl FrameUpscaler {
@@ -72,6 +77,7 @@ impl FrameUpscaler {
             output_allocations: Vec::new(),
             extents,
             dispatched_this_frame: false,
+            dispatch_failure: None,
         };
 
         if let Err(error) = upscaler.create_outputs(device, allocator) {
@@ -252,7 +258,12 @@ impl FrameUpscaler {
     }
 
     pub fn is_fsr_dispatch_active(&self) -> bool {
-        self.context.is_some()
+        self.context.is_some() && self.dispatch_failure.is_none()
+    }
+
+    /// The SDK error that permanently disabled dispatch, if one occurred.
+    pub fn dispatch_failure(&self) -> Option<&str> {
+        self.dispatch_failure.as_deref()
     }
 
     /// Record either the real FSR dispatch or the native blit bridge.
@@ -271,8 +282,16 @@ impl FrameUpscaler {
         fsr_frame: Option<FsrFrameParameters>,
     ) -> Result<()> {
         self.dispatched_this_frame = false;
-        if self.context.is_none() {
-            unsafe { self.record_native_blit(device, cmd, frame, inputs.scene_color) };
+        if !self.is_fsr_dispatch_active() {
+            unsafe {
+                self.record_native_blit(
+                    device,
+                    cmd,
+                    frame,
+                    inputs.scene_color,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                )
+            };
             return Ok(());
         }
 
@@ -287,83 +306,113 @@ impl FrameUpscaler {
             .context
             .as_mut()
             .expect("context presence checked above");
-        unsafe {
+        let dispatch = unsafe {
             // SAFETY: boundary barriers above establish the layouts and access
             // states described to the SDK; all handles belong to this device
             // and the renderer keeps them alive through queue completion.
-            context
-                .dispatch(fsr3::DispatchDescription {
-                    command_buffer: cmd.as_raw() as usize,
-                    color: vulkan_image(
-                        inputs.scene_color,
-                        HDR_FORMAT,
-                        vk::ImageUsageFlags::COLOR_ATTACHMENT
-                            | vk::ImageUsageFlags::SAMPLED
-                            | vk::ImageUsageFlags::TRANSFER_SRC,
-                        render_size,
-                    ),
-                    depth: vulkan_image(
-                        inputs.depth,
-                        inputs.depth_format,
-                        vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
-                            | vk::ImageUsageFlags::SAMPLED
-                            | vk::ImageUsageFlags::TRANSFER_SRC,
-                        render_size,
-                    ),
-                    motion_vectors: vulkan_image(
-                        inputs.motion_vectors,
-                        MOTION_FORMAT,
-                        vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-                        render_size,
-                    ),
-                    exposure: inputs.exposure.map(|image| {
-                        vulkan_image(
-                            image,
-                            EXPOSURE_FORMAT,
-                            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
-                            [1, 1],
-                        )
-                    }),
-                    reactive: None,
-                    transparency_and_composition: None,
-                    output: vulkan_image(
-                        output,
-                        HDR_FORMAT,
-                        vk::ImageUsageFlags::STORAGE
-                            | vk::ImageUsageFlags::SAMPLED
-                            | vk::ImageUsageFlags::TRANSFER_DST,
-                        output_size,
-                    ),
-                    jitter_offset: frame_params.jitter_offset,
-                    motion_vector_scale: fsr_motion_vector_scale(self.extents.render),
+            context.dispatch(fsr3::DispatchDescription {
+                command_buffer: cmd.as_raw() as usize,
+                color: vulkan_image(
+                    inputs.scene_color,
+                    HDR_FORMAT,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_SRC,
                     render_size,
-                    upscale_size: output_size,
-                    frame_time_delta_ms: frame_params.frame_time_delta_ms.max(0.001),
-                    pre_exposure: 1.0,
-                    reset: frame_params.reset,
-                    camera_near: frame_params.camera_near,
-                    camera_far: frame_params.camera_far,
-                    camera_fov_angle_vertical: frame_params.camera_fov_angle_vertical,
-                    view_space_to_meters_factor: 1.0,
-                    enable_sharpening: false,
-                    sharpness: 0.0,
-                })
-                .context("record FSR upscale dispatch")?;
+                ),
+                depth: vulkan_image(
+                    inputs.depth,
+                    inputs.depth_format,
+                    vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_SRC,
+                    render_size,
+                ),
+                motion_vectors: vulkan_image(
+                    inputs.motion_vectors,
+                    MOTION_FORMAT,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                    render_size,
+                ),
+                exposure: inputs.exposure.map(|image| {
+                    vulkan_image(
+                        image,
+                        EXPOSURE_FORMAT,
+                        vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+                        [1, 1],
+                    )
+                }),
+                reactive: None,
+                transparency_and_composition: None,
+                output: vulkan_image(
+                    output,
+                    HDR_FORMAT,
+                    vk::ImageUsageFlags::STORAGE
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_DST,
+                    output_size,
+                ),
+                jitter_offset: frame_params.jitter_offset,
+                motion_vector_scale: fsr_motion_vector_scale(self.extents.render),
+                render_size,
+                upscale_size: output_size,
+                frame_time_delta_ms: frame_params.frame_time_delta_ms.max(0.001),
+                pre_exposure: 1.0,
+                reset: frame_params.reset,
+                camera_near: frame_params.camera_near,
+                camera_far: frame_params.camera_far,
+                camera_fov_angle_vertical: frame_params.camera_fov_angle_vertical,
+                view_space_to_meters_factor: 1.0,
+                enable_sharpening: false,
+                sharpness: 0.0,
+            })
+        };
+
+        if let Err(error) = dispatch {
+            // A dispatch that the SDK rejected must not take the frame down
+            // with it: the boundary barriers above already moved depth and
+            // the output image out of their steady-state layouts, so the
+            // recovery path restores them and blits the render-resolution
+            // scene instead. Latching here (rather than dropping the context)
+            // keeps SDK-owned resources alive for frames still in flight.
+            log::error!(
+                "FSR upscale dispatch failed: {error}; \
+                 falling back to the native HDR blit for this swapchain generation"
+            );
+            self.dispatch_failure = Some(error.to_string());
+            unsafe {
+                self.record_fsr_depth_restore(device, cmd, inputs.depth);
+                self.record_native_blit(
+                    device,
+                    cmd,
+                    frame,
+                    inputs.scene_color,
+                    vk::ImageLayout::GENERAL,
+                );
+            }
+            return Ok(());
         }
+
         unsafe { self.record_fsr_barriers_after(device, cmd, frame, inputs.depth) };
         self.dispatched_this_frame = true;
         Ok(())
     }
 
+    /// `output_layout` is the layout this frame slot's output image is
+    /// currently in: `SHADER_READ_ONLY_OPTIMAL` on the steady-state bridge
+    /// path, or `GENERAL` when the FSR boundary barriers already ran and the
+    /// dispatch then failed.
     unsafe fn record_native_blit(
         &self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
         scene_color: vk::Image,
+        output_layout: vk::ImageLayout,
     ) {
         let range = color_subresource_single_mip();
         let output = self.output_images[frame];
+        let output_src_access = blit_output_src_access(output_layout);
         let before = [
             vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
@@ -373,9 +422,9 @@ impl FrameUpscaler {
                 .image(scene_color)
                 .subresource_range(range),
             vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_READ)
+                .src_access_mask(output_src_access)
                 .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .old_layout(output_layout)
                 .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
                 .image(output)
                 .subresource_range(range),
@@ -383,11 +432,12 @@ impl FrameUpscaler {
         unsafe {
             // SAFETY: caller guarantees `cmd` is recording outside a render
             // pass; scene composition left `scene_color` shader-readable and
-            // the prior presentation left this frame-slot output readable.
+            // the output is in the layout the caller declared.
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                    | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    | vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::DependencyFlags::empty(),
                 &[],
@@ -524,6 +574,41 @@ impl FrameUpscaler {
         }
     }
 
+    /// Put depth back into the layout every other pass expects after the FSR
+    /// boundary barriers ran but the dispatch itself was rejected.
+    unsafe fn record_fsr_depth_restore(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        depth_image: vk::Image,
+    ) {
+        let barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_READ)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .new_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL)
+            .image(depth_image)
+            .subresource_range(
+                vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::DEPTH)
+                    .level_count(1)
+                    .layer_count(1),
+            );
+        unsafe {
+            // SAFETY: `record_fsr_barriers_before` moved this exact
+            // subresource to SHADER_READ_ONLY_OPTIMAL earlier in `cmd`.
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier],
+            );
+        }
+    }
+
     unsafe fn record_fsr_barriers_after(
         &self,
         device: &ash::Device,
@@ -621,6 +706,19 @@ impl FrameUpscaler {
                 .ok();
         }
         self.dispatched_this_frame = false;
+        self.dispatch_failure = None;
+    }
+}
+
+/// Source access mask for the blit's output-image acquire barrier.
+///
+/// `GENERAL` only ever reaches the blit through the dispatch-failure recovery
+/// path, where the last declared access was the SDK's storage write.
+fn blit_output_src_access(output_layout: vk::ImageLayout) -> vk::AccessFlags {
+    if output_layout == vk::ImageLayout::GENERAL {
+        vk::AccessFlags::SHADER_WRITE
+    } else {
+        vk::AccessFlags::SHADER_READ
     }
 }
 
@@ -651,5 +749,17 @@ mod tests {
         assert!(usage.contains(vk::ImageUsageFlags::SAMPLED));
         assert!(usage.contains(vk::ImageUsageFlags::TRANSFER_DST));
         assert_eq!(HDR_FORMAT, vk::Format::R16G16B16A16_SFLOAT);
+    }
+
+    #[test]
+    fn recovery_blit_acquires_the_output_from_the_layout_the_dispatch_left() {
+        assert_eq!(
+            blit_output_src_access(vk::ImageLayout::GENERAL),
+            vk::AccessFlags::SHADER_WRITE
+        );
+        assert_eq!(
+            blit_output_src_access(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+            vk::AccessFlags::SHADER_READ
+        );
     }
 }
