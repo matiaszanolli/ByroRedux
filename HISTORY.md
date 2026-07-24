@@ -24,6 +24,26 @@ Commits hold that record.
 
 ---
 
+## Session 60 — FSR 3.1 upscaler (phases 1→4/5), exterior terrain collision, RT correctness  (2026-07-21 → 2026-07-23, `c8dbba93..33d6a18e`, 18 commits)
+
+Two drivers. The larger was standing up AMD FidelityFX Super Resolution
+3.1 in upscaler-only mode behind a narrow FFI boundary, executed against
+an approved written plan; the smaller was a run of correctness fixes
+surfaced by actually driving real content on-device (an FO4 interior and
+a small FO3 exterior) once a stale NVIDIA driver was rebooted and the RTX
+4070 Ti reappeared to Vulkan.
+
+- **FSR 3.1 integration** — approved plan doc ([`docs/engine/fsr3-upscaler-integration-plan.md`](docs/engine/fsr3-upscaler-integration-plan.md)); vendored, pinned Vulkan upscaler SDK as new workspace member `crates/fsr3-sys` (`c4b070a7`) behind an upscaler-only FFI boundary (`34e26ca8`, no frame-generation symbols). Execution phases 1–3 complete: typed `--upscaler`/`--fsr-quality` config + `FrameExtentSet` render-vs-output extent model (`5de7371e`/`0886d4ab`), FSR-preset mip-biased bindless samplers (`26041f3a`), and the temporal input contracts — deterministic jitter/reset state, previous rigid-instance motion history (`33d9a468`), motion adapter, the shared `signal_temporal_discontinuity` reset dispatcher, and the 1×1 exposure producer wired end-to-end into the composite tonemap (`012dc187`). Phase 4/5 began landing: output-resolution presentation pass + `frame_upscaler`/`presentation` modules (`33d6a18e`) and a directional-light/shadow-contract refactor (`8961fbdd`). TAA remains the functional default; no user-visible FSR upscale yet.
+- **Universal settings registry** — settings registry + UI integration (`d4cc88ac`) underpinning the runtime upscaler selection.
+- **GPU selection** — discrete-GPU preference key (`b36c5043`): among suitable devices a discrete GPU always outranks integrated/CPU. Fixes the exterior startup crash where the engine picked the AMD iGPU, the GNOME compositor couldn't import its dmabuf (`SURFACE_LOST_KHR`), and the run died — a symptom that only appeared once the RTX's Vulkan ICD came back after a driver-mismatch reboot.
+- **RT correctness** — skinned BLAS no longer built over non-RT-capable meshes (`16c0b625`): `GpuMesh` records the `rt_enabled` it was uploaded with, and the skinned refit path skips meshes without it, matching the static path. Closes a real `VkBufferDeviceAddressInfo`/`vkCmdBuildAccelerationStructuresKHR` spec violation (30 validation errors → 0 on FO4 `RailroadHQ01`).
+- **Exterior terrain collision** — LAND tiles now go through the same collider synthesis as every other static mesh via a shared `spawn_trimesh_collider_ghost` helper (`bad8619a`), rather than a bespoke heightfield subsystem. Gamebryo's interior-bhk / exterior-heightfield split is an engine artifact, not a data property; unifying it fixed the player falling through the world at spawn (FO3 `megatonworld`: "NO floor found" → grounded at frame 0).
+- **Scripting/audit** — remaining scripting/quest audit findings closed (`6b986478`); issues #2126–#2130 filed (`1bf2a315`).
+
+Net: tests 3785 → 3826 (+41); non-test LOC ~285.4K → ~290.3K (+~4.9K); +1 workspace member (`crates/fsr3-sys`). No bench re-run — bench-of-record `8a668eff` now 74 commits stale (tracked by R6a-stale-16). New known issue: exterior surface shading produces Inf/NaN (white-out on FO3 exteriors), isolated by exposure bisection, not yet root-caused.
+
+---
+
 ## Session 59 — M47.2 quest aliases + object-targeting effects, renderer surface-ID/light-animation quality pass, audit bug-bash  (2026-07-20 → 2026-07-21, `dfcf74c1..c2336ee1`, 16 commits)
 
 Three threads running in parallel rather than one driver: continuing
