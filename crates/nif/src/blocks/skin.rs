@@ -103,8 +103,18 @@ impl NiSkinData {
             let _skin_partition_ref = stream.read_block_ref()?;
         }
 
-        // has_vertex_weights (version >= 4.2.1.0, always true for Bethesda games)
-        let has_vertex_weights = stream.read_u8()? != 0;
+        // `Has Vertex Weights` — nif.xml `since="4.2.1.0" default="true"`.
+        // Absent below that version, where the weights array is present
+        // unconditionally; reading the byte anyway over-read by one and
+        // misaligned the whole BoneData array (#2168). Always present for
+        // every currently supported title (Oblivion 20.0.0.x, FO3/FNV
+        // 20.2.0.7, Skyrim+ higher), so this gate is correctness hygiene
+        // for the Morrowind-era range rather than a live-content fix.
+        let has_vertex_weights = if stream.version().has_skin_data_vertex_weights_flag() {
+            stream.read_u8()? != 0
+        } else {
+            true
+        };
 
         let mut bones = stream.allocate_vec(num_bones)?;
         for _ in 0..num_bones {
@@ -847,5 +857,96 @@ mod tests {
         assert_eq!(inst.skeleton_root_ref.index(), Some(13));
         assert!(inst.bone_refs.is_empty());
         assert_eq!(stream.position() as usize, data.len());
+    }
+
+    // ── #2168 — NiSkinData pre-Bethesda version gates ───────────────
+
+    fn make_header(version: NifVersion) -> NifHeader {
+        NifHeader {
+            version,
+            little_endian: true,
+            user_version: 0,
+            user_version_2: 0,
+            num_blocks: 0,
+            block_types: Vec::new(),
+            block_type_indices: Vec::new(),
+            block_sizes: Vec::new(),
+            strings: Vec::new(),
+            max_string_length: 0,
+            num_groups: 0,
+        }
+    }
+
+    /// A zero-bone `NiSkinData` body: the 52-byte NiTransform struct,
+    /// `num_bones = 0`, then optionally the inline Skin Partition ref and
+    /// the Has Vertex Weights byte, per the version's layout.
+    fn skin_data_bytes(with_partition_ref: bool, with_weights_flag: bool) -> Vec<u8> {
+        let mut d = Vec::new();
+        // NiTransform STRUCT: 3x3 rotation + translation + scale = 13 f32.
+        for _ in 0..13 {
+            d.extend_from_slice(&0f32.to_le_bytes());
+        }
+        d.extend_from_slice(&0u32.to_le_bytes()); // num_bones = 0
+        if with_partition_ref {
+            d.extend_from_slice(&(-1i32).to_le_bytes());
+        }
+        if with_weights_flag {
+            d.push(1u8);
+        }
+        d
+    }
+
+    /// #2168 — at `V4_0_0_2` the inline Skin Partition ref IS present but
+    /// the Has Vertex Weights byte is NOT (`since="4.2.1.0"`).
+    ///
+    /// The exact-position assertion is the point: an over-read leaves the
+    /// stream past `data.len()` and every subsequent float in a real
+    /// (non-empty) BoneData array would be shifted. This era predates the
+    /// `block_sizes` table (`>= 20.2.0.5`), so nothing downstream would
+    /// resync it.
+    #[test]
+    fn skin_data_v4_0_0_2_has_partition_ref_but_no_weights_flag() {
+        let header = make_header(NifVersion::V4_0_0_2);
+        let bytes = skin_data_bytes(true, false);
+        let mut stream = NifStream::new(&bytes, &header);
+        let data = NiSkinData::parse(&mut stream).expect("parses");
+        assert!(data.bones.is_empty());
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "the Has Vertex Weights byte is absent below 4.2.1.0 — reading it \
+             anyway over-reads by one and misaligns the BoneData array (#2168)"
+        );
+    }
+
+    /// #2168 — at exactly `V4_0_0_0` (below `since="4.0.0.2"`) neither
+    /// optional field is on disk. Pre-fix the partition-ref predicate had
+    /// no lower bound, so this over-read 5 bytes.
+    #[test]
+    fn skin_data_v4_0_0_0_has_neither_optional_field() {
+        let header = make_header(NifVersion::V4_0_0_0);
+        let bytes = skin_data_bytes(false, false);
+        let mut stream = NifStream::new(&bytes, &header);
+        let data = NiSkinData::parse(&mut stream).expect("parses");
+        assert!(data.bones.is_empty());
+        assert_eq!(
+            stream.position() as usize,
+            bytes.len(),
+            "below since=4.0.0.2 the inline Skin Partition ref is absent too — \
+             pre-#2168 this over-read 4 + 1 bytes"
+        );
+    }
+
+    /// The supported-title layout is unchanged: no inline partition ref
+    /// (`until=10.1.0.0`), weights flag present. Guards against the fix
+    /// over-correcting into the range every real game actually uses.
+    #[test]
+    fn skin_data_modern_layout_is_unchanged() {
+        let header = make_header(NifVersion::V20_2_0_7);
+        let bytes = skin_data_bytes(false, true);
+        let mut stream = NifStream::new(&bytes, &header);
+        let data = NiSkinData::parse(&mut stream).expect("parses");
+        assert!(data.bones.is_empty());
+        assert_eq!(stream.position() as usize, bytes.len());
     }
 }

@@ -17,6 +17,14 @@ pub const TOTAL_CLUSTERS: u32 = CLUSTER_TILES_X * CLUSTER_TILES_Y * CLUSTER_SLIC
 /// Per-vertex size in bytes (derived from VERTEX_STRIDE_FLOATS).
 pub const VERTEX_STRIDE_BYTES: u64 = VERTEX_STRIDE_FLOATS as u64 * 4;
 
+/// Skinned-vertex output size in bytes (derived from
+/// `SKIN_OUTPUT_STRIDE_FLOATS`). This is both the `SkinSlot::output_buffer`
+/// allocation stride and the `vertexStride` handed to the skinned-BLAS
+/// build/refit — they are the same number by construction, which is the
+/// point of deriving it here rather than spelling `12` at three sites
+/// (#2170).
+pub const SKIN_OUTPUT_STRIDE_BYTES: u64 = SKIN_OUTPUT_STRIDE_FLOATS as u64 * 4;
+
 #[cfg(test)]
 mod tests {
     use super::*;

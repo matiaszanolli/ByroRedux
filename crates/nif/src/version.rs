@@ -218,11 +218,30 @@ impl NifVersion {
     }
 
     /// `NiSkinData.Skin Partition` is a `Ref` carried inline (between
-    /// `Num Bones` and `Has Vertex Weights`) `until="10.1.0.0"`; later
-    /// versions moved it to `NiSkinInstance`. Old-Oblivion creature skin
-    /// data still has it (#1337).
+    /// `Num Bones` and `Has Vertex Weights`) `since="4.0.0.2"
+    /// until="10.1.0.0"`; later versions moved it to `NiSkinInstance`.
+    /// Old-Oblivion creature skin data still has it (#1337).
+    ///
+    /// #2168 — the `since` bound was missing, so at exactly `V4_0_0_0`
+    /// this returned `true` and the parser read a 4-byte ref that isn't
+    /// on disk, misaligning the rest of the block.
     pub fn has_skin_data_partition_ref(self) -> bool {
-        self <= Self::V10_1_0_0
+        self >= Self::V4_0_0_2 && self <= Self::V10_1_0_0
+    }
+
+    /// `NiSkinData.Has Vertex Weights` is a `bool` `since="4.2.1.0"`
+    /// with `default="true"` — absent on older files, where the weights
+    /// array is present unconditionally.
+    ///
+    /// #2168 — this field was read unconditionally, unlike every other
+    /// version-gated field in the same parser. Below 4.2.1.0 that
+    /// over-read one byte and misaligned every subsequent float in the
+    /// `BoneData` array. Versions this old predate the `block_sizes`
+    /// table (`>= 20.2.0.5`), so there is no per-block recovery anchor —
+    /// the drift would cascade the way the #1301/#1310/#1337 v10.x
+    /// truncation family did.
+    pub fn has_skin_data_vertex_weights_flag(self) -> bool {
+        self >= Self::V4_2_1_0
     }
 
     /// `NiKeyframeController.Data` ref (a `NiKeyframeData`) is
@@ -623,6 +642,51 @@ mod tests {
         // (until=10.1.0.0, inclusive).
         let b = NifVersion::V10_1_0_0;
         assert!(b.has_mopp_offset() && b.has_skin_data_partition_ref());
+    }
+
+    /// #2168 — both `NiSkinData` layout gates carry their full nif.xml
+    /// range, not just one bound.
+    ///
+    /// `Skin Partition` is `since="4.0.0.2" until="10.1.0.0"`; the
+    /// `since` half was missing, so exactly `V4_0_0_0` claimed a 4-byte
+    /// ref that isn't on disk. `Has Vertex Weights` is `since="4.2.1.0"`
+    /// and had no gate at all.
+    #[test]
+    fn skin_data_layout_gates_carry_both_nif_xml_bounds() {
+        // Skin Partition ref — closed range [4.0.0.2, 10.1.0.0].
+        assert!(
+            !NifVersion::V4_0_0_0.has_skin_data_partition_ref(),
+            "below since=4.0.0.2 the inline ref is absent — reading it \
+             over-reads 4 bytes and misaligns the BoneData array (#2168)"
+        );
+        assert!(
+            NifVersion::V4_0_0_2.has_skin_data_partition_ref(),
+            "since bound is inclusive"
+        );
+        assert!(
+            NifVersion::V10_1_0_0.has_skin_data_partition_ref(),
+            "until bound is inclusive"
+        );
+        assert!(!NifVersion::V20_0_0_5.has_skin_data_partition_ref());
+
+        // Has Vertex Weights — since=4.2.1.0, open-ended above.
+        assert!(
+            !NifVersion::V4_0_0_2.has_skin_data_vertex_weights_flag(),
+            "below since=4.2.1.0 the byte is absent (default=true) — reading \
+             it over-reads one byte (#2168)"
+        );
+        assert!(
+            NifVersion::V4_2_1_0.has_skin_data_vertex_weights_flag(),
+            "since bound is inclusive"
+        );
+
+        // Every currently supported title sits far above both bounds, which
+        // is why this had zero live blast radius: Oblivion 20.0.0.5,
+        // FO3/FNV 20.2.0.7, Skyrim+ higher.
+        for v in [NifVersion::V20_0_0_5, NifVersion::V20_2_0_7] {
+            assert!(v.has_skin_data_vertex_weights_flag());
+            assert!(!v.has_skin_data_partition_ref());
+        }
     }
 
     /// #1506 — the two narrow 10.1.0.x sub-band predicates that gate the

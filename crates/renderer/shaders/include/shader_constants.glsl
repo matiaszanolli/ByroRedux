@@ -18,6 +18,8 @@
 
 // Vertex layout (global SSBO)
 #define VERTEX_STRIDE_FLOATS 26u
+// Skinned-vertex output stride — position only (#2170).
+#define SKIN_OUTPUT_STRIDE_FLOATS 3u
 #define VERTEX_NORMAL_OFFSET_FLOATS 7u
 #define VERTEX_UV_OFFSET_FLOATS 10u
 

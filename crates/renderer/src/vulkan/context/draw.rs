@@ -1360,6 +1360,17 @@ impl VulkanContext {
         // "previous" for motion vectors — together with the origin it was
         // built against, so next frame's upload can origin-correct it
         // (#1489 / REN2-04).
+        // #2171 — capture the origin delta BEFORE `prev_render_origin` is
+        // overwritten on the next line. The trace below used to subtract
+        // the field after the assignment, so it printed exactly zero every
+        // frame — actively arguing "no origin crossing happened" on
+        // precisely the frames the ghosting investigation was looking at.
+        let origin_delta = [
+            render_origin.x - self.prev_render_origin[0],
+            render_origin.y - self.prev_render_origin[1],
+            render_origin.z - self.prev_render_origin[2],
+        ];
+
         self.prev_view_proj = *vp;
         self.prev_camera_position = camera_pos;
         self.prev_render_origin = [render_origin.x, render_origin.y, render_origin.z];
@@ -1379,9 +1390,9 @@ impl VulkanContext {
             self.frame_counter,
             camera_static,
             self.svgf_recovery_frames,
-            render_origin.x - self.prev_render_origin[0],
-            render_origin.y - self.prev_render_origin[1],
-            render_origin.z - self.prev_render_origin[2],
+            origin_delta[0],
+            origin_delta[1],
+            origin_delta[2],
             vp_max_abs_delta,
         );
 

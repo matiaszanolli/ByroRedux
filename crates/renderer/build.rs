@@ -72,6 +72,16 @@ fn main() {
     writeln!(out, "#define VERTEX_STRIDE_FLOATS {VERTEX_STRIDE_FLOATS}u").unwrap();
     writeln!(
         out,
+        "// Skinned-vertex output stride — position only (#2170)."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define SKIN_OUTPUT_STRIDE_FLOATS {SKIN_OUTPUT_STRIDE_FLOATS}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define VERTEX_NORMAL_OFFSET_FLOATS {VERTEX_NORMAL_OFFSET_FLOATS}u"
     )
     .unwrap();

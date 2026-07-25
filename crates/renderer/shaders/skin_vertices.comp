@@ -32,10 +32,20 @@
 //   21     splat_weights_1 (4×u8 packed)
 //   22..25 tangent (xyz + bitangent sign) — #783 / M-NORMALS
 //
-// Skinning math mirrors `triangle.vert:151-162`. Pass-through fields
-// (color, UV, splats, bone weights/indices) copy verbatim so the
-// output buffer is a complete drop-in replacement when Phase 3 wires
-// raster to read from it.
+// Skinning math mirrors `triangle.vert:151-162`.
+//
+// #2170 — the output is POSITION ONLY (SKIN_OUTPUT_STRIDE_FLOATS = 3).
+// It used to mirror the full 26-float input layout so a deferred
+// "Phase 3" (raster reading pre-skinned vertices as a VBO) could swap in
+// without a layout change. Phase 3 never landed, and `create_slot`
+// omits the VERTEX_BUFFER usage it would need anyway (#681/MEM-2-6), so
+// the only consumer is the skinned-BLAS build/refit — which reads this
+// as R32G32B32_SFLOAT and touched 12 of every 104 bytes. RT hit shading
+// samples the bind-pose global vertex SSBO, not this buffer, so the
+// skinned normal/tangent had no reader either.
+//
+// Reviving Phase 3 means restoring the full layout AND adding the
+// VERTEX_BUFFER usage bit — one commit, not a silent dependency here.
 
 layout(local_size_x = SKIN_WORKGROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 
@@ -55,9 +65,9 @@ layout(std430, set = 0, binding = 1) readonly buffer BoneBuffer {
     mat4 bones[];
 };
 
-// Per-mesh skinned-vertex output buffer (size = vertex_count × 26 ×
-// 4 B post-#783). Phase 2 refits a BLAS against this buffer; Phase 3
-// may bind it as the raster vertex source.
+// Per-mesh skinned-vertex output buffer (size = vertex_count ×
+// SKIN_OUTPUT_STRIDE_FLOATS × 4 B = 12 B/vertex). The skinned-BLAS
+// build/refit is its only consumer (#2170).
 layout(std430, set = 0, binding = 2) writeonly buffer OutputVertices {
     float outputVertexData[];
 };
@@ -82,18 +92,17 @@ void main() {
     }
 
     uint src_base = (vertex_offset + vid) * VERTEX_STRIDE_FLOATS;
-    uint dst_base = vid * VERTEX_STRIDE_FLOATS;
+    uint dst_base = vid * SKIN_OUTPUT_STRIDE_FLOATS;
 
     vec3 pos = vec3(
         inputVertexData[src_base + 0u],
         inputVertexData[src_base + 1u],
         inputVertexData[src_base + 2u]
     );
-    vec3 normal = vec3(
-        inputVertexData[src_base + 7u],
-        inputVertexData[src_base + 8u],
-        inputVertexData[src_base + 9u]
-    );
+    // #2170 — the normal (lanes 7..10) and tangent (lanes 22..25) loads
+    // that used to sit here are gone with the skinned-normal/tangent
+    // writes they fed. Only position, bone indices and bone weights are
+    // read now.
 
     // Bone indices were uploaded as `[u32; 4]` in the Rust Vertex
     // struct; the SSBO sees 4 floats with the same bit pattern. Use
@@ -142,62 +151,19 @@ void main() {
     }
 
     vec3 skinnedPos = (xform * vec4(pos, 1.0)).xyz;
-    // Normal goes through the upper-3x3. Skinning bones are usually
-    // rigid (rotation + translation) so determinant ~ 1 and an
-    // inverse-transpose isn't required; the renderer's GpuInstance
-    // bit 0 already flags non-uniform scale for the rigid path and
-    // the bone palette never carries that — see triangle.vert:177.
-    vec3 skinnedNormal = mat3(xform) * normal;
 
-    // #783 / M-NORMALS — skin the tangent direction the same way as
-    // the normal. Bitangent sign (lane 25) passes through unchanged
-    // because rigid bone transforms don't flip handedness, and the
-    // shader-side `sign × cross(N, T)` reconstruction stays correct
-    // under the same transform applied to N and T.
-    vec3 tangentIn = vec3(
-        inputVertexData[src_base + 22u],
-        inputVertexData[src_base + 23u],
-        inputVertexData[src_base + 24u]
-    );
-    vec3 skinnedTangent = mat3(xform) * tangentIn;
-
-    // Write skinned position + normal; pass through every other
-    // field verbatim so the output buffer is layout-identical to the
-    // input. Phase 3 (vertex shader reads pre-skinned) needs every
-    // field present.
+    // Position only — see the header note on #2170.
+    //
+    // The skinned normal (`mat3(xform) * normal`) and skinned tangent
+    // (#783 / M-NORMALS) used to be computed and written here. Both are
+    // gone with the lanes that held them: nothing read them. RT hit
+    // shading samples the bind-pose global vertex SSBO, and the AS build
+    // — this buffer's only consumer — takes position alone. Dropping the
+    // reads also removes 6 input floats per vertex from the load side.
+    //
+    // Restoring them means restoring the output layout too; see the
+    // header note before assuming a lane is free.
     outputVertexData[dst_base + 0u] = skinnedPos.x;
     outputVertexData[dst_base + 1u] = skinnedPos.y;
     outputVertexData[dst_base + 2u] = skinnedPos.z;
-
-    outputVertexData[dst_base + 3u] = inputVertexData[src_base + 3u]; // color r
-    outputVertexData[dst_base + 4u] = inputVertexData[src_base + 4u]; // color g
-    outputVertexData[dst_base + 5u] = inputVertexData[src_base + 5u]; // color b
-    outputVertexData[dst_base + 6u] = inputVertexData[src_base + 6u]; // color a
-
-    outputVertexData[dst_base + 7u] = skinnedNormal.x;
-    outputVertexData[dst_base + 8u] = skinnedNormal.y;
-    outputVertexData[dst_base + 9u] = skinnedNormal.z;
-
-    outputVertexData[dst_base + 10u] = inputVertexData[src_base + 10u]; // uv u
-    outputVertexData[dst_base + 11u] = inputVertexData[src_base + 11u]; // uv v
-
-    outputVertexData[dst_base + 12u] = inputVertexData[src_base + 12u];
-    outputVertexData[dst_base + 13u] = inputVertexData[src_base + 13u];
-    outputVertexData[dst_base + 14u] = inputVertexData[src_base + 14u];
-    outputVertexData[dst_base + 15u] = inputVertexData[src_base + 15u];
-
-    outputVertexData[dst_base + 16u] = inputVertexData[src_base + 16u]; // bone w
-    outputVertexData[dst_base + 17u] = inputVertexData[src_base + 17u];
-    outputVertexData[dst_base + 18u] = inputVertexData[src_base + 18u];
-    outputVertexData[dst_base + 19u] = inputVertexData[src_base + 19u];
-
-    outputVertexData[dst_base + 20u] = inputVertexData[src_base + 20u]; // splat 0
-    outputVertexData[dst_base + 21u] = inputVertexData[src_base + 21u]; // splat 1
-
-    // Tangent (skinned through the bone palette) + bitangent sign
-    // (passed through unchanged). #783 / M-NORMALS.
-    outputVertexData[dst_base + 22u] = skinnedTangent.x;
-    outputVertexData[dst_base + 23u] = skinnedTangent.y;
-    outputVertexData[dst_base + 24u] = skinnedTangent.z;
-    outputVertexData[dst_base + 25u] = inputVertexData[src_base + 25u];
 }

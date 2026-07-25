@@ -16,7 +16,6 @@ use super::predicates::{
 };
 use super::types::{BlasEntry, SkinnedBlasGeometry};
 use super::AccelerationManager;
-use crate::vertex::Vertex;
 use anyhow::{Context, Result};
 use ash::vk;
 use byroredux_core::ecs::storage::EntityId;
@@ -79,7 +78,11 @@ impl AccelerationManager {
             index_count: u32,
         }
 
-        let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
+        // #2170 — the skinned slot output is position-only, so the AS
+        // build strides by 12 B, not by the 104 B `Vertex`. These two
+        // must move together with `SKIN_OUTPUT_STRIDE_FLOATS`; a stale
+        // stride here reads garbage positions into the BLAS.
+        let vertex_stride = crate::shader_constants::SKIN_OUTPUT_STRIDE_BYTES;
         // Flags: `SKINNED_BLAS_FLAGS` — see R6a-prospector-regress
         // (2026-05-16) for the split from the shared `UPDATABLE_AS_FLAGS`
         // (TLAS) into the skinned-BLAS-only `PREFER_FAST_BUILD` arm.
@@ -501,7 +504,11 @@ impl AccelerationManager {
             "blas_scratch_buffer absent — must be allocated by build_skinned_blas_batched_on_cmd first",
         )?;
 
-        let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
+        // #2170 — the skinned slot output is position-only, so the AS
+        // build strides by 12 B, not by the 104 B `Vertex`. These two
+        // must move together with `SKIN_OUTPUT_STRIDE_FLOATS`; a stale
+        // stride here reads garbage positions into the BLAS.
+        let vertex_stride = crate::shader_constants::SKIN_OUTPUT_STRIDE_BYTES;
         // SAFETY: vertex_buffer is live with SHADER_DEVICE_ADDRESS usage; the
         // caller-required compute-write → AS-input-read barrier ensures visibility.
         let vertex_address = unsafe {

@@ -22,7 +22,7 @@ use super::buffer::GpuBuffer;
 use super::descriptors::{write_storage_buffer, DescriptorPoolBuilder};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
-use crate::shader_constants::VERTEX_STRIDE_BYTES;
+use crate::shader_constants::SKIN_OUTPUT_STRIDE_BYTES;
 #[cfg(test)]
 use crate::shader_constants::VERTEX_STRIDE_FLOATS;
 use anyhow::{Context, Result};
@@ -65,11 +65,17 @@ const PUSH_CONSTANTS_SIZE: u32 = std::mem::size_of::<SkinPushConstants>() as u32
 /// frame-in-flight so the bone-palette buffer rotation stays correct.
 pub struct SkinSlot {
     /// Skinned-vertex output buffer. Sized for `vertex_count` ×
-    /// `VERTEX_STRIDE_BYTES`. Layout-identical to the input SSBO so
-    /// Phase 3 can swap raster to read from it directly.
+    /// `SKIN_OUTPUT_STRIDE_BYTES` — **position only** (12 B/vertex).
+    ///
+    /// #2170 — this used to be layout-identical to the input SSBO
+    /// (104 B/vertex) so a deferred Phase 3 could swap raster onto it.
+    /// Phase 3 never landed and `create_slot` omits the `VERTEX_BUFFER`
+    /// usage it would need, so the 92 extra bytes served no reader: the
+    /// skinned-BLAS build/refit is the only consumer and takes position
+    /// alone.
     pub output_buffer: GpuBuffer,
     /// Capacity of the output buffer in bytes (equal to the active
-    /// vertex_count × VERTEX_STRIDE_BYTES at allocation time).
+    /// vertex_count × SKIN_OUTPUT_STRIDE_BYTES at allocation time).
     pub output_size: vk::DeviceSize,
     /// One descriptor set per frame-in-flight — each binds (input,
     /// bone palette for that frame, this slot's output).
@@ -399,7 +405,7 @@ impl SkinComputePipeline {
         allocator: &SharedAllocator,
         vertex_count: u32,
     ) -> Result<SkinSlot> {
-        let output_size = (vertex_count as u64) * VERTEX_STRIDE_BYTES;
+        let output_size = (vertex_count as u64) * SKIN_OUTPUT_STRIDE_BYTES;
         // Phase 2 wires the output buffer as a BLAS-build input (vertex
         // source for the per-frame refit). The BLAS build path requires:
         //   - STORAGE_BUFFER     — compute shader writes
@@ -987,13 +993,13 @@ impl SkinPaletteComputePipeline {
 mod tests {
     use super::*;
 
-    /// Pin the per-vertex stride against the Rust `Vertex` size — the
-    /// shader uses 26 floats / 104 bytes per vertex; if
-    /// a vertex field is added without bumping `VERTEX_STRIDE_FLOATS`
-    /// here AND `VERTEX_STRIDE_FLOATS` in the shader, the compute pass
-    /// would read past the end of each vertex and write the wrong
-    /// target vertex. Phase 1 catch — the renderer crate has no
-    /// Vulkan-free test path for the rest of the pipeline.
+    /// Pin the compute pass's INPUT stride against the Rust `Vertex`
+    /// size — the shader reads 26 floats / 104 bytes per vertex; if a
+    /// vertex field is added without bumping `VERTEX_STRIDE_FLOATS`
+    /// here AND in the shader, the compute pass would read past the end
+    /// of each vertex and write the wrong target vertex. Phase 1 catch —
+    /// the renderer crate has no Vulkan-free test path for the rest of
+    /// the pipeline.
     #[test]
     fn vertex_stride_matches_rust_vertex_size() {
         use crate::vertex::Vertex;
@@ -1004,7 +1010,72 @@ mod tests {
              skin_vertices.comp will read garbage if these drift",
             VERTEX_STRIDE_FLOATS,
         );
-        assert_eq!(VERTEX_STRIDE_BYTES, 104);
+        assert_eq!(crate::shader_constants::VERTEX_STRIDE_BYTES, 104);
+    }
+
+    /// #2170 — pin the OUTPUT stride, which is deliberately NOT the
+    /// input stride.
+    ///
+    /// The slot output is position-only (12 B/vertex); the skinned-BLAS
+    /// build and refit both hand this same number to
+    /// `vertex_stride(...)` while declaring `R32G32B32_SFLOAT`. Three
+    /// sites must agree — the allocation, the shader's `dst_base`
+    /// multiplier, and the AS-build stride — and a mismatch is silent:
+    /// the BLAS would just be built over garbage positions, which no
+    /// unit test can observe. Pinning the constant is what keeps them
+    /// from drifting apart.
+    #[test]
+    fn skin_output_stride_is_position_only_and_as_build_compatible() {
+        use crate::shader_constants::{SKIN_OUTPUT_STRIDE_BYTES, SKIN_OUTPUT_STRIDE_FLOATS};
+
+        assert_eq!(
+            SKIN_OUTPUT_STRIDE_FLOATS, 3,
+            "the slot output holds position only — see #2170 before widening it"
+        );
+        assert_eq!(SKIN_OUTPUT_STRIDE_BYTES, 12);
+
+        // Vulkan requires `vertexStride` to be a multiple of the vertex
+        // format's smallest component size; R32G32B32_SFLOAT is f32, so 4.
+        assert_eq!(
+            SKIN_OUTPUT_STRIDE_BYTES % 4,
+            0,
+            "AS-build vertexStride must be a multiple of the 4-byte f32 component"
+        );
+
+        // The narrowing is the whole point: it must stay strictly smaller
+        // than the input vertex, or the #2170 saving has silently regressed.
+        assert!(
+            SKIN_OUTPUT_STRIDE_BYTES < crate::shader_constants::VERTEX_STRIDE_BYTES,
+            "output stride ({SKIN_OUTPUT_STRIDE_BYTES} B) must stay below the \
+             {} B input Vertex — reverting to the full layout re-introduces the \
+             8.7x over-allocation #2170 removed",
+            crate::shader_constants::VERTEX_STRIDE_BYTES,
+        );
+    }
+
+    /// #2170 — both AS-build call sites must stride by the narrowed
+    /// output constant, not by `size_of::<Vertex>()`.
+    ///
+    /// Static source check: the BLAS build needs a live device, so the
+    /// only thing reachable from `cargo test` is the shape. A stale
+    /// `size_of::<Vertex>()` here would stride 104 B through a 12 B/vertex
+    /// buffer — reading ~8.7x past the allocation into whatever follows.
+    #[test]
+    fn skinned_blas_build_sites_use_the_narrowed_stride() {
+        let src = include_str!("acceleration/blas_skinned.rs");
+        assert!(
+            !src.contains("size_of::<Vertex>()"),
+            "the skinned-BLAS build must not stride by the 104-byte Vertex — \
+             the slot output is position-only since #2170"
+        );
+        assert_eq!(
+            src.matches("let vertex_stride = crate::shader_constants::SKIN_OUTPUT_STRIDE_BYTES;")
+                .count(),
+            2,
+            "both AS-build sites (first-sight BUILD and refit UPDATE) must take \
+             the narrowed stride — fixing one and not the other corrupts half \
+             the skinned BLASes (#2170)"
+        );
     }
 
     /// Push constant payload size must fit in the conservative 128 B

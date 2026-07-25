@@ -392,10 +392,15 @@ fn sort_key_is_deterministic_for_full_tuple_ties() {
 }
 
 /// #934 / PERF-DC-01 — measure serial vs parallel sort cost across
-/// scene-sized N. The audit claims rayon's `par_sort_unstable_by_key`
-/// loses to `sort_unstable_by_key` on the closure-extracted 10-tuple
-/// key at typical Bethesda draw counts (~800–1500), and that the
-/// crossover is in the 2K range.
+/// scene-sized N. Rayon's `par_sort_unstable_by_key` loses to
+/// `sort_unstable_by_key` on the closure-extracted key at typical
+/// Bethesda draw counts (~800–1500).
+///
+/// #2173 — the key is now an **11-tuple** (`883f57cd` added the stable
+/// surface ID); re-measuring with the wider key moved the crossover from
+/// ~2K to ~3K, and `DRAW_SORT_PARALLEL_THRESHOLD` was updated to match.
+/// Re-run this whenever `draw_sort_key`'s arity or field types change —
+/// the threshold is calibration, not a constant with a principled value.
 ///
 /// `#[ignore]` because the timings are environment-dependent — this is
 /// a one-shot measurement gate, not a regression test. Run with
@@ -424,7 +429,13 @@ fn manual_bench_draw_sort_serial_vs_parallel() {
         v
     }
     const ITERS: u32 = 50;
-    for &n in &[400usize, 800, 1500, 2000, 3000, 5000, 10_000] {
+    // #2173 — the 2000..3000 range is sampled finely because that is where
+    // the crossover sits after the sort key widened from 10 to 11 tuples
+    // (`883f57cd`); the original coarse list could only say "somewhere
+    // between 2000 and 3000".
+    for &n in &[
+        400usize, 800, 1500, 2000, 2250, 2500, 2750, 3000, 5000, 10_000,
+    ] {
         let mut serial_ns = 0u128;
         for _ in 0..ITERS {
             // Rebuild each iteration — DrawCommand isn't Clone, and

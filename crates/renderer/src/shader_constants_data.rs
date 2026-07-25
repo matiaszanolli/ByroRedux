@@ -34,6 +34,25 @@ pub const MAX_LIGHTS_PER_CLUSTER: u32 = 128;
 
 // Vertex layout (global SSBO)
 pub const VERTEX_STRIDE_FLOATS: u32 = 26;
+// Skinned-vertex OUTPUT stride (`SkinSlot::output_buffer`) — position
+// only, deliberately NOT the full 26-float input layout.
+//
+// #2170 — the slot output used to mirror the input stride so a deferred
+// "Phase 3" (raster reading pre-skinned vertices as a VBO) could swap in
+// without a layout change. Phase 3 never landed, `create_slot` omits the
+// `VERTEX_BUFFER` usage it would need anyway (#681/MEM-2-6), and the only
+// live consumer is the skinned-BLAS build, which reads the buffer as
+// `R32G32B32_SFLOAT` and touches 12 of every 104 bytes. Provisioning the
+// other 92 cost an 8.7x over-allocation per slot plus the bandwidth to
+// write pass-through lanes nothing reads.
+//
+// If Phase 3 is ever revived it needs the full layout back AND the
+// `VERTEX_BUFFER` usage bit — that is one commit, not a silent
+// dependency on this constant.
+//
+// 3 floats = 12 B satisfies the AS-build requirement that `vertexStride`
+// be a multiple of the vertex format's component size (4 B for f32).
+pub const SKIN_OUTPUT_STRIDE_FLOATS: u32 = 3;
 // position(0..3) color RGBA(3..7) normal(7..10) uv(10..12) — see
 // crates/renderer/src/vertex.rs.
 pub const VERTEX_NORMAL_OFFSET_FLOATS: u32 = 7;

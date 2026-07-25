@@ -472,25 +472,40 @@ pub(crate) fn build_render_data(
     // Alpha-blend: must remain back-to-front (depth-primary) for correct
     // transparency ordering — instancing is irrelevant here.
     //
-    // #934 / PERF-DC-01 — rayon's fork-join overhead loses to serial
-    // `sort_unstable_by_key` below ~2K elements on the closure-extracted
-    // 10-tuple key. Measured on a 7950X (see
-    // `bench_draw_sort_serial_vs_parallel` in
-    // `byroredux/src/render/draw_sort_key_tests.rs`):
+    // #934 / PERF-DC-01, re-measured for #2173 — rayon's fork-join
+    // overhead loses to serial `sort_unstable_by_key` below ~3K elements
+    // on the closure-extracted key.
     //
-    //     N= 400: serial 21µs vs parallel 27µs  (serial 28% faster)
-    //     N= 800: serial 46µs vs parallel 60µs  (serial 31% faster)
-    //     N=1500: serial 97µs vs parallel 131µs (serial 35% faster)
-    //     N=2000: 161µs ≈ 165µs                  (tied)
-    //     N=3000: serial 269µs vs parallel 235µs (parallel 14% faster)
-    //     N=10K : serial 1122µs vs parallel 673µs(parallel 67% faster)
+    // Re-measured 2026-07-25 on a 7950X after `883f57cd` widened the sort
+    // key from 10 to 11 tuples (the stable surface ID), which raised
+    // per-comparison cost and moved the crossover UP. Run
+    // `manual_bench_draw_sort_serial_vs_parallel` in
+    // `byroredux/src/render/draw_sort_key_tests.rs` to reproduce:
+    //
+    //     N=  400: serial  24µs vs parallel  30µs (serial 19% faster)
+    //     N=  800: serial  54µs vs parallel  71µs (serial 24% faster)
+    //     N= 1500: serial 115µs vs parallel 144µs (serial 20% faster)
+    //     N= 2000: serial 161µs vs parallel 198µs (serial 19% faster)
+    //     N= 2250: serial 204µs vs parallel 222µs (serial  8% faster)
+    //     N= 2750: serial 293µs vs parallel 300µs (≈ tied)
+    //     N= 3000: serial 348µs vs parallel 362µs (≈ tied, run-to-run
+    //              ratios straddled 1.0 across three runs)
+    //     N= 5000: serial 596µs vs parallel 446µs (parallel 34% faster)
+    //     N=  10K: serial 1429µs vs parallel 873µs (parallel 64% faster)
+    //
+    // The old table put N=2000 at "tied" and set the threshold there. With
+    // the wider key serial is still ~19% ahead at 2000 and holds through
+    // ~2750, so the old constant dispatched to rayon across a whole band
+    // where serial wins. 3000 is the first size where the two are reliably
+    // interchangeable and above which parallel pulls away.
     //
     // Typical Bethesda cell counts sit in 400–1500 (Prospector ~811,
-    // GSDocMitchell ~263, exterior radius-3 grid ~1200), so serial is
-    // the default. The fallback to `par_sort_unstable_by_key` at
-    // `DRAW_SORT_PARALLEL_THRESHOLD` covers exterior radius-5+ grids and
-    // Skyrim+ city interiors.
-    const DRAW_SORT_PARALLEL_THRESHOLD: usize = 2000;
+    // GSDocMitchell ~263, exterior radius-3 grid ~1200), so serial remains
+    // the common path either way; this only moves the 2000–3000 band. The
+    // fallback to `par_sort_unstable_by_key` still covers exterior
+    // radius-5+ grids and Skyrim+ city interiors (MedTek ~14.5K draws is
+    // far above the threshold on both settings).
+    const DRAW_SORT_PARALLEL_THRESHOLD: usize = 3000;
     let ms_particles = took(t_particles);
     let t_sort = mark(profile);
     if draw_commands.len() >= DRAW_SORT_PARALLEL_THRESHOLD {
