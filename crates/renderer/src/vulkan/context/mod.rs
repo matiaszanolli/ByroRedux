@@ -1058,6 +1058,13 @@ pub struct VulkanContext {
     /// origin-corrected on grid-crossing frames instead of producing one
     /// frame of full-screen garbage motion vectors (#1489 / REN2-04).
     pub prev_render_origin: [f32; 3],
+    /// Previous frame's world-space camera forward vector (unit length).
+    /// Paired with `prev_camera_position` as the second `camera_cut` signal
+    /// (#2159): a real teleport/cut reorients the camera drastically in one
+    /// frame, unlike ordinary translation or mouselook. Replaces a raw
+    /// full-matrix `view_proj` delta, which misfired on both ordinary
+    /// locomotion speeds and every render-origin grid crossing.
+    pub prev_cam_forward: [f32; 3],
     // ── Per-frame scratch cluster ───────────────────────────────────────
     // The four `*_scratch` Vecs below (plus `terrain_tile_scratch` further
     // down in the struct definition) all follow the same amortization
@@ -2741,6 +2748,7 @@ impl VulkanContext {
             ],
             prev_camera_position: [0.0; 3],
             prev_render_origin: [0.0; 3],
+            prev_cam_forward: [0.0, 0.0, -1.0],
             gpu_instances_scratch: Vec::new(),
             previous_rigid_models: HashMap::new(),
             current_rigid_models_scratch: HashMap::new(),

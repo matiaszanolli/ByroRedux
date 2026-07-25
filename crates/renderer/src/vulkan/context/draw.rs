@@ -56,6 +56,42 @@ fn halton(mut index: u32, base: u32) -> f32 {
     result
 }
 
+/// Pure camera-cut decision (#2159), pulled out of `draw_frame` so it's
+/// testable without standing up a `VulkanContext` — mirrors the
+/// `is_slow_frame`/`scratch_should_shrink` style pure-predicate convention
+/// used elsewhere in the renderer.
+///
+/// Two independent, origin/speed-robust signals: an absolute position jump
+/// (`camera_delta`, in world units — unaffected by the render-origin's
+/// camera-relative snapping) and an angular forward-vector flip
+/// (`cam_forward_dot`, the dot product of this frame's and last frame's
+/// unit forward vectors — unaffected by translation speed). Either alone
+/// indicates a teleport/cutscene snap that bypassed the cell-transition
+/// reset hooks; ordinary locomotion (any speed) and render-origin grid
+/// crossings (zero real camera motion) trip neither.
+///
+/// Replaces a raw `view_proj` element-wise diff, which — because
+/// `view_proj` is camera-relative to a render origin that itself snaps on
+/// a grid crossing — misfired on both ordinary walk/run speeds and every
+/// grid crossing, permanently defeating #1489's origin correction and
+/// forcing TAA/SVGF/FSR into a reset loop while the player simply moved.
+fn is_camera_cut(frame_counter: u32, camera_delta: f32, cam_forward_dot: f32) -> bool {
+    frame_counter > 0 && (camera_delta > 256.0 || cam_forward_dot < 0.0)
+}
+
+/// Whether a draw should read/write the per-frame rigid motion-history map
+/// (#2160). The map is keyed on `DrawCommand::entity_id`, but particle
+/// draws synthesize that field as `entity ^ i` — a sort tiebreaker, not a
+/// real identity — which routinely aliases a real static-mesh entity's ID
+/// and would otherwise corrupt that entity's motion vector. Alpha-blend
+/// draws (particles included) get no temporal benefit from motion-history
+/// reuse anyway, so they're excluded regardless of ID collisions; skinned
+/// draws (`bone_offset != 0`) already have their own per-entity skin-pool
+/// history and never used this map.
+fn uses_rigid_motion_history(bone_offset: u32, alpha_blend: bool) -> bool {
+    bone_offset == 0 && !alpha_blend
+}
+
 /// TAA sub-pixel jitter via Halton(2,3) sequence, in NDC. Each frame shifts
 /// the projection by a different sub-pixel offset so temporal blending
 /// reconstructs a super-sampled result; the vertex shader applies it AFTER
@@ -116,6 +152,87 @@ mod taa_jitter_tests {
             jx != 0.0 || jy != 0.0,
             "expected a nonzero Halton jitter offset"
         );
+    }
+}
+
+#[cfg(test)]
+mod camera_cut_tests {
+    use super::is_camera_cut;
+    use byroredux_core::math::Vec3;
+
+    /// #2159 regression guard — the exact false-positive that defeated
+    /// #1489's origin correction: no real teleport, just a render-origin
+    /// grid crossing (which by construction carries zero camera position
+    /// jump and zero forward-vector change) plus ordinary fast-run
+    /// locomotion (well over the old raw-matrix-diff threshold). Must NOT
+    /// be classified as a cut.
+    #[test]
+    fn grid_crossing_plus_fast_run_is_not_a_cut() {
+        // A grid crossing changes the render origin, not the camera's
+        // absolute position or facing — both signals stay at "no change".
+        let camera_delta = 0.0; // no teleport
+        let cam_forward_dot = 1.0; // identical facing frame-to-frame
+        assert!(!is_camera_cut(10, camera_delta, cam_forward_dot));
+
+        // Sanity: even at the high end of documented run speed (400 u/s /
+        // 60fps ≈ 6.7 u/frame), the position-delta signal alone (were it
+        // still driven by translation) would stay far under the 256 u
+        // teleport threshold — confirms the fix path, not just a
+        // degenerate zero-motion case.
+        let fast_run_frame_delta = 6.7;
+        assert!(!is_camera_cut(10, fast_run_frame_delta, cam_forward_dot));
+    }
+
+    /// A same-frame ~180° reorientation (e.g. a scripted camera snap) must
+    /// still be caught even with zero position change.
+    #[test]
+    fn same_position_but_reversed_facing_is_a_cut() {
+        let forward_before = Vec3::new(0.0, 0.0, -1.0);
+        let forward_after = Vec3::new(0.0, 0.0, 1.0);
+        let cam_forward_dot = forward_before.dot(forward_after);
+        assert!(is_camera_cut(10, 0.0, cam_forward_dot));
+    }
+
+    /// An absolute-position teleport past the 256-unit threshold is still
+    /// caught regardless of facing.
+    #[test]
+    fn large_position_jump_is_a_cut() {
+        assert!(is_camera_cut(10, 500.0, 1.0));
+    }
+
+    /// Frame 0 never counts as a cut (nothing to compare against yet).
+    #[test]
+    fn first_frame_is_never_a_cut() {
+        assert!(!is_camera_cut(0, 10_000.0, -1.0));
+    }
+}
+
+#[cfg(test)]
+mod rigid_motion_history_tests {
+    use super::uses_rigid_motion_history;
+
+    /// #2160 regression guard: a rigid, opaque draw is exactly the case
+    /// the map exists for.
+    #[test]
+    fn rigid_opaque_draw_uses_history() {
+        assert!(uses_rigid_motion_history(0, false));
+    }
+
+    /// #2160 regression guard: particles are `bone_offset: 0` +
+    /// `alpha_blend: true` and synthesize a colliding `entity_id`
+    /// (`entity ^ i`) — they must be excluded from the map so that alias
+    /// can never corrupt a real entity's motion vector.
+    #[test]
+    fn alpha_blend_draw_never_uses_history_even_at_bone_offset_zero() {
+        assert!(!uses_rigid_motion_history(0, true));
+    }
+
+    /// Skinned draws have their own per-entity skin-pool history and never
+    /// touched this map, regardless of blend mode.
+    #[test]
+    fn skinned_draw_never_uses_rigid_history() {
+        assert!(!uses_rigid_motion_history(1, false));
+        assert!(!uses_rigid_motion_history(1, true));
     }
 }
 
@@ -915,6 +1032,21 @@ impl VulkanContext {
         };
         // Automatic camera-cut detection catches debug teleports and scripted
         // snaps that do not flow through the cell-transition reset hooks.
+        //
+        // #2159: the VP-matrix limb used to be a raw element-wise diff
+        // against `self.prev_view_proj` — which is camera-RELATIVE to the
+        // PREVIOUS frame's render origin, so a plain 4096-unit grid crossing
+        // (zero real camera motion) produced a huge, meaningless delta; the
+        // same raw diff also tripped on ordinary walk/run speeds (a 6
+        // units/frame forward move alone crosses the old 0.75 threshold by
+        // 8x). Both false-positives defeated #1489's origin correction on
+        // exactly the frame it exists for, and forced TAA/SVGF/FSR into a
+        // permanent reset loop while the player was simply moving. Replaced
+        // with two signals that are each robust on their own: an absolute
+        // position jump (unaffected by origin-relativity) and an angular
+        // forward-vector flip (unaffected by translation speed) — a real
+        // teleport/cutscene snap reorients the camera far more than any
+        // continuous turn does in one frame.
         let camera_delta = byroredux_core::math::Vec3::from_array(camera_pos).distance(
             byroredux_core::math::Vec3::from_array(self.prev_camera_position),
         );
@@ -923,8 +1055,9 @@ impl VulkanContext {
             .zip(self.prev_view_proj.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0_f32, f32::max);
-        let camera_cut =
-            self.frame_counter > 0 && (camera_delta > 256.0 || vp_max_abs_delta > 0.75);
+        let cam_forward_dot = byroredux_core::math::Vec3::from_array(active_dof.cam_forward)
+            .dot(byroredux_core::math::Vec3::from_array(self.prev_cam_forward));
+        let camera_cut = is_camera_cut(self.frame_counter, camera_delta, cam_forward_dot);
         if camera_cut {
             self.signal_temporal_discontinuity(8);
             if let Some(ref mut frame) = fsr_frame {
@@ -1171,6 +1304,7 @@ impl VulkanContext {
         self.prev_view_proj = *vp;
         self.prev_camera_position = camera_pos;
         self.prev_render_origin = [render_origin.x, render_origin.y, render_origin.z];
+        self.prev_cam_forward = active_dof.cam_forward;
 
         // #1874 diagnostic — ghosted diagonal double-image investigation.
         // Cheap, stateless (uses only locals already computed above) trace
@@ -1494,7 +1628,9 @@ impl VulkanContext {
             let m = &draw_cmd.model_matrix;
             let skip_batch = !draw_cmd.in_raster || draw_cmd.is_water;
             let current_model = rebase_model_matrix(m, render_origin);
-            let previous_source = if draw_cmd.bone_offset == 0 && !camera_cut {
+            let uses_rigid_history =
+                uses_rigid_motion_history(draw_cmd.bone_offset, draw_cmd.alpha_blend);
+            let previous_source = if uses_rigid_history && !camera_cut {
                 self.previous_rigid_models
                     .get(&draw_cmd.entity_id)
                     .unwrap_or(m)
@@ -1502,7 +1638,7 @@ impl VulkanContext {
                 m
             };
             previous_models.push(rebase_model_matrix(previous_source, render_origin));
-            if draw_cmd.bone_offset == 0 {
+            if uses_rigid_history {
                 current_rigid_models.insert(draw_cmd.entity_id, *m);
             }
 
