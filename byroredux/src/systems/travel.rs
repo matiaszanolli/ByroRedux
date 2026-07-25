@@ -95,6 +95,19 @@ pub(crate) fn resolve_destination(
     pick_wander_target(home, radius, form_id, 0)
 }
 
+/// One actor's staged move input, collected in Pass 1a — `current`
+/// position, `rotation`, and the resolved `destination` (which may itself
+/// have required a `GlobalTransform` read via `resolve_destination`) — all
+/// gathered before `PhysicsWorld` is acquired in Pass 1b (#2134:
+/// `PhysicsWorld` must never be live at the same time as a
+/// `GlobalTransform` read).
+struct TravelPending {
+    entity: EntityId,
+    current: Vec3,
+    rotation: Quat,
+    destination: Vec3,
+}
+
 /// One actor's computed movement/state update for this tick, applied in
 /// Pass 2 after all Pass-1 reads have dropped (mirrors `wander_system`'s
 /// two-pass read-then-write structure).
@@ -115,6 +128,7 @@ struct TravelDecision {
 /// `AnimScratch` (#1372).
 #[derive(Default)]
 struct TravelScratch {
+    pending: Vec<TravelPending>,
     decisions: Vec<TravelDecision>,
 }
 
@@ -129,15 +143,16 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
         return;
     };
 
-    // ── Pass 1: gather decisions (reads only). ──
-    scratch.decisions.clear();
+    // ── Pass 1a: resolve destinations (reads only; `resolve_destination`
+    // may itself read `GlobalTransform`, so `PhysicsWorld` is NOT acquired
+    // in this scope — #2134). ──
+    scratch.pending.clear();
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
         };
         let traveled_q = world.query::<Traveled>();
         let state_q = world.query::<TravelState>();
-        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
 
         for (entity, behavior) in behavior_q.iter() {
             if traveled_q.as_ref().is_some_and(|q| q.contains(entity)) {
@@ -159,27 +174,46 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                 ),
             };
 
-            let target_xz = Vec3::new(destination.x, current.y, destination.z);
-            let (new_pos, rotation) = step_toward(
+            scratch.pending.push(TravelPending {
+                entity,
                 current,
-                transform.rotation,
-                target_xz,
-                dt,
-                physics.as_deref(),
-            );
+                rotation: transform.rotation,
+                destination,
+            });
+        }
+    }
+    if scratch.pending.is_empty() {
+        scratch.decisions.clear();
+        return;
+    }
 
-            let horiz_delta = Vec3::new(new_pos.x - destination.x, 0.0, new_pos.z - destination.z);
+    // ── Pass 1b: compute movement via `step_toward`. `Transform` and
+    // `GlobalTransform` locks from Pass 1a have already dropped, so
+    // `PhysicsWorld` is acquired here without ever overlapping either
+    // (#2134). ──
+    scratch.decisions.clear();
+    {
+        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
+        for p in &scratch.pending {
+            let target_xz = Vec3::new(p.destination.x, p.current.y, p.destination.z);
+            let (new_pos, rotation) =
+                step_toward(p.current, p.rotation, target_xz, dt, physics.as_deref());
+
+            let horiz_delta =
+                Vec3::new(new_pos.x - p.destination.x, 0.0, new_pos.z - p.destination.z);
             let arrived = horiz_delta.length_squared()
                 <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
 
             scratch.decisions.push(TravelDecision {
-                entity,
+                entity: p.entity,
                 translation: new_pos,
                 rotation,
                 state: if arrived {
                     None
                 } else {
-                    Some(TravelState { destination })
+                    Some(TravelState {
+                        destination: p.destination,
+                    })
                 },
             });
         }
@@ -391,6 +425,59 @@ mod tests {
         assert_eq!(
             pos_after_first, pos_after_second,
             "Traveled actors must not move on later ticks"
+        );
+    }
+
+    /// #2134 regression guard: with a *real* `PhysicsWorld` resource
+    /// installed, `resolve_destination`'s `GlobalTransform` read (inside
+    /// Pass 1a) must still resolve correctly before `PhysicsWorld` is
+    /// acquired in Pass 1b — proving the split didn't change behavior,
+    /// only lock-acquisition order.
+    #[test]
+    fn travel_system_resolves_target_with_a_real_physics_world_installed() {
+        let mut world = World::new();
+        world.register::<TravelBehavior>();
+        world.register::<TravelState>();
+        world.register::<Traveled>();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<FormIdComponent>();
+        world.insert_resource(byroredux_physics::PhysicsWorld::new());
+
+        let mut pool = FormIdPool::new();
+        let target_fid = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV.esm"),
+            local: LocalFormId(0x000E_0001),
+        });
+        world.insert_resource(pool);
+
+        let target = world.spawn();
+        world.insert(target, FormIdComponent(target_fid));
+        world.insert(
+            target,
+            GlobalTransform::new(Vec3::new(300.0, 10.0, 400.0), Quat::IDENTITY, 1.0),
+        );
+
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::ZERO));
+        world.insert(
+            actor,
+            TravelBehavior {
+                radius: None,
+                target_form_id: Some(0x000E_0001),
+                form_id: 0x000E_0002,
+            },
+        );
+
+        travel_system(&world, 0.001);
+
+        let sq = world
+            .query::<TravelState>()
+            .expect("TravelState registered");
+        assert_eq!(
+            sq.get(actor).unwrap().destination,
+            Vec3::new(300.0, 10.0, 400.0),
+            "destination must still resolve to the target's live position with a real PhysicsWorld present"
         );
     }
 }

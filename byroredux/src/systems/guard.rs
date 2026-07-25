@@ -78,6 +78,19 @@ fn resolve_anchor(world: &World, behavior: &GuardBehavior, home: Vec3) -> Vec3 {
     home
 }
 
+/// One actor's staged move input, collected in Pass 1a — `resolve_anchor`
+/// reads `GlobalTransform`, so this is gathered before `PhysicsWorld` is
+/// acquired in Pass 1b (#2134: `PhysicsWorld` must never be live at the
+/// same time as a `GlobalTransform` read).
+struct GuardPending {
+    entity: EntityId,
+    current: Vec3,
+    rotation: Quat,
+    /// `Some` when beyond the leash and a walk-back is needed this tick.
+    target_xz: Option<Vec3>,
+    state: Option<GuardState>,
+}
+
 /// One actor's computed movement/state update for this tick, applied in
 /// Pass 2 after all Pass-1 reads have dropped (mirrors
 /// `travel_system`/`follow_system`'s two-pass structure).
@@ -98,6 +111,7 @@ struct GuardDecision {
 /// `AnimScratch` (#1372).
 #[derive(Default)]
 struct GuardScratch {
+    pending: Vec<GuardPending>,
     decisions: Vec<GuardDecision>,
 }
 
@@ -111,14 +125,15 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
         return;
     };
 
-    // ── Pass 1: gather decisions (reads only). ──
-    scratch.decisions.clear();
+    // ── Pass 1a: resolve anchors (reads only; `resolve_anchor` may itself
+    // read `GlobalTransform`, so `PhysicsWorld` is NOT acquired in this
+    // scope — #2134). ──
+    scratch.pending.clear();
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
         };
         let state_q = world.query::<GuardState>();
-        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
 
         for (entity, behavior) in behavior_q.iter() {
             let Some(transform) = transform_q.get(entity) else {
@@ -137,24 +152,40 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
 
             let leash = behavior.radius.unwrap_or(GUARD_DEFAULT_RADIUS);
             let horiz_delta = Vec3::new(anchor.x - current.x, 0.0, anchor.z - current.z);
-            let movement = if horiz_delta.length() > leash {
-                let target_xz = Vec3::new(anchor.x, current.y, anchor.z);
-                Some(step_toward(
-                    current,
-                    transform.rotation,
-                    target_xz,
-                    dt,
-                    physics.as_deref(),
-                ))
-            } else {
-                None
-            };
+            let target_xz = (horiz_delta.length() > leash)
+                .then(|| Vec3::new(anchor.x, current.y, anchor.z));
+
+            scratch.pending.push(GuardPending {
+                entity,
+                current,
+                rotation: transform.rotation,
+                target_xz,
+                state,
+            });
+        }
+    }
+    if scratch.pending.is_empty() {
+        scratch.decisions.clear();
+        return;
+    }
+
+    // ── Pass 1b: compute movement via `step_toward`. `Transform` and
+    // `GlobalTransform` locks from Pass 1a have already dropped, so
+    // `PhysicsWorld` is acquired here without ever overlapping either
+    // (#2134). ──
+    scratch.decisions.clear();
+    {
+        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
+        for p in &scratch.pending {
+            let movement = p
+                .target_xz
+                .map(|target_xz| step_toward(p.current, p.rotation, target_xz, dt, physics.as_deref()));
 
             scratch.decisions.push(GuardDecision {
-                entity,
-                translation: movement.map_or(current, |(pos, _)| pos),
+                entity: p.entity,
+                translation: movement.map_or(p.current, |(pos, _)| pos),
                 rotation: movement.and_then(|(_, rot)| rot),
-                state,
+                state: p.state,
             });
         }
     }
@@ -341,6 +372,56 @@ mod tests {
         assert!(
             tq.get(entity).unwrap().translation.x < 500.0,
             "beyond the leash — must step back toward the anchor"
+        );
+    }
+
+    /// #2134 regression guard: with a *real* `PhysicsWorld` resource
+    /// installed, `resolve_anchor`'s `GlobalTransform` read (Pass 1a)
+    /// must still resolve correctly before `PhysicsWorld` is acquired in
+    /// Pass 1b — proving the split didn't change behavior, only
+    /// lock-acquisition order.
+    #[test]
+    fn guard_system_resolves_anchor_with_a_real_physics_world_installed() {
+        let mut world = World::new();
+        world.register::<GuardBehavior>();
+        world.register::<GuardState>();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<FormIdComponent>();
+        world.insert_resource(byroredux_physics::PhysicsWorld::new());
+
+        let mut pool = FormIdPool::new();
+        let anchor_fid = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV.esm"),
+            local: LocalFormId(0x0010_0001),
+        });
+        world.insert_resource(pool);
+
+        let anchor = world.spawn();
+        world.insert(anchor, FormIdComponent(anchor_fid));
+        world.insert(
+            anchor,
+            GlobalTransform::new(Vec3::new(300.0, 10.0, 400.0), Quat::IDENTITY, 1.0),
+        );
+
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::ZERO));
+        world.insert(
+            actor,
+            GuardBehavior {
+                anchor_form_id: Some(0x0010_0001),
+                radius: None,
+                form_id: 0x0010_0002,
+            },
+        );
+
+        guard_system(&world, 0.001);
+
+        let sq = world.query::<GuardState>().expect("GuardState registered");
+        assert_eq!(
+            sq.get(actor).unwrap().anchor,
+            Vec3::new(300.0, 10.0, 400.0),
+            "anchor must still resolve to the target's live position with a real PhysicsWorld present"
         );
     }
 }

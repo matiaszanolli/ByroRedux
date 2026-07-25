@@ -168,13 +168,20 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         let Some(c) = cq.get(player_entity).copied() else {
             return;
         };
-        let Some(tq) = world.query::<Transform>() else {
-            return;
+        // The `Transform` read guard is dropped (block ends) before
+        // `RapierHandles` is acquired below — `pull_dynamic` (`sync.rs`)
+        // acquires the reverse pair (`RapierHandles`/`RigidBodyData` held
+        // across a `Transform` *write*), so overlapping the two orders
+        // here would be an ABBA risk (#2135).
+        let pos = {
+            let Some(tq) = world.query::<Transform>() else {
+                return;
+            };
+            let Some(t) = tq.get(player_entity) else {
+                return;
+            };
+            t.translation
         };
-        let Some(t) = tq.get(player_entity) else {
-            return;
-        };
-        let pos = t.translation;
         let handles = world
             .query::<byroredux_physics::RapierHandles>()
             .and_then(|q| q.get(player_entity).copied());

@@ -237,14 +237,26 @@ fn render_layer_label(l: RenderLayer) -> &'static str {
 fn dump_awake_fallers(world: &World) {
     use rapier3d::prelude::RigidBodyHandle;
 
-    let pw = world.resource::<PhysicsWorld>();
-    let awake: Vec<RigidBodyHandle> = pw.islands.active_dynamic_bodies().to_vec();
-    if awake.len() < AWAKE_FALLER_DUMP_FLOOR {
-        return; // not a storm yet — don't consume the one-shot
-    }
-    if AWAKE_FALLERS_DUMPED.swap(true, Ordering::Relaxed) {
-        return; // already dumped once this process
-    }
+    // Snapshot everything `PhysicsWorld` alone can answer (awake handles +
+    // their y/vy), then drop the guard before opening any ECS storage —
+    // every other site in this crate (`push_kinematic`, `pull_dynamic`,
+    // `apply_buoyancy`) acquires `RapierHandles` before `PhysicsWorld`;
+    // holding `PhysicsWorld` underneath `RapierHandles` here was the
+    // opposite order (#2136).
+    let body_snapshots: Vec<(RigidBodyHandle, f32, f32)> = {
+        let pw = world.resource::<PhysicsWorld>();
+        let awake: Vec<RigidBodyHandle> = pw.islands.active_dynamic_bodies().to_vec();
+        if awake.len() < AWAKE_FALLER_DUMP_FLOOR {
+            return; // not a storm yet — don't consume the one-shot
+        }
+        if AWAKE_FALLERS_DUMPED.swap(true, Ordering::Relaxed) {
+            return; // already dumped once this process
+        }
+        awake
+            .iter()
+            .filter_map(|h| pw.bodies.get(*h).map(|body| (*h, body.translation().y, body.linvel().y)))
+            .collect()
+    };
 
     // Invert RapierHandles (entity → body) into body → entity for lookup.
     let mut body_to_entity: HashMap<RigidBodyHandle, EntityId> = HashMap::new();
@@ -265,13 +277,10 @@ fn dump_awake_fallers(world: &World) {
     let physics_source_q = world.query::<PhysicsSourceForm>();
     let pool = world.try_resource::<FormIdPool>();
 
-    let mut entries: Vec<FallerEntry> = Vec::with_capacity(awake.len());
+    let mut entries: Vec<FallerEntry> = Vec::with_capacity(body_snapshots.len());
     let (mut vy_min, mut vy_max) = (f32::INFINITY, f32::NEG_INFINITY);
-    for h in &awake {
-        let Some(body) = pw.bodies.get(*h) else {
-            continue;
-        };
-        let vy = body.linvel().y;
+    for (h, y, vy) in &body_snapshots {
+        let vy = *vy;
         vy_min = vy_min.min(vy);
         vy_max = vy_max.max(vy);
         let entity = body_to_entity.get(h).copied();
@@ -289,7 +298,7 @@ fn dump_awake_fallers(world: &World) {
         });
         entries.push(FallerEntry {
             entity: entity.map(|e| e.to_string()).unwrap_or_else(|| "?".into()),
-            y: body.translation().y,
+            y: *y,
             vy,
             form,
             layer,
@@ -614,6 +623,14 @@ fn pull_dynamic(world: &World) {
             updates.push((entity, translation, rotation));
         }
     }
+
+    // Drop the `RapierHandles`/`RigidBodyData` read guards before taking
+    // the `Transform` write lock below — `updates` already carries
+    // everything needed. `character_controller_system` acquires the
+    // reverse pair (`Transform` read held across `RapierHandles`), so
+    // overlapping the two orders would be an ABBA risk (#2135).
+    drop(handles_q);
+    drop(body_q);
 
     if updates.is_empty() {
         return;

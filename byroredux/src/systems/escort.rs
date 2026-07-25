@@ -93,6 +93,38 @@ fn resolve_destination(world: &World, behavior: &EscortBehavior, home: Vec3) -> 
     )
 }
 
+/// Which phase a staged [`EscortPending`] move belongs to — determines how
+/// Pass 1b (which has `PhysicsWorld` available) finishes the decision.
+enum EscortPendingKind {
+    /// Walking toward a frozen destination — either already leading, or
+    /// transitioning into the lead phase this very tick. `new_state` is
+    /// `Some` only on the transition tick (Pass 2 must persist the newly
+    /// resolved `EscortState`); `None` while already leading with
+    /// unchanged state. Pass 1b checks arrival against `destination`.
+    Lead {
+        destination: Vec3,
+        new_state: Option<EscortState>,
+    },
+    /// Still collecting: walking toward the target's live position.
+    /// `new_state` is `Some` only on this actor's first tick with
+    /// `EscortState` at all. Never "arrived" (only the lead phase tags
+    /// [`Escorted`]).
+    Collect { new_state: Option<EscortState> },
+}
+
+/// One actor's staged move input, collected in Pass 1a — before
+/// `PhysicsWorld` is acquired in Pass 1b (#2134: `PhysicsWorld` must never
+/// be live at the same time as a `GlobalTransform` read; both the collect
+/// target's live position and `resolve_destination`'s `NearReference`
+/// lookup read `GlobalTransform`).
+struct EscortPending {
+    entity: EntityId,
+    current: Vec3,
+    rotation: Quat,
+    target_xz: Vec3,
+    kind: EscortPendingKind,
+}
+
 /// One actor's computed movement/state update for this tick, applied in
 /// Pass 2 after all Pass-1 reads have dropped (mirrors
 /// `wander_system`/`travel_system`/`follow_system`'s two-pass structure).
@@ -116,6 +148,7 @@ struct EscortDecision {
 /// `AnimScratch` (#1372).
 #[derive(Default)]
 struct EscortScratch {
+    pending: Vec<EscortPending>,
     decisions: Vec<EscortDecision>,
 }
 
@@ -132,15 +165,17 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
         return;
     };
 
-    // ── Pass 1: gather decisions (reads only). ──
-    scratch.decisions.clear();
+    // ── Pass 1a: resolve targets/destinations (reads only). Both the
+    // collect target's live position and `resolve_destination`'s
+    // `NearReference` lookup read `GlobalTransform`, so `PhysicsWorld` is
+    // NOT acquired in this scope (#2134). ──
+    scratch.pending.clear();
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
         };
         let escorted_q = world.query::<Escorted>();
         let state_q = world.query::<EscortState>();
-        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
 
         for (entity, behavior) in behavior_q.iter() {
             if escorted_q.as_ref().is_some_and(|q| q.contains(entity)) {
@@ -160,23 +195,15 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
             // ── Already leading: walk toward the frozen destination. ──
             if let Some(destination) = existing_state.and_then(|s| s.destination) {
                 let target_xz = Vec3::new(destination.x, current.y, destination.z);
-                let (new_pos, rotation) = step_toward(
-                    current,
-                    transform.rotation,
-                    target_xz,
-                    dt,
-                    physics.as_deref(),
-                );
-                let horiz_delta =
-                    Vec3::new(new_pos.x - destination.x, 0.0, new_pos.z - destination.z);
-                let arrived = horiz_delta.length_squared()
-                    <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
-                scratch.decisions.push(EscortDecision {
+                scratch.pending.push(EscortPending {
                     entity,
-                    translation: new_pos,
-                    rotation,
-                    state: None,
-                    arrived,
+                    current,
+                    rotation: transform.rotation,
+                    target_xz,
+                    kind: EscortPendingKind::Lead {
+                        destination,
+                        new_state: None,
+                    },
                 });
                 continue;
             }
@@ -199,49 +226,73 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                 // travel_system moving on the very tick it resolves.
                 let destination = resolve_destination(world, behavior, current);
                 let target_xz = Vec3::new(destination.x, current.y, destination.z);
-                let (new_pos, rotation) = step_toward(
-                    current,
-                    transform.rotation,
-                    target_xz,
-                    dt,
-                    physics.as_deref(),
-                );
-                let horiz_delta =
-                    Vec3::new(new_pos.x - destination.x, 0.0, new_pos.z - destination.z);
-                let arrived = horiz_delta.length_squared()
-                    <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
-                scratch.decisions.push(EscortDecision {
+                scratch.pending.push(EscortPending {
                     entity,
-                    translation: new_pos,
-                    rotation,
-                    state: Some(EscortState {
-                        target_entity,
-                        destination: Some(destination),
-                    }),
-                    arrived,
+                    current,
+                    rotation: transform.rotation,
+                    target_xz,
+                    kind: EscortPendingKind::Lead {
+                        destination,
+                        new_state: Some(EscortState {
+                            target_entity,
+                            destination: Some(destination),
+                        }),
+                    },
                 });
             } else {
                 // Still collecting: walk toward the target's live position.
                 let pos = live_target_pos.expect("collected == false implies Some");
                 let target_xz = Vec3::new(pos.x, current.y, pos.z);
-                let (new_pos, rotation) = step_toward(
-                    current,
-                    transform.rotation,
-                    target_xz,
-                    dt,
-                    physics.as_deref(),
-                );
-                scratch.decisions.push(EscortDecision {
+                scratch.pending.push(EscortPending {
                     entity,
-                    translation: new_pos,
-                    rotation,
-                    state: existing_state.is_none().then_some(EscortState {
-                        target_entity,
-                        destination: None,
-                    }),
-                    arrived: false,
+                    current,
+                    rotation: transform.rotation,
+                    target_xz,
+                    kind: EscortPendingKind::Collect {
+                        new_state: existing_state.is_none().then_some(EscortState {
+                            target_entity,
+                            destination: None,
+                        }),
+                    },
                 });
             }
+        }
+    }
+    if scratch.pending.is_empty() {
+        scratch.decisions.clear();
+        return;
+    }
+
+    // ── Pass 1b: compute movement via `step_toward`. `Transform` and
+    // `GlobalTransform` locks from Pass 1a have already dropped, so
+    // `PhysicsWorld` is acquired here without ever overlapping either
+    // (#2134). ──
+    scratch.decisions.clear();
+    {
+        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
+        for p in &scratch.pending {
+            let (new_pos, rotation) =
+                step_toward(p.current, p.rotation, p.target_xz, dt, physics.as_deref());
+            let (state, arrived) = match &p.kind {
+                EscortPendingKind::Lead {
+                    destination,
+                    new_state,
+                } => {
+                    let horiz_delta =
+                        Vec3::new(new_pos.x - destination.x, 0.0, new_pos.z - destination.z);
+                    let arrived = horiz_delta.length_squared()
+                        <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
+                    (*new_state, arrived)
+                }
+                EscortPendingKind::Collect { new_state } => (*new_state, false),
+            };
+            scratch.decisions.push(EscortDecision {
+                entity: p.entity,
+                translation: new_pos,
+                rotation,
+                state,
+                arrived,
+            });
         }
     }
     if scratch.decisions.is_empty() {
@@ -484,6 +535,46 @@ mod tests {
         assert_eq!(
             pos_after_first, pos_after_second,
             "Escorted actors must not move on later ticks"
+        );
+    }
+
+    /// #2134 regression guard: with a *real* `PhysicsWorld` resource
+    /// installed, the collect-phase target's `GlobalTransform` read
+    /// (Pass 1a) must still resolve correctly before `PhysicsWorld` is
+    /// acquired in Pass 1b — proving the split didn't change behavior,
+    /// only lock-acquisition order.
+    #[test]
+    fn escort_system_collects_target_with_a_real_physics_world_installed() {
+        let mut world = World::new();
+        register_all(&mut world);
+        world.insert_resource(byroredux_physics::PhysicsWorld::new());
+
+        let target = spawn_entity_at(&mut world, 0x000F_0001, Vec3::new(1000.0, 0.0, 0.0));
+
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::ZERO));
+        world.insert(
+            actor,
+            EscortBehavior {
+                target_form_id: Some(0x000F_0001),
+                destination_form_id: None,
+                destination_radius: Some(200.0),
+                form_id: 0x000F_0002,
+            },
+        );
+
+        escort_system(&world, 0.1);
+
+        let sq = world
+            .query::<EscortState>()
+            .expect("EscortState registered");
+        let state = sq.get(actor).expect("state written on first tick");
+        assert_eq!(state.target_entity, Some(target));
+
+        let tq = world.query::<Transform>().expect("Transform registered");
+        assert!(
+            tq.get(actor).unwrap().translation.x > 0.0,
+            "actor should still close toward the target with a real PhysicsWorld present"
         );
     }
 }

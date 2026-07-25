@@ -66,6 +66,14 @@ fn resolve_follow_target(world: &World, behavior: &FollowBehavior) -> Option<Ent
 /// `travel_system`'s two-pass read-then-write structure).
 struct FollowDecision {
     entity: EntityId,
+    /// Staged move inputs (current position, rotation, target XZ)
+    /// collected in Pass 1a while `Transform`/`GlobalTransform` are held
+    /// but `PhysicsWorld` is NOT — filled into `movement` by Pass 1b,
+    /// which acquires `PhysicsWorld` only after those locks have
+    /// dropped (#2134: `PhysicsWorld` must never be live at the same
+    /// time as a `GlobalTransform` read, matching `sync.rs::push_kinematic`'s
+    /// GlobalTransform-before-PhysicsWorld order).
+    pending_move: Option<(Vec3, Quat, Vec3)>,
     /// `None` when the actor didn't move this tick (already within
     /// stand-off distance, or has no resolvable target).
     movement: Option<(Vec3, Option<Quat>)>,
@@ -96,14 +104,15 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
         return;
     };
 
-    // ── Pass 1: gather decisions (reads only). ──
+    // ── Pass 1a: resolve targets + stage move inputs. `Transform` and
+    // `GlobalTransform` are read here; `PhysicsWorld` is NOT acquired in
+    // this scope (#2134). ──
     scratch.decisions.clear();
     {
         let Some(transform_q) = world.query::<Transform>() else {
             return;
         };
         let state_q = world.query::<FollowState>();
-        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
 
         for (entity, behavior) in behavior_q.iter() {
             let Some(transform) = transform_q.get(entity) else {
@@ -126,6 +135,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
             let Some(target_entity) = target_entity else {
                 scratch.decisions.push(FollowDecision {
                     entity,
+                    pending_move: None,
                     movement: None,
                     state_to_insert,
                 });
@@ -136,6 +146,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
                 // tick rather than re-resolving (v0 discipline).
                 scratch.decisions.push(FollowDecision {
                     entity,
+                    pending_move: None,
                     movement: None,
                     state_to_insert,
                 });
@@ -147,27 +158,41 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
             let target_xz = Vec3::new(target_gt.translation.x, current.y, target_gt.translation.z);
             let horiz_delta = Vec3::new(target_xz.x - current.x, 0.0, target_xz.z - current.z);
 
-            let movement = if horiz_delta.length() > distance + LOCOMOTION_ARRIVAL_EPSILON {
-                Some(step_toward(
-                    current,
-                    transform.rotation,
-                    target_xz,
-                    dt,
-                    physics.as_deref(),
-                ))
+            let pending_move = if horiz_delta.length() > distance + LOCOMOTION_ARRIVAL_EPSILON {
+                Some((current, transform.rotation, target_xz))
             } else {
                 None
             };
 
             scratch.decisions.push(FollowDecision {
                 entity,
-                movement,
+                pending_move,
+                movement: None,
                 state_to_insert,
             });
         }
     }
     if scratch.decisions.is_empty() {
         return;
+    }
+
+    // ── Pass 1b: compute movement via `step_toward`. `Transform` and
+    // `GlobalTransform` locks from Pass 1a have already dropped, so
+    // `PhysicsWorld` is acquired here without ever overlapping either
+    // (#2134). ──
+    {
+        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
+        for d in &mut scratch.decisions {
+            if let Some((current, rotation, target_xz)) = d.pending_move {
+                d.movement = Some(step_toward(
+                    current,
+                    rotation,
+                    target_xz,
+                    dt,
+                    physics.as_deref(),
+                ));
+            }
+        }
     }
 
     // ── Pass 2: apply writes (each a scoped single-type lock). ──
@@ -357,6 +382,43 @@ mod tests {
         assert!(
             pos_after_second.z > pos_after_first.z + 1e-3,
             "actor must chase the target's NEW live position, not a frozen one"
+        );
+    }
+
+    /// #2134 regression guard: with a *real* `PhysicsWorld` resource
+    /// installed (not `try_resource` returning `None`), the resolved
+    /// target's `GlobalTransform` must still be readable and movement
+    /// still computed correctly — proving the Pass 1a/1b split (target
+    /// resolution before `PhysicsWorld` is acquired) didn't change
+    /// behavior, only lock-acquisition order.
+    #[test]
+    fn follow_system_resolves_target_with_a_real_physics_world_installed() {
+        let mut world = World::new();
+        world.register::<FollowBehavior>();
+        world.register::<FollowState>();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<FormIdComponent>();
+        world.insert_resource(byroredux_physics::PhysicsWorld::new());
+
+        spawn_target(&mut world, 0x000D_0001, Vec3::new(1000.0, 10.0, 0.0));
+
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::ZERO));
+        world.insert(
+            actor,
+            FollowBehavior {
+                target_form_id: Some(0x000D_0001),
+                follow_distance: Some(50.0),
+            },
+        );
+
+        follow_system(&world, 0.1);
+
+        let tq = world.query::<Transform>().expect("Transform registered");
+        assert!(
+            tq.get(actor).unwrap().translation.x > 0.0,
+            "actor should still close toward the target with a real PhysicsWorld present"
         );
     }
 }
