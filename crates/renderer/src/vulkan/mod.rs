@@ -18,6 +18,7 @@ pub mod gpu_timers;
 pub mod instance;
 pub mod material;
 pub mod pipeline;
+pub mod placeholder;
 pub mod presentation;
 pub mod reflect;
 pub mod restir;

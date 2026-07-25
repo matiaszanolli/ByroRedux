@@ -165,6 +165,30 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// FFX error code reported by the `BYRO_FSR_FORCE_DISPATCH_FAIL` fault
+/// injection: `FFX_API_RETURN_ERROR_RUNTIME_ERROR` (3), which is what
+/// `ffx-api` itself returns when the underlying Vulkan runtime or the
+/// effect rejects a call (`ffx_provider.h:41`). Using a real code — rather
+/// than an out-of-range sentinel — means the renderer's recovery takes the
+/// same branch, and logs the same message, as a genuine SDK failure.
+const FORCED_FAILURE_CODE: u32 = 3;
+
+/// Debug-only: force [`Context::dispatch`] to fail without entering the SDK.
+///
+/// The FSR dispatch-failure recovery path (#2140) is unreachable on the
+/// happy path and not exercisable from `cargo test` — it needs an SDK OOM,
+/// an invalid descriptor, or a device loss mid-frame. This gate makes the
+/// "SDK rejected the dispatch having recorded nothing" case reproducible so
+/// the recovery barriers can be checked under validation.
+///
+/// Read once and cached: `dispatch` runs every frame, and re-reading the
+/// environment per frame would put a lock-taking syscall on the hot path.
+fn force_dispatch_failure() -> bool {
+    use std::sync::OnceLock;
+    static FORCED: OnceLock<bool> = OnceLock::new();
+    *FORCED.get_or_init(|| std::env::var_os("BYRO_FSR_FORCE_DISPATCH_FAIL").is_some())
+}
+
 fn check(code: u32) -> Result<(), Error> {
     if code == 0 {
         Ok(())
@@ -345,6 +369,27 @@ impl Context {
     /// context, remain live through command-buffer execution, and be in the
     /// layouts represented by the renderer-side FSR boundary contract.
     pub unsafe fn dispatch(&mut self, desc: DispatchDescription) -> Result<(), Error> {
+        // #2140 — debug-only fault injection. Returns `Err` *before* the
+        // SDK is entered at all, so nothing can have been recorded into
+        // the command buffer. That isolates exactly one half of the
+        // hypothesis: "is the renderer's dispatch-failure recovery sound
+        // when the SDK recorded nothing?" It deliberately does NOT answer
+        // whether the real SDK can record transitions and *then* report an
+        // error — `ExecuteGpuJobsVK` records every queued job and checks
+        // `errorCode` only after the loop — which is the question that
+        // decides whether the secondary-command-buffer restructure is
+        // needed. Keep those two apart when reading any result from this.
+        if force_dispatch_failure() {
+            // `eprintln!` rather than `log`: this crate is a thin FFI shim
+            // with no `log` dependency (matching the `destroy` path below).
+            eprintln!(
+                "BYRO_FSR_FORCE_DISPATCH_FAIL: returning a synthetic dispatch error without \
+                 entering the SDK — nothing was recorded into the command buffer (#2140)"
+            );
+            return Err(Error {
+                code: FORCED_FAILURE_CODE,
+            });
+        }
         let raw = RawDispatchDesc {
             vk_command_buffer: desc.command_buffer,
             color: desc.color.into(),

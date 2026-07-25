@@ -447,7 +447,32 @@ impl VulkanContext {
                     self.ssao = Some(new_ssao);
                 }
                 Err(e) => {
+                    // #2141 / RL-D6-01 — the old SSAO pipeline (and its
+                    // per-FIF AO images + views) was destroyed above, but
+                    // scene set 1 / binding 7 still names those views and
+                    // `triangle.frag` samples `aoTexture` unconditionally.
+                    // This arm only warned, and the failure doesn't
+                    // propagate — `recreate_screen_passes` completes and
+                    // the #1211 `framebuffers.is_empty()` bail-out doesn't
+                    // catch it — so every subsequent frame bound a
+                    // descriptor referencing freed GPU memory.
                     log::warn!("SSAO recreation failed after resize: {e} — no ambient occlusion");
+                    match self.placeholder_ao.as_ref() {
+                        Some(p) => {
+                            for f in 0..MAX_FRAMES_IN_FLIGHT {
+                                self.scene_buffers.write_ao_texture(
+                                    &self.device,
+                                    f,
+                                    p.view,
+                                    p.sampler,
+                                );
+                            }
+                        }
+                        None => log::error!(
+                            "SSAO recreation failed and no AO placeholder exists — scene \
+                             binding 7 still references the destroyed AO view (#2141)"
+                        ),
+                    }
                 }
             }
         }
@@ -646,14 +671,38 @@ impl VulkanContext {
                 }
             }
         }
-        // Rebind WaterPipeline's set 2 to the new accumulator views
-        // (the recreate above produced fresh `vk::ImageView` handles
-        // per FIF slot). Skipped when either side dropped out above.
-        if let (Some(w), Some(accum)) = (self.water.as_ref(), self.water_caustic_accum.as_ref()) {
-            let views: Vec<vk::ImageView> = (0..MAX_FRAMES_IN_FLIGHT)
-                .map(|i| accum.storage_view(i))
-                .collect();
-            w.update_water_caustic_descriptors(&self.device, &views);
+        // Rebind WaterPipeline's set 2 to the new accumulator views (the
+        // recreate above produced fresh `vk::ImageView` handles per FIF
+        // slot), or to the 1×1 storage sink if the accumulator dropped out.
+        //
+        // #2142 / RL-D6-02 — this used to be `if let (Some(w), Some(accum))`,
+        // so both failure arms above (which destroy the accumulator and set
+        // it to `None`) skipped the rebind entirely and left set 2 holding
+        // the destroyed per-FIF storage view. `record_draw` binds set 2
+        // unconditionally and the geometry pass gates the water draw only on
+        // `self.water.is_some()` — never on the accumulator — so every
+        // subsequent exterior/water frame issued an `imageAtomicAdd` against
+        // freed memory. Strictly worse than the AO case above: a write, not
+        // a read.
+        if let Some(w) = self.water.as_ref() {
+            let views: Option<Vec<vk::ImageView>> = match self.water_caustic_accum.as_ref() {
+                Some(accum) => Some(
+                    (0..MAX_FRAMES_IN_FLIGHT)
+                        .map(|i| accum.storage_view(i))
+                        .collect(),
+                ),
+                None => self
+                    .placeholder_caustic_sink
+                    .as_ref()
+                    .map(|p| vec![p.view; MAX_FRAMES_IN_FLIGHT]),
+            };
+            match views {
+                Some(views) => w.update_water_caustic_descriptors(&self.device, &views),
+                None => log::error!(
+                    "Water-caustic accumulator dropped out and no sink placeholder exists — \
+                     WaterPipeline set 2 still references the destroyed storage view (#2142)"
+                ),
+            }
         }
         let caustic_views: Vec<vk::ImageView> = match self.caustic {
             Some(ref c) => (0..MAX_FRAMES_IN_FLIGHT)
@@ -1166,6 +1215,160 @@ mod tests {
             destroy_views_pos < destroy_swapchain_pos,
             "old image views must be destroyed BEFORE the old \
              swapchain (children-before-parent). #654."
+        );
+    }
+
+    // ── #2141 / #2142 — failure-arm descriptor rebinds ──────────────
+    //
+    // Both bugs are failure-path-only and need a live device to reproduce
+    // (`SsaoPipeline::new` / `WaterCausticAccum::recreate_on_resize` must
+    // actually fail, realistically under VRAM exhaustion). Static source
+    // checks, matching the #654 test above, are what this crate can pin.
+
+    /// `resize.rs` up to (not including) this test module.
+    ///
+    /// These tests assert on the *absence* of certain code shapes, and
+    /// `include_str!` pulls in the assertions themselves — a test that
+    /// names the shape it forbids would match its own source and fail
+    /// against correct code.
+    fn production_src() -> &'static str {
+        let src = include_str!("resize.rs");
+        src.split("\nmod tests {")
+            .next()
+            .expect("split always yields a first segment")
+    }
+
+    /// #2141 / RL-D6-01 — the SSAO `Err` arm must rebind scene binding 7
+    /// to the placeholder.
+    ///
+    /// The old pipeline's AO images/views are destroyed *before* the
+    /// rebuild is attempted, and the failure doesn't propagate, so without
+    /// a rebind every subsequent frame samples a destroyed image view.
+    #[test]
+    fn ssao_recreate_failure_rebinds_binding_7_to_the_placeholder() {
+        let src = production_src();
+
+        let destroy_pos = src
+            .find("old_ssao.destroy(&self.device, allocator)")
+            .expect("the old SSAO pipeline is destroyed before the rebuild");
+        let err_arm_pos = src
+            .find("SSAO recreation failed after resize")
+            .expect("the SSAO Err arm must still exist");
+        // Match the call name only, not its argument list — rustfmt breaks
+        // the args across lines once the arm grows, and a whitespace-exact
+        // needle would make this test fail on a pure reformat.
+        let rebind_pos = src[err_arm_pos..]
+            .find("write_ao_texture(")
+            .map(|off| err_arm_pos + off)
+            .expect(
+                "the SSAO Err arm must rebind scene binding 7 to the AO placeholder — \
+                 the old AO views were already destroyed, and `triangle.frag` samples \
+                 `aoTexture` unconditionally (#2141 / RL-D6-01)",
+            );
+
+        assert!(
+            destroy_pos < err_arm_pos && err_arm_pos < rebind_pos,
+            "the rebind must live inside the Err arm that follows the destroy"
+        );
+        assert!(
+            src[err_arm_pos..rebind_pos].contains("placeholder_ao"),
+            "the Err arm must rebind to `self.placeholder_ao`, not to a fresh \
+             allocation — the realistic trigger for this arm is VRAM exhaustion, \
+             where allocating on the failure path is exactly what won't work"
+        );
+    }
+
+    /// #2142 / RL-D6-02 — the water set-2 rebind must NOT be gated on the
+    /// accumulator being present.
+    ///
+    /// The pre-fix `if let (Some(w), Some(accum))` skipped the rebind on
+    /// exactly the two arms that had just destroyed the accumulator,
+    /// leaving set 2 naming a freed storage view that the shader then
+    /// wrote via `imageAtomicAdd`.
+    #[test]
+    fn water_caustic_rebind_is_not_gated_on_accumulator_presence() {
+        let src = production_src();
+
+        assert!(
+            !src.contains("if let (Some(w), Some(accum)) = (self.water.as_ref()"),
+            "the water set-2 rebind must not be gated on the accumulator being \
+             Some — that guard skipped the rebind on the two failure arms that \
+             had just destroyed it (#2142 / RL-D6-02)"
+        );
+
+        let rebind_pos = src
+            .find("update_water_caustic_descriptors(&self.device, &views)")
+            .expect("the water set-2 rebind must still exist");
+        // Walk back to the enclosing `if let Some(w) = self.water` and
+        // confirm the placeholder fallback sits between it and the rebind.
+        let block_pos = src
+            .find("if let Some(w) = self.water.as_ref()")
+            .expect("the rebind must be gated on the water pipeline alone");
+        assert!(block_pos < rebind_pos);
+        assert!(
+            src[block_pos..rebind_pos].contains("placeholder_caustic_sink"),
+            "when the accumulator is absent, set 2 must be rebound to the 1×1 \
+             storage sink — `record_draw` binds set 2 unconditionally and the \
+             water draw is gated only on `self.water` (#2142)"
+        );
+    }
+
+    /// Both placeholders are created once at context init, never on the
+    /// failure path. Pins the ordering that makes the `None` arms in
+    /// `context/mod.rs` able to fall back at all.
+    #[test]
+    fn placeholders_are_created_before_the_passes_that_fall_back_to_them() {
+        let src = include_str!("mod.rs");
+
+        let ao_create = src
+            .find("PlaceholderImage::new_white_ao")
+            .expect("the AO placeholder must be created at init");
+        let sink_create = src
+            .find("PlaceholderImage::new_storage_sink")
+            .expect("the caustic-sink placeholder must be created at init");
+        let ssao_init = src
+            .find("let ssao = match SsaoPipeline::new")
+            .expect("SSAO init block");
+        let accum_init = src
+            .find("let water_caustic_accum = match")
+            .expect("water-caustic accumulator init block");
+
+        assert!(
+            ao_create < ssao_init,
+            "the AO placeholder must exist before the SSAO init block, or its \
+             failure arm has nothing to rebind binding 7 to (#2141)"
+        );
+        assert!(
+            sink_create < accum_init,
+            "the caustic sink must exist before the accumulator init block (#2142)"
+        );
+    }
+
+    /// #2142 — the init-path set-2 wiring must also fall back, and the
+    /// stale "scaffold-only window" justification must be gone.
+    #[test]
+    fn init_path_water_set_2_falls_back_and_drops_the_stale_comment() {
+        let src = include_str!("mod.rs");
+
+        assert!(
+            !src.contains("won't fire during the\n        // scaffold-only window"),
+            "the `sunDirection.w > 0` / scaffold-only-window justification is stale — \
+             Phase D and Phase E (#1255 / #1257) shipped, so set 2 is now bound \
+             unconditionally AND written by the shader (#2142)"
+        );
+
+        let init_block = src
+            .find("if let Some(w) = water.as_ref()")
+            .expect("init-path set-2 wiring must be gated on the water pipeline alone");
+        let rebind = src[init_block..]
+            .find("update_water_caustic_descriptors(&device, &views)")
+            .map(|off| init_block + off)
+            .expect("init-path rebind must still exist");
+        assert!(
+            src[init_block..rebind].contains("placeholder_caustic_sink"),
+            "when the accumulator fails to create, init must still write set 2 — \
+             leaving it unwritten is an atomic write to an uninitialised \
+             descriptor once the water draw runs (#2142)"
         );
     }
 }

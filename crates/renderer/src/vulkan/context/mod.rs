@@ -1303,6 +1303,23 @@ pub struct VulkanContext {
     /// upload section for the read side.
     pub clean_skin_frames: u32,
     pub ssao: Option<SsaoPipeline>,
+    /// 1×1 white "AO = 1.0" stand-in for scene binding 7, and a 1×1
+    /// storage sink for `WaterPipeline` set 2 (#2141 / #2142).
+    ///
+    /// Both consumers bind their descriptor unconditionally every frame —
+    /// `triangle.frag` samples `aoTexture` with no gate, and the water
+    /// draw issues `imageAtomicAdd` against set 2 — so when the optional
+    /// pass behind one of them fails to create (init) or re-create
+    /// (resize), simply setting the pass to `None` leaves the descriptor
+    /// naming a *destroyed* image. Rebinding to these keeps the degraded
+    /// state pointing at live memory.
+    ///
+    /// Created once at init, deliberately not on the failure path itself:
+    /// the realistic trigger is VRAM exhaustion, where allocating more is
+    /// exactly what won't work. `None` only if that init allocation fails,
+    /// in which case the affected bindings keep today's behaviour.
+    pub placeholder_ao: Option<super::placeholder::PlaceholderImage>,
+    pub placeholder_caustic_sink: Option<super::placeholder::PlaceholderImage>,
     /// FSR/presentation exposure producer — a persistent 1x1 `R32_SFLOAT`
     /// texture holding the single fixed HDR exposure value. It is the source
     /// of truth the FSR dispatch samples and the presentation tonemap reads,
@@ -2065,6 +2082,40 @@ impl VulkanContext {
         // `composite.frag` (Phase E) alongside the existing caustic
         // accumulator. Failure degrades gracefully — water still
         // renders, just without the caustic contribution path.
+        // #2141 / #2142 — the two 1×1 placeholders, created BEFORE the
+        // optional passes that fall back to them so the `None` arms below
+        // have something live to rebind to. A failure here is itself
+        // non-fatal: the affected binding just keeps its pre-fix behaviour.
+        let placeholder_ao = match super::placeholder::PlaceholderImage::new_white_ao(
+            &device,
+            &gpu_allocator,
+            &graphics_queue,
+            transfer_pool,
+        ) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                log::warn!(
+                    "AO placeholder creation failed: {e} — scene binding 7 has no fallback if SSAO drops out"
+                );
+                None
+            }
+        };
+        let placeholder_caustic_sink = match super::placeholder::PlaceholderImage::new_storage_sink(
+            &device,
+            &gpu_allocator,
+            &graphics_queue,
+            transfer_pool,
+            super::caustic::CAUSTIC_FORMAT,
+        ) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                log::warn!(
+                    "Caustic-sink placeholder creation failed: {e} — water set 2 has no fallback if the accumulator drops out"
+                );
+                None
+            }
+        };
+
         let water_caustic_accum = match super::water_caustic::WaterCausticAccum::new(
             &device,
             &gpu_allocator,
@@ -2109,20 +2160,34 @@ impl VulkanContext {
         };
 
         // Wire the WaterPipeline's set 2 descriptors at the matching
-        // WaterCausticAccum slot views. Skipped when either side
-        // failed init — WaterPipeline's set 2 stays bindable (the
-        // pool + sets exist) but points at null views; record_draw
-        // binds the set unconditionally so the pipeline-layout is
-        // satisfied even when the consumer (Phase D) isn't active
-        // yet. Without the accumulator the descriptor stays
-        // uninitialised; safe because Phase D's shader-side read is
-        // gated on `sunDirection.w > 0` and won't fire during the
-        // scaffold-only window.
-        if let (Some(w), Some(accum)) = (water.as_ref(), water_caustic_accum.as_ref()) {
-            let views: Vec<vk::ImageView> = (0..super::sync::MAX_FRAMES_IN_FLIGHT)
-                .map(|i| accum.storage_view(i))
-                .collect();
-            w.update_water_caustic_descriptors(&device, &views);
+        // WaterCausticAccum slot views, falling back to the 1×1 storage
+        // sink when the accumulator failed to create.
+        //
+        // #2142 — the previous comment here claimed an unwritten set 2 was
+        // "safe because Phase D's shader-side read is gated on
+        // `sunDirection.w > 0` and won't fire during the scaffold-only
+        // window". That window closed when Phase D and Phase E shipped
+        // (#1255 / #1257): `record_draw` binds set 2 unconditionally and
+        // the shader now *writes* it via `imageAtomicAdd`, so leaving the
+        // descriptor unwritten (init) or pointing at a destroyed view
+        // (resize failure) is an atomic write to freed memory, not a
+        // harmless no-op.
+        if let Some(w) = water.as_ref() {
+            let views: Option<Vec<vk::ImageView>> = match water_caustic_accum.as_ref() {
+                Some(accum) => Some(
+                    (0..super::sync::MAX_FRAMES_IN_FLIGHT)
+                        .map(|i| accum.storage_view(i))
+                        .collect(),
+                ),
+                // Same view in every FIF slot: nothing reads the sink back,
+                // so the slots have no reason to stay distinct.
+                None => placeholder_caustic_sink
+                    .as_ref()
+                    .map(|p| vec![p.view; super::sync::MAX_FRAMES_IN_FLIGHT]),
+            };
+            if let Some(views) = views {
+                w.update_water_caustic_descriptors(&device, &views);
+            }
         }
 
         // 14a. SSAO pipeline (reads depth buffer after render pass)
@@ -2154,7 +2219,17 @@ impl VulkanContext {
                 Some(s)
             }
             Err(e) => {
+                // #2141 — binding 7 would otherwise be left entirely
+                // unwritten here, and `triangle.frag` samples `aoTexture`
+                // with no gate. Point it at the white placeholder so the
+                // degraded path reads "no occlusion" instead of an
+                // uninitialised descriptor.
                 log::warn!("SSAO pipeline creation failed: {e} — no ambient occlusion");
+                if let Some(p) = placeholder_ao.as_ref() {
+                    for f in 0..MAX_FRAMES_IN_FLIGHT {
+                        scene_buffers.write_ao_texture(&device, f, p.view, p.sampler);
+                    }
+                }
                 None
             }
         };
@@ -2699,6 +2774,8 @@ impl VulkanContext {
             skin_dispatch_ran: false,
             clean_skin_frames: 0,
             ssao,
+            placeholder_ao,
+            placeholder_caustic_sink,
             exposure,
             composite,
             frame_upscaler,
@@ -3289,6 +3366,22 @@ impl Drop for VulkanContext {
                 // guard.
                 if let Some(ref mut ssao) = self.ssao {
                     ssao.destroy(&self.device, alloc);
+                }
+                // #2141 / #2142 — the 1×1 placeholders. Torn down here,
+                // alongside the passes whose descriptors may still name
+                // them: both are allocator-backed, so they must go before
+                // the `self.allocator.take()` + `Arc::try_unwrap` below,
+                // and after the descriptor sets that reference them have
+                // stopped being used (the device_wait_idle at the top of
+                // Drop already guarantees nothing is in flight).
+                // SAFETY (both `destroy` calls): `device_wait_idle` ran at
+                // the top of Drop, so no in-flight command buffer still
+                // references these handles.
+                if let Some(ref mut p) = self.placeholder_ao {
+                    p.destroy(&self.device, alloc);
+                }
+                if let Some(ref mut p) = self.placeholder_caustic_sink {
+                    p.destroy(&self.device, alloc);
                 }
                 // The exposure resource owns its own device + allocator (an
                 // `Arc` clone of the shared allocator), so it self-frees via

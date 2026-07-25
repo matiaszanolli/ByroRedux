@@ -711,6 +711,31 @@ impl FrameUpscaler {
         }
     }
 
+    /// Restore the layouts `record_fsr_barriers_before` moved depth and the
+    /// upscale output out of, now that the SDK dispatch has been recorded.
+    ///
+    /// # Validated SDK layout contract (CHAIN-D2-02 / #2139)
+    ///
+    /// The `old_layout` values here are an assertion about where the
+    /// vendored FFX Vulkan backend leaves each image, and nothing in this
+    /// repo pins the SDK's internal resource-state tracking to them. If the
+    /// SDK left the output in some other layout, the `GENERAL` claimed
+    /// below would be a lie and the transition undefined behaviour
+    /// (VUID-VkImageMemoryBarrier-oldLayout-01197).
+    ///
+    /// Confirmed empirically against **FSR 3.1.4** (`third_party/
+    /// fidelityfx-sdk-v1.1.4`) on 2026-07-25: 900 frames under
+    /// `BYRO_VALIDATION=1` (core + sync validation) across three presets —
+    /// `quality`, `performance`, `native-aa`, i.e. three different
+    /// render→output ratios, each 300 frames and therefore many round
+    /// trips through both frame-in-flight slots — produced **zero**
+    /// `VUID-VkImageMemoryBarrier-oldLayout-01197` and zero
+    /// `SYNC-HAZARD-*` reports naming the upscale output or depth image.
+    ///
+    /// This is evidence, not proof: it confirms the contract holds for the
+    /// code paths those presets exercise on this driver. **Re-run that
+    /// check when the SDK is upgraded** — a backend change to resource-state
+    /// tracking would break these barriers silently on the happy path.
     unsafe fn record_fsr_barriers_after(
         &self,
         device: &ash::Device,
