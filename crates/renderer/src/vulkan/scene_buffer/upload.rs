@@ -14,7 +14,7 @@ use super::descriptors::{
     hash_previous_model_slice,
 };
 use super::*;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ash::vk;
 
 impl super::buffers::SceneBuffers {
@@ -790,57 +790,29 @@ impl super::buffers::SceneBuffers {
         // so skip the StagingPool reuse overhead — a one-shot 32 KB
         // CpuToGpu allocation is cheap and the buffer vanishes cleanly
         // via the guard below on any exit path.
-        let staging_info = vk::BufferCreateInfo::default()
-            .size(byte_size)
-            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-        let staging_buffer = unsafe {
-            // SAFETY: `device` is the live logical device; `staging_info` and the
-            // fields it borrows outlive this call; the None allocation callback is
-            // always valid.
-            device
-                .create_buffer(&staging_info, None)
-                .context("Failed to create terrain tile staging buffer")?
-        };
-        let reqs = unsafe {
-            // SAFETY: `device` is live and `staging_buffer` was just created by it
-            // above and not yet destroyed.
-            device.get_buffer_memory_requirements(staging_buffer)
-        };
-        let mut staging_alloc = allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                name: "terrain_tile_staging",
-                requirements: reqs,
-                location: gpu_allocator::MemoryLocation::CpuToGpu,
-                linear: true,
-                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .context("Failed to allocate terrain tile staging memory")?;
-        super::super::buffer::debug_assert_cpu_to_gpu_mapped(
-            &staging_alloc,
+        //
+        // REN-LOW L-5 / #2164 — "via the guard" is now true. This used
+        // to open-code create → allocate → bind → map with a `?` on each
+        // fallible step and no guard until the very end, so an allocator
+        // OOM or a bind failure leaked the `VkBuffer` (and, past the
+        // bind, the allocation too). `create_staging_buffer` unwinds the
+        // pre-guard window itself; the guard covers everything after.
+        let (staging_buffer, staging_alloc) = super::super::buffer::create_staging_buffer(
+            device,
+            allocator,
+            byte_size,
             "terrain_tile_staging",
+        )?;
+        let mut staging = super::super::buffer::StagingGuard::new(
+            staging_buffer,
+            staging_alloc,
+            device.clone(),
+            allocator.clone(),
         );
-        unsafe {
-            // SAFETY: `device` is live; `staging_buffer` was created by it above and
-            // is not yet bound; `staging_alloc`'s memory + offset come from the
-            // allocator's successful allocation against this buffer's own memory
-            // requirements, so the binding satisfies size/alignment.
-            device
-                .bind_buffer_memory(
-                    staging_buffer,
-                    staging_alloc.memory(),
-                    staging_alloc.offset(),
-                )
-                .context("Failed to bind terrain tile staging buffer")?;
-        }
 
         // SAFETY: GpuTerrainTile is #[repr(C)] with u32-only fields
         // matching std430. Staging was sized to `byte_size` above.
-        let mapped = staging_alloc
-            .mapped_slice_mut()
-            .context("Terrain tile staging not mapped")?;
+        let mapped = staging.mapped_slice_mut()?;
         unsafe {
             // SAFETY: `mapped` is the host-visible staging slice fetched just
             // above, valid for `byte_size` bytes (the buffer was sized to
@@ -872,17 +844,9 @@ impl super::buffers::SceneBuffers {
             });
 
         // Tear down staging regardless of copy outcome.
-        unsafe {
-            // SAFETY: `staging_buffer` was created by `device` above and is destroyed
-            // exactly once here; with_one_time_commands waited on its fence before
-            // returning, so no in-flight command buffer still references it.
-            device.destroy_buffer(staging_buffer, None);
-        }
-        allocator
-            .lock()
-            .expect("allocator lock poisoned")
-            .free(staging_alloc)
-            .ok();
+        // `with_one_time_commands` waited on its fence before returning,
+        // so no in-flight command buffer still references the buffer.
+        staging.destroy();
 
         // Suppress "field never read" on the cached size — kept for
         // future layout changes / debugging introspection.

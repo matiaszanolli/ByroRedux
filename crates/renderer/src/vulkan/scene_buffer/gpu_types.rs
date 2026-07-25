@@ -105,7 +105,12 @@ pub struct GpuInstance {
     /// Per-draw optical IOR. This occupies the former padding slot so the
     /// 112-byte std430 layout stays unchanged; the caustic pass consumes it
     /// without needing a duplicate material-table descriptor.
-    pub _pad_id0: f32, // 4 B, offset 92 (optical IOR)
+    ///
+    /// Named `_pad_id0` until #2164/L-3 — live data wearing a padding
+    /// name at 4 of its 5 mirror sites, which is how a "free slot at
+    /// offset 92" reading survives three audits. `caustic_splat.comp`
+    /// has always declared it `ior`; the other mirrors now agree.
+    pub ior: f32, // 4 B, offset 92
     /// Pre-computed average albedo for GI bounce approximation.
     /// Avoids 11 divergent memory ops per GI ray hit by replacing
     /// full UV lookup + texture sample with a single SSBO read.
@@ -147,7 +152,7 @@ impl Default for GpuInstance {
             // aliasing whichever user material happened to intern
             // first. User-interned distinct materials start at id 1.
             material_id: 0,
-            _pad_id0: 0.0,
+            ior: 0.0,
             avg_albedo_r: 0.5,
             avg_albedo_g: 0.5,
             avg_albedo_b: 0.5,

@@ -175,7 +175,7 @@ One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 | 80 | 4 | `vertex_count` | Vertex count (bounds checking) |
 | 84 | 4 | `flags` | Bit-packed flags + terrain tile slot (bits 16–31) — see below |
 | 88 | 4 | `material_id` | Index into per-frame `MaterialBuffer` SSBO |
-| 92 | 4 | *(padding)* | — |
+| 92 | 4 | `ior` | Per-draw optical IOR — repurposed padding slot; consumed only by `caustic_splat.comp` |
 | 96 | 4 | `avg_albedo_r` | Pre-computed average albedo R |
 | 100 | 4 | `avg_albedo_g` | Pre-computed average albedo G |
 | 104 | 4 | `avg_albedo_b` | Pre-computed average albedo B |
@@ -367,6 +367,12 @@ up is a precision bug, so they're documented here.
 snapped to the cell grid on the CPU. The raster geometry path runs
 entirely in **render-origin-relative** space so `viewProj × worldPos`
 keeps full f32 precision at large offsets:
+
+> **`renderOrigin.w` is not padding.** It carries the FSR
+> one-frame-reset flag, uploaded in `context/draw.rs` and read by
+> `triangle.frag`'s FSR-reset debug view. Several shader-side comments
+> described it as unused until #2164/L-10 — the same trap #1928 fixed for
+> `VolumetricsParams.render_origin.w`. Don't claim the slot.
 
 - Rigid draws: the instance `model` translation is rebased on the CPU.
 - Skinned draws: `triangle.vert` rebases the blended bone-palette

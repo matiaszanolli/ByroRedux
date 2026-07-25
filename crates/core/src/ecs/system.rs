@@ -15,7 +15,12 @@ use super::world::World;
 pub trait System: Send + Sync {
     fn run(&mut self, world: &World, dt: f32);
 
-    fn name(&self) -> &str {
+    /// `&'static str`, not `&str`: the scheduler's per-system wall-time
+    /// tracker stores the name alongside the elapsed nanos, and a
+    /// borrowed name would force an owned `String` per system per frame
+    /// (PERF-D1-01 / #2166). Every impl already returns a literal or
+    /// `type_name`, both of which are `'static`.
+    fn name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
 

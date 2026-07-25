@@ -197,64 +197,33 @@ impl Texture {
         let image_size = total_size as vk::DeviceSize;
 
         // 1. Staging buffer — from pool (reuse) or fresh. See #239.
-        let (staging_buffer, mut staging_alloc) = if let Some(pool) = staging_pool {
+        // #2164 / L-5 — the fresh path unwinds its own create/allocate/bind
+        // window inside `create_staging_buffer`; the guard below covers
+        // everything after.
+        let (staging_buffer, staging_alloc) = if let Some(pool) = staging_pool {
             pool.acquire(image_size)?
         } else {
-            let staging_buffer_info = vk::BufferCreateInfo::default()
-                .size(image_size)
-                .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-            let buf = unsafe {
-                // SAFETY: `device` is the caller's live logical device;
-                // `staging_buffer_info` is a stack-local `BufferCreateInfo`
-                // that outlives this call and describes a TRANSFER_SRC buffer
-                // of the computed `image_size`.
-                device
-                    .create_buffer(&staging_buffer_info, None)
-                    .context("Failed to create DDS staging buffer")?
-            };
-            let reqs = unsafe {
-                // SAFETY: pure query — `buf` was just created above by this
-                // same live `device` and has not been destroyed.
-                device.get_buffer_memory_requirements(buf)
-            };
-            let alloc = allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .allocate(&vk_alloc::AllocationCreateDesc {
-                    name: "dds_texture_staging",
-                    requirements: reqs,
-                    location: MemoryLocation::CpuToGpu,
-                    linear: true,
-                    allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-                })
-                .context("Failed to allocate DDS staging memory")?;
-            super::buffer::debug_assert_cpu_to_gpu_mapped(&alloc, "dds_texture_staging");
-            unsafe {
-                // SAFETY: `buf` is device-created above and unbound; `alloc`
-                // is a fresh CpuToGpu allocation from this device's allocator
-                // whose `memory()`/`offset()` satisfy `buf`'s memory
-                // requirements queried just above.
-                device
-                    .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
-                    .context("Failed to bind DDS staging buffer")?;
-            }
-            (buf, alloc)
+            super::buffer::create_staging_buffer(
+                device,
+                allocator,
+                image_size,
+                "dds_texture_staging",
+            )?
         };
 
-        staging_alloc
-            .mapped_slice_mut()
-            .context("DDS staging buffer not mapped")?[..total_size as usize]
-            .copy_from_slice(&pixel_data[..total_size as usize]);
-
         // Wrap staging in RAII guard — ensures cleanup on early return.
-        let staging = StagingGuard::new(
+        // Constructed BEFORE the host write (#2164 / L-5): the
+        // `mapped_slice_mut` failure path used to run while both the buffer
+        // and the allocation were still owned by bare locals.
+        let mut staging = StagingGuard::new(
             staging_buffer,
             staging_alloc,
             device.clone(),
             allocator.clone(),
         );
+
+        staging.mapped_slice_mut()?[..total_size as usize]
+            .copy_from_slice(&pixel_data[..total_size as usize]);
 
         // 2. Device-local image.
         let image_info = vk::ImageCreateInfo::default()

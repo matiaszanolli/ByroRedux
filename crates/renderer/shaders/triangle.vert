@@ -45,7 +45,7 @@ struct GpuInstance {
     uint vertexCount;      // offset 80
     uint flags;            // offset 84 — bit 0: non-uniform scale, bit 1: alpha blend, bit 2: caustic source, bit 3 + bits 16..32: terrain splat
     uint materialId;       // offset 88 — index into MaterialBuffer SSBO (R1)
-    float _padId0;         // offset 92
+    float ior;             // offset 92 — per-draw optical IOR (read by caustic_splat.comp)
     float avgAlbedoR;      // offset 96 — kept for caustic_splat.comp (set 0 reads, not migrated)
     float avgAlbedoG;      // offset 100
     float avgAlbedoB;      // offset 104

@@ -1046,6 +1046,27 @@ impl ApplicationHandler for App {
                                 drop(input);
                                 if let Some(ref mut ui) = self.debug_ui {
                                     ui.toggle();
+                                    // #2166 — the Metrics panel is the only
+                                    // consumer of the scheduler's per-system
+                                    // wall times, and the resource's presence
+                                    // is what arms that tracker. Insert it the
+                                    // first time the overlay opens rather than
+                                    // at world setup, so a run that never opens
+                                    // the overlay never pays for it. Left in
+                                    // place once armed: a toggle-off would
+                                    // otherwise blank the panel's history on
+                                    // every reopen, and the idle cost of the
+                                    // empty resource is a single probe.
+                                    if ui.visible
+                                        && self
+                                            .world
+                                            .try_resource::<byroredux_core::ecs::SchedulerSystemTimings>()
+                                            .is_none()
+                                    {
+                                        self.world.insert_resource(
+                                            byroredux_core::ecs::SchedulerSystemTimings::default(),
+                                        );
+                                    }
                                 }
                             } else {
                                 input.keys_held.insert(code);

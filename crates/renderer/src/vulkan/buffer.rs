@@ -297,6 +297,91 @@ impl Drop for StagingPool {
     }
 }
 
+/// Create a fresh host-visible staging buffer and bind memory to it.
+///
+/// Every fallible step unwinds internally, so a failure leaks nothing:
+/// an `allocate` failure destroys the just-created `VkBuffer`, and a
+/// `bind_buffer_memory` failure destroys the buffer *and* frees the
+/// allocation. Callers own both on success and must hand them to a
+/// [`StagingGuard`] (which is what makes every *subsequent* `?` safe).
+///
+/// Extracted for REN-LOW L-5 / #2164: this create → allocate → bind
+/// prologue was open-coded at three sites, and the window between
+/// `create_buffer` and the guard was unprotected at all of them. Doing
+/// the unwinding once, here, is what closes it — a guard alone can't,
+/// since it cannot exist until after the allocation succeeds.
+pub(crate) fn create_staging_buffer(
+    device: &ash::Device,
+    allocator: &SharedAllocator,
+    size: vk::DeviceSize,
+    name: &'static str,
+) -> Result<(vk::Buffer, vulkan::Allocation)> {
+    let info = vk::BufferCreateInfo::default()
+        .size(size)
+        .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    let buffer = unsafe {
+        // SAFETY: `device` is the caller's live logical device, valid for the
+        // call; `info` is a fully-populated valid VkBufferCreateInfo whose
+        // borrows outlive it; the None allocation callback is always valid.
+        device
+            .create_buffer(&info, None)
+            .with_context(|| format!("Failed to create {name} staging buffer"))?
+    };
+
+    // From here on, every early return must destroy `buffer` by hand —
+    // there is no guard to own it until the allocation lands.
+    let destroy = || unsafe {
+        // SAFETY: `buffer` was created by `device` immediately above, has
+        // never been bound or referenced by a command buffer, and is
+        // destroyed exactly once on each of these unwind paths.
+        device.destroy_buffer(buffer, None);
+    };
+
+    let reqs = unsafe {
+        // SAFETY: pure query — `buffer` was just created by this same live
+        // `device` and has not been destroyed.
+        device.get_buffer_memory_requirements(buffer)
+    };
+
+    let allocation = match allocator.lock().expect("allocator lock poisoned").allocate(
+        &vulkan::AllocationCreateDesc {
+            name,
+            requirements: reqs,
+            location: MemoryLocation::CpuToGpu,
+            linear: true,
+            allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
+        },
+    ) {
+        Ok(a) => a,
+        Err(e) => {
+            destroy();
+            return Err(e).with_context(|| format!("Failed to allocate {name} staging memory"));
+        }
+    };
+    debug_assert_cpu_to_gpu_mapped(&allocation, name);
+
+    let bind = unsafe {
+        // SAFETY: `device` is live; `buffer` was created by it above and is
+        // not yet bound; `allocation`'s memory + offset come from the
+        // allocator's successful allocation against this buffer's own memory
+        // requirements, so the binding satisfies size/alignment.
+        device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+    };
+    if let Err(e) = bind {
+        destroy();
+        allocator
+            .lock()
+            .expect("allocator lock poisoned")
+            .free(allocation)
+            .ok();
+        return Err(e).with_context(|| format!("Failed to bind {name} staging buffer"));
+    }
+
+    Ok((buffer, allocation))
+}
+
 /// RAII guard for a staging buffer. Destroys on drop if not explicitly released.
 /// Used to ensure cleanup on early return from upload paths.
 pub(crate) struct StagingGuard {
@@ -324,6 +409,20 @@ impl StagingGuard {
     /// Consume the guard, destroying staging resources.
     pub fn destroy(mut self) {
         self.cleanup();
+    }
+
+    /// Host-visible bytes of the guarded allocation.
+    ///
+    /// Exists so upload paths can fill staging *through* the guard rather
+    /// than holding the raw `Allocation` alongside it — the `?` here
+    /// unwinds into `Drop`, where the pre-#2164 spelling (mapping before
+    /// constructing the guard) leaked both buffer and allocation.
+    pub fn mapped_slice_mut(&mut self) -> Result<&mut [u8]> {
+        self.allocation
+            .as_mut()
+            .context("StagingGuard allocation already released")?
+            .mapped_slice_mut()
+            .context("Staging buffer not host-mapped")
     }
 
     /// Consume the guard and return the staging buffer + allocation to
@@ -826,49 +925,25 @@ impl GpuBuffer {
             command_pool,
         } = ctx;
         // 1. Acquire staging buffer — from pool (reuse) or create fresh.
-        let (staging_buffer, mut staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
+        // #2164 / L-5 — the fresh path unwinds its own create/allocate/bind
+        // window inside `create_staging_buffer`; the guard below covers
+        // everything after.
+        let (staging_buffer, staging_alloc) = if let Some(pool) = staging_pool.as_deref_mut() {
             pool.acquire(size)?
         } else {
-            let staging_info = vk::BufferCreateInfo::default()
-                .size(size)
-                .usage(vk::BufferUsageFlags::TRANSFER_SRC)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-            // SAFETY: `device` is the caller's live logical device, valid for the
-            // call; `staging_info` is a fully-populated valid VkBufferCreateInfo.
-            let buf = unsafe {
-                device
-                    .create_buffer(&staging_info, None)
-                    .context("Failed to create staging buffer")?
-            };
-
-            // SAFETY: `buf` was just created by this device above and is live;
-            // the device outlives the call.
-            let reqs = unsafe { device.get_buffer_memory_requirements(buf) };
-
-            let alloc = allocator
-                .lock()
-                .expect("allocator lock poisoned")
-                .allocate(&vulkan::AllocationCreateDesc {
-                    name: "buffer_staging",
-                    requirements: reqs,
-                    location: MemoryLocation::CpuToGpu,
-                    linear: true,
-                    allocation_scheme: vulkan::AllocationScheme::GpuAllocatorManaged,
-                })
-                .context("Failed to allocate staging memory")?;
-            debug_assert_cpu_to_gpu_mapped(&alloc, "create_device_local_with_data buffer_staging");
-
-            // SAFETY: `buf` and `alloc` were both created here from this device;
-            // the memory/offset come from the allocation that satisfied `buf`'s
-            // memory requirements, and the buffer is not yet bound.
-            unsafe {
-                device
-                    .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
-                    .context("Failed to bind staging buffer")?;
-            }
-            (buf, alloc)
+            create_staging_buffer(device, allocator, size, "buffer_staging")?
         };
+
+        // Wrap staging resources in RAII guard — ensures cleanup on early
+        // return. Constructed BEFORE the host write (#2164 / L-5): the
+        // `mapped_slice_mut` failure path used to run while both the buffer
+        // and the allocation were still owned by bare locals.
+        let mut staging = StagingGuard::new(
+            staging_buffer,
+            staging_alloc,
+            device.clone(),
+            allocator.clone(),
+        );
 
         // SAFETY: T: Copy guarantees no padding/drop concerns. The pointer is
         // valid and aligned (from a live slice), and size_of_val gives the
@@ -877,18 +952,7 @@ impl GpuBuffer {
             std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data))
         };
 
-        staging_alloc
-            .mapped_slice_mut()
-            .context("Staging buffer not mapped")?[..bytes.len()]
-            .copy_from_slice(bytes);
-
-        // Wrap staging resources in RAII guard — ensures cleanup on early return.
-        let staging = StagingGuard::new(
-            staging_buffer,
-            staging_alloc,
-            device.clone(),
-            allocator.clone(),
-        );
+        staging.mapped_slice_mut()?[..bytes.len()].copy_from_slice(bytes);
 
         // 2. Create the device-local buffer (GPU_ONLY).
         let buffer_info = vk::BufferCreateInfo::default()
@@ -1031,6 +1095,80 @@ impl Drop for GpuBuffer {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod staging_guard_coverage_tests {
+    //! REN-LOW L-5 / #2164 — every staging upload path must funnel its
+    //! buffer through [`create_staging_buffer`] (which unwinds the
+    //! pre-guard create/allocate/bind window) and then a
+    //! [`StagingGuard`] (which covers every `?` after it).
+    //!
+    //! Static source checks: the real failure needs an allocator OOM or a
+    //! `vkBindBufferMemory` failure against a live device, neither of
+    //! which is reachable from `cargo test`. Pinning the *shape* is what
+    //! stops the pattern being open-coded back in — the leak existed for
+    //! as long as it did precisely because nothing flagged the shape.
+
+    const UPLOAD_SRC: &str = include_str!("scene_buffer/upload.rs");
+    const TEXTURE_SRC: &str = include_str!("texture.rs");
+
+    /// The two consumer sites. `buffer.rs` itself is excluded: it *hosts*
+    /// `create_staging_buffer` and `StagingPool`, the two legitimate
+    /// creators of a `TRANSFER_SRC` buffer in this crate.
+    fn consumer_sites() -> [(&'static str, &'static str); 2] {
+        [
+            ("scene_buffer/upload.rs", UPLOAD_SRC),
+            ("texture.rs", TEXTURE_SRC),
+        ]
+    }
+
+    /// No consumer may open-code the staging prologue. Creating a
+    /// `TRANSFER_SRC` buffer outside `create_staging_buffer` is the exact
+    /// shape that leaks: the `VkBuffer` exists, but nothing owns it until
+    /// the allocation lands several fallible steps later.
+    #[test]
+    fn no_consumer_open_codes_the_staging_prologue() {
+        for (name, src) in consumer_sites() {
+            assert!(
+                !src.contains("TRANSFER_SRC"),
+                "{name}: a staging buffer is created outside `create_staging_buffer` — \
+                 the create→allocate→bind window leaks the VkBuffer on any failure \
+                 (REN-LOW L-5 / #2164). Route it through `create_staging_buffer`."
+            );
+        }
+    }
+
+    /// `upload_terrain_tiles` — the site the audit named — must tear down
+    /// through the guard, not a hand-rolled destroy/free pair.
+    #[test]
+    fn upload_terrain_tiles_tears_down_through_the_guard() {
+        let fn_start = UPLOAD_SRC
+            .find("pub fn upload_terrain_tiles")
+            .expect("upload_terrain_tiles not found");
+        let body = &UPLOAD_SRC[fn_start..];
+        let fn_end = body
+            .find("\n    /// Get the light buffers")
+            .unwrap_or(body.len());
+        let body = &body[..fn_end];
+
+        assert!(
+            body.contains("StagingGuard::new"),
+            "upload_terrain_tiles must wrap staging in a StagingGuard immediately \
+             after acquiring it — the three fallible steps that follow used to leak \
+             it (REN-LOW L-5 / #2164)"
+        );
+        assert!(
+            body.contains("staging.destroy()"),
+            "upload_terrain_tiles must release staging via `StagingGuard::destroy`"
+        );
+        assert!(
+            !body.contains("destroy_buffer"),
+            "upload_terrain_tiles must not hand-roll `destroy_buffer` — that spelling \
+             is only reached on the success path and is what left the failure paths \
+             leaking (REN-LOW L-5 / #2164)"
+        );
     }
 }
 

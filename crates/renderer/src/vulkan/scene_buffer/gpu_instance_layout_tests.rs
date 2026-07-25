@@ -77,7 +77,7 @@ fn gpu_instance_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuInstance, vertex_count), 80);
     assert_eq!(offset_of!(GpuInstance, flags), 84);
     assert_eq!(offset_of!(GpuInstance, material_id), 88);
-    assert_eq!(offset_of!(GpuInstance, _pad_id0), 92);
+    assert_eq!(offset_of!(GpuInstance, ior), 92);
     assert_eq!(offset_of!(GpuInstance, avg_albedo_r), 96);
     assert_eq!(offset_of!(GpuInstance, avg_albedo_g), 100);
     assert_eq!(offset_of!(GpuInstance, avg_albedo_b), 104);
@@ -511,6 +511,72 @@ fn triangle_vert_skinned_branch_rebases_render_origin() {
              skinned motion vectors are off by the full render origin \
              (#1486 / REN2-01)."
     );
+}
+
+/// REN-LOW L-9 / #2164 regression guard for the **#1496** varying
+/// convention — the sibling of #1486's check above, which #1496 never got.
+///
+/// `triangle.vert` emits `fragWorldPosRel` render-origin-*relative*;
+/// `triangle.frag` reconstructs the absolute `fragWorldPos` once at the
+/// top of `main()`. The point of the split is that the four derivative
+/// consumers keep differentiating the *relative* position, so `dFdx`/
+/// `dFdy` form from small magnitudes and f32 quantization lands after
+/// the derivative stage (pre-#1496 the absolute varying fed those
+/// derivatives up to ~0.0156 u of ULP noise at `|world| ≥ 131k`).
+///
+/// Until this test, that convention was enforced only by shader
+/// comments: `grep -rl fragWorldPosRel --include=*.rs` returned nothing
+/// repo-wide, so renaming the varying — or quietly switching one
+/// derivative consumer to the absolute local, which is the *easy*
+/// mistake since both are in scope — compiled clean and passed every
+/// renderer test while silently restoring the precision bug.
+#[test]
+fn triangle_shaders_keep_the_render_origin_relative_varying_convention() {
+    let vert = include_str!("../../../shaders/triangle.vert");
+    let frag = include_str!("../../../shaders/triangle.frag");
+
+    assert!(
+        vert.contains("fragWorldPosRel = worldPos.xyz"),
+        "triangle.vert: the `location = 3` varying must be emitted \
+         render-origin-RELATIVE (`fragWorldPosRel = worldPos.xyz`) — \
+         emitting the absolute position re-introduces the #1496 \
+         derivative-precision bug."
+    );
+    assert!(
+        frag.contains("fragWorldPosRel + renderOrigin.xyz"),
+        "triangle.frag: the absolute position must be reconstructed once \
+         at the top of main() as `fragWorldPosRel + renderOrigin.xyz` \
+         (#1496)."
+    );
+
+    // The four derivative consumers. Each must differentiate the
+    // RELATIVE position, never the reconstructed absolute one.
+    for (needle, what) in [
+        (
+            "cross(dFdx(fragWorldPosRel), dFdy(fragWorldPosRel))",
+            "flat-shading normal",
+        ),
+        (
+            "fragWorldPosRel,  // #1496 — POM builds its TBN",
+            "POM / parallaxDisplaceUV",
+        ),
+        (
+            "perturbNormal(N, fragWorldPosRel,",
+            "derivative TBN (perturbNormal)",
+        ),
+        (
+            "max(length(dFdx(fragWorldPosRel)), length(dFdy(fragWorldPosRel)))",
+            "rtLOD footprint",
+        ),
+    ] {
+        assert!(
+            frag.contains(needle),
+            "triangle.frag: the {what} consumer must take `fragWorldPosRel`, \
+             not the reconstructed absolute `fragWorldPos` — differentiating \
+             the absolute position is exactly the #1496 precision bug \
+             (REN-LOW L-9 / #2164). Expected to find: `{needle}`"
+        );
+    }
 }
 
 /// #1488 / REN2-03 regression. Both caustic deposit writers trace in

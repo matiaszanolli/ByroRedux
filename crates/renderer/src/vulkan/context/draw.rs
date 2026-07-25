@@ -314,6 +314,28 @@ fn dof_effective_view_proj(
 /// (`is_decal` excluded by the glass classifier), `BSEffectShaderProperty`
 /// FX cards (kind 101 — MATERIAL_KIND_EFFECT_SHADER).
 fn is_caustic_source(cmd: &DrawCommand) -> bool {
+    is_refractive_glass(cmd)
+}
+
+/// Whether a draw is a refractive glass-family surface.
+///
+/// The shared material classifier behind two independent consumers, both
+/// of which need "real glass, not a blended billboard":
+///   * [`is_caustic_source`] — gates `INSTANCE_FLAG_CAUSTIC_SOURCE`.
+///   * [`needs_two_sided_blend_split`] — gates the two-pass
+///     FRONT-then-BACK cull split (#1804 / #2165).
+///
+/// Kept as one function deliberately: when the classifier drifts (a new
+/// refractive `material_kind`, say), both consumers must move together —
+/// they are asking the same question about the same authored material.
+///
+/// Accepted refractive signals:
+///   * `material_kind == MATERIAL_KIND_GLASS` — engine-classified glass
+///     from `render::build_render_data` (alpha-blend + low metal + low
+///     roughness + not a decal). See #515 / #706.
+///   * Skyrim+ `MultiLayerParallax` (kind 11) with a non-zero inner-layer
+///     refraction scale — real two-layer refractive surface.
+fn is_refractive_glass(cmd: &DrawCommand) -> bool {
     if cmd.material_kind == MATERIAL_KIND_GLASS {
         return true;
     }
@@ -395,6 +417,23 @@ pub(super) struct DrawBatch {
     /// `NiZBufferProperty.z_function` — fed to `vkCmdSetDepthCompareOp`
     /// (Gamebryo `TestFunction` enum mapped to `vk::CompareOp`).
     pub z_function: u8,
+    /// Whether this batch's material is refractive glass
+    /// ([`is_refractive_glass`]) — the ONLY population that needs the
+    /// two-pass back-then-front cull split.
+    ///
+    /// Carried explicitly rather than re-derived from depth state.
+    /// #1804 originally used `z_write` as the "order-dependent glass"
+    /// proxy; `883f57cd` then dropped that limb outright (correctly —
+    /// FO4 BGEM glass is commonly authored `z_write == false`), which
+    /// re-broadened the split to every two-sided blended batch and put
+    /// particle FX back on the 2-direct-draw path #1804 had removed
+    /// them from (#2165). The material kind is the real signal; depth
+    /// state never was.
+    ///
+    /// MUST be part of the merge key ([`group_state`]): a non-glass
+    /// leader would otherwise swallow a glass batch into its indirect
+    /// group and silently drop that batch's split.
+    pub order_dependent_glass: bool,
 }
 
 /// Indirect-merge key for [`DrawBatch`] (#1581 / F1). Two batches may fold
@@ -417,6 +456,7 @@ pub(super) fn group_state(
     bool,
     bool,
     u8,
+    bool,
 ) {
     (
         b.pipeline_key,
@@ -425,6 +465,12 @@ pub(super) fn group_state(
         b.z_test,
         b.z_write,
         b.z_function,
+        // #2165 — split-eligibility must split the group too. The
+        // gather loop admits a batch on `group_state` equality alone,
+        // so without this limb a non-glass two-sided blend leader would
+        // absorb a following glass batch and rasterize it in one
+        // CULL_NONE indirect draw, losing the back-then-front ordering.
+        b.order_dependent_glass,
     )
 }
 
@@ -436,12 +482,20 @@ pub(super) fn group_state(
 /// disabled: FO4 BGEM glass commonly uses `z_write == false`, and a single
 /// CULL_NONE draw otherwise interleaves the dome's front/back triangles in
 /// mesh index order. TAA jitter then exposes a different blend winner and
-/// produces crawling blocks/cross-hatch. The extra FRONT-cull pass remains
-/// cheap for planar particles because it rasterizes no camera-facing
-/// fragments; their normal BACK-cull pass still supplies the visible quad.
+/// produces crawling blocks/cross-hatch.
+///
+/// Eligibility is the material kind ([`DrawBatch::order_dependent_glass`],
+/// set at batch formation from [`is_refractive_glass`]), NOT depth state.
+/// Both earlier spellings were wrong in opposite directions: `z_write` as
+/// a glass proxy (#1804) excluded the FO4 BGEM glass that motivated the
+/// split, and dropping the limb entirely (`883f57cd`) re-included every
+/// two-sided blended particle batch (#2165). Particle billboards are
+/// front-facing by construction, so their FRONT-cull pass rasterizes zero
+/// fragments — pure wasted vertex work, plus the batch falls out of
+/// indirect grouping into two direct draws.
 pub(super) fn needs_two_sided_blend_split(b: &DrawBatch) -> bool {
     let is_blend = matches!(b.pipeline_key, PipelineKey::Blended { .. });
-    is_blend && b.two_sided
+    is_blend && b.two_sided && b.order_dependent_glass
 }
 
 /// All per-frame inputs consumed by [`VulkanContext::draw_frame`].
@@ -1252,10 +1306,15 @@ impl VulkanContext {
                 self.light_atten_knee,
                 if camera_static { 1.0 } else { 0.0 },
             ],
-            // #markarth-precision — camera-relative render origin (xyz; w
-            // unused). Vertex/deferred shaders add this back to recover the
-            // absolute world position from the relative `view_proj` space.
-            // w exposes FSR's one-frame reset state to the diagnostic view.
+            // #markarth-precision — camera-relative render origin in xyz.
+            // Vertex/deferred shaders add this back to recover the absolute
+            // world position from the relative `view_proj` space.
+            //
+            // `w` is NOT padding (REN-LOW L-10 / #2164): it carries the
+            // FSR one-frame-reset flag, read by `triangle.frag`'s FSR-reset
+            // debug view. Any shader that treats this as a free slot will
+            // fight that consumer — same trap as #1928's
+            // `VolumetricsParams.render_origin.w`.
             render_origin: [
                 render_origin.x,
                 render_origin.y,
@@ -1786,7 +1845,7 @@ impl VulkanContext {
                 // Reuse the layout's former padding lane for per-material IOR.
                 // caustic_splat.comp names this offset `ior`; other shaders
                 // keep treating it as padding, so the std430 ABI is unchanged.
-                _pad_id0: draw_cmd.ior,
+                ior: draw_cmd.ior,
                 avg_albedo_r: gi_albedo[0],
                 avg_albedo_g: gi_albedo[1],
                 avg_albedo_b: gi_albedo[2],
@@ -1797,7 +1856,20 @@ impl VulkanContext {
 
             // Frustum-culled draws still need an SSBO entry so RT hit
             // shaders that land on their TLAS instance read the right
-            // material / transform (#516). Skip batch formation — they
+            // material / transform (#516).
+            //
+            // REN-LOW L-8 / #2164 — "transform" needs a caveat. Since the
+            // render-origin rebase, `GpuInstance.model` is render-origin
+            // *relative*, while the TLAS an RT hit arrives through is
+            // absolute. Rotation and scale are therefore usable from a hit
+            // shader; translation is NOT. The only current RT reader
+            // (`raytrace.glsl::getHitTriNormal`) is translation-invariant,
+            // so nothing is wrong today — but a future hit-position
+            // reconstruction built on `.model[3]` would land `renderOrigin`
+            // (up to ~176k units on MarkarthWorld) from the true hit. Add
+            // `+ renderOrigin.xyz` if you ever need absolute position here.
+            //
+            // Skip batch formation — they
             // have no rasterized pixels this frame. Breaking the batch
             // chain here also avoids accidentally extending a previous
             // batch across a gap in the SSBO layout (`first_instance +
@@ -1847,6 +1919,13 @@ impl VulkanContext {
             // at cell-load time.
             let render_layer = draw_cmd.render_layer;
 
+            // #2165 — split-eligibility is a material property, resolved
+            // once here at emit time. Part of the batch merge key: a
+            // glass draw and a particle draw that happen to agree on
+            // every pipeline/depth axis must not fold together, or the
+            // merged batch would take one population's path for both.
+            let order_dependent_glass = is_refractive_glass(draw_cmd);
+
             if let Some(batch) = batches.last_mut() {
                 if batch.mesh_handle == draw_cmd.mesh_handle
                     && batch.pipeline_key == pipeline_key
@@ -1855,6 +1934,7 @@ impl VulkanContext {
                     && batch.z_test == draw_cmd.z_test
                     && batch.z_write == draw_cmd.z_write
                     && batch.z_function == draw_cmd.z_function
+                    && batch.order_dependent_glass == order_dependent_glass
                     && batch.first_instance + batch.instance_count == instance_idx
                 {
                     batch.instance_count += 1;
@@ -1876,6 +1956,7 @@ impl VulkanContext {
                 z_test: draw_cmd.z_test,
                 z_write: draw_cmd.z_write,
                 z_function: draw_cmd.z_function,
+                order_dependent_glass,
             });
         }
 
@@ -3223,6 +3304,7 @@ mod group_state_tests {
             z_test: true,
             z_write: true,
             z_function: 3,
+            order_dependent_glass: false,
         }
     }
 
@@ -3292,15 +3374,24 @@ mod group_state_tests {
 
 #[cfg(test)]
 mod needs_two_sided_blend_split_tests {
-    //! #1804 / D2-NEW-03 — every two-sided alpha-blend batch is split into
-    //! stable back/front passes. FO4 BGEM glass is commonly `z_write: false`,
-    //! so depth-write state cannot be used to distinguish glass from planar
-    //! particles. The latter pay only an extra vertex walk because their
-    //! FRONT-cull pass produces no camera-facing fragments.
+    //! #1804 / D2-NEW-03 / #2165 — the two-pass back-then-front cull split
+    //! applies to two-sided *refractive glass* batches only.
+    //!
+    //! Both earlier predicates were wrong, in opposite directions, and both
+    //! shipped green because the tests were written to match whatever the
+    //! code did at the time. #1804 keyed on `z_write`, which excludes the
+    //! FO4 BGEM glass (`z_write: false`) that motivated the split;
+    //! `883f57cd` then dropped the limb entirely and re-included every
+    //! two-sided blended particle batch — the exact population #1804 set
+    //! out to exclude — while a same-named test asserted that as correct.
+    //! The cases below are signed against the *material*, which is what the
+    //! split has always actually been about.
     use super::*;
     use byroredux_core::ecs::components::RenderLayer;
 
-    fn blended_two_sided_batch(z_write: bool) -> DrawBatch {
+    /// A two-sided blended batch. `order_dependent_glass` is the axis under
+    /// test; `z_write` is varied only to prove it is NOT an input.
+    fn blended_two_sided_batch(z_write: bool, order_dependent_glass: bool) -> DrawBatch {
         DrawBatch {
             mesh_handle: 1,
             pipeline_key: PipelineKey::Blended {
@@ -3318,35 +3409,84 @@ mod needs_two_sided_blend_split_tests {
             z_test: true,
             z_write,
             z_function: 3,
+            order_dependent_glass,
         }
     }
 
-    /// Depth-writing two-sided blend (order-dependent glass) splits.
+    /// Depth-writing two-sided glass splits.
     #[test]
-    fn splits_when_blended_two_sided_and_z_write() {
-        assert!(needs_two_sided_blend_split(&blended_two_sided_batch(true)));
+    fn splits_when_blended_two_sided_glass_and_z_write() {
+        assert!(needs_two_sided_blend_split(&blended_two_sided_batch(
+            true, true
+        )));
     }
 
-    /// Non-depth-writing two-sided blend must also split: this is the normal
-    /// authored state for FO4 BGEM glass.
+    /// Non-depth-writing two-sided glass must also split: this is the
+    /// normal authored state for FO4 BGEM glass, and the case #1804's
+    /// `z_write` proxy wrongly excluded.
     #[test]
-    fn splits_when_z_write_false() {
-        assert!(needs_two_sided_blend_split(&blended_two_sided_batch(false)));
+    fn splits_when_glass_and_z_write_false() {
+        assert!(needs_two_sided_blend_split(&blended_two_sided_batch(
+            false, true
+        )));
     }
 
-    /// Single-sided blend never splits, regardless of z_write.
+    /// #2165 regression guard — the particle population. Two-sided,
+    /// alpha-blended, `z_write: false`, non-glass: matches every limb the
+    /// post-`883f57cd` predicate tested, and must NOT split. Billboards are
+    /// front-facing by construction, so the FRONT-cull pass produces no
+    /// camera-facing fragments; splitting buys nothing and costs a wasted
+    /// vertex walk plus the batch's place in an indirect group.
+    ///
+    /// This is the assertion whose sign was inverted before #2165 (as
+    /// `splits_when_z_write_false`) — which is why `cargo test` stayed
+    /// green straight through the regression.
+    #[test]
+    fn does_not_split_two_sided_blended_particles() {
+        assert!(!needs_two_sided_blend_split(&blended_two_sided_batch(
+            false, false
+        )));
+    }
+
+    /// The same population with `z_write: true` also stays unsplit — depth
+    /// state is not an input to the predicate in either direction.
+    #[test]
+    fn does_not_split_non_glass_regardless_of_z_write() {
+        assert!(!needs_two_sided_blend_split(&blended_two_sided_batch(
+            true, false
+        )));
+    }
+
+    /// Single-sided glass never splits — there are no back faces to order.
     #[test]
     fn does_not_split_when_not_two_sided() {
-        let mut b = blended_two_sided_batch(true);
+        let mut b = blended_two_sided_batch(true, true);
         b.two_sided = false;
         assert!(!needs_two_sided_blend_split(&b));
     }
 
-    /// Opaque batches never split, even if (nonsensically) two_sided.
+    /// Opaque batches never split, even if (nonsensically) two-sided glass.
     #[test]
     fn does_not_split_when_opaque() {
-        let mut b = blended_two_sided_batch(true);
+        let mut b = blended_two_sided_batch(true, true);
         b.pipeline_key = PipelineKey::Opaque { wireframe: false };
         assert!(!needs_two_sided_blend_split(&b));
+    }
+
+    /// #2165 — the indirect gather loop admits a batch on `group_state`
+    /// equality alone. If split-eligibility weren't in that key, a particle
+    /// leader would absorb a following glass batch into its indirect group
+    /// and rasterize it in a single CULL_NONE draw, silently losing the
+    /// back-then-front ordering the split exists for.
+    #[test]
+    fn glass_and_particles_never_share_an_indirect_group() {
+        let particles = blended_two_sided_batch(false, false);
+        let glass = blended_two_sided_batch(false, true);
+        assert_ne!(
+            group_state(&particles),
+            group_state(&glass),
+            "identical pipeline + depth state, differing only in glass-ness — \
+             the merge key must still split them"
+        );
     }
 }

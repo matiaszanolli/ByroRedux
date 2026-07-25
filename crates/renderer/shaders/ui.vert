@@ -21,7 +21,7 @@ struct GpuInstance {
     uint vertexCount;      // offset 80
     uint flags;            // offset 84
     uint materialId;       // offset 88
-    float _padId0;         // offset 92
+    float ior;             // offset 92 — per-draw optical IOR (read by caustic_splat.comp)
     float avgAlbedoR;      // offset 96 — kept for caustic_splat.comp
     float avgAlbedoG;      // offset 100
     float avgAlbedoB;      // offset 104

@@ -191,7 +191,7 @@ impl System for DebugDrainSystem {
         }
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "debug_drain_system"
     }
 }

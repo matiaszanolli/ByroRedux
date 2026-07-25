@@ -61,16 +61,22 @@ impl SystemEntry {
 
     /// Run the system, recording `(name, ns)` into `timings` only when
     /// the per-system tracker is active (`Some`). When `None` — the
-    /// steady-state path with no `SchedulerSystemTimings` resource — the
-    /// `Instant::now()` probe and the owned-`String` name allocation are
-    /// both skipped entirely (#1647).
-    fn run_tracked(&mut self, world: &World, dt: f32, timings: Option<&Mutex<Vec<(String, u64)>>>) {
+    /// steady-state path, where no `SchedulerSystemTimings` resource
+    /// exists — the `Instant::now()` probe and the `Mutex` round-trip
+    /// are both skipped entirely (#1647 / #2166).
+    fn run_tracked(
+        &mut self,
+        world: &World,
+        dt: f32,
+        timings: Option<&Mutex<Vec<(&'static str, u64)>>>,
+    ) {
         match timings {
             Some(timings) => {
-                // Take an owned name up front — `name()` borrows
+                // Read the name up front — `name()` borrows
                 // `self.system` immutably and would otherwise conflict
-                // with the `&mut` run call below.
-                let name = self.system.name().to_string();
+                // with the `&mut` run call below. It's `&'static str`,
+                // so this is a copy, not an allocation (#2166).
+                let name = self.system.name();
                 let t0 = Instant::now();
                 self.system.run(world, dt);
                 let ns = t0.elapsed().as_nanos() as u64;
@@ -122,11 +128,27 @@ pub struct Scheduler {
 /// to N — that's the parallelism gain. A single system reading
 /// far above the stage wall time means it dominates and the
 /// others run "for free" alongside it.
+///
+/// # Presence is the gate
+///
+/// The resource's *existence* arms the tracker — [`Scheduler::run`]
+/// probes for it once per frame and skips all per-system timing work
+/// when it is absent (#1647). It must therefore only be inserted while
+/// something actually consumes it (the egui Metrics panel, or
+/// `BYRO_PROFILE=1`); an unconditional insert at world setup silently
+/// re-arms every frame of the shipping binary and defeats the gate
+/// (PERF-D1-01 / #2166).
 #[derive(Default)]
 pub struct SchedulerSystemTimings {
     /// `(system_name, ms)` pairs sorted descending. Re-populated
     /// at the end of every `Scheduler::run`.
-    pub systems: Vec<(String, f32)>,
+    ///
+    /// `&'static str` rather than `String`: names come from
+    /// [`System::name`], which returns a literal or `type_name`. Keeping
+    /// them borrowed removes one allocation per system per frame from
+    /// the tracked path (#2166); consumers that need ownership (the 2 Hz
+    /// `MetricsSnapshot`) convert at their own, far lower, cadence.
+    pub systems: Vec<(&'static str, f32)>,
 }
 
 impl Resource for SchedulerSystemTimings {}
@@ -457,15 +479,18 @@ impl Scheduler {
         // `SchedulerSystemTimings` resource for the debug-UI.
         //
         // The tracker is allocated only when that resource is present
-        // (debug-UI open). In the steady-state path it's absent, so
-        // `timings` stays `None` and `run_tracked` skips the
-        // `Instant::now()` probe and the owned-`String` name allocation
-        // for every system — no per-frame `Mutex`/`Vec`/`String` churn
-        // (#1647). When present, cost is one `Instant::now()` + one
-        // Mutex-lock-push per system; Mutex contention is bounded by the
-        // rayon worker count (≤ 1 lock per worker per stage), so a
-        // ~20-system schedule pays ~20 µs at most.
-        let timings: Option<Mutex<Vec<(String, u64)>>> = world
+        // (Metrics panel open, or `BYRO_PROFILE=1`). In the steady-state
+        // path it's absent, so `timings` stays `None` and `run_tracked`
+        // skips the `Instant::now()` probe entirely — no per-frame
+        // `Mutex`/`Vec` churn (#1647). Keeping the resource out of the
+        // world in that state is what makes the gate real; inserting it
+        // unconditionally at world setup defeated it (#2166). When
+        // present, cost is one `Instant::now()` + one Mutex-lock-push
+        // per system (names are `&'static str`, so no allocation);
+        // Mutex contention is bounded by the rayon worker count (≤ 1
+        // lock per worker per stage), so a ~40-system schedule pays a
+        // few µs at most.
+        let timings: Option<Mutex<Vec<(&'static str, u64)>>> = world
             .try_resource::<SchedulerSystemTimings>()
             .is_some()
             .then(|| Mutex::new(Vec::new()));
@@ -747,7 +772,7 @@ mod tests {
             }
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "DamageOverTime"
         }
     }
@@ -1082,7 +1107,7 @@ mod tests {
     struct DamagePosition;
     impl System for DamagePosition {
         fn run(&mut self, _world: &World, _dt: f32) {}
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "DamagePosition"
         }
         fn access(&self) -> Option<Access> {
@@ -1153,7 +1178,7 @@ mod tests {
         struct WriteHealth;
         impl System for WriteHealth {
             fn run(&mut self, _w: &World, _dt: f32) {}
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "WriteHealth"
             }
             fn access(&self) -> Option<Access> {

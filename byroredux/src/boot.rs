@@ -310,7 +310,18 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // desc. The egui Metrics panel renders the top entries
     // so the operator can see which ECS system dominates
     // `atw_scheduler_ms`.
-    world.insert_resource(byroredux_core::ecs::SchedulerSystemTimings::default());
+    //
+    // Deliberately NOT inserted unconditionally: the resource's
+    // presence is what arms the scheduler's per-system tracker, so
+    // inserting it here made every registered system pay an
+    // `Instant::now()` + a shared-`Mutex` push every frame for a
+    // consumer that samples at ≤ 2 Hz — defeating the #1647 gate
+    // outright (PERF-D1-01 / #2166). `BYRO_PROFILE=1` arms it up
+    // front for offline profiling runs; otherwise it is inserted
+    // lazily by `App` the first time the F3 debug overlay opens.
+    if std::env::var_os("BYRO_PROFILE").is_some() {
+        world.insert_resource(byroredux_core::ecs::SchedulerSystemTimings::default());
+    }
     // Debug-UI sampler state + the aggregated snapshot. Snapshot is
     // empty until `metrics_sample_system` fires its first tick
     // (~500 ms in), at which point CPU / RAM / VRAM / GPU pass
@@ -1202,4 +1213,72 @@ fn strip_flag_and_value(args: Vec<String>, flag: &str) -> Vec<String> {
         out.push(a);
     }
     out
+}
+
+#[cfg(test)]
+mod scheduler_timings_gate_tests {
+    //! PERF-D1-01 / #2166 — the per-system wall-time tracker is armed by
+    //! the *presence* of `SchedulerSystemTimings` in the world. Inserting
+    //! it unconditionally at world setup (as this file did before #2166)
+    //! silently defeats the #1647 gate: every registered system then pays
+    //! an `Instant::now()` plus a shared-`Mutex` push on every frame of
+    //! the shipping binary, for a consumer that samples at ≤ 2 Hz.
+    //!
+    //! Static source checks rather than a live `setup_world` call — the
+    //! full boot path wants a Vulkan device and on-disk game data, which
+    //! is out of `cargo test` scope. Mirrors the renderer crate's
+    //! `include_str!` convention for pinning a source-level invariant.
+
+    const BOOT_SRC: &str = include_str!("boot.rs");
+
+    /// The only `SchedulerSystemTimings` insert in `boot.rs` must sit
+    /// behind the `BYRO_PROFILE` env gate.
+    #[test]
+    fn scheduler_timings_insert_is_env_gated() {
+        // Ignore this test module's own mentions of the type name.
+        let setup = BOOT_SRC
+            .split("mod scheduler_timings_gate_tests")
+            .next()
+            .expect("split always yields a first segment");
+
+        let inserts: Vec<&str> = setup
+            .lines()
+            .filter(|l| l.contains("insert_resource") && l.contains("SchedulerSystemTimings"))
+            .collect();
+        assert_eq!(
+            inserts.len(),
+            1,
+            "expected exactly one SchedulerSystemTimings insert in boot.rs, found {}: {:?}",
+            inserts.len(),
+            inserts,
+        );
+
+        let gate = setup
+            .find("if std::env::var_os(\"BYRO_PROFILE\").is_some() {")
+            .expect(
+                "boot.rs must gate the SchedulerSystemTimings insert on BYRO_PROFILE — an \
+                 unconditional insert re-arms the scheduler tracker every frame (#2166)",
+            );
+        let insert = setup
+            .find("insert_resource(byroredux_core::ecs::SchedulerSystemTimings::default())")
+            .expect("SchedulerSystemTimings insert not found in boot.rs");
+        assert!(
+            insert > gate,
+            "the SchedulerSystemTimings insert must appear inside the BYRO_PROFILE gate, \
+             not before it (#2166)"
+        );
+    }
+
+    /// The lazy arm-on-overlay-open path lives in `main.rs`; without it a
+    /// normal (non-`BYRO_PROFILE`) run could never populate the Metrics
+    /// panel at all. Pin that the fallback exists.
+    #[test]
+    fn overlay_open_arms_the_tracker_lazily() {
+        const MAIN_SRC: &str = include_str!("main.rs");
+        assert!(
+            MAIN_SRC.contains("SchedulerSystemTimings::default()"),
+            "main.rs must insert SchedulerSystemTimings when the F3 debug overlay first \
+             opens — boot.rs no longer does it unconditionally (#2166)"
+        );
+    }
 }

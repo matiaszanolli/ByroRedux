@@ -50,7 +50,7 @@ struct GpuInstance {
     uint vertexCount;
     uint flags;
     uint materialId;
-    float _padId0;
+    float ior;             // offset 92 — per-draw optical IOR (read by caustic_splat.comp)
     float avgAlbedoR;
     float avgAlbedoG;
     float avgAlbedoB;
@@ -73,7 +73,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
     vec4 skyTint;
     vec4 sunDirection;
     vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
-    vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin; add to worldPos_rel for the absolute world position. w unused.
+    vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin; add to worldPos_rel for the absolute world position. w = FSR one-frame-reset flag (NOT padding — #2164/L-10).
 };
 
 layout(location = 0) out vec3 vWorldPos;

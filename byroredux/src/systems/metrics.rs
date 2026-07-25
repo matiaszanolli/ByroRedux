@@ -160,10 +160,20 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
 
     // Phase 11 — top-N system timings. Cloning the whole list is
     // fine; the scheduler caps it at the registered system count
-    // (~25 today) so this is a few hundred bytes.
+    // (~39 today) so this is a few hundred bytes. The scheduler keeps
+    // the names borrowed (`&'static str`) to stay allocation-free on
+    // the per-frame path, so the `String` conversion happens here
+    // instead — at this sampler's ≤ 2 Hz cadence, not per frame
+    // (#2166). Empty when the tracker was never armed (no debug
+    // overlay opened and no `BYRO_PROFILE`).
     let top_systems_ms: Vec<(String, f32)> = world
         .try_resource::<SchedulerSystemTimings>()
-        .map(|t| t.systems.clone())
+        .map(|t| {
+            t.systems
+                .iter()
+                .map(|&(name, ms)| (name.to_string(), ms))
+                .collect()
+        })
         .unwrap_or_default();
 
     // `BYRO_PROFILE=1` logs the per-system wall-time breakdown at the
