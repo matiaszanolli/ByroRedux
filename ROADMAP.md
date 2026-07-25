@@ -775,6 +775,50 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
   shading fewer pixels, which is exactly why the default flip should not be
   read as making this less urgent.
 
+  **Root cause narrowed to the fragment shader (2026-07-24).** Swapping *only*
+  `triangle.frag.spv` from `e414249f` into a `6c56e311` worktree — no other
+  file — restores 65.1 → **149.9 FPS**. The whole regression is compiled
+  main-pass shader code. `6c56e311` added two features there, and per-knob
+  measurement on Prospector attributes the cost as:
+
+  | configuration | FPS | note |
+  |---|---:|---|
+  | current HEAD | 62.7 | both features on |
+  | binary shadow ray (pre-`6c56e311` semantics) | 107.9 | isolates the shadow rewrite |
+  | GI diffuse bounces 2→1 | 86.2 | isolates the GI path depth |
+  | GI path segments 6→2, bounces 2 | 70.4 | segment count is the minor term |
+  | pre-regression (`e414249f`) | 142.0 | both features absent |
+
+  1. **`traceShadowTransmittance`** (glass-transmitting, alpha-aware shadows)
+     replaced a single `TerminateOnFirstHitEXT` any-hit query with two
+     closest-hit walks that read `GpuInstance` + `GpuMaterial` per hit. Worth
+     ~45 FPS. The cost is *inherent to the feature*: deciding whether a hit
+     blocks requires sampling its coverage, which an any-hit query cannot do.
+  2. **The GI ray became a bounded path tracer** (`MAX_PATH_SEGMENTS = 6`,
+     `MAX_DIFFUSE_BOUNCES = 2`) where it was one `TerminateOnFirstHit`
+     traversal. Worth ~24 FPS, nearly all of it in the *second* diffuse
+     bounce, which fires a shadow ray per light at the bounce hit — so it
+     compounds with (1).
+
+  **Recovering it is a quality trade-off, not a bug fix**, which is why
+  nothing is landed here: both are deliberate visual features (glass tints
+  light instead of casting black shadows; second-bounce colour bleeding).
+  The options above are measured and available to pick from.
+
+  **One structural avenue was explored and rejected.** Adding a
+  `SHADOW_MASK_SOLID` TLAS bucket (opaque, no alpha coverage, no emission) so
+  the common case can use a memory-free any-hit probe again measured +6%
+  (62.7 → 66.5) — but it also shifted 0.336% of Prospector pixels by more than
+  24/255, against a same-build noise floor of 0.000% at that threshold. The
+  probe was argued to be behaviour-identical and is not, most likely because
+  the CPU-side classifier reads the *draw command's* emissive while the shader
+  reads the *material table's*, so a mesh can be bucketed solid yet take the
+  emitter-shell branch in the walk. Not shipped: +6% does not justify an
+  unexplained visual delta, and per the project's own rule a renderer change
+  whose failure mode is invisible to `cargo test` needs RenderDoc or a revert,
+  not speculation. If picked up again, reconcile those two emissive sources
+  first — that discrepancy may be a latent bug in its own right.
+
 ### Open — Misc
 
 - [ ] `parry3d` panics on nested compound collision shapes (catch_unwind guard in place)
