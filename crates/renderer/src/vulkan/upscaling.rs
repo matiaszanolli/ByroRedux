@@ -55,13 +55,28 @@ impl FromStr for FsrQuality {
 }
 
 /// Temporal reconstruction path selected for the renderer.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpscalerMode {
-    /// Existing native-resolution TAA path and compatibility fallback.
-    #[default]
+    /// Native-resolution TAA path, and the compatibility fallback taken
+    /// whenever FSR context creation or dispatch fails.
     Taa,
     /// FSR 3.1 upscaler-only path. Frame generation is not represented here.
     Fsr3(FsrQuality),
+}
+
+impl Default for UpscalerMode {
+    /// FSR 3.1 Quality, matching what the CLI selects when `--upscaler` is
+    /// absent. The two must agree: a `Default` that differs from the CLI
+    /// default is a footgun, since the only thing distinguishing them is
+    /// which construction path a caller happened to take.
+    ///
+    /// Chosen in execution phase 7 of the FSR plan on the benchmark matrix —
+    /// +40% to +68% net frame recovery across every measured game scene at
+    /// SSIM 0.955 (Cornell) / 0.990 (FO4 Dugout) against the native TAA
+    /// render. See `docs/engine/fsr3-upscaler-integration-plan.md`.
+    fn default() -> Self {
+        Self::Fsr3(FsrQuality::Quality)
+    }
 }
 
 impl fmt::Display for UpscalerMode {
@@ -311,6 +326,16 @@ mod tests {
 
     fn extents(mode: UpscalerMode) -> FrameExtentSet {
         FrameExtentSet::for_output(FULL_HD, mode, 16_384).unwrap()
+    }
+
+    /// The CLI's no-flag default and `UpscalerMode::default()` must not
+    /// drift apart — `cli_args` relies on them agreeing.
+    #[test]
+    fn default_mode_is_fsr_quality() {
+        assert_eq!(
+            UpscalerMode::default(),
+            UpscalerMode::Fsr3(FsrQuality::Quality)
+        );
     }
 
     #[test]

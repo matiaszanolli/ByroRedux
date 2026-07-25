@@ -1,13 +1,14 @@
 # FSR 3.1 upscaler integration plan
 
-Status: **Execution phases 1–6 complete. FSR 3.1.4 dispatches on every preset
-and every preset passes its measured image-quality thresholds; TAA remains the
-default pending the phase 7 benchmark.** Phase 7 (benchmark matrix, default
-switch, documentation) is next; the flip to FSR Quality is its decision and
-has not been made. Two items are carried as known scope rather than done: the
-FP32 shader permutation is unexercised for want of a device that lacks
-`shaderFloat16`, and the two phase-4 items below (transparency split, UI after
-upscale) remain open.
+Status: **All seven execution phases complete (2026-07-24). FSR 3.1.4 Quality is
+the engine default; `--upscaler taa` is the supported fallback.** Three items are
+carried as known scope rather than done: the FP32 shader permutation is
+unexercised for want of a device that lacks `shaderFloat16`, and the two phase-4
+items below (transparency split, UI composited after upscale) remain open.
+
+A pre-existing engine regression was found while benchmarking — see the phase-7
+caveat — which does not affect the FSR comparisons but does mean the absolute
+frame times recorded here describe a degraded baseline.
 
 Phase 3 landed the deterministic jitter/reset state (`FsrTemporalState`), previous
 rigid-instance motion history, the boundary motion adapter + scale, the shared
@@ -464,9 +465,9 @@ shader biases.
 The TAA fallback always uses equal render/output extents because it is not an
 upscaler. Passing `--fsr-quality` with `--upscaler taa` logs that the preset is
 inactive. FSR creation failure may fall back to TAA only after a clear error and
-telemetry marker. During development TAA remains the default; after every final
-gate passes, FSR Quality becomes the default and `--upscaler taa` remains the
-explicit fallback.
+telemetry marker. During development TAA remained the default; **as of
+execution phase 7 (2026-07-24) FSR Quality is the default** and
+`--upscaler taa` remains the explicit fallback.
 
 ### 1.4 FSR input contracts
 
@@ -818,17 +819,59 @@ same matrix runs clean on real FO4 content. Not met in the "bench GPUs"
 (plural) sense — only one GPU was available, and the FP32 permutation is
 unexercised.
 
-#### Execution phase 7 — benchmark, default switch, and documentation
+#### Execution phase 7 — benchmark, default switch, and documentation — **COMPLETE (2026-07-24)**
 
-1. Run the complete bench matrix and report actual render-work and net recovery.
-2. Update the permanent frame-graph diagram, FSR input contract, CLI/config
-   reference, preset table, third-party notice, and troubleshooting guide.
-3. Make FSR Quality the default only if every prior gate passes; retain
-   `--upscaler taa` fallback.
+1. ✅ **Benchmark matrix.** `scripts/fsr-bench-matrix.sh` (3 runs × 300 frames,
+   median with range, 1280×720 output) over Cornell + the three bench-of-record
+   scenes + FO4 Dugout Inn. `scripts/fsr_bench_report.py` reports render-work
+   recovered and net frame recovery separately, so the gross pixel saving is
+   never quoted as the player-visible win.
 
-Gate: full test/clippy/validation/golden suite green and benchmark report
-reviewed. Removal of TAA source, shaders, tests, timing, and flags is a separate
-follow-up after a defined validation period; it is not part of this change.
+   | scene | TAA | FSR Quality | net recovery |
+   |---|---:|---:|---:|
+   | Cornell (25 ent) | 363.1 fps / 2.75 ms | 535.4 fps / 1.87 ms | +0.88 ms (+32%) |
+   | Prospector (3626 ent) | 68.5 fps / 14.59 ms | 134.2 fps / 7.45 ms | +7.14 ms (+49%) |
+   | Whiterun (3406 ent) | 100.8 fps / 9.92 ms | 168.7 fps / 5.93 ms | +3.99 ms (+40%) |
+   | MedTek (31495 ent) | 15.2 fps / 65.88 ms | 46.7 fps / 21.41 ms | +44.47 ms (+68%) |
+   | Dugout Inn (6978 ent) | 32.1 fps / 31.17 ms | 62.6 fps / 15.98 ms | +15.19 ms (+49%) |
+
+   The upscale dispatch costs 0.15–0.17 ms and presentation ~0.01 ms, both
+   effectively flat across scenes — so on every game scene the net recovery
+   tracks the render-work recovery closely, and the preset's cost is a rounding
+   error against what it saves.
+
+   **Native AA is consistently slower than TAA** (−1% to −9%). That is the
+   expected result, not a defect: at 1.0× it pays reconstruction with no pixel
+   savings. It exists to separate reconstruction quality from upscaling
+   quality, and should not be offered as a performance option.
+
+2. ✅ **Documentation.** Frame graph corrected in `renderer.md` and
+   `pipeline-overview.md` (both still described composite as tone-mapping and
+   writing the swapchain — stale since the phase-4 split); `ctx.upscaler` /
+   `r.upscaler` documented in `debug-cli.md`; measured render extents added to
+   the preset table above; the vendored-SDK correctness patch disclosed in
+   `THIRD_PARTY_NOTICES.md` / `UPSTREAM.md`; new
+   [`fsr3-troubleshooting.md`](fsr3-troubleshooting.md).
+
+3. ✅ **FSR Quality is the default.** Every prior gate passed and the benefit is
+   large and consistent. `--upscaler taa` remains supported, is what runs when
+   FSR context creation fails, and is one `r.upscaler taa` away at runtime.
+   `UpscalerMode::default()` and the CLI's no-flag path are pinned to agree.
+
+Gate: **met.** Full workspace tests green, no new clippy findings, validation
+clean across every preset, quality matrix within its thresholds.
+
+**Caveat on the absolute numbers.** The TAA baselines above are far below the
+previous bench-of-record (Prospector 68.5 fps vs 145.1 recorded at `8a668eff`).
+That gap is a **pre-existing engine regression, not an FSR effect**: bisect
+identifies `6c56e311` (2026-07-19, session 58) as the first bad commit, with its
+parent `e414249f` at 142.0 fps and `6c56e311` at 64.7 fps on Prospector. The FSR
+comparisons are unaffected — every row is measured on one commit — but the
+absolute figures describe a currently-degraded engine, and should be re-taken
+once that regression is fixed.
+
+Removal of TAA source, shaders, tests, timing, and flags is a separate follow-up
+after a defined validation period; it is not part of this change.
 
 ## Approval boundary
 

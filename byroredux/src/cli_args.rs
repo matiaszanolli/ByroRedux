@@ -61,7 +61,13 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
     let quality = option("--fsr-quality")?
         .map(str::parse::<FsrQuality>)
         .transpose()?;
-    let upscaler = match option("--upscaler")?.unwrap_or("taa") {
+    // FSR 3.1 Quality is the default as of execution phase 7 of the FSR plan,
+    // on the phase-7 benchmark: +40% to +68% net frame recovery across every
+    // measured game scene, at SSIM 0.955 (Cornell) / 0.990 (FO4 Dugout)
+    // against the native TAA render. `--upscaler taa` remains the supported
+    // fallback and is still what runs on a device where FSR context creation
+    // fails.
+    let upscaler = match option("--upscaler")?.unwrap_or("fsr3") {
         "taa" => {
             if let Some(inactive) = quality {
                 log::warn!(
@@ -184,11 +190,26 @@ mod tests {
         assert!(parse_upscaler_spec("fsr3 quality extra").is_err());
     }
 
+    /// No `--upscaler` means FSR 3.1 Quality (phase 7). Pinned against the
+    /// literal rather than `RendererConfig::default()` alone, so that a change
+    /// to the type default cannot silently move the CLI default with it —
+    /// the two agreeing is asserted separately in `upscaling.rs`.
     #[test]
-    fn renderer_config_defaults_to_taa() {
+    fn renderer_config_defaults_to_fsr_quality() {
+        let parsed = parse_renderer_config(&args(&["byroredux"])).unwrap();
+        assert_eq!(parsed.upscaler, UpscalerMode::Fsr3(FsrQuality::Quality));
+        assert_eq!(parsed, RendererConfig::default());
+    }
+
+    /// `--fsr-quality` composes with the implicit default, so selecting a
+    /// preset does not also require spelling out `--upscaler fsr3`.
+    #[test]
+    fn fsr_quality_alone_selects_that_preset() {
         assert_eq!(
-            parse_renderer_config(&args(&["byroredux"])).unwrap(),
-            RendererConfig::default()
+            parse_renderer_config(&args(&["byroredux", "--fsr-quality", "performance"]))
+                .unwrap()
+                .upscaler,
+            UpscalerMode::Fsr3(FsrQuality::Performance)
         );
     }
 

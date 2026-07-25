@@ -76,7 +76,11 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
          resolution and reconstructs it; TAA renders at native resolution. \
          Switching rebuilds every render-resolution target and resets \
          temporal history.",
-        "taa",
+        // Must match `UpscalerMode::default()` and the CLI's no-flag default;
+        // `App::new` overwrites this from the parsed config at startup anyway,
+        // but a divergent literal here would show the wrong entry for the one
+        // frame before that happens.
+        "fsr3/quality",
         vec![
             SettingChoice::new("taa", "TAA (native resolution)"),
             SettingChoice::new("fsr3/native-aa", "FSR 3.1 — Native AA"),

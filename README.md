@@ -167,11 +167,12 @@ cargo run -- path/to/mesh.nif [--kf path/to/anim.kf]
 # Per-game NIF parse-rate sweep (requires game data)
 cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored
 
-# FSR 3.1 upscaling (AMD FidelityFX, upscaler-only — no frame generation).
-# Renders the scene below output resolution and reconstructs it. Default is
-# `taa`, which renders at native resolution.
-cargo run --release -- --cornell --upscaler fsr3 --fsr-quality quality
+# FSR 3.1 upscaling (AMD FidelityFX, upscaler-only — no frame generation) is
+# the DEFAULT at the Quality preset: the scene renders below output resolution
+# and is reconstructed. Opt out with `--upscaler taa` for native resolution.
+cargo run --release -- --cornell --fsr-quality balanced
 #   presets: native-aa (1.0x) | quality (1.5x) | balanced (1.7x) | performance (2.0x)
+cargo run --release -- --cornell --upscaler taa    # native-resolution fallback
 
 # Upscaler image-quality matrix (SSIM vs the native TAA render, 5 camera paths)
 cargo test --release -p byroredux --test upscaler_quality -- --ignored --nocapture
@@ -186,14 +187,22 @@ raise/lower (fly mode) or jump (walk mode), Ctrl for speed boost. Press
 (gravity + collide-and-slide + autostep); fly mode keeps the legacy
 no-clip cam.
 
-**Upscaler.** `--upscaler taa|fsr3` picks the temporal reconstruction
-path, and `--fsr-quality` picks the FSR preset. Both are also switchable
-at runtime without a relaunch — `r.upscaler fsr3 balanced` over
-`byro-dbg`, or the Rendering section of the F3 settings panel — which is
-the intended way to A/B presets on one scene. `ctx.upscaler` reports the
-active path, its render/output extents, the FSR provider version, and the
-GPU memory the SDK reserved for itself (which is invisible to
-`ctx.memory`, since the FSR backend allocates it directly).
+**Upscaler.** FSR 3.1 Quality is the default; `--upscaler taa` selects the
+native-resolution fallback, and `--fsr-quality` picks the FSR preset. Both
+are switchable at runtime without a relaunch — `r.upscaler fsr3 balanced`
+over `byro-dbg`, or the Rendering section of the F3 settings panel — which
+is the intended way to A/B presets on one scene. `ctx.upscaler` reports the
+active path, its render/output extents, the FSR provider version and
+FP16/FP32 permutation, and the GPU memory the SDK reserved for itself
+(invisible to `mem.frag`, since the FSR backend allocates it directly).
+
+Measured on an RTX 4070 Ti at 1280×720, FSR Quality against native TAA:
++49% frame time on FNV Prospector, +40% on Skyrim Whiterun, +68% on FO4
+MedTek, at SSIM 0.955–0.990 versus the native render. Note **Native AA
+(1.0×) is slower than TAA** — it pays reconstruction with no pixel savings
+and exists to separate reconstruction quality from upscaling quality, not
+as a performance option. Details and troubleshooting in
+[docs/engine/fsr3-troubleshooting.md](docs/engine/fsr3-troubleshooting.md).
 
 **Deterministic bench camera.** `--bench-camera <static|pan|orbit|dolly|cut>`
 drives the camera along a frame-indexed path for the length of a
