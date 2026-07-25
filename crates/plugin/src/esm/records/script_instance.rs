@@ -102,9 +102,25 @@ impl ScriptInstance {
     }
 
     /// Convenience: the FormID of an `Object`-typed property by name.
+    ///
+    /// Requires `alias == -1`. An alias-bound entry needs the
+    /// quest-alias-fill subsystem to resolve correctly, so this declines
+    /// rather than trusting the raw `form_id` sitting next to a live
+    /// alias index — the wire format stores both, and the `form_id` beside
+    /// a bound alias is not the intended target.
+    ///
+    /// #2186 — this used to match `Object { form_id, .. }`, discarding
+    /// `alias` entirely, while the parallel `ObjectRef::Property` resolver
+    /// in `byroredux-scripting` applied the strict check. That left
+    /// `QuestRef::Property` (the only consumer of this helper) resolving
+    /// alias-bound quest properties to the wrong quest — a `SetStage` or
+    /// objective effect silently mutating unrelated quest state, and a
+    /// `QuestAdvanceOnActivate` component stamped with the wrong
+    /// `owning_quest`. The strict check now lives here, at the single
+    /// shared accessor, so a future caller cannot reintroduce the lax path.
     pub fn object_form_id(&self, name: &str) -> Option<u32> {
         match self.property(name)?.value {
-            PropertyValue::Object { form_id, .. } => Some(form_id),
+            PropertyValue::Object { form_id, alias: -1 } => Some(form_id),
             _ => None,
         }
     }
@@ -663,5 +679,53 @@ mod tests {
         let frags = parse_quest_fragments(&vmad);
         assert_eq!(frags.len(), 1);
         assert_eq!(frags[0].fragment_name, "Fragment_0");
+    }
+
+    // ── #2186 — alias-bound properties must decline ─────────────────
+
+    fn instance_with_alias(alias: i16) -> ScriptInstance {
+        ScriptInstance {
+            name: "TestScript".to_string(),
+            status: 0,
+            properties: vec![ScriptProperty {
+                name: "MyQuest".to_string(),
+                status: 1,
+                value: PropertyValue::Object {
+                    form_id: 0x0002_42af,
+                    alias,
+                },
+            }],
+        }
+    }
+
+    /// #2186 — an alias-bound `Object` property must NOT resolve to the
+    /// raw `form_id` sitting beside the alias index.
+    ///
+    /// The wire format stores both, and once a property is alias-bound
+    /// the `form_id` is not the intended target — resolving it anyway
+    /// makes a `SetStage`/objective fragment effect mutate an unrelated
+    /// quest, and stamps `QuestAdvanceOnActivate` with the wrong
+    /// `owning_quest`. The `ObjectRef::Property` sibling resolver always
+    /// applied this check; this accessor (the only `QuestRef::Property`
+    /// resolver) did not.
+    #[test]
+    fn object_form_id_declines_alias_bound_property() {
+        for alias in [0i16, 3, 7, i16::MAX] {
+            assert_eq!(
+                instance_with_alias(alias).object_form_id("MyQuest"),
+                None,
+                "alias={alias} is alias-bound and must decline (#2186)"
+            );
+        }
+    }
+
+    /// The unbound sentinel (`-1`) still resolves — the fix must not
+    /// turn the strict check into a blanket decline.
+    #[test]
+    fn object_form_id_resolves_unbound_property() {
+        assert_eq!(
+            instance_with_alias(-1).object_form_id("MyQuest"),
+            Some(0x0002_42af)
+        );
     }
 }

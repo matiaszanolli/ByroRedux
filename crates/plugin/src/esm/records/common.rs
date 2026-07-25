@@ -309,12 +309,25 @@ pub struct CommonItemFields {
     pub script_form_id: u32,
     pub value: u32,
     pub weight: f32,
-    /// True when the record carries a `VMAD` sub-record — Skyrim+'s
-    /// Papyrus VM attached-script blob. Full VMAD decoding (script
-    /// names + property bindings) is gated on the scripting-as-ECS
-    /// work tracked at M30.2 / M48; for now this flag at least makes
-    /// the count of script-bearing records discoverable. See #369.
+    /// True when the record carries a `VMAD` sub-record (Skyrim+ Papyrus
+    /// VM). Presence-only; the decoded attachments live in
+    /// [`Self::script_instance`]. Kept so the many presence-only consumers
+    /// don't churn — mirrors [`CommonNamedFields::has_script`].
     pub has_script: bool,
+    /// Decoded `VMAD` script attachments + property bindings (Skyrim+).
+    /// `None` when the record has no `VMAD`.
+    ///
+    /// #2189 — this field did not exist until M47.2's attach path was
+    /// audited: `CommonItemFields` set only the presence flag while its
+    /// sibling [`CommonNamedFields`] fully decoded the blob, so
+    /// `Index::base_record_script_instance` structurally could not reach
+    /// the item family (`WEAP`/`ARMO`/`AMMO`/`MISC`/`KEYM`/`ALCH`/`INGR`/
+    /// `BOOK`/`NOTE`) — there was nowhere for an `items` arm to read from.
+    /// Every scripted weapon, armor piece, potion, book or key silently
+    /// failed to attach its script. The field doc previously blamed this
+    /// on scripting-as-ECS work "gated on M30.2/M48", which had long since
+    /// shipped; #369's fix reached `CommonNamedFields` only.
+    pub script_instance: Option<super::script_instance::ScriptInstanceData>,
 }
 
 impl CommonItemFields {
@@ -335,8 +348,13 @@ impl CommonItemFields {
                     out.script_form_id =
                         crate::esm::sub_reader::SubReader::new(&sub.data).u32_or_default();
                 }
-                // VMAD presence-only flag — see `has_script` field doc.
-                b"VMAD" => out.has_script = true,
+                b"VMAD" => {
+                    // #2189 — decode, don't just flag. Matches
+                    // `CommonNamedFields::from_subs`'s VMAD arm exactly.
+                    out.has_script = true;
+                    out.script_instance =
+                        Some(super::script_instance::ScriptInstanceData::parse(&sub.data));
+                }
                 _ => {}
             }
         }
@@ -422,6 +440,45 @@ mod tests {
     #[test]
     fn common_named_fields_without_vmad_has_no_instance() {
         let c = CommonNamedFields::from_subs(&[sub(b"EDID", b"Plain\0")]);
+        assert!(!c.has_script);
+        assert!(c.script_instance.is_none());
+    }
+
+    /// #2189 — the item family must decode VMAD exactly like its
+    /// `CommonNamedFields` sibling, not just flag its presence.
+    ///
+    /// `CommonItemFields` backs every `WEAP`/`ARMO`/`AMMO`/`MISC`/`KEYM`/
+    /// `ALCH`/`INGR`/`BOOK`/`NOTE` parser. While it stored only
+    /// `has_script`, `Index::base_record_script_instance` could not reach
+    /// the item family even in principle — there was no decoded blob for
+    /// an `items` arm to return — so a scripted weapon, potion, book or
+    /// key silently never attached its script.
+    #[test]
+    fn common_item_fields_decodes_vmad_script_instance() {
+        // Byte-identical VMAD to the CommonNamedFields test above, so the
+        // two structs are pinned to the same decode.
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&5i16.to_le_bytes());
+        vmad.extend_from_slice(&2i16.to_le_bytes());
+        vmad.extend_from_slice(&1u16.to_le_bytes());
+        let name = b"WeaponEnchantScript";
+        vmad.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        vmad.extend_from_slice(name);
+        vmad.push(0); // script status
+        vmad.extend_from_slice(&0u16.to_le_bytes()); // propCount = 0
+        let subs = vec![sub(b"EDID", b"ScriptedSword\0"), sub(b"VMAD", &vmad)];
+        let c = CommonItemFields::from_subs(&subs);
+        assert!(c.has_script, "presence flag preserved");
+        let inst = c
+            .script_instance
+            .expect("VMAD decoded into script_instance (#2189)");
+        assert_eq!(inst.scripts.len(), 1);
+        assert_eq!(inst.scripts[0].name, "WeaponEnchantScript");
+    }
+
+    #[test]
+    fn common_item_fields_without_vmad_has_no_instance() {
+        let c = CommonItemFields::from_subs(&[sub(b"EDID", b"PlainSword\0")]);
         assert!(!c.has_script);
         assert!(c.script_instance.is_none());
     }

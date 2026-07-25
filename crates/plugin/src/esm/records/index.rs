@@ -592,9 +592,9 @@ impl EsmIndex {
     /// translation layer decompiles to canonical ECS behavior.
     ///
     /// Covers the same base-record families `base_record_script` walks —
-    /// activators, containers, NPCs/creatures — in the same priority
-    /// order. Returns `None` when the record is absent or carries no
-    /// `VMAD`. (Items / terminals don't decode `VMAD` yet, so they
+    /// activators, containers, NPCs/creatures, items — in the same
+    /// priority order. Returns `None` when the record is absent or
+    /// carries no `VMAD`. (Terminals still don't decode `VMAD`, so they
     /// never match here.)
     pub fn base_record_script_instance(
         &self,
@@ -611,6 +611,13 @@ impl EsmIndex {
         }
         if let Some(r) = self.creatures.get(&base_form_id) {
             return r.script_instance.as_ref();
+        }
+        // #2189 — the item family (WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/
+        // BOOK/NOTE). Absent until `CommonItemFields` gained a decoded
+        // `script_instance`; before that this arm had nothing to return,
+        // so every scripted item silently declined to attach.
+        if let Some(r) = self.items.get(&base_form_id) {
+            return r.common.script_instance.as_ref();
         }
         None
     }
@@ -983,5 +990,70 @@ mod tests {
         let plain = parse_cont(0xC0_0002, &[sub(b"EDID", b"PlainChest\0")], &None);
         idx.containers.insert(0xC0_0002, plain);
         assert!(idx.base_record_script_instance(0xC0_0002).is_none());
+    }
+
+    /// #2189 — `base_record_script_instance` must resolve a VMAD-attached
+    /// script off an `items` entry, not just activators/containers/actors.
+    ///
+    /// This is the accessor the M47.2 attach path calls
+    /// (`cell_loader::references::attach`), so a miss here is the whole
+    /// mechanism by which a scripted weapon/potion/book silently loses its
+    /// script. Before the fix this arm could not exist: `ItemRecord.common`
+    /// had no decoded `script_instance` to return.
+    #[test]
+    fn base_record_script_instance_resolves_an_item_records_vmad() {
+        use crate::esm::records::items::{ItemKind, ItemRecord};
+        use crate::esm::records::script_instance::{ScriptInstance, ScriptInstanceData};
+
+        const SWORD: u32 = 0x0001_3989;
+
+        let mut idx = EsmIndex::default();
+        idx.items.insert(
+            SWORD,
+            ItemRecord {
+                form_id: SWORD,
+                common: crate::esm::records::common::CommonItemFields {
+                    editor_id: "ScriptedSword".to_string(),
+                    has_script: true,
+                    script_instance: Some(ScriptInstanceData {
+                        version: 5,
+                        object_format: 2,
+                        scripts: vec![ScriptInstance {
+                            name: "WeaponEnchantScript".to_string(),
+                            status: 0,
+                            properties: Vec::new(),
+                        }],
+                    }),
+                    ..Default::default()
+                },
+                kind: ItemKind::Misc,
+            },
+        );
+
+        let inst = idx
+            .base_record_script_instance(SWORD)
+            .expect("an item record's VMAD must be reachable from the attach path (#2189)");
+        assert_eq!(inst.scripts.len(), 1);
+        assert_eq!(inst.scripts[0].name, "WeaponEnchantScript");
+    }
+
+    /// An item with no VMAD still declines — the new arm must not
+    /// manufacture an attachment.
+    #[test]
+    fn base_record_script_instance_declines_an_item_without_vmad() {
+        use crate::esm::records::items::{ItemKind, ItemRecord};
+
+        const PLAIN: u32 = 0x0001_398A;
+
+        let mut idx = EsmIndex::default();
+        idx.items.insert(
+            PLAIN,
+            ItemRecord {
+                form_id: PLAIN,
+                common: Default::default(),
+                kind: ItemKind::Misc,
+            },
+        );
+        assert!(idx.base_record_script_instance(PLAIN).is_none());
     }
 }

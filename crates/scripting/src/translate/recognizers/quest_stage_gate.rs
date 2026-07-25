@@ -435,6 +435,55 @@ mod tests {
         assert_eq!(got.conditions[0].param_2, 10); // stage 10
     }
 
+    /// #2186 — the same shape, but the `Quest Property` is alias-bound.
+    ///
+    /// The recognizer must DECLINE rather than bind `owning_quest` to the
+    /// raw `form_id` sitting beside the alias index; resolving an
+    /// alias-bound property needs the quest-alias-fill subsystem, and the
+    /// stored `form_id` is not the intended target. Emitting the component
+    /// anyway stamps every condition's `param_1` with the wrong quest.
+    ///
+    /// `ObjectRef::Property` already declined this way; `QuestRef::Property`
+    /// went through the lax `object_form_id`, which discarded `alias`.
+    #[test]
+    fn declines_alias_bound_quest_property() {
+        let src = "ScriptName GenericDoor extends ObjectReference\n\
+                   Quest Property MyQuest Auto\n\
+                   Event OnActivate(ObjectReference akActionRef)\n\
+                   If MyQuest.GetStageDone(10) == 1\n\
+                   MyQuest.SetStage(20)\n\
+                   EndIf\n\
+                   EndEvent\n";
+        let (script, errors) = parse_script(src).expect("parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        let source = ScriptSource::PapyrusSource(&script);
+
+        // Identical to `binds_quest_property_form_via_vmad` except the
+        // property is alias-bound (alias = 3, not the -1 sentinel).
+        let instance = ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "GenericDoor".into(),
+                status: 1,
+                properties: vec![ScriptProperty {
+                    name: "MyQuest".into(),
+                    status: 1,
+                    value: PropertyValue::Object {
+                        form_id: 0x0001_2345,
+                        alias: 3,
+                    },
+                }],
+            }],
+        };
+
+        assert!(
+            translate_script(&source, GameKind::Skyrim, Some(&instance), None).is_none(),
+            "an alias-bound Quest property must decline, not resolve to the raw \
+             form_id beside the alias index (#2186)"
+        );
+    }
+
     #[test]
     fn declines_mixed_quest_conjunction() {
         // A gate whose AND-conjunction predicates on TWO different quests

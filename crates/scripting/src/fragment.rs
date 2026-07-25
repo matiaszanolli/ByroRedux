@@ -38,7 +38,7 @@ use std::collections::HashMap;
 use byroredux_core::ecs::components::{GlobalTransform, Inventory, ItemStack, Transform};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::world::World;
-use byroredux_plugin::esm::records::script_instance::{PropertyValue, ScriptInstanceData};
+use byroredux_plugin::esm::records::script_instance::ScriptInstanceData;
 
 use crate::quest_stages::{
     QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
@@ -138,16 +138,16 @@ fn resolve_quest_logged(
 /// Resolve an [`ObjectRef::Property`] to its VMAD-bound FormID. Requires
 /// an `Object`-typed property with `alias == -1` — an alias-bound entry
 /// (`ReferenceAlias Property`) needs the quest-alias-fill subsystem to
-/// resolve correctly, so it declines here rather than trusting the raw
+/// resolve correctly, so it declines rather than trusting the raw
 /// `form_id` sitting next to a live alias index.
+///
+/// #2186 — the `alias == -1` check itself now lives in
+/// `ScriptInstance::object_form_id`, which `resolve_quest` also uses.
+/// This function open-coded the strict match while `object_form_id`
+/// stayed lax, so the two sibling resolvers disagreed; sharing one
+/// accessor is what keeps them from drifting apart again.
 fn resolve_property_form_id(vmad: Option<&ScriptInstanceData>, name: &str) -> Option<u32> {
-    vmad?
-        .scripts
-        .iter()
-        .find_map(|s| match s.property(name)?.value {
-            PropertyValue::Object { form_id, alias: -1 } => Some(form_id),
-            _ => None,
-        })
+    vmad?.scripts.iter().find_map(|s| s.object_form_id(name))
 }
 
 /// Resolve an [`ObjectRef`] all the way to a live entity: VMAD property →

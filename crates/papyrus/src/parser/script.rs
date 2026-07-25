@@ -465,39 +465,81 @@ impl Parser {
     ) -> Result<(Option<Function>, Option<Function>), ParseError> {
         let mut getter = None;
         let mut setter = None;
+        // Accept an accessor into the first free slot. Shared by both
+        // arms so the third-accessor diagnostic can't drift between them.
+        fn place(
+            getter: &mut Option<Function>,
+            setter: &mut Option<Function>,
+            func: Function,
+        ) -> Option<ParseError> {
+            if getter.is_none() {
+                *getter = Some(func);
+                None
+            } else if setter.is_none() {
+                *setter = Some(func);
+                None
+            } else {
+                // Third accessor — error but keep parsing so the rest
+                // of the script still loads.
+                let span = func.name.span;
+                Some(ParseError::unexpected_token(
+                    "EndProperty after second accessor",
+                    None,
+                    span,
+                ))
+            }
+        }
+
         loop {
             self.skip_newlines();
+            // #2185 — must precede the catch-all arm, which cannot make
+            // progress at EOF. Return the accessors parsed so far.
+            if self.container_body_at_eof("EndProperty") {
+                return Ok((getter, setter));
+            }
             match self.peek() {
                 Some(Token::KwEndProperty) => {
                     self.advance().unwrap();
                     self.expect_eol()?;
                     return Ok((getter, setter));
                 }
-                Some(Token::KwFunction) => {
-                    let func = self.parse_function(None)?;
-                    if getter.is_none() {
-                        getter = Some(func);
-                    } else if setter.is_none() {
-                        setter = Some(func);
-                    } else {
-                        // Third accessor — error but keep parsing
-                        // so the rest of the script still loads.
-                        let span = func.name.span;
-                        self.push_error(ParseError::unexpected_token(
-                            "EndProperty after second accessor",
-                            None,
-                            span,
-                        ));
+                // #2188 — recover per accessor rather than propagating
+                // via `?`. The bare `?` here discarded the entire
+                // Property on a malformed setter, taking a getter that
+                // had parsed with zero errors down with it — the same
+                // shape #2125 fixed for State/Struct/Group but never
+                // reached in this fourth container.
+                Some(Token::KwFunction) => match self.parse_function(None) {
+                    Ok(func) => {
+                        if let Some(e) = place(&mut getter, &mut setter, func) {
+                            self.push_error(e);
+                        }
                     }
-                }
+                    Err(e) => {
+                        self.push_error(e);
+                        self.skip_to_next_line();
+                    }
+                },
                 // Type-prefixed function inside a property — `Int Function Get()`.
                 _ => {
-                    let ty = self.parse_type()?;
-                    let func = self.parse_function(Some(ty))?;
-                    if getter.is_none() {
-                        getter = Some(func);
-                    } else if setter.is_none() {
-                        setter = Some(func);
+                    let ty = match self.parse_type() {
+                        Ok(ty) => ty,
+                        Err(e) => {
+                            self.push_error(e);
+                            self.skip_to_next_line();
+                            continue;
+                        }
+                    };
+                    match self.parse_function(Some(ty)) {
+                        Ok(func) => {
+                            if let Some(e) = place(&mut getter, &mut setter, func) {
+                                self.push_error(e);
+                            }
+                        }
+                        Err(e) => {
+                            self.push_error(e);
+                            self.skip_to_next_line();
+                        }
                     }
                 }
             }
@@ -519,6 +561,15 @@ impl Parser {
         let mut body = Vec::new();
         loop {
             self.skip_newlines();
+            // #2185 — must precede the catch-all arm, which cannot make
+            // progress at EOF. Return the members parsed so far.
+            if self.container_body_at_eof("EndState") {
+                return Ok(State {
+                    name,
+                    is_auto,
+                    body,
+                });
+            }
             match self.peek() {
                 Some(Token::KwEndState) => {
                     self.advance().unwrap();
@@ -588,6 +639,11 @@ impl Parser {
         let mut members = Vec::new();
         loop {
             self.skip_newlines();
+            // #2185 — must precede the catch-all arm, which cannot make
+            // progress at EOF. Return the members parsed so far.
+            if self.container_body_at_eof("EndStruct") {
+                return Ok(Struct { name, members });
+            }
             match self.peek() {
                 Some(Token::KwEndStruct) => {
                     self.advance().unwrap();
@@ -640,6 +696,15 @@ impl Parser {
         let mut properties = Vec::new();
         loop {
             self.skip_newlines();
+            // #2185 — must precede the catch-all arm, which cannot make
+            // progress at EOF. Return the properties parsed so far.
+            if self.container_body_at_eof("EndGroup") {
+                return Ok(Group {
+                    name,
+                    flags,
+                    properties,
+                });
+            }
             match self.peek() {
                 Some(Token::KwEndGroup) => {
                     self.advance().unwrap();
@@ -678,7 +743,42 @@ impl Parser {
         }
     }
 
-    // ── Recovery helper ────────────────────────────────────────────
+    // ── Recovery helpers ───────────────────────────────────────────
+
+    /// Termination guard for a container-body recovery loop
+    /// (`State` / `Struct` / `Group` / `Property`).
+    ///
+    /// Returns `true` — meaning "stop looping" — when the token stream
+    /// ran out before the container's closing keyword. Callers must
+    /// `break` on `true` and return whatever children they collected;
+    /// the pushed error carries the diagnostic.
+    ///
+    /// # Why this has to exist (#2185)
+    ///
+    /// Each of those loops recovers *per child* rather than propagating
+    /// via `?` (#2125), so one bad member no longer discards its
+    /// siblings. But the bare `?` those loops used to have was also
+    /// their only termination condition at EOF, and #2125 removed it
+    /// without replacing it. At genuine EOF `peek()` returns `None`,
+    /// which falls into the catch-all arm; that arm calls `parse_type`
+    /// / `parse_variable_body`, which fail *without consuming a token*
+    /// (`parse_base_type` returns `unexpected_eof` before touching
+    /// `self.pos`); the handler then calls [`skip_to_next_line`], whose
+    /// `advance_raw` also returns `None` immediately at EOF. Nothing
+    /// advances `self.pos`, so the loop spins at 100% CPU forever —
+    /// reachable from any truncated `.psc`, i.e. a denial of service on
+    /// untrusted input.
+    ///
+    /// [`skip_to_next_line`]: Self::skip_to_next_line
+    fn container_body_at_eof(&mut self, expected_end: &str) -> bool {
+        if self.at_eof() {
+            let span = self.current_span();
+            self.push_error(ParseError::unexpected_eof(expected_end, span));
+            true
+        } else {
+            false
+        }
+    }
 
     /// Skip to the start of the next line after an error. Consumes raw
     /// tokens up to and including the next `Newline` (or EOF).
@@ -999,5 +1099,136 @@ EndState
             .count();
         assert_eq!(prop_count, 5);
         assert_eq!(state_count, 3);
+    }
+
+    // ── #2185 / #2188 — container-body recovery-loop termination ────
+
+    /// Parse `src` on a worker thread, failing the test if it does not
+    /// finish within `SECS`. The #2185 bug is an *infinite loop*, not a
+    /// wrong result, so a plain call would hang the whole suite forever
+    /// rather than fail — the bounded harness is the assertion.
+    fn parse_bounded(src: &'static str) -> (Script, Vec<ParseError>) {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        const SECS: u64 = 10;
+        let (tx, rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let (preprocessed, _map) = preprocess(src);
+            let (tokens, _errs) = lex(&preprocessed);
+            let mut parser = Parser::new(tokens);
+            let script = parser.parse_script();
+            let _ = tx.send((script, parser.errors().to_vec()));
+        });
+
+        match rx.recv_timeout(Duration::from_secs(SECS)) {
+            Ok((Ok(script), errors)) => {
+                handle.join().expect("parser thread panicked");
+                (script, errors)
+            }
+            Ok((Err(e), _)) => panic!("parse_script returned a hard error: {e:?}"),
+            Err(_) => panic!(
+                "parse_script did not terminate within {SECS}s — the container-body \
+                 recovery loop is spinning without consuming a token (#2185). At EOF the \
+                 catch-all arm's parse_type/parse_variable_body fails without advancing \
+                 self.pos, and skip_to_next_line consumes nothing either."
+            ),
+        }
+    }
+
+    /// #2185 — an unterminated `State` must terminate the parse, not spin.
+    ///
+    /// Reachable from any truncated `.psc` (transfer cutoff, disk
+    /// corruption, a mod author omitting one keyword), so the pre-fix
+    /// behaviour was a denial of service on untrusted input. Note this
+    /// did *not* hang before #2125: the bare `?` propagated the EOF
+    /// error and unwound: that fix removed the loop's only termination
+    /// condition without replacing it.
+    #[test]
+    fn unterminated_state_terminates_instead_of_hanging() {
+        let (script, errors) = parse_bounded("ScriptName Foo\n\nState MyState\n");
+        assert!(
+            !errors.is_empty(),
+            "the missing EndState must surface a recovered error"
+        );
+        assert_eq!(script.name.node.0, "Foo");
+    }
+
+    /// #2185 — same shape for `Struct` / `EndStruct`.
+    #[test]
+    fn unterminated_struct_terminates_instead_of_hanging() {
+        let (_script, errors) = parse_bounded("ScriptName Foo\n\nStruct Point\n    Int X\n");
+        assert!(
+            !errors.is_empty(),
+            "the missing EndStruct must surface a recovered error"
+        );
+    }
+
+    /// #2185 — same shape for `Group` / `EndGroup`.
+    #[test]
+    fn unterminated_group_terminates_instead_of_hanging() {
+        let (_script, errors) = parse_bounded("ScriptName Foo\n\nGroup MyGroup\n");
+        assert!(
+            !errors.is_empty(),
+            "the missing EndGroup must surface a recovered error"
+        );
+    }
+
+    /// #2185 — `parse_property_accessors` is the fourth container, which
+    /// the #2125 fix never reached; it must not hang either.
+    #[test]
+    fn unterminated_property_accessors_terminate_instead_of_hanging() {
+        let (_script, errors) =
+            parse_bounded("ScriptName Foo\n\nInt Property Foo\n    Int Function Get()\n");
+        assert!(
+            !errors.is_empty(),
+            "the missing EndProperty must surface a recovered error"
+        );
+    }
+
+    /// #2188 — a malformed setter must not take a valid getter with it.
+    ///
+    /// Pre-fix, `parse_property_accessors`'s bare `?` propagated up
+    /// through `parse_property` -> `parse_type_prefixed_item` ->
+    /// `parse_script_item`, discarding the entire `ScriptItem::Property`
+    /// — so a `Get()` that parsed with zero errors vanished from the AST
+    /// and no diagnostic named the property.
+    #[test]
+    fn malformed_setter_keeps_the_valid_getter() {
+        let src = "\
+ScriptName Test
+
+Int Property MyProp
+    Int Function Get()
+        return 42
+    EndFunction
+    Function Set(Int value)
+        int x = )
+    EndFunction
+EndProperty
+";
+        let (script, errors) = parse_bounded(src);
+        assert!(
+            !errors.is_empty(),
+            "the malformed setter body must still recover an error"
+        );
+
+        let prop = script
+            .body
+            .iter()
+            .find_map(|item| match &item.node {
+                ScriptItem::Property(p) => Some(p),
+                _ => None,
+            })
+            .expect(
+                "the Property must survive a malformed setter — pre-#2188 the bare `?` \
+                 discarded the whole property, valid getter included",
+            );
+
+        assert_eq!(prop.name.node.0, "MyProp");
+        assert!(
+            prop.getter.is_some(),
+            "the getter parsed with zero errors and must be retained"
+        );
     }
 }

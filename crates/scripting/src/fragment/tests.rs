@@ -379,6 +379,72 @@ fn dispatch_resolves_property_targeted_effect_via_registered_vmad() {
     );
 }
 
+/// #2186 — the same dispatch, but the `Quest Property` is alias-bound.
+///
+/// The effect must be SKIPPED, not resolved against the raw `form_id`
+/// stored beside the alias index. Resolving it anyway means a `SetStage`
+/// silently mutating an unrelated quest's state — a wrong lowering, not a
+/// decline. `ObjectRef::Property` already declined this way; the
+/// `QuestRef::Property` path went through the lax `object_form_id`.
+#[test]
+fn dispatch_skips_property_targeted_effect_when_the_property_is_alias_bound() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const OTHER: QuestFormId = QuestFormId(0x0009_9999);
+
+    let world = fixture();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_TestQuest_00012345".into(),
+                    status: 0,
+                    properties: vec![ScriptProperty {
+                        name: "OtherQuest".into(),
+                        status: 1,
+                        // Identical to the resolving test above except
+                        // for this: alias-bound, so the form_id beside it
+                        // is not the intended target.
+                        value: PropertyValue::Object {
+                            form_id: OTHER.0,
+                            alias: 3,
+                        },
+                    }],
+                }],
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::SetStage {
+                quest: QuestRef::Property("OtherQuest".into()),
+                stage: 77,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(OTHER),
+        0,
+        "an alias-bound Quest property must decline — advancing OTHER here \
+         would be a wrong lowering, mutating a quest the author never targeted"
+    );
+    assert_eq!(
+        world.resource::<QuestStageState>().get_stage(Q),
+        10,
+        "Q itself must also be untouched"
+    );
+}
+
 #[test]
 fn cascade_does_not_drop_a_different_quests_transition_that_collides_on_stage_number() {
     // #2124 — regression for the cascade guard comparing `adv.new_stage`
