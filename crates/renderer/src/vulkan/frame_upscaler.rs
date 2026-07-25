@@ -195,12 +195,24 @@ impl FrameUpscaler {
                     allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                 })
                 .context("allocate upscale output image")?;
-            unsafe {
+            // #2178 / PERF-D3-03 — return the sub-allocation to the allocator
+            // before bailing. `allocation` is still a local at this point:
+            // `output_allocations[frame]` holds `None`, so neither `destroy`
+            // nor `Drop` can reach it, and the memory would stay off the free
+            // list for the process lifetime. The image itself is already in
+            // `output_images` and is cleaned up normally. Mirrors
+            // `exposure.rs`'s bind-failure branch.
+            if let Err(error) = unsafe {
                 // SAFETY: `allocation` was created from this image's exact
                 // requirements and the image has not been bound before.
-                device
-                    .bind_image_memory(image, allocation.memory(), allocation.offset())
-                    .context("bind upscale output image")?;
+                device.bind_image_memory(image, allocation.memory(), allocation.offset())
+            } {
+                allocator
+                    .lock()
+                    .expect("allocator lock poisoned")
+                    .free(allocation)
+                    .ok();
+                return Err(error).context("bind upscale output image");
             }
             self.output_allocations[frame] = Some(allocation);
 
@@ -920,6 +932,65 @@ mod tests {
         assert_eq!(
             blit_output_src_access(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
             vk::AccessFlags::SHADER_READ
+        );
+    }
+}
+
+/// #2178 / PERF-D3-03 — both image-creation loops must return their
+/// gpu-allocator sub-allocation on a `bind_image_memory` failure.
+///
+/// Static assertions: the branch fires only on a real allocator/driver
+/// failure, which `cargo test` has no way to induce. What is checkable is
+/// that the bind result is inspected rather than `?`-propagated past the
+/// still-local allocation — the `?` form is precisely what leaked, because
+/// at that point the allocation is not yet in `output_allocations` /
+/// `allocations`, so neither `destroy()` nor `Drop` can reach it.
+#[cfg(test)]
+mod bind_failure_frees_allocation_tests {
+    const FRAME_UPSCALER_RS: &str = include_str!("frame_upscaler.rs");
+    const GBUFFER_RS: &str = include_str!("gbuffer.rs");
+
+    /// Slice of `source` from the first `bind_image_memory` mention to the
+    /// end of the enclosing statement's error branch — in practice, up to
+    /// the following `self.` push/assign that takes ownership.
+    fn bind_branch(source: &str, terminator: &str) -> String {
+        let start = source
+            .find("bind_image_memory")
+            .expect("bind_image_memory disappeared");
+        let rest = &source[start..];
+        let end = rest
+            .find(terminator)
+            .unwrap_or_else(|| panic!("`{terminator}` not found after the bind call"));
+        rest[..end].to_string()
+    }
+
+    #[test]
+    fn frame_upscaler_create_outputs_frees_on_bind_failure() {
+        let production = FRAME_UPSCALER_RS
+            .split_once("\n#[cfg(test)]")
+            .expect("frame_upscaler.rs lost its test modules")
+            .0;
+        let branch = bind_branch(
+            production,
+            "self.output_allocations[frame] = Some(allocation);",
+        );
+        assert!(
+            branch.contains(".free(allocation)"),
+            "create_outputs no longer frees its sub-allocation when \
+             bind_image_memory fails — the allocation is still a local there \
+             (output_allocations[frame] is None), so nothing else can reclaim \
+             it (#2178). Branch was:\n{branch}",
+        );
+    }
+
+    #[test]
+    fn gbuffer_create_attachment_frees_on_bind_failure() {
+        let branch = bind_branch(GBUFFER_RS, "self.allocations.push(Some(alloc));");
+        assert!(
+            branch.contains(".free(alloc)"),
+            "gbuffer's attachment loop no longer frees its sub-allocation when \
+             bind_image_memory fails — same shape as the frame_upscaler site \
+             (#2178). Branch was:\n{branch}",
         );
     }
 }

@@ -48,6 +48,7 @@ fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, HashMap<EntityId, u32>) {
         &mut draw_commands,
         &mut water_commands,
         &mut gpu_lights,
+        &mut Vec::new(),
         &mut bone_world,
         &mut skin_offsets,
         &mut skin_slot_pool,

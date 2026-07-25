@@ -90,6 +90,11 @@ struct App {
     water_commands: Vec<byroredux_renderer::vulkan::water::WaterDrawCommand>,
     /// Reusable per-frame light buffer (cleared each frame, allocation retained).
     gpu_lights: Vec<byroredux_renderer::GpuLight>,
+    /// #2172 / PERF-D1-02 — decorate-sort scratch for `collect_lights`'
+    /// GI-priority ordering. Held here for the same reason `gpu_lights`
+    /// is: the buffer is rebuilt from scratch every frame, so only the
+    /// allocation is worth carrying over.
+    light_sort_scratch: Vec<(f32, byroredux_renderer::GpuLight)>,
     /// M29.5/M29.6 — reusable per-frame bone-world matrices (column-
     /// major mat4 entries; slot 0 always identity). Sparse layout
     /// indexed by `skin_slot_id × MAX_BONES_PER_MESH`; the renderer
@@ -320,6 +325,7 @@ impl App {
             draw_commands: Vec::new(),
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),
+            light_sort_scratch: Vec::new(),
             bone_world: Vec::new(),
             // M29.6 — slot pool capacity. The persistent bind_inverses
             // SSBO is sized for MAX_TOTAL_BONES bones (196608 after the
@@ -465,6 +471,7 @@ impl App {
                 &mut self.draw_commands,
                 &mut self.water_commands,
                 &mut self.gpu_lights,
+                &mut self.light_sort_scratch,
                 &mut self.bone_world,
                 &mut self.skin_offsets,
                 &mut self.skin_slot_pool,

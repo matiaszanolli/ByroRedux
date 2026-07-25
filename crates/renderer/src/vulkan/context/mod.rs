@@ -35,6 +35,7 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1083,9 +1084,18 @@ pub struct VulkanContext {
     gpu_instances_scratch: Vec<scene_buffer::GpuInstance>,
     /// Previous rigid transforms keyed by stable draw/entity id. Updated only
     /// after queue submission succeeds, matching temporal GPU history.
-    previous_rigid_models: HashMap<u32, [f32; 16]>,
+    ///
+    /// #2174 / D2-03 — `FxHashMap`, not the std default. Both maps are probed
+    /// twice per rigid draw per frame (~29K probes on MedTek), which is the
+    /// exact shape the renderer already standardizes `rustc_hash` on
+    /// (`material.rs`'s material-dedup index, the skin-slot map). SipHash-1-3
+    /// buys collision resistance nobody needs for a `u32` draw id we generate
+    /// ourselves. Allocation behaviour is unrelated and already correct: the
+    /// maps are `mem::take`n, cleared, and swapped in `draw.rs`, so no
+    /// per-frame heap churn — hashing was the only remaining cost.
+    previous_rigid_models: FxHashMap<u32, [f32; 16]>,
     /// Current-frame map reused while assembling the next submitted history.
-    current_rigid_models_scratch: HashMap<u32, [f32; 16]>,
+    current_rigid_models_scratch: FxHashMap<u32, [f32; 16]>,
     /// Previous transforms realigned to this frame's sorted instance indices.
     previous_models_scratch: Vec<scene_buffer::GpuPreviousModel>,
     /// Per-frame scratch buffer for draw batch metadata. Same lifecycle
@@ -2827,8 +2837,8 @@ impl VulkanContext {
             prev_render_origin: [0.0; 3],
             prev_cam_forward: [0.0, 0.0, -1.0],
             gpu_instances_scratch: Vec::new(),
-            previous_rigid_models: HashMap::new(),
-            current_rigid_models_scratch: HashMap::new(),
+            previous_rigid_models: FxHashMap::default(),
+            current_rigid_models_scratch: FxHashMap::default(),
             previous_models_scratch: Vec::new(),
             batches_scratch: Vec::new(),
             indirect_draws_scratch: Vec::new(),
@@ -3820,5 +3830,48 @@ mod skin_pipeline_coupling_tests {
     fn compute_absent_but_palette_ok_stays_none() {
         let skin_compute: Option<u32> = None;
         assert_eq!(couple_skin_compute_to_palette(skin_compute, true), None);
+    }
+}
+
+/// #2174 / D2-03 + PERF-D4-03 — pin the hasher on the rigid motion-history
+/// maps.
+///
+/// A source assertion rather than a type assertion: the two fields are
+/// private and live on a struct that needs a real Vulkan device to build, so
+/// there is no value to inspect from a test. The declaration text is the
+/// only device-free observable, and it is exactly what regressed — `33d9a468`
+/// reintroduced `std::collections::HashMap` at a new per-draw site after
+/// #1368 had removed it elsewhere, which is how this went unnoticed.
+#[cfg(test)]
+mod rigid_history_hasher_tests {
+    const CONTEXT_MOD_RS: &str = include_str!("mod.rs");
+
+    /// Everything before the test modules, so the needles below cannot
+    /// match this file's own assertion strings.
+    fn production_src() -> &'static str {
+        CONTEXT_MOD_RS
+            .split_once("\n#[cfg(test)]")
+            .expect("context/mod.rs lost its test modules")
+            .0
+    }
+
+    #[test]
+    fn rigid_motion_history_maps_are_not_siphash() {
+        let src = production_src();
+        for field in ["previous_rigid_models", "current_rigid_models_scratch"] {
+            let decl = format!("{field}: FxHashMap<u32, [f32; 16]>");
+            assert!(
+                src.contains(&decl),
+                "`{field}` is no longer declared `{decl}` — these two maps are \
+                 probed twice per rigid draw per frame (~29K probes on MedTek), \
+                 which is what makes SipHash-1-3 the wrong default here (#2174)",
+            );
+        }
+        assert_eq!(
+            src.matches("FxHashMap::default()").count(),
+            2,
+            "expected exactly 2 FxHashMap constructions (the two rigid-history \
+             maps) — a `HashMap::new()` crept back into one of them (#2174)",
+        );
     }
 }

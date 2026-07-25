@@ -24,18 +24,25 @@
 //! - depth test on, depth write **off** (transparent surface);
 //! - cull NONE (water seen from both above + below).
 //!
-//! Per-frame flow expected by the caller (typically `draw.rs`):
+//! Per-frame flow expected by the caller (`context::geometry_pass`):
 //!
 //! 1. After all opaque + alpha-blend draws have submitted to the main
-//!    render pass but before `vkCmdEndRenderPass`, bind this pipeline.
-//! 2. The bound set 0 + set 1 + dynamic state from prior triangle
-//!    draws stays valid (layouts are compatible; dynamic state
-//!    inheritance is documented at `pipeline.rs::UI_PIPELINE_DYNAMIC_STATES`).
-//! 3. For each `WaterPlane` entity, push constants + bind its
-//!    `MeshHandle` vertex/index buffers + `cmd_draw_indexed` with
-//!    its instance index. The instance SSBO entry must already be
-//!    populated (water planes are real instances — they reuse the
-//!    same per-instance model matrix the rest of the scene uses).
+//!    render pass but before `vkCmdEndRenderPass`, set the transparent
+//!    dynamic state (depth test on, depth write off, cull NONE) and call
+//!    [`WaterPipeline::bind_pass`] **once**. That binds the pipeline and
+//!    all three descriptor sets for the whole pass (#2175).
+//! 2. Descriptor state does *not* survive the pipeline bind: this
+//!    pipeline's 128-byte push-constant range makes its layout
+//!    incompatible with the triangle pipeline's for every set, so
+//!    `bind_pass` rebinds sets 0 and 1 explicitly rather than inheriting
+//!    them (#1258 — see its doc comment). Dynamic state does survive, per
+//!    `pipeline.rs::UI_PIPELINE_DYNAMIC_STATES`.
+//! 3. For each `WaterPlane` entity, bind its `MeshHandle` vertex/index
+//!    buffers, then [`WaterPipeline::record_draw`] for the push constants
+//!    + `cmd_draw_indexed` with its instance index. The instance SSBO
+//!    entry must already be populated (water planes are real instances —
+//!    they reuse the same per-instance model matrix the rest of the scene
+//!    uses). Neither step disturbs the bindings from step 1.
 
 use super::descriptors::{write_storage_image, DescriptorPoolBuilder};
 use super::pipeline::load_shader_module;
@@ -381,60 +388,51 @@ impl WaterPipeline {
         }
     }
 
-    /// Record a single water draw into a command buffer that is
-    /// already inside the main render pass with set 0 + set 1 bound
-    /// and dynamic viewport / scissor / depth state set to valid
-    /// transparent-draw values.
+    /// Bind the water pipeline and all three descriptor sets — **once per
+    /// pass**, before the first [`record_draw`](Self::record_draw).
     ///
-    /// Caller is responsible for:
+    /// #2175 / D2-04 — this used to live inside `record_draw`, so a scene
+    /// with N water planes issued N pipeline binds and 3N descriptor-set
+    /// binds for state that is identical across every plane. All three
+    /// sets are per-frame, not per-plane: sets 0 and 1 are the caller's
+    /// bindless-texture and scene sets, and set 2 is indexed by `frame`
+    /// alone. Only the push constants, index count, and instance index
+    /// vary per plane, and the per-mesh vertex/index binds the caller
+    /// interleaves between draws do not disturb pipeline or descriptor
+    /// state.
     ///
-    /// - binding the per-mesh vertex + index buffers before this
-    ///   call (water meshes are not in the global SSBO — they're
-    ///   freshly registered per cell, same as terrain tile meshes);
-    /// - issuing `cmd_set_depth_write_enable(false)`,
-    ///   `cmd_set_depth_test_enable(true)`,
-    ///   `cmd_set_cull_mode(vk::CullModeFlags::NONE)` before the
-    ///   first water draw of the frame;
-    /// - having uploaded the `GpuInstance` entry at `instance_index`
-    ///   with the water plane's model matrix.
+    /// Why sets 0 and 1 are rebound here at all, rather than inherited
+    /// from the triangle path: pre-#1258, `WaterPipeline` assumed the
+    /// prior triangle-pipeline's set 0 + set 1 bindings stayed live across
+    /// `cmd_bind_pipeline`. That holds only when both pipelines' layouts
+    /// are "compatible for set N" per the Vulkan spec, which requires
+    /// identical push-constant ranges as well as identical set-layout
+    /// handles. Triangle has no push constants; water has 128 B (`WaterPush`
+    /// at VERTEX + FRAGMENT). The push-range mismatch un-binds *all*
+    /// descriptor sets when `cmd_bind_pipeline(WaterPipeline)` runs, so
+    /// every water draw fired without sets 0 + 1 — spammy
+    /// `VUID-vkCmdDrawIndexed-None-08600` on Riverwood, the first cell with
+    /// real water draws to surface the latent bug. The descriptor handles
+    /// are the same ones the triangle path uses; only the pipeline layout
+    /// differs. Hoisting the binds out of the per-plane loop does not
+    /// weaken that fix — the invalidation happens on the pipeline bind,
+    /// which is now also hoisted, so the rebinds still follow it.
     ///
     /// # Safety
     ///
-    /// `cmd` must be a valid command buffer in the recording state.
-    /// All Vulkan handles passed in must outlive the GPU's
-    /// consumption of this command buffer. This is the same
-    /// contract every other `record_*` helper in the renderer
-    /// honours.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn record_draw(
+    /// `cmd` must be a valid command buffer in the recording state, inside
+    /// the main render pass. All Vulkan handles passed in must outlive the
+    /// GPU's consumption of this command buffer.
+    pub unsafe fn bind_pass(
         &self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
-        push: &WaterPush,
-        index_count: u32,
-        instance_index: u32,
         frame: usize,
         bindless_texture_set: vk::DescriptorSet, // set 0 — passed in by caller
         scene_set: vk::DescriptorSet,            // set 1 — passed in by caller
     ) {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
 
-        // Pre-#1258: WaterPipeline assumed the prior triangle-pipeline's
-        // set 0 + set 1 bindings stayed live across `cmd_bind_pipeline`.
-        // That's only true when both pipelines' layouts are "compatible
-        // for set N" per the Vulkan spec — which requires identical
-        // push-constant ranges AS WELL as identical set-layout handles.
-        // Triangle has NO push constants; water has 128 B (WaterPush at
-        // FRAGMENT + VERTEX stages). The push-range mismatch un-binds
-        // ALL descriptor sets when `cmd_bind_pipeline(WaterPipeline)`
-        // runs, so every water draw fired without sets 0 + 1 → spammy
-        // VUID-vkCmdDrawIndexed-None-08600 on Riverwood (first cell
-        // with actual water draws to surface the latent bug).
-        //
-        // Fix: rebind sets 0 + 1 explicitly through THIS pipeline's
-        // layout, then bind set 2 (water-caustic). The descriptor
-        // handles are the same the triangle path uses; only the
-        // pipeline_layout differs. See #1258.
         device.cmd_bind_descriptor_sets(
             cmd,
             vk::PipelineBindPoint::GRAPHICS,
@@ -464,7 +462,42 @@ impl WaterPipeline {
             &[self.water_caustic_descriptor_sets[frame]],
             &[],
         );
+    }
 
+    /// Record a single water draw into a command buffer that is
+    /// already inside the main render pass with dynamic viewport /
+    /// scissor / depth state set to valid transparent-draw values.
+    ///
+    /// Caller is responsible for:
+    ///
+    /// - calling [`bind_pass`](Self::bind_pass) once before the first
+    ///   draw of the pass (#2175 — this function no longer binds the
+    ///   pipeline or any descriptor set);
+    /// - binding the per-mesh vertex + index buffers before this
+    ///   call (water meshes are not in the global SSBO — they're
+    ///   freshly registered per cell, same as terrain tile meshes);
+    /// - issuing `cmd_set_depth_write_enable(false)`,
+    ///   `cmd_set_depth_test_enable(true)`,
+    ///   `cmd_set_cull_mode(vk::CullModeFlags::NONE)` before the
+    ///   first water draw of the frame;
+    /// - having uploaded the `GpuInstance` entry at `instance_index`
+    ///   with the water plane's model matrix.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be a valid command buffer in the recording state.
+    /// All Vulkan handles passed in must outlive the GPU's
+    /// consumption of this command buffer. This is the same
+    /// contract every other `record_*` helper in the renderer
+    /// honours.
+    pub unsafe fn record_draw(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        push: &WaterPush,
+        index_count: u32,
+        instance_index: u32,
+    ) {
         // SAFETY: WaterPush is #[repr(C)] + Copy with only [f32; 4] fields —
         // no padding bytes, no invalid byte patterns, trivially initialised.
         // `push` is a valid shared reference, so the pointer is aligned and
@@ -924,5 +957,102 @@ mod tests {
     fn empty_water_commands_passes() {
         let draws = vec![make_draw_command(7, false)];
         assert!(water_commands_match_draw_slots(&[], &draws));
+    }
+}
+
+/// #2175 / D2-04 — the pipeline + descriptor binds are hoisted out of the
+/// per-plane draw loop.
+///
+/// These are static source assertions because the failure mode is invisible
+/// to `cargo test`: it needs a real device, a cell with water, and the
+/// validation layer to observe. What *is* checkable without a device is the
+/// structural property the fix rests on — `record_draw` binds nothing, and
+/// the one caller binds once ahead of its loop. A future edit that pushes a
+/// bind back inside the loop (or drops `bind_pass` entirely, which would
+/// resurrect the #1258 unbound-descriptor-set crash) fails here.
+#[cfg(test)]
+mod pass_bind_hoist_tests {
+    const WATER_RS: &str = include_str!("water.rs");
+    const GEOMETRY_PASS_RS: &str = include_str!("context/geometry_pass.rs");
+
+    /// Everything before the test modules — needed so the needles below
+    /// cannot match this file's own assertion strings.
+    fn water_production_src() -> &'static str {
+        WATER_RS
+            .split_once("\n#[cfg(test)]")
+            .expect("water.rs lost its test modules")
+            .0
+    }
+
+    /// Body of `record_draw`, from its signature to the closing brace at
+    /// method indentation.
+    fn record_draw_body() -> &'static str {
+        let src = water_production_src();
+        let start = src
+            .find("pub unsafe fn record_draw(")
+            .expect("record_draw disappeared from water.rs");
+        let rest = &src[start..];
+        let end = rest
+            .find("\n    }")
+            .expect("record_draw has no closing brace at method indentation");
+        &rest[..end]
+    }
+
+    #[test]
+    fn record_draw_binds_neither_pipeline_nor_descriptor_sets() {
+        let body = record_draw_body();
+        for needle in ["cmd_bind_pipeline", "cmd_bind_descriptor_sets"] {
+            assert!(
+                !body.contains(needle),
+                "record_draw calls `{needle}` again — that is per-plane state \
+                 the pass-level `bind_pass` already covers (#2175). If a new \
+                 per-plane descriptor really is needed, bind only that set, \
+                 not the pipeline and all three.",
+            );
+        }
+        assert!(
+            body.contains("cmd_draw_indexed"),
+            "record_draw no longer issues a draw — the extraction above is \
+             matching the wrong function",
+        );
+    }
+
+    #[test]
+    fn bind_pass_binds_the_pipeline_and_all_three_sets() {
+        let src = water_production_src();
+        let start = src.find("pub unsafe fn bind_pass(").expect(
+            "bind_pass disappeared — record_draw would draw with no pipeline bound (#1258)",
+        );
+        let body = &src[start..];
+        let end = body
+            .find("\n    }")
+            .expect("bind_pass has no closing brace at method indentation");
+        let body = &body[..end];
+        assert!(body.contains("cmd_bind_pipeline"));
+        assert_eq!(
+            body.matches("cmd_bind_descriptor_sets").count(),
+            3,
+            "bind_pass must bind all three sets (0 bindless, 1 scene, \
+             2 water-caustic) — a missing rebind is the #1258 crash, since \
+             water's push-constant range makes its layout incompatible with \
+             the triangle pipeline's for every set",
+        );
+    }
+
+    /// The bind must precede the loop, not sit inside it.
+    #[test]
+    fn geometry_pass_binds_once_before_the_per_plane_loop() {
+        let bind = GEOMETRY_PASS_RS
+            .find("water.bind_pass(")
+            .expect("geometry_pass no longer calls bind_pass");
+        let loop_head = GEOMETRY_PASS_RS
+            .find("for wc in water_commands {")
+            .expect("the per-plane water loop changed shape");
+        assert!(
+            bind < loop_head,
+            "water.bind_pass (byte {bind}) must be hoisted above the \
+             per-plane loop (byte {loop_head}) — binding inside it is the \
+             regression #2175 removed",
+        );
     }
 }

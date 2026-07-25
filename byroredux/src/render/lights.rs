@@ -96,7 +96,17 @@ fn gi_priority_score(light: &byroredux_renderer::GpuLight) -> f32 {
 /// (it indexes lights by ID from its own per-cluster lists), but
 /// `giHitIrradiance`'s fixed-prefix GI scan does, and the once-per-session
 /// info log below references the first three slots post-sort.
-pub(super) fn collect_lights(world: &World, gpu_lights: &mut Vec<byroredux_renderer::GpuLight>) {
+///
+/// `sort_scratch` is the caller-owned decorate-sort buffer (#2172 /
+/// PERF-D1-02); its contents on entry are irrelevant — it is cleared
+/// here — but its *capacity* is what the caller is preserving across
+/// frames. Same contract as `gpu_lights` itself and the `AnimScratch`
+/// buffers in `systems/animation.rs`.
+pub(super) fn collect_lights(
+    world: &World,
+    gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
+    sort_scratch: &mut Vec<(f32, byroredux_renderer::GpuLight)>,
+) {
     // Cell directional light. Source selection remains environment-specific
     // (`compute_directional_upload` uses authored XCLL strength indoors and
     // the weather/TOD ramp outdoors), but both produce the same standard
@@ -219,16 +229,21 @@ pub(super) fn collect_lights(world: &World, gpu_lights: &mut Vec<byroredux_rende
     // #2034 / PERF-D1-2026-07-16-02 — precompute `gi_priority_score` once
     // per light (Schwartzian transform / decorate-sort-undecorate)
     // instead of recomputing it on both sides of every comparator call.
-    // Point-light counts are small (streaming-RIS-capped, typically <50),
-    // so the temporary `(score, light)` Vec is negligible; the point is
-    // avoiding the redundant O(n log n) recomputation, not avoiding this
-    // one small allocation.
+    //
+    // #2172 / PERF-D1-02 — the decorate buffer is caller-owned and reused
+    // rather than freshly allocated each frame. #2034 judged the
+    // allocation negligible on size grounds and it is (point-light counts
+    // are streaming-RIS-capped, typically <50), but "small" and
+    // "per-frame" is the same combination every other scratch in this
+    // module family already amortizes away, so it costs nothing to be
+    // consistent. `clear` + `extend` keeps the backing allocation and
+    // only ever grows it to the high-water light count.
     let suffix = &mut gpu_lights[directional_count..];
-    let mut scored: Vec<(f32, byroredux_renderer::GpuLight)> =
-        suffix.iter().map(|l| (gi_priority_score(l), *l)).collect();
-    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-    for (slot, (_, light)) in suffix.iter_mut().zip(scored) {
-        *slot = light;
+    sort_scratch.clear();
+    sort_scratch.extend(suffix.iter().map(|l| (gi_priority_score(l), *l)));
+    sort_scratch.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for (slot, (_, light)) in suffix.iter_mut().zip(sort_scratch.iter()) {
+        *slot = *light;
     }
 
     // Log light count once per session.
@@ -348,7 +363,7 @@ mod directional_source_contract_tests {
         world.insert_resource(full_sun_sky_params());
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights);
+        collect_lights(&world, &mut lights, &mut Vec::new());
 
         assert_eq!(
             lights.len(),
@@ -398,7 +413,7 @@ mod directional_source_contract_tests {
         world.insert_resource(full_sun_sky_params());
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights);
+        collect_lights(&world, &mut lights, &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         let l = &lights[0];
@@ -423,7 +438,7 @@ mod directional_source_contract_tests {
         // No SkyParamsRes — fresh-boot or interior-only session.
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights);
+        collect_lights(&world, &mut lights, &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         let l = &lights[0];
@@ -443,7 +458,7 @@ mod directional_source_contract_tests {
         world.insert_resource(full_sun_sky_params());
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights);
+        collect_lights(&world, &mut lights, &mut Vec::new());
 
         assert_eq!(
             lights.len(),
@@ -551,7 +566,7 @@ mod gi_light_priority_tests {
         spawn_point_light(&mut world, [20.0, 0.0, 0.0], [0.9, 0.9, 0.9], 900.0);
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights);
+        collect_lights(&world, &mut lights, &mut Vec::new());
 
         assert_eq!(lights.len(), 3, "all three point lights must be collected");
         let scores: Vec<f32> = lights.iter().map(gi_priority_score).collect();
@@ -604,7 +619,7 @@ mod gi_light_priority_tests {
         spawn_point_light(&mut world, [5.0, 0.0, 0.0], [1.0, 1.0, 1.0], 5000.0);
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights);
+        collect_lights(&world, &mut lights, &mut Vec::new());
 
         assert_eq!(lights.len(), 2);
         assert!(
@@ -612,6 +627,108 @@ mod gi_light_priority_tests {
             "index 0 must always be the directional (type 2.0), regardless \
              of point-light brightness — got type {}",
             lights[0].color_type[3]
+        );
+    }
+}
+
+/// #2172 / PERF-D1-02 — the GI-priority decorate-sort buffer is
+/// caller-owned so its allocation amortizes across frames.
+#[cfg(test)]
+mod sort_scratch_reuse_tests {
+    use super::*;
+    use byroredux_core::ecs::LightSource;
+
+    fn spawn_point_light(world: &mut World, radius: f32, brightness: f32) {
+        let e = world.spawn();
+        world.insert(
+            e,
+            GlobalTransform::new(
+                byroredux_core::math::Vec3::new(radius, 0.0, 0.0),
+                byroredux_core::math::Quat::IDENTITY,
+                1.0,
+            ),
+        );
+        world.insert(
+            e,
+            LightSource {
+                radius,
+                color: [brightness; 3],
+                ..Default::default()
+            },
+        );
+    }
+
+    /// The scratch must be reused, not reallocated: after a warm-up call
+    /// has grown it to the scene's light count, a second call on the same
+    /// scene must not touch the allocator.
+    ///
+    /// `capacity()` is the observable that distinguishes "cleared and
+    /// refilled" from "dropped and rebuilt" — a fresh `Vec` collected into
+    /// each frame would come back with capacity grown from 0, whereas
+    /// `clear` + `extend` keeps whatever the high-water mark established.
+    #[test]
+    fn repeated_collection_reuses_the_scratch_allocation() {
+        let mut world = World::new();
+        for i in 1..=12 {
+            spawn_point_light(&mut world, i as f32 * 100.0, i as f32 * 0.05);
+        }
+
+        let mut lights = Vec::new();
+        let mut scratch = Vec::new();
+
+        collect_lights(&world, &mut lights, &mut scratch);
+        let warm_capacity = scratch.capacity();
+        assert!(
+            warm_capacity >= 12,
+            "warm-up call must size the scratch to the light count, got {warm_capacity}",
+        );
+
+        lights.clear();
+        collect_lights(&world, &mut lights, &mut scratch);
+        assert_eq!(
+            scratch.capacity(),
+            warm_capacity,
+            "a second frame over the same scene must not regrow the scratch",
+        );
+    }
+
+    /// Threading the scratch must not change the sort result, including
+    /// when the caller hands over a buffer still holding a previous
+    /// frame's (larger) contents — `collect_lights` clears it, so stale
+    /// entries can neither leak into the output nor survive past the
+    /// current light count.
+    #[test]
+    fn stale_scratch_contents_do_not_leak_into_the_sorted_output() {
+        let mut world = World::new();
+        spawn_point_light(&mut world, 100.0, 0.05);
+        spawn_point_light(&mut world, 900.0, 0.9);
+
+        // Pre-poison with a high-scoring entry that is in no scene.
+        let mut scratch = vec![(
+            f32::MAX,
+            byroredux_renderer::GpuLight {
+                position_radius: [7.0, 7.0, 7.0, 12_345.0],
+                color_type: [9.0, 9.0, 9.0, 0.0],
+                direction_angle: [0.0; 4],
+                params: [1.0, 0.0, 0.0, 0.0],
+            },
+        )];
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights, &mut scratch);
+
+        assert_eq!(lights.len(), 2, "only the two spawned lights may appear");
+        assert!(
+            lights
+                .iter()
+                .all(|l| (l.position_radius[3] - 12_345.0).abs() > 1e-3),
+            "the poisoned scratch entry leaked into the output: {:?}",
+            lights.iter().map(|l| l.position_radius).collect::<Vec<_>>(),
+        );
+        let scores: Vec<f32> = lights.iter().map(gi_priority_score).collect();
+        assert!(
+            scores.windows(2).all(|w| w[0] >= w[1]),
+            "descending gi_priority_score order must survive scratch reuse, got {scores:?}",
         );
     }
 }

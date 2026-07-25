@@ -137,15 +137,23 @@ impl Attachment {
                     allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                 })
                 .with_context(|| format!("Failed to allocate {name_prefix} memory"))?;
-            // SAFETY: `img` is the freshly-created image; `alloc.memory()`
-            // is the matching allocation gpu-allocator returned for `img`'s
-            // memory requirements. Bound once — the `Drop` path on `alloc`
-            // is the only thing that releases the memory, and we own `alloc`
-            // in `self.allocations` until `destroy()` runs.
-            unsafe {
-                device
-                    .bind_image_memory(img, alloc.memory(), alloc.offset())
-                    .with_context(|| format!("bind {name_prefix} image memory"))?;
+            // #2178 / PERF-D3-03 — free the sub-allocation on bind failure.
+            // Until the `push` below, `alloc` is a local that `destroy()`
+            // cannot see, so an early return would strand the memory outside
+            // the allocator's free list. `img` is already in `self.images`
+            // and is destroyed normally. Same shape as the sibling site in
+            // `frame_upscaler.rs::create_outputs` and the established pattern
+            // in `exposure.rs`.
+            if let Err(error) = unsafe {
+                // SAFETY: `img` is the freshly-created image; `alloc.memory()`
+                // is the matching allocation gpu-allocator returned for `img`'s
+                // memory requirements. Bound once — the `Drop` path on `alloc`
+                // is the only thing that releases the memory, and we own `alloc`
+                // in `self.allocations` until `destroy()` runs.
+                device.bind_image_memory(img, alloc.memory(), alloc.offset())
+            } {
+                allocator.lock().expect("allocator lock").free(alloc).ok();
+                return Err(error).context(format!("bind {name_prefix} image memory"));
             }
             self.allocations.push(Some(alloc));
 

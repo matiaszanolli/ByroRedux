@@ -269,14 +269,30 @@ impl Texture {
             })
             .context("Failed to allocate DDS texture image memory")?;
 
-        unsafe {
+        // #2178 / PERF-D3-03 — free the sub-allocation on bind failure. This is
+        // the most reachable instance of the pattern: unlike the startup
+        // attachment allocations, this one runs per DDS upload for the whole
+        // session, so a VRAM-pressure bind failure here is plausible rather
+        // than hypothetical, and every failed upload would strand its
+        // allocation for the process lifetime.
+        if let Err(error) = unsafe {
             // SAFETY: `image` is device-created above and unbound; `image_alloc`
             // is a fresh GpuOnly allocation from this device's allocator whose
             // `memory()`/`offset()` satisfy `image`'s memory requirements
             // queried just above.
-            device
-                .bind_image_memory(image, image_alloc.memory(), image_alloc.offset())
-                .context("Failed to bind DDS texture image memory")?;
+            device.bind_image_memory(image, image_alloc.memory(), image_alloc.offset())
+        } {
+            allocator
+                .lock()
+                .expect("allocator lock poisoned")
+                .free(image_alloc)
+                .ok();
+            unsafe {
+                // SAFETY: the bind failed and no view exists, so the image is
+                // unreferenced and its allocation has just been returned.
+                device.destroy_image(image, None);
+            }
+            return Err(error).context("Failed to bind DDS texture image memory");
         }
 
         // Build per-mip copy regions.

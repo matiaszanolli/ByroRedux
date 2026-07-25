@@ -324,8 +324,10 @@ pub(crate) struct RenderFrameView {
 
 /// Build the view-projection matrix and draw command list from ECS queries.
 ///
-/// All scratch buffers — `draw_commands`, `gpu_lights`, `bone_world`,
-/// `skin_offsets` — are owned by the caller and cleared on entry so
+/// All scratch buffers — `draw_commands`, `gpu_lights`,
+/// `light_sort_scratch`, `bone_world`, `skin_offsets` — are owned by the
+/// caller and cleared on entry (or, for `light_sort_scratch`, at its point
+/// of use in `collect_lights`) so
 /// their heap allocations persist across frames. See #253
 /// (`skin_offsets`), #243 (`draw_commands` / `gpu_lights` /
 /// `bone_world` scratch pattern), M29.5 (the bone_world / bind_inverses
@@ -338,6 +340,9 @@ pub(crate) fn build_render_data(
     draw_commands: &mut Vec<DrawCommand>,
     water_commands: &mut Vec<WaterDrawCommand>,
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
+    // Decorate-sort scratch for `collect_lights`' GI-priority ordering.
+    // Caller-owned purely so its capacity survives the frame (#2172).
+    light_sort_scratch: &mut Vec<(f32, byroredux_renderer::GpuLight)>,
     bone_world: &mut Vec<[[f32; 4]; 4]>,
     skin_offsets: &mut HashMap<EntityId, u32>,
     skin_slot_pool: &mut SkinSlotPool,
@@ -536,7 +541,7 @@ pub(crate) fn build_render_data(
     // Collect lights from ECS — cell directional + placed point lights.
     // See `render::lights::collect_lights`.
     let t_lights = mark(profile);
-    lights::collect_lights(world, gpu_lights);
+    lights::collect_lights(world, gpu_lights, light_sort_scratch);
     let ms_lights = took(t_lights);
     if profile {
         log::info!(

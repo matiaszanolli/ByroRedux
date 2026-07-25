@@ -511,6 +511,19 @@ impl VulkanContext {
                     // Emit the runtime override here so the draw uses NONE (water
                     // surfaces are visible from above and below the camera plane).
                     self.device.cmd_set_cull_mode(cmd, vk::CullModeFlags::NONE);
+                    // #2175 / D2-04 — pipeline + all three descriptor sets
+                    // are identical for every plane in the pass, so bind
+                    // them once here rather than once per plane. The only
+                    // per-plane state left in the loop is the mesh's
+                    // vertex/index buffers and the push constants, neither
+                    // of which disturbs pipeline or descriptor bindings.
+                    water.bind_pass(
+                        &self.device,
+                        cmd,
+                        frame, // #1255 — selects set 2 per-FIF water-caustic descriptor
+                        self.texture_registry.descriptor_set(frame), // #1258 — set 0
+                        self.scene_buffers.descriptor_set(frame), // #1258 — set 1
+                    );
                     for wc in water_commands {
                         if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
                             let vb = mesh
@@ -535,9 +548,6 @@ impl VulkanContext {
                                 &wc.push,
                                 mesh.index_count,
                                 wc.instance_index,
-                                frame, // #1255 — selects set 2 per-FIF water-caustic descriptor
-                                self.texture_registry.descriptor_set(frame), // #1258 — set 0
-                                self.scene_buffers.descriptor_set(frame), // #1258 — set 1
                             );
                         }
                     }

@@ -326,15 +326,31 @@ impl CompositePipeline {
                     allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                 })
                 .context("Failed to allocate HDR image memory"));
+            // #2178 / PERF-D3-03 — hand the sub-allocation to `partial` BEFORE
+            // the fallible bind. `try_or_cleanup!` reclaims whatever `partial`
+            // owns; with the store after the bind, a bind failure left
+            // `hdr_allocations[i]` as `None` and stranded the memory off the
+            // allocator's free list. Storing first is the smaller fix here than
+            // an explicit `free` (which would mean inlining the macro body);
+            // the sites that have no container to store into use the explicit
+            // form instead — see `frame_upscaler.rs` and `exposure.rs`.
+            partial.hdr_allocations[i] = Some(alloc);
+            let (memory, offset) = {
+                let alloc = partial.hdr_allocations[i]
+                    .as_ref()
+                    .expect("stored on the line above");
+                // SAFETY: reading the handle + offset of a live allocation this
+                // scope owns; nothing has aliased or freed it since `allocate`.
+                unsafe { (alloc.memory(), alloc.offset()) }
+            };
             // SAFETY: `img` (created above) matches the memory requirements that
-            // produced `alloc`; bound exactly once. On Err, `try_or_cleanup!`
-            // destroys the partial state.
+            // produced the allocation; bound exactly once. On Err,
+            // `try_or_cleanup!` destroys the partial state, allocation included.
             try_or_cleanup!(unsafe {
                 device
-                    .bind_image_memory(img, alloc.memory(), alloc.offset())
+                    .bind_image_memory(img, memory, offset)
                     .context("bind HDR image memory")
             });
-            partial.hdr_allocations[i] = Some(alloc);
 
             // SAFETY: `img` is bound to memory (line above); the view handle is
             // owned by `partial.hdr_image_views` on Ok, freed by `try_or_cleanup!`
@@ -401,15 +417,23 @@ impl CompositePipeline {
                     allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                 })
                 .context("allocate composed scene image"));
+            // #2178 — store before binding, same reasoning as the HDR loop above.
+            partial.scene_allocations[i] = Some(allocation);
+            let (memory, offset) = {
+                let allocation = partial.scene_allocations[i]
+                    .as_ref()
+                    .expect("stored on the line above");
+                // SAFETY: as above — live, uniquely-owned allocation.
+                unsafe { (allocation.memory(), allocation.offset()) }
+            };
             try_or_cleanup!(unsafe {
-                // SAFETY: `allocation` satisfies the queried requirements for
+                // SAFETY: the allocation satisfies the queried requirements for
                 // the still-unbound `image` and belongs to this logical
                 // device.
                 device
-                    .bind_image_memory(image, allocation.memory(), allocation.offset())
+                    .bind_image_memory(image, memory, offset)
                     .context("bind composed scene image")
             });
-            partial.scene_allocations[i] = Some(allocation);
 
             let view = try_or_cleanup!(unsafe {
                 // SAFETY: `image` is live and bound, and `HDR_FORMAT` matches
@@ -1117,10 +1141,22 @@ impl CompositePipeline {
                         allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                     },
                 )?;
-                // SAFETY: `img` matches the memory requirements that
-                // produced `alloc`; bound once per image.
-                unsafe { device.bind_image_memory(img, alloc.memory(), alloc.offset())? };
+                // #2178 — push before the fallible bind so the `?` cannot
+                // strand the sub-allocation; `destroy` drains
+                // `hdr_allocations` and frees whatever is in it.
                 self.hdr_allocations.push(Some(alloc));
+                let (memory, offset) = {
+                    let alloc = self
+                        .hdr_allocations
+                        .last()
+                        .and_then(Option::as_ref)
+                        .expect("pushed on the line above");
+                    // SAFETY: as above — live, uniquely-owned allocation.
+                    unsafe { (alloc.memory(), alloc.offset()) }
+                };
+                // SAFETY: `img` matches the memory requirements that
+                // produced the allocation; bound once per image.
+                unsafe { device.bind_image_memory(img, memory, offset)? };
 
                 // SAFETY: `img` is bound (line above); view owned by
                 // `self.hdr_image_views` on Ok.
@@ -1174,12 +1210,19 @@ impl CompositePipeline {
                         allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                     },
                 )?;
-                // SAFETY: `image` matches the memory requirements that
-                // produced `allocation`; bound once per image.
-                unsafe {
-                    device.bind_image_memory(image, allocation.memory(), allocation.offset())?
-                };
+                // #2178 — store before the fallible bind, same as the HDR
+                // loop above.
                 self.scene_allocations[i] = Some(allocation);
+                let (memory, offset) = {
+                    let allocation = self.scene_allocations[i]
+                        .as_ref()
+                        .expect("stored on the line above");
+                    // SAFETY: as above — live, uniquely-owned allocation.
+                    unsafe { (allocation.memory(), allocation.offset()) }
+                };
+                // SAFETY: `image` matches the memory requirements that
+                // produced the allocation; bound once per image.
+                unsafe { device.bind_image_memory(image, memory, offset)? };
 
                 // SAFETY: `image` is bound (line above); view owned by
                 // `self.scene_image_views` on Ok.
