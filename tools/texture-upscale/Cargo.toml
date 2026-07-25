@@ -1,0 +1,19 @@
+[package]
+name = "byro-texture-upscale"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "byro-texture-upscale"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+byroredux-bsa = { workspace = true }
+clap = { workspace = true }
+image = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+toml = { workspace = true }
+walkdir = { workspace = true }

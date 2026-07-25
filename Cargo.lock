@@ -393,6 +393,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "byro-texture-upscale"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "byroredux-bsa",
+ "clap",
+ "image 0.24.9",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
 name = "byroredux"
 version = "0.1.0"
 dependencies = [

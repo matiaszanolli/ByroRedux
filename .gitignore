@@ -3,9 +3,10 @@
 *.pdb
 .env
 
-# Third-party dev tools (cloned locally, not tracked) — but byro-dbg is ours
+# Third-party dev tools (cloned locally, not tracked) — except our workspace tools
 /tools/*
 !/tools/byro-dbg/
+!/tools/texture-upscale/
 pipeline_cache.bin
 GEMINI.md
 

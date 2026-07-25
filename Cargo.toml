@@ -23,6 +23,7 @@ members = [
     "crates/debug-server",
     "crates/debug-ui",
     "tools/byro-dbg",
+    "tools/texture-upscale",
     "byroredux",
 ]
 resolver = "2"
@@ -114,6 +115,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 semver = { version = "1", features = ["serde"] }
+clap = { version = "4.6", features = ["derive"] }
 
 # Checksums — save-file integrity (M45). Power-cut / partial-write
 # detection on load; SIMD-accelerated, non-cryptographic.
@@ -134,6 +136,8 @@ rapier3d = { version = "0.22", features = ["simd-stable"] }
 
 # Image loading
 image = "0.24"
+tempfile = "3"
+walkdir = "2.5"
 
 # Audio (M44 — 3D positional, reverb zones, streaming, attenuation curves)
 # Pinned to 0.10 — game-oriented Rust audio with built-in SpatialScene

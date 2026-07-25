@@ -6,8 +6,8 @@ under `[workspace.dependencies]` and are consumed by individual crates via
 [Architecture Overview](architecture.md#crate-dependency-graph).
 
 > Last reconciled against the tree on **2026-05-28** (Session 42 closeout).
-> The workspace has grown to **19 crates under `crates/`** plus the
-> `byroredux` binary and the `byro-dbg` tool since the Session 7 (2026-04-09)
+> The workspace has grown to **22 crates under `crates/`** plus the
+> `byroredux` binary and two tools since the Session 7 (2026-04-09)
 > revision of this doc — the dependency surface below reflects the current
 > `Cargo.toml` files, not the early-April snapshot.
 
@@ -42,14 +42,17 @@ internal graph are not repeated).
 | uuid               | 1 (`v5`, `serde`) | core, plugin                         | Plugin identity (`v5` content hashing)                       |
 | semver             | 1 (`serde`) | plugin                                     | Plugin version constraints                                    |
 | **Serialization**  |          |                                               |                                                               |
-| serde              | 1 (`derive`) | plugin, debug-protocol, debug-server, byroredux, core (`inspect`) | Manifest + debug-wire + profile serialization |
-| serde_json         | 1        | debug-protocol, debug-server, byro-dbg, core (`inspect`) | Length-prefixed JSON debug protocol            |
-| toml               | 0.8      | plugin, byroredux                             | Plugin manifest + game-profile format                         |
+| serde              | 1 (`derive`) | plugin, debug-protocol, debug-server, byroredux, core (`inspect`), texture-upscale | Manifest + debug-wire + profile serialization |
+| serde_json         | 1        | debug-protocol, debug-server, byro-dbg, core (`inspect`), texture-upscale | JSON protocol and upscale provenance reports |
+| toml               | 0.8      | plugin, byroredux, texture-upscale            | Plugin, game-profile, and texture-set manifests               |
+| clap               | 4.6 (`derive`) | texture-upscale                         | Offline texture-workbench CLI                                 |
 | **Compression**    |          |                                               |                                                               |
 | flate2             | 1        | bsa, plugin                                   | Zlib decompression for BSA + BA2 + ESM records                |
 | lz4_flex           | 0.11     | bsa                                           | LZ4 frame (BSA v105) + LZ4 block (BA2 v3 / Starfield) decompression |
 | **Image**          |          |                                               |                                                               |
-| image              | 0.24     | renderer, byroredux (dev — golden frames)     | PNG / non-DDS image loading; PNG decode in screenshot regression tests |
+| image              | 0.24     | renderer, byroredux (dev — golden frames), texture-upscale | Image I/O plus BC1/BC2/BC3 DDS decode for the upscale workbench |
+| tempfile           | 3        | texture-upscale                               | Isolated external-upscaler interchange files                  |
+| walkdir            | 2.5      | texture-upscale                               | Recursive loose-texture source indexing                       |
 | **Profiling**      |          |                                               |                                                               |
 | tracing            | 0.1      | byroredux                                     | Wall-clock span ladder for the cell-load critical path (#886) |
 | tracing-subscriber | 0.3      | byroredux                                     | `fmt` + `env-filter` span output                              |
@@ -137,6 +140,7 @@ dependency is only ever consumed by that one crate:
 | byroredux-debug-ui       | byroredux-core, byroredux-renderer                                      |
 | byroredux (binary)       | all engine crates above (debug-server is optional, on by default)       |
 | byro-dbg (tool)          | byroredux-debug-protocol                                                |
+| byro-texture-upscale (tool) | byroredux-bsa                                                     |
 
 `byroredux-spt` (SpeedTree) depends on `byroredux-nif` so its importer emits
 the same `Imported*` scene types the cell loader spawns through one canonical

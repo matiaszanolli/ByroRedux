@@ -51,6 +51,7 @@ a working checkout and want to understand or change engine internals.
 | [FO4 CSG Format](fo4-csg-format.md) | bsa | `BSPackedGeomObject` TLV spec for FO4 precombined geometry |
 | [Geometry Defect Triage](geometry-defect-triage-workflow.md) | nif, byroredux | Workflow for diagnosing and fixing mesh import artefacts |
 | [Debug CLI](debug-cli.md) | debug-protocol, debug-server, byro-dbg | Live ECS inspection, Papyrus expression queries, screenshots |
+| [Texture Upscale Workbench](../../tools/texture-upscale/README.md) | bsa, byro-texture-upscale | BSA/BA2 set discovery, external ESRGAN reference pass, semantic-map guided upscale |
 | [Memory Budget](memory-budget.md) | renderer, bsa, byroredux | VRAM/RAM ceilings, SSBO sizes, LRU eviction thresholds, deferred-destroy queue |
 | [Testing](testing.md) | all | Unit + integration test inventory, how to run |
 | [Dependencies](dependencies.md) | all | Workspace crates and per-crate deps |
@@ -89,6 +90,7 @@ a working checkout and want to understand or change engine internals.
 | Debug protocol | `byroredux_debug_protocol::{DebugRequest, DebugResponse}` |
 | Debug server | `byroredux_debug_server::start()` |
 | Debug CLI | `tools/byro-dbg` binary |
+| Texture upscale workbench | `tools/texture-upscale` binary |
 
 ## Stats
 

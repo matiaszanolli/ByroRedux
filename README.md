@@ -177,6 +177,13 @@ cargo run --release -- --cornell --upscaler taa    # native-resolution fallback
 # Upscaler image-quality matrix (SSIM vs the native TAA render, 5 camera paths)
 cargo test --release -p byroredux --test upscaler_quality -- --ignored --nocapture
 
+# Offline texture-set upscaling — discover BSA/BA2 sets, run ESRGAN on the
+# color reference, then edge-guide normals/glow/specular/masks from that result
+cargo run --release -p byro-texture-upscale -- discover \
+  --source "Fallout - Textures.bsa" \
+  --source "Fallout - Textures2.bsa" \
+  --manifest texture-sets.toml
+
 # Debug CLI — connect to a running engine (TCP, port 9876)
 cargo run -p byro-dbg
 ```
@@ -195,6 +202,12 @@ is the intended way to A/B presets on one scene. `ctx.upscaler` reports the
 active path, its render/output extents, the FSR provider version and
 FP16/FP32 permutation, and the GPU memory the SDK reserved for itself
 (invisible to `mem.frag`, since the FSR backend allocates it directly).
+
+**Texture-set upscaling.** The
+[offline workbench](tools/texture-upscale/README.md) discovers related assets
+through loose directories, BSA archives, and BA2 archives. It applies learned
+detail only to the color reference; companion maps are edge-guided from that
+result, with normal vectors renormalized and authored alpha preserved.
 
 Measured on an RTX 4070 Ti at 1280×720, FSR Quality against native TAA:
 +49% frame time on FNV Prospector, +40% on Skyrim Whiterun, +68% on FO4

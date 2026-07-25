@@ -843,6 +843,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ### Open — Misc
 
+- [ ] **Offline texture-set upscale finalization.** The first working slice is
+  in `tools/texture-upscale`: ordered loose/BSA/BA2 sources, conservative
+  `_n`/`_g`/`_s`/`_m`/`_p` discovery, editable TOML manifests, an external
+  ESRGAN-family reference pass, joint-bilateral companion-map upsampling,
+  normal renormalization, alpha preservation, overwrite protection, and JSON
+  provenance. Live FNV discovery finds 3,127 sets; a synthetic 2×2 → 8×8
+  end-to-end pass exercises the external-process adapter. Remaining:
+  per-game/per-role DDS compression and mip generation, BC5/BC7 decode, and
+  material-slot-aware discovery. PNG intermediates are intentional until
+  those policies exist.
 - [ ] `parry3d` panics on nested compound collision shapes (catch_unwind guard in place)
 - [ ] **Exterior surface shading emits Inf/NaN → white-out** (surfaced Session 60 on FO3 `megatonworld`). Structures render as pure `(255,255,255)` (95.4% of frame) while the procedural sky renders correctly. Isolated by exposure bisection: crushing exposure 0.85 → 0.02 (42×) scales the sky exactly as expected but does not move the geometry by a single pixel — a value that survives a 42× reduction is non-finite, not merely bright (ACES(Inf)→1.0; NaN→white). Ruled out by measurement: missing textures (`tex.missing` = none), fog (`fog_clip/power` None on exteriors), light attenuation (`DBG_LEGACY_LIGHT_ATTEN` pixel-identical), sun contract (`direction_angle` valid, `radius=0` is the documented directional convention, `emitterRadius=0` guarded). Structural asymmetry = the likely locus: exteriors upload the directional at `radius=0` (shadow rays **traced**) while interiors use `radius=-1` (shadow rays **skipped**), and interiors render correctly. Root cause not yet isolated — needs a RenderDoc capture or an `isnan/isinf` debug-viz bisect of the sun-shadow/GI path, not a speculative shader edit.
 - [x] ~~`--esm` accepts only one plugin~~ — **closed via #561 / M46.0** (repeatable `--master <path>` CLI arg + multi-plugin merge through `EsmIndex::merge_from`).
@@ -855,15 +865,16 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-07-23 (Session 60 closeout). Last `/session-close` verification was 2026-07-23 (Session 60).
+Ground-truth as of 2026-07-25. Last full workspace test verification was
+2026-07-25; other inventory figures remain from the Session 60 closeout.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
 | Rust source lines (`src/` dirs)         | ~290 267 (Session 60 measure) |
 | Rust total lines (all `.rs`, excl. `target/`) | ~305 971 (updated 2026-07-23)  |
 | Source files (`.rs`, excl. `target/`)   | 719 total · 681 outside `tests/` dirs |
-| Workspace members                       | 24 (22 crates + `byroredux` binary + `tools/byro-dbg`) |
-| Tests (last reported by ROADMAP)        | **3826 passing** (Session 60 closeout, 2026-07-23). +41 vs Session 59. |
+| Workspace members                       | 25 (22 crates + `byroredux` binary + 2 tools) |
+| Tests (last reported by ROADMAP)        | **3899 passing, 129 ignored** (`cargo test --workspace`, 2026-07-25). |
 | Open issue directories                  | 2000 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | 184 886                       |
 | Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE / FO4 / FO76 (FO4 both base mesh archives, 159 866 NIFs, 2026-06-14; FO76 58 469 NIFs, 2026-07-11 #1900); Oblivion 99.93% (2026-06-15 sweep, post-#1543/#1544), Starfield 99.64% aggregate (2026-07-03 sweep; see compat matrix for per-archive breakdown). Recoverable 100% on all games, including Oblivion (#698's corrupt-marker hard-failure is closed). Sweep dates: Oblivion 2026-06-15, FO4 2026-06-14, FO76 2026-07-11, Starfield 2026-07-03; FO3/FNV/Skyrim SE unrefreshed since the original integration sweep (still 100%). |
@@ -933,3 +944,4 @@ a new claim without one.
 | `byroredux-audio`             | 3D spatial audio via kira 0.10 (spatial sub-tracks, reverb send, streaming music — M44)                          |
 | `byroredux` (binary)          | Game loop, cell loader, fly camera, animation system, render data collection, NIFAL translation boundary         |
 | `tools/byro-dbg`              | Standalone debug CLI (TCP client, REPL)                                                                          |
+| `tools/texture-upscale`       | Offline BSA/BA2 texture-set discovery and reference-guided semantic-map upscaling                                |

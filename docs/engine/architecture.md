@@ -14,12 +14,12 @@ Bethesda Gamebryo/Creation game (Oblivion through Starfield).
 
 ## Workspace Structure
 
-The workspace is **21 members**: 19 library crates under `crates/`, the
-`byroredux` binary, and the `tools/byro-dbg` debug CLI.
+The workspace is **25 members**: 22 library crates under `crates/`, the
+`byroredux` binary, and two tools.
 
 ```
 byroredux/
-├── Cargo.toml                 Workspace root (21 members)
+├── Cargo.toml                 Workspace root (25 members)
 ├── byroredux/                 Binary crate — game loop, scene setup, cell loader,
 │                              world streaming, NPC spawn/equip, fly + character
 │                              controllers, animation/transform/render systems
@@ -53,7 +53,8 @@ byroredux/
 │   ├── debug-server/          TCP debug server embedded in the engine
 │   └── debug-ui/              In-engine egui overlay (metrics, load queue)
 ├── tools/
-│   └── byro-dbg/              Standalone debug CLI binary (TCP client, REPL)
+│   ├── byro-dbg/              Standalone debug CLI binary (TCP client, REPL)
+│   └── texture-upscale/       Archive-aware, reference-guided texture upscaler
 └── docs/
     ├── engine/                This documentation
     ├── legacy/                Gamebryo 2.3 / Creation Engine analysis
