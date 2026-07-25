@@ -463,7 +463,22 @@ impl FrameUpscaler {
                 // SAFETY: same contract as the dispatch path above — `cmd` is
                 // recording outside a render pass, and both helpers only
                 // record into it. `record_fsr_barriers_before` established the
-                // exact layouts these two transition out of.
+                // exact layouts these two transition out of, and the SDK
+                // recorded nothing between then and this `Err`.
+                //
+                // That last clause was #2140's open hypothesis; it is settled
+                // for the vendored SDK. Every reachable error return on this
+                // path — the FFI shim's parameter checks, `ffxDispatch` /
+                // `ffxProvider_FSR3Upscale::Dispatch`'s `VERIFY`s, and
+                // `ffxFsr3UpscalerContextDispatch`'s seven
+                // `FFX_RETURN_ON_ERROR` guards — fires strictly before
+                // `fsr3upscalerDispatch`, the first function that schedules or
+                // records anything, and that function has no error return at
+                // all. So a failed dispatch leaves `cmd` exactly as
+                // `record_fsr_barriers_before` left it. The property is pinned
+                // against the vendored sources by
+                // `fsr3_sys::vendored_sdk_contract_tests`, which fails an SDK
+                // bump that introduces an error return at or after recording.
                 self.record_fsr_depth_restore(device, cmd, inputs.depth);
                 self.record_native_blit(
                     device,
@@ -854,6 +869,11 @@ impl FrameUpscaler {
 ///
 /// `GENERAL` only ever reaches the blit through the dispatch-failure recovery
 /// path, where the last declared access was the SDK's storage write.
+///
+/// #2140 — "the SDK's storage write" here means the transition
+/// `record_fsr_barriers_before` recorded, not anything the SDK itself put into
+/// the command buffer: a rejected dispatch cannot have recorded, see the
+/// recovery branch in [`FrameUpscaler::record`].
 fn blit_output_src_access(output_layout: vk::ImageLayout) -> vk::AccessFlags {
     if output_layout == vk::ImageLayout::GENERAL {
         vk::AccessFlags::SHADER_WRITE

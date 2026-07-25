@@ -401,3 +401,99 @@ fn two_doors_same_quest_advance_in_one_pass() {
     assert_eq!(batch.0[1].previous_stage, 40);
     assert_eq!(batch.0[1].new_stage, 40);
 }
+
+// ── One signal per entity per frame (#2130) ───────────────────
+
+/// #2130 / SCR-D7-NEW3-01 — an entity that receives BOTH an
+/// `ActivateEvent` and an `OnTriggerEnterEvent` in the same frame must
+/// advance exactly once.
+///
+/// Not reachable today: a `TriggerVolume` only lands on a mesh-less REFR,
+/// and no live system emits `ActivateEvent` yet (only the debug console).
+/// But the recognizer test `on_activate_wins_over_on_trigger_enter` proves
+/// one script can define both handlers, so once boot.rs's "Stage 4"
+/// player-activation system lands, one player action could deliver both.
+///
+/// Without the dedup this fails on the batch length, not the stage value:
+/// phase 1 is a pure read, so both signals see the same pre-write state
+/// and both satisfy the predicate; phase 2 then applies twice and emits
+/// two `QuestStageAdvanced` markers. `set_stage(40)` twice is harmless,
+/// but a downstream non-idempotent fragment effect keyed off the marker
+/// (`AddItem`) would run twice.
+#[test]
+fn both_activate_and_trigger_enter_in_one_frame_advance_exactly_once() {
+    let (world, player, door) = setup_da10_world();
+    {
+        let mut stage_state = world.resource_mut::<QuestStageState>();
+        stage_state.set_stage(DA10_QUEST_FORM_ID, 37);
+    }
+    if world.has::<QuestStageAdvancedBatch>(player) {
+        world
+            .query_mut::<QuestStageAdvancedBatch>()
+            .unwrap()
+            .remove(player);
+    }
+
+    fire_activate(&world, door, player);
+    fire_trigger_enter(&world, door, player);
+    quest_advance_system(&world);
+
+    let batch = world
+        .get::<QuestStageAdvancedBatch>(player)
+        .expect("QuestStageAdvancedBatch must land on player");
+    assert_eq!(
+        batch.0.len(),
+        1,
+        "a single entity carrying both advance signals in one frame must \
+         emit exactly one QuestStageAdvanced, got {:?}",
+        batch.0,
+    );
+    let ev = batch.0[0];
+    assert_eq!(ev.quest, DA10_QUEST_FORM_ID);
+    assert_eq!(
+        ev.previous_stage, 37,
+        "the surviving signal must be the one that saw the pre-advance \
+         state — a second application would carry previous_stage 40",
+    );
+    assert_eq!(ev.new_stage, 40);
+
+    let stage_state = world.resource::<QuestStageState>();
+    assert_eq!(stage_state.get_stage(DA10_QUEST_FORM_ID), 40);
+}
+
+/// Companion to the test above: `ActivateEvent` is drained first, so it is
+/// the signal that survives the dedup. Pinning the precedence keeps the
+/// system consistent with the recognizer's
+/// `on_activate_wins_over_on_trigger_enter`, where a script defining both
+/// handlers resolves to the activate one.
+///
+/// The two events carry *different* triggerers here, and the DA10 preset
+/// gates on `ActivatorGate::PlayerOnly`: the activate signal names the
+/// player and the trigger signal names an NPC. If the dedup ever kept the
+/// trigger-enter entry instead, the gate would reject it and nothing would
+/// advance at all.
+#[test]
+fn activate_wins_the_dedup_over_trigger_enter() {
+    let (mut world, player, door) = setup_da10_world();
+    {
+        let mut stage_state = world.resource_mut::<QuestStageState>();
+        stage_state.set_stage(DA10_QUEST_FORM_ID, 37);
+    }
+    if world.has::<QuestStageAdvancedBatch>(player) {
+        world
+            .query_mut::<QuestStageAdvancedBatch>()
+            .unwrap()
+            .remove(player);
+    }
+    let npc = world.spawn();
+
+    fire_activate(&world, door, player);
+    fire_trigger_enter(&world, door, npc);
+    quest_advance_system(&world);
+
+    let batch = world
+        .get::<QuestStageAdvancedBatch>(player)
+        .expect("the activate signal (player) must survive the dedup and pass the PlayerOnly gate");
+    assert_eq!(batch.0.len(), 1);
+    assert_eq!(batch.0[0].new_stage, 40);
+}

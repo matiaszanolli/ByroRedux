@@ -86,6 +86,8 @@ use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
+use std::collections::HashSet;
+
 use byroredux_plugin::esm::records::condition::{
     ComparisonOp, Condition, ConditionList, ConditionValue, RunOn,
 };
@@ -243,19 +245,42 @@ pub fn quest_advance_system(world: &World) {
     // Two activation signals converge on the same advance: a use-key /
     // console `ActivateEvent` (doors, levers) and an `OnTriggerEnterEvent`
     // from an actor crossing a trigger volume (the `default*Trigger`
-    // family). A given entity only ever receives one — doors carry no
-    // trigger volume, trigger volumes have no use interaction — so
-    // collecting `(entity, triggerer)` from both unifies the dispatch
-    // without any risk of double-firing one object.
+    // family). Collecting `(entity, triggerer)` from both unifies the
+    // dispatch.
+    //
+    // #2130 / SCR-D7-NEW3-01 — at most ONE signal per entity per frame.
+    // Today the two populations happen to be disjoint (a `TriggerVolume`
+    // only ever lands on a mesh-less REFR, and no live system emits
+    // `ActivateEvent` yet — only the debug console does), so this dedup is
+    // a no-op. It is here because that disjointness is a property of
+    // unbuilt code: the recognizer test `on_activate_wins_over_on_trigger_enter`
+    // proves a single script can legitimately define *both* handlers, so
+    // once boot.rs's "Stage 4" (the real player-activates-a-REFR system)
+    // lands, one player action against a trigger-volume-bearing REFR would
+    // otherwise push the entity twice. The stage write itself is
+    // idempotent, but the `QuestStageAdvanced` marker is not — a
+    // non-idempotent fragment effect downstream (`AddItem`) would apply
+    // twice. Enforcing it here costs one hash insert per event and keeps
+    // the invariant local to the system that depends on it, rather than
+    // as an unwritten precondition on a system that does not exist yet.
+    //
+    // First-write-wins ordering is deliberate: `ActivateEvent` is drained
+    // first, matching the recognizer's `OnActivate`-beats-`OnTriggerEnter`
+    // precedence.
     let mut triggered: Vec<(EntityId, EntityId)> = Vec::new();
+    let mut signalled: HashSet<EntityId> = HashSet::new();
     if let Some(events) = world.query::<ActivateEvent>() {
         for (entity, ev) in events.iter() {
-            triggered.push((entity, ev.activator));
+            if signalled.insert(entity) {
+                triggered.push((entity, ev.activator));
+            }
         }
     }
     if let Some(events) = world.query::<OnTriggerEnterEvent>() {
         for (entity, ev) in events.iter() {
-            triggered.push((entity, ev.triggerer));
+            if signalled.insert(entity) {
+                triggered.push((entity, ev.triggerer));
+            }
         }
     }
 

@@ -371,14 +371,17 @@ impl Context {
     pub unsafe fn dispatch(&mut self, desc: DispatchDescription) -> Result<(), Error> {
         // #2140 — debug-only fault injection. Returns `Err` *before* the
         // SDK is entered at all, so nothing can have been recorded into
-        // the command buffer. That isolates exactly one half of the
-        // hypothesis: "is the renderer's dispatch-failure recovery sound
-        // when the SDK recorded nothing?" It deliberately does NOT answer
-        // whether the real SDK can record transitions and *then* report an
-        // error — `ExecuteGpuJobsVK` records every queued job and checks
-        // `errorCode` only after the loop — which is the question that
-        // decides whether the secondary-command-buffer restructure is
-        // needed. Keep those two apart when reading any result from this.
+        // the command buffer, which exercises the renderer's
+        // dispatch-failure recovery under the conditions it assumes.
+        //
+        // Those conditions are the real ones: every error the SDK can
+        // report on this path fires before `fsr3upscalerDispatch`, the
+        // first function that records anything. `ExecuteGpuJobsVK` does
+        // record every queued job before checking `errorCode`, but that
+        // check is unreachable — all four job executors return `FFX_OK`
+        // unconditionally — and `fsr3upscalerDispatch` discards its status
+        // anyway. See `vendored_sdk_contract_tests` below, which pins both
+        // properties against the vendored sources.
         if force_dispatch_failure() {
             // `eprintln!` rather than `log`: this crate is a thin FFI shim
             // with no `log` dependency (matching the `destroy` path below).
@@ -502,5 +505,165 @@ mod tests {
             std::mem::size_of::<usize>()
         );
         assert!(std::mem::size_of::<RawDispatchDesc>() >= 7 * std::mem::size_of::<RawImage>());
+    }
+}
+
+/// #2140 / CHAIN-D2-03 — pins the vendored SDK control-flow property that
+/// the renderer's dispatch-failure recovery depends on.
+///
+/// `FrameUpscaler::record`'s recovery path (`crates/renderer/src/vulkan/
+/// frame_upscaler.rs`) reacts to an `Err` from [`Context::dispatch`] by
+/// recording depth-restore + native-blit barriers whose `old_layout` values
+/// are the ones `record_fsr_barriers_before` established. That is correct
+/// only if the SDK recorded nothing into the command buffer before it
+/// reported the error. The audit filed this as a hypothesis because
+/// `ExecuteGpuJobsVK` records every queued job and inspects `errorCode`
+/// only *after* the loop — which would allow a partially-recorded
+/// transition sequence alongside an error return.
+///
+/// Tracing the whole chain settles it for v1.1.4 as vendored. Every
+/// reachable error return happens strictly before any recording:
+///
+/// 1. `byro_fsr3_context_dispatch` (native/byro_fsr3.cpp) validates its
+///    parameters and returns before entering the SDK.
+/// 2. `ffxDispatch` + `ffxProvider_FSR3Upscale::Dispatch` `VERIFY` their
+///    pointers and desc type before calling into the effect.
+/// 3. `ffxFsr3UpscalerContextDispatch` runs seven `FFX_RETURN_ON_ERROR`
+///    guards, all before it calls `fsr3upscalerDispatch`.
+/// 4. `fsr3upscalerDispatch` — the first function that schedules or records
+///    anything — has exactly one return, `return FFX_OK`. It has no error
+///    path at all, and it *discards* `fpExecuteGpuJobs`'s return code.
+/// 5. Each of the four `executeGpuJob*` backend functions likewise has a
+///    single `return FFX_OK`, so `ExecuteGpuJobsVK`'s post-loop error check
+///    is unreachable in this version.
+///
+/// So the recovery path's assumption holds, and the secondary-command-buffer
+/// restructure the issue sketched is not needed. That conclusion is a
+/// property of the vendored sources, not of the API contract, so these two
+/// tests pin it: an SDK bump that introduces an error return at or after
+/// recording fails here instead of silently invalidating the recovery path's
+/// declared layouts.
+///
+/// Point 4 also has an inverse worth stating: because the SDK swallows
+/// `fpExecuteGpuJobs`'s status, a hypothetical backend job failure would be
+/// reported as `FFX_OK` and take the *success* path. Point 5 is what rules
+/// that out today, and is the reason it is pinned alongside point 4.
+#[cfg(test)]
+mod vendored_sdk_contract_tests {
+    use std::path::PathBuf;
+
+    fn vendored(relative: &str) -> String {
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("fsr3-sys must remain under <workspace>/crates")
+            .to_path_buf();
+        let path = workspace
+            .join("third_party/fidelityfx-sdk-v1.1.4")
+            .join(relative);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("vendored SDK source {} unreadable: {e}", path.display()))
+    }
+
+    /// Body text of a top-level function, from its signature line to the
+    /// first column-0 `}`. The vendored sources are Allman-braced
+    /// throughout, so the closing brace of a top-level definition is the
+    /// only `}` that starts a line at column 0.
+    fn function_body(source: &str, signature_prefix: &str) -> String {
+        let start = source.find(signature_prefix).unwrap_or_else(|| {
+            panic!("`{signature_prefix}` not found — the vendored SDK changed shape")
+        });
+        let rest = &source[start..];
+        let end = rest
+            .find("\n}")
+            .unwrap_or_else(|| panic!("no column-0 closing brace after `{signature_prefix}`"));
+        rest[..end].to_string()
+    }
+
+    /// Returns every `return` statement in `body`, normalised to a single
+    /// space, so a caller can assert on the exact set.
+    fn returns(body: &str) -> Vec<String> {
+        body.lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("return"))
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect()
+    }
+
+    /// Point 4 — the first SDK function that schedules or records GPU work
+    /// cannot report an error. If a future SDK gains an error return here,
+    /// the renderer's recovery path can no longer assume the command buffer
+    /// is untouched.
+    #[test]
+    fn upscaler_dispatch_has_no_error_return_once_recording_can_have_started() {
+        let source = vendored("sdk/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp");
+        let body = function_body(&source, "static FfxErrorCode fsr3upscalerDispatch(");
+        assert_eq!(
+            returns(&body),
+            vec!["return FFX_OK;"],
+            "fsr3upscalerDispatch gained a return other than `return FFX_OK;` — \
+             it schedules and executes GPU jobs, so any error return it can now \
+             reach may follow a partially-recorded command buffer. Re-audit \
+             FrameUpscaler::record's dispatch-failure recovery (#2140) before \
+             accepting the SDK bump.",
+        );
+        assert!(
+            body.contains("fpExecuteGpuJobs"),
+            "fsr3upscalerDispatch no longer calls fpExecuteGpuJobs — the \
+             recording boundary moved, re-derive the chain in #2140",
+        );
+    }
+
+    /// Point 3 — every guard in the public entry point must precede the call
+    /// into `fsr3upscalerDispatch`, or an error could be reported after
+    /// recording began.
+    #[test]
+    fn upscaler_entry_point_validates_before_it_can_record() {
+        let source = vendored("sdk/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp");
+        let body = function_body(
+            &source,
+            "FfxErrorCode ffxFsr3UpscalerContextDispatch(FfxFsr3UpscalerContext* context,",
+        );
+        let call = body
+            .find("fsr3upscalerDispatch(contextPrivate, dispatchParams)")
+            .expect("entry point no longer delegates to fsr3upscalerDispatch");
+        let last_guard = body
+            .rfind("FFX_RETURN_ON_ERROR")
+            .expect("entry point lost its FFX_RETURN_ON_ERROR guards");
+        assert!(
+            last_guard < call,
+            "an FFX_RETURN_ON_ERROR guard now sits after the \
+             fsr3upscalerDispatch call — the SDK can report an error after \
+             recording started, invalidating the recovery path's declared \
+             layouts (#2140)",
+        );
+    }
+
+    /// Point 5 — none of the four backend job executors can fail, so
+    /// `ExecuteGpuJobsVK`'s post-loop `errorCode` check is unreachable and
+    /// there is no "recorded some jobs, then reported an error" path. Note
+    /// the failure direction if this regresses: `fsr3upscalerDispatch`
+    /// discards the executor's status, so a newly-fallible job would be
+    /// swallowed into a `FFX_OK` return and take the success path with a
+    /// partially-recorded buffer.
+    #[test]
+    fn vk_backend_gpu_job_executors_cannot_fail() {
+        let source = vendored("sdk/src/backends/vk/ffx_vk.cpp");
+        for name in [
+            "executeGpuJobClearFloat",
+            "executeGpuJobCopy",
+            "executeGpuJobCompute",
+            "executeGpuJobBarrier",
+        ] {
+            let body = function_body(&source, &format!("static FfxErrorCode {name}("));
+            assert_eq!(
+                returns(&body),
+                vec!["return FFX_OK;"],
+                "{name} gained a fallible return — ExecuteGpuJobsVK's post-loop \
+                 errorCode check becomes live, and fsr3upscalerDispatch discards \
+                 it, so the failure would surface as FFX_OK on the success path \
+                 (#2140)",
+            );
+        }
     }
 }

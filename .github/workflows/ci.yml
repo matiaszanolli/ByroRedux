@@ -131,6 +131,16 @@ jobs:
   vulkan-validation:
     name: Vulkan validation layers (lavapipe)
     runs-on: ubuntu-24.04
+    env:
+      # #2137 / CONC-D4-NEW-01 — this is the only CI job that boots the real
+      # engine, so it is the only place rayon dispatches the parallel batch
+      # across worker threads against a real loaded world: exactly the
+      # workload the cross-thread lock-order graph was built for. Without
+      # this the detector is compiled in (debug profile) but inert, because
+      # `ENABLED` is a `LazyLock<AtomicBool>` seeded from the environment at
+      # first touch (crates/core/src/ecs/lock_tracker.rs). Cost is negligible
+      # for a 5-frame run.
+      BYRO_LOCK_ORDER_CHECK: 1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -159,14 +169,35 @@ jobs:
 
           # xvfb-run provides the display winit needs.
           # --bench-frames exits after N rendered frames (no --bench-hold).
-          # Allow non-zero exit (no suitable device → engine bails cleanly).
+          # Allow non-zero exit (no suitable device → engine bails cleanly),
+          # but keep the real status instead of discarding it with `|| true`.
+          set +e
           OUTPUT=$(xvfb-run --auto-servernum \
-            cargo run -p byroredux -- --bench-frames 5 2>&1 || true)
+            cargo run -p byroredux -- --bench-frames 5 2>&1)
+          STATUS=$?
+          set -e
           echo "$OUTPUT"
+          echo "bench exit status: $STATUS"
 
           # Fail if the Vulkan debug messenger fired any ERROR-severity callback.
           if echo "$OUTPUT" | grep -qF '[Vulkan]'; then
             echo ""
             echo "Vulkan validation errors detected (see [Vulkan] lines above)."
+            exit 1
+          fi
+
+          # #2138 / CONC-D4-NEW-02 — a tripped assertion panics with text that
+          # contains no '[Vulkan]' marker, and the old `|| true` discarded the
+          # exit code, so the job went green on a tripped guard. Two live
+          # families reach this job and only this job: the BYRO_LOCK_ORDER_CHECK
+          # detector enabled above, and the #1394/#1602 scheduler-access
+          # debug_asserts in boot.rs::install_runtime_registries. Match the
+          # panic text rather than any non-zero status — that would also catch
+          # the legitimate "no suitable device" bail — and match on output
+          # rather than the status alone, since a panic on a rayon worker
+          # thread still prints here whatever the process exit code ends up as.
+          if echo "$OUTPUT" | grep -qF 'panicked at'; then
+            echo ""
+            echo "Engine panicked during the bench run (see 'panicked at' above)."
             exit 1
           fi
