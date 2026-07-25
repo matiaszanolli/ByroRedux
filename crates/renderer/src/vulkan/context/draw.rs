@@ -891,6 +891,12 @@ impl VulkanContext {
                 active_dof.camera_fov_y,
             ) else {
                 let _ = unsafe {
+                    // SAFETY: this early-return happens after the swapchain
+                    // image acquire but before any batch is submitted this
+                    // frame (the `bail!` below aborts before `queue_submit`),
+                    // `frame < MAX_FRAMES_IN_FLIGHT` per the caller's frame
+                    // index, and `self.device` is the same device that
+                    // allocated the existing semaphore.
                     self.frame_sync
                         .recreate_image_available_for_frame(&self.device, frame)
                 };

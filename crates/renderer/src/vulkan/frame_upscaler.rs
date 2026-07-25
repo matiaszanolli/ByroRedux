@@ -344,6 +344,10 @@ impl FrameUpscaler {
         self.dispatched_this_frame = false;
         if !self.is_fsr_dispatch_active() {
             unsafe {
+                // SAFETY: `record_native_blit` shares this fn's own `# Safety`
+                // contract (`cmd` recording outside a render pass, input
+                // images live and in the documented layout) — the bridge
+                // branch just skips the FSR SDK dispatch below it.
                 self.record_native_blit(
                     device,
                     cmd,
@@ -357,7 +361,12 @@ impl FrameUpscaler {
 
         let frame_params =
             fsr_frame.context("FSR context is active but frame parameters are absent")?;
-        unsafe { self.record_fsr_barriers_before(device, cmd, frame, inputs) };
+        unsafe {
+            // SAFETY: same contract as this fn's own `# Safety` doc — `cmd`
+            // is recording outside a render pass and `inputs`' images are
+            // live and start in the layouts these barriers assume.
+            self.record_fsr_barriers_before(device, cmd, frame, inputs)
+        };
 
         let render_size = [self.extents.render.width, self.extents.render.height];
         let output_size = [self.extents.output.width, self.extents.output.height];
@@ -467,7 +476,12 @@ impl FrameUpscaler {
             return Ok(());
         }
 
-        unsafe { self.record_fsr_barriers_after(device, cmd, frame, inputs.depth) };
+        unsafe {
+            // SAFETY: same contract as `record`'s own `# Safety` doc — `cmd`
+            // is recording outside a render pass; the successful dispatch
+            // above left the images in the layouts this barrier expects.
+            self.record_fsr_barriers_after(device, cmd, frame, inputs.depth)
+        };
         self.dispatched_this_frame = true;
         Ok(())
     }
@@ -788,9 +802,15 @@ impl FrameUpscaler {
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
         self.context.take();
         for view in self.output_views.drain(..) {
+            // SAFETY: `view` was created by this device and, per this fn's
+            // `# Safety` contract, no command buffer referencing it is still
+            // executing.
             unsafe { device.destroy_image_view(view, None) };
         }
         for image in self.output_images.drain(..) {
+            // SAFETY: `image` was created by this device; every view onto it
+            // is destroyed above, and per this fn's contract the device is
+            // idle.
             unsafe { device.destroy_image(image, None) };
         }
         for allocation in self.output_allocations.drain(..).flatten() {

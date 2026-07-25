@@ -379,6 +379,8 @@ impl CompositePipeline {
                 .sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .initial_layout(vk::ImageLayout::UNDEFINED);
             let image = try_or_cleanup!(unsafe {
+                // SAFETY: `img_info` is fully initialized and contains no
+                // pointers that outlive this call.
                 device
                     .create_image(&img_info, None)
                     .context("create composed scene image")
@@ -391,6 +393,8 @@ impl CompositePipeline {
                 .expect("allocator lock")
                 .allocate(&vk_alloc::AllocationCreateDesc {
                     name: &format!("composed_scene_{i}"),
+                    // SAFETY: `image` was just created by this device and
+                    // remains live.
                     requirements: unsafe { device.get_image_memory_requirements(image) },
                     location: gpu_allocator::MemoryLocation::GpuOnly,
                     linear: false,
@@ -398,6 +402,9 @@ impl CompositePipeline {
                 })
                 .context("allocate composed scene image"));
             try_or_cleanup!(unsafe {
+                // SAFETY: `allocation` satisfies the queried requirements for
+                // the still-unbound `image` and belongs to this logical
+                // device.
                 device
                     .bind_image_memory(image, allocation.memory(), allocation.offset())
                     .context("bind composed scene image")
@@ -405,6 +412,8 @@ impl CompositePipeline {
             partial.scene_allocations[i] = Some(allocation);
 
             let view = try_or_cleanup!(unsafe {
+                // SAFETY: `image` is live and bound, and `HDR_FORMAT` matches
+                // the format it was created with above.
                 device
                     .create_image_view(
                         &vk::ImageViewCreateInfo::default()
@@ -1049,10 +1058,17 @@ impl CompositePipeline {
             allocator.lock().expect("allocator lock").free(a).ok();
         }
         for &view in &self.scene_image_views {
+            // SAFETY: `view` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_image_view(view, None) };
         }
         self.scene_image_views.clear();
         for &image in &self.scene_images {
+            // SAFETY: `image` was created by this device and is destroyed
+            // here at teardown, when the device is idle (frames-in-flight
+            // fenced / device_wait_idle), so no in-flight command buffer
+            // references it.
             unsafe { device.destroy_image(image, None) };
         }
         self.scene_images.clear();
@@ -1141,6 +1157,9 @@ impl CompositePipeline {
                     )
                     .sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .initial_layout(vk::ImageLayout::UNDEFINED);
+                // SAFETY: `info` fully populated above; image owned
+                // by `self.scene_images` on Ok. On Err the `?` bubbles up
+                // before any subsequent allocation runs.
                 let image = unsafe { device.create_image(&info, None)? };
                 self.scene_images.push(image);
                 self.scene_allocations.push(None);
@@ -1148,17 +1167,22 @@ impl CompositePipeline {
                 let allocation = allocator.lock().expect("allocator lock").allocate(
                     &vk_alloc::AllocationCreateDesc {
                         name: &format!("composed_scene_{i}"),
+                        // SAFETY: `image` just created above.
                         requirements: unsafe { device.get_image_memory_requirements(image) },
                         location: gpu_allocator::MemoryLocation::GpuOnly,
                         linear: false,
                         allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
                     },
                 )?;
+                // SAFETY: `image` matches the memory requirements that
+                // produced `allocation`; bound once per image.
                 unsafe {
                     device.bind_image_memory(image, allocation.memory(), allocation.offset())?
                 };
                 self.scene_allocations[i] = Some(allocation);
 
+                // SAFETY: `image` is bound (line above); view owned by
+                // `self.scene_image_views` on Ok.
                 let view = unsafe {
                     device.create_image_view(
                         &vk::ImageViewCreateInfo::default()
@@ -1264,7 +1288,7 @@ impl CompositePipeline {
             log::error!("Composite recreate partial failure: {e} — cleaning up");
             // Clean up only the recreatable resources (HDR images +
             // framebuffers), NOT the pipeline/render-pass/descriptors.
-            // SAFETY (the four destroy loops below): fenced-resize path —
+            // SAFETY (the destroy loops below): fenced-resize path —
             // `VulkanContext::recreate_swapchain` waits both
             // frames-in-flight before reaching this branch, so no
             // in-flight command references any of the partially-allocated
@@ -1294,10 +1318,14 @@ impl CompositePipeline {
                 allocator.lock().expect("allocator lock").free(a).ok();
             }
             for &view in &self.scene_image_views {
+                // SAFETY: covered by the four-loop comment above — fenced
+                // resize path, device idle, no in-flight references.
                 unsafe { device.destroy_image_view(view, None) };
             }
             self.scene_image_views.clear();
             for &image in &self.scene_images {
+                // SAFETY: covered by the four-loop comment above — fenced
+                // resize path, device idle, no in-flight references.
                 unsafe { device.destroy_image(image, None) };
             }
             self.scene_images.clear();
@@ -1475,10 +1503,17 @@ impl CompositePipeline {
             allocator.lock().expect("allocator lock").free(a).ok();
         }
         for &view in &self.scene_image_views {
+            // SAFETY: `view` was created by this device and is destroyed here
+            // at teardown, when the device is idle (frames-in-flight fenced /
+            // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_image_view(view, None) };
         }
         self.scene_image_views.clear();
         for &image in &self.scene_images {
+            // SAFETY: `image` was created by this device and is destroyed
+            // here at teardown, when the device is idle (frames-in-flight
+            // fenced / device_wait_idle), so no in-flight command buffer
+            // references it.
             unsafe { device.destroy_image(image, None) };
         }
         self.scene_images.clear();

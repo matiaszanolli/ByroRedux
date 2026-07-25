@@ -414,38 +414,79 @@ impl PresentationPipeline {
     /// No in-flight command buffer may reference this pipeline.
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
         for framebuffer in self.framebuffers.drain(..) {
-            unsafe { device.destroy_framebuffer(framebuffer, None) };
+            unsafe {
+                // SAFETY: `framebuffer` was created by this device in `new()`
+                // and, per this fn's `# Safety` contract, no in-flight command
+                // buffer still references it.
+                device.destroy_framebuffer(framebuffer, None)
+            };
         }
         if self.pipeline != vk::Pipeline::null() {
-            unsafe { device.destroy_pipeline(self.pipeline, None) };
+            unsafe {
+                // SAFETY: `self.pipeline` was created by this device and is
+                // not bound by any in-flight command buffer (fn contract).
+                device.destroy_pipeline(self.pipeline, None)
+            };
             self.pipeline = vk::Pipeline::null();
         }
         if self.vert_module != vk::ShaderModule::null() {
-            unsafe { device.destroy_shader_module(self.vert_module, None) };
+            unsafe {
+                // SAFETY: `self.vert_module` was created by this device; shader
+                // modules may be destroyed once the pipeline that references
+                // them has been created (Vulkan spec), which already happened.
+                device.destroy_shader_module(self.vert_module, None)
+            };
             self.vert_module = vk::ShaderModule::null();
         }
         if self.frag_module != vk::ShaderModule::null() {
-            unsafe { device.destroy_shader_module(self.frag_module, None) };
+            unsafe {
+                // SAFETY: same as `vert_module` above.
+                device.destroy_shader_module(self.frag_module, None)
+            };
             self.frag_module = vk::ShaderModule::null();
         }
         if self.pipeline_layout != vk::PipelineLayout::null() {
-            unsafe { device.destroy_pipeline_layout(self.pipeline_layout, None) };
+            unsafe {
+                // SAFETY: `self.pipeline_layout` was created by this device;
+                // the pipeline that referenced it is destroyed above.
+                device.destroy_pipeline_layout(self.pipeline_layout, None)
+            };
             self.pipeline_layout = vk::PipelineLayout::null();
         }
         if self.render_pass != vk::RenderPass::null() {
-            unsafe { device.destroy_render_pass(self.render_pass, None) };
+            unsafe {
+                // SAFETY: `self.render_pass` was created by this device; all
+                // framebuffers built against it are destroyed above, and per
+                // this fn's contract no in-flight command buffer uses it.
+                device.destroy_render_pass(self.render_pass, None)
+            };
             self.render_pass = vk::RenderPass::null();
         }
         if self.descriptor_pool != vk::DescriptorPool::null() {
-            unsafe { device.destroy_descriptor_pool(self.descriptor_pool, None) };
+            unsafe {
+                // SAFETY: `self.descriptor_pool` was created by this device;
+                // destroying the pool implicitly frees every set allocated
+                // from it (Vulkan spec), which is why `descriptor_sets` is
+                // cleared without individually freeing them below.
+                device.destroy_descriptor_pool(self.descriptor_pool, None)
+            };
             self.descriptor_pool = vk::DescriptorPool::null();
         }
         if self.descriptor_set_layout != vk::DescriptorSetLayout::null() {
-            unsafe { device.destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
+            unsafe {
+                // SAFETY: `self.descriptor_set_layout` was created by this
+                // device; all sets allocated from it are freed by the pool
+                // destroy above.
+                device.destroy_descriptor_set_layout(self.descriptor_set_layout, None)
+            };
             self.descriptor_set_layout = vk::DescriptorSetLayout::null();
         }
         if self.sampler != vk::Sampler::null() {
-            unsafe { device.destroy_sampler(self.sampler, None) };
+            unsafe {
+                // SAFETY: `self.sampler` was created by this device and is
+                // not referenced by any in-flight command buffer (fn contract).
+                device.destroy_sampler(self.sampler, None)
+            };
             self.sampler = vk::Sampler::null();
         }
         self.descriptor_sets.clear();

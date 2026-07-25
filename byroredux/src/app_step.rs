@@ -269,7 +269,7 @@ impl App {
                 let Some(transform) = self
                     .world
                     .query::<byroredux_core::ecs::Transform>()
-                    .and_then(|q| q.get(active).map(|t| *t))
+                    .and_then(|q| q.get(active).copied())
                 else {
                     return;
                 };

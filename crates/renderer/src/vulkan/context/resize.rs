@@ -824,6 +824,10 @@ impl VulkanContext {
         // retire presentation before replacing those views. The resize entry
         // point paid device_wait_idle before reaching this method.
         if let Some(mut presentation) = self.presentation.take() {
+            // SAFETY: the resize entry point called device_wait_idle before
+            // reaching this method, so `presentation` — created by
+            // `self.device` and not yet destroyed — has no in-flight
+            // command-buffer references and is safe to destroy.
             unsafe { presentation.destroy(&self.device) };
         }
         let allocator = self
