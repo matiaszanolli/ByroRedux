@@ -265,7 +265,8 @@ pub const INSTANCE_FLAG_FLAT_SHADING: u32 = 1 << 7;
 /// terrain-tile-index window (bits 16..31), so it collides with nothing.
 pub const INSTANCE_FLAG_DIFFUSE_ALPHA: u32 = 1 << 8;
 
-/// Engine-synthesized material kinds for [`GpuInstance::material_kind`].
+/// Engine-synthesized material kinds for [`GpuMaterial::material_kind`]
+/// (moved off `GpuInstance` in R1 Phase 6, #785).
 ///
 /// The low range (0..=19) is reserved for Skyrim+
 /// `BSLightingShaderProperty.shader_type` values the NIF importer
@@ -277,8 +278,8 @@ pub const INSTANCE_FLAG_DIFFUSE_ALPHA: u32 = 1 << 8;
 /// material, metalness < 0.3, not a decal. The fragment shader branches
 /// on this value to dispatch the RT reflection + refraction path —
 /// replaces the pre-Phase-2 per-pixel `texColor.a` heuristic that
-/// flickered across textures. Callers (`render.rs`) must compute the
-/// kind BEFORE populating `DrawCommand.material_kind`.
+/// flickered across textures. Callers (`byroredux/src/render/`) must
+/// compute the kind BEFORE populating `DrawCommand.material_kind`.
 pub const MATERIAL_KIND_GLASS: u32 = 100;
 
 /// `EffectShader` (`#706` / FX-1): Skyrim+ `BSEffectShaderProperty`

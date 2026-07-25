@@ -261,16 +261,19 @@ engine binary itself).
 
 ## CI
 
-Three jobs run on every push / PR:
+Five jobs run on every push / PR:
 
 | Job | What it checks | GPU? |
 |---|---|---|
+| `shader-artifacts` | Recompiles every first-party `.spv` from source and diffs against the checked-in binary (shader/artifact parity) | No |
 | `cargo-test` | `cargo check`, `cargo test --workspace`, `cargo clippy -D warnings` | No |
 | `lock-order-check` | Same tests with `BYRO_LOCK_ORDER_CHECK=1` (ABBA deadlock detector) | No |
+| `nif-heap-allocation-bounds` | `cargo test` under `dhat-heap` — NIF parser heap-allocation budget regression | No |
 | `vulkan-validation` | 5-frame headless bench through lavapipe + `VK_LAYER_KHRONOS_validation` | No (lavapipe) |
 
 CI passes if: all unit tests pass, no clippy warnings, no ABBA cycles
-detected, and no Vulkan `ERROR`-severity validation messages fire.
+detected, no Vulkan `ERROR`-severity validation messages fire, no shader
+source/artifact drift, and NIF heap allocation stays within budget.
 
 The integration tests (`--ignored`) are not in CI — they require game
 data files that cannot be redistributed.

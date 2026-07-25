@@ -188,7 +188,7 @@ pub struct GpuPerFrameTimers {
     /// Per-frame "was this bracket's pair written?" — set by the
     /// END writer, cleared on reset. Slot index matches the frame
     /// slot the pool reads from. Each u16 packs `BIT_*` flags
-    /// (one per bracket — currently 12). The bit-gated read in
+    /// (one per bracket — currently 14). The bit-gated read in
     /// `read_and_reset` is required because WAIT-reading an
     /// unwritten query blocks forever.
     active_bits: [u16; MAX_FRAMES_IN_FLIGHT],
@@ -272,7 +272,7 @@ impl GpuPerFrameTimers {
     /// the per-frame command buffer.
     ///
     /// The first time a slot is read its `active_bits` are zero —
-    /// nothing has been written yet — so all twelve ms fields stay
+    /// nothing has been written yet — so all fourteen ms fields stay
     /// at the default `0.0` until the second cycle. From then on
     /// the snapshot is whatever the previous cycle wrote, with
     /// inactive brackets reading `0.0`.
@@ -280,9 +280,9 @@ impl GpuPerFrameTimers {
         let pool = self.pools[frame];
         let bits = self.active_bits[frame];
         // #2041 / PERF-D9-02 — one batched read for the whole pool instead
-        // of up to twelve individual per-bracket `get_query_pool_results`
+        // of up to fourteen individual per-bracket `get_query_pool_results`
         // calls (one driver round-trip each). Deliberately WITHOUT
-        // `WAIT`: WAIT-reading the full 24-query pool when only a subset
+        // `WAIT`: WAIT-reading the full 28-query pool when only a subset
         // was written blocks forever on the unwritten queries (Vulkan
         // spec — VK_QUERY_RESULT_WAIT_BIT blocks until ALL queried
         // results are available; reset-but-never-written queries never

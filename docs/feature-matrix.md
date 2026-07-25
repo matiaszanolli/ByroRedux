@@ -36,8 +36,9 @@ closed by #699.)
 | **RT reflections** | ✓ All games | Per-mesh BLAS compaction + LRU eviction |
 | **1-bounce GI** | ✓ All games | Ray-query; denoised by SVGF |
 | **SVGF temporal denoiser** | ✓ All games | Motion-vector reprojection, mesh-ID disocclusion |
+| **Upscaling** | ✓ All games | FSR 3.1 Quality (default, `5c7acfe2`) / TAA native (`--upscaler taa` fallback); four FSR presets (Quality/Balanced/Performance/Ultra Performance), see ROADMAP.md Session 60 |
 | **TAA** | ✓ All games | Halton(2,3) jitter, YCoCg variance clamp |
-| **ACES tone mapping** | ✓ All games | Post-ACES fog blend (LIGHT-N2, #784) |
+| **ACES tone mapping** | ✓ All games | Runs in the output-resolution presentation pass (`presentation.frag`), after upscaling; fog blend (LIGHT-N2, #784) happens earlier, in `composite.frag` |
 | **Normal mapping** | ✓ All games | Authored tangents (Skyrim+/FO4) or synthesized (FO3/FNV/Oblivion) |
 | **Terrain splatting** | ✓ FO3/FNV/Skyrim/FO4/Starfield | LTEX/TXST splat; `INSTANCE_FLAG_TERRAIN_SPLAT` path |
 | **Water + RT caustics** | ✓ All games | Vertex displacement, Fresnel, RT reflection/refraction; caustic splat compute (M38) |

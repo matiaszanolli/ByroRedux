@@ -13,9 +13,14 @@
 //!   the one runtime signal — it culls the full model so the LOD doesn't
 //!   z-fight it (future slice; for now object LOD is loaded only for quads
 //!   **outside** the full-detail ring, where no full model is resident).
-//! - **Oblivion / FO3 / FNV**: a different scheme entirely — per-cell
-//!   `DistantLOD\*.lod` placement lists instancing `_far.nif` meshes,
-//!   handled by the sibling [`super::placement_lod`] module (#1726).
+//! - **Oblivion**: a different scheme entirely — per-cell `DistantLOD\*.lod`
+//!   placement lists instancing `_far.nif` meshes, handled by the sibling
+//!   [`super::placement_lod`] module (#1726). **FO3/FNV do not share this**:
+//!   `placement_lod_supported` gates on `GameKind::Oblivion` only (#2086) —
+//!   FO3/FNV ship zero vanilla `distantlod\*.lod` files, so for those two
+//!   titles this is a documented no-op, not "handled". FO3/FNV fold landmark
+//!   LOD into the terrain-LOD block tree instead; there is currently no
+//!   distant-object scheme wired for them.
 //!
 //! Verified (2026-06-02): vanilla Skyrim `.bto` (e.g.
 //! `meshes\terrain\tamriel\objects\tamriel.4.-8.-16.bto`) parse with the

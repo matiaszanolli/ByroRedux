@@ -16,20 +16,27 @@ Constants in [`scene_buffer/constants.rs`](../../crates/renderer/src/vulkan/scen
 |---|---|---|---|---|---|
 | Light SSBO | `MAX_LIGHTS` = 512 | 512 | 64 B | 32 KB | **64 KB** |
 | Instance SSBO | `MAX_INSTANCES` = 262 144 | 262 144 | 112 B | 29.4 MB | **58.8 MB** |
+| Previous-model SSBO (`33d9a468`) | `MAX_INSTANCES` = 262 144 | 262 144 | 64 B (`mat4`) | 16.8 MB | **33.6 MB** |
 | Indirect draw SSBO | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
 | Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 300 B | 4.9 MB | **9.8 MB** |
-| Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 32 B | 32 KB | **64 KB** |
-| Bone-palette SSBO | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB | **25.2 MB** ¹ |
+| Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 32 B | — | **32 KB** (single shared buffer, NOT FIF-doubled) |
+| Bone buffers ¹ | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB/buffer | **100.6 MB** |
 | Camera UBO | — | 1 | 336 B | 336 B | **672 B** |
 
-¹ The bone-palette SSBO has a third copy for the previous frame (motion
-vectors); total bone buffer is 3 × 12.6 MB ≈ **37.8 MB**.
+¹ Eight 12.6 MB bone-sized allocations, not one: palette (`bone_device`),
+`bone_world` staging, and `bone_world` device-copy are each FIF-doubled
+(3 families × 2 FIF = 6 × 12.6 MB ≈ 75.5 MB), plus two single (non-FIF)
+buffers — `bind_inverses_persistent` and the `bind_inverse_upload_staging`
+scratch (`1 366 × MAX_BONES_PER_MESH(144) × 64 B ≈ 12.6 MB`, M29.6). Total
+≈ 75.5 + 12.6 + 12.6 ≈ **100.6 MB**. See
+[`scene_buffer/buffers.rs`](../../crates/renderer/src/vulkan/scene_buffer/buffers.rs)
+`allocate_scene_render_buffers`.
 
-**Total resident scene buffers:** ≈ **140 MB** across all copies.
+**Total resident scene buffers:** ≈ **213 MB** across all copies.
 
-Exceeding `MAX_INSTANCES` causes the TLAS to be partitioned across
-multiple instance buffers (pending work); currently a `debug_assert`
-fires. Exceeding `MAX_MATERIALS` silently reuses material slot 0.
+Exceeding `MAX_INSTANCES` logs a one-shot `warn!` and clamps to
+`MAX_INSTANCES` (#956/#992) — it is no longer a `debug_assert`. Exceeding
+`MAX_MATERIALS` silently reuses material slot 0.
 
 ---
 
@@ -134,6 +141,27 @@ history — not FIF-doubled, unlike everything else on this page.
 | 1920×1080 | ~3.5 MB |
 | 2560×1440 | ~6.2 MB |
 | 3840×2160 | ~13.8 MB |
+
+### FSR 3.1 Upscaler (default, `5c7acfe2`)
+
+[`frame_upscaler.rs`](../../crates/renderer/src/vulkan/frame_upscaler.rs),
+`presentation.rs`, `exposure.rs`, `crates/fsr3-sys`. Unlike every other entry
+in this section, FSR 3.1 Quality (the shipped default) renders at a **lower
+internal resolution** and upscales to the swapchain's **output resolution** —
+the two axes are no longer the same, so figures below are split accordingly.
+Leak-free and FIF-correct (verified 2026-07-25 sweep); reactive/transparency
+masks are G-buffer attachments (see [Shader Pipeline](shader-pipeline.md)'s
+G-Buffer table), not counted again here.
+
+| Resource | Resolution axis | Notes |
+|---|---|---|
+| Upscaler output image | Output | One per FIF, consumed by `presentation.frag` |
+| FSR 3.1 SDK working memory | Internal (per-preset scratch, driver-managed) | Allocated by the vendored FidelityFX SDK context, not a `GpuBuffer`/`Attachment` this doc otherwise tracks |
+| Native-blit fallback (`--upscaler taa`) | Output | No SDK context; a plain blit, no extra resident memory beyond the existing TAA history above |
+
+Quality-preset internal-resolution scale factor and the four-preset (Quality/
+Balanced/Performance/Ultra Performance) breakdown are tracked in ROADMAP.md's
+Session 60 closeout, not duplicated here.
 
 ### Volumetrics (M55) — the one exception: NOT resolution-scaled
 
@@ -261,13 +289,15 @@ tech debt — not yet implemented.
 | Constant | Value | VRAM |
 |---|---|---|
 | `MAX_MESH_SLOTS` | 16 777 216 (1 << 24) | handle-table slots only (not VRAM) |
-| `VERTEX_POOL_SOFT_CAP` | 4 M vertices | ~400 MB (100 B/vertex) |
-| `VERTEX_POOL_HARD_CAP` | 16 M vertices | ~1.6 GB |
+| `VERTEX_POOL_SOFT_CAP` | 4 M vertices | ~416 MB (104 B/vertex) |
+| `VERTEX_POOL_HARD_CAP` | 16 M vertices | ~1.66 GB |
 | `INDEX_POOL_SOFT_CAP` | 16 M indices | ~64 MB (4 B/index) |
 | `INDEX_POOL_HARD_CAP` | 64 M indices | ~256 MB |
 
-The vertex stride is 100 B (19 × f32 + 4 × u32 + 8 × u8 — position,
-colour, normal, UV, bone indices/weights, splat channels, tangent).
+The vertex stride is 104 B (20 × f32 + 4 × u32 + 8 × u8 — position,
+colour (widened `vec3`→`vec4`, `cd2b5fe4`), normal, UV, bone
+indices/weights, splat channels, tangent); test-pinned
+(`assert_eq!(size_of::<Vertex>(), 104)`, `crates/renderer/src/vertex.rs`).
 Soft caps emit a `warn!`; hard caps return an error.
 `check_pool_growth()` is called at every upload.
 
@@ -339,8 +369,8 @@ the fence slot is complete before the tick runs (#418).
 
 | Subsystem | Typical | Peak |
 |---|---|---|
-| G-buffer (6 attachments × 2 FIF) | ~22 MB | ~45 MB (4K) |
-| Scene SSBOs | ~140 MB | ~140 MB |
+| G-buffer (8 attachments × 2 FIF, incl. FSR reactive/transparency masks) | ~23 MB | ~47 MB (4K) |
+| Scene SSBOs | ~213 MB | ~213 MB |
 | ReSTIR reservoirs (2 FIF) | ~133 MB (1080p) | ~531 MB (4K) |
 | SVGF history (2 FIF) | ~50 MB (1080p) | ~199 MB (4K) |
 | TAA history (2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |
@@ -348,12 +378,13 @@ the fence slot is complete before the tick runs (#418).
 | SSAO (2 FIF) | ~4 MB (1080p) | ~17 MB (4K) |
 | Bloom pyramid | ~4 MB (1080p) | ~14 MB (4K) |
 | Volumetrics froxel grid (fixed) | ~56 MB | ~56 MB |
-| Vertex / index pools | ~200 MB | ~1.6 GB cap |
+| FSR 3.1 upscaler output (2 FIF, output resolution) | ~33 MB (1080p) | ~133 MB (4K) — SDK working memory not separately tracked |
+| Vertex / index pools | ~208 MB | ~1.66 GB cap |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.43 GB** | **< 4 GB target** |
+| **Estimated total** | **~1.53 GB** | **< 4 GB target** |
 
 The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
 they are design targets. The RTX 4070 Ti (12 GB) has headroom for all

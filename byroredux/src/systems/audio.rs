@@ -95,7 +95,7 @@ pub(crate) fn reverb_zone_system(world: &World, _dt: f32) {
 ///     don't emit a "phantom footstep" against the default zero pose.
 ///
 /// Spawn a `FootstepEmitter` on the player entity to opt in. The
-/// fly-camera attach is wired in `main.rs::App::new`.
+/// fly-camera attach is wired in `scene.rs::setup_scene`.
 pub(crate) fn footstep_system(world: &World, _dt: f32) {
     use crate::components::{FootstepConfig, FootstepEmitter, FootstepScratch};
 

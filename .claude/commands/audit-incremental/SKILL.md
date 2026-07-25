@@ -67,7 +67,7 @@ Risk is the *floor* severity for an un-disproven finding in that area.
 | `byroredux/src/env_translate.rs` (EXAL boundary) | `/audit-nifal` (mirror), `/audit-renderer` | MEDIUM |
 | `byroredux/src/ragdoll.rs`, `crates/physics/src/**` (PHYSAL / Rapier bridge) | `/audit-safety`, per-game `/audit-<game>` | MEDIUM |
 | `crates/spt/src/**`, `byroredux/src/cell_loader/refr.rs` (.spt route) | `/audit-speedtree` | MEDIUM |
-| `crates/plugin/src/esm/**` (incl. `records/misc/{water,character,world,ai,magic,effects,equipment}.rs`) | per-game `/audit-<game>`, `/audit-legacy-compat` | MEDIUM |
+| `crates/plugin/src/esm/**` (incl. `records/misc/{water,character,world,pack,quest,dialogue,magic,effects,equipment}.rs`) | per-game `/audit-<game>`, `/audit-legacy-compat` | MEDIUM |
 | `crates/core/src/animation/**` | `/audit-nif` (anim import), `/audit-ecs` | MEDIUM |
 | `byroredux/src/cell_loader/**` | per-game `/audit-<game>` | MEDIUM |
 | `byroredux/src/systems/**`, `byroredux/src/render/**` | `/audit-ecs`, `/audit-renderer`, `/audit-performance` | MEDIUM |

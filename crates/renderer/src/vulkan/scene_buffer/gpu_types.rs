@@ -31,10 +31,13 @@ pub type GpuPreviousModel = [[f32; 4]; 4];
 /// `#[repr(C)]` Rust struct where `[f32; 3]` is only 12 bytes.
 ///
 /// **Shader Struct Sync**: the matching `struct GpuInstance` declaration
-/// in `triangle.vert`, `triangle.frag`, `ui.vert`, `caustic_splat.comp`
-/// and `water.vert` (#1498) MUST be updated in lockstep. The
+/// in `include/bindings.glsl` (pulled into `triangle.frag` via `#include`
+/// since #1583/#1590 — `triangle.frag` itself no longer declares its own
+/// copy) plus four standalone hand-mirrored copies — `triangle.vert`,
+/// `ui.vert`, `caustic_splat.comp`, and `water.vert` (#1498) — MUST be
+/// updated in lockstep (5 declaration sites total). The
 /// `every_shader_struct_gpu_instance_names_material_kind_slot` test
-/// greps those five .comp/.vert/.frag files for the `struct GpuInstance`
+/// greps those five .glsl/.comp/.vert files for the `struct GpuInstance`
 /// declaration — when you add a field here, update the expected suffix
 /// in the assertion and rename the sentinel to match the new last field.
 ///

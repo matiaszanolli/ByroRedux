@@ -18,7 +18,7 @@ purpose. Re-run the recipe; report what it surfaces today.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, the 21-crate roster,
+See `.claude/commands/_audit-common.md` for project layout, the 22-crate roster,
 methodology, deduplication, context rules, severity, and finding format. Do not
 duplicate any of that here. The newest crates — `crates/pex/` (M47.2 compiled-
 Papyrus `.pex` decompiler), `crates/save/` (M45 full-ECS snapshot save/load), and
@@ -111,7 +111,7 @@ over threshold).
 - `crates/nif/src/blocks/particle.rs` → typed emitter/ctlr structs vs the opaque `NiPSysBlock` fallback vs grow/fade modifiers.
 - `crates/nif/src/import/collision/mod.rs` → split per bhk shape family (primitive/compound/mesh/compressed), mirroring `crates/nif/src/blocks/collision/`.
 - `crates/core/src/ecs/resources/mod.rs` → partially split already (`SkinSlotPool` extracted to `skin_slot_pool.rs` under #1869; `mod.rs` now 1210 LOC, under threshold). Split further per resource domain (rendering/world/audio/scripting) only if it re-bloats.
-- `crates/plugin/src/esm/records/actor.rs` → split per NPC_ data-group (13 groups).
+- Actor record split per NPC_ data-group (13 groups) — done (#2055): `crates/plugin/src/esm/records/actor/mod.rs` (+ `tests.rs`).
 
 **Also flag**: functions >200 LOC (propose extraction); match arms >50 cases
 (want a lookup table); nesting depth >5 (state-machine extraction); a `mod.rs` /

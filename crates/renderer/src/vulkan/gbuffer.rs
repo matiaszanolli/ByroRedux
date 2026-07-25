@@ -201,8 +201,10 @@ impl Drop for Attachment {
     /// path drops a populated `Attachment` without calling
     /// `destroy()` first; the `log::error!` carries the same signal
     /// into release builds. Pre-fix release builds silently leaked
-    /// (5 attachments × 2 FIF slots × image + view + alloc per
-    /// attachment = up to 30 leaked Vulkan handles per `GBuffer`).
+    /// (7 attachments × 2 FIF slots × image + view + alloc per
+    /// attachment = up to 42 leaked Vulkan handles per `GBuffer` —
+    /// grew from 5/30 with the FSR 3.1 `reactive`/`transparency`
+    /// attachments, `5c56e311`/`5c7acfe2`).
     /// See REN-D2-NEW-01 (audit 2026-05-09).
     fn drop(&mut self) {
         if self.images.is_empty() && self.views.is_empty() && self.allocations.is_empty() {
@@ -229,8 +231,8 @@ impl Drop for Attachment {
 }
 
 /// Owns the G-buffer attachment images (normal, motion, mesh_id,
-/// raw_indirect, albedo) + their views and allocations.
-/// One image per frame-in-flight slot for each attachment.
+/// raw_indirect, albedo, reactive, transparency) + their views and
+/// allocations. One image per frame-in-flight slot for each attachment.
 pub struct GBuffer {
     normal: Attachment,
     motion: Attachment,

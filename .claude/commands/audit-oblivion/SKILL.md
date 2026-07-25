@@ -170,7 +170,7 @@ exist".
   walker (`crates/plugin/src/esm/records/grup_walker.rs`).
 - Oblivion-specific branches already present — verify they're correct, not
   regressed: `flags_oblivion` + `is_oblivion` in
-  `crates/plugin/src/esm/records/actor.rs`; MGEF-by-code map (Oblivion 4-char
+  `crates/plugin/src/esm/records/actor/mod.rs` (split from `actor.rs`, #2055); MGEF-by-code map (Oblivion 4-char
   effect codes) and the CONT 4-byte-payload guard in
   `crates/plugin/src/esm/records/tests.rs` / `container.rs`; CLMT three-entry
   WLST in `crates/plugin/src/esm/records/climate.rs`.

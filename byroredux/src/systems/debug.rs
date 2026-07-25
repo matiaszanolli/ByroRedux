@@ -66,11 +66,13 @@ fn is_slow_frame(frame_time_ms: f32, frame_index: usize) -> bool {
 fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
     format!(
         "main_render={:.1} tlas={:.1} svgf={:.1} composite={:.1} cluster_cull={:.1} \
-         ssao={:.1} bloom={:.1} caustic={:.1} volumetrics={:.1} skin={:.1} blas_refit={:.1} taa={:.1}",
+         ssao={:.1} bloom={:.1} caustic={:.1} volumetrics={:.1} skin={:.1} blas_refit={:.1} \
+         taa={:.1} upscale={:.1} presentation={:.1}",
         cov.gpu_main_render_ms, cov.gpu_tlas_build_ms, cov.gpu_svgf_ms,
         cov.gpu_composite_ms, cov.gpu_cluster_cull_ms, cov.gpu_ssao_ms,
         cov.gpu_bloom_ms, cov.gpu_caustic_splat_ms, cov.gpu_volumetrics_ms,
         cov.gpu_skin_dispatch_ms, cov.gpu_skin_blas_refit_ms, cov.gpu_taa_ms,
+        cov.gpu_upscale_ms, cov.gpu_presentation_ms,
     )
 }
 

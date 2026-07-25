@@ -32,7 +32,7 @@ those here.
 
 ## Scope
 
-**Crates** (21-crate sanity check in `_audit-common.md`; `pex` is the newest):
+**Crates** (22-crate sanity check in `_audit-common.md`; `pex` is the newest owned by this audit):
 - `crates/pex/src/` — `.pex` reader + 5-phase decompiler. Files: `crates/pex/src/opcode.rs`,
   `crates/pex/src/reader.rs`, `crates/pex/src/model.rs`, `crates/pex/src/lib.rs`,
   and `crates/pex/src/decompile/` (`mod`, `cfg`, `lift`, `control_flow`, `boolean`,
@@ -52,10 +52,11 @@ those here.
   scripts: `crates/scripting/src/papyrus_demo/`.
 
 **Engine-side wiring** (Dimension 7 — outside the crates):
-- `byroredux/src/cell_loader/references/mod.rs` — `attach_vmad_scripts` /
-  `attach_script_for_refr` call `byroredux_scripting::translate_pex`; the
-  `trigger_volume_from_primitive` builder spawns invisible `TriggerVolume`
-  REFRs from `XPRM` primitives.
+- `byroredux/src/cell_loader/references/attach.rs` (split out of `mod.rs`,
+  #1877; `mod.rs` re-exports them and keeps their call sites) —
+  `attach_vmad_scripts` / `attach_script_for_refr` call
+  `byroredux_scripting::translate_pex`; the `trigger_volume_from_primitive`
+  builder spawns invisible `TriggerVolume` REFRs from `XPRM` primitives.
 - `crates/plugin/src/esm/records/index.rs` — `base_record_script_instance`
   accessor (VMAD retained on ACTI/CONT/NPC/CREA base records).
 - `crates/plugin/src/esm/records/script_instance.rs` — `ScriptInstanceData` /
@@ -754,9 +755,10 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
 **Output**: `/tmp/audit/scripting/dim_6.md`
 
 ### Dimension 7: Engine Attach Path & Trigger-Volume Wiring (engine-side)
-**Entry points**: `byroredux/src/cell_loader/references/mod.rs` (`attach_vmad_scripts`,
+**Entry points**: `byroredux/src/cell_loader/references/attach.rs` (`attach_vmad_scripts`,
 `attach_script_for_refr`, `trigger_volume_from_primitive`, the invisible-trigger
-REFR spawn path); `crates/plugin/src/esm/records/index.rs`
+REFR spawn path — split out of `references/mod.rs` under #1877, which now only
+re-exports them and keeps their call sites); `crates/plugin/src/esm/records/index.rs`
 (`base_record_script_instance`); `crates/plugin/src/esm/records/script_instance.rs`
 (`ScriptInstanceData`, `ScriptInstance`); `byroredux/src/asset_provider/script.rs`
 (`build_script_provider`, `extract_pex`, the `--scripts-bsa` parse);

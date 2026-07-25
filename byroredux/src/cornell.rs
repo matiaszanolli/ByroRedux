@@ -236,8 +236,8 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
     }
 
     // ── Glass probes ────────────────────────────────────────────────
-    // Glass is OPAQUE (no AlphaBlend, opaque neutral texture → finalAlpha
-    // 1.0): the IOR refraction ray IS the transmission — it samples the
+    // Glass is OPAQUE (no AlphaBlend): the IOR refraction ray IS the
+    // transmission — it samples the
     // scene behind and writes it in place of the background, so the bent /
     // refracted world is what you see THROUGH the glass. An alpha-blend
     // window would instead composite the *undistorted* background over the
@@ -317,9 +317,14 @@ fn pbr(color: [f32; 3], metalness: f32, roughness: f32) -> Material {
     }
 }
 
-/// `MATERIAL_KIND_GLASS` probe — forces the glass-smooth roughness and a
-/// transmissive alpha so the IOR refraction path engages, matching the
-/// spawn-time `classify_glass_into_material` contract.
+/// `MATERIAL_KIND_GLASS` probe — forces the glass-smooth roughness so the
+/// IOR refraction path engages (the gate keys on
+/// `materialKind == MATERIAL_KIND_GLASS && roughness < 0.35`, not `alpha`),
+/// matching the spawn-time `classify_glass_into_material` contract.
+/// `alpha: 0.25` below sets `finalAlpha` for these probes to ~0.25 (not
+/// 1.0) — currently unconsumed downstream (`taa.comp`/`composite.frag`
+/// don't read it), but latent-fragile if a future composite branch keys
+/// on alpha for glass/decal classification. See #676 / DEN-6.
 fn glass(color: [f32; 3]) -> Material {
     let mut material = Material {
         diffuse_color: color,

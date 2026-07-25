@@ -2190,7 +2190,8 @@ impl VulkanContext {
             }
 
             // Debug-UI overlay (Phase 4 of the debug-UI plan).
-            // Composite already wrote the swapchain image and left
+            // The presentation pass (FSR 3.1 tail, `presentation.rs`) —
+            // not composite — already wrote the swapchain image and left
             // it in PRESENT_SRC_KHR; the egui RP keeps that layout
             // via loadOp=LOAD + matching initial/final layouts, so
             // the only thing this needs is a fresh begin/end inside

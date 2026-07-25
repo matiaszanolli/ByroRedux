@@ -21,8 +21,9 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `water.frag` | Water surface — RT reflection/refraction, Fresnel mix, caustic accumulator `imageAtomicAdd`, shoreline foam RT ray |
 | `ui.vert` | UI quad passthrough — position already in NDC [-1, 1] |
 | `ui.frag` | UI bindless texture sampling — no shading, straight texel output |
-| `composite.vert` | Fullscreen triangle via `gl_VertexIndex` — no vertex buffer |
-| `composite.frag` | HDR compose — direct + SVGF-denoised indirect + dual caustic accumulator (glass/water), ACES tone-map, bloom add, volumetric froxel sample, underwater FX |
+| `composite.vert` | Fullscreen triangle via `gl_VertexIndex` — no vertex buffer; reused unmodified as `presentation.frag`'s vertex stage |
+| `composite.frag` | HDR compose — direct + SVGF-denoised indirect + dual caustic accumulator (glass/water), bloom add, volumetric froxel sample. Emits linear HDR to an intermediate image (no tone-map, no swapchain write — see `presentation.frag`) |
+| `presentation.frag` | FSR 3.1 presentation pass — samples the upscaled (or native-blit-fallback) scene, applies ACES tone-mapping and underwater extinction, writes the swapchain (`PRESENT_SRC_KHR`) |
 
 ### Compute
 
@@ -93,20 +94,35 @@ graphics+compute queue. Pass ordering is inside
 15 bloom_downsample ×N   ─┐ bloom pyramid
    bloom_upsample   ×N   ─┘
 16 [Composite render pass]─ raster:
-     composite.vert / .frag  HDR combine → swapchain (PRESENT_SRC_KHR)
-17 [Egui render pass]    ─  egui overlay (blended on swapchain)
-18 [Screenshot copy]     ─  transfer blit → staging buffer (if requested)
-19 Queue submit
-20 Present
+     composite.vert / .frag  HDR combine → intermediate HDR image
+                           (`R16G16B16A16_SFLOAT`, `SHADER_READ_ONLY_OPTIMAL`;
+                           no tone-map, does NOT write the swapchain)
+17 frame_upscaler.record  ─  FSR 3.1 SDK dispatch (Quality preset default) or
+                           native-blit fallback (`--upscaler taa`) — render-
+                           resolution HDR → output-resolution HDR
+18 [Presentation pass]    ─  raster: composite.vert / presentation.frag —
+                           exposure + ACES tone-map + underwater extinction,
+                           writes the swapchain (`PRESENT_SRC_KHR`)
+19 [Egui render pass]    ─  egui overlay (blended on swapchain)
+20 [Screenshot copy]     ─  transfer blit → staging buffer (if requested)
+21 Queue submit
+22 Present
 ```
+
+Steps 17–18 are the FSR 3.1 tail added 2026-07-22→24 (`crates/fsr3-sys`,
+`vulkan/frame_upscaler.rs`, `vulkan/presentation.rs`, `vulkan/exposure.rs`);
+the split moves ACES tone-mapping out of `composite.frag` (which now emits
+un-tonemapped linear HDR) and into `presentation.frag`, which runs at output
+resolution after the upscale so tone-mapping sees full-resolution detail.
 
 ---
 
 ## G-Buffer Layout
 
-Six colour attachments + depth, all double-buffered (one set per
+Eight colour attachments + depth, all double-buffered (one set per
 `MAX_FRAMES_IN_FLIGHT` = 2). Written by the main render pass
-(`triangle.frag` + `water.frag`), read by SVGF, TAA, SSAO, and composite.
+(`triangle.frag` + `water.frag`), read by SVGF, TAA, SSAO, composite, and
+(the two FSR mask attachments) `frame_upscaler`'s FSR 3.1 SDK dispatch.
 
 | Attachment | `VkFormat` | Contents | Layout during pass |
 |---|---|---|---|
@@ -116,6 +132,8 @@ Six colour attachments + depth, all double-buffered (one set per
 | Mesh ID | `R32_UINT` | Bits 0–30: instance ID + 1; bit 31: `ALPHA_BLEND_NO_HISTORY` (skip SVGF accumulation) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Raw indirect | `B10G11R11_UFLOAT_PACK32` | Albedo-demodulated indirect light (SVGF input) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Albedo | `B10G11R11_UFLOAT_PACK32` | Surface colour (diffuse × vertex colour) | `COLOR_ATTACHMENT_OPTIMAL` |
+| Reactive | `R8_UNORM` | FSR 3.1 reactive mask (transparent coverage) | `COLOR_ATTACHMENT_OPTIMAL` |
+| Transparency | `R8_UNORM` | FSR 3.1 transparency & composition mask | `COLOR_ATTACHMENT_OPTIMAL` |
 | Depth | `D32_SFLOAT` | Standard depth (0.0 = near, 1.0 = far), `LESS_OR_EQUAL`, clear = 1.0 | `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` |
 
 After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIMAL`.
@@ -140,7 +158,7 @@ After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIM
 | 256 | 16 | `jitter` | xy = TAA Halton jitter (NDC); z = debug flags (bitcast f32); w = is_exterior |
 | 272 | 16 | `sky_tint` | xyz = TOD/weather zenith colour; w = sun angular radius (rad) |
 | 288 | 16 | `sun_direction` | xyz = direction **to** sun (unit); w = sun intensity |
-| 304 | 16 | `dof_params` | x = aperture half-radius; y = focus distance; zw reserved |
+| 304 | 16 | `dof_params` | x = aperture half-radius; y = focus distance; z = `light_atten_knee` (ambient-cull falloff knee); w = `camera_static` flag (1.0 = parked, gates GI reprojection) |
 | 320 | 16 | `render_origin` | xyz = camera-relative render origin (#markarth-precision); w reserved |
 
 ### `GpuInstance` — 112 bytes, SSBO (Set 1, Binding 4)
@@ -182,7 +200,8 @@ One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 Indexed by `GpuInstance.material_id`. Deduplicated per frame: identical
 material params share one entry. Up to `MAX_MATERIALS` = 16 384 entries.
 
-Selected fields (full layout in `gpu_types.rs`):
+Selected fields (full layout in
+[`vulkan/material.rs`](../../crates/renderer/src/vulkan/material.rs)):
 
 | Offset | Field | Contents |
 |---|---|---|
@@ -196,9 +215,16 @@ Selected fields (full layout in `gpu_types.rs`):
 | 48–83 | texture indices | diffuse, normal, dark, glow, detail, gloss, parallax, env, env_mask (9 × u32) |
 | 84 | `alpha_test_func` | 0=ALWAYS … 7=NEVER |
 | 88 | `material_kind` | Classification — see below |
-| 96–119 | UV transform | offset U/V + scale U/V; diffuse/ambient colour legacy |
+| 92 | `material_alpha` | Authored material alpha (`NiAlphaProperty`-independent) |
+| 96–100 | parallax POM | height scale, max sample passes |
+| 104–119 | UV transform | offset U/V + scale U/V |
+| 120–140 | diffuse/ambient | legacy diffuse RGB + ambient RGB |
 | 144–171 | tinting | skin tint ARGB, hair tint RGB (Skyrim+) |
-| 232–255 | BSEffect falloff | start/stop angle, start/stop opacity, soft depth |
+| 172–231 | multi-layer / eye / sparkle | envmap strength, eye cubemap centers + scale, refraction scale, sparkle RGB |
+| 232 | `sparkle_intensity` | Sparkle/glitter effect strength |
+| 236–255 | BSEffect falloff | start/stop angle, start/stop opacity, soft depth |
+| 256 | `greyscale_lut_index` | Bindless index of the BSEffectShaderProperty palette LUT (0 = none) |
+| 260–276 | BGSM translucency | subsurface RGB, transmissive scale, turbulence |
 | 280 | `ior` | Refractive index (default 1.5) |
 | 284 | `subsurface` | Disney diffuse subsurface strength |
 | 288 | `sheen` | Disney sheen strength |
@@ -210,9 +236,21 @@ Selected fields (full layout in `gpu_types.rs`):
 | Bit | Constant | Meaning |
 |---|---|---|
 | 0 | `MAT_FLAG_VERTEX_COLOR_EMISSIVE` | Vertex colour drives emissive instead of albedo |
+| 1 | `MAT_FLAG_EFFECT_SOFT` | BSEffectShaderProperty soft (depth-feathered) particles |
+| 2 | `MAT_FLAG_EFFECT_PALETTE_COLOR` | Sample `greyscale_lut_index` for colour (1D LUT) |
+| 3 | `MAT_FLAG_EFFECT_PALETTE_ALPHA` | Sample `greyscale_lut_index` for alpha |
+| 4 | `MAT_FLAG_EFFECT_LIT` | BSEffectShaderProperty responds to scene lights |
 | 5 | `MAT_FLAG_PBR_BSDF` | Disney diffuse + sheen enabled (else Lambert) |
 | 6 | `MAT_FLAG_TRANSLUCENCY` | BGSM v≥8 translucency suite |
 | 7 | `MAT_FLAG_MODEL_SPACE_NORMALS` | Normal map is model-space, not tangent-space |
+| 8 | `MAT_FLAG_TRANSLUCENCY_THICK_OBJECT` | Translucency: thick-object attenuation profile |
+| 9 | `MAT_FLAG_TRANSLUCENCY_MIX_ALBEDO` | Translucency: mix subsurface colour with albedo |
+| 10 | *(unused/reserved)* | — |
+| 11 | `MAT_FLAG_THIN_GLASS` | Non-occluding glass — zero-ray Fresnel/framebuffer-transmission path, no RT (#883f57cd) |
+
+Bits 16–23 (`MAT_FLAG_EFFECT_LI_SHIFT`) additionally pack an 8-bit
+lighting-influence value for `MAT_FLAG_EFFECT_LIT` materials, read as
+`(materialFlags >> 16) & 0xFF) / 255.0`.
 
 **`material_kind`** (offset 88):
 

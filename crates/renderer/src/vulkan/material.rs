@@ -34,7 +34,7 @@ use std::sync::Once;
 /// First-frame overflow latch for [`MaterialTable::intern`]. Wired through
 /// a `Once` so the warn fires exactly once per session; #797's regression
 /// guard is the truthful pairing of the upload-side warn message
-/// (`scene_buffer.rs:978`) with actual default-to-0 behaviour.
+/// (`scene_buffer/upload.rs`) with actual default-to-0 behaviour.
 static INTERN_OVERFLOW_WARNED: Once = Once::new();
 
 /// std430 GPU-side material record. **300 bytes** per material.
@@ -60,9 +60,9 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// #1583/#1590; `triangle.frag` now `#include`s it and reads from
 /// `materials[inst.materialId]` at binding 13). `triangle.vert`,
 /// `ui.vert`, and `caustic_splat.comp`
-/// MUST NOT mirror the struct or index the material buffer — the build-
-/// time grep at `scene_buffer.rs:1639`
-/// (`ui_vert_reads_texture_index_from_instance_not_material_table`)
+/// MUST NOT mirror the struct or index the material buffer — the
+/// test `ui_vert_reads_texture_index_from_instance_not_material_table`
+/// (`scene_buffer/gpu_instance_layout_tests.rs`)
 /// pins this for `ui.vert` after #776 / #785; mirror checks for the
 /// other two stages live in the same module. Layout invariant is pinned
 /// by `gpu_material_size_is_300_bytes` and
@@ -138,8 +138,8 @@ pub struct GpuMaterial {
     // no shader read `mat.avgAlbedo*`; both consumers (caustic_splat.comp
     // and triangle.frag GI miss) sample from the per-instance copy on
     // `GpuInstance.avgAlbedo*` instead. The retention comment at
-    // `scene_buffer.rs:215-219` explains why the per-instance copy
-    // stays. Subsequent fields shift down by 12 bytes.
+    // `scene_buffer/gpu_types.rs` (near `avg_albedo_r`) explains why the
+    // per-instance copy stays. Subsequent fields shift down by 12 bytes.
 
     // ── skin_tint_a + skin_tint RGB (offsets 144-156) ───────────────
     pub skin_tint_a: f32, // offset 144
@@ -383,9 +383,12 @@ impl Default for GpuMaterial {
     }
 }
 
-/// `GpuMaterial::material_flags` bit catalog. Mirrored shader-side as
-/// raw `0x...u` literals in `triangle.frag` so the GLSL is grep-friendly
-/// without needing a generated header.
+/// `GpuMaterial::material_flags` bit catalog. The single source of truth
+/// is `crates/renderer/src/shader_constants_data.rs`, which emits the
+/// matching `MAT_FLAG_*` `#define`s into the generated
+/// `crates/renderer/shaders/include/shader_constants.glsl` header —
+/// `triangle.frag` `#include`s that header and MUST NOT hand-write the
+/// raw `0x...u` literals (see `shader_constants_data.rs`'s own doctrine).
 pub mod material_flag {
     /// Per-vertex `fragColor.rgb` drives self-illumination instead of
     /// modulating albedo. Set when the source NIF declared
@@ -1347,7 +1350,7 @@ mod tests {
     /// preserve total size but produce wrong shader reads.
     ///
     /// Mirrors the `gpu_instance_field_offsets_match_shader_contract`
-    /// pattern at `scene_buffer.rs:1453`. The shader-side
+    /// pattern (`scene_buffer/gpu_instance_layout_tests.rs`). The shader-side
     /// `struct GpuMaterial` declaration in
     /// `crates/renderer/shaders/include/bindings.glsl` (lifted out of
     /// `triangle.frag` under #1583/#1590 — it now `#include`s it) is the

@@ -49,6 +49,15 @@ Vulkan-spec compliance, then the narrower regression-guard surfaces.
   `_audit-severity` applies.
 - `unsafe extern "C++"` in the bridge marks the C++ side as trusted — verify no
   new fn returns a pointer Rust then dereferences past the call.
+- **`crates/fsr3-sys` (added 2026-07-22) is a real, live FFI crossing** — unlike
+  the cxx-bridge placeholder above, this is not hypothetical. `extern "C"`
+  functions take `*mut RawContext`/`*const RawCreateDesc`/`*mut RawVersion`
+  etc.; `pub unsafe fn Context::create`/`Context::dispatch` carry `# Safety`
+  doc sections stating caller contracts (device/physical-device/proc-addr must
+  outlive the `Context`; dispatch handles must belong to the creating device),
+  and `Drop` calls back into the native shim. Audit every `unsafe fn` here for
+  a `# Safety` doc and a lifetime contract the way this dimension used to
+  reserve for a *hypothetical* live cxx-bridge.
 
 ### 2. Memory Corruption / UB
 
@@ -211,8 +220,11 @@ Vulkan-spec compliance, then the narrower regression-guard surfaces.
   the refraction hit prevents unbounded recursion when coincident glass surfaces
   share an albedo/normal-map descriptor pair. A regression is a frame-time hang on
   any paired-glass cell. Verify the check is present.
-- **Glass ray budget** `GLASS_RAY_BUDGET = 1048576`
-  (`crates/renderer/src/shader_constants_data.rs`; raised from 8192 in `6efe1706`).
+- **Glass ray budget** `GLASS_RAY_BUDGET`
+  (`crates/renderer/src/shader_constants_data.rs`, mirrored in
+  `crates/renderer/shaders/include/shader_constants.glsl` — verify the two stay
+  in lockstep; raised from 8192 in `6efe1706`, and again since — check the
+  constant by name rather than trusting a hard-coded figure here).
   It is a runaway-recursion cap, not a quality knob. #1438 documented that the
   atomicAdd accounting can overshoot the budget unconditionally — note that nuance
   rather than reporting the overshoot as new. Verify the budget is enforced at every

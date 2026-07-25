@@ -225,7 +225,7 @@ full-body Starfield `BSLightingShaderProperty` carries a 38-byte trailing field
 yields an empty tail. Verify the tail is captured to-block_size (not a hardcoded
 38, no over-read) and that LODMeshes drift stays at 0 — do NOT fabricate field
 names/semantics. Tests: `parse_bs_lighting_starfield_captures_trailing_tail` +
-`..._tail_empty_without_size_or_drift` in `crates/nif/src/blocks/shader_tests.rs`.
+`..._tail_empty_without_size_or_drift` in `crates/nif/src/blocks/shader_tests/starfield.rs` (split by era, #2056).
 The sibling BSEffectShaderProperty +32 B under-read on the same archive is a known
 follow-up (left scoped out) — note frequency, don't re-file as new.
 **Output**: `/tmp/audit/starfield/dim_6.md`

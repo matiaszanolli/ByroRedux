@@ -210,7 +210,7 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   `PatrolState` (M42.8) — ALL `SparseSetStorage` (only actors running that
   procedure carry them). Verify a growing actor population doesn't force any of
   them onto `PackedStorage`. An NPC's active package is always a single winning
-  `PackRecord` (`active_package`'s `find` in `crates/plugin/src/esm/records/misc/ai.rs`),
+  `PackRecord` (`active_package`'s `find` in `crates/plugin/src/esm/records/misc/pack.rs`),
   so at most one Behavior component lands per actor at spawn — a regression that
   lets two of these seven land on the same entity is a correctness bug in the
   `npc_spawn.rs` spawn-tail's `if runs_*` chain, not a storage issue.

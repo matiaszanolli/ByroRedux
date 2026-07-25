@@ -31,7 +31,7 @@ Debug Protocol:  crates/debug-protocol/src/           (wire types, component reg
 Debug Server:    crates/debug-server/src/             (TCP server + DebugDrainSystem)
 Debug UI (egui): crates/debug-ui/src/                 (lib.rs, panels.rs — egui overlay)
 Renderer:        crates/renderer/src/vulkan/
-VulkanContext:   crates/renderer/src/vulkan/context/  (mod.rs, draw.rs, resize.rs, resources.rs, helpers.rs, screenshot.rs)
+VulkanContext:   crates/renderer/src/vulkan/context/  (mod.rs, draw.rs, resize.rs, resources.rs, helpers.rs, screenshot.rs, geometry_pass.rs, post_passes.rs, skinned_blas_refit.rs — the last three split out under #1857/the FSR3 frame-tail work)
 Accel (RT):      crates/renderer/src/vulkan/acceleration/  (mod.rs struct + new()/destroy(); constants, types, predicates, blas_static, blas_skinned, tlas, memory; tests.rs)
 G-Buffer:        crates/renderer/src/vulkan/gbuffer.rs
 SVGF Denoiser:   crates/renderer/src/vulkan/svgf.rs
@@ -47,6 +47,7 @@ Bloom (M58):     crates/renderer/src/vulkan/bloom.rs        (5-mip down + 4-mip 
 Water (M38):     crates/renderer/src/vulkan/water.rs        (WaterPipeline: vertex displacement + Fresnel, RT reflection/refraction against TLAS)
 GPU Skin (M29):  crates/renderer/src/vulkan/skin_compute.rs
 Material (R1):   crates/renderer/src/vulkan/material.rs   (MaterialBuffer SSBO, GpuMaterial dedup; replaces per-instance fields)
+FSR3 Upscaler:   crates/fsr3-sys/src/lib.rs (vendored FidelityFX SDK FFI, added 2026-07-22) + crates/renderer/src/vulkan/{frame_upscaler,presentation,exposure}.rs
 SPIR-V Reflect:  crates/renderer/src/vulkan/reflect.rs    (descriptor layout reflection from SPIR-V)
 Scene Buffers:   crates/renderer/src/vulkan/scene_buffer/  (mod, constants, gpu_types, buffers, upload, descriptors; gpu_instance_layout_tests + instance_hash_tests + material_hash_tests + scene_descriptor_reflection_tests)
 Descriptors:     crates/renderer/src/vulkan/descriptors.rs
@@ -57,7 +58,7 @@ Mesh:            crates/renderer/src/mesh.rs
 Vertex:          crates/renderer/src/vertex.rs
 Tex Registry:    crates/renderer/src/texture_registry.rs (+ texture_registry_tests.rs)
 Shaders:         crates/renderer/shaders/             (triangle.vert/frag, svgf_temporal.comp, taa.comp, composite.vert/frag, ssao.comp, cluster_cull.comp, skin_palette.comp, skin_vertices.comp, caustic_splat.comp, volumetrics_inject.comp, volumetrics_integrate.comp, bloom_downsample.comp, bloom_upsample.comp, water.vert/frag, ui.vert/frag — full per-pass roles and G-buffer layout in docs/engine/shader-pipeline.md)
-Plugin/ESM:      crates/plugin/src/                   (esm/{mod, reader, sub_reader}, esm/cell/, esm/records/{actor, climate, container, global, items, misc/{water, character, world, ai, magic, effects, equipment}, mswp, pkin, scol, script, tree, weather, …}, record.rs generic dispatch; legacy/ holds the LegacyFormId/LoadOrder bridge — per-game stubs were removed under #390)
+Plugin/ESM:      crates/plugin/src/                   (esm/{mod, reader, sub_reader}, esm/cell/, esm/records/{actor/{mod,tests} (#2055), climate, container, global, items, misc/{water, character, world, pack, quest, dialogue, magic, effects, equipment} (#2054 split misc/ai.rs into these), mswp, pkin, scol, script, tree, weather, …}, record.rs generic dispatch; legacy/ holds the LegacyFormId/LoadOrder bridge — per-game stubs were removed under #390)
 Platform:        crates/platform/src/
 UI (Ruffle):     crates/ui/src/
 CXX Bridge:      crates/cxx-bridge/
@@ -73,7 +74,7 @@ Ragdoll:         byroredux/src/ragdoll.rs (M41.x ragdoll activation + writeback;
 Cornell Harness: byroredux/src/cornell.rs (--cornell self-contained RT material/lighting reference scene; no on-disk game data)
 Asset Provider:  byroredux/src/asset_provider.rs (BSA/BA2 texture+mesh extraction, resolve_texture, strip_build_prefix for AE pipeline-path paths)
 Components:      byroredux/src/components.rs (binary-local markers + app resources: Spinning, AlphaBlend, TwoSided, DoorTeleport, IsFxMesh, IsLodTerrain, IsCollisionOnly, FootstepEmitter/Config/Scratch, CellLightingRes, SkyParamsRes, WeatherDataRes, LightTuning, …). Shared ECS components (WaterPlane/WaterVolume/SubmersionState) live in crates/core/src/ecs/components/water.rs; SelectedRef is a resource in crates/core/src/ecs/resources/mod.rs)
-NPC Spawn:       byroredux/src/npc_spawn.rs           (M41 actor instantiation; M42.2 adds CTDA package-condition gating (`package_conditions_pass`, fail-open on unimplemented condition functions); the spawn-tail reads all seven `active_package_is_*`/`active_*_location`/`active_*_target` selector pairs (`crates/plugin/src/esm/records/misc/ai.rs`) and inserts at most one Behavior component per actor — an NPC's active package is always a single winning `PackRecord`, so Sandbox/Wander/Travel/Follow/Escort/Guard/Patrol selection is mutually exclusive by construction)
+NPC Spawn:       byroredux/src/npc_spawn.rs           (M41 actor instantiation; M42.2 adds CTDA package-condition gating (`package_conditions_pass`, fail-open on unimplemented condition functions); the spawn-tail reads all seven `active_package_is_*`/`active_*_location`/`active_*_target` selector pairs (`crates/plugin/src/esm/records/misc/pack.rs`) and inserts at most one Behavior component per actor — an NPC's active package is always a single winning `PackRecord`, so Sandbox/Wander/Travel/Follow/Escort/Guard/Patrol selection is mutually exclusive by construction)
 Sandbox AI:      byroredux/src/systems/{sandbox,wander,travel,follow,escort,guard,patrol}.rs — the seven M42 procedure runtimes (of ~17 in the FO3/FNV enum; the other ten are parse-only, blocked on unbuilt item-use/combat/magic/dialogue subsystems, not just missing dispatch). `sandbox_seat_system` (M42) does nearest-free-seat assignment, per-marker reservation via SeatReservations keyed (furniture, marker index). `wander_system`/`travel_system`/`follow_system`/`escort_system`/`guard_system`/`patrol_system` (M42.3–M42.8) share a `step_toward` walk-to-point primitive (`systems/locomotion.rs`); `patrol_system` additionally reuses `wander_system`'s whole phase-transition core (`step_oscillating_wander`) rather than duplicating it, since no patrol-route data is decoded anywhere in this codebase. All seven are opt-in, gated one env var each (`BYRO_SANDBOX_SIT`/`BYRO_WANDER`/`BYRO_TRAVEL`/`BYRO_FOLLOW`/`BYRO_ESCORT`/`BYRO_GUARD`/`BYRO_PATROL`), none in the default scheduler. Components: `crates/core/src/ecs/components/{sandbox,furniture,wander,travel,follow,escort,guard,patrol}.rs` (SandboxBehavior/Seated, WanderBehavior/WanderState/WanderPhase, TravelBehavior/TravelState/Traveled, FollowBehavior/FollowState, EscortBehavior/EscortState/Escorted, GuardBehavior/GuardState, PatrolBehavior/PatrolState — all `SparseSetStorage`). v0 scope throughout: no pathing/NAVM, no animation-clip swap, no per-frame package re-evaluation (selection is spawn-time-only). Doc: docs/engine/npc-spawn-ai-packages.md.
 World Stream:    byroredux/src/streaming.rs           (M40 cell lifecycle) + streaming_tests.rs
 SF Smoke:        byroredux/src/sf_smoke.rs            (Starfield ESM resolve-rate harness, --sf-smoke CLI)
@@ -100,13 +101,17 @@ Prefer them over re-deriving facts from source during an audit.
 | `docs/engine/scripting.md` | ECS-native scripting model (Papyrus VM → ECS), recognizer-chain design, what `.pex`/recognizers translate vs. defer. Paired with `docs/engine/papyrus-parser.md` (`.psc` AST), `docs/engine/m47-0-design.md`, `docs/engine/m47-2-design.md`, `docs/engine/m47-2-recognizer-scaling.md`. Owner audit: `/audit-scripting`. |
 | `docs/contributing.md` | Prerequisites, build, test tiers (unit/integration/Vulkan/smoke), shader recompile, game data paths, CI jobs |
 
-Crate count: 21 under `crates/` — audio, bgsm, bsa, core, cxx-bridge,
-debug-protocol, debug-server, debug-ui, facegen, nif, papyrus, pex, physics,
-platform, plugin, renderer, save, scripting, sfmaterial, spt, ui. Use this as a
-coverage sanity check: an audit that never touches a relevant crate here is
-incomplete. (`pex` + `save` are the two newest, added in Sessions 50–51 for the
-M45 save/load and M47.2 compiled-Papyrus arcs — owned by `/audit-save` and
-`/audit-scripting` respectively.)
+Crate count: 22 under `crates/` — audio, bgsm, bsa, core, cxx-bridge,
+debug-protocol, debug-server, debug-ui, facegen, fsr3-sys, nif, papyrus, pex,
+physics, platform, plugin, renderer, save, scripting, sfmaterial, spt, ui. Use
+this as a coverage sanity check: an audit that never touches a relevant crate
+here is incomplete. (`pex` + `save` are added in Sessions 50–51 for the M45
+save/load and M47.2 compiled-Papyrus arcs — owned by `/audit-save` and
+`/audit-scripting` respectively. `fsr3-sys`, added 2026-07-22, is the FSR 3.1
+FFI crossing — a real live FFI boundary, unlike `cxx-bridge`'s placeholder;
+audit its `unsafe fn` `# Safety` contracts the way Dimension 1 of
+`/audit-safety` used to reserve for a hypothetical live cxx-bridge. It has no
+dedicated owner audit skill yet, unlike `pex`/`save`.)
 
 ## Game Data Locations
 

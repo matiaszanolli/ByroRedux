@@ -253,22 +253,15 @@ impl VulkanContext {
             // SSAO / composite so the fragment shader can sample the
             // integrated volume.
             //
-            // ── Composite-output gate (#928) ────────────────────────
-            // The composite shader currently multiplies the volumetric
-            // result by 0.0 (composite.frag:362) because the per-
-            // froxel single-shadow-ray approach produces visible
-            // banding on bright surfaces (diagnosed 2026-05-09 against
-            // Prospector cups and lanterns). While the output is
-            // unused, dispatching the inject + integrate passes is
-            // pure GPU waste — ~1.84M ray-query traces and ~28 MB of
-            // memory bandwidth per frame for nothing.
-            //
-            // The `VOLUMETRIC_OUTPUT_CONSUMED` const in volumetrics.rs
-            // is the single source of truth for whether the read is
-            // active. Both that const and the `* 0.0` in composite.frag
-            // get flipped together when M-LIGHT v2 (multi-tap soft
-            // shadows + temporal stability) lands and removes the
-            // banding. See #928.
+            // ── Composite-output gate (#928, flipped live by 977eb95a) ──
+            // `VOLUMETRIC_OUTPUT_CONSUMED` (volumetrics.rs) is now `true`:
+            // the per-froxel single-shadow-ray banding that justified the
+            // original `* 0.0` discard (diagnosed 2026-05-09 against
+            // Prospector cups and lanterns) was addressed, and
+            // `composite.frag` (`combined = combined * vol.a + vol.rgb`)
+            // consumes the integrated volume every frame. The inject +
+            // integrate dispatch is live GPU cost, not dead weight — do
+            // NOT "optimize" it away as unused work. See #928 / 977eb95a.
             //
             // Gated on TLAS being available, mirroring caustic
             // (caustic.rs:627 / draw.rs:1648). When no TLAS exists
