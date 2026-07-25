@@ -12,6 +12,34 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────────────────
+  # Offline shader source/artifact parity
+  #
+  # Shader modules are committed and embedded with include_bytes!, so ordinary
+  # Rust builds never prove that the checked-in GLSL still compiles to the
+  # shipped SPIR-V. Keep the compiler version exact: SPIR-V code generation is
+  # version-dependent, and a compile-only check would miss a binary produced
+  # from uncommitted source.
+  # ──────────────────────────────────────────────────────────────────────────
+  shader-artifacts:
+    name: Shader source/artifact parity
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - name: Install checkout + shader tools
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            git \
+            glslang-tools \
+            ripgrep
+      - uses: actions/checkout@v4
+      - name: Recompile and compare every first-party shader
+        run: scripts/check-shader-artifacts.sh
+
+  # ──────────────────────────────────────────────────────────────────────────
   # Standard checks — no GPU required
   # ──────────────────────────────────────────────────────────────────────────
   cargo-test:

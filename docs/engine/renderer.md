@@ -730,9 +730,13 @@ doc for the full NIF→ECS→GPU upload flow.
 | egui              | 0.33    | Debug-overlay UI (CPU side)                |
 | egui-ash-renderer | 0.11    | Debug-overlay GPU pipeline (shares allocator) |
 
-The shaders are compiled offline with `glslangValidator` and embedded into
-the binary via `include_bytes!` from `crates/renderer/shaders/`. The full
-set: `triangle.vert/frag` (main geometry + PBR + RT ray queries),
+The shaders are compiled offline with `glslangValidator` 16.2.0 and embedded
+into the binary via `include_bytes!` from `crates/renderer/shaders/`. Run
+`scripts/check-shader-artifacts.sh` after shader edits; it recompiles every
+first-party shader and rejects source/binary drift byte-for-byte. CI runs the
+same check in an Ubuntu 26.04 container, whose `glslang-tools` package provides
+the pinned compiler. The full set:
+`triangle.vert/frag` (main geometry + PBR + RT ray queries),
 `composite.vert/frag`, `ui.vert/frag`, `water.vert/frag`, plus the compute
 shaders `cluster_cull`, `ssao`, `svgf_temporal`, `taa`, `caustic_splat`,
 `skin_vertices`, `skin_palette`, `bloom_downsample`, `bloom_upsample`,

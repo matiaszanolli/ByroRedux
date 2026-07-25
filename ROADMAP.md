@@ -810,14 +810,36 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
   the common case can use a memory-free any-hit probe again measured +6%
   (62.7 → 66.5) — but it also shifted 0.336% of Prospector pixels by more than
   24/255, against a same-build noise floor of 0.000% at that threshold. The
-  probe was argued to be behaviour-identical and is not, most likely because
-  the CPU-side classifier reads the *draw command's* emissive while the shader
-  reads the *material table's*, so a mesh can be bucketed solid yet take the
-  emitter-shell branch in the walk. Not shipped: +6% does not justify an
-  unexplained visual delta, and per the project's own rule a renderer change
-  whose failure mode is invisible to `cargo test` needs RenderDoc or a revert,
-  not speculation. If picked up again, reconcile those two emissive sources
-  first — that discrepancy may be a latent bug in its own right.
+  probe was argued to be behaviour-identical and is not. Not shipped: +6%
+  does not justify an unexplained visual delta, and per the project's own rule
+  a renderer change whose failure mode is invisible to `cargo test` needs
+  RenderDoc or a revert, not speculation.
+
+  **Follow-up (2026-07-24): the suspected emissive-source discrepancy is
+  ruled out on the normal material-table path.** `DrawCommand::to_gpu_material`
+  copies `emissive_mult` and all three emissive channels verbatim; the
+  per-frame table interns that exact value under `DrawCommand::material_hash`;
+  and `material_hash_matches_gpu_material_field_hash` pins the two complete
+  field walks in lockstep. The solid pre-pass still has a concrete semantic
+  mismatch: the existing opaque walk fails open after
+  `MAX_OPAQUE_LAYERS = 8` continued effect/alpha/emitter-shell hits, while an
+  independent any-hit query can see and block on solid geometry behind the
+  ninth such hit. That is enough to invalidate the behaviour-identity claim
+  without inventing a CPU/GPU material divergence. Do not retry the independent
+  pre-pass as a no-quality-cost change; preserving hit order and the layer
+  budget requires the split closest-hit walks that already measured slower.
+
+  **Shader provenance follow-up (2026-07-24).** The committed GLSL at
+  `6c56e311` does not compile (`hitInst.alphaThreshold` and
+  `hitMat.materialFlags` address fields owned by the opposite structs).
+  Correcting only those two accesses still does not reproduce that commit's
+  `triangle.frag.spv`, proving the shipped module came from additional dirty
+  shader source. Current HEAD now self-compiles byte-for-byte across all 21
+  first-party shaders under `glslangValidator` 16.2.0; this sweep also found
+  and rebuilt stale `ui.vert.spv` and `water.vert.spv` modules left behind by
+  the `_padAlbedo` → `surfaceId` field rename (same offset and unused by both
+  shaders, so behavior-neutral). `scripts/check-shader-artifacts.sh` and its CI
+  job now reject either an unbuildable source tree or source/binary drift.
 
 ### Open — Misc
 
