@@ -8,6 +8,7 @@ use anyhow::{anyhow, Result};
 use std::any::Any;
 use std::sync::{Arc, Mutex};
 
+use ruffle_core::external::Value as ExternalValue;
 use ruffle_core::tag_utils::SwfMovie;
 use ruffle_core::{FloatDuration, Player, PlayerBuilder};
 use ruffle_render_wgpu::backend::{
@@ -15,6 +16,8 @@ use ruffle_render_wgpu::backend::{
 };
 use ruffle_render_wgpu::descriptors::Descriptors;
 use ruffle_render_wgpu::target::TextureTarget;
+
+use crate::{ScaleformHostBridge, ScaleformProfile, ScaleformValue};
 
 /// Wraps a Ruffle Flash player instance with offscreen wgpu rendering.
 ///
@@ -26,6 +29,7 @@ pub struct SwfPlayer {
     height: u32,
     pixel_buffer: Vec<u8>,
     dirty: bool,
+    host_bridge: ScaleformHostBridge,
 }
 
 impl SwfPlayer {
@@ -37,6 +41,35 @@ impl SwfPlayer {
         // Parse the SWF data.
         let movie = SwfMovie::from_data(swf_data, "file:///menu.swf".to_string(), None)
             .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
+        let profile = ScaleformProfile::from_movie(&movie);
+        Self::from_movie(movie, width, height, profile)
+    }
+
+    /// Create a player with an explicit Bethesda Scaleform profile.
+    pub fn new_with_profile(
+        swf_data: &[u8],
+        width: u32,
+        height: u32,
+        profile: ScaleformProfile,
+    ) -> Result<Self> {
+        let movie = SwfMovie::from_data(swf_data, "file:///menu.swf".to_string(), None)
+            .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
+        let detected = ScaleformProfile::from_movie(&movie);
+        if detected != profile {
+            return Err(anyhow!(
+                "Scaleform profile mismatch: requested {profile:?}, movie requires {detected:?}"
+            ));
+        }
+        Self::from_movie(movie, width, height, profile)
+    }
+
+    fn from_movie(
+        movie: SwfMovie,
+        width: u32,
+        height: u32,
+        profile: ScaleformProfile,
+    ) -> Result<Self> {
+        let host_bridge = ScaleformHostBridge::new(profile);
 
         // Create wgpu instance and device (headless, no surface).
         let instance =
@@ -63,6 +96,7 @@ impl SwfPlayer {
         let player = PlayerBuilder::new()
             .with_renderer(renderer)
             .with_video(ruffle_video_software::backend::SoftwareVideoBackend::new())
+            .with_external_interface(host_bridge.provider())
             .with_movie(movie)
             .with_viewport_dimensions(width, height, 1.0)
             .build();
@@ -84,6 +118,7 @@ impl SwfPlayer {
             height,
             pixel_buffer,
             dirty: true,
+            host_bridge,
         })
     }
 
@@ -138,5 +173,36 @@ impl SwfPlayer {
     /// Get the viewport dimensions.
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    pub fn profile(&self) -> ScaleformProfile {
+        self.host_bridge.profile()
+    }
+
+    pub fn host_bridge(&self) -> ScaleformHostBridge {
+        self.host_bridge.clone()
+    }
+
+    /// Invoke a callback registered through `ExternalInterface.addCallback`.
+    ///
+    /// `None` distinguishes an unknown callback from a registered callback
+    /// whose valid return value is `ScaleformValue::Null`.
+    pub fn invoke_callback(
+        &mut self,
+        name: &str,
+        arguments: impl IntoIterator<Item = ScaleformValue>,
+    ) -> Option<ScaleformValue> {
+        if !self.host_bridge.has_callback(name) {
+            return None;
+        }
+
+        let arguments = arguments.into_iter().map(ExternalValue::from);
+        let result = self
+            .player
+            .lock()
+            .unwrap()
+            .call_internal_interface(name, arguments);
+        self.dirty = true;
+        Some(ScaleformValue::from(&result))
     }
 }

@@ -162,9 +162,10 @@ the full trace.
 | Feature | Status |
 |---|---|
 | Static SWF menus via Ruffle (Skyrim SE) | ✓ M20 |
-| GFx extensions (`_global.gfx`, text replacement, Papyrus callbacks) | ✗ |
+| Ruffle ExternalInterface host bridge (Skyrim AVM1 + Fallout 4 AVM2) | ✓ R4 |
+| GFx host methods (`_global.gfx`, text replacement, Papyrus callbacks) | ◐ transport shipped; method catalog pending M48 |
 | `byroredux-debug-ui` egui overlay (F-key toggle) | ✓ |
-| Full menu reimplementation | ✗ R4 decision pending (Tier 7) |
+| Native menu reimplementation | Not planned; preserve SWF compatibility through Ruffle profiles |
 
 ---
 

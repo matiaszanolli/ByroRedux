@@ -700,6 +700,7 @@ name = "byroredux-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "byroredux-bsa",
  "byroredux-core",
  "futures",
  "image 0.25.10",

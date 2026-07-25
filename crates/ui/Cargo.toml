@@ -26,3 +26,6 @@ image = { version = "0.25", default-features = false }
 # Error handling
 anyhow.workspace = true
 log.workspace = true
+
+[dev-dependencies]
+byroredux-bsa = { workspace = true }

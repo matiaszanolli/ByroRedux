@@ -30,8 +30,8 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 | Ruffle render backend  | `ruffle_render_wgpu` on its **own** wgpu/Vulkan device (separate from the engine's `ash` Vulkan) |
 | Render path            | Ruffle → wgpu offscreen `TextureTarget` → `capture_frame()` CPU RGBA → Vulkan texture upload → fullscreen quad |
 | Lifetime               | `UiManager` is **not** an ECS resource — Ruffle's `Player` is not `Send + Sync`; it lives in the main loop alongside `VulkanContext` |
-| Status                 | Loose SWF demo working (`--swf path.swf`); cargo run shows the menu as a fullscreen overlay |
-| Pending                | Scaleform GFx stubs (`_global.gfx`), Papyrus↔UI bridge, input routing, font loading, full menu pack |
+| Status                 | Loose SWF demo working (`--swf path.swf`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional ExternalInterface host bridge |
+| Pending                | Engine method dispatch behind the host bridge, remaining GFx stubs, Papyrus↔UI bridge, input routing, font loading, full menu pack |
 
 ## Why Ruffle?
 
@@ -44,29 +44,33 @@ no open-source Scaleform runtime. We have three options:
 2. **Reimplement every menu in a modern UI library** (egui, imgui, ...)
    — fastest start, but throws away every modder's existing SWF mods
 3. **Use Ruffle** — open-source Flash player written in Rust, already
-   handles AS1/2/3, only needs Bethesda's GFx-specific globals stubbed
-   to render most menus
+   handles AS1/2/3, with a ByroRedux-owned Bethesda Scaleform host layer
 
 Option 3 is what M20 picked. The bet is that "Bethesda menu" ≈ "Flash file
 that uses a small set of Scaleform extensions" and that those extensions
 can be stubbed in a few hundred lines of glue. So far that bet is holding:
-simple AS2 menus render with **zero GFx stubs implemented yet** — calls
-into Bethesda's `_global.gfx.*` namespace that Ruffle doesn't recognise
-are simply not present, so any rendering-only Scaleform extensions are
-absent while the rest of the menu draws.
+simple AS2 menus render, and the pinned Ruffle API provides both sides of
+the host transport: `ExternalInterfaceProvider::call_method` for
+ActionScript → engine and `Player::call_internal_interface` for engine →
+registered ActionScript callbacks. ByroRedux now installs that transport
+for both Skyrim AVM1 and Fallout 4 AVM2 movies. The remaining work is the
+Bethesda method catalog and behavior behind it, not a new Flash VM.
 
 ## Module map
 
 ```
 crates/ui/src/
+├── host.rs      ScaleformHostBridge — ExternalInterface call queue,
+│                callback discovery, typed values, diagnostics/responses
 ├── lib.rs       UiManager — top-level handle: owns the active SwfPlayer,
 │                visibility/menu-name/viewport state, load/tick/render/close
-└── player.rs    SwfPlayer — Ruffle wrapper, own wgpu/Vulkan device,
-                 offscreen TextureTarget, capture_frame() → cached RGBA buffer
+├── player.rs    SwfPlayer — Ruffle wrapper, own wgpu/Vulkan device,
+│                offscreen TextureTarget, capture_frame() → cached RGBA buffer
+└── profile.rs   Skyrim AVM1 / Fallout 4 AVM2 host profiles and detection
 ```
 
-Both types are re-exported from `byroredux_ui` (`pub use player::SwfPlayer;`,
-`UiManager` defined directly in `lib.rs`).
+The player, profile, host bridge, host call, and typed value are re-exported
+from `byroredux_ui`; `UiManager` remains defined directly in `lib.rs`.
 
 ## Pipeline
 
@@ -277,12 +281,15 @@ The M20 milestone (Phase 1) is the **infrastructure**: load a SWF, render
 it offscreen, upload to Vulkan, draw on top. The full Bethesda menu pack
 needs additional layers that are not yet implemented:
 
-### `_global.gfx` Scaleform stubs
+### Scaleform host methods and remaining `_global.gfx` stubs
 
 Bethesda menus call into a small set of Scaleform-specific globals for
-layout, locale, and texture loading. We need to install AS-side stubs
-inside Ruffle's player so calls like `gfx.io.GameDelegate.call(...)`
-return sensible defaults instead of being silently dropped.
+layout, locale, and texture loading. The Ruffle ExternalInterface transport
+is installed: Skyrim's `GameDelegate.call(...)` transport is normalized
+into logical host-method calls, unknown methods are inventoried, and the
+engine can invoke callbacks registered by either AVM generation. We still
+need to implement the actual Bethesda method catalog and any AS-side
+globals that are not supplied by the shipped menu.
 
 ### Papyrus ↔ UI bridge
 
@@ -318,11 +325,16 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-UI tests are minimal at this stage — Ruffle has its own extensive test
-suite, and our `crates/ui/` integration is thin glue with no dedicated
-unit tests. What guards the integration today:
+The UI crate has five dedicated unit tests over synthetic, non-Bethesda
+SWFs taken from Ruffle's pinned ExternalInterface fixtures:
 
 - The `byroredux-ui` crate compiles as part of the workspace.
+- Real headless AVM1 and AVM2 movies verify ActionScript → host calls,
+  callback discovery, and host → ActionScript invocation through Ruffle's
+  null renderer.
+- Unit coverage pins profile detection, Skyrim `GameDelegate` call
+  normalization, monotonically sequenced diagnostics, and nested value
+  conversion.
 - The renderer-side UI contract is covered by tests, not the Ruffle glue:
   `UiVertex` size/offsets (`crates/renderer/src/vertex.rs`), the bindless
   layout match between `triangle.frag` and `ui.frag`
@@ -331,9 +343,9 @@ unit tests. What guards the integration today:
   (`crates/renderer/src/vulkan/scene_buffer/`).
 - Manual: `cargo run -- --swf path.swf` for each tested menu.
 
-End-to-end UI testing is gated on the `_global.gfx` stub work; once a
-menu touches Bethesda-specific globals, we need a way to assert that
-those globals returned the expected values.
+Real Bethesda movies remain local/ignored corpus tests: proprietary SWFs
+must not be committed. The host bridge now provides the observable call
+queue needed for those compatibility assertions.
 
 ## Related docs
 

@@ -6,9 +6,13 @@
 //! Note: UiManager is NOT an ECS Resource because Ruffle's Player is not Send+Sync.
 //! It lives in the main loop alongside VulkanContext.
 
+mod host;
 mod player;
+mod profile;
 
+pub use host::{ScaleformHostBridge, ScaleformHostCall, ScaleformValue};
 pub use player::SwfPlayer;
+pub use profile::ScaleformProfile;
 
 /// Global UI manager. Owns the active Ruffle player and UI state.
 ///
@@ -40,6 +44,23 @@ impl UiManager {
     /// Load a SWF file and create a Ruffle player for it.
     pub fn load_swf(&mut self, swf_data: &[u8], name: &str) -> anyhow::Result<()> {
         let player = SwfPlayer::new(swf_data, self.width, self.height)?;
+        self.install_player(player, name);
+        Ok(())
+    }
+
+    /// Load a SWF using an explicit Bethesda Scaleform profile.
+    pub fn load_swf_with_profile(
+        &mut self,
+        swf_data: &[u8],
+        name: &str,
+        profile: ScaleformProfile,
+    ) -> anyhow::Result<()> {
+        let player = SwfPlayer::new_with_profile(swf_data, self.width, self.height, profile)?;
+        self.install_player(player, name);
+        Ok(())
+    }
+
+    fn install_player(&mut self, player: SwfPlayer, name: &str) {
         self.player = Some(player);
         self.menu_name = name.to_string();
         self.visible = true;
@@ -49,7 +70,6 @@ impl UiManager {
             self.width,
             self.height
         );
-        Ok(())
     }
 
     /// Advance the Ruffle player by dt seconds.
@@ -71,6 +91,22 @@ impl UiManager {
         } else {
             None
         }
+    }
+
+    /// Host bridge for draining ActionScript calls and inspecting callbacks.
+    pub fn host_bridge(&self) -> Option<ScaleformHostBridge> {
+        self.player.as_ref().map(SwfPlayer::host_bridge)
+    }
+
+    /// Invoke a callback registered by the active ActionScript movie.
+    pub fn invoke_callback(
+        &mut self,
+        name: &str,
+        arguments: impl IntoIterator<Item = ScaleformValue>,
+    ) -> Option<ScaleformValue> {
+        self.player
+            .as_mut()
+            .and_then(|player| player.invoke_callback(name, arguments))
     }
 
     /// Close the current menu.
