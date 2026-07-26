@@ -152,8 +152,8 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
 
             let leash = behavior.radius.unwrap_or(GUARD_DEFAULT_RADIUS);
             let horiz_delta = Vec3::new(anchor.x - current.x, 0.0, anchor.z - current.z);
-            let target_xz = (horiz_delta.length() > leash)
-                .then(|| Vec3::new(anchor.x, current.y, anchor.z));
+            let target_xz =
+                (horiz_delta.length() > leash).then(|| Vec3::new(anchor.x, current.y, anchor.z));
 
             scratch.pending.push(GuardPending {
                 entity,
@@ -177,9 +177,9 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
     {
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
         for p in &scratch.pending {
-            let movement = p
-                .target_xz
-                .map(|target_xz| step_toward(p.current, p.rotation, target_xz, dt, physics.as_deref()));
+            let movement = p.target_xz.map(|target_xz| {
+                step_toward(p.current, p.rotation, target_xz, dt, physics.as_deref())
+            });
 
             scratch.decisions.push(GuardDecision {
                 entity: p.entity,

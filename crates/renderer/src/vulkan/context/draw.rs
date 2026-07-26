@@ -1109,8 +1109,9 @@ impl VulkanContext {
             .zip(self.prev_view_proj.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0_f32, f32::max);
-        let cam_forward_dot = byroredux_core::math::Vec3::from_array(active_dof.cam_forward)
-            .dot(byroredux_core::math::Vec3::from_array(self.prev_cam_forward));
+        let cam_forward_dot = byroredux_core::math::Vec3::from_array(active_dof.cam_forward).dot(
+            byroredux_core::math::Vec3::from_array(self.prev_cam_forward),
+        );
         let camera_cut = is_camera_cut(self.frame_counter, camera_delta, cam_forward_dot);
         if camera_cut {
             self.signal_temporal_discontinuity(8);

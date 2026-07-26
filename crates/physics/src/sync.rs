@@ -254,7 +254,11 @@ fn dump_awake_fallers(world: &World) {
         }
         awake
             .iter()
-            .filter_map(|h| pw.bodies.get(*h).map(|body| (*h, body.translation().y, body.linvel().y)))
+            .filter_map(|h| {
+                pw.bodies
+                    .get(*h)
+                    .map(|body| (*h, body.translation().y, body.linvel().y))
+            })
             .collect()
     };
 

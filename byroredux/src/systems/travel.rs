@@ -199,8 +199,11 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             let (new_pos, rotation) =
                 step_toward(p.current, p.rotation, target_xz, dt, physics.as_deref());
 
-            let horiz_delta =
-                Vec3::new(new_pos.x - p.destination.x, 0.0, new_pos.z - p.destination.z);
+            let horiz_delta = Vec3::new(
+                new_pos.x - p.destination.x,
+                0.0,
+                new_pos.z - p.destination.z,
+            );
             let arrived = horiz_delta.length_squared()
                 <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
 
