@@ -1,7 +1,7 @@
 //! World-definition records — navigation, regions, encounter zones,
 //! lighting templates, image-space adapters, activators, terminals.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring};
+use super::super::common::{read_zstring, CommonNamedFields};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -281,27 +281,26 @@ pub struct ActiRecord {
 }
 
 pub fn parse_acti(form_id: u32, subs: &[SubRecord]) -> ActiRecord {
+    // EDID / FULL / MODL / SCRI / VMAD via the shared helper (TD2-109 /
+    // #2068). VMAD is the Skyrim+ inline Papyrus attachment — absent on
+    // FO3/FNV, which carry SCRI instead — and the helper decodes it so the
+    // M47.2 attach path can decompile the named `.pex` and bind its
+    // properties. Only the ACTI-specific sound / radio arms remain below.
+    let common = CommonNamedFields::from_subs(subs);
     let mut out = ActiRecord {
         form_id,
+        editor_id: common.editor_id,
+        full_name: common.full_name,
+        model_path: common.model_path,
+        script_form_id: common.script_form_id,
+        script_instance: common.script_instance,
         ..Default::default()
     };
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
-            b"MODL" => out.model_path = read_zstring(&sub.data),
-            b"SCRI" => out.script_form_id = SubReader::new(&sub.data).u32_or_default(),
             b"SNAM" => out.sound_form_id = SubReader::new(&sub.data).u32_or_default(),
             b"RNAM" | b"RADR" => {
                 out.radio_form_id = SubReader::new(&sub.data).u32_or_default();
-            }
-            // VMAD — Skyrim+ inline Papyrus attachment. Absent on FO3/FNV
-            // (which carry SCRI instead); decoded here so the M47.2 attach
-            // path can decompile the named `.pex` and bind its properties.
-            b"VMAD" => {
-                out.script_instance = Some(
-                    crate::esm::records::script_instance::ScriptInstanceData::parse(&sub.data),
-                );
             }
             _ => {}
         }
@@ -345,16 +344,21 @@ pub struct TermRecord {
 }
 
 pub fn parse_term(form_id: u32, subs: &[SubRecord]) -> TermRecord {
+    // EDID / FULL / MODL / SCRI via the shared helper (TD2-109 / #2068).
+    // TERM is FO3/FNV-only, so the helper's VMAD arm never fires here and
+    // `TermRecord` carries no script-instance field; only the terminal-
+    // specific password / footer / menu arms remain below.
+    let common = CommonNamedFields::from_subs(subs);
     let mut out = TermRecord {
         form_id,
+        editor_id: common.editor_id,
+        full_name: common.full_name,
+        model_path: common.model_path,
+        script_form_id: common.script_form_id,
         ..Default::default()
     };
     for sub in subs {
         match &sub.sub_type {
-            b"EDID" => out.editor_id = read_zstring(&sub.data),
-            b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
-            b"MODL" => out.model_path = read_zstring(&sub.data),
-            b"SCRI" => out.script_form_id = SubReader::new(&sub.data).u32_or_default(),
             b"ANAM" => out.password = read_zstring(&sub.data),
             b"DNAM" => out.footer_text = read_zstring(&sub.data),
             b"BSIZ" if !sub.data.is_empty() => {
@@ -522,6 +526,45 @@ mod tests {
         assert_eq!(a.sound_form_id, 0x0009_0000);
         // Radio form defaults to 0 when RNAM/RADR absent.
         assert_eq!(a.radio_form_id, 0);
+    }
+
+    /// TD2-109 / #2068 — `parse_acti` now sources its EDID/FULL/MODL/SCRI/
+    /// VMAD bundle from `CommonNamedFields::from_subs`, which means each
+    /// field is copied across by hand into `ActiRecord`. Every other field
+    /// is asserted by `parse_acti_extracts_scri_and_model` above; the
+    /// decoded VMAD attachment was not covered by anything, so a dropped
+    /// `script_instance` mapping would have gone unnoticed. Activators are
+    /// the most common scripted base record in Skyrim cells, and the M47.2
+    /// attach path reads exactly this field.
+    #[test]
+    fn parse_acti_decodes_vmad_into_script_instance() {
+        // version 5, objectFormat 2, 1 script "DoorScript", 0 props —
+        // same shape as `common::tests::common_named_fields_decodes_vmad_script_instance`.
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&5i16.to_le_bytes());
+        vmad.extend_from_slice(&2i16.to_le_bytes());
+        vmad.extend_from_slice(&1u16.to_le_bytes());
+        let name = b"DoorScript";
+        vmad.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        vmad.extend_from_slice(name);
+        vmad.push(0); // script status
+        vmad.extend_from_slice(&0u16.to_le_bytes()); // propCount = 0
+
+        let subs = vec![
+            sub(b"EDID", b"SkyrimLever01\0"),
+            sub(b"MODL", b"clutter\\lever01.nif\0"),
+            sub(b"VMAD", &vmad),
+        ];
+        let a = parse_acti(0x0001_0000, &subs);
+        assert_eq!(a.editor_id, "SkyrimLever01");
+        assert_eq!(a.model_path, "clutter\\lever01.nif");
+        let inst = a
+            .script_instance
+            .expect("VMAD must survive the CommonNamedFields hand-off");
+        assert_eq!(inst.scripts.len(), 1);
+        assert_eq!(inst.scripts[0].name, "DoorScript");
+        // Skyrim activators carry VMAD *instead of* SCRI.
+        assert_eq!(a.script_form_id, 0);
     }
 
     #[test]

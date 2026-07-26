@@ -7,7 +7,6 @@ edition.workspace = true
 logos = "0.15"
 thiserror = { workspace = true }
 bitflags = "2"
-log = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }

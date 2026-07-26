@@ -2,7 +2,7 @@
 //! patrols, merchant behavior, dialogue triggers, ambient idles).
 
 use super::super::common::read_zstring;
-use super::super::condition::{parse_ctda, remap_condition_form_ids, ConditionList};
+use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
@@ -632,12 +632,7 @@ pub fn parse_pack(
             // CTDA list (no per-block nesting like QUST stages), combined
             // with the standard OR-precedence rule. FormID params are
             // remapped to global load-order space here, same as PLDT above.
-            b"CTDA" => {
-                if let Some(mut cond) = parse_ctda(sub) {
-                    remap_condition_form_ids(&mut cond, remap);
-                    out.conditions.push(cond);
-                }
-            }
+            b"CTDA" => push_ctda(sub, remap, &mut out.conditions),
             _ => {}
         }
     }

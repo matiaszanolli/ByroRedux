@@ -13,7 +13,6 @@ edition.workspace = true
 # `.psc` decompiler). See docs/engine/m47-2-design.md.
 
 [dependencies]
-log = { workspace = true }
 thiserror = { workspace = true }
 # The decompiler lowers its node tree to the shared Papyrus AST so a
 # decompiled `.pex` reuses every existing `.psc` recognizer. papyrus does

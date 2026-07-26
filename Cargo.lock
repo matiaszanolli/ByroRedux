@@ -464,7 +464,6 @@ version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
  "env_logger",
- "log",
  "thiserror 2.0.18",
 ]
 
@@ -531,7 +530,6 @@ dependencies = [
  "egui",
  "egui-ash-renderer",
  "egui-winit",
- "log",
  "winit",
 ]
 
@@ -541,7 +539,6 @@ version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
  "env_logger",
- "log",
  "thiserror 2.0.18",
 ]
 
@@ -572,7 +569,6 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.11.0",
  "env_logger",
- "log",
  "logos",
  "thiserror 2.0.18",
 ]
@@ -584,7 +580,6 @@ dependencies = [
  "byroredux-bsa",
  "byroredux-papyrus",
  "env_logger",
- "log",
  "thiserror 2.0.18",
 ]
 
@@ -679,7 +674,6 @@ version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
  "env_logger",
- "log",
  "thiserror 2.0.18",
 ]
 
@@ -691,7 +685,6 @@ dependencies = [
  "byroredux-core",
  "byroredux-nif",
  "env_logger",
- "log",
  "thiserror 2.0.18",
 ]
 

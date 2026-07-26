@@ -2,7 +2,7 @@
 //! fragment-dispatch bindings.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
-use super::super::condition::{parse_ctda, remap_condition_form_ids, ConditionList};
+use super::super::condition::{push_ctda, ConditionList};
 use super::super::script_instance::{
     parse_quest_fragments, QuestScriptFragment, ScriptInstanceData,
 };
@@ -430,18 +430,8 @@ pub fn parse_qust(
             // another fill type). Stage and Alias are the two block
             // kinds that currently collect conditions here.
             b"CTDA" => match &mut block {
-                QustBlock::Stage(stage) => {
-                    if let Some(mut cond) = parse_ctda(sub) {
-                        remap_condition_form_ids(&mut cond, remap);
-                        stage.conditions.push(cond);
-                    }
-                }
-                QustBlock::Alias(alias) => {
-                    if let Some(mut cond) = parse_ctda(sub) {
-                        remap_condition_form_ids(&mut cond, remap);
-                        alias.match_conditions.push(cond);
-                    }
-                }
+                QustBlock::Stage(stage) => push_ctda(sub, remap, &mut stage.conditions),
+                QustBlock::Alias(alias) => push_ctda(sub, remap, &mut alias.match_conditions),
                 QustBlock::Objective(_) | QustBlock::None => {}
             },
             // ALST/ALLS opens an alias block — a Reference alias or a

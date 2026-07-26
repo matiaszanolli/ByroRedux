@@ -309,6 +309,25 @@ pub fn parse_condition_list(subs: &[SubRecord]) -> ConditionList {
     subs.iter().filter_map(parse_ctda).collect()
 }
 
+/// Parse one `CTDA` sub-record, remap its FormIDs, and append it to `out`.
+///
+/// The three-statement `parse_ctda` → [`remap_condition_form_ids`] → `push`
+/// triplet was copy-pasted at five sites across four record walkers
+/// (`quest.rs` ×2, `dialogue.rs`, `magic.rs`, `pack.rs`) — TD2-111 / #2070.
+/// Every one of them owns a `remap`, and dropping the remap step is the
+/// multi-plugin false-positive landmine described on
+/// [`remap_condition_form_ids`], so keeping the three steps welded together
+/// here is the point of the helper, not just the line saving.
+///
+/// Undecodable CTDAs are skipped (`parse_ctda` returns `None`); order is
+/// preserved, which the OR-precedence evaluator requires.
+pub fn push_ctda(sub: &SubRecord, remap: &Option<FormIdRemap>, out: &mut ConditionList) {
+    if let Some(mut cond) = parse_ctda(sub) {
+        remap_condition_form_ids(&mut cond, remap);
+        out.push(cond);
+    }
+}
+
 /// Does `param_1` of the given condition function carry a FormID?
 ///
 /// `parse_ctda` is deliberately decoupled from the function catalog, so it

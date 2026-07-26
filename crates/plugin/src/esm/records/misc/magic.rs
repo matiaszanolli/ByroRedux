@@ -1,7 +1,7 @@
 //! Magic / perks records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
-use super::super::condition::{parse_ctda, remap_condition_form_ids, ConditionList};
+use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 use anyhow::Result;
@@ -436,10 +436,7 @@ pub fn parse_perk(
                     ref mut conditions, ..
                 } = &mut block
                 {
-                    if let Some(mut cond) = parse_ctda(sub) {
-                        remap_condition_form_ids(&mut cond, remap);
-                        conditions.push(cond);
-                    }
+                    push_ctda(sub, remap, conditions);
                 }
             }
             // PRKF closes the entry. Push it onto `entries` only if
@@ -485,6 +482,70 @@ pub struct MagicEffectItem {
     pub duration: u32,
 }
 
+/// EFIT (Effect Item) schema — fixed 12 bytes, identical across every game
+/// that carries an EFID/EFIT chain. Phase C schema decoder.
+#[derive(Debug, Clone, Copy)]
+struct EffectItemHeader {
+    pub magnitude: f32, // @0
+    pub area: u32,      // @4
+    pub duration: u32,  // @8
+}
+
+impl SubRecordSchema for EffectItemHeader {
+    const CODE: [u8; 4] = *b"EFIT";
+
+    fn read(r: &mut SubReader) -> Result<Self> {
+        Ok(EffectItemHeader {
+            magnitude: r.f32_or_default(),
+            area: r.u32_or_default(),
+            duration: r.u32_or_default(),
+        })
+    }
+}
+
+/// Accumulator for the EFID → EFIT pair chain shared by `parse_spel` and
+/// `parse_ench` (TD2-110 / #2069), which decoded it verbatim twice.
+///
+/// The wire format is a stream of alternating sub-records, not a single
+/// packed array: `EFID` names the MGEF and `EFIT` supplies that effect's
+/// magnitude / area / duration. Hence the latch — `EFID` stores the pending
+/// form ID and the following `EFIT` consumes it, clearing the latch so a
+/// stray second `EFIT` cannot re-bind the same effect. An `EFIT` with no
+/// pending `EFID` is dropped rather than pushed with a null effect ID.
+#[derive(Debug, Default)]
+struct MagicEffectAccumulator {
+    pending_efid: u32,
+    items: Vec<MagicEffectItem>,
+}
+
+impl MagicEffectAccumulator {
+    /// Feed one `EFID` or `EFIT` sub-record. Any other sub-type is ignored,
+    /// so callers can delegate a combined `b"EFID" | b"EFIT"` match arm here.
+    ///
+    /// Short sub-records are skipped without disturbing the latch, matching
+    /// the length guards the two hand-rolled copies carried.
+    fn feed(&mut self, sub: &SubRecord) {
+        match &sub.sub_type {
+            b"EFID" if sub.data.len() >= 4 => {
+                self.pending_efid = SubReader::new(&sub.data).u32_or_default();
+            }
+            b"EFIT" if sub.data.len() >= 12 && self.pending_efid != 0 => {
+                let Ok(header) = read_sub::<EffectItemHeader>(sub) else {
+                    return;
+                };
+                self.items.push(MagicEffectItem {
+                    effect_form_id: self.pending_efid,
+                    magnitude: header.magnitude,
+                    area: header.area,
+                    duration: header.duration,
+                });
+                self.pending_efid = 0;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// `SPEL` spell / ability / power record. FO3/FNV also covers passive
 /// abilities and radiation-poisoning style auto-cast effects. SPIT
 /// carries cost + level requirement + flags; effect list (EFID/EFIT)
@@ -508,7 +569,7 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
         form_id,
         ..Default::default()
     };
-    let mut current_efid: u32 = 0;
+    let mut effects = MagicEffectAccumulator::default();
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
@@ -519,32 +580,11 @@ pub fn parse_spel(form_id: u32, subs: &[SubRecord]) -> SpelRecord {
                     out.spell_flags = header.spell_flags;
                 }
             }
-            b"EFID" if sub.data.len() >= 4 => {
-                current_efid =
-                    u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
-            }
-            b"EFIT" if sub.data.len() >= 12 && current_efid != 0 => {
-                out.effects.push(MagicEffectItem {
-                    effect_form_id: current_efid,
-                    magnitude: f32::from_le_bytes([
-                        sub.data[0],
-                        sub.data[1],
-                        sub.data[2],
-                        sub.data[3],
-                    ]),
-                    area: u32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]),
-                    duration: u32::from_le_bytes([
-                        sub.data[8],
-                        sub.data[9],
-                        sub.data[10],
-                        sub.data[11],
-                    ]),
-                });
-                current_efid = 0;
-            }
+            b"EFID" | b"EFIT" => effects.feed(sub),
             _ => {}
         }
     }
+    out.effects = effects.items;
     out
 }
 
@@ -663,7 +703,7 @@ pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
         form_id,
         ..Default::default()
     };
-    let mut current_efid: u32 = 0;
+    let mut effects = MagicEffectAccumulator::default();
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
@@ -677,32 +717,11 @@ pub fn parse_ench(form_id: u32, subs: &[SubRecord]) -> EnchRecord {
                     out.enchant_flags = header.enchant_flags;
                 }
             }
-            b"EFID" if sub.data.len() >= 4 => {
-                current_efid =
-                    u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
-            }
-            b"EFIT" if sub.data.len() >= 12 && current_efid != 0 => {
-                out.effects.push(MagicEffectItem {
-                    effect_form_id: current_efid,
-                    magnitude: f32::from_le_bytes([
-                        sub.data[0],
-                        sub.data[1],
-                        sub.data[2],
-                        sub.data[3],
-                    ]),
-                    area: u32::from_le_bytes([sub.data[4], sub.data[5], sub.data[6], sub.data[7]]),
-                    duration: u32::from_le_bytes([
-                        sub.data[8],
-                        sub.data[9],
-                        sub.data[10],
-                        sub.data[11],
-                    ]),
-                });
-                current_efid = 0;
-            }
+            b"EFID" | b"EFIT" => effects.feed(sub),
             _ => {}
         }
     }
+    out.effects = effects.items;
     out
 }
 
@@ -1177,6 +1196,50 @@ mod tests {
         ];
         let s = parse_spel(0x8888, &subs);
         assert!(s.effects.is_empty());
+    }
+
+    /// TD2-110 / #2069 — the EFID latch must clear when an EFIT consumes it,
+    /// so a stray second EFIT cannot re-bind the same MGEF and emit a
+    /// phantom duplicate effect. `parse_spel_efit_without_efid_is_skipped`
+    /// covers the never-latched case; this covers the already-consumed one,
+    /// which is the invariant `MagicEffectAccumulator` now single-sources
+    /// for both `parse_spel` and `parse_ench`.
+    #[test]
+    fn efit_after_a_consumed_efid_does_not_duplicate_the_effect() {
+        let mut spit = Vec::new();
+        spit.extend_from_slice(&100u32.to_le_bytes());
+        spit.extend_from_slice(&[0u8; 8]);
+        spit.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut efit = Vec::new();
+        efit.extend_from_slice(&4.0f32.to_le_bytes());
+        efit.extend_from_slice(&1u32.to_le_bytes());
+        efit.extend_from_slice(&7u32.to_le_bytes());
+
+        let subs = vec![
+            sub(b"EDID", b"DoubleEfitSpell\0"),
+            sub(b"SPIT", &spit),
+            sub(b"EFID", &0xCAFEu32.to_le_bytes()),
+            sub(b"EFIT", &efit),
+            sub(b"EFIT", &efit), // no intervening EFID — must be dropped
+        ];
+        let s = parse_spel(0x9999, &subs);
+        assert_eq!(s.effects.len(), 1, "the consumed EFID must not re-bind");
+        assert_eq!(s.effects[0].effect_form_id, 0xCAFE);
+
+        // Same accumulator, same rule, on the enchantment side.
+        let mut enit = Vec::new();
+        enit.extend_from_slice(&[0u8; 16]);
+        let subs = vec![
+            sub(b"EDID", b"DoubleEfitEnch\0"),
+            sub(b"ENIT", &enit),
+            sub(b"EFID", &0xBEEFu32.to_le_bytes()),
+            sub(b"EFIT", &efit),
+            sub(b"EFIT", &efit),
+        ];
+        let e = parse_ench(0x9998, &subs);
+        assert_eq!(e.effects.len(), 1);
+        assert_eq!(e.effects[0].effect_form_id, 0xBEEF);
     }
 
     #[test]

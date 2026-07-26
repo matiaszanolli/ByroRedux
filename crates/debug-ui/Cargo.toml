@@ -10,5 +10,4 @@ egui = { workspace = true }
 egui-winit = { workspace = true }
 egui-ash-renderer = { workspace = true }
 winit = { workspace = true }
-log = { workspace = true }
 anyhow = { workspace = true }

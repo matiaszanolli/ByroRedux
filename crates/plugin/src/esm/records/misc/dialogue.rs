@@ -1,7 +1,7 @@
 //! `DIAL` / `INFO` / `MESG` dialogue and message records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring};
-use super::super::condition::{parse_ctda, remap_condition_form_ids, ConditionList};
+use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -163,12 +163,7 @@ pub fn parse_info(
                 let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
                 out.actor_form_id = remapped;
             }
-            b"CTDA" => {
-                if let Some(mut cond) = parse_ctda(sub) {
-                    remap_condition_form_ids(&mut cond, remap);
-                    out.conditions.push(cond);
-                }
-            }
+            b"CTDA" => push_ctda(sub, remap, &mut out.conditions),
             _ => {}
         }
     }

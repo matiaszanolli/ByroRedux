@@ -15,7 +15,6 @@ edition.workspace = true
 # redistributing SpeedTree binaries — we are a reader, never a writer.
 
 [dependencies]
-log = { workspace = true }
 thiserror = { workspace = true }
 # Imported* scene types live in the NIF crate (engine-wide
 # "renderable scene" shape). Pulling them in keeps the SpeedTree
