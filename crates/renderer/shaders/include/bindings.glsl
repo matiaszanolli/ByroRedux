@@ -1,9 +1,8 @@
 // Bindless texture array + GPU structs + SSBO/UBO bindings + TLAS + vertex-layout constants
 //
-// NON-STANDALONE shader fragment. Included by triangle.frag in dependency
-// order via GL_GOOGLE_include_directive; it references symbols (structs,
-// SSBO/UBO bindings, helper functions, constants) defined in shader_constants.glsl
-// and in earlier includes. Do not compile on its own.
+// NON-STANDALONE shader fragment. Included by triangle.frag and water.frag in
+// dependency order via GL_GOOGLE_include_directive; it references constants
+// defined in shader_constants.glsl. Do not compile on its own.
 
 // Bindless texture array.
 layout(set = 0, binding = 0) uniform sampler2D textures[];

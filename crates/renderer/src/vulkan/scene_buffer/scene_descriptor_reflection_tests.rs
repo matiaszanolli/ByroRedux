@@ -62,9 +62,10 @@ fn rt_disabled_layout_matches_triangle_shaders_with_optional_tlas() {
 
 /// All four shaders that consume the set=1 layout at draw time:
 /// triangle.vert/frag (which cover every binding) plus water.vert/frag,
-/// which reuse a subset (CameraUBO binding 1, InstanceBuffer binding 4, TLAS
-/// binding 2). Mirrors the exact shader set `create_scene_descriptors` runs
-/// through `validate_set_layout` at startup (#1561).
+/// which reuse CameraUBO, InstanceBuffer, TLAS, MaterialBuffer, and global
+/// geometry bindings for material-aware water-ray hit reconstruction.
+/// Mirrors the exact shader set `create_scene_descriptors` runs through
+/// `validate_set_layout` at startup (#1561).
 fn scene_shaders_with_water() -> [super::super::reflect::ReflectedShader<'static>; 4] {
     let [tv, tf] = triangle_shaders();
     [

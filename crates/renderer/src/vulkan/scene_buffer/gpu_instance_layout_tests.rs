@@ -385,38 +385,88 @@ fn ui_vert_reads_texture_index_from_instance_not_material_table() {
     );
 }
 
-/// #1067 / REN-D14-NEW-07 — sibling guard for the water shaders.
-/// `water.vert` / `water.frag` consume the per-instance `WaterPush`
-/// push-constant block (128 B with reflection tint + scroll vectors)
-/// instead of the MaterialBuffer SSBO; the water pipeline's descriptor
-/// set doesn't even have binding 13 wired. Acquiring a MaterialBuffer
-/// binding would be a silent regression (the descriptor set layout
-/// would reject the bind at validation time) and re-introduce the
-/// #776 / #785 failure-mode for the water path.
+/// Water's fragment ray path must resolve the real material at a committed
+/// hit. The scene descriptor set already contains the material table and
+/// global geometry buffers, and startup SPIR-V reflection validates their
+/// union across triangle + water shaders. Keep the vertex shader on the
+/// compact per-water-plane path while pinning the fragment shader to the
+/// shared hit reconstruction contract.
 #[test]
-fn water_shaders_must_not_acquire_material_buffer_binding() {
-    for (name, src) in [
-        ("water.vert", include_str!("../../../shaders/water.vert")),
-        ("water.frag", include_str!("../../../shaders/water.frag")),
+fn water_fragment_uses_shared_material_aware_ray_hits() {
+    let vert = include_str!("../../../shaders/water.vert");
+    let frag = include_str!("../../../shaders/water.frag");
+    let hit = include_str!("../../../shaders/include/ray_hit.glsl");
+
+    assert!(
+        !vert.contains("include/bindings.glsl")
+            && !vert.contains("buffer MaterialBuffer")
+            && !vert.contains("materials["),
+        "water.vert must remain on its compact per-plane instance path; \
+         only committed fragment-ray hits need scene material lookup."
+    );
+    assert!(
+        frag.contains("#include \"include/bindings.glsl\"")
+            && frag.contains("#include \"include/ray_hit.glsl\""),
+        "water.frag must consume the shared scene descriptors and hit helpers."
+    );
+    for needle in [
+        "materials[inst.materialId]",
+        "getHitUV(instIdx, primIdx, bary)",
+        "rayHitHasCoverage(inst, mat, uv, baseSample)",
+        "rayHitAlbedo(mat, baseSample.rgb)",
+        "rayHitEmission(mat, uv, baseSample.rgb, 0.0)",
     ] {
         assert!(
-            !src.contains("buffer MaterialBuffer"),
-            "{name}: must NOT declare a `MaterialBuffer` SSBO. The water \
-             pipeline's descriptor set has no material-table binding; \
-             adding one would silently break the water pipeline. \
-             See #1067 / REN-D14-NEW-07."
-        );
-        assert!(
-            !src.contains("struct GpuMaterial"),
-            "{name}: must NOT declare `struct GpuMaterial`. Water \
-             material parameters live in the `WaterPush` push-constant \
-             block (128 B) — see #1067 / REN-D14-NEW-07."
-        );
-        assert!(
-            !src.contains("materials[inst") && !src.contains("materials["),
-            "{name}: must NOT index into `materials[…]`. See #1067."
+            frag.contains(needle),
+            "water.frag must reconstruct committed hit material data via `{needle}`."
         );
     }
+    for helper in [
+        "vec2 getHitUV(",
+        "bool rayHitHasCoverage(",
+        "vec3 rayHitAlbedo(",
+        "vec3 rayHitEmission(",
+    ] {
+        assert!(
+            hit.contains(helper),
+            "shared ray_hit.glsl is missing `{helper}`."
+        );
+    }
+    assert!(
+        !frag.contains("avgAlbedoR") && !frag.contains("avgAlbedoG")
+            && !frag.contains("avgAlbedoB"),
+        "water rays must not regress to the flat instance-average shortcut."
+    );
+}
+
+/// Reflection tint belongs only to reflected radiance, and transmitted rays
+/// must start on the opposite side of the view-facing water surface. These
+/// source pins catch the exact coupling and self-intersection bugs that made
+/// water render as a pale, flat slab.
+#[test]
+fn water_reflection_and_refraction_keep_distinct_two_sided_semantics() {
+    let frag = include_str!("../../../shaders/water.frag");
+    let trace_start = frag.find("vec3 traceWaterRay(").expect("traceWaterRay");
+    let trace_end = frag[trace_start..]
+        .find("// ── Beer-Lambert")
+        .map(|offset| trace_start + offset)
+        .expect("traceWaterRay section terminator");
+    let trace = &frag[trace_start..trace_end];
+
+    assert!(
+        !trace.contains("tint_reflect"),
+        "the shared water-ray terminus must not apply a reflection-only tint."
+    );
+    assert!(
+        frag.contains("reflColor *= push.tint_reflect.rgb;"),
+        "WATR reflection colour must filter reflected radiance explicitly."
+    );
+    assert!(
+        frag.contains("vWorldPos - N * 0.05")
+            && frag.contains("? (1.0 / max(ior, 1.0))")
+            && frag.contains(": max(ior, 1.0);"),
+        "refraction must bias through the surface and reverse eta underwater."
+    );
 }
 
 /// SH-3 / #641 regression. The vertex shader must compose

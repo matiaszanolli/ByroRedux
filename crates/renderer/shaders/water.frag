@@ -28,12 +28,13 @@
 //
 // Ray-tracing strategy (mirrors `triangle.frag::traceReflection`):
 //   • Reflection — Schlick fresnel × `reflectivity`. Ray fired along
-//     `reflect(-V, N_perturbed)` with `TerminateOnFirstHit`. Distance
-//     attenuation matches the rest of the pipeline.
-//   • Refraction — fired along `refract(-V, N, 1.0/ior)` with
-//     `TerminateOnFirstHit`. Hit distance through water column drives
-//     Beer-Lambert absorption: `exp(-hitDist / fog_far) * shallow_color`
-//     blended with `deep_color`.
+//     `reflect(-V, N_perturbed)` and resolves the closest covered material
+//     texel. Distance attenuation matches the rest of the pipeline.
+//   • Refraction — fired into the opposite side of the view-facing surface
+//     with the air↔water eta selected from the camera side. The same
+//     material-aware closest-hit walk supplies surface texture, alpha
+//     coverage, and emission. Hit distance through the water column drives
+//     Beer-Lambert absorption.
 //   • Shoreline — short downward ray from the water surface; hit-dist
 //     under `shoreline_width` lights up the foam mask. This avoids
 //     plumbing the opaque-pass depth buffer through to the water
@@ -106,57 +107,12 @@ layout(location = 0) out vec4 outColor;
 layout(location = 6) out float outFsrReactive;
 layout(location = 7) out float outFsrTransparency;
 
-// Bindless texture array — normal maps + foam mask sample here.
-layout(set = 0, binding = 0) uniform sampler2D textures[];
-
-layout(set = 1, binding = 1) uniform CameraUBO {
-    mat4 viewProj;
-    mat4 prevViewProj;
-    mat4 invViewProj;
-    vec4 cameraPos;
-    vec4 sceneFlags;
-    vec4 screen;
-    vec4 fog;
-    vec4 jitter;
-    vec4 skyTint;
-    vec4 sunDirection; // xyz = world-space direction TO the sun (light-incoming, matches GpuLight.direction_angle), w = intensity. #1210.
-    vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
-    vec4 renderOrigin;   // #markarth-precision — camera-relative render origin. vWorldPos arrives ABSOLUTE from water.vert; subtracted before any viewProj re-projection (caustic floor splat, #1488).
-};
-
-layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
-
-// Per-instance data, read by `traceWaterRay` to give a reflection/refraction
-// hit the colour of the surface it actually hit instead of a constant.
-//
-// Costs no new descriptor surface: set 1 is the shared scene set layout, whose
-// binding 4 is already declared `VERTEX | FRAGMENT`
-// (`scene_buffer/buffers.rs`), and `water.vert` already reads this same
-// buffer. The struct is a byte-for-byte mirror of the one in `water.vert` —
-// 112 bytes, pinned by `gpu_instance_is_112_bytes_std430_compatible` in
-// `crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs`.
-// This is the 6th mirror of `GpuInstance` (include/bindings.glsl + 5
-// standalone copies: triangle.vert, ui.vert, water.vert, water.frag,
-// caustic_splat.comp) — all must be edited in lockstep.
-struct GpuInstance {
-    mat4 model;
-    uint textureIndex;
-    uint boneOffset;
-    uint vertexOffset;
-    uint indexOffset;
-    uint vertexCount;
-    uint flags;
-    uint materialId;
-    float ior;             // offset 92 — per-draw optical IOR (read by caustic_splat.comp)
-    float avgAlbedoR;
-    float avgAlbedoG;
-    float avgAlbedoB;
-    uint surfaceId;
-};
-
-layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
-    GpuInstance instances[];
-};
+// Water uses the same scene descriptors and secondary-hit material contract
+// as triangle.frag. The scene set already exposes the material table and
+// global vertex/index buffers to FRAGMENT shaders, so this adds no host-side
+// descriptor or pipeline-layout surface.
+#include "include/bindings.glsl"
+#include "include/ray_hit.glsl"
 
 // #1256 / Phase D of #1210 — water-side caustic accumulator.
 // Per-FIF R32_UINT storage image owned by WaterCausticAccum (#1255),
@@ -265,7 +221,14 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
 // faint sky cast through `absorbWaterColumn`'s ~14% surface-radiance
 // term on miss (downward refraction rays escaping the BLAS at cliff
 // edges or sparse exterior cells).
-vec3 traceWaterRay(vec3 origin, vec3 direction, float maxDist, vec3 missFallback, out float hitDist, out bool hit) {
+vec3 traceWaterRay(
+    vec3 origin,
+    vec3 direction,
+    float maxDist,
+    vec3 missFallback,
+    out float hitDist,
+    out bool hit
+) {
     // #1561 — match triangle.frag / caustic_splat.comp: skip the ray query
     // when RT is unsupported OR the TLAS was not written this frame.
     // `sceneFlags.x` is 1.0 only when ray_query is supported AND the TLAS is
@@ -278,58 +241,71 @@ vec3 traceWaterRay(vec3 origin, vec3 direction, float maxDist, vec3 missFallback
         hitDist = maxDist;
         return missFallback;
     }
-    rayQueryEXT rq;
-    rayQueryInitializeEXT(
-        rq, topLevelAS,
-        gl_RayFlagsOpaqueEXT, 0xFF,
-        origin, 0.05, direction, maxDist
-    );
-    while (rayQueryProceedEXT(rq)) {}
+    // Alpha-tested leaves, grates, and other cutouts must not become solid
+    // slabs in water. Ray queries cannot invoke the raster material's alpha
+    // test, so resolve the closest candidate, sample its real UV/material,
+    // and continue behind uncovered texels. This is the same bounded
+    // contract as traceReflection; eight layers prevents pathological
+    // foliage stacks from turning a water pixel into an unbounded walk.
+    const int MAX_TRANSPARENT_SKIPS = 8;
+    vec3 rayOrigin = origin;
+    float travelled = 0.0;
+    float remaining = maxDist;
 
-    if (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
-        hit = false;
-        hitDist = maxDist;
-        return missFallback;
+    for (int layer = 0; layer < MAX_TRANSPARENT_SKIPS; ++layer) {
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(
+            rq, topLevelAS,
+            gl_RayFlagsOpaqueEXT, 0xFF,
+            rayOrigin, 0.05, direction, remaining
+        );
+        while (rayQueryProceedEXT(rq)) {}
+
+        if (rayQueryGetIntersectionTypeEXT(rq, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT) {
+            hit = false;
+            hitDist = maxDist;
+            return missFallback;
+        }
+
+        float localT = rayQueryGetIntersectionTEXT(rq, true);
+        uint instIdx = uint(
+            rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
+        uint primIdx = uint(
+            rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
+        vec2 bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+
+        GpuInstance inst = instances[instIdx];
+        GpuMaterial mat = materials[inst.materialId];
+        vec2 uv = transformRayHitUV(
+            mat, getHitUV(instIdx, primIdx, bary));
+        vec4 baseSample;
+
+        if (rayHitHasCoverage(inst, mat, uv, baseSample)) {
+            hit = true;
+            hitDist = travelled + localT;
+
+            // A secondary water ray needs the visible terminus, not the
+            // instance-wide average used by the old shortcut. Texture ×
+            // diffuse plus authored emission is a stable, bounded surface-
+            // colour proxy that preserves detail without firing another
+            // light/shadow tree from every reflection and refraction hit.
+            return rayHitAlbedo(mat, baseSample.rgb)
+                 + rayHitEmission(mat, uv, baseSample.rgb, 0.0);
+        }
+
+        float advance = max(localT + 0.05, 0.05);
+        travelled += advance;
+        remaining = maxDist - travelled;
+        if (remaining <= 0.05) {
+            break;
+        }
+        rayOrigin = origin + direction * travelled;
     }
 
-    hit = true;
-    hitDist = rayQueryGetIntersectionTEXT(rq, true);
-
-    // Hit colour = the average albedo of the instance we actually hit,
-    // tinted by the per-WATR reflection colour.
-    //
-    // Before this, BOTH branches of this function returned the same
-    // constant: the hit branch used `skyTint` as a stand-in for the hit
-    // surface, so a reflection ray that struck a carved Nordic door and one
-    // that escaped into empty space produced identical colour. Only
-    // `hitDist` distinguished them (feeding absorption), which is why water
-    // read as flat painted grey with no image in it — the "reflection" was
-    // reflecting nothing.
-    //
-    // `avgAlbedoR/G/B` is the same per-instance proxy `caustic_splat.comp`
-    // already uses, and the comment this replaces named it as the way to do
-    // this "without a full SSBO plumb". It needs no new descriptor bindings
-    // (see the InstanceBuffer declaration above), so the tight ≤2-rays-per
-    // -fragment budget and the pipeline's descriptor footprint are both
-    // unchanged.
-    //
-    // LIMITATION, deliberately kept: this is a per-instance *average*, not a
-    // texture sample, so a reflected object contributes one flat colour
-    // rather than its surface detail. The remaining half of the deferred
-    // work under closed #1070 / #1110 — binding MaterialBuffer +
-    // GlobalVertexBuffer + GlobalIndexBuffer and sampling the real texel at
-    // the barycentric hit — is what would fix that, at the cost of roughly
-    // doubling this pipeline's descriptor surface.
-    //
-    // The blend weight and the role of `tint_reflect.rgb` (WATR DATA
-    // reflection_color, #1069 / F-WAT-09) are carried over unchanged; the
-    // only thing that changes is *what* is being tinted — the real hit
-    // albedo instead of the sky constant.
-    int instIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
-    vec3 hitAlbedo = vec3(instances[instIdx].avgAlbedoR,
-                          instances[instIdx].avgAlbedoG,
-                          instances[instIdx].avgAlbedoB);
-    return mix(hitAlbedo, push.tint_reflect.rgb, 0.4);
+    hit = false;
+    hitDist = maxDist;
+    return missFallback;
 }
 
 // ── Beer-Lambert through the water column ─────────────────────────────
@@ -415,13 +391,13 @@ void main() {
     float ior  = push.timing.w;
     uint  normalMapIndex = floatBitsToUint(push.misc.z);
 
-    vec3 N = normalize(vWorldNormal);
+    vec3 Nsurface = normalize(vWorldNormal);
     vec3 T = normalize(vWorldTangent);
     // Re-orthogonalise T against N (Gram-Schmidt) — drops the
     // floating-point drift from interpolation across the quad.
-    T = normalize(T - N * dot(T, N));
-    vec3 B = normalize(cross(N, T) * vWorldBitangentSign);
-    mat3 TBN = mat3(T, B, N);
+    T = normalize(T - Nsurface * dot(T, Nsurface));
+    vec3 B = normalize(cross(Nsurface, T) * vWorldBitangentSign);
+    mat3 TBN = mat3(T, B, Nsurface);
 
     vec3 V = normalize(cameraPos.xyz - vWorldPos);
 
@@ -477,6 +453,17 @@ void main() {
     // Tangent → world space.
     vec3 Nperturbed = normalize(TBN * nMix);
 
+    // Orient the shading surface toward the viewer. Water is transmissive
+    // from both sides: reflection stays on the camera side (+N), refraction
+    // crosses to the opposite side (-N), and eta reverses below the surface.
+    // Keeping `Nsurface` separate preserves the authored above→below
+    // convention for shoreline and sunlight-caustic rays.
+    bool viewFromPositiveSide = dot(Nsurface, V) >= 0.0;
+    vec3 N = viewFromPositiveSide ? Nsurface : -Nsurface;
+    if (!viewFromPositiveSide) {
+        Nperturbed = -Nperturbed;
+    }
+
     // Stability clamp — #1025 / F-WAT-04.
     //
     // As the camera grazes the surface, the high-frequency normal-map
@@ -527,31 +514,54 @@ void main() {
     float reflDist; bool reflHit;
     // Reflection-miss: sky tint is the right backdrop (the reflected
     // ray escaped above the water surface).
-    vec3 reflColor = traceWaterRay(vWorldPos + N * 0.05, R, REFLECTION_MAX_DIST, skyTint.xyz, reflDist, reflHit);
+    vec3 reflColor = traceWaterRay(
+        vWorldPos + N * 0.05,
+        R,
+        REFLECTION_MAX_DIST,
+        skyTint.xyz,
+        reflDist,
+        reflHit
+    );
     if (reflHit) {
         reflColor *= exp(-reflDist * DIST_FALLOFF);
     }
     // Always blend toward sky on miss so the surface doesn't go black
     // when the reflection escapes.
     reflColor = mix(skyTint.xyz, reflColor, reflHit ? 1.0 : 0.0);
+    // WATR DATA reflection_color is a filter on reflected radiance. It must
+    // not be mixed into the shared ray terminus, because that contaminates
+    // the refraction branch with a reflection-only material parameter.
+    reflColor *= push.tint_reflect.rgb;
 
     // ── Refraction ray (skipped for waterfalls) ──
     vec3 refrColor;
     float refrDist = push.deep.a; // default: full deep tint on skip
     if (kind != WATER_WATERFALL) {
-        vec3 Tdir = refract(-V, Nperturbed, 1.0 / max(ior, 1.0));
+        float eta = viewFromPositiveSide
+            ? (1.0 / max(ior, 1.0))
+            : max(ior, 1.0);
+        vec3 Tdir = refract(-V, Nperturbed, eta);
         bool refrHit;
-        // If TIR (total internal reflection) — refract returns zero —
-        // skip the ray and use deep colour.
+        // If TIR (total internal reflection) — possible only while viewing
+        // from the water side — refract returns zero and all energy goes to
+        // the already-resolved reflection.
         if (length(Tdir) > 0.001) {
             // Refraction-miss: deep water tint is the right backdrop
             // (the downward ray escaped the BLAS — cliff edge / sparse
             // exterior — but conceptually it should land in the deep
             // water column, NOT in the sky above). #1015.
-            vec3 hitColor = traceWaterRay(vWorldPos + N * 0.05, Tdir, REFRACTION_MAX_DIST, push.deep.rgb, refrDist, refrHit);
+            vec3 hitColor = traceWaterRay(
+                vWorldPos - N * 0.05,
+                Tdir,
+                REFRACTION_MAX_DIST,
+                push.deep.rgb,
+                refrDist,
+                refrHit
+            );
             refrColor = absorbWaterColumn(hitColor, refrHit ? refrDist : push.deep.a);
         } else {
-            refrColor = push.deep.rgb;
+            refrColor = reflColor;
+            fresnel = 1.0;
         }
     } else {
         // Waterfalls: just use the deep colour modulated slightly by
@@ -563,7 +573,7 @@ void main() {
     // ── Foam composite ──
     float foamMask = 0.0;
     if (kind != WATER_WATERFALL) {
-        foamMask += foamShoreline(vWorldPos, N) * 1.0;
+        foamMask += foamShoreline(vWorldPos, Nsurface) * 1.0;
     }
     if (kind == WATER_RAPIDS) {
         foamMask += foamFlowStreaks(vWorldPos, time) * 0.85;
@@ -643,7 +653,7 @@ void main() {
             shadowRq, topLevelAS,
             gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
             0xFF,
-            vWorldPos + N * 0.05,
+            vWorldPos + Nsurface * 0.05,
             0.05,
             sunDir,
             DIRECTIONAL_SHADOW_TRACE_DISTANCE
@@ -658,7 +668,7 @@ void main() {
             // to-sun direction. refract() returns vec3(0) on total-internal-
             // reflection, which can't happen for light entering the denser
             // medium from above — but length-gate anyway in case grazing.
-            vec3 refractDir = refract(-sunDir, N, 1.0 / 1.33);
+            vec3 refractDir = refract(-sunDir, Nsurface, 1.0 / 1.33);
             if (length(refractDir) > 1e-4) {
                 // 3. Find floor via TLAS ray (single bounce).
                 //
@@ -677,7 +687,7 @@ void main() {
                 rayQueryInitializeEXT(
                     floorRq, topLevelAS,
                     gl_RayFlagsOpaqueEXT, 0xFF,
-                    vWorldPos - N * 0.05, 0.05, refractDir, 5000.0
+                    vWorldPos - Nsurface * 0.05, 0.05, refractDir, 5000.0
                 );
                 while (rayQueryProceedEXT(floorRq)) {}
                 if (rayQueryGetIntersectionTypeEXT(floorRq, true)
@@ -706,7 +716,7 @@ void main() {
                             // Travel falloff matches caustic_splat
                             // (1 / (1 + t²·k)) — caustics fade with
                             // depth as the refracted column spreads.
-                            float NdotSun = max(dot(N, sunDir), 0.0);
+                            float NdotSun = max(dot(Nsurface, sunDir), 0.0);
                             float travelFall = 1.0 / (1.0 + floorT * floorT * 1e-4);
                             float contrib = sunDirection.w * NdotSun * travelFall;
                             float scale = CAUSTIC_FIXED_SCALE;
