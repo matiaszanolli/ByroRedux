@@ -24,6 +24,122 @@ Commits hold that record.
 
 ---
 
+## Session 61 — FSR 3.1 phases 5–7 + default flip, Scaleform host bridge (R4 closed), two regressions caught by measurement  (2026-07-24 → 2026-07-26, `98a0fd7a..3a02b02d`, 43 commits)
+
+Three planned threads and one unplanned. The planned ones: finish the FSR 3.1
+integration plan through phase 7, continue the Scaleform bridge that R4's
+decision unblocked, and run the standing audit cadence. The unplanned one is
+the session's most useful outcome — refreshing the bench-of-record as part of
+the FSR default flip immediately surfaced a ~2.2× frame-time regression that
+had been live and unmeasured for ~80 commits, which is precisely the failure
+mode the staleness tracker exists to catch. A second regression surfaced the
+same way: a routine parse-rate re-measurement caught a Starfield archive that
+had silently collapsed from 100% to 6.10% four days earlier.
+
+- **FSR 3.1 — phases 5 through 7, now the default.** Dispatch-failure
+  survival instead of a dropped frame (`f9a42e07`), a GPU timer bracket around
+  the upscale pass (`71068d05`), provider-version + SDK working-memory
+  telemetry (`8d0d170c`), the reactive and transparency-and-composition masks
+  (`f6d10838`), runtime upscaler switching (`b3c92ef7`), and a pinned/reported
+  FP16-vs-FP32 shader permutation (`443e55b0`). Quality-gating infrastructure
+  landed alongside: deterministic frame-indexed `--bench-camera` paths
+  (`e9929068`) — necessary because temporal reconstruction only misbehaves
+  when the camera moves and neither the fly camera nor the character rig runs
+  headless — then an SSIM matrix over those five paths (`227b331b`), extended
+  to real game content rather than only the redistributable Cornell scene
+  (`1fbfaabd`). Phase 7 flipped the default to FSR Quality (`5c7acfe2`) with
+  `--upscaler taa` retained, and the presentation pass got its own timer
+  (`e153b50c`). Carried scope unchanged: FP32 permutation unexercised, and
+  two phase-4 items (transparency split, UI-after-upscale) still open.
+- **PERF-REGRESSION-6c56e311 — found, root-caused, deliberately not "fixed".**
+  The phase-7 bench matrix put Prospector at 68.5 FPS against the 145.1
+  recorded eight days earlier; a same-machine rebuild of the old commit
+  reproduced 149.6, ruling out environmental drift (`14905392`). `git bisect`
+  named `6c56e311` (2026-07-19) and a per-file SPIR-V swap narrowed the whole
+  cost to `triangle.frag` — not the volumetrics pass the commit is named for
+  (`0b8cd46b`). Two deliberate visual features account for it: glass-aware
+  `traceShadowTransmittance` (~45 FPS) and the GI ray becoming a bounded path
+  tracer (~24 FPS). Left open as a **quality trade-off with a measured knob
+  table**, not a bug: a `SHADOW_MASK_SOLID` TLAS-bucket mitigation measured
+  +6% but shifted 0.336% of pixels against a 0.000% noise floor, so it was
+  rejected under the project's own rule that an invisible-to-`cargo test`
+  renderer change needs RenderDoc or a revert. Filed as #2161 so the decision
+  is tracked outside ROADMAP prose. The investigation also found the shipped
+  `triangle.frag.spv` at `6c56e311` could not be rebuilt from its own
+  committed GLSL — so `scripts/check-shader-artifacts.sh` plus a CI job now
+  reject either an unbuildable shader tree or source/binary drift (`ca7a4e0e`).
+- **Scaleform host bridge — R4 closed, M48 advanced.** A bidirectional
+  `ScaleformHostBridge` with `ScaleformProfile::{SkyrimAvm1,Fallout4Avm2}`
+  (`58e14e04`) closed R4 on pinned Ruffle plus ByroRedux-owned host profiles.
+  M48's first slice corrected the Skyrim `GameDelegate` contract the bridge had
+  wrong — the ExternalInterface method name *is* the host method, the numeric
+  request ID is argument 0, and replies re-enter ActionScript through the
+  registered `respond` callback rather than the call's return value — and
+  pinned 74 SkyUI call-site methods, 12 of them callback requests
+  (`631765c7`). Fallout 4 needed a separately recovered protocol rather than
+  Skyrim's: its menus expose native objects to AVM2, so the `BGSCodeObj`
+  lifecycle and method catalog were reconstructed and an ABC forwarding
+  adapter injected (`b94aaa85`), later grown to 138 installed-corpus methods
+  with `onCodeObjDestruction` acknowledgement (`3a02b02d`). Relative resources
+  now resolve through BSA/BA2 providers via a `ScaleformNavigator`
+  (`f69c0fd6`).
+- **Audit bug-bash (~30 findings across five dimensions).** A tech-debt audit
+  over the 110 commits since 2026-07-16 (`7facffd3`) plus concurrency,
+  performance and resource-lifecycle legs. Concurrency: CI was *swallowing*
+  the guards it was supposed to enforce — the only job that boots the real
+  engine never set `BYRO_LOCK_ORDER_CHECK=1` and captured its bench exit code
+  with `|| true` (#2137/#2138, `734a0f99`); four AI-package procedures held
+  `PhysicsWorld` across a `GlobalTransform` read, a live ABBA risk
+  (`8a5feafe`). Renderer: two failure arms left descriptors naming destroyed
+  views that the shader samples ungated (#2141/#2142, `8e0e2cf9`); the FSR
+  record path became infallible so an error could no longer skip
+  `queue_submit` *and* `mark_frame_completed` (#2146, `4ce97f87`); three FSR
+  resource-lifecycle gaps closed (#2156/#2157/#2158, `c881b4c8`); and the 30
+  `unsafe` blocks the presentation pass added without SAFETY comments were
+  documented, un-breaking a clippy-only CI gate that `cargo test` cannot see
+  (`b0d331af`). Perf: particle indirect grouping restored after a glass fix
+  that was correct in isolation re-broadened the two-sided split (#2165,
+  `8e55a714`),
+  skinned-vertex output narrowed 104 B → 12 B per vertex (#2170, `22798ecc`),
+  per-frame scratch amortised and allocator leaks plugged (`dd1ef6fa`).
+  Correctness: `camera_cut` stopped misfiring on ordinary movement and grid
+  crossings — it had been forcing the new FSR default into a permanent
+  single-frame reset (#2159, `11ae4a35`); a truncated `.psc` could spin the
+  Papyrus parser at 100% CPU forever (#2185, `45740e6b`); `SeatReservations`
+  was cleared once per cell, releasing seats still physically occupied
+  (#2147, `0dcb71b7`). Plus cell-loader/collision consolidation
+  (#2063–#2066, `61b0cea7`), four ESM record-parser de-duplications
+  (#2068–#2070/#2075, `1a000e35`), an FO4 alpha-test threshold seed (#2091,
+  `90d1e76a`), FSR doc-drift reconciliation with 9 stale audit path refs
+  (`2cb86be5`), and a rustfmt sweep (`83062741`).
+- **Starfield parse-rate regression caught in-session.** #2105's undocumented
+  2-byte `BSWeakReferenceNode` gap had been gated on `SF_FORM_ID` (173) on the
+  assumption that the gap and the per-entry formID correlate. They don't:
+  vanilla `Meshes02` is uniformly bsver 173, carries the formID and *not* the
+  gap, so the skip read the water-ref count late and ran past EOF — 93.9% of
+  that archive silently dropped to `NiUnknown` between 2026-07-21 and
+  2026-07-25, the mirror image of the bug #2105 fixed. The gap now has its own
+  `SF_WEAK_REF_GAP = 175` constant; three bsvers are attested and all three
+  differ (`e3b9b115`). The follow-up re-measurement (`f8d6ae87`) also
+  corrected a bad search from the fix commit — Starfield *was* installed, under
+  the project's own `DEFAULT_GAMES_ROOT`, which had gone unchecked — restoring
+  `Meshes02` to 100.00% (7552/7552) with MeshesPatch's documented 6-file
+  residual unchanged.
+- **New tool** — `tools/texture-upscale` (`5c3729d6`): offline reference-guided
+  texture-set upscaling. Ordered loose/BSA/BA2 sources, conservative
+  `_n`/`_g`/`_s`/`_m`/`_p` companion discovery, editable TOML manifests, an
+  external ESRGAN-family reference pass, joint-bilateral companion upsampling
+  with normal renormalisation and alpha preservation. Live FNV discovery finds
+  3,127 sets. Remaining work tracked under Open — Misc.
+
+Net: tests 3826 → 3965 (+139); src/ LOC ~290.3K → ~298.7K (+~8.4K); +1
+workspace member (`tools/texture-upscale`). No bench re-run — bench-of-record
+advanced to `e153b50c` mid-session by the phase-7 matrix, now 28 commits stale
+with four measured-path changes on top of it (R6a-stale-17). Two regressions
+closed or characterised that only measurement would have found; R4 closed.
+
+---
+
 ## Session 60 — FSR 3.1 upscaler (phases 1→4/5), exterior terrain collision, RT correctness  (2026-07-21 → 2026-07-23, `c8dbba93..33d6a18e`, 18 commits)
 
 Two drivers. The larger was standing up AMD FidelityFX Super Resolution

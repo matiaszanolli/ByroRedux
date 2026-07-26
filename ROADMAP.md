@@ -12,10 +12,37 @@ proposes a single synchronised edit across ROADMAP / HISTORY / README.
 Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
-**Last verified**: 2026-07-23 (Session 60 closeout — tests 3826, +41; src/ LOC +~4 871; +1 workspace member `crates/fsr3-sys`; bench-of-record still `8a668eff`, now 74 commits stale — **over** the 30-commit refresh threshold, still flagged as R6a-stale-16 below). Session 60 stood up AMD FSR 3.1 in upscaler-only mode against an approved plan ([`docs/engine/fsr3-upscaler-integration-plan.md`](docs/engine/fsr3-upscaler-integration-plan.md)) — execution phases 1–3 complete (vendored Vulkan SDK behind an FFI boundary, render-vs-output extent model, temporal input contracts incl. the 1×1 exposure producer) with phase 4/5 beginning (output-resolution presentation pass, directional-shadow-contract refactor); TAA stays the default, no user-visible FSR yet. **Superseded 2026-07-24: phases 5 and 6 closed** — FSR 3.1.4 dispatches on all four presets with the reactive/T&C masks, GPU timing, SDK-memory telemetry, a dispatch-failure fallback, and runtime `r.upscaler` switching; an SSIM quality matrix over five deterministic camera paths now fences every preset (Cornell worst case: Quality 0.9554 SSIM / 1.68% outliers, Performance 0.9199 / 5.39%; FO4 Dugout scores higher on SSIM and worse on outliers). **Phase 7 closed the same day: FSR Quality is now the engine default** (+40% to +68% net frame recovery across every measured game scene), `--upscaler taa` retained as the fallback, and the bench-of-record refreshed — which surfaced PERF-REGRESSION-6c56e311, a ~2.2× regression predating all FSR work. Carried scope: the FP32 shader permutation is unexercised (needs a GPU without `shaderFloat16`), and two phase-4 items — the transparency split and moving the UI after upscale — remain open. Alongside: a discrete-GPU preference key (fixes the exterior `SURFACE_LOST_KHR` startup crash from picking the iGPU), a skinned-BLAS RT-capability gate (closes a real device-address/AS-build spec violation), and exterior terrain collision routed through the shared static-mesh collider path (player no longer falls through the world at exterior spawn). See [HISTORY.md](HISTORY.md) Session 60.
-**Bench-of-record** (R6a-stale-15 refresh, HEAD `8a668eff`, 2026-07-18,
-wall-clock bench, 300 frames × 3 runs/scene averaged, RTX 4070 Ti, run from
-each game's `Data/` directory — see Repro-command CWD note below):
+**Last verified**: 2026-07-26 (Session 61 closeout — tests 3965, +139; src/ LOC
++~8 400; +1 workspace member `tools/texture-upscale`; bench-of-record `e153b50c`,
+28 commits stale and one commit short of the 30-commit threshold, tracked as
+R6a-stale-17 below).
+
+**Current state in one paragraph.** The FSR 3.1 integration plan is complete
+through phase 7: FSR 3.1.4 Quality is the engine default, all four presets
+dispatch with reactive/T&C masks, GPU timing, SDK-memory telemetry, a
+dispatch-failure fallback and runtime `r.upscaler` switching, and an SSIM
+matrix over five deterministic camera paths fences every preset. R4 (the
+SWF/GFx strategic decision) closed on pinned Ruffle plus ByroRedux-owned
+Scaleform host profiles, and M48 now carries Skyrim's 74-method `GameDelegate`
+catalog and Fallout 4's 138-method `BGSCodeObj` catalog. Two regressions were
+found by measurement rather than by report: **PERF-REGRESSION-6c56e311**
+(~2.2× frame time on real content, live and unmeasured for ~80 commits, and
+root-caused to the main-pass fragment shader — see Known Issues, tracked as #2161)
+and a Starfield `Meshes02` parse-rate collapse to 6.10% from an over-broad
+version gate, both fixed or characterised in-session. Carried scope: the FSR
+FP32 shader permutation is unexercised (needs a GPU without `shaderFloat16`),
+and two phase-4 items — the transparency split and moving the UI after
+upscale — remain open. Session narratives: [HISTORY.md](HISTORY.md) Sessions
+60 and 61.
+
+**Superseded bench-of-record** (R6a-stale-15 refresh, HEAD `8a668eff`,
+2026-07-18, wall-clock bench, 300 frames × 3 runs/scene averaged, RTX 4070 Ti,
+run from each game's `Data/` directory — see Repro-command CWD note below).
+**These numbers are not reproducible at HEAD**: PERF-REGRESSION-6c56e311
+landed on 2026-07-19, one day after this run, and costs ~2.2× frame time on
+real content. The live bench-of-record is the phase-7 matrix two sections
+down; this table is kept only as the historical TAA baseline the regression is
+measured against.
 
 | Bench | This refresh (`8a668eff`, 3-run avg) | Prior record (`1c26bc25`) | Δ |
 |---|---|---|---|
@@ -30,7 +57,7 @@ Prospector confirms #2084's live-sample finding: the fence-recovery gap the R6a-
 
 **Repro-command CWD note:** bare `--bsa` / `--textures-bsa` / `--materials-ba2` names resolve against CWD, not the `--esm` folder. Run each bench with CWD set to that game's `Data/` directory. Run from elsewhere → archives silently fail → scene loads near-empty (Prospector: 36 entities / 3 meshes / spurious ~1792 FPS).
 
-### Bench-of-record refresh — R6a-stale-16 CLOSED (2026-07-24, HEAD `e153b50c`)
+### Bench-of-record (LIVE) — R6a-stale-16 refresh (2026-07-24, HEAD `e153b50c`)
 
 Run by the FSR phase-7 matrix: 3 runs × 300 frames, median with range, 1280×720
 output, per-scene CWD set to that game's `Data/`. Repro:
@@ -56,7 +83,20 @@ FSR is now the engine default at Quality (FSR plan phase 7). The `TAA (native)`
 column stays the reference for historical comparison and remains reachable via
 `--upscaler taa` / `r.upscaler taa`.
 
-**Staleness (2026-07-23, Session 60 closeout — superseded by the refresh above):** bench-of-record is still R6a-stale-15 (HEAD `8a668eff`) — now 74 commits stale, well **over** the 30-commit refresh threshold (tripped at Session 58 close, filed as R6a-stale-16, still open below). Session 60 landed substantial renderer work on top (FSR SDK/extent/temporal-contract plumbing, an output-resolution presentation pass, and a directional-light/shadow-contract refactor), so the breach has widened rather than closed. FSR is not the functional default and does not affect the TAA-path numbers above, but the shadow-contract change does touch the exterior direct-light path — re-run recommended before trusting the numbers for anything beyond direction. **2026-07-24:** FSR phase 5 added two `R8_UNORM` attachments to the main render pass and a `gpu_upscale` GPU-timer bracket; both are on the TAA path too (the masks are write-masked off for opaque draws, and the bracket covers the native blit), so the breach widens again. The phase-7 bench matrix — TAA at native against all four FSR presets, on the same commit and scenes — is the intended way to clear it.
+**Staleness (2026-07-26, Session 61 closeout):** bench-of-record `e153b50c` is
+**28 commits** stale — under the 30-commit threshold, but one commit short of
+it, so the next session trips it on arrival. The second threshold limb is
+already met: Session 61 landed four changes that plausibly move these numbers,
+none of them measured. Two should *help* — restoring particle indirect grouping
+(#2165, every two-sided blended particle batch had fallen out of grouping into
+two direct draws) and narrowing the skinned-vertex output buffer from 104 B to
+12 B per vertex (#2170). One changes temporal behaviour on the FSR default path
+— the `camera_cut` false-positive fix (#2159), which had been forcing FSR into
+a permanent single-frame reset during ordinary player movement, so the shipped
+default was measured in a degraded state. One is neutral-by-intent (per-frame
+scratch amortisation, #2172/#2174). Tracked as R6a-stale-17 below; re-run
+before any perf-sensitive decision, and note the `camera_cut` fix means the
+phase-7 FSR column above understates the default configuration.
 
 ---
 
@@ -94,13 +134,12 @@ no longer lockstep across 4 shaders + DrawCommand + GpuInstance.
 
 **Parser coverage.** NIF parses across seven games (184 886 files
 on the latest sweep — see compatibility matrix below). FO3 / FNV /
-Skyrim SE land at 100% clean; FO4 at 100% (both base mesh archives,
-2026-06-14); Oblivion / FO76 in the 95–97%
-band (drift-induced truncation; #687/#688 closed). Starfield at 97.19%
-clean (recent BA2 v3 LZ4 chunked content the parser doesn't yet
-fully cover). Recoverable rate is 100% on all seven games except
-Oblivion (99.99%, single hard-fail on a corrupt-by-design debug
-marker — #698 closed). Archive
+Skyrim SE land at 100% clean, as do FO4 (both base mesh archives) and
+FO76; Oblivion is at 99.93% and Starfield at 99.99% aggregate.
+Recoverable rate is 100% on all seven games. Per-archive breakdowns,
+sweep dates and the residual truncation tails live in the
+compatibility matrix below — the single home for those figures; do not
+restate them here. Archive
 readers cover BSA v103/v104/v105 and BA2 v1/v2/v3/v7/v8 (GNRL + DX10
 with reconstructed DDS headers, zlib + LZ4).
 
@@ -729,6 +768,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6a-stale-14-collider-partial** (filed 2026-06-03): **Closed** (this session). Root cause analysis: the bhk-authored collision path already creates **separate, `MeshHandle`-free ghost entities** (lines 479-487 of `cell_loader/spawn.rs`), so bhk colliders never enter BLAS/TLAS. The synthesized trimesh path (F3 fallback — FO4/Starfield architecture) incorrectly piggybacked `CollisionShape + RigidBodyData + IsCollisionOnly` onto the render entity instead of following the bhk pattern. This gave those entities a BLAS entry and then excluded them from TLAS — wasting GPU memory on unused BLAS builds while also removing visible architecture from RT shadows/GI. Fix: synthesize path now spawns the same ghost-entity shape as the bhk path (`world.spawn()` → `Transform + GlobalTransform + CollisionShape + RigidBodyData`, no `MeshHandle`). Render entity is untouched — enters BLAS+TLAS normally. `entities` command extended with `physics-only (no MeshHandle)` count and `IsCollisionOnly (expect 0)` count so the next bench run can confirm. **R6a-stale-15 required** to measure the fence recovery and verify `IsCollisionOnly=0` in Prospector/MedTek. Note: the 2564→3516 entity count growth origin (the larger gap vs. the pre-collider baseline) remains unconfirmed — strong candidate is M41 Phase 2 NPC mesh additions (hair, eyebrow, eye meshes per actor: `740036f7`, `323e3a9c`, committed just after the 2564-entity baseline `a9bbe8d1`). That growth is legitimate scene content; the synthesized-collider BLAS waste is now resolved.
 - [x] **R6a-stale-15** (filed 2026-06-03): **Closed 2026-07-18 at HEAD `8a668eff`** (#2084). Fresh 300-frame × 3-run bench across all three scenes — see the Bench-of-record table above for full numbers/interpretation. (a) Fence recovery confirmed: Prospector fence 11.12→5.06 ms (−54.5%), FPS 76.2→145.1 (+90.4%); MedTek fence 9.03→7.08 ms (−21.6%), FPS 65.2→74.4 (+14.1%) despite entity count growing 47% (ghost-entity, non-draw). Residual gap to the pre-collider Prospector target (161.4 FPS / 2.62 ms) narrowed from ~4× to ~2× fence, not yet closed. (b) `IsCollisionOnly=0` live verification via `entities` command **not re-checked this pass** — #2084's ask was the bench refresh + doc sync, not a fresh correctness sweep of the #1531/#1726 fix; still believed correct (untouched since closing R6a-stale-14-collider-partial) but worth a `byro-dbg entities` spot-check next time either scene is loaded interactively. Whiterun (control) showed an unexplained mild regression (362.8→335.0 FPS) at flat entity count, attributed to shared-desktop GPU contention during this run rather than a code regression — flagged for a re-check on an idle machine, not a new tracked issue.
 - [x] **R6a-stale-16** — **CLOSED 2026-07-24** by the FSR phase-7 bench matrix at HEAD `e153b50c` (see the refresh table above). The re-run did what a stale-bench tracker exists to do: it surfaced **PERF-REGRESSION-6c56e311**, a ~2.2× frame-time regression that had been live and unmeasured since 2026-07-19. Original entry follows. Threshold tripped 2026-07-20 at Session 58 close (HEAD `86035f51`, 38 commits past `8a668eff` — both threshold limbs exceeded: >30 commits *and* real shader/hot-path changes landed). Notable post-bench commits since `8a668eff`: `Vertex` struct color `vec3`→`vec4` layout change (26 floats / 104 B, `cd2b5fe4`) plus the matching `skin_vertices.comp` / `triangle.vert`/`.frag` updates, ReSTIR `Reservoir` repack + TAA surface-validated history (octahedral normals, bounded accumulation, `e5d02f83`), glass alpha-blending + `GLASS_RAY_BUDGET` increase (`a09d2b76`), volumetric in-scattering + water RT precision pass (`6c56e311`), decal `IsDecalMesh` alpha blending (`388b9969`). All three benches (Prospector/Whiterun/MedTek) touch the fragment shader and/or vertex layout this cycle. Re-run deferred — next tracker. **Update (2026-07-23, Session 60 close):** now 74 commits past `8a668eff`. Session 60 added the FSR SDK/extent/temporal-contract plumbing, an output-resolution presentation pass, and a directional-light/shadow-contract refactor (`8961fbdd`) that touches the exterior direct-light path. FSR itself is off by default, but the shadow-contract change warrants the re-run being done before the next perf-sensitive decision.
+- [ ] **R6a-stale-17** (filed 2026-07-26, Session 61 close): bench-of-record `e153b50c` is 28 commits stale — *under* the 30-commit limb, but the change-content limb is already met, which is the limb that matters. Four Session 61 landings touch the measured paths: particle indirect grouping restored (#2165), skinned-vertex output narrowed 104 B → 12 B per vertex (#2170), per-frame scratch amortised (#2172/#2174), and — the important one — the `camera_cut` false-positive fix (#2159), which had been forcing FSR 3.1 into a permanent single-frame temporal reset during ordinary player movement. FSR Quality was made the default *while that bug was live*, so the phase-7 FSR column understates the shipped configuration and the re-run is expected to move it upward. Re-run before any perf-sensitive decision, and before quoting the phase-7 numbers as the FSR baseline.
 - [x] **REND-#1447** HIGH (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-02** (`e6df0f5b`) — SPIR-V recompiled after DoF CameraUBO extension.
 - [x] **REND-#1448** LOW (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-02** (`f8e5daad`) — screenshot extent captured at record time, survives same-frame resize.
 - [x] **BUILD-SFMATERIAL** (2026-06-03): **Closed 2026-06-03.** `ee727346` removed `pub use chunk::ChunkType` and broke `crate::StringTable` / `crate::ChunkType` in internal modules + integration test. Fixed: `ChunkType` re-exported from `lib.rs`; internal `reader.rs` and `error.rs` use module-local paths.
@@ -752,8 +792,10 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ### Open — Performance
 
-- [ ] **PERF-REGRESSION-6c56e311** HIGH (found 2026-07-24 by the FSR phase-7
-  bench matrix): a **~2.2× frame-time regression on real content** landed in
+- [ ] **PERF-REGRESSION-6c56e311** HIGH ([#2161](https://github.com/matiaszanolli/ByroRedux/issues/2161), found 2026-07-24 by the FSR phase-7
+  bench matrix; filed as a GitHub issue 2026-07-25 so the open decision is
+  tracked outside ROADMAP prose — it is a decision-tracking issue, not a
+  code-fix one, per the closing note below): a **~2.2× frame-time regression on real content** landed in
   `6c56e311` "Refactor volumetric lighting and water shaders" (2026-07-19,
   session 58) and went unmeasured for ~80 commits because the bench-of-record
   was never re-run — which is precisely the risk R6a-stale-16 was tracking.
@@ -865,19 +907,19 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ## Project Stats
 
-Ground-truth as of 2026-07-25. Last full workspace test verification was
-2026-07-25; other inventory figures remain from the Session 60 closeout.
+Ground-truth as of 2026-07-26 (Session 61 closeout, HEAD `3a02b02d`). Every
+figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~290 267 (Session 60 measure) |
-| Rust total lines (all `.rs`, excl. `target/`) | ~305 971 (updated 2026-07-23)  |
-| Source files (`.rs`, excl. `target/`)   | 719 total · 681 outside `tests/` dirs |
+| Rust source lines (`src/` dirs)         | ~298 673                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~319 555                 |
+| Source files (`.rs`, excl. `target/`)   | 743 total · 696 outside `tests/` dirs |
 | Workspace members                       | 25 (22 crates + `byroredux` binary + 2 tools) |
-| Tests (last reported by ROADMAP)        | **3899 passing, 129 ignored** (`cargo test --workspace`, 2026-07-25). |
-| Open issue directories                  | 2000 (`.claude/issues/`)     |
+| Tests                                   | **3965 passing, 132 ignored** (`cargo test --workspace`, 2026-07-26). |
+| Open issue directories                  | 2078 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | 184 886                       |
-| Per-game NIF clean-parse rate           | 100% on FO3 / FNV / Skyrim SE / FO4 / FO76 (FO4 both base mesh archives, 159 866 NIFs, 2026-06-14; FO76 58 469 NIFs, 2026-07-11 #1900); Oblivion 99.93% (2026-06-15 sweep, post-#1543/#1544), Starfield 99.64% aggregate (2026-07-03 sweep; see compat matrix for per-archive breakdown). Recoverable 100% on all games, including Oblivion (#698's corrupt-marker hard-failure is closed). Sweep dates: Oblivion 2026-06-15, FO4 2026-06-14, FO76 2026-07-11, Starfield 2026-07-03; FO3/FNV/Skyrim SE unrefreshed since the original integration sweep (still 100%). |
+| Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on FO3 / FNV / Skyrim SE / FO4 / FO76, Oblivion 99.93%, Starfield 99.99% aggregate; recoverable 100% on all seven. |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
 
 ### Repro commands for every bench claim
@@ -888,14 +930,22 @@ Ground-truth as of 2026-07-25. Last full workspace test verification was
 > `cd "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data"`) — and
 > drop the `Game/Data/` prefix from `--esm` accordingly. Run from elsewhere and
 > the archives silently fail to open; the scene loads near-empty (Prospector
-> falls to 36 entities / 3 meshes and reports a spurious ~1792 FPS). FPS numbers
-> below are the R6a-stale-15 refresh (`8a668eff`, 2026-07-18).
+> falls to 36 entities / 3 meshes and reports a spurious ~1792 FPS).
+>
+> **Which numbers are live.** The first three rows carry the R6a-stale-15
+> figures (`8a668eff`, 2026-07-18) and **do not reproduce at HEAD** —
+> PERF-REGRESSION-6c56e311 landed the following day. The live bench-of-record
+> is the phase-7 FSR matrix row below (`e153b50c`). The three scene rows are
+> retained because they are the commands themselves, and because they are the
+> TAA baseline the regression is measured against.
 
 | Claim                                                                     | Command                                                                                                                                                                                        |
 |---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Prospector Saloon 3626 entities @ **145.1 FPS / 6.90 ms / fence=5.06 ms / brd=0.33 ms** (R6a-stale-15, `8a668eff`, 2026-07-18, 3-run avg; FPS +90.4% / fence −54.5% vs R6a-stale-14 — most of the gap closed as a side effect of intervening perf work, not a change in this bench cycle; residual gap to pre-collider 161.4 FPS / 2.62 ms narrowed from ~4× to ~2× fence) | (CWD = `.../Fallout New Vegas/Data`) `cargo run --release -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --textures-bsa "Fallout - Textures2.bsa" --bench-frames 300` |
 | Skyrim SE WhiterunBanneredMare 3237 entities @ **335.0 FPS / 3.00 ms / ~1298 draws / fence=1.21 ms** (R6a-stale-15, `8a668eff`, 2026-07-18, 3-run avg; −7.7% FPS vs 362.8 R6a-stale-14 at flat entity count — no code path changed here between the two bench dates; attributed to shared-desktop GPU contention during this run, re-check on an idle machine). Must list all 9 texture archives explicitly — numeric-sibling auto-load gates on a non-digit suffix and `Textures0.bsa` ends in a digit. | (CWD = `.../Skyrim Special Edition/Data`) `cargo run --release -- --esm Skyrim.esm --cell WhiterunBanneredMare --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" --textures-bsa "Skyrim - Textures0.bsa" --textures-bsa "Skyrim - Textures1.bsa" --textures-bsa "Skyrim - Textures2.bsa" --textures-bsa "Skyrim - Textures3.bsa" --textures-bsa "Skyrim - Textures4.bsa" --textures-bsa "Skyrim - Textures5.bsa" --textures-bsa "Skyrim - Textures6.bsa" --textures-bsa "Skyrim - Textures7.bsa" --textures-bsa "Skyrim - Textures8.bsa" --bench-frames 300` |
 | FO4 MedTekResearch01 31495 entities @ **74.4 FPS / 13.49 ms / 14535 draws / brd_ms=3.63 / fence=7.08** (R6a-stale-15, `8a668eff`, 2026-07-18, 3-run avg; entity +47% vs R6a-stale-14 with draws exactly flat — consistent with the ghost-entity rerouting fix (R6a-stale-14-collider-partial) adding non-draw physics-only entities; FPS +14.1% / fence −21.6% despite the larger entity count) | (CWD = `.../Fallout 4/Data`) `cargo run --release -- --esm Fallout4.esm --cell MedTekResearch01 --bsa "Fallout4 - Meshes.ba2" --bsa "Fallout4 - MeshesExtra.ba2" --textures-bsa "Fallout4 - Textures1.ba2" --textures-bsa "Fallout4 - Textures2.ba2" --textures-bsa "Fallout4 - Textures3.ba2" --textures-bsa "Fallout4 - Textures4.ba2" --textures-bsa "Fallout4 - Textures5.ba2" --textures-bsa "Fallout4 - Textures6.ba2" --textures-bsa "Fallout4 - Textures7.ba2" --textures-bsa "Fallout4 - Textures8.ba2" --textures-bsa "Fallout4 - Textures9.ba2" --textures-bsa "Fallout4 - TexturesPatch.ba2" --materials-ba2 "Fallout4 - Materials.ba2" --bench-frames 300` |
+| **Bench-of-record (LIVE)** — phase-7 FSR matrix, all five scenes × TAA-native vs four FSR presets (`e153b50c`, 2026-07-24, 3 runs × 300 frames, median with range, 1280×720 output). Source of every FPS/ms figure in the phase-7 table above, incl. the FO4 Dugout Inn and Cornell rows that appear nowhere else. Per-scene CWD still applies. | `scripts/fsr-bench-matrix.sh 3 300` |
+| **Upscaler SSIM quality matrix** — the SSIM / outlier-percentage figures quoted for every preset (Cornell Quality 0.9554 SSIM / 1.68% outliers, Performance 0.9199 / 5.39%; FO4 Dugout higher SSIM, worse outliers). Scores each preset against the native TAA render over five deterministic `--bench-camera` paths. Append `game` to score real game content instead of the redistributable Cornell scene. | `cargo test --release -p byroredux --test upscaler_quality -- --ignored --nocapture` |
 | Skyrim sweetroll single-mesh ~3000-5000 FPS (2026-04-22, RTX 4070 Ti @ 1280×720)        | `cargo run --release -- --bsa "Skyrim Special Edition/Data/Skyrim - Meshes0.bsa" --mesh meshes\\clutter\\ingredients\\sweetroll01.nif --textures-bsa "Skyrim Special Edition/Data/Skyrim - Textures3.bsa"` |
 | Megaton interior parse-side 929 REFRs (2026-04-19)                        | `cargo test -p byroredux-plugin --release --test parse_real_esm parse_real_fo3_megaton_cell_baseline -- --ignored`                                                                             |
 | Per-game full mesh sweep (clean rates above; recoverable 100% gate)       | `cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored parse_rate`                                                                                                          |
