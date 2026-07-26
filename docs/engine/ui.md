@@ -15,9 +15,11 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 > Status note (2026-07-25): R4 selected pinned Ruffle plus ByroRedux-owned
 > Bethesda profiles. The first M48 slice now includes profile detection,
 > a bidirectional ExternalInterface bridge, and a pinned 74-method
-> Skyrim/SkyUI host catalog. Method behavior, Fallout 4's injected AVM2
-> object surface, menu lifecycle, input, and archive-backed resources
-> remain integration work.
+> Skyrim/SkyUI host catalog. The second slice adds Fallout 4's
+> `BGSCodeObj` lifecycle, a 129-method reconstructed-vanilla catalog, and
+> an injected AVM2 forwarding adapter. Method behavior, complete
+> archive-grounded FO4 coverage, menu lifecycle, input, and archive-backed
+> resources remain integration work.
 
 ## At a glance
 
@@ -28,8 +30,8 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 | Ruffle render backend  | `ruffle_render_wgpu` on its **own** wgpu/Vulkan device (separate from the engine's `ash` Vulkan) |
 | Render path            | Ruffle → wgpu offscreen `TextureTarget` → `capture_frame()` CPU RGBA → Vulkan texture upload → fullscreen quad |
 | Lifetime               | `UiManager` is **not** an ECS resource — Ruffle's `Player` is not `Send + Sync`; it lives in the main loop alongside `VulkanContext` |
-| Status                 | Loose SWF demo working (`--swf path.swf`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional ExternalInterface host bridge |
-| Pending                | Skyrim method behavior, Fallout 4 native-object inventory/dispatch, remaining GFx stubs, Papyrus↔UI bridge, input routing, font loading, full menu pack |
+| Status                 | Loose SWF demo working (`--swf path.swf`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional host bridge; Skyrim `GameDelegate` and Fallout 4 `BGSCodeObj` contracts |
+| Pending                | Host-method behavior, complete installed-FO4 inventory, archive-backed Ruffle navigator, remaining GFx stubs, Papyrus↔UI bridge, input routing, fonts, full menu pack |
 
 ## Why Ruffle?
 
@@ -59,7 +61,8 @@ surface, not a new Flash VM.
 
 ```
 crates/ui/src/
-├── catalog.rs   Profile-specific known host-method inventory
+├── avm2_host.rs Fallout 4 BGSCodeObj ABC adapter and SWF injection
+├── catalog.rs   Profile-specific known host-method/object inventory
 ├── host.rs      ScaleformHostBridge — ExternalInterface call queue,
 │                callback discovery, typed values, diagnostics/responses
 ├── lib.rs       UiManager — top-level handle: owns the active SwfPlayer,
@@ -121,6 +124,7 @@ pub struct SwfPlayer {
     height: u32,
     pixel_buffer: Vec<u8>,   // last captured RGBA8, reused frame to frame
     dirty: bool,             // set on tick(), cleared after a successful render()
+    host_object_state: ScaleformHostObjectState,
 }
 
 impl SwfPlayer {
@@ -128,14 +132,17 @@ impl SwfPlayer {
     pub fn tick(&mut self, dt: f64);          // seconds; wrapped in FloatDuration internally
     pub fn render(&mut self) -> Option<&[u8]>; // borrows pixel_buffer; None if not dirty
     pub fn dimensions(&self) -> (u32, u32);
+    pub fn host_object_state(&self) -> ScaleformHostObjectState;
 }
 ```
 
 `new()` parses the SWF (`SwfMovie::from_data`), spins up a headless
 wgpu/Vulkan device, builds an offscreen `TextureTarget` of the requested
 size, wires it into a `WgpuRenderBackend`, attaches a software video
-backend (`ruffle_video_software`), and starts playback
-(`set_is_playing(true)`).
+backend (`ruffle_video_software`), selects blocking preload for the
+already-resident SWF bytes, and starts playback (`set_is_playing(true)`).
+For a Fallout 4 contract movie, the in-memory ABC adapter is inserted before
+this parse/build sequence; the source asset on disk is never modified.
 
 `tick(dt)` advances Ruffle's clock (`Player::tick(FloatDuration::from_secs(dt))`)
 and runs any ActionScript that wants to fire (timers, frame scripts,
@@ -306,19 +313,50 @@ requests. Catalog entries are recognition and protocol metadata, not claims
 that gameplay behavior exists. The engine must still implement or explicitly
 stub each drained call.
 
-The Fallout 4 catalog is intentionally empty. Its installed AVM2 HUD
-loaded for 120 headless frames without registering an ExternalInterface
-callback or making a host call. That is evidence against copying Skyrim's
-transport, not evidence that FO4 needs no host API: FO4 integrations inject
-native objects into the AVM2 root (F4SE's
-[`Hooks_Scaleform.cpp`](https://github.com/ianpatt/f4se/blob/master/f4se/Hooks_Scaleform.cpp)
-is a concrete extension-layer example). Recovering the vanilla root-object
-surface from real menus is the next profile-specific inventory task.
+Fallout 4 does not use Skyrim's protocol. Its dynamic menu root constructs
+`BGSCodeObj`; native code fills that object with function values and invokes
+`onCodeObjCreate`, while `onCodeObjDestruction` clears the reference. The
+menu-side `BGSExternalInterface.call` helper is only a null-safe lookup and
+`Function.apply` wrapper around those installed functions—it is not Flash's
+ExternalInterface transport. The reconstructed
+[F4CF interface source](https://github.com/F4CF/Interface) describes itself
+as intended to track vanilla closely and yields 129 distinct calls through
+that object. The catalog preserves case because FO4 contains both forms such
+as `CloseMenu` and `closeMenu`.
+
+Ruffle deliberately keeps its AVM2 object model private. Rather than fork the
+VM, `avm2_host.rs` detects movies that declare both `BGSCodeObj` and
+`onCodeObjCreate`, rewrites the in-memory SWF, and injects an eager ABC
+adapter before the first frame. On the next AVM2 turn the adapter populates
+the menu-created object with one forwarding function per catalog method and
+calls the lifecycle hook. Each forwarding function uses Ruffle's supported
+ExternalInterface boundary with a namespaced transport method such as
+`BGSCodeObj.PlaySound`; `ScaleformHostBridge` normalizes that to logical
+method `PlaySound` while retaining `host_object = Some("BGSCodeObj")`.
+Immediate response handlers therefore also work for FO4 functions used as
+queries. Reserved readiness and destruction callbacks are registered only
+after installation; dropping `SwfPlayer` invokes the latter so the menu's
+`onCodeObjDestruction` hook runs before Ruffle is released.
+F4SE independently demonstrates the same general extension pattern by
+installing function objects on `root.f4se` in
+[`Hooks_Scaleform.cpp`](https://github.com/ianpatt/f4se/blob/master/f4se/Hooks_Scaleform.cpp).
+
+The adapter is runtime-tested with a synthetic AVM2 contract, and the
+installed `HUDMenu.swf` is rewritten and reparsed in an ignored corpus smoke.
+That installed HUD does not yet reach frame 1 in a standalone player:
+unlimited Ruffle preload still returns incomplete at its unresolved
+`ImportAssets` boundary. The old smoke therefore proved parsing, not 120
+executed frames. Resolving imported SWFs through the game archives is the
+next blocking UI slice; only after that can the readiness callback and full
+menu lifecycle be asserted against the installed corpus. The 129-method
+source catalog is intentionally not described as exhaustive—installed
+holotape programs and future DLC/mod menus can still surface additional
+methods through the existing unknown-method diagnostics.
 
 | Profile | What exists now | What must be created |
 |---|---|---|
 | Skyrim AVM1 | `GameDelegate` transport, 74 recognized methods, 12 request contracts, response re-entry | Per-method engine behavior and remaining `_global.gfx` compatibility |
-| Fallout 4 AVM2 | Ruffle AVM2 profile, typed bridge, real-HUD load smoke | Vanilla injected-object inventory, object installation, dispatch contracts |
+| Fallout 4 AVM2 | `BGSCodeObj` lifecycle, 129 reconstructed-source methods, generated forwarding ABC, object-aware dispatch, installed-HUD rewrite/parse smoke | Archive-backed imports, installed-corpus lifecycle assertion, inventory completion, per-method behavior |
 | FO3/FNV | XML corpus confirmed; no SWF profile | Separate legacy XML UI runtime or translation path |
 
 ### Papyrus ↔ UI bridge

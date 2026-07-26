@@ -18,6 +18,17 @@ pub struct ScaleformHostMethod {
     pub kind: ScaleformHostMethodKind,
 }
 
+/// Native object installed by a profile on the root ActionScript object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScaleformHostObject {
+    /// Dynamic property containing the native function table.
+    pub property: &'static str,
+    /// Root callback invoked after the function table is populated.
+    pub on_create: &'static str,
+    /// Root callback invoked before the native object is released.
+    pub on_destroy: &'static str,
+}
+
 impl ScaleformHostMethod {
     const fn command(name: &'static str) -> Self {
         Self {
@@ -52,10 +63,18 @@ impl ScaleformHostCatalog {
     pub fn methods(self) -> &'static [ScaleformHostMethod] {
         match self.profile {
             ScaleformProfile::SkyrimAvm1 => SKYRIM_SKYUI_METHODS,
-            // Fallout 4 menus expose native objects to AVM2. Their method
-            // inventory needs to be recovered separately; do not leak the
-            // Skyrim GameDelegate contract into this profile.
-            ScaleformProfile::Fallout4Avm2 => &[],
+            ScaleformProfile::Fallout4Avm2 => FALLOUT4_BGS_CODE_OBJECT_METHODS,
+        }
+    }
+
+    pub const fn host_object(self) -> Option<ScaleformHostObject> {
+        match self.profile {
+            ScaleformProfile::SkyrimAvm1 => None,
+            ScaleformProfile::Fallout4Avm2 => Some(ScaleformHostObject {
+                property: "BGSCodeObj",
+                on_create: "onCodeObjCreate",
+                on_destroy: "onCodeObjDestruction",
+            }),
         }
     }
 
@@ -159,4 +178,145 @@ static SKYRIM_SKYUI_METHODS: &[ScaleformHostMethod] = &[
     ScaleformHostMethod::command("ZoomItemModel"),
     ScaleformHostMethod::command("buttonPress"),
     ScaleformHostMethod::request("updateStats"),
+];
+
+// Calls through BGSCodeObj in F4CF/Interface's reconstructed vanilla Fallout
+// 4 ActionScript sources. The project states that reconstructed areas are
+// intended to remain as close as possible to the vanilla interface.
+//
+// BGSCodeObj is an AVM2 function table, not Skyrim's callback-bearing
+// GameDelegate protocol, so every entry is a direct command here. Callers can
+// still configure an immediate return value for functions used as queries.
+//
+// Source: https://github.com/F4CF/Interface/tree/master/Data/Interface/Source/Bethesda
+static FALLOUT4_BGS_CODE_OBJECT_METHODS: &[ScaleformHostMethod] = &[
+    ScaleformHostMethod::command("ActivateScrollSound"),
+    ScaleformHostMethod::command("BackLevel"),
+    ScaleformHostMethod::command("CanRepairSelectedItem"),
+    ScaleformHostMethod::command("CenterMarkerRequest"),
+    ScaleformHostMethod::command("CheckHardcoreModeFastTravel"),
+    ScaleformHostMethod::command("CheckRequirements"),
+    ScaleformHostMethod::command("ClearPlayerMarker"),
+    ScaleformHostMethod::command("CloseMenu"),
+    ScaleformHostMethod::command("ConfirmBuild"),
+    ScaleformHostMethod::command("EndRotate3DItem"),
+    ScaleformHostMethod::command("ExamineItem"),
+    ScaleformHostMethod::command("FastTravel"),
+    ScaleformHostMethod::command("FillModPartArray"),
+    ScaleformHostMethod::command("GetButtonFromUserEvent"),
+    ScaleformHostMethod::command("GetDisplayRate"),
+    ScaleformHostMethod::command("GetHackingBoardCharHeight"),
+    ScaleformHostMethod::command("GetHackingBoardCharWidth"),
+    ScaleformHostMethod::command("GetNumGuesses"),
+    ScaleformHostMethod::command("GetPerkInfoByRank"),
+    ScaleformHostMethod::command("GetStartingListPosition"),
+    ScaleformHostMethod::command("GetXPInfo"),
+    ScaleformHostMethod::command("HideMenu"),
+    ScaleformHostMethod::command("HolotapeActivate"),
+    ScaleformHostMethod::command("IsSelectedItemEquipped"),
+    ScaleformHostMethod::command("ItemDrop"),
+    ScaleformHostMethod::command("ItemSelect"),
+    ScaleformHostMethod::command("OnAcceptPress"),
+    ScaleformHostMethod::command("OnAlternateButton"),
+    ScaleformHostMethod::command("OnBuildFailed"),
+    ScaleformHostMethod::command("OnMenuItemSelect"),
+    ScaleformHostMethod::command("OnMobileSettingsLoaded"),
+    ScaleformHostMethod::command("OnScrollingStarted"),
+    ScaleformHostMethod::command("OnScrollingStopped"),
+    ScaleformHostMethod::command("OnSpeechChallengeAnimComplete"),
+    ScaleformHostMethod::command("PlayFocusSound"),
+    ScaleformHostMethod::command("PlayPerkSound"),
+    ScaleformHostMethod::command("PlaySmallTransition"),
+    ScaleformHostMethod::command("PlaySound"),
+    ScaleformHostMethod::command("PlayZoomSound"),
+    ScaleformHostMethod::command("PopulatePipboyInfoObj"),
+    ScaleformHostMethod::command("RefreshMapMarkers"),
+    ScaleformHostMethod::command("RegisterComponents"),
+    ScaleformHostMethod::command("RegisterMap"),
+    ScaleformHostMethod::command("RegisterMovie"),
+    ScaleformHostMethod::command("RegisterPerkGridComponents"),
+    ScaleformHostMethod::command("RegisterTerminalElements"),
+    ScaleformHostMethod::command("RemoveHighlight"),
+    ScaleformHostMethod::command("RepairSelectedItem"),
+    ScaleformHostMethod::command("RevertChanges"),
+    ScaleformHostMethod::command("ScrapItem"),
+    ScaleformHostMethod::command("SelectHackingWord"),
+    ScaleformHostMethod::command("SelectItem"),
+    ScaleformHostMethod::command("SelectPerk"),
+    ScaleformHostMethod::command("SendTutorialEvent"),
+    ScaleformHostMethod::command("SetItemSelectValuesForComponents"),
+    ScaleformHostMethod::command("SetName"),
+    ScaleformHostMethod::command("SetPlayerMarker"),
+    ScaleformHostMethod::command("SetQuestActive"),
+    ScaleformHostMethod::command("SetQuickkey"),
+    ScaleformHostMethod::command("ShouldShowTagForSearchButton"),
+    ScaleformHostMethod::command("ShowItem"),
+    ScaleformHostMethod::command("ShowPerksMenu"),
+    ScaleformHostMethod::command("ShowQuestOnMap"),
+    ScaleformHostMethod::command("ShowWorkshopOnMap"),
+    ScaleformHostMethod::command("SortItemList"),
+    ScaleformHostMethod::command("StartBuildConfirm"),
+    ScaleformHostMethod::command("StartItemSelection"),
+    ScaleformHostMethod::command("StartRotate3DItem"),
+    ScaleformHostMethod::command("StopPerkSound"),
+    ScaleformHostMethod::command("SwitchBaseItem"),
+    ScaleformHostMethod::command("SwitchMod"),
+    ScaleformHostMethod::command("ToggleComponentFavorite"),
+    ScaleformHostMethod::command("ToggleFavoriteMod"),
+    ScaleformHostMethod::command("ToggleItemEquipped"),
+    ScaleformHostMethod::command("ToggleRadioStationActiveStatus"),
+    ScaleformHostMethod::command("UnregisterMap"),
+    ScaleformHostMethod::command("UpdateRequirements"),
+    ScaleformHostMethod::command("UseRadaway"),
+    ScaleformHostMethod::command("UseStimpak"),
+    ScaleformHostMethod::command("ValidateHackingWord"),
+    ScaleformHostMethod::command("ZoomIn"),
+    ScaleformHostMethod::command("ZoomOut"),
+    ScaleformHostMethod::command("closeMenu"),
+    ScaleformHostMethod::command("confirmInvest"),
+    ScaleformHostMethod::command("executeCommand"),
+    ScaleformHostMethod::command("exitMenu"),
+    ScaleformHostMethod::command("functiononGPSModeButtonClicked"),
+    ScaleformHostMethod::command("getButtonFromUserEvent"),
+    ScaleformHostMethod::command("getItemValue"),
+    ScaleformHostMethod::command("getScrollSpeed"),
+    ScaleformHostMethod::command("getSelectedItemEquippable"),
+    ScaleformHostMethod::command("getSelectedItemEquipped"),
+    ScaleformHostMethod::command("inspectItem"),
+    ScaleformHostMethod::command("onAcceptPress"),
+    ScaleformHostMethod::command("onBackButtonHandled"),
+    ScaleformHostMethod::command("onButtonPress"),
+    ScaleformHostMethod::command("onButtonRelease"),
+    ScaleformHostMethod::command("onCancelPress"),
+    ScaleformHostMethod::command("onComponentViewToggle"),
+    ScaleformHostMethod::command("onFadeDone"),
+    ScaleformHostMethod::command("onGridAddedToStage"),
+    ScaleformHostMethod::command("onHideComplete"),
+    ScaleformHostMethod::command("onIntroAnimComplete"),
+    ScaleformHostMethod::command("onInvItemSelection"),
+    ScaleformHostMethod::command("onManualModeButtonClicked"),
+    ScaleformHostMethod::command("onMenuLoadComplete"),
+    ScaleformHostMethod::command("onModalOpen"),
+    ScaleformHostMethod::command("onNewPage"),
+    ScaleformHostMethod::command("onNewTab"),
+    ScaleformHostMethod::command("onPerksTabClose"),
+    ScaleformHostMethod::command("onPerksTabOpen"),
+    ScaleformHostMethod::command("onQuestSelection"),
+    ScaleformHostMethod::command("onScanButtonClicked"),
+    ScaleformHostMethod::command("onShowHotKeys"),
+    ScaleformHostMethod::command("onSwitchBetweenWorldLocalMap"),
+    ScaleformHostMethod::command("registerObjects"),
+    ScaleformHostMethod::command("requestCredits"),
+    ScaleformHostMethod::command("sendXButton"),
+    ScaleformHostMethod::command("sendYButton"),
+    ScaleformHostMethod::command("show3D"),
+    ScaleformHostMethod::command("sortItems"),
+    ScaleformHostMethod::command("takeAllItems"),
+    ScaleformHostMethod::command("toggleMovementToDirectional"),
+    ScaleformHostMethod::command("toggleSelectedItemEquipped"),
+    ScaleformHostMethod::command("transferItem"),
+    ScaleformHostMethod::command("updateItem3D"),
+    ScaleformHostMethod::command("updateItemPickpocketInfo"),
+    ScaleformHostMethod::command("updateSortButtonLabel"),
+    ScaleformHostMethod::command("useQuickkey"),
 ];

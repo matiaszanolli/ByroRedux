@@ -5,10 +5,13 @@ use std::sync::{Arc, Mutex};
 use byroredux_bsa::{Ba2Archive, BsaArchive};
 use ruffle_core::external::Value as ExternalValue;
 use ruffle_core::tag_utils::SwfMovie;
-use ruffle_core::{FloatDuration, Player, PlayerBuilder};
+use ruffle_core::{FloatDuration, LoadBehavior, Player, PlayerBuilder};
 
 use super::{ScaleformHostBridge, ScaleformHostDispatch, ScaleformValue};
-use crate::{ScaleformHostCatalog, ScaleformHostMethodKind, ScaleformProfile};
+use crate::avm2_host::inject_host_object_adapter;
+use crate::{
+    ScaleformHostCatalog, ScaleformHostMethodKind, ScaleformHostObjectState, ScaleformProfile,
+};
 
 const AVM1_FIXTURE: &str = include_str!("../../testdata/avm1_external_interface.swf.b64");
 const AVM2_FIXTURE: &str = include_str!("../../testdata/avm2_external_interface.swf.b64");
@@ -61,6 +64,7 @@ fn run_movie(
     let player = PlayerBuilder::new()
         .with_external_interface(bridge.provider())
         .with_movie(movie)
+        .with_load_behavior(LoadBehavior::Blocking)
         .with_viewport_dimensions(64, 64, 1.0)
         .build();
     player.lock().unwrap().set_is_playing(true);
@@ -225,8 +229,40 @@ fn skyrim_catalog_is_pinned_sorted_and_profile_specific() {
         .all(|methods| methods[0].name < methods[1].name));
 
     let fallout = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
-    assert!(fallout.is_empty());
-    assert!(!fallout.contains("PlaySound"));
+    assert_eq!(fallout.len(), 129);
+    assert!(fallout.contains("PlaySound"));
+    assert!(!fallout.contains("RequestPlayerInfo"));
+    assert!(fallout
+        .methods()
+        .windows(2)
+        .all(|methods| methods[0].name < methods[1].name));
+    assert_eq!(
+        fallout.host_object().unwrap(),
+        crate::ScaleformHostObject {
+            property: "BGSCodeObj",
+            on_create: "onCodeObjCreate",
+            on_destroy: "onCodeObjDestruction",
+        }
+    );
+}
+
+#[test]
+fn fallout4_object_transport_is_normalized_and_cataloged() {
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
+    let outcome = bridge.record_call(
+        "BGSCodeObj.PlaySound",
+        &[ExternalValue::from("UIGeneralFocus")],
+    );
+
+    assert_eq!(outcome.return_value, ExternalValue::Null);
+    assert!(outcome.callback_response.is_none());
+    let call = bridge.drain_calls().pop().unwrap();
+    assert_eq!(call.transport_method, "BGSCodeObj.PlaySound");
+    assert_eq!(call.method, "PlaySound");
+    assert_eq!(call.host_object.as_deref(), Some("BGSCodeObj"));
+    assert_eq!(call.arguments, vec![ScaleformValue::from("UIGeneralFocus")]);
+    assert_eq!(call.dispatch, ScaleformHostDispatch::Queued);
+    assert!(bridge.unknown_methods().is_empty());
 }
 
 #[test]
@@ -261,7 +297,7 @@ fn installed_skyrim_hudmenu_loads_with_avm1_profile() {
 
 #[test]
 #[ignore = "requires an installed Fallout 4 corpus"]
-fn installed_fallout4_hudmenu_loads_with_avm2_profile() {
+fn installed_fallout4_hudmenu_rewrites_with_avm2_profile() {
     let archive_path = data_dir(
         "BYROREDUX_FO4_DATA",
         "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
@@ -273,6 +309,8 @@ fn installed_fallout4_hudmenu_loads_with_avm2_profile() {
         .expect("extract Fallout 4 HUDMenu.swf");
 
     let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
+    let (swf, state) = inject_host_object_adapter(&swf, bridge.catalog()).unwrap();
+    assert_eq!(state, ScaleformHostObjectState::AdapterInjected);
     let (_player, bridge) = run_movie(&swf, bridge);
     assert_eq!(bridge.profile(), ScaleformProfile::Fallout4Avm2);
 }

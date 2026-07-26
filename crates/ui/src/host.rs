@@ -98,6 +98,8 @@ pub struct ScaleformHostCall {
     pub transport_method: String,
     /// Logical engine method after profile-specific normalization.
     pub method: String,
+    /// Injected AVM2 object that supplied the method, when applicable.
+    pub host_object: Option<String>,
     /// `GameDelegate` request identifier, when the profile uses one.
     pub request_id: Option<u64>,
     /// Logical method arguments.
@@ -295,6 +297,7 @@ impl ScaleformHostBridge {
             profile: self.profile,
             transport_method: transport_method.to_string(),
             method: normalized.method.clone(),
+            host_object: normalized.host_object,
             request_id: normalized.request_id,
             arguments: normalized.arguments,
             dispatch,
@@ -334,6 +337,7 @@ impl ScaleformHostBridge {
                 if let Some(request_id) = numeric_request_id(*request_id) {
                     return NormalizedCall {
                         method: transport_method.to_string(),
+                        host_object: None,
                         request_id: Some(request_id),
                         arguments: rest.to_vec(),
                     };
@@ -341,8 +345,25 @@ impl ScaleformHostBridge {
             }
         }
 
+        if self.profile == ScaleformProfile::Fallout4Avm2 {
+            if let Some(object) = self.catalog.host_object() {
+                if let Some(method) = transport_method
+                    .strip_prefix(object.property)
+                    .and_then(|method| method.strip_prefix('.'))
+                {
+                    return NormalizedCall {
+                        method: method.to_string(),
+                        host_object: Some(object.property.to_string()),
+                        request_id: None,
+                        arguments,
+                    };
+                }
+            }
+        }
+
         NormalizedCall {
             method: transport_method.to_string(),
+            host_object: None,
             request_id: None,
             arguments,
         }
@@ -359,6 +380,7 @@ fn numeric_request_id(value: f64) -> Option<u64> {
 
 struct NormalizedCall {
     method: String,
+    host_object: Option<String>,
     request_id: Option<u64>,
     arguments: Vec<ScaleformValue>,
 }
