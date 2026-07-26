@@ -163,7 +163,8 @@ the full trace.
 |---|---|
 | Static SWF menus via Ruffle (Skyrim SE) | ✓ M20 |
 | Ruffle ExternalInterface host bridge (Skyrim AVM1 + Fallout 4 AVM2) | ✓ R4 |
-| GFx host methods (`_global.gfx`, text replacement, Papyrus callbacks) | ◐ transport shipped; method catalog pending M48 |
+| Skyrim GFx host methods (`GameDelegate`, `_global.gfx`, text replacement, Papyrus callbacks) | ◐ 74-method catalog + request routing shipped; method behavior pending M48 |
+| Fallout 4 Scaleform host objects | ◐ AVM2 bridge/load smoke shipped; vanilla injected-object inventory pending M48 |
 | `byroredux-debug-ui` egui overlay (F-key toggle) | ✓ |
 | Native menu reimplementation | Not planned; preserve SWF compatibility through Ruffle profiles |
 

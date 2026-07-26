@@ -12,14 +12,12 @@ scratch and without linking to Adobe's GFx runtime.
 
 Source: [`crates/ui/src/`](../../crates/ui/src/)
 
-> Status note (as of Session 42 / 2026-05-28): the UI subsystem is still
-> **Phase-1 infrastructure**. The Ruffle integration glue in `crates/ui/`
-> has not changed structurally since it landed (the crate is two files —
-> `lib.rs` + `player.rs`). Everything that *has* moved since the doc was
-> first written is on the **renderer side**: the UI overlay was migrated
-> onto the bindless texture array and a dedicated lightweight vertex
-> format, and the draw-time pipeline-state invariant was codified. Those
-> changes are folded into the relevant sections below.
+> Status note (2026-07-25): R4 selected pinned Ruffle plus ByroRedux-owned
+> Bethesda profiles. The first M48 slice now includes profile detection,
+> a bidirectional ExternalInterface bridge, and a pinned 74-method
+> Skyrim/SkyUI host catalog. Method behavior, Fallout 4's injected AVM2
+> object surface, menu lifecycle, input, and archive-backed resources
+> remain integration work.
 
 ## At a glance
 
@@ -31,7 +29,7 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 | Render path            | Ruffle → wgpu offscreen `TextureTarget` → `capture_frame()` CPU RGBA → Vulkan texture upload → fullscreen quad |
 | Lifetime               | `UiManager` is **not** an ECS resource — Ruffle's `Player` is not `Send + Sync`; it lives in the main loop alongside `VulkanContext` |
 | Status                 | Loose SWF demo working (`--swf path.swf`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional ExternalInterface host bridge |
-| Pending                | Engine method dispatch behind the host bridge, remaining GFx stubs, Papyrus↔UI bridge, input routing, font loading, full menu pack |
+| Pending                | Skyrim method behavior, Fallout 4 native-object inventory/dispatch, remaining GFx stubs, Papyrus↔UI bridge, input routing, font loading, full menu pack |
 
 ## Why Ruffle?
 
@@ -54,12 +52,14 @@ the host transport: `ExternalInterfaceProvider::call_method` for
 ActionScript → engine and `Player::call_internal_interface` for engine →
 registered ActionScript callbacks. ByroRedux now installs that transport
 for both Skyrim AVM1 and Fallout 4 AVM2 movies. The remaining work is the
-Bethesda method catalog and behavior behind it, not a new Flash VM.
+Bethesda behavior behind the catalog and Fallout 4's native-object
+surface, not a new Flash VM.
 
 ## Module map
 
 ```
 crates/ui/src/
+├── catalog.rs   Profile-specific known host-method inventory
 ├── host.rs      ScaleformHostBridge — ExternalInterface call queue,
 │                callback discovery, typed values, diagnostics/responses
 ├── lib.rs       UiManager — top-level handle: owns the active SwfPlayer,
@@ -69,8 +69,9 @@ crates/ui/src/
 └── profile.rs   Skyrim AVM1 / Fallout 4 AVM2 host profiles and detection
 ```
 
-The player, profile, host bridge, host call, and typed value are re-exported
-from `byroredux_ui`; `UiManager` remains defined directly in `lib.rs`.
+The catalog, player, profile, host bridge, host call/dispatch status, and
+typed value are re-exported from `byroredux_ui`; `UiManager` remains
+defined directly in `lib.rs`.
 
 ## Pipeline
 
@@ -285,11 +286,40 @@ needs additional layers that are not yet implemented:
 
 Bethesda menus call into a small set of Scaleform-specific globals for
 layout, locale, and texture loading. The Ruffle ExternalInterface transport
-is installed: Skyrim's `GameDelegate.call(...)` transport is normalized
-into logical host-method calls, unknown methods are inventoried, and the
-engine can invoke callbacks registered by either AVM generation. We still
-need to implement the actual Bethesda method catalog and any AS-side
-globals that are not supplied by the shipped menu.
+is installed and the first host inventory is checked in.
+
+Skyrim's AS2 [`GameDelegate`](https://github.com/schlangster/skyui/blob/master/src/CLIK/gfx/io/GameDelegate.as)
+passes the logical method as the ExternalInterface method name and prepends
+a numeric request ID to its arguments. When the call supplied an
+ActionScript callback, the host must re-enter the registered `respond`
+callback with that ID before `ExternalInterface.call` returns. Returning a
+value directly does not complete that protocol. `ScaleformHostBridge`
+now models this exactly: calls retain their request ID, configured response
+values or argument-dependent response handlers use the re-entrant callback
+path, and diagnostics distinguish known commands, missing responses,
+registered extensions, and unknown methods.
+
+`ScaleformHostCatalog::for_profile(SkyrimAvm1)` contains the 74 literal
+`GameDelegate.call` method names in the SkyUI source tree pinned at
+`835428728e2305865e220fdfc99d791434955eb1`; 12 are marked as callback
+requests. Catalog entries are recognition and protocol metadata, not claims
+that gameplay behavior exists. The engine must still implement or explicitly
+stub each drained call.
+
+The Fallout 4 catalog is intentionally empty. Its installed AVM2 HUD
+loaded for 120 headless frames without registering an ExternalInterface
+callback or making a host call. That is evidence against copying Skyrim's
+transport, not evidence that FO4 needs no host API: FO4 integrations inject
+native objects into the AVM2 root (F4SE's
+[`Hooks_Scaleform.cpp`](https://github.com/ianpatt/f4se/blob/master/f4se/Hooks_Scaleform.cpp)
+is a concrete extension-layer example). Recovering the vanilla root-object
+surface from real menus is the next profile-specific inventory task.
+
+| Profile | What exists now | What must be created |
+|---|---|---|
+| Skyrim AVM1 | `GameDelegate` transport, 74 recognized methods, 12 request contracts, response re-entry | Per-method engine behavior and remaining `_global.gfx` compatibility |
+| Fallout 4 AVM2 | Ruffle AVM2 profile, typed bridge, real-HUD load smoke | Vanilla injected-object inventory, object installation, dispatch contracts |
+| FO3/FNV | XML corpus confirmed; no SWF profile | Separate legacy XML UI runtime or translation path |
 
 ### Papyrus ↔ UI bridge
 
@@ -325,15 +355,17 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-The UI crate has five dedicated unit tests over synthetic, non-Bethesda
-SWFs taken from Ruffle's pinned ExternalInterface fixtures:
+The UI crate has seven default tests plus two ignored installed-corpus
+smokes. The synthetic non-Bethesda SWFs come from Ruffle's pinned
+ExternalInterface fixtures:
 
 - The `byroredux-ui` crate compiles as part of the workspace.
 - Real headless AVM1 and AVM2 movies verify ActionScript → host calls,
   callback discovery, and host → ActionScript invocation through Ruffle's
   null renderer.
-- Unit coverage pins profile detection, Skyrim `GameDelegate` call
-  normalization, monotonically sequenced diagnostics, and nested value
+- Unit coverage pins profile detection, the 74-method sorted catalog,
+  profile isolation, Skyrim request-ID normalization and response routing,
+  dispatch diagnostics, monotonically sequenced calls, and nested value
   conversion.
 - The renderer-side UI contract is covered by tests, not the Ruffle glue:
   `UiVertex` size/offsets (`crates/renderer/src/vertex.rs`), the bindless

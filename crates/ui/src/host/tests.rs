@@ -7,8 +7,8 @@ use ruffle_core::external::Value as ExternalValue;
 use ruffle_core::tag_utils::SwfMovie;
 use ruffle_core::{FloatDuration, Player, PlayerBuilder};
 
-use super::{ScaleformHostBridge, ScaleformValue};
-use crate::ScaleformProfile;
+use super::{ScaleformHostBridge, ScaleformHostDispatch, ScaleformValue};
+use crate::{ScaleformHostCatalog, ScaleformHostMethodKind, ScaleformProfile};
 
 const AVM1_FIXTURE: &str = include_str!("../../testdata/avm1_external_interface.swf.b64");
 const AVM2_FIXTURE: &str = include_str!("../../testdata/avm2_external_interface.swf.b64");
@@ -138,25 +138,95 @@ fn scaleform_values_round_trip_nested_payloads() {
 #[test]
 fn skyrim_game_delegate_transport_is_normalized() {
     let bridge = ScaleformHostBridge::new(ScaleformProfile::SkyrimAvm1);
-    bridge.set_response("Inventory.GetItems", ScaleformValue::Bool(true));
+    bridge.set_response_handler("RequestPlayerInfo", |arguments| {
+        vec![ScaleformValue::Bool(
+            arguments == [ScaleformValue::from("inventory")],
+        )]
+    });
 
-    let response = bridge.record_call(
-        "Call",
-        &[
-            ExternalValue::from("Inventory.GetItems"),
-            ExternalValue::List(vec![ExternalValue::from(7_i32)]),
-        ],
+    let outcome = bridge.record_call(
+        "RequestPlayerInfo",
+        &[ExternalValue::from(7_i32), ExternalValue::from("inventory")],
     );
 
-    assert_eq!(response, ExternalValue::Bool(true));
-    let call = bridge.drain_calls().pop().unwrap();
-    assert_eq!(call.transport_method, "Call");
-    assert_eq!(call.method, "Inventory.GetItems");
+    assert_eq!(outcome.return_value, ExternalValue::Null);
     assert_eq!(
-        call.arguments,
-        vec![ScaleformValue::List(vec![ScaleformValue::Number(7.0)])]
+        outcome.callback_response,
+        Some(vec![ExternalValue::from(7_i32), ExternalValue::Bool(true)])
     );
+    let call = bridge.drain_calls().pop().unwrap();
+    assert_eq!(call.transport_method, "RequestPlayerInfo");
+    assert_eq!(call.method, "RequestPlayerInfo");
+    assert_eq!(call.request_id, Some(7));
+    assert_eq!(call.arguments, vec![ScaleformValue::from("inventory")]);
+    assert_eq!(call.dispatch, ScaleformHostDispatch::GameDelegateResponse);
     assert!(bridge.unknown_methods().is_empty());
+    assert!(bridge.unanswered_methods().is_empty());
+}
+
+#[test]
+fn skyrim_catalog_distinguishes_commands_requests_and_unknowns() {
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::SkyrimAvm1);
+
+    let command = bridge.record_call(
+        "PlaySound",
+        &[ExternalValue::from(1_i32), ExternalValue::from("UIMenuOK")],
+    );
+    assert_eq!(command.return_value, ExternalValue::Null);
+    assert!(command.callback_response.is_none());
+
+    let request = bridge.record_call("RequestItemCardInfo", &[ExternalValue::from(2_i32)]);
+    assert_eq!(request.return_value, ExternalValue::Null);
+    assert!(request.callback_response.is_none());
+
+    bridge.record_call("UnmappedMethod", &[ExternalValue::from(3_i32)]);
+
+    let calls = bridge.drain_calls();
+    assert_eq!(calls[0].dispatch, ScaleformHostDispatch::Queued);
+    assert_eq!(calls[0].request_id, Some(1));
+    assert_eq!(calls[0].arguments, vec![ScaleformValue::from("UIMenuOK")]);
+    assert_eq!(calls[1].dispatch, ScaleformHostDispatch::MissingResponse);
+    assert_eq!(calls[2].dispatch, ScaleformHostDispatch::Unknown);
+    assert_eq!(
+        bridge.unanswered_methods(),
+        vec!["RequestItemCardInfo".to_string()]
+    );
+    assert_eq!(bridge.unknown_methods(), vec!["UnmappedMethod".to_string()]);
+
+    // Registering a queued engine handler does not satisfy GameDelegate's
+    // synchronous callback contract; only a configured response does.
+    bridge.register_method("RequestItemCardInfo");
+    assert_eq!(
+        bridge.unanswered_methods(),
+        vec!["RequestItemCardInfo".to_string()]
+    );
+}
+
+#[test]
+fn skyrim_catalog_is_pinned_sorted_and_profile_specific() {
+    let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::SkyrimAvm1);
+    assert_eq!(catalog.len(), 74);
+    assert!(catalog.contains("PlaySound"));
+    assert_eq!(
+        catalog.find("RequestPlayerInfo").unwrap().kind,
+        ScaleformHostMethodKind::Request
+    );
+    assert_eq!(
+        catalog
+            .methods()
+            .iter()
+            .filter(|method| method.kind == ScaleformHostMethodKind::Request)
+            .count(),
+        12
+    );
+    assert!(catalog
+        .methods()
+        .windows(2)
+        .all(|methods| methods[0].name < methods[1].name));
+
+    let fallout = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
+    assert!(fallout.is_empty());
+    assert!(!fallout.contains("PlaySound"));
 }
 
 #[test]

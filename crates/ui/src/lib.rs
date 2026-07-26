@@ -6,11 +6,13 @@
 //! Note: UiManager is NOT an ECS Resource because Ruffle's Player is not Send+Sync.
 //! It lives in the main loop alongside VulkanContext.
 
+mod catalog;
 mod host;
 mod player;
 mod profile;
 
-pub use host::{ScaleformHostBridge, ScaleformHostCall, ScaleformValue};
+pub use catalog::{ScaleformHostCatalog, ScaleformHostMethod, ScaleformHostMethodKind};
+pub use host::{ScaleformHostBridge, ScaleformHostCall, ScaleformHostDispatch, ScaleformValue};
 pub use player::SwfPlayer;
 pub use profile::ScaleformProfile;
 
