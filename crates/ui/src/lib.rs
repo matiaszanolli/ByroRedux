@@ -9,14 +9,18 @@
 mod avm2_host;
 mod catalog;
 mod host;
+mod navigator;
 mod player;
 mod profile;
+
+use std::rc::Rc;
 
 pub use avm2_host::ScaleformHostObjectState;
 pub use catalog::{
     ScaleformHostCatalog, ScaleformHostMethod, ScaleformHostMethodKind, ScaleformHostObject,
 };
 pub use host::{ScaleformHostBridge, ScaleformHostCall, ScaleformHostDispatch, ScaleformValue};
+pub use navigator::{ScaleformResourceLoad, ScaleformResourceProvider};
 pub use player::SwfPlayer;
 pub use profile::ScaleformProfile;
 
@@ -62,6 +66,26 @@ impl UiManager {
         profile: ScaleformProfile,
     ) -> anyhow::Result<()> {
         let player = SwfPlayer::new_with_profile(swf_data, self.width, self.height, profile)?;
+        self.install_player(player, name);
+        Ok(())
+    }
+
+    /// Load a menu and its relative `ImportAssets` dependencies from one
+    /// Gamebryo archive resource provider.
+    pub fn load_swf_from_resource_provider(
+        &mut self,
+        provider: Rc<dyn ScaleformResourceProvider>,
+        movie_path: &str,
+        name: &str,
+        profile: ScaleformProfile,
+    ) -> anyhow::Result<()> {
+        let player = SwfPlayer::from_resource_provider(
+            provider,
+            movie_path,
+            self.width,
+            self.height,
+            profile,
+        )?;
         self.install_player(player, name);
         Ok(())
     }

@@ -6,9 +6,11 @@
 
 use anyhow::{anyhow, Result};
 use std::any::Any;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use ruffle_core::external::Value as ExternalValue;
+use ruffle_core::limits::ExecutionLimit;
 use ruffle_core::tag_utils::SwfMovie;
 use ruffle_core::{FloatDuration, LoadBehavior, Player, PlayerBuilder};
 use ruffle_render_wgpu::backend::{
@@ -18,7 +20,13 @@ use ruffle_render_wgpu::descriptors::Descriptors;
 use ruffle_render_wgpu::target::TextureTarget;
 
 use crate::avm2_host::{inject_host_object_adapter, DESTROY_CALLBACK};
-use crate::{ScaleformHostBridge, ScaleformHostObjectState, ScaleformProfile, ScaleformValue};
+use crate::navigator::{ScaleformNavigator, ScaleformNavigatorRuntime};
+use crate::{
+    ScaleformHostBridge, ScaleformHostObjectState, ScaleformProfile, ScaleformResourceLoad,
+    ScaleformResourceProvider, ScaleformValue,
+};
+
+const MAX_ARCHIVE_PRELOAD_PASSES: usize = 64;
 
 /// Wraps a Ruffle Flash player instance with offscreen wgpu rendering.
 ///
@@ -32,6 +40,8 @@ pub struct SwfPlayer {
     dirty: bool,
     host_bridge: ScaleformHostBridge,
     host_object_state: ScaleformHostObjectState,
+    navigator_runtime: Option<ScaleformNavigatorRuntime>,
+    resource_error: Option<String>,
 }
 
 impl SwfPlayer {
@@ -46,7 +56,7 @@ impl SwfPlayer {
             .map_err(|error| anyhow!("Failed to prepare Scaleform host object: {error}"))?;
         let movie = SwfMovie::from_data(&swf_data, "file:///menu.swf".to_string(), None)
             .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
-        Self::from_movie(movie, width, height, profile, host_object_state)
+        Self::from_movie(movie, width, height, profile, host_object_state, None)
     }
 
     /// Create a player with an explicit Bethesda Scaleform profile.
@@ -67,7 +77,50 @@ impl SwfPlayer {
             .map_err(|error| anyhow!("Failed to prepare Scaleform host object: {error}"))?;
         let movie = SwfMovie::from_data(&swf_data, "file:///menu.swf".to_string(), None)
             .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
-        Self::from_movie(movie, width, height, profile, host_object_state)
+        Self::from_movie(movie, width, height, profile, host_object_state, None)
+    }
+
+    /// Load a menu and all of its relative imports through one archive source.
+    pub fn from_resource_provider(
+        provider: Rc<dyn ScaleformResourceProvider>,
+        movie_path: &str,
+        width: u32,
+        height: u32,
+        profile: ScaleformProfile,
+    ) -> Result<Self> {
+        let swf_data = provider
+            .load(movie_path)
+            .map_err(|error| anyhow!("Failed to load Scaleform movie {movie_path:?}: {error}"))?
+            .ok_or_else(|| anyhow!("Scaleform movie not found in archive: {movie_path:?}"))?;
+        let detected = ScaleformProfile::detect(&swf_data)?;
+        if detected != profile {
+            return Err(anyhow!(
+                "Scaleform profile mismatch: requested {profile:?}, movie requires {detected:?}"
+            ));
+        }
+        let catalog = crate::ScaleformHostCatalog::for_profile(profile);
+        let (swf_data, host_object_state) = inject_host_object_adapter(&swf_data, catalog)
+            .map_err(|error| anyhow!("Failed to prepare Scaleform host object: {error}"))?;
+        let (navigator, runtime, movie_url) = ScaleformNavigatorRuntime::create(
+            movie_path, &swf_data, provider,
+        )
+        .map_err(|error| anyhow!("Failed to configure Scaleform archive loading: {error}"))?;
+        let movie = SwfMovie::from_data(&swf_data, movie_url, None)
+            .map_err(|e| anyhow!("Failed to parse SWF: {e}"))?;
+        let mut player = Self::from_movie(
+            movie,
+            width,
+            height,
+            profile,
+            host_object_state,
+            Some((navigator, runtime)),
+        )?;
+        if !player.drive_archive_preload()? {
+            return Err(anyhow!(
+                "Scaleform archive preload did not settle after {MAX_ARCHIVE_PRELOAD_PASSES} passes"
+            ));
+        }
+        Ok(player)
     }
 
     fn from_movie(
@@ -76,6 +129,7 @@ impl SwfPlayer {
         height: u32,
         profile: ScaleformProfile,
         host_object_state: ScaleformHostObjectState,
+        navigator: Option<(ScaleformNavigator, ScaleformNavigatorRuntime)>,
     ) -> Result<Self> {
         let host_bridge = ScaleformHostBridge::new(profile);
 
@@ -101,14 +155,20 @@ impl SwfPlayer {
             .map_err(|e| anyhow!("Failed to create render backend: {e}"))?;
 
         // Build the Ruffle player with the parsed movie.
-        let player = PlayerBuilder::new()
+        let mut player_builder = PlayerBuilder::new()
             .with_renderer(renderer)
             .with_video(ruffle_video_software::backend::SoftwareVideoBackend::new())
             .with_external_interface(host_bridge.provider())
             .with_movie(movie)
             .with_load_behavior(LoadBehavior::Blocking)
-            .with_viewport_dimensions(width, height, 1.0)
-            .build();
+            .with_viewport_dimensions(width, height, 1.0);
+        let navigator_runtime = if let Some((navigator, runtime)) = navigator {
+            player_builder = player_builder.with_navigator(navigator);
+            Some(runtime)
+        } else {
+            None
+        };
+        let player = player_builder.build();
 
         // Start playback.
         player.lock().unwrap().set_is_playing(true);
@@ -129,14 +189,40 @@ impl SwfPlayer {
             dirty: true,
             host_bridge,
             host_object_state,
+            navigator_runtime,
+            resource_error: None,
         })
     }
 
     /// Advance the player by `dt` seconds. Ruffle handles frame accumulation
     /// internally — just call tick() each frame with the real delta time.
     pub fn tick(&mut self, dt: f64) {
-        let mut player = self.player.lock().unwrap();
-        player.tick(FloatDuration::from_secs(dt));
+        if self.resource_error.is_some() {
+            return;
+        }
+        if self.navigator_runtime.is_some() {
+            match self.drive_archive_preload() {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(error) => {
+                    let error = error.to_string();
+                    log::error!("{error}");
+                    self.resource_error = Some(error);
+                    return;
+                }
+            }
+        }
+        {
+            let mut player = self.player.lock().unwrap();
+            player.tick(FloatDuration::from_secs(dt));
+        }
+        if let Some(runtime) = &mut self.navigator_runtime {
+            runtime.run_until_stalled();
+            if let Some(error) = runtime.first_error() {
+                log::error!("{error}");
+                self.resource_error = Some(error);
+            }
+        }
         self.dirty = true;
     }
 
@@ -197,6 +283,24 @@ impl SwfPlayer {
         self.host_object_state
     }
 
+    /// Current root timeline frame, if playback has started.
+    pub fn current_frame(&self) -> Option<u16> {
+        self.player.lock().unwrap().current_frame()
+    }
+
+    /// Successful relative resources loaded through the archive navigator.
+    pub fn resource_loads(&self) -> Vec<ScaleformResourceLoad> {
+        self.navigator_runtime
+            .as_ref()
+            .map(ScaleformNavigatorRuntime::loads)
+            .unwrap_or_default()
+    }
+
+    /// First archive loading failure encountered after construction.
+    pub fn resource_error(&self) -> Option<&str> {
+        self.resource_error.as_deref()
+    }
+
     /// Invoke a callback registered through `ExternalInterface.addCallback`.
     ///
     /// `None` distinguishes an unknown callback from a registered callback
@@ -218,6 +322,27 @@ impl SwfPlayer {
             .call_internal_interface(name, arguments);
         self.dirty = true;
         Some(ScaleformValue::from(&result))
+    }
+
+    fn drive_archive_preload(&mut self) -> Result<bool> {
+        for _ in 0..MAX_ARCHIVE_PRELOAD_PASSES {
+            let finished = {
+                let mut execution_limit = ExecutionLimit::none();
+                self.player.lock().unwrap().preload(&mut execution_limit)
+            };
+            let runtime = self
+                .navigator_runtime
+                .as_mut()
+                .expect("archive preload requires a navigator runtime");
+            runtime.run_until_stalled();
+            if let Some(error) = runtime.first_error() {
+                return Err(anyhow!("Scaleform archive preload failed: {error}"));
+            }
+            if finished {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 

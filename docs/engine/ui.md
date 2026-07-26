@@ -12,14 +12,16 @@ scratch and without linking to Adobe's GFx runtime.
 
 Source: [`crates/ui/src/`](../../crates/ui/src/)
 
-> Status note (2026-07-25): R4 selected pinned Ruffle plus ByroRedux-owned
+> Status note (2026-07-26): R4 selected pinned Ruffle plus ByroRedux-owned
 > Bethesda profiles. The first M48 slice now includes profile detection,
 > a bidirectional ExternalInterface bridge, and a pinned 74-method
 > Skyrim/SkyUI host catalog. The second slice adds Fallout 4's
 > `BGSCodeObj` lifecycle, a 129-method reconstructed-vanilla catalog, and
-> an injected AVM2 forwarding adapter. Method behavior, complete
-> archive-grounded FO4 coverage, menu lifecycle, input, and archive-backed
-> resources remain integration work.
+> an injected AVM2 forwarding adapter. The third slice adds a BSA/BA2-backed
+> Ruffle navigator and executor-driven `ImportAssets` preload; the installed
+> Fallout 4 HUD now resolves `fonts_en.swf` and reaches frame 1. Method
+> behavior, complete archive-grounded FO4 coverage, menu lifecycle, and input
+> remain integration work.
 
 ## At a glance
 
@@ -30,8 +32,8 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 | Ruffle render backend  | `ruffle_render_wgpu` on its **own** wgpu/Vulkan device (separate from the engine's `ash` Vulkan) |
 | Render path            | Ruffle → wgpu offscreen `TextureTarget` → `capture_frame()` CPU RGBA → Vulkan texture upload → fullscreen quad |
 | Lifetime               | `UiManager` is **not** an ECS resource — Ruffle's `Player` is not `Send + Sync`; it lives in the main loop alongside `VulkanContext` |
-| Status                 | Loose SWF demo working (`--swf path.swf`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional host bridge; Skyrim `GameDelegate` and Fallout 4 `BGSCodeObj` contracts |
-| Pending                | Host-method behavior, complete installed-FO4 inventory, archive-backed Ruffle navigator, remaining GFx stubs, Papyrus↔UI bridge, input routing, fonts, full menu pack |
+| Status                 | Loose SWF demo working (`--swf path.swf`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional host bridge; Skyrim `GameDelegate` and Fallout 4 `BGSCodeObj` contracts; BSA/BA2-relative `ImportAssets` loading |
+| Pending                | Host-method behavior, complete installed-FO4 inventory/lifecycle, remaining GFx stubs, Papyrus↔UI bridge, input routing, font fidelity, full menu pack |
 
 ## Why Ruffle?
 
@@ -67,6 +69,8 @@ crates/ui/src/
 │                callback discovery, typed values, diagnostics/responses
 ├── lib.rs       UiManager — top-level handle: owns the active SwfPlayer,
 │                visibility/menu-name/viewport state, load/tick/render/close
+├── navigator.rs Archive-backed relative URL resolution, resource diagnostics,
+│                Ruffle future executor, and ImportAssets preload compatibility
 ├── player.rs    SwfPlayer — Ruffle wrapper, own wgpu/Vulkan device,
 │                offscreen TextureTarget, capture_frame() → cached RGBA buffer
 └── profile.rs   Skyrim AVM1 / Fallout 4 AVM2 host profiles and detection
@@ -83,6 +87,9 @@ SWF file bytes
         │
         ▼  ruffle_core::tag_utils::SwfMovie::from_data
 parsed SwfMovie
+        │
+        ├── ImportAssets URL → navigator → BSA/BA2 resource provider
+        │                         → local future executor → continued preload
         │
         ▼  PlayerBuilder::new().with_renderer(WgpuRenderBackend).with_movie(..).build()
 ruffle_core::Player (Arc<Mutex<…>>; advances frames, runs ActionScript)
@@ -125,14 +132,25 @@ pub struct SwfPlayer {
     pixel_buffer: Vec<u8>,   // last captured RGBA8, reused frame to frame
     dirty: bool,             // set on tick(), cleared after a successful render()
     host_object_state: ScaleformHostObjectState,
+    navigator_runtime: Option<ScaleformNavigatorRuntime>,
 }
 
 impl SwfPlayer {
     pub fn new(swf_data: &[u8], width: u32, height: u32) -> anyhow::Result<Self>;
+    pub fn from_resource_provider(
+        provider: Rc<dyn ScaleformResourceProvider>,
+        movie_path: &str,
+        width: u32,
+        height: u32,
+        profile: ScaleformProfile,
+    ) -> anyhow::Result<Self>;
     pub fn tick(&mut self, dt: f64);          // seconds; wrapped in FloatDuration internally
     pub fn render(&mut self) -> Option<&[u8]>; // borrows pixel_buffer; None if not dirty
     pub fn dimensions(&self) -> (u32, u32);
     pub fn host_object_state(&self) -> ScaleformHostObjectState;
+    pub fn current_frame(&self) -> Option<u16>;
+    pub fn resource_loads(&self) -> Vec<ScaleformResourceLoad>;
+    pub fn resource_error(&self) -> Option<&str>;
 }
 ```
 
@@ -144,9 +162,32 @@ already-resident SWF bytes, and starts playback (`set_is_playing(true)`).
 For a Fallout 4 contract movie, the in-memory ABC adapter is inserted before
 this parse/build sequence; the source asset on disk is never modified.
 
+`from_resource_provider()` loads the root and relative dependencies through
+the same source. `Ba2Archive` and `BsaArchive` implement
+`ScaleformResourceProvider`; other overlay/mod stacks can implement the
+one-method trait without coupling Ruffle to a particular archive format.
+The virtual root URL preserves the menu's archive directory, so Fallout 4's
+`fonts_en.swf` request from `interface\hudmenu.swf` resolves to
+`interface\fonts_en.swf`. The player retains Ruffle's local executor and
+alternates unlimited preload passes with `run_until_stalled()` outside the
+player mutex until each queued import completes. Missing or failed resources
+are surfaced through construction errors or `resource_error()` rather than
+leaving the root silently parked before frame 1.
+
+Pinned Ruffle initializes `ImportAssets` children at preload frame zero while
+its AVM2 `DoABC`/`SymbolClass` preloader indexes `frame - 1`. Fallout 4's
+`fonts_en.swf` exercises that underflow. For paths proven to be
+`ImportAssets` targets, the navigator inserts a raw zero-length `ShowFrame`
+boundary immediately before the first affected tag. This restores the frame
+index Ruffle normally has for a root movie without reserializing the SWF's
+other tags. Ordinary dynamic movie loads are not rewritten, and
+`ScaleformResourceLoad::import_preload_rewritten` records when the workaround
+was applied.
+
 `tick(dt)` advances Ruffle's clock (`Player::tick(FloatDuration::from_secs(dt))`)
 and runs any ActionScript that wants to fire (timers, frame scripts,
-button handlers), then marks the player **dirty**.
+button handlers), pumps any newly queued archive future after releasing the
+player lock, then marks the player **dirty**.
 
 `render()` is a no-op fast path when not dirty. When dirty it calls
 `Player::render()`, downcasts the boxed renderer back to the concrete
@@ -170,6 +211,13 @@ pub struct UiManager {
 impl UiManager {
     pub fn new(width: u32, height: u32) -> Self;
     pub fn load_swf(&mut self, swf_data: &[u8], name: &str) -> anyhow::Result<()>;
+    pub fn load_swf_from_resource_provider(
+        &mut self,
+        provider: Rc<dyn ScaleformResourceProvider>,
+        movie_path: &str,
+        name: &str,
+        profile: ScaleformProfile,
+    ) -> anyhow::Result<()>;
     pub fn tick(&mut self, dt: f64);             // forwards to the active player when visible
     pub fn render(&mut self) -> Option<&[u8]>;   // None when hidden or no player
     pub fn close(&mut self);                      // drops the player, clears state
@@ -341,22 +389,21 @@ F4SE independently demonstrates the same general extension pattern by
 installing function objects on `root.f4se` in
 [`Hooks_Scaleform.cpp`](https://github.com/ianpatt/f4se/blob/master/f4se/Hooks_Scaleform.cpp).
 
-The adapter is runtime-tested with a synthetic AVM2 contract, and the
-installed `HUDMenu.swf` is rewritten and reparsed in an ignored corpus smoke.
-That installed HUD does not yet reach frame 1 in a standalone player:
-unlimited Ruffle preload still returns incomplete at its unresolved
-`ImportAssets` boundary. The old smoke therefore proved parsing, not 120
-executed frames. Resolving imported SWFs through the game archives is the
-next blocking UI slice; only after that can the readiness callback and full
-menu lifecycle be asserted against the installed corpus. The 129-method
-source catalog is intentionally not described as exhaustive—installed
-holotape programs and future DLC/mod menus can still surface additional
-methods through the existing unknown-method diagnostics.
+The adapter is runtime-tested with a synthetic AVM2 contract. A second
+synthetic movie pins archive URL resolution, AVM2 import rewriting, executor
+pumping, completed preload, and frame-1 advancement. The ignored installed
+corpus check now loads `HUDMenu.swf` and `fonts_en.swf` from
+`Fallout4 - Interface.ba2`, observes the targeted imported-SWF workaround,
+and reaches frame 1. This supersedes the old parse-only smoke. The readiness
+callback and broader menu lifecycle still need installed-corpus assertions.
+The 129-method source catalog is intentionally not described as
+exhaustive—installed holotape programs and future DLC/mod menus can still
+surface additional methods through the existing unknown-method diagnostics.
 
 | Profile | What exists now | What must be created |
 |---|---|---|
 | Skyrim AVM1 | `GameDelegate` transport, 74 recognized methods, 12 request contracts, response re-entry | Per-method engine behavior and remaining `_global.gfx` compatibility |
-| Fallout 4 AVM2 | `BGSCodeObj` lifecycle, 129 reconstructed-source methods, generated forwarding ABC, object-aware dispatch, installed-HUD rewrite/parse smoke | Archive-backed imports, installed-corpus lifecycle assertion, inventory completion, per-method behavior |
+| Fallout 4 AVM2 | `BGSCodeObj` lifecycle, 129 reconstructed-source methods, generated forwarding ABC, object-aware dispatch, BA2-backed imports, installed HUD reaches frame 1 | Installed-corpus lifecycle assertion, inventory completion, per-method behavior |
 | FO3/FNV | XML corpus confirmed; no SWF profile | Separate legacy XML UI runtime or translation path |
 
 ### Papyrus ↔ UI bridge
@@ -378,9 +425,10 @@ does not yet capture input away from the world.
 
 ### Font loading
 
-Bethesda ships custom fonts (`fontlib_loader.swf`) that the menus load at
-startup. Ruffle has a font subsystem; we need to feed the FNV / Skyrim
-font assets through it.
+Bethesda ships custom font SWFs that menus load at startup. The archive
+navigator now delivers Fallout 4's `fonts_en.swf` through `ImportAssets`;
+per-game font mapping, fallback selection, and visual-fidelity coverage
+remain.
 
 ### Menu pack
 
@@ -393,7 +441,7 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-The UI crate has seven default tests plus two ignored installed-corpus
+The UI crate has 13 default tests plus two ignored installed-corpus
 smokes. The synthetic non-Bethesda SWFs come from Ruffle's pinned
 ExternalInterface fixtures:
 
@@ -405,6 +453,10 @@ ExternalInterface fixtures:
   profile isolation, Skyrim request-ID normalization and response routing,
   dispatch diagnostics, monotonically sequenced calls, and nested value
   conversion.
+- Navigator coverage pins relative archive resolution, root confinement and
+  percent decoding, the imported-AVM2 frame-boundary workaround, executor
+  pumping, and frame-1 advancement. The ignored Fallout 4 corpus test repeats
+  that sequence against the installed BA2.
 - The renderer-side UI contract is covered by tests, not the Ruffle glue:
   `UiVertex` size/offsets (`crates/renderer/src/vertex.rs`), the bindless
   layout match between `triangle.frag` and `ui.frag`

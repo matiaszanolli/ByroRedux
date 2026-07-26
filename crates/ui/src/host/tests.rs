@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use byroredux_bsa::{Ba2Archive, BsaArchive};
@@ -8,7 +9,6 @@ use ruffle_core::tag_utils::SwfMovie;
 use ruffle_core::{FloatDuration, LoadBehavior, Player, PlayerBuilder};
 
 use super::{ScaleformHostBridge, ScaleformHostDispatch, ScaleformValue};
-use crate::avm2_host::inject_host_object_adapter;
 use crate::{
     ScaleformHostCatalog, ScaleformHostMethodKind, ScaleformHostObjectState, ScaleformProfile,
 };
@@ -297,20 +297,33 @@ fn installed_skyrim_hudmenu_loads_with_avm1_profile() {
 
 #[test]
 #[ignore = "requires an installed Fallout 4 corpus"]
-fn installed_fallout4_hudmenu_rewrites_with_avm2_profile() {
+fn installed_fallout4_hudmenu_reaches_frame_one_with_archive_imports() {
     let archive_path = data_dir(
         "BYROREDUX_FO4_DATA",
         "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
     )
     .join("Fallout4 - Interface.ba2");
     let archive = Ba2Archive::open(&archive_path).expect("open Fallout 4 interface BA2");
-    let swf = archive
-        .extract("interface\\hudmenu.swf")
-        .expect("extract Fallout 4 HUDMenu.swf");
+    let mut player = crate::SwfPlayer::from_resource_provider(
+        Rc::new(archive),
+        "interface\\hudmenu.swf",
+        64,
+        64,
+        ScaleformProfile::Fallout4Avm2,
+    )
+    .expect("load Fallout 4 HUD and its archive imports");
+    assert_eq!(
+        player.host_object_state(),
+        ScaleformHostObjectState::AdapterInjected
+    );
+    assert_eq!(
+        player.resource_loads()[0].archive_path,
+        "interface\\fonts_en.swf"
+    );
+    assert!(player.resource_loads()[0].import_preload_rewritten);
 
-    let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
-    let (swf, state) = inject_host_object_adapter(&swf, bridge.catalog()).unwrap();
-    assert_eq!(state, ScaleformHostObjectState::AdapterInjected);
-    let (_player, bridge) = run_movie(&swf, bridge);
-    assert_eq!(bridge.profile(), ScaleformProfile::Fallout4Avm2);
+    player.tick(1.0 / 30.0);
+    assert_eq!(player.current_frame(), Some(1));
+    assert_eq!(player.resource_error(), None);
+    assert_eq!(player.profile(), ScaleformProfile::Fallout4Avm2);
 }

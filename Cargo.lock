@@ -700,6 +700,7 @@ name = "byroredux-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "byroredux-bsa",
  "byroredux-core",
  "futures",
@@ -710,6 +711,7 @@ dependencies = [
  "ruffle_render_wgpu",
  "ruffle_video_software",
  "swf",
+ "url",
  "wgpu",
 ]
 
