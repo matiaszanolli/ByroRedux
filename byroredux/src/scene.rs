@@ -636,24 +636,74 @@ pub(crate) fn setup_scene(
                     FLOOR_PROBE_RANGE_BU,
                 )
             };
-            // Second rung — the near-door probe can legitimately miss when
-            // the nudge lands over a stairwell gap, balcony edge, or
-            // multi-level drop (the room isn't flat near door height at
-            // all). Widen to the whole cell's vertical extent, same
-            // technique the no-door ray-cast branch below already uses,
-            // rather than giving up straight to the (possibly floor-less)
-            // door height.
-            let wide_floor_y = near_door_floor_y.or_else(|| {
-                aabb.and_then(|(_, max, _)| {
+            // Second rung — the nudge itself can be the problem. It moves
+            // the XZ 64 BU into the room, and when that lands over a hole
+            // (Skyrim's `BleakFallsBarrow01`: the nudged XZ has no floor
+            // anywhere near door height) the threshold the door actually
+            // opens onto is still solid. Doors sit at floor level by
+            // construction — the same premise rung 1 relies on — so probe
+            // the UN-nudged door XZ before resorting to a deep sweep.
+            // Standing on the threshold is a better spawn than the bottom
+            // of whatever shaft the nudge happened to point at.
+            let door_xz_floor_y = near_door_floor_y.or_else(|| {
+                let pw = world.resource::<byroredux_physics::PhysicsWorld>();
+                let probe_origin = Vec3::new(door_pos.x, door_pos.y + 50.0, door_pos.z);
+                pw.cast_capsule_down(
+                    probe_origin,
+                    cc.half_height,
+                    cc.radius,
+                    FLOOR_PROBE_RANGE_BU,
+                )
+            });
+
+            // Third rung — neither XZ has floor near door height, so the
+            // room genuinely isn't flat here (stairwell gap, balcony edge,
+            // multi-level drop). Sweep the cell's whole vertical extent.
+            //
+            // #2013 follow-up: this rung previously could not reach the
+            // cell floor at all. It destructured the AABB as `(_, max, _)`,
+            // discarding `min`, and substituted `door_pos.y` for the cell's
+            // bottom — so from an origin of `max.y + 50` it travelled only
+            // `(max.y - door_pos.y) + 150`, terminating 100 BU BELOW THE
+            // DOOR rather than below the cell. On `BleakFallsBarrow01` that
+            // is y=412 against colliders reaching y=-4514: the sweep
+            // covered 100 of the 5026 BU beneath the spawn and reported a
+            // miss, and the character free-fell out of the world from door
+            // height with every asset loaded (black screen, 0 draws). Now
+            // spans `max.y - min.y` like the no-door ray-cast branch below,
+            // which had this right all along.
+            let wide_floor_y = door_xz_floor_y.or_else(|| {
+                aabb.and_then(|(min, max, _)| {
                     let pw = world.resource::<byroredux_physics::PhysicsWorld>();
                     let probe_origin = Vec3::new(nudged_x, max[1] + 50.0, nudged_z);
-                    let max_distance = (max[1] - door_pos.y).max(1.0) + 150.0;
+                    let max_distance = (max[1] - min[1]).max(1.0) + 100.0;
                     pw.cast_capsule_down(probe_origin, cc.half_height, cc.radius, max_distance)
                 })
             });
             let floor_y = wide_floor_y;
+            // Which rung answered, so a bad spawn names its own cause in one
+            // run instead of needing a bisect. Derived by comparison rather
+            // than threaded through the `or_else` chain to keep the ladder
+            // readable.
+            let floor_rung = if near_door_floor_y.is_some() {
+                "nudged XZ near door height"
+            } else if door_xz_floor_y.is_some() {
+                "door XZ near door height (nudge landed over a hole)"
+            } else if wide_floor_y.is_some() {
+                "full-cell sweep at nudged XZ"
+            } else {
+                "none"
+            };
             let spawn_y = floor_y.unwrap_or(door_pos.y) + cc.half_height + 4.0;
-            let spawn = Vec3::new(nudged_x, spawn_y, nudged_z);
+            // Rung 2 resolves the threshold's own floor, so the capsule must
+            // stand on the threshold rather than at the nudged XZ it just
+            // rejected as floor-less.
+            let (spawn_x, spawn_z) = if near_door_floor_y.is_none() && door_xz_floor_y.is_some() {
+                (door_pos.x, door_pos.z)
+            } else {
+                (nudged_x, nudged_z)
+            };
+            let spawn = Vec3::new(spawn_x, spawn_y, spawn_z);
 
             let nudge_degraded = inward_xz.is_none();
             let floor_probe_failed = floor_y.is_none();
@@ -667,8 +717,8 @@ pub(crate) fn setup_scene(
                 nudge.x,
                 nudge.z,
                 match floor_y {
-                    Some(y) => format!("hit y={y:.1}"),
-                    None => "MISS (used door height)".to_string(),
+                    Some(y) => format!("hit y={y:.1} via {floor_rung}"),
+                    None => "MISS on all 3 rungs (used door height)".to_string(),
                 },
                 spawn.x,
                 spawn.y,
