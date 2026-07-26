@@ -7,6 +7,7 @@ use std::rc::Rc;
 use ruffle_core::context::UpdateContext;
 use ruffle_core::external::{ExternalInterfaceProvider, Value as ExternalValue};
 
+use crate::avm2_host::DESTROYED_EVENT;
 use crate::{ScaleformHostCatalog, ScaleformHostMethodKind, ScaleformProfile};
 
 type ResponseHandler = dyn Fn(&[ScaleformValue]) -> Vec<ScaleformValue>;
@@ -126,6 +127,7 @@ pub enum ScaleformHostDispatch {
 #[derive(Default)]
 struct BridgeState {
     next_sequence: u64,
+    code_object_destructions: u64,
     calls: VecDeque<ScaleformHostCall>,
     callbacks: BTreeSet<String>,
     known_methods: BTreeSet<String>,
@@ -229,6 +231,14 @@ impl ScaleformHostBridge {
         self.state.borrow().callbacks.contains(name)
     }
 
+    /// Completed Fallout 4 `onCodeObjDestruction` hooks observed by the bridge.
+    ///
+    /// The count remains available on cloned bridge handles after a
+    /// [`crate::SwfPlayer`] is dropped.
+    pub fn code_object_destruction_count(&self) -> u64 {
+        self.state.borrow().code_object_destructions
+    }
+
     /// Host methods observed without a corresponding registration or response.
     pub fn unknown_methods(&self) -> Vec<String> {
         self.state
@@ -256,6 +266,14 @@ impl ScaleformHostBridge {
     }
 
     fn record_call(&self, transport_method: &str, args: &[ExternalValue]) -> HostCallOutcome {
+        if transport_method == DESTROYED_EVENT {
+            self.state.borrow_mut().code_object_destructions += 1;
+            return HostCallOutcome {
+                return_value: ExternalValue::Null,
+                callback_response: None,
+            };
+        }
+
         let converted = args.iter().map(ScaleformValue::from).collect::<Vec<_>>();
         let normalized = self.normalize_call(transport_method, converted);
         let response_handler = self

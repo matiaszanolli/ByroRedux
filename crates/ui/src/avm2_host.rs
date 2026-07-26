@@ -4,26 +4,32 @@
 //! dynamic object with native functions, then calls `onCodeObjCreate` on the
 //! root. Ruffle intentionally keeps its AVM2 object model private, so the
 //! adapter is injected as ordinary ABC bytecode before Ruffle parses the SWF.
-//! The injected ActionScript schedules installation for the next AVM2 turn,
-//! fills the menu-created object, and forwards each call through
-//! ExternalInterface.
+//! The lifecycle class constructor is patched immediately after it initializes
+//! `BGSCodeObj`; that bootstrap fills the object and forwards each call through
+//! ExternalInterface without relying on Ruffle's private AVM2 object model.
 
+#[cfg(test)]
+use std::collections::BTreeSet;
+
+use swf::avm2::read::Reader;
 use swf::avm2::types::{
-    AbcFile, ConstantPool, Index, Method, MethodBody, MethodFlags, Multiname, Namespace, Op,
-    Script, Trait, TraitKind,
+    AbcFile, ConstantPool, Index, Method, MethodBody, MethodFlags, MethodParam, Multiname,
+    Namespace, Op, Script, Trait, TraitKind,
 };
 use swf::avm2::write::Writer;
+use swf::extensions::ReadSwfExt;
 use swf::{decompress_swf, parse_swf, write_swf, DoAbc2, DoAbc2Flag, SwfStr, Tag};
 
 use crate::ScaleformHostCatalog;
 
 const HELPER_PREFIX: &str = "__byro_fallout4_host_";
-const INSTALL_HELPER: &str = "__byro_fallout4_install";
+pub(crate) const INSTALL_HELPER: &str = "__byro_fallout4_install";
 const READY_HELPER: &str = "__byro_fallout4_ready";
 const DESTROY_HELPER: &str = "__byro_fallout4_destroy";
 pub(crate) const READY_CALLBACK: &str = "__byroBGSCodeObjReady";
 pub(crate) const LOADED_CALLBACK: &str = "__byroBGSAdapterLoaded";
 pub(crate) const DESTROY_CALLBACK: &str = "__byroBGSCodeObjDestroy";
+pub(crate) const DESTROYED_EVENT: &str = "__byroBGSCodeObjDestroyed";
 const ADAPTER_NAME: &str = "byroredux.fallout4.BGSCodeObj";
 
 /// Preparation state for a profile's native ActionScript host object.
@@ -62,24 +68,435 @@ pub(crate) fn inject_host_object_adapter(
         return Ok((swf_data.to_vec(), ScaleformHostObjectState::NotPresent));
     }
 
+    let object = catalog
+        .host_object()
+        .expect("contract scan requires a host-object profile");
+    let mut root_abc_index = None;
+    let mut root_class = None;
+    for (index, tag) in movie.tags.iter().enumerate() {
+        let data = match tag {
+            Tag::DoAbc(data) => Some(*data),
+            Tag::DoAbc2(do_abc) => Some(do_abc.data),
+            _ => None,
+        };
+        let Some(data) = data else {
+            continue;
+        };
+        let abc = Reader::new(data)
+            .read()
+            .map_err(|error| format!("parsing root ABC candidate: {error}"))?;
+        let contract_class = abc.instances.iter().find(|instance| {
+            [object.property, object.on_create, object.on_destroy]
+                .into_iter()
+                .all(|required| {
+                    instance.traits.iter().any(|trait_| {
+                        multiname_local_name(&abc, trait_.name).as_deref()
+                            == Some(required.as_bytes())
+                    })
+                })
+        });
+        if let Some(contract_class) = contract_class {
+            root_abc_index = Some(index);
+            root_class = qualified_name(&abc, contract_class.name);
+            break;
+        }
+    }
+    let root_abc_index = root_abc_index
+        .ok_or_else(|| "Fallout 4 BGSCodeObj lifecycle class was not found".to_string())?;
+    let root_class =
+        root_class.ok_or_else(|| "Fallout 4 lifecycle class has no qualified name".to_string())?;
+    let root_abc = match &movie.tags[root_abc_index] {
+        Tag::DoAbc(data) => *data,
+        Tag::DoAbc2(do_abc) => do_abc.data,
+        _ => unreachable!("root ABC index must reference an ABC tag"),
+    };
+    let patched_root_abc = patch_root_constructor(root_abc, &root_class)?;
+
     let adapter = build_adapter_abc(catalog)
         .map_err(|error| format!("building Fallout 4 AVM2 adapter: {error}"))?;
+    let replacement = match &movie.tags[root_abc_index] {
+        Tag::DoAbc(_) => Tag::DoAbc(&patched_root_abc),
+        Tag::DoAbc2(do_abc) => Tag::DoAbc2(DoAbc2 {
+            flags: do_abc.flags,
+            name: do_abc.name,
+            data: &patched_root_abc,
+        }),
+        _ => unreachable!("root ABC index must reference an ABC tag"),
+    };
+    movie.tags[root_abc_index] = replacement;
     let tag = Tag::DoAbc2(DoAbc2 {
         flags: DoAbc2Flag::empty(),
         name: SwfStr::from_utf8_str(ADAPTER_NAME),
         data: &adapter,
     });
-    let insertion_point = movie
-        .tags
-        .iter()
-        .position(|tag| matches!(tag, Tag::ShowFrame | Tag::End))
-        .unwrap_or(movie.tags.len());
-    movie.tags.insert(insertion_point, tag);
+    movie.tags.insert(root_abc_index, tag);
 
     let mut patched = Vec::new();
     write_swf(movie.header.swf_header(), &movie.tags, &mut patched)
         .map_err(|error| format!("serializing patched SWF: {error}"))?;
     Ok((patched, ScaleformHostObjectState::AdapterInjected))
+}
+
+fn qualified_name(abc: &AbcFile, index: Index<Multiname>) -> Option<Vec<u8>> {
+    let multiname = abc
+        .constant_pool
+        .multinames
+        .get(index.as_u30().checked_sub(1)? as usize)?;
+    let (namespace, name) = match multiname {
+        Multiname::QName { namespace, name } | Multiname::QNameA { namespace, name } => {
+            (*namespace, *name)
+        }
+        _ => return None,
+    };
+    let name = abc
+        .constant_pool
+        .strings
+        .get(name.as_u30().checked_sub(1)? as usize)?;
+    let namespace = abc
+        .constant_pool
+        .namespaces
+        .get(namespace.as_u30().checked_sub(1)? as usize)?;
+    let namespace = match namespace {
+        Namespace::Namespace(name)
+        | Namespace::Package(name)
+        | Namespace::PackageInternal(name)
+        | Namespace::Protected(name)
+        | Namespace::Explicit(name)
+        | Namespace::StaticProtected(name)
+        | Namespace::Private(name) => abc
+            .constant_pool
+            .strings
+            .get(name.as_u30().checked_sub(1)? as usize)?,
+    };
+
+    if namespace.is_empty() {
+        return Some(name.clone());
+    }
+    let mut qualified = namespace.clone();
+    qualified.push(b'.');
+    qualified.extend_from_slice(name);
+    Some(qualified)
+}
+
+fn multiname_local_name(abc: &AbcFile, index: Index<Multiname>) -> Option<Vec<u8>> {
+    let multiname = abc
+        .constant_pool
+        .multinames
+        .get(index.as_u30().checked_sub(1)? as usize)?;
+    let name = match multiname {
+        Multiname::QName { name, .. }
+        | Multiname::QNameA { name, .. }
+        | Multiname::RTQName { name }
+        | Multiname::RTQNameA { name }
+        | Multiname::Multiname { name, .. }
+        | Multiname::MultinameA { name, .. } => *name,
+        _ => return None,
+    };
+    abc.constant_pool
+        .strings
+        .get(name.as_u30().checked_sub(1)? as usize)
+        .cloned()
+}
+
+#[cfg(test)]
+pub(crate) fn referenced_host_methods(swf_data: &[u8]) -> Result<BTreeSet<String>, String> {
+    let decompressed =
+        decompress_swf(swf_data).map_err(|error| format!("decompressing SWF: {error}"))?;
+    let movie = parse_swf(&decompressed).map_err(|error| format!("parsing SWF: {error}"))?;
+    let mut methods = BTreeSet::new();
+
+    for tag in &movie.tags {
+        let data = match tag {
+            Tag::DoAbc(data) => Some(*data),
+            Tag::DoAbc2(do_abc) => Some(do_abc.data),
+            _ => None,
+        };
+        let Some(data) = data else {
+            continue;
+        };
+        let abc = Reader::new(data)
+            .read()
+            .map_err(|error| format!("parsing AVM2 host-call inventory: {error}"))?;
+        for body in &abc.method_bodies {
+            let mut reader = Reader::new(&body.code);
+            let mut ops = Vec::new();
+            while !reader.as_slice().is_empty() {
+                ops.push(
+                    reader
+                        .read_op()
+                        .map_err(|error| format!("reading AVM2 host-call inventory: {error}"))?,
+                );
+            }
+            for (index, op) in ops.iter().enumerate() {
+                let receiver = match op {
+                    Op::GetProperty { index }
+                    | Op::GetLex { index }
+                    | Op::FindPropStrict { index } => Some(*index),
+                    _ => None,
+                };
+                if !receiver.is_some_and(|receiver| {
+                    multiname_local_name(&abc, receiver).as_deref() == Some(b"BGSCodeObj")
+                }) {
+                    continue;
+                }
+
+                let method = method_called_with_bgs_receiver(&abc, &ops[index + 1..]);
+                let Some(method) = method else {
+                    continue;
+                };
+                if matches!(method.as_slice(), b"InitCodeObj" | b"ReleaseCodeObj") {
+                    continue;
+                }
+                let method = String::from_utf8(method)
+                    .map_err(|_| "non-UTF-8 BGSCodeObj method name".to_string())?;
+                methods.insert(method);
+            }
+        }
+    }
+    Ok(methods)
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+enum InventoryStackValue {
+    BgsCodeObj,
+    String(Vec<u8>),
+    Other,
+}
+
+#[cfg(test)]
+fn method_called_with_bgs_receiver(abc: &AbcFile, ops: &[Op]) -> Option<Vec<u8>> {
+    for mut stack in [
+        vec![InventoryStackValue::BgsCodeObj],
+        vec![InventoryStackValue::Other, InventoryStackValue::BgsCodeObj],
+    ] {
+        for op in ops.iter().take(32) {
+            match op {
+                Op::PushString { value } => {
+                    let value = abc
+                        .constant_pool
+                        .strings
+                        .get(value.as_u30().checked_sub(1)? as usize)?
+                        .clone();
+                    stack.push(InventoryStackValue::String(value));
+                }
+                Op::GetLocal { .. }
+                | Op::GetLex { .. }
+                | Op::FindPropStrict { .. }
+                | Op::GetGlobalScope
+                | Op::GetScopeObject { .. }
+                | Op::PushByte { .. }
+                | Op::PushShort { .. }
+                | Op::PushInt { .. }
+                | Op::PushUint { .. }
+                | Op::PushDouble { .. }
+                | Op::PushTrue
+                | Op::PushFalse
+                | Op::PushNull
+                | Op::PushUndefined
+                | Op::PushNaN => stack.push(InventoryStackValue::Other),
+                Op::GetProperty { .. } | Op::GetSlot { .. } => {
+                    stack.pop()?;
+                    stack.push(InventoryStackValue::Other);
+                }
+                Op::SetLocal { .. } | Op::Pop => {
+                    stack.pop()?;
+                }
+                Op::Dup => stack.push(stack.last()?.clone()),
+                Op::Swap => {
+                    let length = stack.len();
+                    if length < 2 {
+                        break;
+                    }
+                    stack.swap(length - 1, length - 2);
+                }
+                Op::CallProperty { index, num_args } | Op::CallPropVoid { index, num_args } => {
+                    let num_args = *num_args as usize;
+                    if stack.len() < num_args + 1 {
+                        break;
+                    }
+                    let arguments = stack.split_off(stack.len() - num_args);
+                    let receiver = stack.pop()?;
+                    let call_name = multiname_local_name(abc, *index)?;
+                    if matches!(receiver, InventoryStackValue::BgsCodeObj) && call_name != b"call" {
+                        return Some(call_name);
+                    }
+                    if call_name == b"call"
+                        && matches!(arguments.first(), Some(InventoryStackValue::BgsCodeObj))
+                    {
+                        if let Some(InventoryStackValue::String(method)) = arguments.get(1) {
+                            return Some(method.clone());
+                        }
+                    }
+                    if matches!(op, Op::CallProperty { .. }) {
+                        stack.push(InventoryStackValue::Other);
+                    }
+                }
+                Op::Coerce { .. }
+                | Op::CoerceA
+                | Op::CoerceB
+                | Op::CoerceD
+                | Op::CoerceI
+                | Op::CoerceO
+                | Op::CoerceS
+                | Op::CoerceU
+                | Op::ConvertB
+                | Op::ConvertD
+                | Op::ConvertI
+                | Op::ConvertO
+                | Op::ConvertS
+                | Op::ConvertU
+                | Op::AsType { .. } => {}
+                _ => break,
+            }
+        }
+    }
+    None
+}
+
+fn patch_root_constructor(abc_data: &[u8], root_class: &[u8]) -> Result<Vec<u8>, String> {
+    let mut abc = Reader::new(abc_data)
+        .read()
+        .map_err(|error| format!("parsing Fallout 4 root ABC: {error}"))?;
+    let instance = abc
+        .instances
+        .iter()
+        .find(|instance| qualified_name(&abc, instance.name).as_deref() == Some(root_class))
+        .ok_or_else(|| "root class disappeared while patching its ABC".to_string())?;
+    let init_method = instance.init_method.as_u30() as usize;
+    let body_index = abc
+        .methods
+        .get(init_method)
+        .and_then(|method| method.body)
+        .ok_or_else(|| "Fallout 4 root constructor has no method body".to_string())?
+        .as_u30() as usize;
+    let insertion_offset = {
+        let body = abc
+            .method_bodies
+            .get(body_index)
+            .ok_or_else(|| "Fallout 4 root constructor body index is invalid".to_string())?;
+        let mut reader = Reader::new(&body.code);
+        let mut insertion_offset = None;
+        while !reader.as_slice().is_empty() {
+            let op = reader
+                .read_op()
+                .map_err(|error| format!("reading Fallout 4 root constructor: {error}"))?;
+            let property = match op {
+                Op::InitProperty { index } | Op::SetProperty { index } => Some(index),
+                _ => None,
+            };
+            if property.is_some_and(|property| {
+                multiname_local_name(&abc, property).as_deref() == Some(b"BGSCodeObj")
+            }) {
+                insertion_offset = Some(body.code.len() - reader.as_slice().len());
+                break;
+            }
+        }
+        insertion_offset.ok_or_else(|| {
+            "Fallout 4 root constructor does not initialize BGSCodeObj".to_string()
+        })?
+    };
+    {
+        let body = &abc.method_bodies[body_index];
+        let mut reader = Reader::new(&body.code);
+        while !reader.as_slice().is_empty() {
+            let start = body.code.len() - reader.as_slice().len();
+            let op = reader
+                .read_op()
+                .map_err(|error| format!("validating Fallout 4 root constructor: {error}"))?;
+            let end = body.code.len() - reader.as_slice().len();
+            let crosses_insertion = |target: i64| {
+                (start < insertion_offset && target >= insertion_offset as i64)
+                    || (start >= insertion_offset && target < insertion_offset as i64)
+            };
+            let crosses = match op {
+                Op::IfEq { offset }
+                | Op::IfFalse { offset }
+                | Op::IfGe { offset }
+                | Op::IfGt { offset }
+                | Op::IfLe { offset }
+                | Op::IfLt { offset }
+                | Op::IfNe { offset }
+                | Op::IfNge { offset }
+                | Op::IfNgt { offset }
+                | Op::IfNle { offset }
+                | Op::IfNlt { offset }
+                | Op::IfStrictEq { offset }
+                | Op::IfStrictNe { offset }
+                | Op::IfTrue { offset }
+                | Op::Jump { offset } => crosses_insertion(end as i64 + offset as i64),
+                Op::LookupSwitch(switch) => {
+                    crosses_insertion(start as i64 + switch.default_offset as i64)
+                        || switch
+                            .case_offsets
+                            .iter()
+                            .any(|offset| crosses_insertion(start as i64 + *offset as i64))
+                }
+                _ => false,
+            };
+            if crosses {
+                return Err(
+                    "Fallout 4 root constructor branches across BGSCodeObj initialization"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    let empty_string = add_string(&mut abc.constant_pool.strings, Vec::new());
+    abc.constant_pool
+        .namespaces
+        .push(Namespace::Package(empty_string));
+    let public_namespace = Index::new(abc.constant_pool.namespaces.len() as u32);
+    let install_string = add_string(
+        &mut abc.constant_pool.strings,
+        INSTALL_HELPER.as_bytes().to_vec(),
+    );
+    let install = add_multiname(
+        &mut abc.constant_pool.multinames,
+        Multiname::QName {
+            namespace: public_namespace,
+            name: install_string,
+        },
+    );
+
+    let body = abc
+        .method_bodies
+        .get_mut(body_index)
+        .ok_or_else(|| "Fallout 4 root constructor body index is invalid".to_string())?;
+    let injection = write_ops(&[
+        Op::FindPropStrict { index: install },
+        Op::GetLocal { index: 0 },
+        Op::CallPropVoid {
+            index: install,
+            num_args: 1,
+        },
+    ])
+    .map_err(|error| format!("writing Fallout 4 root bootstrap: {error}"))?;
+    body.code.splice(
+        insertion_offset..insertion_offset,
+        injection.iter().copied(),
+    );
+    body.max_stack = body.max_stack.max(2);
+    let inserted = injection.len() as u32;
+    let insertion_offset = insertion_offset as u32;
+    for exception in &mut body.exceptions {
+        if exception.from_offset >= insertion_offset {
+            exception.from_offset += inserted;
+        }
+        if exception.to_offset >= insertion_offset {
+            exception.to_offset += inserted;
+        }
+        if exception.target_offset >= insertion_offset {
+            exception.target_offset += inserted;
+        }
+    }
+
+    let mut bytes = Vec::new();
+    Writer::new(&mut bytes)
+        .write(abc)
+        .map_err(|error| format!("serializing patched Fallout 4 root ABC: {error}"))?;
+    Ok(bytes)
 }
 
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
@@ -122,6 +539,8 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
         object.on_destroy.as_bytes().to_vec(),
         DESTROY_HELPER.as_bytes().to_vec(),
         DESTROY_CALLBACK.as_bytes().to_vec(),
+        DESTROYED_EVENT.as_bytes().to_vec(),
+        b"__byro_fallout4_root".to_vec(),
     ];
     let mut multinames = vec![
         qname(2, 4),  // flash.external::ExternalInterface
@@ -143,29 +562,39 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
         qname(1, 24), // destroy helper
     ];
     let external_interface = Index::new(1);
-    let loader_info = Index::new(2);
     let call = Index::new(3);
     let apply = Index::new(4);
     let unshift = Index::new(5);
-    let get_loader_info = Index::new(6);
-    let content = Index::new(9);
     let code_object = Index::new(10);
     let on_create = Index::new(11);
     let install_helper = Index::new(12);
     let add_callback = Index::new(13);
     let ready_helper = Index::new(14);
-    let set_timeout = Index::new(15);
     let on_destroy = Index::new(16);
     let destroy_helper = Index::new(17);
     let ready_callback_string = Index::new(19);
     let loaded_callback_string = Index::new(22);
     let destroy_callback_string = Index::new(25);
+    let destroyed_event_string = Index::new(26);
+    let root_slot_string: Index<String> = Index::new(27);
+    let root_slot = add_multiname(&mut multinames, qname(1, root_slot_string.0));
 
     let mut methods = Vec::with_capacity(catalog.len() + 4);
     let mut method_bodies = Vec::with_capacity(catalog.len() + 4);
-    let mut traits = Vec::with_capacity(catalog.len() + 3);
+    let mut traits = Vec::with_capacity(catalog.len() + 4);
     let mut helper_multinames = Vec::with_capacity(catalog.len());
     let mut method_property_multinames = Vec::with_capacity(catalog.len());
+    traits.push(Trait {
+        name: root_slot,
+        kind: TraitKind::Slot {
+            slot_id: 1,
+            type_name: Index::new(0),
+            value: None,
+        },
+        metadata: Vec::new(),
+        is_final: false,
+        is_override: false,
+    });
 
     for (index, method) in catalog.methods().iter().enumerate() {
         let helper_string = add_string(&mut strings, helper_name(index));
@@ -274,18 +703,20 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
         code: write_ops(&[
             Op::GetLocal { index: 0 },
             Op::PushScope,
-            Op::GetLex { index: loader_info },
-            Op::GetLex {
-                index: helper_multinames[0],
-            },
-            Op::CallProperty {
-                index: get_loader_info,
-                num_args: 1,
-            },
-            Op::GetProperty { index: content },
+            Op::GetLex { index: root_slot },
             Op::CallPropVoid {
                 index: on_destroy,
                 num_args: 0,
+            },
+            Op::GetLex {
+                index: external_interface,
+            },
+            Op::PushString {
+                value: destroyed_event_string,
+            },
+            Op::CallPropVoid {
+                index: call,
+                num_args: 1,
             },
             Op::ReturnVoid,
         ])?,
@@ -302,7 +733,11 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
     let installer_body = Index::new(method_bodies.len() as u32);
     methods.push(Method {
         name: Index::new(16),
-        params: Vec::new(),
+        params: vec![MethodParam {
+            name: None,
+            kind: Index::new(0),
+            default_value: None,
+        }],
         return_type: Index::new(0),
         flags: MethodFlags::empty(),
         body: Some(installer_body),
@@ -310,29 +745,22 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
     let mut install_ops = vec![
         Op::GetLocal { index: 0 },
         Op::PushScope,
-        Op::GetLex { index: loader_info },
-        Op::GetLex {
-            index: helper_multinames[0],
-        },
-        Op::CallProperty {
-            index: get_loader_info,
-            num_args: 1,
-        },
-        Op::GetProperty { index: content },
-        Op::SetLocal { index: 2 },
-        Op::GetLocal { index: 2 },
+        Op::GetGlobalScope,
+        Op::GetLocal { index: 1 },
+        Op::SetProperty { index: root_slot },
+        Op::GetLocal { index: 1 },
         Op::GetProperty { index: code_object },
-        Op::SetLocal { index: 3 },
+        Op::SetLocal { index: 2 },
     ];
     for (helper, property) in helper_multinames.iter().zip(&method_property_multinames) {
         install_ops.extend([
-            Op::GetLocal { index: 3 },
+            Op::GetLocal { index: 2 },
             Op::GetLex { index: *helper },
             Op::SetProperty { index: *property },
         ]);
     }
     install_ops.extend([
-        Op::GetLocal { index: 2 },
+        Op::GetLocal { index: 1 },
         Op::CallPropVoid {
             index: on_create,
             num_args: 0,
@@ -367,8 +795,8 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
     ]);
     method_bodies.push(MethodBody {
         method: installer_method,
-        max_stack: 2,
-        num_locals: 4,
+        max_stack: 3,
+        num_locals: 3,
         init_scope_depth: 1,
         max_scope_depth: 2,
         code: write_ops(&install_ops)?,
@@ -410,15 +838,6 @@ fn build_adapter_abc(catalog: ScaleformHostCatalog) -> std::io::Result<Vec<u8>> 
             },
             Op::CallPropVoid {
                 index: add_callback,
-                num_args: 2,
-            },
-            Op::FindPropStrict { index: set_timeout },
-            Op::GetLex {
-                index: install_helper,
-            },
-            Op::PushByte { value: 0 },
-            Op::CallPropVoid {
-                index: set_timeout,
                 num_args: 2,
             },
             Op::ReturnVoid,
@@ -498,16 +917,18 @@ fn write_ops(ops: &[Op]) -> std::io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use byroredux_bsa::Ba2Archive;
     use ruffle_core::swf::avm2::read::Reader;
-    use ruffle_core::tag_utils::SwfMovie;
-    use ruffle_core::{LoadBehavior, PlayerBuilder};
     use swf::avm2::types::{AbcFile, ConstantPool, Index, Method, MethodBody, MethodFlags, Script};
     use swf::avm2::write::Writer;
     use swf::extensions::ReadSwfExt;
     use swf::{DoAbc2, DoAbc2Flag, FileAttributes, SwfStr, Tag};
 
-    use super::{build_adapter_abc, inject_host_object_adapter, write_ops, LOADED_CALLBACK};
-    use crate::{ScaleformHostBridge, ScaleformHostCatalog, ScaleformProfile};
+    use super::{
+        build_adapter_abc, inject_host_object_adapter, referenced_host_methods, write_ops,
+        DESTROYED_EVENT,
+    };
+    use crate::{ScaleformHostCatalog, ScaleformProfile};
 
     #[test]
     fn generated_adapter_is_valid_abc_with_one_helper_per_method() {
@@ -516,7 +937,7 @@ mod tests {
         let abc = Reader::new(&bytes).read().unwrap();
 
         assert_eq!(abc.scripts.len(), 1);
-        assert_eq!(abc.scripts[0].traits.len(), catalog.len() + 3);
+        assert_eq!(abc.scripts[0].traits.len(), catalog.len() + 4);
         assert_eq!(abc.methods.len(), catalog.len() + 4);
         assert_eq!(abc.method_bodies.len(), catalog.len() + 4);
 
@@ -531,12 +952,69 @@ mod tests {
                 _ => {}
             }
         }
-        assert_eq!(installed_properties, catalog.len());
+        assert_eq!(installed_properties, catalog.len() + 1);
         assert_eq!(void_calls, 3);
+
+        let destroy = &abc.method_bodies[catalog.len() + 1];
+        let mut reader = Reader::new(&destroy.code);
+        let mut void_calls = 0;
+        while !reader.as_slice().is_empty() {
+            if matches!(
+                reader.read_op().unwrap(),
+                swf::avm2::types::Op::CallPropVoid { .. }
+            ) {
+                void_calls += 1;
+            }
+        }
+        assert_eq!(void_calls, 2);
+        assert!(abc
+            .constant_pool
+            .strings
+            .iter()
+            .any(|string| string.as_slice() == DESTROYED_EVENT.as_bytes()));
+
+        let init = &abc.method_bodies[catalog.len() + 3];
+        let mut reader = Reader::new(&init.code);
+        let mut callback_names = Vec::new();
+        while !reader.as_slice().is_empty() {
+            if let swf::avm2::types::Op::PushString { value } = reader.read_op().unwrap() {
+                callback_names.push(value.0);
+            }
+        }
+        assert_eq!(callback_names, [22]);
     }
 
     #[test]
-    fn injected_adapter_executes_as_eager_abc() {
+    #[ignore = "requires an installed Fallout 4 corpus"]
+    fn installed_fallout4_host_calls_are_cataloged() {
+        let path = std::env::var("BYROREDUX_FO4_DATA").unwrap_or_else(|_| {
+            "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data".to_string()
+        });
+        let archive =
+            Ba2Archive::open(std::path::Path::new(&path).join("Fallout4 - Interface.ba2")).unwrap();
+        let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
+
+        for movie in [
+            "interface\\hudmenu.swf",
+            "interface\\pipboymenu.swf",
+            "programs\\atomiccommand.swf",
+        ] {
+            let swf = archive.extract(movie).unwrap();
+            let methods = referenced_host_methods(&swf).unwrap();
+            let unknown = methods
+                .iter()
+                .filter(|method| !catalog.contains(method))
+                .cloned()
+                .collect::<Vec<_>>();
+            assert!(
+                unknown.is_empty(),
+                "{movie} references uncataloged BGSCodeObj methods: {unknown:?}; all={methods:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn marker_without_a_lifecycle_class_is_rejected() {
         let marker_abc = marker_abc();
         let mut header = swf::Header::default_with_swf_version(15);
         header.num_frames = 1;
@@ -553,23 +1031,12 @@ mod tests {
         let mut source = Vec::new();
         swf::write_swf(&header, &tags, &mut source).unwrap();
 
-        let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
-        let (patched, state) = inject_host_object_adapter(&source, bridge.catalog()).unwrap();
-        assert_eq!(state, super::ScaleformHostObjectState::AdapterInjected);
-        let movie = SwfMovie::from_data(
-            &patched,
-            "file:///fallout4-host-adapter.swf".to_string(),
-            None,
+        let error = inject_host_object_adapter(
+            &source,
+            ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2),
         )
-        .unwrap();
-        let player = PlayerBuilder::new()
-            .with_external_interface(bridge.provider())
-            .with_load_behavior(LoadBehavior::Blocking)
-            .with_movie(movie)
-            .build();
-        player.lock().unwrap().run_frame();
-
-        assert!(bridge.has_callback(LOADED_CALLBACK));
+        .unwrap_err();
+        assert!(error.contains("lifecycle class"));
     }
 
     fn marker_abc() -> Vec<u8> {

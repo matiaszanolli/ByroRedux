@@ -229,7 +229,7 @@ fn skyrim_catalog_is_pinned_sorted_and_profile_specific() {
         .all(|methods| methods[0].name < methods[1].name));
 
     let fallout = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
-    assert_eq!(fallout.len(), 129);
+    assert_eq!(fallout.len(), 138);
     assert!(fallout.contains("PlaySound"));
     assert!(!fallout.contains("RequestPlayerInfo"));
     assert!(fallout
@@ -266,6 +266,19 @@ fn fallout4_object_transport_is_normalized_and_cataloged() {
 }
 
 #[test]
+fn fallout4_destruction_acknowledgement_is_observable_but_not_a_host_call() {
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::Fallout4Avm2);
+
+    let outcome = bridge.record_call(crate::avm2_host::DESTROYED_EVENT, &[]);
+
+    assert_eq!(outcome.return_value, ExternalValue::Null);
+    assert!(outcome.callback_response.is_none());
+    assert_eq!(bridge.code_object_destruction_count(), 1);
+    assert!(bridge.drain_calls().is_empty());
+    assert!(bridge.unknown_methods().is_empty());
+}
+
+#[test]
 fn avm1_external_interface_is_bidirectional_headlessly() {
     let (player, bridge) = run_fixture(AVM1_FIXTURE, ScaleformProfile::SkyrimAvm1);
     assert_external_interface_round_trip(&player, &bridge, ScaleformProfile::SkyrimAvm1);
@@ -297,33 +310,83 @@ fn installed_skyrim_hudmenu_loads_with_avm1_profile() {
 
 #[test]
 #[ignore = "requires an installed Fallout 4 corpus"]
-fn installed_fallout4_hudmenu_reaches_frame_one_with_archive_imports() {
+fn installed_fallout4_representative_menus_obey_host_object_lifecycle() {
     let archive_path = data_dir(
         "BYROREDUX_FO4_DATA",
         "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
     )
     .join("Fallout4 - Interface.ba2");
-    let archive = Ba2Archive::open(&archive_path).expect("open Fallout 4 interface BA2");
-    let mut player = crate::SwfPlayer::from_resource_provider(
-        Rc::new(archive),
-        "interface\\hudmenu.swf",
-        64,
-        64,
-        ScaleformProfile::Fallout4Avm2,
-    )
-    .expect("load Fallout 4 HUD and its archive imports");
-    assert_eq!(
-        player.host_object_state(),
-        ScaleformHostObjectState::AdapterInjected
-    );
-    assert_eq!(
-        player.resource_loads()[0].archive_path,
-        "interface\\fonts_en.swf"
-    );
-    assert!(player.resource_loads()[0].import_preload_rewritten);
+    let archive = Rc::new(Ba2Archive::open(&archive_path).expect("open Fallout 4 interface BA2"));
+    let cases = [
+        (
+            "HUD",
+            "interface\\hudmenu.swf",
+            ScaleformHostObjectState::AdapterInjected,
+        ),
+        (
+            "Pip-Boy",
+            "interface\\pipboymenu.swf",
+            ScaleformHostObjectState::AdapterInjected,
+        ),
+        (
+            "Atomic Command holotape",
+            "programs\\atomiccommand.swf",
+            ScaleformHostObjectState::NotPresent,
+        ),
+    ];
 
-    player.tick(1.0 / 30.0);
-    assert_eq!(player.current_frame(), Some(1));
-    assert_eq!(player.resource_error(), None);
-    assert_eq!(player.profile(), ScaleformProfile::Fallout4Avm2);
+    for (label, path, expected_state) in cases {
+        let mut player = crate::SwfPlayer::from_resource_provider(
+            archive.clone(),
+            path,
+            64,
+            64,
+            ScaleformProfile::Fallout4Avm2,
+        )
+        .unwrap_or_else(|error| panic!("load {label} and its archive imports: {error}"));
+        assert_eq!(
+            player.host_object_state(),
+            expected_state,
+            "{label} host-object contract"
+        );
+
+        for _ in 0..3 {
+            player.tick(1.0 / 30.0);
+        }
+        assert!(player.current_frame().is_some(), "{label} did not start");
+        assert_eq!(player.resource_error(), None, "{label} resource loading");
+        assert_eq!(player.profile(), ScaleformProfile::Fallout4Avm2);
+
+        let bridge = player.host_bridge();
+        if expected_state == ScaleformHostObjectState::AdapterInjected {
+            assert!(bridge.has_callback(crate::avm2_host::LOADED_CALLBACK));
+            assert!(
+                bridge.has_callback(crate::avm2_host::READY_CALLBACK),
+                "{label} installer did not finish; callbacks={:?}, calls={:?}",
+                bridge.available_callbacks(),
+                bridge.drain_calls()
+            );
+            assert_eq!(
+                player.invoke_callback(crate::avm2_host::READY_CALLBACK, []),
+                Some(ScaleformValue::Bool(true)),
+                "{label} readiness callback"
+            );
+            assert!(bridge.has_callback(crate::avm2_host::DESTROY_CALLBACK));
+        } else {
+            assert!(!bridge.has_callback(crate::avm2_host::READY_CALLBACK));
+            assert!(!bridge.has_callback(crate::avm2_host::DESTROY_CALLBACK));
+        }
+
+        drop(player);
+        assert_eq!(
+            bridge.code_object_destruction_count(),
+            u64::from(expected_state == ScaleformHostObjectState::AdapterInjected),
+            "{label} destruction hook"
+        );
+        assert!(
+            bridge.unknown_methods().is_empty(),
+            "{label} unknown methods: {:?}",
+            bridge.unknown_methods()
+        );
+    }
 }
