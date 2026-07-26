@@ -210,8 +210,11 @@ detail only to the color reference; companion maps are edge-guided from that
 result, with normal vectors renormalized and authored alpha preserved.
 
 Measured on an RTX 4070 Ti at 1280×720, FSR Quality against native TAA:
-+49% frame time on FNV Prospector, +40% on Skyrim Whiterun, +68% on FO4
-MedTek, at SSIM 0.955–0.990 versus the native render. Note **Native AA
++47% frame time on FNV Prospector, +40% on Skyrim Whiterun, +50% on FO4
+MedTek, at SSIM 0.955–0.990 versus the native render. See
+[ROADMAP](ROADMAP.md) Bench-of-record for the full matrix and its caveats —
+these figures are ~6–12% pessimistic, measured on a non-idle desktop. Note
+**Native AA
 (1.0×) is slower than TAA** — it pays reconstruction with no pixel savings
 and exists to separate reconstruction quality from upscaling quality, not
 as a performance option. Details and troubleshooting in

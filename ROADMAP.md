@@ -13,9 +13,10 @@ Ritual-driven, not hook-driven — one checkpoint per session, not N per
 commit.
 
 **Last verified**: 2026-07-26 (Session 61 closeout — tests 3965, +139; src/ LOC
-+~8 400; +1 workspace member `tools/texture-upscale`; bench-of-record `e153b50c`,
-28 commits stale and one commit short of the 30-commit threshold, tracked as
-R6a-stale-17 below).
++~8 400; +1 workspace member `tools/texture-upscale`; **bench-of-record
+refreshed to HEAD `3a02b02d`, 0 commits stale — R6a-stale-17 closed the same
+day it was filed**, with HEAD measuring flat against the prior record and two
+phase-7 figures corrected as measurement artifacts).
 
 **Current state in one paragraph.** The FSR 3.1 integration plan is complete
 through phase 7: FSR 3.1.4 Quality is the engine default, all four presets
@@ -40,9 +41,9 @@ upscale — remain open. Session narratives: [HISTORY.md](HISTORY.md) Sessions
 run from each game's `Data/` directory — see Repro-command CWD note below).
 **These numbers are not reproducible at HEAD**: PERF-REGRESSION-6c56e311
 landed on 2026-07-19, one day after this run, and costs ~2.2× frame time on
-real content. The live bench-of-record is the phase-7 matrix two sections
-down; this table is kept only as the historical TAA baseline the regression is
-measured against.
+real content. The live bench-of-record is the R6a-stale-17 refresh below
+(HEAD `3a02b02d`, 2026-07-26); this table is kept only as the historical TAA
+baseline the regression is measured against.
 
 | Bench | This refresh (`8a668eff`, 3-run avg) | Prior record (`1c26bc25`) | Δ |
 |---|---|---|---|
@@ -57,46 +58,100 @@ Prospector confirms #2084's live-sample finding: the fence-recovery gap the R6a-
 
 **Repro-command CWD note:** bare `--bsa` / `--textures-bsa` / `--materials-ba2` names resolve against CWD, not the `--esm` folder. Run each bench with CWD set to that game's `Data/` directory. Run from elsewhere → archives silently fail → scene loads near-empty (Prospector: 36 entities / 3 meshes / spurious ~1792 FPS).
 
-### Bench-of-record (LIVE) — R6a-stale-16 refresh (2026-07-24, HEAD `e153b50c`)
+### Bench-of-record (LIVE) — R6a-stale-17 refresh (2026-07-26, HEAD `3a02b02d`)
 
-Run by the FSR phase-7 matrix: 3 runs × 300 frames, median with range, 1280×720
-output, per-scene CWD set to that game's `Data/`. Repro:
-`scripts/fsr-bench-matrix.sh 3 300`.
+Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
+1280×720 output, per-scene CWD set to that game's `Data/`. 75 runs, zero
+failures. Repro: `scripts/fsr-bench-matrix.sh 3 300`.
+
+| Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
+|---|---:|---:|---:|---:|
+| Prospector (3626 ent) | **65.3 FPS / 15.32 ms** | 123.5 FPS / 8.10 ms | +7.22 ms (+47%) | 187.2 / 5.34 (+65%) |
+| Whiterun BanneredMare (3406 ent) | **97.6 FPS / 10.25 ms** | 161.6 FPS / 6.19 ms | +4.06 ms (+40%) | 233.6 / 4.28 (+58%) |
+| MedTek Research 01 (31495 ent) | **23.1 FPS / 43.28 ms** | 46.3 FPS / 21.59 ms | +21.69 ms (+50%) | 68.0 / 14.72 (+66%) |
+| FO4 Dugout Inn (6978 ent) | 31.9 FPS / 31.39 ms | 63.7 FPS / 15.71 ms | +15.68 ms (+50%) | 99.0 / 10.10 (+68%) |
+| Cornell (25 ent, redistributable control) | 323.6 FPS / 3.09 ms | 462.1 FPS / 2.16 ms | +0.93 ms (+30%) | 568.0 / 1.76 (+43%) |
+
+**`native-aa` is a net loss on every scene** (−9% Cornell, −5% Whiterun, −2%
+Prospector, −1% Dugout, +4% MedTek): it reconstructs at full output resolution,
+so its upscale dispatch costs 0.21–0.62 ms against ~0.15–0.17 ms for the
+upscaling presets while saving no render-resolution work. It exists to separate
+reconstruction quality from upscaling quality, not as a performance option.
+
+**HEAD is flat against the previous record — the 28 intervening commits cost
+and gained nothing measurable.** Established by rebuilding `e153b50c` in a
+worktree and benching it in the same session under the same load, with a
+byte-identical harness (both `fsr-bench-matrix.sh` and `fsr_bench_report.py`
+are unchanged across the two commits). HEAD vs that control: Cornell TAA
++1.1%, Cornell Quality −0.6%, Prospector TAA +1.2%, Prospector Quality +0.7%,
+MedTek TAA +3.6%, MedTek Quality +7.7%; the widest excursions are Prospector
+Performance −4.4% and Balanced −3.8%. All inside this machine's noise band.
+
+**Two corrections to the superseded phase-7 table, both found by that control
+run — neither was a code change:**
+
+1. **Machine contention, not regression.** Cornell reads −11.9% and Prospector
+   −5.8% against the phase-7 figures *at the phase-7 commit itself*. This
+   desktop carries 3–43% background GPU utilisation (compositor, browser,
+   editor) plus a ~59%-CPU indexer; the effect is largest on Cornell, whose
+   3 ms frame is mostly fixed per-frame overhead. Absolute numbers in this
+   table are therefore ~6–12% pessimistic against an idle machine, uniformly
+   across configs — the *ratios* between configs are unaffected, which is why
+   net-recovery percentages barely moved.
+2. **The phase-7 MedTek TAA row was not reproducible at its own commit.** It
+   recorded 15.2 FPS / 65.88 ms; `e153b50c` re-measures **22.3 FPS / 44.82 ms
+   ±0.72** today, +47% off. Its published `±11.48 ms` spread was the tell. The
+   phase-7 MedTek net-recovery figure (+68%) was inflated by that bad
+   baseline; the real figure is +50%. Do not cite the 15.2 number.
+
+**Prediction that did not hold.** The Session 61 close expected the
+`camera_cut` false-positive fix (#2159) to raise the FSR column, on the
+grounds that FSR Quality was made the default while that bug was forcing a
+permanent single-frame temporal reset. It did not: FSR Quality moved +0.7% on
+Prospector and −0.6% on Cornell. The fix is real and correct, but it does not
+show up in steady-state bench numbers — plausibly because `--bench-camera` was
+not driving the camera in these runs, so the movement that triggered the false
+positive never occurred. A motion-path bench would be the way to measure it.
+
+**Standing methodology note.** Two bench cycles running, the same-machine
+worktree rebuild of the prior commit has been the thing that made the result
+interpretable — it proved PERF-REGRESSION-6c56e311 was code (`8a668eff`
+reproduced 149.6 FPS) and proved this cycle's apparent regressions were not.
+Treat it as part of the refresh, not an optional extra. What is still missing
+after three cycles is a genuinely idle-machine run; "re-check on an idle
+machine" has been carried since R6a-stale-15 and remains unpaid.
+
+FSR is the engine default at Quality (FSR plan phase 7). The `TAA (native)`
+column stays the reference for historical comparison and remains reachable via
+`--upscaler taa` / `r.upscaler taa`.
+
+### Superseded — FSR phase-7 matrix (2026-07-24, HEAD `e153b50c`)
+
+Retained because **PERF-REGRESSION-6c56e311 / #2161** measures itself against
+this table's Prospector TAA column, and because it is the provenance of the
+SSIM matrix figures. Superseded by the R6a-stale-17 refresh above; its MedTek
+TAA row is known bad (see correction 2 above).
 
 | Scene | TAA (native) | FSR Quality | net recovery |
 |---|---:|---:|---:|
 | Prospector (3626 ent) | **68.5 FPS / 14.59 ms** / fence 12.79 | 134.2 FPS / 7.45 ms | +7.14 ms (+49%) |
 | Whiterun BanneredMare (3406 ent) | **100.8 FPS / 9.92 ms** | 168.7 FPS / 5.93 ms | +3.99 ms (+40%) |
-| MedTek Research 01 (31495 ent) | **15.2 FPS / 65.88 ms** | 46.7 FPS / 21.41 ms | +44.47 ms (+68%) |
+| MedTek Research 01 (31495 ent) | ~~15.2 FPS / 65.88 ms~~ **not reproducible — see above** | 46.7 FPS / 21.41 ms | ~~+68%~~ → +50% |
 | FO4 Dugout Inn (6978 ent) | 32.1 FPS / 31.17 ms | 62.6 FPS / 15.98 ms | +15.19 ms (+49%) |
 | Cornell (25 ent, redistributable control) | 363.1 FPS / 2.75 ms | 535.4 FPS / 1.87 ms | +0.88 ms (+32%) |
 
-**These TAA numbers are far below R6a-stale-15 and that is a real regression,
-not a measurement artifact.** Prospector: 145.1 FPS recorded at `8a668eff`
-versus 68.5 now. Verified by rebuilding `8a668eff` in a worktree on the same
-machine in the same session — it reproduces **149.6 FPS**, so the environment
-is not the difference. See **PERF-REGRESSION-6c56e311** under Known Issues; it
-is *not* caused by the FSR work (the pre-FSR-session tip `33d6a18e` already
-measures 65.6 FPS).
+**The Prospector TAA drop against R6a-stale-15 is a real regression, not a
+measurement artifact.** 145.1 FPS recorded at `8a668eff` versus 68.5 here;
+rebuilding `8a668eff` in a worktree on the same machine in the same session
+reproduced **149.6 FPS**, so the environment is not the difference. The
+R6a-stale-17 control re-measured this commit at 64.5 FPS, consistent within
+contention — the finding stands unchanged. See **PERF-REGRESSION-6c56e311**
+under Known Issues; it is *not* caused by the FSR work (the pre-FSR-session tip
+`33d6a18e` already measures 65.6 FPS).
 
-FSR is now the engine default at Quality (FSR plan phase 7). The `TAA (native)`
-column stays the reference for historical comparison and remains reachable via
-`--upscaler taa` / `r.upscaler taa`.
-
-**Staleness (2026-07-26, Session 61 closeout):** bench-of-record `e153b50c` is
-**28 commits** stale — under the 30-commit threshold, but one commit short of
-it, so the next session trips it on arrival. The second threshold limb is
-already met: Session 61 landed four changes that plausibly move these numbers,
-none of them measured. Two should *help* — restoring particle indirect grouping
-(#2165, every two-sided blended particle batch had fallen out of grouping into
-two direct draws) and narrowing the skinned-vertex output buffer from 104 B to
-12 B per vertex (#2170). One changes temporal behaviour on the FSR default path
-— the `camera_cut` false-positive fix (#2159), which had been forcing FSR into
-a permanent single-frame reset during ordinary player movement, so the shipped
-default was measured in a degraded state. One is neutral-by-intent (per-frame
-scratch amortisation, #2172/#2174). Tracked as R6a-stale-17 below; re-run
-before any perf-sensitive decision, and note the `camera_cut` fix means the
-phase-7 FSR column above understates the default configuration.
+**Staleness (2026-07-26):** bench-of-record is HEAD `3a02b02d`, 0 commits
+stale. Next tracker not yet filed; the 30-commit threshold and the
+change-content limb both reset with this refresh.
 
 ---
 
@@ -768,7 +823,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6a-stale-14-collider-partial** (filed 2026-06-03): **Closed** (this session). Root cause analysis: the bhk-authored collision path already creates **separate, `MeshHandle`-free ghost entities** (lines 479-487 of `cell_loader/spawn.rs`), so bhk colliders never enter BLAS/TLAS. The synthesized trimesh path (F3 fallback — FO4/Starfield architecture) incorrectly piggybacked `CollisionShape + RigidBodyData + IsCollisionOnly` onto the render entity instead of following the bhk pattern. This gave those entities a BLAS entry and then excluded them from TLAS — wasting GPU memory on unused BLAS builds while also removing visible architecture from RT shadows/GI. Fix: synthesize path now spawns the same ghost-entity shape as the bhk path (`world.spawn()` → `Transform + GlobalTransform + CollisionShape + RigidBodyData`, no `MeshHandle`). Render entity is untouched — enters BLAS+TLAS normally. `entities` command extended with `physics-only (no MeshHandle)` count and `IsCollisionOnly (expect 0)` count so the next bench run can confirm. **R6a-stale-15 required** to measure the fence recovery and verify `IsCollisionOnly=0` in Prospector/MedTek. Note: the 2564→3516 entity count growth origin (the larger gap vs. the pre-collider baseline) remains unconfirmed — strong candidate is M41 Phase 2 NPC mesh additions (hair, eyebrow, eye meshes per actor: `740036f7`, `323e3a9c`, committed just after the 2564-entity baseline `a9bbe8d1`). That growth is legitimate scene content; the synthesized-collider BLAS waste is now resolved.
 - [x] **R6a-stale-15** (filed 2026-06-03): **Closed 2026-07-18 at HEAD `8a668eff`** (#2084). Fresh 300-frame × 3-run bench across all three scenes — see the Bench-of-record table above for full numbers/interpretation. (a) Fence recovery confirmed: Prospector fence 11.12→5.06 ms (−54.5%), FPS 76.2→145.1 (+90.4%); MedTek fence 9.03→7.08 ms (−21.6%), FPS 65.2→74.4 (+14.1%) despite entity count growing 47% (ghost-entity, non-draw). Residual gap to the pre-collider Prospector target (161.4 FPS / 2.62 ms) narrowed from ~4× to ~2× fence, not yet closed. (b) `IsCollisionOnly=0` live verification via `entities` command **not re-checked this pass** — #2084's ask was the bench refresh + doc sync, not a fresh correctness sweep of the #1531/#1726 fix; still believed correct (untouched since closing R6a-stale-14-collider-partial) but worth a `byro-dbg entities` spot-check next time either scene is loaded interactively. Whiterun (control) showed an unexplained mild regression (362.8→335.0 FPS) at flat entity count, attributed to shared-desktop GPU contention during this run rather than a code regression — flagged for a re-check on an idle machine, not a new tracked issue.
 - [x] **R6a-stale-16** — **CLOSED 2026-07-24** by the FSR phase-7 bench matrix at HEAD `e153b50c` (see the refresh table above). The re-run did what a stale-bench tracker exists to do: it surfaced **PERF-REGRESSION-6c56e311**, a ~2.2× frame-time regression that had been live and unmeasured since 2026-07-19. Original entry follows. Threshold tripped 2026-07-20 at Session 58 close (HEAD `86035f51`, 38 commits past `8a668eff` — both threshold limbs exceeded: >30 commits *and* real shader/hot-path changes landed). Notable post-bench commits since `8a668eff`: `Vertex` struct color `vec3`→`vec4` layout change (26 floats / 104 B, `cd2b5fe4`) plus the matching `skin_vertices.comp` / `triangle.vert`/`.frag` updates, ReSTIR `Reservoir` repack + TAA surface-validated history (octahedral normals, bounded accumulation, `e5d02f83`), glass alpha-blending + `GLASS_RAY_BUDGET` increase (`a09d2b76`), volumetric in-scattering + water RT precision pass (`6c56e311`), decal `IsDecalMesh` alpha blending (`388b9969`). All three benches (Prospector/Whiterun/MedTek) touch the fragment shader and/or vertex layout this cycle. Re-run deferred — next tracker. **Update (2026-07-23, Session 60 close):** now 74 commits past `8a668eff`. Session 60 added the FSR SDK/extent/temporal-contract plumbing, an output-resolution presentation pass, and a directional-light/shadow-contract refactor (`8961fbdd`) that touches the exterior direct-light path. FSR itself is off by default, but the shadow-contract change warrants the re-run being done before the next perf-sensitive decision.
-- [ ] **R6a-stale-17** (filed 2026-07-26, Session 61 close): bench-of-record `e153b50c` is 28 commits stale — *under* the 30-commit limb, but the change-content limb is already met, which is the limb that matters. Four Session 61 landings touch the measured paths: particle indirect grouping restored (#2165), skinned-vertex output narrowed 104 B → 12 B per vertex (#2170), per-frame scratch amortised (#2172/#2174), and — the important one — the `camera_cut` false-positive fix (#2159), which had been forcing FSR 3.1 into a permanent single-frame temporal reset during ordinary player movement. FSR Quality was made the default *while that bug was live*, so the phase-7 FSR column understates the shipped configuration and the re-run is expected to move it upward. Re-run before any perf-sensitive decision, and before quoting the phase-7 numbers as the FSR baseline.
+- [x] **R6a-stale-17** — **CLOSED 2026-07-26 at HEAD `3a02b02d`**, same day it was filed. Full 75-run matrix + a same-machine control rebuild of `e153b50c`; numbers and interpretation in the Bench-of-record section above. **Outcome: HEAD is flat** — the 28 intervening commits are within ±4.4% on every scene/config pair, most within ±1.5%. The refresh's value was entirely in what the control ruled out: the raw HEAD numbers looked like a broad regression (Cornell −10.9%, Prospector −4.7%, Prospector Quality −8.0%) *and* one implausible win (MedTek TAA +52%), and neither was code. Rebuilding `e153b50c` and benching it under the same load reproduced the same shortfalls (Cornell −11.9%, Prospector −5.8% against the phase-7 figures at the phase-7 commit), pinning them on this desktop's 3–43% background GPU load; and it re-measured MedTek TAA at 22.3 FPS against the 15.2 the phase-7 table published, so the "+52% win" was a bad recorded baseline rather than an improvement. Original entry follows. Filed at 28 commits — *under* the 30-commit limb, but the change-content limb was met: particle indirect grouping restored (#2165), skinned-vertex output narrowed 104 B → 12 B per vertex (#2170), per-frame scratch amortised (#2172/#2174), and the `camera_cut` false-positive fix (#2159). **The stated expectation that #2159 would raise the FSR column did not hold** (+0.7% Prospector Quality, −0.6% Cornell) — see the prediction note in the bench section; a `--bench-camera` motion path, not a static bench, is what would measure that fix.
 - [x] **REND-#1447** HIGH (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-02** (`e6df0f5b`) — SPIR-V recompiled after DoF CameraUBO extension.
 - [x] **REND-#1448** LOW (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-02** (`f8e5daad`) — screenshot extent captured at record time, survives same-frame resize.
 - [x] **BUILD-SFMATERIAL** (2026-06-03): **Closed 2026-06-03.** `ee727346` removed `pub use chunk::ChunkType` and broke `crate::StringTable` / `crate::ChunkType` in internal modules + integration test. Fixed: `ChunkType` re-exported from `lib.rs`; internal `reader.rs` and `error.rs` use module-local paths.
@@ -935,16 +990,17 @@ figure in this table was measured at that HEAD, not carried forward.
 > **Which numbers are live.** The first three rows carry the R6a-stale-15
 > figures (`8a668eff`, 2026-07-18) and **do not reproduce at HEAD** —
 > PERF-REGRESSION-6c56e311 landed the following day. The live bench-of-record
-> is the phase-7 FSR matrix row below (`e153b50c`). The three scene rows are
-> retained because they are the commands themselves, and because they are the
-> TAA baseline the regression is measured against.
+> is the R6a-stale-17 matrix row below (HEAD `3a02b02d`, 2026-07-26). The three
+> scene rows are retained because they are the commands themselves, and because
+> they are the TAA baseline the regression is measured against.
 
 | Claim                                                                     | Command                                                                                                                                                                                        |
 |---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Prospector Saloon 3626 entities @ **145.1 FPS / 6.90 ms / fence=5.06 ms / brd=0.33 ms** (R6a-stale-15, `8a668eff`, 2026-07-18, 3-run avg; FPS +90.4% / fence −54.5% vs R6a-stale-14 — most of the gap closed as a side effect of intervening perf work, not a change in this bench cycle; residual gap to pre-collider 161.4 FPS / 2.62 ms narrowed from ~4× to ~2× fence) | (CWD = `.../Fallout New Vegas/Data`) `cargo run --release -- --esm FalloutNV.esm --cell GSProspectorSaloonInterior --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa" --textures-bsa "Fallout - Textures2.bsa" --bench-frames 300` |
 | Skyrim SE WhiterunBanneredMare 3237 entities @ **335.0 FPS / 3.00 ms / ~1298 draws / fence=1.21 ms** (R6a-stale-15, `8a668eff`, 2026-07-18, 3-run avg; −7.7% FPS vs 362.8 R6a-stale-14 at flat entity count — no code path changed here between the two bench dates; attributed to shared-desktop GPU contention during this run, re-check on an idle machine). Must list all 9 texture archives explicitly — numeric-sibling auto-load gates on a non-digit suffix and `Textures0.bsa` ends in a digit. | (CWD = `.../Skyrim Special Edition/Data`) `cargo run --release -- --esm Skyrim.esm --cell WhiterunBanneredMare --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" --textures-bsa "Skyrim - Textures0.bsa" --textures-bsa "Skyrim - Textures1.bsa" --textures-bsa "Skyrim - Textures2.bsa" --textures-bsa "Skyrim - Textures3.bsa" --textures-bsa "Skyrim - Textures4.bsa" --textures-bsa "Skyrim - Textures5.bsa" --textures-bsa "Skyrim - Textures6.bsa" --textures-bsa "Skyrim - Textures7.bsa" --textures-bsa "Skyrim - Textures8.bsa" --bench-frames 300` |
 | FO4 MedTekResearch01 31495 entities @ **74.4 FPS / 13.49 ms / 14535 draws / brd_ms=3.63 / fence=7.08** (R6a-stale-15, `8a668eff`, 2026-07-18, 3-run avg; entity +47% vs R6a-stale-14 with draws exactly flat — consistent with the ghost-entity rerouting fix (R6a-stale-14-collider-partial) adding non-draw physics-only entities; FPS +14.1% / fence −21.6% despite the larger entity count) | (CWD = `.../Fallout 4/Data`) `cargo run --release -- --esm Fallout4.esm --cell MedTekResearch01 --bsa "Fallout4 - Meshes.ba2" --bsa "Fallout4 - MeshesExtra.ba2" --textures-bsa "Fallout4 - Textures1.ba2" --textures-bsa "Fallout4 - Textures2.ba2" --textures-bsa "Fallout4 - Textures3.ba2" --textures-bsa "Fallout4 - Textures4.ba2" --textures-bsa "Fallout4 - Textures5.ba2" --textures-bsa "Fallout4 - Textures6.ba2" --textures-bsa "Fallout4 - Textures7.ba2" --textures-bsa "Fallout4 - Textures8.ba2" --textures-bsa "Fallout4 - Textures9.ba2" --textures-bsa "Fallout4 - TexturesPatch.ba2" --materials-ba2 "Fallout4 - Materials.ba2" --bench-frames 300` |
-| **Bench-of-record (LIVE)** — phase-7 FSR matrix, all five scenes × TAA-native vs four FSR presets (`e153b50c`, 2026-07-24, 3 runs × 300 frames, median with range, 1280×720 output). Source of every FPS/ms figure in the phase-7 table above, incl. the FO4 Dugout Inn and Cornell rows that appear nowhere else. Per-scene CWD still applies. | `scripts/fsr-bench-matrix.sh 3 300` |
+| **Bench-of-record (LIVE)** — full FSR matrix, all five scenes × TAA-native vs four FSR presets (R6a-stale-17, HEAD `3a02b02d`, 2026-07-26, 75 runs = 5×5×3 of 300 frames, median with range, 1280×720 output). Source of every FPS/ms figure in the bench-of-record table above, incl. the FO4 Dugout Inn and Cornell rows that appear nowhere else. Per-scene CWD still applies. Scene subset via `FSR_BENCH_SCENES`, output dir via `FSR_BENCH_OUT`. | `scripts/fsr-bench-matrix.sh 3 300` |
+| **Same-machine control** (the method that makes a refresh interpretable — see the standing methodology note in the bench section; used to prove PERF-REGRESSION-6c56e311 was code, and to prove R6a-stale-17's apparent regressions were not). Rebuild the prior record's commit in a worktree and bench it in the same session under the same load; the harness must be byte-identical at both commits (`diff` both scripts before trusting the comparison). | `git worktree add <dir> <prior-commit> && cd <dir> && cargo build --release && FSR_BENCH_SCENES="cornell prospector medtek" FSR_BENCH_OUT=<dir>/out <dir>/scripts/fsr-bench-matrix.sh 3 300` |
 | **Upscaler SSIM quality matrix** — the SSIM / outlier-percentage figures quoted for every preset (Cornell Quality 0.9554 SSIM / 1.68% outliers, Performance 0.9199 / 5.39%; FO4 Dugout higher SSIM, worse outliers). Scores each preset against the native TAA render over five deterministic `--bench-camera` paths. Append `game` to score real game content instead of the redistributable Cornell scene. | `cargo test --release -p byroredux --test upscaler_quality -- --ignored --nocapture` |
 | Skyrim sweetroll single-mesh ~3000-5000 FPS (2026-04-22, RTX 4070 Ti @ 1280×720)        | `cargo run --release -- --bsa "Skyrim Special Edition/Data/Skyrim - Meshes0.bsa" --mesh meshes\\clutter\\ingredients\\sweetroll01.nif --textures-bsa "Skyrim Special Edition/Data/Skyrim - Textures3.bsa"` |
 | Megaton interior parse-side 929 REFRs (2026-04-19)                        | `cargo test -p byroredux-plugin --release --test parse_real_esm parse_real_fo3_megaton_cell_baseline -- --ignored`                                                                             |
