@@ -318,6 +318,36 @@ fn apply_bs_lighting_shader(
         // Material → GpuMaterial); see #570 (SK-D3-03).
         info.material_kind = shader.shader_type;
         apply_shader_type_data(info, &shader.shader_type_data);
+        // Skyrim/FO4 fire heat-haze planes are ordinary
+        // BSLightingShaderProperty meshes whose diffuse and normal slots
+        // both point at a tangent-space normal texture. Their authored
+        // SLSF1 Refraction + Fire_Refraction pair is the discriminator:
+        // rendering the source texture as lit albedo produces the familiar
+        // opaque rainbow slab and hides the actual BSEffect flame cards.
+        //
+        // 103 is an engine-synthesized material kind (100=glass,
+        // 101=effect, 102=no-lighting). The nif crate is upstream of the
+        // renderer, so keep the literal here and pin it in the importer
+        // regression below. The renderer-side named constant owns the
+        // public value.
+        let fire_refraction_flags = crate::shader_flags::skyrim_slsf1::REFRACTION
+            | crate::shader_flags::skyrim_slsf1::FIRE_REFRACTION;
+        if shader.shader_flags_1 & fire_refraction_flags == fire_refraction_flags {
+            info.material_kind = 103;
+            // Fire refraction is a screen-composition proxy. It must not
+            // claim depth or behave like ordinary opaque BSLighting
+            // geometry: doing either hides the separately-authored flame
+            // cards sitting immediately behind the haze plane.
+            //
+            // Synthesize conventional source-alpha-over state here even
+            // when the NIF omitted a NiAlphaProperty. The renderer gives
+            // kind 103 its own ordering phase between opaque geometry and
+            // every ordinary effect/transparent draw.
+            info.alpha_blend = true;
+            info.src_blend_mode = 6; // SRC_ALPHA
+            info.dst_blend_mode = 7; // INV_SRC_ALPHA
+            info.z_write = false;
+        }
         info.has_material_data = true;
     }
 }

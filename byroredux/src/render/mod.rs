@@ -162,7 +162,11 @@ fn compute_directional_upload(
 ///                 to shadow / reflection / GI from beyond the
 ///                 frustum). See `MAX_INSTANCES` doc + Option B of
 ///                 the transparent-draw-flicker root-cause writeup.
-///   Slot 1       = opaque/transparent class (`0`/`1`).
+///   Slot 1       = composition phase: opaque (`0`), fire-refraction
+///                 proxies (`1`), then ordinary transparent/effect draws
+///                 (`2`). The middle phase lets heat haze replace the
+///                 opaque scene before its associated flame cards composite
+///                 over it.
 ///   Slot 2       = transparent blend class: additive (`0`) before true
 ///                 alpha-over (`1`). Opaque also uses `0`.
 ///   Opaque      — slots 3/4 = render layer/two-sided; slots 5/6 = 0
@@ -207,6 +211,17 @@ pub(crate) fn draw_sort_key(
     // `MAX_INSTANCES` writeup in `scene_buffer.rs`.
     let rt_only = (!cmd.in_raster) as u8;
     if cmd.alpha_blend {
+        // Fire-refraction proxies must compose after the opaque scene but
+        // before every ordinary transparent/effect draw. Sorting them in
+        // the normal alpha-over phase puts a nearer proxy after its flame
+        // cards (global back-to-front order), so the proxy covers the
+        // flames it is meant only to distort around.
+        let composition_phase =
+            if cmd.material_kind == byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION {
+                1u8
+            } else {
+                2u8
+            };
         // Additive blending (Gamebryo `dst_blend == ONE`, value 0 — see
         // `gamebryo_to_vk_blend_factor`) is order-independent: the HDR
         // target accumulates `src*srcF + dst*1` commutatively, so
@@ -228,7 +243,7 @@ pub(crate) fn draw_sort_key(
             // sort_depth is only a deterministic within-mesh tiebreaker.
             (
                 rt_only,
-                1u8, // after opaque
+                composition_phase,
                 0u8, // additive before alpha-over
                 cmd.render_layer as u32,
                 cmd.two_sided as u32,
@@ -245,7 +260,7 @@ pub(crate) fn draw_sort_key(
             // only break ties within one quantized depth bucket.
             (
                 rt_only,
-                1u8, // after opaque
+                composition_phase,
                 1u8, // after additive transparent draws
                 !cmd.sort_depth,
                 cmd.render_layer as u32,

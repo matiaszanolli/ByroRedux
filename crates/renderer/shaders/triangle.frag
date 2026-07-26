@@ -755,6 +755,68 @@ void main() {
         return;
     }
 
+    // ── Skyrim/FO4 fire refraction — normal-driven heat haze ────────
+    //
+    // A BSLightingShaderProperty carrying SLSF1 Refraction +
+    // Fire_Refraction is a distortion proxy, not a lit surface. Bethesda
+    // commonly binds the same tangent-space normal texture in its diffuse
+    // and normal slots; letting it reach the ordinary albedo path displays
+    // that vector texture as an opaque rainbow slab over the flames.
+    //
+    // The canonical material translator stores authored
+    // `refraction_strength` in `mat.ior` for this discriminated kind. Bend
+    // the camera-through direction by the normal map's tangent-plane
+    // component, trace the real scene behind the proxy, then let the
+    // separately-authored BSEffect flame cards composite over it. The proxy
+    // is excluded from BLAS/TLAS, so this ray cannot hit the haze mesh itself
+    // and the proxy cannot cast shadows or feed GI.
+    if (mat.materialKind == MATERIAL_KIND_FIRE_REFRACTION) {
+        // Without ray queries there is no faithful source image to distort.
+        // Discard preserves the already-rendered scene instead of reverting
+        // to the broken normal-as-diffuse slab.
+        if (!rtEnabled) {
+            discard;
+        }
+        vec3 macroN = normalize(fragNormalEffective);
+        if (dot(macroN, V) < 0.0) {
+            macroN = -macroN;
+        }
+        vec3 tangentWarp = N - macroN * dot(N, macroN);
+        float distortionStrength = clamp(mat.ior, 0.0, 1.0);
+        vec3 throughDir = normalize(-V + tangentWarp * distortionStrength);
+        vec4 distortedScene = traceReflection(
+            fragWorldPos + throughDir * 0.1,
+            throughDir,
+            2000.0,
+            0.0,
+            fragInstanceIndex);
+
+        // `traceReflection.a == 0` is the no-hit contract. There is no
+        // background sample to replace in that case, so preserve the
+        // already-rendered scene by emitting no fragment. Using the miss
+        // RGB here produced an opaque ambient-coloured wedge.
+        if (distortedScene.a < 0.5) {
+            discard;
+        }
+        // The RT helper reconstructs hit radiance independently from the
+        // already-rendered framebuffer and can legitimately disagree in
+        // exposure (especially beside a fire light). Authored refraction
+        // strength is therefore also the replacement coverage: a Skyrim
+        // strength of 0.1 bends the lookup and contributes ten percent of
+        // that sample, preserving ninety percent of the real background.
+        // Treating the proxy as alpha=1 turned any exposure disagreement
+        // into a solid white trapezoid.
+        outColor = vec4(distortedScene.rgb, distortionStrength);
+        outNormal = octEncode(macroN);
+        outRawIndirect = vec4(0.0, 0.0, 0.0, 1.0);
+        outAlbedo = vec4(1.0);
+        // The sampled background does not share this proxy's motion vector.
+        // Force temporal reconstruction to treat it as changing composition.
+        outFsrReactive = 1.0;
+        outFsrTransparency = 1.0;
+        return;
+    }
+
     // ── FO3/FNV BSShaderNoLightingProperty — fullbright / unlit ──────
     //
     // `MATERIAL_KIND_NO_LIGHTING` (102) is the original engine's "no

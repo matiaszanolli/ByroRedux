@@ -67,6 +67,12 @@ pub mod skyrim_slsf1 {
     /// `BSEffectShaderProperty.greyscale_texture` as an alpha palette LUT.
     /// See #890.
     pub const GREYSCALE_TO_PALETTE_ALPHA: u32 = 0x0000_0020;
+    /// Bit 15 — `Refraction`. Enables screen/scene refraction on
+    /// `BSLightingShaderProperty`. Skyrim and FO4 share this bit.
+    pub const REFRACTION: u32 = 0x0000_8000;
+    /// Bit 16 — `Fire_Refraction`. Marks the normal-map-driven heat-haze
+    /// proxy used behind fire effects. Skyrim and FO4 share this bit.
+    pub const FIRE_REFRACTION: u32 = 0x0001_0000;
     /// Bit 26 — `Decal`. Same bit + semantic as FO3/FNV F1.
     pub const DECAL: u32 = 0x0400_0000;
     /// Bit 27 — `Dynamic_Decal`. Same bit + semantic as FO3/FNV F1.
@@ -400,6 +406,14 @@ mod tests {
         );
         assert_eq!(fo4_slsf1::SOFT_EFFECT, skyrim_slsf1::SOFT_EFFECT);
         assert_eq!(fo4_slsf2::EFFECT_LIGHTING, skyrim_slsf2::EFFECT_LIGHTING);
+    }
+
+    #[test]
+    fn fo4_shares_fire_refraction_bits_with_skyrim() {
+        assert_eq!(fo4_slsf1::REFRACTION, skyrim_slsf1::REFRACTION);
+        assert_eq!(fo4_slsf1::FIRE_REFRACTION, skyrim_slsf1::FIRE_REFRACTION);
+        assert_eq!(skyrim_slsf1::REFRACTION, 1u32 << 15);
+        assert_eq!(skyrim_slsf1::FIRE_REFRACTION, 1u32 << 16);
     }
 
     /// #712 — pin the `BSShaderCRC32` constants against the literal

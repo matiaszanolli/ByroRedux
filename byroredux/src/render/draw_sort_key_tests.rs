@@ -240,6 +240,46 @@ fn transparent_clusters_by_blend_factors() {
     assert_eq!(cmds[2].sort_depth, 100);
 }
 
+/// Fire-refraction meshes are scene-composition proxies, not ordinary
+/// alpha-over surfaces. They must replace/distort the opaque background
+/// before both additive and alpha-over flame cards draw, regardless of
+/// camera depth. Otherwise normal back-to-front sorting puts the nearer
+/// haze plane last and it masks the flames it belongs to.
+#[test]
+fn fire_refraction_composes_between_opaque_and_effect_draws() {
+    use byroredux_renderer::{MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION};
+
+    let mut opaque = cmd(false, false, false);
+    opaque.entity_id = 1;
+
+    let mut fire_refraction = cmd(true, false, true);
+    fire_refraction.material_kind = MATERIAL_KIND_FIRE_REFRACTION;
+    fire_refraction.z_write = false;
+    fire_refraction.sort_depth = 100;
+    fire_refraction.entity_id = 2;
+
+    let mut additive_flame = cmd(true, false, true);
+    additive_flame.material_kind = MATERIAL_KIND_EFFECT_SHADER;
+    additive_flame.dst_blend = 0;
+    additive_flame.sort_depth = 900;
+    additive_flame.entity_id = 3;
+
+    let mut alpha_over_flame = cmd(true, false, true);
+    alpha_over_flame.material_kind = MATERIAL_KIND_EFFECT_SHADER;
+    alpha_over_flame.dst_blend = 7;
+    alpha_over_flame.sort_depth = 900;
+    alpha_over_flame.entity_id = 4;
+
+    let mut cmds = vec![alpha_over_flame, additive_flame, fire_refraction, opaque];
+    cmds.sort_by_key(draw_sort_key);
+
+    assert_eq!(
+        cmds.iter().map(|c| c.entity_id).collect::<Vec<_>>(),
+        vec![1, 2, 3, 4],
+        "opaque scene, then heat haze, then all ordinary effect draws"
+    );
+}
+
 /// Regression for #1649: additive (Gamebryo `dst_blend == ONE == 0`) is
 /// order-independent, so same-mesh additive draws (e.g. an emitter's
 /// particle billboards) must sort *contiguously by mesh* — not depth-

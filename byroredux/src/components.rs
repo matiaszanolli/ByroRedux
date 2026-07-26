@@ -161,11 +161,21 @@ impl Component for VisibleWhenDistant {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Returns `true` if `texture_path` matches any of the 6 "FX decoration"
-/// needles the renderer drops. Pulled out as a shared helper so the
-/// spawn-time tagger in `cell_loader::spawn` + `scene::nif_loader` and
-/// any future caller stays in lockstep. PERF-D3-NEW-02 / #1136.
-pub(crate) fn texture_path_is_fx_mesh(texture_path: &str) -> bool {
+/// Returns `true` if `texture_path` matches any of the 6 legacy
+/// "FX decoration" needles the renderer drops.
+///
+/// Authored effect-shader and fire-refraction materials are real renderer
+/// inputs, even though their texture names deliberately live under
+/// `effects\fx*`; never let the path heuristic override those stronger
+/// source-format semantics. Pulled out as a shared helper so the spawn-time
+/// tagger in `cell_loader::spawn` + `scene::nif_loader` and any future caller
+/// stays in lockstep. PERF-D3-NEW-02 / #1136.
+pub(crate) fn texture_path_is_fx_mesh(texture_path: &str, material_kind: u32) -> bool {
+    if material_kind == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+        || material_kind == byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+    {
+        return false;
+    }
     fn contains_ci(haystack: &str, needle: &str) -> bool {
         haystack
             .as_bytes()
@@ -1216,7 +1226,7 @@ mod fx_mesh_classification_tests {
             "fxlightrays\\rays01.nif",
         ] {
             assert!(
-                texture_path_is_fx_mesh(path),
+                texture_path_is_fx_mesh(path, 0),
                 "expected FX classification on {path}",
             );
         }
@@ -1232,10 +1242,23 @@ mod fx_mesh_classification_tests {
             "",
         ] {
             assert!(
-                !texture_path_is_fx_mesh(path),
+                !texture_path_is_fx_mesh(path, 0),
                 "expected NO FX classification on {path}",
             );
         }
+    }
+
+    #[test]
+    fn authored_effect_semantics_override_the_path_heuristic() {
+        let path = "effects\\fxfireatlas04.dds";
+        assert!(!texture_path_is_fx_mesh(
+            path,
+            byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER,
+        ));
+        assert!(!texture_path_is_fx_mesh(
+            path,
+            byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION,
+        ));
     }
 }
 

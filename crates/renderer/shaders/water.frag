@@ -512,22 +512,24 @@ void main() {
     // ── Reflection ray ──
     vec3 R = reflect(-V, Nperturbed);
     float reflDist; bool reflHit;
-    // Reflection-miss: sky tint is the right backdrop (the reflected
-    // ray escaped above the water surface).
+    // Reflection miss follows the same environment contract as the main
+    // material path: exterior rays see the weather sky; interior rays see
+    // the cell ambient. Feeding an interior miss from `skyTint` is what
+    // turned cave water into a bright, nearly white slab anywhere the
+    // reflected ray escaped sparse TLAS geometry.
+    vec3 reflectionMiss = jitter.w > 0.5 ? skyTint.xyz : sceneFlags.yzw;
     vec3 reflColor = traceWaterRay(
         vWorldPos + N * 0.05,
         R,
         REFLECTION_MAX_DIST,
-        skyTint.xyz,
+        reflectionMiss,
         reflDist,
         reflHit
     );
     if (reflHit) {
         reflColor *= exp(-reflDist * DIST_FALLOFF);
     }
-    // Always blend toward sky on miss so the surface doesn't go black
-    // when the reflection escapes.
-    reflColor = mix(skyTint.xyz, reflColor, reflHit ? 1.0 : 0.0);
+    reflColor = mix(reflectionMiss, reflColor, reflHit ? 1.0 : 0.0);
     // WATR DATA reflection_color is a filter on reflected radiance. It must
     // not be mixed into the shared ray terminus, because that contaminates
     // the refraction branch with a reflection-only material parameter.

@@ -115,6 +115,11 @@ fn main() {
         "#define MATERIAL_KIND_NO_LIGHTING {MATERIAL_KIND_NO_LIGHTING}u"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define MATERIAL_KIND_FIRE_REFRACTION {MATERIAL_KIND_FIRE_REFRACTION}u"
+    )
+    .unwrap();
     writeln!(out, "#define SHADOW_MASK_OPAQUE {SHADOW_MASK_OPAQUE}u").unwrap();
     writeln!(out, "#define SHADOW_MASK_GLASS {SHADOW_MASK_GLASS}u").unwrap();
     writeln!(out, "#define SHADOW_FADE_START {SHADOW_FADE_START:?}").unwrap();

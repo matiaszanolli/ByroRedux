@@ -964,6 +964,7 @@ fn spawn_mesh_instance(
         // proxy hull as if it were solid geometry.
         let for_rt = ctx.device_caps.ray_query_supported
             && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+            && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
             && !mesh.is_decal;
         let upload_result = match mesh_cache_key {
             Some(key) => ctx.mesh_registry.register_scene_mesh_keyed(
@@ -1176,12 +1177,13 @@ fn spawn_mesh_instance(
         },
         extra_material_flags,
     );
+    let material_kind = material.material_kind;
     world.insert(entity, material);
     // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn
     // time so build_render_data can skip them via a component query
     // instead of running 6 substring scans per draw per frame.
     if let Some(ref tp) = eff_texture_path {
-        if texture_path_is_fx_mesh(tp) {
+        if texture_path_is_fx_mesh(tp, material_kind) {
             world.insert(entity, IsFxMesh);
         }
     }
@@ -1381,6 +1383,7 @@ fn spawn_mesh_instance(
         && mesh.skin.is_none()
         && !mesh.is_decal
         && !mesh.alpha_test
+        && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
         && mesh.positions.len() >= 3
         && mesh.indices.len() >= 3
     {

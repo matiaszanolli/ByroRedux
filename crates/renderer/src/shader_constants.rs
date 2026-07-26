@@ -100,6 +100,7 @@ mod tests {
             ("MATERIAL_KIND_GLASS", format!("#define MATERIAL_KIND_GLASS {MATERIAL_KIND_GLASS}u")),
             ("MATERIAL_KIND_EFFECT_SHADER", format!("#define MATERIAL_KIND_EFFECT_SHADER {MATERIAL_KIND_EFFECT_SHADER}u")),
             ("MATERIAL_KIND_NO_LIGHTING", format!("#define MATERIAL_KIND_NO_LIGHTING {MATERIAL_KIND_NO_LIGHTING}u")),
+            ("MATERIAL_KIND_FIRE_REFRACTION", format!("#define MATERIAL_KIND_FIRE_REFRACTION {MATERIAL_KIND_FIRE_REFRACTION}u")),
             ("GLASS_RAY_BUDGET", format!("#define GLASS_RAY_BUDGET {GLASS_RAY_BUDGET}u")),
             ("GLASS_RAY_COST", format!("#define GLASS_RAY_COST {GLASS_RAY_COST}u")),
             ("WORKGROUP_X", format!("#define WORKGROUP_X {WORKGROUP_X}")),
@@ -431,6 +432,7 @@ mod tests {
             "MATERIAL_KIND_GLASS",
             "MATERIAL_KIND_EFFECT_SHADER",
             "MATERIAL_KIND_NO_LIGHTING",
+            "MATERIAL_KIND_FIRE_REFRACTION",
         ] {
             let needle = format!("const uint {name}");
             assert!(
@@ -446,12 +448,14 @@ mod tests {
     #[test]
     fn material_kind_matches_scene_buffer_consts() {
         use crate::vulkan::scene_buffer::{
-            MATERIAL_KIND_EFFECT_SHADER as SB_EFFECT_SHADER, MATERIAL_KIND_GLASS as SB_GLASS,
+            MATERIAL_KIND_EFFECT_SHADER as SB_EFFECT_SHADER,
+            MATERIAL_KIND_FIRE_REFRACTION as SB_FIRE_REFRACTION, MATERIAL_KIND_GLASS as SB_GLASS,
             MATERIAL_KIND_NO_LIGHTING as SB_NO_LIGHTING,
         };
         assert_eq!(MATERIAL_KIND_GLASS, SB_GLASS);
         assert_eq!(MATERIAL_KIND_EFFECT_SHADER, SB_EFFECT_SHADER);
         assert_eq!(MATERIAL_KIND_NO_LIGHTING, SB_NO_LIGHTING);
+        assert_eq!(MATERIAL_KIND_FIRE_REFRACTION, SB_FIRE_REFRACTION);
     }
 
     /// Shared scan for `<accessor> & N` where `N` is a bare numeric

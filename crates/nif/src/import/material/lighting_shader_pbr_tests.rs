@@ -170,6 +170,38 @@ fn fo4_plus_grayscale_and_fresnel_scalars_land_in_material_info() {
     assert_eq!(info.fresnel_power, 3.5);
 }
 
+#[test]
+fn skyrim_fire_refraction_flags_select_engine_material_kind() {
+    let mut shader = bslsp_with_pbr_scalars(0.10, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 5.0);
+    shader.shader_flags_1 = crate::shader_flags::skyrim_slsf1::REFRACTION
+        | crate::shader_flags::skyrim_slsf1::FIRE_REFRACTION;
+    let info = extract_with_shader(shader);
+    assert_eq!(
+        info.material_kind, 103,
+        "Refraction + Fire_Refraction must select the renderer's fire-haze kind"
+    );
+    assert_eq!(info.refraction_strength, 0.10);
+    assert!(
+        info.alpha_blend,
+        "fire haze is a transparent composition proxy"
+    );
+    assert_eq!(info.src_blend_mode, 6);
+    assert_eq!(info.dst_blend_mode, 7);
+    assert!(!info.z_write, "fire haze must not hide the flame cards");
+}
+
+#[test]
+fn plain_refraction_keeps_authored_lighting_shader_type() {
+    let mut shader = bslsp_with_pbr_scalars(0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 5.0);
+    shader.shader_type = 7;
+    shader.shader_flags_1 = crate::shader_flags::skyrim_slsf1::REFRACTION;
+    let info = extract_with_shader(shader);
+    assert_eq!(
+        info.material_kind, 7,
+        "ordinary refractive materials must not be promoted to fire haze"
+    );
+}
+
 /// `MaterialInfo::default()` must mirror the BSLSP parser stub at
 /// `crates/nif/src/blocks/shader.rs:739-749` so the no-author fallback
 /// is the same as the FO76+ stopcond fallback. If either side drifts

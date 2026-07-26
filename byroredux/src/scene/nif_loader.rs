@@ -716,6 +716,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // surface that should occlude shadow/GI/reflection rays.
         let for_rt = ctx.device_caps.ray_query_supported
             && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+            && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
             && !mesh.is_decal;
         // upload_scene_mesh registers the vertices/indices into the global
         // geometry SSBO that RT ray queries sample for reflection UVs.
@@ -916,10 +917,11 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             },
             0,
         );
+        let material_kind = material.material_kind;
         world.insert(entity, material);
         // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
         if let Some(ref tp) = owned_texture_path {
-            if texture_path_is_fx_mesh(tp) {
+            if texture_path_is_fx_mesh(tp, material_kind) {
                 world.insert(entity, IsFxMesh);
             }
         }

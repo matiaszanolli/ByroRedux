@@ -413,7 +413,8 @@ pub(super) fn collect_static_mesh_draws(
                 // shadows/GI hits and avoids traversing their large hulls.
                 let in_tlas = !is_lod
                     && !is_decal_mesh
-                    && material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER;
+                    && material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+                    && material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION;
 
                 // Step 2 — normal-alpha-as-spec gloss-flag BINDING (Skyrim/
                 // Gamebryo convention). When a lit Skyrim-era surface

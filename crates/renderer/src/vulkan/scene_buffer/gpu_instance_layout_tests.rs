@@ -433,7 +433,8 @@ fn water_fragment_uses_shared_material_aware_ray_hits() {
         );
     }
     assert!(
-        !frag.contains("avgAlbedoR") && !frag.contains("avgAlbedoG")
+        !frag.contains("avgAlbedoR")
+            && !frag.contains("avgAlbedoG")
             && !frag.contains("avgAlbedoB"),
         "water rays must not regress to the flat instance-average shortcut."
     );
@@ -460,6 +461,10 @@ fn water_reflection_and_refraction_keep_distinct_two_sided_semantics() {
     assert!(
         frag.contains("reflColor *= push.tint_reflect.rgb;"),
         "WATR reflection colour must filter reflected radiance explicitly."
+    );
+    assert!(
+        frag.contains("jitter.w > 0.5 ? skyTint.xyz : sceneFlags.yzw"),
+        "water reflection misses must use sky only outdoors and cell ambient indoors."
     );
     assert!(
         frag.contains("vWorldPos - N * 0.05")

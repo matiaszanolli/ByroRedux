@@ -77,6 +77,7 @@ pub const SKIN_WORKGROUP_SIZE: u32 = 64;
 pub const MATERIAL_KIND_GLASS: u32 = 100;
 pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
 pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
+pub const MATERIAL_KIND_FIRE_REFRACTION: u32 = 103;
 
 // TLAS instance shadow-ray mask buckets (the 8-bit mask AND'd against a
 // ray query's cullMask — see the extension-point comment at

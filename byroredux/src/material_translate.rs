@@ -26,6 +26,23 @@ use byroredux_core::ecs::components::material::{EffectFalloff, Material};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_nif::import::ImportedMesh;
 
+/// `GpuMaterial.ior` is a discriminated optical scalar. For ordinary
+/// materials it remains the canonical dielectric index of refraction. A
+/// fire-refraction proxy instead stores the authored heat-haze distortion
+/// strength there; the material kind makes the two meanings unambiguous
+/// without expanding the hot 300-byte GPU material record.
+fn material_optical_scalar(material_kind: u32, refraction_strength: f32) -> f32 {
+    if material_kind == byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION {
+        if refraction_strength.is_finite() {
+            refraction_strength.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    } else {
+        byroredux_core::ecs::components::material::DEFAULT_DIELECTRIC_IOR
+    }
+}
+
 /// Spawn-resolved texture-slot paths the caller computes before
 /// translation: the REFR XATO/XTNM/XTXR overlay (cell loader) has
 /// already been applied and each populated [`byroredux_core::string::
@@ -156,10 +173,11 @@ pub(crate) fn translate_material(
         // from the keyword classifier and clamps to the renderer ranges.
         metalness: mesh.metalness_override.unwrap_or(f32::NAN),
         roughness: mesh.roughness_override.unwrap_or(f32::NAN),
-        // Generic dielectric until canonical behavior selection below. Glass
-        // promotion replaces this with the shared glass IOR while preserving
-        // the source material's texture-map overlay.
-        ior: byroredux_core::ecs::components::material::DEFAULT_DIELECTRIC_IOR,
+        // Generic dielectric for ordinary materials; fire-refraction uses
+        // this discriminated scalar as its authored distortion strength.
+        // Glass promotion below replaces the ordinary value with the shared
+        // glass IOR while preserving source texture overlays.
+        ior: material_optical_scalar(mesh.material_kind, mesh.refraction_strength),
     };
     material.resolve_pbr();
     crate::helpers::classify_glass_into_material(
@@ -325,6 +343,19 @@ mod tests {
     // no gloss map): material_kind 0, metalness 0, env_map_scale 0,
     // normal_map_index 7, gloss_map_index 0.
     const PASS: (u32, f32, f32, u32, u32) = (0, 0.0, 0.0, 7, 0);
+
+    #[test]
+    fn fire_refraction_uses_sanitized_authored_strength_as_optical_payload() {
+        let kind = byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION;
+        assert_eq!(material_optical_scalar(kind, 0.1), 0.1);
+        assert_eq!(material_optical_scalar(kind, -2.0), 0.0);
+        assert_eq!(material_optical_scalar(kind, 4.0), 1.0);
+        assert_eq!(material_optical_scalar(kind, f32::NAN), 0.0);
+        assert_eq!(
+            material_optical_scalar(0, 0.1),
+            byroredux_core::ecs::components::material::DEFAULT_DIELECTRIC_IOR
+        );
+    }
 
     #[test]
     fn alpha_normal_seeds_smooth_roughness_from_glossiness() {

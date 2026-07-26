@@ -321,6 +321,20 @@ pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
 /// the mesh isn't already an engine-synthesized kind.
 pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
 
+/// `FireRefraction`: Skyrim/FO4 `BSLightingShaderProperty` carrying both
+/// SLSF1 `Refraction` and `Fire_Refraction`. These meshes are heat-haze
+/// distortion proxies, not lit surfaces: their diffuse slot commonly points
+/// at the same tangent-space normal texture as the normal slot, so ordinary
+/// shading displays that vector texture as an opaque rainbow slab.
+///
+/// The fragment shader uses the normal map to perturb a camera-through ray
+/// and samples the scene behind the proxy. The mesh stays raster-only: it
+/// must not cast shadows, receive GI hits, enter reflections, or synthesize a
+/// physics collider. `GpuMaterial.ior` carries the authored
+/// `refraction_strength` for this kind only; all other kinds retain its
+/// canonical index-of-refraction meaning.
+pub const MATERIAL_KIND_FIRE_REFRACTION: u32 = 103;
+
 /// Cell-grid snap for the camera-relative render origin
 /// (#markarth-precision). The origin all GPU clip-space math is performed
 /// relative to is `floor(camera_pos / SNAP) * SNAP`, so it only moves when

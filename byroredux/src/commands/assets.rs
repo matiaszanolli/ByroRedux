@@ -3,6 +3,7 @@
 //! `tex.missing`, `tex.loaded`, `mesh.info`, `mesh.cache`, `skin.coverage`, `skin.list`, `skin.dump`.
 
 use super::shared::*;
+use crate::components::GreyscaleLutHandle;
 
 pub(crate) struct TexMissingCommand;
 impl ConsoleCommand for TexMissingCommand {
@@ -261,6 +262,15 @@ impl ConsoleCommand for MeshInfoCommand {
                 if mat.gloss_map.is_some() { "set" } else { "-" },
                 if mat.dark_map.is_some() { "set" } else { "-" },
             ));
+            let lut_handle = world
+                .get::<GreyscaleLutHandle>(id)
+                .map(|h| h.0.to_string())
+                .unwrap_or_else(|| "(none)".to_string());
+            lines.push(format!(
+                "  greyscale LUT:     {} (handle {})",
+                mat.greyscale_texture.as_deref().unwrap_or("(none)"),
+                lut_handle,
+            ));
             // Material kind / shader-type enum (0 = Default lit, 1 = Envmap,
             // 2 = Glow, … 20 vanilla; 100+ synthesized for GLASS / FX).
             // Critical for diagnosing "what shader path did this take?" —
@@ -301,6 +311,29 @@ impl ConsoleCommand for MeshInfoCommand {
             ));
         } else {
             lines.push("  Material:          (none)".to_string());
+        }
+        if let Some(emitter) = world.get::<ParticleEmitter>(id) {
+            lines.push(format!(
+                "  ParticleEmitter:   texture={} live={}/{} blend={}/{}",
+                emitter.texture_path.as_deref().unwrap_or("(none)"),
+                emitter.particles.len(),
+                emitter.max_particles,
+                emitter.src_blend,
+                emitter.dst_blend,
+            ));
+            lines.push(format!(
+                "                     color [{:.2},{:.2},{:.2},{:.2}] -> [{:.2},{:.2},{:.2},{:.2}], size {:.2} -> {:.2}",
+                emitter.start_color[0],
+                emitter.start_color[1],
+                emitter.start_color[2],
+                emitter.start_color[3],
+                emitter.end_color[0],
+                emitter.end_color[1],
+                emitter.end_color[2],
+                emitter.end_color[3],
+                emitter.start_size,
+                emitter.end_size,
+            ));
         }
         // Marker components — these tell us what category of render path
         // the entity routes through. A bare "no Material" entity that
