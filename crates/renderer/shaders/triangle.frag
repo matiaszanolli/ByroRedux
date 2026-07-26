@@ -800,16 +800,23 @@ void main() {
         }
         // The RT helper reconstructs hit radiance independently from the
         // already-rendered framebuffer and can legitimately disagree in
-        // exposure (especially beside a fire light). Authored refraction
-        // strength is therefore also the replacement coverage: a Skyrim
-        // strength of 0.1 bends the lookup and contributes ten percent of
-        // that sample, preserving ninety percent of the real background.
-        // Treating the proxy as alpha=1 turned any exposure disagreement
-        // into a solid white trapezoid.
-        outColor = vec4(distortedScene.rgb, distortionStrength);
+        // exposure (especially beside a fire light). Treating the proxy as
+        // alpha=1 turned any exposure disagreement into a solid white
+        // trapezoid.
+        // Coverage is quadratic because this forward pass reconstructs
+        // background radiance rather than sampling the exact HDR receiver.
+        // Directional warp remains linear/authored-strength; strength² only
+        // suppresses exposure disagreement at the proxy mesh boundary.
+        float proxyCoverage = distortionStrength * distortionStrength;
+        outColor = vec4(distortedScene.rgb, proxyCoverage);
         outNormal = octEncode(macroN);
-        outRawIndirect = vec4(0.0, 0.0, 0.0, 1.0);
-        outAlbedo = vec4(1.0);
+        // The blended pipeline uses auxiliary-output alpha as coverage.
+        // Keep it zero so this screen-composition proxy changes HDR only;
+        // overwriting the opaque receiver's indirect/albedo attachments
+        // made the later composite reconstruct the proxy silhouette as a
+        // dark rectangle even when HDR coverage was only 0.1.
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(0.0);
         // The sampled background does not share this proxy's motion vector.
         // Force temporal reconstruction to treat it as changing composition.
         outFsrReactive = 1.0;

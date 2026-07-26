@@ -443,6 +443,28 @@ mod tests {
         }
     }
 
+    /// Fire refraction runs in the blended composition phase. Its HDR
+    /// replacement coverage is deliberately strength², while auxiliary
+    /// albedo/indirect coverage stays zero so the proxy cannot reappear as
+    /// a dark rectangle during the later composite.
+    #[test]
+    fn fire_refraction_preserves_opaque_auxiliary_buffers() {
+        let src = include_str!("../shaders/triangle.frag");
+        let start = src
+            .find("if (mat.materialKind == MATERIAL_KIND_FIRE_REFRACTION)")
+            .expect("fire-refraction shader branch");
+        let end = src[start..]
+            .find("// ── FO3/FNV BSShaderNoLightingProperty")
+            .map(|offset| start + offset)
+            .expect("end of fire-refraction shader branch");
+        let branch = &src[start..end];
+
+        assert!(branch.contains("float proxyCoverage = distortionStrength * distortionStrength;"));
+        assert!(branch.contains("outColor = vec4(distortedScene.rgb, proxyCoverage);"));
+        assert!(branch.contains("outRawIndirect = vec4(0.0);"));
+        assert!(branch.contains("outAlbedo = vec4(0.0);"));
+    }
+
     /// #1401 — Pin shader-side `MATERIAL_KIND_*` values against the
     /// authoritative Rust constants in `scene_buffer/constants.rs`.
     #[test]
