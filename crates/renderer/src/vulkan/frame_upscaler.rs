@@ -642,35 +642,19 @@ impl FrameUpscaler {
             .aspect_mask(vk::ImageAspectFlags::DEPTH)
             .level_count(1)
             .layer_count(1);
+        // #2200 / TD2-NEW-01 — the four color inputs the SDK only reads take
+        // an identical execution-only barrier: same access pair, same layout
+        // on both sides. They exist to order the producing render pass before
+        // the SDK's compute reads, not to transition anything. Built through
+        // one helper so a future change to that shape lands once instead of
+        // four times, and so the two barriers that genuinely differ (depth's
+        // layout change, and the output image's read->write transition) stand
+        // out as the exceptions they are.
         let barriers = [
-            vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(inputs.scene_color)
-                .subresource_range(color),
-            vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(inputs.motion_vectors)
-                .subresource_range(color),
-            vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(inputs.reactive)
-                .subresource_range(color),
-            vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .image(inputs.transparency)
-                .subresource_range(color),
+            fsr_input_read_barrier(inputs.scene_color, color),
+            fsr_input_read_barrier(inputs.motion_vectors, color),
+            fsr_input_read_barrier(inputs.reactive, color),
+            fsr_input_read_barrier(inputs.transparency, color),
             vk::ImageMemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::SHADER_READ)
                 .dst_access_mask(vk::AccessFlags::SHADER_READ)
@@ -877,6 +861,27 @@ impl FrameUpscaler {
     }
 }
 
+/// Execution-only barrier for one of the four color images FSR reads but never
+/// writes (#2200).
+///
+/// `old_layout == new_layout == SHADER_READ_ONLY_OPTIMAL` makes this a pure
+/// ordering + visibility edge: the producing render pass's
+/// `COLOR_ATTACHMENT_WRITE` must complete and become visible to the SDK's
+/// compute `SHADER_READ`, with no layout transition. Identical for all four,
+/// so it is written once here rather than repeated per image.
+fn fsr_input_read_barrier(
+    image: vk::Image,
+    range: vk::ImageSubresourceRange,
+) -> vk::ImageMemoryBarrier<'static> {
+    vk::ImageMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .image(image)
+        .subresource_range(range)
+}
+
 /// Source access mask for the blit's output-image acquire barrier.
 ///
 /// `GENERAL` only ever reaches the blit through the dispatch-failure recovery
@@ -992,5 +997,82 @@ mod bind_failure_frees_allocation_tests {
              bind_image_memory fails — same shape as the frame_upscaler site \
              (#2178). Branch was:\n{branch}",
         );
+    }
+}
+
+/// #2200 / TD2-NEW-01 — the extracted FSR input barrier keeps the exact field
+/// values the four hand-rolled copies had.
+///
+/// A pure refactor needs a pin precisely because it is supposed to change
+/// nothing: the four originals were byte-identical apart from `.image`, so
+/// there is no behavioural test that would notice the helper drifting. These
+/// assertions are on plain `#[repr(C)]` struct fields — no device needed.
+#[cfg(test)]
+mod fsr_input_barrier_tests {
+    use super::*;
+
+    #[test]
+    fn helper_reproduces_the_execution_only_shape() {
+        let image = vk::Image::from_raw(0x1234);
+        let range = color_subresource_single_mip();
+        let barrier = fsr_input_read_barrier(image, range);
+
+        assert_eq!(
+            barrier.src_access_mask,
+            vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+        );
+        assert_eq!(barrier.dst_access_mask, vk::AccessFlags::SHADER_READ);
+        assert_eq!(barrier.image, image);
+        assert_eq!(
+            barrier.old_layout,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+        );
+        assert_eq!(
+            barrier.old_layout, barrier.new_layout,
+            "these four barriers order the producing pass before the SDK's \
+             reads; they must not transition anything. A layout change here \
+             would silently alter what the SDK is handed.",
+        );
+    }
+
+    /// The two barriers that are *not* this shape must stay distinct — depth
+    /// changes layout, and the output image goes read -> write. If either ever
+    /// collapses into the helper, FSR would be handed an image in the wrong
+    /// layout with no validation error at record time.
+    #[test]
+    fn depth_and_output_are_deliberately_not_the_shared_shape() {
+        let src = production_src();
+        let before = src
+            .split_once("unsafe fn record_fsr_barriers_before(")
+            .expect("record_fsr_barriers_before disappeared")
+            .1;
+        let body = before
+            .split_once("\n    }")
+            .expect("no closing brace at method indentation")
+            .0;
+
+        assert_eq!(
+            body.matches("fsr_input_read_barrier(").count(),
+            4,
+            "expected exactly the four read-only color inputs to use the \
+             shared helper (#2200)",
+        );
+        assert!(
+            body.contains("DEPTH_STENCIL_READ_ONLY_OPTIMAL"),
+            "depth's layout transition was folded away — it is not the \
+             execution-only shape",
+        );
+        assert!(
+            body.contains("vk::ImageLayout::GENERAL"),
+            "the output image's read -> write transition to GENERAL was folded \
+             away — it is not the execution-only shape",
+        );
+    }
+
+    fn production_src() -> &'static str {
+        include_str!("frame_upscaler.rs")
+            .split_once("\n#[cfg(test)]")
+            .expect("frame_upscaler.rs lost its test modules")
+            .0
     }
 }

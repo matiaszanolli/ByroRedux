@@ -417,6 +417,25 @@ pub mod bsver {
     /// blocks (e.g. NiNode). Content with `bsver >= SF_FORM_ID` has
     /// this field; retail Starfield at 172 does not.
     pub const SF_FORM_ID: u32 = 173;
+    /// Starfield builds that carry the undocumented 2-byte field between
+    /// `BSWeakReferenceNode`'s weak-ref array and `unkInt1` (#2105).
+    ///
+    /// **Deliberately separate from [`SF_FORM_ID`]** even though #2105
+    /// originally reused it. The two properties do not correlate, and
+    /// assuming they did cost 93.9% of `Starfield - Meshes02.ba2` (#2201):
+    ///
+    /// | bsver | `form_id` per entry | 2-byte gap | observed in           |
+    /// |-------|---------------------|------------|-----------------------|
+    /// | 172   | no                  | no         | "packin" composites   |
+    /// | 173   | yes                 | **no**     | `Meshes02.ba2`        |
+    /// | 175   | yes                 | **yes**    | `MeshesPatch.ba2`     |
+    ///
+    /// 174 is unobserved in any archive on hand, so the true boundary is
+    /// somewhere in `(173, 175]`; this constant sits at the lowest value
+    /// the field is actually known to be present at. If bsver-174 content
+    /// ever turns up, byte-check it rather than assuming which side it
+    /// falls on — both neighbours are attested and they disagree.
+    pub const SF_WEAK_REF_GAP: u32 = 175;
 }
 
 /// Which game generation produced this NIF.

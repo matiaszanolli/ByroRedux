@@ -147,10 +147,13 @@ fn starfield_header() -> NifHeader {
 /// Minimal Starfield (v20.2.0.7 / bsver 172) `BSWeakReferenceNode` body with
 /// empty weak-ref and water-ref lists — the NiNode base (76 B, same modern
 /// layout as `build_bs_multi_bound_node_body`) + num_weak_refs(0) + unk_int1 +
-/// num_water_refs(0) = 88 B. bsver 172 is below `SF_FORM_ID` (173), so the
-/// #2105 2-byte gap (gated the same as `formID`) does NOT apply here — see
-/// `bs_weak_reference_node_parses_populated_lists_with_undocumented_gap` for
-/// the bsver-175 shape that does. Callers append the #1882 trailing tail.
+/// num_water_refs(0) = 88 B. bsver 172 is below both `SF_FORM_ID` (173) and
+/// `SF_WEAK_REF_GAP` (175), so neither the per-entry `formID` nor the #2105
+/// 2-byte gap applies here — the three attested bsvers each carry a different
+/// combination, pinned by
+/// `bs_weak_reference_node_has_no_undocumented_gap_at_bsver_173` (formID, no
+/// gap) and `..._parses_populated_lists_with_undocumented_gap` (both). See
+/// `SF_WEAK_REF_GAP`'s doc for the table. Callers append the #1882 tail.
 fn build_empty_starfield_weakref_body() -> Vec<u8> {
     let mut b = Vec::new();
     // NiObjectNET
@@ -301,6 +304,129 @@ fn bs_weak_reference_node_parses_populated_lists_with_undocumented_gap() {
         .expect("dispatch must parse");
     assert_eq!(boxed.block_type_name(), "BSWeakReferenceNode");
     assert_eq!(s2.position(), b.len() as u64);
+}
+
+/// One populated `BSWeakReference` entry, with `formID` present or absent per
+/// `bsver`, and the #2105 2-byte gap present or absent per `with_gap`. The
+/// shape both #2105 and #2201 turn on, parameterised so the two real
+/// populations can be pinned against each other.
+fn build_populated_starfield_weakref_body(with_form_id: bool, with_gap: bool) -> Vec<u8> {
+    let mut b = build_empty_starfield_weakref_body();
+    // Truncate back to the bare NiNode base (drop num_weak_refs(0),
+    // unk_int1(0), num_water_refs(0)) so the tail can be rebuilt with a
+    // populated weak-ref entry inserted first.
+    b.truncate(b.len() - 4 - 4 - 4);
+    b.extend_from_slice(&1u32.to_le_bytes()); // num_weak_refs = 1
+    if with_form_id {
+        b.extend_from_slice(&0u32.to_le_bytes()); // formID (bsver >= SF_FORM_ID)
+    }
+    b.extend_from_slice(&[0u8; 12]); // BSResourceID (blank)
+    b.extend_from_slice(&1u32.to_le_bytes()); // num_transforms = 1
+    b.extend_from_slice(&[0u8; 64]); // one Matrix4 transform
+    b.extend_from_slice(&0u32.to_le_bytes()); // num_materials = 0
+    if with_gap {
+        b.extend_from_slice(&0u16.to_le_bytes()); // #2105 undocumented 2-byte gap
+    }
+    b.extend_from_slice(&0u32.to_le_bytes()); // unkInt1
+    b.extend_from_slice(&0u32.to_le_bytes()); // num_water_refs = 0
+    b
+}
+
+fn starfield_header_at_bsver(bsver: u32) -> NifHeader {
+    NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: bsver,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: vec![Arc::from("")],
+        max_string_length: 0,
+        num_groups: 0,
+    }
+}
+
+/// #2201 — the population #2105's gate misparsed.
+///
+/// #2105 gated its 2-byte skip on `SF_FORM_ID` (173), assuming the gap and the
+/// per-entry `formID` correlate. They don't. Vanilla
+/// `Starfield - Meshes02.ba2` is uniformly bsver 173: it *has* the `formID`
+/// and *lacks* the gap. Skipping 2 bytes there read `unkInt1`/`numWaterRefs`
+/// 2 bytes late, and the resulting garbage water-ref count ran its implied
+/// `skip()` past EOF — 7 091 of 7 552 files (93.9%) dropped to `NiUnknown`.
+///
+/// #2105 shipped a fixture only for the bsver-175/gap-present shape, which is
+/// why nothing caught this: the two shapes are indistinguishable unless both
+/// are pinned. This test is the missing half, and the assertions below are
+/// deliberately symmetric with
+/// `bs_weak_reference_node_parses_populated_lists_with_undocumented_gap`.
+#[test]
+fn bs_weak_reference_node_has_no_undocumented_gap_at_bsver_173() {
+    use crate::blocks::node::BsWeakReferenceNode;
+
+    let header = starfield_header_at_bsver(173);
+    let b = build_populated_starfield_weakref_body(true, false);
+
+    let mut stream = NifStream::new(&b, &header);
+    BsWeakReferenceNode::parse(&mut stream).expect("bsver-173 populated lists must parse");
+    assert_eq!(
+        stream.position(),
+        b.len() as u64,
+        "bsver 173 carries the formID but NOT the 2-byte gap — consuming \
+         anything other than the exact body length means the gate is wrong \
+         in one direction or the other (#2201)",
+    );
+
+    let mut s2 = NifStream::new(&b, &header);
+    let boxed = crate::blocks::parse_block("BSWeakReferenceNode", &mut s2, Some(b.len() as u32))
+        .expect("dispatch must parse");
+    assert_eq!(
+        boxed.block_type_name(),
+        "BSWeakReferenceNode",
+        "must resolve to a real node, not NiUnknown",
+    );
+}
+
+/// The inverse of the test above, and the reason the gate can't simply be
+/// widened or dropped: at bsver 175 the gap *is* present, so a body written
+/// without it must NOT consume cleanly. Without this direction, moving the
+/// gate to 176+ (or deleting it) would leave every assertion in this file
+/// passing while re-breaking the 325 MeshesPatch files #2105 fixed.
+#[test]
+fn bs_weak_reference_gap_gate_separates_bsver_173_and_175() {
+    use crate::blocks::node::BsWeakReferenceNode;
+
+    // The 173-shaped body (no gap) read as bsver 175 must over-consume: the
+    // parser skips 2 bytes that aren't there, so it runs past the body end.
+    let no_gap = build_populated_starfield_weakref_body(true, false);
+    let header_175 = starfield_header_at_bsver(175);
+    let mut stream = NifStream::new(&no_gap, &header_175);
+    let over_consumed = match BsWeakReferenceNode::parse(&mut stream) {
+        Ok(_) => stream.position() > no_gap.len() as u64,
+        Err(_) => true, // ran off the end entirely — also a mismatch
+    };
+    assert!(
+        over_consumed,
+        "a gap-free body must not parse cleanly at bsver 175, or the gate is \
+         doing nothing and #2105's MeshesPatch fix is silently dead",
+    );
+
+    // And the 175-shaped body (gap present) read as bsver 173 must not
+    // consume exactly either — the 2 stray bytes shift every later field.
+    let with_gap = build_populated_starfield_weakref_body(true, true);
+    let header_173 = starfield_header_at_bsver(173);
+    let mut stream = NifStream::new(&with_gap, &header_173);
+    let mismatched = match BsWeakReferenceNode::parse(&mut stream) {
+        Ok(_) => stream.position() != with_gap.len() as u64,
+        Err(_) => true,
+    };
+    assert!(
+        mismatched,
+        "a gap-bearing body must not consume exactly at bsver 173, or the \
+         two populations are not actually distinguishable by this gate",
+    );
 }
 
 /// Regression test for issue #142: NiNode subtypes with trailing fields.

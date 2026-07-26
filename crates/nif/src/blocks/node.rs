@@ -909,11 +909,10 @@ impl BsWeakReferenceNode {
         }
 
         // #2105 — undocumented 2-byte field between the weak-ref array and
-        // `unkInt1`, gated the same as the per-entry `formID` above (nifly's
-        // `Sync` has no such field and nif.xml has no entry for this block
-        // at all). Found by byte-diffing real content: 18/18 sampled
-        // `Starfield - MeshesPatch.ba2` NIFs with a populated water-ref list
-        // (bsver 175, formID present) decode cleanly only when these 2 bytes
+        // `unkInt1` (nifly's `Sync` has no such field and nif.xml has no
+        // entry for this block at all). Found by byte-diffing real content:
+        // 18/18 sampled `Starfield - MeshesPatch.ba2` NIFs with a populated
+        // water-ref list (bsver 175) decode cleanly only when these 2 bytes
         // are skipped here — without them `unkInt1`/the water-ref count are
         // read 2 bytes early, producing a huge garbage count whose implied
         // `skip()` runs past EOF and drops the block to `NiUnknown`
@@ -921,11 +920,20 @@ impl BsWeakReferenceNode {
         // sample's real `materials/water/*.mat` resource string and walking
         // backward through `BSWaterReferenceStruct`'s known field sizes to
         // the count — it lines up only 2 bytes later than nifly predicts.
-        // The gate matters: bsver-172 "packin" composite nodes (no per-entry
-        // `formID`) do NOT carry this field — an earlier unconditional skip
-        // regressed a different 20/29 849 files that previously parsed
-        // clean. Distinct from #1882's tail (after the *whole* struct).
-        if stream.bsver() >= crate::version::bsver::SF_FORM_ID {
+        //
+        // #2201 — this gate is `SF_WEAK_REF_GAP` (175), NOT the `SF_FORM_ID`
+        // (173) gate used for the per-entry `formID` above. #2105 reused
+        // that constant on the assumption the two fields correlate; they
+        // don't. `Starfield - Meshes02.ba2` is uniformly bsver 173, has the
+        // `formID`, and does NOT have this gap — skipping 2 bytes there
+        // misaligned 7 091/7 552 of its NIFs (93.9%) into `NiUnknown` by the
+        // exact mechanism described above, just inverted. Both boundaries
+        // are load-bearing and independently attested: bsver-172 "packin"
+        // composites have neither field (an earlier *unconditional* skip
+        // regressed 20/29 849 files), 173 has one, 175 has both. See
+        // `SF_WEAK_REF_GAP`'s doc for the table and the unobserved-174 caveat.
+        // Distinct from #1882's tail (after the *whole* struct).
+        if stream.bsver() >= crate::version::bsver::SF_WEAK_REF_GAP {
             stream.skip(2)?;
         }
 
