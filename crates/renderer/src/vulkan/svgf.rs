@@ -180,6 +180,31 @@ pub fn next_svgf_temporal_alpha(recovery_frames: u32) -> (f32, f32, u32) {
 /// on first 2-3 frames after resize" — the existing
 /// `frames_since_creation` reset path already addresses it; this
 /// extraction is the regression guard the audit asked for.
+/// Advance the per-FIF history age for whichever slots were dispatched, and
+/// clear their latches.
+///
+/// Per-FIF: iterate slots and bump whichever was just dispatched. With strict
+/// alternating frame indices only one slot has `dispatched_this_frame[i] ==
+/// true` at a time, so the loop is O(MAX_FRAMES_IN_FLIGHT == 2) but correct at
+/// any MFIF count. (#964 / REN-D10-NEW-07)
+///
+/// Split out of [`SvgfPipeline::mark_frame_completed`] under #2146 so the
+/// latch semantics can be tested without a Vulkan device. The property that
+/// matters is what happens when a caller *skips* this call after a dispatch
+/// latched — see `stale_latch_over_advances_history_age` for the concrete
+/// damage, which is why `FrameUpscaler::record` is infallible.
+pub(super) fn advance_completed_frames(
+    dispatched_this_frame: &mut [bool; MAX_FRAMES_IN_FLIGHT],
+    frames_since_creation: &mut [u32; MAX_FRAMES_IN_FLIGHT],
+) {
+    for i in 0..MAX_FRAMES_IN_FLIGHT {
+        if dispatched_this_frame[i] {
+            frames_since_creation[i] = frames_since_creation[i].saturating_add(1);
+            dispatched_this_frame[i] = false;
+        }
+    }
+}
+
 pub(super) fn should_force_history_reset(frames_since_creation: u32) -> bool {
     frames_since_creation < MAX_FRAMES_IN_FLIGHT as u32
 }
@@ -1298,17 +1323,10 @@ impl SvgfPipeline {
     /// guarantees no advance on a skipped / failed dispatch. See #917 /
     /// REN-D10-NEW-03.
     pub fn mark_frame_completed(&mut self) {
-        // Per-FIF advance: iterate slots and bump whichever was just
-        // dispatched. With strict alternating frame indices only one
-        // slot has `dispatched_this_frame[i] == true` at a time, so
-        // the loop is O(MAX_FRAMES_IN_FLIGHT == 2) but correct at any
-        // MFIF count. (#964 / REN-D10-NEW-07)
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
-            if self.dispatched_this_frame[i] {
-                self.frames_since_creation[i] = self.frames_since_creation[i].saturating_add(1);
-                self.dispatched_this_frame[i] = false;
-            }
-        }
+        advance_completed_frames(
+            &mut self.dispatched_this_frame,
+            &mut self.frames_since_creation,
+        );
     }
 
     /// Recreate history images at a new extent after a swapchain resize.
@@ -1710,6 +1728,114 @@ mod tests {
              `if (hasHistory)` branch (REG-07 / #1639, #1481) — re-arms a \
              one-frame un-clamped firefly on the disocclusion (no-history) \
              path. Keep `currInd *= maxL` ahead of `if (hasHistory)`."
+        );
+    }
+}
+
+/// #2146 / CHAIN-D2-01 — the no-advance-on-unsubmitted-dispatch invariant
+/// (#917), and the structural guarantee that nothing between the dispatch and
+/// the submit can bypass it.
+#[cfg(test)]
+mod unsubmitted_dispatch_tests {
+    use super::*;
+
+    /// The happy path: dispatch latches, submit succeeds, age advances once.
+    #[test]
+    fn completed_dispatch_advances_exactly_its_own_slot() {
+        let mut dispatched = [false; MAX_FRAMES_IN_FLIGHT];
+        let mut frames = [0u32; MAX_FRAMES_IN_FLIGHT];
+
+        dispatched[0] = true; // svgf.dispatch on slot 0
+        advance_completed_frames(&mut dispatched, &mut frames); // queue_submit Ok
+
+        assert_eq!(frames[0], 1);
+        assert_eq!(frames[1], 0, "only the dispatched slot may advance");
+        assert!(!dispatched[0], "the latch must clear so it cannot re-count");
+    }
+
+    /// The damage a bypass causes, and the reason `FrameUpscaler::record` is
+    /// infallible rather than returning `Result`.
+    ///
+    /// Frame A dispatches on slot 0 and then aborts before `queue_submit`, so
+    /// `mark_frame_completed` never runs and slot 0's latch stays set. Frame B
+    /// dispatches on slot 1 and submits normally — and its
+    /// `mark_frame_completed` credits *both* slots. Slot 0's history age now
+    /// counts a dispatch that never reached the GPU, so
+    /// `should_force_history_reset` stops forcing a reset one frame early and
+    /// the first real frame reads uninitialised history: a one-frame smear.
+    #[test]
+    fn stale_latch_over_advances_history_age() {
+        let mut dispatched = [false; MAX_FRAMES_IN_FLIGHT];
+        let mut frames = [0u32; MAX_FRAMES_IN_FLIGHT];
+
+        dispatched[0] = true; // frame A: svgf.dispatch
+                              // frame A aborts before queue_submit -> no advance_completed_frames
+
+        dispatched[1] = true; // frame B: svgf.dispatch
+        advance_completed_frames(&mut dispatched, &mut frames); // frame B submits Ok
+
+        assert_eq!(frames[1], 1, "frame B's own slot advances correctly");
+        assert_eq!(
+            frames[0], 1,
+            "this is the bug #2146 guards against: slot 0 advanced for a \
+             dispatch that never reached the GPU. The state machine cannot \
+             detect this on its own — the only defence is that no fallible \
+             call exists between the dispatch and the submit.",
+        );
+    }
+
+    /// `should_force_history_reset` is what consumes the over-advanced count,
+    /// so pin the boundary the extra frame crosses. With MFIF = 2 a slot needs
+    /// 2 real frames before its history is trustworthy; one spurious advance
+    /// gets it there after a single real one.
+    #[test]
+    fn one_spurious_advance_closes_the_reset_window_early() {
+        assert!(
+            should_force_history_reset(MAX_FRAMES_IN_FLIGHT as u32 - 1),
+            "one frame short of the window must still force a reset",
+        );
+        assert!(
+            !should_force_history_reset(MAX_FRAMES_IN_FLIGHT as u32),
+            "at the window boundary history is trusted — which is why an \
+             advance for an unsubmitted dispatch is visible as a smear",
+        );
+    }
+
+    /// The structural half of the fix. `FrameUpscaler::record` must stay
+    /// infallible: it runs after SVGF/TAA have latched, so a `Result` there is
+    /// what lets an abort skip `queue_submit` *and* `mark_frame_completed`.
+    #[test]
+    fn frame_upscaler_record_stays_infallible() {
+        const FRAME_UPSCALER_RS: &str = include_str!("frame_upscaler.rs");
+        let signature = FRAME_UPSCALER_RS
+            .split_once("pub unsafe fn record(")
+            .expect("FrameUpscaler::record disappeared")
+            .1;
+        let header = signature.split_once('{').expect("record has no body").0;
+        assert!(
+            !header.contains("Result"),
+            "FrameUpscaler::record regained a Result return type. It runs \
+             after svgf/taa latched dispatched_this_frame, so propagating an \
+             error from there skips queue_submit AND mark_frame_completed \
+             (#2146 / #917). Latch the failure and fall back to the native \
+             blit instead, as the dispatch-failure path does.",
+        );
+    }
+
+    /// And the call site: no `?` may appear between the SVGF dispatch and the
+    /// end of `record_post_passes`.
+    #[test]
+    fn record_post_passes_has_no_error_propagation_after_the_svgf_latch() {
+        const POST_PASSES_RS: &str = include_str!("context/post_passes.rs");
+        let after_svgf = POST_PASSES_RS
+            .split_once("self.svgf")
+            .expect("record_post_passes no longer dispatches SVGF")
+            .1;
+        assert!(
+            !after_svgf.contains("?;"),
+            "a `?` reappeared after the SVGF dispatch in record_post_passes. \
+             Everything from that latch to queue_submit must be infallible, \
+             or #917's invariant is bypassable again (#2146).",
         );
     }
 }

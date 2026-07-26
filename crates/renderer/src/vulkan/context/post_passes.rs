@@ -558,8 +558,14 @@ impl VulkanContext {
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_upscale_start(&self.device, cmd, frame);
             }
-            let upscale_result = self
-                .frame_upscaler
+            // #2146 — `record` is infallible on purpose. It runs after
+            // `svgf.dispatch`/`taa.dispatch` have latched
+            // `dispatched_this_frame`, so an error escaping to `draw_frame`
+            // would skip `queue_submit` *and* `mark_frame_completed`, leaving
+            // those latches set for a dispatch that never reached the GPU.
+            // See `FrameUpscaler::record`'s doc comment before adding any
+            // fallible call between here and the submit.
+            self.frame_upscaler
                 .as_mut()
                 .expect("frame upscaler must exist while recording")
                 .record(
@@ -580,7 +586,6 @@ impl VulkanContext {
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_upscale_end(&self.device, cmd, frame);
             }
-            upscale_result?;
 
             let exposure = self
                 .exposure

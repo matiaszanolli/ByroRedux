@@ -170,12 +170,34 @@ impl PresentationPipeline {
             .dst_access_mask(
                 vk::AccessFlags::SHADER_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
             );
+        // #2143 / CONC-D1-2026-07-25-01 — declaring this dependency at all
+        // *replaces* Vulkan's implicit end-of-pass dependency, so a
+        // `dst_stage_mask` of NONE left the pass's COLOR_ATTACHMENT_WRITE with
+        // an empty second sync scope: unordered against everything after it.
+        // No live hazard, because both current consumers of the swapchain
+        // image carry their own incoming barrier — the egui overlay
+        // (COLOR_ATTACHMENT_OUTPUT) and the screenshot copy (TRANSFER) — and
+        // the present itself is covered by `render_finished`. The exposure was
+        // a future pass added here without its own barrier, which nothing in
+        // `cargo test` can catch.
+        //
+        // The dst scope below names those two consumers rather than being
+        // maximally wide, so it stays a description of the frame graph. A
+        // third consumer means extending it. Mirrors `composite.rs`'s outgoing
+        // dependency; `egui_pass.rs` makes the same point with BOTTOM_OF_PIPE.
         let outgoing = vk::SubpassDependency::default()
             .src_subpass(0)
             .dst_subpass(vk::SUBPASS_EXTERNAL)
             .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
             .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags::NONE);
+            .dst_stage_mask(
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::TRANSFER,
+            )
+            .dst_access_mask(
+                vk::AccessFlags::COLOR_ATTACHMENT_READ
+                    | vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                    | vk::AccessFlags::TRANSFER_READ,
+            );
         let attachments = [color];
         let subpasses = [subpass];
         let dependencies = [incoming, outgoing];

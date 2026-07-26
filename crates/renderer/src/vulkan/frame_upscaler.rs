@@ -340,6 +340,21 @@ impl FrameUpscaler {
 
     /// Record either the real FSR dispatch or the native blit bridge.
     ///
+    /// **Infallible by design (#2146 / CHAIN-D2-01).** Every failure here
+    /// degrades to the native blit and latches, rather than propagating. The
+    /// return type is not an oversight to be "tidied up" later: this runs
+    /// inside `record_post_passes`, *after* `svgf.dispatch` and `taa.dispatch`
+    /// have set their `dispatched_this_frame` latches. An error escaping to
+    /// `draw_frame` aborts before `queue_submit`, so `mark_frame_completed`
+    /// never runs, the latch stays `true`, and the *next* frame's
+    /// `mark_frame_completed` credits `frames_since_creation` for a dispatch
+    /// that never reached the GPU — closing `should_force_history_reset` one
+    /// frame early and smearing SVGF/TAA history. That is exactly the failure
+    /// #917 was written to prevent, and a `Result` here is what would let it
+    /// back in. If a genuinely fatal condition ever appears, clear those
+    /// latches on the error path before returning rather than restoring the
+    /// `Result`.
+    ///
     /// # Safety
     ///
     /// `cmd` must be recording outside a render pass. All input images must
@@ -352,7 +367,7 @@ impl FrameUpscaler {
         frame: usize,
         inputs: UpscaleDispatchInputs,
         fsr_frame: Option<FsrFrameParameters>,
-    ) -> Result<()> {
+    ) {
         self.dispatched_this_frame = false;
         if !self.is_fsr_dispatch_active() {
             unsafe {
@@ -368,11 +383,39 @@ impl FrameUpscaler {
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 )
             };
-            return Ok(());
+            return;
         }
 
-        let frame_params =
-            fsr_frame.context("FSR context is active but frame parameters are absent")?;
+        // #2146 — was `fsr_frame.context(...)?`, the sole error return in this
+        // function and the first `?` inside `record_post_passes`. Unreachable
+        // as written (the jitter gate and this gate read the same predicate
+        // within one `draw_frame`), but it sat *after* SVGF/TAA had latched
+        // `dispatched_this_frame`, so it would have bypassed #917's
+        // no-advance-on-unsubmitted-dispatch invariant the moment a second
+        // caller stopped keeping the two predicates in lockstep. Degrade the
+        // same way a rejected dispatch does instead: latch, blit, carry on.
+        let Some(frame_params) = fsr_frame else {
+            log::error!(
+                "FSR context is active but frame parameters are absent;                  falling back to the native HDR blit for this swapchain generation"
+            );
+            self.dispatch_failure =
+                Some("FSR context is active but frame parameters are absent".to_string());
+            unsafe {
+                // SAFETY: same contract as this fn's own `# Safety` doc. No
+                // boundary barrier has run yet on this path, so the output
+                // image is still in its steady-state SHADER_READ_ONLY_OPTIMAL
+                // layout — the same one the bridge branch above blits from,
+                // NOT the GENERAL the post-dispatch recovery path uses.
+                self.record_native_blit(
+                    device,
+                    cmd,
+                    frame,
+                    inputs.scene_color,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                );
+            }
+            return;
+        };
         unsafe {
             // SAFETY: same contract as this fn's own `# Safety` doc — `cmd`
             // is recording outside a render pass and `inputs`' images are
@@ -500,7 +543,7 @@ impl FrameUpscaler {
                     vk::ImageLayout::GENERAL,
                 );
             }
-            return Ok(());
+            return;
         }
 
         unsafe {
@@ -510,13 +553,42 @@ impl FrameUpscaler {
             self.record_fsr_barriers_after(device, cmd, frame, inputs.depth)
         };
         self.dispatched_this_frame = true;
-        Ok(())
     }
 
     /// `output_layout` is the layout this frame slot's output image is
     /// currently in: `SHADER_READ_ONLY_OPTIMAL` on the steady-state bridge
     /// path, or `GENERAL` when the FSR boundary barriers already ran and the
     /// dispatch then failed.
+    ///
+    /// # On the width of the acquire barrier's source scope (#2145)
+    ///
+    /// The `before` barrier's src stage mask is
+    /// `COLOR_ATTACHMENT_OUTPUT | FRAGMENT_SHADER | COMPUTE_SHADER` — wider
+    /// than the two images strictly need. Recording why, because the audit
+    /// that flagged it and the audit that resolved it reached opposite
+    /// conclusions and the next reader deserves the settled one:
+    ///
+    /// CONC-D1-2026-07-25-03 argued `COMPUTE_SHADER` is *load-bearing*,
+    /// ordering partially-recorded FFX storage writes before this blit's
+    /// transfer write, on the premise that `ExecuteGpuJobsVK` records every
+    /// queued job before checking its error code. **That premise is false for
+    /// the vendored SDK** — see #2201's sibling #2140, which traced the whole
+    /// chain: every reachable error return fires before `fsr3upscalerDispatch`,
+    /// the first function that records anything, and all four
+    /// `executeGpuJob*` helpers return `FFX_OK` unconditionally, so the
+    /// post-loop check is dead code. A failed dispatch has recorded nothing.
+    /// `byroredux_fsr3_sys::vendored_sdk_contract_tests` pins both facts
+    /// against the vendored sources.
+    ///
+    /// So `COMPUTE_SHADER` is **not** covering partial FFX writes, and this is
+    /// defensive breadth rather than a load-bearing mask. The reason to leave
+    /// it alone is different and simpler: this function has two callers with
+    /// different `output_layout` values and therefore different prior writers,
+    /// so narrowing the mask is a per-caller analysis, not the one-line
+    /// cleanup it looks like. The cost of the extra bits is nil — they widen a
+    /// barrier that is already being recorded — and the cost of getting the
+    /// narrowing wrong is a same-command-buffer WAW that no test can see.
+    /// If it is ever narrowed, split the barrier per call site first.
     unsafe fn record_native_blit(
         &self,
         device: &ash::Device,
