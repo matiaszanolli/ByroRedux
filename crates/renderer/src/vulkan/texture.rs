@@ -648,9 +648,14 @@ where
         // SAFETY: `cmd` was just allocated above from `pool` and is in the
         // initial state (not already recording); `begin_info` is a stack-local
         // that outlives the call. `device` is live.
-        device
-            .begin_command_buffer(cmd, &begin_info)
-            .context("begin one-time command buffer")?;
+        //
+        // #2157 — on failure `cmd` stays in the initial state (never entered
+        // recording, never submitted), so freeing it directly is sound and
+        // required: this is the first of the two `?` sites #1861 left leaking.
+        if let Err(e) = device.begin_command_buffer(cmd, &begin_info) {
+            device.free_command_buffers(pool, &[cmd]);
+            return Err(e).context("begin one-time command buffer");
+        }
     }
 
     // Run the recording closure. If it fails, end + free the command buffer
@@ -675,9 +680,16 @@ where
         // SAFETY: `cmd` is in the recording state (begun above, closure
         // succeeded); `device` is live. Ending a recording buffer is the
         // required precondition before submission.
-        device
-            .end_command_buffer(cmd)
-            .context("end one-time command buffer")?;
+        //
+        // #2157 — a failed `end_command_buffer` leaves `cmd` in the invalid
+        // state, which `vkFreeCommandBuffers` accepts (it takes buffers in any
+        // state except pending, and this one was never submitted). Freeing is
+        // the only way to reclaim it: the second of the two `?` sites #1861
+        // left leaking.
+        if let Err(e) = device.end_command_buffer(cmd) {
+            device.free_command_buffers(pool, &[cmd]);
+            return Err(e).context("end one-time command buffer");
+        }
     }
 
     let submit_info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd));
@@ -833,11 +845,19 @@ mod one_time_lock_scope_tests {
     /// success tail called `free_command_buffers`; the four later fallible
     /// calls propagated via `?` straight past it.
     ///
+    /// #2157 extended it to the two sites #1861 missed —
+    /// `begin_command_buffer` and `end_command_buffer`, both of which sit
+    /// between the allocation and that cleanup block and still propagated
+    /// via a bare `?`. Their blast radius grew when the FSR work made
+    /// `FrameUpscaler::initialize_outputs` and `ExposureResource::initialize`
+    /// callers that re-enter on every swapchain recreate rather than once at
+    /// load time.
+    ///
     /// Static source check (no GPU device under `cargo test`), same seam as
     /// `queue_guard_released_before_one_time_fence_wait` above. Counts
     /// `free_command_buffers(pool, &[cmd])` call sites in the function
-    /// body: 1 (closure-failure) + 4 (the four post-allocation fallible
-    /// calls) + 1 (success tail) = 6.
+    /// body: 1 (begin) + 1 (closure-failure) + 1 (end) + 4 (the four
+    /// post-submit fallible calls) + 1 (success tail) = 8.
     #[test]
     fn one_time_commands_free_cmd_buffer_on_every_error_path() {
         let src = include_str!("texture.rs");
@@ -852,19 +872,22 @@ mod one_time_lock_scope_tests {
 
         let free_count = body.matches("free_command_buffers(pool, &[cmd])").count();
         assert_eq!(
-            free_count, 6,
-            "expected 6 free_command_buffers(pool, &[cmd]) call sites in \
-             with_one_time_commands_inner (closure-failure + create_fence + \
+            free_count, 8,
+            "expected 8 free_command_buffers(pool, &[cmd]) call sites in \
+             with_one_time_commands_inner (begin_command_buffer + \
+             closure-failure + end_command_buffer + create_fence + \
              reset_fences + queue_submit + wait_for_fences error arms + the \
              success tail) — found {free_count}. A new fallible call was \
-             likely added without a matching cleanup arm (#1861).",
+             likely added without a matching cleanup arm (#1861 / #2157).",
         );
 
-        // Every one of the four post-allocation fallible calls must be
+        // Every one of the post-allocation fallible calls must be
         // followed by an explicit error arm (not a bare `?`) before its
         // `.context(...)` — pins that none of them regress back to the
         // pre-#1861 `?`-propagates-straight-through shape.
         for context_needle in [
+            "begin one-time command buffer",
+            "end one-time command buffer",
             "create one-time fence",
             "reset reusable one-time fence",
             "submit one-time commands",

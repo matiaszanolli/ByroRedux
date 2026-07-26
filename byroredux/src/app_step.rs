@@ -7,6 +7,7 @@ use crate::cell_loader;
 use crate::streaming;
 use crate::streaming_helpers::{consume_streaming_payload, SVGF_TAA_STREAMING_RECOVERY_FRAMES};
 use crate::App;
+use winit::event_loop::ActiveEventLoop;
 
 /// SVGF/upscaler recovery window after a `--bench-camera cut`. Matches the
 /// window the streaming and cell-transition paths use, so the harness
@@ -316,7 +317,14 @@ impl App {
     /// A rejected spec or a failed rebuild logs and leaves the previous
     /// upscaler running — the request is dropped either way, so a bad value
     /// cannot retry itself into a loop.
-    pub(crate) fn step_upscaler_switch(&mut self) {
+    ///
+    /// An `Err` out of `set_upscaler_mode` is a different animal: it means the
+    /// rollback to the previous upscaler failed too, so no drawable
+    /// configuration is left. That is exactly as fatal as a failed
+    /// `recreate_swapchain` in `main.rs`, and is handled the same way — exit
+    /// the event loop instead of spinning a frame loop that can only skip
+    /// frames (#2156).
+    pub(crate) fn step_upscaler_switch(&mut self, event_loop: &ActiveEventLoop) {
         let Some(spec) = self
             .world
             .try_resource_mut::<byroredux_core::ecs::PendingUpscalerSwitch>()
@@ -337,7 +345,8 @@ impl App {
         };
         let size = window.inner_size();
         if let Err(error) = ctx.set_upscaler_mode(mode, [size.width, size.height]) {
-            log::error!("upscaler switch to {mode} failed: {error:#}");
+            log::error!("upscaler switch to {mode} failed unrecoverably: {error:#}");
+            event_loop.exit();
         }
     }
 
@@ -572,5 +581,36 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// #2156 / RL-D6-03 — the other half of the fix (the rollback itself
+    /// lives in `renderer::vulkan::context::resize`). An `Err` out of
+    /// `set_upscaler_mode` means even the rollback to the previous upscaler
+    /// failed, so no drawable configuration is left: `framebuffers` is empty
+    /// and the #1211 guard turns every remaining frame into a skip. That is
+    /// exactly as fatal as a failed `recreate_swapchain` in `main.rs`, and
+    /// must exit the event loop rather than freeze the window.
+    ///
+    /// Static source check — the arm needs a real allocation/SDK failure that
+    /// `cargo test` cannot induce, matching the source-scan precedent in
+    /// `resize.rs`.
+    #[test]
+    fn upscaler_switch_failure_exits_the_event_loop() {
+        let src = include_str!("app_step.rs");
+        let call_pos = src
+            .find("ctx.set_upscaler_mode(")
+            .expect("step_upscaler_switch must still drive set_upscaler_mode");
+        let arm = &src[call_pos..];
+        let exit_pos = arm
+            .find("event_loop.exit()")
+            .expect("the set_upscaler_mode Err arm must exit the event loop (#2156)");
+        assert!(
+            exit_pos < 400,
+            "the `event_loop.exit()` must sit in set_upscaler_mode's own Err arm, \
+             not somewhere further down the file (#2156)",
+        );
     }
 }

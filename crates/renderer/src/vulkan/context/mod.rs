@@ -3301,6 +3301,19 @@ impl Drop for VulkanContext {
             if let Some(ref mut w) = self.water {
                 w.destroy(&self.device);
             }
+            // #2158 — the FSR SDK context is allocator-independent: it owns
+            // SDK-side pipelines, descriptor pools, and `VkDeviceMemory`
+            // allocated outside gpu-allocator's view. Left inside the
+            // `Some(allocator)` guard below it would be skipped entirely on an
+            // allocator-`None` Drop path, dropping (or never dropping) SDK
+            // objects relative to `vkDestroyDevice` — exactly the #1483 failure
+            // mode. Its per-FIF output images DO need the allocator and stay in
+            // the guard, run after this so the context has already let go of
+            // them. Ordered after `presentation.destroy()` above, which is what
+            // the guard-side comment required.
+            if let Some(ref mut upscaler) = self.frame_upscaler {
+                upscaler.destroy_device_objects(&self.device);
+            }
 
             self.destroy_screenshot_staging();
 
@@ -3403,10 +3416,12 @@ impl Drop for VulkanContext {
                 if let Some(ref mut exposure) = self.exposure {
                     exposure.destroy();
                 }
-                // The SDK context and output views must be retired after
-                // presentation descriptors and before composed-scene inputs.
+                // The output views must be retired after presentation
+                // descriptors and before composed-scene inputs. The SDK
+                // context half already ran in the allocator-independent block
+                // above (#2158) — do not move it back down here.
                 if let Some(ref mut upscaler) = self.frame_upscaler {
-                    upscaler.destroy(&self.device, alloc);
+                    upscaler.destroy_allocations(&self.device, alloc);
                 }
                 if let Some(ref mut composite) = self.composite {
                     composite.destroy(&self.device, alloc);

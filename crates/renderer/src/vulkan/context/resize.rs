@@ -1031,6 +1031,13 @@ impl VulkanContext {
     ///
     /// Runs at a frame boundary: `device_wait_idle` first, so no in-flight
     /// command buffer references the resources being replaced.
+    ///
+    /// `Ok(())` means the renderer is drawable — either the switch landed, or
+    /// it failed and the rollback below restored the previous configuration.
+    /// `Err` means neither the new nor the old configuration could be built,
+    /// so there is no drawable state left to return to; the call site must
+    /// treat it as fatal rather than continuing to spin the frame loop
+    /// (#2156).
     pub fn set_upscaler_mode(
         &mut self,
         mode: super::super::upscaling::UpscalerMode,
@@ -1067,19 +1074,48 @@ impl VulkanContext {
             }
         }
 
-        self.renderer_config.upscaler = mode;
-        self.recreate_swapchain(window_size)
-            .with_context(|| format!("rebuild render targets for upscaler {mode}"))?;
-
-        if mode == super::super::upscaling::UpscalerMode::Taa {
-            self.build_taa_pipeline();
-        }
-
         // Every history the old path accumulated describes a different render
         // extent, so none of it survives the switch.
         // Same window the resize path uses — the switch invalidates history
         // for exactly the same reason a resize does.
         const SWITCH_RECOVERY_FRAMES: u32 = 8;
+
+        self.renderer_config.upscaler = mode;
+        if let Err(error) = self
+            .recreate_swapchain(window_size)
+            .with_context(|| format!("rebuild render targets for upscaler {mode}"))
+        {
+            // #2156 — a `?` here would return with the renderer mid-rebuild:
+            // `recreate_swapchain` destroys the framebuffers up front and only
+            // rebuilds them at the very end, so an earlier failure (the FSR
+            // `upscaler.recreate`, `PresentationPipeline::new`, …) leaves
+            // `framebuffers` empty and `presentation` None. The #1211 guard
+            // then converts that into "skip every frame, forever" — nothing in
+            // the frame loop ever retries, so the window freezes until the user
+            // happens to resize it. Roll the mode back and take the resize path
+            // once more: the previous configuration rendered a frame ago, so it
+            // is the best shot at landing in a drawable state. The switch
+            // request itself is dropped, which is what the doc comment above
+            // already promises. A failing rollback is unrecoverable and
+            // propagates — the call site treats that as fatal.
+            log::error!("upscaler switch {previous} -> {mode} failed: {error:#} — rolling back");
+            self.renderer_config.upscaler = previous;
+            self.recreate_swapchain(window_size).with_context(|| {
+                format!("roll back render targets to upscaler {previous} after failed switch")
+            })?;
+            if previous == super::super::upscaling::UpscalerMode::Taa {
+                // The TAA pipeline was destroyed on the way in; the rollback
+                // has to rebuild it or `previous` is only nominally restored.
+                self.build_taa_pipeline();
+            }
+            self.signal_temporal_discontinuity(SWITCH_RECOVERY_FRAMES);
+            return Ok(());
+        }
+
+        if mode == super::super::upscaling::UpscalerMode::Taa {
+            self.build_taa_pipeline();
+        }
+
         self.signal_temporal_discontinuity(SWITCH_RECOVERY_FRAMES);
         log::info!(
             "Upscaler switched {previous} -> {mode} (render {}x{}, output {}x{})",
@@ -1310,6 +1346,58 @@ mod tests {
             "when the accumulator is absent, set 2 must be rebound to the 1×1 \
              storage sink — `record_draw` binds set 2 unconditionally and the \
              water draw is gated only on `self.water` (#2142)"
+        );
+    }
+
+    /// #2156 / RL-D6-03 — a failed `recreate_swapchain` inside
+    /// `set_upscaler_mode` must roll the mode back and rebuild, not
+    /// `?`-propagate.
+    ///
+    /// `recreate_swapchain` drains the framebuffers up front and rebuilds them
+    /// last, so a `?` from anything in between (`upscaler.recreate`,
+    /// `PresentationPipeline::new`, …) leaves `framebuffers` empty and
+    /// `presentation` None. The #1211 guard then turns every subsequent frame
+    /// into a skip, and nothing retries — a frozen window with one log line.
+    /// Static source check: the failing calls need a real allocation/SDK
+    /// failure that `cargo test` cannot induce.
+    #[test]
+    fn upscaler_switch_failure_rolls_back_instead_of_propagating() {
+        let src = production_src();
+
+        let start = src
+            .find("pub fn set_upscaler_mode")
+            .expect("set_upscaler_mode disappeared");
+        let end = start
+            + src[start..]
+                .find("fn build_taa_pipeline")
+                .expect("build_taa_pipeline follows set_upscaler_mode");
+        let body = &src[start..end];
+
+        let first_rebuild = body
+            .find("rebuild render targets for upscaler")
+            .expect("the switch must still rebuild the render targets");
+        let rollback = body
+            .find("self.renderer_config.upscaler = previous")
+            .expect(
+                "the failure arm must roll `renderer_config.upscaler` back to \
+                 `previous` — otherwise the config claims the new upscaler while \
+                 no target for it exists (#2156)",
+            );
+        let retry = body.find("roll back render targets to upscaler").expect(
+            "the failure arm must re-enter recreate_swapchain for the previous \
+                 upscaler — a mode rollback without a rebuild still leaves the \
+                 framebuffers drained (#2156)",
+        );
+        assert!(
+            first_rebuild < rollback && rollback < retry,
+            "expected rebuild -> mode rollback -> rebuild ordering in \
+             set_upscaler_mode's failure arm (#2156)",
+        );
+        assert!(
+            body[rollback..retry].contains("build_taa_pipeline")
+                || body[retry..].contains("build_taa_pipeline"),
+            "rolling back to a TAA `previous` must rebuild the TAA pipeline the \
+             switch destroyed on the way in (#2156)",
         );
     }
 

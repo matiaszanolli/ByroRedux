@@ -903,12 +903,43 @@ impl FrameUpscaler {
         Ok(())
     }
 
+    /// Retire the FSR SDK context — the allocator-independent half of
+    /// teardown (#2158).
+    ///
+    /// `fsr3::Context` owns SDK-side pipelines, descriptor pools, and its own
+    /// `VkDeviceMemory` allocated outside gpu-allocator's view, so it must be
+    /// dropped on *every* teardown path, including one where the allocator has
+    /// already been taken. Splitting it out lets `VulkanContext::drop` run it
+    /// in the allocator-independent block (the #1483 rule) while the output
+    /// images below still go inside the `Some(allocator)` guard.
+    ///
+    /// Idempotent: a second call sees `self.context == None` and does nothing.
+    ///
+    /// # Safety
+    ///
+    /// The device must be idle — no submitted command buffer may still
+    /// reference the SDK's internal resources.
+    pub unsafe fn destroy_device_objects(&mut self, _device: &ash::Device) {
+        self.context.take();
+        self.dispatched_this_frame = false;
+        self.dispatch_failure = None;
+    }
+
+    /// Free the per-frame-in-flight output images/views/allocations — the
+    /// allocator-dependent half of teardown (#2158).
+    ///
+    /// Always runs after [`Self::destroy_device_objects`]: the SDK context
+    /// must let go of these images before they are destroyed.
+    ///
     /// # Safety
     ///
     /// The device must be idle and every descriptor/command buffer referencing
     /// these output views must no longer be executing.
-    pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        self.context.take();
+    pub unsafe fn destroy_allocations(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+    ) {
         for view in self.output_views.drain(..) {
             // SAFETY: `view` was created by this device and, per this fn's
             // `# Safety` contract, no command buffer referencing it is still
@@ -928,8 +959,23 @@ impl FrameUpscaler {
                 .free(allocation)
                 .ok();
         }
-        self.dispatched_this_frame = false;
-        self.dispatch_failure = None;
+    }
+
+    /// Full teardown — both halves in the only order that is sound (SDK
+    /// context first, then the images it referenced). Used by
+    /// [`Self::recreate`], where the allocator is always available; the Drop
+    /// path calls the two halves separately so the context half survives an
+    /// allocator-`None` teardown (#2158).
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`Self::destroy_allocations`].
+    pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        // SAFETY: the caller's device-idle contract is inherited by both halves.
+        unsafe {
+            self.destroy_device_objects(device);
+            self.destroy_allocations(device, allocator);
+        }
     }
 }
 
@@ -998,6 +1044,51 @@ mod tests {
         assert!(usage.contains(vk::ImageUsageFlags::SAMPLED));
         assert!(usage.contains(vk::ImageUsageFlags::TRANSFER_DST));
         assert_eq!(HDR_FORMAT, vk::Format::R16G16B16A16_SFLOAT);
+    }
+
+    /// #2158 / RL-D6-05 — the FSR SDK context must be retired outside the
+    /// `Some(allocator)` guard in `VulkanContext::drop`.
+    ///
+    /// `fsr3::Context` owns SDK-side pipelines, descriptor pools and its own
+    /// `VkDeviceMemory`, none of it visible to gpu-allocator. Inside the guard
+    /// it is skipped entirely on any allocator-`None` Drop path — the driver-
+    /// level use-after-free #1483 was filed against. Static source check: no
+    /// live device under `cargo test`, and the failing path needs an
+    /// allocator-`None` Drop that does not exist today (which is the point —
+    /// this pins the ordering before one is reintroduced).
+    #[test]
+    fn fsr_context_teardown_sits_outside_the_allocator_guard() {
+        const CONTEXT_MOD_RS: &str = include_str!("context/mod.rs");
+        let drop_impl = CONTEXT_MOD_RS
+            .split_once("impl Drop for VulkanContext")
+            .expect("VulkanContext Drop impl disappeared")
+            .1;
+        let guard_pos = drop_impl
+            .find("if let Some(ref alloc) = self.allocator")
+            .expect("the allocator-dependent teardown guard disappeared");
+        let device_objects_pos = drop_impl
+            .find("upscaler.destroy_device_objects(")
+            .expect("Drop must retire the FSR SDK context (#2158)");
+        let allocations_pos = drop_impl
+            .find("upscaler.destroy_allocations(")
+            .expect("Drop must free the FSR output images (#2158)");
+        assert!(
+            device_objects_pos < guard_pos,
+            "FrameUpscaler::destroy_device_objects moved inside the \
+             `Some(allocator)` guard — the FSR SDK context would then leak \
+             past vkDestroyDevice on any allocator-None Drop path (#2158 / \
+             #1483). Keep it in the allocator-independent block.",
+        );
+        assert!(
+            guard_pos < allocations_pos,
+            "FrameUpscaler::destroy_allocations must stay inside the \
+             `Some(allocator)` guard — it frees gpu-allocator memory (#2158).",
+        );
+        assert!(
+            device_objects_pos < allocations_pos,
+            "the SDK context must be dropped BEFORE the output images it \
+             references are destroyed (#2158).",
+        );
     }
 
     #[test]
