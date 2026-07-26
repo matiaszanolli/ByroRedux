@@ -238,6 +238,30 @@ impl World {
         }
     }
 
+    /// Release the sparse-index memory every `SparseSetStorage` is holding
+    /// only because entity IDs are monotonic (#2148).
+    ///
+    /// `sparse` is indexed by raw `EntityId` and IDs are never reclaimed
+    /// (#372), so its length tracks the global high-water mark rather than the
+    /// live component count. After a cell unload despawns thousands of
+    /// entities, every one of their slots is still allocated in every sparse
+    /// storage they touched. This truncates each storage's trailing run of
+    /// empty slots.
+    ///
+    /// **Call at load boundaries, never per frame.** The backwards scan is
+    /// cheap but `shrink_to_fit` reallocates, and a mid-session shrink is
+    /// immediately undone by the next insert above the new length.
+    /// `PackedStorage` is unaffected (its arrays are already sized by live
+    /// count), so this is a no-op for those.
+    pub fn shrink_storages(&mut self) {
+        for (type_id, lock) in self.storages.iter_mut() {
+            let type_name = self.type_names.get(type_id).copied().unwrap_or("<unknown>");
+            lock.get_mut()
+                .unwrap_or_else(|_| storage_lock_poisoned_erased(type_name))
+                .shrink_sparse_tail();
+        }
+    }
+
     /// Overwrite the entity-id high-water mark.
     ///
     /// The save/load path calls this with the snapshot's saved
@@ -393,8 +417,15 @@ impl World {
         let lock = self.storages.get(&type_id)?;
         let scope = lock_tracker::TrackedRead::new(type_id, std::any::type_name::<T>());
         let guard = lock.read().unwrap_or_else(|_| storage_lock_poisoned::<T>());
+        // #2149 — defuse only after the wrapper exists. `QueryRead::new` /
+        // `QueryWrite::new` end in a `downcast_ref().expect(...)`; defusing
+        // first would hand the tracker row to nobody if that ever fired,
+        // leaving a stale entry in the thread-local LOCKS map and a spurious
+        // "ECS deadlock detected" on the next acquisition after a
+        // `catch_unwind`. Matches `World::get`, which already gets this right.
+        let query = QueryRead::new(guard, type_id);
         scope.defuse();
-        Some(QueryRead::new(guard, type_id))
+        Some(query)
     }
 
     /// Acquire a mutable query for a single component type.
@@ -414,8 +445,15 @@ impl World {
         let guard = lock
             .write()
             .unwrap_or_else(|_| storage_lock_poisoned::<T>());
+        // #2149 — defuse only after the wrapper exists. `QueryRead::new` /
+        // `QueryWrite::new` end in a `downcast_ref().expect(...)`; defusing
+        // first would hand the tracker row to nobody if that ever fired,
+        // leaving a stale entry in the thread-local LOCKS map and a spurious
+        // "ECS deadlock detected" on the next acquisition after a
+        // `catch_unwind`. Matches `World::get`, which already gets this right.
+        let query = QueryWrite::new(guard, type_id);
         scope.defuse();
-        Some(QueryWrite::new(guard, type_id))
+        Some(query)
     }
 
     /// Acquire a read query and a write query for two different component
@@ -463,12 +501,13 @@ impl World {
             let guard_b = lock_b
                 .write()
                 .unwrap_or_else(|_| storage_lock_poisoned::<B>());
+            // #2149 — both wrappers first, then defuse both. Either
+            // downcast can panic; a half-defused pair orphans a tracker row.
+            let qa = QueryRead::new(guard_a, id_a);
+            let qb = QueryWrite::new(guard_b, id_b);
             scope_a.defuse();
             scope_b.defuse();
-            Some((
-                QueryRead::new(guard_a, id_a),
-                QueryWrite::new(guard_b, id_b),
-            ))
+            Some((qa, qb))
         } else {
             let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
             let scope_a = lock_tracker::TrackedRead::new(id_a, std::any::type_name::<A>());
@@ -478,12 +517,13 @@ impl World {
             let guard_a = lock_a
                 .read()
                 .unwrap_or_else(|_| storage_lock_poisoned::<A>());
+            // #2149 — both wrappers first, then defuse both. Either
+            // downcast can panic; a half-defused pair orphans a tracker row.
+            let qa = QueryRead::new(guard_a, id_a);
+            let qb = QueryWrite::new(guard_b, id_b);
             scope_a.defuse();
             scope_b.defuse();
-            Some((
-                QueryRead::new(guard_a, id_a),
-                QueryWrite::new(guard_b, id_b),
-            ))
+            Some((qa, qb))
         }
     }
 
@@ -527,12 +567,12 @@ impl World {
             let guard_b = lock_b
                 .write()
                 .unwrap_or_else(|_| storage_lock_poisoned::<B>());
+            // #2149 — both wrappers first, then defuse both.
+            let qa = QueryWrite::new(guard_a, id_a);
+            let qb = QueryWrite::new(guard_b, id_b);
             scope_a.defuse();
             scope_b.defuse();
-            Some((
-                QueryWrite::new(guard_a, id_a),
-                QueryWrite::new(guard_b, id_b),
-            ))
+            Some((qa, qb))
         } else {
             let scope_b = lock_tracker::TrackedWrite::new(id_b, std::any::type_name::<B>());
             let scope_a = lock_tracker::TrackedWrite::new(id_a, std::any::type_name::<A>());
@@ -542,12 +582,12 @@ impl World {
             let guard_a = lock_a
                 .write()
                 .unwrap_or_else(|_| storage_lock_poisoned::<A>());
+            // #2149 — both wrappers first, then defuse both.
+            let qa = QueryWrite::new(guard_a, id_a);
+            let qb = QueryWrite::new(guard_b, id_b);
             scope_a.defuse();
             scope_b.defuse();
-            Some((
-                QueryWrite::new(guard_a, id_a),
-                QueryWrite::new(guard_b, id_b),
-            ))
+            Some((qa, qb))
         }
     }
 

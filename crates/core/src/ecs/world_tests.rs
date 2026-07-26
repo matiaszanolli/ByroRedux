@@ -1450,3 +1450,121 @@ fn set_next_entity_then_insert_at_original_ids() {
     let q = world.query::<Position>().unwrap();
     assert_eq!(q.iter().map(|(e, _)| e).collect::<Vec<_>>(), vec![3]);
 }
+
+/// #2149 / ECS-2507-03 — the tracker scope must still be armed when the
+/// query wrapper's fallible downcast runs.
+mod tracker_defuse_ordering_tests {
+    use super::super::lock_tracker;
+    use super::*;
+
+    /// Positive control: the reordering must not have broken the ordinary
+    /// hand-off. Every query kind acquires, hands its tracker row to the
+    /// wrapper, and untracks on drop.
+    #[test]
+    fn every_query_kind_hands_off_and_untracks_cleanly() {
+        assert!(lock_tracker::is_clean(), "tracker must start clean");
+
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Health(100.0));
+        world.insert(e, Position { x: 1.0, y: 2.0 });
+
+        {
+            let _q = world.query::<Health>().unwrap();
+            assert!(!lock_tracker::is_clean(), "the read must be tracked");
+        }
+        assert!(lock_tracker::is_clean(), "query() must untrack on drop");
+
+        {
+            let _q = world.query_mut::<Health>().unwrap();
+        }
+        assert!(lock_tracker::is_clean(), "query_mut() must untrack on drop");
+
+        {
+            let (_a, _b) = world.query_2_mut::<Health, Position>().unwrap();
+        }
+        assert!(
+            lock_tracker::is_clean(),
+            "query_2_mut() must untrack both on drop"
+        );
+
+        {
+            let (_a, _b) = world.query_2_mut_mut::<Health, Position>().unwrap();
+        }
+        assert!(
+            lock_tracker::is_clean(),
+            "query_2_mut_mut() must untrack both on drop"
+        );
+    }
+
+    /// The ordering itself. The failure this guards is unreachable by
+    /// construction — two distinct types cannot share a `TypeId`, so
+    /// `QueryRead::new`'s `downcast_ref().expect(...)` cannot fire — which is
+    /// exactly why it needs a source assertion rather than a behavioural test:
+    /// there is no way to provoke the panic and observe the orphaned tracker
+    /// row. If it *could* fire with the scope already defused, the row would
+    /// be owned by nobody (the wrapper's `Drop` is the only untrack path) and
+    /// the next acquisition on that thread after a `catch_unwind` would report
+    /// a spurious "ECS deadlock detected" — the #137 failure mode.
+    #[test]
+    fn defuse_follows_wrapper_construction_at_every_query_site() {
+        const WORLD_RS: &str = include_str!("world.rs");
+
+        for (site, wrapper) in [
+            ("pub fn query<", "QueryRead::new"),
+            ("pub fn query_mut<", "QueryWrite::new"),
+        ] {
+            let body = WORLD_RS
+                .split_once(site)
+                .unwrap_or_else(|| panic!("`{site}` not found in world.rs"))
+                .1;
+            let body = body.split_once("\n    }").expect("no end of fn").0;
+            let construct = body
+                .find(wrapper)
+                .unwrap_or_else(|| panic!("{site} no longer builds a {wrapper}"));
+            let defuse = body
+                .find("scope.defuse()")
+                .unwrap_or_else(|| panic!("{site} no longer defuses its scope"));
+            assert!(
+                construct < defuse,
+                "{site} defuses at byte {defuse} before constructing {wrapper} \
+                 at byte {construct} — the wrapper's downcast would panic with \
+                 the tracker row owned by nobody (#2149 / #137)",
+            );
+        }
+
+        // The two-query forms: both wrappers must exist before either defuse,
+        // since either downcast can panic and a half-defused pair orphans a
+        // row. These have two TypeId-ordered branches, so check each on its
+        // own — comparing across branches proves nothing.
+        for site in ["pub fn query_2_mut<", "pub fn query_2_mut_mut<"] {
+            let body = WORLD_RS
+                .split_once(site)
+                .unwrap_or_else(|| panic!("`{site}` not found in world.rs"))
+                .1;
+            let body = body.split_once("\n    }").expect("no end of fn").0;
+            let branches: Vec<&str> = body.split("} else {").collect();
+            assert_eq!(
+                branches.len(),
+                2,
+                "{site} no longer has exactly the two TypeId-ordered branches \
+                 this test walks",
+            );
+            for (i, branch) in branches.iter().enumerate() {
+                let last_construct = branch
+                    .rfind("::new(guard")
+                    .unwrap_or_else(|| panic!("{site} branch {i} builds no query wrapper"));
+                let first_defuse = branch
+                    .find(".defuse()")
+                    .unwrap_or_else(|| panic!("{site} branch {i} defuses no scope"));
+                assert!(
+                    last_construct < first_defuse,
+                    "{site} branch {i} defuses at byte {first_defuse} before \
+                     the last wrapper construction at byte {last_construct} \
+                     — either downcast can panic, so both wrappers must exist \
+                     before either defuse (#2149)",
+                );
+            }
+        }
+    }
+}

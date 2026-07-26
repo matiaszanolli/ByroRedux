@@ -185,16 +185,32 @@ pub(super) fn load_references(
 
     // M42.1 — resolve the sit-enter clip (handle, duration) once per cell
     // (archive provider available here; `sandbox_seat_system` has none) into
-    // the `SandboxSitClip` resource, and clear stale seat reservations from
-    // the previous cell (entity ids reset on unload). `None` for
-    // Skyrim+/Havok games → those actors are not seated.
+    // the `SandboxSitClip` resource. `None` for Skyrim+/Havok games → those
+    // actors are not seated.
     let sit_clip = crate::npc_spawn::load_sit_clip(world, tex_provider, game);
     if let Some(mut r) = world.try_resource_mut::<crate::components::SandboxSitClip>() {
         r.0 = sit_clip;
     }
-    if let Some(mut r) = world.try_resource_mut::<crate::components::SeatReservations>() {
-        r.0.clear();
-    }
+
+    // #2147 / ECS-2507-01 — prune reservations whose furniture is gone,
+    // rather than clearing the whole set.
+    //
+    // This ran once per cell, and the exterior grid path calls
+    // `load_references` per `(gx, gy)` — 49 wholesale clears on `--radius 3`,
+    // and again for every cell streamed in at a boundary crossing while
+    // previously-loaded cells and their seated actors are still resident.
+    // `Seated` is a one-shot terminal marker, so an actor that already sat
+    // never re-asserts its claim: the clear released seats that were still
+    // physically occupied, and the next unseated actor within
+    // `SEAT_SEARCH_RADIUS` could claim the same `(furniture, marker)`.
+    //
+    // The old comment justified the clear with "entity ids reset on unload".
+    // They don't — `World::despawn` documents that IDs are never reclaimed
+    // (#372) and `next_entity` only grows, so a stale entry can never alias a
+    // *new* furniture entity. The clear was only bounding set growth, at the
+    // cost of the per-marker exclusivity the resource exists to provide.
+    //
+    prune_seat_reservations(world);
 
     // Per-call NIF-cache accumulators (this_call_hits / misses / pending_new
     // / pending_hits / pending_clip_handles) live on `accum` and are committed
@@ -1262,6 +1278,27 @@ fn refr_script_instance_for_synth_child(
     }
 }
 
+/// #2147 / ECS-2507-01 — drop seat reservations whose furniture entity is
+/// gone, keeping every claim whose furniture is still loaded.
+///
+/// Called once per `load_references`, i.e. once per cell. Extracted so the
+/// cross-cell survival property is testable without the archive providers and
+/// ESM index the full load path needs.
+///
+/// Query `Furniture` first, then take the resource write: that is the order
+/// `sandbox_seat_system` uses (`systems/sandbox.rs` queries `Furniture` before
+/// `resource_mut::<SeatReservations>()`), so the pair cannot form an ABBA
+/// cycle under the parallel scheduler.
+fn prune_seat_reservations(world: &byroredux_core::ecs::World) {
+    let live_furniture: std::collections::HashSet<byroredux_core::ecs::storage::EntityId> = world
+        .query::<byroredux_core::ecs::components::Furniture>()
+        .map(|q| q.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    if let Some(mut r) = world.try_resource_mut::<crate::components::SeatReservations>() {
+        r.0.retain(|(furniture, _)| live_furniture.contains(furniture));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1650,5 +1687,115 @@ mod tests {
              end-of-cell summary log, or the cost stays invisible (the exact \
              gap #1798 reports)"
         );
+    }
+}
+
+/// #2147 / ECS-2507-01 — seat claims must survive a sibling cell's load.
+#[cfg(test)]
+mod seat_reservation_prune_tests {
+    use super::prune_seat_reservations;
+    use crate::components::SeatReservations;
+    use byroredux_core::ecs::components::Furniture;
+    use byroredux_core::ecs::storage::EntityId;
+    use byroredux_core::ecs::World;
+
+    fn world_with_furniture(count: usize) -> (World, Vec<EntityId>) {
+        let mut world = World::new();
+        world.register::<Furniture>();
+        world.insert_resource(SeatReservations::default());
+        let ids = (0..count)
+            .map(|_| {
+                let e = world.spawn();
+                world.insert(e, Furniture::default());
+                e
+            })
+            .collect();
+        (world, ids)
+    }
+
+    /// The bug. Cell A's furniture is seated and still resident; loading cell
+    /// B must not release A's claim.
+    ///
+    /// On an exterior grid this ran per `(gx, gy)` — 49 times at
+    /// `--radius 3` — and again per cell streamed in at a boundary crossing.
+    /// `Seated` is a one-shot terminal marker, so the actor never re-asserts
+    /// its claim: the seat stayed physically occupied but was free to claim.
+    #[test]
+    fn sibling_cell_load_keeps_claims_on_still_loaded_furniture() {
+        let (world, furniture) = world_with_furniture(2);
+        let (cell_a_chair, cell_b_chair) = (furniture[0], furniture[1]);
+
+        world
+            .resource_mut::<SeatReservations>()
+            .0
+            .insert((cell_a_chair, 0));
+
+        // Cell B loads. Both cells' furniture is resident.
+        prune_seat_reservations(&world);
+
+        let reservations = world.resource::<SeatReservations>();
+        assert!(
+            reservations.0.contains(&(cell_a_chair, 0)),
+            "cell A's seat is still occupied and its furniture still loaded — \
+             the claim must survive cell B's load (#2147)",
+        );
+        assert_eq!(reservations.0.len(), 1);
+        assert!(!reservations.0.contains(&(cell_b_chair, 0)));
+    }
+
+    /// The prune must still do its job: a claim whose furniture was unloaded
+    /// is dead weight and goes.
+    #[test]
+    fn claims_on_despawned_furniture_are_dropped() {
+        let (mut world, furniture) = world_with_furniture(2);
+        let (kept, unloaded) = (furniture[0], furniture[1]);
+        {
+            let mut r = world.resource_mut::<SeatReservations>();
+            r.0.insert((kept, 0));
+            r.0.insert((unloaded, 3));
+        }
+
+        world.despawn(unloaded);
+        prune_seat_reservations(&world);
+
+        let reservations = world.resource::<SeatReservations>();
+        assert!(reservations.0.contains(&(kept, 0)));
+        assert!(
+            !reservations.0.contains(&(unloaded, 3)),
+            "a claim on despawned furniture must not accumulate",
+        );
+    }
+
+    /// Per-marker granularity survives the prune — the resource exists to keep
+    /// two actors off the same marker of a multi-seat piece, so a shared
+    /// furniture entity with distinct marker indices must be preserved
+    /// independently.
+    #[test]
+    fn distinct_markers_on_one_furniture_are_preserved_independently() {
+        let (world, furniture) = world_with_furniture(1);
+        let bench = furniture[0];
+        {
+            let mut r = world.resource_mut::<SeatReservations>();
+            r.0.insert((bench, 0));
+            r.0.insert((bench, 1));
+            r.0.insert((bench, 2));
+        }
+
+        prune_seat_reservations(&world);
+
+        assert_eq!(world.resource::<SeatReservations>().0.len(), 3);
+    }
+
+    /// No furniture registered at all (loose-NIF demo, test fixtures) must not
+    /// panic — and, with nothing live, every claim is stale by definition.
+    #[test]
+    fn missing_furniture_storage_is_not_a_panic() {
+        let mut world = World::new();
+        world.insert_resource(SeatReservations::default());
+        world.resource_mut::<SeatReservations>().0.insert((7, 0));
+
+        prune_seat_reservations(&world);
+
+        assert!(world.resource::<SeatReservations>().0.is_empty());
     }
 }

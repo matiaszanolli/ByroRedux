@@ -86,6 +86,20 @@ pub trait DynStorage: Send + Sync + 'static {
     /// time, and it can't miss a live entity the way an ID sweep would.
     fn clear_erased(&mut self);
 
+    /// Release memory this storage is holding purely because entity IDs are
+    /// monotonic (#2148).
+    ///
+    /// `SparseSetStorage` indexes `sparse` by raw `EntityId`, and IDs are
+    /// never reclaimed (#372), so its length tracks the global high-water mark
+    /// rather than the live component count: a long exterior-streaming session
+    /// keeps a slot for every entity ever spawned. This truncates the trailing
+    /// run of empty slots and returns the capacity.
+    ///
+    /// Default is a no-op — `PackedStorage` sizes everything by live count and
+    /// has nothing to release. Call at load boundaries, not per frame: the
+    /// scan is cheap but the `shrink_to_fit` reallocates.
+    fn shrink_sparse_tail(&mut self) {}
+
     /// Upcast to `&dyn Any` so `World` can downcast back to the concrete
     /// `T::Storage` for typed access.
     fn as_any(&self) -> &dyn Any;

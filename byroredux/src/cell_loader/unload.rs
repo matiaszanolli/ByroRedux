@@ -199,6 +199,19 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         world.despawn(eid);
     }
 
+    // #2148 / ECS-2507-02 — hand back the sparse-index memory those despawns
+    // just orphaned. `SparseSetStorage::sparse` is indexed by raw `EntityId`
+    // and IDs are never reclaimed (#372), so its length tracks the global
+    // high-water mark, not the live count: without this, an exterior-streaming
+    // session that cycles cells at ever-higher IDs keeps a 4-byte slot per
+    // entity ever spawned, in every sparse storage that entity touched.
+    //
+    // A cell unload is the right and only place for it. The scan is O(trailing
+    // empty slots) but `shrink_to_fit` reallocates, so this must not run per
+    // frame — and it is only productive right after a bulk despawn, since a
+    // mid-session shrink is undone by the next insert above the new length.
+    world.shrink_storages();
+
     log::info!(
         "Cell unload: {} entities, {} mesh refs ({} freed), {} texture refs released (cell_root {})",
         victim_count,
