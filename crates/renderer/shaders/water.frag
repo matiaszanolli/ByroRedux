@@ -126,6 +126,38 @@ layout(set = 1, binding = 1) uniform CameraUBO {
 
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
 
+// Per-instance data, read by `traceWaterRay` to give a reflection/refraction
+// hit the colour of the surface it actually hit instead of a constant.
+//
+// Costs no new descriptor surface: set 1 is the shared scene set layout, whose
+// binding 4 is already declared `VERTEX | FRAGMENT`
+// (`scene_buffer/buffers.rs`), and `water.vert` already reads this same
+// buffer. The struct is a byte-for-byte mirror of the one in `water.vert` —
+// 112 bytes, pinned by `gpu_instance_is_112_bytes_std430_compatible` in
+// `crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs`.
+// This is the 6th mirror of `GpuInstance` (include/bindings.glsl + 5
+// standalone copies: triangle.vert, ui.vert, water.vert, water.frag,
+// caustic_splat.comp) — all must be edited in lockstep.
+struct GpuInstance {
+    mat4 model;
+    uint textureIndex;
+    uint boneOffset;
+    uint vertexOffset;
+    uint indexOffset;
+    uint vertexCount;
+    uint flags;
+    uint materialId;
+    float ior;             // offset 92 — per-draw optical IOR (read by caustic_splat.comp)
+    float avgAlbedoR;
+    float avgAlbedoG;
+    float avgAlbedoB;
+    uint surfaceId;
+};
+
+layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
+    GpuInstance instances[];
+};
+
 // #1256 / Phase D of #1210 — water-side caustic accumulator.
 // Per-FIF R32_UINT storage image owned by WaterCausticAccum (#1255),
 // cleared pre-render-pass each frame in `context::draw::draw_frame`,
@@ -263,31 +295,41 @@ vec3 traceWaterRay(vec3 origin, vec3 direction, float maxDist, vec3 missFallback
     hit = true;
     hitDist = rayQueryGetIntersectionTEXT(rq, true);
 
-    // We deliberately do NOT refetch the hit material / texture here.
-    // Water rays use a tight budget (≤2 per fragment) and the hit
-    // colour is going to be tinted heavily by Beer-Lambert absorption
-    // downstream anyway, so the perceptual quality gain from a real
-    // texture sample is small. Using a neutral grey biased toward
-    // the sky tint keeps the descriptor surface for this pipeline
-    // limited to (textures, camera UBO, TLAS, instance buffer) — no
-    // material table / vertex SSBO / index SSBO bindings needed,
-    // which would otherwise double the descriptor footprint.
+    // Hit colour = the average albedo of the instance we actually hit,
+    // tinted by the per-WATR reflection colour.
     //
-    // Deferred work (tracked under closed #1070 — M38 Phase 2 / #1110):
-    // Returns a per-WATR constant — the water pipeline does not bind
-    // MaterialBuffer / GlobalVertexBuffer / GlobalIndexBuffer. To fetch
-    // the real hit albedo, extend WaterPipeline's descriptor set with
-    // those three SSBOs and call rayQueryGetIntersectionInstanceCustom
-    // IndexEXT to index into them. See also: caustic_splat.comp uses
-    // instances[instIdx].avgAlbedoR/G/B as a per-instance proxy that
-    // could approximate this without a full SSBO plumb.
+    // Before this, BOTH branches of this function returned the same
+    // constant: the hit branch used `skyTint` as a stand-in for the hit
+    // surface, so a reflection ray that struck a carved Nordic door and one
+    // that escaped into empty space produced identical colour. Only
+    // `hitDist` distinguished them (feeding absorption), which is why water
+    // read as flat painted grey with no image in it — the "reflection" was
+    // reflecting nothing.
     //
-    // The per-WATR `tint_reflect.rgb` (sourced from WATR DATA
-    // reflection_color, #1069 / F-WAT-09) currently provides water-body-
-    // specific tinting. The pre-fix value was a hard-coded neutral grey
-    // (`vec3(0.65, 0.7, 0.75)`); the default of `tint_reflect.rgb`
-    // matches that fallback for unspecified records.
-    return mix(skyTint.xyz, push.tint_reflect.rgb, 0.4);
+    // `avgAlbedoR/G/B` is the same per-instance proxy `caustic_splat.comp`
+    // already uses, and the comment this replaces named it as the way to do
+    // this "without a full SSBO plumb". It needs no new descriptor bindings
+    // (see the InstanceBuffer declaration above), so the tight ≤2-rays-per
+    // -fragment budget and the pipeline's descriptor footprint are both
+    // unchanged.
+    //
+    // LIMITATION, deliberately kept: this is a per-instance *average*, not a
+    // texture sample, so a reflected object contributes one flat colour
+    // rather than its surface detail. The remaining half of the deferred
+    // work under closed #1070 / #1110 — binding MaterialBuffer +
+    // GlobalVertexBuffer + GlobalIndexBuffer and sampling the real texel at
+    // the barycentric hit — is what would fix that, at the cost of roughly
+    // doubling this pipeline's descriptor surface.
+    //
+    // The blend weight and the role of `tint_reflect.rgb` (WATR DATA
+    // reflection_color, #1069 / F-WAT-09) are carried over unchanged; the
+    // only thing that changes is *what* is being tinted — the real hit
+    // albedo instead of the sky constant.
+    int instIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+    vec3 hitAlbedo = vec3(instances[instIdx].avgAlbedoR,
+                          instances[instIdx].avgAlbedoG,
+                          instances[instIdx].avgAlbedoB);
+    return mix(hitAlbedo, push.tint_reflect.rgb, 0.4);
 }
 
 // ── Beer-Lambert through the water column ─────────────────────────────
