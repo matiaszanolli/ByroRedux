@@ -163,8 +163,19 @@ impl SaveState {
 /// here; [`execute_pending_save_loads`] consumes it between frames, where
 /// the App has the mutable access the cell reload needs. Mirrors the
 /// `PendingDebugLoadSlot` / `PendingCellTransitionSlot` deferred shape.
+///
+/// Single-slot by design: two `load` commands in the same frame resolve
+/// last-writer-wins. [`slot`](Self::slot) rides alongside so the
+/// supersede can name *both* requests instead of dropping the earlier one
+/// silently (#1848 / SAVE-05).
 #[derive(Default)]
-pub struct PendingSaveLoadSlot(pub Option<Snapshot>);
+pub struct PendingSaveLoadSlot {
+    /// Decoded snapshot awaiting the drain. `None` when idle.
+    pub snapshot: Option<Snapshot>,
+    /// Save-slot number [`snapshot`](Self::snapshot) was decoded from.
+    /// Meaningless while `snapshot` is `None`.
+    pub slot: u32,
+}
 
 impl Resource for PendingSaveLoadSlot {}
 
@@ -657,11 +668,29 @@ impl ConsoleCommand for LoadCommand {
         // Queue for the between-frames drain (needs &mut World + renderer).
         match world.try_resource_mut::<PendingSaveLoadSlot>() {
             Some(mut pending) => {
-                pending.0 = Some(snapshot);
-                CommandOutput::line(format!(
+                // #1848 / SAVE-05 — the pending slot is a single Option, so
+                // a second `load` issued before `execute_pending_save_loads`
+                // drains replaces the first. Last-writer-wins is the intended
+                // semantics; what was wrong is that the discarded request
+                // vanished without a trace. Report it on both channels: the
+                // engine log (for a `--bench-hold` session) and the command
+                // output (for the byro-dbg operator who typed it).
+                let superseded = pending.snapshot.is_some().then_some(pending.slot);
+                pending.snapshot = Some(snapshot);
+                pending.slot = slot;
+                let mut lines = Vec::new();
+                if let Some(prev) = superseded {
+                    let msg = format!(
+                        "queued load of slot {prev} superseded by slot {slot} before drain"
+                    );
+                    log::info!("save load: {msg}");
+                    lines.push(msg);
+                }
+                lines.push(format!(
                     "queued load of slot {slot} → cell {} (applies next frame)",
                     ctx.cell_editor_id
-                ))
+                ));
+                CommandOutput::lines(lines)
             }
             None => CommandOutput::error("load slot not installed"),
         }
@@ -684,7 +713,7 @@ pub fn execute_pending_save_loads(
         let Some(mut slot) = world.try_resource_mut::<PendingSaveLoadSlot>() else {
             return;
         };
-        match slot.0.take() {
+        match slot.snapshot.take() {
             Some(s) => s,
             None => return,
         }
@@ -1250,10 +1279,87 @@ mod tests {
             out.lines
         );
         let pending = world.resource::<PendingSaveLoadSlot>();
-        let snap = pending.0.as_ref().expect("snapshot queued");
+        let snap = pending.snapshot.as_ref().expect("snapshot queued");
         let ctx = snapshot_cell_context(snap).expect("cell context survived round-trip");
         assert_eq!(ctx.cell_editor_id, "GSDocMitchellHouse");
         assert_eq!(ctx.esm_path, "FalloutNV.esm");
+        assert_eq!(pending.slot, 0, "queued slot number recorded");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1848 / SAVE-05 — two `load` commands in the same frame (before
+    /// `execute_pending_save_loads` drains) resolve last-writer-wins, and
+    /// the superseded request is *reported* rather than silently dropped.
+    /// Pre-fix `pending.0 = Some(snapshot)` overwrote unconditionally with
+    /// no signal on either the log or the command output, so an operator
+    /// double-typing `load` in one frame saw only a confirmation for a
+    /// request that never ran.
+    ///
+    /// The two slots are saved from different `CurrentCellContext`s so the
+    /// surviving snapshot is identifiable by its cell EDID, not just by
+    /// the recorded slot number.
+    #[test]
+    fn second_load_before_drain_supersedes_and_reports() {
+        use crate::cell_loader::CurrentCellContext;
+
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        world.insert_resource(FormIdPool::new());
+        world.insert_resource(build_save_registry());
+        let dir = std::env::temp_dir().join(format!("byro_supersede_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        world.insert_resource(SaveState::new(dir.clone(), 4));
+        world.insert_resource(PendingSaveLoadSlot::default());
+        world.insert_resource(CurrentCellContext {
+            cell_editor_id: "FirstCell".to_string(),
+            esm_path: "FalloutNV.esm".to_string(),
+            masters: vec![],
+        });
+
+        let e = world.spawn();
+        world.insert(e, Transform::from_translation(Vec3::new(1.0, 2.0, 3.0)));
+        SaveCommand.execute(&world, "0");
+
+        // Second save from a different cell so the two snapshots differ.
+        world.resource_mut::<CurrentCellContext>().cell_editor_id = "SecondCell".to_string();
+        SaveCommand.execute(&world, "1");
+
+        // Two loads, no drain in between.
+        let first = LoadCommand.execute(&world, "0");
+        assert!(
+            !first.lines.iter().any(|l| l.contains("superseded")),
+            "first load must not report a supersede: {:?}",
+            first.lines
+        );
+        let second = LoadCommand.execute(&world, "1");
+        assert!(
+            second
+                .lines
+                .iter()
+                .any(|l| l.contains("slot 0 superseded by slot 1")),
+            "second load must name both requests: {:?}",
+            second.lines
+        );
+
+        // Last writer won, and the slot number tracks it.
+        let pending = world.resource::<PendingSaveLoadSlot>();
+        assert_eq!(pending.slot, 1);
+        let snap = pending.snapshot.as_ref().expect("snapshot queued");
+        let ctx = snapshot_cell_context(snap).expect("cell context present");
+        assert_eq!(
+            ctx.cell_editor_id, "SecondCell",
+            "the surviving snapshot is the second request's"
+        );
+        drop(pending);
+
+        // The drain `.take()`s, so a third frame with no `load` is a no-op
+        // — idempotency of the single surviving request is unchanged.
+        {
+            let mut slot = world.resource_mut::<PendingSaveLoadSlot>();
+            assert!(slot.snapshot.take().is_some());
+        }
+        assert!(world.resource::<PendingSaveLoadSlot>().snapshot.is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
