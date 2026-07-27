@@ -942,7 +942,7 @@ pub struct MaterialTable {
     /// [`MAX_MATERIALS`] cap and were routed to the neutral default
     /// (id `0`) instead of getting a fresh slot. Reset at frame
     /// start by [`Self::clear`]. Surfaced through
-    /// [`Self::overflow_count`] so the `mem` console command can
+    /// [`Self::overflow_count`] so the `ctx.scratch` console command can
     /// report "how badly is the cap blown" — a single `Once`-gated
     /// warning loses count visibility (which #797 / SAFE-22's
     /// cap-and-warn intentionally accepted for cheapness; the
@@ -955,7 +955,7 @@ pub struct MaterialTable {
     /// byte-equality check fires; the corresponding `debug_assert!` will
     /// panic first in practice, but the counter is wired so that future
     /// soft-warning modes can surface the collision count via telemetry
-    /// (e.g. the `mem` console command). Zero overhead in release.
+    /// (e.g. the `ctx.scratch` console command). Zero overhead in release.
     /// See #1414.
     #[cfg(debug_assertions)]
     collision_count: usize,
@@ -1115,7 +1115,7 @@ impl MaterialTable {
                     "MaterialTable: unique-material count exceeded MAX_MATERIALS \
                      ({}); over-cap entries share the neutral-default material 0 \
                      for the rest of the session. See #797 / SAFE-22 + #807. \
-                     Per-frame overflow count via `mem` command.",
+                     Per-frame overflow count via the `ctx.scratch` command.",
                     MAX_MATERIALS,
                 );
             });
@@ -1151,8 +1151,8 @@ impl MaterialTable {
     /// Number of intern calls this frame that were routed to id `0`
     /// (the neutral-default fallback) because the table hit
     /// [`MAX_MATERIALS`]. `0` in the common case; non-zero means
-    /// raising the cap is appropriate. Surfaced through the `mem`
-    /// console command.
+    /// raising the cap is appropriate. Surfaced through the
+    /// `ctx.scratch` console command.
     pub fn overflow_count(&self) -> usize {
         self.overflow_count
     }
