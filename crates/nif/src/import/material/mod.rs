@@ -1167,8 +1167,8 @@ impl MaterialInfo {
         )
     }
 
-    /// Project this `MaterialInfo`'s shader-type fields into a
-    /// `ShaderTypeFields` bundle for `ImportedMesh`. See #430.
+    /// Project this `MaterialInfo`'s shader-type fields into the core-owned
+    /// `ShaderTypeFields` bundle carried by `ImportedMaterial`. See #430.
     pub(super) fn shader_type_fields(&self) -> ShaderTypeFields {
         ShaderTypeFields {
             skin_tint_color: self.skin_tint_color,
@@ -1184,6 +1184,79 @@ impl MaterialInfo {
             multi_layer_inner_layer_scale: self.multi_layer_inner_layer_scale,
             multi_layer_envmap_strength: self.multi_layer_envmap_strength,
             sparkle_parameters: self.sparkle_parameters,
+        }
+    }
+
+    /// Finish the source-format translation into the single material
+    /// payload shared by every imported mesh representation.
+    pub(super) fn into_imported_material(
+        self,
+        pool: &mut StringPool,
+        mesh_name: Option<&str>,
+    ) -> super::types::ImportedMaterial {
+        let legacy_pbr = self.classify_legacy_pbr(pool);
+        let has_alpha = self.effective_alpha_blend(mesh_name, pool);
+        let textures = self.texture_set(pool);
+        let shader_type_fields = self.shader_type_fields();
+
+        super::types::ImportedMaterial {
+            textures,
+            material_path: self.material_path,
+            has_alpha,
+            src_blend_mode: self.src_blend_mode,
+            dst_blend_mode: self.dst_blend_mode,
+            alpha_test: self.alpha_test,
+            alpha_threshold: self.alpha_threshold,
+            alpha_test_func: self.alpha_test_func,
+            two_sided: self.two_sided,
+            is_decal: self.is_decal,
+            is_pbr: false,
+            has_translucency: false,
+            model_space_normals: self.model_space_normals,
+            from_bgsm: false,
+            bgem_glass: false,
+            thin_glass: false,
+            metalness_override: Some(legacy_pbr.metalness),
+            roughness_override: Some(legacy_pbr.roughness),
+            translucency_subsurface_color: [0.0; 3],
+            translucency_transmissive_scale: 0.0,
+            translucency_turbulence: 0.0,
+            translucency_thick_object: false,
+            translucency_mix_albedo: false,
+            parallax_max_passes: self.parallax_max_passes,
+            parallax_height_scale: self.parallax_height_scale,
+            vertex_color_mode: self.vertex_color_mode as u8,
+            texture_clamp_mode: self.texture_clamp_mode,
+            emissive_color: self.emissive_color,
+            emissive_mult: self.emissive_mult,
+            emissive_source: self.emissive_source,
+            specular_color: self.specular_color,
+            diffuse_color: self.diffuse_color,
+            ambient_color: self.ambient_color,
+            specular_strength: self.specular_strength,
+            glossiness: self.glossiness,
+            refraction_strength: self.refraction_strength,
+            lighting_effect_1: self.lighting_effect_1,
+            lighting_effect_2: self.lighting_effect_2,
+            subsurface_rolloff: self.subsurface_rolloff,
+            rimlight_power: self.rimlight_power,
+            backlight_power: self.backlight_power,
+            grayscale_to_palette_scale: self.grayscale_to_palette_scale,
+            bgsm_greyscale_lut_is_alpha: false,
+            fresnel_power: self.fresnel_power,
+            uv_offset: self.uv_offset,
+            uv_scale: self.uv_scale,
+            mat_alpha: self.alpha,
+            env_map_scale: self.env_map_scale,
+            z_test: self.z_test,
+            z_write: self.z_write,
+            z_function: self.z_function,
+            effect_shader: self.effect_shader,
+            material_kind: self.material_kind,
+            shader_type_fields,
+            no_lighting_falloff: self.no_lighting_falloff,
+            wireframe: self.wireframe,
+            flat_shading: self.flat_shading,
         }
     }
 }

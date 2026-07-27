@@ -218,7 +218,7 @@ impl PrecombineMaterial {
     /// (which otherwise carries the opaque untextured defaults from
     /// [`ImportedMesh::from_geometry`]).
     pub fn apply(&self, mesh: &mut ImportedMesh) {
-        mesh.textures = self.textures.clone();
+        mesh.textures = self.textures;
         mesh.material_path = self.material_path;
         mesh.has_alpha = self.has_alpha;
         mesh.src_blend_mode = self.src_blend_mode;

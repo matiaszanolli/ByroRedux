@@ -10,7 +10,7 @@
 //! is stored as plain `Vec<Vertex>` / `Vec<u32>` ready for GPU upload
 //! via `MeshRegistry::upload()`.
 
-use super::material::{BsEffectShaderData, NoLightingFalloff, ShaderTypeFields};
+use super::material::{BsEffectShaderData, NoLightingFalloff};
 use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::FixedString;
@@ -360,6 +360,214 @@ impl<T> MaterialTextureSet<T> {
             decals: std::array::from_fn(|index| map(&self.decals[index])),
         }
     }
+
+    /// Iterate every semantic role in canonical order.
+    ///
+    /// Centralizing this walk keeps lifecycle operations exhaustive: callers
+    /// do not need to repeat the role list when releasing, validating, or
+    /// otherwise visiting a material's textures.
+    pub fn values(&self) -> impl Iterator<Item = &T> {
+        [
+            &self.base_color,
+            &self.normal,
+            &self.emissive,
+            &self.detail,
+            &self.smooth_spec,
+            &self.dark,
+            &self.height,
+            &self.environment,
+            &self.environment_mask,
+            &self.tint,
+            &self.inner_layer,
+            &self.specular,
+            &self.lighting,
+            &self.flow,
+            &self.wrinkle,
+            &self.greyscale_lut,
+            &self.reflectance,
+            &self.emittance_gradient,
+        ]
+        .into_iter()
+        .chain(self.decals.iter())
+    }
+
+    /// Iterate every role except base color.
+    ///
+    /// Runtime entities hold base color separately as `TextureHandle`; the
+    /// remaining roles are owned by `MaterialTextureHandles`.
+    pub fn secondary_values(&self) -> impl Iterator<Item = &T> {
+        self.values().skip(1)
+    }
+}
+
+#[cfg(test)]
+mod material_texture_set_tests {
+    use super::MaterialTextureSet;
+
+    #[test]
+    fn canonical_iteration_covers_every_role_once() {
+        let textures = MaterialTextureSet {
+            base_color: 0,
+            normal: 1,
+            emissive: 2,
+            detail: 3,
+            smooth_spec: 4,
+            dark: 5,
+            height: 6,
+            environment: 7,
+            environment_mask: 8,
+            tint: 9,
+            inner_layer: 10,
+            specular: 11,
+            lighting: 12,
+            flow: 13,
+            wrinkle: 14,
+            greyscale_lut: 15,
+            reflectance: 16,
+            emittance_gradient: 17,
+            decals: [18, 19, 20, 21],
+        };
+
+        assert_eq!(
+            textures.values().copied().collect::<Vec<_>>(),
+            (0..22).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            textures.secondary_values().copied().collect::<Vec<_>>(),
+            (1..22).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Source-normalized material payload attached to an [`ImportedMesh`].
+///
+/// Mesh extractors translate their property blocks into this shape once;
+/// geometry-specific constructors no longer repeat the same material field
+/// forwarding. BGSM/BGEM resolution may subsequently patch this payload, but
+/// consumers never need to know which mesh block carried it.
+#[derive(Debug)]
+pub struct ImportedMaterial {
+    pub textures: MaterialTextureSet<Option<FixedString>>,
+    pub material_path: Option<FixedString>,
+    pub has_alpha: bool,
+    pub src_blend_mode: u8,
+    pub dst_blend_mode: u8,
+    pub alpha_test: bool,
+    pub alpha_threshold: f32,
+    pub alpha_test_func: u8,
+    pub two_sided: bool,
+    pub is_decal: bool,
+    pub is_pbr: bool,
+    pub has_translucency: bool,
+    pub model_space_normals: bool,
+    pub from_bgsm: bool,
+    pub bgem_glass: bool,
+    pub thin_glass: bool,
+    pub metalness_override: Option<f32>,
+    pub roughness_override: Option<f32>,
+    pub translucency_subsurface_color: [f32; 3],
+    pub translucency_transmissive_scale: f32,
+    pub translucency_turbulence: f32,
+    pub translucency_thick_object: bool,
+    pub translucency_mix_albedo: bool,
+    pub parallax_max_passes: Option<f32>,
+    pub parallax_height_scale: Option<f32>,
+    pub vertex_color_mode: u8,
+    pub texture_clamp_mode: u8,
+    pub emissive_color: [f32; 3],
+    pub emissive_mult: f32,
+    pub emissive_source: byroredux_core::ecs::components::material::EmissiveSource,
+    pub specular_color: [f32; 3],
+    pub diffuse_color: [f32; 3],
+    pub ambient_color: [f32; 3],
+    pub specular_strength: f32,
+    pub glossiness: f32,
+    pub refraction_strength: f32,
+    pub lighting_effect_1: f32,
+    pub lighting_effect_2: f32,
+    pub subsurface_rolloff: f32,
+    pub rimlight_power: f32,
+    pub backlight_power: f32,
+    pub grayscale_to_palette_scale: f32,
+    pub bgsm_greyscale_lut_is_alpha: bool,
+    pub fresnel_power: f32,
+    pub uv_offset: [f32; 2],
+    pub uv_scale: [f32; 2],
+    pub mat_alpha: f32,
+    pub env_map_scale: f32,
+    pub z_test: bool,
+    pub z_write: bool,
+    pub z_function: u8,
+    pub effect_shader: Option<BsEffectShaderData>,
+    pub material_kind: u32,
+    pub shader_type_fields: byroredux_core::ecs::components::material::ShaderTypeFields,
+    pub no_lighting_falloff: Option<NoLightingFalloff>,
+    pub wireframe: bool,
+    pub flat_shading: bool,
+}
+
+impl Default for ImportedMaterial {
+    fn default() -> Self {
+        Self {
+            textures: MaterialTextureSet::default(),
+            material_path: None,
+            has_alpha: false,
+            src_blend_mode: 6,
+            dst_blend_mode: 7,
+            alpha_test: false,
+            alpha_threshold: 0.5,
+            alpha_test_func: 6,
+            two_sided: false,
+            is_decal: false,
+            is_pbr: false,
+            has_translucency: false,
+            model_space_normals: false,
+            from_bgsm: false,
+            bgem_glass: false,
+            thin_glass: false,
+            metalness_override: None,
+            roughness_override: None,
+            translucency_subsurface_color: [0.0; 3],
+            translucency_transmissive_scale: 0.0,
+            translucency_turbulence: 0.0,
+            translucency_thick_object: false,
+            translucency_mix_albedo: false,
+            parallax_max_passes: None,
+            parallax_height_scale: None,
+            vertex_color_mode: 2,
+            texture_clamp_mode: 0,
+            emissive_color: [0.0; 3],
+            emissive_mult: 0.0,
+            emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,
+            specular_color: [1.0; 3],
+            diffuse_color: [1.0; 3],
+            ambient_color: [1.0; 3],
+            specular_strength: 0.0,
+            glossiness: 0.0,
+            refraction_strength: 0.0,
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            grayscale_to_palette_scale: 1.0,
+            bgsm_greyscale_lut_is_alpha: false,
+            fresnel_power: 5.0,
+            uv_offset: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+            mat_alpha: 1.0,
+            env_map_scale: 0.0,
+            z_test: true,
+            z_write: true,
+            z_function: 3,
+            effect_shader: None,
+            material_kind: 0,
+            shader_type_fields: Default::default(),
+            no_lighting_falloff: None,
+            wireframe: false,
+            flat_shading: false,
+        }
+    }
 }
 
 /// A mesh extracted from a NIF file, ready for GPU upload.
@@ -408,262 +616,14 @@ pub struct ImportedMesh {
     /// Local-space rotation as quaternion [x, y, z, w] (Y-up).
     pub rotation: [f32; 4],
     pub scale: f32,
-    /// Common semantic texture contract. Every path is interned in the
-    /// engine-wide string pool; resolve handles through `StringPool`.
-    pub textures: MaterialTextureSet<Option<FixedString>>,
-    /// BGSM/BGEM material file path (FO4+). When present and
-    /// `textures.base_color` is `None`, the real texture paths live inside
-    /// this material file in the Materials BA2.
-    pub material_path: Option<FixedString>,
+    /// Canonical material translated independently of the source mesh block.
+    pub material: ImportedMaterial,
     /// Node name from the NIF. Uses `Arc<str>` to avoid heap copies from the string table.
     pub name: Option<Arc<str>>,
-    /// Whether this mesh uses alpha blending (from NiAlphaProperty bit 0).
-    pub has_alpha: bool,
-    /// Source blend factor from NiAlphaProperty flags bits 1–4.
-    /// Gamebryo AlphaFunction: 0=ONE, 6=SRC_ALPHA (default), etc.
-    pub src_blend_mode: u8,
-    /// Destination blend factor from NiAlphaProperty flags bits 5–8.
-    /// Gamebryo AlphaFunction: 0=ONE, 7=INV_SRC_ALPHA (default), etc.
-    pub dst_blend_mode: u8,
-    /// Whether this mesh uses alpha testing / cutout rendering
-    /// (NiAlphaProperty bit 9 / mask 0x200). When `true`, the renderer
-    /// should render opaque but `discard` fragments whose sampled
-    /// texture alpha is below `alpha_threshold`. Mutually exclusive
-    /// with `has_alpha` — the importer prefers alpha-test when both
-    /// bits are set on the source material. See issue #152.
-    pub alpha_test: bool,
-    /// Alpha-test cutoff threshold in [0, 1] (NiAlphaProperty.threshold
-    /// divided by 255). Only meaningful when `alpha_test` is `true`.
-    pub alpha_threshold: f32,
-    /// Alpha test comparison function from NiAlphaProperty flags bits 10–12.
-    /// 0=ALWAYS, 1=LESS, 2=EQUAL, 3=LESSEQUAL, 4=GREATER, 5=NOTEQUAL,
-    /// 6=GREATEREQUAL (default), 7=NEVER.
-    pub alpha_test_func: u8,
-    /// Whether this mesh should be rendered two-sided (no backface culling).
-    pub two_sided: bool,
-    /// Whether this mesh is a decal (should render on top of coplanar surfaces).
-    pub is_decal: bool,
-    /// Material uses the FO4 PBR shading path (BGSM v>2 flag).
-    /// Forwarded from `BgsmFile.pbr`. When `true`, the renderer
-    /// should branch into the metalness/roughness PBR pipeline
-    /// rather than the Gamebryo-legacy specular path. `false` on
-    /// every BGEM material and on NIF-only paths (BGEM doesn't
-    /// author this flag — its effect-shader path is by definition
-    /// non-PBR). See #1077 / FO4-D6-003 (Phase 1: data
-    /// propagation; renderer-side gating in `triangle.frag` is
-    /// the deferred Phase 2 of #1077).
-    pub is_pbr: bool,
-    /// Material has subsurface-translucency authoring (BGSM v>=8
-    /// flag). Forwarded from `BgsmFile.translucency`. When `true`,
-    /// the renderer's subsurface-scattering path applies — skin,
-    /// vegetation, glass, thin-translucent materials. The
-    /// accompanying parameter suite (subsurface color, transmissive
-    /// scale, turbulence, thick-object flag, mix-albedo flag) lives
-    /// on `BgsmFile` and is not currently surfaced here — the
-    /// renderer-side consumer would also need to land before adding
-    /// the parameter fields. `false` on every BGEM material and on
-    /// NIF-only paths. See #1077 / FO4-D6-003.
-    pub has_translucency: bool,
-    /// Material's normal map is authored in object/model space
-    /// rather than the conventional tangent space. Forwarded from
-    /// `BgsmFile.model_space_normals`. When `true`, the fragment
-    /// shader's normal decode skips the TBN transform and uses the
-    /// sampled normal directly. Vanilla FO4 authors this for a
-    /// small set of static objects whose tangent space isn't
-    /// reliably reconstructable. `false` on every BGEM material and
-    /// on NIF-only paths. See #1077 / FO4-D6-003.
-    pub model_space_normals: bool,
-    /// Set by `merge_bgsm_into_mesh` when a `.bgsm` or `.bgem`
-    /// material file resolved and merged successfully. Telemetry /
-    /// provenance only — the renderer does NOT branch on this flag.
-    /// Material-translation work (BGSM spec-glossiness → engine
-    /// metalness/roughness) happens in `merge_bgsm_into_mesh`
-    /// itself, populating `metalness_override` / `roughness_override`
-    /// so the renderer sees a single standard PBR input regardless
-    /// of source format. Keeping the bool because debug-server
-    /// inspection wants to know which materials came from BGSM.
-    pub from_bgsm: bool,
-    /// FO4+ BGEM `glass_enabled` flag — set by `merge_bgsm_into_mesh`
-    /// when the referenced effect-material file explicitly authors
-    /// `glass_enabled = true`. Consumed by
-    /// `helpers::classify_glass_into_material` as an authoritative
-    /// transparency signal that fires the glass-classification path
-    /// even when neither texture path nor mesh name carries a glass
-    /// keyword. Closes the FO4-BGEM-glass-bottle-with-no-keyword class
-    /// flagged in #1280 sub-step 3b (canonical material convergence).
-    pub bgem_glass: bool,
-    /// Canonical thin-surface glass behavior selected by the source
-    /// translator. Unlike [`Self::bgem_glass`], this is not a format
-    /// provenance flag: it records that the authored glass is a
-    /// non-occluding shell/sheet rather than a closed refractive volume.
-    /// The renderer uses it to choose stable Fresnel alpha transmission
-    /// instead of the thick-object Snell/RT path.
-    pub thin_glass: bool,
-    /// PBR metalness `[0, 1]` computed by the translation layer from
-    /// authored source data — a **raw-tier** field read only at the
-    /// `translate_material` boundary; the renderer never sees it. `Some`
-    /// is set by:
-    ///   * `merge_bgsm_into_mesh` for BGSM/BGEM materials — derived
-    ///     from `luminance(spec_color * spec_mult)` mapped through
-    ///     `(L - 0.04) / 0.96` so dielectric spec (≈ 0.04) lands at
-    ///     0 and conductor spec (≈ 0.95) lands near 1.
-    ///   * Future: Starfield .mat translator.
-    ///
-    /// `None` seeds a NaN sentinel on the canonical `Material.metalness`,
-    /// which `Material::resolve_pbr` then fills via `classify_pbr_keyword`
-    /// (Oblivion / FO3 / FNV keyword path) — at the boundary, NOT per-draw.
-    /// The renderer reads the resolved `Material.metalness` directly; the
-    /// shader stays format-agnostic — single `F0 = mix(0.04, albedo,
-    /// metalness)` path. (Pre-#1346 this was read render-side with a
-    /// classify_pbr fallback; that leak is closed — doc corrected #1365.)
-    pub metalness_override: Option<f32>,
-    /// PBR roughness `[0, 1]` companion to `metalness_override`, same
-    /// raw-tier / boundary-only contract. Set by `merge_bgsm_into_mesh`
-    /// to `1 - bgsm.smoothness` so the authored smoothness drives the lobe
-    /// width directly; `None` is resolved on `Material.roughness` by
-    /// `resolve_pbr` (legacy `1 - glossiness/100` keyword derivation) at
-    /// the `translate_material` boundary, never at render time.
-    pub roughness_override: Option<f32>,
-    /// `BgsmFile.translucency_subsurface_color` (v>=8). RGB of the
-    /// transmitted/scattered light beneath the surface. Used by the
-    /// renderer's SSS approximation when `has_translucency` is also
-    /// set. `[0.0; 3]` by default (no contribution when the gating
-    /// flag is unset). See #1147 / FO4-D6-003 Phase 2b.
-    pub translucency_subsurface_color: [f32; 3],
-    /// `BgsmFile.translucency_transmissive_scale` (v>=8). Intensity
-    /// scalar for the back-side transmission term. 0.0 = no SSS
-    /// contribution; typical BGSM range 0.5–4.0. #1147 Phase 2b.
-    pub translucency_transmissive_scale: f32,
-    /// `BgsmFile.translucency_turbulence` (v>=8). Noise-driven
-    /// perturbation to the transmission term so SSS doesn't appear
-    /// uniformly smooth on varied materials (vegetation, frost-rimed
-    /// glass). 0.0 = no turbulence. #1147 Phase 2b.
-    pub translucency_turbulence: f32,
-    /// `BgsmFile.translucency_thick_object` (v>=8). True for thick
-    /// volumes (skin, wax) — changes the SSS view-dependent falloff
-    /// shape. False for thin sheets (leaves, paper). #1147 Phase 2b.
-    pub translucency_thick_object: bool,
-    /// `BgsmFile.translucency_mix_albedo_with_subsurface_color`
-    /// (v>=8). True for skin-like materials where albedo tints the
-    /// transmission; false for foliage-like materials with strong
-    /// pigment colour. #1147 Phase 2b.
-    pub translucency_mix_albedo: bool,
-    /// Parallax-occlusion max ray-march passes (from
-    /// `BSShaderPPLightingProperty` or Skyrim `ShaderTypeData::ParallaxOcc`).
-    /// `None` when the material doesn't author a value. See #452.
-    pub parallax_max_passes: Option<f32>,
-    /// Parallax-occlusion height scale. See #452.
-    pub parallax_height_scale: Option<f32>,
-    /// Vertex-color source mode from `NiVertexColorProperty`
-    /// (`vertex_mode`). Values match Gamebryo's `SourceMode` enum:
-    /// `0 = Ignore`, `1 = Emissive`, `2 = AmbientDiffuse` (default).
-    /// The importer already handles `Ignore` by not populating the
-    /// vertex-color vec; the value is forwarded so the material
-    /// system can route `Emissive` to self-illumination later.
-    /// See #214.
-    pub vertex_color_mode: u8,
-    /// Gamebryo `TexClampMode` from the diffuse slot's `TexDesc.flags`
-    /// (lower 4 bits): `0 = WRAP_S_WRAP_T` (default REPEAT), `1 =
-    /// WRAP_S_CLAMP_T`, `2 = CLAMP_S_WRAP_T`, `3 = CLAMP_S_CLAMP_T`.
-    /// Sourced from either `NiTexturingProperty.base_texture` (Oblivion
-    /// / FO3 / FNV statics) or `BSEffectShaderProperty.texture_clamp_mode`
-    /// (Skyrim+ effects). The renderer's bindless cache picks the
-    /// matching `VkSamplerAddressMode` pair at descriptor-write time
-    /// — pre-#610 the value was dropped and every texture rendered
-    /// with REPEAT, leaving decal / scope-reticle / skybox-seam edges
-    /// visibly bleeding.
-    pub texture_clamp_mode: u8,
-    /// Emissive color (RGB, linear).
-    pub emissive_color: [f32; 3],
-    /// Emissive intensity multiplier.
-    pub emissive_mult: f32,
-    /// Provenance of [`Self::emissive_mult`] — disambiguates the three
-    /// NIF shader-property classes whose "emissive multiplier" fields
-    /// all flow into the same slot but carry different semantics. See
-    /// [`byroredux_core::ecs::components::material::EmissiveSource`].
-    /// Forwarded from `MaterialInfo.emissive_source`. #1280 step 4 /
-    /// canonical material convergence.
-    pub emissive_source: byroredux_core::ecs::components::material::EmissiveSource,
-    /// Specular highlight color (RGB, linear).
-    pub specular_color: [f32; 3],
-    /// Diffuse tint (RGB, linear) from `NiMaterialProperty.diffuse`.
-    /// Multiplied into sampled albedo by the fragment shader. Default
-    /// `[1.0; 3]` (no tint) when the mesh ships only a BSShader path.
-    /// Audit `AUDIT_LEGACY_COMPAT_2026-04-10.md` D4-09 / #221.
-    pub diffuse_color: [f32; 3],
-    /// Ambient color (RGB) from `NiMaterialProperty.ambient`. Modulates
-    /// the cell ambient lighting term per material. Default `[1.0; 3]`.
-    pub ambient_color: [f32; 3],
-    /// Specular intensity multiplier.
-    pub specular_strength: f32,
-    /// Glossiness / smoothness.
-    pub glossiness: f32,
-    /// `BSLightingShaderProperty.refraction_strength` (every BSVER 83+
-    /// BSLSP authors this). Drives refractive distortion magnitude on
-    /// Skyrim+ / FO4 / FO76 surfaces. Default 0.0 (no refraction).
-    /// Renderer-side consumption deferred to the Skyrim+ PBR pass
-    /// paired with the BGSM v>=8 suite (#1147). See #1241 /
-    /// NIF-DIM4-NEW-01.
-    pub refraction_strength: f32,
-    /// `BSLightingShaderProperty.lighting_effect_1` (Skyrim subsurface
-    /// scattering scalar, BSVER < FO4, gated by `SLSF2_Soft_Lighting`).
-    /// Drives per-material SSS rolloff on skin / soft-cloth / wax.
-    /// Default 0.0. See #1241.
-    pub lighting_effect_1: f32,
-    /// `BSLightingShaderProperty.lighting_effect_2` (Skyrim backlight
-    /// scalar, BSVER < FO4, gated by `SLSF2_Back_Lighting`). Drives
-    /// the back-lit translucency on hair / foliage / fabric edges.
-    /// Default 0.0. See #1241.
-    pub lighting_effect_2: f32,
-    /// `BSLightingShaderProperty.subsurface_rolloff` (FO4 BSVER 130–139).
-    /// Per-material SSS rolloff envelope. Default 0.0. See #1241.
-    pub subsurface_rolloff: f32,
-    /// `BSLightingShaderProperty.rimlight_power` (FO4 BSVER 130–139).
-    /// Per-material rim-light exponent (power-armor edges, NPC skin
-    /// rim). Default 0.0. See #1241.
-    pub rimlight_power: f32,
-    /// `BSLightingShaderProperty.backlight_power` (FO4 BSVER 130–139,
-    /// paired with `rimlight_power < FLT_MAX`). Per-material backlight
-    /// exponent. Default 0.0. See #1241.
-    pub backlight_power: f32,
-    /// `BSLightingShaderProperty.grayscale_to_palette_scale` (FO4+
-    /// BSVER >= 130). Modulator on the greyscale→palette LUT remap
-    /// (NPC face tints, gradient palette swaps). Default 1.0 = no
-    /// scale (matches the BSLSP parser stub at `shader.rs:748`).
-    /// See #1241.
-    pub grayscale_to_palette_scale: f32,
-    /// `true` when [`MaterialTextureSet::greyscale_lut`] should gate
-    /// `MAT_FLAG_EFFECT_PALETTE_ALPHA` instead of the default
-    /// `MAT_FLAG_EFFECT_PALETTE_COLOR`. Only BGEM authors this — it's
-    /// `BSEffectShaderProperty.grayscale_to_palette_alpha`; BGSM has no
-    /// alpha-variant bool, so a BGSM-sourced LUT path always leaves this
-    /// `false`. See #1580.
-    pub bgsm_greyscale_lut_is_alpha: bool,
-    /// `BSLightingShaderProperty.fresnel_power` (FO4+ BSVER >= 130).
-    /// Per-material Schlick exponent for the Fresnel rim term.
-    /// Default 5.0 (standard Schlick exponent, matches the BSLSP
-    /// parser stub at `shader.rs:749`). See #1241.
-    pub fresnel_power: f32,
-    /// UV texture coordinate offset [u, v].
-    pub uv_offset: [f32; 2],
-    /// UV texture coordinate scale [u, v].
-    pub uv_scale: [f32; 2],
-    /// Material alpha/transparency.
-    pub mat_alpha: f32,
-    /// Environment map reflection scale (from shader type 1).
-    pub env_map_scale: f32,
     /// Index into `ImportedScene.nodes` for this mesh's parent node, or None.
     pub parent_node: Option<usize>,
     /// Skeletal skinning data. `None` for rigid meshes.
     pub skin: Option<ImportedSkin>,
-    /// Depth test enabled (from NiZBufferProperty). Default: true.
-    pub z_test: bool,
-    /// Depth write enabled (from NiZBufferProperty). Default: true.
-    pub z_write: bool,
-    /// Depth comparison function (Gamebryo `TestFunction` enum from
-    /// `NiZBufferProperty.z_function`). Default 3 (LESSEQUAL). See
-    /// `MaterialInfo::z_function` for the enum values + #398.
-    pub z_function: u8,
     /// Mesh-local bounding sphere center in Y-up renderer space. Extracted
     /// from `NiTriShapeData.center` / `BsTriShape.center` when present, or
     /// computed from the vertex positions when the NIF bound is zero.
@@ -675,69 +635,9 @@ pub struct ImportedMesh {
     /// Expressed in the mesh's own local units — the propagation system
     /// multiplies by the world scale to produce the world-space radius.
     pub local_bound_radius: f32,
-    /// Skyrim+ effect-shader (`BSEffectShaderProperty`) rich material
-    /// data — soft-falloff cone, greyscale palette, FO4+/FO76 companion
-    /// textures, lighting influence. `None` for non-effect materials
-    /// (the common case for static / clutter / actor meshes).
-    ///
-    /// Captured by the importer so the renderer-side effect-shader
-    /// dispatch (SK-D3-02) can route it to a dedicated VFX pipeline
-    /// without re-reading the NIF. Until that lands, this rides along
-    /// unused — the audit's "VISUAL: soft falloff edge visible" check
-    /// can only be satisfied once the renderer hookup is in. See #345.
-    pub effect_shader: Option<BsEffectShaderData>,
-    /// Raw `BSLightingShaderProperty.shader_type` enum value (0–19),
-    /// captured for the renderer-side variant dispatch in
-    /// `triangle.frag`. 0 = Default lit (the safe fall-through, also
-    /// emitted for non-Skyrim+ meshes that have no
-    /// BSLightingShaderProperty backing). Surfacing this on
-    /// `ImportedMesh` is the data side of #344 — pre-fix the importer
-    /// captured `material_kind` on the internal `MaterialInfo` but
-    /// dropped it on the way out, so the renderer had no way to
-    /// branch on SkinTint / HairTint / EyeEnvmap / SparkleSnow /
-    /// MultiLayerParallax. Variant rendering wiring inside the
-    /// fragment shader is per-variant follow-up work. Widened to
-    /// `u32` per #570 (SK-D3-03); see `MaterialInfo::material_kind`
-    /// for the rationale.
-    pub material_kind: u32,
     /// Raw `NiAVObject.flags` value (sibling of `ImportedNode.flags`).
     /// Consumers emit a `SceneFlags` component per shape entity. See #222.
     pub flags: u32,
-    /// Shader-type-specific trailing fields decoded off
-    /// `BSLightingShaderProperty.shader_type_data` — SkinTint color,
-    /// HairTint color, EyeEnvmap centers, ParallaxOcc / MultiLayerParallax
-    /// depth parameters, SparkleSnow packed rgba. Every variant is
-    /// capture-ready here; renderer-side consumption happens as each
-    /// `material_kind` branch is wired into `triangle.frag`. Before #430
-    /// these fields were populated on `MaterialInfo` (NiTriShape path) but
-    /// dropped in the construction of `ImportedMesh`, and the BsTriShape
-    /// path ignored them entirely — both sides now populate uniformly.
-    pub shader_type_fields: ShaderTypeFields,
-    /// FO3/FNV `BSShaderNoLightingProperty` soft-falloff cone —
-    /// four scalars that drive the angular alpha gradient on HUD
-    /// overlays, VATS crosshair, scope reticles, Pip-Boy glow, and
-    /// heat-shimmer planes. `None` for every non-NoLighting mesh.
-    /// Renderer dispatch is follow-up work (same track as the
-    /// BSEffectShaderProperty soft-falloff consumption). Pre-#451
-    /// the parser captured these but the importer dropped them.
-    pub no_lighting_falloff: Option<NoLightingFalloff>,
-    /// Forces wireframe rendering (polygon_mode = LINE). Set by
-    /// `NiWireframeProperty { flags: 1 }`. Oblivion vanilla never uses this;
-    /// common in FO3/FNV mods. Renderer-side `VK_POLYGON_MODE_LINE` is
-    /// deferred — tracked at #869 (O4-D4-NEW-01). The eventual fix ships a
-    /// `WireframeOpaque { two_sided }` pipeline variant + matching `Blended`
-    /// arm in `crates/renderer/src/vulkan/pipeline.rs`. Until then this
-    /// bool is captured but not consulted on the render path.
-    pub wireframe: bool,
-    /// Forces flat shading (no per-vertex normal interpolation). Set by
-    /// `NiShadeProperty { flags: 0 }` (bit 0 off = flat). Used on a handful
-    /// of Oblivion architectural pieces for a faceted look. Renderer-side
-    /// consumption is deferred — tracked at #869 (O4-D4-NEW-01). The two
-    /// implementation paths are (a) parallel `triangle_flat.vert/frag` pair
-    /// with pipeline-time switch, or (b) per-fragment dFdx/dFdy face-normal
-    /// recompute gated on a per-batch flag. Until then this bool is captured
-    /// but not consulted on the render path.
-    pub flat_shading: bool,
     /// FO4 `BSLODTriShape` distant-LOD triangle-count cutoffs `[lod0,
     /// lod1, lod2]` — the three thresholds an eventual M35 LOD selector
     /// will consult to choose which LOD level to draw at distance. Pre-#1207
@@ -757,6 +657,20 @@ pub struct ImportedMesh {
     pub bs_sub_index: Option<BsSubIndexTriShapeData>,
 }
 
+impl std::ops::Deref for ImportedMesh {
+    type Target = ImportedMaterial;
+
+    fn deref(&self) -> &Self::Target {
+        &self.material
+    }
+}
+
+impl std::ops::DerefMut for ImportedMesh {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.material
+    }
+}
+
 impl ImportedMesh {
     /// Build an opaque, untextured, lit mesh from raw renderer-space
     /// (Y-up) geometry, with identity transform and the same default
@@ -768,8 +682,8 @@ impl ImportedMesh {
     ///
     /// Shared builder for geometry that arrives without a NIF shader
     /// property — FO4 precombined CSG objects ([`crate::import::precombine`],
-    /// M49) today; the SpeedTree placeholder and the loose-NIF empty-mesh
-    /// fallbacks duplicate this field block and can adopt it next.
+    /// M49) and synthetic/test geometry today. SpeedTree supplies authored
+    /// bounds directly but shares [`ImportedMaterial::default`].
     /// `local_bound_*` is computed from `positions` via
     /// [`crate::import::mesh::extract_local_bound`].
     #[allow(clippy::too_many_arguments)]
@@ -800,69 +714,13 @@ impl ImportedMesh {
             translation: [0.0, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: 1.0,
-            textures: MaterialTextureSet::default(),
-            material_path: None,
+            material: ImportedMaterial::default(),
             name: None,
-            has_alpha: false,
-            src_blend_mode: 6, // SRC_ALPHA (unused when opaque)
-            dst_blend_mode: 7, // INV_SRC_ALPHA
-            alpha_test: false,
-            alpha_threshold: 0.5,
-            alpha_test_func: 6, // GREATEREQUAL
-            two_sided: false,
-            is_decal: false,
-            is_pbr: false,
-            has_translucency: false,
-            model_space_normals: false,
-            from_bgsm: false,
-            bgem_glass: false,
-            thin_glass: false,
-            metalness_override: None,
-            roughness_override: None,
-            translucency_subsurface_color: [0.0; 3],
-            translucency_transmissive_scale: 0.0,
-            translucency_turbulence: 0.0,
-            translucency_thick_object: false,
-            translucency_mix_albedo: false,
-            parallax_max_passes: None,
-            parallax_height_scale: None,
-            vertex_color_mode: 2,  // AmbientDiffuse
-            texture_clamp_mode: 0, // WRAP_S_WRAP_T
-            emissive_color: [0.0; 3],
-            emissive_mult: 0.0,
-            emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,
-            specular_color: [1.0; 3],
-            diffuse_color: [1.0; 3],
-            ambient_color: [1.0; 3],
-            specular_strength: 0.0,
-            glossiness: 0.0,
-            refraction_strength: 0.0,
-            lighting_effect_1: 0.0,
-            lighting_effect_2: 0.0,
-            subsurface_rolloff: 0.0,
-            rimlight_power: 0.0,
-            backlight_power: 0.0,
-            grayscale_to_palette_scale: 1.0,
-            bgsm_greyscale_lut_is_alpha: false,
-            fresnel_power: 5.0,
-            uv_offset: [0.0, 0.0],
-            uv_scale: [1.0, 1.0],
-            mat_alpha: 1.0,
-            env_map_scale: 0.0,
             parent_node: None,
             skin: None,
-            z_test: true,
-            z_write: true,
-            z_function: 3, // LESSEQUAL
             local_bound_center,
             local_bound_radius,
-            effect_shader: None,
-            material_kind: 0, // Default lit
             flags: 0,
-            shader_type_fields: ShaderTypeFields::default(),
-            no_lighting_falloff: None,
-            wireframe: false,
-            flat_shading: false,
             bs_lod_cutoffs: None,
             bs_sub_index: None,
         }

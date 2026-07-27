@@ -248,15 +248,7 @@ pub fn extract_bs_geometry(
         }
     };
 
-    let shader_type_fields = mat.shader_type_fields();
-
-    // Stage 2 (`feedback_format_translation.md`) — derive PBR
-    // (metalness, roughness) at import time. BGSM merge downstream
-    // overwrites for BGSM-resolved Starfield BSGeometry meshes;
-    // anything else keeps these classifier-derived values.
-    let legacy_pbr = mat.classify_legacy_pbr(pool);
-    let effective_alpha_blend = mat.effective_alpha_blend(shape.av.net.name.as_deref(), pool);
-    let textures = mat.texture_set(pool);
+    let material = mat.into_imported_material(pool, shape.av.net.name.as_deref());
 
     Some(ImportedMesh {
         positions,
@@ -268,85 +260,13 @@ pub fn extract_bs_geometry(
         translation: zup_point_to_yup(t),
         rotation: quat,
         scale: world_transform.scale,
+        material,
         name: shape.av.net.name.clone(),
-        textures,
-        material_path: mat.material_path,
-        has_alpha: effective_alpha_blend,
-        src_blend_mode: mat.src_blend_mode,
-        dst_blend_mode: mat.dst_blend_mode,
-        alpha_test: mat.alpha_test,
-        alpha_threshold: mat.alpha_threshold,
-        alpha_test_func: mat.alpha_test_func,
-        two_sided: mat.two_sided,
-        is_decal: mat.is_decal,
-        // #1077 / FO4-D6-003 — BGSM-only shader flags; NIF
-        // shader-texture-set doesn't surface these. Populated
-        // downstream by `merge_bgsm_into_mesh` from BgsmFile.
-        is_pbr: false,
-        has_translucency: false,
-        // #1592 — now also sourced from the FO4 `F4SF1::Model_Space_Normals`
-        // shader flag in the material walker; `merge_bgsm_into_mesh` still
-        // OR-upgrades it from the `.bgsm` (authoritative for vanilla).
-        model_space_normals: mat.model_space_normals,
-        from_bgsm: false,
-        bgem_glass: false,
-        thin_glass: false,
-        // Stage 2 — legacy PBR translation; BGSM merge overwrites
-        // when a `.mat` file is present.
-        metalness_override: Some(legacy_pbr.metalness),
-        roughness_override: Some(legacy_pbr.roughness),
-        // #1147 Phase 2b — BGSM v>=8 translucency suite.
-        translucency_subsurface_color: [0.0; 3],
-        translucency_transmissive_scale: 0.0,
-        translucency_turbulence: 0.0,
-        translucency_thick_object: false,
-        translucency_mix_albedo: false,
-        parallax_max_passes: mat.parallax_max_passes,
-        parallax_height_scale: mat.parallax_height_scale,
-        vertex_color_mode: mat.vertex_color_mode as u8,
-        texture_clamp_mode: mat.texture_clamp_mode,
-        emissive_color: mat.emissive_color,
-        emissive_mult: mat.emissive_mult,
-        emissive_source: mat.emissive_source,
-        specular_color: mat.specular_color,
-        diffuse_color: mat.diffuse_color,
-        ambient_color: mat.ambient_color,
-        specular_strength: mat.specular_strength,
-        glossiness: mat.glossiness,
-        // #1241 — BSLSP PBR scalars. BSGeometry is the Starfield path
-        // (BSVER 172) so the BSLSP shader-flags pair is a CRC array;
-        // refraction / grayscale / fresnel still ride through when a
-        // legacy BSLightingShaderProperty backs the geometry.
-        refraction_strength: mat.refraction_strength,
-        lighting_effect_1: mat.lighting_effect_1,
-        lighting_effect_2: mat.lighting_effect_2,
-        subsurface_rolloff: mat.subsurface_rolloff,
-        rimlight_power: mat.rimlight_power,
-        backlight_power: mat.backlight_power,
-        grayscale_to_palette_scale: mat.grayscale_to_palette_scale,
-        bgsm_greyscale_lut_is_alpha: false,
-        fresnel_power: mat.fresnel_power,
-        uv_offset: mat.uv_offset,
-        uv_scale: mat.uv_scale,
-        mat_alpha: mat.alpha,
-        env_map_scale: mat.env_map_scale,
         parent_node: None,
         skin,
-        z_test: mat.z_test,
-        z_write: mat.z_write,
-        z_function: mat.z_function,
         local_bound_center,
         local_bound_radius,
-        effect_shader: mat.effect_shader,
-        material_kind: mat.material_kind,
-        shader_type_fields,
-        no_lighting_falloff: mat.no_lighting_falloff,
-        wireframe: mat.wireframe,
-        flat_shading: mat.flat_shading,
         flags: shape.av.flags,
-        // #1207 / #1206 — BSGeometry (Starfield) doesn't carry the
-        // FO4-era BSTriShape LOD / SubIndex discriminator; both fields
-        // are None.
         bs_lod_cutoffs: None,
         bs_sub_index: None,
     })

@@ -110,16 +110,7 @@ pub fn extract_bs_tri_shape(
     let (local_bound_center, local_bound_radius) =
         extract_local_bound(shape.center, shape.radius, &positions);
 
-    // #430 — capture ShaderTypeFields before the `mat` move.
-    let shader_type_fields = mat.shader_type_fields();
-
-    // Stage 2 (`feedback_format_translation.md`) — derive PBR
-    // (metalness, roughness) at import time. BGSM merge downstream
-    // overwrites both for BGSM-resolved Skyrim+/FO4 meshes; legacy
-    // inline-shader BSLightingShaderProperty meshes keep these.
-    let legacy_pbr = mat.classify_legacy_pbr(pool);
-    let effective_alpha_blend = mat.effective_alpha_blend(shape.av.net.name.as_deref(), pool);
-    let textures = mat.texture_set(pool);
+    let material = mat.into_imported_material(pool, shape.av.net.name.as_deref());
 
     // #795 / SK-D1-03 + #796 / SK-D1-04 — per-vertex tangents.
     //
@@ -203,105 +194,17 @@ pub fn extract_bs_tri_shape(
         translation: zup_point_to_yup(t),
         rotation: quat,
         scale: world_transform.scale,
+        material,
         name: shape.av.net.name.clone(),
-        textures,
-        material_path: mat.material_path,
-        has_alpha: effective_alpha_blend,
-        src_blend_mode: mat.src_blend_mode,
-        dst_blend_mode: mat.dst_blend_mode,
-        alpha_test: mat.alpha_test,
-        alpha_threshold: mat.alpha_threshold,
-        alpha_test_func: mat.alpha_test_func,
-        two_sided: mat.two_sided,
-        is_decal: mat.is_decal,
-        // #1077 / FO4-D6-003 — BGSM-only shader flags; NIF
-        // shader-texture-set doesn't surface these. Populated
-        // downstream by `merge_bgsm_into_mesh` from BgsmFile.
-        is_pbr: false,
-        has_translucency: false,
-        // #1592 — now also sourced from the FO4 `F4SF1::Model_Space_Normals`
-        // shader flag in the material walker; `merge_bgsm_into_mesh` still
-        // OR-upgrades it from the `.bgsm` (authoritative for vanilla).
-        model_space_normals: mat.model_space_normals,
-        from_bgsm: false,
-        bgem_glass: false,
-        thin_glass: false,
-        // Stage 2 — legacy PBR translation. BGSM merge overwrites for
-        // BGSM-resolved Skyrim+/FO4 meshes; non-BGSM BSLightingShader-
-        // Property paths keep these classifier-derived values.
-        metalness_override: Some(legacy_pbr.metalness),
-        roughness_override: Some(legacy_pbr.roughness),
-        // #1147 Phase 2b — BGSM v>=8 translucency suite.
-        translucency_subsurface_color: [0.0; 3],
-        translucency_transmissive_scale: 0.0,
-        translucency_turbulence: 0.0,
-        translucency_thick_object: false,
-        translucency_mix_albedo: false,
-        parallax_max_passes: mat.parallax_max_passes,
-        parallax_height_scale: mat.parallax_height_scale,
-        vertex_color_mode: mat.vertex_color_mode as u8,
-        // #610 — diffuse-slot `TexClampMode` from BSShader /
-        // BSEffectShader (BsTriShape's effective clamp source).
-        texture_clamp_mode: mat.texture_clamp_mode,
-        emissive_color: mat.emissive_color,
-        emissive_mult: mat.emissive_mult,
-        emissive_source: mat.emissive_source,
-        specular_color: mat.specular_color,
-        diffuse_color: mat.diffuse_color,
-        ambient_color: mat.ambient_color,
-        specular_strength: mat.specular_strength,
-        glossiness: mat.glossiness,
-        // #1241 — BSLSP PBR scalars. BsTriShape is the Skyrim+ / FO4 /
-        // FO76 path so these carry authored values per BSVER band
-        // (Skyrim: lighting_effect_1/2; FO4 130–139: subsurface_rolloff
-        // + rim/back power; FO4+ 130+: grayscale + fresnel + refraction).
-        refraction_strength: mat.refraction_strength,
-        lighting_effect_1: mat.lighting_effect_1,
-        lighting_effect_2: mat.lighting_effect_2,
-        subsurface_rolloff: mat.subsurface_rolloff,
-        rimlight_power: mat.rimlight_power,
-        backlight_power: mat.backlight_power,
-        grayscale_to_palette_scale: mat.grayscale_to_palette_scale,
-        bgsm_greyscale_lut_is_alpha: false,
-        fresnel_power: mat.fresnel_power,
-        uv_offset: mat.uv_offset,
-        uv_scale: mat.uv_scale,
-        mat_alpha: mat.alpha,
-        env_map_scale: mat.env_map_scale,
         parent_node: None,
         skin,
-        // BSTriShape (Skyrim+) has no NiZBufferProperty binding; the
-        // shared extractor preserves Gamebryo runtime defaults
-        // (z_test+write on, LESSEQUAL) when no NiZBufferProperty is
-        // found — which is always on this path.
-        z_test: mat.z_test,
-        z_write: mat.z_write,
-        z_function: mat.z_function,
         local_bound_center,
         local_bound_radius,
-        effect_shader: mat.effect_shader,
-        material_kind: mat.material_kind,
-        shader_type_fields,
-        // BSShaderNoLightingProperty is an FO3/FNV-era property and
-        // doesn't bind to BsTriShape (Skyrim+); the shared extractor
-        // won't populate it here. See #451.
-        no_lighting_falloff: mat.no_lighting_falloff,
-        wireframe: mat.wireframe,
-        flat_shading: mat.flat_shading,
         flags: shape.av.flags,
-        // #1207 / NIF-DIM4-07 — surface FO4 BSLODTriShape distant-LOD
-        // triangle-count cutoffs (parser already captured them via
-        // `BsTriShapeKind::LOD`). Future M35 LOD selector will consult
-        // these. `None` on every non-LOD variant.
         bs_lod_cutoffs: match &shape.kind {
             BsTriShapeKind::LOD { lod0, lod1, lod2 } => Some([*lod0, *lod1, *lod2]),
             _ => None,
         },
-        // #1206 / NIF-DIM4-06 — surface BSSubIndexTriShape segmentation
-        // payload (parser already captured the full segments table +
-        // shared SSF metadata via `BsTriShapeKind::SubIndex`). Future
-        // dismemberment / body-part-segmentation system will consult
-        // this. `None` on every non-SubIndex variant.
         bs_sub_index: match &shape.kind {
             BsTriShapeKind::SubIndex(data) => Some((**data).clone()),
             _ => None,

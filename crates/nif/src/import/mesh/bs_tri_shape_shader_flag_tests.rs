@@ -257,7 +257,10 @@ fn extract_bs_tri_shape_pulls_effect_shader_emissive_uv_alpha_normal() {
         mesh.textures.normal.and_then(|s| pool.resolve(s)),
         Some("fx/glow_n.dds")
     );
-    let fx = mesh.effect_shader.expect("effect_shader should populate");
+    let fx = mesh
+        .effect_shader
+        .as_ref()
+        .expect("effect_shader should populate");
     assert_eq!(fx.greyscale_texture.as_deref(), Some("fx/fire_palette.dds"));
     assert!((fx.env_map_scale - 0.75).abs() < 1e-6);
 }

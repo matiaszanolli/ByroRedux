@@ -48,7 +48,7 @@ use std::sync::Arc;
 
 use byroredux_core::string::{FixedString, StringPool};
 use byroredux_nif::import::{
-    ImportedMesh, ImportedNode, ImportedScene, MaterialTextureSet, ShaderTypeFields,
+    ImportedMaterial, ImportedMesh, ImportedNode, ImportedScene, MaterialTextureSet,
 };
 
 use crate::scene::SptScene;
@@ -270,19 +270,16 @@ fn placeholder_billboard_mesh(
 ) -> ImportedMesh {
     let half_w = width * 0.5;
     let positions = vec![
-        [-half_w, 0.0, 0.0],    // 0: bottom-left
-        [half_w, 0.0, 0.0],     // 1: bottom-right
-        [half_w, height, 0.0],  // 2: top-right
-        [-half_w, height, 0.0], // 3: top-left
+        [-half_w, 0.0, 0.0],    // bottom-left
+        [half_w, 0.0, 0.0],     // bottom-right
+        [half_w, height, 0.0],  // top-right
+        [-half_w, height, 0.0], // top-left
     ];
-    // Front-face normals point -Z (toward the camera after the
-    // billboard rotation arc). See doc above for the rationale.
+    // The billboard rotation maps object-space -Z toward the camera.
     let normals = vec![[0.0, 0.0, -1.0]; 4];
     let uvs = vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
     let colors = vec![[1.0, 1.0, 1.0, 1.0]; 4];
-    // Winding: (0 → 3 → 2) and (2 → 1 → 0). Traces CCW when viewed
-    // from -Z — i.e., the camera at look-arc termination sees the
-    // textured front face.
+    // Counter-clockwise when viewed from -Z.
     let indices = vec![0, 3, 2, 2, 1, 0];
 
     ImportedMesh {
@@ -295,92 +292,29 @@ fn placeholder_billboard_mesh(
         translation: [0.0, 0.0, 0.0],
         rotation: [0.0, 0.0, 0.0, 1.0],
         scale: 1.0,
-        textures: MaterialTextureSet {
-            base_color: texture_path,
+        material: ImportedMaterial {
+            textures: MaterialTextureSet {
+                base_color: texture_path,
+                ..Default::default()
+            },
+            // SpeedTree leaf cards use cutout alpha and can expose either
+            // face while rotating toward the camera.
+            alpha_test: true,
+            alpha_threshold: 0.5,
+            alpha_test_func: 6,
+            two_sided: true,
+            // Foliage is matte/non-metallic. Resolve this here instead of
+            // letting texture-name keywords misclassify leaves as wood/glass.
+            metalness_override: Some(0.0),
+            roughness_override: Some(0.85),
             ..Default::default()
         },
-        material_path: None,
         name: Some(Arc::from("SptPlaceholderBillboard")),
-        // Alpha-test (cutout) is the right call for tree leaves —
-        // vanilla TREE ICON textures encode the leaf silhouette in
-        // the alpha channel.
-        has_alpha: false,
-        src_blend_mode: 6, // SRC_ALPHA — unused under alpha-test
-        dst_blend_mode: 7, // INV_SRC_ALPHA — unused under alpha-test
-        alpha_test: true,
-        alpha_threshold: 0.5,
-        alpha_test_func: 6, // GREATEREQUAL
-        // Tree billboard rotates with the camera, so both faces will
-        // be visible during the rotation interpolation. Two-sided
-        // matches vanilla SpeedTree leaf-card behaviour.
-        two_sided: true,
-        is_decal: false,
-        // #1077 / FO4-D6-003 — SpeedTree never resolves BGSM/BGEM.
-        is_pbr: false,
-        has_translucency: false,
-        model_space_normals: false,
-        from_bgsm: false,
-        bgem_glass: false,
-        thin_glass: false,
-        // #1819 / SPT-NEW-05 — classify at import like every NIF path,
-        // instead of leaving both `None` and falling through to
-        // `classify_pbr_keyword`'s texture-path substring classifier.
-        // Leaf billboard textures collide with unrelated keyword
-        // buckets (e.g. "ShrubBoxwoodLeaves" contains "wood" → WOOD;
-        // "ShrubGenericElderberryLeaves" contains "ic"+"e" across a
-        // word seam → GLASS, crossing the RT-reflection roughness
-        // gate). Foliage is matte and non-metallic — matches the
-        // classifier's own no-keyword-match default.
-        metalness_override: Some(0.0),
-        roughness_override: Some(0.85),
-        // #1147 Phase 2b — translucency suite (zero default; SpeedTree
-        // is BGSM-free).
-        translucency_subsurface_color: [0.0; 3],
-        translucency_transmissive_scale: 0.0,
-        translucency_turbulence: 0.0,
-        translucency_thick_object: false,
-        translucency_mix_albedo: false,
-        parallax_max_passes: None,
-        parallax_height_scale: None,
-        vertex_color_mode: 2,  // AmbientDiffuse
-        texture_clamp_mode: 0, // WRAP_S_WRAP_T
-        emissive_color: [0.0; 3],
-        emissive_mult: 0.0,
-        emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,
-        specular_color: [1.0; 3],
-        diffuse_color: [1.0; 3],
-        ambient_color: [1.0; 3],
-        specular_strength: 0.0,
-        glossiness: 0.0,
-        // #1241 — SpeedTree billboards never resolve a
-        // BSLightingShaderProperty; defaults mirror MaterialInfo.
-        refraction_strength: 0.0,
-        lighting_effect_1: 0.0,
-        lighting_effect_2: 0.0,
-        subsurface_rolloff: 0.0,
-        rimlight_power: 0.0,
-        backlight_power: 0.0,
-        grayscale_to_palette_scale: 1.0,
-        bgsm_greyscale_lut_is_alpha: false,
-        fresnel_power: 5.0,
-        uv_offset: [0.0, 0.0],
-        uv_scale: [1.0, 1.0],
-        mat_alpha: 1.0,
-        env_map_scale: 0.0,
         parent_node: Some(0),
         skin: None,
-        z_test: true,
-        z_write: true,
-        z_function: 3, // LESSEQUAL
         local_bound_center: [0.0, height * 0.5, 0.0],
         local_bound_radius: (half_w * half_w + height * height * 0.25).sqrt(),
-        effect_shader: None,
-        material_kind: 0, // Default lit
         flags: 0,
-        shader_type_fields: ShaderTypeFields::default(),
-        no_lighting_falloff: None,
-        wireframe: false,
-        flat_shading: false,
         bs_lod_cutoffs: None,
         bs_sub_index: None,
     }

@@ -27,16 +27,11 @@ fn environment_map_writes_scale() {
     assert_eq!(info.env_map_scale, 2.5);
 }
 
-/// #430 — `capture_shader_type_fields` is the shared helper the
-/// BsTriShape import path uses. Exhaustive per-variant check that the
-/// returned bundle matches what `apply_shader_type_data` writes into
-/// #562 — `ShaderTypeFields::to_core()` must mirror every field
-/// byte-for-byte so the ECS `Material` component carries the
-/// same Skyrim+ variant payload as the NIF importer captured.
-/// Silent drift would desync the fragment-shader variant ladder
-/// from the NIF-authored data.
+/// #562 — the importer writes the core-owned payload directly. This
+/// fully-populated value keeps every variant field available without a
+/// second mirror type or field-by-field conversion.
 #[test]
-fn to_core_round_trips_every_field() {
+fn core_shader_type_fields_carries_every_variant_field() {
     let f = ShaderTypeFields {
         skin_tint_color: Some([0.9, 0.8, 0.7]),
         skin_tint_alpha: Some(0.5),
@@ -52,26 +47,9 @@ fn to_core_round_trips_every_field() {
         multi_layer_envmap_strength: Some(1.5),
         sparkle_parameters: Some([1.0, 0.5, 0.25, 2.0]),
     };
-    let c = f.to_core();
-    assert_eq!(c.skin_tint_color, f.skin_tint_color);
-    assert_eq!(c.skin_tint_alpha, f.skin_tint_alpha);
-    assert_eq!(c.hair_tint_color, f.hair_tint_color);
-    assert_eq!(c.eye_cubemap_scale, f.eye_cubemap_scale);
-    assert_eq!(c.eye_left_reflection_center, f.eye_left_reflection_center);
-    assert_eq!(c.eye_right_reflection_center, f.eye_right_reflection_center);
-    assert_eq!(c.parallax_max_passes, f.parallax_max_passes);
-    assert_eq!(c.parallax_height_scale, f.parallax_height_scale);
-    assert_eq!(c.multi_layer_inner_thickness, f.multi_layer_inner_thickness);
-    assert_eq!(
-        c.multi_layer_refraction_scale,
-        f.multi_layer_refraction_scale
-    );
-    assert_eq!(
-        c.multi_layer_inner_layer_scale,
-        f.multi_layer_inner_layer_scale
-    );
-    assert_eq!(c.multi_layer_envmap_strength, f.multi_layer_envmap_strength);
-    assert_eq!(c.sparkle_parameters, f.sparkle_parameters);
+    let core: byroredux_core::ecs::components::material::ShaderTypeFields = f.clone();
+    assert_eq!(core, f);
+    assert!(!core.is_empty());
 }
 
 /// Empty ShaderTypeFields must report `is_empty() == true` so the

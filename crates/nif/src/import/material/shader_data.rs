@@ -3,6 +3,7 @@
 //! Lead types: apply_shader_type_data, capture_shader_type_fields, ShaderTypeFields, capture_effect_shader_data.
 
 use super::*;
+pub use byroredux_core::ecs::components::material::ShaderTypeFields;
 
 /// Lift a `BSEffectShaderProperty` into the importer's
 /// [`BsEffectShaderData`] capture struct. Empty string fields collapse
@@ -152,30 +153,8 @@ pub(crate) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeD
     info.sparkle_parameters = fields.sparkle_parameters.or(info.sparkle_parameters);
 }
 
-/// The 13 shader-type-specific fields pulled off `BSLightingShaderProperty`'s
-/// `shader_type_data` variant. Mirrors the flat fields on `MaterialInfo` so
-/// both the NiTriShape path (via `MaterialInfo`) and the BsTriShape path
-/// (direct) can populate the same `ImportedMesh` fields without duplication.
-/// See #430 / NIF-D4-N01.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ShaderTypeFields {
-    pub skin_tint_color: Option<[f32; 3]>,
-    pub skin_tint_alpha: Option<f32>,
-    pub hair_tint_color: Option<[f32; 3]>,
-    pub eye_cubemap_scale: Option<f32>,
-    pub eye_left_reflection_center: Option<[f32; 3]>,
-    pub eye_right_reflection_center: Option<[f32; 3]>,
-    pub parallax_max_passes: Option<f32>,
-    pub parallax_height_scale: Option<f32>,
-    pub multi_layer_inner_thickness: Option<f32>,
-    pub multi_layer_refraction_scale: Option<f32>,
-    pub multi_layer_inner_layer_scale: Option<[f32; 2]>,
-    pub multi_layer_envmap_strength: Option<f32>,
-    pub sparkle_parameters: Option<[f32; 4]>,
-}
-
 /// Pull the shader-type-specific trailing fields out of a `ShaderTypeData`
-/// into a flat `ShaderTypeFields` bundle. Complements
+/// into the core-owned [`ShaderTypeFields`] bundle. Complements
 /// [`apply_shader_type_data`] — both are exhaustive on the 9 variants so
 /// any future addition fails compilation here.
 pub(crate) fn capture_shader_type_fields(data: &ShaderTypeData) -> ShaderTypeFields {
@@ -225,35 +204,4 @@ pub(crate) fn capture_shader_type_fields(data: &ShaderTypeData) -> ShaderTypeFie
         }
     }
     f
-}
-
-impl ShaderTypeFields {
-    /// `true` when every slot is empty — equivalent to
-    /// `*self == ShaderTypeFields::default()`. Used to skip attaching
-    /// a heap-allocated `Box<ShaderTypeFields>` on the ECS `Material`
-    /// component for the 99% of meshes that use no Skyrim+ variant.
-    pub fn is_empty(&self) -> bool {
-        *self == ShaderTypeFields::default()
-    }
-
-    /// Convert into the ECS-side [`byroredux_core::ecs::components::material::ShaderTypeFields`]
-    /// mirror type. Field-by-field copy — both shapes are intentionally
-    /// identical. See #562.
-    pub fn to_core(&self) -> byroredux_core::ecs::components::material::ShaderTypeFields {
-        byroredux_core::ecs::components::material::ShaderTypeFields {
-            skin_tint_color: self.skin_tint_color,
-            skin_tint_alpha: self.skin_tint_alpha,
-            hair_tint_color: self.hair_tint_color,
-            eye_cubemap_scale: self.eye_cubemap_scale,
-            eye_left_reflection_center: self.eye_left_reflection_center,
-            eye_right_reflection_center: self.eye_right_reflection_center,
-            parallax_max_passes: self.parallax_max_passes,
-            parallax_height_scale: self.parallax_height_scale,
-            multi_layer_inner_thickness: self.multi_layer_inner_thickness,
-            multi_layer_refraction_scale: self.multi_layer_refraction_scale,
-            multi_layer_inner_layer_scale: self.multi_layer_inner_layer_scale,
-            multi_layer_envmap_strength: self.multi_layer_envmap_strength,
-            sparkle_parameters: self.sparkle_parameters,
-        }
-    }
 }

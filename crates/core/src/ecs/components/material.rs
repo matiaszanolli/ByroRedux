@@ -276,13 +276,13 @@ pub struct EffectFalloff {
     pub soft_falloff_depth: f32,
 }
 
-/// Per-variant payload for `BSLightingShaderProperty` shader types
-/// that carry extra parameters beyond the standard PBR set. Mirrors
-/// `nif::import::material::ShaderTypeFields` so the ECS layer can be
-/// populated without depending on the NIF crate.
+/// Canonical per-variant payload for lighting-shader types that carry
+/// parameters beyond the standard PBR set.
 ///
 /// Every field is `Option` — unset means "this variant doesn't use
-/// it". See #562 for the full ladder.
+/// it". Source-format importers populate this core-owned shape directly,
+/// so adding a field cannot desynchronize an importer-side mirror from the
+/// ECS material contract. See #562.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ShaderTypeFields {
@@ -299,6 +299,13 @@ pub struct ShaderTypeFields {
     pub multi_layer_inner_layer_scale: Option<[f32; 2]>,
     pub multi_layer_envmap_strength: Option<f32>,
     pub sparkle_parameters: Option<[f32; 4]>,
+}
+
+impl ShaderTypeFields {
+    /// `true` when no shader variant authored an additional payload.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl Default for Material {

@@ -295,29 +295,7 @@ pub(crate) fn collect_victim_gpu_handles(
                 let maps = &handles.textures;
                 // Base color is released through TextureHandle above. Every
                 // secondary semantic role was independently acquired.
-                for handle in [
-                    maps.normal,
-                    maps.emissive,
-                    maps.detail,
-                    maps.smooth_spec,
-                    maps.dark,
-                    maps.height,
-                    maps.environment,
-                    maps.environment_mask,
-                    maps.tint,
-                    maps.inner_layer,
-                    maps.specular,
-                    maps.lighting,
-                    maps.flow,
-                    maps.wrinkle,
-                    maps.greyscale_lut,
-                    maps.reflectance,
-                    maps.emittance_gradient,
-                    maps.decals[0],
-                    maps.decals[1],
-                    maps.decals[2],
-                    maps.decals[3],
-                ] {
+                for &handle in maps.secondary_values() {
                     push_tex_drop(handle, &mut texture_drops);
                 }
             }

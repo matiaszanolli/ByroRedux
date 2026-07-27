@@ -226,6 +226,13 @@ EFFECT_* flags); the one *deferred* item is the `base_color_scale`
 diffuse-tint-vs-emissive render path (§4) — tagged via `EmissiveSource::Effect`, not
 dropped.
 
+`ImportedMesh` now owns one source-agnostic `ImportedMaterial` payload. The
+NiTriShape, BSTriShape, and BSGeometry extractors all delegate
+`MaterialInfo` → `ImportedMaterial` construction to the same boundary instead of
+forwarding the material field set independently. `ShaderTypeFields` is likewise
+defined once in `byroredux_core` and carried through the import boundary directly;
+there is no NIF-local mirror or `to_core()` copy to keep synchronized.
+
 Texture paths cross the NIF boundary in one generic semantic contract:
 `MaterialTextureSet<T>`. Its 18 named roles plus four ordered decal layers cover
 legacy `NiTexturingProperty`, `BSShaderTextureSet`, inline effect shaders, and
@@ -238,7 +245,9 @@ the established base/normal/emissive/detail/smoothness/dark/height/environment
 roles. Lighting, flow, and wrinkle roles are preserved through the GPU contract
 but remain deliberately unsampled until their authored lookup coordinates or
 actor controls are available; treating them as ordinary RGB modulation would be
-format-specific guesswork at the supposedly game-agnostic boundary.
+format-specific guesswork at the supposedly game-agnostic boundary. Generic
+`values()` / `secondary_values()` traversal is the exhaustive lifecycle contract;
+cell unload uses it directly rather than maintaining a separate role list.
 
 ### Passthroughs — parked / dropped inventory (surveyed 2026-06-02)
 

@@ -123,7 +123,7 @@ pub(crate) fn translate_material(
         shader_type_fields: if mesh.shader_type_fields.is_empty() {
             None
         } else {
-            Some(Box::new(mesh.shader_type_fields.to_core()))
+            Some(Box::new(mesh.shader_type_fields.clone()))
         },
         // #620 / #451 — BSEffectShaderProperty falloff cone (Skyrim+) OR
         // BSShaderNoLightingProperty falloff cone (FO3/FNV sibling).

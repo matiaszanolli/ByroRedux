@@ -1591,87 +1591,23 @@ fn imported_mesh_with_material_path(
     pool: &mut byroredux_core::string::StringPool,
     path: &str,
 ) -> ImportedMesh {
-    // Empty-but-valid `ImportedMesh`; the merge helper only touches
-    // material-flow fields. `ImportedMesh` has no `Default` impl
-    // (every field is concretely meaningful), so we hand-construct
-    // — mirrors the same shape as `empty_mesh()` in
-    // `pack_bgsm_material_flags_tests` (`byroredux/src/cell_loader.rs`).
-    ImportedMesh {
-        positions: Vec::new(),
-        colors: Vec::new(),
-        normals: Vec::new(),
-        tangents: Vec::new(),
-        uvs: Vec::new(),
-        indices: Vec::new(),
-        translation: [0.0; 3],
-        rotation: [0.0, 0.0, 0.0, 1.0],
-        scale: 1.0,
-        textures: Default::default(),
-        material_path: Some(pool.intern(path)),
-        name: None,
-        has_alpha: false,
-        src_blend_mode: 6,
-        dst_blend_mode: 7,
-        alpha_test: false,
-        alpha_threshold: 0.0,
-        alpha_test_func: 6,
-        two_sided: false,
-        is_decal: false,
-        is_pbr: false,
-        has_translucency: false,
-        model_space_normals: false,
-        from_bgsm: false,
-        bgem_glass: false,
-        thin_glass: false,
-        metalness_override: None,
-        roughness_override: None,
-        translucency_subsurface_color: [0.0; 3],
-        translucency_transmissive_scale: 0.0,
-        translucency_turbulence: 0.0,
-        translucency_thick_object: false,
-        translucency_mix_albedo: false,
-        parallax_max_passes: None,
-        parallax_height_scale: None,
-        vertex_color_mode: 2,
-        texture_clamp_mode: 0,
-        emissive_color: [0.0; 3],
-        emissive_mult: 0.0,
-        emissive_source: byroredux_core::ecs::components::material::EmissiveSource::None,
-        specular_color: [1.0; 3],
-        diffuse_color: [1.0; 3],
-        ambient_color: [1.0; 3],
-        specular_strength: 1.0,
-        glossiness: 80.0,
-        refraction_strength: 0.0,
-        lighting_effect_1: 0.0,
-        lighting_effect_2: 0.0,
-        subsurface_rolloff: 0.0,
-        rimlight_power: 0.0,
-        backlight_power: 0.0,
-        grayscale_to_palette_scale: 1.0,
-        bgsm_greyscale_lut_is_alpha: false,
-        fresnel_power: 5.0,
-        uv_offset: [0.0; 2],
-        uv_scale: [1.0; 2],
-        mat_alpha: 1.0,
-        env_map_scale: 1.0,
-        parent_node: None,
-        skin: None,
-        z_test: true,
-        z_write: true,
-        z_function: 3,
-        local_bound_center: [0.0; 3],
-        local_bound_radius: 0.0,
-        effect_shader: None,
-        material_kind: 0,
-        shader_type_fields: byroredux_nif::import::ShaderTypeFields::default(),
-        no_lighting_falloff: None,
-        wireframe: false,
-        flat_shading: false,
-        flags: 0,
-        bs_lod_cutoffs: None,
-        bs_sub_index: None,
-    }
+    // The merge helper only touches material-flow fields. Start from the
+    // shared geometry/material defaults so this fixture cannot drift as the
+    // import contract grows.
+    let mut mesh = ImportedMesh::from_geometry(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    mesh.material_path = Some(pool.intern(path));
+    mesh.alpha_threshold = 0.0;
+    mesh.specular_strength = 1.0;
+    mesh.glossiness = 80.0;
+    mesh.env_map_scale = 1.0;
+    mesh
 }
 
 /// Synthetic minimal CDB: BETH magic + header + STRT (empty) + TYPE
