@@ -1717,6 +1717,65 @@ mod tests {
         "../crates/core/src/ecs/components/sandbox.rs", // Seated (+ SandboxBehavior)
     ];
 
+    /// Does `line` carry a `#[serde(...)]` attribute that declares
+    /// `default`, in any key position?
+    ///
+    /// SAVE-D2-NEW-07 (#2181) — the guard below used to test
+    /// `starts_with("#[serde(default")`, which catches `#[serde(default)]`
+    /// and `#[serde(default, ...)]` but misses the semantically identical
+    /// `#[serde(skip_serializing_if = "...", default)]`, a legal and
+    /// idiomatic serde ordering. That ordering exists nowhere in
+    /// [`SAVE_TYPE_SOURCES`] today, so this closes a blind spot rather than
+    /// a live gap.
+    ///
+    /// A bare `line.contains("default")` would close it too, but it
+    /// false-positives on a *value* that merely spells the word — e.g.
+    /// `#[serde(skip_serializing_if = "Option::is_default")]` or
+    /// `#[serde(rename = "default")]`, neither of which default-fills
+    /// anything. So this parses the attribute's key list instead: split the
+    /// parenthesised body on top-level commas (commas inside string
+    /// literals don't count), take each entry's key (the text before any
+    /// `=`), and match `default` exactly.
+    ///
+    /// Residual, deliberately: an attribute rustfmt has broken across lines
+    /// is only seen one fragment at a time. `default` alone on its own line
+    /// still matches (the continuation is scanned as its own line and the
+    /// `#[serde(` fragment opens the body), but a key list wrapped so that
+    /// `default` shares a line with neither is not reachable by a
+    /// line-oriented scan. Same class of admitted residual as the
+    /// new-`Option` half documented on the guard itself.
+    fn serde_attr_declares_default(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        // Attribute form only, so a comment or string mention of the
+        // attribute (this file has several) doesn't self-trip the scan.
+        let Some(rest) = trimmed.strip_prefix("#[serde(") else {
+            return false;
+        };
+        // Body is everything up to the closing `)]`; a wrapped attribute
+        // whose first line has no `)]` contributes what it does have.
+        let body = match rest.rfind(")]") {
+            Some(end) => &rest[..end],
+            None => rest,
+        };
+        let mut in_string = false;
+        for key in body
+            .split(|c| {
+                if c == '"' {
+                    in_string = !in_string;
+                }
+                c == ',' && !in_string
+            })
+            // The key is the text left of `=`; a valueless key is the whole
+            // entry. `rename = "default"` yields `rename`, not `default`.
+            .map(|entry| entry.split('=').next().unwrap_or("").trim())
+        {
+            if key == "default" {
+                return true;
+            }
+        }
+        false
+    }
+
     /// SAVE-D2-01 (#1714) — a save-participating struct must not gain a
     /// `#[serde(default)]` field without a [`FORMAT_MAJOR`] bump.
     ///
@@ -1753,10 +1812,8 @@ mod tests {
                 )
             });
             for (i, line) in src.lines().enumerate() {
-                // Match the attribute form only (`#[serde(default …)]`), so a
-                // comment / string mention of the attribute (this file has
-                // several) doesn't self-trip the scan.
-                if line.trim_start().starts_with("#[serde(default") {
+                // #2181 — key-position-independent; see the helper.
+                if serde_attr_declares_default(line) {
                     offenders.push(format!("{rel}:{}", i + 1));
                 }
             }
@@ -1769,5 +1826,82 @@ mod tests {
              byroredux_save::FORMAT_MAJOR (+ add a migrator) or drop the \
              default. Offenders: {offenders:?}",
         );
+    }
+
+    /// SAVE-D2-NEW-07 (#2181) — the ordering the old line-prefix match
+    /// missed. `default` as a non-first key is exactly as dangerous as
+    /// `default` as the first one: both silently default-fill a missing
+    /// column on an old save.
+    #[test]
+    fn serde_guard_catches_default_in_any_key_position() {
+        // The reported blind spot, verbatim from the issue.
+        assert!(serde_attr_declares_default(
+            r#"#[serde(skip_serializing_if = "Vec::is_empty", default)]"#
+        ));
+        // …and with a value, still not first.
+        assert!(serde_attr_declares_default(
+            r#"    #[serde(rename = "n", default = "Vec::new")]"#
+        ));
+        // Third position, after two other keys.
+        assert!(serde_attr_declares_default(
+            r#"#[serde(rename = "n", skip_serializing_if = "Vec::is_empty", default)]"#
+        ));
+    }
+
+    /// The forms the original prefix match already caught must keep
+    /// tripping — broadening the check must not narrow it.
+    #[test]
+    fn serde_guard_still_catches_the_original_first_key_forms() {
+        assert!(serde_attr_declares_default("#[serde(default)]"));
+        assert!(serde_attr_declares_default(
+            r#"#[serde(default = "default_layers")]"#
+        ));
+        assert!(serde_attr_declares_default(
+            r#"    #[serde(default, rename = "n")]"#
+        ));
+    }
+
+    /// The reason this parses keys instead of using `contains("default")`:
+    /// a *value* that merely spells the word default-fills nothing, and a
+    /// guard that trips on it would be noise the next maintainer silences.
+    #[test]
+    fn serde_guard_ignores_default_appearing_only_as_a_value() {
+        assert!(!serde_attr_declares_default(
+            r#"#[serde(skip_serializing_if = "Option::is_default")]"#
+        ));
+        assert!(!serde_attr_declares_default(
+            r#"#[serde(rename = "default")]"#
+        ));
+        assert!(!serde_attr_declares_default(
+            r#"#[serde(with = "crate::default_codec")]"#
+        ));
+    }
+
+    /// Attribute form only — prose and string mentions of the attribute
+    /// (this file is full of them, including the assert message below)
+    /// must not self-trip the scan.
+    #[test]
+    fn serde_guard_ignores_non_attribute_mentions() {
+        assert!(!serde_attr_declares_default(
+            "/// a `#[serde(default)]` field default-fills a missing column"
+        ));
+        assert!(!serde_attr_declares_default("// #[serde(default)]"));
+        assert!(!serde_attr_declares_default(
+            r##"    let s = "#[serde(default)]";"##
+        ));
+        // A different attribute that happens to name a `default` key.
+        assert!(!serde_attr_declares_default("#[builder(default)]"));
+    }
+
+    /// A comma inside a string literal is not a key separator — the split
+    /// must not mistake the tail of a quoted path for a new key.
+    #[test]
+    fn serde_guard_does_not_split_on_commas_inside_string_literals() {
+        assert!(!serde_attr_declares_default(
+            r#"#[serde(rename = "a,default")]"#
+        ));
+        assert!(serde_attr_declares_default(
+            r#"#[serde(rename = "a,b", default)]"#
+        ));
     }
 }
