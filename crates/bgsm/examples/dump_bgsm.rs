@@ -24,7 +24,7 @@ fn main() {
         match parse(&bytes) {
             Ok(MaterialFile::Bgsm(m)) => {
                 // Authored fields only — the spec-gloss → metal/rough
-                // translation lives in `asset_provider::merge_bgsm_into_mesh`
+                // translation lives in `asset_provider::merge_external_material`
                 // (gated on `pbr`); don't duplicate it here or it drifts.
                 let mx = m.specular_color[0]
                     .max(m.specular_color[1])

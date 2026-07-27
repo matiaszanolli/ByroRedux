@@ -11,7 +11,7 @@ BSA / BA2 ─┤                                                      │
            │                                                      ▼
            └──► Asset bytes (NIF, DDS, BGSM/BGEM) ──► NifScene ──► ImportedMesh
                                                                        │
-                                          merge_bgsm_into_mesh ────────┤
+                                          merge_external_material ────────┤
                                                                        │
                                           translate_material (NIFAL) ──┤
                                                                        ▼
@@ -270,9 +270,9 @@ per-step breakdown.
 
 ### 9.5. Merge BGSM/BGEM material (FO4 / Starfield)
 
-When `ImportedMesh.material_path` points at a `.bgsm` / `.bgem`
+When `ImportedMesh.material.material_path` points at a `.bgsm` / `.bgem`
 (`.mat` for Starfield), the loader calls
-[`merge_bgsm_into_mesh()`](../../byroredux/src/asset_provider/material.rs)
+[`merge_external_material()`](../../byroredux/src/asset_provider/material.rs)
 against the `MaterialProvider`. NIF fields take precedence — only empty
 slots are filled from the resolved material:
 
@@ -283,7 +283,7 @@ slots are filled from the resolved material:
 - **BGEM** has no inheritance (the format carries no parent path), so
   the single parsed file is read; `bgem_glass` becomes the authoritative
   glass signal.
-- **Starfield `.mat`** flips `mesh.is_pbr = true` so downstream packing
+- **Starfield `.mat`** flips `material.is_pbr = true` so downstream packing
   routes the surface through the Disney BSDF path. The actual material
   data lives in the binary Component Database
   (`materials\materialsbeta.cdb` inside `Starfield - Materials.ba2`),
@@ -292,7 +292,7 @@ slots are filled from the resolved material:
   non-Starfield archive set off the PBR path. (#1289 Phase 1 — authored
   CDB-value extraction is Phase 2.)
 
-`merge_bgsm_into_mesh` returns `true` when any field was filled and is a
+`merge_external_material` returns `true` when any field was filled and is a
 no-op (returns `false`) when the path can't resolve in any opened
 materials archive. Failed paths are cached so a missing BGSM is only
 warned about once. The `bgem_cache` and `failed_paths` maps both have a
@@ -377,7 +377,7 @@ data; the per-game quirks resolve here exactly once.
 - pack `effect_shader_flags` as the union of the BSEffectShader SLSF
   bits ([`cell_loader::pack_effect_shader_flags`](../../byroredux/src/cell_loader.rs)),
   the BGSM v>2 PBR / translucency / model-space-normals bits
-  ([`cell_loader::pack_bgsm_material_flags`](../../byroredux/src/cell_loader.rs)),
+  ([`cell_loader::pack_imported_material_flags`](../../byroredux/src/cell_loader.rs)),
   and any caller-supplied `extra_material_flags` (the cell loader passes
   the REFR-overlay model-space-normals bit; loose-NIF loads pass `0`);
 - resolve PBR once via `Material::resolve_pbr()` so legacy inline-shader
@@ -471,7 +471,7 @@ improves as more uploads batch onto fewer command buffers.
 For `cargo run -- path/to/mesh.nif`, the pipeline is the same minus the
 ESM step. [`scene/nif_loader.rs`](../../byroredux/src/scene/nif_loader.rs)
 (`load_nif_from_args` → `load_nif_bytes`) parses the NIF directly, runs
-the same import + `merge_bgsm_into_mesh` + `translate_material` + upload +
+the same import + `merge_external_material` + `translate_material` + upload +
 spawn flow, and skips REFR resolution (using the fallback texture for
 any path that doesn't resolve). It calls the same `translate_material`
 boundary as the cell path, so material handling can't diverge between

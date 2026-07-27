@@ -445,7 +445,7 @@ mod material_texture_set_tests {
 /// geometry-specific constructors no longer repeat the same material field
 /// forwarding. BGSM/BGEM resolution may subsequently patch this payload, but
 /// consumers never need to know which mesh block carried it.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImportedMaterial {
     pub textures: MaterialTextureSet<Option<FixedString>>,
     pub material_path: Option<FixedString>,
@@ -655,20 +655,6 @@ pub struct ImportedMesh {
     /// (deferred) has nothing to consume. `None` on every non-SubIndex
     /// BSTriShape and every NiTriShape / BSGeometry.
     pub bs_sub_index: Option<BsSubIndexTriShapeData>,
-}
-
-impl std::ops::Deref for ImportedMesh {
-    type Target = ImportedMaterial;
-
-    fn deref(&self) -> &Self::Target {
-        &self.material
-    }
-}
-
-impl std::ops::DerefMut for ImportedMesh {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.material
-    }
 }
 
 impl ImportedMesh {

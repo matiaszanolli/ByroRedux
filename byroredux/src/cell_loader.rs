@@ -179,9 +179,10 @@ pub(crate) fn pack_effect_shader_flags(
     flags
 }
 
-/// Pack the three BGSM v>2 boolean flags
-/// ([`ImportedMesh::is_pbr`] / [`ImportedMesh::has_translucency`] /
-/// [`ImportedMesh::model_space_normals`]) into the canonical
+/// Pack source-normalized external-material properties
+/// ([`ImportedMaterial::is_pbr`], [`ImportedMaterial::has_translucency`],
+/// [`ImportedMaterial::model_space_normals`], palette mode, and related
+/// shape flags) into the canonical
 /// `material_flag::{PBR_BSDF, TRANSLUCENCY, MODEL_SPACE_NORMALS, …}`
 /// bit layout. Sibling to [`pack_effect_shader_flags`] — both contribute
 /// to the same `Material.effect_shader_flags` u32 by OR-composition at
@@ -195,39 +196,41 @@ pub(crate) fn pack_effect_shader_flags(
 /// #1077 / FO4-D6-003 (Phase 2a) and #1147 (Phase 2b). The same bits are also
 /// set by `pack_effect_shader_flags` for the effect-mesh path.
 ///
-/// [`ImportedMesh::is_pbr`]: byroredux_nif::import::ImportedMesh::is_pbr
-/// [`ImportedMesh::has_translucency`]: byroredux_nif::import::ImportedMesh::has_translucency
-/// [`ImportedMesh::model_space_normals`]: byroredux_nif::import::ImportedMesh::model_space_normals
-pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMesh) -> u32 {
+/// [`ImportedMaterial::is_pbr`]: byroredux_nif::import::ImportedMaterial::is_pbr
+/// [`ImportedMaterial::has_translucency`]: byroredux_nif::import::ImportedMaterial::has_translucency
+/// [`ImportedMaterial::model_space_normals`]: byroredux_nif::import::ImportedMaterial::model_space_normals
+pub(crate) fn pack_imported_material_flags(
+    material: &byroredux_nif::import::ImportedMaterial,
+) -> u32 {
     use byroredux_renderer::vulkan::material::material_flag::{
         BGSM_AUTHORED, EFFECT_PALETTE_ALPHA, EFFECT_PALETTE_COLOR, MODEL_SPACE_NORMALS, PBR_BSDF,
         THIN_GLASS, TRANSLUCENCY, TRANSLUCENCY_MIX_ALBEDO, TRANSLUCENCY_THICK_OBJECT,
     };
     let mut flags = 0u32;
-    // `BGSM_AUTHORED` — set when `merge_bgsm_into_mesh` resolved a
+    // `BGSM_AUTHORED` — set when `merge_external_material` resolved a
     // BGSM/BGEM file successfully (independent of `bgsm.pbr`, which
     // vanilla FO4 virtually never authors — sampled: 0 of 793
     // metal/cargo BGSMs in `Fallout4 - Materials.ba2`). The
     // spec-glossiness → metallic-roughness translation is entirely
-    // CPU-side (`merge_bgsm_into_mesh` writes `metalness_override` /
+    // CPU-side (`merge_external_material` writes `metalness_override` /
     // `roughness_override`, then `translate_material` resolves them into
     // `Material.{metalness,roughness}`); the shader is format-agnostic
     // and does NOT branch on this flag. The bit rides through to the GPU
     // material for debug-server inspection only — see
     // `material_flag::BGSM_AUTHORED` and `shader_constants_data.rs`.
-    if mesh.from_bgsm {
+    if material.from_bgsm {
         flags |= BGSM_AUTHORED;
     }
-    if mesh.is_pbr {
+    if material.is_pbr {
         flags |= PBR_BSDF;
     }
-    if mesh.has_translucency {
+    if material.has_translucency {
         flags |= TRANSLUCENCY;
     }
-    if mesh.model_space_normals {
+    if material.model_space_normals {
         flags |= MODEL_SPACE_NORMALS;
     }
-    if mesh.thin_glass {
+    if material.thin_glass {
         flags |= THIN_GLASS;
     }
     // #1353 / FO4-D8-07 — FO4 BGSM grayscale-to-palette. EFFECT_PALETTE_COLOR
@@ -245,8 +248,8 @@ pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMes
     // remap targets alpha rather than luminance, matching how
     // `pack_effect_shader_flags` derives the two bits independently for
     // the inline-effect-shader path.
-    if mesh.textures.greyscale_lut.is_some() {
-        if mesh.bgsm_greyscale_lut_is_alpha {
+    if material.textures.greyscale_lut.is_some() {
+        if material.bgsm_greyscale_lut_is_alpha {
             flags |= EFFECT_PALETTE_ALPHA;
         } else {
             flags |= EFFECT_PALETTE_COLOR;
@@ -257,55 +260,47 @@ pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMes
     // unconditionally so the shader's predicate `is_thick` /
     // `mix_albedo` reads the authored value directly. The shader
     // already gates the whole SSS block on `TRANSLUCENCY`.
-    if mesh.translucency_thick_object {
+    if material.translucency_thick_object {
         flags |= TRANSLUCENCY_THICK_OBJECT;
     }
-    if mesh.translucency_mix_albedo {
+    if material.translucency_mix_albedo {
         flags |= TRANSLUCENCY_MIX_ALBEDO;
     }
     flags
 }
 
 #[cfg(test)]
-mod pack_bgsm_material_flags_tests {
+mod pack_imported_material_flags_tests {
     //! Regression for #1147 Phase 2a (#1077 follow-up). Pins the
     //! contract that the bool-to-bit-OR packer matches the
     //! `material_flag::BGSM_*` layout the Phase 2b shader consumer
     //! will read.
 
-    use super::pack_bgsm_material_flags;
-    use byroredux_nif::import::ImportedMesh;
+    use super::pack_imported_material_flags;
+    use byroredux_nif::import::ImportedMaterial;
     use byroredux_renderer::vulkan::material::material_flag::{
         EFFECT_PALETTE_COLOR, MODEL_SPACE_NORMALS, PBR_BSDF, THIN_GLASS, TRANSLUCENCY,
     };
 
-    /// Build an empty-but-valid `ImportedMesh` with all BGSM flags clear.
     /// Shared defaults keep this fixture aligned with the import contract.
-    fn empty_mesh() -> ImportedMesh {
-        ImportedMesh::from_geometry(
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        )
+    fn empty_material() -> ImportedMaterial {
+        ImportedMaterial::default()
     }
 
     #[test]
     fn all_three_flags_off_produces_zero() {
-        let mesh = empty_mesh();
-        assert_eq!(pack_bgsm_material_flags(&mesh), 0);
+        let material = empty_material();
+        assert_eq!(pack_imported_material_flags(&material), 0);
     }
 
     #[test]
     fn all_three_flags_on_produces_full_union() {
-        let mut mesh = empty_mesh();
-        mesh.is_pbr = true;
-        mesh.has_translucency = true;
-        mesh.model_space_normals = true;
+        let mut material = empty_material();
+        material.is_pbr = true;
+        material.has_translucency = true;
+        material.model_space_normals = true;
 
-        let packed = pack_bgsm_material_flags(&mesh);
+        let packed = pack_imported_material_flags(&material);
         let expected = PBR_BSDF | TRANSLUCENCY | MODEL_SPACE_NORMALS;
         assert_eq!(packed, expected);
         // Sanity-check the canonical bit layout the Phase 2b shader
@@ -317,42 +312,42 @@ mod pack_bgsm_material_flags_tests {
 
     #[test]
     fn individual_flags_produce_individual_bits() {
-        let mut mesh = empty_mesh();
-        mesh.is_pbr = true;
-        assert_eq!(pack_bgsm_material_flags(&mesh), PBR_BSDF);
+        let mut material = empty_material();
+        material.is_pbr = true;
+        assert_eq!(pack_imported_material_flags(&material), PBR_BSDF);
 
-        let mut mesh = empty_mesh();
-        mesh.has_translucency = true;
-        assert_eq!(pack_bgsm_material_flags(&mesh), TRANSLUCENCY);
+        let mut material = empty_material();
+        material.has_translucency = true;
+        assert_eq!(pack_imported_material_flags(&material), TRANSLUCENCY);
 
-        let mut mesh = empty_mesh();
-        mesh.model_space_normals = true;
-        assert_eq!(pack_bgsm_material_flags(&mesh), MODEL_SPACE_NORMALS);
+        let mut material = empty_material();
+        material.model_space_normals = true;
+        assert_eq!(pack_imported_material_flags(&material), MODEL_SPACE_NORMALS);
 
-        let mut mesh = empty_mesh();
-        mesh.thin_glass = true;
-        assert_eq!(pack_bgsm_material_flags(&mesh), THIN_GLASS);
+        let mut material = empty_material();
+        material.thin_glass = true;
+        assert_eq!(pack_imported_material_flags(&material), THIN_GLASS);
     }
 
     /// #1353 / FO4-D8-07 — a BGSM that authored a greyscale-to-palette LUT
-    /// (`bgsm_greyscale_lut_path`, set by `merge_bgsm_into_mesh`) must pack
+    /// (`bgsm_greyscale_lut_path`, set by `merge_external_material`) must pack
     /// `EFFECT_PALETTE_COLOR` (= SLSF1 Greyscale_To_PaletteColor) so the
     /// lit-path palette remap in triangle.frag fires. Absent the path, the
     /// bit must stay clear.
     #[test]
     fn bgsm_greyscale_lut_path_sets_effect_palette_color() {
-        let mesh = empty_mesh();
+        let material = empty_material();
         assert_eq!(
-            pack_bgsm_material_flags(&mesh) & EFFECT_PALETTE_COLOR,
+            pack_imported_material_flags(&material) & EFFECT_PALETTE_COLOR,
             0,
             "no greyscale LUT path → palette flag must stay clear"
         );
 
-        let mut mesh = empty_mesh();
+        let mut material = empty_material();
         let mut pool = byroredux_core::string::StringPool::new();
-        mesh.textures.greyscale_lut = Some(pool.intern("textures\\actors\\ghoul_palette.dds"));
+        material.textures.greyscale_lut = Some(pool.intern("textures\\actors\\ghoul_palette.dds"));
         assert_eq!(
-            pack_bgsm_material_flags(&mesh) & EFFECT_PALETTE_COLOR,
+            pack_imported_material_flags(&material) & EFFECT_PALETTE_COLOR,
             EFFECT_PALETTE_COLOR,
             "BGSM greyscale LUT path must pack EFFECT_PALETTE_COLOR (#1353)"
         );
@@ -367,11 +362,12 @@ mod pack_bgsm_material_flags_tests {
     fn bgem_alpha_variant_sets_effect_palette_alpha_not_color() {
         use byroredux_renderer::vulkan::material::material_flag::EFFECT_PALETTE_ALPHA;
 
-        let mut mesh = empty_mesh();
+        let mut material = empty_material();
         let mut pool = byroredux_core::string::StringPool::new();
-        mesh.textures.greyscale_lut = Some(pool.intern("textures\\effects\\gradients\\fire.dds"));
-        mesh.bgsm_greyscale_lut_is_alpha = true;
-        let flags = pack_bgsm_material_flags(&mesh);
+        material.textures.greyscale_lut =
+            Some(pool.intern("textures\\effects\\gradients\\fire.dds"));
+        material.bgsm_greyscale_lut_is_alpha = true;
+        let flags = pack_imported_material_flags(&material);
         assert_eq!(
             flags & EFFECT_PALETTE_ALPHA,
             EFFECT_PALETTE_ALPHA,

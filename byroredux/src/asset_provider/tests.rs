@@ -585,7 +585,7 @@ fn normalize_short_string_gets_prefixed() {
 
 // ── MaterialProvider / BGSM merge (#493) ──────────────────────────
 //
-// The merge logic in `merge_bgsm_into_mesh` has three moving parts:
+// The merge logic in `merge_external_material` has three moving parts:
 //   1. Dispatch on `material_path` extension (.bgsm / .bgem / other)
 //   2. For BGSM: walk the template chain child-first, fill empties
 //   3. For BGEM: single-file fill, no inheritance
@@ -598,7 +598,7 @@ fn normalize_short_string_gets_prefixed() {
 use byroredux_bgsm::template::ResolvedMaterial;
 use byroredux_bgsm::{BgemFile, BgsmFile};
 
-/// Same fill closure as `merge_bgsm_into_mesh` so the tests verify
+/// Same fill closure as `merge_external_material` so the tests verify
 /// the exact precedence rule the prod helper uses.
 fn fill(slot: &mut Option<String>, value: &str) -> bool {
     if slot.is_none() && !value.is_empty() {
@@ -611,7 +611,7 @@ fn fill(slot: &mut Option<String>, value: &str) -> bool {
 
 /// Walks a ResolvedMaterial chain child-first, filling the 6 slots
 /// the prod merge helper writes for BGSM files. The slot set mirrors
-/// `merge_bgsm_into_mesh` exactly; the closure is inlined in prod
+/// `merge_external_material` exactly; the closure is inlined in prod
 /// for a single allocation-free pass.
 fn apply_bgsm_chain(
     resolved: &ResolvedMaterial,
@@ -809,7 +809,7 @@ fn bgsm_merge_forwards_phase1_shader_flags() {
 
     assert!(
         is_pbr,
-        "BGSM.pbr=true must propagate to ImportedMesh.is_pbr"
+        "BGSM.pbr=true must propagate to ImportedMaterial.is_pbr"
     );
     assert!(has_translucency);
     assert!(model_space_normals);
@@ -897,7 +897,7 @@ fn bgsm_merge_phase1_flags_honor_child_first_chain() {
 /// Regression for FO4 BGSM glass / alpha-blended decals. FO4
 /// moved per-material blend state out of `NiAlphaProperty` into
 /// BGSM's `base.alpha_blend_mode`. Pre-fix the merge dropped
-/// that tuple, leaving `ImportedMesh.has_alpha = false` on
+/// that tuple, leaving `ImportedMaterial.has_alpha = false` on
 /// every BGSM-only glass pane → no `AlphaBlend` component
 /// attached → `INSTANCE_FLAG_ALPHA_BLEND` never set → the
 /// `MATERIAL_KIND_GLASS` classifier in `static_meshes.rs`
@@ -1135,7 +1135,7 @@ fn legacy_bgem_effect_cards_do_not_become_glass() {
 }
 
 /// Regression for #1358 — BGEM `base_color` / `base_color_scale` must
-/// forward to `mesh.emissive_color` / `mesh.emissive_mult` with
+/// forward to `mesh.material.emissive_color` / `mesh.material.emissive_mult` with
 /// `emissive_source = EmissiveSource::Effect`. Pre-fix the BGEM merge
 /// set `emissive_color = bgem.emittance_color` (a separate v≥11
 /// additive glow) and left `emissive_mult = 0.0` and
@@ -1170,7 +1170,7 @@ fn bgem_merge_forwards_base_color_as_emissive() {
 }
 
 /// Regression for the FO4 HalluciGen gas-lab white-out — BGEM
-/// `soft`/`soft_depth` must forward to `mesh.effect_shader` so
+/// `soft`/`soft_depth` must forward to `mesh.material.effect_shader` so
 /// `material_translate` builds `soft_falloff_depth` + MAT_FLAG_EFFECT_SOFT
 /// for the soft-particle depth fade in triangle.frag. Pre-fix only the NIF
 /// `BSEffectShaderProperty` path populated these, so every FO4 BGEM
@@ -1294,7 +1294,7 @@ fn bgem_merge_forwards_grayscale_texture_as_lut_path() {
 }
 
 /// Regression for #1580 — BGEM's `grayscale_to_palette_alpha` bool must
-/// forward alongside the LUT path so `pack_bgsm_material_flags` (in
+/// forward alongside the LUT path so `pack_imported_material_flags` (in
 /// `cell_loader.rs`) can pick `EFFECT_PALETTE_ALPHA` over the color
 /// default. Pre-fix the bool had zero consumers outside the parser.
 #[test]
@@ -1413,7 +1413,7 @@ fn pex_archive_path_normalises_every_authored_form() {
 /// must win; parent must contribute only fields the child left at its
 /// default.
 ///
-/// This mirrors the prod `merge_bgsm_into_mesh` scalar body (minus the
+/// This mirrors the prod `merge_external_material` scalar body (minus the
 /// archive-read step); any future drift between the two surfaces here.
 #[test]
 fn bgsm_merge_forwards_scalars_child_first() {
@@ -1464,7 +1464,7 @@ fn bgsm_merge_forwards_scalars_child_first() {
         })),
     };
 
-    // Replicate the scalar-forwarding half of merge_bgsm_into_mesh
+    // Replicate the scalar-forwarding half of merge_external_material
     // inline. Mesh starts with engine defaults so every write below
     // is the BGSM path overriding a fallback.
     let mut emissive_color = [0.0f32; 3];
@@ -1573,7 +1573,7 @@ fn detect_kind_returns_bgem_for_bgem_magic_in_bgsm_named_file() {
     );
 
     // A mismatched extension is detected by comparing ext_kind vs magic_kind
-    // as done in merge_bgsm_into_mesh. Simulate the comparison logic.
+    // as done in merge_external_material. Simulate the comparison logic.
     let ext_kind = Some(MaterialKind::Bgsm); // extension says .bgsm
     let magic_kind = detect_kind(bgem_magic_bytes); // magic says BGEM
     assert_ne!(
@@ -1583,7 +1583,7 @@ fn detect_kind_returns_bgem_for_bgem_magic_in_bgsm_named_file() {
 }
 
 // ── #1289 / SF-D3-NEW-01 — Starfield `.mat` arm in
-//   `merge_bgsm_into_mesh`. Verifies the audit-fail closure: a
+//   `merge_external_material`. Verifies the audit-fail closure: a
 //   Starfield-shaped mesh (`.mat` material path) flips `is_pbr`
 //   when (and only when) the Component Database is loaded.
 
@@ -1602,11 +1602,11 @@ fn imported_mesh_with_material_path(
         Vec::new(),
         Vec::new(),
     );
-    mesh.material_path = Some(pool.intern(path));
-    mesh.alpha_threshold = 0.0;
-    mesh.specular_strength = 1.0;
-    mesh.glossiness = 80.0;
-    mesh.env_map_scale = 1.0;
+    mesh.material.material_path = Some(pool.intern(path));
+    mesh.material.alpha_threshold = 0.0;
+    mesh.material.specular_strength = 1.0;
+    mesh.material.glossiness = 80.0;
+    mesh.material.env_map_scale = 1.0;
     mesh
 }
 
@@ -1695,7 +1695,7 @@ fn discovered_cdbs_accumulate_in_load_order() {
 }
 
 /// Audit-fail closure: a `.mat` path on a Starfield mesh with the
-/// CDB loaded must flip `is_pbr=true` so `pack_bgsm_material_flags`
+/// CDB loaded must flip `is_pbr=true` so `pack_imported_material_flags`
 /// packs `MAT_FLAG_PBR_BSDF` and `triangle.frag` routes through
 /// Disney BSDF instead of legacy Lambert.
 #[test]
@@ -1709,19 +1709,25 @@ fn merge_sets_is_pbr_on_mat_path_when_cdb_loaded() {
     );
 
     let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/setpieces/cargobay.mat");
-    assert!(!mesh.is_pbr, "fresh ImportedMesh defaults to is_pbr=false");
+    assert!(
+        !mesh.material.is_pbr,
+        "fresh ImportedMesh defaults to is_pbr=false"
+    );
 
-    let touched = merge_bgsm_into_mesh(&mut mesh, &mut provider, &mut pool);
+    let touched = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
 
     assert!(touched, ".mat arm must report touched=true");
     assert!(
-        mesh.is_pbr,
+        mesh.material.is_pbr,
         "Starfield .mat path must flip is_pbr=true → MAT_FLAG_PBR_BSDF in shader"
     );
     // `from_bgsm` deliberately stays false — that flag gates BGSM
     // spec-glossiness translation which is wrong for Starfield .mat
     // (metalness/roughness direct authoring).
-    assert!(!mesh.from_bgsm, "Starfield path must NOT set from_bgsm");
+    assert!(
+        !mesh.material.from_bgsm,
+        "Starfield path must NOT set from_bgsm"
+    );
 }
 
 /// CDB-presence gate: a `.mat` path against a non-Starfield archive
@@ -1736,13 +1742,16 @@ fn merge_skips_mat_path_when_cdb_absent() {
     assert!(!provider.has_starfield_cdb());
 
     let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/modded.mat");
-    let touched = merge_bgsm_into_mesh(&mut mesh, &mut provider, &mut pool);
+    let touched = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
 
     // Falls through past the .mat arm; bgsm/bgem dispatch fails
     // because the path doesn't match either suffix; returns false
     // (no archive to resolve from anyway).
     assert!(!touched, "no CDB + no archives → no merge work");
-    assert!(!mesh.is_pbr, ".mat path without CDB must NOT flip is_pbr");
+    assert!(
+        !mesh.material.is_pbr,
+        ".mat path without CDB must NOT flip is_pbr"
+    );
 }
 
 /// SF3-02 / #1831 — a `.mat` path with no CDB loaded gets the
@@ -1790,14 +1799,14 @@ fn mat_arm_does_not_steal_bgsm_dispatch() {
 
     let mut mesh =
         imported_mesh_with_material_path(&mut pool, "materials/setdressing/metallocker01.bgsm");
-    let _ = merge_bgsm_into_mesh(&mut mesh, &mut provider, &mut pool);
+    let _ = merge_external_material(&mut mesh.material, &mut provider, &mut pool);
 
     // The .bgsm path falls past the .mat arm into BGSM dispatch,
     // which fails on the missing archive (no .bgsm to extract).
     // `is_pbr` stays at its default — BGSM dispatch doesn't flip
     // it without a successful resolve.
     assert!(
-        !mesh.is_pbr,
+        !mesh.material.is_pbr,
         ".bgsm path must not be hijacked by the Starfield arm"
     );
 }

@@ -22,7 +22,7 @@ Source: [`crates/nif/src/`](../../crates/nif/src/)
 | Tests (unit)         | ~738 in-crate `#[test]`s with synthetic byte streams (per-parser regressions + the 67-test `dispatch_tests` suite + per-category `*_tests.rs` siblings) |
 | Integration sweeps   | 7 games, 100% recoverable each ([`tests/parse_real_nifs.rs`](../../crates/nif/tests/parse_real_nifs.rs) + per-block-baseline / heap-bound / translation-completeness siblings) |
 | Cumulative NIFs swept | 184,886 (full mesh-archive sweeps, per-game counts in [Game Compatibility](game-compatibility.md)) |
-| BGSM / BGEM references | Surfaced as `ImportedMesh.material_path` when the NiNet name is a material file (BSVER ≥ 155); BGSM/BGEM sidecars surfaced on the lighting/effect shader data |
+| BGSM / BGEM references | Surfaced as `ImportedMesh.material.material_path` when the NiNet name is a material file (BSVER ≥ 155); BGSM/BGEM sidecars surfaced on the lighting/effect shader data |
 | Starfield `.mesh`     | `BSGeometry` carries external `.mesh` filenames; resolved via the `geometries\<hash>.mesh` canonical path (#1292), not `meshes\…` |
 | Import cache          | Process-lifetime resource (#381) — each unique NIF parses once per process, not once per cell |
 | OOM hardening         | Every stream-derived `Vec::with_capacity` routed through `stream.allocate_vec(count)?`, which bounds `count` against remaining file bytes (#388 + #408 + #1245/#1246) — a corrupt `u32::MAX` count errors cleanly instead of aborting the process |

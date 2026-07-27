@@ -1,8 +1,8 @@
 //! NIFAL (NIF Abstraction Layer) — the **material** translation boundary.
 //!
 //! [`translate_material`] is the **single** site that turns a raw,
-//! per-game [`ImportedMesh`] (with BGSM/BGEM already merged into it by
-//! [`crate::asset_provider`]'s `merge_bgsm_into_mesh`) into the engine's
+//! per-game [`ImportedMaterial`] (with BGSM/BGEM already merged into it by
+//! [`crate::asset_provider`]'s `merge_external_material`) into the engine's
 //! canonical [`Material`] ECS component. Every consumer downstream of
 //! `Material` reads game-agnostic, fully-resolved data — the per-game
 //! quirks are resolved here, exactly once. This is the material slice of
@@ -24,7 +24,7 @@
 use crate::components::MaterialTextureHandles;
 use byroredux_core::ecs::components::material::{EffectFalloff, Material};
 use byroredux_core::ecs::{EntityId, World};
-use byroredux_nif::import::{ImportedMesh, MaterialTextureSet};
+use byroredux_nif::import::{ImportedMaterial, MaterialTextureSet};
 
 /// `GpuMaterial.ior` is a discriminated optical scalar. For ordinary
 /// materials it remains the canonical dielectric index of refraction. A
@@ -56,7 +56,8 @@ pub(crate) struct ResolvedPaths {
     pub material_path: Option<String>,
 }
 
-/// Translate a raw [`ImportedMesh`] + caller-resolved paths into the
+/// Translate a source-normalized [`ImportedMaterial`] + caller-resolved
+/// paths into the
 /// canonical [`Material`] component.
 ///
 /// Resolution performed here (the "single source of truth"):
@@ -64,12 +65,12 @@ pub(crate) struct ResolvedPaths {
 ///   - `effect_shader_flags` packed as the union of the BSEffectShader
 ///     SLSF bits ([`crate::cell_loader::pack_effect_shader_flags`]), the
 ///     BGSM v>2 PBR/translucency/model-space-normals bits
-///     ([`crate::cell_loader::pack_bgsm_material_flags`]), and any
+///     ([`crate::cell_loader::pack_imported_material_flags`]), and any
 ///     `extra_material_flags` the caller supplies (the cell loader's
 ///     REFR-overlay model-space-normals bit; `0` for loose-NIF loads);
 ///   - PBR scalars resolved: for NIF-imported content the keyword
 ///     classifier already ran at import time (`classify_legacy_pbr` in the
-///     NIF mesh extractors) and populated `mesh.metalness_override/
+///     NIF mesh extractors) and populated `source.metalness_override/
 ///     roughness_override` as `Some(…)`, so [`Material::resolve_pbr`] here
 ///     only clamps — its classifier arm is a sentinel-backstop (only fires
 ///     when the override is `NaN`, i.e. for future non-NIF paths). BGSM/BGEM
@@ -81,7 +82,8 @@ pub(crate) struct ResolvedPaths {
 ///     ([`crate::helpers::classify_glass_into_material`]), after the PBR
 ///     resolve so the forced glass roughness wins.
 pub(crate) fn translate_material(
-    mesh: &ImportedMesh,
+    source: &ImportedMaterial,
+    mesh_name: Option<&str>,
     paths: ResolvedPaths,
     extra_material_flags: u32,
 ) -> Material {
@@ -91,18 +93,18 @@ pub(crate) fn translate_material(
     } = paths;
     let texture_path = textures.base_color.clone();
     let mut material = Material {
-        emissive_color: mesh.emissive_color,
-        emissive_mult: mesh.emissive_mult,
-        emissive_source: mesh.emissive_source,
-        specular_color: mesh.specular_color,
-        specular_strength: mesh.specular_strength,
-        diffuse_color: mesh.diffuse_color,
-        ambient_color: mesh.ambient_color,
-        glossiness: mesh.glossiness,
-        uv_offset: mesh.uv_offset,
-        uv_scale: mesh.uv_scale,
-        alpha: mesh.mat_alpha,
-        env_map_scale: mesh.env_map_scale,
+        emissive_color: source.emissive_color,
+        emissive_mult: source.emissive_mult,
+        emissive_source: source.emissive_source,
+        specular_color: source.specular_color,
+        specular_strength: source.specular_strength,
+        diffuse_color: source.diffuse_color,
+        ambient_color: source.ambient_color,
+        glossiness: source.glossiness,
+        uv_offset: source.uv_offset,
+        uv_scale: source.uv_scale,
+        alpha: source.mat_alpha,
+        env_map_scale: source.env_map_scale,
         normal_map: textures.normal,
         texture_path: texture_path.clone(),
         material_path,
@@ -110,26 +112,26 @@ pub(crate) fn translate_material(
         detail_map: textures.detail,
         gloss_map: textures.smooth_spec,
         dark_map: textures.dark,
-        vertex_color_mode: mesh.vertex_color_mode,
-        alpha_test: mesh.alpha_test,
-        alpha_threshold: mesh.alpha_threshold,
-        alpha_test_func: mesh.alpha_test_func,
-        material_kind: mesh.material_kind,
-        wireframe: mesh.wireframe,
-        flat_shading: mesh.flat_shading,
-        z_test: mesh.z_test,
-        z_write: mesh.z_write,
-        z_function: mesh.z_function,
-        shader_type_fields: if mesh.shader_type_fields.is_empty() {
+        vertex_color_mode: source.vertex_color_mode,
+        alpha_test: source.alpha_test,
+        alpha_threshold: source.alpha_threshold,
+        alpha_test_func: source.alpha_test_func,
+        material_kind: source.material_kind,
+        wireframe: source.wireframe,
+        flat_shading: source.flat_shading,
+        z_test: source.z_test,
+        z_write: source.z_write,
+        z_function: source.z_function,
+        shader_type_fields: if source.shader_type_fields.is_empty() {
             None
         } else {
-            Some(Box::new(mesh.shader_type_fields.clone()))
+            Some(Box::new(source.shader_type_fields.clone()))
         },
         // #620 / #451 — BSEffectShaderProperty falloff cone (Skyrim+) OR
         // BSShaderNoLightingProperty falloff cone (FO3/FNV sibling).
         // BSShaderNoLighting fills `soft_falloff_depth = 0.0` (no
         // soft-depth field on that block).
-        effect_falloff: mesh
+        effect_falloff: source
             .effect_shader
             .as_ref()
             .map(|es| EffectFalloff {
@@ -140,7 +142,7 @@ pub(crate) fn translate_material(
                 soft_falloff_depth: es.soft_falloff_depth,
             })
             .or_else(|| {
-                mesh.no_lighting_falloff.as_ref().map(|nl| EffectFalloff {
+                source.no_lighting_falloff.as_ref().map(|nl| EffectFalloff {
                     start_angle: nl.start_angle,
                     stop_angle: nl.stop_angle,
                     start_opacity: nl.start_opacity,
@@ -154,42 +156,42 @@ pub(crate) fn translate_material(
         // contributors target the same `material_flag::*` layout so a
         // single OR yields the word `GpuMaterial.material_flags` consumes.
         effect_shader_flags: crate::cell_loader::pack_effect_shader_flags(
-            mesh.effect_shader.as_ref(),
-        ) | crate::cell_loader::pack_bgsm_material_flags(mesh)
+            source.effect_shader.as_ref(),
+        ) | crate::cell_loader::pack_imported_material_flags(source)
             | extra_material_flags,
         // #1147 Phase 2b — BGSM v>=8 translucency suite; only meaningful
-        // when `pack_bgsm_material_flags` set MAT_FLAG_BGSM_TRANSLUCENCY.
-        translucency_subsurface_color: mesh.translucency_subsurface_color,
-        translucency_transmissive_scale: mesh.translucency_transmissive_scale,
-        translucency_turbulence: mesh.translucency_turbulence,
+        // when `pack_imported_material_flags` set MAT_FLAG_BGSM_TRANSLUCENCY.
+        translucency_subsurface_color: source.translucency_subsurface_color,
+        translucency_transmissive_scale: source.translucency_transmissive_scale,
+        translucency_turbulence: source.translucency_turbulence,
         // #890 Stage 2c — BSEffectShaderProperty greyscale LUT path;
         // resolved to a bindless handle at draw-build time.
         greyscale_texture: textures.greyscale_lut,
         // Canonical PBR — seed authored BGSM/BGEM scalars
-        // (`merge_bgsm_into_mesh`) or a NaN sentinel for legacy
+        // (`merge_external_material`) or a NaN sentinel for legacy
         // inline-shader content; `resolve_pbr` below fills any sentinel
         // from the keyword classifier and clamps to the renderer ranges.
-        metalness: mesh.metalness_override.unwrap_or(f32::NAN),
-        roughness: mesh.roughness_override.unwrap_or(f32::NAN),
+        metalness: source.metalness_override.unwrap_or(f32::NAN),
+        roughness: source.roughness_override.unwrap_or(f32::NAN),
         // Generic dielectric for ordinary materials; fire-refraction uses
         // this discriminated scalar as its authored distortion strength.
         // Glass promotion below replaces the ordinary value with the shared
         // glass IOR while preserving source texture overlays.
-        ior: material_optical_scalar(mesh.material_kind, mesh.refraction_strength),
+        ior: material_optical_scalar(source.material_kind, source.refraction_strength),
     };
     material.resolve_pbr();
     crate::helpers::classify_glass_into_material(
         &mut material,
-        mesh.name.as_deref(),
+        mesh_name,
         texture_path.as_deref(),
         // `has_alpha` tracks blended transparency, while broken panes and
         // mirrors commonly express their transparent coverage exclusively
         // through NiAlphaProperty's alpha-test bit.  Both are valid glass
         // coverage; alpha-test must not make an otherwise explicit glass
         // texture look like an opaque wall.
-        mesh.has_alpha || mesh.alpha_test,
-        mesh.is_decal,
-        mesh.bgem_glass,
+        source.has_alpha || source.alpha_test,
+        source.is_decal,
+        source.bgem_glass,
     );
     material
 }

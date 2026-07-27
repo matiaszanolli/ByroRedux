@@ -232,6 +232,11 @@ NiTriShape, BSTriShape, and BSGeometry extractors all delegate
 forwarding the material field set independently. `ShaderTypeFields` is likewise
 defined once in `byroredux_core` and carried through the import boundary directly;
 there is no NIF-local mirror or `to_core()` copy to keep synchronized.
+`ImportedMesh` does not dereference implicitly to its material: consumers cross
+the boundary explicitly through `mesh.material`, while external BGSM/BGEM/`.mat`
+resolution and canonical ECS translation accept `ImportedMaterial` directly.
+FO4 precombined CSG geometry also carries this full payload; the former
+`PrecombineMaterial` subset and field-by-field patch operation were removed.
 
 Texture paths cross the NIF boundary in one generic semantic contract:
 `MaterialTextureSet<T>`. Its 18 named roles plus four ordered decal layers cover

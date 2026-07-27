@@ -218,14 +218,14 @@ pub(super) fn spawn_precombined_meshes(
                                 // shared-precombine CSG path did not — leaving
                                 // precombine foliage/decals with no alpha-test
                                 // (opaque-black cards clipping through walls) and no
-                                // two-sided / decal routing. `merge_bgsm_into_mesh`
+                                // two-sided / decal routing. `merge_external_material`
                                 // no-ops for meshes without a `material_path`.
                                 //
                                 // BUT do NOT take the BGSM alpha-BLEND on this path.
                                 // FO4 authors the "Standard" blend mode (function=1,
                                 // src=6, dst=7) identically on transparent lab glass
                                 // AND opaque metal architecture (institutemetal01a,
-                                // flatmetalpanelsdetails01); `merge_bgsm_into_mesh`
+                                // flatmetalpanelsdetails01); `merge_external_material`
                                 // turns any function>0 into `has_alpha`, so applying
                                 // it here made the whole precombined Institute shell
                                 // alpha-blend against its diffuse alpha (specular
@@ -237,17 +237,19 @@ pub(super) fn spawn_precombined_meshes(
                                 if let Some(provider) = mat_provider.as_deref_mut() {
                                     for mesh in &mut meshes {
                                         let blend = (
-                                            mesh.has_alpha,
-                                            mesh.src_blend_mode,
-                                            mesh.dst_blend_mode,
+                                            mesh.material.has_alpha,
+                                            mesh.material.src_blend_mode,
+                                            mesh.material.dst_blend_mode,
                                         );
-                                        crate::asset_provider::merge_bgsm_into_mesh(
-                                            mesh, provider, &mut pool,
+                                        crate::asset_provider::merge_external_material(
+                                            &mut mesh.material,
+                                            provider,
+                                            &mut pool,
                                         );
                                         (
-                                            mesh.has_alpha,
-                                            mesh.src_blend_mode,
-                                            mesh.dst_blend_mode,
+                                            mesh.material.has_alpha,
+                                            mesh.material.src_blend_mode,
+                                            mesh.material.dst_blend_mode,
                                         ) = blend;
                                     }
                                 }
@@ -510,8 +512,9 @@ pub(super) fn build_precombine_meshes(
         // resolved material. Objects with no combined entries carry no
         // placement (an unplaced merge) and contribute nothing.
         for inst in &geom.instances {
-            let mut mesh = decoded.clone().into_imported_mesh(inst);
-            geom.material.apply(&mut mesh);
+            let mesh = decoded
+                .clone()
+                .into_imported_mesh(inst, geom.material.clone());
             meshes.push(mesh);
         }
     }
@@ -663,7 +666,7 @@ mod tests {
                 "index {max_idx} in range for {} verts",
                 m.positions.len()
             );
-            if m.textures.base_color.is_some() {
+            if m.material.textures.base_color.is_some() {
                 textured += 1;
             }
         }

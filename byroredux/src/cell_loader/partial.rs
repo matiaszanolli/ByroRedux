@@ -11,7 +11,7 @@
 use byroredux_core::ecs::World;
 use std::sync::Arc;
 
-use crate::asset_provider::{merge_bgsm_into_mesh, MaterialProvider};
+use crate::asset_provider::{merge_external_material, MaterialProvider};
 
 use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
 
@@ -109,7 +109,7 @@ pub(crate) fn finish_partial_import(
     if let Some(provider) = mat_provider {
         let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
         for mesh in &mut meshes {
-            merge_bgsm_into_mesh(mesh, provider, &mut pool);
+            merge_external_material(&mut mesh.material, provider, &mut pool);
         }
     }
 

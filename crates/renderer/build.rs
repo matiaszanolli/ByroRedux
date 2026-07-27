@@ -291,7 +291,7 @@ fn main() {
     .unwrap();
     // NOTE: `material_flag::BGSM_AUTHORED` is intentionally NOT emitted
     // here. The shader is format-agnostic — BGSM-specific translation
-    // happens in `merge_bgsm_into_mesh` (writes `metalness_override` /
+    // happens in `merge_external_material` (writes `metalness_override` /
     // `roughness_override` on Material), so the shader never branches
     // on material provenance. Flag still rides on the Rust side for
     // debug-server inspection. See `feedback_format_translation.md`.

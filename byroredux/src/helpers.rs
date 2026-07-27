@@ -31,7 +31,7 @@ fn is_mirror_pane(
 /// 1. A glass keyword in the texture path OR the mesh name (the legacy
 ///    path that covers Oblivion / FO3 / FNV / Skyrim content).
 /// 2. **`bgem_glass = true`** — the FO4+ BGEM `glass_enabled` flag set by
-///    `merge_bgsm_into_mesh`. This is an authoritative authored signal
+///    `merge_external_material`. This is an authoritative authored signal
 ///    that catches FO4 BGEM glass bottles whose atlas texture (e.g.
 ///    `clutter01.dds`) and node name (e.g. `Bottle:0`) match nothing in
 ///    the keyword list. Pre-#1280 sub-step 3b those bottles rendered as
@@ -334,7 +334,7 @@ mod glass_classification_tests {
         // FO4 BGEM glass bottle: atlas texture `clutter01.dds` (no
         // keyword), node name `Bottle:0` (no glass keyword), but the
         // referenced .bgem file authored `glass_enabled = true`.
-        // `merge_bgsm_into_mesh` forwarded the bit; this assertion
+        // `merge_external_material` forwarded the bit; this assertion
         // pins that we honour it as an authoritative glass signal.
         let mut m = mat();
         m.roughness = 0.80; // post-BGSM-merge non-glass roughness

@@ -13,7 +13,7 @@
 use byroredux_core::ecs::BillboardMode;
 use std::sync::Arc;
 
-use crate::asset_provider::{merge_bgsm_into_mesh, MaterialProvider};
+use crate::asset_provider::{merge_external_material, MaterialProvider};
 
 use crate::cell_loader::nif_import_registry::CachedNifImport;
 
@@ -108,7 +108,7 @@ pub(super) fn parse_and_import_nif(
     // resolved BGSM/BGEM chain.
     if let Some(provider) = mat_provider {
         for mesh in &mut meshes {
-            merge_bgsm_into_mesh(mesh, provider, pool);
+            merge_external_material(&mut mesh.material, provider, pool);
         }
     }
     let lights = byroredux_nif::import::import_nif_lights(&scene);

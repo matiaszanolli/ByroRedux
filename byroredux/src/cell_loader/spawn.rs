@@ -755,7 +755,10 @@ fn resolve_mesh_paths(
     imported
         .iter()
         .map(|mesh| {
-            let mut textures = mesh.textures.map_ref(|path| resolve_to_owned(&pool, *path));
+            let mut textures = mesh
+                .material
+                .textures
+                .map_ref(|path| resolve_to_owned(&pool, *path));
             // Effective texture slot paths. REFR overlay
             // (XATO/XTNM/XTXR) wins over the NIF-authored paths
             // when present; for slots the overlay left empty the
@@ -763,34 +766,46 @@ fn resolve_mesh_paths(
             // sides means the slot has no texture. See #584.
             textures.base_color = resolve_to_owned(
                 &pool,
-                ov.and_then(|o| o.diffuse).or(mesh.textures.base_color),
+                ov.and_then(|o| o.diffuse)
+                    .or(mesh.material.textures.base_color),
             );
             // Oblivion/FO3 ship normal maps via the `<base>_n.dds`
             // load-time convention, not an explicit NIF slot. When the
             // mesh left both normal/bump slots empty, derive the sibling
             // from the (effective) diffuse path; it resolves like any
             // texture and fails soft if absent (#1303 / OBL-D4-NEW-01).
-            textures.normal =
-                resolve_to_owned(&pool, ov.and_then(|o| o.normal).or(mesh.textures.normal))
-                    .or_else(|| textures.base_color.as_deref().map(derive_normal_map_path));
-            textures.emissive =
-                resolve_to_owned(&pool, ov.and_then(|o| o.glow).or(mesh.textures.emissive));
+            textures.normal = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| o.normal).or(mesh.material.textures.normal),
+            )
+            .or_else(|| textures.base_color.as_deref().map(derive_normal_map_path));
+            textures.emissive = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| o.glow).or(mesh.material.textures.emissive),
+            );
             textures.smooth_spec = resolve_to_owned(
                 &pool,
-                ov.and_then(|o| o.specular).or(mesh.textures.smooth_spec),
+                ov.and_then(|o| o.specular)
+                    .or(mesh.material.textures.smooth_spec),
             );
-            textures.height =
-                resolve_to_owned(&pool, ov.and_then(|o| o.height).or(mesh.textures.height));
-            textures.environment =
-                resolve_to_owned(&pool, ov.and_then(|o| o.env).or(mesh.textures.environment));
+            textures.height = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| o.height).or(mesh.material.textures.height),
+            );
+            textures.environment = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| o.env)
+                    .or(mesh.material.textures.environment),
+            );
             textures.environment_mask = resolve_to_owned(
                 &pool,
                 ov.and_then(|o| o.env_mask)
-                    .or(mesh.textures.environment_mask),
+                    .or(mesh.material.textures.environment_mask),
             );
             let material_path = resolve_to_owned(
                 &pool,
-                ov.and_then(|o| o.material_path).or(mesh.material_path),
+                ov.and_then(|o| o.material_path)
+                    .or(mesh.material.material_path),
             );
             // Intern the mesh name in the same lock — see #882's
             // second hotspot. `mesh.name: Option<Arc<str>>`. The
@@ -933,9 +948,9 @@ fn spawn_mesh_instance(
         // them both wastes memory/load time and lets shadow/GI rays hit the
         // proxy hull as if it were solid geometry.
         let for_rt = ctx.device_caps.ray_query_supported
-            && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
-            && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
-            && !mesh.is_decal;
+            && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+            && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+            && !mesh.material.is_decal;
         let upload_result = match mesh_cache_key {
             Some(key) => ctx.mesh_registry.register_scene_mesh_keyed(
                 upload_ctx,
@@ -994,7 +1009,7 @@ fn spawn_mesh_instance(
         ctx,
         tex_provider,
         eff_texture_path.as_deref(),
-        mesh.texture_clamp_mode,
+        mesh.material.texture_clamp_mode,
     );
 
     // #544 — mesh entities now sit in the NIF-local frame and
@@ -1126,7 +1141,8 @@ fn spawn_mesh_instance(
         .map(|_| byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS)
         .unwrap_or(0);
     let material = crate::material_translate::translate_material(
-        mesh,
+        &mesh.material,
+        mesh.name.as_deref(),
         crate::material_translate::ResolvedPaths {
             textures: eff_textures.clone(),
             material_path: eff_material_path.clone(),
@@ -1166,8 +1182,8 @@ fn spawn_mesh_instance(
         MaterialTextureHandles {
             textures: texture_handles,
             normal_has_alpha,
-            parallax_height_scale: mesh.parallax_height_scale.unwrap_or(0.04),
-            parallax_max_passes: mesh.parallax_max_passes.unwrap_or(4.0),
+            parallax_height_scale: mesh.material.parallax_height_scale.unwrap_or(0.04),
+            parallax_max_passes: mesh.material.parallax_max_passes.unwrap_or(4.0),
         },
     );
     // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
@@ -1177,17 +1193,17 @@ fn spawn_mesh_instance(
     // reads, so the value is identical — only canonical + tooling-visible.
     crate::material_translate::resolve_normal_alpha_spec_roughness(world, entity);
     let implicit_decal_blend = decal_uses_implicit_alpha_blend(
-        mesh.is_decal,
-        mesh.has_alpha,
-        mesh.alpha_test,
-        mesh.alpha_threshold,
+        mesh.material.is_decal,
+        mesh.material.has_alpha,
+        mesh.material.alpha_test,
+        mesh.material.alpha_threshold,
     );
-    if mesh.has_alpha || implicit_decal_blend {
+    if mesh.material.has_alpha || implicit_decal_blend {
         // FO4's dedicated decal pass composites texture alpha even when the
         // BGSM generic blend function is `None` for low-threshold soft
         // decals. Preserve explicit factors; otherwise use alpha-over.
-        let (src_blend, dst_blend) = if mesh.has_alpha {
-            (mesh.src_blend_mode, mesh.dst_blend_mode)
+        let (src_blend, dst_blend) = if mesh.material.has_alpha {
+            (mesh.material.src_blend_mode, mesh.material.dst_blend_mode)
         } else {
             (6, 7)
         };
@@ -1199,17 +1215,17 @@ fn spawn_mesh_instance(
             },
         );
     }
-    if mesh.is_decal {
+    if mesh.material.is_decal {
         world.insert(entity, IsDecalMesh);
     }
-    if mesh.two_sided {
+    if mesh.material.two_sided {
         world.insert(entity, TwoSided);
     }
     // #renderlayer — derive the per-entity content-class layer.
     // Base layer comes from the REFR's record type
     // (`stat.record_type.render_layer()`); the per-mesh
-    // `mesh.is_decal` (NIF-flagged decals — blood splats, scorch
-    // marks) and `mesh.alpha_test_func != 0` (alpha-tested rugs /
+    // `mesh.material.is_decal` (NIF-flagged decals — blood splats, scorch
+    // marks) and `mesh.material.alpha_test_func != 0` (alpha-tested rugs /
     // posters / fences / cutout foliage) escalate to
     // [`RenderLayer::Decal`] regardless of the base, so any
     // coplanar overlay wins its z-fight against the surface
@@ -1217,7 +1233,7 @@ fn spawn_mesh_instance(
     // the rare "neither base nor mesh hints decal" path.
     //
     // Pre-#renderlayer this site also inserted a `Decal` marker
-    // component when `mesh.is_decal` — that marker is retired now
+    // component when `mesh.material.is_decal` — that marker is retired now
     // that `RenderLayer::Decal` carries the same signal end-to-end.
     {
         use byroredux_core::ecs::components::{
@@ -1240,7 +1256,11 @@ fn spawn_mesh_instance(
         // collider stripped on a render-side optimization.
         let layer =
             escalate_small_static_to_clutter(base_layer, mesh.local_bound_radius * ref_scale);
-        let layer = render_layer_with_decal_escalation(layer, mesh.is_decal, mesh.alpha_test);
+        let layer = render_layer_with_decal_escalation(
+            layer,
+            mesh.material.is_decal,
+            mesh.material.alpha_test,
+        );
         world.insert(entity, layer);
     }
 
@@ -1263,7 +1283,7 @@ fn spawn_mesh_instance(
     //   - `RenderLayer::Architecture` — structural only; clutter and
     //     decals are escalated away from this layer above.
     //   - `!mesh.skinned` — never synthesize for animated bodies.
-    //   - `!mesh.is_decal && !mesh.alpha_test` — skip overlay planes.
+    //   - `!mesh.material.is_decal && !mesh.material.alpha_test` — skip overlay planes.
     //   - ≥ 1 triangle of geometry.
     // Scale: the physics sync places bodies by GlobalTransform
     // translation+rotation only (it ignores scale — bhk shapes bake
@@ -1301,9 +1321,9 @@ fn spawn_mesh_instance(
     if collisions_empty
         && base_layer == byroredux_core::ecs::components::RenderLayer::Architecture
         && mesh.skin.is_none()
-        && !mesh.is_decal
-        && !mesh.alpha_test
-        && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+        && !mesh.material.is_decal
+        && !mesh.material.alpha_test
+        && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
         && mesh.positions.len() >= 3
         && mesh.indices.len() >= 3
     {

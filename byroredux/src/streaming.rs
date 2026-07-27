@@ -119,7 +119,7 @@ pub struct LoadCellPayload {
 /// Pool-free portion of NIF import — everything the worker can do
 /// off-thread. The main-thread drain step takes a `PartialNifImport`,
 /// runs `import_nif_with_collision` (string interning, needs the
-/// world's `StringPool`) and `merge_bgsm_into_mesh` (needs the
+/// world's `StringPool`) and `merge_external_material` (needs the
 /// `MaterialProvider`), and assembles the full
 /// `cell_loader::CachedNifImport`.
 pub struct PartialNifImport {
@@ -177,7 +177,7 @@ pub struct WorldStreamingState {
     /// access via `Mutex`, so concurrent extracts are safe.
     pub tex_provider: Arc<TextureProvider>,
     /// Long-lived BGSM material provider. Stays main-thread only —
-    /// `merge_bgsm_into_mesh` needs `&mut MaterialProvider` (writes to
+    /// `merge_external_material` needs `&mut MaterialProvider` (writes to
     /// `bgsm_cache` / `bgem_cache` / `failed_paths`), and serialising
     /// every drain-step BGSM resolve through a Mutex would put the
     /// main thread on the slow path. Worker doesn't touch BGSM.

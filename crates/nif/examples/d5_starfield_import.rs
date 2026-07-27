@@ -206,11 +206,13 @@ fn main() {
         for (i, m) in imp.meshes.iter().enumerate() {
             let name = m.name.as_deref().unwrap_or("<unnamed>");
             let mat_path = m
+                .material
                 .material_path
                 .as_ref()
                 .and_then(|s| pool.resolve(*s).map(|s| s.to_string()))
                 .unwrap_or_else(|| "<none>".to_string());
             let tex = m
+                .material
                 .textures
                 .base_color
                 .as_ref()

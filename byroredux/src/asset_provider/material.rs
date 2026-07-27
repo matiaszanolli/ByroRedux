@@ -2,7 +2,7 @@ use super::*;
 
 use byroredux_bgsm::template::ResolvedMaterial;
 use byroredux_bgsm::{BgemFile, TemplateCache, TemplateResolver};
-use byroredux_nif::import::ImportedMesh;
+use byroredux_nif::import::ImportedMaterial;
 use byroredux_sfmaterial::ComponentDatabaseFile;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -215,9 +215,9 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
 /// FO4+ authors materials as external .bgsm / .bgem files, referenced by
 /// `BSLightingShaderProperty.net.name` (lit) or
 /// `BSEffectShaderProperty.net.name` (effect). The NIF side captures the
-/// path into `ImportedMesh.material_path`; this provider opens the files
-/// out of `Fallout4 - Materials.ba2` (or equivalent) and hands back the
-/// parsed + template-resolved chain. The LRU is owned by `bgsm`'s
+/// path into `ImportedMesh.material.material_path`; this provider opens the
+/// files out of `Fallout4 - Materials.ba2` (or equivalent) and hands back
+/// the parsed + template-resolved chain. The LRU is owned by `bgsm`'s
 /// [`TemplateCache`] so integration doesn't reinvent chain-walking.
 ///
 /// Parse failures are logged once per path and return `None` — callers
@@ -250,7 +250,7 @@ pub(crate) struct MaterialProvider {
     /// `* - Main.ba2`. `0` for non-Starfield content.
     /// #1289 / SF-D3-NEW-01, multi-CDB discovery #1571 / SF-D3-03.
     ///
-    /// Phase 1 (today): presence-only — [`merge_bgsm_into_mesh`]'s `.mat`
+    /// Phase 1 (today): presence-only — [`merge_external_material`]'s `.mat`
     /// arm only needs confirmation that Starfield material authoring is
     /// loaded before flipping `is_pbr`, so discovery runs a header-only
     /// probe ([`ComponentDatabaseFile::probe_header`]) and records the
@@ -324,7 +324,7 @@ impl MaterialProvider {
 
     /// True once at least one Starfield Component Database has been
     /// loaded (base and/or DLC). Drives the `.mat` arm in
-    /// [`merge_bgsm_into_mesh`] — flipping `mesh.is_pbr = true` on `.mat`
+    /// [`merge_external_material`] — flipping `material.is_pbr = true` on `.mat`
     /// material paths only when a CDB is present means modded `.mat`
     /// paths against a non-Starfield archive set don't accidentally route
     /// to Disney BSDF. #1289 / SF-D3-NEW-01.
@@ -580,7 +580,7 @@ impl MaterialProvider {
 /// `material_path` points at a .bgsm or .bgem file. NIF fields take
 /// precedence — only empty slots are filled in from the resolved
 /// material chain. This matches Bethesda's runtime behaviour where the
-/// shader property can override template defaults per-mesh.
+/// shader property can override template defaults per-material.
 ///
 /// For BGSM the template chain is walked child-first: the first
 /// non-empty value for any given field wins. BGEM has no inheritance
@@ -622,7 +622,7 @@ pub(crate) fn bgsm_blend_to_gamebryo(raw: u32) -> u8 {
 }
 
 /// SF3-02 / #1831 — chooses the diagnostic message for a material path
-/// that fell through to the unknown-format arm of [`merge_bgsm_into_mesh`].
+/// that fell through to the unknown-format arm of [`merge_external_material`].
 /// A `.mat` path only reaches that arm when no Starfield CDB is loaded
 /// (the CDB-presence gate short-circuits it otherwise), which is a
 /// distinct, more actionable cause than "unrecognised extension" — name
@@ -641,12 +641,19 @@ pub(crate) fn unresolved_material_warning(path: &str, has_starfield_cdb: bool) -
     }
 }
 
-pub(crate) fn merge_bgsm_into_mesh(
-    mesh: &mut ImportedMesh,
+/// Merge a BGSM, BGEM, or Starfield `.mat` sidecar into the
+/// source-normalized NIF material payload.
+///
+/// This boundary deliberately accepts [`ImportedMaterial`] rather than an
+/// [`byroredux_nif::import::ImportedMesh`]: external formats can patch material
+/// semantics, but cannot mutate geometry, transforms, skinning, or scene
+/// ownership.
+pub(crate) fn merge_external_material(
+    material: &mut ImportedMaterial,
     provider: &mut MaterialProvider,
     pool: &mut byroredux_core::string::StringPool,
 ) -> bool {
-    let Some(path_sym) = mesh.material_path else {
+    let Some(path_sym) = material.material_path else {
         return false;
     };
     // `StringPool::resolve` returns the canonical lowercased form, so
@@ -659,7 +666,7 @@ pub(crate) fn merge_bgsm_into_mesh(
 
     // `touched` flips to `true` on any merged field. Allowed unused
     // assignment: the success branches (BGSM / BGEM) set `touched`
-    // unconditionally via `mesh.from_bgsm = true`, so the `false`
+    // unconditionally via `material.from_bgsm = true`, so the `false`
     // initializer is overwritten before any read — but the
     // initializer is load-bearing for the failure / unknown-kind
     // path that returns it without further assignment.
@@ -688,8 +695,8 @@ pub(crate) fn merge_bgsm_into_mesh(
     // `materials\materialsbeta.cdb` inside `Starfield - Materials.ba2`,
     // loaded once at provider init via [`register_starfield_cdb`].
     //
-    // Phase 1 (this commit): flip `mesh.is_pbr = true` so
-    // `pack_bgsm_material_flags` packs `MAT_FLAG_PBR_BSDF` and
+    // Phase 1 (this commit): flip `material.is_pbr = true` so
+    // `pack_imported_material_flags` packs `MAT_FLAG_PBR_BSDF` and
     // `triangle.frag` routes Starfield content through the Disney BSDF
     // path instead of the legacy Lambert + simple-GGX path (the audit
     // FAIL closure). Defaults for metalness / roughness / textures
@@ -701,7 +708,7 @@ pub(crate) fn merge_bgsm_into_mesh(
     // archive set (FO4 / FNV cells with a stray mod-authored `.mat`
     // shouldn't get Disney BSDF).
     if path.ends_with(".mat") && provider.has_starfield_cdb() {
-        mesh.is_pbr = true;
+        material.is_pbr = true;
         // `from_bgsm` deliberately NOT set — that flag gates BGSM
         // spec-glossiness translation (FO4-specific format convention).
         // Starfield .mat authors metalness/roughness directly, but this
@@ -767,10 +774,10 @@ pub(crate) fn merge_bgsm_into_mesh(
         // BGSM resolution succeeded — telemetry-only flag (no renderer
         // branch); the substantive work happens in the spec-glossiness
         // → metallic-roughness translation below.
-        mesh.from_bgsm = true;
+        material.from_bgsm = true;
         touched = true;
         // #1352 / FO4-D7-03 — route ALL BGSM-authored content through the
-        // Disney diffuse lobe (MAT_FLAG_PBR_BSDF via `pack_bgsm_material_flags`),
+        // Disney diffuse lobe (MAT_FLAG_PBR_BSDF via `pack_imported_material_flags`),
         // not just the rarely-authored `bgsm.pbr == true` case (0 of 793
         // sampled vanilla FO4 BGSMs set it). The spec-glossiness →
         // metallic-roughness translation below gives every `from_bgsm` mesh
@@ -780,7 +787,7 @@ pub(crate) fn merge_bgsm_into_mesh(
         // FO4 BGSM content (was Lambert, correct-as-authored for Bethesda's
         // modified Blinn-Phong pipeline) — pending RenderDoc visual
         // validation on real FO4 content. Reverting is this single line.
-        mesh.is_pbr = true;
+        material.is_pbr = true;
 
         // ── Translation layer (BGSM spec-glossiness → standard PBR) ──
         //
@@ -824,7 +831,7 @@ pub(crate) fn merge_bgsm_into_mesh(
         // authoritative; template parents are background defaults the
         // artist explicitly overrode if they set a different value.
         //
-        // For metallic materials, also tint `mesh.diffuse_color` toward
+        // For metallic materials, also tint `material.diffuse_color` toward
         // the authored spec_color so the per-pixel `F0 = mix(0.04,
         // albedo, metalness)` lands on the right conductor tint when
         // the diffuse texture is BC1-desaturated (a known FO4 issue —
@@ -844,31 +851,32 @@ pub(crate) fn merge_bgsm_into_mesh(
             bgsm_metalness(leaf.specular_color, false)
         };
         let roughness = (1.0 - leaf.smoothness).clamp(0.04, 1.0);
-        mesh.metalness_override = Some(metalness);
-        mesh.roughness_override = Some(roughness);
+        material.metalness_override = Some(metalness);
+        material.roughness_override = Some(roughness);
         if metalness > 0.5 {
             // #1591 — blend toward the mult-free `specular_color`, NOT
             // `spec_*` (= specular_color × specular_mult); the mult-bearing
             // `spec_*` stays for the pbr F0-luminance path above where
             // mult-as-scale is correct. See `conductor_diffuse_tint`.
-            mesh.diffuse_color = conductor_diffuse_tint(mesh.diffuse_color, leaf.specular_color);
+            material.diffuse_color =
+                conductor_diffuse_tint(material.diffuse_color, leaf.specular_color);
         }
         for step in resolved.walk() {
             let bgsm = &step.file;
             fill(
-                &mut mesh.textures.base_color,
+                &mut material.textures.base_color,
                 &bgsm.diffuse_texture,
                 &mut touched,
                 pool,
             );
             fill(
-                &mut mesh.textures.normal,
+                &mut material.textures.normal,
                 &bgsm.normal_texture,
                 &mut touched,
                 pool,
             );
             fill(
-                &mut mesh.textures.emissive,
+                &mut material.textures.emissive,
                 &bgsm.glow_texture,
                 &mut touched,
                 pool,
@@ -876,7 +884,7 @@ pub(crate) fn merge_bgsm_into_mesh(
             // Smoothness/spec mask — .r encodes per-texel specular
             // strength in the engine's existing gloss_map slot. #453.
             fill(
-                &mut mesh.textures.smooth_spec,
+                &mut material.textures.smooth_spec,
                 &bgsm.smooth_spec_texture,
                 &mut touched,
                 pool,
@@ -887,22 +895,22 @@ pub(crate) fn merge_bgsm_into_mesh(
             // v<=2 BGSMs). First non-empty in the template chain wins, to
             // match the texture fills above. Routed through the common
             // greyscale_lut role and flagged via EFFECT_PALETTE_COLOR in
-            // `pack_bgsm_material_flags` so the lit-path remap samples it.
+            // `pack_imported_material_flags` so the lit-path remap samples it.
             fill(
-                &mut mesh.textures.greyscale_lut,
+                &mut material.textures.greyscale_lut,
                 &bgsm.greyscale_texture,
                 &mut touched,
                 pool,
             );
             // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
             fill(
-                &mut mesh.textures.environment,
+                &mut material.textures.environment,
                 &bgsm.envmap_texture,
                 &mut touched,
                 pool,
             );
             fill(
-                &mut mesh.textures.height,
+                &mut material.textures.height,
                 &bgsm.displacement_texture,
                 &mut touched,
                 pool,
@@ -913,25 +921,25 @@ pub(crate) fn merge_bgsm_into_mesh(
             // default) so the `fill` no-op suffices to gate the
             // forward without an explicit version check.
             fill(
-                &mut mesh.textures.specular,
+                &mut material.textures.specular,
                 &bgsm.specular_texture,
                 &mut touched,
                 pool,
             );
             fill(
-                &mut mesh.textures.lighting,
+                &mut material.textures.lighting,
                 &bgsm.lighting_texture,
                 &mut touched,
                 pool,
             );
             fill(
-                &mut mesh.textures.flow,
+                &mut material.textures.flow,
                 &bgsm.flow_texture,
                 &mut touched,
                 pool,
             );
             fill(
-                &mut mesh.textures.wrinkle,
+                &mut material.textures.wrinkle,
                 &bgsm.wrinkles_texture,
                 &mut touched,
                 pool,
@@ -950,16 +958,16 @@ pub(crate) fn merge_bgsm_into_mesh(
             // shading in `triangle.frag` based on `is_pbr` needs
             // RenderDoc-validated visual diffs against FO4 content,
             // which is out of scope for this Phase 1 close-out.
-            if !mesh.is_pbr && bgsm.pbr {
-                mesh.is_pbr = true;
+            if !material.is_pbr && bgsm.pbr {
+                material.is_pbr = true;
                 touched = true;
             }
-            if !mesh.has_translucency && bgsm.translucency {
-                mesh.has_translucency = true;
+            if !material.has_translucency && bgsm.translucency {
+                material.has_translucency = true;
                 touched = true;
             }
-            if !mesh.model_space_normals && bgsm.model_space_normals {
-                mesh.model_space_normals = true;
+            if !material.model_space_normals && bgsm.model_space_normals {
+                material.model_space_normals = true;
                 touched = true;
             }
 
@@ -971,14 +979,15 @@ pub(crate) fn merge_bgsm_into_mesh(
             // If `has_translucency` is set by this chain entry but
             // the params are still at default-zero, propagate them.
             if bgsm.translucency
-                && mesh.translucency_transmissive_scale == 0.0
-                && mesh.translucency_subsurface_color == [0.0; 3]
+                && material.translucency_transmissive_scale == 0.0
+                && material.translucency_subsurface_color == [0.0; 3]
             {
-                mesh.translucency_subsurface_color = bgsm.translucency_subsurface_color;
-                mesh.translucency_transmissive_scale = bgsm.translucency_transmissive_scale;
-                mesh.translucency_turbulence = bgsm.translucency_turbulence;
-                mesh.translucency_thick_object = bgsm.translucency_thick_object;
-                mesh.translucency_mix_albedo = bgsm.translucency_mix_albedo_with_subsurface_color;
+                material.translucency_subsurface_color = bgsm.translucency_subsurface_color;
+                material.translucency_transmissive_scale = bgsm.translucency_transmissive_scale;
+                material.translucency_turbulence = bgsm.translucency_turbulence;
+                material.translucency_thick_object = bgsm.translucency_thick_object;
+                material.translucency_mix_albedo =
+                    bgsm.translucency_mix_albedo_with_subsurface_color;
                 touched = true;
             }
 
@@ -986,14 +995,14 @@ pub(crate) fn merge_bgsm_into_mesh(
             // value wins. Parser already decodes these fields; the
             // pre-fix merge dropped them on the floor.
             if !set_emissive && bgsm.emit_enabled {
-                mesh.emissive_color = bgsm.emittance_color;
-                mesh.emissive_mult = bgsm.emittance_mult;
+                material.emissive_color = bgsm.emittance_color;
+                material.emissive_mult = bgsm.emittance_mult;
                 set_emissive = true;
                 touched = true;
             }
             if !set_specular {
-                mesh.specular_color = bgsm.specular_color;
-                mesh.specular_strength = bgsm.specular_mult;
+                material.specular_color = bgsm.specular_color;
+                material.specular_strength = bgsm.specular_mult;
                 set_specular = true;
                 touched = true;
             }
@@ -1006,7 +1015,7 @@ pub(crate) fn merge_bgsm_into_mesh(
                 // `classify_pbr` fell through to the glossiness fallback
                 // with `roughness=0.95`, killing direct specular and the
                 // RT-reflection metalness/roughness gate (Med-Tek floors).
-                mesh.glossiness = bgsm.smoothness * 100.0;
+                material.glossiness = bgsm.smoothness * 100.0;
                 set_glossiness = true;
                 touched = true;
             }
@@ -1017,7 +1026,7 @@ pub(crate) fn merge_bgsm_into_mesh(
             // non-default values (power armor, shiny metals) were silently
             // falling back to 5.0 before this fix.
             if !set_fresnel {
-                mesh.fresnel_power = bgsm.fresnel_power;
+                material.fresnel_power = bgsm.fresnel_power;
                 set_fresnel = true;
                 touched = true;
             }
@@ -1025,18 +1034,18 @@ pub(crate) fn merge_bgsm_into_mesh(
             // Modulates the LUT remap intensity for NPC creature colour
             // variants (deathclaw, supermutant). Default 1.0 = no change.
             if !set_palette_scale {
-                mesh.grayscale_to_palette_scale = bgsm.grayscale_to_palette_scale;
+                material.grayscale_to_palette_scale = bgsm.grayscale_to_palette_scale;
                 set_palette_scale = true;
                 touched = true;
             }
             if !set_alpha {
-                mesh.mat_alpha = bgsm.base.alpha;
+                material.mat_alpha = bgsm.base.alpha;
                 set_alpha = true;
                 touched = true;
             }
             if !set_uv {
-                mesh.uv_offset = [bgsm.base.u_offset, bgsm.base.v_offset];
-                mesh.uv_scale = [bgsm.base.u_scale, bgsm.base.v_scale];
+                material.uv_offset = [bgsm.base.u_offset, bgsm.base.v_offset];
+                material.uv_scale = [bgsm.base.u_scale, bgsm.base.v_scale];
                 set_uv = true;
                 touched = true;
             }
@@ -1044,16 +1053,16 @@ pub(crate) fn merge_bgsm_into_mesh(
             // ANY ancestor marks the material as two-sided / decal /
             // alpha-test, the concrete instance is too.
             if bgsm.base.two_sided {
-                mesh.two_sided = true;
+                material.two_sided = true;
                 touched = true;
             }
             if bgsm.base.decal {
-                mesh.is_decal = true;
+                material.is_decal = true;
                 touched = true;
             }
-            if bgsm.base.alpha_test && !mesh.alpha_test {
-                mesh.alpha_test = true;
-                mesh.alpha_threshold = f32::from(bgsm.base.alpha_test_ref) / 255.0;
+            if bgsm.base.alpha_test && !material.alpha_test {
+                material.alpha_test = true;
+                material.alpha_threshold = f32::from(bgsm.base.alpha_test_ref) / 255.0;
                 touched = true;
             }
             // BGSM alpha-blend forwarding. FO4+ moved per-material blend
@@ -1076,9 +1085,11 @@ pub(crate) fn merge_bgsm_into_mesh(
             // wrong #1651 fix that assumed a GL-style enum requiring a
             // swap).
             if !set_blend && bgsm.base.alpha_blend_mode.function > 0 {
-                mesh.has_alpha = true;
-                mesh.src_blend_mode = bgsm_blend_to_gamebryo(bgsm.base.alpha_blend_mode.src_blend);
-                mesh.dst_blend_mode = bgsm_blend_to_gamebryo(bgsm.base.alpha_blend_mode.dst_blend);
+                material.has_alpha = true;
+                material.src_blend_mode =
+                    bgsm_blend_to_gamebryo(bgsm.base.alpha_blend_mode.src_blend);
+                material.dst_blend_mode =
+                    bgsm_blend_to_gamebryo(bgsm.base.alpha_blend_mode.dst_blend);
                 set_blend = true;
                 touched = true;
             }
@@ -1091,22 +1102,22 @@ pub(crate) fn merge_bgsm_into_mesh(
         // metalness and roughness are left as NaN sentinels so resolve_pbr
         // runs the keyword classifier. glass_enabled surfaces get the glass
         // roughness override from classify_glass_into_material downstream.
-        mesh.from_bgsm = true;
+        material.from_bgsm = true;
         touched = true;
         fill(
-            &mut mesh.textures.base_color,
+            &mut material.textures.base_color,
             &bgem.base_texture,
             &mut touched,
             pool,
         );
         fill(
-            &mut mesh.textures.normal,
+            &mut material.textures.normal,
             &bgem.normal_texture,
             &mut touched,
             pool,
         );
         fill(
-            &mut mesh.textures.emissive,
+            &mut material.textures.emissive,
             &bgem.glow_texture,
             &mut touched,
             pool,
@@ -1116,22 +1127,22 @@ pub(crate) fn merge_bgsm_into_mesh(
         // Forward it to the same common greyscale_lut role BGSM uses — both
         // resolve through MaterialTextureHandles and the
         // `EFFECT_PALETTE_COLOR` flag.
-        if mesh.textures.greyscale_lut.is_none() && !bgem.grayscale_texture.is_empty() {
-            mesh.textures.greyscale_lut = Some(pool.intern(&bgem.grayscale_texture));
+        if material.textures.greyscale_lut.is_none() && !bgem.grayscale_texture.is_empty() {
+            material.textures.greyscale_lut = Some(pool.intern(&bgem.grayscale_texture));
             // #1580 — BGEM's own alpha-variant bool decides whether the LUT
             // gates EFFECT_PALETTE_ALPHA or the default EFFECT_PALETTE_COLOR;
-            // see `pack_bgsm_material_flags` in `cell_loader.rs`.
-            mesh.bgsm_greyscale_lut_is_alpha = bgem.grayscale_to_palette_alpha;
+            // see `pack_imported_material_flags` in `cell_loader.rs`.
+            material.bgsm_greyscale_lut_is_alpha = bgem.grayscale_to_palette_alpha;
             touched = true;
         }
         fill(
-            &mut mesh.textures.environment,
+            &mut material.textures.environment,
             &bgem.envmap_texture,
             &mut touched,
             pool,
         );
         fill(
-            &mut mesh.textures.environment_mask,
+            &mut material.textures.environment_mask,
             &bgem.envmap_mask_texture,
             &mut touched,
             pool,
@@ -1143,13 +1154,13 @@ pub(crate) fn merge_bgsm_into_mesh(
         // `crates/bgsm/src/bgem.rs`). Forward them here so the BGEM
         // path has the same coverage as the BGSM path.
         fill(
-            &mut mesh.textures.specular,
+            &mut material.textures.specular,
             &bgem.specular_texture,
             &mut touched,
             pool,
         );
         fill(
-            &mut mesh.textures.lighting,
+            &mut material.textures.lighting,
             &bgem.lighting_texture,
             &mut touched,
             pool,
@@ -1163,21 +1174,22 @@ pub(crate) fn merge_bgsm_into_mesh(
         // effect-diffuse tint, not a genuine emissive scalar. #1358.
         // `emittance_color` (v≥11 additive glow) is deferred until a
         // second emissive slot exists on `ImportedMesh`.
-        mesh.emissive_color = bgem.base_color;
-        mesh.emissive_mult = bgem.base_color_scale;
-        mesh.emissive_source = byroredux_core::ecs::components::material::EmissiveSource::Effect;
-        mesh.mat_alpha = bgem.base.alpha;
-        mesh.uv_offset = [bgem.base.u_offset, bgem.base.v_offset];
-        mesh.uv_scale = [bgem.base.u_scale, bgem.base.v_scale];
+        material.emissive_color = bgem.base_color;
+        material.emissive_mult = bgem.base_color_scale;
+        material.emissive_source =
+            byroredux_core::ecs::components::material::EmissiveSource::Effect;
+        material.mat_alpha = bgem.base.alpha;
+        material.uv_offset = [bgem.base.u_offset, bgem.base.v_offset];
+        material.uv_scale = [bgem.base.u_scale, bgem.base.v_scale];
         if bgem.base.two_sided {
-            mesh.two_sided = true;
+            material.two_sided = true;
         }
         if bgem.base.decal {
-            mesh.is_decal = true;
+            material.is_decal = true;
         }
         if bgem.base.alpha_test {
-            mesh.alpha_test = true;
-            mesh.alpha_threshold = f32::from(bgem.base.alpha_test_ref) / 255.0;
+            material.alpha_test = true;
+            material.alpha_threshold = f32::from(bgem.base.alpha_test_ref) / 255.0;
         }
         // BGEM alpha-blend — same GL→Gamebryo translation as the BGSM
         // branch above, applied to the BSEffectShaderProperty path.
@@ -1186,9 +1198,9 @@ pub(crate) fn merge_bgsm_into_mesh(
         // renderer reads as `(ZERO, ZERO)` and renders invisible.
         // BGEM has no inheritance so no child-first guard needed.
         if bgem.base.alpha_blend_mode.function > 0 {
-            mesh.has_alpha = true;
-            mesh.src_blend_mode = bgsm_blend_to_gamebryo(bgem.base.alpha_blend_mode.src_blend);
-            mesh.dst_blend_mode = bgsm_blend_to_gamebryo(bgem.base.alpha_blend_mode.dst_blend);
+            material.has_alpha = true;
+            material.src_blend_mode = bgsm_blend_to_gamebryo(bgem.base.alpha_blend_mode.src_blend);
+            material.dst_blend_mode = bgsm_blend_to_gamebryo(bgem.base.alpha_blend_mode.dst_blend);
         }
         // #1280 sub-step 3b — forward BGEM glass semantics so the
         // spawn-time classifier in `helpers::classify_glass_into_material`
@@ -1198,16 +1210,16 @@ pub(crate) fn merge_bgsm_into_mesh(
         // blend/depth/falloff/environment-map feature bundle recognized by
         // `bgem_uses_glass_behavior` (Port-A-Diner's v2 dome).
         if bgem_uses_glass_behavior(&bgem) {
-            mesh.bgem_glass = true;
+            material.bgem_glass = true;
             // `non_occluder` is the authored behavioral distinction between
             // a thin transmissive shell (display dome/window sheet) and a
             // closed glass volume. Preserve it independently of BGEM so the
             // shared glass shader can choose a surface-consistent base path;
             // texture maps remain ordinary overlays either way.
-            mesh.thin_glass = bgem_uses_thin_glass_behavior(&bgem);
+            material.thin_glass = bgem_uses_thin_glass_behavior(&bgem);
         }
         // Soft-particle depth fade + view-angle falloff cone. The NIF
-        // `BSEffectShaderProperty` path fills `mesh.effect_shader` from the
+        // `BSEffectShaderProperty` path fills `material.effect_shader` from the
         // block; the BGEM path is the FO4+ equivalent and must mirror it so
         // `material_translate` can build `Material.{effect_falloff,
         // effect_shader_flags}` (soft_falloff_depth + MAT_FLAG_EFFECT_SOFT)
@@ -1215,7 +1227,7 @@ pub(crate) fn merge_bgsm_into_mesh(
         // (`soft = true` in the authored file) rendered with no depth feather
         // and stacked to an opaque white-out (HalluciGen labs). `lighting_influence`
         // is authored 0..1 in BGEM but carried 0..255 on the shared payload.
-        mesh.effect_shader = Some(byroredux_nif::import::BsEffectShaderData {
+        material.effect_shader = Some(byroredux_nif::import::BsEffectShaderData {
             falloff_start_angle: bgem.falloff_start_angle,
             falloff_stop_angle: bgem.falloff_stop_angle,
             falloff_start_opacity: bgem.falloff_start_opacity,

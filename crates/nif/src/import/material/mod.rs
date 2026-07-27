@@ -1133,7 +1133,7 @@ impl MaterialInfo {
     /// inline-shader data at NIF-import time, so every mesh leaves
     /// the parser with explicit `metalness_override` /
     /// `roughness_override` populated. The BGSM merge layer
-    /// downstream (`asset_provider::merge_bgsm_into_mesh`)
+    /// downstream (`asset_provider::merge_external_material`)
     /// overwrites both unconditionally for BGSM-resolved materials,
     /// so legacy Oblivion / FO3 / FNV / pre-Skyrim meshes keep the
     /// values this method writes; BGSM-using FO4 / Skyrim meshes get

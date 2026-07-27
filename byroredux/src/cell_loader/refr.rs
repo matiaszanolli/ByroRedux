@@ -79,7 +79,7 @@ pub(crate) struct RefrTextureOverlay {
     /// from a TXST that explicitly authors a model-space normal map
     /// (vs the default tangent-space). Fed into the spawn-side
     /// `effect_shader_flags` OR with the BGSM-sourced bit from
-    /// `pack_bgsm_material_flags` so the renderer's existing
+    /// `pack_imported_material_flags` so the renderer's existing
     /// `MAT_FLAG_BGSM_MODEL_SPACE_NORMALS` consumer at
     /// `triangle.frag:1019` fires for direct-TXST overrides too —
     /// not just BGSM-routed materials. See #972 / FO4-D4-NEW-09.
@@ -178,7 +178,7 @@ impl RefrTextureOverlay {
     }
 
     /// Walk the overlay's `material_path` BGSM/BGEM chain and fill any
-    /// still-empty texture slot. Matches `merge_bgsm_into_mesh`'s
+    /// still-empty texture slot. Matches `merge_external_material`'s
     /// first-wins policy so REFR overlays and per-mesh imports agree on
     /// precedence for MNAM-only TXSTs. No-op when the path isn't a
     /// `.bgsm` / `.bgem` or the provider can't resolve it.
@@ -311,7 +311,7 @@ pub(crate) fn build_refr_texture_overlay(
     // BGSM chain fill — MNAM-only TXSTs contribute nothing to the 8
     // direct slots, but their `material_path` resolves through the BGSM
     // template chain to real textures. Matches import-time
-    // `merge_bgsm_into_mesh` semantics. Runs after the MSWP substitution
+    // `merge_external_material` semantics. Runs after the MSWP substitution
     // above so the chain walks the swapped target BGSM, not the source.
     if ov.material_path.is_some() {
         if let Some(mp) = mat_provider {

@@ -184,7 +184,7 @@ fn bgsm_on_lighting_shader_still_captured() {
     )));
     let (mesh, pool) = import(&scene, &renderable_shape(0));
     assert_eq!(
-        resolved_path(&pool, mesh.material_path),
+        resolved_path(&pool, mesh.material.material_path),
         Some("materials\\architecture\\whiterunstone.bgsm")
     );
 }
@@ -200,7 +200,7 @@ fn bgem_on_effect_shader_is_captured() {
     )));
     let (mesh, pool) = import(&scene, &renderable_shape(0));
     assert_eq!(
-        resolved_path(&pool, mesh.material_path),
+        resolved_path(&pool, mesh.material.material_path),
         Some("materials\\weapons\\laserrifle\\laserbeam.bgem")
     );
 }
@@ -215,7 +215,7 @@ fn bgsm_on_effect_shader_also_captured() {
     )));
     let (mesh, pool) = import(&scene, &renderable_shape(0));
     assert_eq!(
-        resolved_path(&pool, mesh.material_path),
+        resolved_path(&pool, mesh.material.material_path),
         Some("materials\\statics\\sign01.bgsm")
     );
 }
@@ -227,7 +227,7 @@ fn non_material_name_returns_none() {
         .blocks
         .push(Box::new(minimal_effect_shader_named("FxGlowEdge01")));
     let (mesh, _pool) = import(&scene, &renderable_shape(0));
-    assert!(mesh.material_path.is_none());
+    assert!(mesh.material.material_path.is_none());
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn lighting_shader_name_takes_priority() {
     )));
     let (mesh, pool) = import(&scene, &renderable_shape(0));
     assert_eq!(
-        resolved_path(&pool, mesh.material_path),
+        resolved_path(&pool, mesh.material.material_path),
         Some("materials\\primary.bgsm")
     );
 }
@@ -261,7 +261,7 @@ fn lighting_shader_root_material_fallback_when_name_is_editor_label() {
     scene.blocks.push(Box::new(shader));
     let (mesh, pool) = import(&scene, &renderable_shape(0));
     assert_eq!(
-        resolved_path(&pool, mesh.material_path),
+        resolved_path(&pool, mesh.material.material_path),
         Some("materials\\fallback.bgsm"),
         "root_material_path must back-fill material_path when net.name is a non-material editor label"
     );
@@ -279,7 +279,7 @@ fn lighting_shader_name_beats_root_material() {
     scene.blocks.push(Box::new(shader));
     let (mesh, pool) = import(&scene, &renderable_shape(0));
     assert_eq!(
-        resolved_path(&pool, mesh.material_path),
+        resolved_path(&pool, mesh.material.material_path),
         Some("materials\\primary.bgsm"),
         "net.name must take priority over root_material_path when both are material refs"
     );
@@ -298,7 +298,7 @@ fn lighting_shader_non_material_root_material_is_ignored() {
     scene.blocks.push(Box::new(shader));
     let (mesh, _pool) = import(&scene, &renderable_shape(0));
     assert!(
-        mesh.material_path.is_none(),
+        mesh.material.material_path.is_none(),
         "non-material root_material_path must not be captured"
     );
 }

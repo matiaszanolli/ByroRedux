@@ -47,8 +47,8 @@ So real glass in two different games both fail to render as glass, for two **dif
 
 ### Leak B — metalness/roughness derived by three conventions, with an Option fallback
 
-`ImportedMesh.metalness_override: Option<f32>` / `roughness_override: Option<f32>`:
-- **`Some`** → authored (BGSM, FO4/Skyrim+), set by `merge_bgsm_into_mesh` (`roughness = 1 - bgsm.smoothness`).
+`ImportedMaterial.metalness_override: Option<f32>` / `roughness_override: Option<f32>`:
+- **`Some`** → authored (BGSM, FO4/Skyrim+), set by `merge_external_material` (`roughness = 1 - bgsm.smoothness`).
 - **`None`** → falls back to `classify_pbr_keyword` (texture-path keyword + `1 - glossiness/100`) **at render time**.
 
 So:

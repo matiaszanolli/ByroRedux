@@ -494,7 +494,7 @@ pub mod material_flag {
     // BGSM-specific `MAT_AUTHORED_BY_BGSM` telemetry bit below records
     // provenance for debug inspection without ever reaching the shader.
     //
-    // Captured CPU-side by `pack_bgsm_material_flags` in
+    // Captured CPU-side by `pack_imported_material_flags` in
     // `byroredux/src/cell_loader.rs` and OR'd into `effect_shader_flags`
     // at the importer boundary; forwarded unchanged to
     // `GpuMaterial.material_flags` by `DrawCommand::to_gpu_material`.
@@ -503,7 +503,7 @@ pub mod material_flag {
     /// Burley diffuse, GGX specular, optional sheen / subsurface /
     /// clearcoat). When clear, the fragment shader runs the
     /// legacy Lambert + simple-GGX path. Set for all BGSM/BGEM-sourced
-    /// content: since #1352 the BGSM merge flips `ImportedMesh.is_pbr =
+    /// content: since #1352 the BGSM merge flips `ImportedMaterial.is_pbr =
     /// true` unconditionally and the cell loader ORs this bit whenever
     /// `is_pbr` is set (not just the rarely-authored `BgsmFile.pbr ==
     /// true` case). Future translators (.mat, Disney-authored legacy
@@ -554,7 +554,7 @@ pub mod material_flag {
     /// shader never reads it (it is format-agnostic and consumes only
     /// the resolved `Material.{metalness,roughness}` — see
     /// `shader_constants_data.rs`). The two conventions, resolved
-    /// CPU-side in `merge_bgsm_into_mesh` + `translate_material`:
+    /// CPU-side in `merge_external_material` + `translate_material`:
     ///   * BGSM-authored (Skyrim SE / FO4 / FO76) → spec-glossiness:
     ///     `F0 = specular_color * specular_mult` directly, no metalness
     ///     mix. Vanilla content uniformly authors per-material spec_color
@@ -565,7 +565,7 @@ pub mod material_flag {
     ///     keyword-classified metalness; spec_color is a Phong-era
     ///     tint scalar applied AFTER the BRDF, not F0 itself.
     ///
-    /// Set when `merge_bgsm_into_mesh` resolves a `.bgsm` or `.bgem`
+    /// Set when `merge_external_material` resolves a `.bgsm` or `.bgem`
     /// material file successfully (i.e. real authored data merged into
     /// `ImportedMesh`). NOT set when the mesh has an inline
     /// `BSLightingShaderProperty` only — Skyrim BSLighting without an

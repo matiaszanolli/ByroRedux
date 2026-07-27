@@ -365,9 +365,18 @@ mod tests {
         // convention. Triangulation diagonal stays BL-TR (same as
         // pre-fix), but each triangle's vertex order is reversed.
         assert_eq!(mesh.indices, vec![0, 3, 2, 2, 1, 0]);
-        assert!(mesh.alpha_test, "leaf billboards use alpha-test cutout");
-        assert!(mesh.two_sided, "billboard rotates, both faces visible");
-        assert!(!mesh.has_alpha, "alpha-test and alpha-blend are exclusive");
+        assert!(
+            mesh.material.alpha_test,
+            "leaf billboards use alpha-test cutout"
+        );
+        assert!(
+            mesh.material.two_sided,
+            "billboard rotates, both faces visible"
+        );
+        assert!(
+            !mesh.material.has_alpha,
+            "alpha-test and alpha-blend are exclusive"
+        );
         assert_eq!(mesh.parent_node, Some(0), "mesh is a child of node 0");
     }
 
@@ -452,6 +461,7 @@ mod tests {
         };
         let imported = import_spt_scene(&scene, &params, &mut pool);
         let texture = imported.meshes[0]
+            .material
             .textures
             .base_color
             .and_then(|h| pool.resolve(h).map(|s| s.to_string()));
@@ -484,12 +494,12 @@ mod tests {
             let imported = import_spt_scene(&scene, &params, &mut pool);
             let mesh = &imported.meshes[0];
             assert_eq!(
-                mesh.metalness_override,
+                mesh.material.metalness_override,
                 Some(0.0),
                 "leaf path {leaf_path:?} must not classify metallic"
             );
             assert_eq!(
-                mesh.roughness_override,
+                mesh.material.roughness_override,
                 Some(0.85),
                 "leaf path {leaf_path:?} must use the matte foliage default, \
                  not a keyword-collision classification (WOOD=0.7, GLASS=0.1)"
@@ -504,6 +514,7 @@ mod tests {
         let params = SptImportParams::default();
         let imported = import_spt_scene(&scene, &params, &mut pool);
         let texture = imported.meshes[0]
+            .material
             .textures
             .base_color
             .and_then(|h| pool.resolve(h).map(|s| s.to_string()));
@@ -517,7 +528,7 @@ mod tests {
         let params = SptImportParams::default();
         let imported = import_spt_scene(&scene, &params, &mut pool);
         assert!(
-            imported.meshes[0].textures.base_color.is_none(),
+            imported.meshes[0].material.textures.base_color.is_none(),
             "no texture → leave path unset, renderer fills the magenta placeholder",
         );
     }

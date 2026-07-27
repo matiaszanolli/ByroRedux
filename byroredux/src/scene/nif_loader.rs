@@ -23,8 +23,8 @@ use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{
-    build_material_provider, build_texture_provider, derive_normal_map_path, merge_bgsm_into_mesh,
-    resolve_texture, MaterialProvider, TextureProvider,
+    build_material_provider, build_texture_provider, derive_normal_map_path,
+    merge_external_material, resolve_texture, MaterialProvider, TextureProvider,
 };
 use crate::components::{
     decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, IsDecalMesh, IsFxMesh,
@@ -231,7 +231,7 @@ pub(super) fn parse_import_and_merge(
     // REFR overlays and per-mesh imports share the dedup table (#609).
     if let Some(provider) = mat_provider {
         for mesh in &mut imported.meshes {
-            merge_bgsm_into_mesh(mesh, provider, &mut pool);
+            merge_external_material(&mut mesh.material, provider, &mut pool);
         }
     }
     // #1215 / D2 FIND-1 — sibling of the cell-loader zero-contribution
@@ -715,9 +715,9 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // Effect-shader geometry is a raster-only proxy volume, never a
         // surface that should occlude shadow/GI/reflection rays.
         let for_rt = ctx.device_caps.ray_query_supported
-            && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
-            && mesh.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
-            && !mesh.is_decal;
+            && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+            && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+            && !mesh.material.is_decal;
         // upload_scene_mesh registers the vertices/indices into the global
         // geometry SSBO that RT ray queries sample for reflection UVs.
         // See #371.
@@ -756,8 +756,8 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                         .map(|s| s.to_string())
                 };
             (
-                mesh.textures.map_ref(|path| resolve_owned(*path)),
-                resolve_owned(mesh.material_path),
+                mesh.material.textures.map_ref(|path| resolve_owned(*path)),
+                resolve_owned(mesh.material.material_path),
             )
         };
 
@@ -820,14 +820,14 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         );
         world.insert(entity, WorldBound::ZERO);
         let implicit_decal_blend = decal_uses_implicit_alpha_blend(
-            mesh.is_decal,
-            mesh.has_alpha,
-            mesh.alpha_test,
-            mesh.alpha_threshold,
+            mesh.material.is_decal,
+            mesh.material.has_alpha,
+            mesh.material.alpha_test,
+            mesh.material.alpha_threshold,
         );
-        if mesh.has_alpha || implicit_decal_blend {
-            let (src_blend, dst_blend) = if mesh.has_alpha {
-                (mesh.src_blend_mode, mesh.dst_blend_mode)
+        if mesh.material.has_alpha || implicit_decal_blend {
+            let (src_blend, dst_blend) = if mesh.material.has_alpha {
+                (mesh.material.src_blend_mode, mesh.material.dst_blend_mode)
             } else {
                 (6, 7)
             };
@@ -839,10 +839,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 },
             );
         }
-        if mesh.is_decal {
+        if mesh.material.is_decal {
             world.insert(entity, IsDecalMesh);
         }
-        if mesh.two_sided {
+        if mesh.material.two_sided {
             world.insert(entity, TwoSided);
         }
         // #renderlayer — loose-NIF path has no REFR base record, so
@@ -868,7 +868,11 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 RenderLayer::Architecture,
                 mesh.local_bound_radius,
             );
-            let layer = render_layer_with_decal_escalation(layer, mesh.is_decal, mesh.alpha_test);
+            let layer = render_layer_with_decal_escalation(
+                layer,
+                mesh.material.is_decal,
+                mesh.material.alpha_test,
+            );
             world.insert(entity, layer);
         }
         // Carry `NiAVObject.flags` across — gameplay systems branch on
@@ -883,7 +887,8 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // identically. No REFR overlay on the loose path → no extra
         // material flags. See `material_translate.rs`.
         let material = crate::material_translate::translate_material(
-            mesh,
+            &mesh.material,
+            mesh.name.as_deref(),
             crate::material_translate::ResolvedPaths {
                 textures: owned_textures.clone(),
                 material_path: owned_material_path.clone(),
@@ -919,8 +924,8 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             MaterialTextureHandles {
                 textures: texture_handles,
                 normal_has_alpha,
-                parallax_height_scale: mesh.parallax_height_scale.unwrap_or(0.04),
-                parallax_max_passes: mesh.parallax_max_passes.unwrap_or(4.0),
+                parallax_height_scale: mesh.material.parallax_height_scale.unwrap_or(0.04),
+                parallax_max_passes: mesh.material.parallax_max_passes.unwrap_or(4.0),
             },
         );
         // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
@@ -1040,7 +1045,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             mesh.name.as_deref().unwrap_or("unnamed"),
             num_verts,
             mesh.indices.len() / 3,
-            mesh.textures.base_color,
+            mesh.material.textures.base_color,
         );
         count += 1;
     }

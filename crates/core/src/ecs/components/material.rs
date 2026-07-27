@@ -215,7 +215,7 @@ pub struct Material {
     /// #1147 Phase 2b — BGSM v>=8 translucency suite. Forwarded from
     /// `ImportedMesh.translucency_subsurface_color` etc.; gated at the
     /// renderer by `material_flags & MAT_FLAG_BGSM_TRANSLUCENCY`
-    /// (packed via `pack_bgsm_material_flags`). `[0.0; 3]` and `0.0`
+    /// (packed via `pack_imported_material_flags`). `[0.0; 3]` and `0.0`
     /// defaults so legacy / non-BGSM-v>=8 content evaluates the SSS
     /// path as zero contribution even if the gating flag were
     /// erroneously set.
@@ -233,7 +233,7 @@ pub struct Material {
     /// Canonical PBR metalness `[0, 1]` — **fully resolved, no Option,
     /// no render-time fallback**. Populated once at the translation
     /// boundary (`byroredux::material_translate::translate_material`):
-    /// either from the BGSM/BGEM translator (`merge_bgsm_into_mesh`
+    /// either from the BGSM/BGEM translator (`merge_external_material`
     /// maps authored `specular_color * specular_mult` luminance —
     /// dielectric ≈ 0.04 → `0.0`, conductor ≈ 0.95 → near `1.0`), or
     /// from the keyword classifier ([`resolve_pbr`](Self::resolve_pbr))

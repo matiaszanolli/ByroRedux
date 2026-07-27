@@ -19,12 +19,12 @@ use crate::blocks::extra_data::{BsPackedCombinedGeomDataExtra, BsPackedCombinedP
 use crate::blocks::traits::HasObjectNET;
 use crate::blocks::tri_shape::{decode_bs_vertex_stream, BsTriShape};
 use crate::header::NifHeader;
-use crate::import::{ImportedMesh, MaterialTextureSet};
+use crate::import::{ImportedMaterial, ImportedMesh};
 use crate::scene::NifScene;
 use crate::stream::NifStream;
 use crate::types::NiTransform;
 use crate::version::{bsver, NifVersion};
-use byroredux_core::string::{FixedString, StringPool};
+use byroredux_core::string::StringPool;
 use std::io;
 use std::sync::Arc;
 
@@ -61,9 +61,14 @@ impl PrecombineGeometry {
     /// rotation via `zup_matrix_to_yup_quat` (which conjugates by the
     /// Z→Y axis swap) — matching how the node walk converts every other
     /// local transform, so composition with the cell origin stays
-    /// correct. The mesh is untextured (v1): precombines bake a
-    /// grayscale-to-palette atlas whose material binding is a follow-up.
-    pub fn into_imported_mesh(self, instance: &NiTransform) -> ImportedMesh {
+    /// correct. The caller supplies the owning shape's fully translated
+    /// material payload, keeping precombined and ordinary geometry on the
+    /// same import contract.
+    pub fn into_imported_mesh(
+        self,
+        instance: &NiTransform,
+        material: ImportedMaterial,
+    ) -> ImportedMesh {
         let mut mesh = ImportedMesh::from_geometry(
             self.positions,
             self.colors,
@@ -75,6 +80,7 @@ impl PrecombineGeometry {
         mesh.translation = super::coord::zup_point_to_yup(&instance.translation);
         mesh.rotation = super::coord::zup_matrix_to_yup_quat(&instance.rotation);
         mesh.scale = instance.scale;
+        mesh.material = material;
         mesh.name = Some(Arc::from("PrecombineObject"));
         mesh
     }
@@ -187,50 +193,6 @@ pub fn decode_shared_geom_object(
     })
 }
 
-/// Visually-essential material the owning shape's shader/alpha properties
-/// resolve to for a precombine object (M49 texturing). Sourced from the
-/// same `MaterialInfo` the normal BSTriShape import computes; the full
-/// PBR / emissive suite defaults via [`ImportedMesh::from_geometry`], and
-/// BGSM-only precombines (`material_path` set, no inline texture set) need
-/// the BGSM merge — a follow-up. Empty (`Default`) when no shape claims
-/// the geometry block.
-#[derive(Debug, Clone, Default)]
-pub struct PrecombineMaterial {
-    pub textures: MaterialTextureSet<Option<FixedString>>,
-    pub material_path: Option<FixedString>,
-    pub has_alpha: bool,
-    pub src_blend_mode: u8,
-    pub dst_blend_mode: u8,
-    pub alpha_test: bool,
-    pub alpha_threshold: f32,
-    pub alpha_test_func: u8,
-    pub two_sided: bool,
-    /// BGSM/shader Decal flag. Without it, decals baked into a precombine
-    /// (grime rings, blood splats, scorch marks) stay `RenderLayer::Architecture`
-    /// and render as opaque black instead of escalating to `RenderLayer::Decal`.
-    /// Mirrors the `is_decal: mat.is_decal` propagation the inline BSTriShape /
-    /// NiTriShape / BSGeometry import paths already do (#1188 follow-up).
-    pub is_decal: bool,
-}
-
-impl PrecombineMaterial {
-    /// Stamp these material fields onto a freshly-built precombine mesh
-    /// (which otherwise carries the opaque untextured defaults from
-    /// [`ImportedMesh::from_geometry`]).
-    pub fn apply(&self, mesh: &mut ImportedMesh) {
-        mesh.textures = self.textures;
-        mesh.material_path = self.material_path;
-        mesh.has_alpha = self.has_alpha;
-        mesh.src_blend_mode = self.src_blend_mode;
-        mesh.dst_blend_mode = self.dst_blend_mode;
-        mesh.alpha_test = self.alpha_test;
-        mesh.alpha_threshold = self.alpha_threshold;
-        mesh.alpha_test_func = self.alpha_test_func;
-        mesh.two_sided = self.two_sided;
-        mesh.is_decal = self.is_decal;
-    }
-}
-
 /// One shared-geometry object resolved from an `_oc.nif` scene: where its
 /// vertex/triangle data lives in the CSG, the LOD table, the per-instance
 /// placements, and the material from the owning shape. The cell loader
@@ -248,7 +210,7 @@ pub struct PrecombineGeomRef {
     pub lod_offsets: [u32; 3],
     /// Per-`BSPackedGeomDataCombined` placement transforms (raw Z-up).
     pub instances: Vec<NiTransform>,
-    pub material: PrecombineMaterial,
+    pub material: ImportedMaterial,
 }
 
 /// Walk an `_oc.nif` scene and collect every shared-geometry object with
@@ -309,14 +271,13 @@ fn find_owning_shape(scene: &NifScene, packed_idx: usize) -> Option<&BsTriShape>
     })
 }
 
-/// Resolve a precombine shape's material via the same `MaterialInfo`
-/// extraction the inline-geometry BSTriShape import uses, then keep the
-/// visually-essential fields.
+/// Resolve a precombine shape's material through the same full translation
+/// boundary used by inline BSTriShape geometry.
 fn precombine_material_from_shape(
     scene: &NifScene,
     shape: &BsTriShape,
     pool: &mut StringPool,
-) -> PrecombineMaterial {
+) -> ImportedMaterial {
     let mat = super::material::extract_material_info_from_refs(
         scene,
         shape.shader_property_ref,
@@ -325,48 +286,30 @@ fn precombine_material_from_shape(
         &[],
         pool,
     );
-    let effective_alpha_blend = mat.effective_alpha_blend(shape.av.net.name.as_deref(), pool);
-    let textures = mat.texture_set(pool);
-    PrecombineMaterial {
-        textures,
-        material_path: mat.material_path,
-        has_alpha: effective_alpha_blend,
-        src_blend_mode: mat.src_blend_mode,
-        dst_blend_mode: mat.dst_blend_mode,
-        alpha_test: mat.alpha_test,
-        alpha_threshold: mat.alpha_threshold,
-        alpha_test_func: mat.alpha_test_func,
-        two_sided: mat.two_sided,
-        is_decal: mat.is_decal,
-    }
+    mat.into_imported_material(pool, shape.av.net.name.as_deref())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// #1188 follow-up — `PrecombineMaterial::apply` must stamp `is_decal`
-    /// onto the mesh. Before the fix, decals baked into a precombine
-    /// (grime rings, blood splats) lost the flag and rendered as opaque
-    /// black architecture instead of escalating to `RenderLayer::Decal`.
+    /// #1188 follow-up — material attachment must preserve all translated
+    /// flags, including decal/two-sided routing.
     #[test]
-    fn apply_propagates_is_decal() {
-        let mut mesh = ImportedMesh::from_geometry(vec![], vec![], vec![], vec![], vec![], vec![]);
-        assert!(!mesh.is_decal, "default mesh is not a decal");
-
-        let mat = PrecombineMaterial {
+    fn mesh_construction_attaches_full_material() {
+        let material = ImportedMaterial {
             is_decal: true,
             two_sided: true,
+            emissive_mult: 7.0,
+            material_kind: 16,
             ..Default::default()
         };
-        mat.apply(&mut mesh);
-        assert!(mesh.is_decal, "is_decal must survive the precombine apply");
-        assert!(mesh.two_sided, "two_sided still propagates");
-
-        // A non-decal material leaves the flag clear.
-        let mut plain = ImportedMesh::from_geometry(vec![], vec![], vec![], vec![], vec![], vec![]);
-        PrecombineMaterial::default().apply(&mut plain);
-        assert!(!plain.is_decal);
+        let mesh =
+            PrecombineGeometry::default().into_imported_mesh(&NiTransform::default(), material);
+        assert!(mesh.material.is_decal);
+        assert!(mesh.material.two_sided);
+        assert_eq!(mesh.material.emissive_mult, 7.0);
+        assert_eq!(mesh.material.material_kind, 16);
     }
 
     fn half(f: f32) -> [u8; 2] {

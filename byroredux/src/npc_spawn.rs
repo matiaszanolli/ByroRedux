@@ -1273,7 +1273,7 @@ pub fn spawn_npc_entity(
                         return;
                     };
                     for mesh in scene.meshes.iter_mut() {
-                        mesh.textures.base_color = Some(interned);
+                        mesh.material.textures.base_color = Some(interned);
                     }
                 };
                 let has_hook = interned_eye_tex.is_some();

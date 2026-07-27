@@ -301,12 +301,12 @@ fn pbr_scalars_propagate_to_imported_mesh_through_ni_tri_shape() {
     );
     let mesh = &imported.meshes[0];
 
-    assert_eq!(mesh.refraction_strength, 0.42);
-    assert_eq!(mesh.lighting_effect_1, 0.11);
-    assert_eq!(mesh.lighting_effect_2, 0.22);
-    assert_eq!(mesh.subsurface_rolloff, 0.33);
-    assert_eq!(mesh.rimlight_power, 0.44);
-    assert_eq!(mesh.backlight_power, 0.55);
-    assert_eq!(mesh.grayscale_to_palette_scale, 0.66);
-    assert_eq!(mesh.fresnel_power, 7.7);
+    assert_eq!(mesh.material.refraction_strength, 0.42);
+    assert_eq!(mesh.material.lighting_effect_1, 0.11);
+    assert_eq!(mesh.material.lighting_effect_2, 0.22);
+    assert_eq!(mesh.material.subsurface_rolloff, 0.33);
+    assert_eq!(mesh.material.rimlight_power, 0.44);
+    assert_eq!(mesh.material.backlight_power, 0.55);
+    assert_eq!(mesh.material.grayscale_to_palette_scale, 0.66);
+    assert_eq!(mesh.material.fresnel_power, 7.7);
 }

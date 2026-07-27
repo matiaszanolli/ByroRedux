@@ -478,6 +478,7 @@ fn spawn_placement_lod_cell(
 
             // Diffuse texture from the `_far.nif`'s own shader texture set.
             let tex_str = mesh
+                .material
                 .textures
                 .base_color
                 .and_then(|fs| pool.resolve(fs).map(str::to_owned));

@@ -129,12 +129,12 @@ fn bs_tri_shape_captures_skin_tint_color() {
         &mut byroredux_core::string::StringPool::new(),
     )
     .expect("synthetic shape should import");
-    assert_eq!(imported.material_kind, 5);
+    assert_eq!(imported.material.material_kind, 5);
     assert_eq!(
-        imported.shader_type_fields.skin_tint_color,
+        imported.material.shader_type_fields.skin_tint_color,
         Some([0.87, 0.65, 0.54])
     );
-    assert_eq!(imported.shader_type_fields.skin_tint_alpha, None);
+    assert_eq!(imported.material.shader_type_fields.skin_tint_alpha, None);
 }
 
 #[test]
@@ -154,9 +154,9 @@ fn bs_tri_shape_captures_hair_tint_color() {
         &mut byroredux_core::string::StringPool::new(),
     )
     .unwrap();
-    assert_eq!(imported.material_kind, 6);
+    assert_eq!(imported.material.material_kind, 6);
     assert_eq!(
-        imported.shader_type_fields.hair_tint_color,
+        imported.material.shader_type_fields.hair_tint_color,
         Some([0.3, 0.15, 0.05])
     );
 }
@@ -180,13 +180,22 @@ fn bs_tri_shape_captures_eye_envmap_centers() {
         &mut byroredux_core::string::StringPool::new(),
     )
     .unwrap();
-    assert_eq!(imported.shader_type_fields.eye_cubemap_scale, Some(1.5));
     assert_eq!(
-        imported.shader_type_fields.eye_left_reflection_center,
+        imported.material.shader_type_fields.eye_cubemap_scale,
+        Some(1.5)
+    );
+    assert_eq!(
+        imported
+            .material
+            .shader_type_fields
+            .eye_left_reflection_center,
         Some([0.1, 0.2, 0.3])
     );
     assert_eq!(
-        imported.shader_type_fields.eye_right_reflection_center,
+        imported
+            .material
+            .shader_type_fields
+            .eye_right_reflection_center,
         Some([0.4, 0.5, 0.6])
     );
 }
@@ -211,10 +220,13 @@ fn bs_tri_shape_fo76_skin_tint_splits_rgba() {
     )
     .unwrap();
     assert_eq!(
-        imported.shader_type_fields.skin_tint_color,
+        imported.material.shader_type_fields.skin_tint_color,
         Some([0.9, 0.7, 0.55])
     );
-    assert_eq!(imported.shader_type_fields.skin_tint_alpha, Some(0.25));
+    assert_eq!(
+        imported.material.shader_type_fields.skin_tint_alpha,
+        Some(0.25)
+    );
 }
 
 #[test]
@@ -234,9 +246,9 @@ fn bs_tri_shape_environment_map_routes_scale_not_fields() {
         &mut byroredux_core::string::StringPool::new(),
     )
     .unwrap();
-    assert_eq!(imported.env_map_scale, 2.5);
+    assert_eq!(imported.material.env_map_scale, 2.5);
     assert_eq!(
-        imported.shader_type_fields,
+        imported.material.shader_type_fields,
         super::super::material::ShaderTypeFields::default()
     );
 }
@@ -253,9 +265,9 @@ fn bs_tri_shape_without_shader_has_default_fields() {
         &mut byroredux_core::string::StringPool::new(),
     )
     .unwrap();
-    assert_eq!(imported.material_kind, 0);
+    assert_eq!(imported.material.material_kind, 0);
     assert_eq!(
-        imported.shader_type_fields,
+        imported.material.shader_type_fields,
         super::super::material::ShaderTypeFields::default()
     );
 }

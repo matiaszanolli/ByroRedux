@@ -142,19 +142,19 @@ fn import_with_pool(
 }
 
 /// #128 — Double_Sided bit on BSEffectShaderProperty.shader_flags_2
-/// routes through the shared extractor onto `ImportedMesh.two_sided`.
+/// routes through the shared extractor onto `ImportedMesh.material.two_sided`.
 #[test]
 fn two_sided_via_bs_effect_shader_property() {
     let mut scene = NifScene::default();
     scene.blocks.push(Box::new(effect_shader(0x10)));
-    assert!(import(&scene, &renderable_shape(0)).two_sided);
+    assert!(import(&scene, &renderable_shape(0)).material.two_sided);
 }
 
 #[test]
 fn not_two_sided_via_bs_effect_shader_without_flag() {
     let mut scene = NifScene::default();
     scene.blocks.push(Box::new(effect_shader(0x00)));
-    assert!(!import(&scene, &renderable_shape(0)).two_sided);
+    assert!(!import(&scene, &renderable_shape(0)).material.two_sided);
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn null_shader_ref_yields_single_sided() {
     let scene = NifScene::default();
     let mut shape = renderable_shape(0);
     shape.shader_property_ref = BlockRef::NULL;
-    assert!(!import(&scene, &shape).two_sided);
+    assert!(!import(&scene, &shape).material.two_sided);
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn shader_ref_pointing_at_unrelated_block_yields_single_sided() {
         children: Vec::new(),
         effects: Vec::new(),
     }));
-    assert!(!import(&scene, &renderable_shape(0)).two_sided);
+    assert!(!import(&scene, &renderable_shape(0)).material.two_sided);
 }
 
 /// #618 — BsTriShape vertex_colors carry RGBA per nif.xml
@@ -247,17 +247,18 @@ fn extract_bs_tri_shape_pulls_effect_shader_emissive_uv_alpha_normal() {
     let mut scene = NifScene::default();
     scene.blocks.push(Box::new(effect_shader_with_payload()));
     let (mesh, pool) = import_with_pool(&scene, &renderable_shape(0));
-    assert_eq!(mesh.emissive_color, [0.7, 0.8, 0.9]);
-    assert!((mesh.emissive_mult - 3.5).abs() < 1e-6);
-    assert_eq!(mesh.uv_offset, [0.25, 0.5]);
-    assert_eq!(mesh.uv_scale, [2.0, 4.0]);
-    assert!((mesh.mat_alpha - 0.5).abs() < 1e-6);
-    assert!((mesh.env_map_scale - 0.75).abs() < 1e-6);
+    assert_eq!(mesh.material.emissive_color, [0.7, 0.8, 0.9]);
+    assert!((mesh.material.emissive_mult - 3.5).abs() < 1e-6);
+    assert_eq!(mesh.material.uv_offset, [0.25, 0.5]);
+    assert_eq!(mesh.material.uv_scale, [2.0, 4.0]);
+    assert!((mesh.material.mat_alpha - 0.5).abs() < 1e-6);
+    assert!((mesh.material.env_map_scale - 0.75).abs() < 1e-6);
     assert_eq!(
-        mesh.textures.normal.and_then(|s| pool.resolve(s)),
+        mesh.material.textures.normal.and_then(|s| pool.resolve(s)),
         Some("fx/glow_n.dds")
     );
     let fx = mesh
+        .material
         .effect_shader
         .as_ref()
         .expect("effect_shader should populate");
@@ -281,7 +282,7 @@ fn effect_shader_flag2_bit_21_is_not_decal_on_modern_properties() {
     let mut scene = NifScene::default();
     scene.blocks.push(Box::new(effect_shader(0x0020_0000)));
     assert!(
-        !import(&scene, &renderable_shape(0)).is_decal,
+        !import(&scene, &renderable_shape(0)).material.is_decal,
         "flags2 bit 21 is Cloud_LOD (Skyrim) / Anisotropic_Lighting (FO4), not a decal bit"
     );
 }
@@ -294,7 +295,7 @@ fn decal_via_effect_shader_decal_single_pass() {
     let mut shader = effect_shader(0);
     shader.shader_flags_1 = 0x0400_0000;
     scene.blocks.push(Box::new(shader));
-    assert!(import(&scene, &renderable_shape(0)).is_decal);
+    assert!(import(&scene, &renderable_shape(0)).material.is_decal);
 }
 
 // ── #795 / SK-D1-03 — BSTriShape inline tangent decode ────────────

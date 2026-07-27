@@ -99,7 +99,7 @@ Materials cross the canonical boundary in
 `byroredux::material_translate::translate_material`
 (`byroredux/src/material_translate.rs:73`) — this matches
 [NIFAL](nifal.md)'s claim that materials are the converged reference
-slice. `merge_bgsm_into_mesh` (`import.rs:113`) runs first, folding in
+slice. `merge_external_material` (`import.rs:113`) runs first, folding in
 FO4+ external BGSM/BGEM data. See [NIFAL](nifal.md) and
 [Material Abstraction](material-abstraction.md).
 

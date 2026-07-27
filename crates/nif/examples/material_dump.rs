@@ -43,33 +43,37 @@ fn main() {
             .map(|s| s.to_string())
             .unwrap_or_else(|| "-".to_string());
         let tex = m
+            .material
             .textures
             .base_color
             .and_then(|s| pool.resolve(s))
             .map(str::to_string)
             .or_else(|| {
-                m.material_path
+                m.material
+                    .material_path
                     .and_then(|s| pool.resolve(s))
                     .map(str::to_string)
             })
             .unwrap_or_else(|| "(none)".to_string());
         let meto = m
+            .material
             .metalness_override
             .map(|v| format!("{:.2}", v))
             .unwrap_or_else(|| "-".to_string());
         let rgho = m
+            .material
             .roughness_override
             .map(|v| format!("{:.2}", v))
             .unwrap_or_else(|| "-".to_string());
         // Specular-color luminance (Rec.709) — a near-1.0 value with high
         // specular_strength is the legacy metal hint we currently ignore.
-        let sc = m.specular_color;
+        let sc = m.material.specular_color;
         let spec_lum = 0.2126 * sc[0] + 0.7152 * sc[1] + 0.0722 * sc[2];
         // Emissive-multiplier provenance (#1280 step 4 / emissive scale
         // unification ground-truth): which authoring slot fed emisM, so a
         // per-game sweep can read whether the three sources share a scale.
         use byroredux_core::ecs::components::material::EmissiveSource;
-        let emis_src = match m.emissive_source {
+        let emis_src = match m.material.emissive_source {
             EmissiveSource::None => "-",
             EmissiveSource::Material => "mat", // NiMaterialProperty.emissive_mult
             EmissiveSource::Lighting => "lit", // BSLightingShaderProperty.emissive_multiple
@@ -78,17 +82,17 @@ fn main() {
         println!(
             "{:<22.22} {:>5} {:>5} {:>5} {:>5.0} {:>5.2} {:>5.2} {:>6.2} {:>6.1} {:>6} {:>5} {:>5}  {}",
             name,
-            m.material_kind,
+            m.material.material_kind,
             meto,
             rgho,
-            m.glossiness,
-            m.env_map_scale,
-            m.specular_strength,
+            m.material.glossiness,
+            m.material.env_map_scale,
+            m.material.specular_strength,
             spec_lum,
-            m.emissive_mult,
+            m.material.emissive_mult,
             emis_src,
-            m.has_alpha as u8,
-            m.is_decal as u8,
+            m.material.has_alpha as u8,
+            m.material.is_decal as u8,
             tex,
         );
     }

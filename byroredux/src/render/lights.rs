@@ -9,7 +9,7 @@
 //! `falloff_exponent` field) and the renderer's standard light contract.
 //! The shader consumes only the translated fields — no LIGH-specific
 //! knowledge leaks into GLSL. Same directive as the BGSM → PBR
-//! translation in `merge_bgsm_into_mesh`; see
+//! translation in `merge_external_material`; see
 //! `feedback_format_translation.md`.
 
 use byroredux_core::ecs::{GlobalTransform, LightSource, World};

@@ -267,7 +267,7 @@ pub const MAT_FLAG_EFFECT_LI_SHIFT: u32 = 16;
 // NOTE: `material_flag::BGSM_AUTHORED` (Rust-side bit 10) is
 // NOT mirrored here — the shader is format-agnostic and doesn't
 // branch on material provenance. BGSM → standardized PBR
-// translation happens in `merge_bgsm_into_mesh`, which writes
+// translation happens in `merge_external_material`, which writes
 // `metalness_override` / `roughness_override` on the raw-tier
 // `ImportedMesh`; `translate_material` then resolves those into
 // `Material.{metalness,roughness}`. The Rust-side flag rides
