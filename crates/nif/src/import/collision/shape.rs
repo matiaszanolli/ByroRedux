@@ -375,23 +375,24 @@ fn resolve_tri_strips_data_refs(
                 v.z * extra_scale[2],
             ));
         }
-        // Convert triangle strips to triangles.
-        for strip in &data.strips {
-            for i in 2..strip.len() {
-                let (a, b, c) = if i % 2 == 0 {
-                    (strip[i - 2], strip[i - 1], strip[i])
-                } else {
-                    (strip[i - 1], strip[i - 2], strip[i])
-                };
-                // Skip degenerate triangles.
-                if a != b && b != c && a != c {
-                    all_indices.push([
-                        a as u32 + base_idx,
-                        b as u32 + base_idx,
-                        c as u32 + base_idx,
-                    ]);
-                }
-            }
+        // #2193 — de-strip through `NiTriStripsData::to_triangles`, the same
+        // call the RENDER path makes on this very block
+        // (`import/mesh/ni_tri_shape.rs`). `bhkNiTriStripsShape` reuses the
+        // visual geometry for collision, so the two consumers must agree on
+        // winding by construction, not by two hand-maintained copies of the
+        // strip-parity rule drifting in parallel — the collision copy that
+        // lived here alternated on the odd triangle by swapping the FIRST
+        // two vertices where the canonical one swaps the LAST two. Those are
+        // cyclic rotations of each other (same orientation, so no behaviour
+        // change here), but nothing was pinning that, and a one-sided edit
+        // to either copy would have silently inverted every Oblivion
+        // collision normal relative to the mesh it was cloned from.
+        for tri in data.to_triangles() {
+            all_indices.push([
+                tri[0] as u32 + base_idx,
+                tri[1] as u32 + base_idx,
+                tri[2] as u32 + base_idx,
+            ]);
         }
     }
 
@@ -826,6 +827,141 @@ mod cycle_tests {
             num_triangles: 0,
             strips: vec![strip],
         })
+    }
+
+    /// Geometric normal of a resolved collision triangle, in engine space.
+    /// Parry derives a `TriMesh` triangle's outward direction from exactly
+    /// this cross product (and the engine's default `TriMeshFlags::
+    /// FIX_INTERNAL_EDGES` transitively enables `ORIENTED`, so it is
+    /// load-bearing for contact normals — i.e. for `is_grounded`).
+    fn tri_normal(
+        verts: &[byroredux_core::math::Vec3],
+        tri: [u32; 3],
+    ) -> byroredux_core::math::Vec3 {
+        let a = verts[tri[0] as usize];
+        let b = verts[tri[1] as usize];
+        let c = verts[tri[2] as usize];
+        (b - a).cross(c - a).normalize()
+    }
+
+    /// #2193 — pin the winding of a `bhkNiTriStripsShape`-derived floor.
+    ///
+    /// A Z-up floor quad wound so its Gamebryo geometric normal is `+Z`
+    /// (up) must still read up (`+Y`) after `havok_to_engine`: the
+    /// Z-up→Y-up map `(x, y, z) → (x, z, -y)` is a proper rotation
+    /// (det = +1), so it moves normals without flipping orientation.
+    /// Both the even and the odd strip triangle are checked — the strip
+    /// parity rule is the one place a de-stripping bug inverts every other
+    /// triangle rather than all of them.
+    ///
+    /// This is the observable that `ICMarketDistrictTheGildedCarafe`
+    /// contradicts (a resting contact reading `dot-up ≈ −0.99`). Pinning it
+    /// here means the eventual fix has to explain what is actually
+    /// different about that content, and can't quietly become a blanket
+    /// winding flip that inverts every correctly-oriented floor.
+    #[test]
+    fn tri_strips_floor_keeps_an_upward_normal_through_the_coord_swap() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkNiTriStripsShape {
+            data_refs: vec![BlockRef(1u32)],
+            material: 0,
+            radius: 0.0,
+            scale: [1.0, 1.0, 1.0, 0.0],
+            filters: Vec::new(),
+        }));
+        // Four corners of a flat Z-up floor at z = 0, ordered so the strip
+        // (0,1,2,3) de-strips to two triangles whose Gamebryo geometric
+        // normals both point +Z: v0=(0,0), v1=(1,0), v2=(0,1), v3=(1,1)
+        // gives tri0 = (v0,v1,v2) with (1,0,0)×(0,1,0) = +Z, and the odd
+        // tri1 = (v1,v3,v2) with (0,1,0)×(-1,1,0) = +Z.
+        let p = |x: f32, y: f32| NiPoint3 { x, y, z: 0.0 };
+        scene.blocks.push(tri_strips_data(
+            vec![p(0.0, 0.0), p(1.0, 0.0), p(0.0, 1.0), p(1.0, 1.0)],
+            vec![0, 1, 2, 3],
+        ));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::TriMesh { vertices, indices }) => {
+                assert_eq!(indices.len(), 2, "strip of 4 ⇒ 2 triangles");
+                for (i, tri) in indices.iter().enumerate() {
+                    let n = tri_normal(&vertices, *tri);
+                    assert!(
+                        n.y > 0.99,
+                        "triangle {i} ({}) normal must point up (+Y) in engine \
+                         space, got {n:?} — an inverted normal here is the \
+                         #2193 symptom, and a strip-parity bug inverts only \
+                         every other triangle",
+                        if i % 2 == 0 { "even" } else { "odd" },
+                    );
+                }
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
+    }
+
+    /// #2193 — the collision de-stripper and the RENDER de-stripper must
+    /// agree, because `bhkNiTriStripsShape` reuses the render path's own
+    /// `NiTriStripsData`. Before the dedup, two hand-written copies of the
+    /// strip-parity rule existed (this one swapped the first two vertices
+    /// on odd triangles, the canonical one swaps the last two — cyclic
+    /// rotations, hence equivalent, but nothing pinned that). Now there is
+    /// one implementation; this test pins that it stays the shared one.
+    #[test]
+    fn collision_destrip_matches_the_canonical_render_destrip() {
+        use crate::blocks::tri_shape::NiTriStripsData as Data;
+
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkNiTriStripsShape {
+            data_refs: vec![BlockRef(1u32)],
+            material: 0,
+            radius: 0.0,
+            scale: [1.0, 1.0, 1.0, 0.0],
+            filters: Vec::new(),
+        }));
+        // Six-vertex strip ⇒ 4 triangles, so both parities appear twice.
+        let verts: Vec<NiPoint3> = (0..6)
+            .map(|i| NiPoint3 {
+                x: i as f32,
+                y: (i % 2) as f32,
+                z: 0.0,
+            })
+            .collect();
+        scene
+            .blocks
+            .push(tri_strips_data(verts.clone(), vec![0, 1, 2, 3, 4, 5]));
+
+        let canonical = Data {
+            vertices: verts,
+            normals: Vec::new(),
+            center: NiPoint3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            radius: 0.0,
+            vertex_colors: Vec::new(),
+            uv_sets: Vec::new(),
+            num_triangles: 0,
+            strips: vec![vec![0, 1, 2, 3, 4, 5]],
+        }
+        .to_triangles();
+
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::TriMesh { indices, .. }) => {
+                let got: Vec<[u16; 3]> = indices
+                    .iter()
+                    .map(|t| [t[0] as u16, t[1] as u16, t[2] as u16])
+                    .collect();
+                assert_eq!(
+                    got, canonical,
+                    "collision de-strip must be the render de-strip verbatim",
+                );
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
     }
 
     #[test]
