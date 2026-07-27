@@ -55,6 +55,29 @@ pub const BU_PER_METER: f32 = 70.0;
 /// [`PhysicsWorld::step`].
 pub const KILL_PLANE_Y: f32 = -25_000.0;
 
+/// One collider found by [`PhysicsWorld::colliders_near_xz`] (#2202).
+///
+/// `body_type` is the Rapier label of the *parent* body, because that is the
+/// discriminator the spawn-probe blind spots turn on: `QueryFilter::
+/// exclude_dynamic` (used by `cast_ray_down` / `cast_capsule_down`) and the
+/// `RigidBodyType::Fixed` census in `static_colliders_aabb` both skip the
+/// Dynamic family entirely, so a floor authored as Dynamic is simultaneously
+/// un-probeable and uncounted.
+#[derive(Debug, Clone, Copy)]
+pub struct NearbyCollider {
+    /// Parent rigid body, for resolving back to an ECS entity via
+    /// `RapierHandles`. `None` for a parentless (orphan) collider.
+    pub body: Option<rapier3d::prelude::RigidBodyHandle>,
+    /// `"Fixed"` / `"Dynamic"` / `"KinematicPos"` / `"KinematicVel"` /
+    /// `"orphan"`.
+    pub body_type: &'static str,
+    /// Sensors (trigger volumes) never generate contacts — a sensor sitting
+    /// where the floor should be is not a floor.
+    pub is_sensor: bool,
+    pub aabb_min: [f32; 3],
+    pub aabb_max: [f32; 3],
+}
+
 /// Rapier simulation container + fixed-timestep accumulator.
 ///
 /// Held as an ECS resource. Query via `world.resource_mut::<PhysicsWorld>()`.
@@ -600,6 +623,64 @@ impl PhysicsWorld {
         }
     }
 
+    /// Diagnostic — every collider whose AABB overlaps the vertical column
+    /// of half-width `radius` around `(x, z)`, whatever its body type
+    /// (#2202).
+    ///
+    /// [`static_colliders_aabb`](Self::static_colliders_aabb) answers
+    /// "is the collision world populated and does it overlap this cell?" —
+    /// cell-wide bounds and a Fixed-only count. That reads healthy for a
+    /// cell with 2560 fixed colliders and a hole exactly under the player's
+    /// spawn, which is why it cannot discriminate between a collider that
+    /// is absent, a collider that exists but is Dynamic (and so invisible
+    /// to both that census and the `exclude_dynamic` spawn probe), and a
+    /// collider that exists as Fixed but composed to the wrong Y.
+    ///
+    /// This one is deliberately unfiltered: the *point* is to see colliders
+    /// the spawn probe cannot. Returned entries carry the parent body handle
+    /// so the caller can resolve it back to an entity and its
+    /// `PhysicsSourceForm`; sorted by AABB centre Y, descending, so the
+    /// nearest thing above the probe reads first.
+    pub fn colliders_near_xz(&self, x: f32, z: f32, radius: f32) -> Vec<NearbyCollider> {
+        use rapier3d::prelude::*;
+        let mut out = Vec::new();
+        for (_h, c) in self.colliders.iter() {
+            let aabb = c.compute_aabb();
+            // Column overlap test — a wall whose AABB straddles the column
+            // counts even if its centre is far away.
+            if aabb.maxs.x < x - radius
+                || aabb.mins.x > x + radius
+                || aabb.maxs.z < z - radius
+                || aabb.mins.z > z + radius
+            {
+                continue;
+            }
+            let parent = c.parent();
+            let body_type = parent
+                .and_then(|p| self.bodies.get(p))
+                .map(|rb| match rb.body_type() {
+                    RigidBodyType::Fixed => "Fixed",
+                    RigidBodyType::Dynamic => "Dynamic",
+                    RigidBodyType::KinematicPositionBased => "KinematicPos",
+                    RigidBodyType::KinematicVelocityBased => "KinematicVel",
+                })
+                .unwrap_or("orphan");
+            out.push(NearbyCollider {
+                body: parent,
+                body_type,
+                is_sensor: c.is_sensor(),
+                aabb_min: [aabb.mins.x, aabb.mins.y, aabb.mins.z],
+                aabb_max: [aabb.maxs.x, aabb.maxs.y, aabb.maxs.z],
+            });
+        }
+        out.sort_by(|a, b| {
+            let ac = a.aabb_min[1] + a.aabb_max[1];
+            let bc = b.aabb_min[1] + b.aabb_max[1];
+            bc.partial_cmp(&ac).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        out
+    }
+
     /// Drive a kinematic character body forward one step using
     /// Rapier's `KinematicCharacterController` (M28.5). Returns the
     /// effective collide-and-slide-corrected motion + grounded status.
@@ -710,6 +791,108 @@ mod tests {
     fn empty_world_has_no_bodies() {
         let w = PhysicsWorld::new();
         assert_eq!(w.body_count(), 0);
+    }
+
+    /// Test helper: insert a 100×2×100 BU slab at `(x, y, z)` with the
+    /// given body type, and return nothing — the census is queried by
+    /// position, not handle.
+    fn insert_slab(w: &mut PhysicsWorld, pos: Vec3, dynamic: bool) {
+        let shape = single_shape(&CollisionShape::Cuboid {
+            half_extents: Vec3::new(50.0, 1.0, 50.0),
+        });
+        let body = if dynamic {
+            RigidBodyBuilder::dynamic()
+        } else {
+            RigidBodyBuilder::fixed()
+        }
+        .position(iso_from_trs(pos, Quat::IDENTITY))
+        .build();
+        let h = w.bodies.insert(body);
+        w.colliders
+            .insert_with_parent(ColliderBuilder::new(shape).build(), h, &mut w.bodies);
+    }
+
+    /// #2202 — the census must see a Dynamic-family floor. This is the
+    /// blind spot that makes candidate (B) indistinguishable from "no
+    /// collider": `cast_capsule_down` filters with `exclude_dynamic` and
+    /// `static_colliders_aabb` counts only `Fixed`, so a Dynamic slab is
+    /// reported by neither.
+    #[test]
+    fn census_sees_a_dynamic_floor_that_both_existing_probes_miss() {
+        let mut w = PhysicsWorld::new();
+        insert_slab(&mut w, Vec3::new(0.0, 0.0, 0.0), true);
+        w.update_query_pipeline();
+
+        assert!(
+            w.static_colliders_aabb().is_none(),
+            "Fixed-only census must not see a Dynamic floor — that blindness \
+             is the premise of this diagnostic"
+        );
+        assert!(
+            w.cast_capsule_down(Vec3::new(0.0, 100.0, 0.0), 60.0, 20.0, 500.0)
+                .is_none(),
+            "exclude_dynamic probe must not see a Dynamic floor"
+        );
+
+        let near = w.colliders_near_xz(0.0, 0.0, 64.0);
+        assert_eq!(near.len(), 1, "census must see it");
+        assert_eq!(near[0].body_type, "Dynamic");
+        assert!(!near[0].is_sensor);
+    }
+
+    /// A genuinely empty column reports empty — distinguishing candidate
+    /// (A)/(D) from (B)/(C).
+    #[test]
+    fn census_of_an_empty_column_is_empty() {
+        let mut w = PhysicsWorld::new();
+        // Floor exists, but 5000 BU away in X: the cell is populated, the
+        // spawn column is not. That is exactly the 2560-colliders-with-a-hole
+        // shape `static_colliders_aabb` reads as healthy.
+        insert_slab(&mut w, Vec3::new(5000.0, 0.0, 0.0), false);
+        w.update_query_pipeline();
+
+        assert!(
+            w.static_colliders_aabb().is_some(),
+            "cell-wide census still reports a populated collision world"
+        );
+        assert!(w.colliders_near_xz(0.0, 0.0, 64.0).is_empty());
+    }
+
+    /// Column overlap is an AABB test, not a centre-distance test: a slab
+    /// whose centre is outside the radius but whose extent straddles the
+    /// column still counts (a wall beside the spawn is load-bearing
+    /// evidence).
+    #[test]
+    fn census_column_test_uses_aabb_overlap_not_centre_distance() {
+        let mut w = PhysicsWorld::new();
+        // Centre 60 BU away in X, half-extent 50 ⇒ AABB spans x ∈ [10, 110].
+        insert_slab(&mut w, Vec3::new(60.0, 0.0, 0.0), false);
+        w.update_query_pipeline();
+        assert_eq!(w.colliders_near_xz(0.0, 0.0, 16.0).len(), 1);
+        // Same slab, column now well clear of x ∈ [10, 110].
+        assert!(w.colliders_near_xz(-100.0, 0.0, 16.0).is_empty());
+    }
+
+    /// Results come back nearest-above-first so the entry most likely to be
+    /// the missing floor reads at the top of the dump.
+    #[test]
+    fn census_sorts_by_aabb_centre_y_descending() {
+        let mut w = PhysicsWorld::new();
+        insert_slab(&mut w, Vec3::new(0.0, -500.0, 0.0), false);
+        insert_slab(&mut w, Vec3::new(0.0, 300.0, 0.0), false);
+        insert_slab(&mut w, Vec3::new(0.0, 0.0, 0.0), false);
+        w.update_query_pipeline();
+
+        let near = w.colliders_near_xz(0.0, 0.0, 16.0);
+        assert_eq!(near.len(), 3);
+        let centres: Vec<f32> = near
+            .iter()
+            .map(|n| 0.5 * (n.aabb_min[1] + n.aabb_max[1]))
+            .collect();
+        assert!(
+            centres[0] > centres[1] && centres[1] > centres[2],
+            "expected descending centre Y, got {centres:?}"
+        );
     }
 
     #[test]

@@ -30,6 +30,11 @@ pub use config::{ContactConfig, TriMeshFlagBits};
 pub use ragdoll::{
     build_ragdoll, RagdollBodySpec, RagdollConstraintSpec, RagdollJointSpec, RagdollSpec,
 };
-pub use sync::{physics_sync_system, set_kinematic_translation, set_linear_velocity};
+pub use sync::{
+    dump_spawn_collider_census, physics_sync_system, set_kinematic_translation,
+    set_linear_velocity, SpawnCensusEntry,
+};
 pub use water::{buoyancy_force, submerged_fraction, PhysicsWaterConstants};
-pub use world::{CharacterMoveParams, CharacterMoveResult, PhysicsWorld, PHYSICS_DT};
+pub use world::{
+    CharacterMoveParams, CharacterMoveResult, NearbyCollider, PhysicsWorld, PHYSICS_DT,
+};

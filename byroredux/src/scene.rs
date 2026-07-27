@@ -768,6 +768,22 @@ pub(crate) fn setup_scene(
                     ""
                 },
             );
+            // #2202 — all three rungs missed, so the column really is empty
+            // to the probe. Census what IS there before the character starts
+            // falling: the probe filters to non-Dynamic bodies and the
+            // static-AABB sanity log counts only Fixed ones, so between them
+            // an authored-Dynamic floor is invisible twice over and reads
+            // identically to no floor at all. Only on the failure path — a
+            // healthy spawn pays nothing.
+            if floor_probe_failed {
+                const SPAWN_CENSUS_RADIUS_BU: f32 = 256.0;
+                byroredux_physics::dump_spawn_collider_census(
+                    world,
+                    spawn.x,
+                    spawn.z,
+                    SPAWN_CENSUS_RADIUS_BU,
+                );
+            }
             spawn
         } else {
             let pw = world.resource::<byroredux_physics::PhysicsWorld>();

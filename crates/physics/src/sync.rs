@@ -332,6 +332,149 @@ fn dump_awake_fallers(world: &World) {
     }
 }
 
+/// Number of nearby colliders named individually by
+/// [`dump_spawn_collider_census`]. A vestibule is a handful of architecture
+/// pieces; anything past this is a wall of log that hides the answer.
+const SPAWN_CENSUS_DETAIL_CAP: usize = 24;
+
+/// One line of a spawn-column census (#2202). Pure data so the grouping is
+/// unit-testable without a live `World`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnCensusEntry {
+    pub body_type: &'static str,
+    pub is_sensor: bool,
+    /// AABB centre Y — the "is there anything at floor height here?" number.
+    pub center_y: f32,
+    pub min_y: f32,
+    pub max_y: f32,
+    pub entity: Option<String>,
+    pub form: Option<u32>,
+    pub layer: Option<&'static str>,
+}
+
+/// Tally of a census by parent body type, in the order the #2202
+/// candidate table reads. Pure, so it's unit-testable.
+///
+/// Returns `(fixed, dynamic, kinematic, sensors, orphan)`.
+fn census_tally(entries: &[SpawnCensusEntry]) -> (usize, usize, usize, usize, usize) {
+    let mut t = (0usize, 0usize, 0usize, 0usize, 0usize);
+    for e in entries {
+        if e.is_sensor {
+            t.3 += 1;
+        }
+        match e.body_type {
+            "Fixed" => t.0 += 1,
+            "Dynamic" => t.1 += 1,
+            "KinematicPos" | "KinematicVel" => t.2 += 1,
+            _ => t.4 += 1,
+        }
+    }
+    t
+}
+
+/// #2202 — census every collider in the vertical column around a spawn XZ,
+/// grouped by parent body type and resolved back to the placement form that
+/// produced it.
+///
+/// The discriminating diagnostic the issue asks for as its first step. When
+/// the door-spawn floor probe misses on all three rungs, the existing logs
+/// cannot tell these apart:
+///
+/// - colliders present, all Dynamic → the floor is authored non-Fixed, so
+///   `QueryFilter::exclude_dynamic` hid it from the probe and
+///   `static_colliders_aabb`'s Fixed-only count hid it from the sanity log;
+/// - colliders present, Fixed, wrong Y → a transform/scale composition bug,
+///   not a missing collider;
+/// - no colliders in the column but the owning REFR resolves → the shape
+///   dropped during import while a sibling shape in the same NIF kept
+///   `cached.collisions` non-empty, which suppresses the synthesized-trimesh
+///   fallback (that gate is per-NIF, `spawn.rs`, while the fallback itself is
+///   per-sub-mesh);
+/// - nothing at all → a REFR-level gap, upstream of collision entirely.
+///
+/// Pure logging, no state change. Called only on the all-rungs-missed path,
+/// so a healthy spawn costs nothing.
+pub fn dump_spawn_collider_census(world: &World, x: f32, z: f32, radius: f32) {
+    // Same lock-order discipline as `dump_awake_fallers` (#2136): snapshot
+    // everything `PhysicsWorld` can answer, drop the guard, then open ECS
+    // storages.
+    let nearby = {
+        let pw = world.resource::<PhysicsWorld>();
+        pw.colliders_near_xz(x, z, radius)
+    };
+
+    let mut body_to_entity: HashMap<rapier3d::prelude::RigidBodyHandle, EntityId> = HashMap::new();
+    if let Some(hq) = world.query::<RapierHandles>() {
+        for (entity, h) in hq.iter() {
+            body_to_entity.insert(h.body, entity);
+        }
+    }
+    let layer_q = world.query::<RenderLayer>();
+    let form_q = world.query::<FormIdComponent>();
+    let physics_source_q = world.query::<PhysicsSourceForm>();
+    let pool = world.try_resource::<FormIdPool>();
+
+    let entries: Vec<SpawnCensusEntry> = nearby
+        .iter()
+        .map(|n| {
+            let entity = n.body.and_then(|h| body_to_entity.get(&h).copied());
+            SpawnCensusEntry {
+                body_type: n.body_type,
+                is_sensor: n.is_sensor,
+                center_y: 0.5 * (n.aabb_min[1] + n.aabb_max[1]),
+                min_y: n.aabb_min[1],
+                max_y: n.aabb_max[1],
+                entity: entity.map(|e| e.to_string()),
+                form: entity.and_then(|e| {
+                    let direct = form_q.as_ref().and_then(|q| q.get(e).copied()).map(|c| c.0);
+                    let backlink = physics_source_q
+                        .as_ref()
+                        .and_then(|q| q.get(e).copied())
+                        .map(|c| c.0);
+                    let fid = resolve_source_form(direct, backlink)?;
+                    pool.as_ref()?.resolve(fid).map(|pair| pair.local.0)
+                }),
+                layer: entity
+                    .and_then(|e| layer_q.as_ref().and_then(|q| q.get(e).copied()))
+                    .map(render_layer_label),
+            }
+        })
+        .collect();
+
+    let (fixed, dynamic, kinematic, sensors, orphan) = census_tally(&entries);
+    log::warn!(
+        "#2202 spawn-column census at XZ ({x:.1}, {z:.1}) ±{radius:.0} BU: {} colliders \
+         (Fixed={fixed} Dynamic={dynamic} Kinematic={kinematic} orphan={orphan}, of which \
+         {sensors} sensors). Fixed=0 with Dynamic>0 ⇒ the floor is authored non-Fixed and both \
+         the spawn probe (exclude_dynamic) and the static census are blind to it; Fixed>0 at a \
+         wrong Y ⇒ transform composition; 0 total ⇒ the collider never spawned (per-NIF \
+         trimesh-fallback gate, or a REFR-level gap). Nearest {} by AABB centre Y:",
+        entries.len(),
+        entries.len().min(SPAWN_CENSUS_DETAIL_CAP),
+    );
+    for e in entries.iter().take(SPAWN_CENSUS_DETAIL_CAP) {
+        log::warn!(
+            "  {}{} entity={} form={} layer={} y=[{:.0}, {:.0}] centre={:.0}",
+            e.body_type,
+            if e.is_sensor { " (sensor)" } else { "" },
+            e.entity.as_deref().unwrap_or("?"),
+            e.form
+                .map(|id| format!("{id:#08X}"))
+                .unwrap_or_else(|| "?".into()),
+            e.layer.unwrap_or("?"),
+            e.min_y,
+            e.max_y,
+            e.center_y,
+        );
+    }
+    if entries.len() > SPAWN_CENSUS_DETAIL_CAP {
+        log::warn!(
+            "  … {} further colliders omitted",
+            entries.len() - SPAWN_CENSUS_DETAIL_CAP,
+        );
+    }
+}
+
 // ── Phase 1 ─────────────────────────────────────────────────────────────
 
 /// Snapshot of one entity to register in Rapier.
@@ -648,6 +791,60 @@ fn pull_dynamic(world: &World) {
             t.translation = pos;
             t.rotation = rot;
         }
+    }
+}
+
+#[cfg(test)]
+mod spawn_census_tests {
+    use super::{census_tally, SpawnCensusEntry};
+
+    fn entry(body_type: &'static str, is_sensor: bool) -> SpawnCensusEntry {
+        SpawnCensusEntry {
+            body_type,
+            is_sensor,
+            center_y: 0.0,
+            min_y: -1.0,
+            max_y: 1.0,
+            entity: None,
+            form: None,
+            layer: None,
+        }
+    }
+
+    /// #2202 — the tally is what separates the four candidate mechanisms,
+    /// so each family must land in its own bucket. Both kinematic variants
+    /// collapse into one count: the spawn probe *can* see keyframed bodies
+    /// (`havok_motion_type` maps raw 6 → Keyframed), so they are not part of
+    /// the Dynamic blind spot the census exists to expose.
+    #[test]
+    fn tally_separates_the_four_candidate_families() {
+        let entries = vec![
+            entry("Fixed", false),
+            entry("Fixed", false),
+            entry("Dynamic", false),
+            entry("KinematicPos", false),
+            entry("KinematicVel", false),
+            entry("orphan", false),
+        ];
+        assert_eq!(census_tally(&entries), (2, 1, 2, 0, 1));
+    }
+
+    /// Sensors are counted independently of body type — a trigger volume
+    /// where the floor should be generates no contacts and is not a floor,
+    /// so "Fixed=1" alone would be a misleading all-clear.
+    #[test]
+    fn sensors_are_counted_alongside_their_body_type() {
+        let entries = vec![entry("Fixed", true), entry("Fixed", false)];
+        let (fixed, dynamic, kinematic, sensors, orphan) = census_tally(&entries);
+        assert_eq!((fixed, dynamic, kinematic, orphan), (2, 0, 0, 0));
+        assert_eq!(sensors, 1);
+    }
+
+    /// The empty column — candidate (A)/(D) — tallies to all zeros rather
+    /// than panicking or defaulting anything into a bucket.
+    #[test]
+    fn empty_census_tallies_to_zero() {
+        assert_eq!(census_tally(&[]), (0, 0, 0, 0, 0));
     }
 }
 
