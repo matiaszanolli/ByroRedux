@@ -457,6 +457,14 @@ fn apply_misc_shader_properties(
         }
         info.env_map_scale = shader.shader.env_map_scale;
     }
+    // #1856 — `env_map_scale` is the *entire* payload here, not a
+    // partial wire-up: per nif.xml line 6322 the FO3/FNV
+    // `WaterShaderProperty` inherits `BSShaderProperty` with no fields
+    // of its own. The `water_shader_flags` word an audit might expect
+    // to see set lives only on the Skyrim-era `BSWaterShaderProperty`
+    // (nif.xml line 6705, handled in `dedicated_shader::apply_bs_water_shader`);
+    // forwarding this block's base `shader_flags_1/2` into it would mix
+    // `BSShaderFlags` with `WaterShaderPropertyFlags`.
     if let Some(shader) = scene.get_as::<WaterShaderProperty>(idx) {
         info.env_map_scale = shader.shader.env_map_scale;
     }

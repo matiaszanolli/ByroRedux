@@ -187,3 +187,77 @@ fn no_water_shader_property_keeps_default_env_map_scale() {
 
     assert_eq!(info.env_map_scale, MaterialInfo::default().env_map_scale);
 }
+
+/// #1856 — pins the FO3/FNV vs Skyrim+ water split so a future audit
+/// doesn't refile "the legacy branch forgot to set
+/// `water_shader_flags`" as a wire-up bug. It didn't forget: per
+/// nif.xml line 6322 the FO3/FNV `WaterShaderProperty` has *no* fields
+/// beyond the `BSShaderProperty` base, so the flag word simply does
+/// not exist on that block. It is authored only on the Skyrim-era
+/// `BSWaterShaderProperty` (nif.xml line 6705).
+///
+/// Both halves are asserted together: the legacy block leaves the
+/// field at its `0` default while still forwarding `env_map_scale`,
+/// and the Skyrim block carries the authored word through. A refactor
+/// that "fixed" the legacy branch by folding in the base
+/// `BSShaderFlags` (a different flag namespace entirely) fails here.
+#[test]
+fn water_shader_flags_are_skyrim_only_by_block_shape() {
+    use crate::blocks::shader::BSWaterShaderProperty;
+    use crate::types::NiTransform as TestNiTransform;
+
+    // FO3/FNV: property-list-bound, no flag word on the block.
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(water_shader_with_env_scale(0.85))];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut pool = StringPool::new();
+    let legacy = extract_material_info(&scene, &shape_with_property_ref(0), &[], &mut pool);
+    assert_eq!(legacy.env_map_scale, 0.85, "#1243 wire-up still live");
+    assert_eq!(
+        legacy.water_shader_flags, 0,
+        "FO3/FNV WaterShaderProperty carries no WaterShaderPropertyFlags word — \
+         anything non-zero here means a flag namespace got crossed"
+    );
+
+    // Skyrim+: shader_property_ref-bound, authored flag word (0xC4 =
+    // Reflections | Refractions | Cubemap, nif.xml's documented default).
+    let bs_water = BSWaterShaderProperty {
+        net: empty_net(),
+        shader_flags_1: 0,
+        shader_flags_2: 0,
+        sf1_crcs: Vec::new(),
+        sf2_crcs: Vec::new(),
+        uv_offset: [0.0, 0.0],
+        uv_scale: [1.0, 1.0],
+        water_shader_flags: 0xC4,
+    };
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(bs_water)];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut shape = NiTriShape {
+        av: NiAVObjectData {
+            net: empty_net(),
+            flags: 0,
+            transform: TestNiTransform::default(),
+            properties: vec![],
+            collision_ref: BlockRef::NULL,
+        },
+        data_ref: BlockRef::NULL,
+        skin_instance_ref: BlockRef::NULL,
+        shader_property_ref: BlockRef(0),
+        alpha_property_ref: BlockRef::NULL,
+        num_materials: 0,
+        active_material_index: 0,
+    };
+    shape.av.properties.clear();
+    let mut pool = StringPool::new();
+    let skyrim = extract_material_info(&scene, &shape, &[], &mut pool);
+    assert_eq!(
+        skyrim.water_shader_flags, 0xC4,
+        "Skyrim+ BSWaterShaderProperty is the only source of this word"
+    );
+}

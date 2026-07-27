@@ -749,6 +749,27 @@ pub(super) struct MaterialInfo {
     /// water surfaces (Oblivion `meshes/water/*.nif`, Skyrim river
     /// segments). See `BSWaterShaderProperty` in
     /// `crates/nif/src/blocks/shader.rs`.
+    ///
+    /// **Skyrim+ only, and by construction — not a wire-up gap.** The
+    /// FO3/FNV `WaterShaderProperty` (nif.xml line 6322) inherits
+    /// `BSShaderProperty` with *zero* fields of its own; the
+    /// `Water Shader Flags` word exists solely on the Skyrim-era
+    /// `BSWaterShaderProperty` (nif.xml line 6705). So the FO3/FNV
+    /// branch in `legacy_properties::apply_misc_shader_properties`
+    /// forwards `env_map_scale` and nothing else because there is
+    /// nothing else on the block — folding the base
+    /// `BSShaderPropertyData::shader_flags_1/2` (`BSShaderFlags`) in
+    /// here would mix two unrelated flag namespaces. #1856.
+    ///
+    /// **No consumer past this struct, deliberately.** `ImportedMesh`
+    /// and the ECS `Material` carry no counterpart, so the value stops
+    /// at the NIFAL boundary; there is no legacy-mesh-water render
+    /// route for it to land in yet, and fabricating a downstream field
+    /// with no reader would just move the dead end one layer down. Plumb
+    /// it through `ImportedMesh` → `translate_material` when that route
+    /// lands — until then this is a capture-with-no-consumer gap, *not*
+    /// a `translate_material` divergence. Pinned by
+    /// `water_shader_legacy_tests`. #1856.
     pub water_shader_flags: u32,
 }
 
