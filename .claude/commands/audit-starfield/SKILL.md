@@ -47,7 +47,8 @@ read those at audit time. Snapshot of the shape, not the numbers:
 - **BGSM / BGEM material references** — `is_material_reference` (`shader.rs`)
   short-circuits when `Name` is a non-empty `.bgsm`/`.bgem` path and returns a
   material-reference stub; the real material is the external file, parsed by
-  `crates/bgsm/` and folded in by `merge_bgsm_into_mesh` (`asset_provider.rs`).
+  `crates/bgsm/` and folded in by `merge_external_material`
+  (`byroredux/src/asset_provider/material.rs`).
 - **CDB material database** — vanilla Starfield ships all material data inside a
   single `materials\materialsbeta.cdb` Component Database (in
   `Starfield - Materials.ba2`), consumed by `crates/sfmaterial/` and extracted
@@ -272,15 +273,19 @@ slice (Cydonia's synthesized + bhk colliders): `BhkMultiSphereShape` +
 ### Dimension 9: BGSM/BGEM External Material Flow
 **Subagent**: `renderer-specialist`
 **Entry points**: `crates/bgsm/src/bgsm.rs` + `crates/bgsm/src/bgem.rs` (external
-parser), `byroredux/src/asset_provider/material.rs` (`merge_bgsm_into_mesh`),
-`byroredux/src/cell_loader.rs` (`pack_bgsm_material_flags`)
+parser), `byroredux/src/asset_provider/material.rs` (`merge_external_material`),
+`byroredux/src/cell_loader.rs` (`pack_imported_material_flags`)
 **Checklist**: The material-reference stub from `shader.rs` resolves to the
 external file — confirm the BGEM variant (`bgem.rs`) is handled distinctly from
 BGSM (`bgsm.rs`): different texture-set conventions plus the BGEM `glass_enabled`
-flag. `merge_bgsm_into_mesh` folds the parsed result into `ImportedMesh`;
-`pack_bgsm_material_flags` packs `byroredux_renderer::vulkan::material::material_flag::{BGSM_AUTHORED, PBR_BSDF, TRANSLUCENCY, MODEL_SPACE_NORMALS, EFFECT_PALETTE_COLOR}`
+flag. `merge_external_material` folds the parsed result into `ImportedMesh.material`
+(an `ImportedMaterial` — it takes `&mut ImportedMaterial`, so it cannot touch
+geometry/skinning; a widened signature is a NIFAL boundary violation);
+Starfield `.mat` texture paths must land in `MaterialTextureSet` roles, never
+in a CDB-specific slot index;
+`pack_imported_material_flags` packs `byroredux_renderer::vulkan::material::material_flag::{BGSM_AUTHORED, PBR_BSDF, TRANSLUCENCY, MODEL_SPACE_NORMALS, EFFECT_PALETTE_COLOR}`
 (#1147 / #1077 / #1076 / #1280) — verify each flag derives from the right
-`ImportedMesh` field. BGEM `glass_enabled` (`bgem.rs`) is the authoritative glass
+`ImportedMaterial` field. BGEM `glass_enabled` (`bgem.rs`) is the authoritative glass
 signal (#1280), consumed in `byroredux/src/helpers.rs` (and must NOT misclassify an
 opaque architecture piece carrying a stuck flag — there's a regression test for
 that). **Disney BSDF / PBR (#1248-#1252)** is the canonical lobe (GLSL-PathTracer

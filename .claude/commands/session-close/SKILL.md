@@ -71,6 +71,12 @@ ls .claude/issues/ 2>/dev/null | wc -l
 
 # Latest commit
 git log -1 --format="%h %s (%ci)"
+
+# Audit-skill drift — stale paths (fatal) + stale symbols (advisory).
+# The skills describe the code; a session that moved code moved them
+# out of sync. Cheap to run, and the class of error it catches (a GPU
+# struct documented at the wrong byte size) is expensive to hit later.
+.claude/commands/_audit-validate.sh
 ```
 
 Fill in the **Ground truth** block below:
@@ -83,7 +89,13 @@ Ground truth (HEAD = <short-sha>):
   Source files:         <N>
   Workspace members:    <N>
   Open issue dirs:      <N>
+  Audit-skill drift:    <clean | N stale paths, M advisory symbols>
 ```
+
+If the audit gate reports anything, fix the skills as part of this
+close — do not defer it. Skill drift compounds silently: every later
+audit reasons from the stale description and reports findings against
+code that no longer exists.
 
 ---
 

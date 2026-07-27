@@ -121,7 +121,66 @@ done
 
 echo
 echo "Checked $checked_count refs across ${#skill_files[@]} skill files."
+
+# ---------------------------------------------------------------------------
+# Symbol drift (ADVISORY — reports, never fails the gate)
+#
+# Paths were only half the recurring staleness. Renamed *symbols* rot the same
+# way and the path gate structurally cannot see them: `merge_bgsm_into_mesh`
+# and `pack_bgsm_material_flags` survived in four skills after the 2026-07-27
+# material refactor, and `gpu_material_size_is_300_bytes` outlived a 300→348 B
+# GpuMaterial change — a wrong number in a GPU layout contract.
+#
+# Heuristic: every backticked snake_case token >=7 chars that appears in NO
+# tracked .rs file. Advisory only, because the noise floor is real and mostly
+# legitimate: baseline TSV column names, git hashes, memory-file slugs, rustc
+# lint names, and deliberate references to symbols that SHOULD NOT exist.
+# Filters below remove the known-benign classes; what survives is worth a look,
+# not an automatic failure. Historical names should be *italicised*, not
+# backticked (same rule as backwards-looking paths).
+# ---------------------------------------------------------------------------
+if [[ "${SKIP_SYMBOL_CHECK:-0}" != "1" ]]; then
+    src_blob=$(mktemp)
+    trap 'rm -f "$all_paths_file" "$src_blob"' EXIT
+    git ls-files '*.rs' | xargs cat 2>/dev/null > "$src_blob" || true
+
+    suspect_count=0
+    while read -r sym; do
+        # Benign classes, in order of frequency:
+        [[ "$sym" =~ ^[0-9a-f]{7,8}$ ]] && continue          # git short hashes
+        [[ "$sym" == feedback_* ]] && continue               # ~/.claude memory slugs
+        [[ "$sym" == nif_v10x_* ]] && continue               # memory slugs
+        [[ "$sym" == bench_* || "$sym" == light_count_* ]] && continue   # baseline TSV columns
+        [[ "$sym" == tex_missing_* || "$sym" == mesh_cache_* ]] && continue
+        [[ "$sym" == entities_total || "$sym" == tlas_instances ]] && continue
+        [[ "$sym" == static_frames || "$sym" == terrain_tile ]] && continue
+        [[ "$sym" == unknown_records || "$sym" == marker_arrow ]] && continue
+        [[ "$sym" == max_size || "$sym" == local_size ]] && continue     # GLSL / generic
+        [[ "$sym" == unreachable_patterns ]] && continue     # rustc lint name
+        [[ "$sym" == cmd_reset_query_pool ]] && continue     # ash API
+        [[ "$sym" == srgb_to_linear ]] && continue           # deliberately-absent (see memory)
+        [[ "$sym" == comprehensive ]] && continue            # plain English
+
+        grep -qw "$sym" "$src_blob" && continue
+        if (( suspect_count == 0 )); then
+            echo
+            echo "ADVISORY — backticked symbols not found in any tracked .rs:"
+        fi
+        printf '  %-46s %s\n' "$sym" "$(grep -rl "\`$sym\`" "${skill_files[@]}" 2>/dev/null | sed 's|.claude/commands/||;s|/SKILL.md||' | tr '\n' ' ')"
+        suspect_count=$((suspect_count + 1))
+    done < <(grep -rhoE '`[a-z][a-z0-9_]{6,}`' "${skill_files[@]}" 2>/dev/null | tr -d '`' | sort -u)
+
+    if (( suspect_count > 0 )); then
+        echo
+        echo "  $suspect_count advisory symbol(s). Each is either (a) genuinely renamed —"
+        echo "  update the skill, or (b) an intentional historical/never-should-exist"
+        echo "  reference — italicise it instead of backticking. Not a failure."
+        echo "  Set SKIP_SYMBOL_CHECK=1 to silence."
+    fi
+fi
+
 if (( stale_count > 0 )); then
+    echo
     echo "FAIL: $stale_count stale path reference(s)."
     echo "Fix: update the audit skill files, OR delete the stale ref if the target moved."
     exit 1

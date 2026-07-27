@@ -78,9 +78,11 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 
 ### Dimension 2: BGSM / BGEM Consumption + Metalness-from-Chromaticity (regression pin #1476)
 **Subagent**: `general-purpose`
-**Entry points**: `crates/bgsm/src/` (`lib`, `base`, `bgsm`, `bgem`, `reader`, `template`), `byroredux/src/asset_provider/material.rs` (`merge_bgsm_into_mesh`).
+**Entry points**: `crates/bgsm/src/` (`lib`, `base`, `bgsm`, `bgem`, `reader`, `template`), `byroredux/src/asset_provider/material.rs` (`merge_external_material`).
 **Checklist**:
-- **Single data source** — `merge_bgsm_into_mesh` is the FO4 material merge: albedo/diffuse tint, specular, emissive, smoothness→roughness, translucency suite (#1147), model-space-normals bit, texture-slot paths. It runs **before** `translate_material`.
+- **Single data source** — `merge_external_material` is the FO4 material merge: albedo/diffuse tint, specular, emissive, smoothness→roughness, translucency suite (#1147), model-space-normals bit, texture roles. It runs **before** `translate_material`.
+- **Narrowed merge signature (2026-07-27, `05d68926`)** — the fn takes `&mut ImportedMaterial`, *not* `&mut ImportedMesh`: an external BGSM/BGEM sidecar may patch material semantics but must not reach geometry, transforms, skinning, or scene ownership. A widened signature is a NIFAL boundary violation, report it as such. Material state now lives at `ImportedMesh.material`, not as flat fields.
+- **Texture roles, not slot indices** — BGSM texture paths land in `MaterialTextureSet` (18 named roles + `decals: [T; 4]`, `crates/nif/src/import/types.rs`). FO4's slot ordering must be consumed into roles at the merge; any downstream code indexing FO4 slots numerically has leaked a per-game vocabulary past the import boundary.
 - **Metalness from saturation, NOT luminance** (#1476, `08ed03be`) — for legacy spec-glossiness BGSMs (`leaf.pbr == false`, ~all vanilla architecture), metalness = `(max-min)/max` of `specular_color` (mult-invariant saturation): white spec `[1,1,1]` → 0 (concrete is dielectric), tinted spec → metallic. **Any reversion to luminance (`0.2126·r + …`) for the non-pbr branch is the #1476 regression — it makes vanilla concrete read chrome.** The luminance path is correct *only* for `leaf.pbr == true`.
 - **smoothness→roughness applied exactly once at parse** — `mesh.roughness_override = Some((1.0 - leaf.smoothness).clamp(0.04, 1.0))`. Audit any downstream re-application of the `1.0 - smoothness` inversion.
 - **Magic-vs-extension reconciliation** (#758 footgun) — the `.bgsm`/`.bgem`/`.mat` arm dispatches on file content; verify it logs and does not blindly trust the extension.
@@ -134,10 +136,10 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 
 ### Dimension 7: NIFAL Canonical Material Translation (FO4 is PBR-canonical)
 **Subagent**: `renderer-specialist`
-**Entry points**: `byroredux/src/material_translate.rs` (`translate_material` — the single boundary), `crates/core/src/ecs/components/material.rs` (`Material`, `Material::resolve_pbr`), `byroredux/src/cell_loader.rs` (`pack_bgsm_material_flags`, `pack_effect_shader_flags`). Spec: `docs/engine/nifal.md`. **See also `/audit-nifal`.**
+**Entry points**: `byroredux/src/material_translate.rs` (`translate_material` — the single boundary), `crates/core/src/ecs/components/material.rs` (`Material`, `Material::resolve_pbr`), `byroredux/src/cell_loader.rs` (`pack_imported_material_flags`, `pack_effect_shader_flags`). Spec: `docs/engine/nifal.md`. **See also `/audit-nifal`.**
 **Checklist**:
 - **Single boundary** — `translate_material(mesh, paths, extra_material_flags)` is the only `ImportedMesh → Material` site; both the cell-loader REFR-spawn path and the loose-NIF `scene` path must route through it, not verbatim struct literals.
-- **BGSM PBR flag routing** — `effect_shader_flags` ORs `pack_effect_shader_flags` + `pack_bgsm_material_flags(mesh)` + caller `extra_material_flags`. Verify BGSM meshes get `BGSM_PBR` (and where authored `BGSM_TRANSLUCENCY` / `BGSM_MODEL_SPACE_NORMALS`) → shader-side `MAT_FLAG_PBR_BSDF`. Tests: `pack_bgsm_material_flags_tests` in `cell_loader.rs`.
+- **BGSM PBR flag routing** — `effect_shader_flags` ORs `pack_effect_shader_flags` + `pack_imported_material_flags(mesh)` + caller `extra_material_flags`. Verify BGSM meshes get `BGSM_PBR` (and where authored `BGSM_TRANSLUCENCY` / `BGSM_MODEL_SPACE_NORMALS`) → shader-side `MAT_FLAG_PBR_BSDF`. Tests: `pack_imported_material_flags_tests` in `cell_loader.rs`.
 - **Resolve-once contract** — `Material.metalness` / `Material.roughness` are plain `f32` (not `Option` + per-draw classify), seeded from `mesh.metalness_override` / `mesh.roughness_override` (or `f32::NAN` for legacy inline-shader content), then `resolve_pbr()` fills NaN from the classifier and clamps (metalness 0..1, roughness 0.04..1). `resolve_pbr` is idempotent (tests `resolve_pbr_is_idempotent`, `resolve_pbr_preserves_upstream_translator_values`, `resolve_pbr_fills_only_missing_slot` in `material.rs`). Any consumer re-deriving roughness or re-running a classifier at draw-time is the regression.
 - Glass is classified **after** `resolve_pbr` (forced glass roughness wins) via `helpers::classify_glass_into_material`.
 **Output**: `/tmp/audit/fo4/dim_7.md`
@@ -167,7 +169,7 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 2. Combine into `docs/audits/AUDIT_FO4_<TODAY>.md`:
    - **Executive Summary** — NIF + BA2 + BGSM parser + SCOL/PKIN expansion + **M49 CSG precombines** all landed; parse rate per the latest `parse_rate_fo4_all_meshes` run. Pending: precombine collision / `.uvd` volumes, MOVS physics, deeper cell coverage (LIGH/CONT/NPC_).
    - **Dimension Findings** — grouped by severity per dimension.
-   - **BGSM Consumption Table** — BGSM field × merged-into-`ImportedMesh`-by-`merge_bgsm_into_mesh` / surfaced-on-canonical-`Material` (post-NIFAL).
+   - **BGSM Consumption Table** — BGSM field × merged-into-`ImportedMesh.material` (`ImportedMaterial`) by `merge_external_material` / surfaced-on-canonical-`Material` (post-NIFAL). Texture columns must name the `MaterialTextureSet` role, not an FO4 slot number.
    - **Forward Scope Chain** — precombine collision / `.uvd` → MOVS physics → deeper REFR/LIGH/CONT/NPC_ coverage. Do NOT list the CSG reader, BGSM parser, or SCOL expansion as pending.
 3. Remove cross-dimension duplicates.
 

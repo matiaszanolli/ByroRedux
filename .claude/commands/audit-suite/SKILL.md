@@ -41,6 +41,9 @@ suite is the one place those numbers are duplicated, so it drifts first.
 | `renderer-deep` | after renderer changes | renderer · performance · concurrency · safety |
 | `rt-deep` | after RT / denoiser / G-buffer changes | renderer · performance · concurrency |
 | `material-deep` | after material-table / PBR changes | renderer · safety |
+| `texture-roles-deep` | after `MaterialTextureSet` / `ImportedMaterial` changes | nifal · fo4 · starfield · renderer |
+| `upscaler-deep` | after FSR3 / presentation / exposure changes | renderer · safety · performance |
+| `ui-deep` | after Scaleform/SWF (R4 + M48) changes | safety · concurrency · tech-debt · incremental |
 | `water-deep` | after water-rendering changes | renderer · concurrency · safety |
 | `volumetrics-deep` | after volumetric-lighting changes | renderer · performance · safety |
 | `bloom-deep` | after bloom-pyramid changes | renderer · performance · safety |
@@ -149,15 +152,16 @@ cross-cutting regression sweep around it:
 
 ## Renderer Presets
 
-Renderer dimension map (from `/audit-renderer`): 1 AS · 2 SSBO+rays · 3 GPU-struct
-layout · 4 sync/barriers · 5 memory/lifecycle · 6 NIFAL material · 7 material
-table · 8 denoiser/composite · 9 skinning · 10 camera-relative precision ·
+Renderer dimension map (from `/audit-renderer`, 23 dimensions): 1 AS · 2 SSBO+rays ·
+3 GPU-struct layout · 4 sync/barriers · 5 memory/lifecycle · 6 NIFAL material ·
+7 material table · 8 denoiser/composite · 9 skinning · 10 camera-relative precision ·
 11 pipeline/render-pass · 12 cmd buffer · 13 TAA · 14 caustic splat · 15 water ·
 16 volumetrics+bloom · 17 Disney BSDF/soft shadows · 18 sky/weather · 19 tangent
-space · 20 debug/telemetry · 21 Cornell harness.
+space · 20 debug/telemetry · 21 Cornell harness · 22 light animation ·
+23 FSR3 upscaler + presentation chain (added 2026-07-27).
 
 ### `--preset renderer-deep`
-After significant renderer changes — all 21 dimensions plus the cross-cutting
+After significant renderer changes — all 23 dimensions plus the cross-cutting
 perf/concurrency/safety passes:
 1. `/audit-renderer`
 2. `/audit-performance --focus 1,2,3,5`
@@ -175,6 +179,35 @@ After material-table / PBR changes (`GpuMaterial` layout, dedup, SSBO,
 Disney BSDF gating):
 1. `/audit-renderer --focus 6,7,17`    # NIFAL material + material table + Disney BSDF
 2. `/audit-safety`
+
+### `--preset texture-roles-deep`
+After changes to `MaterialTextureSet`, `ImportedMaterial`, `merge_external_material`,
+or `translate_material` — the 2026-07-27 cross-game texture-role unification
+(`1d94eb24` + `05d68926` + `c8c8a834`). Roles are the new per-game seam, so a
+mistake here is invisible in one game and wrong in another:
+1. `/audit-nifal --focus 1,8`          # material boundary (narrowed signature) + texture-role vocabulary
+2. `/audit-fo4`                        # BGSM is the densest role producer
+3. `/audit-starfield`                  # CDB `.mat` is the second densest, and the newest
+4. `/audit-renderer --focus 6,7`       # NIFAL material + material table consumption
+
+### `--preset upscaler-deep`
+After FSR 3.1 / presentation / exposure changes. **FSR Quality is the engine
+default**, so this is the default render path — a layout or barrier error here
+is not a feature bug, it is every frame:
+1. `/audit-renderer --focus 23,4,13`   # FSR dim + sync/barriers + TAA (shared jitter/motion vectors)
+2. `/audit-safety`                     # `crates/fsr3-sys` FFI `# Safety` contracts
+3. `/audit-performance --focus 1,3`
+Run `BYRO_VALIDATION=1` alongside — layout errors here are structurally
+invisible to `cargo test`.
+
+### `--preset ui-deep`
+After Scaleform/SWF UI changes (R4 + M48 host layer). **No `/audit-ui` skill
+exists**, so this preset is the only coverage `crates/ui/` gets — say so in the
+report scope line:
+1. `/audit-safety`                     # Ruffle/wgpu FFI + offscreen readback lifetimes
+2. `/audit-concurrency --focus 7`      # Ruffle local-executor pump vs. main loop
+3. `/audit-tech-debt`                  # generated AVM2 adapter + 74/138-method catalogs are drift-prone
+4. `/audit-incremental --commits 10`
 
 ### `--preset water-deep`
 After water-rendering changes (incl. water-side caustics):
