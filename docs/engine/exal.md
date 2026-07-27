@@ -384,11 +384,34 @@ LOD-water consumer must read them rather than reuse the full-detail values.
 
 ---
 
+## 5.5 Ground cover (procedural grass) — see [`exal-groundcover.md`](exal-groundcover.md)
+
+The vegetation stratum on the terrain surface — grass, ferns, moss, low scrub —
+is an EXAL category with its own sub-document, in the same relation to this file
+as the `charal-*-ruleset.md` files are to [`charal.md`](charal.md).
+
+It is the **one exterior category where EXAL deliberately does not translate the
+per-game model faithfully**. Creation-Engine grass keys density to `LTEX`
+identity on a 17×17-per-quadrant paint grid inside a hard cull radius, and those
+three properties *are* the patchy look; reproducing them faithfully would
+reproduce the artifact. So placement authority moves into the engine (a
+continuous, terrain-derived density field evaluated per candidate point in a GPU
+scatter pass), and per-game `GRAS` / `LTEX` data is demoted to populating a
+species palette — colour, size, stiffness — never placement.
+
+The `GRAS` record currently parses to a `MinimalEsmRecord` stub with no
+consumer, so nothing is unwound by this. Trees and `FLOR` harvestables stay out
+of scope and remain ordinary placed references / §5 LOD-ring content.
+
+---
+
 ## 6. What stays out of scope
 
 - **Shader passes.** Like NIFAL, no EXAL slice touches the Vulkan render-pass /
   pipeline. `compute_sky`, the terrain pass, `water.frag`, and the sun light
   already consume canonical inputs; EXAL changes only what *produces* those inputs.
+  (Ground cover, §5.5, is the exception that proves the rule: it *adds* passes
+  rather than changing existing ones, since no grass pipeline exists today.)
 - **The per-frame `weather_system`.** It is a canonical *consumer* and stays a
   system; EXAL does not fold it into the boundary.
 - **New gameplay** (swim currents, weather-driven AI). The components exist

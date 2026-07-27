@@ -23,7 +23,7 @@ use crate::avm2_host::{inject_host_object_adapter, DESTROY_CALLBACK};
 use crate::navigator::{ScaleformNavigator, ScaleformNavigatorRuntime};
 use crate::{
     ScaleformHostBridge, ScaleformHostObjectState, ScaleformProfile, ScaleformResourceLoad,
-    ScaleformResourceProvider, ScaleformValue,
+    ScaleformResourceProvider, ScaleformValue, UiInputEvent,
 };
 
 const MAX_ARCHIVE_PRELOAD_PASSES: usize = 64;
@@ -224,6 +224,16 @@ impl SwfPlayer {
             }
         }
         self.dirty = true;
+    }
+
+    /// Forward a platform-neutral input event to Ruffle.
+    ///
+    /// The return value is Ruffle's per-event handled result. UiManager uses
+    /// focus ownership, rather than this value, to decide modal capture.
+    pub fn handle_input(&mut self, event: UiInputEvent) -> bool {
+        let handled = self.player.lock().unwrap().handle_event(event.into());
+        self.dirty = true;
+        handled
     }
 
     /// Render the current frame to the internal pixel buffer.

@@ -9,6 +9,7 @@
 mod avm2_host;
 mod catalog;
 mod host;
+mod input;
 mod navigator;
 mod player;
 mod profile;
@@ -20,6 +21,10 @@ pub use catalog::{
     ScaleformHostCatalog, ScaleformHostMethod, ScaleformHostMethodKind, ScaleformHostObject,
 };
 pub use host::{ScaleformHostBridge, ScaleformHostCall, ScaleformHostDispatch, ScaleformValue};
+pub use input::{
+    UiImeEvent, UiInputEvent, UiKeyDescriptor, UiKeyLocation, UiLogicalKey, UiMouseButton,
+    UiMouseWheelDelta, UiNamedKey, UiPhysicalKey, UiTextControlCode,
+};
 pub use navigator::{ScaleformResourceLoad, ScaleformResourceProvider};
 pub use player::SwfPlayer;
 pub use profile::ScaleformProfile;
@@ -33,6 +38,8 @@ pub struct UiManager {
     player: Option<SwfPlayer>,
     /// Whether the UI overlay is visible.
     pub visible: bool,
+    /// Whether the active menu owns keyboard and pointer input.
+    input_focused: bool,
     /// Name of the currently loaded menu (e.g. "startmenu").
     pub menu_name: String,
     /// Viewport dimensions for the UI overlay.
@@ -45,6 +52,7 @@ impl UiManager {
         Self {
             player: None,
             visible: false,
+            input_focused: false,
             menu_name: String::new(),
             width,
             height,
@@ -91,9 +99,11 @@ impl UiManager {
     }
 
     fn install_player(&mut self, player: SwfPlayer, name: &str) {
+        self.set_input_focus(false);
         self.player = Some(player);
         self.menu_name = name.to_string();
         self.visible = true;
+        self.set_input_focus(true);
         log::info!(
             "Loaded SWF menu '{}' ({}x{})",
             name,
@@ -139,8 +149,54 @@ impl UiManager {
             .and_then(|player| player.invoke_callback(name, arguments))
     }
 
+    /// Whether the visible menu currently owns keyboard and pointer input.
+    pub fn has_input_focus(&self) -> bool {
+        self.input_focused && self.visible && self.player.is_some()
+    }
+
+    /// Transfer keyboard and pointer focus to or from the active menu.
+    ///
+    /// Focus cannot be granted without a visible player. A transition is
+    /// forwarded to Ruffle exactly once and the return value reports whether
+    /// the effective focus state changed.
+    pub fn set_input_focus(&mut self, focused: bool) -> bool {
+        let focused = focused && self.visible && self.player.is_some();
+        if self.input_focused == focused {
+            return false;
+        }
+
+        self.input_focused = focused;
+        if let Some(player) = self.player.as_mut() {
+            let event = if focused {
+                UiInputEvent::FocusGained
+            } else {
+                UiInputEvent::FocusLost
+            };
+            player.handle_input(event);
+        }
+        true
+    }
+
+    /// Dispatch an input event to the focused menu.
+    ///
+    /// `true` means the menu captured the event. Capture is based on focus,
+    /// not on whether an individual ActionScript listener returned handled:
+    /// modal menus must not leak unhandled keys into world controls.
+    pub fn handle_input(&mut self, event: UiInputEvent) -> bool {
+        if !self.has_input_focus() {
+            return false;
+        }
+        if let Some(player) = self.player.as_mut() {
+            player.handle_input(event);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Close the current menu.
     pub fn close(&mut self) {
+        self.set_input_focus(false);
         self.player = None;
         self.visible = false;
         self.menu_name.clear();
