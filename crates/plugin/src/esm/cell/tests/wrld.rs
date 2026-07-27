@@ -370,3 +370,77 @@ fn wrld_short_dnam_leaves_default_water_none() {
     let w = worldspaces.get("nodnamworld").expect("decoded");
     assert_eq!(w.default_water_height, None);
 }
+
+/// #1849 — WRLD `NAM3` (LOD water type FormID), `NAM4` (LOD water
+/// height f32) and `OFST` (per-cell offset table) previously fell to
+/// the walker's `_ => {}` default arm and were dropped.
+///
+/// Values are the real FO3 `Wasteland` shape: NAM3 diverging from NAM2
+/// and NAM4 diverging from the DNAM water height, which is the case
+/// that proves the LOD fields need their own storage rather than
+/// aliasing the full-detail siblings (18/28 Fallout3.esm worldspaces
+/// author a NAM3 ≠ NAM2; 22/30 Skyrim.esm author a NAM4 ≠ DNAM water).
+#[test]
+fn wrld_nam3_nam4_ofst_captured() {
+    let mut dnam = Vec::new();
+    dnam.extend_from_slice(&(-2048.0f32).to_le_bytes()); // default land height
+    dnam.extend_from_slice(&(10_500.0f32).to_le_bytes()); // default water height
+    let ofst: Vec<u8> = [0x0000_0000u32, 0x0000_8E6F, 0xDEAD_BEEF]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    let wrld = build_wrld_record(
+        0x0000_003C,
+        &[
+            (b"EDID", b"Wasteland\0".to_vec()),
+            (b"NAM2", 0x0003_0009_u32.to_le_bytes().to_vec()),
+            (b"NAM3", 0x0000_0018_u32.to_le_bytes().to_vec()),
+            (b"NAM4", (-14_000.0f32).to_le_bytes().to_vec()),
+            (b"DNAM", dnam),
+            (b"OFST", ofst),
+        ],
+    );
+    let buf = build_wrld_group(&[wrld]);
+    let (worldspaces, _c, _e) = parse_synthetic_wrld(&buf);
+    let w = worldspaces.get("wasteland").expect("Wasteland decoded");
+
+    assert_eq!(w.lod_water_form, Some(0x0000_0018), "NAM3 captured");
+    assert_eq!(
+        w.water_form,
+        Some(0x0003_0009),
+        "NAM2 untouched — the LOD water type must not overwrite it"
+    );
+    assert_eq!(w.lod_water_height, Some(-14_000.0), "NAM4 captured");
+    assert_eq!(
+        w.default_water_height,
+        Some(10_500.0),
+        "DNAM water height untouched by NAM4"
+    );
+    assert_eq!(
+        w.cell_offsets,
+        vec![0x0000_0000, 0x0000_8E6F, 0xDEAD_BEEF],
+        "OFST captured verbatim as LE u32 words"
+    );
+}
+
+/// Oblivion authors no `NAM3`/`NAM4` at all (disk-sampled: 0 of 84
+/// Oblivion.esm worldspaces carry either), and some of its worldspaces
+/// ship a zero-length `OFST`. Both must leave the record at its
+/// defaults rather than fabricating a LOD-water plane at Z=0. #1849.
+#[test]
+fn wrld_oblivion_shape_leaves_lod_water_none() {
+    let wrld = build_wrld_record(
+        0x0000_003D,
+        &[
+            (b"EDID", b"TamrielObl\0".to_vec()),
+            (b"NAM2", 0x0000_0018_u32.to_le_bytes().to_vec()),
+            (b"OFST", vec![]), // observed on real Oblivion.esm worldspaces
+        ],
+    );
+    let buf = build_wrld_group(&[wrld]);
+    let (worldspaces, _c, _e) = parse_synthetic_wrld(&buf);
+    let w = worldspaces.get("tamrielobl").expect("decoded");
+    assert_eq!(w.lod_water_form, None);
+    assert_eq!(w.lod_water_height, None);
+    assert!(w.cell_offsets.is_empty(), "empty OFST yields no words");
+}

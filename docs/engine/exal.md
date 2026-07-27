@@ -373,9 +373,14 @@ NIF-hint-driven:
   encode the result.
 
 What runtime LOD **does** need that we don't parse yet (new, small parser work):
-the **VWD / "Has Distant LOD" record-header flag** (§5.2), and the WRLD `NAM3`/
-`NAM4` LOD-water fields + `OFST` cell-offset table currently skipped in
-`wrld.rs`. These feed the LOD ring, not the full-detail scene.
+the **VWD / "Has Distant LOD" record-header flag** (§5.2, tracked by #1731).
+The WRLD `NAM3`/`NAM4` LOD-water fields + `OFST` cell-offset table **are now
+parsed** (#1849) onto `WorldspaceRecord::lod_water_form` / `lod_water_height` /
+`cell_offsets` — captured but not yet consumed, since they feed the LOD ring
+rather than the full-detail scene. The LOD-water fields are genuinely distinct
+from their full-detail NAM2 / DNAM siblings on real content (NAM3 ≠ NAM2 on
+18/28 Fallout3.esm worldspaces; NAM4 ≠ DNAM water on 22/30 Skyrim.esm), so the
+LOD-water consumer must read them rather than reuse the full-detail values.
 
 ---
 

@@ -140,6 +140,42 @@ pub(crate) fn parse_wrld_group(
                         b"ZNAM" if sub.data.len() >= 4 => {
                             record.default_music = read_form_id(&sub.data);
                         }
+                        // NAM3 / NAM4 — LOD-water type FormID + LOD-water
+                        // height, the distant-LOD-ring counterparts of
+                        // NAM2 / DNAM. FO3-and-later; Oblivion authors
+                        // neither. Both are genuinely distinct from their
+                        // full-detail siblings on real content (see the
+                        // per-game divergence counts on WorldspaceRecord),
+                        // so they get their own fields rather than folding
+                        // into water_form / default_water_height. #1849.
+                        b"NAM3" if sub.data.len() >= 4 => {
+                            record.lod_water_form = read_form_id(&sub.data);
+                        }
+                        b"NAM4" if sub.data.len() >= 4 => {
+                            record.lod_water_height = Some(f32::from_le_bytes([
+                                sub.data[0],
+                                sub.data[1],
+                                sub.data[2],
+                                sub.data[3],
+                            ]));
+                        }
+                        // OFST — per-cell offset table. Stored as raw u32
+                        // words; the grid interpretation is game-specific
+                        // and unsettled, so the parser captures without
+                        // inventing a shape (#1849). Routinely oversized
+                        // (177 KB in FalloutNV.esm) and therefore arriving
+                        // through the XXXX extended-size escape, which
+                        // `read_sub_records` already handles. A trailing
+                        // partial word (never observed on vanilla content —
+                        // every sampled OFST is a multiple of 4) is dropped
+                        // by `chunks_exact`.
+                        b"OFST" => {
+                            record.cell_offsets = sub
+                                .data
+                                .chunks_exact(4)
+                                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                                .collect();
+                        }
                         // ICON — pause-menu map texture (zstring).
                         b"ICON" => {
                             record.map_texture = read_zstring(&sub.data);

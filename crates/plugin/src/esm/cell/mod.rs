@@ -787,13 +787,15 @@ pub struct TextureSet {
 ///   can't fast travel, 0x04 no LOD water, 0x08 no landscape, 0x10
 ///   no sky, 0x20 fixed dimensions, 0x40 no grass.
 /// - `ZNAM` — default music FormID (u32, MUSC record).
+/// - `DNAM` — default land/water height (2 × f32); only the second
+///   (water) is kept, as [`default_water_height`](Self::default_water_height).
+/// - `NAM3`/`NAM4` — LOD water type FormID + LOD water height (#1849).
+/// - `OFST` — per-cell offset table (#1849).
 ///
 /// Sub-records not consumed here (parsed-past by the walker so the
 /// next record still aligns): `WCTR` (TES5 centre cell), `MNAM` (map
-/// camera data), `DNAM` (default land/water height for streaming),
-/// `NAM3/NAM4` (LOD water type/height), `RNAM` (region overrides),
-/// `OFST` (per-cell LAND offset table — perf optimisation for
-/// streaming, can land in a follow-up). See OpenMW reference
+/// camera data), `RNAM` (region overrides), `MHDT` (Skyrim+ map
+/// height data), `CLSZ`/`WLEV` (FO4). See OpenMW reference
 /// `components/esm4/loadwrld.cpp` and audit OBL-D3-NEW-01 / #965.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorldspaceRecord {
@@ -836,6 +838,35 @@ pub struct WorldspaceRecord {
     pub map_texture: String,
     /// Worldspace flags byte (DATA). See struct docs for bit layout.
     pub flags: u8,
+    /// LOD water type FormID (NAM3, WATR record) — the water material
+    /// the *distant* LOD ring uses. Genuinely independent of the
+    /// full-detail [`water_form`](Self::water_form) (NAM2): the two
+    /// differ on 18 of 28 Fallout3.esm worldspaces, 5 of 30
+    /// Skyrim.esm, and 2 of 14 FalloutNV.esm, so a consumer must not
+    /// substitute one for the other. `None` on Oblivion, whose WRLD
+    /// carries no NAM3 at all (the sub-record is FO3-and-later —
+    /// disk-sampled across Oblivion.esm / Fallout3.esm / FalloutNV.esm
+    /// / Skyrim.esm / Fallout4.esm). See #1849.
+    pub lod_water_form: Option<u32>,
+    /// LOD water height (NAM4, f32, Z-up world units) — the water
+    /// plane Z for the distant LOD ring. Also independent of DNAM's
+    /// default water height ([`default_water_height`](Self::default_water_height)):
+    /// they differ on 22 of 30 Skyrim.esm worldspaces and 6 of 28
+    /// Fallout3.esm. `None` on Oblivion (no NAM4). See #1849.
+    pub lod_water_height: Option<f32>,
+    /// Per-cell offset table (OFST) as raw little-endian `u32`s.
+    ///
+    /// Captured verbatim: the table's *grid* interpretation is
+    /// game-specific and not settled (sizes observed on disk range
+    /// from 36 B to 177 KB and are only guaranteed to be a multiple of
+    /// 4), so the parser stores the words and leaves the layout to a
+    /// future LAND streamer rather than inventing a shape. Empty when
+    /// the sub-record is absent or zero-length (Oblivion authors a
+    /// 0-byte OFST on some worldspaces). Note the sub-record routinely
+    /// exceeds the 16-bit sub-record size field and arrives via the
+    /// `XXXX` extended-size escape — see `EsmReader::read_sub_records`.
+    /// See #1849.
+    pub cell_offsets: Vec<u32>,
 }
 
 impl WorldspaceRecord {
