@@ -12,3 +12,4 @@ GEMINI.md
 
 # MCP server config — carries a personal Apify API token, do NOT commit
 .mcp.json
+.codex/config.toml
