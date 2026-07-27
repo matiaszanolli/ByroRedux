@@ -82,7 +82,9 @@ mod world_setup;
 // transition orchestrator in `main.rs::App::step_cell_transition` can
 // reuse them on Interior→Exterior swaps — same boot-path code, no
 // duplication. See cell_loader::transition.
-pub(crate) use world_setup::{apply_worldspace_weather, stream_initial_radius};
+pub(crate) use world_setup::{
+    apply_worldspace_weather, stream_initial_radius, ExteriorBootstrapMode,
+};
 // The four `scene/*_tests.rs` child modules reach for these helpers
 // via `use super::*;` so they need to be in scope at the parent
 // module level. Gating the imports on `#[cfg(test)]` keeps the
@@ -258,8 +260,8 @@ pub(crate) fn setup_scene(
             // through `WorldStreamingState` (M40 Phase 1a). The bulk
             // loader has been retired from this path; cells stream in
             // around the player via `step_streaming` from frame 1.
-            // Initial-radius cells are loaded synchronously here so
-            // the first rendered frame has a populated world.
+            // Interactive startup waits only for the foreground cell;
+            // deterministic benches keep the fully-populated-radius contract.
             let (cx, cy) = parse_grid_coords(grid);
             let tex_provider = build_texture_provider(&args);
             let mat_provider = build_material_provider(&args);
@@ -277,13 +279,17 @@ pub(crate) fn setup_scene(
                     let mut state =
                         WorldStreamingState::new(wctx, tex_provider, mat_provider, radius);
                     state.last_player_grid = Some((cx, cy));
-                    cam_center = stream_initial_radius(world, ctx, &mut state, cx, cy);
+                    let bootstrap_mode = ExteriorBootstrapMode::from_cli_args(&args);
+                    cam_center =
+                        stream_initial_radius(world, ctx, &mut state, cx, cy, bootstrap_mode);
                     log::info!(
-                        "Streaming context ready: worldspace '{}', radius {} (load), {} (unload), {} cells loaded initially",
+                        "Streaming context ready: worldspace '{}', radius {} (load), {} (unload), {} cells loaded, {} pending ({:?})",
                         state.wctx.worldspace_key,
                         state.radius_load,
                         state.radius_unload,
                         state.loaded.len(),
+                        state.pending.len(),
+                        bootstrap_mode,
                     );
                     *streaming_slot = Some(state);
                 }

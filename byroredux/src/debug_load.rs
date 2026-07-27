@@ -393,7 +393,14 @@ fn exec_load_exterior(
     let mut state =
         streaming::WorldStreamingState::new(wctx, tex_provider, mat_provider, clamped_radius);
     state.last_player_grid = Some((grid_x, grid_y));
-    let _ = crate::scene::stream_initial_radius(world, ctx, &mut state, grid_x, grid_y);
+    let _ = crate::scene::stream_initial_radius(
+        world,
+        ctx,
+        &mut state,
+        grid_x,
+        grid_y,
+        crate::scene::ExteriorBootstrapMode::ForegroundFirst,
+    );
     *streaming = Some(state);
     ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
 

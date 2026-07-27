@@ -13,7 +13,8 @@ every game.
 `Imported*` → one resolved, game-agnostic representation). The verbs stay
 `translate` / `canonical` / `resolve`; **EXAL** names the layer as a whole.
 
-**Status**: PROPOSED (design, 2026-06-02). Implementation rolls out per §7.
+**Status**: ACTIVE. Environment translation and distant LOD are implemented;
+foreground-first loading convergence began 2026-07-27 (§5.6 / §7).
 
 **Goal**: every supported engine version (Oblivion / FO3 / FNV / Skyrim LE/SE /
 FO4 / FO76 / Starfield) translates its native, per-game exterior data into **one
@@ -405,6 +406,36 @@ of scope and remain ordinary placed references / §5 LOD-ring content.
 
 ---
 
+## 5.6 Foreground-first loading (interior parity)
+
+EXAL also owns the runtime readiness contract for entering an exterior. An
+interior becomes usable after one cell transaction; before 2026-07-27 exterior
+bootstrap dispatched the whole radius through the worker but then blocked until
+every cell had been applied. At the default radius 5, entering outdoors
+therefore waited for up to 121 cells before the first interactive frame.
+
+The first convergence slice keeps the center exterior cell as the coherent
+foreground transaction and leaves the peripheral radius queued:
+
+1. `compute_streaming_deltas` produces one closest-first desired-cell list.
+2. `WorldStreamingState::queue_loads` is the single request boundary for
+   bootstrap and player-boundary streaming.
+3. `consume_streaming_payload` is the single main-thread apply boundary for
+   bootstrap and steady state.
+4. Interactive boot, door transitions, and debug exterior loads wait only until
+   the center coordinate resolves. The remaining payloads respect
+   `MAX_CELLS_SPAWNED_PER_FRAME`.
+5. `--bench-frames` explicitly selects full-radius blocking so performance and
+   screenshot baselines still begin from a stable populated world.
+
+This is intentionally the first step, not a claim that exterior entry is already
+pause-free. The next latency boundaries are synchronous LOD-ring construction,
+variable-cost cell application (terrain/precombine/upload/BLAS), and provider
+rebuilds on transitions. Those should move behind block/time budgets in that
+order; the foreground cell remains the minimum coherent handoff throughout.
+
+---
+
 ## 6. What stays out of scope
 
 - **Shader passes.** Like NIFAL, no EXAL slice touches the Vulkan render-pass /
@@ -537,6 +568,16 @@ render-pass / pipeline.
 Steps 1–5 are refactors that pay down the scattered-quirk debt; step 6 is the new
 rendering capability the user asked for, built on the boundary the earlier steps
 establish.
+
+7. **Loading continuity (§5.6)** — **first cut done (2026-07-27).**
+   Interactive exterior entry is foreground-first: the center cell blocks as one
+   coherent transaction and the rest of the radius applies through the existing
+   worker/frame budget. Bootstrap and steady state now share
+   `WorldStreamingState::queue_loads` and `consume_streaming_payload`; the
+   duplicated bootstrap cache/spawn implementation was removed. Deterministic
+   `--bench-frames` runs retain full-radius blocking. Follow-ups: incremental LOD
+   initialization, time-budgeted rather than cell-count-budgeted payload apply,
+   and provider reuse across door transitions.
 
 ---
 

@@ -1,7 +1,7 @@
 //! World cell streaming (M40 Phase 1a).
 //!
 //! Owns the live (gx, gy) → cell_root map and the streaming control
-//! parameters. The App-level driver (`main.rs`) reads the active
+//! parameters. The App-level driver (`app_step.rs`) reads the active
 //! camera position each frame, asks
 //! [`compute_streaming_deltas`] which cells need to enter or leave the
 //! loaded set, and dispatches to
@@ -15,20 +15,10 @@
 //! load radius, stays loaded for one extra cell of travel, and only
 //! unloads once the player is genuinely past the boundary.
 //!
-//! ## Phase 1a vs 1b
-//!
-//! Phase 1a (this module): sync load on the main thread via the
-//! per-cell loader factored in commit `2e3f73e`. NIF parse + DDS
-//! extract happen synchronously when each cell crosses the load
-//! boundary — expected stutter ~50-100 ms per cell crossing on FNV
-//! WastelandNV. The control loop (diff + dispatch + stale-load
-//! cancellation) is the load-bearing piece; all of it works against a
-//! `&mut World + &mut VulkanContext` driver.
-//!
-//! Phase 1b (next commit): replaces the sync load call with an
-//! `mpsc::Sender<LoadCellRequest>` send and a payload drain step.
-//! Worker thread does the parse off main thread. The diff logic and
-//! state shape on this struct stay the same.
+//! NIF extraction and parsing run on the worker below. The main thread
+//! applies completed payloads under a per-frame spawn budget; exterior
+//! bootstrap uses the same request and payload path instead of maintaining
+//! a second synchronous loader.
 
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
@@ -197,8 +187,8 @@ pub struct WorldStreamingState {
     /// no baked LOD). Streamed alongside `lod_blocks` each cell-boundary
     /// crossing; quads load only outside the full-detail ring.
     pub object_lod_blocks: HashMap<(i32, i32), crate::cell_loader::ObjectLodBlock>,
-    /// Distant **object** LOD cells for the placement scheme (Oblivion /
-    /// FO3 / FNV), keyed by cell `(x, y)`. Each entry is the cell's
+    /// Distant **object** LOD cells for Oblivion's placement scheme, keyed
+    /// by cell `(x, y)`. Each entry is the cell's
     /// `DistantLOD\*.lod` instanced `_far.nif` meshes (or an empty sentinel
     /// for a cell with no `.lod`). Streamed alongside `object_lod_blocks`;
     /// only one of the two ever populates per game (the gate is by
@@ -296,6 +286,45 @@ impl WorldStreamingState {
             Some(tx) => tx.send(req),
             None => Err(mpsc::SendError(req)),
         }
+    }
+
+    /// Queue cells through the canonical exterior worker path.
+    ///
+    /// Generation allocation, duplicate suppression, pending bookkeeping,
+    /// request construction, and closed-channel rollback live here so the
+    /// initial bootstrap and steady-state boundary crossing cannot drift.
+    /// Returns the number of requests successfully queued.
+    pub fn queue_loads(
+        &mut self,
+        coords: impl IntoIterator<Item = (i32, i32)>,
+        cached_keys: Arc<HashSet<String>>,
+    ) -> usize {
+        let mut queued = 0usize;
+        for (gx, gy) in coords {
+            let coord = (gx, gy);
+            if self.loaded.contains_key(&coord) || self.pending.contains_key(&coord) {
+                continue;
+            }
+
+            let generation = self.next_generation;
+            self.next_generation = self.next_generation.wrapping_add(1);
+            self.pending.insert(coord, generation);
+            let req = LoadCellRequest {
+                gx,
+                gy,
+                generation,
+                wctx: self.wctx.clone(),
+                tex_provider: self.tex_provider.clone(),
+                cached_keys: cached_keys.clone(),
+            };
+            if self.send_request(req).is_err() {
+                log::error!("Streaming worker channel closed; cell ({gx},{gy}) cannot be loaded");
+                self.pending.remove(&coord);
+            } else {
+                queued += 1;
+            }
+        }
+        queued
     }
 
     /// Graceful shutdown — close the request channel so the worker's
@@ -798,8 +827,8 @@ pub fn world_pos_to_grid(world_x: f32, world_z: f32) -> (i32, i32) {
 
 /// Generation-counter decision for an incoming worker payload.
 ///
-/// The drain step (in `main.rs::consume_streaming_payload` and
-/// `scene::stream_initial_radius`) compares the payload's generation
+/// The shared drain step in `streaming_helpers::consume_streaming_payload`
+/// compares the payload's generation
 /// against `WorldStreamingState.pending[(gx, gy)]`. A mismatch means
 /// either:
 ///   * The cell was unloaded since the request was sent — `pending`

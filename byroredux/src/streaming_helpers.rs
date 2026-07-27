@@ -176,17 +176,28 @@ mod tests {
     #[test]
     fn drain_budget_caps_applied_spawns_not_stale_drops() {
         const CAP: usize = 2;
-        // A queue mixing stale drops (false) and real applies (true), exactly
-        // as `try_recv` would hand them to the drain loop.
-        let queue = [false, true, false, true, true, true];
-        let mut it = queue.iter().copied();
+        // A queue mixing stale drops and current applies, exactly as
+        // `try_recv` hands outcomes to the drain loop.
+        let applied = |coord| StreamingPayloadOutcome::Applied {
+            coord,
+            center: None,
+        };
+        let queue = [
+            StreamingPayloadOutcome::DroppedStale,
+            applied((0, 0)),
+            StreamingPayloadOutcome::DroppedStale,
+            applied((1, 0)),
+            applied((2, 0)),
+            applied((3, 0)),
+        ];
+        let mut it = queue.iter();
 
         let mut spawned = 0usize;
         let mut pulled = 0usize;
         while spawned < CAP {
-            let Some(applied) = it.next() else { break };
+            let Some(outcome) = it.next() else { break };
             pulled += 1;
-            if applied {
+            if outcome.is_applied() {
                 spawned += 1;
             }
         }
@@ -218,6 +229,28 @@ mod tests {
     }
 }
 
+/// Result of applying one worker payload through the canonical exterior
+/// main-thread boundary.
+pub enum StreamingPayloadOutcome {
+    /// The payload no longer matches an in-flight request and was discarded
+    /// before any cache, ECS, or GPU mutation.
+    DroppedStale,
+    /// The request was current and its main-thread apply path ran. `center`
+    /// is present when the coordinate resolved to a real exterior cell; it is
+    /// absent for worldspace holes and failed cell spawns.
+    Applied {
+        coord: (i32, i32),
+        center: Option<byroredux_core::math::Vec3>,
+    },
+}
+
+impl StreamingPayloadOutcome {
+    /// Applied payloads consume the per-frame cell budget; stale drops do not.
+    pub fn is_applied(&self) -> bool {
+        matches!(self, Self::Applied { .. })
+    }
+}
+
 /// Apply a single worker-pre-parsed [`streaming::LoadCellPayload`]:
 /// stale-generation gate, finish-import every entry into the NIF
 /// cache, then synchronously call
@@ -234,16 +267,16 @@ mod tests {
     skip_all,
     fields(gx = payload.gx, gy = payload.gy, generation = payload.generation),
 )]
-/// Returns `true` when the payload was applied (the full main-thread spawn —
-/// terrain + BLAS + water + precombines + uploads — ran), `false` when it was
-/// stale-dropped before any spawn work. #1586 / F7 — the per-frame drain uses
-/// this so its cell budget counts only real spawns, not cheap stale drops.
+/// Returns an explicit outcome so both progressive bootstrap and steady-state
+/// streaming share the exact same cache/spawn path. #1586 / F7 — the
+/// per-frame drain uses [`StreamingPayloadOutcome::is_applied`] so its cell
+/// budget counts only current payloads, not cheap stale drops.
 pub fn consume_streaming_payload(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
     state: &mut streaming::WorldStreamingState,
     payload: streaming::LoadCellPayload,
-) -> bool {
+) -> StreamingPayloadOutcome {
     let coord = (payload.gx, payload.gy);
     // Stale-load gate via the testable `classify_payload` helper.
     match streaming::classify_payload(&state.pending, coord, payload.generation) {
@@ -258,7 +291,7 @@ pub fn consume_streaming_payload(
                 payload.gy,
                 payload.generation
             );
-            return false;
+            return StreamingPayloadOutcome::DroppedStale;
         }
     }
 
@@ -297,7 +330,7 @@ pub fn consume_streaming_payload(
     }
 
     // Spawn pass — every NIF lookup hits cache (slow parse path skipped).
-    match cell_loader::load_one_exterior_cell(
+    let center = match cell_loader::load_one_exterior_cell(
         wctx.as_ref(),
         payload.gx,
         payload.gy,
@@ -320,10 +353,12 @@ pub fn consume_streaming_payload(
             // geometry is washed out in ~8 frames instead of 30+ at
             // the steady-state α. See #801 / STRM-N1.
             ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+            Some(info.center)
         }
         Ok(None) => {
             // Worldspace hole — common at edges; pending entry already
             // cleared above.
+            None
         }
         Err(e) => {
             log::warn!(
@@ -332,7 +367,8 @@ pub fn consume_streaming_payload(
                 payload.gy,
                 e
             );
+            None
         }
-    }
-    true
+    };
+    StreamingPayloadOutcome::Applied { coord, center }
 }

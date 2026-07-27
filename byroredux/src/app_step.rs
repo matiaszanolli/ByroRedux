@@ -53,7 +53,9 @@ impl App {
                 ctx,
                 self.streaming.as_mut().unwrap(),
                 payload,
-            ) {
+            )
+            .is_applied()
+            {
                 spawned_this_frame += 1;
             }
         }
@@ -145,34 +147,7 @@ impl App {
             .world
             .resource::<cell_loader::NifImportRegistry>()
             .snapshot_keys();
-        for (gx, gy) in deltas.to_load {
-            // Skip if a load is already in flight or the cell is
-            // already loaded (the diff already filtered loaded, but a
-            // duplicate compute_streaming_deltas call could happen
-            // mid-frame).
-            if state.pending.contains_key(&(gx, gy)) {
-                continue;
-            }
-            let generation = state.next_generation;
-            state.next_generation = state.next_generation.wrapping_add(1);
-            state.pending.insert((gx, gy), generation);
-            let req = streaming::LoadCellRequest {
-                gx,
-                gy,
-                generation,
-                wctx: state.wctx.clone(),
-                tex_provider: state.tex_provider.clone(),
-                cached_keys: cached_keys.clone(),
-            };
-            if state.send_request(req).is_err() {
-                log::error!(
-                    "Streaming worker channel closed; cell ({},{}) cannot be loaded",
-                    gx,
-                    gy
-                );
-                state.pending.remove(&(gx, gy));
-            }
-        }
+        state.queue_loads(deltas.to_load, cached_keys);
 
         // ── 3. Stream the distant-terrain LOD ring (#1373) ──────────
         //
@@ -540,14 +515,14 @@ impl App {
                             &mut state,
                             grid.0,
                             grid.1,
+                            crate::scene::ExteriorBootstrapMode::ForegroundFirst,
                         );
                         self.streaming = Some(state);
 
                         // 4. Reposition the camera at the destination
-                        // spawn point. `stream_initial_radius` returned
-                        // a "load-centre" pose for the initial boot
-                        // path, but here we want the XTEL-authored
-                        // spawn, not the cell centre.
+                        // spawn point. Foreground-first bootstrap has made
+                        // the arrival cell coherent; here we still want the
+                        // XTEL-authored pose, not its terrain centre.
                         let dest_pos =
                             cell_loader::position_zup_to_yup(pending.destination_position_zup);
                         let dest_rot =

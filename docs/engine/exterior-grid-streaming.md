@@ -36,9 +36,16 @@ streaming system's first batch. Dispatch calls
 to build a once-per-session `ExteriorWorldContext` (worldspace selection:
 `--wrld` override → worldspace containing the requested grid → a
 preferred-game-default list → most-cells fallback), constructs
-`WorldStreamingState::new(...)` (`byroredux/src/streaming.rs:244`), and
-calls `stream_initial_radius` (`byroredux/src/scene/world_setup.rs:456`)
-to synchronously populate the starting grid.
+`WorldStreamingState::new(...)`, and calls `stream_initial_radius` to
+dispatch the starting grid through the worker.
+
+Interactive startup is **foreground-first**: it waits for the center cell as
+one coherent transaction, then returns to the render loop while peripheral
+cells continue through the normal two-cells-per-frame apply budget. This gives
+exterior entry the same minimum readiness contract as an interior load without
+blocking on the whole 11×11 default radius. `--bench-frames` selects the
+`FullRadius` bootstrap mode instead, preserving deterministic measurements with
+no initial population mixed into the sample.
 
 ## 2. WRLD/LAND → terrain + REFRs
 
@@ -65,37 +72,37 @@ game-agnostic representation for rendering.
 
 ## 3. Radius → grid cells
 
-Chebyshev (square) neighborhoods, not circular, computed in two places
-that agree on shape: the initial-load loop in `stream_initial_radius`
-(`byroredux/src/scene/world_setup.rs:456`), and the steady-state diff in
-`compute_streaming_deltas` (`byroredux/src/streaming.rs:700-745`) — a
-pure function: for `dx, dy` in `-radius_load..=radius_load`, insert
-`(px+dx, py+dy)` into the desired set, diff against the currently-loaded
-set, closest-first sort for `to_load`. Being a pure function decoupled
-from I/O is what makes it unit-testable without a live `World`.
+Chebyshev (square) neighborhoods, not circular, come from the single
+`compute_streaming_deltas` pure function in `byroredux/src/streaming.rs`:
+for `dx, dy` in `-radius_load..=radius_load`, insert `(px+dx, py+dy)` into
+the desired set, diff against the currently-loaded set, and closest-first
+sort `to_load`. Both bootstrap and steady-state dispatch that result through
+`WorldStreamingState::queue_loads`, which owns generation allocation,
+pending bookkeeping, duplicate suppression, request construction, and
+closed-channel rollback.
 
 ## 4. Streaming Phase 1: async pre-parse worker
 
 A real background thread + `mpsc` pipeline in `byroredux/src/streaming.rs`.
-`WorldStreamingState::new` (`streaming.rs:244`) spawns a worker thread
-(`streaming.rs:256`) running `cell_pre_parse_worker` (`streaming.rs:421`),
-which pulls `LoadCellRequest`s off an `mpsc::Receiver` and does the
-NIF-parse/BSA-extract work off the main thread via `pre_parse_cell`
-(`streaming.rs:539`), sending `LoadCellPayload` back on a second channel.
+`WorldStreamingState::new` spawns a worker thread running
+`cell_pre_parse_worker`, which pulls `LoadCellRequest`s off an
+`mpsc::Receiver`, does the NIF-parse/BSA-extract work off the main thread
+via `pre_parse_cell`, and sends `LoadCellPayload` back on a second channel.
 
 Trigger: `App::step_streaming` (`byroredux/src/app_step.rs:21`) runs once
 per tick, converts the active camera's position to a grid coordinate via
 `world_pos_to_grid` (`streaming.rs:752`), and only acts when that grid
 cell changed since last tick. It calls `compute_streaming_deltas`,
 dispatches new load requests, and drains ready payloads via
-`payload_rx.try_recv()` into `consume_streaming_payload`
-(`byroredux/src/streaming_helpers.rs`) — capped at
+`payload_rx.try_recv()` into the shared `consume_streaming_payload`
+boundary (`byroredux/src/streaming_helpers.rs`) — capped at
 `MAX_CELLS_SPAWNED_PER_FRAME = 2` (`app_step.rs:19`) so a large batch of
 simultaneously-ready cells can't spike one frame's cost.
 
-(`streaming.rs`'s own module-doc comment still describes this as a
-future "Phase 1b (next commit)" — that comment is stale; the worker
-below it is fully implemented.)
+Bootstrap consumes through that same boundary. Cache insertion, external
+material resolution, ECS/GPU spawn, loaded-map insertion, temporal-history
+invalidation, and stale-generation rejection therefore have one implementation
+for initial entry, door transitions, debug loads, and player movement.
 
 ## 5. Streaming Phase 2: door teleport
 
@@ -125,7 +132,7 @@ takes the pending transition and dispatches:
 - **Exterior destination**: `app_step.rs:322-394` tears down any interior
   and drains the existing `WorldStreamingState`, then calls the same
   `build_exterior_world_context` + `WorldStreamingState::new` +
-  `stream_initial_radius` used at boot, with
+  foreground-first `stream_initial_radius` used at interactive boot, with
   `DEFAULT_TRANSITION_RADIUS = 5` (`app_step.rs:270`).
 
 Despawn, in both cases, walks `CellRoot` (`crates/core/src/ecs/components/cell_root.rs:20`)
@@ -151,6 +158,13 @@ genuinely open items, per that row:
   — `MAX_CELLS_SPAWNED_PER_FRAME` exists specifically because draining
   every ready payload in one frame still spikes frame time when several
   cells finish pre-parsing at once.
+- Distant terrain/object LOD-ring construction is still a synchronous
+  bootstrap stage. Moving it behind an incremental block/quad budget is the
+  next foreground-first slice.
+- A cell payload is budgeted as one unit even though its main-thread cost
+  varies with terrain, precombine complexity, texture uploads, and BLAS work.
+  Replacing the fixed cell-count cap with a measured time/bytes budget is the
+  path from bounded pop-in to consistently hitch-free streaming.
 
 See [ROADMAP.md's M40 row](../../ROADMAP.md) for the full closure
 history and commit references.

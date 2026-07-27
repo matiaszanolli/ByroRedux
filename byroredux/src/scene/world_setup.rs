@@ -15,7 +15,8 @@ use crate::cell_loader;
 use crate::components::{
     CloudSimState, GameTimeRes, SkyParamsRes, WeatherDataRes, WeatherTransitionRes,
 };
-use crate::streaming::{self, LoadedCell, WorldStreamingState};
+use crate::streaming::{self, WorldStreamingState};
+use crate::streaming_helpers::{consume_streaming_payload, StreamingPayloadOutcome};
 
 /// Reference cloud sprite width — Bethesda's typical authoring
 /// resolution. Per-layer baselines (`CLOUD_TILE_SCALE_*`) assume this
@@ -448,28 +449,61 @@ pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [
     }
 }
 
-/// Stream the initial radius around the player's spawn cell. Returns
-/// the camera-spawn point (center cell terrain mid-height + 200 units,
-/// or `Vec3::ZERO` when there's no center cell).
+/// How much of the initial exterior radius must be ready before control
+/// returns to the render loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExteriorBootstrapMode {
+    /// Wait only for the arrival cell. The rest of the radius stays queued
+    /// and is applied by the normal per-frame streaming budget.
+    ForegroundFirst,
+    /// Wait for every requested cell. Used by deterministic benchmarks so
+    /// measurement never includes initial-radius population.
+    FullRadius,
+}
+
+impl ExteriorBootstrapMode {
+    pub(crate) fn from_cli_args(args: &[String]) -> Self {
+        if args.iter().any(|arg| arg == "--bench-frames") {
+            Self::FullRadius
+        } else {
+            Self::ForegroundFirst
+        }
+    }
+}
+
+fn bootstrap_waiting(
+    mode: ExteriorBootstrapMode,
+    pending: &std::collections::HashMap<(i32, i32), u64>,
+    center: (i32, i32),
+) -> bool {
+    match mode {
+        ExteriorBootstrapMode::ForegroundFirst => pending.contains_key(&center),
+        ExteriorBootstrapMode::FullRadius => !pending.is_empty(),
+    }
+}
+
+/// Stream the initial radius around the player's spawn cell. Returns the
+/// camera-spawn point (center cell terrain mid-height + 200 units, or
+/// `Vec3::ZERO` when there's no center cell).
 ///
-/// Dispatches the initial radius via the streaming worker and blocks
-/// (with `payload_rx.recv()`, not `try_recv`) until every pending
-/// load resolves — bench harness expects the world fully populated
-/// before measurement starts. Each payload is consumed via the same
-/// `finish_partial_import` + `load_one_exterior_cell` pipeline the
-/// per-frame `step_streaming` uses.
+/// Every cell is dispatched through the streaming worker. In
+/// [`ExteriorBootstrapMode::ForegroundFirst`] this blocks only for the
+/// center cell—the exterior equivalent of one coherent interior-cell
+/// transaction—then leaves the surrounding radius to the steady-state
+/// per-frame budget. [`ExteriorBootstrapMode::FullRadius`] preserves the
+/// old deterministic benchmark behavior.
 ///
-/// Phase 1b: worker still does the heavy CPU work off-thread while
-/// the bootstrap thread blocks on the `recv()`. The win vs. Phase 1a
-/// sync is bounded — the bootstrap is single-threaded by design — but
-/// it keeps the post-bootstrap streaming loop using exactly one code
-/// path for cell load (no separate sync vs async branches).
+/// Both modes consume payloads through [`consume_streaming_payload`], so
+/// bootstrap and steady-state loading share cache insertion, material
+/// resolution, cell spawning, temporal-history invalidation, and stale
+/// generation handling.
 pub(crate) fn stream_initial_radius(
     world: &mut World,
     ctx: &mut VulkanContext,
     state: &mut WorldStreamingState,
     cx: i32,
     cy: i32,
+    mode: ExteriorBootstrapMode,
 ) -> Vec3 {
     let deltas = streaming::compute_streaming_deltas(
         &state.loaded,
@@ -492,37 +526,15 @@ pub(crate) fn stream_initial_radius(
     let cached_keys = world
         .resource::<crate::cell_loader::NifImportRegistry>()
         .snapshot_keys();
-    for (gx, gy) in &deltas.to_load {
-        let coord = (*gx, *gy);
-        let generation = state.next_generation;
-        state.next_generation = state.next_generation.wrapping_add(1);
-        state.pending.insert(coord, generation);
-        let req = streaming::LoadCellRequest {
-            gx: *gx,
-            gy: *gy,
-            generation,
-            wctx: state.wctx.clone(),
-            tex_provider: state.tex_provider.clone(),
-            cached_keys: cached_keys.clone(),
-        };
-        if state.send_request(req).is_err() {
-            log::error!(
-                "Streaming worker channel closed during initial-radius dispatch \
-                 — cell ({},{}) cannot be loaded",
-                gx,
-                gy
-            );
-            state.pending.remove(&coord);
-        }
-    }
+    state.queue_loads(deltas.to_load, cached_keys);
 
-    // Block on the receiver until every pending load resolves. Loads
-    // arrive in worker-completion order, not dispatch order, so we
-    // consume any payload that arrives and only stop when `pending`
-    // is empty.
+    // Block for the selected foreground contract. Loads normally arrive
+    // closest-first because the delta list is ordered and the worker is FIFO,
+    // but the loop keys its stop condition to the center coordinate rather
+    // than relying on that implementation detail.
     let mut center = Vec3::ZERO;
-    let wctx = state.wctx.clone();
-    while !state.pending.is_empty() {
+    let center_coord = (cx, cy);
+    while bootstrap_waiting(mode, &state.pending, center_coord) {
         let payload = match state.payload_rx.recv() {
             Ok(p) => p,
             Err(_) => {
@@ -533,80 +545,29 @@ pub(crate) fn stream_initial_radius(
                 break;
             }
         };
-        let coord = (payload.gx, payload.gy);
-        // Stale-load gate via the testable `classify_payload` helper.
-        match streaming::classify_payload(&state.pending, coord, payload.generation) {
-            streaming::PayloadDecision::Apply => {
-                state.pending.remove(&coord);
-            }
-            streaming::PayloadDecision::StaleNewerPending { .. }
-            | streaming::PayloadDecision::StaleNoPending => continue,
-        }
-        for (model_path, partial_opt) in payload.parsed {
-            match partial_opt {
-                Some(partial) => cell_loader::finish_partial_import(
-                    world,
-                    Some(&mut state.mat_provider),
-                    Some(state.tex_provider.as_ref()),
-                    &model_path,
-                    partial,
-                ),
-                None => {
-                    let cache_key = model_path.to_ascii_lowercase();
-                    let freed = {
-                        let mut reg = world.resource_mut::<cell_loader::NifImportRegistry>();
-                        reg.insert(cache_key, None)
-                    };
-                    // #863 — release LRU-evicted clip handles.
-                    if !freed.is_empty() {
-                        let mut clip_reg = world
-                            .resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
-                        for h in freed {
-                            clip_reg.release(h);
-                        }
-                    }
-                }
-            }
-        }
-        match cell_loader::load_one_exterior_cell(
-            wctx.as_ref(),
-            payload.gx,
-            payload.gy,
-            world,
-            ctx,
-            state.tex_provider.as_ref(),
-            Some(&mut state.mat_provider),
-            None,
-        ) {
-            Ok(Some(info)) => {
-                if coord == (cx, cy) {
-                    center = info.center;
-                }
-                state.loaded.insert(
-                    coord,
-                    LoadedCell {
-                        cell_root: info.cell_root,
-                    },
-                );
-            }
-            Ok(None) => {
-                // Worldspace hole — common at edges.
-            }
-            Err(e) => {
-                log::warn!(
-                    "Initial cell ({},{}) spawn failed: {:#}",
-                    coord.0,
-                    coord.1,
-                    e
-                );
+        if let StreamingPayloadOutcome::Applied {
+            coord,
+            center: Some(cell_center),
+        } = consume_streaming_payload(world, ctx, state, payload)
+        {
+            if coord == center_coord {
+                center = cell_center;
             }
         }
     }
+    if mode == ExteriorBootstrapMode::ForegroundFirst && !state.pending.is_empty() {
+        log::info!(
+            "Exterior foreground ready at ({cx},{cy}); {} peripheral cells continue streaming",
+            state.pending.len(),
+        );
+    }
 
-    // Distant-terrain LOD ring (#view-dist). With every full-detail cell
-    // now loaded, build the coarse LOD blocks that extend view distance
-    // ~10× beyond the streamed ring. Cells inside `radius_unload` are holed
-    // out so the LOD never overlaps the near terrain — #1866 / #1871
+    // Distant-terrain LOD ring (#view-dist). Build the coarse blocks that
+    // extend view distance ~10× beyond the streamed ring. In foreground-first
+    // mode, cells inside `radius_unload` are conservatively holed before all
+    // peripheral full-detail payloads have landed; those cells fill the
+    // reserved near ring progressively without ever overlapping LOD.
+    // Cells inside `radius_unload` are holed out — #1866 / #1871
     // (LC0703-01 / LC0703-02): full cells stay resident through
     // `radius_load + 1` under the streaming hysteresis band, so gating on
     // `radius_load` let a LOD block load one cell early and z-fight a
@@ -615,6 +576,7 @@ pub(crate) fn stream_initial_radius(
     // initial call runs against an empty map → spawns the whole ring around
     // the spawn cell).
     let lod_tex = state.tex_provider.clone();
+    let wctx = state.wctx.clone();
     cell_loader::stream_lod_blocks(
         world,
         ctx,
@@ -675,6 +637,61 @@ pub(crate) fn stream_initial_radius(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interactive_bootstrap_waits_only_for_foreground_cell() {
+        let center = (4, -2);
+        let mut pending = std::collections::HashMap::from([(center, 1), ((5, -2), 2)]);
+        assert!(bootstrap_waiting(
+            ExteriorBootstrapMode::ForegroundFirst,
+            &pending,
+            center,
+        ));
+
+        pending.remove(&center);
+        assert!(
+            !bootstrap_waiting(ExteriorBootstrapMode::ForegroundFirst, &pending, center,),
+            "peripheral requests must not extend the interactive loading gate"
+        );
+        assert_eq!(pending.len(), 1, "peripheral work remains queued");
+    }
+
+    #[test]
+    fn deterministic_bootstrap_waits_for_the_full_radius() {
+        let center = (4, -2);
+        let mut pending = std::collections::HashMap::from([(center, 1), ((5, -2), 2)]);
+        pending.remove(&center);
+        assert!(bootstrap_waiting(
+            ExteriorBootstrapMode::FullRadius,
+            &pending,
+            center,
+        ));
+        pending.clear();
+        assert!(!bootstrap_waiting(
+            ExteriorBootstrapMode::FullRadius,
+            &pending,
+            center,
+        ));
+    }
+
+    #[test]
+    fn bench_cli_selects_full_radius_bootstrap() {
+        let interactive = vec!["byroredux".to_string(), "--grid".to_string()];
+        assert_eq!(
+            ExteriorBootstrapMode::from_cli_args(&interactive),
+            ExteriorBootstrapMode::ForegroundFirst
+        );
+
+        let bench = vec![
+            "byroredux".to_string(),
+            "--bench-frames".to_string(),
+            "60".to_string(),
+        ];
+        assert_eq!(
+            ExteriorBootstrapMode::from_cli_args(&bench),
+            ExteriorBootstrapMode::FullRadius
+        );
+    }
 
     /// #1339 / D3-03 — on a worldspace re-acquire, every real prior sky
     /// texture (cloud 0-3 + CLMT sun) must be released, but `0` (absent /
