@@ -43,6 +43,7 @@ use crate::asset_provider::{resolve_texture, TextureProvider};
 use crate::components::IsLodTerrain;
 
 use super::exterior::ExteriorWorldContext;
+use super::lod_support::{sort_lod_coords_nearest, LodReconcileInput, LodWorkBudget};
 
 /// Object-LOD quad level streamed by the first cut — level 4 (4×4-cell
 /// quads), the closest / highest-detail band. Coarser bands (8/16/32) for
@@ -143,35 +144,42 @@ fn object_lod_quads_in_radius(
 /// band. Gating on `radius_unload` instead means a quad only loads once
 /// every cell it covers is provably beyond any possible full-cell residency.
 ///
-/// No-op for Oblivion / FO3 / FNV — those ship the `DistantLOD\*.lod` +
-/// `_far.nif` placement scheme, not `.bto` (EXAL §5; a separate module).
+/// No-op outside Skyrim / FO4. Oblivion uses the `DistantLOD\*.lod` +
+/// `_far.nif` placement scheme; FO3/FNV ship neither standalone object-LOD
+/// scheme (EXAL §5).
+/// Reclaims are immediate; entering quads consume [`LodWorkBudget`] units.
+/// Returns `true` when every desired quad is resident or represented by its
+/// known-missing sentinel.
 pub(crate) fn stream_object_lod_blocks(
     world: &mut World,
     ctx: &mut VulkanContext,
-    tex_provider: &TextureProvider,
-    wctx: &ExteriorWorldContext,
-    player_grid: (i32, i32),
-    max_full_cell_radius: i32,
+    input: &LodReconcileInput<'_>,
     blocks: &mut HashMap<(i32, i32), ObjectLodBlock>,
-) {
+    budget: &mut LodWorkBudget,
+) -> bool {
+    let tex_provider = input.tex_provider;
+    let wctx = input.wctx;
+    let player_grid = input.player_grid;
+    let max_full_cell_radius = input.max_full_cell_radius;
     if !matches!(
         wctx.record_index.game,
         GameKind::Skyrim | GameKind::Fallout4
     ) {
-        return;
+        return true;
     }
     let level = OBJECT_LOD_LEVEL;
-    let desired: std::collections::HashSet<(i32, i32)> =
-        object_lod_quads_in_radius(player_grid, max_full_cell_radius, level)
-            .into_iter()
-            .collect();
+    let mut desired = object_lod_quads_in_radius(player_grid, max_full_cell_radius, level);
+    sort_lod_coords_nearest(&mut desired, |(qx, qy)| {
+        quad_min_chebyshev(qx, qy, level, player_grid)
+    });
+    let desired_set: std::collections::HashSet<_> = desired.iter().copied().collect();
 
     let mut spawned = 0usize;
     let mut unloaded = 0usize;
 
     // Unload quads that left the ring (skip empty sentinels — nothing to free).
     blocks.retain(|coord, blk| {
-        if desired.contains(coord) {
+        if desired_set.contains(coord) {
             true
         } else {
             if !blk.entities.is_empty() {
@@ -182,11 +190,19 @@ pub(crate) fn stream_object_lod_blocks(
         }
     });
 
+    let candidates: Vec<_> = desired
+        .into_iter()
+        .filter(|coord| !blocks.contains_key(coord))
+        .collect();
+    let candidate_count = candidates.len();
+    let mut attempted = 0usize;
+
     // Load entering quads.
-    for &(qx, qy) in &desired {
-        if blocks.contains_key(&(qx, qy)) {
-            continue; // already loaded (or a known-missing sentinel)
+    for (qx, qy) in candidates {
+        if !budget.try_take() {
+            break;
         }
+        attempted += 1;
         match spawn_object_lod_quad(world, ctx, tex_provider, wctx, level, qx, qy) {
             Some(blk) => {
                 if !blk.entities.is_empty() {
@@ -201,7 +217,8 @@ pub(crate) fn stream_object_lod_blocks(
         }
     }
 
-    if spawned + unloaded > 0 {
+    let complete = attempted == candidate_count;
+    if complete && spawned + unloaded > 0 {
         log::info!(
             "Object-LOD ring @cell ({},{}): +{} quads loaded, -{} unloaded ({} tracked)",
             player_grid.0,
@@ -211,6 +228,8 @@ pub(crate) fn stream_object_lod_blocks(
             blocks.len(),
         );
     }
+
+    complete
 }
 
 /// Resolve + import + spawn one quad's `.bto`. Returns `None` when the quad

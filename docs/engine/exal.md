@@ -146,7 +146,7 @@ is now the **universal fallback** behind the games' prebaked assets:
   distant terrain is textured rather than flat there; Oblivion/FO3/FNV
   `Landscape\LOD\*.nif` + `_lod` textures are still un-consumed (synth-only);
 - distant **object LOD** is consumed for Skyrim+/FO4 (baked per-quad `.bto`
-  macro-meshes + object atlas, step 6) **and** for Oblivion/FO3/FNV via the
+  macro-meshes + object atlas, step 6) **and** for Oblivion via the
   `DistantLOD\*.lod` → `_far.nif` placement scheme (`PlacementLodProvider`,
   `cell_loader/placement_lod.rs`, #1726 — format reverse-engineered from the
   vanilla Oblivion corpus, see §Q3 below);
@@ -415,7 +415,8 @@ every cell had been applied. At the default radius 5, entering outdoors
 therefore waited for up to 121 cells before the first interactive frame.
 
 The first convergence slice keeps the center exterior cell as the coherent
-foreground transaction and leaves the peripheral radius queued:
+foreground transaction and leaves the peripheral radius queued. The second
+slice makes distant LOD obey the same progressive contract:
 
 1. `compute_streaming_deltas` produces one closest-first desired-cell list.
 2. `WorldStreamingState::queue_loads` is the single request boundary for
@@ -427,12 +428,25 @@ foreground transaction and leaves the peripheral radius queued:
    `MAX_CELLS_SPAWNED_PER_FRAME`.
 5. `--bench-frames` explicitly selects full-radius blocking so performance and
    screenshot baselines still begin from a stable populated world.
+6. Foreground-first bootstrap marks the terrain/object/placement LOD reconcile
+   pending instead of constructing every block synchronously.
+7. A frame that applies any full-detail cell spends no new LOD work. An idle
+   frame permits two archive/import/upload attempts per provider; terrain and
+   the active game-specific object scheme therefore cannot starve each other.
+8. LOD candidates are deterministic and closest-first. Missing assets become
+   mask-aware sentinels, so one absent near block cannot be retried forever and
+   prevent the outer ring from filling.
+9. Reclaims remain immediate even when the construction budget is zero:
+   out-of-ring geometry and stale terrain hole masks disappear on the boundary
+   crossing, while replacements may arrive over later frames.
 
-This is intentionally the first step, not a claim that exterior entry is already
-pause-free. The next latency boundaries are synchronous LOD-ring construction,
-variable-cost cell application (terrain/precombine/upload/BLAS), and provider
-rebuilds on transitions. Those should move behind block/time budgets in that
-order; the foreground cell remains the minimum coherent handoff throughout.
+This is not yet a claim that exterior entry is pause-free. LOD work is bounded
+by attempt count rather than elapsed time, and one placement cell can still be
+much more expensive than one terrain block. The next latency boundary is a
+measured time/bytes budget spanning variable-cost cell application
+(terrain/precombine/upload/BLAS) and LOD providers, followed by provider/cache
+reuse across transitions. The foreground cell remains the minimum coherent
+handoff throughout.
 
 ---
 
@@ -569,15 +583,17 @@ Steps 1–5 are refactors that pay down the scattered-quirk debt; step 6 is the 
 rendering capability the user asked for, built on the boundary the earlier steps
 establish.
 
-7. **Loading continuity (§5.6)** — **first cut done (2026-07-27).**
+7. **Loading continuity (§5.6)** — **first two cuts done (2026-07-27).**
    Interactive exterior entry is foreground-first: the center cell blocks as one
    coherent transaction and the rest of the radius applies through the existing
    worker/frame budget. Bootstrap and steady state now share
    `WorldStreamingState::queue_loads` and `consume_streaming_payload`; the
    duplicated bootstrap cache/spawn implementation was removed. Deterministic
-   `--bench-frames` runs retain full-radius blocking. Follow-ups: incremental LOD
-   initialization, time-budgeted rather than cell-count-budgeted payload apply,
-   and provider reuse across door transitions.
+   `--bench-frames` runs retain full-radius blocking. Terrain, `.bto`, and
+   placement LOD now share one closest-first reconciler: interactive work runs
+   only on cell-apply-idle frames at two attempts per provider, while stale
+   geometry is reclaimed immediately. Follow-ups: time-budgeted rather than
+   count-budgeted cell/LOD apply and provider reuse across door transitions.
 
 ---
 

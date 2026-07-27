@@ -7,7 +7,7 @@ grid cell to terrain + REFRs, the background pre-parse worker that keeps
 streaming off the main thread, and the two ways a loaded scene changes
 wholesale — walking across a cell boundary, and a door teleport.
 
-> **Currency note.** Verified against the tree as of 2026-07-15, source
+> **Currency note.** Verified against the tree as of 2026-07-27, source
 > citations below. Two other docs currently misdescribe this system and
 > are due a fix: **README.md**'s "State" section still reads "World
 > streaming Phase 1 ... + Phase 2 ... shipped; multi-cell grid pending"
@@ -91,9 +91,9 @@ via `pre_parse_cell`, and sends `LoadCellPayload` back on a second channel.
 
 Trigger: `App::step_streaming` (`byroredux/src/app_step.rs:21`) runs once
 per tick, converts the active camera's position to a grid coordinate via
-`world_pos_to_grid` (`streaming.rs:752`), and only acts when that grid
-cell changed since last tick. It calls `compute_streaming_deltas`,
-dispatches new load requests, and drains ready payloads via
+`world_pos_to_grid` (`streaming.rs:752`). Cell diff/dispatch only runs when
+that grid cell changed, but the step continues on stationary frames while a
+deferred LOD reconcile is pending. It drains ready payloads via
 `payload_rx.try_recv()` into the shared `consume_streaming_payload`
 boundary (`byroredux/src/streaming_helpers.rs`) — capped at
 `MAX_CELLS_SPAWNED_PER_FRAME = 2` (`app_step.rs:19`) so a large batch of
@@ -103,6 +103,16 @@ Bootstrap consumes through that same boundary. Cache insertion, external
 material resolution, ECS/GPU spawn, loaded-map insertion, temporal-history
 invalidation, and stale-generation rejection therefore have one implementation
 for initial entry, door transitions, debug loads, and player movement.
+
+The same step advances terrain, Skyrim+/FO4 `.bto`, and Oblivion placement LOD
+through `streaming_helpers::reconcile_lod_rings`. Full-detail cell application
+has priority: only a frame that applied zero cells receives new LOD work, capped
+at two archive/import/upload attempts per provider. Candidates fill
+closest-first. A boundary crossing still runs reclaim-only reconciliation even
+on a cell-apply frame, so geometry leaving the ring and stale terrain hole masks
+are removed immediately. Interactive bootstrap defers this work; deterministic
+`FullRadius` benchmark bootstrap passes an unlimited budget and settles all
+three providers before returning.
 
 ## 5. Streaming Phase 2: door teleport
 
@@ -158,12 +168,13 @@ genuinely open items, per that row:
   — `MAX_CELLS_SPAWNED_PER_FRAME` exists specifically because draining
   every ready payload in one frame still spikes frame time when several
   cells finish pre-parsing at once.
-- Distant terrain/object LOD-ring construction is still a synchronous
-  bootstrap stage. Moving it behind an incremental block/quad budget is the
-  next foreground-first slice.
+- Distant terrain/object LOD-ring construction is incremental, but its budget
+  is an operation count. One `.lod` placement cell can parse and upload far
+  more geometry than one terrain block, so the cap bounds work quantity, not
+  wall-clock time.
 - A cell payload is budgeted as one unit even though its main-thread cost
   varies with terrain, precombine complexity, texture uploads, and BLAS work.
-  Replacing the fixed cell-count cap with a measured time/bytes budget is the
+  Replacing both fixed caps with a shared measured time/bytes budget is the
   path from bounded pop-in to consistently hitch-free streaming.
 
 See [ROADMAP.md's M40 row](../../ROADMAP.md) for the full closure

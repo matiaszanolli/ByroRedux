@@ -16,7 +16,9 @@ use crate::components::{
     CloudSimState, GameTimeRes, SkyParamsRes, WeatherDataRes, WeatherTransitionRes,
 };
 use crate::streaming::{self, WorldStreamingState};
-use crate::streaming_helpers::{consume_streaming_payload, StreamingPayloadOutcome};
+use crate::streaming_helpers::{
+    consume_streaming_payload, reconcile_lod_rings, StreamingPayloadOutcome,
+};
 
 /// Reference cloud sprite width — Bethesda's typical authoring
 /// resolution. Per-layer baselines (`CLOUD_TILE_SCALE_*`) assume this
@@ -562,72 +564,21 @@ pub(crate) fn stream_initial_radius(
         );
     }
 
-    // Distant-terrain LOD ring (#view-dist). Build the coarse blocks that
-    // extend view distance ~10× beyond the streamed ring. In foreground-first
-    // mode, cells inside `radius_unload` are conservatively holed before all
-    // peripheral full-detail payloads have landed; those cells fill the
-    // reserved near ring progressively without ever overlapping LOD.
-    // Cells inside `radius_unload` are holed out — #1866 / #1871
-    // (LC0703-01 / LC0703-02): full cells stay resident through
-    // `radius_load + 1` under the streaming hysteresis band, so gating on
-    // `radius_load` let a LOD block load one cell early and z-fight a
-    // still-resident full model. Slice 2 (#1373): populate `state.lod_blocks`
-    // so the ring is tracked and re-centered as the player walks (the
-    // initial call runs against an empty map → spawns the whole ring around
-    // the spawn cell).
-    let lod_tex = state.tex_provider.clone();
-    let wctx = state.wctx.clone();
-    cell_loader::stream_lod_blocks(
-        world,
-        ctx,
-        lod_tex.as_ref(),
-        wctx.as_ref(),
-        (cx, cy),
-        state.radius_unload,
-        &mut state.lod_blocks,
-    );
-    // Distant object LOD (Skyrim+/FO4 `.bto`) — no-op on other games.
-    cell_loader::stream_object_lod_blocks(
-        world,
-        ctx,
-        lod_tex.as_ref(),
-        wctx.as_ref(),
-        (cx, cy),
-        state.radius_unload,
-        &mut state.object_lod_blocks,
-    );
-    // Distant object LOD (Oblivion/FO3/FNV `DistantLOD\*.lod` → `_far.nif`) —
-    // no-op on Skyrim+/FO4 (#1726). Only one of the two ever populates.
-    cell_loader::stream_placement_lod_blocks(
-        world,
-        ctx,
-        lod_tex.as_ref(),
-        wctx.as_ref(),
-        (cx, cy),
-        state.radius_unload,
-        &mut state.placement_lod_blocks,
-    );
-
-    // #1745 — flush the DDS textures the LOD streaming above enqueued. The
-    // per-cell `flush_pending_uploads` (references.rs) runs during cell load,
-    // which happens BEFORE this distant-LOD pass — so without an explicit flush
-    // here the baked `landscapelod\generated` quad textures stay pointed at the
-    // fallback (checker) slot until the player's first cell-boundary crossing
-    // triggers another cell load. In a static `--fly` / `--bench-hold` session
-    // that crossing never comes, so the distant terrain renders permanently
-    // checkered. Flush once now so the initial ring shows real textures.
-    if let Some(allocator) = ctx.allocator.as_ref() {
-        let pending = ctx.texture_registry.pending_dds_upload_count();
-        if pending > 0 {
-            if let Err(e) = ctx.texture_registry.flush_pending_uploads(
-                &ctx.device,
-                allocator,
-                &ctx.graphics_queue,
-                ctx.transfer_pool,
-                &ctx.transfer_fence,
-            ) {
-                log::warn!("Initial LOD texture flush failed ({pending} pending): {e}");
-            }
+    // EXAL progressive bootstrap: interactive loads return as soon as the
+    // foreground cell is coherent, then the normal per-frame driver fills
+    // terrain and the game-specific object LOD ring on idle frames. Bench
+    // mode preserves the deterministic contract by settling every ring here.
+    match mode {
+        ExteriorBootstrapMode::ForegroundFirst => {
+            state.lod_reconcile_pending = true;
+        }
+        ExteriorBootstrapMode::FullRadius => {
+            let progress = reconcile_lod_rings(world, ctx, state, (cx, cy), usize::MAX);
+            debug_assert!(
+                progress.complete,
+                "unlimited LOD bootstrap must settle every provider"
+            );
+            state.lod_reconcile_pending = false;
         }
     }
 

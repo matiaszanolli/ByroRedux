@@ -181,11 +181,17 @@ pub struct WorldStreamingState {
     /// these once and never tracked them — re-entry leaked ~600 blocks and
     /// the hole-out went stale as the player walked.
     pub lod_blocks: HashMap<(i32, i32), LodBlock>,
+    /// Terrain-LOD coordinates that were reconciled but produced no mesh,
+    /// keyed to the hole mask that was attempted. This is the terrain
+    /// equivalent of the empty sentinels stored directly in the object and
+    /// placement maps: incremental initialization must not retry the same
+    /// absent asset every frame and starve all later coordinates.
+    pub lod_missing_blocks: HashMap<(i32, i32), u16>,
     /// Distant **object** LOD quads, keyed by the quad's SW-corner cell
     /// (EXAL step 6). Skyrim+/FO4 only — each entry is the baked `.bto`
     /// macro-mesh's spawned sub-meshes (or an empty sentinel for a quad with
-    /// no baked LOD). Streamed alongside `lod_blocks` each cell-boundary
-    /// crossing; quads load only outside the full-detail ring.
+    /// no baked LOD). Reconciled progressively alongside `lod_blocks`; quads
+    /// load only outside the full-detail ring.
     pub object_lod_blocks: HashMap<(i32, i32), crate::cell_loader::ObjectLodBlock>,
     /// Distant **object** LOD cells for Oblivion's placement scheme, keyed
     /// by cell `(x, y)`. Each entry is the cell's
@@ -215,6 +221,10 @@ pub struct WorldStreamingState {
     /// suppress no-op streaming work when the player hasn't crossed a
     /// cell boundary.
     pub last_player_grid: Option<(i32, i32)>,
+    /// Whether the three distant-LOD rings still have deferred reconcile
+    /// work. Foreground-first bootstrap and cell-boundary movement set this;
+    /// idle frames clear it progressively through the shared LOD budget.
+    pub lod_reconcile_pending: bool,
     /// Worker thread handle. Held so the thread isn't detached. On
     /// graceful shutdown [`WorldStreamingState::shutdown`] drops
     /// `request_tx` (so the worker's recv loop exits) and joins this
@@ -262,6 +272,7 @@ impl WorldStreamingState {
             mat_provider,
             loaded: HashMap::new(),
             lod_blocks: HashMap::new(),
+            lod_missing_blocks: HashMap::new(),
             object_lod_blocks: HashMap::new(),
             placement_lod_blocks: HashMap::new(),
             pending: HashMap::new(),
@@ -269,6 +280,7 @@ impl WorldStreamingState {
             radius_load,
             radius_unload: radius_load + 1,
             last_player_grid: None,
+            lod_reconcile_pending: false,
             worker: Some(worker),
             request_tx: Some(request_tx),
             payload_rx,

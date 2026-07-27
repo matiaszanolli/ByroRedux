@@ -36,7 +36,7 @@ use crate::asset_provider::{resolve_texture, TextureProvider};
 use crate::components::IsLodTerrain;
 use crate::streaming::LodBlock;
 
-use super::exterior::ExteriorWorldContext;
+use super::lod_support::{sort_lod_coords_nearest, LodReconcileInput, LodWorkBudget};
 
 /// Cells per LOD-block edge. A block is one merged mesh covering
 /// `LOD_BLOCK_CELLS²` cells (4×4 = 16 cells = 16384×16384 BU). Bigger
@@ -234,9 +234,10 @@ fn block_hole_mask(
 ///     moved with the player) are regenerated so the LOD never overlaps or
 ///     gaps against the streamed near terrain.
 ///
-/// Cells inside `max_full_cell_radius` are holed out. Called once at scene
-/// setup (against an empty map → spawns the whole ring) and again on every
-/// cell-boundary crossing from `App::step_streaming`.
+/// Cells inside `max_full_cell_radius` are holed out. Reclaims and stale-mask
+/// invalidations happen immediately; entering/regenerated blocks consume
+/// [`LodWorkBudget`] units and may be deferred. Returns `true` once every
+/// desired coordinate is either resident or recorded in `missing_blocks`.
 ///
 /// `max_full_cell_radius` **must** be the caller's cell-streaming
 /// `radius_unload`, not `radius_load` — see [`cell_is_full_detail`]
@@ -244,15 +245,18 @@ fn block_hole_mask(
 pub(crate) fn stream_lod_blocks(
     world: &mut World,
     ctx: &mut VulkanContext,
-    tex_provider: &TextureProvider,
-    wctx: &ExteriorWorldContext,
-    player_grid: (i32, i32),
-    max_full_cell_radius: i32,
+    input: &LodReconcileInput<'_>,
     lod_blocks: &mut HashMap<(i32, i32), LodBlock>,
-) {
+    missing_blocks: &mut HashMap<(i32, i32), u16>,
+    budget: &mut LodWorkBudget,
+) -> bool {
+    let tex_provider = input.tex_provider;
+    let wctx = input.wctx;
+    let player_grid = input.player_grid;
+    let max_full_cell_radius = input.max_full_cell_radius;
     let index = &wctx.record_index.cells;
     let Some(cells_map) = index.exterior_cells.get(&wctx.worldspace_key) else {
-        return;
+        return true;
     };
     // Prebaked `.btr` distant terrain is a Skyrim+/FO4 scheme (older games use
     // the heightmap synth fallback exclusively — EXAL §5).
@@ -272,22 +276,25 @@ pub(crate) fn stream_lod_blocks(
     let pbi = player_grid.0.div_euclid(k);
     let pbj = player_grid.1.div_euclid(k);
 
-    // Desired ring: Chebyshev `LOD_RADIUS_BLOCKS` around the player block.
-    let mut desired: HashSet<(i32, i32)> = HashSet::new();
+    // Desired ring: closest-first so a budgeted initialization grows outward
+    // deterministically instead of following HashMap random iteration order.
+    let mut desired = Vec::new();
     for bj in (pbj - LOD_RADIUS_BLOCKS)..=(pbj + LOD_RADIUS_BLOCKS) {
         for bi in (pbi - LOD_RADIUS_BLOCKS)..=(pbi + LOD_RADIUS_BLOCKS) {
-            desired.insert((bi, bj));
+            desired.push((bi, bj));
         }
     }
+    sort_lod_coords_nearest(&mut desired, |coord| chebyshev(coord, (pbi, pbj)));
+    let desired_set: HashSet<_> = desired.iter().copied().collect();
 
     let mut spawned = 0usize;
     let mut btr_spawned = 0usize;
-    let mut regenerated = 0usize;
+    let mut invalidated = 0usize;
     let mut unloaded = 0usize;
 
     // Unload blocks that left the ring.
     lod_blocks.retain(|coord, block| {
-        if desired.contains(coord) {
+        if desired_set.contains(coord) {
             true
         } else {
             unload_lod_block(world, ctx, block);
@@ -295,10 +302,14 @@ pub(crate) fn stream_lod_blocks(
             false
         }
     });
+    missing_blocks.retain(|coord, _| desired_set.contains(coord));
 
     let all_holed = all_holed_mask();
+    let mut candidates = Vec::new();
 
-    // Spawn entering blocks + regenerate boundary blocks whose mask moved.
+    // First invalidate every stale block, regardless of the spawn budget.
+    // This prevents old hole masks from overlapping full-detail terrain while
+    // replacement geometry waits for an idle frame.
     for &(bi, bj) in &desired {
         let mask = block_hole_mask(cells_map, bi, bj, player_grid, max_full_cell_radius);
         // Copy the prior mask out before mutating the map (no borrow held).
@@ -310,20 +321,40 @@ pub(crate) fn stream_lod_blocks(
                 unload_lod_block(world, ctx, &block);
                 unloaded += 1;
             }
+            missing_blocks.remove(&(bi, bj));
             continue;
         }
 
         match prev_mask {
-            Some(m) if m == mask => continue, // unchanged — keep as-is
+            Some(m) if m == mask => {
+                missing_blocks.remove(&(bi, bj));
+                continue;
+            }
             Some(_) => {
-                // Hole pattern moved — drop the stale block, respawn below.
+                // Hole pattern moved — drop the stale block now; its
+                // replacement may be deferred below.
                 if let Some(block) = lod_blocks.remove(&(bi, bj)) {
                     unload_lod_block(world, ctx, &block);
                 }
-                regenerated += 1;
+                invalidated += 1;
             }
             None => {} // new block
         }
+
+        if missing_blocks.get(&(bi, bj)) == Some(&mask) {
+            continue;
+        }
+        missing_blocks.remove(&(bi, bj));
+        candidates.push((bi, bj, mask));
+    }
+
+    let candidate_count = candidates.len();
+    let mut attempted = 0usize;
+    for (bi, bj, mask) in candidates {
+        if !budget.try_take() {
+            break;
+        }
+        attempted += 1;
 
         // Prefer the game's prebaked `.btr` distant-terrain mesh for a
         // fully-distant block (`mask == 0` → every cell has landscape and
@@ -364,28 +395,36 @@ pub(crate) fn stream_lod_blocks(
         });
         if let Some(block) = block {
             lod_blocks.insert((bi, bj), block);
+            missing_blocks.remove(&(bi, bj));
             spawned += 1;
             if from_btr {
                 btr_spawned += 1;
             }
+        } else {
+            // Remember a real miss at this exact hole mask so a budgeted
+            // reconcile can continue outward instead of retrying forever.
+            missing_blocks.insert((bi, bj), mask);
         }
     }
 
-    if spawned + regenerated + unloaded > 0 {
+    let complete = attempted == candidate_count;
+    if complete && spawned + invalidated + unloaded > 0 {
         log::info!(
             "LOD ring @block ({},{}): +{} spawned ({} prebaked .btr / {} synth), \
-             ~{} regenerated, -{} unloaded ({} resident, ~{:.0}K BU)",
+             ~{} stale invalidated, -{} unloaded ({} resident, ~{:.0}K BU)",
             pbi,
             pbj,
             spawned,
             btr_spawned,
             spawned - btr_spawned,
-            regenerated,
+            invalidated,
             unloaded,
             lod_blocks.len(),
             (LOD_RADIUS_BLOCKS * k) as f32 * EXTERIOR_CELL_UNITS / 1000.0,
         );
     }
+
+    complete
 }
 
 /// Tear down one streamed LOD block (#1373): free its global-SSBO geometry

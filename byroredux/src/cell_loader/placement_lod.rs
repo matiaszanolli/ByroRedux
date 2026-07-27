@@ -64,6 +64,7 @@ use crate::components::IsLodTerrain;
 
 use super::euler::euler_zup_to_quat_yup_refr;
 use super::exterior::ExteriorWorldContext;
+use super::lod_support::{sort_lod_coords_nearest, LodReconcileInput, LodWorkBudget};
 
 /// Object-LOD ring radius in **cells** (Chebyshev) for the placement
 /// scheme. Cells within this distance of the player — and entirely beyond
@@ -309,30 +310,34 @@ pub(crate) fn placement_lod_supported(game: GameKind) -> bool {
 pub(crate) fn stream_placement_lod_blocks(
     world: &mut World,
     ctx: &mut VulkanContext,
-    tex_provider: &TextureProvider,
-    wctx: &ExteriorWorldContext,
-    player_grid: (i32, i32),
-    max_full_cell_radius: i32,
+    input: &LodReconcileInput<'_>,
     blocks: &mut HashMap<(i32, i32), PlacementLodBlock>,
-) {
+    budget: &mut LodWorkBudget,
+) -> bool {
+    let tex_provider = input.tex_provider;
+    let wctx = input.wctx;
+    let player_grid = input.player_grid;
+    let max_full_cell_radius = input.max_full_cell_radius;
     if !placement_lod_supported(wctx.record_index.game) {
-        return;
+        return true;
     }
 
-    let desired: std::collections::HashSet<(i32, i32)> = placement_lod_cells_in_radius(
+    let mut desired = placement_lod_cells_in_radius(
         player_grid,
         max_full_cell_radius,
         PLACEMENT_LOD_RADIUS_CELLS,
-    )
-    .into_iter()
-    .collect();
+    );
+    sort_lod_coords_nearest(&mut desired, |(cx, cy)| {
+        (cx - player_grid.0).abs().max((cy - player_grid.1).abs())
+    });
+    let desired_set: std::collections::HashSet<_> = desired.iter().copied().collect();
 
     let mut spawned = 0usize;
     let mut unloaded = 0usize;
 
     // Unload cells that left the ring (skip empty sentinels — nothing to free).
     blocks.retain(|coord, blk| {
-        if desired.contains(coord) {
+        if desired_set.contains(coord) {
             true
         } else {
             if !blk.entities.is_empty() {
@@ -343,11 +348,19 @@ pub(crate) fn stream_placement_lod_blocks(
         }
     });
 
+    let candidates: Vec<_> = desired
+        .into_iter()
+        .filter(|coord| !blocks.contains_key(coord))
+        .collect();
+    let candidate_count = candidates.len();
+    let mut attempted = 0usize;
+
     // Load entering cells.
-    for &(cx, cy) in &desired {
-        if blocks.contains_key(&(cx, cy)) {
-            continue; // already loaded (or a known-missing sentinel)
+    for (cx, cy) in candidates {
+        if !budget.try_take() {
+            break;
         }
+        attempted += 1;
         match spawn_placement_lod_cell(world, ctx, tex_provider, wctx, cx, cy) {
             Some(blk) => {
                 if !blk.entities.is_empty() {
@@ -361,7 +374,8 @@ pub(crate) fn stream_placement_lod_blocks(
         }
     }
 
-    if spawned + unloaded > 0 {
+    let complete = attempted == candidate_count;
+    if complete && spawned + unloaded > 0 {
         log::info!(
             "Placement-LOD ring @cell ({},{}): +{} cells loaded, -{} unloaded ({} tracked)",
             player_grid.0,
@@ -371,6 +385,8 @@ pub(crate) fn stream_placement_lod_blocks(
             blocks.len(),
         );
     }
+
+    complete
 }
 
 /// One uploaded `_far.nif` sub-mesh, reused across every placement of its

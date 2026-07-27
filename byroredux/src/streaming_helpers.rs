@@ -6,7 +6,7 @@
 //! self.renderer` without aliasing — an `App::foo(&mut self)` method
 //! signature can't express that.
 
-use crate::cell_loader::{ObjectLodBlock, PlacementLodBlock};
+use crate::cell_loader::{LodReconcileInput, LodWorkBudget, ObjectLodBlock, PlacementLodBlock};
 use crate::streaming::LodBlock;
 use crate::{cell_loader, streaming};
 use std::collections::HashMap;
@@ -18,6 +18,128 @@ use std::collections::HashMap;
 /// At 60 FPS that's ~130 ms of recovery, comparable to TAA history-
 /// reset windows. See #801 / STRM-N1.
 pub const SVGF_TAA_STREAMING_RECOVERY_FRAMES: u32 = 8;
+
+/// Result of reconciling all game-specific distant-LOD providers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LodReconcileProgress {
+    /// Every desired coordinate is resident or a known asset miss.
+    pub complete: bool,
+    /// Archive/import/upload attempts charged across all three providers.
+    pub attempted: usize,
+}
+
+/// Decide whether and how much deferred LOD work belongs in this frame.
+///
+/// Full-detail cell spawns win the main-thread budget. A boundary crossing
+/// still runs a zero-budget reconcile so stale/out-of-ring geometry is
+/// reclaimed immediately, but new LOD work waits for the next idle frame.
+pub(crate) fn lod_reconcile_budget_for_frame(
+    reconcile_pending: bool,
+    cells_spawned: usize,
+    grid_changed: bool,
+    idle_attempts_per_provider: usize,
+) -> Option<usize> {
+    if !reconcile_pending {
+        None
+    } else if cells_spawned == 0 {
+        Some(idle_attempts_per_provider)
+    } else if grid_changed {
+        Some(0)
+    } else {
+        None
+    }
+}
+
+/// Reconcile terrain, baked-object, and placement-object LOD through one
+/// shared policy boundary. Each provider gets its own allowance so a large
+/// terrain ring cannot starve the active game-specific object scheme.
+///
+/// Reclaims are always immediate inside the provider functions. The budget
+/// covers only potentially expensive archive/import/upload attempts. Passing
+/// `usize::MAX` preserves the deterministic full-radius bootstrap contract.
+pub(crate) fn reconcile_lod_rings(
+    world: &mut byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::VulkanContext,
+    state: &mut streaming::WorldStreamingState,
+    player_grid: (i32, i32),
+    max_attempts_per_provider: usize,
+) -> LodReconcileProgress {
+    let tex_provider = state.tex_provider.clone();
+    let wctx = state.wctx.clone();
+    let input = LodReconcileInput {
+        tex_provider: tex_provider.as_ref(),
+        wctx: wctx.as_ref(),
+        player_grid,
+        max_full_cell_radius: state.radius_unload,
+    };
+    let make_budget = || {
+        if max_attempts_per_provider == usize::MAX {
+            LodWorkBudget::unlimited()
+        } else {
+            LodWorkBudget::new(max_attempts_per_provider)
+        }
+    };
+
+    let mut terrain_budget = make_budget();
+    let terrain_complete = cell_loader::stream_lod_blocks(
+        world,
+        ctx,
+        &input,
+        &mut state.lod_blocks,
+        &mut state.lod_missing_blocks,
+        &mut terrain_budget,
+    );
+
+    let mut object_budget = make_budget();
+    let object_complete = cell_loader::stream_object_lod_blocks(
+        world,
+        ctx,
+        &input,
+        &mut state.object_lod_blocks,
+        &mut object_budget,
+    );
+
+    let mut placement_budget = make_budget();
+    let placement_complete = cell_loader::stream_placement_lod_blocks(
+        world,
+        ctx,
+        &input,
+        &mut state.placement_lod_blocks,
+        &mut placement_budget,
+    );
+
+    let attempted = terrain_budget.spent() + object_budget.spent() + placement_budget.spent();
+    if attempted > 0 {
+        flush_pending_lod_textures(ctx);
+    }
+
+    LodReconcileProgress {
+        complete: terrain_complete && object_complete && placement_complete,
+        attempted,
+    }
+}
+
+/// LOD texture resolution happens after normal cell-load texture flushing.
+/// Flush those deferred DDS uploads at the same boundary that owns the LOD
+/// work so a static camera never leaves the ring bound to checker slots.
+fn flush_pending_lod_textures(ctx: &mut byroredux_renderer::VulkanContext) {
+    let Some(allocator) = ctx.allocator.as_ref() else {
+        return;
+    };
+    let pending = ctx.texture_registry.pending_dds_upload_count();
+    if pending == 0 {
+        return;
+    }
+    if let Err(e) = ctx.texture_registry.flush_pending_uploads(
+        &ctx.device,
+        allocator,
+        &ctx.graphics_queue,
+        ctx.transfer_pool,
+        &ctx.transfer_fence,
+    ) {
+        log::warn!("LOD texture flush failed ({pending} pending): {e}");
+    }
+}
 
 /// Drain all three distant-LOD rings out of a worldspace-streaming state,
 /// returning the resident blocks so the caller can hand each to its
@@ -214,6 +336,31 @@ mod tests {
             it.count(),
             2,
             "the remaining real payloads stay queued for the next frame"
+        );
+    }
+
+    #[test]
+    fn deferred_lod_uses_only_idle_main_thread_frames() {
+        const CAP: usize = 2;
+        assert_eq!(
+            lod_reconcile_budget_for_frame(true, 0, false, CAP),
+            Some(CAP),
+            "an idle frame advances the ring"
+        );
+        assert_eq!(
+            lod_reconcile_budget_for_frame(true, 1, false, CAP),
+            None,
+            "full-detail cell apply owns a normal frame"
+        );
+        assert_eq!(
+            lod_reconcile_budget_for_frame(true, 1, true, CAP),
+            Some(0),
+            "a crossing still performs immediate reclaim with no new work"
+        );
+        assert_eq!(
+            lod_reconcile_budget_for_frame(false, 0, true, CAP),
+            None,
+            "a settled ring does no steady-state work"
         );
     }
 

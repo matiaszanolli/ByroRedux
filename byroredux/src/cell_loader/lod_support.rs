@@ -1,16 +1,82 @@
-//! Shared geometry helpers for the two distant-LOD spawn paths — object
-//! LOD (`.bto`, [`super::object_lod`]) and placement LOD (`_far.nif`,
+//! Shared reconciliation policy and geometry helpers for the three
+//! distant-LOD spawn paths — terrain, object LOD (`.bto`,
+//! [`super::object_lod`]), and placement LOD (`_far.nif`,
 //! [`super::placement_lod`]).
 //!
 //! The format-specific streaming logic (`.bto` vs `.lod` discovery, ring
 //! math, per-game gating) is deliberately kept separate in each module.
-//! Only the format-agnostic `ImportedMesh` → renderer conversion lives
-//! here, so the two paths can't drift on vertex defaults or bound math
-//! (TD2-105 / #2064).
+//! Format-agnostic budget accounting, closest-first ordering, shared inputs,
+//! and `ImportedMesh` → renderer conversion live here so providers cannot
+//! drift on scheduling, vertex defaults, or bound math (TD2-105 / #2064).
 
 use byroredux_core::math::Vec3;
 use byroredux_nif::import::ImportedMesh;
 use byroredux_renderer::Vertex;
+
+use crate::asset_provider::TextureProvider;
+
+use super::exterior::ExteriorWorldContext;
+
+/// Immutable inputs shared by terrain and both game-specific object LOD
+/// providers during one ring reconciliation.
+pub(crate) struct LodReconcileInput<'a> {
+    pub(crate) tex_provider: &'a TextureProvider,
+    pub(crate) wctx: &'a ExteriorWorldContext,
+    pub(crate) player_grid: (i32, i32),
+    /// The full-detail streaming hysteresis boundary (`radius_unload`).
+    pub(crate) max_full_cell_radius: i32,
+}
+
+/// Bounded main-thread work allowance shared by every distant-LOD provider.
+///
+/// One unit represents one archive/import/upload attempt for a terrain block,
+/// object quad, or placement cell. Reclaims do not consume the budget: stale
+/// geometry must disappear immediately when the player moves, while new
+/// geometry may fill in progressively over later frames.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LodWorkBudget {
+    remaining: usize,
+    spent: usize,
+}
+
+impl LodWorkBudget {
+    pub(crate) fn new(max_attempts: usize) -> Self {
+        Self {
+            remaining: max_attempts,
+            spent: 0,
+        }
+    }
+
+    pub(crate) fn unlimited() -> Self {
+        Self::new(usize::MAX)
+    }
+
+    /// Reserve one potentially expensive provider attempt.
+    pub(crate) fn try_take(&mut self) -> bool {
+        if self.remaining == 0 {
+            return false;
+        }
+        self.remaining -= 1;
+        self.spent += 1;
+        true
+    }
+
+    pub(crate) fn spent(self) -> usize {
+        self.spent
+    }
+}
+
+/// Apply the shared closest-first ordering used by every LOD provider.
+///
+/// Providers supply their own distance metric (terrain block distance, object
+/// quad minimum-cell distance, or placement-cell distance); Y/X tie-breakers
+/// keep the result stable across runs and archive/hash iteration order.
+pub(crate) fn sort_lod_coords_nearest(
+    coords: &mut [(i32, i32)],
+    distance: impl Fn((i32, i32)) -> i32,
+) {
+    coords.sort_unstable_by_key(|&(x, y)| (distance((x, y)), y, x));
+}
 
 /// Convert an [`ImportedMesh`]'s parallel per-vertex arrays into renderer
 /// [`Vertex`]es, applying the LOD fallback defaults (opaque white colour,
@@ -92,5 +158,27 @@ mod tests {
         let (centre, radius) = local_aabb_center_radius(&positions);
         assert_eq!(centre, Vec3::splat(0.5));
         assert!((radius - Vec3::splat(0.5).length()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lod_work_budget_caps_attempts_and_tracks_spend() {
+        let mut budget = LodWorkBudget::new(2);
+        assert!(budget.try_take());
+        assert!(budget.try_take());
+        assert!(!budget.try_take());
+        assert_eq!(budget.spent(), 2);
+
+        let mut unlimited = LodWorkBudget::unlimited();
+        for _ in 0..1_000 {
+            assert!(unlimited.try_take());
+        }
+        assert_eq!(unlimited.spent(), 1_000);
+    }
+
+    #[test]
+    fn lod_coordinate_order_is_nearest_first_with_stable_ties() {
+        let mut coords = vec![(2, 0), (0, 1), (-1, 0), (1, 0), (0, -1)];
+        sort_lod_coords_nearest(&mut coords, |coord| coord.0.abs().max(coord.1.abs()));
+        assert_eq!(coords, vec![(0, -1), (-1, 0), (1, 0), (0, 1), (2, 0)]);
     }
 }

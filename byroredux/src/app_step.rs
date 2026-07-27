@@ -5,7 +5,10 @@
 
 use crate::cell_loader;
 use crate::streaming;
-use crate::streaming_helpers::{consume_streaming_payload, SVGF_TAA_STREAMING_RECOVERY_FRAMES};
+use crate::streaming_helpers::{
+    consume_streaming_payload, lod_reconcile_budget_for_frame, reconcile_lod_rings,
+    SVGF_TAA_STREAMING_RECOVERY_FRAMES,
+};
 use crate::App;
 use winit::event_loop::ActiveEventLoop;
 
@@ -23,6 +26,10 @@ impl App {
     /// this many real spawns per frame and leave the rest queued in
     /// the channel for subsequent frames.
     const MAX_CELLS_SPAWNED_PER_FRAME: usize = 2;
+    /// Deferred EXAL work per active LOD provider on a frame where no
+    /// full-detail cell payload was applied. Terrain plus exactly one of
+    /// object/placement can therefore spend at most four attempts.
+    const MAX_LOD_ATTEMPTS_PER_PROVIDER_PER_IDLE_FRAME: usize = 2;
 
     pub(crate) fn step_streaming(&mut self) {
         let Some(ctx) = self.renderer.as_mut() else {
@@ -79,123 +86,96 @@ impl App {
         };
         let player_grid = streaming::world_pos_to_grid(player_pos.x, player_pos.z);
         let state = self.streaming.as_mut().unwrap();
-        if state.last_player_grid == Some(player_grid) {
-            return;
-        }
-        state.last_player_grid = Some(player_grid);
-        log::info!(
-            "Player crossed cell boundary → grid ({},{}) (world {:.0},{:.0},{:.0})",
-            player_grid.0,
-            player_grid.1,
-            player_pos.x,
-            player_pos.y,
-            player_pos.z,
-        );
+        let grid_changed = state.last_player_grid != Some(player_grid);
+        if grid_changed {
+            state.last_player_grid = Some(player_grid);
+            state.lod_reconcile_pending = true;
+            log::info!(
+                "Player crossed cell boundary → grid ({},{}) (world {:.0},{:.0},{:.0})",
+                player_grid.0,
+                player_grid.1,
+                player_pos.x,
+                player_pos.y,
+                player_pos.z,
+            );
 
-        let deltas = streaming::compute_streaming_deltas(
-            &state.loaded,
-            player_grid,
-            state.radius_load,
-            state.radius_unload,
-        );
+            let deltas = streaming::compute_streaming_deltas(
+                &state.loaded,
+                player_grid,
+                state.radius_load,
+                state.radius_unload,
+            );
 
-        // Unload first to free GPU resources before kicking new loads —
-        // cuts peak VRAM at the boundary crossing.
-        let mut unloaded_any = false;
-        for coord in deltas.to_unload {
-            if let Some(slot) = state.loaded.remove(&coord) {
-                cell_loader::unload_cell(&mut self.world, ctx, slot.cell_root);
-                log::info!(
-                    "Unloaded cell ({},{}) (root {})",
-                    coord.0,
-                    coord.1,
-                    slot.cell_root
-                );
-                unloaded_any = true;
+            // Unload first to free GPU resources before kicking new loads —
+            // cuts peak VRAM at the boundary crossing.
+            let mut unloaded_any = false;
+            for coord in deltas.to_unload {
+                if let Some(slot) = state.loaded.remove(&coord) {
+                    cell_loader::unload_cell(&mut self.world, ctx, slot.cell_root);
+                    log::info!(
+                        "Unloaded cell ({},{}) (root {})",
+                        coord.0,
+                        coord.1,
+                        slot.cell_root
+                    );
+                    unloaded_any = true;
+                }
             }
-        }
-        // #2113 / D7-01 — a cell can have an in-flight worker request
-        // (tracked only in `pending`, not yet in `loaded`) that the
-        // `to_unload` diff above never sees. Drop any such request whose
-        // coord has left the unload radius so the payload classifies as
-        // `PayloadDecision::StaleNoPending` and is discarded on arrival
-        // instead of paying a full spawn one boundary crossing too late.
-        for coord in
-            streaming::stale_pending_coords(&state.pending, player_grid, state.radius_unload)
-        {
-            state.pending.remove(&coord);
-        }
-        // Cell unload despawns instances and forces a TLAS rebuild on
-        // the next frame; the SVGF/TAA history is now stale for the
-        // pixels those instances covered. Bump the recovery window so
-        // ghosting is washed out in ~8 frames instead of 30+ at the
-        // steady-state α. See #801 / STRM-N1.
-        if unloaded_any {
-            ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+            // #2113 / D7-01 — a cell can have an in-flight worker request
+            // (tracked only in `pending`, not yet in `loaded`) that the
+            // `to_unload` diff above never sees. Drop any such request whose
+            // coord has left the unload radius so the payload classifies as
+            // `PayloadDecision::StaleNoPending` and is discarded on arrival
+            // instead of paying a full spawn one boundary crossing too late.
+            for coord in
+                streaming::stale_pending_coords(&state.pending, player_grid, state.radius_unload)
+            {
+                state.pending.remove(&coord);
+            }
+            // Cell unload despawns instances and forces a TLAS rebuild on
+            // the next frame; the SVGF/TAA history is now stale for the
+            // pixels those instances covered. Bump the recovery window so
+            // ghosting is washed out in ~8 frames instead of 30+ at the
+            // steady-state α. See #801 / STRM-N1.
+            if unloaded_any {
+                ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+            }
+
+            // Dispatch new loads — non-blocking send, worker picks them up
+            // off-thread. Snapshot cached NIF keys once per crossing so the
+            // whole request batch shares one cache view (#862).
+            let cached_keys = self
+                .world
+                .resource::<cell_loader::NifImportRegistry>()
+                .snapshot_keys();
+            state.queue_loads(deltas.to_load, cached_keys);
         }
 
-        // Dispatch new loads — non-blocking send, worker picks them up
-        // off-thread.
+        // ── 3. Progress the three distant-LOD rings ─────────────────
         //
-        // Snapshot the NifImportRegistry's cached keys ONCE per
-        // dispatch batch (i.e. per cell-crossing) so every request
-        // shares the same view. Worker filters its model_paths
-        // against this set so >95% of typical exterior statics
-        // (rocks, roadways, junkpiles) skip BSA-extract + parse
-        // entirely on cell crossings. See #862.
-        let cached_keys = self
-            .world
-            .resource::<cell_loader::NifImportRegistry>()
-            .snapshot_keys();
-        state.queue_loads(deltas.to_load, cached_keys);
-
-        // ── 3. Stream the distant-terrain LOD ring (#1373) ──────────
-        //
-        // The player crossed a cell boundary (guarded by the early
-        // return above), so the full-detail hole-out region moved with
-        // them. Re-center the ring: spawn blocks entering the LOD radius,
-        // unload those leaving, and regenerate boundary blocks whose hole
-        // mask changed against the new full-detail region. Arcs are cloned
-        // so `lod_blocks` can be borrowed mutably alongside `self.world`.
-        let lod_tex = state.tex_provider.clone();
-        let lod_wctx = state.wctx.clone();
-        // #1866 / #1871 (LC0703-01 / LC0703-02) — every LOD ring (terrain,
-        // object, placement) gates on `radius_unload`, not `radius_load`:
-        // full cells stay resident through `radius_load + 1` under the
-        // streaming hysteresis band (`streaming.rs`), so gating on
-        // `radius_load` let a LOD block/quad load one cell early and
-        // z-fight a still-resident full model.
-        let max_full_cell_radius = state.radius_unload;
-        cell_loader::stream_lod_blocks(
-            &mut self.world,
-            ctx,
-            lod_tex.as_ref(),
-            lod_wctx.as_ref(),
-            player_grid,
-            max_full_cell_radius,
-            &mut state.lod_blocks,
-        );
-        // Distant object LOD (Skyrim+/FO4 `.bto`) — no-op on other games.
-        cell_loader::stream_object_lod_blocks(
-            &mut self.world,
-            ctx,
-            lod_tex.as_ref(),
-            lod_wctx.as_ref(),
-            player_grid,
-            max_full_cell_radius,
-            &mut state.object_lod_blocks,
-        );
-        // Distant object LOD (Oblivion/FO3/FNV placement scheme) — no-op on
-        // Skyrim+/FO4 (#1726). Mutually exclusive with the `.bto` ring above.
-        cell_loader::stream_placement_lod_blocks(
-            &mut self.world,
-            ctx,
-            lod_tex.as_ref(),
-            lod_wctx.as_ref(),
-            player_grid,
-            max_full_cell_radius,
-            &mut state.placement_lod_blocks,
-        );
+        // Full-detail cell applies own the frame. On idle frames, each LOD
+        // provider gets a small independent attempt budget, so terrain cannot
+        // starve the active object scheme. A boundary crossing with cell work
+        // still executes a zero-budget reconcile: leaving/stale geometry is
+        // reclaimed immediately, while replacements wait for an idle frame.
+        let Some(lod_budget) = lod_reconcile_budget_for_frame(
+            state.lod_reconcile_pending,
+            spawned_this_frame,
+            grid_changed,
+            Self::MAX_LOD_ATTEMPTS_PER_PROVIDER_PER_IDLE_FRAME,
+        ) else {
+            return;
+        };
+        let progress = reconcile_lod_rings(&mut self.world, ctx, state, player_grid, lod_budget);
+        if progress.complete {
+            state.lod_reconcile_pending = false;
+            log::info!(
+                "Exterior LOD rings settled around ({},{}); {} attempts in final slice",
+                player_grid.0,
+                player_grid.1,
+                progress.attempted,
+            );
+        }
     }
 
     /// Drain any queued debug-UI load ops and dispatch them to the
