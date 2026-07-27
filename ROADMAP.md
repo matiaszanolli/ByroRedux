@@ -849,10 +849,24 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 
 ### Open — Performance
 
-- [ ] **PERF-REGRESSION-6c56e311** HIGH ([#2161](https://github.com/matiaszanolli/ByroRedux/issues/2161), found 2026-07-24 by the FSR phase-7
-  bench matrix; filed as a GitHub issue 2026-07-25 so the open decision is
+- [x] **PERF-REGRESSION-6c56e311** HIGH ([#2161](https://github.com/matiaszanolli/ByroRedux/issues/2161)) — **DECIDED 2026-07-27: accept the
+  cost, keep both features.** The knob table below was the whole point of
+  filing this; the picked point is the first row (`current HEAD`, 62.7 FPS on
+  Prospector). `traceShadowTransmittance` (glass tints light rather than
+  casting black shadows) and the second diffuse GI bounce (colour bleeding)
+  both stay as shipped. This is a quality decision, not an unfixed bug — do
+  **not** re-file it as a performance finding, and do not "optimise" either
+  feature back toward the pre-`6c56e311` semantics without a new decision.
+  The measured alternatives stay recorded below in case that decision is
+  revisited (the cheapest, `MAX_DIFFUSE_BOUNCES 2 → 1`, is worth +37%). Worth
+  re-measuring the magnitude after the PERF-D9-NEW-01 `camera_cut`
+  false-positive is fixed, since the 68.5 FPS figure may include frames shaded
+  under a forced temporal reset. Original entry follows.
+
+  Found 2026-07-24 by the FSR phase-7
+  bench matrix; filed as a GitHub issue 2026-07-25 so the decision was
   tracked outside ROADMAP prose — it is a decision-tracking issue, not a
-  code-fix one, per the closing note below): a **~2.2× frame-time regression on real content** landed in
+  code-fix one, per the closing note below: a **~2.2× frame-time regression on real content** landed in
   `6c56e311` "Refactor volumetric lighting and water shaders" (2026-07-19,
   session 58) and went unmeasured for ~80 commits because the bench-of-record
   was never re-run — which is precisely the risk R6a-stale-16 was tracking.
