@@ -211,10 +211,11 @@ is high enough that the text path unblocks the dormant pre-Skyrim scripts
 
 ## Engine integration (the attach path)
 
-Today scripts attach via M47.0's static chain (`base_record.script_form_id
-→ index.scripts → ScriptRegistry → ScriptSpawnFn`) populated by a hardcoded
-`papyrus_demo::register_spawners`. M47.2 makes attachment **dynamic and
-recognizer-driven**, in the cell loader's per-REFR walk
+Scripts once attached via M47.0's static chain
+(`base_record.script_form_id → index.scripts → ScriptRegistry →
+ScriptSpawnFn`) populated by a hardcoded `papyrus_demo::register_spawners`
+(retired at boot by #2191 — see below). M47.2 makes attachment **dynamic
+and recognizer-driven**, in the cell loader's per-REFR walk
 (`cell_loader/references.rs`, after entity spawn):
 
 ```
@@ -233,8 +234,14 @@ for each spawned REFR:
 VMAD decode exists at the record level (`ScriptInstanceData::parse`); the
 integration work is **threading `script_instance` and `owning_quest` into
 `RecognizeCtx` at attach time** and resolving which frontend a given
-game+record uses. The hardcoded demo registration is retired in favor of
-this path (the demos remain as recognizer-test fixtures).
+game+record uses. The hardcoded demo registration **is** retired in favor
+of this path (#2191, done): `boot.rs` inserts a bare `ScriptRegistry` and
+no longer calls `papyrus_demo::register_spawners`, which no longer exists
+— `recognizers::rumble` promotes `defaultRumbleOnActivate` dynamically to
+the same `RumbleOnActivate` component at the same `.psc` author defaults.
+The demos remain as recognizer-test fixtures, and the `ScriptRegistry`
+resource remains as the registration point for the pre-Skyrim `SCRI` →
+`SCPT` route the `SCTX` Obscript frontend will feed.
 
 ---
 
@@ -330,7 +337,7 @@ recognizer family. `SCDA` disassembly deferred (filed).
 - [ ] `translate_script` is called from the cell-loader REFR-attach path
 - [ ] `RecognizeCtx.script_instance` carries decoded VMAD at attach time
 - [ ] `RecognizeCtx.owning_quest` resolves for alias-attached scripts
-- [ ] hardcoded `papyrus_demo::register_spawners` retired from the attach path
+- [x] hardcoded `papyrus_demo::register_spawners` retired from the attach path (#2191)
 - [ ] emitted components + `QuestStageState` registered with the M45 `SaveRegistry`
 - [ ] synthetic E2E: `.psc` ACTI w/ VMAD → component lands → event → side-effect marker on player
 - [ ] script state survives a `save`→`load` round-trip

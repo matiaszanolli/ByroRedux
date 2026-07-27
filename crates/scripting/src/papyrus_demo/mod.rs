@@ -212,52 +212,17 @@ pub fn register(world: &mut World) {
     mg07_door::register(world);
 }
 
-/// M47.0 Phase 2 — register every demo spawner into the
-/// [`crate::ScriptRegistry`] so the cell loader's per-REFR walk can
-/// look them up by SCPT `editor_id`.
-///
-/// Phase 2 scope ships ONE spawner: `defaultRumbleOnActivate`. The
-/// other three R5 demos (`DA10MainDoorScript`,
-/// `DLC2TTR4aPlayerScript`, `MG07LabyrinthianDoorSCRIPT`) require
-/// property values from `VMAD` (Skyrim+ per-instance script overrides
-/// — `Quest Property MG07`, `ObjectReference Property myDoor`, …)
-/// that the parser doesn't decode yet. Until VMAD decode lands
-/// (M47.2 territory), spawning them with placeholder FormIDs / null
-/// EntityIds would attach inert components — worse than the silent
-/// "no spawner registered" fall-through which the cell loader can
-/// at least log honestly. The three are documented at
-/// `docs/engine/m47-0-design.md` as deferred.
-pub fn register_spawners(registry: &mut crate::ScriptRegistry) {
-    // Source: docs/r5/source/defaultRumbleOnActivate.psc, ScriptName
-    // header line 1. `RumbleOnActivate::default()` matches the .psc
-    // Auto-property defaults byte-for-byte (camera_intensity=0.25,
-    // duration=0.25, repeatable=true, shake_left=0.25,
-    // shake_right=0.25, state=Active) — confirmed against `impl
-    // Default for RumbleOnActivate` above.
-    registry.register("defaultRumbleOnActivate", spawn_default_rumble);
-}
-
-/// Spawner for `defaultRumbleOnActivate`. Inserts a
-/// [`RumbleOnActivate`] component at the .psc-author default values
-/// on the supplied entity.
-///
-/// Per [`crate::ScriptSpawnFn`]: takes `(world, entity)`, returns
-/// unit. No property-override path yet — VMAD decode lands later.
-fn spawn_default_rumble(
-    world: &mut byroredux_core::ecs::world::World,
-    entity: byroredux_core::ecs::storage::EntityId,
-) {
-    let Some(mut q) = world.query_mut::<RumbleOnActivate>() else {
-        // Storage missing means `papyrus_demo::register(world)` was
-        // never called — `scripting::register` is the load-bearing
-        // call site that registers it. Skipping silently is the
-        // right call: the cell loader can't recover anyway, and the
-        // boot log already prints a "Scripting subsystem initialized"
-        // line that flags whether the path ran.
-        return;
-    };
-    q.insert(entity, RumbleOnActivate::default());
-}
+// M47.0 Phase 2 shipped a `register_spawners` entry point here that
+// bound `defaultRumbleOnActivate` → `spawn_default_rumble` into the
+// engine's `ScriptRegistry` at boot. #2191 retired it, per
+// `docs/engine/m47-2-design.md`'s own Phase-0 exit criteria:
+// `translate::recognizers::rumble` promotes the very same script — to
+// the very same `RumbleOnActivate` component at the very same `.psc`
+// author defaults — off the decompiled script, so the hardcoded map
+// entry was a duplicate of a dynamic path AND unreachable (the
+// registry is only ever consulted via an `SCRI`-sourced form id, which
+// no Skyrim-era script has). The demo's components and systems stay:
+// they are what the recognizer emits and what its tests assert on.
 
 /// Translation of Papyrus's per-state `Event OnActivate(actronaut)`
 /// dispatch.

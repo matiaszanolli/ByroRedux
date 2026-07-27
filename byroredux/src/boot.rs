@@ -483,16 +483,27 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // Register scripting component storages.
     byroredux_scripting::register(&mut world);
 
-    // M47.0 Phase 2 — build the script registry mapping SCPT
-    // `editor_id` → spawner. Populated here by every demo module
-    // exposing a `register_spawners` entry point; the cell
-    // loader's per-REFR walk (Phase 3) will look up each REFR's
-    // base record's `script_form_id` → SCPT → editor_id against
-    // this registry. Inserted as a resource so it survives the
-    // whole engine lifetime and stays modifiable by downstream
-    // crates that ship additional script translations.
-    let mut script_registry = byroredux_scripting::ScriptRegistry::new();
-    byroredux_scripting::papyrus_demo::register_spawners(&mut script_registry);
+    // M47.0 Phase 2 — the SCPT `editor_id` → spawner map consulted by
+    // `attach_scpt_script` (the pre-Skyrim `SCRI` → `SCPT` →
+    // `ScriptRegistry` Obscript path) on every cell load.
+    //
+    // #2191 — boot no longer seeds it with `papyrus_demo::
+    // register_spawners`. That hardcoded registration bound exactly one
+    // entry, `defaultRumbleOnActivate`, which M47.2 Phase 0 superseded:
+    // `translate::recognizers::rumble` now promotes the same script
+    // dynamically off its decompiled `.pex` / parsed `.psc`. The static
+    // entry was also provably unreachable — the only route into this
+    // registry is an `SCRI`-sourced form id, a sub-record Skyrim+
+    // records don't carry, and `defaultRumbleOnActivate` is a
+    // Skyrim-era Papyrus script that never appears as an `SCPT`
+    // editor_id in Oblivion/FO3/FNV content.
+    //
+    // The resource itself stays: it is the extension point the
+    // pre-Skyrim path resolves against (and `attach_scpt_script` logs
+    // an error when it is absent), so downstream crates shipping
+    // Obscript translations still have somewhere to register. It is
+    // simply empty until the M47.2 `SCTX` Obscript recognizer lands.
+    let script_registry = byroredux_scripting::ScriptRegistry::new();
     log::info!(
         "ScriptRegistry initialised with {} editor_id mappings",
         script_registry.len()

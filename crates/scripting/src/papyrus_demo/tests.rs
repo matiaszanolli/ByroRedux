@@ -306,8 +306,8 @@ fn full_lifecycle_round_trip_via_event_then_tick() {
 // `RumbleOnActivate` on the lever. The integration tests below
 // exercise the FULL Phase 1-5 chain:
 //   1. Build a world with `crate::register` (Phase 1 wiring).
-//   2. Build a `ScriptRegistry` + `register_spawners` (Phase 2 +
-//      Phase 3a/3b).
+//   2. Build a `ScriptRegistry` and register a spawner into it (Phase 2
+//      + Phase 3a/3b).
 //   3. Run the spawner via the registry's lookup path → component
 //      lands on the entity (simulates the cell loader's
 //      `attach_script_for_refr`).
@@ -317,19 +317,40 @@ fn full_lifecycle_round_trip_via_event_then_tick() {
 //      registration would do this automatically in the engine; the
 //      test calls it explicitly).
 //   6. Assert the post-state matches the e2e expected outcome.
+//
+// #2191 — the spawner under test lives HERE now, not in the production
+// module. Boot no longer seeds the registry (M47.2's `recognizers::
+// rumble` promotes `defaultRumbleOnActivate` dynamically instead), but
+// the `ScriptRegistry` resource is still the pre-Skyrim `SCRI` → `SCPT`
+// attach path's extension point, so its lookup contract still needs
+// coverage. Supplying the spawner from the test keeps that contract
+// pinned without a production registration that no real content reaches.
+
+/// Test spawner standing in for what the retired
+/// `papyrus_demo::register_spawners` bound. Byte-for-byte the .psc
+/// author defaults (camera_intensity = 0.25, duration = 0.25,
+/// repeatable = true) via `RumbleOnActivate::default()`, so the
+/// assertions below still pin those values.
+fn spawn_default_rumble_for_test(
+    world: &mut byroredux_core::ecs::world::World,
+    entity: byroredux_core::ecs::storage::EntityId,
+) {
+    let Some(mut q) = world.query_mut::<RumbleOnActivate>() else {
+        return;
+    };
+    q.insert(entity, RumbleOnActivate::default());
+}
 
 /// Build a world with the FULL M47.0 plumbing in place — scripting
-/// crate `register`, a `ScriptRegistry` populated by
-/// `papyrus_demo::register_spawners`, and a player entity wired into
-/// the [`PlayerEntity`] resource. Mirrors what the engine's main.rs
-/// does at boot.
+/// crate `register`, a `ScriptRegistry` carrying the demo spawner, and
+/// a player entity wired into the [`PlayerEntity`] resource.
 fn setup_world_with_registry() -> (World, EntityId, crate::ScriptRegistry) {
     let mut world = World::new();
     crate::register(&mut world);
     let player = world.spawn();
     world.insert_resource(PlayerEntity(player));
     let mut registry = crate::ScriptRegistry::new();
-    crate::papyrus_demo::register_spawners(&mut registry);
+    registry.register("defaultRumbleOnActivate", spawn_default_rumble_for_test);
     (world, player, registry)
 }
 
@@ -346,7 +367,7 @@ fn registry_spawner_attaches_rumble_component_on_lookup_hit() {
 
     let spawn_fn = registry
         .lookup("defaultRumbleOnActivate")
-        .expect("Phase 2 registers defaultRumbleOnActivate");
+        .expect("the fixture registers defaultRumbleOnActivate");
     spawn_fn(&mut world, lever);
 
     let rumble = world
@@ -366,7 +387,7 @@ fn registry_lookup_miss_for_unregistered_editor_id_returns_none() {
     let (_world, _player, registry) = setup_world_with_registry();
     assert!(registry.lookup("SomeMod_NoSuchScript").is_none());
     assert!(registry.lookup("").is_none());
-    // Case sensitivity (Phase 2 contract).
+    // Case sensitivity (Phase 2 registry contract).
     assert!(registry.lookup("DEFAULTRUMBLEONACTIVATE").is_none());
 }
 

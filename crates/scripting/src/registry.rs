@@ -43,9 +43,16 @@ pub type ScriptSpawnFn = fn(world: &mut World, entity: EntityId);
 
 /// Resource: editor_id → spawn function map.
 ///
-/// Populated at engine init by [`crate::papyrus_demo::register_spawners`]
-/// (and downstream registries when additional scripts land). Consumed
-/// by the cell loader's per-REFR walk at spawn time.
+/// Consumed by the cell loader's per-REFR walk at spawn time (only via
+/// the pre-Skyrim `SCRI` → `SCPT` route — Skyrim+ records carry `VMAD`
+/// instead and go through the M47.2 recognizer chain).
+///
+/// **Empty at boot since #2191.** M47.0 Phase 2 seeded it with a
+/// hardcoded `defaultRumbleOnActivate` mapping; M47.2 Phase 0's
+/// recognizer chain superseded that, so the engine now inserts a bare
+/// registry and this stays the registration point for Obscript
+/// translations that downstream crates — or the M47.2 `SCTX` frontend —
+/// choose to bind by editor_id.
 #[derive(Default)]
 pub struct ScriptRegistry {
     spawners: HashMap<String, ScriptSpawnFn>,
