@@ -475,7 +475,7 @@ impl DrawCommand {
             // #1147 Phase 2b — BGSM v>=8 translucency suite. The
             // `MAT_FLAG_BGSM_TRANSLUCENCY` bit in `material_flags`
             // gates whether the shader reads these (set by
-            // `cell_loader::pack_bgsm_material_flags`).
+            // `cell_loader::pack_imported_material_flags`).
             translucency_subsurface_r: self.translucency_subsurface_color[0],
             translucency_subsurface_g: self.translucency_subsurface_color[1],
             translucency_subsurface_b: self.translucency_subsurface_color[2],

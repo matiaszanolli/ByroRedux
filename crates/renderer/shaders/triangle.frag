@@ -904,7 +904,7 @@ void main() {
     // ALPHA — the FX-atlas convention): a lit BGSM material's diffuse IS
     // the greyscale ramp, so index the palette by its luminance. Gated on
     // the same SLSF1 bit (MAT_FLAG_EFFECT_PALETTE_COLOR, set here only by
-    // `pack_bgsm_material_flags` for BGSM meshes that authored a
+    // `pack_imported_material_flags` for BGSM meshes that authored a
     // greyscale_texture) AND a resolved LUT, so non-palette lit content is
     // untouched. The grayscale_to_palette_scale modulator is not yet
     // plumbed to GpuMaterial — direct lookup for now. Tint correctness +

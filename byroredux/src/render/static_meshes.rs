@@ -702,7 +702,7 @@ pub(super) fn collect_static_mesh_draws(
                     supplemental_texture_indices,
                     // #1147 Phase 2b — BGSM v>=8 translucency suite.
                     // Gated at the shader by `MAT_FLAG_BGSM_TRANSLUCENCY`
-                    // (packed via `pack_bgsm_material_flags`).
+                    // (packed via `pack_imported_material_flags`).
                     translucency_subsurface_color: mat
                         .map(|m| m.translucency_subsurface_color)
                         .unwrap_or([0.0; 3]),
