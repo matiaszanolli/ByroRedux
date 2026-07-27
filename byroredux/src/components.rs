@@ -195,65 +195,34 @@ pub(crate) fn texture_path_is_fx_mesh(texture_path: &str, material_kind: u32) ->
 // narrower and retains only authored decal-surface semantics needed for
 // alpha compositing, depth writes, and RT participation.
 
-/// Bindless texture handle for a normal map (parallels TextureHandle for
-/// diffuse). `.1` = whether the loaded DDS carries an alpha channel — Skyrim/
-/// Gamebryo author the gloss mask in the normal alpha, so this gates the
-/// normal-alpha-as-spec path (false for BC5/alpha-less normals → scalar
-/// fallback). Captured from the texture registry at load. See static_meshes.
+/// Bindless texture handle for the specialized water normal-map path.
+///
+/// Static NIF materials use [`MaterialTextureHandles`], including the
+/// normal-alpha metadata needed by the legacy gloss convention.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct NormalMapHandle(pub(crate) u32, pub(crate) bool);
+pub(crate) struct NormalMapHandle(pub(crate) u32);
 impl Component for NormalMapHandle {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Bindless texture handle for a dark/lightmap (NiTexturingProperty slot 1).
-/// Multiplicative modulation: `albedo.rgb *= dark_sample.rgb`. See #264.
+/// Resolved bindless indices for the common NIF material texture contract.
+///
+/// Every static material carries the same semantic role set regardless of
+/// whether its source was legacy NiTexturingProperty, BSShaderTextureSet,
+/// BGSM/BGEM, or BSEffectShaderProperty. Index 0 means the role is absent.
+/// Water keeps its specialized [`NormalMapHandle`] because it is emitted by a
+/// separate renderer path.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct DarkMapHandle(pub(crate) u32);
-impl Component for DarkMapHandle {
-    type Storage = SparseSetStorage<Self>;
-}
-
-/// Bindless texture handle for a `BSEffectShaderProperty.greyscale_texture`
-/// colour palette LUT (Skyrim+). When attached, the fragment shader's
-/// `MATERIAL_KIND_EFFECT_SHADER` branch samples
-/// `textures[handle]` at `vec2(source.r, 0.5)` to remap a greyscale-
-/// authored source texture (typical for fire / explosion / VFX atlases)
-/// into authored colour. Only attached when the importer captured a
-/// non-empty `greyscale_texture` path AND it resolved to a real texture
-/// (so the shader's `handle != 0` gate is meaningful). See #890 Stage 2c.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct GreyscaleLutHandle(pub(crate) u32);
-impl Component for GreyscaleLutHandle {
-    type Storage = SparseSetStorage<Self>;
-}
-
-/// Bindless texture indices for the three NiTexturingProperty slots that
-/// previously populated `Material` but never reached `GpuInstance`:
-/// glow (slot 4 — emissive overlay), detail (slot 2 — high-frequency
-/// 2× UV overlay), and gloss (slot 3 — per-texel specular mask). All
-/// three default to `0` (= no map; shader falls through to the inline
-/// material constants). Combined into a single component to keep the
-/// per-frame query count fixed regardless of which slots a mesh uses.
-/// See #399 (OBL-D4-H3).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ExtraTextureMaps {
-    pub(crate) glow: u32,
-    pub(crate) detail: u32,
-    pub(crate) gloss: u32,
-    /// Parallax / height map (`BSShaderTextureSet` slot 3). 0 = no POM.
-    /// See #453 (renderer-side plumbing) and #452 (import-side path).
-    pub(crate) parallax: u32,
-    /// Env reflection map (slot 4). 0 = no env map. See #453.
-    pub(crate) env: u32,
-    /// Env reflection mask (slot 5). 0 = unmasked. See #453.
-    pub(crate) env_mask: u32,
+pub(crate) struct MaterialTextureHandles {
+    pub(crate) textures: byroredux_nif::import::MaterialTextureSet<u32>,
+    /// Whether the normal DDS carries authored alpha (legacy gloss channel).
+    pub(crate) normal_has_alpha: bool,
     /// POM height scale (default 0.04). See #453.
     pub(crate) parallax_height_scale: f32,
     /// POM ray-march sample budget (default 4.0). See #453.
     pub(crate) parallax_max_passes: f32,
 }
-impl Component for ExtraTextureMaps {
+impl Component for MaterialTextureHandles {
     type Storage = SparseSetStorage<Self>;
 }
 

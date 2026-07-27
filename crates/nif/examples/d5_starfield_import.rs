@@ -211,7 +211,8 @@ fn main() {
                 .and_then(|s| pool.resolve(*s).map(|s| s.to_string()))
                 .unwrap_or_else(|| "<none>".to_string());
             let tex = m
-                .texture_path
+                .textures
+                .base_color
                 .as_ref()
                 .and_then(|s| pool.resolve(*s).map(|s| s.to_string()))
                 .unwrap_or_else(|| "<none>".to_string());

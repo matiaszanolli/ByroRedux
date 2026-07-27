@@ -19,7 +19,7 @@ use crate::blocks::extra_data::{BsPackedCombinedGeomDataExtra, BsPackedCombinedP
 use crate::blocks::traits::HasObjectNET;
 use crate::blocks::tri_shape::{decode_bs_vertex_stream, BsTriShape};
 use crate::header::NifHeader;
-use crate::import::ImportedMesh;
+use crate::import::{ImportedMesh, MaterialTextureSet};
 use crate::scene::NifScene;
 use crate::stream::NifStream;
 use crate::types::NiTransform;
@@ -196,8 +196,7 @@ pub fn decode_shared_geom_object(
 /// the geometry block.
 #[derive(Debug, Clone, Default)]
 pub struct PrecombineMaterial {
-    pub texture_path: Option<FixedString>,
-    pub normal_map: Option<FixedString>,
+    pub textures: MaterialTextureSet<Option<FixedString>>,
     pub material_path: Option<FixedString>,
     pub has_alpha: bool,
     pub src_blend_mode: u8,
@@ -219,8 +218,7 @@ impl PrecombineMaterial {
     /// (which otherwise carries the opaque untextured defaults from
     /// [`ImportedMesh::from_geometry`]).
     pub fn apply(&self, mesh: &mut ImportedMesh) {
-        mesh.texture_path = self.texture_path;
-        mesh.normal_map = self.normal_map;
+        mesh.textures = self.textures.clone();
         mesh.material_path = self.material_path;
         mesh.has_alpha = self.has_alpha;
         mesh.src_blend_mode = self.src_blend_mode;
@@ -328,9 +326,9 @@ fn precombine_material_from_shape(
         pool,
     );
     let effective_alpha_blend = mat.effective_alpha_blend(shape.av.net.name.as_deref(), pool);
+    let textures = mat.texture_set(pool);
     PrecombineMaterial {
-        texture_path: mat.texture_path,
-        normal_map: mat.normal_map,
+        textures,
         material_path: mat.material_path,
         has_alpha: effective_alpha_blend,
         src_blend_mode: mat.src_blend_mode,

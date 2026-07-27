@@ -21,16 +21,16 @@
 //! is game-agnostic, and is what the renderer reads) — this boundary is
 //! the `translate()` step, not a new type.
 
-use crate::components::{ExtraTextureMaps, NormalMapHandle};
+use crate::components::MaterialTextureHandles;
 use byroredux_core::ecs::components::material::{EffectFalloff, Material};
 use byroredux_core::ecs::{EntityId, World};
-use byroredux_nif::import::ImportedMesh;
+use byroredux_nif::import::{ImportedMesh, MaterialTextureSet};
 
 /// `GpuMaterial.ior` is a discriminated optical scalar. For ordinary
 /// materials it remains the canonical dielectric index of refraction. A
 /// fire-refraction proxy instead stores the authored heat-haze distortion
 /// strength there; the material kind makes the two meanings unambiguous
-/// without expanding the hot 300-byte GPU material record.
+/// without adding another field to the hot 348-byte GPU material record.
 fn material_optical_scalar(material_kind: u32, refraction_strength: f32) -> f32 {
     if material_kind == byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION {
         if refraction_strength.is_finite() {
@@ -48,19 +48,12 @@ fn material_optical_scalar(material_kind: u32, refraction_strength: f32) -> f32 
 /// already been applied and each populated [`byroredux_core::string::
 /// FixedString`] handle resolved to an owned `String`.
 ///
-/// Only the slots the canonical [`Material`] carries are listed here;
-/// the parallax / env / env_mask slots become separate
-/// `*MapHandle` components and are resolved by the caller directly off
-/// its own `eff_*` / `owned_*` locals.
+/// The complete common semantic set stays intact at this boundary. The
+/// canonical [`Material`] consumes the path-bearing roles it exposes, while
+/// [`MaterialTextureHandles`] carries every role to the renderer.
 pub(crate) struct ResolvedPaths {
-    pub texture_path: Option<String>,
+    pub textures: MaterialTextureSet<Option<String>>,
     pub material_path: Option<String>,
-    pub normal_map: Option<String>,
-    pub glow_map: Option<String>,
-    pub detail_map: Option<String>,
-    pub gloss_map: Option<String>,
-    pub dark_map: Option<String>,
-    pub greyscale_texture: Option<String>,
 }
 
 /// Translate a raw [`ImportedMesh`] + caller-resolved paths into the
@@ -92,6 +85,11 @@ pub(crate) fn translate_material(
     paths: ResolvedPaths,
     extra_material_flags: u32,
 ) -> Material {
+    let ResolvedPaths {
+        textures,
+        material_path,
+    } = paths;
+    let texture_path = textures.base_color.clone();
     let mut material = Material {
         emissive_color: mesh.emissive_color,
         emissive_mult: mesh.emissive_mult,
@@ -105,13 +103,13 @@ pub(crate) fn translate_material(
         uv_scale: mesh.uv_scale,
         alpha: mesh.mat_alpha,
         env_map_scale: mesh.env_map_scale,
-        normal_map: paths.normal_map,
-        texture_path: paths.texture_path.clone(),
-        material_path: paths.material_path,
-        glow_map: paths.glow_map,
-        detail_map: paths.detail_map,
-        gloss_map: paths.gloss_map,
-        dark_map: paths.dark_map,
+        normal_map: textures.normal,
+        texture_path: texture_path.clone(),
+        material_path,
+        glow_map: textures.emissive,
+        detail_map: textures.detail,
+        gloss_map: textures.smooth_spec,
+        dark_map: textures.dark,
         vertex_color_mode: mesh.vertex_color_mode,
         alpha_test: mesh.alpha_test,
         alpha_threshold: mesh.alpha_threshold,
@@ -166,7 +164,7 @@ pub(crate) fn translate_material(
         translucency_turbulence: mesh.translucency_turbulence,
         // #890 Stage 2c — BSEffectShaderProperty greyscale LUT path;
         // resolved to a bindless handle at draw-build time.
-        greyscale_texture: paths.greyscale_texture,
+        greyscale_texture: textures.greyscale_lut,
         // Canonical PBR — seed authored BGSM/BGEM scalars
         // (`merge_bgsm_into_mesh`) or a NaN sentinel for legacy
         // inline-shader content; `resolve_pbr` below fills any sentinel
@@ -183,7 +181,7 @@ pub(crate) fn translate_material(
     crate::helpers::classify_glass_into_material(
         &mut material,
         mesh.name.as_deref(),
-        paths.texture_path.as_deref(),
+        texture_path.as_deref(),
         // `has_alpha` tracks blended transparency, while broken panes and
         // mirrors commonly express their transparent coverage exclusively
         // through NiAlphaProperty's alpha-test bit.  Both are valid glass
@@ -217,8 +215,8 @@ pub(crate) const NORMAL_ALPHA_SPEC_BIT: u32 =
 /// ships a normal map but no dedicated gloss map. Excludes glass/effect
 /// kinds (>= 100, own roughness) and the FNV/FO4 env-mapped population. The
 /// inputs are the exact values both the spawn write-back and the render
-/// path read from the `Material` / `NormalMapHandle` / `ExtraTextureMaps`
-/// components, so the gate cannot diverge between the two call sites.
+/// path read from the `Material` / [`MaterialTextureHandles`] components,
+/// so the gate cannot diverge between the two call sites.
 pub(crate) fn normal_alpha_spec_applies(
     material_kind: u32,
     metalness: f32,
@@ -291,7 +289,7 @@ pub(crate) fn normal_alpha_spec_roughness(
 /// resolve-once), with no render-time heuristic mutating canonical state.
 ///
 /// Reads the SAME components the render path reads (`Material`,
-/// `NormalMapHandle`, `ExtraTextureMaps`), so the written value is
+/// `MaterialTextureHandles`), so the written value is
 /// byte-identical to the legacy per-draw result — only its home (the
 /// canonical field, now visible to `mat.*` / `material_dump` tooling) and
 /// its timing (once at spawn, not every frame) change. Idempotent (see
@@ -311,14 +309,16 @@ pub(crate) fn resolve_normal_alpha_spec_roughness(world: &mut World, entity: Ent
     else {
         return;
     };
-    let (normal_map_index, normal_has_alpha) = world
-        .get::<NormalMapHandle>(entity)
-        .map(|n| (n.0, n.1))
-        .unwrap_or((0, false));
-    let gloss_map_index = world
-        .get::<ExtraTextureMaps>(entity)
-        .map(|e| e.gloss)
-        .unwrap_or(0);
+    let (normal_map_index, gloss_map_index, normal_has_alpha) = world
+        .get::<MaterialTextureHandles>(entity)
+        .map(|handles| {
+            (
+                handles.textures.normal,
+                handles.textures.smooth_spec,
+                handles.normal_has_alpha,
+            )
+        })
+        .unwrap_or((0, 0, false));
     if let Some(r) = normal_alpha_spec_roughness(
         material_kind,
         metalness,

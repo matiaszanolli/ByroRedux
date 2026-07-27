@@ -180,6 +180,7 @@ pub fn extract_mesh(
     // Oblivion / FO3 / FNV / pre-Skyrim paths it's intended to serve.
     let legacy_pbr = mat.classify_legacy_pbr(pool);
     let effective_alpha_blend = mat.effective_alpha_blend(shape.av.net.name.as_deref(), pool);
+    let textures = mat.texture_set(pool);
 
     // #783 / M-NORMALS — pre-decoded tangents from the NIF's
     // `NiBinaryExtraData("Tangent space (binormal & tangent vectors)")`.
@@ -206,7 +207,7 @@ pub fn extract_mesh(
         rotation: quat,
         scale: world_transform.scale,
         name: shape.av.net.name.clone(),
-        texture_path: mat.texture_path,
+        textures,
         material_path: mat.material_path,
         has_alpha: effective_alpha_blend,
         src_blend_mode: mat.src_blend_mode,
@@ -216,23 +217,6 @@ pub fn extract_mesh(
         alpha_test_func: mat.alpha_test_func,
         two_sided: mat.two_sided,
         is_decal: mat.is_decal,
-        normal_map: mat.normal_map,
-        glow_map: mat.glow_map,
-        detail_map: mat.detail_map,
-        gloss_map: mat.gloss_map,
-        dark_map: mat.dark_map,
-        parallax_map: mat.parallax_map,
-        env_map: mat.env_map,
-        env_mask: mat.env_mask,
-        tint_map: mat.tint_map,
-        inner_layer_map: mat.inner_layer_map,
-        // #1076 / FO4-D6-002 — NIF shader-texture-set slots
-        // don't expose these; populated downstream by
-        // `merge_bgsm_into_mesh` from BGSM/BGEM v>2.
-        specular_map: None,
-        lighting_map: None,
-        flow_map: None,
-        wrinkle_map: None,
         // #1077 / FO4-D6-003 — BGSM-only shader flags; NIF
         // shader-texture-set doesn't surface these. Populated
         // downstream by `merge_bgsm_into_mesh` from BgsmFile.
@@ -282,9 +266,6 @@ pub fn extract_mesh(
         rimlight_power: mat.rimlight_power,
         backlight_power: mat.backlight_power,
         grayscale_to_palette_scale: mat.grayscale_to_palette_scale,
-        // BGSM greyscale LUT path is resolved later by `merge_bgsm_into_mesh`
-        // (the NIF extractor has no BGSM file in scope here). See #1353.
-        bgsm_greyscale_lut_path: None,
         bgsm_greyscale_lut_is_alpha: false,
         fresnel_power: mat.fresnel_power,
         uv_offset: mat.uv_offset,

@@ -344,11 +344,13 @@ pub struct DrawCommand {
     /// slot) means "no LUT" — the shader treats it as a disable signal
     /// even if `EFFECT_PALETTE_COLOR` / `EFFECT_PALETTE_ALPHA` are set,
     /// matching legacy behaviour where greyscale-mapped meshes without
-    /// a valid LUT fall back to the raw source texture. Resolved by
-    /// `cell_loader::resolve_material_textures` from
-    /// `MaterialInfo::effect_shader::greyscale_texture`; populates
+    /// a valid LUT fall back to the raw source texture. Resolved through
+    /// the common `MaterialTextureSet::greyscale_lut` role; populates
     /// `GpuMaterial::greyscale_lut_index` 1:1 via `to_gpu_material`.
     pub greyscale_lut_index: u32,
+    /// Bindless handles for the common supplemental semantic roles.
+    /// Ordering is defined by `material::supplemental_texture_slot`.
+    pub supplemental_texture_indices: [u32; super::material::supplemental_texture_slot::COUNT],
     /// #1147 Phase 2b — BGSM v>=8 translucency suite, forwarded to
     /// `GpuMaterial.translucency_*`. Default zeros (no contribution
     /// when `MAT_FLAG_BGSM_TRANSLUCENCY` is unset). Populated by
@@ -389,6 +391,7 @@ impl DrawCommand {
     /// `MaterialTable::intern`. Identical materials collapse to one
     /// id; distinct materials get distinct ids.
     pub fn to_gpu_material(&self) -> GpuMaterial {
+        use super::material::supplemental_texture_slot as slot;
         GpuMaterial {
             roughness: self.roughness,
             metalness: self.metalness,
@@ -486,6 +489,19 @@ impl DrawCommand {
             sheen_tint: self.sheen_tint,
             // #1250 — anisotropic GGX strength.
             anisotropic: self.anisotropic,
+            tint_map_index: self.supplemental_texture_indices[slot::TINT],
+            inner_layer_map_index: self.supplemental_texture_indices[slot::INNER_LAYER],
+            specular_map_index: self.supplemental_texture_indices[slot::SPECULAR],
+            lighting_map_index: self.supplemental_texture_indices[slot::LIGHTING],
+            flow_map_index: self.supplemental_texture_indices[slot::FLOW],
+            wrinkle_map_index: self.supplemental_texture_indices[slot::WRINKLE],
+            reflectance_map_index: self.supplemental_texture_indices[slot::REFLECTANCE],
+            emittance_gradient_map_index: self.supplemental_texture_indices
+                [slot::EMITTANCE_GRADIENT],
+            decal_map_0_index: self.supplemental_texture_indices[slot::DECAL_0],
+            decal_map_1_index: self.supplemental_texture_indices[slot::DECAL_1],
+            decal_map_2_index: self.supplemental_texture_indices[slot::DECAL_2],
+            decal_map_3_index: self.supplemental_texture_indices[slot::DECAL_3],
         }
     }
 
@@ -622,6 +638,9 @@ impl DrawCommand {
         h.write_u32(self.sheen_tint.to_bits());
         // #1250 — anisotropic GGX strength (offset 296). Same lockstep.
         h.write_u32(self.anisotropic.to_bits());
+        for texture_index in self.supplemental_texture_indices {
+            h.write_u32(texture_index);
+        }
         h.finish()
     }
 }
@@ -3695,6 +3714,7 @@ mod draw_command_tests {
             // Non-zero LUT handle so the hash-walk contract covers this
             // field (zero would dedup with the default and hide a drift).
             greyscale_lut_index: 7,
+            supplemental_texture_indices: [31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42],
             // Non-zero translucency so the hash-walk covers these
             // fields too (#1147 Phase 2b).
             translucency_subsurface_color: [0.5, 0.4, 0.3],

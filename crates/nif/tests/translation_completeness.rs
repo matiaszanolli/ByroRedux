@@ -144,7 +144,7 @@ struct MaterialStats {
 impl MaterialStats {
     fn record(&mut self, source_nif: &str, mesh: &ImportedMesh) {
         self.imported_meshes += 1;
-        if mesh.texture_path.is_some() {
+        if mesh.textures.base_color.is_some() {
             self.with_texture_path += 1;
         }
         if mesh.material_path.is_some() {
@@ -159,7 +159,7 @@ impl MaterialStats {
         if mesh.roughness_override.is_some() {
             self.with_roughness_override += 1;
         }
-        if mesh.normal_map.is_some() {
+        if mesh.textures.normal.is_some() {
             self.with_normal_map += 1;
         }
         if !mesh.tangents.is_empty() {

@@ -3,7 +3,7 @@
 //! `tex.missing`, `tex.loaded`, `mesh.info`, `mesh.cache`, `skin.coverage`, `skin.list`, `skin.dump`.
 
 use super::shared::*;
-use crate::components::GreyscaleLutHandle;
+use crate::components::MaterialTextureHandles;
 
 pub(crate) struct TexMissingCommand;
 impl ConsoleCommand for TexMissingCommand {
@@ -263,8 +263,8 @@ impl ConsoleCommand for MeshInfoCommand {
                 if mat.dark_map.is_some() { "set" } else { "-" },
             ));
             let lut_handle = world
-                .get::<GreyscaleLutHandle>(id)
-                .map(|h| h.0.to_string())
+                .get::<MaterialTextureHandles>(id)
+                .map(|handles| handles.textures.greyscale_lut.to_string())
                 .unwrap_or_else(|| "(none)".to_string());
             lines.push(format!(
                 "  greyscale LUT:     {} (handle {})",

@@ -43,7 +43,8 @@ fn main() {
             .map(|s| s.to_string())
             .unwrap_or_else(|| "-".to_string());
         let tex = m
-            .texture_path
+            .textures
+            .base_color
             .and_then(|s| pool.resolve(s))
             .map(str::to_string)
             .or_else(|| {

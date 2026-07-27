@@ -22,9 +22,8 @@ use crate::asset_provider::{
     derive_normal_map_path, resolve_texture, resolve_texture_with_clamp, TextureProvider,
 };
 use crate::components::{
-    decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle,
-    DoorTeleport, ExtraTextureMaps, GreyscaleLutHandle, IsDecalMesh, IsFxMesh, NormalMapHandle,
-    TwoSided,
+    decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, DoorTeleport,
+    IsDecalMesh, IsFxMesh, MaterialTextureHandles, TwoSided,
 };
 
 use super::nif_import_registry::CachedNifImport;
@@ -732,20 +731,8 @@ fn spawn_collision_shapes(
 /// lock (#882). Promoted to module scope from `spawn_placed_instances`
 /// so `resolve_mesh_paths` + `spawn_mesh_instance` can share it (#2057).
 struct ResolvedMeshPaths {
-    texture_path: Option<String>,
-    normal_map: Option<String>,
-    glow_map: Option<String>,
-    gloss_map: Option<String>,
-    parallax_map: Option<String>,
-    env_map: Option<String>,
-    env_mask: Option<String>,
+    textures: byroredux_nif::import::MaterialTextureSet<Option<String>>,
     material_path: Option<String>,
-    detail_map: Option<String>,
-    dark_map: Option<String>,
-    /// #890 Stage 2c — BSEffectShaderProperty greyscale LUT path.
-    /// Skyrim+ only; `None` on every non-effect mesh and the
-    /// FO3/FNV BSShaderNoLightingProperty path.
-    greyscale_texture: Option<String>,
     name_sym: Option<byroredux_core::string::FixedString>,
 }
 fn resolve_to_owned(
@@ -768,51 +755,43 @@ fn resolve_mesh_paths(
     imported
         .iter()
         .map(|mesh| {
+            let mut textures = mesh.textures.map_ref(|path| resolve_to_owned(&pool, *path));
             // Effective texture slot paths. REFR overlay
             // (XATO/XTNM/XTXR) wins over the NIF-authored paths
             // when present; for slots the overlay left empty the
             // cached NIF's texture rides through. `None` on both
             // sides means the slot has no texture. See #584.
-            let texture_path =
-                resolve_to_owned(&pool, ov.and_then(|o| o.diffuse).or(mesh.texture_path));
+            textures.base_color = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| o.diffuse).or(mesh.textures.base_color),
+            );
             // Oblivion/FO3 ship normal maps via the `<base>_n.dds`
             // load-time convention, not an explicit NIF slot. When the
             // mesh left both normal/bump slots empty, derive the sibling
             // from the (effective) diffuse path; it resolves like any
             // texture and fails soft if absent (#1303 / OBL-D4-NEW-01).
-            let normal_map = resolve_to_owned(&pool, ov.and_then(|o| o.normal).or(mesh.normal_map))
-                .or_else(|| texture_path.as_deref().map(derive_normal_map_path));
-            let glow_map = resolve_to_owned(&pool, ov.and_then(|o| o.glow).or(mesh.glow_map));
-            let gloss_map = resolve_to_owned(&pool, ov.and_then(|o| o.specular).or(mesh.gloss_map));
-            let parallax_map =
-                resolve_to_owned(&pool, ov.and_then(|o| o.height).or(mesh.parallax_map));
-            let env_map = resolve_to_owned(&pool, ov.and_then(|o| o.env).or(mesh.env_map));
-            let env_mask = resolve_to_owned(&pool, ov.and_then(|o| o.env_mask).or(mesh.env_mask));
+            textures.normal =
+                resolve_to_owned(&pool, ov.and_then(|o| o.normal).or(mesh.textures.normal))
+                    .or_else(|| textures.base_color.as_deref().map(derive_normal_map_path));
+            textures.emissive =
+                resolve_to_owned(&pool, ov.and_then(|o| o.glow).or(mesh.textures.emissive));
+            textures.smooth_spec = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| o.specular).or(mesh.textures.smooth_spec),
+            );
+            textures.height =
+                resolve_to_owned(&pool, ov.and_then(|o| o.height).or(mesh.textures.height));
+            textures.environment =
+                resolve_to_owned(&pool, ov.and_then(|o| o.env).or(mesh.textures.environment));
+            textures.environment_mask = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| o.env_mask)
+                    .or(mesh.textures.environment_mask),
+            );
             let material_path = resolve_to_owned(
                 &pool,
                 ov.and_then(|o| o.material_path).or(mesh.material_path),
             );
-            // Detail/dark slots come straight from the NIF
-            // (no REFR-overlay path for these today).
-            let detail_map = resolve_to_owned(&pool, mesh.detail_map);
-            let dark_map = resolve_to_owned(&pool, mesh.dark_map);
-            // #890 Stage 2c — BSEffectShaderProperty greyscale LUT
-            // path. Lives on the nested `effect_shader` payload as
-            // `Option<String>` (not a `FixedString` because the
-            // importer captures it post-stopcond on the modern
-            // shader-property path, which already owns its
-            // resolved strings).
-            // #1353 — BSEffectShaderProperty greyscale LUT (effect
-            // meshes) takes priority; FO4 BGSM lit grayscale-to-palette
-            // (`bgsm_greyscale_lut_path`, set by `merge_bgsm_into_mesh`)
-            // is the fallback. Both flow to the same GreyscaleLutHandle
-            // resolve below; `pack_bgsm_material_flags` sets
-            // EFFECT_PALETTE_COLOR for the BGSM lit case.
-            let greyscale_texture = mesh
-                .effect_shader
-                .as_ref()
-                .and_then(|es| es.greyscale_texture.clone())
-                .or_else(|| mesh.bgsm_greyscale_lut_path.clone());
             // Intern the mesh name in the same lock — see #882's
             // second hotspot. `mesh.name: Option<Arc<str>>`. The
             // `pool.intern` call must follow the resolves so the
@@ -820,17 +799,8 @@ fn resolve_mesh_paths(
             // the `&mut pool` re-borrow.
             let name_sym = mesh.name.as_deref().map(|n| pool.intern(n));
             ResolvedMeshPaths {
-                texture_path,
-                normal_map,
-                glow_map,
-                gloss_map,
-                parallax_map,
-                env_map,
-                env_mask,
+                textures,
                 material_path,
-                detail_map,
-                dark_map,
-                greyscale_texture,
                 name_sym,
             }
         })
@@ -1010,17 +980,9 @@ fn spawn_mesh_instance(
     // allocation per populated slot per mesh, same as the pre-fix
     // `resolve_owned(...).clone()` pattern at the Material struct
     // construction site.
-    let eff_texture_path = paths.texture_path.clone();
-    let eff_normal_map = paths.normal_map.clone();
-    let eff_glow_map = paths.glow_map.clone();
-    let eff_gloss_map = paths.gloss_map.clone();
-    let eff_parallax_map = paths.parallax_map.clone();
-    let eff_env_map = paths.env_map.clone();
-    let eff_env_mask = paths.env_mask.clone();
+    let eff_textures = paths.textures.clone();
+    let eff_texture_path = eff_textures.base_color.clone();
     let eff_material_path = paths.material_path.clone();
-    let eff_detail_map = paths.detail_map.clone();
-    let eff_dark_map = paths.dark_map.clone();
-    let eff_greyscale_texture = paths.greyscale_texture.clone();
 
     // Load texture (shared resolve: cache → BSA → fallback).
     // #610 — pass the diffuse-slot `TexClampMode` so the bindless
@@ -1166,14 +1128,8 @@ fn spawn_mesh_instance(
     let material = crate::material_translate::translate_material(
         mesh,
         crate::material_translate::ResolvedPaths {
-            texture_path: eff_texture_path.clone(),
+            textures: eff_textures.clone(),
             material_path: eff_material_path.clone(),
-            normal_map: eff_normal_map.clone(),
-            glow_map: eff_glow_map.clone(),
-            detail_map: eff_detail_map.clone(),
-            gloss_map: eff_gloss_map.clone(),
-            dark_map: eff_dark_map.clone(),
-            greyscale_texture: eff_greyscale_texture.clone(),
         },
         extra_material_flags,
     );
@@ -1187,72 +1143,36 @@ fn spawn_mesh_instance(
             world.insert(entity, IsFxMesh);
         }
     }
-    // Load and attach normal map if the material specifies one.
-    if let Some(ref nmap_path) = eff_normal_map {
-        let h = resolve_texture(ctx, tex_provider, Some(nmap_path.as_str()));
-        if h != ctx.texture_registry.fallback() {
-            let has_alpha = ctx.texture_registry.handle_has_alpha(h);
-            world.insert(entity, NormalMapHandle(h, has_alpha));
-        }
-    }
-    // Load and attach dark/lightmap if the material specifies one (#264).
-    if let Some(ref dark_path) = eff_dark_map {
-        let h = resolve_texture(ctx, tex_provider, Some(dark_path.as_str()));
-        if h != ctx.texture_registry.fallback() {
-            world.insert(entity, DarkMapHandle(h));
-        }
-    }
-    // #890 Stage 2c — BSEffectShaderProperty greyscale LUT. Only
-    // attach the component when the path resolves to a real handle
-    // so the SparseSet stays small + the shader's `handle != 0`
-    // gate remains a meaningful disable signal.
-    if let Some(ref lut_path) = eff_greyscale_texture {
-        let h = resolve_texture(ctx, tex_provider, Some(lut_path.as_str()));
-        if h != ctx.texture_registry.fallback() {
-            world.insert(entity, GreyscaleLutHandle(h));
-        }
-    }
-    // #399 — Resolve glow / detail / gloss texture handles. All three
-    // default to 0 (no map; shader falls through to inline material
-    // constants). The component is only attached when at least one
-    // path resolved to a real handle, keeping the SparseSet small
-    // for the bulk of meshes that have no extra maps.
+    // Resolve every semantic role into the same common shape used by NIF
+    // translation. No source-game slot interpretation survives this point.
     let mut resolve = |path: &Option<String>| -> u32 {
         path.as_deref()
             .map(|p| resolve_texture(ctx, tex_provider, Some(p)))
             .filter(|&h| h != ctx.texture_registry.fallback())
             .unwrap_or(0)
     };
-    let glow_h = resolve(&eff_glow_map);
-    let detail_h = resolve(&eff_detail_map);
-    let gloss_h = resolve(&eff_gloss_map);
-    let parallax_h = resolve(&eff_parallax_map);
-    let env_h = resolve(&eff_env_map);
-    let env_mask_h = resolve(&eff_env_mask);
-    if glow_h != 0
-        || detail_h != 0
-        || gloss_h != 0
-        || parallax_h != 0
-        || env_h != 0
-        || env_mask_h != 0
-    {
-        world.insert(
-            entity,
-            ExtraTextureMaps {
-                glow: glow_h,
-                detail: detail_h,
-                gloss: gloss_h,
-                parallax: parallax_h,
-                env: env_h,
-                env_mask: env_mask_h,
-                parallax_height_scale: mesh.parallax_height_scale.unwrap_or(0.04),
-                parallax_max_passes: mesh.parallax_max_passes.unwrap_or(4.0),
-            },
-        );
-    }
+    let mut secondary_textures = eff_textures.clone();
+    secondary_textures.base_color = None;
+    let mut texture_handles = secondary_textures.map_ref(&mut resolve);
+    // Base color was already resolved with the authored clamp mode; reusing
+    // that handle avoids a duplicate cache acquire and preserves its sampler.
+    texture_handles.base_color = tex_handle;
+    let normal_has_alpha = texture_handles.normal != 0
+        && ctx
+            .texture_registry
+            .handle_has_alpha(texture_handles.normal);
+    world.insert(
+        entity,
+        MaterialTextureHandles {
+            textures: texture_handles,
+            normal_has_alpha,
+            parallax_height_scale: mesh.parallax_height_scale.unwrap_or(0.04),
+            parallax_max_passes: mesh.parallax_max_passes.unwrap_or(4.0),
+        },
+    );
     // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
-    // ONCE into the canonical Material now that Material + NormalMapHandle
-    // + ExtraTextureMaps are all attached, instead of recomputing it per
+    // ONCE into the canonical Material now that MaterialTextureHandles is
+    // attached, instead of recomputing it per
     // draw in the render path. Reads the same components the renderer
     // reads, so the value is identical — only canonical + tooling-visible.
     crate::material_translate::resolve_normal_alpha_spec_roughness(world, entity);

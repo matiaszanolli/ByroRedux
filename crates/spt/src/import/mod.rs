@@ -47,7 +47,9 @@
 use std::sync::Arc;
 
 use byroredux_core::string::{FixedString, StringPool};
-use byroredux_nif::import::{ImportedMesh, ImportedNode, ImportedScene, ShaderTypeFields};
+use byroredux_nif::import::{
+    ImportedMesh, ImportedNode, ImportedScene, MaterialTextureSet, ShaderTypeFields,
+};
 
 use crate::scene::SptScene;
 
@@ -293,7 +295,10 @@ fn placeholder_billboard_mesh(
         translation: [0.0, 0.0, 0.0],
         rotation: [0.0, 0.0, 0.0, 1.0],
         scale: 1.0,
-        texture_path,
+        textures: MaterialTextureSet {
+            base_color: texture_path,
+            ..Default::default()
+        },
         material_path: None,
         name: Some(Arc::from("SptPlaceholderBillboard")),
         // Alpha-test (cutout) is the right call for tree leaves —
@@ -310,22 +315,6 @@ fn placeholder_billboard_mesh(
         // matches vanilla SpeedTree leaf-card behaviour.
         two_sided: true,
         is_decal: false,
-        normal_map: None,
-        glow_map: None,
-        detail_map: None,
-        gloss_map: None,
-        dark_map: None,
-        parallax_map: None,
-        env_map: None,
-        env_mask: None,
-        tint_map: None,
-        inner_layer_map: None,
-        // #1076 / FO4-D6-002 — SpeedTree imports never resolve a
-        // BGSM/BGEM material path; these stay None.
-        specular_map: None,
-        lighting_map: None,
-        flow_map: None,
-        wrinkle_map: None,
         // #1077 / FO4-D6-003 — SpeedTree never resolves BGSM/BGEM.
         is_pbr: false,
         has_translucency: false,
@@ -372,7 +361,6 @@ fn placeholder_billboard_mesh(
         rimlight_power: 0.0,
         backlight_power: 0.0,
         grayscale_to_palette_scale: 1.0,
-        bgsm_greyscale_lut_path: None, // SpeedTree billboards have no BGSM (#1353)
         bgsm_greyscale_lut_is_alpha: false,
         fresnel_power: 5.0,
         uv_offset: [0.0, 0.0],
@@ -530,7 +518,8 @@ mod tests {
         };
         let imported = import_spt_scene(&scene, &params, &mut pool);
         let texture = imported.meshes[0]
-            .texture_path
+            .textures
+            .base_color
             .and_then(|h| pool.resolve(h).map(|s| s.to_string()));
         assert_eq!(
             texture.as_deref(),
@@ -581,7 +570,8 @@ mod tests {
         let params = SptImportParams::default();
         let imported = import_spt_scene(&scene, &params, &mut pool);
         let texture = imported.meshes[0]
-            .texture_path
+            .textures
+            .base_color
             .and_then(|h| pool.resolve(h).map(|s| s.to_string()));
         assert_eq!(texture.as_deref(), Some("trees\\bushleaf.dds"));
     }
@@ -593,7 +583,7 @@ mod tests {
         let params = SptImportParams::default();
         let imported = import_spt_scene(&scene, &params, &mut pool);
         assert!(
-            imported.meshes[0].texture_path.is_none(),
+            imported.meshes[0].textures.base_color.is_none(),
             "no texture → leave path unset, renderer fills the magenta placeholder",
         );
     }

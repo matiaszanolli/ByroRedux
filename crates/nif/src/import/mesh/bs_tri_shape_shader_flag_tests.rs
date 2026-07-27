@@ -254,7 +254,7 @@ fn extract_bs_tri_shape_pulls_effect_shader_emissive_uv_alpha_normal() {
     assert!((mesh.mat_alpha - 0.5).abs() < 1e-6);
     assert!((mesh.env_map_scale - 0.75).abs() < 1e-6);
     assert_eq!(
-        mesh.normal_map.and_then(|s| pool.resolve(s)),
+        mesh.textures.normal.and_then(|s| pool.resolve(s)),
         Some("fx/glow_n.dds")
     );
     let fx = mesh.effect_shader.expect("effect_shader should populate");

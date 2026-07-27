@@ -135,6 +135,44 @@ fn default_material_info_has_no_secondary_maps_and_default_mode() {
     assert_eq!(info.vertex_color_mode, VertexColorMode::AmbientDiffuse);
 }
 
+#[test]
+fn texture_set_normalizes_inline_and_effect_shader_roles() {
+    let mut pool = StringPool::new();
+    let mut info = MaterialInfo::default();
+    info.texture_path = Some(pool.intern("base.dds"));
+    info.normal_map = Some(pool.intern("normal.dds"));
+    info.glow_map = Some(pool.intern("emit.dds"));
+    info.tint_map = Some(pool.intern("tint.dds"));
+    info.inner_layer_map = Some(pool.intern("inner.dds"));
+    info.decal_maps = [
+        Some(pool.intern("decal0.dds")),
+        None,
+        Some(pool.intern("decal2.dds")),
+        None,
+    ];
+    info.effect_shader = Some(BsEffectShaderData {
+        greyscale_texture: Some("palette.dds".into()),
+        reflectance_texture: Some("reflectance.dds".into()),
+        lighting_texture: Some("lighting.dds".into()),
+        emit_gradient_texture: Some("gradient.dds".into()),
+        ..Default::default()
+    });
+
+    let textures = info.texture_set(&mut pool);
+    let resolve = |path: Option<FixedString>| path.and_then(|handle| pool.resolve(handle));
+    assert_eq!(resolve(textures.base_color), Some("base.dds"));
+    assert_eq!(resolve(textures.normal), Some("normal.dds"));
+    assert_eq!(resolve(textures.emissive), Some("emit.dds"));
+    assert_eq!(resolve(textures.tint), Some("tint.dds"));
+    assert_eq!(resolve(textures.inner_layer), Some("inner.dds"));
+    assert_eq!(resolve(textures.greyscale_lut), Some("palette.dds"));
+    assert_eq!(resolve(textures.reflectance), Some("reflectance.dds"));
+    assert_eq!(resolve(textures.lighting), Some("lighting.dds"));
+    assert_eq!(resolve(textures.emittance_gradient), Some("gradient.dds"));
+    assert_eq!(resolve(textures.decals[0]), Some("decal0.dds"));
+    assert_eq!(resolve(textures.decals[2]), Some("decal2.dds"));
+}
+
 /// Regression: #438 — `MaterialInfo.diffuse_color` must default to
 /// white so meshes without a `NiMaterialProperty` fall back to
 /// `[1.0, 1.0, 1.0]` vertex tinting (the pre-#438 hardcoded

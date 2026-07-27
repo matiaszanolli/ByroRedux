@@ -226,6 +226,20 @@ EFFECT_* flags); the one *deferred* item is the `base_color_scale`
 diffuse-tint-vs-emissive render path (§4) — tagged via `EmissiveSource::Effect`, not
 dropped.
 
+Texture paths cross the NIF boundary in one generic semantic contract:
+`MaterialTextureSet<T>`. Its 18 named roles plus four ordered decal layers cover
+legacy `NiTexturingProperty`, `BSShaderTextureSet`, inline effect shaders, and
+BGSM/BGEM material files. The source-specific slot vocabulary is gone before
+runtime spawning; the same shape is reused as `MaterialTextureSet<Option<String>>`
+for resolved paths and `MaterialTextureSet<u32>` inside
+`MaterialTextureHandles`. Tint, inner-layer, standalone specular, reflectance,
+emittance-gradient, and legacy decal layers now reach fragment shading alongside
+the established base/normal/emissive/detail/smoothness/dark/height/environment
+roles. Lighting, flow, and wrinkle roles are preserved through the GPU contract
+but remain deliberately unsampled until their authored lookup coordinates or
+actor controls are available; treating them as ordinary RGB modulation would be
+format-specific guesswork at the supposedly game-agnostic boundary.
+
 ### Passthroughs — parked / dropped inventory (surveyed 2026-06-02)
 
 The 2026-06-02 coverage sweep traced every `ImportedScene`/`ImportedNode`/`ImportedMesh`
@@ -301,10 +315,10 @@ The material slice was executed this session as the template. Mechanics:
 `translate_material` lives in the top `byroredux` crate (not `core` / `nif`)
 because it folds in `classify_glass_into_material` (needs
 `byroredux_renderer::MATERIAL_KIND_GLASS`) and consumes the spawn sites' resolved
-texture paths (BGSM `material_path` → real textures, `StringPool`-resolved). This is
-the expected shape: a category whose translation needs renderer constants or
-asset-provider state translates in the top crate; a category whose translation is
-self-contained (geometry, skinning) can translate inside `crates/nif`.
+common texture set (BGSM `material_path` → real textures, `StringPool`-resolved).
+This is the expected shape: a category whose translation needs renderer constants
+or asset-provider state translates in the top crate; a category whose translation
+is self-contained (geometry, skinning) can translate inside `crates/nif`.
 
 ---
 

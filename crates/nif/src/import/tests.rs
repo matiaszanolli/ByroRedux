@@ -425,12 +425,12 @@ fn import_extracts_oblivion_bump_texture_as_normal_map() {
     assert_eq!(meshes.len(), 1);
     let m = &meshes[0];
     assert_eq!(
-        test_support::resolve_path(&pool, m.texture_path),
+        test_support::resolve_path(&pool, m.textures.base_color),
         Some("textures\\architecture\\wall01.dds"),
         "base_texture should still be extracted"
     );
     assert_eq!(
-        test_support::resolve_path(&pool, m.normal_map),
+        test_support::resolve_path(&pool, m.textures.normal),
         Some("textures\\architecture\\wall01_n.dds"),
         "bump_texture slot should populate normal_map for Oblivion meshes"
     );
@@ -507,7 +507,7 @@ fn import_prefers_normal_texture_over_bump_texture() {
     let meshes = import_nif(&scene, &mut pool);
 
     assert_eq!(
-        test_support::resolve_path(&pool, meshes[0].normal_map),
+        test_support::resolve_path(&pool, meshes[0].textures.normal),
         Some("modern_normal.dds"),
         "normal_texture should win when both slots are populated"
     );

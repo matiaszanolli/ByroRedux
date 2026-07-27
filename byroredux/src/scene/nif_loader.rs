@@ -27,8 +27,8 @@ use crate::asset_provider::{
     resolve_texture, MaterialProvider, TextureProvider,
 };
 use crate::components::{
-    decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, DarkMapHandle,
-    ExtraTextureMaps, GreyscaleLutHandle, IsDecalMesh, IsFxMesh, NormalMapHandle, TwoSided,
+    decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, IsDecalMesh, IsFxMesh,
+    MaterialTextureHandles, TwoSided,
 };
 use crate::helpers::add_child;
 
@@ -748,18 +748,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // each populated slot to an owned `String` once for the
         // downstream `Material` component + texture-resolve calls. The
         // pool read lock is short-lived; the resolved Strings outlive it.
-        let (
-            owned_texture_path,
-            owned_normal_map,
-            owned_glow_map,
-            owned_detail_map,
-            owned_gloss_map,
-            owned_dark_map,
-            owned_parallax_map,
-            owned_env_map,
-            owned_env_mask,
-            owned_material_path,
-        ) = {
+        let (mut owned_textures, owned_material_path) = {
             let pool_read = world.resource::<StringPool>();
             let resolve_owned =
                 |sym: Option<byroredux_core::string::FixedString>| -> Option<String> {
@@ -767,15 +756,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                         .map(|s| s.to_string())
                 };
             (
-                resolve_owned(mesh.texture_path),
-                resolve_owned(mesh.normal_map),
-                resolve_owned(mesh.glow_map),
-                resolve_owned(mesh.detail_map),
-                resolve_owned(mesh.gloss_map),
-                resolve_owned(mesh.dark_map),
-                resolve_owned(mesh.parallax_map),
-                resolve_owned(mesh.env_map),
-                resolve_owned(mesh.env_mask),
+                mesh.textures.map_ref(|path| resolve_owned(*path)),
                 resolve_owned(mesh.material_path),
             )
         };
@@ -785,8 +766,12 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // normal/bump slot, derive the sibling from the diffuse path; it
         // resolves like any texture below and fails soft if absent
         // (#1303 / OBL-D4-NEW-01).
-        let owned_normal_map =
-            owned_normal_map.or_else(|| owned_texture_path.as_deref().map(derive_normal_map_path));
+        owned_textures.normal = owned_textures.normal.or_else(|| {
+            owned_textures
+                .base_color
+                .as_deref()
+                .map(derive_normal_map_path)
+        });
 
         // #2095 / SKY-D3-NEW-03 — the per-call diffuse override (pre-baked
         // FaceGen tint) wins over the NIF-authored diffuse. Applied after
@@ -795,11 +780,11 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // Flows into both the bound `TextureHandle` and the canonical
         // `Material.texture_path` below, mirroring the REFR-overlay
         // precedent in `cell_loader::spawn`.
-        let owned_texture_path = diffuse_override
+        owned_textures.base_color = diffuse_override
             .map(|p| p.to_string())
-            .or(owned_texture_path);
+            .or(owned_textures.base_color);
 
-        let tex_handle = resolve_texture(ctx, tex_provider, owned_texture_path.as_deref());
+        let tex_handle = resolve_texture(ctx, tex_provider, owned_textures.base_color.as_deref());
 
         let quat = Quat::from_xyzw(
             mesh.rotation[0],
@@ -900,98 +885,47 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         let material = crate::material_translate::translate_material(
             mesh,
             crate::material_translate::ResolvedPaths {
-                texture_path: owned_texture_path.clone(),
+                textures: owned_textures.clone(),
                 material_path: owned_material_path.clone(),
-                normal_map: owned_normal_map.clone(),
-                glow_map: owned_glow_map.clone(),
-                detail_map: owned_detail_map.clone(),
-                gloss_map: owned_gloss_map.clone(),
-                dark_map: owned_dark_map.clone(),
-                // #1353 — effect-mesh greyscale LUT first, then the FO4
-                // BGSM lit grayscale-to-palette path as fallback.
-                greyscale_texture: mesh
-                    .effect_shader
-                    .as_ref()
-                    .and_then(|es| es.greyscale_texture.clone())
-                    .or_else(|| mesh.bgsm_greyscale_lut_path.clone()),
             },
             0,
         );
         let material_kind = material.material_kind;
         world.insert(entity, material);
         // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
-        if let Some(ref tp) = owned_texture_path {
+        if let Some(ref tp) = owned_textures.base_color {
             if texture_path_is_fx_mesh(tp, material_kind) {
                 world.insert(entity, IsFxMesh);
             }
         }
 
-        // Load and attach normal map texture handle.
-        if let Some(ref nmap_path) = owned_normal_map {
-            let h = resolve_texture(ctx, tex_provider, Some(nmap_path.as_str()));
-            if h != ctx.texture_registry.fallback() {
-                let has_alpha = ctx.texture_registry.handle_has_alpha(h);
-                world.insert(entity, NormalMapHandle(h, has_alpha));
-            }
-        }
-        // Load and attach dark/lightmap texture handle.
-        if let Some(ref dark_path) = owned_dark_map {
-            let h = resolve_texture(ctx, tex_provider, Some(dark_path.as_str()));
-            if h != ctx.texture_registry.fallback() {
-                world.insert(entity, DarkMapHandle(h));
-            }
-        }
-        // #890 Stage 2c — BSEffectShaderProperty greyscale LUT. Mirrors
-        // the cell_loader::spawn site.
-        if let Some(lut_path) = mesh
-            .effect_shader
-            .as_ref()
-            .and_then(|es| es.greyscale_texture.as_ref())
-        {
-            let h = resolve_texture(ctx, tex_provider, Some(lut_path.as_str()));
-            if h != ctx.texture_registry.fallback() {
-                world.insert(entity, GreyscaleLutHandle(h));
-            }
-        }
-        // #399 — three NiTexturingProperty extra slots packed into one
-        // ECS component. Mirrors the cell_loader.rs path; only attached
-        // when at least one slot resolved to a real texture handle.
+        // Resolve all secondary roles through the same semantic contract.
         let mut resolve = |path: &Option<String>| -> u32 {
             path.as_deref()
                 .map(|p| resolve_texture(ctx, tex_provider, Some(p)))
                 .filter(|&h| h != ctx.texture_registry.fallback())
                 .unwrap_or(0)
         };
-        let glow_h = resolve(&owned_glow_map);
-        let detail_h = resolve(&owned_detail_map);
-        let gloss_h = resolve(&owned_gloss_map);
-        let parallax_h = resolve(&owned_parallax_map);
-        let env_h = resolve(&owned_env_map);
-        let env_mask_h = resolve(&owned_env_mask);
-        if glow_h != 0
-            || detail_h != 0
-            || gloss_h != 0
-            || parallax_h != 0
-            || env_h != 0
-            || env_mask_h != 0
-        {
-            world.insert(
-                entity,
-                ExtraTextureMaps {
-                    glow: glow_h,
-                    detail: detail_h,
-                    gloss: gloss_h,
-                    parallax: parallax_h,
-                    env: env_h,
-                    env_mask: env_mask_h,
-                    parallax_height_scale: mesh.parallax_height_scale.unwrap_or(0.04),
-                    parallax_max_passes: mesh.parallax_max_passes.unwrap_or(4.0),
-                },
-            );
-        }
+        let mut secondary_textures = owned_textures.clone();
+        secondary_textures.base_color = None;
+        let mut texture_handles = secondary_textures.map_ref(&mut resolve);
+        texture_handles.base_color = tex_handle;
+        let normal_has_alpha = texture_handles.normal != 0
+            && ctx
+                .texture_registry
+                .handle_has_alpha(texture_handles.normal);
+        world.insert(
+            entity,
+            MaterialTextureHandles {
+                textures: texture_handles,
+                normal_has_alpha,
+                parallax_height_scale: mesh.parallax_height_scale.unwrap_or(0.04),
+                parallax_max_passes: mesh.parallax_max_passes.unwrap_or(4.0),
+            },
+        );
         // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
-        // ONCE into the canonical Material now that Material + NormalMapHandle
-        // + ExtraTextureMaps are all attached (mirrors the cell-loader spawn
+        // ONCE into the canonical Material now that MaterialTextureHandles is
+        // attached (mirrors the cell-loader spawn
         // path), instead of recomputing it per draw in the render path.
         crate::material_translate::resolve_normal_alpha_spec_roughness(world, entity);
 
@@ -1106,7 +1040,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             mesh.name.as_deref().unwrap_or("unnamed"),
             num_verts,
             mesh.indices.len() / 3,
-            mesh.texture_path,
+            mesh.textures.base_color,
         );
         count += 1;
     }

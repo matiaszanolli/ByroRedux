@@ -53,7 +53,7 @@ use std::sync::Arc;
 #[cfg(test)]
 #[allow(unused_imports)]
 use crate::components::{
-    AlphaBlend, CellLightingRes, CellRootIndex, DarkMapHandle, ExtraTextureMaps, NormalMapHandle,
+    AlphaBlend, CellLightingRes, CellRootIndex, MaterialTextureHandles, NormalMapHandle,
     SkyParamsRes, TerrainTileSlot, TwoSided, WeatherDataRes, WeatherTransitionRes,
 };
 
@@ -232,10 +232,10 @@ pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMes
     }
     // #1353 / FO4-D8-07 — FO4 BGSM grayscale-to-palette. EFFECT_PALETTE_COLOR
     // IS `SLSF1::Greyscale_To_PaletteColor`; setting it on a BGSM lit material
-    // (one that authored a `greyscale_texture`, captured as
-    // `bgsm_greyscale_lut_path`) makes the lit-path palette remap in
-    // triangle.frag sample the resolved GreyscaleLutHandle by diffuse
-    // luminance. The effect-mesh path sets the same bit via
+    // (one that authored a `greyscale_texture`, captured in the common
+    // `greyscale_lut` role) makes the lit-path palette remap sample the
+    // resolved MaterialTextureHandles entry by diffuse luminance. The
+    // effect-mesh path sets the same bit via
     // `pack_effect_shader_flags`; the two live in different material-kind
     // shader branches so there is no conflict.
     //
@@ -245,7 +245,7 @@ pub(crate) fn pack_bgsm_material_flags(mesh: &byroredux_nif::import::ImportedMes
     // remap targets alpha rather than luminance, matching how
     // `pack_effect_shader_flags` derives the two bits independently for
     // the inline-effect-shader path.
-    if mesh.bgsm_greyscale_lut_path.is_some() {
+    if mesh.textures.greyscale_lut.is_some() {
         if mesh.bgsm_greyscale_lut_is_alpha {
             flags |= EFFECT_PALETTE_ALPHA;
         } else {
@@ -294,7 +294,7 @@ mod pack_bgsm_material_flags_tests {
             translation: [0.0; 3],
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: 1.0,
-            texture_path: None,
+            textures: Default::default(),
             material_path: None,
             name: None,
             has_alpha: false,
@@ -305,20 +305,6 @@ mod pack_bgsm_material_flags_tests {
             alpha_test_func: 6,
             two_sided: false,
             is_decal: false,
-            normal_map: None,
-            glow_map: None,
-            detail_map: None,
-            gloss_map: None,
-            dark_map: None,
-            parallax_map: None,
-            env_map: None,
-            env_mask: None,
-            tint_map: None,
-            inner_layer_map: None,
-            specular_map: None,
-            lighting_map: None,
-            flow_map: None,
-            wrinkle_map: None,
             is_pbr: false,
             has_translucency: false,
             model_space_normals: false,
@@ -354,7 +340,6 @@ mod pack_bgsm_material_flags_tests {
             rimlight_power: 0.0,
             backlight_power: 0.0,
             grayscale_to_palette_scale: 1.0,
-            bgsm_greyscale_lut_path: None,
             bgsm_greyscale_lut_is_alpha: false,
             fresnel_power: 5.0,
             uv_offset: [0.0; 2],
@@ -437,7 +422,8 @@ mod pack_bgsm_material_flags_tests {
         );
 
         let mut mesh = empty_mesh();
-        mesh.bgsm_greyscale_lut_path = Some("textures\\actors\\ghoul_palette.dds".to_string());
+        let mut pool = byroredux_core::string::StringPool::new();
+        mesh.textures.greyscale_lut = Some(pool.intern("textures\\actors\\ghoul_palette.dds"));
         assert_eq!(
             pack_bgsm_material_flags(&mesh) & EFFECT_PALETTE_COLOR,
             EFFECT_PALETTE_COLOR,
@@ -455,7 +441,8 @@ mod pack_bgsm_material_flags_tests {
         use byroredux_renderer::vulkan::material::material_flag::EFFECT_PALETTE_ALPHA;
 
         let mut mesh = empty_mesh();
-        mesh.bgsm_greyscale_lut_path = Some("textures\\effects\\gradients\\fire.dds".to_string());
+        let mut pool = byroredux_core::string::StringPool::new();
+        mesh.textures.greyscale_lut = Some(pool.intern("textures\\effects\\gradients\\fire.dds"));
         mesh.bgsm_greyscale_lut_is_alpha = true;
         let flags = pack_bgsm_material_flags(&mesh);
         assert_eq!(

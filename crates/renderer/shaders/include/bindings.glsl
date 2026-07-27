@@ -45,7 +45,7 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 
 // ── R1 Phase 4: deduplicated material table ─────────────────────────
 //
-// Mirrors the Rust `GpuMaterial` (300 B std430) defined
+// Mirrors the Rust `GpuMaterial` (348 B std430) defined
 // in `crates/renderer/src/vulkan/material.rs`. Indexed by
 // `GpuInstance.materialId`. Phase 4 migrates one field (`roughness`)
 // off the per-instance copy onto this path; Phases 5–6 do the rest
@@ -53,9 +53,8 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 //
 // **Shader Struct Sync**: any field added here must be added in
 // lockstep to the Rust `GpuMaterial` struct + the matching
-// `intern`/encoding sites; the size of this struct (300 B — was 260 B
-// post-#804, grew through the #1248–#1250 Disney BSDF additions) is
-// pinned by `gpu_material_size_is_300_bytes` on the Rust side.
+// `intern`/encoding sites; the size of this struct (348 B) is pinned by
+// `gpu_material_size_is_348_bytes` on the Rust side.
 struct GpuMaterial {
     // PBR scalars (vec4 #1)
     float roughness;
@@ -121,7 +120,7 @@ struct GpuMaterial {
     // highlight. All zero by default → byte-identical Lambert
     // behaviour for legacy NIF content. Only consulted when
     // `MAT_FLAG_PBR_BSDF` is set. These complete the #1249 block at
-    // offset 296; #1250 `anisotropic` then extends the struct to 300 B.
+    // offset 296; #1250 `anisotropic` then completed the prior 300 B layout.
     float subsurface;
     float sheen;
     float sheenTint;
@@ -129,8 +128,22 @@ struct GpuMaterial {
     // (ax = ay = roughness; distributionGGXAniso degenerates to the
     // legacy distributionGGX lobe shape). 1 = maximum anisotropy
     // capped at `aspect = sqrt(0.1)` so the lobe doesn't fully
-    // degenerate into a needle. Closes the 300 B struct.
+    // degenerate into a needle.
     float anisotropic;
+    // Common supplemental semantic texture roles (offsets 300-344).
+    // Source-game slot numbering has already been translated away.
+    uint tintMapIndex;
+    uint innerLayerMapIndex;
+    uint specularMapIndex;
+    uint lightingMapIndex;
+    uint flowMapIndex;
+    uint wrinkleMapIndex;
+    uint reflectanceMapIndex;
+    uint emittanceGradientMapIndex;
+    uint decalMap0Index;
+    uint decalMap1Index;
+    uint decalMap2Index;
+    uint decalMap3Index;
 };
 
 layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {

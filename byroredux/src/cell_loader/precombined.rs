@@ -663,7 +663,7 @@ mod tests {
                 "index {max_idx} in range for {} verts",
                 m.positions.len()
             );
-            if m.texture_path.is_some() {
+            if m.textures.base_color.is_some() {
                 textured += 1;
             }
         }

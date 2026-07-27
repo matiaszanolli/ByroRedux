@@ -414,14 +414,10 @@ pub(super) struct MaterialInfo {
     /// Baked shadow/grime modulation on Oblivion interior architecture.
     /// Applied as `albedo.rgb *= dark_sample.rgb`. See #264.
     pub dark_map: Option<FixedString>,
-    // NOTE: `decal_maps: Vec<String>` (NiTexturingProperty decal slots
-    // 0..=3) was removed in #705 / O4-07. The walker extracted them
-    // but no consumer in the renderer ever bound the descriptors or
-    // surfaced an overlay loop in the fragment shader, so the import
-    // cost was paid for a render-side no-op. The block parser still
-    // exposes the raw slots on `NiTexturingProperty.decal_textures`;
-    // re-extraction is a one-line addition when descriptor bindings +
-    // shader overlay land. See discussion in the issue.
+    /// Ordered legacy material-overlay maps from NiTexturingProperty decal
+    /// slots 0..=3. They now feed the shared semantic texture contract
+    /// instead of stopping at the block parser.
+    pub decal_maps: [Option<FixedString>; 4],
     /// Parallax / height texture (`BSShaderTextureSet` slot 3). FO3/FNV
     /// architecture relies on this for brick-wall / concrete
     /// parallax-occlusion mapping on `shader_type = 3` (Parallax_Shader_Index_15)
@@ -971,6 +967,7 @@ impl Default for MaterialInfo {
             detail_map: None,
             gloss_map: None,
             dark_map: None,
+            decal_maps: [None; 4],
             parallax_map: None,
             env_map: None,
             env_mask: None,
@@ -1054,6 +1051,58 @@ impl Default for MaterialInfo {
 }
 
 impl MaterialInfo {
+    /// Normalize every game-specific texture source into the public texture
+    /// contract consumed by the asset and renderer layers.
+    pub(super) fn texture_set(
+        &self,
+        pool: &mut byroredux_core::string::StringPool,
+    ) -> super::types::MaterialTextureSet<Option<FixedString>> {
+        fn intern_effect_path(
+            pool: &mut byroredux_core::string::StringPool,
+            path: Option<&str>,
+        ) -> Option<FixedString> {
+            path.filter(|value| !value.is_empty())
+                .map(|value| pool.intern(value))
+        }
+
+        let effect = self.effect_shader.as_ref();
+        super::types::MaterialTextureSet {
+            base_color: self.texture_path,
+            normal: self.normal_map,
+            emissive: self.glow_map,
+            detail: self.detail_map,
+            smooth_spec: self.gloss_map,
+            dark: self.dark_map,
+            height: self.parallax_map,
+            environment: self.env_map,
+            environment_mask: self.env_mask,
+            tint: self.tint_map,
+            inner_layer: self.inner_layer_map,
+            // Standalone BGSM/BGEM roles are populated by the downstream
+            // material-file translator; inline NIF shaders do not expose them.
+            specular: None,
+            lighting: intern_effect_path(
+                pool,
+                effect.and_then(|data| data.lighting_texture.as_deref()),
+            ),
+            flow: None,
+            wrinkle: None,
+            greyscale_lut: intern_effect_path(
+                pool,
+                effect.and_then(|data| data.greyscale_texture.as_deref()),
+            ),
+            reflectance: intern_effect_path(
+                pool,
+                effect.and_then(|data| data.reflectance_texture.as_deref()),
+            ),
+            emittance_gradient: intern_effect_path(
+                pool,
+                effect.and_then(|data| data.emit_gradient_texture.as_deref()),
+            ),
+            decals: self.decal_maps,
+        }
+    }
+
     /// Resolve the renderer blend path without turning every Gamebryo
     /// blend+test cutout into a sorted transparent mesh. Glass is the exception:
     /// its alpha test removes texture coverage holes, while its blend bit

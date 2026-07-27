@@ -856,22 +856,27 @@ pub(crate) fn merge_bgsm_into_mesh(
         for step in resolved.walk() {
             let bgsm = &step.file;
             fill(
-                &mut mesh.texture_path,
+                &mut mesh.textures.base_color,
                 &bgsm.diffuse_texture,
                 &mut touched,
                 pool,
             );
             fill(
-                &mut mesh.normal_map,
+                &mut mesh.textures.normal,
                 &bgsm.normal_texture,
                 &mut touched,
                 pool,
             );
-            fill(&mut mesh.glow_map, &bgsm.glow_texture, &mut touched, pool);
+            fill(
+                &mut mesh.textures.emissive,
+                &bgsm.glow_texture,
+                &mut touched,
+                pool,
+            );
             // Smoothness/spec mask — .r encodes per-texel specular
             // strength in the engine's existing gloss_map slot. #453.
             fill(
-                &mut mesh.gloss_map,
+                &mut mesh.textures.smooth_spec,
                 &bgsm.smooth_spec_texture,
                 &mut touched,
                 pool,
@@ -880,18 +885,24 @@ pub(crate) fn merge_bgsm_into_mesh(
             // (`SLSF1::Greyscale_To_PaletteColor`, used by FO4 NPC /
             // creature colour variants; the palette slot is authored on
             // v<=2 BGSMs). First non-empty in the template chain wins, to
-            // match the texture fills above. Routed to ResolvedPaths →
-            // GreyscaleLutHandle and flagged via EFFECT_PALETTE_COLOR in
-            // `pack_bgsm_material_flags` so the lit-path remap in
-            // triangle.frag samples it.
-            if mesh.bgsm_greyscale_lut_path.is_none() && !bgsm.greyscale_texture.is_empty() {
-                mesh.bgsm_greyscale_lut_path = Some(bgsm.greyscale_texture.clone());
-                touched = true;
-            }
-            // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
-            fill(&mut mesh.env_map, &bgsm.envmap_texture, &mut touched, pool);
+            // match the texture fills above. Routed through the common
+            // greyscale_lut role and flagged via EFFECT_PALETTE_COLOR in
+            // `pack_bgsm_material_flags` so the lit-path remap samples it.
             fill(
-                &mut mesh.parallax_map,
+                &mut mesh.textures.greyscale_lut,
+                &bgsm.greyscale_texture,
+                &mut touched,
+                pool,
+            );
+            // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
+            fill(
+                &mut mesh.textures.environment,
+                &bgsm.envmap_texture,
+                &mut touched,
+                pool,
+            );
+            fill(
+                &mut mesh.textures.height,
                 &bgsm.displacement_texture,
                 &mut touched,
                 pool,
@@ -902,20 +913,25 @@ pub(crate) fn merge_bgsm_into_mesh(
             // default) so the `fill` no-op suffices to gate the
             // forward without an explicit version check.
             fill(
-                &mut mesh.specular_map,
+                &mut mesh.textures.specular,
                 &bgsm.specular_texture,
                 &mut touched,
                 pool,
             );
             fill(
-                &mut mesh.lighting_map,
+                &mut mesh.textures.lighting,
                 &bgsm.lighting_texture,
                 &mut touched,
                 pool,
             );
-            fill(&mut mesh.flow_map, &bgsm.flow_texture, &mut touched, pool);
             fill(
-                &mut mesh.wrinkle_map,
+                &mut mesh.textures.flow,
+                &bgsm.flow_texture,
+                &mut touched,
+                pool,
+            );
+            fill(
+                &mut mesh.textures.wrinkle,
                 &bgsm.wrinkles_texture,
                 &mut touched,
                 pool,
@@ -1078,34 +1094,44 @@ pub(crate) fn merge_bgsm_into_mesh(
         mesh.from_bgsm = true;
         touched = true;
         fill(
-            &mut mesh.texture_path,
+            &mut mesh.textures.base_color,
             &bgem.base_texture,
             &mut touched,
             pool,
         );
         fill(
-            &mut mesh.normal_map,
+            &mut mesh.textures.normal,
             &bgem.normal_texture,
             &mut touched,
             pool,
         );
-        fill(&mut mesh.glow_map, &bgem.glow_texture, &mut touched, pool);
+        fill(
+            &mut mesh.textures.emissive,
+            &bgem.glow_texture,
+            &mut touched,
+            pool,
+        );
         // #1453 — BGEM's grayscale_texture is the palette/gradient LUT for
         // effect materials (fire-gradient, electricity-gradient, magic VFX).
-        // Forward it to the same `bgsm_greyscale_lut_path` field that BGSM
-        // uses — both serve as the greyscale LUT path the renderer resolves
-        // for `GreyscaleLutHandle` and the `EFFECT_PALETTE_COLOR` flag.
-        if mesh.bgsm_greyscale_lut_path.is_none() && !bgem.grayscale_texture.is_empty() {
-            mesh.bgsm_greyscale_lut_path = Some(bgem.grayscale_texture.clone());
+        // Forward it to the same common greyscale_lut role BGSM uses — both
+        // resolve through MaterialTextureHandles and the
+        // `EFFECT_PALETTE_COLOR` flag.
+        if mesh.textures.greyscale_lut.is_none() && !bgem.grayscale_texture.is_empty() {
+            mesh.textures.greyscale_lut = Some(pool.intern(&bgem.grayscale_texture));
             // #1580 — BGEM's own alpha-variant bool decides whether the LUT
             // gates EFFECT_PALETTE_ALPHA or the default EFFECT_PALETTE_COLOR;
             // see `pack_bgsm_material_flags` in `cell_loader.rs`.
             mesh.bgsm_greyscale_lut_is_alpha = bgem.grayscale_to_palette_alpha;
             touched = true;
         }
-        fill(&mut mesh.env_map, &bgem.envmap_texture, &mut touched, pool);
         fill(
-            &mut mesh.env_mask,
+            &mut mesh.textures.environment,
+            &bgem.envmap_texture,
+            &mut touched,
+            pool,
+        );
+        fill(
+            &mut mesh.textures.environment_mask,
             &bgem.envmap_mask_texture,
             &mut touched,
             pool,
@@ -1117,13 +1143,13 @@ pub(crate) fn merge_bgsm_into_mesh(
         // `crates/bgsm/src/bgem.rs`). Forward them here so the BGEM
         // path has the same coverage as the BGSM path.
         fill(
-            &mut mesh.specular_map,
+            &mut mesh.textures.specular,
             &bgem.specular_texture,
             &mut touched,
             pool,
         );
         fill(
-            &mut mesh.lighting_map,
+            &mut mesh.textures.lighting,
             &bgem.lighting_texture,
             &mut touched,
             pool,

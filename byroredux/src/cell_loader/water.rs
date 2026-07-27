@@ -231,7 +231,7 @@ pub(super) fn spawn_water_plane(
     // every cell unload. Gated on `!= 0` to mirror the acquire gate
     // (the procedural-fallback path leaves `resolved_normal_idx == 0`).
     if resolved_normal_idx != 0 {
-        world.insert(entity, NormalMapHandle(resolved_normal_idx, false));
+        world.insert(entity, NormalMapHandle(resolved_normal_idx));
     }
     if let Some(flow) = flow {
         world.insert(entity, flow);
@@ -340,7 +340,7 @@ mod tests {
         // The fix: a non-zero resolved normal index becomes a handle.
         let resolved_normal_idx: u32 = 42;
         if resolved_normal_idx != 0 {
-            world.insert(entity, NormalMapHandle(resolved_normal_idx, false));
+            world.insert(entity, NormalMapHandle(resolved_normal_idx));
         }
 
         // `unload_cell` reaches mesh handles via `query::<MeshHandle>()`

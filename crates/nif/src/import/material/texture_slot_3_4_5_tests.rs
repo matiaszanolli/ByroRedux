@@ -1162,6 +1162,64 @@ fn ni_texturing_property_parallax_slot_defaults_scalars_when_no_pp_lighting() {
     );
 }
 
+#[test]
+fn ni_texturing_property_decals_reach_semantic_overlay_slots() {
+    use crate::blocks::properties::{NiTexturingProperty, TexDesc};
+    use crate::blocks::texture::NiSourceTexture;
+
+    let source = |name: &'static str| NiSourceTexture {
+        net: empty_net(),
+        use_external: true,
+        filename: Some(Arc::from(name)),
+        pixel_data_ref: BlockRef::NULL,
+        pixel_layout: 0,
+        use_mipmaps: 0,
+        alpha_format: 0,
+        is_static: true,
+    };
+    let tex = NiTexturingProperty {
+        net: empty_net(),
+        flags: 0,
+        texture_count: 2,
+        base_texture: None,
+        dark_texture: None,
+        detail_texture: None,
+        gloss_texture: None,
+        glow_texture: None,
+        bump_texture: None,
+        normal_texture: None,
+        parallax_texture: None,
+        parallax_offset: 0.0,
+        decal_textures: vec![
+            TexDesc {
+                source_ref: BlockRef(0),
+                flags: 0,
+                transform: None,
+            },
+            TexDesc {
+                source_ref: BlockRef(1),
+                flags: 0,
+                transform: None,
+            },
+        ],
+    };
+    let scene = NifScene {
+        blocks: vec![
+            Box::new(source("textures\\decals\\blood.dds")),
+            Box::new(source("textures\\decals\\sign.dds")),
+            Box::new(tex),
+        ],
+        ..Default::default()
+    };
+    let shape = make_tri_shape_with_props(vec![BlockRef(2)]);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_path(&pool, info.decal_maps[0], "textures\\decals\\blood.dds");
+    assert_path(&pool, info.decal_maps[1], "textures\\decals\\sign.dds");
+    assert!(info.decal_maps[2].is_none());
+    assert!(info.decal_maps[3].is_none());
+}
+
 /// Sibling: an absent parallax slot must NOT trigger the default
 /// — `info.parallax_max_passes` / `parallax_height_scale` stay
 /// `None` when no parallax authoring was found anywhere in the

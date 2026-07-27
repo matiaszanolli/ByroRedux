@@ -1,5 +1,5 @@
 //! Regression tests for #1341 / D3-05 — the cell-unload victim walk
-//! (`collect_victim_gpu_handles`) must sweep `GreyscaleLutHandle` so the
+//! (`collect_victim_gpu_handles`) must sweep `MaterialTextureHandles` so the
 //! BSEffectShaderProperty greyscale-LUT texture refcount + bindless slot
 //! is released on cell unload. Pre-fix the component was attached at
 //! spawn (via `resolve_texture`, which bumps the refcount) but omitted
@@ -7,11 +7,21 @@
 //!
 //! These exercise the GPU-free collection fn directly (the Vulkan half of
 //! `unload_cell` can't run without a `VulkanContext`), so a future change
-//! that drops the `GreyscaleLutHandle` arm from the walk fails here.
+//! that drops the greyscale role from the walk fails here.
 
 use super::collect_victim_gpu_handles;
-use crate::components::{DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, NormalMapHandle};
+use crate::components::{MaterialTextureHandles, NormalMapHandle};
 use byroredux_core::ecs::{MeshHandle, TextureHandle, World};
+use byroredux_nif::import::MaterialTextureSet;
+
+fn material_handles(textures: MaterialTextureSet<u32>) -> MaterialTextureHandles {
+    MaterialTextureHandles {
+        textures,
+        normal_has_alpha: false,
+        parallax_height_scale: 0.04,
+        parallax_max_passes: 4.0,
+    }
+}
 
 /// A victim entity carrying a real greyscale LUT must have that handle
 /// collected for drop. This is the exact #1341 leak case.
@@ -22,7 +32,13 @@ fn unload_walk_collects_greyscale_lut_handle() {
 
     let fx = world.spawn();
     world.insert(fx, MeshHandle(1));
-    world.insert(fx, GreyscaleLutHandle(42));
+    world.insert(
+        fx,
+        material_handles(MaterialTextureSet {
+            greyscale_lut: 42,
+            ..Default::default()
+        }),
+    );
 
     let (_mesh, texture_drops, _terrain) = collect_victim_gpu_handles(&world, &[fx], fallback_tex);
 
@@ -42,9 +58,15 @@ fn unload_walk_skips_fallback_and_zero_greyscale_lut() {
     let fallback_tex: u32 = 999;
 
     let fb = world.spawn();
-    world.insert(fb, GreyscaleLutHandle(fallback_tex));
+    world.insert(
+        fb,
+        material_handles(MaterialTextureSet {
+            greyscale_lut: fallback_tex,
+            ..Default::default()
+        }),
+    );
     let zero = world.spawn();
-    world.insert(zero, GreyscaleLutHandle(0));
+    world.insert(zero, material_handles(MaterialTextureSet::default()));
 
     let (_mesh, texture_drops, _terrain) =
         collect_victim_gpu_handles(&world, &[fb, zero], fallback_tex);
@@ -63,12 +85,8 @@ fn unload_walk_skips_fallback_and_zero_greyscale_lut() {
 /// the same pass, so this fn fully replaces the previous inline loop and
 /// the greyscale add didn't regress the existing coverage.
 ///
-/// #1656 — `ExtraTextureMaps` (the 6-slot glow/detail/gloss/parallax/
-/// env/env_mask component, the largest texture-bearing component, each
-/// slot `resolve_texture`-acquired at spawn) is included here so a future
-/// edit that drops any of its six arms from `collect_victim_gpu_handles`
-/// fails this "all components" test instead of silently leaking up to six
-/// texture refcounts per env-mapped mesh per cell-unload cycle.
+/// Every common semantic role is included so adding a map cannot silently
+/// leak its texture-registry acquire on cell unload.
 #[test]
 fn unload_walk_collects_all_texture_handle_components() {
     let mut world = World::new();
@@ -77,30 +95,40 @@ fn unload_walk_collects_all_texture_handle_components() {
     let e = world.spawn();
     world.insert(e, MeshHandle(7));
     world.insert(e, TextureHandle(10));
-    world.insert(e, NormalMapHandle(11, false));
-    world.insert(e, DarkMapHandle(12));
-    world.insert(e, GreyscaleLutHandle(13));
-    // Six distinct non-zero slots + one placeholder (0) that must be
-    // skipped, plus the two non-texture POM scalars.
+    // Specialized water normal path remains independently swept.
+    world.insert(e, NormalMapHandle(50));
     world.insert(
         e,
-        ExtraTextureMaps {
-            glow: 20,
-            detail: 21,
-            gloss: 22,
-            parallax: 23,
-            env: 24,
-            env_mask: 0, // placeholder — must NOT be collected
-            parallax_height_scale: 0.04,
-            parallax_max_passes: 4.0,
-        },
+        material_handles(MaterialTextureSet {
+            base_color: 10, // released through TextureHandle, not twice here
+            normal: 11,
+            emissive: 12,
+            detail: 13,
+            smooth_spec: 14,
+            dark: 15,
+            height: 16,
+            environment: 17,
+            environment_mask: 0, // placeholder — must NOT be collected
+            tint: 18,
+            inner_layer: 19,
+            specular: 20,
+            lighting: 21,
+            flow: 22,
+            wrinkle: 23,
+            greyscale_lut: 24,
+            reflectance: 25,
+            emittance_gradient: 26,
+            decals: [27, 28, 29, 30],
+        }),
     );
 
     let (mesh_drops, texture_drops, _terrain) =
         collect_victim_gpu_handles(&world, &[e], fallback_tex);
 
     assert!(mesh_drops.contains(&7), "mesh handle must be collected");
-    for tex in [10, 11, 12, 13, 20, 21, 22, 23, 24] {
+    for tex in [
+        10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 50,
+    ] {
         assert!(
             texture_drops.contains(&tex),
             "texture handle {tex} must be collected by the unload walk"
@@ -110,6 +138,6 @@ fn unload_walk_collects_all_texture_handle_components() {
     // is the shared sky/missing-texture slot, never per-cell refcounted.
     assert!(
         !texture_drops.contains(&0),
-        "ExtraTextureMaps placeholder slot (handle 0) must never be dropped"
+        "MaterialTextureHandles placeholder slot (handle 0) must never be dropped"
     );
 }

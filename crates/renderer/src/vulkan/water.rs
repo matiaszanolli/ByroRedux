@@ -842,6 +842,7 @@ mod tests {
             vertex_color_emissive: false,
             effect_shader_flags: 0,
             greyscale_lut_index: 0,
+            supplemental_texture_indices: [0; 12],
             translucency_subsurface_color: [0.0; 3],
             translucency_transmissive_scale: 0.0,
             translucency_turbulence: 0.0,

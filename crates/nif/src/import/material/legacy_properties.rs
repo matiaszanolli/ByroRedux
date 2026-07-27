@@ -184,15 +184,15 @@ fn apply_texturing_property(
                 }
             }
         }
-        // NOTE: NiTexturingProperty decal slots 0..=3 are NOT
-        // copied to MaterialInfo. #705 / O4-07 removed the
-        // extraction (originally added in #400 / OBL-D4-H4)
-        // because no descriptor bindings or fragment-shader
-        // overlay path consumes them — the import-side cost
-        // was paid for a render-side no-op. The block parser
-        // still exposes the raw slots on
-        // `NiTexturingProperty.decal_textures` so re-extraction
-        // is a one-line addition when consumer wiring lands.
+        for (slot, decal) in info
+            .decal_maps
+            .iter_mut()
+            .zip(tex_prop.decal_textures.iter().take(4))
+        {
+            if slot.is_none() {
+                *slot = tex_desc_source_path(scene, Some(decal), pool);
+            }
+        }
         // Propagate the base slot's UV transform to the shared
         // `uv_offset` / `uv_scale` fields. The renderer shader applies
         // them per-vertex to every sampled texture — fine for the

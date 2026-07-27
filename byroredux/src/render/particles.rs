@@ -236,6 +236,7 @@ pub(super) fn emit_particles(
                 // palette LUT either; the bindless 0 slot signals
                 // "no LUT" in the shader.
                 greyscale_lut_index: 0,
+                supplemental_texture_indices: [0; 12],
                 translucency_subsurface_color: [0.0; 3],
                 translucency_transmissive_scale: 0.0,
                 translucency_turbulence: 0.0,

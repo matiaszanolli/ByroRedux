@@ -296,6 +296,72 @@ pub use crate::blocks::node::BsRangeKind;
 /// consumers downstream of the NIF crate.
 pub use crate::blocks::tri_shape::BsSubIndexTriShapeData;
 
+/// Source-agnostic texture roles produced by NIF material translation.
+///
+/// Game-specific slot numbers and container formats stop at the NIF import
+/// boundary. `NiTexturingProperty`, `BSShaderTextureSet`, BGSM/BGEM, and
+/// `BSEffectShaderProperty` translators all populate these semantic roles;
+/// asset resolution and rendering consume the same shape without branching on
+/// the originating game.
+///
+/// `T` deliberately represents the texture at each pipeline stage:
+/// `Option<FixedString>` for imported paths, `Option<String>` for resolved
+/// archive paths, and bindless indices for renderer-facing material data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MaterialTextureSet<T> {
+    pub base_color: T,
+    pub normal: T,
+    pub emissive: T,
+    pub detail: T,
+    /// Smoothness/specular-strength mask (legacy gloss map / BGSM smooth-spec).
+    pub smooth_spec: T,
+    /// Legacy multiplicative dark/light map.
+    pub dark: T,
+    pub height: T,
+    pub environment: T,
+    pub environment_mask: T,
+    pub tint: T,
+    pub inner_layer: T,
+    /// Standalone specular-colour map, distinct from [`Self::smooth_spec`].
+    pub specular: T,
+    pub lighting: T,
+    pub flow: T,
+    pub wrinkle: T,
+    pub greyscale_lut: T,
+    pub reflectance: T,
+    pub emittance_gradient: T,
+    /// Ordered legacy material-overlay layers.
+    pub decals: [T; 4],
+}
+
+impl<T> MaterialTextureSet<T> {
+    /// Convert every role to the representation used by the next pipeline
+    /// stage while preserving the semantic slot ordering.
+    pub fn map_ref<U>(&self, mut map: impl FnMut(&T) -> U) -> MaterialTextureSet<U> {
+        MaterialTextureSet {
+            base_color: map(&self.base_color),
+            normal: map(&self.normal),
+            emissive: map(&self.emissive),
+            detail: map(&self.detail),
+            smooth_spec: map(&self.smooth_spec),
+            dark: map(&self.dark),
+            height: map(&self.height),
+            environment: map(&self.environment),
+            environment_mask: map(&self.environment_mask),
+            tint: map(&self.tint),
+            inner_layer: map(&self.inner_layer),
+            specular: map(&self.specular),
+            lighting: map(&self.lighting),
+            flow: map(&self.flow),
+            wrinkle: map(&self.wrinkle),
+            greyscale_lut: map(&self.greyscale_lut),
+            reflectance: map(&self.reflectance),
+            emittance_gradient: map(&self.emittance_gradient),
+            decals: std::array::from_fn(|index| map(&self.decals[index])),
+        }
+    }
+}
+
 /// A mesh extracted from a NIF file, ready for GPU upload.
 #[derive(Debug)]
 pub struct ImportedMesh {
@@ -342,14 +408,12 @@ pub struct ImportedMesh {
     /// Local-space rotation as quaternion [x, y, z, w] (Y-up).
     pub rotation: [f32; 4],
     pub scale: f32,
-    /// Texture file path (if a base texture was found in BSShaderTextureSet).
-    /// Holds an interned [`FixedString`] handle into the engine-wide
-    /// [`StringPool`] (#609 / D6-NEW-01). Resolve via
-    /// `pool.resolve(handle)` to get the original `&str`.
-    pub texture_path: Option<FixedString>,
-    /// BGSM/BGEM material file path (FO4+). When present and texture_path is
-    /// None, the real texture paths live inside this .bgsm file in the
-    /// Materials BA2. Stored for debug diagnostics and future BGSM parsing.
+    /// Common semantic texture contract. Every path is interned in the
+    /// engine-wide string pool; resolve handles through `StringPool`.
+    pub textures: MaterialTextureSet<Option<FixedString>>,
+    /// BGSM/BGEM material file path (FO4+). When present and
+    /// `textures.base_color` is `None`, the real texture paths live inside
+    /// this material file in the Materials BA2.
     pub material_path: Option<FixedString>,
     /// Node name from the NIF. Uses `Arc<str>` to avoid heap copies from the string table.
     pub name: Option<Arc<str>>,
@@ -379,67 +443,6 @@ pub struct ImportedMesh {
     pub two_sided: bool,
     /// Whether this mesh is a decal (should render on top of coplanar surfaces).
     pub is_decal: bool,
-    /// Normal map texture path (if found in shader texture set).
-    pub normal_map: Option<FixedString>,
-    /// Glow / self-illumination texture (NiTexturingProperty slot 4,
-    /// Oblivion/FO3/FNV). Separate from the BSShaderTextureSet glow
-    /// slot, which the Skyrim+ path pulls directly. See #214.
-    pub glow_map: Option<FixedString>,
-    /// Detail overlay texture (NiTexturingProperty slot 2). See #214.
-    pub detail_map: Option<FixedString>,
-    /// Specular-mask / gloss texture (NiTexturingProperty slot 3).
-    /// Per-texel specular strength. See #214.
-    pub gloss_map: Option<FixedString>,
-    /// Dark / multiplicative lightmap (NiTexturingProperty slot 1).
-    /// Baked shadow modulation for Oblivion interior architecture. #264.
-    pub dark_map: Option<FixedString>,
-    /// Parallax / height texture (BSShaderTextureSet slot 3). FO3/FNV
-    /// `shader_type = 3` / `7` surfaces plus Skyrim ParallaxOcc /
-    /// MultiLayerParallax materials route through this. See #452.
-    pub parallax_map: Option<FixedString>,
-    /// Environment cubemap (BSShaderTextureSet slot 4). Paired with
-    /// `env_map_scale` — glass, polished metal, power armor. See #452.
-    pub env_map: Option<FixedString>,
-    /// Environment-reflection mask (BSShaderTextureSet slot 5). #452.
-    pub env_mask: Option<FixedString>,
-    /// FaceTint tint map (BSShaderTextureSet slot 7, BSLightingShaderType 8
-    /// FaceTint). Captured by the material walker and forwarded here so it
-    /// survives to a future FaceTint consumer (NIF-D4-01 / #1610).
-    pub tint_map: Option<FixedString>,
-    /// MultiLayerParallax inner-layer map (BSShaderTextureSet slot 7,
-    /// BSLightingShaderType 11). Captured by the material walker and
-    /// forwarded here for a future consumer (NIF-D4-01 / #1610).
-    pub inner_layer_map: Option<FixedString>,
-    /// Standalone PBR specular texture (BGSM/BGEM v>2). FO4 authors
-    /// this as a per-texel specular colour layer separate from
-    /// `gloss_map` (which carries smooth/spec as a single .r-channel
-    /// strength mask). Forwarded from `BgsmFile.specular_texture` /
-    /// `BgemFile.specular_texture` by `merge_bgsm_into_mesh`. `None`
-    /// on NIF-only paths (the NIF shader-texture-set slots don't
-    /// expose this; Bethesda introduced the standalone slot when
-    /// BGSM v>2 split specular off from smooth). See #1076 /
-    /// FO4-D6-002.
-    pub specular_map: Option<FixedString>,
-    /// Pre-integrated lighting LUT (BGSM/BGEM v>2). FO4 authors this
-    /// for subsurface-style approximations and special-case lighting
-    /// curves (skin, hair, glow card composites). Forwarded from
-    /// `BgsmFile.lighting_texture` / `BgemFile.lighting_texture`.
-    /// `None` on NIF-only paths. See #1076 / FO4-D6-002.
-    pub lighting_map: Option<FixedString>,
-    /// Animated flow-direction map (BGSM v>2 only — BGEM doesn't
-    /// author this). FO4 water surfaces and stream/river meshes use
-    /// this to drive scrolling normal-map UVs in the direction the
-    /// flow texture encodes. Forwarded from `BgsmFile.flow_texture`.
-    /// `None` on every non-water FO4 material and on NIF-only paths.
-    /// See #1076 / FO4-D6-002.
-    pub flow_map: Option<FixedString>,
-    /// NPC age-wrinkle blend texture (BGSM v>2 only — BGEM doesn't
-    /// author this). FO4 / Skyrim SE skin shaders use this to blend
-    /// wrinkle detail into the head normal map driven by an
-    /// age-slider input. Forwarded from `BgsmFile.wrinkles_texture`.
-    /// `None` on every non-skin FO4 material and on NIF-only paths.
-    /// See #1076 / FO4-D6-002.
-    pub wrinkle_map: Option<FixedString>,
     /// Material uses the FO4 PBR shading path (BGSM v>2 flag).
     /// Forwarded from `BgsmFile.pbr`. When `true`, the renderer
     /// should branch into the metalness/roughness PBR pipeline
@@ -629,24 +632,12 @@ pub struct ImportedMesh {
     /// scale (matches the BSLSP parser stub at `shader.rs:748`).
     /// See #1241.
     pub grayscale_to_palette_scale: f32,
-    /// FO4 BGSM `greyscale_texture` — the colour-palette LUT path for
-    /// `SLSF1::Greyscale_To_PaletteColor` lit materials (NPC / creature
-    /// colour variants). Populated by `merge_bgsm_into_mesh`; routed to
-    /// `ResolvedPaths.greyscale_texture` → a `GreyscaleLutHandle` so the
-    /// lit-path palette remap in `triangle.frag` (gated on
-    /// `MAT_FLAG_EFFECT_PALETTE_COLOR` = `SLSF1::Greyscale_To_PaletteColor`)
-    /// can sample it. Distinct from the `BSEffectShaderProperty.greyscale_texture`
-    /// effect-mesh path which rides on `effect_shader`. `None` for non-BGSM /
-    /// non-palette content. See #1353 / FO4-D8-07.
-    pub bgsm_greyscale_lut_path: Option<String>,
-    /// `true` when [`bgsm_greyscale_lut_path`] should gate
+    /// `true` when [`MaterialTextureSet::greyscale_lut`] should gate
     /// `MAT_FLAG_EFFECT_PALETTE_ALPHA` instead of the default
     /// `MAT_FLAG_EFFECT_PALETTE_COLOR`. Only BGEM authors this — it's
     /// `BSEffectShaderProperty.grayscale_to_palette_alpha`; BGSM has no
     /// alpha-variant bool, so a BGSM-sourced LUT path always leaves this
     /// `false`. See #1580.
-    ///
-    /// [`bgsm_greyscale_lut_path`]: Self::bgsm_greyscale_lut_path
     pub bgsm_greyscale_lut_is_alpha: bool,
     /// `BSLightingShaderProperty.fresnel_power` (FO4+ BSVER >= 130).
     /// Per-material Schlick exponent for the Fresnel rim term.
@@ -809,7 +800,7 @@ impl ImportedMesh {
             translation: [0.0, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
             scale: 1.0,
-            texture_path: None,
+            textures: MaterialTextureSet::default(),
             material_path: None,
             name: None,
             has_alpha: false,
@@ -820,20 +811,6 @@ impl ImportedMesh {
             alpha_test_func: 6, // GREATEREQUAL
             two_sided: false,
             is_decal: false,
-            normal_map: None,
-            glow_map: None,
-            detail_map: None,
-            gloss_map: None,
-            dark_map: None,
-            parallax_map: None,
-            env_map: None,
-            env_mask: None,
-            tint_map: None,
-            inner_layer_map: None,
-            specular_map: None,
-            lighting_map: None,
-            flow_map: None,
-            wrinkle_map: None,
             is_pbr: false,
             has_translucency: false,
             model_space_normals: false,
@@ -866,7 +843,6 @@ impl ImportedMesh {
             rimlight_power: 0.0,
             backlight_power: 0.0,
             grayscale_to_palette_scale: 1.0,
-            bgsm_greyscale_lut_path: None,
             bgsm_greyscale_lut_is_alpha: false,
             fresnel_power: 5.0,
             uv_offset: [0.0, 0.0],

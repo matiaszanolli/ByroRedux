@@ -37,10 +37,11 @@ use std::sync::Once;
 /// (`scene_buffer/upload.rs`) with actual default-to-0 behaviour.
 static INTERN_OVERFLOW_WARNED: Once = Once::new();
 
-/// std430 GPU-side material record. **300 bytes** per material.
+/// std430 GPU-side material record. **348 bytes** per material.
 /// Size history: 272 B → 260 B (#804 R1-N4 dropped `avg_albedo_r/g/b`)
-/// → 296 B (#1249 Disney sheen/subsurface) → 300 B (#1250 `anisotropic`).
-/// Pinned by `gpu_material_size_is_300_bytes`.
+/// → 296 B (#1249 Disney sheen/subsurface) → 300 B (#1250 `anisotropic`)
+/// → 348 B (common supplemental texture roles).
+/// Pinned by `gpu_material_size_is_348_bytes`.
 ///
 /// (Historical: the per-instance → per-material migration shipped as
 /// R1 Phases 4–6, finishing with #785. The layout below was originally
@@ -65,7 +66,7 @@ static INTERN_OVERFLOW_WARNED: Once = Once::new();
 /// (`scene_buffer/gpu_instance_layout_tests.rs`)
 /// pins this for `ui.vert` after #776 / #785; mirror checks for the
 /// other two stages live in the same module. Layout invariant is pinned
-/// by `gpu_material_size_is_300_bytes` and
+/// by `gpu_material_size_is_348_bytes` and
 /// `gpu_material_field_offsets_match_shader_contract` (added #806 to
 /// catch within-vec4 reorderings the size pin alone would miss).
 #[repr(C)]
@@ -81,8 +82,7 @@ pub struct GpuMaterial {
     /// albedo — set when the source NIF declared
     /// `NiVertexColorProperty.vertex_mode = SOURCE_EMISSIVE`. Pre-#695
     /// this slot was an unused pad; routing the bit through here keeps
-    /// the std430 layout pinned by `gpu_material_size_is_300_bytes`
-    /// (300 B post-#1250 Disney lobe).
+    /// the std430 layout pinned by `gpu_material_size_is_348_bytes`.
     pub material_flags: u32, // offset 12
 
     // ── Emissive RGB + specular_strength (vec4 #2) ─────────────────
@@ -271,7 +271,24 @@ pub struct GpuMaterial {
     /// streak when authored values land. The `0.9` cap prevents
     /// complete needle degeneracy at anisotropic = 1. Reference:
     /// knightcrawler25/GLSL-PathTracer `pathtrace.glsl:100-102` (MIT).
-    pub anisotropic: f32, // offset 296 → total 300
+    pub anisotropic: f32, // offset 296
+
+    // ── Supplemental semantic texture roles (offsets 300-344) ─────
+    // These are source-format agnostic. The NIF translation layer maps
+    // legacy slots, BSShader texture sets, BGSM/BGEM, and effect shaders
+    // into the same role names before a material reaches this record.
+    pub tint_map_index: u32,               // offset 300
+    pub inner_layer_map_index: u32,        // offset 304
+    pub specular_map_index: u32,           // offset 308
+    pub lighting_map_index: u32,           // offset 312
+    pub flow_map_index: u32,               // offset 316
+    pub wrinkle_map_index: u32,            // offset 320
+    pub reflectance_map_index: u32,        // offset 324
+    pub emittance_gradient_map_index: u32, // offset 328
+    pub decal_map_0_index: u32,            // offset 332
+    pub decal_map_1_index: u32,            // offset 336
+    pub decal_map_2_index: u32,            // offset 340
+    pub decal_map_3_index: u32,            // offset 344 → total 348
 }
 
 impl Default for GpuMaterial {
@@ -379,8 +396,37 @@ impl Default for GpuMaterial {
             // anisotropic GGX helper produces the same lobe shape as
             // the legacy isotropic distributionGGX call.
             anisotropic: 0.0,
+            tint_map_index: 0,
+            inner_layer_map_index: 0,
+            specular_map_index: 0,
+            lighting_map_index: 0,
+            flow_map_index: 0,
+            wrinkle_map_index: 0,
+            reflectance_map_index: 0,
+            emittance_gradient_map_index: 0,
+            decal_map_0_index: 0,
+            decal_map_1_index: 0,
+            decal_map_2_index: 0,
+            decal_map_3_index: 0,
         }
     }
+}
+
+/// Indexes into `DrawCommand::supplemental_texture_indices`.
+pub mod supplemental_texture_slot {
+    pub const TINT: usize = 0;
+    pub const INNER_LAYER: usize = 1;
+    pub const SPECULAR: usize = 2;
+    pub const LIGHTING: usize = 3;
+    pub const FLOW: usize = 4;
+    pub const WRINKLE: usize = 5;
+    pub const REFLECTANCE: usize = 6;
+    pub const EMITTANCE_GRADIENT: usize = 7;
+    pub const DECAL_0: usize = 8;
+    pub const DECAL_1: usize = 9;
+    pub const DECAL_2: usize = 10;
+    pub const DECAL_3: usize = 11;
+    pub const COUNT: usize = 12;
 }
 
 /// `GpuMaterial::material_flags` bit catalog. The single source of truth
@@ -789,7 +835,7 @@ pub mod presets {
 /// Canonical material hash — FxHash (#1368) over the 75 live scalar
 /// fields of [`GpuMaterial`] in declaration order. Used by
 /// [`MaterialTable::intern_by_hash`] to dedup without hashing the full
-/// 300-byte struct.
+/// 348-byte struct.
 ///
 /// **Lockstep contract** (#781 / PERF-N4): [`DrawCommand::material_hash`]
 /// walks the same field sequence, in the same order, against the
@@ -908,6 +954,18 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
     h.write_u32(mat.sheen_tint.to_bits());
     // #1250 — anisotropic GGX strength (offset 296). Same lockstep.
     h.write_u32(mat.anisotropic.to_bits());
+    h.write_u32(mat.tint_map_index);
+    h.write_u32(mat.inner_layer_map_index);
+    h.write_u32(mat.specular_map_index);
+    h.write_u32(mat.lighting_map_index);
+    h.write_u32(mat.flow_map_index);
+    h.write_u32(mat.wrinkle_map_index);
+    h.write_u32(mat.reflectance_map_index);
+    h.write_u32(mat.emittance_gradient_map_index);
+    h.write_u32(mat.decal_map_0_index);
+    h.write_u32(mat.decal_map_1_index);
+    h.write_u32(mat.decal_map_2_index);
+    h.write_u32(mat.decal_map_3_index);
     h.finish()
 }
 
@@ -918,7 +976,7 @@ pub(super) fn hash_gpu_material_fields(mat: &GpuMaterial) -> u64 {
 /// distinct materials get fresh ids in insertion order. The reverse map
 /// (`FxHashMap<u64, u32>` keyed on [`hash_gpu_material_fields`]) keeps
 /// `intern` O(1) amortised. Pre-#781 the index keyed on `GpuMaterial`
-/// itself, requiring a 300-byte byte-hash on every lookup AND forcing
+/// itself, requiring a full-record byte-hash on every lookup AND forcing
 /// the caller to construct the full `GpuMaterial` even on dedup hits.
 /// The fast path now goes through [`Self::intern_by_hash`], which takes
 /// a precomputed u64 + a closure that produces the `GpuMaterial` only
@@ -1025,7 +1083,7 @@ impl MaterialTable {
     // the first frame after construction then re-runs `clear()` →
     // `seed_neutral_default` AND uploads the (identical) neutral
     // entry. That re-upload is one std430-aligned `GpuMaterial`
-    // (300 B) of redundant host→device traffic per first frame
+    // (348 B) of redundant host→device traffic per first frame
     // and is not visible in steady-state telemetry. Documented
     // here rather than skipped because the alternative (suppress
     // first-frame clear) gates the seed on a `dirty` flag, which
@@ -1067,7 +1125,7 @@ impl MaterialTable {
     /// Hot-path intern entry: take a precomputed u64 hash + a closure
     /// that produces the [`GpuMaterial`] only on dedup miss. The
     /// closure is NOT invoked when the hash already maps to a stored
-    /// material — `to_gpu_material` (the dominant 300-byte construction
+    /// material — `to_gpu_material` (the dominant 348-byte construction
     /// cost) is skipped on the ~97% dedup-hit path. See #781 / PERF-N4.
     ///
     /// **Hash quality contract**: callers must produce a u64 that is a
@@ -1206,11 +1264,12 @@ mod tests {
     ///   Schlick F0 derivation), then 284 → 296 under #1249 (+12 B for
     ///   the Disney diffuse lobe — `subsurface` + `sheen` + `sheen_tint`),
     ///   then 296 → 300 under #1250 (+4 B for `anisotropic`, the GGX
-    ///   ax/ay aspect ratio driver). Test name includes the size so a future
+    ///   ax/ay aspect ratio driver), then 300 → 348 for the twelve common
+    ///   supplemental texture roles. Test name includes the size so a future
     ///   size shift updates it in lockstep with the assertion.
     #[test]
-    fn gpu_material_size_is_300_bytes() {
-        assert_eq!(std::mem::size_of::<GpuMaterial>(), 300);
+    fn gpu_material_size_is_348_bytes() {
+        assert_eq!(std::mem::size_of::<GpuMaterial>(), 348);
     }
 
     /// `#[repr(C)]` puts no implicit padding between f32/u32 fields,
@@ -1226,7 +1285,7 @@ mod tests {
     /// Regression guard for `GpuMaterial` GLSL field names —
     /// REN-D14-NEW-02 (audit 2026-05-09). The offset pin
     /// (`gpu_material_field_offsets_match_shader_contract`) and the
-    /// size pin (`gpu_material_size_is_300_bytes`) catch byte-level
+    /// size pin (`gpu_material_size_is_348_bytes`) catch byte-level
     /// drift, but neither catches a GLSL-side field rename: the
     /// shader still reads from the same offset, the value still
     /// arrives in the right register, but the field's MEANING in
@@ -1332,6 +1391,19 @@ mod tests {
             "sheenTint;",
             // #1250 — anisotropic GGX ax/ay driver
             "anisotropic;",
+            // Common supplemental semantic texture roles
+            "tintMapIndex;",
+            "innerLayerMapIndex;",
+            "specularMapIndex;",
+            "lightingMapIndex;",
+            "flowMapIndex;",
+            "wrinkleMapIndex;",
+            "reflectanceMapIndex;",
+            "emittanceGradientMapIndex;",
+            "decalMap0Index;",
+            "decalMap1Index;",
+            "decalMap2Index;",
+            "decalMap3Index;",
         ] {
             assert!(
                 src.contains(name),
@@ -1343,9 +1415,9 @@ mod tests {
     }
 
     /// Regression guard for the GpuMaterial Shader Struct Sync (#806).
-    /// The size pin (`gpu_material_size_is_300_bytes`) catches additions
-    /// or removals; this catches reorderings WITHIN the existing 16
-    /// vec4 slots that the size pin alone would miss — e.g. swapping
+    /// The size pin (`gpu_material_size_is_348_bytes`) catches additions
+    /// or removals; this catches reorderings within the record that the
+    /// size pin alone would miss — e.g. swapping
     /// `texture_index` and `normal_map_index` within vec4 #4 would
     /// preserve total size but produce wrong shader reads.
     ///
@@ -1494,6 +1566,18 @@ mod tests {
 
         // ── Anisotropic GGX (#1250, offset 296) ───────────────────
         assert_eq!(offset_of!(GpuMaterial, anisotropic), 296);
+        assert_eq!(offset_of!(GpuMaterial, tint_map_index), 300);
+        assert_eq!(offset_of!(GpuMaterial, inner_layer_map_index), 304);
+        assert_eq!(offset_of!(GpuMaterial, specular_map_index), 308);
+        assert_eq!(offset_of!(GpuMaterial, lighting_map_index), 312);
+        assert_eq!(offset_of!(GpuMaterial, flow_map_index), 316);
+        assert_eq!(offset_of!(GpuMaterial, wrinkle_map_index), 320);
+        assert_eq!(offset_of!(GpuMaterial, reflectance_map_index), 324);
+        assert_eq!(offset_of!(GpuMaterial, emittance_gradient_map_index), 328);
+        assert_eq!(offset_of!(GpuMaterial, decal_map_0_index), 332);
+        assert_eq!(offset_of!(GpuMaterial, decal_map_1_index), 336);
+        assert_eq!(offset_of!(GpuMaterial, decal_map_2_index), 340);
+        assert_eq!(offset_of!(GpuMaterial, decal_map_3_index), 344);
     }
 
     #[test]

@@ -7,10 +7,7 @@ use byroredux_core::ecs::{MeshHandle, TextureHandle, World};
 use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
 
-use crate::components::{
-    CellRootIndex, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, NormalMapHandle,
-    TerrainTileSlot,
-};
+use crate::components::{CellRootIndex, MaterialTextureHandles, NormalMapHandle, TerrainTileSlot};
 
 /// Tear down a cell: despawn every entity owned by `cell_root` and
 /// release the mesh/BLAS/texture GPU resources they referenced.
@@ -232,10 +229,10 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
 /// - `mesh_drops` — one `MeshHandle` per holder (refcounted dedup #879:
 ///   each holder contributes one decrement so the registry frees the GPU
 ///   buffers exactly when the last placement releases).
-/// - `texture_drops` — every bindless texture handle on the victim's
-///   `TextureHandle` / `NormalMapHandle` / `DarkMapHandle` /
-///   `ExtraTextureMaps` (6 slots) / `GreyscaleLutHandle` (#1341)
-///   components. Handle `0` and `fallback_tex` are skipped — those are
+/// - `texture_drops` — the base [`TextureHandle`], specialized water
+///   [`NormalMapHandle`], and every secondary role in
+///   [`MaterialTextureHandles`]. Handle `0` and `fallback_tex` are skipped —
+///   those are
 ///   the shared placeholder / neutral-fallback slots that are never
 ///   per-cell refcounted.
 /// - `terrain_tile_slots` — `TerrainTileSlot` IDs; the caller frees each
@@ -244,9 +241,9 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
 /// # Adding a texture-handle component
 /// Every component that carries a `resolve_texture`-acquired bindless
 /// handle MUST be swept here or its refcount leaks on cell unload (the
-/// #1341 / D3-05 bug was exactly such an omission — `GreyscaleLutHandle`
-/// was attached at spawn but never collected). The unit test pins the
-/// coverage for `GreyscaleLutHandle`; extend it when adding a new handle.
+/// #1341 / D3-05 bug was exactly such an omission — the greyscale LUT
+/// was attached at spawn but never collected). The unit test pins every
+/// semantic role in the common set; extend it when adding a new role.
 pub(crate) fn collect_victim_gpu_handles(
     world: &World,
     victims: &[EntityId],
@@ -275,9 +272,7 @@ pub(crate) fn collect_victim_gpu_handles(
     let mq = world.query::<MeshHandle>();
     let tq = world.query::<TextureHandle>();
     let nq = world.query::<NormalMapHandle>();
-    let dq = world.query::<DarkMapHandle>();
-    let eq = world.query::<ExtraTextureMaps>();
-    let gq = world.query::<GreyscaleLutHandle>();
+    let mtq = world.query::<MaterialTextureHandles>();
     let ttq = world.query::<TerrainTileSlot>();
     for &eid in victims {
         if let Some(mq) = &mq {
@@ -295,29 +290,36 @@ pub(crate) fn collect_victim_gpu_handles(
                 push_tex_drop(nh.0, &mut texture_drops);
             }
         }
-        if let Some(dq) = &dq {
-            if let Some(dh) = dq.get(eid) {
-                push_tex_drop(dh.0, &mut texture_drops);
-            }
-        }
-        if let Some(eq) = &eq {
-            if let Some(extra) = eq.get(eid) {
-                push_tex_drop(extra.glow, &mut texture_drops);
-                push_tex_drop(extra.detail, &mut texture_drops);
-                push_tex_drop(extra.gloss, &mut texture_drops);
-                push_tex_drop(extra.parallax, &mut texture_drops);
-                push_tex_drop(extra.env, &mut texture_drops);
-                push_tex_drop(extra.env_mask, &mut texture_drops);
-            }
-        }
-        // #1341 / D3-05 — BSEffectShaderProperty greyscale LUT. Attached
-        // at spawn (`spawn.rs`) via `resolve_texture` (refcount bump) but
-        // historically omitted from this walk, leaking the texture +
-        // bindless slot on every unload of a cell with a greyscale-LUT
-        // effect mesh. Mirrors the `DarkMapHandle` sweep above.
-        if let Some(gq) = &gq {
-            if let Some(gh) = gq.get(eid) {
-                push_tex_drop(gh.0, &mut texture_drops);
+        if let Some(mtq) = &mtq {
+            if let Some(handles) = mtq.get(eid) {
+                let maps = &handles.textures;
+                // Base color is released through TextureHandle above. Every
+                // secondary semantic role was independently acquired.
+                for handle in [
+                    maps.normal,
+                    maps.emissive,
+                    maps.detail,
+                    maps.smooth_spec,
+                    maps.dark,
+                    maps.height,
+                    maps.environment,
+                    maps.environment_mask,
+                    maps.tint,
+                    maps.inner_layer,
+                    maps.specular,
+                    maps.lighting,
+                    maps.flow,
+                    maps.wrinkle,
+                    maps.greyscale_lut,
+                    maps.reflectance,
+                    maps.emittance_gradient,
+                    maps.decals[0],
+                    maps.decals[1],
+                    maps.decals[2],
+                    maps.decals[3],
+                ] {
+                    push_tex_drop(handle, &mut texture_drops);
+                }
             }
         }
         if let Some(ttq) = &ttq {

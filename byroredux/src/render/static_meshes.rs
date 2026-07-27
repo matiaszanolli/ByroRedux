@@ -28,8 +28,8 @@ use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
 
 use crate::components::{
-    AlphaBlend, DarkMapHandle, ExtraTextureMaps, GreyscaleLutHandle, IsDecalMesh, IsFxMesh,
-    IsLodTerrain, NormalMapHandle, TerrainTileSlot, TwoSided,
+    AlphaBlend, IsDecalMesh, IsFxMesh, IsLodTerrain, MaterialTextureHandles, TerrainTileSlot,
+    TwoSided,
 };
 
 use super::camera::FrustumPlanes;
@@ -112,13 +112,7 @@ pub(super) fn collect_static_mesh_draws(
     // is applied at spawn time, not here, so this query reads the
     // final per-entity layer directly.
     let render_layer_q = world.query::<RenderLayer>();
-    let nmap_q = world.query::<NormalMapHandle>();
-    let dmap_q = world.query::<DarkMapHandle>();
-    let extra_q = world.query::<ExtraTextureMaps>();
-    // #890 Stage 2c — bindless handle for `BSEffectShaderProperty`
-    // greyscale palette LUT. Sparse: ~50–200 entities per Skyrim cell
-    // (fire effects, magic VFX, alchemy steam) vs ~5K total meshes.
-    let lut_q = world.query::<GreyscaleLutHandle>();
+    let texture_maps_q = world.query::<MaterialTextureHandles>();
     let terrain_tile_q = world.query::<TerrainTileSlot>();
     let wb_q = world.query::<WorldBound>();
     // PERF-D3-NEW-02 / #1136 — query once instead of 6 substring scans
@@ -233,58 +227,29 @@ pub(super) fn collect_static_mesh_draws(
                 // MeshHandle-free ghost entities and never reach this query.
                 let is_lod = lod_q.as_ref().is_some_and(|q| q.get(entity).is_some());
                 let bone_offset = skin_offsets.get(&entity).copied().unwrap_or(0);
-                let (normal_map_index, normal_has_alpha) = nmap_q
-                    .as_ref()
-                    .and_then(|q| q.get(entity))
-                    .map(|n| (n.0, n.1))
-                    .unwrap_or((0, false));
-                let dark_map_index = dmap_q
-                    .as_ref()
-                    .and_then(|q| q.get(entity))
-                    .map(|d| d.0)
-                    .unwrap_or(0);
-                // #890 Stage 2c — only non-zero on entities the
-                // importer flagged with a `BSEffectShaderProperty
-                // .greyscale_texture` AND the path resolved to a real
-                // bindless handle. The fragment shader gates the LUT
-                // sample on `handle != 0u`, so the default-zero
-                // fall-through is the "no LUT, sample source texture
-                // raw" path.
-                let greyscale_lut_index = lut_q
-                    .as_ref()
-                    .and_then(|q| q.get(entity))
-                    .map(|h| h.0)
-                    .unwrap_or(0);
-                // #399 — three NiTexturingProperty extra slots packed in
-                // one component to keep the per-frame query count fixed.
-                // Default to 0 (= no map; fragment shader falls through
-                // to the inline material constants) for entities that
-                // never had `ExtraTextureMaps` attached at cell load.
-                let (
-                    glow_map_index,
-                    detail_map_index,
-                    mut gloss_map_index,
-                    parallax_map_index,
-                    env_map_index,
-                    env_mask_index,
-                    parallax_height_scale,
-                    parallax_max_passes,
-                ) = extra_q
-                    .as_ref()
-                    .and_then(|q| q.get(entity))
-                    .map(|e| {
-                        (
-                            e.glow,
-                            e.detail,
-                            e.gloss,
-                            e.parallax,
-                            e.env,
-                            e.env_mask,
-                            e.parallax_height_scale,
-                            e.parallax_max_passes,
-                        )
-                    })
-                    .unwrap_or((0, 0, 0, 0, 0, 0, 0.04, 4.0));
+                let material_texture_handles =
+                    texture_maps_q.as_ref().and_then(|q| q.get(entity)).copied();
+                let texture_indices = material_texture_handles
+                    .map(|handles| handles.textures)
+                    .unwrap_or_default();
+                let normal_map_index = texture_indices.normal;
+                let normal_has_alpha = material_texture_handles
+                    .map(|handles| handles.normal_has_alpha)
+                    .unwrap_or(false);
+                let dark_map_index = texture_indices.dark;
+                let glow_map_index = texture_indices.emissive;
+                let detail_map_index = texture_indices.detail;
+                let mut gloss_map_index = texture_indices.smooth_spec;
+                let parallax_map_index = texture_indices.height;
+                let env_map_index = texture_indices.environment;
+                let env_mask_index = texture_indices.environment_mask;
+                let greyscale_lut_index = texture_indices.greyscale_lut;
+                let parallax_height_scale = material_texture_handles
+                    .map(|handles| handles.parallax_height_scale)
+                    .unwrap_or(0.04);
+                let parallax_max_passes = material_texture_handles
+                    .map(|handles| handles.parallax_max_passes)
+                    .unwrap_or(4.0);
 
                 // Terrain splat tile index (#470). Only LAND terrain
                 // entities carry the component; statics pass `None`.
@@ -579,6 +544,20 @@ pub(super) fn collect_static_mesh_draws(
                         [1.0, 1.0, 1.0, 1.0, 0.0]
                     };
 
+                let supplemental_texture_indices = [
+                    texture_indices.tint,
+                    texture_indices.inner_layer,
+                    texture_indices.specular,
+                    texture_indices.lighting,
+                    texture_indices.flow,
+                    texture_indices.wrinkle,
+                    texture_indices.reflectance,
+                    texture_indices.emittance_gradient,
+                    texture_indices.decals[0],
+                    texture_indices.decals[1],
+                    texture_indices.decals[2],
+                    texture_indices.decals[3],
+                ];
                 let mut cmd = DrawCommand {
                     mesh_handle: mesh.0,
                     texture_handle: tex_handle,
@@ -720,6 +699,7 @@ pub(super) fn collect_static_mesh_draws(
                     // `to_gpu_material` ORs the word straight in.
                     effect_shader_flags: mat.map(|m| m.effect_shader_flags).unwrap_or(0),
                     greyscale_lut_index,
+                    supplemental_texture_indices,
                     // #1147 Phase 2b — BGSM v>=8 translucency suite.
                     // Gated at the shader by `MAT_FLAG_BGSM_TRANSLUCENCY`
                     // (packed via `pack_bgsm_material_flags`).

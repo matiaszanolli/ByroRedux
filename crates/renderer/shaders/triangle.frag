@@ -222,6 +222,24 @@ void main() {
     // dropping this lane exposes the proxy mesh as a saturated white wedge.
     texColor.a *= mat.materialAlpha * fragColor.a;
 
+    // Ordered legacy material overlays (NiTexturingProperty decal slots).
+    // Alpha-over composition preserves the base coverage while allowing each
+    // authored layer to add both color and opacity.
+    uint materialDecals[4] = uint[4](
+        mat.decalMap0Index,
+        mat.decalMap1Index,
+        mat.decalMap2Index,
+        mat.decalMap3Index
+    );
+    for (int decalIndex = 0; decalIndex < 4; ++decalIndex) {
+        uint handle = materialDecals[decalIndex];
+        if (handle != 0u) {
+            vec4 decalSample = texture(textures[nonuniformEXT(handle)], sampleUV);
+            texColor.rgb = mix(texColor.rgb, decalSample.rgb, decalSample.a);
+            texColor.a = decalSample.a + texColor.a * (1.0 - decalSample.a);
+        }
+    }
+
     // Terrain splat blending (#470). When the instance has the
     // TERRAIN_SPLAT flag set, BTXT (read above via `fragTexIndex`)
     // becomes the base layer, and up to 8 additional layers from the
@@ -307,6 +325,18 @@ void main() {
     // so the texture sample stays at full diffuse intensity.
     float specStrength = mat.specularStrength;
     vec3 specColor = vec3(mat.specularR, mat.specularG, mat.specularB);
+    if (mat.specularMapIndex != 0u) {
+        specColor *= texture(
+            textures[nonuniformEXT(mat.specularMapIndex)],
+            sampleUV
+        ).rgb;
+    }
+    if (mat.reflectanceMapIndex != 0u) {
+        specColor *= texture(
+            textures[nonuniformEXT(mat.reflectanceMapIndex)],
+            sampleUV
+        ).rgb;
+    }
     uint normalMapIdx = mat.normalMapIndex;
 
     // Surface normal — perturbed by normal map if available.
@@ -905,6 +935,32 @@ void main() {
     // — banner cloth, painted wood, tinted glass.
     albedo *= vec3(mat.diffuseR, mat.diffuseG, mat.diffuseB);
 
+    if (mat.tintMapIndex != 0u) {
+        vec4 tintSample = texture(
+            textures[nonuniformEXT(mat.tintMapIndex)],
+            sampleUV
+        );
+        albedo = mix(albedo, albedo * tintSample.rgb, tintSample.a);
+    }
+
+    if (mat.materialKind == 11u && mat.innerLayerMapIndex != 0u) {
+        vec2 authoredInnerScale = abs(vec2(
+            mat.multiLayerInnerScaleU,
+            mat.multiLayerInnerScaleV
+        ));
+        vec2 innerScale = vec2(
+            authoredInnerScale.x > 0.0001 ? authoredInnerScale.x : 1.0,
+            authoredInnerScale.y > 0.0001 ? authoredInnerScale.y : 1.0
+        );
+        vec4 innerSample = texture(
+            textures[nonuniformEXT(mat.innerLayerMapIndex)],
+            sampleUV * innerScale
+        );
+        float innerWeight = clamp(mat.multiLayerInnerThickness, 0.0, 1.0)
+            * innerSample.a;
+        albedo = mix(albedo, innerSample.rgb, innerWeight);
+    }
+
     // Dark / multiplicative lightmap (#264): baked shadow modulation.
     if (mat.darkMapIndex != 0u) {
         vec3 darkSample = texture(textures[nonuniformEXT(mat.darkMapIndex)], sampleUV).rgb;
@@ -970,6 +1026,16 @@ void main() {
         ).rgb;
         emissiveMask = glowSample;
     }
+    if (mat.emittanceGradientMapIndex != 0u) {
+        float gradientCoordinate = dot(
+            emissiveMask,
+            vec3(0.2126, 0.7152, 0.0722)
+        );
+        emissiveMask = texture(
+            textures[nonuniformEXT(mat.emittanceGradientMapIndex)],
+            vec2(gradientCoordinate, 0.5)
+        ).rgb;
+    }
 
     // ── #562 Skyrim+ BSLightingShaderProperty variant ladder ────────
     //
@@ -1017,17 +1083,13 @@ void main() {
         vec3 sparkleColor = vec3(mat.sparkleR, mat.sparkleG, mat.sparkleB);
         albedo += sparkleColor * glint;
     }
-    // Variant stubs — data already lands in GpuInstance; the full
+    // Variant stubs — data already lands in GpuMaterial; the full
     // shading branches ship in follow-up issues. Listed explicitly so
     // a future reader searching by `materialKind == N` finds the
     // intended consumers.
-    //   · materialKind == 11 (MultiLayerParallax): read
-    //       `multiLayerInnerThickness`, `multiLayerRefractionScale`,
-    //       `multiLayerInnerScaleU/V`, `multiLayerEnvmapStrength`.
-    //       Compute a second sample of `textures[mat.textureIndex]`
-    //       offset along `V` by `refractionScale * innerThickness`,
-    //       blended with the outer layer by a Fresnel × envmapStrength
-    //       mix. See `ShaderTypeData::MultiLayerParallax`.
+    //   · materialKind == 11 (MultiLayerParallax): the authored inner
+    //       texture layer is sampled above. Refraction/Fresnel coupling
+    //       still needs the full cubemap path.
     //   · materialKind == 16 (EyeEnvmap): use
     //       `eyeLeftCenter` / `eyeRightCenter` + `eyeCubemapScale` to
     //       reflect a cubemap sample off the iris center (not the
