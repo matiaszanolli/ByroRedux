@@ -54,6 +54,29 @@ pub(crate) fn parse_exterior_radius(s: &str) -> i32 {
     }
 }
 
+/// Which Cornell-box variant the CLI asked for, if any.
+///
+/// `None` = no Cornell flag (fall through to the ESM / NIF / demo
+/// paths). `Some(false)` = `--cornell`, the interior / point-light
+/// scene. `Some(true)` = `--cornell-sun`, the exterior / sun-only
+/// variant (#1942).
+///
+/// `--cornell-sun` implies `--cornell`, and passing both is not an
+/// error — sun mode wins, since asking for the sun variant at all means
+/// the sun paths are what's being bisected. Pulled out as a free
+/// function so the flag contract is unit-testable without a Vulkan
+/// device, same rationale as [`parse_exterior_radius`].
+pub(crate) fn cornell_sun_mode(args: &[String]) -> Option<bool> {
+    let sun = args.iter().any(|a| a == "--cornell-sun");
+    if sun {
+        Some(true)
+    } else if args.iter().any(|a| a == "--cornell") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 mod world_setup;
 // Re-export the streaming setup helpers so the M40 Phase 2 cell-
 // transition orchestrator in `main.rs::App::step_cell_transition` can
@@ -95,16 +118,19 @@ pub(crate) fn setup_scene(
     // `None`. See cell_loader::transition.
     world.insert_resource(cell_loader::PendingCellTransitionSlot::default());
 
-    // Cornell-box test harness (`--cornell`) — a self-contained RT
-    // validation scene needing no on-disk game data. Takes precedence
-    // over the ESM / NIF / demo paths. Returns the camera pose to use
-    // (overridable by the usual `--camera-pos` / `--camera-forward`).
-    let cornell = args.iter().any(|a| a == "--cornell");
+    // Cornell-box test harness (`--cornell` / `--cornell-sun`) — a
+    // self-contained RT validation scene needing no on-disk game data.
+    // Takes precedence over the ESM / NIF / demo paths. Returns the
+    // camera pose to use (overridable by the usual `--camera-pos` /
+    // `--camera-forward`). `--cornell-sun` selects the exterior /
+    // sun-only variant (#1942); see `crate::cornell`.
+    let cornell_sun = cornell_sun_mode(&args);
+    let cornell = cornell_sun.is_some();
     let mut cornell_cam: Option<(Vec3, Vec3)> = None;
 
     // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
-    if cornell {
-        let (pos, target) = crate::cornell::setup_cornell_scene(world, ctx);
+    if let Some(sun) = cornell_sun {
+        let (pos, target) = crate::cornell::setup_cornell_scene(world, ctx, sun);
         cornell_cam = Some((pos, target));
         cam_center = target;
         // Skip the demo-primitive spawn + flag the scene as populated so

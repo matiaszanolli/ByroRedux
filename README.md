@@ -164,6 +164,13 @@ cargo run -- --esm Skyrim.esm --cell <editor_id> \
 # Loose NIF + optional animation
 cargo run -- path/to/mesh.nif [--kf path/to/anim.kf]
 
+# Cornell-box RT reference harness (no game data needed). `--cornell` is the
+# interior / point-light scene; `--cornell-sun` is the exterior counterpart —
+# ceiling removed, local lights dropped, a fixed-direction sun as the only
+# light — for bisecting directional / sky / volumetric-sun regressions.
+cargo run --release -- --cornell
+cargo run --release -- --cornell-sun
+
 # Per-game NIF parse-rate sweep (requires game data)
 cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored
 

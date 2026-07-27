@@ -3,6 +3,26 @@
 //! data. Activated with the `--cornell` CLI flag (handled in
 //! [`crate::scene::setup_scene`]).
 //!
+//! # Two lighting variants
+//!
+//! `--cornell` is **interior / point-light only**: a closed box lit by a
+//! ceiling panel + a camera-side fill, `CellLightingRes.directional_color`
+//! zeroed and no `SkyParamsRes`. Every sun-driven path — directional
+//! BRDF + RT sun shadows, the volumetric froxel sun injection, the
+//! Effect_Lit sun shading, the composite sky — is therefore **inert**, and
+//! a "sun looks wrong" regression bisected against it returns a false
+//! all-clear (#1942).
+//!
+//! `--cornell-sun` is the exterior counterpart: same probe set, ceiling
+//! removed, *all* local lights dropped, and the canonical procedural
+//! exterior environment installed ([`procedural_fallback_cell_lighting`] +
+//! [`procedural_fallback_sky`], the same constructors a plugin-less
+//! exterior load uses) with a fixed [`SUN_DIR_RAW`]. The sun is then the only
+//! light in the scene, so any sign flip / axis swap / dropped term in the
+//! directional chain shows up as a moved or missing shadow rather than a
+//! plausible-looking image. No `WeatherDataRes` is inserted, so
+//! `weather_system` stays inert and the direction does not drift with TOD.
+//!
 //! The scene is the classic Cornell box (white floor/ceiling/back wall,
 //! red left wall, green right wall, a ceiling area light) populated with
 //! probe objects chosen to exercise specific RT behaviours:
@@ -32,6 +52,7 @@ use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{box_vertices_colored, uv_sphere, VulkanContext, MATERIAL_KIND_GLASS};
 
 use crate::components::CellLightingRes;
+use crate::env_translate::{procedural_fallback_cell_lighting, procedural_fallback_sky};
 
 /// Classic Cornell wall albedos (linear). Gamebryo colors are raw
 /// monitor-space floats and must NOT be sRGB-decoded (see the
@@ -48,34 +69,39 @@ const HEIGHT: f32 = 5.0;
 /// Wall slab half-thickness.
 const T: f32 = 0.05;
 
+/// Un-normalised sun direction for `--cornell-sun`, in the engine's
+/// canonical convention: the vector points **from the scene toward the
+/// sun**, in Y-up world space. That is what `systems::weather`'s
+/// `compute_sun_arc` produces (`y = sin(arc angle)`, positive while the
+/// sun is up) and what `env_translate` copies verbatim into *both*
+/// `CellLightingRes::directional_dir` and `SkyParamsRes::sun_direction`.
+///
+/// Deliberately asymmetric with three distinct component magnitudes and
+/// all-positive signs: the tall block's floor shadow then falls toward
+/// `-X/-Z` at an angle no axis swap or sign flip reproduces, so a
+/// convention regression relocates it visibly instead of yielding a
+/// different-but-plausible image. Normalised at use — `SkyParams`
+/// consumers (`draw.rs`, `water.frag`'s caustic synthesis) assume a unit
+/// vector.
+const SUN_DIR_RAW: Vec3 = Vec3::new(0.6, 0.84, 0.4);
+
+/// Unit-length [`SUN_DIR_RAW`].
+fn sun_dir() -> [f32; 3] {
+    SUN_DIR_RAW.normalize().to_array()
+}
+
 /// Build the Cornell box into `world`, uploading all meshes + BLAS through
 /// `ctx`. Returns `(camera_position, camera_target)` so the caller can
 /// place the fly-camera looking into the open front of the box.
-pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) -> (Vec3, Vec3) {
-    // Dark interior so the single ceiling light dominates — the classic
-    // Cornell look. Directional zeroed (no sun); interior flag set so the
-    // renderer treats any residual directional as fill. Fog pushed far
-    // out of the way.
-    world.insert_resource(CellLightingRes {
-        ambient: [0.03, 0.03, 0.03],
-        directional_color: [0.0, 0.0, 0.0],
-        directional_dir: [0.0, -1.0, 0.0],
-        is_interior: true,
-        fog_color: [0.0, 0.0, 0.0],
-        fog_near: 100_000.0,
-        fog_far: 1_000_000.0,
-        directional_fade: None,
-        fog_clip: None,
-        fog_power: None,
-        fog_far_color: None,
-        fog_max: None,
-        light_fade_begin: None,
-        light_fade_end: None,
-        directional_ambient: None,
-        specular_color: None,
-        specular_alpha: None,
-        fresnel_power: None,
-    });
+///
+/// `sun` selects the exterior variant (`--cornell-sun`): see the module
+/// header for what changes and why (#1942).
+pub(crate) fn setup_cornell_scene(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    sun: bool,
+) -> (Vec3, Vec3) {
+    install_cornell_lighting(world, sun);
 
     // Every probe is untextured by design — surface color comes entirely
     // from `Material::diffuse_color`. Bind the registry's white 1×1
@@ -101,6 +127,8 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
 
     let walls: &[(MeshHandle, Vec3, [f32; 3], &str)] = &[
         (h_slab, Vec3::new(0.0, -T, 0.0), WHITE, "floor"),
+        // Skipped in sun mode — a lid would block every sun ray and
+        // reduce the bisection scene to ambient.
         (h_slab, Vec3::new(0.0, HEIGHT + T, 0.0), WHITE, "ceiling"),
         (
             back_slab,
@@ -122,6 +150,9 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
         ),
     ];
     for &(mesh, pos, color, name) in walls {
+        if sun && name == "ceiling" {
+            continue;
+        }
         spawn_object(
             world,
             mesh,
@@ -133,45 +164,53 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
         );
     }
 
-    // ── Ceiling area light ──────────────────────────────────────────
-    // An emissive panel (the visible light) plus a point LightSource just
-    // below it (the actual direct illumination — emissive-only GI is a
-    // known weak spot this harness is meant to expose).
-    let light_panel = builder.box_mesh([1.2, 0.02, 1.2]);
-    spawn_object(
-        world,
-        light_panel,
-        neutral,
-        Vec3::new(0.0, HEIGHT - 0.03, 0.0),
-        Quat::IDENTITY,
-        emissive([1.0, 0.97, 0.9], 8.0),
-        "ceiling_light_panel",
-    );
-    spawn_point_light(
-        world,
-        Vec3::new(0.0, HEIGHT - 0.3, 0.0),
-        30.0,
-        [1.6, 1.55, 1.45],
-        "ceiling_light",
-    );
+    // ── Local lights (interior variant only) ────────────────────────
+    // In sun mode every one of these is skipped: a bisection harness for
+    // the directional path must not have a second light source that can
+    // mask a dead or misdirected sun. What survives is the emissive cube
+    // probe below, which is emissive-GI, not a `LightSource`.
+    if !sun {
+        // ── Ceiling area light ──────────────────────────────────────
+        // An emissive panel (the visible light) plus a point LightSource
+        // just below it (the actual direct illumination — emissive-only
+        // GI is a known weak spot this harness is meant to expose).
+        let light_panel = builder.box_mesh([1.2, 0.02, 1.2]);
+        spawn_object(
+            world,
+            light_panel,
+            neutral,
+            Vec3::new(0.0, HEIGHT - 0.03, 0.0),
+            Quat::IDENTITY,
+            emissive([1.0, 0.97, 0.9], 8.0),
+            "ceiling_light_panel",
+        );
+        spawn_point_light(
+            world,
+            Vec3::new(0.0, HEIGHT - 0.3, 0.0),
+            30.0,
+            [1.6, 1.55, 1.45],
+            "ceiling_light",
+        );
 
-    // ── Camera-side key/fill light ──────────────────────────────────
-    // The ceiling light alone sits *behind* the front probe rows, so
-    // their camera-facing hemispheres fall into near-shadow and no
-    // material differences are visible. This second light, placed high
-    // and off to one side near the camera, rakes the camera-facing
-    // sides — giving each probe a GGX highlight whose shape/size reveals
-    // roughness, and an albedo-tinted (vs white) specular that reveals
-    // metalness. Dimmer than the key so the Cornell colour-bleed look
-    // survives. (Whether GI *alone* should fill these faces is a
-    // separate question tracked for a later pass.)
-    spawn_point_light(
-        world,
-        Vec3::new(2.0, HEIGHT * 0.8, HALF_W + 1.0),
-        40.0,
-        [1.1, 1.1, 1.15],
-        "camera_fill_light",
-    );
+        // ── Camera-side key/fill light ──────────────────────────────
+        // The ceiling light alone sits *behind* the front probe rows, so
+        // their camera-facing hemispheres fall into near-shadow and no
+        // material differences are visible. This second light, placed
+        // high and off to one side near the camera, rakes the
+        // camera-facing sides — giving each probe a GGX highlight whose
+        // shape/size reveals roughness, and an albedo-tinted (vs white)
+        // specular that reveals metalness. Dimmer than the key so the
+        // Cornell colour-bleed look survives. (Whether GI *alone* should
+        // fill these faces is a separate question tracked for a later
+        // pass.)
+        spawn_point_light(
+            world,
+            Vec3::new(2.0, HEIGHT * 0.8, HALF_W + 1.0),
+            40.0,
+            [1.1, 1.1, 1.15],
+            "camera_fill_light",
+        );
+    }
 
     // ── Classic probes: tall matte block + matte sphere ─────────────
     let tall = builder.box_mesh([0.7, 1.5, 0.7]);
@@ -285,8 +324,13 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
     builder.finish();
 
     log::info!(
-        "Cornell box ready: {} entities. Tweak materials live via `mat.list` / \
+        "Cornell box ready ({}): {} entities. Tweak materials live via `mat.list` / \
          `mat.set <id> <field> <value>` over byro-dbg.",
+        if sun {
+            "exterior / sun-only"
+        } else {
+            "interior / point-light"
+        },
         world.next_entity_id()
     );
 
@@ -295,6 +339,48 @@ pub(crate) fn setup_cornell_scene(world: &mut World, ctx: &mut VulkanContext) ->
     let target = Vec3::new(0.0, HEIGHT * 0.45, 0.0);
     let pos = Vec3::new(0.0, HEIGHT * 0.55, HALF_W + 6.0);
     (pos, target)
+}
+
+/// Install the environment resources for the selected variant.
+///
+/// Split out of [`setup_cornell_scene`] because it is the whole point of
+/// #1942 and the only part testable without a Vulkan device: it decides
+/// whether the renderer's sun paths are driven at all.
+///
+/// Interior (`sun == false`) keeps the classic look — near-black ambient
+/// so the ceiling panel dominates, directional zeroed, fog pushed out of
+/// range, and *no* `SkyParamsRes` (so `build_sky_params` returns the
+/// all-default `SkyParams` and the composite pass skips the sky).
+///
+/// Exterior (`sun == true`) reuses the canonical plugin-less exterior
+/// constructors rather than hand-rolling a second set of literals, so the
+/// harness drifts with the real fallback path instead of away from it.
+pub(crate) fn install_cornell_lighting(world: &mut World, sun: bool) {
+    if sun {
+        world.insert_resource(procedural_fallback_cell_lighting(sun_dir()));
+        world.insert_resource(procedural_fallback_sky(sun_dir()));
+        return;
+    }
+    world.insert_resource(CellLightingRes {
+        ambient: [0.03, 0.03, 0.03],
+        directional_color: [0.0, 0.0, 0.0],
+        directional_dir: [0.0, -1.0, 0.0],
+        is_interior: true,
+        fog_color: [0.0, 0.0, 0.0],
+        fog_near: 100_000.0,
+        fog_far: 1_000_000.0,
+        directional_fade: None,
+        fog_clip: None,
+        fog_power: None,
+        fog_far_color: None,
+        fog_max: None,
+        light_fade_begin: None,
+        light_fade_end: None,
+        directional_ambient: None,
+        specular_color: None,
+        specular_alpha: None,
+        fresnel_power: None,
+    });
 }
 
 /// Matte dielectric — the diffuse Cornell surface.
@@ -445,5 +531,107 @@ impl<'a> MeshBuilder<'a> {
     /// Build BLAS for every uploaded mesh in one batched call.
     fn finish(self) {
         self.ctx.build_blas_batched(&self.pending);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::cornell_sun_mode;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// #1942 — `--cornell-sun` selects the exterior variant, plain
+    /// `--cornell` the interior one, and neither flag falls through to
+    /// the ESM / NIF / demo paths. Both flags together resolve to sun
+    /// mode rather than to whichever the parser happened to test first.
+    #[test]
+    fn cornell_flag_selects_variant() {
+        assert_eq!(cornell_sun_mode(&args(&[])), None);
+        assert_eq!(cornell_sun_mode(&args(&["--esm", "Skyrim.esm"])), None);
+        assert_eq!(cornell_sun_mode(&args(&["--cornell"])), Some(false));
+        assert_eq!(cornell_sun_mode(&args(&["--cornell-sun"])), Some(true));
+        assert_eq!(
+            cornell_sun_mode(&args(&["--cornell", "--cornell-sun"])),
+            Some(true),
+            "asking for the sun variant at all means the sun paths are what's being bisected"
+        );
+        assert_eq!(
+            cornell_sun_mode(&args(&["--cornellsun"])),
+            None,
+            "no prefix matching — an unknown flag must not silently enable the harness"
+        );
+    }
+
+    /// The interior variant is what #1942 reported: the sun paths are
+    /// inert because the directional term is zeroed and no
+    /// `SkyParamsRes` exists, so `build_sky_params` hands the renderer
+    /// the all-default `SkyParams` (`is_exterior = false`). Pinned so a
+    /// future "just give Cornell a sun" edit can't quietly change the
+    /// interior reference scene instead of using the new variant.
+    #[test]
+    fn interior_variant_leaves_the_sun_paths_inert() {
+        let mut world = World::new();
+        install_cornell_lighting(&mut world, false);
+
+        let lit = world.resource::<CellLightingRes>();
+        assert!(lit.is_interior);
+        assert_eq!(lit.directional_color, [0.0, 0.0, 0.0]);
+        drop(lit);
+        assert!(
+            world
+                .try_resource::<crate::components::SkyParamsRes>()
+                .is_none(),
+            "no SkyParamsRes → no sky, no volumetric sun injection, no Effect_Lit sun"
+        );
+    }
+
+    /// The exterior variant drives every sun path: a non-zero
+    /// directional colour on an `is_interior = false` cell (so
+    /// `compute_directional_upload` scales by the full
+    /// `sun_intensity / SUN_INTENSITY_PEAK` instead of the 0.6 interior
+    /// constant) plus an `is_exterior` `SkyParamsRes` carrying the same
+    /// direction. Both resources must agree — `directional_dir` and
+    /// `sun_direction` are separately consumed (`render::lights` vs
+    /// `render::sky`), and a harness where they disagree would itself
+    /// be a sun-direction bug. #1942.
+    #[test]
+    fn sun_variant_drives_directional_and_sky_paths() {
+        use crate::components::SkyParamsRes;
+
+        let mut world = World::new();
+        install_cornell_lighting(&mut world, true);
+
+        let expected = sun_dir();
+        let len =
+            (expected[0] * expected[0] + expected[1] * expected[1] + expected[2] * expected[2])
+                .sqrt();
+        assert!(
+            (len - 1.0).abs() < 1e-5,
+            "sun direction must be unit-length, got {len}"
+        );
+        assert!(
+            expected[1] > 0.0,
+            "engine convention: the vector points TOWARD the sun, so +Y while the sun is up"
+        );
+
+        let lit = world.resource::<CellLightingRes>();
+        assert!(!lit.is_interior, "exterior → full sun-intensity scaling");
+        assert_ne!(lit.directional_color, [0.0, 0.0, 0.0]);
+        assert_eq!(lit.directional_dir, expected);
+        drop(lit);
+
+        let sky = world.resource::<SkyParamsRes>();
+        assert!(
+            sky.is_exterior,
+            "gates the composite sky + froxel sun inject"
+        );
+        assert_eq!(
+            sky.sun_direction, expected,
+            "SkyParamsRes and CellLightingRes must carry the same direction"
+        );
+        assert!(sky.sun_intensity > 0.0);
     }
 }

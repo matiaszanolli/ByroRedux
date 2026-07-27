@@ -32,7 +32,8 @@ real CLI/boot logic doesn't live in `main.rs` — `pub(crate) fn run()`
 `resumed()` (`main.rs:723`) creates the window + `VulkanContext`, then
 calls `self.setup_scene()` (`main.rs:806`), forwarding to
 `scene::setup_scene` (`byroredux/src/scene.rs:75`). That function is the
-actual dispatch point: `--cornell` → the Cornell-box RT reference scene;
+actual dispatch point: `--cornell` / `--cornell-sun` → the Cornell-box RT
+reference scene (interior point-light vs exterior sun-only, `#1942`);
 `--esm` → interior (`--cell`, `scene.rs:196-220`) or exterior
 (`--grid`, `scene.rs:228`); otherwise falls through to loose-NIF loading
 (`load_nif_from_args`, `byroredux/src/scene/nif_loader.rs`).
