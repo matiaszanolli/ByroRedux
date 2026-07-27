@@ -11,6 +11,8 @@ use ruffle_core::{FloatDuration, LoadBehavior, Player, PlayerBuilder};
 use super::{ScaleformHostBridge, ScaleformHostDispatch, ScaleformValue};
 use crate::{
     ScaleformHostCatalog, ScaleformHostMethodKind, ScaleformHostObjectState, ScaleformProfile,
+    UiInputEvent, UiKeyDescriptor, UiKeyLocation, UiLogicalKey, UiMouseButton, UiNamedKey,
+    UiPhysicalKey,
 };
 
 const AVM1_FIXTURE: &str = include_str!("../../testdata/avm1_external_interface.swf.b64");
@@ -111,6 +113,40 @@ fn assert_external_interface_round_trip(
         .unknown_methods()
         .iter()
         .any(|method| method == "non_existent"));
+}
+
+fn dispatch_representative_input(player: &Arc<Mutex<Player>>) {
+    let key = UiKeyDescriptor {
+        physical_key: UiPhysicalKey::Enter,
+        logical_key: UiLogicalKey::Named(UiNamedKey::Enter),
+        key_location: UiKeyLocation::Standard,
+    };
+    let events = [
+        UiInputEvent::FocusGained,
+        UiInputEvent::MouseMove { x: 32.0, y: 16.0 },
+        UiInputEvent::MouseDown {
+            x: 32.0,
+            y: 16.0,
+            button: UiMouseButton::Left,
+        },
+        UiInputEvent::MouseUp {
+            x: 32.0,
+            y: 16.0,
+            button: UiMouseButton::Left,
+        },
+        UiInputEvent::KeyDown { key },
+        UiInputEvent::TextControl {
+            code: crate::UiTextControlCode::Enter,
+        },
+        UiInputEvent::KeyUp { key },
+        UiInputEvent::FocusLost,
+    ];
+
+    let mut player = player.lock().unwrap();
+    for event in events {
+        player.handle_event(event.into());
+    }
+    player.tick(FloatDuration::from_secs(1.0 / 30.0));
 }
 
 #[test]
@@ -279,14 +315,16 @@ fn fallout4_destruction_acknowledgement_is_observable_but_not_a_host_call() {
 }
 
 #[test]
-fn avm1_external_interface_is_bidirectional_headlessly() {
+fn avm1_input_and_external_interface_are_bidirectional_headlessly() {
     let (player, bridge) = run_fixture(AVM1_FIXTURE, ScaleformProfile::SkyrimAvm1);
+    dispatch_representative_input(&player);
     assert_external_interface_round_trip(&player, &bridge, ScaleformProfile::SkyrimAvm1);
 }
 
 #[test]
-fn avm2_external_interface_is_bidirectional_headlessly() {
+fn avm2_input_and_external_interface_are_bidirectional_headlessly() {
     let (player, bridge) = run_fixture(AVM2_FIXTURE, ScaleformProfile::Fallout4Avm2);
+    dispatch_representative_input(&player);
     assert_external_interface_round_trip(&player, &bridge, ScaleformProfile::Fallout4Avm2);
 }
 

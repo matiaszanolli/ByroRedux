@@ -194,6 +194,19 @@ impl UiManager {
         }
     }
 
+    /// Update Ruffle's native-pointer stage state for the visible menu.
+    pub fn set_mouse_in_stage(&mut self, is_in_stage: bool) -> bool {
+        if !self.visible {
+            return false;
+        }
+        if let Some(player) = self.player.as_mut() {
+            player.set_mouse_in_stage(is_in_stage);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Close the current menu.
     pub fn close(&mut self) {
         self.set_input_focus(false);

@@ -21,9 +21,11 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 > Ruffle navigator and executor-driven `ImportAssets` preload; the installed
 > Fallout 4 HUD now resolves `fonts_en.swf` and reaches frame 1. HUD and
 > Pip-Boy readiness/destruction are asserted against the installed BA2, and
-> Atomic Command contributes nine cataloged holotape methods. Method behavior,
-> remaining GFx compatibility, input, and full-menu visual fidelity remain
-> integration work.
+> Atomic Command contributes nine cataloged holotape methods. The fourth slice
+> adds focused keyboard, pointer, wheel, text, and IME routing through Ruffle
+> for both VMs, with modal capture ahead of world controls. Method behavior,
+> remaining GFx compatibility, menu-stack policy, and full-menu visual fidelity
+> remain integration work.
 
 ## At a glance
 
@@ -34,8 +36,8 @@ Source: [`crates/ui/src/`](../../crates/ui/src/)
 | Ruffle render backend  | `ruffle_render_wgpu` on its **own** wgpu/Vulkan device (separate from the engine's `ash` Vulkan) |
 | Render path            | Ruffle → wgpu offscreen `TextureTarget` → `capture_frame()` CPU RGBA → Vulkan texture upload → fullscreen quad |
 | Lifetime               | `UiManager` is **not** an ECS resource — Ruffle's `Player` is not `Send + Sync`; it lives in the main loop alongside `VulkanContext` |
-| Status                 | Loose SWF demo working (`--swf path.swf`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional host bridge; Skyrim `GameDelegate` and Fallout 4 `BGSCodeObj` contracts; BSA/BA2-relative `ImportAssets` loading |
-| Pending                | Host-method behavior, remaining GFx stubs, Papyrus↔UI bridge, input routing, font fidelity, full menu pack |
+| Status                 | Loose SWF demo working (`--swf path.swf`); AVM1/Skyrim and AVM2/Fallout 4 profiles; bidirectional host bridge; Skyrim `GameDelegate` and Fallout 4 `BGSCodeObj` contracts; BSA/BA2-relative `ImportAssets` loading; focused winit input routing |
+| Pending                | Host-method behavior, remaining GFx stubs, Papyrus↔UI bridge, menu-stack/focus policy, font fidelity, full menu pack |
 
 ## Why Ruffle?
 
@@ -69,8 +71,9 @@ crates/ui/src/
 ├── catalog.rs   Profile-specific known host-method/object inventory
 ├── host.rs      ScaleformHostBridge — ExternalInterface call queue,
 │                callback discovery, typed values, diagnostics/responses
+├── input.rs     Platform-neutral keyboard, pointer, text, IME, and focus events
 ├── lib.rs       UiManager — top-level handle: owns the active SwfPlayer,
-│                visibility/menu-name/viewport state, load/tick/render/close
+│                visibility/input-focus/viewport state, load/tick/render/close
 ├── navigator.rs Archive-backed relative URL resolution, resource diagnostics,
 │                Ruffle future executor, and ImportAssets preload compatibility
 ├── player.rs    SwfPlayer — Ruffle wrapper, own wgpu/Vulkan device,
@@ -207,6 +210,7 @@ dimensions, **not** the SWF's native size — Ruffle scales internally.
 pub struct UiManager {
     player: Option<SwfPlayer>,  // None until a menu is loaded
     pub visible: bool,
+    input_focused: bool,
     pub menu_name: String,      // e.g. the SWF path / "startmenu"
     pub width: u32,
     pub height: u32,
@@ -224,6 +228,10 @@ impl UiManager {
     ) -> anyhow::Result<()>;
     pub fn tick(&mut self, dt: f64);             // forwards to the active player when visible
     pub fn render(&mut self) -> Option<&[u8]>;   // None when hidden or no player
+    pub fn has_input_focus(&self) -> bool;
+    pub fn set_input_focus(&mut self, focused: bool) -> bool;
+    pub fn handle_input(&mut self, event: UiInputEvent) -> bool;
+    pub fn set_mouse_in_stage(&mut self, is_in_stage: bool) -> bool;
     pub fn close(&mut self);                      // drops the player, clears state
 }
 ```
@@ -429,11 +437,28 @@ this is a matter of connecting it to Ruffle, not building it from zero.)
 
 ### Input routing
 
-When a menu is open, mouse/keyboard go to the menu, not the world. The
-game loop already has an input path and a fly-camera system; we need a
-"UI focus" concept that toggles input routing depending on whether any
-modal menu is active. Today `UiManager::visible` gates tick/render but
-does not yet capture input away from the world.
+Loading a menu now grants `UiManager` input focus and closing or replacing it
+sends the corresponding focus transition before dropping the player.
+`byroredux/src/ui_input.rs` translates winit's physical and logical keyboard
+identity, key location, text controls, Unicode input, IME composition, pointer
+coordinates/buttons, and wheel units into `UiInputEvent`. `SwfPlayer` forwards
+that platform-neutral contract to `Player::handle_event`; native pointer
+enter/leave also updates Ruffle's separate `mouse_in_stage` state.
+
+Dispatch order is egui debug overlay → focused Scaleform menu → world input.
+A focused menu captures the input class even if no individual ActionScript
+listener reports it handled, so modal menus cannot leak Escape, movement, or
+mouse-look into gameplay. Any previously held world keys and cursor grab are
+released on transfer. F3 remains an engine-global debug-overlay shortcut.
+Pointer coordinates are scaled from the current native window extent into the
+movie's persistent viewport, which also keeps input aligned after a swapchain
+resize.
+
+The current manager still owns one active menu. A real menu stack must define
+which visible layer receives focus and how non-modal HUD movies coexist with a
+modal pause/container/Pip-Boy layer. Gamepad translation is also a later slice;
+the input contract intentionally starts with the native keyboard/pointer path
+used by the existing engine loop.
 
 ### Font loading
 
@@ -453,18 +478,20 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-The UI crate has 13 default tests plus two ignored installed-corpus
-smokes. The synthetic non-Bethesda SWFs come from Ruffle's pinned
-ExternalInterface fixtures:
+The UI crate has 16 default tests plus three ignored installed-corpus
+smokes; the executable adds three winit-translation tests. The synthetic
+non-Bethesda SWFs come from Ruffle's pinned ExternalInterface fixtures:
 
 - The `byroredux-ui` crate compiles as part of the workspace.
-- Real headless AVM1 and AVM2 movies verify ActionScript → host calls,
+- Real headless AVM1 and AVM2 movies receive representative focus, pointer,
+  key, and text-control events before verifying ActionScript → host calls,
   callback discovery, and host → ActionScript invocation through Ruffle's
   null renderer.
 - Unit coverage pins profile detection, the 74-method sorted catalog,
   profile isolation, Skyrim request-ID normalization and response routing,
-  dispatch diagnostics, monotonically sequenced calls, and nested value
-  conversion.
+  dispatch diagnostics, monotonically sequenced calls, nested value
+  conversion, Ruffle event conversion, winit key semantics, text-control
+  modifiers, and window-to-movie coordinate scaling.
 - Navigator coverage pins relative archive resolution, root confinement and
   percent decoding, the imported-AVM2 frame-boundary workaround, executor
   pumping, and frame-1 advancement. The ignored Fallout 4 corpus test repeats

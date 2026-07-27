@@ -7,9 +7,8 @@
 use ruffle_core::events::{ImeEvent, MouseButton, MouseWheelDelta, PlayerEvent};
 
 pub use ruffle_core::events::{
-    KeyDescriptor as UiKeyDescriptor, KeyLocation as UiKeyLocation,
-    LogicalKey as UiLogicalKey, NamedKey as UiNamedKey, PhysicalKey as UiPhysicalKey,
-    TextControlCode as UiTextControlCode,
+    KeyDescriptor as UiKeyDescriptor, KeyLocation as UiKeyLocation, LogicalKey as UiLogicalKey,
+    NamedKey as UiNamedKey, PhysicalKey as UiPhysicalKey, TextControlCode as UiTextControlCode,
 };
 
 /// Mouse buttons understood by Bethesda Scaleform menus.

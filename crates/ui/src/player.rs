@@ -236,6 +236,12 @@ impl SwfPlayer {
         handled
     }
 
+    /// Tell Ruffle whether the native pointer is currently inside the movie.
+    pub fn set_mouse_in_stage(&mut self, is_in_stage: bool) {
+        self.player.lock().unwrap().set_mouse_in_stage(is_in_stage);
+        self.dirty = true;
+    }
+
     /// Render the current frame to the internal pixel buffer.
     /// Returns the RGBA pixel data if the frame is dirty, None otherwise.
     pub fn render(&mut self) -> Option<&[u8]> {

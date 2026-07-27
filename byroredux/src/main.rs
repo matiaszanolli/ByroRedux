@@ -37,6 +37,7 @@ mod sf_smoke;
 mod streaming;
 mod streaming_helpers;
 mod systems;
+mod ui_input;
 
 use anyhow::Result;
 use byroredux_core::console::CommandRegistry;
@@ -80,6 +81,8 @@ struct App {
     scheduler: Scheduler,
     last_frame: Instant,
     ui_manager: Option<UiManager>,
+    /// Window-system state used to translate events into Scaleform space.
+    ui_input_state: ui_input::UiInputState,
     /// Texture handle for the UI overlay (registered in the texture registry).
     ui_texture_handle: Option<u32>,
     /// Reusable per-frame draw command buffer (cleared each frame, allocation retained).
@@ -321,6 +324,7 @@ impl App {
             scheduler,
             last_frame: Instant::now(),
             ui_manager: None,
+            ui_input_state: ui_input::UiInputState::default(),
             ui_texture_handle: None,
             draw_commands: Vec::new(),
             water_commands: Vec::new(),
@@ -383,6 +387,65 @@ impl App {
             self.camera_forward_override,
             &mut self.streaming,
         );
+    }
+
+    /// Route native window input to the focused Scaleform menu before world
+    /// controls. F3 remains an engine-global debug-overlay binding.
+    fn route_scaleform_window_event(&mut self, event: &WindowEvent) -> bool {
+        if ui_input::is_debug_overlay_key(event) {
+            return false;
+        }
+
+        let window_size = self
+            .window
+            .as_ref()
+            .map(Window::inner_size)
+            .unwrap_or_default();
+        let Some(ui_manager) = self.ui_manager.as_mut() else {
+            return false;
+        };
+        if !ui_manager.has_input_focus() {
+            return false;
+        }
+
+        let ui_size = (ui_manager.width, ui_manager.height);
+        let dispatch = ui_input::dispatch_window_event(
+            event,
+            &mut self.ui_input_state,
+            window_size,
+            ui_size,
+            |event| {
+                // Focus ownership already guarantees modal capture. The
+                // per-listener handled result is intentionally not used to
+                // decide whether world input receives this event.
+                ui_manager.handle_input(event);
+            },
+        );
+        if let Some(is_in_stage) = dispatch.mouse_in_stage {
+            ui_manager.set_mouse_in_stage(is_in_stage);
+        }
+        if dispatch.captured {
+            self.release_world_input_for_ui();
+        }
+        dispatch.captured
+    }
+
+    /// Clear held gameplay input when a modal menu takes ownership so a key
+    /// pressed before the transfer cannot leave the camera moving underneath
+    /// the menu.
+    fn release_world_input_for_ui(&mut self) {
+        let had_mouse_capture = {
+            let mut input = self.world.resource_mut::<InputState>();
+            input.keys_held.clear();
+            std::mem::replace(&mut input.mouse_captured, false)
+        };
+
+        if had_mouse_capture {
+            if let Some(window) = self.window.as_ref() {
+                let _ = window.set_cursor_grab(CursorGrabMode::None);
+                window.set_cursor_visible(true);
+            }
+        }
     }
 }
 
@@ -900,6 +963,9 @@ impl ApplicationHandler for App {
         {
             return;
         }
+        if self.route_scaleform_window_event(&event) {
+            return;
+        }
 
         match event {
             WindowEvent::CloseRequested => {
@@ -1096,6 +1162,14 @@ impl ApplicationHandler for App {
         event: DeviceEvent,
     ) {
         if let DeviceEvent::MouseMotion { delta } = event {
+            let ui_focused = self
+                .ui_manager
+                .as_ref()
+                .is_some_and(UiManager::has_input_focus);
+            if ui_focused {
+                self.release_world_input_for_ui();
+                return;
+            }
             let mut input = self.world.resource_mut::<InputState>();
             if input.mouse_captured {
                 let sensitivity = input.look_sensitivity;
@@ -1111,6 +1185,17 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Menu focus can change through engine code without a corresponding
+        // winit event. Enforce modal ownership before the scheduler reads
+        // InputState so a held movement key cannot leak for one frame.
+        if self
+            .ui_manager
+            .as_ref()
+            .is_some_and(UiManager::has_input_focus)
+        {
+            self.release_world_input_for_ui();
+        }
+
         let atw_pre_t0 = Instant::now();
         let now = atw_pre_t0;
         // `BYROREDUX_FIXED_DT=<seconds>` overrides the wall-clock dt
