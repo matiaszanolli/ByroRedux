@@ -79,6 +79,58 @@ fn is_camera_cut(frame_counter: u32, camera_delta: f32, cam_forward_dot: f32) ->
     frame_counter > 0 && (camera_delta > 256.0 || cam_forward_dot < 0.0)
 }
 
+/// The three frame-over-frame camera signals `draw_frame` derives before
+/// asking [`is_camera_cut`] for a verdict (#2197, extracted from
+/// `draw_frame`).
+struct CameraFrameDeltas {
+    /// Absolute world-space distance the camera moved since last frame.
+    camera_delta: f32,
+    /// Dot product of this frame's and last frame's unit forward vectors.
+    cam_forward_dot: f32,
+    /// Largest element-wise `|Δ|` between this and last frame's view-proj.
+    /// Diagnostic only — deliberately NOT a cut signal, see below.
+    vp_max_abs_delta: f32,
+}
+
+/// Derive the frame-over-frame camera signals for cut detection.
+///
+/// #2159: the VP-matrix limb used to BE the cut signal — a raw element-wise
+/// diff against `prev_view_proj`, which is camera-RELATIVE to the PREVIOUS
+/// frame's render origin, so a plain 4096-unit grid crossing (zero real
+/// camera motion) produced a huge, meaningless delta; the same raw diff also
+/// tripped on ordinary walk/run speeds (a 6 units/frame forward move alone
+/// crossed the old 0.75 threshold by 8x). Both false-positives defeated
+/// #1489's origin correction on exactly the frame it exists for, and forced
+/// TAA/SVGF/FSR into a permanent reset loop while the player was simply
+/// moving.
+///
+/// It was replaced by two signals that are each robust on their own: an
+/// absolute position jump (unaffected by origin-relativity) and an angular
+/// forward-vector flip (unaffected by translation speed) — a real
+/// teleport/cutscene snap reorients the camera far more than any continuous
+/// turn does in one frame. `vp_max_abs_delta` survives only as a per-frame
+/// debug-log field; keeping it here (rather than at the log site) documents
+/// that its exclusion from [`is_camera_cut`] is deliberate.
+fn camera_frame_deltas(
+    camera_pos: [f32; 3],
+    prev_camera_position: [f32; 3],
+    cam_forward: [f32; 3],
+    prev_cam_forward: [f32; 3],
+    view_proj: &[f32; 16],
+    prev_view_proj: &[f32; 16],
+) -> CameraFrameDeltas {
+    use byroredux_core::math::Vec3;
+    CameraFrameDeltas {
+        camera_delta: Vec3::from_array(camera_pos).distance(Vec3::from_array(prev_camera_position)),
+        cam_forward_dot: Vec3::from_array(cam_forward).dot(Vec3::from_array(prev_cam_forward)),
+        vp_max_abs_delta: view_proj
+            .iter()
+            .zip(prev_view_proj.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max),
+    }
+}
+
 /// Whether a draw should read/write the per-frame rigid motion-history map
 /// (#2160). The map is keyed on `DrawCommand::entity_id`, but particle
 /// draws synthesize that field as `entity ^ i` — a sort tiebreaker, not a
@@ -205,6 +257,53 @@ mod camera_cut_tests {
     fn first_frame_is_never_a_cut() {
         assert!(!is_camera_cut(0, 10_000.0, -1.0));
     }
+
+    /// #2197 — the same #2159 grid-crossing false-positive, now pinned end
+    /// to end through the extracted derivation: a render-origin crossing
+    /// makes `view_proj` jump wildly (the old cut signal) while the camera
+    /// has neither moved nor turned, and the verdict must still be "no cut".
+    #[test]
+    fn deltas_from_a_grid_crossing_do_not_reach_the_cut_verdict() {
+        let vp = [0.0_f32; 16];
+        let mut prev_vp = [0.0_f32; 16];
+        prev_vp[12] = 4096.0; // origin re-base: huge matrix delta, no motion
+        let d = super::camera_frame_deltas(
+            [10.0, 20.0, 30.0],
+            [10.0, 20.0, 30.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, -1.0],
+            &vp,
+            &prev_vp,
+        );
+        assert_eq!(d.camera_delta, 0.0);
+        assert_eq!(d.cam_forward_dot, 1.0);
+        assert_eq!(
+            d.vp_max_abs_delta, 4096.0,
+            "the diagnostic limb still reports the crossing"
+        );
+        assert!(
+            !is_camera_cut(10, d.camera_delta, d.cam_forward_dot),
+            "vp_max_abs_delta must stay diagnostic-only — feeding it back \
+             into the verdict is exactly the #2159 regression"
+        );
+    }
+
+    /// A real teleport produces a position delta past the threshold, and
+    /// the derivation feeds that straight into a cut verdict.
+    #[test]
+    fn deltas_from_a_teleport_reach_the_cut_verdict() {
+        let vp = [0.0_f32; 16];
+        let d = super::camera_frame_deltas(
+            [1000.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, -1.0],
+            &vp,
+            &vp,
+        );
+        assert_eq!(d.camera_delta, 1000.0);
+        assert!(is_camera_cut(10, d.camera_delta, d.cam_forward_dot));
+    }
 }
 
 #[cfg(test)]
@@ -293,6 +392,173 @@ fn dof_effective_view_proj(
     let proj = Mat4::from_cols_array(&dof.proj_mat);
     let jvp = (proj * jittered_view).to_cols_array();
     (jvp, jittered_eye.to_array())
+}
+
+/// FSR-vs-DOF interaction gate (#2197, extracted from `draw_frame`).
+///
+/// The initial FSR validation path is pinhole-only: combining the independent
+/// Halton(5,7) lens sequence with FSR's own projection jitter would violate
+/// the motion/reprojection contract before that contract has been validated.
+/// Every other authored DOF field is preserved for the future
+/// output-resolution implementation — only `aperture` is forced to zero, and
+/// only while FSR is active.
+fn fsr_gated_dof(dof: DofView, fsr_active: bool) -> DofView {
+    if fsr_active {
+        DofView {
+            aperture: 0.0,
+            ..dof
+        }
+    } else {
+        dof
+    }
+}
+
+/// Assemble this frame's [`FsrFrameParameters`] (#2197, extracted from
+/// `draw_frame` alongside `dof_effective_view_proj` / `fsr_gated_dof`).
+///
+/// `Ok(None)` is the ordinary "FSR is not the active upscaler" result —
+/// `fsr_jitter_pixel` is `None` for every non-FSR path, so there is nothing
+/// to describe. `Ok(Some(..))` carries the jitter, the reset flag, the frame
+/// delta, and the authored perspective parameters FSR reconstructs depth
+/// from; those come from `active_dof` (i.e. post-`fsr_gated_dof`) so the
+/// values FSR is told about are the values the projection actually used.
+///
+/// `Err` means FSR is active but the camera cannot be described to it —
+/// [`fsr_camera_parameters`] rejects a non-finite / non-perspective
+/// near-far-fov triple. That is fatal for the frame rather than something to
+/// paper over: FSR would reconstruct against garbage. The caller owns the
+/// recovery (recreating the frame's `image_available` semaphore before
+/// returning), which is why this stays a pure function returning `Result`.
+///
+/// Note the camera-cut override is NOT applied here — `draw_frame` sets
+/// `reset = true` on the returned parameters after `is_camera_cut` fires,
+/// since that decision also drives `signal_temporal_discontinuity` and the
+/// `prev_view_proj` substitution.
+fn build_fsr_frame_parameters(
+    active_dof: &DofView,
+    fsr_jitter_pixel: Option<[f32; 2]>,
+    fsr_reset_pending: bool,
+    frame_time_delta_ms: f32,
+) -> anyhow::Result<Option<FsrFrameParameters>> {
+    let Some(jitter_offset) = fsr_jitter_pixel else {
+        return Ok(None);
+    };
+    let Some(camera) = fsr_camera_parameters(
+        active_dof.camera_near,
+        active_dof.camera_far,
+        active_dof.camera_fov_y,
+    ) else {
+        anyhow::bail!("FSR requires a finite perspective projection");
+    };
+    Ok(Some(FsrFrameParameters {
+        jitter_offset,
+        reset: fsr_reset_pending,
+        frame_time_delta_ms,
+        camera_near: camera.near,
+        camera_far: camera.far,
+        camera_fov_angle_vertical: camera.fov_y_radians,
+    }))
+}
+
+#[cfg(test)]
+mod fsr_frame_parameter_tests {
+    use super::{build_fsr_frame_parameters, fsr_gated_dof, DofView};
+
+    /// #2197 — FSR active forces the pinhole path, but must not disturb any
+    /// other authored DOF field (they still feed the future
+    /// output-resolution DOF implementation).
+    #[test]
+    fn fsr_zeroes_aperture_and_preserves_every_other_dof_field() {
+        let dof = DofView {
+            aperture: 2.5,
+            focus_dist: 137.0,
+            ..DofView::default()
+        };
+        let gated = fsr_gated_dof(dof, true);
+        assert_eq!(gated.aperture, 0.0);
+        assert_eq!(gated.focus_dist, 137.0);
+        assert_eq!(gated.camera_near, dof.camera_near);
+        assert_eq!(gated.camera_far, dof.camera_far);
+        assert_eq!(gated.camera_fov_y, dof.camera_fov_y);
+        assert_eq!(gated.proj_mat, dof.proj_mat);
+    }
+
+    /// With FSR inactive the DOF view passes through untouched — a
+    /// non-zero aperture must still reach `dof_effective_view_proj`.
+    #[test]
+    fn no_fsr_leaves_dof_untouched() {
+        let dof = DofView {
+            aperture: 2.5,
+            ..DofView::default()
+        };
+        assert_eq!(fsr_gated_dof(dof, false).aperture, 2.5);
+    }
+
+    /// No jitter ⇒ FSR is not the active upscaler ⇒ no frame parameters,
+    /// and specifically not an error: every non-FSR path takes this branch
+    /// every frame.
+    #[test]
+    fn absent_jitter_yields_no_parameters() {
+        let params = build_fsr_frame_parameters(&DofView::default(), None, false, 16.6)
+            .expect("no-jitter path must not error");
+        assert!(params.is_none());
+    }
+
+    /// The reset flag propagates verbatim from the pending-reset input, and
+    /// the camera triple is sourced from the (already FSR-gated) DofView.
+    #[test]
+    fn reset_and_camera_parameters_propagate() {
+        let dof = DofView {
+            camera_near: 0.5,
+            camera_far: 4096.0,
+            camera_fov_y: 1.0,
+            ..DofView::default()
+        };
+        let params = build_fsr_frame_parameters(&dof, Some([0.25, -0.5]), true, 8.0)
+            .expect("finite perspective must succeed")
+            .expect("jitter present ⇒ parameters present");
+        assert!(params.reset, "pending reset must reach FSR");
+        assert_eq!(params.jitter_offset, [0.25, -0.5]);
+        assert_eq!(params.frame_time_delta_ms, 8.0);
+        assert_eq!(params.camera_near, 0.5);
+        assert_eq!(params.camera_far, 4096.0);
+        assert_eq!(params.camera_fov_angle_vertical, 1.0);
+    }
+
+    /// No pending reset ⇒ `reset` is false. `draw_frame` is what later ORs
+    /// in the camera-cut override (`is_camera_cut`), so this function must
+    /// not invent one.
+    #[test]
+    fn without_pending_reset_the_flag_stays_clear() {
+        let params = build_fsr_frame_parameters(&DofView::default(), Some([0.0, 0.0]), false, 16.6)
+            .expect("finite perspective must succeed")
+            .expect("jitter present ⇒ parameters present");
+        assert!(!params.reset);
+    }
+
+    /// A camera FSR cannot reconstruct from is fatal for the frame, not a
+    /// silently-dropped upscale. `far <= near` is the degenerate case
+    /// `fsr_camera_parameters` rejects.
+    #[test]
+    fn degenerate_perspective_is_an_error() {
+        let dof = DofView {
+            camera_near: 10.0,
+            camera_far: 1.0,
+            ..DofView::default()
+        };
+        assert!(build_fsr_frame_parameters(&dof, Some([0.0, 0.0]), false, 16.6).is_err());
+    }
+
+    /// A non-finite fov reaches the same rejection — pinning that the guard
+    /// covers NaN/inf, not just ordering.
+    #[test]
+    fn non_finite_fov_is_an_error() {
+        let dof = DofView {
+            camera_fov_y: f32::NAN,
+            ..DofView::default()
+        };
+        assert!(build_fsr_frame_parameters(&dof, Some([0.0, 0.0]), false, 16.6).is_err());
+    }
 }
 
 /// Return `true` when `cmd` represents a real refractive surface that the
@@ -1034,19 +1300,8 @@ impl VulkanContext {
         // DOF aperture-disk jitter, or the pinhole pass-through. The bokeh
         // rationale and the #1525 degenerate-`focus_dist` guard live in
         // `dof_effective_view_proj`.
-        // The initial FSR validation path is pinhole-only. Combining the
-        // independent Halton(5,7) lens sequence with FSR's projection jitter
-        // would violate the motion/reprojection contract before it has been
-        // validated. Preserve every other authored DOF field for the future
-        // output-resolution implementation, but force aperture to zero here.
-        let active_dof = if self.fsr_temporal.is_some() {
-            DofView {
-                aperture: 0.0,
-                ..dof
-            }
-        } else {
-            dof
-        };
+        // FSR forces the pinhole path — rationale in `fsr_gated_dof`.
+        let active_dof = fsr_gated_dof(dof, self.fsr_temporal.is_some());
         let (effective_vp, effective_cam_pos) = dof_effective_view_proj(
             &active_dof,
             self.frame_counter,
@@ -1055,62 +1310,41 @@ impl VulkanContext {
             view_proj,
         );
         let vp = &effective_vp;
-        let mut fsr_frame = if let Some(jitter_offset) = fsr_jitter_pixel {
-            let Some(camera) = fsr_camera_parameters(
-                active_dof.camera_near,
-                active_dof.camera_far,
-                active_dof.camera_fov_y,
-            ) else {
+        let mut fsr_frame = match build_fsr_frame_parameters(
+            &active_dof,
+            fsr_jitter_pixel,
+            fsr_reset_pending,
+            frame_time_delta_ms,
+        ) {
+            Ok(params) => params,
+            Err(e) => {
                 let _ = unsafe {
                     // SAFETY: this early-return happens after the swapchain
                     // image acquire but before any batch is submitted this
-                    // frame (the `bail!` below aborts before `queue_submit`),
+                    // frame (the `return` below aborts before `queue_submit`),
                     // `frame < MAX_FRAMES_IN_FLIGHT` per the caller's frame
                     // index, and `self.device` is the same device that
                     // allocated the existing semaphore.
                     self.frame_sync
                         .recreate_image_available_for_frame(&self.device, frame)
                 };
-                anyhow::bail!("FSR requires a finite perspective projection");
-            };
-            Some(FsrFrameParameters {
-                jitter_offset,
-                reset: fsr_reset_pending,
-                frame_time_delta_ms,
-                camera_near: camera.near,
-                camera_far: camera.far,
-                camera_fov_angle_vertical: camera.fov_y_radians,
-            })
-        } else {
-            None
+                return Err(e);
+            }
         };
         // Automatic camera-cut detection catches debug teleports and scripted
         // snaps that do not flow through the cell-transition reset hooks.
-        //
-        // #2159: the VP-matrix limb used to be a raw element-wise diff
-        // against `self.prev_view_proj` — which is camera-RELATIVE to the
-        // PREVIOUS frame's render origin, so a plain 4096-unit grid crossing
-        // (zero real camera motion) produced a huge, meaningless delta; the
-        // same raw diff also tripped on ordinary walk/run speeds (a 6
-        // units/frame forward move alone crosses the old 0.75 threshold by
-        // 8x). Both false-positives defeated #1489's origin correction on
-        // exactly the frame it exists for, and forced TAA/SVGF/FSR into a
-        // permanent reset loop while the player was simply moving. Replaced
-        // with two signals that are each robust on their own: an absolute
-        // position jump (unaffected by origin-relativity) and an angular
-        // forward-vector flip (unaffected by translation speed) — a real
-        // teleport/cutscene snap reorients the camera far more than any
-        // continuous turn does in one frame.
-        let camera_delta = byroredux_core::math::Vec3::from_array(camera_pos).distance(
-            byroredux_core::math::Vec3::from_array(self.prev_camera_position),
-        );
-        let vp_max_abs_delta = vp
-            .iter()
-            .zip(self.prev_view_proj.iter())
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0_f32, f32::max);
-        let cam_forward_dot = byroredux_core::math::Vec3::from_array(active_dof.cam_forward).dot(
-            byroredux_core::math::Vec3::from_array(self.prev_cam_forward),
+        // Signal derivation + rationale in `camera_frame_deltas`.
+        let CameraFrameDeltas {
+            camera_delta,
+            cam_forward_dot,
+            vp_max_abs_delta,
+        } = camera_frame_deltas(
+            camera_pos,
+            self.prev_camera_position,
+            active_dof.cam_forward,
+            self.prev_cam_forward,
+            vp,
+            &self.prev_view_proj,
         );
         let camera_cut = is_camera_cut(self.frame_counter, camera_delta, cam_forward_dot);
         if camera_cut {
