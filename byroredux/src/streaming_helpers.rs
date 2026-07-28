@@ -6,7 +6,9 @@
 //! self.renderer` without aliasing — an `App::foo(&mut self)` method
 //! signature can't express that.
 
-use crate::cell_loader::{LodReconcileInput, LodWorkBudget, ObjectLodBlock, PlacementLodBlock};
+use crate::cell_loader::{
+    FrameTimeBudget, LodReconcileInput, LodWorkBudget, ObjectLodBlock, PlacementLodBlock,
+};
 use crate::streaming::LodBlock;
 use crate::{cell_loader, streaming};
 use std::collections::HashMap;
@@ -173,6 +175,7 @@ pub fn drain_streaming_state(
     let Some(mut state) = streaming_slot.take() else {
         return;
     };
+    cancel_active_streaming_apply(world, ctx, &mut state);
     let cells: Vec<_> = state.loaded.drain().collect();
     // #1536 — LOD blocks (terrain + object) carry no `CellRoot`, so
     // `unload_cell`'s `CellRootIndex` victim walk can't reach them; their
@@ -289,56 +292,6 @@ mod tests {
         assert_eq!(meshes, vec![10, 11, 12, 13, 14]);
     }
 
-    /// Regression for #1586 / F7 — the steady-state per-frame drain in
-    /// `main.rs::step_streaming` spends a bounded budget of *applied* spawns,
-    /// while stale-dropped payloads (`consume_streaming_payload` → `false`)
-    /// are pulled for free and don't count. This mirrors that loop's policy:
-    /// it must stop after `CAP` applies, draining any interleaved stale drops
-    /// without charging them, and leave the remaining real payloads queued.
-    #[test]
-    fn drain_budget_caps_applied_spawns_not_stale_drops() {
-        const CAP: usize = 2;
-        // A queue mixing stale drops and current applies, exactly as
-        // `try_recv` hands outcomes to the drain loop.
-        let applied = |coord| StreamingPayloadOutcome::Applied {
-            coord,
-            center: None,
-        };
-        let queue = [
-            StreamingPayloadOutcome::DroppedStale,
-            applied((0, 0)),
-            StreamingPayloadOutcome::DroppedStale,
-            applied((1, 0)),
-            applied((2, 0)),
-            applied((3, 0)),
-        ];
-        let mut it = queue.iter();
-
-        let mut spawned = 0usize;
-        let mut pulled = 0usize;
-        while spawned < CAP {
-            let Some(outcome) = it.next() else { break };
-            pulled += 1;
-            if outcome.is_applied() {
-                spawned += 1;
-            }
-        }
-
-        assert_eq!(
-            spawned, CAP,
-            "exactly CAP real spawns are applied this frame"
-        );
-        assert_eq!(
-            pulled, 4,
-            "stale drops are pulled for free; loop stops on the 2nd apply"
-        );
-        assert_eq!(
-            it.count(),
-            2,
-            "the remaining real payloads stay queued for the next frame"
-        );
-    }
-
     #[test]
     fn deferred_lod_uses_only_idle_main_thread_frames() {
         const CAP: usize = 2;
@@ -391,10 +344,192 @@ pub enum StreamingPayloadOutcome {
     },
 }
 
-impl StreamingPayloadOutcome {
-    /// Applied payloads consume the per-frame cell budget; stale drops do not.
-    pub fn is_applied(&self) -> bool {
-        matches!(self, Self::Applied { .. })
+fn finish_streaming_import(
+    world: &mut byroredux_core::ecs::World,
+    state: &mut streaming::WorldStreamingState,
+    model_path: String,
+    partial_opt: Option<streaming::PartialNifImport>,
+) {
+    match partial_opt {
+        Some(partial) => {
+            cell_loader::finish_partial_import(
+                world,
+                Some(&mut state.mat_provider),
+                Some(state.tex_provider.as_ref()),
+                &model_path,
+                partial,
+            );
+        }
+        None => {
+            let cache_key = model_path.to_ascii_lowercase();
+            let freed = {
+                let mut reg = world.resource_mut::<cell_loader::NifImportRegistry>();
+                reg.insert(cache_key, None)
+            };
+            // #863 — negative cache inserts can evict a parsed entry carrying
+            // an animation clip, so release those slots just like the
+            // synchronous payload path.
+            if !freed.is_empty() {
+                let mut clip_reg =
+                    world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
+                for h in freed {
+                    clip_reg.release(h);
+                }
+            }
+        }
+    }
+}
+
+fn cancel_streaming_apply_job(
+    world: &mut byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::VulkanContext,
+    job: streaming::StreamingCellApplyJob,
+) {
+    if let streaming::StreamingCellApplyPhase::Spawn(cell_job) = job.phase {
+        cell_job.cancel(world, ctx);
+    }
+}
+
+/// Cancel and reclaim the partially-applied cell, if any.
+///
+/// Used by worldspace drains; normal boundary cancellation happens
+/// automatically when the active job's generation no longer exists in
+/// `pending`.
+pub(crate) fn cancel_active_streaming_apply(
+    world: &mut byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::VulkanContext,
+    state: &mut streaming::WorldStreamingState,
+) {
+    if let Some(job) = state.active_apply.take() {
+        state.pending.remove(&job.coord);
+        cancel_streaming_apply_job(world, ctx, job);
+    }
+}
+
+/// Advance steady-state main-thread cell application under one shared
+/// deadline. Stale payloads are discarded for free; current work proceeds
+/// through NIF finalization, exterior setup, then one-or-more placed REFRs.
+pub(crate) fn advance_streaming_apply(
+    world: &mut byroredux_core::ecs::World,
+    ctx: &mut byroredux_renderer::VulkanContext,
+    state: &mut streaming::WorldStreamingState,
+    budget: &mut FrameTimeBudget,
+) -> bool {
+    loop {
+        if budget.should_yield() {
+            return budget.completed_units() > 0;
+        }
+
+        if state.active_apply.is_none() {
+            let payload = loop {
+                let Ok(payload) = state.payload_rx.try_recv() else {
+                    return budget.completed_units() > 0;
+                };
+                let coord = (payload.gx, payload.gy);
+                match streaming::classify_payload(&state.pending, coord, payload.generation) {
+                    streaming::PayloadDecision::Apply => break payload,
+                    streaming::PayloadDecision::StaleNewerPending { .. }
+                    | streaming::PayloadDecision::StaleNoPending => {
+                        log::debug!(
+                            "Dropping stale streaming payload ({},{}) gen={}",
+                            payload.gx,
+                            payload.gy,
+                            payload.generation
+                        );
+                    }
+                }
+            };
+            state.active_apply = Some(streaming::StreamingCellApplyJob::from_payload(payload));
+        }
+
+        let mut job = state
+            .active_apply
+            .take()
+            .expect("active apply was populated above");
+        if !matches!(
+            streaming::classify_payload(&state.pending, job.coord, job.generation),
+            streaming::PayloadDecision::Apply
+        ) {
+            log::debug!(
+                "Cancelling stale partial streaming apply ({},{}) gen={}",
+                job.coord.0,
+                job.coord.1,
+                job.generation,
+            );
+            cancel_streaming_apply_job(world, ctx, job);
+            continue;
+        }
+
+        match job.phase {
+            streaming::StreamingCellApplyPhase::FinishImports(mut imports) => {
+                if let Some((model_path, partial)) = imports.next() {
+                    finish_streaming_import(world, state, model_path, partial);
+                    budget.complete_unit();
+                    job.phase = streaming::StreamingCellApplyPhase::FinishImports(imports);
+                    state.active_apply = Some(job);
+                } else {
+                    job.phase = streaming::StreamingCellApplyPhase::BeginExterior;
+                    state.active_apply = Some(job);
+                }
+            }
+            streaming::StreamingCellApplyPhase::BeginExterior => {
+                let wctx = state.wctx.clone();
+                match cell_loader::ExteriorCellApplyJob::begin(
+                    wctx.as_ref(),
+                    job.coord.0,
+                    job.coord.1,
+                    world,
+                    ctx,
+                    state.tex_provider.as_ref(),
+                    Some(&mut state.mat_provider),
+                    None,
+                    budget,
+                ) {
+                    Ok(Some(cell_job)) => {
+                        job.phase = streaming::StreamingCellApplyPhase::Spawn(cell_job);
+                        state.active_apply = Some(job);
+                    }
+                    Ok(None) => {
+                        state.pending.remove(&job.coord);
+                    }
+                    Err(e) => {
+                        state.pending.remove(&job.coord);
+                        log::warn!(
+                            "Streaming cell ({},{}) setup failed after pre-parse: {:#}",
+                            job.coord.0,
+                            job.coord.1,
+                            e
+                        );
+                    }
+                }
+            }
+            streaming::StreamingCellApplyPhase::Spawn(cell_job) => {
+                let wctx = state.wctx.clone();
+                match cell_job.advance(
+                    wctx.as_ref(),
+                    world,
+                    ctx,
+                    state.tex_provider.as_ref(),
+                    Some(&mut state.mat_provider),
+                    budget,
+                ) {
+                    cell_loader::ExteriorCellApplyProgress::Pending(cell_job) => {
+                        job.phase = streaming::StreamingCellApplyPhase::Spawn(cell_job);
+                        state.active_apply = Some(job);
+                    }
+                    cell_loader::ExteriorCellApplyProgress::Complete(info) => {
+                        state.pending.remove(&job.coord);
+                        state.loaded.insert(
+                            job.coord,
+                            streaming::LoadedCell {
+                                cell_root: info.cell_root,
+                            },
+                        );
+                        ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -415,9 +550,9 @@ impl StreamingPayloadOutcome {
     fields(gx = payload.gx, gy = payload.gy, generation = payload.generation),
 )]
 /// Returns an explicit outcome so both progressive bootstrap and steady-state
-/// streaming share the exact same cache/spawn path. #1586 / F7 — the
-/// per-frame drain uses [`StreamingPayloadOutcome::is_applied`] so its cell
-/// budget counts only current payloads, not cheap stale drops.
+/// bootstrap modes can distinguish a current payload from a cheap stale drop.
+/// Steady-state streaming uses [`advance_streaming_apply`] instead so the same
+/// work can yield between NIFs and placed references.
 pub fn consume_streaming_payload(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
@@ -446,34 +581,7 @@ pub fn consume_streaming_payload(
     // load_one_exterior_cell calls now hit cache for every NIF.
     let wctx = state.wctx.clone();
     for (model_path, partial_opt) in payload.parsed {
-        match partial_opt {
-            Some(partial) => {
-                cell_loader::finish_partial_import(
-                    world,
-                    Some(&mut state.mat_provider),
-                    Some(state.tex_provider.as_ref()),
-                    &model_path,
-                    partial,
-                );
-            }
-            None => {
-                let cache_key = model_path.to_ascii_lowercase();
-                let freed = {
-                    let mut reg = world.resource_mut::<cell_loader::NifImportRegistry>();
-                    reg.insert(cache_key, None)
-                };
-                // #863 — release LRU-evicted clip handles. Negative
-                // cache inserts can still trigger eviction of older
-                // entries when `BYRO_NIF_CACHE_MAX > 0`.
-                if !freed.is_empty() {
-                    let mut clip_reg =
-                        world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
-                    for h in freed {
-                        clip_reg.release(h);
-                    }
-                }
-            }
-        }
+        finish_streaming_import(world, state, model_path, partial_opt);
     }
 
     // Spawn pass — every NIF lookup hits cache (slow parse path skipped).

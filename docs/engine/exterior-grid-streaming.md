@@ -41,11 +41,11 @@ dispatch the starting grid through the worker.
 
 Interactive startup is **foreground-first**: it waits for the center cell as
 one coherent transaction, then returns to the render loop while peripheral
-cells continue through the normal two-cells-per-frame apply budget. This gives
-exterior entry the same minimum readiness contract as an interior load without
-blocking on the whole 11×11 default radius. `--bench-frames` selects the
-`FullRadius` bootstrap mode instead, preserving deterministic measurements with
-no initial population mixed into the sample.
+cells continue through the normal measured apply budget. This gives exterior
+entry the same minimum readiness contract as an interior load without blocking
+on the whole 11×11 default radius. `--bench-frames` selects the `FullRadius`
+bootstrap mode instead, preserving deterministic measurements with no initial
+population mixed into the sample.
 
 ## 2. WRLD/LAND → terrain + REFRs
 
@@ -55,15 +55,17 @@ is `parse_land_record` (`crates/plugin/src/esm/cell/walkers.rs:1091`),
 decoding VHGT/VNML/VCLR into
 `EsmIndex.cells.exterior_cells[worldspace][(gx,gy)].landscape`.
 
-Consumption is `cell_loader::load_one_exterior_cell`
-(`byroredux/src/cell_loader/exterior.rs:265`): looks up `(gx,gy)`, calls
+Consumption converges in `cell_loader::ExteriorCellApplyJob`
+(`byroredux/src/cell_loader/exterior.rs`): it looks up `(gx,gy)`, calls
 `terrain::spawn_terrain_mesh` (`byroredux/src/cell_loader/terrain.rs:307`)
 for heightmap+splat geometry, `water::spawn_water_plane` for XCLW/default
-water, then the **same** `references::load_references` path
+water, then the **same** budget-aware reference loader
 [Pipeline Overview](pipeline-overview.md) traces for interior placed
-REFRs (plus FO4 precombine absorption). Exterior and interior cells
-converge on identical REFR-spawn machinery — the only difference is what
-feeds it (heightmap-driven terrain vs. an interior's floor/wall meshes).
+REFRs (plus FO4 precombine absorption). `load_one_exterior_cell` drives that
+job with an unlimited budget for synchronous bootstrap/bulk callers; live
+streaming retains the continuation between frames. Exterior and interior cells
+therefore converge on identical REFR-spawn machinery — only the driver and the
+terrain input differ.
 
 See [ESM Records](esm-records.md) for the WRLD/CELL/REFR record layout
 and [EXAL — Exterior Abstraction Layer](exal.md) for how the resulting
@@ -93,24 +95,35 @@ Trigger: `App::step_streaming` (`byroredux/src/app_step.rs:21`) runs once
 per tick, converts the active camera's position to a grid coordinate via
 `world_pos_to_grid` (`streaming.rs:752`). Cell diff/dispatch only runs when
 that grid cell changed, but the step continues on stationary frames while a
-deferred LOD reconcile is pending. It drains ready payloads via
-`payload_rx.try_recv()` into the shared `consume_streaming_payload`
-boundary (`byroredux/src/streaming_helpers.rs`) — capped at
-`MAX_CELLS_SPAWNED_PER_FRAME = 2` (`app_step.rs:19`) so a large batch of
-simultaneously-ready cells can't spike one frame's cost.
+deferred LOD reconcile or cell apply is pending.
 
-Bootstrap consumes through that same boundary. Cache insertion, external
-material resolution, ECS/GPU spawn, loaded-map insertion, temporal-history
-invalidation, and stale-generation rejection therefore have one implementation
-for initial entry, door transitions, debug loads, and player movement.
+Steady-state apply uses one `StreamingCellApplyJob` and a cooperative **4 ms
+deadline** per frame (`STREAMING_APPLY_BUDGET`). The deadline spans:
+
+1. main-thread completion of worker-parsed NIFs, one NIF per atomic unit;
+2. terrain/water/precombine setup as one guaranteed-progress unit;
+3. placed-reference spawning, one outer REFR per atomic unit.
+
+An already-started unit always finishes, so a single complex NIF/REFR can exceed
+4 ms once but cannot deadlock the queue. Dense cells otherwise yield and resume
+without being marked `loaded`. Every yielded entity range is already stamped
+under an early `CellRoot`, so removing the matching pending generation on a
+boundary crossing immediately cancels it through the normal `unload_cell` path.
+Queued texture uploads are flushed per yielded REFR slice instead of accumulating
+into one final cell-sized fence wait.
+
+Foreground/full-radius bootstrap still calls `consume_streaming_payload`
+synchronously, but both drivers share the same import helper, exterior apply
+job, reference pipeline, cache semantics, loaded-map insertion, temporal-history
+invalidation, and stale-generation rules.
 
 The same step advances terrain, Skyrim+/FO4 `.bto`, and Oblivion placement LOD
-through `streaming_helpers::reconcile_lod_rings`. Full-detail cell application
-has priority: only a frame that applied zero cells receives new LOD work, capped
-at two archive/import/upload attempts per provider. Candidates fill
-closest-first. A boundary crossing still runs reclaim-only reconciliation even
-on a cell-apply frame, so geometry leaving the ring and stale terrain hole masks
-are removed immediately. Interactive bootstrap defers this work; deterministic
+through `streaming_helpers::reconcile_lod_rings`. Full-detail work has priority:
+only a frame that spent no NIF/setup/REFR unit receives new LOD work, capped at
+two archive/import/upload attempts per provider. Candidates fill closest-first.
+A boundary crossing still runs reclaim-only reconciliation on a full-detail
+work frame, so geometry leaving the ring and stale terrain hole masks are
+removed immediately. Interactive bootstrap defers this work; deterministic
 `FullRadius` benchmark bootstrap passes an unlimited budget and settles all
 three providers before returning.
 
@@ -160,22 +173,21 @@ eviction/reload as cells stream out, and hysteresis (`radius_unload` >
 `radius_load`, preventing boundary-crossing thrash) are all live. The
 genuinely open items, per that row:
 
-- No smoke test yet against a real multi-cell exterior workspace (FNV
-  WastelandNV, Skyrim's Whiterun plains, FO4 Sanctuary Hills) to bench
-  cell-crossing latency end-to-end.
-- The per-cell parse stutter (~50-100 ms on FNV, pre-async-worker
-  measurement) is mitigated by the pre-parse worker but not eliminated
-  — `MAX_CELLS_SPAWNED_PER_FRAME` exists specifically because draining
-  every ready payload in one frame still spikes frame time when several
-  cells finish pre-parsing at once.
+- Real FNV foreground-first startup has been smoke-tested; a repeatable
+  boundary-crossing benchmark across FNV, Skyrim, and FO4 is still needed to
+  quantify the remaining atomic-unit outliers.
+- Main-thread NIF finalization and the high-cardinality REFR walk now share a
+  measured frame deadline. Individual NIFs/REFRs remain atomic, as do
+  terrain/water/precombine setup and their GPU submissions, so one unusually
+  complex unit can still exceed the target.
 - Distant terrain/object LOD-ring construction is incremental, but its budget
   is an operation count. One `.lod` placement cell can parse and upload far
   more geometry than one terrain block, so the cap bounds work quantity, not
   wall-clock time.
-- A cell payload is budgeted as one unit even though its main-thread cost
-  varies with terrain, precombine complexity, texture uploads, and BLAS work.
-  Replacing both fixed caps with a shared measured time/bytes budget is the
-  path from bounded pop-in to consistently hitch-free streaming.
+- The next latency slice is to split the remaining atomic setup/placement work
+  by upload bytes/mesh batches and bring LOD providers under the same measured
+  deadline. That is the path from bounded progress to consistently hitch-free
+  streaming.
 
 See [ROADMAP.md's M40 row](../../ROADMAP.md) for the full closure
 history and commit references.

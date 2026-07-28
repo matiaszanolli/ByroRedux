@@ -6,10 +6,11 @@
 use crate::cell_loader;
 use crate::streaming;
 use crate::streaming_helpers::{
-    consume_streaming_payload, lod_reconcile_budget_for_frame, reconcile_lod_rings,
+    advance_streaming_apply, lod_reconcile_budget_for_frame, reconcile_lod_rings,
     SVGF_TAA_STREAMING_RECOVERY_FRAMES,
 };
 use crate::App;
+use std::time::Duration;
 use winit::event_loop::ActiveEventLoop;
 
 /// SVGF/upscaler recovery window after a `--bench-camera cut`. Matches the
@@ -18,14 +19,11 @@ use winit::event_loop::ActiveEventLoop;
 const BENCH_CUT_RECOVERY_FRAMES: u32 = SVGF_TAA_STREAMING_RECOVERY_FRAMES;
 
 impl App {
-    /// #1586 / F7 — cap the steady-state spawn budget. Each applied
-    /// payload runs the full main-thread spawn (terrain mesh + batched
-    /// BLAS build + water + precombine decode + vertex/index upload), so
-    /// draining every ready payload in one frame spikes frame time on
-    /// fast-travel / teleport / post-stall catch-up. Spend at most
-    /// this many real spawns per frame and leave the rest queued in
-    /// the channel for subsequent frames.
-    const MAX_CELLS_SPAWNED_PER_FRAME: usize = 2;
+    /// Main-thread allowance for steady-state EXAL application. Work is
+    /// cooperative and guarantees one atomic unit of progress, so an
+    /// unusually expensive NIF/REFR may exceed this target once; the next
+    /// unit then waits for the following frame.
+    const STREAMING_APPLY_BUDGET: Duration = Duration::from_millis(4);
     /// Deferred EXAL work per active LOD provider on a frame where no
     /// full-detail cell payload was applied. Terrain plus exactly one of
     /// object/placement can therefore spend at most four attempts.
@@ -39,35 +37,7 @@ impl App {
             return;
         }
 
-        // ── 1. Drain ready payloads ─────────────────────────────────
-        //
-        // Pull payloads off the worker's channel one at a time. Each
-        // is consumed via `consume_streaming_payload` (free function,
-        // takes split-borrows of world/state/ctx — keeps the App
-        // method signature borrow-checker friendly). Non-blocking via
-        // `try_recv` — fall through immediately when no payload is
-        // ready.
-        let mut spawned_this_frame = 0usize;
-        while spawned_this_frame < Self::MAX_CELLS_SPAWNED_PER_FRAME {
-            let payload_opt = self
-                .streaming
-                .as_mut()
-                .and_then(|s| s.payload_rx.try_recv().ok());
-            let Some(payload) = payload_opt else { break };
-
-            if consume_streaming_payload(
-                &mut self.world,
-                ctx,
-                self.streaming.as_mut().unwrap(),
-                payload,
-            )
-            .is_applied()
-            {
-                spawned_this_frame += 1;
-            }
-        }
-
-        // ── 2. Diff + dispatch ──────────────────────────────────────
+        // ── 1. Diff + dispatch ──────────────────────────────────────
         let player_pos = {
             let Some(active) = self
                 .world
@@ -151,16 +121,25 @@ impl App {
             state.queue_loads(deltas.to_load, cached_keys);
         }
 
+        // ── 2. Advance one resumable full-detail transaction ───────
+        //
+        // The same deadline spans main-thread NIF finalization, terrain/
+        // precombine setup, and placed-reference spawning. Boundary diffing
+        // ran first, so removing a stale `pending` generation above cancels
+        // and reclaims a partial cell before it can consume another slice.
+        let mut apply_budget = cell_loader::FrameTimeBudget::new(Self::STREAMING_APPLY_BUDGET);
+        let full_detail_worked =
+            advance_streaming_apply(&mut self.world, ctx, state, &mut apply_budget);
+
         // ── 3. Progress the three distant-LOD rings ─────────────────
         //
-        // Full-detail cell applies own the frame. On idle frames, each LOD
-        // provider gets a small independent attempt budget, so terrain cannot
-        // starve the active object scheme. A boundary crossing with cell work
-        // still executes a zero-budget reconcile: leaving/stale geometry is
-        // reclaimed immediately, while replacements wait for an idle frame.
+        // Any full-detail work owns the frame, including a partial transaction
+        // that has not reached `loaded` yet. On idle frames, each LOD provider
+        // gets a small independent attempt budget, so terrain cannot starve
+        // the active object scheme.
         let Some(lod_budget) = lod_reconcile_budget_for_frame(
             state.lod_reconcile_pending,
-            spawned_this_frame,
+            usize::from(full_detail_worked),
             grid_changed,
             Self::MAX_LOD_ATTEMPTS_PER_PROVIDER_PER_IDLE_FRAME,
         ) else {

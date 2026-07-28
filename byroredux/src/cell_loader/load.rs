@@ -162,7 +162,34 @@ pub(crate) fn stamp_cell_root(
     first: EntityId,
     last: EntityId,
 ) {
+    register_cell_root(world, cell_root);
+    stamp_cell_root_range(world, cell_root, first, last);
+}
+
+/// Register a cell root before a resumable load starts mutating the world.
+///
+/// Incremental exterior application needs a reclaim handle as soon as its
+/// first terrain/reference entity is spawned. Registering the root up front
+/// lets cancellation use the normal [`super::unload_cell`] path even when the
+/// cell has only been partially applied.
+pub(crate) fn register_cell_root(world: &mut World, cell_root: EntityId) {
     world.insert(cell_root, CellRoot(cell_root));
+    if let Some(mut idx) = world.try_resource_mut::<CellRootIndex>() {
+        idx.map.entry(cell_root).or_default().push(cell_root);
+    }
+}
+
+/// Stamp one newly-created entity range onto an already registered cell root.
+///
+/// `first..last` is deliberately half-open and may be empty. The resumable
+/// exterior loader calls this after every cooperative slice; the synchronous
+/// loaders call it once through [`stamp_cell_root`].
+pub(crate) fn stamp_cell_root_range(
+    world: &mut World,
+    cell_root: EntityId,
+    first: EntityId,
+    last: EntityId,
+) {
     for eid in first..last {
         // `insert` is overwrite-safe; every spawned entity in
         // `first..last` gets a `CellRoot` row regardless of whether
@@ -181,12 +208,11 @@ pub(crate) fn stamp_cell_root(
     if let Some(mut idx) = world.try_resource_mut::<CellRootIndex>() {
         let entry = idx.map.entry(cell_root).or_insert_with(Vec::new);
         let span = last.saturating_sub(first) as usize;
-        entry.reserve(span + 1);
+        entry.reserve(span);
         // `extend` over a known-size `Copy` range lets the compiler
         // inline as a typed memcpy and elide per-push bounds checks
         // — same final layout as the prior per-eid push loop. #885.
         entry.extend(first..last);
-        entry.push(cell_root);
     }
 }
 

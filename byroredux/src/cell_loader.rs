@@ -77,6 +77,7 @@ mod terrain_lod_btr;
 mod transition;
 mod unload;
 mod water;
+mod work_budget;
 
 pub use index::LoadedCellIndex;
 pub use transition::{
@@ -106,6 +107,7 @@ pub(crate) use euler::{euler_zup_to_quat_yup, euler_zup_to_quat_yup_refr};
 pub use exterior::{
     build_exterior_world_context, load_one_exterior_cell, ExteriorWorldContext, OneCellLoadInfo,
 };
+pub(crate) use exterior::{ExteriorCellApplyJob, ExteriorCellApplyProgress};
 pub(crate) use load::apply_interior_cell_lighting;
 #[allow(unused_imports)]
 pub(crate) use load::resolve_cell_lighting;
@@ -120,12 +122,13 @@ pub(crate) use placement_lod::{
 };
 pub(crate) use terrain_lod::{stream_lod_blocks, unload_lod_block};
 pub use unload::unload_cell;
+pub(crate) use work_budget::FrameTimeBudget;
 
 // Test-only re-exports so the `use super::*;` patterns inside the
 // child test modules see the helpers they exercise. Production code
 // paths reach these via their owning submodule path.
 #[cfg(test)]
-pub(crate) use load::stamp_cell_root;
+pub(crate) use load::{register_cell_root, stamp_cell_root, stamp_cell_root_range};
 #[cfg(test)]
 pub(crate) use spawn::{
     count_spawnable_nif_lights, is_spawnable_nif_light, light_radius_or_default,

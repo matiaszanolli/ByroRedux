@@ -106,6 +106,36 @@ pub struct LoadCellPayload {
     pub parsed: HashMap<String, Option<PartialNifImport>>,
 }
 
+/// Main-thread continuation for one worker payload.
+///
+/// Only one is active at a time. Keeping the original generation in the job
+/// lets boundary-crossing cancellation reuse the same `pending` generation
+/// gate as payload arrival.
+pub(crate) struct StreamingCellApplyJob {
+    pub(crate) coord: (i32, i32),
+    pub(crate) generation: u64,
+    pub(crate) phase: StreamingCellApplyPhase,
+}
+
+pub(crate) enum StreamingCellApplyPhase {
+    /// Finish pool/material-dependent import work one NIF at a time.
+    FinishImports(std::collections::hash_map::IntoIter<String, Option<PartialNifImport>>),
+    /// All worker imports are resident; the exterior cell has not begun.
+    BeginExterior,
+    /// Terrain/root are resident and the placed-reference walk is resumable.
+    Spawn(crate::cell_loader::ExteriorCellApplyJob),
+}
+
+impl StreamingCellApplyJob {
+    pub(crate) fn from_payload(payload: LoadCellPayload) -> Self {
+        Self {
+            coord: (payload.gx, payload.gy),
+            generation: payload.generation,
+            phase: StreamingCellApplyPhase::FinishImports(payload.parsed.into_iter()),
+        }
+    }
+}
+
 /// Pool-free portion of NIF import — everything the worker can do
 /// off-thread. The main-thread drain step takes a `PartialNifImport`,
 /// runs `import_nif_with_collision` (string interning, needs the
@@ -244,6 +274,10 @@ pub struct WorldStreamingState {
     /// mpsc receiver for completed payloads. Drained each frame by the
     /// App driver; non-blocking via `try_recv`.
     pub payload_rx: mpsc::Receiver<LoadCellPayload>,
+    /// Current resumable main-thread apply. The matching `pending` entry stays
+    /// live until this completes, suppressing duplicate requests and making a
+    /// boundary-crossing removal an immediate cancellation signal.
+    pub(crate) active_apply: Option<StreamingCellApplyJob>,
 }
 
 impl WorldStreamingState {
@@ -284,6 +318,7 @@ impl WorldStreamingState {
             worker: Some(worker),
             request_tx: Some(request_tx),
             payload_rx,
+            active_apply: None,
         }
     }
 

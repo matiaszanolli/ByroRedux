@@ -495,10 +495,11 @@ fn bootstrap_waiting(
 /// per-frame budget. [`ExteriorBootstrapMode::FullRadius`] preserves the
 /// old deterministic benchmark behavior.
 ///
-/// Both modes consume payloads through [`consume_streaming_payload`], so
-/// bootstrap and steady-state loading share cache insertion, material
-/// resolution, cell spawning, temporal-history invalidation, and stale
-/// generation handling.
+/// Both bootstrap modes consume payloads through
+/// [`consume_streaming_payload`]. Its synchronous driver and steady-state's
+/// resumable driver share the underlying import helper, exterior apply job,
+/// reference pipeline, cache semantics, temporal invalidation, and generation
+/// gate.
 pub(crate) fn stream_initial_radius(
     world: &mut World,
     ctx: &mut VulkanContext,

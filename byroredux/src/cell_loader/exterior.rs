@@ -10,10 +10,12 @@ use std::sync::Arc;
 
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 
-use super::load::stamp_cell_root;
+use super::load::{register_cell_root, stamp_cell_root_range};
 use super::load_order::parse_record_indexes_in_load_order;
-use super::references::load_references;
-use super::{terrain, water};
+use super::references::{
+    flush_pending_cell_textures, load_references_budgeted, ReferenceLoadJob, ReferenceLoadProgress,
+};
+use super::{terrain, water, FrameTimeBudget};
 
 pub struct ExteriorWorldContext {
     pub record_index: Arc<byroredux_plugin::esm::records::EsmIndex>,
@@ -66,6 +68,35 @@ pub struct OneCellLoadInfo {
     /// Mid-cell terrain ground point in Y-up world space (only used by
     /// the bulk loader to seat the initial camera).
     pub center: Vec3,
+}
+
+/// Resumable main-thread application of one exterior cell.
+///
+/// Terrain, water, and FO4 precombined geometry are installed during
+/// construction as one guaranteed-progress unit. The remaining placed REFRs
+/// advance cooperatively through [`ReferenceLoadJob`].
+pub(crate) struct ExteriorCellApplyJob {
+    gx: i32,
+    gy: i32,
+    cell_root: EntityId,
+    terrain_center: Option<Vec3>,
+    precombined_spawned: usize,
+    references: Option<Box<ReferenceLoadJob>>,
+}
+
+pub(crate) enum ExteriorCellApplyProgress {
+    Pending(ExteriorCellApplyJob),
+    Complete(OneCellLoadInfo),
+}
+
+impl ExteriorCellApplyJob {
+    /// Reclaim every ECS/GPU object produced by an unfinished apply.
+    pub(crate) fn cancel(mut self, world: &mut World, ctx: &mut VulkanContext) {
+        if let Some(references) = self.references.take() {
+            references.cancel(world);
+        }
+        super::unload_cell(world, ctx, self.cell_root);
+    }
 }
 
 /// Build the once-per-session context for exterior streaming.
@@ -272,182 +303,272 @@ pub fn load_one_exterior_cell(
     mat_provider: Option<&mut MaterialProvider>,
     terrain_blas_accumulator: Option<&mut Vec<(u32, u32, u32)>>,
 ) -> anyhow::Result<Option<OneCellLoadInfo>> {
-    // #1668 — surface GLOB runtime values once per streaming session so
-    // CTDA "Use Global" comparands resolve. The exterior path streams many
-    // cells from one `record_index`; build the lean `Globals` map only when
-    // it isn't already present rather than rebuilding it each cell.
-    super::load::ensure_globals_resource(world, &wctx.record_index.globals);
-
-    let index = &wctx.record_index.cells;
-    let Some(cells_map) = index.exterior_cells.get(&wctx.worldspace_key) else {
-        return Ok(None);
-    };
-    let Some(cell) = cells_map.get(&(gx, gy)) else {
-        return Ok(None);
-    };
-
-    let first_entity = world.next_entity_id();
-    let has_land = cell.landscape.is_some();
-    log::info!(
-        "  Cell ({},{}) '{}': {} references{}",
+    let mut mat_provider = mat_provider;
+    let mut budget = FrameTimeBudget::unlimited();
+    let Some(mut job) = ExteriorCellApplyJob::begin(
+        wctx,
         gx,
         gy,
-        cell.editor_id,
-        cell.references.len(),
-        if has_land { " + LAND" } else { "" },
-    );
-
-    // Terrain mesh from LAND heightmap. Either accumulate the BLAS
-    // spec for caller's batched build (bulk loader) or build it
-    // ourselves (streaming).
-    let mut local_blas: Vec<(u32, u32, u32)> = Vec::new();
-    let blas_sink: &mut Vec<(u32, u32, u32)> = match terrain_blas_accumulator {
-        Some(acc) => acc,
-        None => &mut local_blas,
-    };
-    if let Some(ref land) = cell.landscape {
-        // #1855 — `spawn_terrain_mesh` already `log::warn!`s a mesh-upload
-        // failure with its own (gx,gy) (the only realistic None cause in
-        // production; the other — no GPU allocator — can't happen once
-        // VulkanContext is constructed). This call-site line adds the
-        // "cell had no terrain" correlation the per-cell log block above
-        // otherwise lacks, so a partial-cell-render is diagnosable from
-        // this cell's own log lines without cross-referencing the callee.
-        if terrain::spawn_terrain_mesh(
-            world,
-            terrain::TerrainSpawnCtx {
-                ctx: &mut *ctx,
-                tex_provider,
-                landscape_textures: &index.landscape_textures,
-                blas_specs: &mut *blas_sink,
-            },
-            gx,
-            gy,
-            land,
-        )
-        .is_none()
-        {
-            log::warn!("  Cell ({gx},{gy}): terrain mesh spawn failed — no terrain will render");
-        }
-    }
-    // Water plane. A cell's explicit XCLW height wins; cells without one
-    // inherit the worldspace default (Tamriel sea level Z=0, resolved into
-    // `wctx.default_water_height` when the worldspace has a NAM2 water
-    // form). 98% of Oblivion exterior cells have no XCLW and relied on
-    // this fallback — without it every coastal/sea cell rendered dry
-    // seabed (#1305 / OBL-D6-NEW-02). The XCLW "no water" sentinel is
-    // already filtered to None at parse time (#1305 sentinel fix), so it
-    // does not reach here as a spurious height.
-    if let Some(water_height) = cell.water_height.or(wctx.default_water_height) {
-        // Exterior cell origin in Y-up world coords. The helper composes
-        // grid-scale and the Z-up→Y-up flip; see TD3-202 / #1112.
-        let origin = cell_grid_to_world_yup(gx, gy);
-        let half = water::exterior_half_extent();
-        // #1855 — `spawn_water_plane` already `log::warn!`s a mesh-upload
-        // failure, but without cell coords (it doesn't take gx/gy). This
-        // call-site line adds the cell correlation so a dry cell that
-        // should have had water is diagnosable from this cell's own log
-        // lines.
-        if water::spawn_water_plane(
-            world,
-            ctx,
-            tex_provider,
-            &wctx.record_index.waters,
-            water_height,
-            cell.water_type_form.or(wctx.default_water_type_form),
-            (origin.x + half, origin.z - half),
-            half,
-            blas_sink,
-        )
-        .is_none()
-        {
-            log::warn!("  Cell ({gx},{gy}): water plane spawn failed — no water will render");
-        }
-    }
-    // Streaming path: submit our own BLAS build now (one mesh, one submit).
-    if !local_blas.is_empty() {
-        let built = ctx.build_blas_batched(&local_blas);
-        log::info!(
-            "  Cell ({},{}) terrain BLAS: {built}/{} tiles",
-            gx,
-            gy,
-            local_blas.len(),
-        );
-    }
-
-    // FO4+ PreCombined Mesh spawn (#1221 / D3-NEW-02). Mirrors the
-    // interior loader's Phase-3a. `cell.precombined_mesh_hashes` and
-    // `cell.absorbed_refs` are populated post-#1220 by the exterior
-    // walker in `wrld.rs`. M49 complete: CSG geometry is resolved and
-    // spawned; the absorption gate honors the XPRI list, suppressing
-    // per-REFR rendering of baked architecture on Commonwealth tiles.
-    //
-    // `cell_grid_to_world_yup(gx, gy)` is the per-tile world-space
-    // origin (Y-up); the bake's cell-local coords are translated by
-    // this offset. Without it every tile's bake would stack at the
-    // world origin (#1222).
-    let mut mat_provider = mat_provider;
-    let cell_origin = cell_grid_to_world_yup(gx, gy);
-    let (pc_spawned, _pc_misses) = super::precombined::spawn_precombined_meshes(
-        cell,
-        cell_origin,
         world,
         ctx,
         tex_provider,
         mat_provider.as_deref_mut(),
-        // M49 — active plugin (Data dir + CSG fallback); the owning plugin
-        // per cell form-id selects the actual `<Plugin> - Geometry.csg` and
-        // the `_oc.nif` path. #1590.
-        &wctx.plugin_path,
-        &wctx
-            .plugin_paths
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-    );
-
-    // Spawn placed references. Pre-#M40 every grid load went through a
-    // single `load_references` over all 49 cells' refs; per-cell calls
-    // share the process-lifetime `NifImportRegistry` so cross-cell mesh
-    // re-use still hits the cache (#381).
-    //
-    // The absorbed-REFR gate lives in the shared helper so interior +
-    // exterior can't drift (#1188 / TD2-104).
-    let absorbed = super::precombined::absorbed_refs_or_empty(&cell.absorbed_refs, pc_spawned);
-    let label = format!("exterior({},{})", gx, gy);
-    let result = load_references(
-        &cell.references,
-        index,
-        &wctx.record_index,
-        &wctx.record_index.npcs,
-        &wctx.record_index.races,
-        wctx.record_index.game,
-        world,
-        ctx,
-        tex_provider,
-        mat_provider,
-        &label,
-        wctx.load_order.as_ref(),
-        absorbed,
-    );
-
-    // Mid-cell terrain ground point — only meaningful for the
-    // initial-load camera-positioning path used by the bulk loader.
-    let center = if let Some(ref land) = cell.landscape {
-        let mid_height = land.heights[16 * 33 + 16];
-        let world_x = gx as f32 * EXTERIOR_CELL_UNITS + 16.0 * 128.0;
-        let world_y = gy as f32 * EXTERIOR_CELL_UNITS + 16.0 * 128.0;
-        // Z-up → Y-up: (x, height, -y), plus 200 units above ground.
-        Vec3::new(world_x, mid_height + 200.0, -world_y)
-    } else {
-        result.center
+        terrain_blas_accumulator,
+        &mut budget,
+    )?
+    else {
+        return Ok(None);
     };
+    loop {
+        match job.advance(
+            wctx,
+            world,
+            ctx,
+            tex_provider,
+            mat_provider.as_deref_mut(),
+            &mut budget,
+        ) {
+            ExteriorCellApplyProgress::Pending(next) => job = next,
+            ExteriorCellApplyProgress::Complete(info) => return Ok(Some(info)),
+        }
+    }
+}
 
-    let last_entity = world.next_entity_id();
-    let cell_root = world.spawn();
-    stamp_cell_root(world, cell_root, first_entity, last_entity);
+impl ExteriorCellApplyJob {
+    /// Install the non-reference phases and create the cell's reclaim root.
+    ///
+    /// This is deliberately one cooperative unit: the expensive high-cardinality
+    /// phase is the REFR walk, while terrain/water/precombine preserve their
+    /// existing atomic GPU submission boundaries.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin(
+        wctx: &ExteriorWorldContext,
+        gx: i32,
+        gy: i32,
+        world: &mut World,
+        ctx: &mut VulkanContext,
+        tex_provider: &TextureProvider,
+        mat_provider: Option<&mut MaterialProvider>,
+        terrain_blas_accumulator: Option<&mut Vec<(u32, u32, u32)>>,
+        budget: &mut FrameTimeBudget,
+    ) -> anyhow::Result<Option<Self>> {
+        // #1668 — surface GLOB runtime values once per streaming session so
+        // CTDA "Use Global" comparands resolve. The exterior path streams many
+        // cells from one `record_index`; build the lean `Globals` map only when
+        // it isn't already present rather than rebuilding it each cell.
+        super::load::ensure_globals_resource(world, &wctx.record_index.globals);
 
-    Ok(Some(OneCellLoadInfo { cell_root, center }))
+        let index = &wctx.record_index.cells;
+        let Some(cells_map) = index.exterior_cells.get(&wctx.worldspace_key) else {
+            return Ok(None);
+        };
+        let Some(cell) = cells_map.get(&(gx, gy)) else {
+            return Ok(None);
+        };
+
+        let cell_root = world.spawn();
+        register_cell_root(world, cell_root);
+        let first_entity = world.next_entity_id();
+        let has_land = cell.landscape.is_some();
+        log::info!(
+            "  Cell ({},{}) '{}': {} references{}",
+            gx,
+            gy,
+            cell.editor_id,
+            cell.references.len(),
+            if has_land { " + LAND" } else { "" },
+        );
+
+        // Terrain mesh from LAND heightmap. Either accumulate the BLAS
+        // spec for caller's batched build (bulk loader) or build it
+        // ourselves (streaming).
+        let mut local_blas: Vec<(u32, u32, u32)> = Vec::new();
+        let blas_sink: &mut Vec<(u32, u32, u32)> = match terrain_blas_accumulator {
+            Some(acc) => acc,
+            None => &mut local_blas,
+        };
+        if let Some(ref land) = cell.landscape {
+            // #1855 — `spawn_terrain_mesh` already `log::warn!`s a mesh-upload
+            // failure with its own (gx,gy) (the only realistic None cause in
+            // production; the other — no GPU allocator — can't happen once
+            // VulkanContext is constructed). This call-site line adds the
+            // "cell had no terrain" correlation the per-cell log block above
+            // otherwise lacks, so a partial-cell-render is diagnosable from
+            // this cell's own log lines without cross-referencing the callee.
+            if terrain::spawn_terrain_mesh(
+                world,
+                terrain::TerrainSpawnCtx {
+                    ctx: &mut *ctx,
+                    tex_provider,
+                    landscape_textures: &index.landscape_textures,
+                    blas_specs: &mut *blas_sink,
+                },
+                gx,
+                gy,
+                land,
+            )
+            .is_none()
+            {
+                log::warn!(
+                    "  Cell ({gx},{gy}): terrain mesh spawn failed — no terrain will render"
+                );
+            }
+        }
+        // Water plane. A cell's explicit XCLW height wins; cells without one
+        // inherit the worldspace default (Tamriel sea level Z=0, resolved into
+        // `wctx.default_water_height` when the worldspace has a NAM2 water
+        // form). 98% of Oblivion exterior cells have no XCLW and relied on
+        // this fallback — without it every coastal/sea cell rendered dry
+        // seabed (#1305 / OBL-D6-NEW-02). The XCLW "no water" sentinel is
+        // already filtered to None at parse time (#1305 sentinel fix), so it
+        // does not reach here as a spurious height.
+        if let Some(water_height) = cell.water_height.or(wctx.default_water_height) {
+            // Exterior cell origin in Y-up world coords. The helper composes
+            // grid-scale and the Z-up→Y-up flip; see TD3-202 / #1112.
+            let origin = cell_grid_to_world_yup(gx, gy);
+            let half = water::exterior_half_extent();
+            // #1855 — `spawn_water_plane` already `log::warn!`s a mesh-upload
+            // failure, but without cell coords (it doesn't take gx/gy). This
+            // call-site line adds the cell correlation so a dry cell that
+            // should have had water is diagnosable from this cell's own log
+            // lines.
+            if water::spawn_water_plane(
+                world,
+                ctx,
+                tex_provider,
+                &wctx.record_index.waters,
+                water_height,
+                cell.water_type_form.or(wctx.default_water_type_form),
+                (origin.x + half, origin.z - half),
+                half,
+                blas_sink,
+            )
+            .is_none()
+            {
+                log::warn!("  Cell ({gx},{gy}): water plane spawn failed — no water will render");
+            }
+        }
+        // Streaming path: submit our own BLAS build now (one mesh, one submit).
+        if !local_blas.is_empty() {
+            let built = ctx.build_blas_batched(&local_blas);
+            log::info!(
+                "  Cell ({},{}) terrain BLAS: {built}/{} tiles",
+                gx,
+                gy,
+                local_blas.len(),
+            );
+        }
+
+        // FO4+ PreCombined Mesh spawn (#1221 / D3-NEW-02). Mirrors the
+        // interior loader's Phase-3a. `cell.precombined_mesh_hashes` and
+        // `cell.absorbed_refs` are populated post-#1220 by the exterior
+        // walker in `wrld.rs`. M49 complete: CSG geometry is resolved and
+        // spawned; the absorption gate honors the XPRI list, suppressing
+        // per-REFR rendering of baked architecture on Commonwealth tiles.
+        //
+        // `cell_grid_to_world_yup(gx, gy)` is the per-tile world-space
+        // origin (Y-up); the bake's cell-local coords are translated by
+        // this offset. Without it every tile's bake would stack at the
+        // world origin (#1222).
+        let cell_origin = cell_grid_to_world_yup(gx, gy);
+        let (pc_spawned, _pc_misses) = super::precombined::spawn_precombined_meshes(
+            cell,
+            cell_origin,
+            world,
+            ctx,
+            tex_provider,
+            mat_provider,
+            // M49 — active plugin (Data dir + CSG fallback); the owning plugin
+            // per cell form-id selects the actual `<Plugin> - Geometry.csg` and
+            // the `_oc.nif` path. #1590.
+            &wctx.plugin_path,
+            &wctx
+                .plugin_paths
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+        );
+
+        // Mid-cell terrain ground point — only meaningful for the
+        // initial-load camera-positioning path used by the bulk loader.
+        let terrain_center = cell.landscape.as_ref().map(|land| {
+            let mid_height = land.heights[16 * 33 + 16];
+            let world_x = gx as f32 * EXTERIOR_CELL_UNITS + 16.0 * 128.0;
+            let world_y = gy as f32 * EXTERIOR_CELL_UNITS + 16.0 * 128.0;
+            // Z-up → Y-up: (x, height, -y), plus 200 units above ground.
+            Vec3::new(world_x, mid_height + 200.0, -world_y)
+        });
+        let last_entity = world.next_entity_id();
+        stamp_cell_root_range(world, cell_root, first_entity, last_entity);
+        budget.complete_unit();
+
+        Ok(Some(Self {
+            gx,
+            gy,
+            cell_root,
+            terrain_center,
+            precombined_spawned: pc_spawned,
+            references: None,
+        }))
+    }
+
+    /// Advance placed references until the frame budget expires.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn advance(
+        mut self,
+        wctx: &ExteriorWorldContext,
+        world: &mut World,
+        ctx: &mut VulkanContext,
+        tex_provider: &TextureProvider,
+        mat_provider: Option<&mut MaterialProvider>,
+        budget: &mut FrameTimeBudget,
+    ) -> ExteriorCellApplyProgress {
+        let index = &wctx.record_index.cells;
+        let cell = index
+            .exterior_cells
+            .get(&wctx.worldspace_key)
+            .and_then(|cells| cells.get(&(self.gx, self.gy)))
+            .expect("exterior cell existed when its apply job began");
+        let absorbed = super::precombined::absorbed_refs_or_empty(
+            &cell.absorbed_refs,
+            self.precombined_spawned,
+        );
+        let label = format!("exterior({},{})", self.gx, self.gy);
+        let first_entity = world.next_entity_id();
+        let progress = load_references_budgeted(
+            &cell.references,
+            index,
+            &wctx.record_index,
+            &wctx.record_index.npcs,
+            &wctx.record_index.races,
+            wctx.record_index.game,
+            world,
+            ctx,
+            tex_provider,
+            mat_provider,
+            &label,
+            wctx.load_order.as_ref(),
+            absorbed,
+            self.references.take(),
+            budget,
+        );
+        stamp_cell_root_range(world, self.cell_root, first_entity, world.next_entity_id());
+
+        match progress {
+            ReferenceLoadProgress::Pending(references) => {
+                self.references = Some(references);
+                flush_pending_cell_textures(ctx);
+                ExteriorCellApplyProgress::Pending(self)
+            }
+            ReferenceLoadProgress::Complete(result) => {
+                let center = self.terrain_center.unwrap_or(result.center);
+                ExteriorCellApplyProgress::Complete(OneCellLoadInfo {
+                    cell_root: self.cell_root,
+                    center,
+                })
+            }
+        }
+    }
 }
 
 // `default_water_for_worldspace` (+ its #1305 / OBL-D6-NEW-02 per-game

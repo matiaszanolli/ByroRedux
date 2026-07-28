@@ -14,7 +14,8 @@ every game.
 `translate` / `canonical` / `resolve`; **EXAL** names the layer as a whole.
 
 **Status**: ACTIVE. Environment translation and distant LOD are implemented;
-foreground-first loading convergence began 2026-07-27 (§5.6 / §7).
+foreground-first loading plus deadline-bounded cell application began
+2026-07-27 (§5.6 / §7).
 
 **Goal**: every supported engine version (Oblivion / FO3 / FNV / Skyrim LE/SE /
 FO4 / FO76 / Starfield) translates its native, per-game exterior data into **one
@@ -416,37 +417,49 @@ therefore waited for up to 121 cells before the first interactive frame.
 
 The first convergence slice keeps the center exterior cell as the coherent
 foreground transaction and leaves the peripheral radius queued. The second
-slice makes distant LOD obey the same progressive contract:
+slice makes distant LOD obey the same progressive contract. The third replaces
+the coarse live cell-count cap with a measured, resumable main-thread apply:
 
 1. `compute_streaming_deltas` produces one closest-first desired-cell list.
 2. `WorldStreamingState::queue_loads` is the single request boundary for
    bootstrap and player-boundary streaming.
-3. `consume_streaming_payload` is the single main-thread apply boundary for
-   bootstrap and steady state.
+3. `ExteriorCellApplyJob` and the budget-aware reference loader are the shared
+   main-thread apply machinery. Synchronous bootstrap drives them with an
+   unlimited budget; steady state retains one continuation across frames.
 4. Interactive boot, door transitions, and debug exterior loads wait only until
-   the center coordinate resolves. The remaining payloads respect
-   `MAX_CELLS_SPAWNED_PER_FRAME`.
+   the center coordinate resolves. The remaining payloads use a cooperative
+   4 ms frame deadline spanning NIF finalization and REFR spawning.
 5. `--bench-frames` explicitly selects full-radius blocking so performance and
    screenshot baselines still begin from a stable populated world.
 6. Foreground-first bootstrap marks the terrain/object/placement LOD reconcile
    pending instead of constructing every block synchronously.
-7. A frame that applies any full-detail cell spends no new LOD work. An idle
-   frame permits two archive/import/upload attempts per provider; terrain and
-   the active game-specific object scheme therefore cannot starve each other.
+7. A frame that spends any full-detail NIF/setup/REFR unit gets no new LOD work.
+   An idle frame permits two archive/import/upload attempts per provider;
+   terrain and the active game-specific object scheme therefore cannot starve
+   each other.
 8. LOD candidates are deterministic and closest-first. Missing assets become
    mask-aware sentinels, so one absent near block cannot be retried forever and
    prevent the outer ring from filling.
 9. Reclaims remain immediate even when the construction budget is zero:
    out-of-ring geometry and stale terrain hole masks disappear on the boundary
    crossing, while replacements may arrive over later frames.
+10. One active payload progresses through NIF finalization (one NIF/unit),
+    atomic terrain/water/precombine setup, then placed references (one outer
+    REFR/unit). A unit already in progress always finishes; the next observes
+    the deadline.
+11. The cell root is registered before setup begins and each yielded entity
+    range extends its `CellRootIndex` entry. A stale generation or worldspace
+    drain can therefore reclaim a half-applied cell through `unload_cell`, not a
+    second cleanup implementation.
 
 This is not yet a claim that exterior entry is pause-free. LOD work is bounded
 by attempt count rather than elapsed time, and one placement cell can still be
-much more expensive than one terrain block. The next latency boundary is a
-measured time/bytes budget spanning variable-cost cell application
-(terrain/precombine/upload/BLAS) and LOD providers, followed by provider/cache
-reuse across transitions. The foreground cell remains the minimum coherent
-handoff throughout.
+much more expensive than one terrain block. A single complex NIF/REFR and the
+terrain/precombine/upload/BLAS setup phase also remain atomic and may exceed the
+nominal deadline once. The next latency boundary is byte/mesh-batch slicing for
+those units plus a measured LOD budget, followed by provider/cache reuse across
+transitions. The foreground cell remains the minimum coherent handoff
+throughout.
 
 ---
 
@@ -583,17 +596,18 @@ Steps 1–5 are refactors that pay down the scattered-quirk debt; step 6 is the 
 rendering capability the user asked for, built on the boundary the earlier steps
 establish.
 
-7. **Loading continuity (§5.6)** — **first two cuts done (2026-07-27).**
+7. **Loading continuity (§5.6)** — **first three cuts done (2026-07-27).**
    Interactive exterior entry is foreground-first: the center cell blocks as one
-   coherent transaction and the rest of the radius applies through the existing
-   worker/frame budget. Bootstrap and steady state now share
-   `WorldStreamingState::queue_loads` and `consume_streaming_payload`; the
-   duplicated bootstrap cache/spawn implementation was removed. Deterministic
-   `--bench-frames` runs retain full-radius blocking. Terrain, `.bto`, and
-   placement LOD now share one closest-first reconciler: interactive work runs
-   only on cell-apply-idle frames at two attempts per provider, while stale
-   geometry is reclaimed immediately. Follow-ups: time-budgeted rather than
-   count-budgeted cell/LOD apply and provider reuse across door transitions.
+   coherent transaction and the rest of the radius applies through the worker.
+   Bootstrap and steady state share request, import, exterior setup, and REFR
+   machinery; deterministic `--bench-frames` runs retain full-radius blocking.
+   Terrain, `.bto`, and placement LOD share one closest-first reconciler:
+   interactive work runs only on full-detail-idle frames at two attempts per
+   provider, while stale geometry is reclaimed immediately. Steady-state
+   full-detail apply now uses one 4 ms cooperative deadline across per-NIF
+   finalization and per-REFR spawn, with resumable cell roots and cancellation.
+   Follow-ups: split atomic terrain/precombine/large-REFR GPU work, bring LOD
+   under the measured deadline, and reuse providers across door transitions.
 
 ---
 

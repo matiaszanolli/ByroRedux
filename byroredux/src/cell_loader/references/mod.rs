@@ -22,6 +22,7 @@ use super::load_order::{self, plugin_for_form_id};
 use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
 use super::refr::{build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements};
 use super::spawn::{light_radius_or_default, spawn_placed_instances};
+use super::FrameTimeBudget;
 
 mod attach;
 mod import;
@@ -45,6 +46,44 @@ pub(super) struct RefLoadResult {
     /// See the `door_pos` local in [`load_references`] for the precedence
     /// rationale.
     pub(super) center: Vec3,
+}
+
+/// Owned continuation for the placed-reference phase of a cell load.
+///
+/// Every field that used to live on `load_references`' stack lives here so
+/// exterior streaming can return to the main loop between REFRs without
+/// duplicating the interior/reference pipeline.
+pub(super) struct ReferenceLoadJob {
+    next_ref: usize,
+    cache_hits_at_entry: u64,
+    cache_misses_at_entry: u64,
+    cache_size_at_entry: usize,
+    door_pos: Option<Vec3>,
+    enable_skipped: u32,
+    absorbed_skipped: u32,
+    npc_pending: u32,
+    npc_pending_sample: Vec<u32>,
+    idle_pool: Vec<u32>,
+    accum: RefLoadAccum,
+}
+
+pub(super) enum ReferenceLoadProgress {
+    Pending(Box<ReferenceLoadJob>),
+    Complete(RefLoadResult),
+}
+
+impl ReferenceLoadJob {
+    /// Release clip handles registered by cache-miss REFRs that never reached
+    /// the end-of-cell cache commit because streaming cancelled the cell.
+    pub(super) fn cancel(self, world: &World) {
+        if self.accum.pending_clip_handles.is_empty() {
+            return;
+        }
+        let mut clip_reg = world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
+        for handle in self.accum.pending_clip_handles.into_values() {
+            clip_reg.release(handle);
+        }
+    }
 }
 
 /// #1495 / REN2-10 — RT absolute-space f32 precision ceiling, in world
@@ -99,7 +138,7 @@ pub(super) fn load_references(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
-    mut mat_provider: Option<&mut MaterialProvider>,
+    mat_provider: Option<&mut MaterialProvider>,
     label: &str,
     load_order: &[String],
     // #1188 — FO4+ PreCombined absorbed REFR form IDs. Skip placement
@@ -110,107 +149,171 @@ pub(super) fn load_references(
     // z-fighting on every wall / floor / ceiling.
     absorbed_refs: &std::collections::HashSet<u32>,
 ) -> RefLoadResult {
-    // CHARAL: build the per-game derived-stat ruleset once (idempotent across
-    // cells) so `GetActorValue` can compute actor-general derived stats (Carry
-    // Weight, Melee Damage, …) for actors that don't carry the value directly.
-    if world
-        .try_resource::<byroredux_core::character::CharacterRuleset>()
-        .is_none()
-    {
-        if let Some(rs) = crate::npc_spawn::build_character_ruleset(game, record_index) {
-            world.insert_resource(rs);
+    let mut budget = FrameTimeBudget::unlimited();
+    match load_references_budgeted(
+        refs,
+        index,
+        record_index,
+        npcs,
+        races,
+        game,
+        world,
+        ctx,
+        tex_provider,
+        mat_provider,
+        label,
+        load_order,
+        absorbed_refs,
+        None,
+        &mut budget,
+    ) {
+        ReferenceLoadProgress::Complete(result) => result,
+        ReferenceLoadProgress::Pending(_) => {
+            unreachable!("an unlimited reference-load budget cannot yield")
         }
     }
-    // Process-lifetime cache of parsed-and-imported NIF scene data
-    // (`NifImportRegistry`, #381). Each unique mesh is parsed exactly
-    // once across the entire process — subsequent placements of the
-    // same model in this cell *and* later cells reuse the shared
-    // `Arc` and only pay the per-reference spawn cost (vertex upload,
-    // texture resolve, entity insertion). A `None` entry records a
-    // mesh that failed to parse — we skip subsequent placements of
-    // the same model silently. Per-cell hit/miss accounting (the
-    // numbers logged at end-of-cell) is computed against the lifetime
-    // counters by snapshotting them at entry.
-    let (cache_hits_at_entry, cache_misses_at_entry, cache_size_at_entry) = {
-        let reg = world.resource::<NifImportRegistry>();
-        (reg.core.hits(), reg.core.misses(), reg.len())
-    };
-    // First door REFR's own placement in THIS cell (not its XTEL
-    // destination) — a strictly better spawn-point candidate than the raw
-    // bounding-box centroid below. A door is always placed on a walkable
-    // threshold; the centroid of every placed REFR (statics, NPCs, invisible
-    // trigger volumes, far-flung markers) has no such guarantee and can land
-    // inside a wall, a stairwell void, or genuinely outside the interior
-    // shell for L-shaped/multi-wing cells — the reported "spawns at random
-    // points, sometimes outside the interior" bug. See the `center` doc
-    // comment on `RefLoadResult`/`CellLoadResult`.
-    let mut door_pos: Option<Vec3> = None;
+}
 
-    let mut enable_skipped = 0u32;
-    // #1188 — count REFRs skipped because the CK absorbed them into a
-    // precombined `_oc.nif`. Surfaced in the end-of-cell summary so an
-    // operator can spot a missing precombined-spawn step (would manifest
-    // as "absorbed=N but precombined_spawned=0" pair below).
-    let mut absorbed_skipped = 0u32;
-    // `npc_pending` was the Phase 0/2 telemetry for pre-baked-FaceGen
-    // games waiting on Phase 4's spawn path — kept (unused after
-    // Phase 4 wired) so the cell summary's "0 ACHR refs ... pending"
-    // line stays a coherent zero rather than disappearing entirely.
-    // M41.0 lands every supported game on a real spawn function;
-    // if a future game variant doesn't satisfy either predicate,
-    // these fall back to the original telemetry shape.
-    #[allow(unused_mut)]
-    let mut npc_pending: u32 = 0;
-    #[allow(unused_mut)]
-    let mut npc_pending_sample: Vec<u32> = Vec::with_capacity(8);
-
-    // M41.0 Phase 2 + M41.5 Phase A — resolve the shared per-cell idle
-    // pool once before the REFR loop; it is threaded through every
-    // `spawn_npc_entity` call, where each NPC picks + phase-desyncs its
-    // own handle. `load_idle_pool` is path-keyed memoised (#790), so
-    // re-entry across cell loads is a HashMap hit — neither the BSA
-    // extract nor `AnimationClipRegistry::add` runs a second time for
-    // the same `kf_path`. Returns an empty pool when the game is on the
-    // Havok-animation track (Skyrim+/FO4+) or the KF isn't archived —
-    // those NPCs just spawn without an animation player. Gender variation
-    // is collapsed: FNV vanilla ships only `_male\idle.kf` and uses it
-    // for both genders. The `Gender` argument was dropped from these
-    // resolvers in #1117 / TD8-018; re-introduce it when a game variant
-    // actually ships separate clips.
-    let idle_pool = if game.has_kf_animations() {
-        crate::npc_spawn::load_idle_pool(world, tex_provider, game)
+/// Advance the shared reference loader until the cooperative deadline expires.
+///
+/// A REFR is the atomic progress unit. One already-started REFR always
+/// finishes, even if it expands to several SCOL/PKIN children; the next REFR
+/// observes the deadline and yields. This preserves deterministic ordering and
+/// guarantees progress for unusually expensive single placements.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn load_references_budgeted(
+    refs: &[esm::cell::PlacedRef],
+    index: &esm::cell::EsmCellIndex,
+    record_index: &byroredux_plugin::esm::records::EsmIndex,
+    npcs: &HashMap<u32, byroredux_plugin::esm::records::NpcRecord>,
+    races: &HashMap<u32, byroredux_plugin::esm::records::RaceRecord>,
+    game: byroredux_plugin::esm::reader::GameKind,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    mut mat_provider: Option<&mut MaterialProvider>,
+    label: &str,
+    load_order: &[String],
+    absorbed_refs: &std::collections::HashSet<u32>,
+    job: Option<Box<ReferenceLoadJob>>,
+    budget: &mut FrameTimeBudget,
+) -> ReferenceLoadProgress {
+    let mut job = if let Some(job) = job {
+        job
     } else {
-        Vec::new()
+        // CHARAL: build the per-game derived-stat ruleset once (idempotent across
+        // cells) so `GetActorValue` can compute actor-general derived stats (Carry
+        // Weight, Melee Damage, …) for actors that don't carry the value directly.
+        if world
+            .try_resource::<byroredux_core::character::CharacterRuleset>()
+            .is_none()
+        {
+            if let Some(rs) = crate::npc_spawn::build_character_ruleset(game, record_index) {
+                world.insert_resource(rs);
+            }
+        }
+        // Process-lifetime cache of parsed-and-imported NIF scene data
+        // (`NifImportRegistry`, #381). Each unique mesh is parsed exactly
+        // once across the entire process — subsequent placements of the
+        // same model in this cell *and* later cells reuse the shared
+        // `Arc` and only pay the per-reference spawn cost (vertex upload,
+        // texture resolve, entity insertion). A `None` entry records a
+        // mesh that failed to parse — we skip subsequent placements of
+        // the same model silently. Per-cell hit/miss accounting (the
+        // numbers logged at end-of-cell) is computed against the lifetime
+        // counters by snapshotting them at entry.
+        let (cache_hits_at_entry, cache_misses_at_entry, cache_size_at_entry) = {
+            let reg = world.resource::<NifImportRegistry>();
+            (reg.core.hits(), reg.core.misses(), reg.len())
+        };
+        // First door REFR's own placement in THIS cell (not its XTEL
+        // destination) — a strictly better spawn-point candidate than the raw
+        // bounding-box centroid below. A door is always placed on a walkable
+        // threshold; the centroid of every placed REFR (statics, NPCs, invisible
+        // trigger volumes, far-flung markers) has no such guarantee and can land
+        // inside a wall, a stairwell void, or genuinely outside the interior
+        // shell for L-shaped/multi-wing cells — the reported "spawns at random
+        // points, sometimes outside the interior" bug. See the `center` doc
+        // comment on `RefLoadResult`/`CellLoadResult`.
+        let door_pos: Option<Vec3> = None;
+        let enable_skipped = 0u32;
+        // #1188 — count REFRs skipped because the CK absorbed them into a
+        // precombined `_oc.nif`. Surfaced in the end-of-cell summary so an
+        // operator can spot a missing precombined-spawn step (would manifest
+        // as "absorbed=N but precombined_spawned=0" pair below).
+        let absorbed_skipped = 0u32;
+        // `npc_pending` was the Phase 0/2 telemetry for pre-baked-FaceGen
+        // games waiting on Phase 4's spawn path — kept (unused after
+        // Phase 4 wired) so the cell summary's "0 ACHR refs ... pending"
+        // line stays a coherent zero rather than disappearing entirely.
+        // M41.0 lands every supported game on a real spawn function;
+        // if a future game variant doesn't satisfy either predicate,
+        // these fall back to the original telemetry shape.
+        let npc_pending: u32 = 0;
+        let npc_pending_sample: Vec<u32> = Vec::with_capacity(8);
+
+        // M41.0 Phase 2 + M41.5 Phase A — resolve the shared per-cell idle
+        // pool once before the REFR loop; it is threaded through every
+        // `spawn_npc_entity` call, where each NPC picks + phase-desyncs its
+        // own handle. `load_idle_pool` is path-keyed memoised (#790), so
+        // re-entry across cell loads is a HashMap hit — neither the BSA
+        // extract nor `AnimationClipRegistry::add` runs a second time for
+        // the same `kf_path`. Returns an empty pool when the game is on the
+        // Havok-animation track (Skyrim+/FO4+) or the KF isn't archived —
+        // those NPCs just spawn without an animation player. Gender variation
+        // is collapsed: FNV vanilla ships only `_male\idle.kf` and uses it
+        // for both genders. The `Gender` argument was dropped from these
+        // resolvers in #1117 / TD8-018; re-introduce it when a game variant
+        // actually ships separate clips.
+        let idle_pool = if game.has_kf_animations() {
+            crate::npc_spawn::load_idle_pool(world, tex_provider, game)
+        } else {
+            Vec::new()
+        };
+
+        // M42.1 — resolve the sit-enter clip (handle, duration) once per cell
+        // (archive provider available here; `sandbox_seat_system` has none) into
+        // the `SandboxSitClip` resource. `None` for Skyrim+/Havok games → those
+        // actors are not seated.
+        let sit_clip = crate::npc_spawn::load_sit_clip(world, tex_provider, game);
+        if let Some(mut r) = world.try_resource_mut::<crate::components::SandboxSitClip>() {
+            r.0 = sit_clip;
+        }
+
+        // #2147 / ECS-2507-01 — prune reservations whose furniture is gone,
+        // rather than clearing the whole set.
+        //
+        // This ran once per cell, and the exterior grid path calls
+        // `load_references` per `(gx, gy)` — 49 wholesale clears on `--radius 3`,
+        // and again for every cell streamed in at a boundary crossing while
+        // previously-loaded cells and their seated actors are still resident.
+        // `Seated` is a one-shot terminal marker, so an actor that already sat
+        // never re-asserts its claim: the clear released seats that were still
+        // physically occupied, and the next unseated actor within
+        // `SEAT_SEARCH_RADIUS` could claim the same `(furniture, marker)`.
+        //
+        // The old comment justified the clear with "entity ids reset on unload".
+        // They don't — `World::despawn` documents that IDs are never reclaimed
+        // (#372) and `next_entity` only grows, so a stale entry can never alias a
+        // *new* furniture entity. The clear was only bounding set growth, at the
+        // cost of the per-marker exclusivity the resource exists to provide.
+        //
+        prune_seat_reservations(world);
+
+        Box::new(ReferenceLoadJob {
+            next_ref: 0,
+            cache_hits_at_entry,
+            cache_misses_at_entry,
+            cache_size_at_entry,
+            door_pos,
+            enable_skipped,
+            absorbed_skipped,
+            npc_pending,
+            npc_pending_sample,
+            idle_pool,
+            accum: RefLoadAccum::new(),
+        })
     };
-
-    // M42.1 — resolve the sit-enter clip (handle, duration) once per cell
-    // (archive provider available here; `sandbox_seat_system` has none) into
-    // the `SandboxSitClip` resource. `None` for Skyrim+/Havok games → those
-    // actors are not seated.
-    let sit_clip = crate::npc_spawn::load_sit_clip(world, tex_provider, game);
-    if let Some(mut r) = world.try_resource_mut::<crate::components::SandboxSitClip>() {
-        r.0 = sit_clip;
-    }
-
-    // #2147 / ECS-2507-01 — prune reservations whose furniture is gone,
-    // rather than clearing the whole set.
-    //
-    // This ran once per cell, and the exterior grid path calls
-    // `load_references` per `(gx, gy)` — 49 wholesale clears on `--radius 3`,
-    // and again for every cell streamed in at a boundary crossing while
-    // previously-loaded cells and their seated actors are still resident.
-    // `Seated` is a one-shot terminal marker, so an actor that already sat
-    // never re-asserts its claim: the clear released seats that were still
-    // physically occupied, and the next unseated actor within
-    // `SEAT_SEARCH_RADIUS` could claim the same `(furniture, marker)`.
-    //
-    // The old comment justified the clear with "entity ids reset on unload".
-    // They don't — `World::despawn` documents that IDs are never reclaimed
-    // (#372) and `next_entity` only grows, so a stale entry can never alias a
-    // *new* furniture entity. The clear was only bounding set growth, at the
-    // cost of the per-marker exclusivity the resource exists to provide.
-    //
-    prune_seat_reservations(world);
 
     // Per-call NIF-cache accumulators (this_call_hits / misses / pending_new
     // / pending_hits / pending_clip_handles) live on `accum` and are committed
@@ -225,10 +328,13 @@ pub(super) fn load_references(
         game,
         tex_provider,
         load_order,
-        idle_pool: &idle_pool,
+        idle_pool: &job.idle_pool,
     };
-    let mut accum = RefLoadAccum::new();
-    for placed_ref in refs {
+    while job.next_ref < refs.len() {
+        if budget.should_yield() {
+            return ReferenceLoadProgress::Pending(job);
+        }
+        let placed_ref = &refs[job.next_ref];
         // Skip REFRs whose XESP gating would keep them hidden under
         // the parents-assumed-enabled heuristic: inverted XESP children
         // are visible only when the parent is *disabled*, so under the
@@ -238,7 +344,9 @@ pub(super) fn load_references(
         // REFR's own 0x0800 "initial disabled" flag.
         if let Some(ep) = placed_ref.enable_parent {
             if ep.default_disabled() {
-                enable_skipped += 1;
+                job.enable_skipped += 1;
+                job.next_ref += 1;
+                budget.complete_unit();
                 continue;
             }
         }
@@ -249,7 +357,9 @@ pub(super) fn load_references(
         // precombined-spawn pass will bring those in as single
         // entities. Filtering here prevents double geometry.
         if absorbed_refs.contains(&placed_ref.form_id) {
-            absorbed_skipped += 1;
+            job.absorbed_skipped += 1;
+            job.next_ref += 1;
+            budget.complete_unit();
             continue;
         }
 
@@ -276,8 +386,8 @@ pub(super) fn load_references(
         // order, not "the" entrance — this loader has no notion of which
         // door the player narratively used, so any door in this cell is a
         // guaranteed-walkable improvement over the bounding-box centroid.
-        if door_pos.is_none() && placed_ref.teleport.is_some() {
-            door_pos = Some(outer_pos);
+        if job.door_pos.is_none() && placed_ref.teleport.is_some() {
+            job.door_pos = Some(outer_pos);
         }
 
         // Build per-REFR texture overlay once. Shared across every
@@ -335,7 +445,7 @@ pub(super) fn load_references(
                 placed_ref.script_instance.as_ref(),
             );
             spawn_synth_child(
-                &mut accum,
+                &mut job.accum,
                 world,
                 ctx,
                 &cell,
@@ -349,7 +459,21 @@ pub(super) fn load_references(
                 refr_script_instance,
             );
         }
+        job.next_ref += 1;
+        budget.complete_unit();
     }
+    let ReferenceLoadJob {
+        cache_hits_at_entry,
+        cache_misses_at_entry,
+        cache_size_at_entry,
+        door_pos,
+        enable_skipped,
+        absorbed_skipped,
+        npc_pending,
+        npc_pending_sample,
+        accum,
+        ..
+    } = *job;
     let RefLoadAccum {
         entity_count,
         bounds_min,
@@ -661,29 +785,37 @@ pub(super) fn load_references(
     // the right place: every REFR has been spawned with its
     // bindless handle attached (descriptor temporarily redirected
     // to the fallback), and the next draw must see real images.
-    let pending_uploads = ctx.texture_registry.pending_dds_upload_count();
-    if pending_uploads > 0 {
-        match ctx.texture_registry.flush_pending_uploads(
-            &ctx.device,
-            ctx.allocator
-                .as_ref()
-                .expect("VulkanContext.allocator initialised before cell load"),
-            &ctx.graphics_queue,
-            ctx.transfer_pool,
-            &ctx.transfer_fence,
-        ) {
-            Ok(n) => log::info!(
-                "  Cell texture upload batch: {n}/{pending_uploads} DDS textures uploaded",
-            ),
-            Err(e) => {
-                log::warn!("Cell texture upload batch failed ({pending_uploads} pending): {e}",)
-            }
-        }
-    }
+    flush_pending_cell_textures(ctx);
 
-    RefLoadResult {
+    ReferenceLoadProgress::Complete(RefLoadResult {
         entity_count,
         center,
+    })
+}
+
+/// Flush textures accumulated by one completed or yielded reference slice.
+///
+/// The synchronous loader calls this once at cell completion. Resumable
+/// exterior application also calls it before yielding so a dense cell does
+/// not defer hundreds of DDS uploads into one final fence wait.
+pub(super) fn flush_pending_cell_textures(ctx: &mut VulkanContext) {
+    let pending_uploads = ctx.texture_registry.pending_dds_upload_count();
+    if pending_uploads == 0 {
+        return;
+    }
+    match ctx.texture_registry.flush_pending_uploads(
+        &ctx.device,
+        ctx.allocator
+            .as_ref()
+            .expect("VulkanContext.allocator initialised before cell load"),
+        &ctx.graphics_queue,
+        ctx.transfer_pool,
+        &ctx.transfer_fence,
+    ) {
+        Ok(n) => {
+            log::info!("  Cell texture upload batch: {n}/{pending_uploads} DDS textures uploaded")
+        }
+        Err(e) => log::warn!("Cell texture upload batch failed ({pending_uploads} pending): {e}"),
     }
 }
 

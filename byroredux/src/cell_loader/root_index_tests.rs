@@ -140,3 +140,36 @@ fn empty_cell_still_creates_index_entry_for_cell_root() {
         .expect("empty cell still gets an entry");
     assert_eq!(entry, &vec![cell_root], "only the cell_root itself");
 }
+
+/// Resumable exterior application registers its root before doing work, then
+/// appends each frame's newly-created range. Every partial slice must already
+/// be reachable by the canonical unload index.
+#[test]
+fn resumable_cell_root_accumulates_partial_ranges() {
+    let mut world = World::new();
+    world.insert_resource(CellRootIndex::new());
+
+    let cell_root = world.spawn();
+    register_cell_root(&mut world, cell_root);
+    let (first_a, last_a) = spawn_range(&mut world, 2);
+    stamp_cell_root_range(&mut world, cell_root, first_a, last_a);
+    let (first_b, last_b) = spawn_range(&mut world, 3);
+    stamp_cell_root_range(&mut world, cell_root, first_b, last_b);
+
+    let idx = world.resource::<CellRootIndex>();
+    let got = idx.map.get(&cell_root).expect("partial cell is indexed");
+    let want: Vec<_> = std::iter::once(cell_root)
+        .chain(first_a..last_a)
+        .chain(first_b..last_b)
+        .collect();
+    assert_eq!(got, &want, "each yielded slice extends one reclaim set");
+
+    let roots = world.query::<CellRoot>().expect("CellRoot storage exists");
+    for entity in want {
+        assert_eq!(
+            roots.get(entity).map(|root| root.0),
+            Some(cell_root),
+            "entity {entity} is unloadable before cell completion",
+        );
+    }
+}
