@@ -129,7 +129,7 @@ Eight colour attachments + depth, all double-buffered (one set per
 | HDR colour | `R16G16B16A16_SFLOAT` | Direct lighting (pre-denoised); alpha feeds SRC_ALPHA blend + water | `COLOR_ATTACHMENT_OPTIMAL` |
 | Normal | `R16G16_SNORM` | Octahedral-encoded world normal | `COLOR_ATTACHMENT_OPTIMAL` |
 | Motion | `R16G16_SFLOAT` | Screen-space motion vector (current → previous NDC) | `COLOR_ATTACHMENT_OPTIMAL` |
-| Mesh ID | `R32_UINT` | Bits 0–30: instance ID + 1; bit 31: `ALPHA_BLEND_NO_HISTORY` (skip SVGF accumulation) | `COLOR_ATTACHMENT_OPTIMAL` |
+| Mesh ID | `R32_UINT` | Bits 0–30: **opaque** = stable `GpuInstance.surface_id`; **alpha-blended** = sorted instance index + 1. Bit 31: `ALPHA_BLEND_NO_HISTORY` (skip SVGF accumulation) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Raw indirect | `B10G11R11_UFLOAT_PACK32` | Albedo-demodulated indirect light (SVGF input) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Albedo | `B10G11R11_UFLOAT_PACK32` | Surface colour (diffuse × vertex colour) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Reactive | `R8_UNORM` | FSR 3.1 reactive mask (transparent coverage) | `COLOR_ATTACHMENT_OPTIMAL` |
@@ -137,6 +137,15 @@ Eight colour attachments + depth, all double-buffered (one set per
 | Depth | `D32_SFLOAT` | Standard depth (0.0 = near, 1.0 = far), `LESS_OR_EQUAL`, clear = 1.0 | `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` |
 
 After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIMAL`.
+
+> **Why Mesh ID carries two representations.** `fragInstanceIndex` follows the
+> per-frame *sorted* draw order, so an actor changing depth bucket used to make
+> static architecture look like a different surface and reset TAA + SVGF across
+> the room. Opaque draws therefore write the ECS-derived `surface_id`, which is
+> stable across frames. Alpha-blended draws bypass both histories anyway (bit
+> 31), so they keep the sorted index in the low bits — `caustic_splat.comp`
+> consumes it to index the current-frame instance SSBO. `0` remains the
+> clear/background value. See `triangle.frag`'s `stableSurfaceId` block.
 
 ---
 
@@ -159,7 +168,7 @@ After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIM
 | 272 | 16 | `sky_tint` | xyz = TOD/weather zenith colour; w = sun angular radius (rad) |
 | 288 | 16 | `sun_direction` | xyz = direction **to** sun (unit); w = sun intensity |
 | 304 | 16 | `dof_params` | x = aperture half-radius; y = focus distance; z = `light_atten_knee` (ambient-cull falloff knee); w = `camera_static` flag (1.0 = parked, gates GI reprojection) |
-| 320 | 16 | `render_origin` | xyz = camera-relative render origin (#markarth-precision); w reserved |
+| 320 | 16 | `render_origin` | xyz = camera-relative render origin (#markarth-precision); **w = FSR one-frame history-reset flag** (1.0 = reset pending), read by `triangle.frag`'s FSR-temporal debug view (#2164). Not a free slot — same trap as `VolumetricsParams.render_origin.w` (#1928) |
 
 ### `GpuInstance` — 112 bytes, SSBO (Set 1, Binding 4)
 
@@ -179,7 +188,7 @@ One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 | 96 | 4 | `avg_albedo_r` | Pre-computed average albedo R |
 | 100 | 4 | `avg_albedo_g` | Pre-computed average albedo G |
 | 104 | 4 | `avg_albedo_b` | Pre-computed average albedo B |
-| 108 | 4 | *(padding)* | — |
+| 108 | 4 | `surface_id` | Stable ECS-derived surface identity — written to the Mesh ID attachment by opaque draws so TAA/SVGF history survives draw-order changes |
 
 **Instance flags** (`flags` field, offset 84):
 
@@ -195,7 +204,7 @@ One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 | 8 | `INSTANCE_FLAG_DIFFUSE_ALPHA` | BC1 diffuse texture carries alpha (guards `NiAlphaProperty`-less alpha test) |
 | 16–31 | terrain tile index | `(flags >> 16) & 0xFFFF` (when bit 3 set) |
 
-### `GpuMaterial` — 300 bytes, SSBO (Set 1, Binding 13)
+### `GpuMaterial` — 348 bytes, SSBO (Set 1, Binding 13)
 
 Indexed by `GpuInstance.material_id`. Deduplicated per frame: identical
 material params share one entry. Up to `MAX_MATERIALS` = 16 384 entries.
@@ -230,6 +239,21 @@ Selected fields (full layout in
 | 288 | `sheen` | Disney sheen strength |
 | 292 | `sheen_tint` | 0 = white sheen, 1 = albedo-tinted sheen |
 | 296 | `anisotropic` | Anisotropic GGX strength [0, 1] |
+| 300 | `tint_map_index` | Supplemental role — bindless index (0 = none) |
+| 304 | `inner_layer_map_index` | Supplemental role |
+| 308 | `specular_map_index` | Supplemental role |
+| 312 | `lighting_map_index` | Supplemental role — imported/uploaded but deliberately **unsampled** pending coordinate semantics |
+| 316 | `flow_map_index` | Supplemental role — deliberately **unsampled** |
+| 320 | `wrinkle_map_index` | Supplemental role — deliberately **unsampled** pending actor-control semantics |
+| 324 | `reflectance_map_index` | Supplemental role |
+| 328 | `emittance_gradient_map_index` | Supplemental role |
+| 332–344 | `decal_map_0..3_index` | Four decal role indices (4 × u32) → total **348** |
+
+The twelve entries at 300–344 are the source-agnostic supplemental texture
+roles introduced with `MaterialTextureSet<T>`; they are what grew the record
+from 300 B to 348 B. Three of them (`lighting_map`, `flow_map`,
+`wrinkle_map`) are populated and hashed but not yet sampled by any shader —
+that is intentional, not drift.
 
 **`material_flags`** (offset 12):
 
@@ -287,7 +311,7 @@ Prefixed by a 16-byte header (`u32 count` + 3 × `u32` padding). Up to
 |---|---|---|
 | `MAX_LIGHTS` | 512 | Per-frame point/spot/directional lights |
 | `MAX_INSTANCES` | 262 144 | One indirect draw command per instance worst-case |
-| `MAX_MATERIALS` | 16 384 | 300 B each; deduplicated per frame |
+| `MAX_MATERIALS` | 16 384 | 348 B each; deduplicated per frame |
 | `MAX_TOTAL_BONES` | 196 608 | 144 slots × 1 364 skinned meshes (M29.6) |
 | `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME` | 1 366 | First-sight bind-inverse upload cap |
 | `MAX_TERRAIN_TILES` | 1 024 | 32 B each |
