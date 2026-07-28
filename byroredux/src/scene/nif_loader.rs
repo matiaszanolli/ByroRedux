@@ -1117,6 +1117,26 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             let mut registry = world.resource_mut::<AnimationClipRegistry>();
             registry.add(clip)
         };
+        // #2221 — attach the non-transform sinks before playback starts.
+        // Same contract as the cell-loader path in `cell_loader/spawn.rs`:
+        // `animation_system` writes into existing components only, so an
+        // unattached sink silently swallows every sampled value.
+        if let Some(root) = root {
+            let channels = {
+                let registry = world.resource::<AnimationClipRegistry>();
+                registry.get(clip_handle).map(|clip| {
+                    (
+                        clip.bool_channels.clone(),
+                        clip.float_channels.clone(),
+                        clip.color_channels.clone(),
+                    )
+                })
+            };
+            if let Some((bools, floats, colors)) = channels {
+                crate::anim_convert::attach_animation_sinks(world, &bools, &floats, &colors, root);
+            }
+        }
+
         let player_entity = world.spawn();
         let mut player = AnimationPlayer::new(clip_handle);
         if let Some(root) = root {

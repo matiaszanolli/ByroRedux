@@ -47,6 +47,189 @@ pub(crate) fn build_subtree_name_map(
     map
 }
 
+/// Insert the `Animated*` sink components a clip's non-transform
+/// channels need, on the entities those channels actually target.
+///
+/// # Why this exists (#2221)
+///
+/// `animation_system` writes non-transform channels through
+/// `query_mut::<T>().get_mut(target)` — a *write* into an existing
+/// component, never an insert. Systems take `&World`, so they
+/// structurally cannot create the sink themselves. The result before
+/// this function existed: every non-transform channel parsed
+/// correctly, resolved its target entity correctly, sampled correctly,
+/// and then dropped the value because no production spawn path had
+/// ever inserted the component. The only `world.insert(e, Animated…)`
+/// calls in the tree were inside `#[cfg(test)]` blocks, which is why
+/// the routing unit tests all passed while nothing animated in-game.
+///
+/// Attach-time is the correct place: it is the one moment we hold
+/// `&mut World`, know the clip, and know the subtree root the channel
+/// names resolve against.
+///
+/// # Contract
+///
+/// - **Only sinks the clip actually needs.** A clip carrying one alpha
+///   channel gets `AnimatedAlpha` on one entity — not all seven
+///   components on the whole subtree. Sparse storages stay sparse.
+/// - **Never overwrite an existing sink.** Two clips can target the
+///   same entity (an idle plus a flicker); the second attach must not
+///   reset the first's live value.
+/// - **Seeded from `t = 0`, not from a neutral default.** The sink is
+///   read by `build_render_data` in the same frame it is created, so a
+///   default-initialised component would show one frame of the wrong
+///   visibility/alpha/tint before the system's first write.
+/// - **`LightSource` is deliberately excluded.** The `Light*` channel
+///   targets write into an existing light; synthesising one here would
+///   spawn a phantom light at every `NiLightColorController` target
+///   that has no `LIGH` record behind it.
+/// - `TextureFlipChannel` has no renderer consumer yet, so it has no
+///   sink to attach. That half of #2221 stays open.
+///
+/// # Why slices, not `&AnimationClip`
+///
+/// Channels are passed as slices rather than as a whole `&AnimationClip`
+/// because the caller must release its `AnimationClipRegistry` read
+/// guard before this function takes `&mut World`. Cloning the three
+/// non-transform channel vectors out of the registry is cheap — the
+/// bulk of a clip is its per-bone `TransformChannel` map, which this
+/// path never touches.
+pub(crate) fn attach_animation_sinks(
+    world: &mut World,
+    bool_channels: &[(FixedString, BoolChannel)],
+    float_channels: &[(FixedString, FloatChannel)],
+    color_channels: &[(FixedString, ColorChannel)],
+    root: EntityId,
+) {
+    use byroredux_core::animation::{
+        sample_bool_channel, sample_color_channel, sample_float_channel,
+    };
+    use byroredux_core::ecs::{
+        AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
+        AnimatedMorphWeights, AnimatedShaderColor, AnimatedShaderFloat, AnimatedSpecularColor,
+        AnimatedUvTransform, AnimatedVisibility,
+    };
+
+    // Nothing to do for a pure transform clip — the overwhelmingly
+    // common case (every skeletal animation). Bail before paying for
+    // the subtree walk.
+    if bool_channels.is_empty() && float_channels.is_empty() && color_channels.is_empty() {
+        return;
+    }
+
+    let names = build_subtree_name_map(world, root);
+
+    // Pass 1 — resolve channels to (entity, seeded value). Grouped per
+    // sink so pass 2 can take one storage lock per component type.
+    let mut visibility: Vec<(EntityId, AnimatedVisibility)> = Vec::new();
+    let mut alpha: Vec<(EntityId, AnimatedAlpha)> = Vec::new();
+    let mut shader_float: Vec<(EntityId, AnimatedShaderFloat)> = Vec::new();
+    let mut diffuse: Vec<(EntityId, AnimatedDiffuseColor)> = Vec::new();
+    let mut ambient: Vec<(EntityId, AnimatedAmbientColor)> = Vec::new();
+    let mut specular: Vec<(EntityId, AnimatedSpecularColor)> = Vec::new();
+    let mut emissive: Vec<(EntityId, AnimatedEmissiveColor)> = Vec::new();
+    let mut shader_color: Vec<(EntityId, AnimatedShaderColor)> = Vec::new();
+    // UV and morph accumulate across channels: five FloatTargets share
+    // one `AnimatedUvTransform`, and N `MorphWeight(idx)` channels share
+    // one weight vector. Keyed by entity so each gets a single fully
+    // seeded component rather than one per channel.
+    let mut uv: HashMap<EntityId, AnimatedUvTransform> = HashMap::new();
+    let mut morph: HashMap<EntityId, AnimatedMorphWeights> = HashMap::new();
+
+    for (name, channel) in bool_channels {
+        if let Some(&e) = names.get(name) {
+            visibility.push((e, AnimatedVisibility(sample_bool_channel(channel, 0.0))));
+        }
+    }
+
+    for (name, channel) in color_channels {
+        let Some(&e) = names.get(name) else { continue };
+        let v = sample_color_channel(channel, 0.0);
+        match channel.target {
+            ColorTarget::Diffuse => diffuse.push((e, AnimatedDiffuseColor(v))),
+            ColorTarget::Ambient => ambient.push((e, AnimatedAmbientColor(v))),
+            ColorTarget::Specular => specular.push((e, AnimatedSpecularColor(v))),
+            ColorTarget::Emissive => emissive.push((e, AnimatedEmissiveColor(v))),
+            ColorTarget::ShaderColor => shader_color.push((e, AnimatedShaderColor(v))),
+            // Writes into an existing LightSource — see the contract note.
+            ColorTarget::LightDiffuse | ColorTarget::LightAmbient => {}
+        }
+    }
+
+    for (name, channel) in float_channels {
+        let Some(&e) = names.get(name) else { continue };
+        let v = sample_float_channel(channel, 0.0);
+        match channel.target {
+            FloatTarget::Alpha => alpha.push((e, AnimatedAlpha(v))),
+            FloatTarget::UvOffsetU
+            | FloatTarget::UvOffsetV
+            | FloatTarget::UvScaleU
+            | FloatTarget::UvScaleV
+            | FloatTarget::UvRotation => {
+                let t = uv.entry(e).or_insert_with(AnimatedUvTransform::identity);
+                match channel.target {
+                    FloatTarget::UvOffsetU => t.offset.x = v,
+                    FloatTarget::UvOffsetV => t.offset.y = v,
+                    FloatTarget::UvScaleU => t.scale.x = v,
+                    FloatTarget::UvScaleV => t.scale.y = v,
+                    FloatTarget::UvRotation => t.rotation = v,
+                    _ => unreachable!(),
+                }
+            }
+            FloatTarget::ShaderFloat => shader_float.push((e, AnimatedShaderFloat(v))),
+            FloatTarget::MorphWeight(idx) => {
+                morph
+                    .entry(e)
+                    .or_insert_with(|| AnimatedMorphWeights(Vec::new()))
+                    .set(idx as usize, v);
+            }
+            // Writes into an existing LightSource — see the contract note.
+            FloatTarget::LightDimmer | FloatTarget::LightIntensity | FloatTarget::LightRadius => {}
+        }
+    }
+
+    // Pass 2 — insert the ones that aren't already there.
+    insert_missing_sinks(world, visibility);
+    insert_missing_sinks(world, alpha);
+    insert_missing_sinks(world, shader_float);
+    insert_missing_sinks(world, diffuse);
+    insert_missing_sinks(world, ambient);
+    insert_missing_sinks(world, specular);
+    insert_missing_sinks(world, emissive);
+    insert_missing_sinks(world, shader_color);
+    insert_missing_sinks(world, uv.into_iter().collect::<Vec<_>>());
+    insert_missing_sinks(world, morph.into_iter().collect::<Vec<_>>());
+}
+
+/// Insert each `(entity, component)` pair whose entity does not already
+/// carry that component.
+///
+/// The existence check is scoped so the read guard is dropped before
+/// `World::insert` takes `&mut self` — holding both would deadlock on
+/// the storage's `RwLock`. A missing storage (`query` → `None`) means
+/// no entity has the component yet, so every pair is inserted.
+fn insert_missing_sinks<T: byroredux_core::ecs::Component>(
+    world: &mut World,
+    items: Vec<(EntityId, T)>,
+) {
+    if items.is_empty() {
+        return;
+    }
+    let mut pending = Vec::with_capacity(items.len());
+    {
+        let existing = world.query::<T>();
+        for (entity, component) in items {
+            let already_present = existing.as_ref().is_some_and(|q| q.get(entity).is_some());
+            if !already_present {
+                pending.push((entity, component));
+            }
+        }
+    }
+    for (entity, component) in pending {
+        world.insert(entity, component);
+    }
+}
+
 /// Convert a NIF animation clip (byroredux_nif types) to a core animation clip (glam types).
 ///
 /// Channel names are interned into `pool` at conversion time so the animation
@@ -261,5 +444,202 @@ pub(crate) fn convert_nif_clip(
         bool_channels,
         texture_flip_channels,
         text_keys,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// #2221 — sink attachment
+// ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod sink_attachment_tests {
+    //! Regression guards for [`attach_animation_sinks`].
+    //!
+    //! The bug these pin was invisible to the pre-existing routing
+    //! tests because those tests inserted the sink components
+    //! themselves before calling the apply helpers. Production never
+    //! did. So every helper-level assertion passed while the shipped
+    //! engine animated nothing but transforms.
+    //!
+    //! The end-to-end test below is therefore the important one: it
+    //! runs attach → apply and asserts the value actually lands,
+    //! without the test ever inserting a sink by hand.
+
+    use super::*;
+    use byroredux_core::animation::{AnimColorKey, AnimFloatKey};
+    use byroredux_core::ecs::{
+        AnimatedAlpha, AnimatedMorphWeights, AnimatedShaderFloat, AnimatedUvTransform,
+        AnimatedVisibility, Children, LightSource, Name,
+    };
+
+    /// Build a two-entity subtree (`root` → `child`) with both named,
+    /// mirroring the shape `build_subtree_name_map` walks in production.
+    fn subtree(world: &mut World, pool: &mut StringPool) -> (EntityId, EntityId, FixedString) {
+        let root = world.spawn();
+        let child = world.spawn();
+        let root_name = pool.intern("Root");
+        let child_name = pool.intern("Fire01");
+        world.insert(root, Name(root_name));
+        world.insert(child, Name(child_name));
+        world.insert(root, Children(vec![child]));
+        (root, child, child_name)
+    }
+
+    fn float_channel(target: FloatTarget, value: f32) -> FloatChannel {
+        FloatChannel {
+            target,
+            keys: vec![AnimFloatKey { time: 0.0, value }],
+        }
+    }
+
+    #[test]
+    fn attaches_only_the_sinks_the_clip_actually_targets() {
+        let mut world = World::new();
+        let mut pool = StringPool::new();
+        let (root, child, child_name) = subtree(&mut world, &mut pool);
+
+        // A UV-scroll-only clip — the classic animated-water case.
+        let floats = vec![(child_name, float_channel(FloatTarget::UvOffsetU, 0.25))];
+        attach_animation_sinks(&mut world, &[], &floats, &[], root);
+
+        let uv = world.query::<AnimatedUvTransform>().unwrap();
+        assert!(
+            uv.get(child).is_some(),
+            "the UV channel's target must receive AnimatedUvTransform"
+        );
+        assert_eq!(uv.get(child).unwrap().offset.x, 0.25, "seeded from t=0");
+        assert!(
+            uv.get(root).is_none(),
+            "sinks attach to the channel's target only, not the whole subtree"
+        );
+        drop(uv);
+
+        // Sparse storages must stay sparse: no sink for a channel type
+        // this clip never carried.
+        assert!(
+            world
+                .query::<AnimatedAlpha>()
+                .is_none_or(|q| q.get(child).is_none()),
+            "a UV-only clip must not attach AnimatedAlpha"
+        );
+        assert!(
+            world
+                .query::<AnimatedMorphWeights>()
+                .is_none_or(|q| q.get(child).is_none()),
+            "a UV-only clip must not attach AnimatedMorphWeights"
+        );
+    }
+
+    #[test]
+    fn does_not_overwrite_an_existing_sink() {
+        let mut world = World::new();
+        let mut pool = StringPool::new();
+        let (root, child, child_name) = subtree(&mut world, &mut pool);
+
+        // A first clip already attached and the system has since ticked
+        // it to a live value.
+        world.insert(child, AnimatedAlpha(0.4));
+
+        let floats = vec![(child_name, float_channel(FloatTarget::Alpha, 1.0))];
+        attach_animation_sinks(&mut world, &[], &floats, &[], root);
+
+        let alpha = world.query::<AnimatedAlpha>().unwrap();
+        assert_eq!(
+            alpha.get(child).unwrap().0,
+            0.4,
+            "a second clip attaching to the same entity must not reset the live value"
+        );
+    }
+
+    #[test]
+    fn light_channels_never_synthesise_a_lightsource() {
+        let mut world = World::new();
+        let mut pool = StringPool::new();
+        let (root, child, child_name) = subtree(&mut world, &mut pool);
+
+        let floats = vec![
+            (child_name, float_channel(FloatTarget::LightDimmer, 0.5)),
+            (child_name, float_channel(FloatTarget::LightRadius, 512.0)),
+        ];
+        let colors = vec![(
+            child_name,
+            ColorChannel {
+                target: ColorTarget::LightDiffuse,
+                keys: vec![AnimColorKey {
+                    time: 0.0,
+                    value: Vec3::ONE,
+                }],
+            },
+        )];
+        attach_animation_sinks(&mut world, &[], &floats, &colors, root);
+
+        assert!(
+            world
+                .query::<LightSource>()
+                .is_none_or(|q| q.get(child).is_none()),
+            "light channels write into an existing LightSource; synthesising one \
+             would spawn a phantom light wherever no LIGH record exists"
+        );
+    }
+
+    #[test]
+    fn unresolvable_channel_names_are_skipped() {
+        let mut world = World::new();
+        let mut pool = StringPool::new();
+        let (root, _child, _) = subtree(&mut world, &mut pool);
+        let orphan = pool.intern("NotInThisSubtree");
+
+        let floats = vec![(orphan, float_channel(FloatTarget::Alpha, 1.0))];
+        attach_animation_sinks(&mut world, &[], &floats, &[], root);
+
+        assert!(
+            world.query::<AnimatedAlpha>().is_none_or(|q| q.len() == 0),
+            "a channel whose name resolves to no entity in the subtree \
+             must not attach a sink anywhere"
+        );
+    }
+
+    #[test]
+    fn morph_and_uv_channels_coalesce_into_one_component_each() {
+        let mut world = World::new();
+        let mut pool = StringPool::new();
+        let (root, child, child_name) = subtree(&mut world, &mut pool);
+
+        let floats = vec![
+            (child_name, float_channel(FloatTarget::UvOffsetU, 0.1)),
+            (child_name, float_channel(FloatTarget::UvScaleV, 2.0)),
+            (child_name, float_channel(FloatTarget::MorphWeight(0), 0.3)),
+            (child_name, float_channel(FloatTarget::MorphWeight(2), 0.9)),
+        ];
+        attach_animation_sinks(&mut world, &[], &floats, &[], root);
+
+        let uv = world.query::<AnimatedUvTransform>().unwrap();
+        let t = uv.get(child).unwrap();
+        assert_eq!(t.offset.x, 0.1, "five UV targets share one component");
+        assert_eq!(t.scale.y, 2.0);
+        assert_eq!(t.scale.x, 1.0, "untouched UV slots keep identity");
+        drop(uv);
+
+        let morph = world.query::<AnimatedMorphWeights>().unwrap();
+        let m = morph.get(child).unwrap();
+        assert_eq!(m.get(0), 0.3);
+        assert_eq!(m.get(1), 0.0, "gap between morph indices zero-pads");
+        assert_eq!(m.get(2), 0.9);
+    }
+
+    #[test]
+    fn pure_transform_clip_attaches_nothing() {
+        let mut world = World::new();
+        let mut pool = StringPool::new();
+        let (root, child, _) = subtree(&mut world, &mut pool);
+
+        attach_animation_sinks(&mut world, &[], &[], &[], root);
+
+        assert!(world
+            .query::<AnimatedShaderFloat>()
+            .is_none_or(|q| q.get(child).is_none()));
+        assert!(world
+            .query::<AnimatedVisibility>()
+            .is_none_or(|q| q.get(child).is_none()));
     }
 }

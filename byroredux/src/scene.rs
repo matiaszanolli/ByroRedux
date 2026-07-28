@@ -345,6 +345,33 @@ pub(crate) fn setup_scene(
                                 first_handle = registry.len() as u32 - nif_clips.len() as u32;
                             }
 
+                            // #2221 — attach the non-transform sinks for
+                            // EVERY clip this KF registered, not just
+                            // `first_handle`: an `AnimationStack` can
+                            // later play any of them on the same subtree,
+                            // and a sink that only exists for clip 0
+                            // leaves the rest silently inert.
+                            if let Some(root) = nif_root {
+                                let last_handle = first_handle + nif_clips.len() as u32;
+                                for handle in first_handle..last_handle {
+                                    let channels = {
+                                        let registry = world.resource::<AnimationClipRegistry>();
+                                        registry.get(handle).map(|clip| {
+                                            (
+                                                clip.bool_channels.clone(),
+                                                clip.float_channels.clone(),
+                                                clip.color_channels.clone(),
+                                            )
+                                        })
+                                    };
+                                    if let Some((bools, floats, colors)) = channels {
+                                        crate::anim_convert::attach_animation_sinks(
+                                            world, &bools, &floats, &colors, root,
+                                        );
+                                    }
+                                }
+                            }
+
                             // Spawn an AnimationPlayer scoped to the NIF subtree.
                             let player_entity = world.spawn();
                             let mut player = AnimationPlayer::new(first_handle);

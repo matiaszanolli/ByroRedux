@@ -363,6 +363,34 @@ pub(super) fn spawn_placed_instances(
     // all stay frozen on cell-rendered REFRs, while loose-NIF
     // imports of the same models animate correctly.
     if let Some(handle) = clip_handle {
+        // #2221 — attach the `Animated*` sinks this clip's non-transform
+        // channels write into, BEFORE the player starts ticking.
+        // `animation_system` can only write into components that already
+        // exist (it holds `&World`), so without this the UV scrolls /
+        // emissive pulses / visibility flickers described above resolve
+        // their target entity and then discard every sampled value.
+        // Channels are cloned out so the registry guard drops before
+        // `attach_animation_sinks` takes `&mut World`.
+        let channels = {
+            let registry = world.resource::<byroredux_core::animation::AnimationClipRegistry>();
+            registry.get(handle).map(|clip| {
+                (
+                    clip.bool_channels.clone(),
+                    clip.float_channels.clone(),
+                    clip.color_channels.clone(),
+                )
+            })
+        };
+        if let Some((bools, floats, colors)) = channels {
+            crate::anim_convert::attach_animation_sinks(
+                world,
+                &bools,
+                &floats,
+                &colors,
+                placement_root,
+            );
+        }
+
         let player_entity = world.spawn();
         let mut player = byroredux_core::animation::AnimationPlayer::new(handle);
         player.root_entity = Some(placement_root);

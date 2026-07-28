@@ -1554,3 +1554,122 @@ mod animation_system_e2e_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod sink_lifecycle_end_to_end_tests {
+    //! #2221 — the guard that would have caught the original defect.
+    //!
+    //! Every pre-existing test in this file inserts the `Animated*`
+    //! sink components by hand before calling `apply_*_channels`.
+    //! Production never did: `attach_animation_sinks` did not exist, so
+    //! the whole non-transform half of the animation system sampled
+    //! correctly and wrote into nothing. Helper-level routing tests
+    //! cannot see that — only a test that runs *attach then apply*,
+    //! without hand-inserting a sink, can.
+    //!
+    //! If someone later removes the attach call from a spawn path, the
+    //! routing tests still pass and this one fails. That asymmetry is
+    //! the entire point.
+
+    use super::*;
+    use crate::anim_convert::attach_animation_sinks;
+    use byroredux_core::animation::{
+        AnimBoolKey, AnimColorKey, AnimFloatKey, BoolChannel, ColorChannel, ColorTarget,
+        FloatChannel,
+    };
+    use byroredux_core::ecs::{Children, Name, World};
+    use byroredux_core::math::Vec3;
+    use byroredux_core::string::StringPool;
+
+    #[test]
+    fn attach_then_apply_lands_the_value_without_a_hand_inserted_sink() {
+        let mut world = World::new();
+        let mut pool = StringPool::new();
+
+        let root = world.spawn();
+        let child = world.spawn();
+        let root_name = pool.intern("Root");
+        let child_name = pool.intern("Fire01");
+        world.insert(root, Name(root_name));
+        world.insert(child, Name(child_name));
+        world.insert(root, Children(vec![child]));
+
+        // Two keys apiece so sampling at t=1.0 differs from the t=0
+        // seed — otherwise the assertion could pass by reading the seed
+        // back and the apply pass would go unverified.
+        let floats = vec![(
+            child_name,
+            FloatChannel {
+                target: FloatTarget::Alpha,
+                keys: vec![
+                    AnimFloatKey {
+                        time: 0.0,
+                        value: 0.0,
+                    },
+                    AnimFloatKey {
+                        time: 1.0,
+                        value: 1.0,
+                    },
+                ],
+            },
+        )];
+        let colors = vec![(
+            child_name,
+            ColorChannel {
+                target: ColorTarget::Emissive,
+                keys: vec![
+                    AnimColorKey {
+                        time: 0.0,
+                        value: Vec3::ZERO,
+                    },
+                    AnimColorKey {
+                        time: 1.0,
+                        value: Vec3::new(1.0, 0.5, 0.25),
+                    },
+                ],
+            },
+        )];
+        let bools = vec![(
+            child_name,
+            BoolChannel {
+                keys: vec![AnimBoolKey {
+                    time: 0.0,
+                    value: false,
+                }],
+            },
+        )];
+
+        attach_animation_sinks(&mut world, &bools, &floats, &colors, root);
+
+        let resolve = |n: &FixedString| -> Option<EntityId> {
+            if *n == child_name {
+                Some(child)
+            } else {
+                None
+            }
+        };
+        apply_float_channels(&world, &floats, 1.0, &resolve);
+        apply_color_channels(&world, &colors, 1.0, &resolve);
+
+        let alpha = world.query::<AnimatedAlpha>().unwrap();
+        assert_eq!(
+            alpha.get(child).unwrap().0,
+            1.0,
+            "alpha sampled at t=1.0 must reach the sink the attach pass created"
+        );
+        drop(alpha);
+
+        let emissive = world.query::<AnimatedEmissiveColor>().unwrap();
+        assert_eq!(emissive.get(child).unwrap().0, Vec3::new(1.0, 0.5, 0.25));
+        drop(emissive);
+
+        // The bool sink needs no apply pass — it is seeded from the clip
+        // at t=0, which is what keeps frame 0 from flashing the wrong
+        // visibility before the system's first write.
+        let vis = world.query::<AnimatedVisibility>().unwrap();
+        assert!(
+            !vis.get(child).unwrap().0,
+            "visibility sink must be seeded from the clip, not defaulted to true"
+        );
+    }
+}
