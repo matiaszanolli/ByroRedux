@@ -1634,4 +1634,48 @@ mod composite_params_layout_tests {
         assert!(!shader.contains("texelFetch(causticTex, ivec2(gl_FragCoord.xy), 0)"));
         assert!(!shader.contains("texelFetch(waterCausticTex, ivec2(gl_FragCoord.xy), 0)"));
     }
+
+    /// #2217 — the caustic term is semantically fragile in a way the
+    /// SPIR-V reflection test cannot see. That test pins structural and
+    /// branch properties; it passes just as happily when the combined
+    /// decode is replaced by a constant. A one-line `causticLum = 0.0`
+    /// debug stub shipped inside a docs-titled commit (`0a3e0da5`) and
+    /// survived 473 renderer tests — only `scripts/check-shader-artifacts.sh`
+    /// caught it, and only because the committed `.spv` had not been
+    /// rebuilt to match. Pin the expression itself.
+    ///
+    /// Three properties, each of which a plausible regression breaks:
+    ///
+    /// 1. BOTH accumulators are read. Dropping `waterCausticRaw` silently
+    ///    reverts Phase E of #1210 — glass caustics keep working, so the
+    ///    loss is invisible except on water.
+    /// 2. Each is promoted to `float` BEFORE the add (#1575). Summing the
+    ///    raw `uint`s wraps mod 2^32 to ~0 on a bright focal cusp — a
+    ///    BLACK pixel the post-divide firefly cap cannot recover.
+    /// 3. The sum is divided by `CAUSTIC_FIXED_SCALE`. Both writers
+    ///    (`caustic_splat.comp`, `water.frag`) deposit in that fixed-point
+    ///    convention; without the divide the term is ~1e6× too large and
+    ///    the firefly clamp pins every caustic pixel to its ceiling.
+    #[test]
+    fn caustic_luminance_combines_both_accumulators_in_float_fixed_point() {
+        let shader = include_str!("../../shaders/composite.frag");
+
+        assert!(
+            shader.contains(
+                "float causticLum = (float(causticRaw) + float(waterCausticRaw)) \
+                 / CAUSTIC_FIXED_SCALE;"
+            ),
+            "composite.frag must decode the combined glass + water caustic \
+             accumulators as float-promoted fixed point; a constant or \
+             single-accumulator expression silently disables caustics"
+        );
+
+        // Property 2 restated as a prohibition: the uint-domain add is the
+        // specific wrap bug #1575 fixed, so it must never reappear.
+        assert!(
+            !shader.contains("causticRaw + waterCausticRaw"),
+            "the two accumulators must be promoted to float individually \
+             before the add — a uint-domain sum wraps mod 2^32 (#1575)"
+        );
+    }
 }

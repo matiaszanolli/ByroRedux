@@ -378,7 +378,7 @@ void main() {
         // deposit, not the running sum of the two textures); adding two large
         // uints wraps mod 2^32 to ~0 → a black pixel the post-divide firefly
         // cap cannot recover.
-        float causticLum = 0.0;
+        float causticLum = (float(causticRaw) + float(waterCausticRaw)) / CAUSTIC_FIXED_SCALE;
         // Firefly cap on the COMBINED caustic luminance (TARGET 2). The focal
         // cusp under glass spheres / water sums thousands of forward-splat
         // deposits (imageAtomicAdd) into a few pixels; under camera motion the
