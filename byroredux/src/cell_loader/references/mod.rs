@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::components::VisibleWhenDistant;
+use crate::npc_spawn::{NpcSpawnJob, NpcSpawnProgress};
 
 use super::euler::euler_zup_to_quat_yup_refr;
 use super::load_order::{self, plugin_for_form_id};
@@ -55,6 +56,10 @@ pub(super) struct RefLoadResult {
 /// duplicating the interior/reference pipeline.
 pub(super) struct ReferenceLoadJob {
     next_ref: usize,
+    /// Next synthetic child inside the current SCOL/PKIN-expanded REFR.
+    next_synth: usize,
+    /// Sub-REFR continuation for an actor whose NIF bundle spans frames.
+    active_npc: Option<NpcSpawnJob>,
     cache_hits_at_entry: u64,
     cache_misses_at_entry: u64,
     cache_size_at_entry: usize,
@@ -176,10 +181,11 @@ pub(super) fn load_references(
 
 /// Advance the shared reference loader until the cooperative deadline expires.
 ///
-/// A REFR is the atomic progress unit. One already-started REFR always
-/// finishes, even if it expands to several SCOL/PKIN children; the next REFR
-/// observes the deadline and yields. This preserves deterministic ordering and
-/// guarantees progress for unusually expensive single placements.
+/// A normal synthetic placement is the atomic progress unit. SCOL/PKIN
+/// expansions can yield between children, and NPC children can additionally
+/// yield between their skeleton/body/head/armor NIFs. The first unit is always
+/// admitted by [`FrameTimeBudget`], preserving deterministic ordering and
+/// forward progress when an individual NIF itself exceeds the target.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn load_references_budgeted(
     refs: &[esm::cell::PlacedRef],
@@ -302,6 +308,8 @@ pub(super) fn load_references_budgeted(
 
         Box::new(ReferenceLoadJob {
             next_ref: 0,
+            next_synth: 0,
+            active_npc: None,
             cache_hits_at_entry,
             cache_misses_at_entry,
             cache_size_at_entry,
@@ -323,12 +331,9 @@ pub(super) fn load_references_budgeted(
     let cell = CellLoadCtx {
         index,
         record_index,
-        npcs,
-        races,
         game,
         tex_provider,
         load_order,
-        idle_pool: &job.idle_pool,
     };
     while job.next_ref < refs.len() {
         if budget.should_yield() {
@@ -437,9 +442,81 @@ pub(super) fn load_references_budgeted(
         // spirit — one REFR-level property, applied once — but VMAD
         // attachment is behavioral, not visual, so it goes to a single
         // child instead of being broadcast to all of them.
+        let synth_count = synth_refs.len();
         for (synth_idx, (child_form_id, ref_pos, ref_rot, ref_scale)) in
             synth_refs.into_iter().enumerate()
         {
+            if synth_idx < job.next_synth {
+                continue;
+            }
+            if budget.should_yield() {
+                return ReferenceLoadProgress::Pending(job);
+            }
+
+            // EXAL sub-REFR continuation: an actor is a bundle of top-level
+            // NIFs, not one indivisible placement.  Keep its skeleton map and
+            // placement root alive across frames, advancing one body/head/
+            // armor part at a time.  Synchronous interiors drive this exact
+            // job with an unlimited budget through `load_references`.
+            if let Some(npc) = npcs.get(&child_form_id) {
+                if job.active_npc.is_none() {
+                    job.accum.bounds_min = job.accum.bounds_min.min(ref_pos);
+                    job.accum.bounds_max = job.accum.bounds_max.max(ref_pos);
+                    job.active_npc = if game.has_runtime_facegen_recipe() {
+                        Some(NpcSpawnJob::runtime(
+                            npc,
+                            races.get(&npc.race_form_id),
+                            game,
+                            ref_pos,
+                            ref_rot,
+                            ref_scale,
+                        ))
+                    } else if game.uses_prebaked_facegen() {
+                        let plugin =
+                            load_order::plugin_for_form_id(child_form_id, load_order).unwrap_or("");
+                        Some(NpcSpawnJob::prebaked(
+                            npc, game, plugin, ref_pos, ref_rot, ref_scale,
+                        ))
+                    } else {
+                        None
+                    };
+                }
+
+                let Some(active_npc) = job.active_npc.as_mut() else {
+                    job.next_synth = synth_idx + 1;
+                    budget.complete_unit();
+                    continue;
+                };
+                match active_npc.advance(
+                    world,
+                    ctx,
+                    tex_provider,
+                    mat_provider.as_deref_mut(),
+                    &job.idle_pool,
+                    record_index,
+                    budget,
+                ) {
+                    NpcSpawnProgress::Pending => {
+                        return ReferenceLoadProgress::Pending(job);
+                    }
+                    NpcSpawnProgress::Complete(result) => {
+                        job.accum.npc_spawn_wall += result.work_wall;
+                        if result.root.is_some() {
+                            job.accum.npc_spawned += 1;
+                            if job.accum.npc_spawned_sample.len() < 8
+                                && !job.accum.npc_spawned_sample.contains(&child_form_id)
+                            {
+                                job.accum.npc_spawned_sample.push(child_form_id);
+                            }
+                            job.accum.entity_count += 1;
+                        }
+                        job.active_npc = None;
+                        job.next_synth = synth_idx + 1;
+                    }
+                }
+                continue;
+            }
+
             let refr_script_instance = refr_script_instance_for_synth_child(
                 synth_idx,
                 placed_ref.script_instance.as_ref(),
@@ -458,9 +535,14 @@ pub(super) fn load_references_budgeted(
                 ref_scale,
                 refr_script_instance,
             );
+            job.next_synth = synth_idx + 1;
+            budget.complete_unit();
         }
         job.next_ref += 1;
-        budget.complete_unit();
+        job.next_synth = 0;
+        if synth_count == 0 {
+            budget.complete_unit();
+        }
     }
     let ReferenceLoadJob {
         cache_hits_at_entry,
@@ -889,12 +971,9 @@ impl RefLoadAccum {
 struct CellLoadCtx<'a> {
     index: &'a esm::cell::EsmCellIndex,
     record_index: &'a byroredux_plugin::esm::records::EsmIndex,
-    npcs: &'a HashMap<u32, byroredux_plugin::esm::records::NpcRecord>,
-    races: &'a HashMap<u32, byroredux_plugin::esm::records::RaceRecord>,
     game: byroredux_plugin::esm::reader::GameKind,
     tex_provider: &'a TextureProvider,
     load_order: &'a [String],
-    idle_pool: &'a [u32],
 }
 
 /// Dispatch one synthetic child placement (SCOL/PKIN-expanded or the lone
@@ -908,7 +987,7 @@ fn spawn_synth_child(
     world: &mut World,
     ctx: &mut VulkanContext,
     cell: &CellLoadCtx,
-    mut mat_provider: Option<&mut MaterialProvider>,
+    mat_provider: Option<&mut MaterialProvider>,
     placed_ref: &esm::cell::PlacedRef,
     refr_overlay: &Option<super::refr::RefrTextureOverlay>,
     child_form_id: u32,
@@ -920,94 +999,10 @@ fn spawn_synth_child(
     let &CellLoadCtx {
         index,
         record_index,
-        npcs,
-        races,
         game,
         tex_provider,
         load_order,
-        idle_pool,
     } = cell;
-    // M41.0 Phase 1b — NPC dispatch must run BEFORE the
-    // statics lookup. NPC_ records are also indexed in
-    // `EsmCellIndex.statics` (because they carry a MODL —
-    // the body mesh path) by `parse_modl_group` at
-    // `crates/plugin/src/esm/cell/mod.rs:703`. If the
-    // statics check ran first the static-spawn path would
-    // claim every NPC ACHR and the NPC dispatcher would
-    // never see them. Pre-fix `TestQAHairM` (31 NPCs / 61
-    // refs) reported "61 statics hits, 0 NPCs spawned" — the
-    // NPCs were silently rendered as a single non-skinned
-    // body mesh per actor instead of going through the
-    // skeleton-aware spawn function.
-    if let Some(npc) = npcs.get(&child_form_id) {
-        accum.bounds_min = accum.bounds_min.min(ref_pos);
-        accum.bounds_max = accum.bounds_max.max(ref_pos);
-        if game.has_runtime_facegen_recipe() {
-            let race = races.get(&npc.race_form_id);
-            let spawn_t0 = std::time::Instant::now();
-            let spawned = crate::npc_spawn::spawn_npc_entity(
-                world,
-                ctx,
-                npc,
-                race,
-                game,
-                tex_provider,
-                mat_provider.as_deref_mut(),
-                idle_pool,
-                ref_pos,
-                ref_rot,
-                ref_scale,
-                record_index,
-            );
-            accum.npc_spawn_wall += spawn_t0.elapsed();
-            if spawned.is_some() {
-                accum.npc_spawned += 1;
-                if accum.npc_spawned_sample.len() < 8
-                    && !accum.npc_spawned_sample.contains(&child_form_id)
-                {
-                    accum.npc_spawned_sample.push(child_form_id);
-                }
-                accum.entity_count += 1;
-            }
-        } else if game.uses_prebaked_facegen() {
-            // M41.0 Phase 4 — Skyrim / FO4 / FO76 / Starfield
-            // pre-baked-FaceGen dispatch. The NPC's plugin
-            // name resolves from the high byte of its
-            // load-order-global FormID against `load_order`;
-            // when the plugin can't be resolved (corrupt
-            // FormID, missing master), the spawn function
-            // logs and returns the placement root with no
-            // mesh — same observable outcome as a missing
-            // FaceGen NIF, just diagnosable from the log.
-            let plugin = load_order::plugin_for_form_id(child_form_id, load_order).unwrap_or("");
-            let spawn_t0 = std::time::Instant::now();
-            let spawned = crate::npc_spawn::spawn_prebaked_npc_entity(
-                world,
-                ctx,
-                npc,
-                game,
-                tex_provider,
-                mat_provider.as_deref_mut(),
-                plugin,
-                ref_pos,
-                ref_rot,
-                ref_scale,
-                record_index,
-            );
-            accum.npc_spawn_wall += spawn_t0.elapsed();
-            if spawned.is_some() {
-                accum.npc_spawned += 1;
-                if accum.npc_spawned_sample.len() < 8
-                    && !accum.npc_spawned_sample.contains(&child_form_id)
-                {
-                    accum.npc_spawned_sample.push(child_form_id);
-                }
-                accum.entity_count += 1;
-            }
-        }
-        return;
-    }
-
     // M47.2 — invisible trigger volume. A REFR carrying an `XPRM`
     // box/sphere primitive and an attached script is a Bethesda
     // trigger box: no MODL, so the statics path below would skip
@@ -1763,18 +1758,13 @@ mod tests {
         );
     }
 
-    /// #1798 / D7-NEW-01 — `load_references` has no live-Vulkan-context
-    /// / ESM-fixture-free unit-test surface (it needs a real
-    /// `VulkanContext`, BSA-backed `TextureProvider`, and parsed ESM
-    /// indices), so a live call-through test is impractical here — the
-    /// same constraint documented on `draw_frame_guards_on_empty_
-    /// framebuffers_before_acquire` in the renderer crate. A static
-    /// source assertion instead pins that both NPC dispatch call sites
-    /// are wrapped in the `npc_spawn_wall` timing this fix added, so a
-    /// future refactor can't silently drop the only visibility this
-    /// loop has into its own per-NPC spawn cost.
+    /// #1798 / D7-NEW-01 + EXAL sub-REFR regression. A live call-through
+    /// needs Vulkan + archive fixtures, so pin the source-level wiring:
+    /// both game families create the resumable continuation and its active
+    /// work time (which excludes parked inter-frame time) still reaches the
+    /// end-of-cell NPC telemetry.
     #[test]
-    fn npc_spawn_call_sites_are_wall_clock_timed() {
+    fn npc_spawn_jobs_are_resumable_and_wall_clock_timed() {
         let full_src = include_str!("mod.rs");
         // Slice off `mod tests` itself — this test's own source text
         // contains the literal strings it's searching for, which would
@@ -1783,35 +1773,13 @@ mod tests {
             .find("#[cfg(test)]\nmod tests {")
             .expect("references.rs must have a #[cfg(test)] mod tests block")];
 
-        let runtime_facegen_pos = src
-            .find("crate::npc_spawn::spawn_npc_entity(")
-            .expect("load_references must call spawn_npc_entity");
-        let prebaked_facegen_pos = src
-            .find("crate::npc_spawn::spawn_prebaked_npc_entity(")
-            .expect("load_references must call spawn_prebaked_npc_entity");
-
-        let timer_starts: Vec<_> = src
-            .match_indices("let spawn_t0 = std::time::Instant::now();")
-            .collect();
-        assert_eq!(
-            timer_starts.len(),
-            2,
-            "expected exactly one spawn_t0 timer per NPC dispatch arm (runtime-FaceGen \
-             and pre-baked-FaceGen); #1798 / D7-NEW-01"
-        );
+        assert!(src.contains("NpcSpawnJob::runtime("));
+        assert!(src.contains("NpcSpawnJob::prebaked("));
+        assert!(src.contains("NpcSpawnProgress::Pending"));
+        assert!(src.contains("active_npc: Option<NpcSpawnJob>"));
         assert!(
-            timer_starts
-                .iter()
-                .any(|&(pos, _)| pos < runtime_facegen_pos),
-            "runtime-FaceGen dispatch (spawn_npc_entity) must be preceded by a spawn_t0 timer"
-        );
-        assert!(
-            timer_starts.iter().any(|&(pos, _)| pos < prebaked_facegen_pos),
-            "pre-baked-FaceGen dispatch (spawn_prebaked_npc_entity) must be preceded by a spawn_t0 timer"
-        );
-        assert!(
-            src.contains("npc_spawn_wall +="),
-            "each timed dispatch must accumulate into npc_spawn_wall"
+            src.contains("npc_spawn_wall += result.work_wall"),
+            "active NPC work time must accumulate into npc_spawn_wall"
         );
         assert!(
             src.contains("{:.1}ms wall in spawn calls"),

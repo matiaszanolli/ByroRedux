@@ -102,15 +102,19 @@ deadline** per frame (`STREAMING_APPLY_BUDGET`). The deadline spans:
 
 1. main-thread completion of worker-parsed NIFs, one NIF per atomic unit;
 2. terrain/water/precombine setup as one guaranteed-progress unit;
-3. placed-reference spawning, one outer REFR per atomic unit.
+3. placed-reference spawning, one synthetic SCOL/PKIN child per unit;
+4. NPC assembly below that boundary: placement setup, skeleton, each body/head
+   part, each eye/hair/brow part, and each armor NIF are separate units on both
+   runtime-FaceGen and pre-baked-FaceGen paths.
 
-An already-started unit always finishes, so a single complex NIF/REFR can exceed
-4 ms once but cannot deadlock the queue. Dense cells otherwise yield and resume
-without being marked `loaded`. Every yielded entity range is already stamped
-under an early `CellRoot`, so removing the matching pending generation on a
-boundary crossing immediately cancels it through the normal `unload_cell` path.
-Queued texture uploads are flushed per yielded REFR slice instead of accumulating
-into one final cell-sized fence wait.
+An already-started unit always finishes, so a single complex NIF or static
+placement can exceed 4 ms once but cannot deadlock the queue. Dense cells and
+multi-part actors otherwise yield and resume without being marked `loaded`.
+Every yielded entity range is already stamped under an early `CellRoot`, so
+removing the matching pending generation on a boundary crossing immediately
+cancels it through the normal `unload_cell` path. Queued texture uploads are
+flushed per yielded reference slice instead of accumulating into one final
+cell-sized fence wait.
 
 Foreground/full-radius bootstrap still calls `consume_streaming_payload`
 synchronously, but both drivers share the same import helper, exterior apply
@@ -177,17 +181,18 @@ genuinely open items, per that row:
   boundary-crossing benchmark across FNV, Skyrim, and FO4 is still needed to
   quantify the remaining atomic-unit outliers.
 - Main-thread NIF finalization and the high-cardinality REFR walk now share a
-  measured frame deadline. Individual NIFs/REFRs remain atomic, as do
-  terrain/water/precombine setup and their GPU submissions, so one unusually
-  complex unit can still exceed the target.
+  measured frame deadline. SCOL/PKIN expansions yield between children, and NPC
+  actors yield between their top-level NIF parts. Individual NIFs, ordinary
+  static placements, and terrain/water/precombine setup remain atomic, so one
+  unusually complex unit can still exceed the target.
 - Distant terrain/object LOD-ring construction is incremental, but its budget
   is an operation count. One `.lod` placement cell can parse and upload far
   more geometry than one terrain block, so the cap bounds work quantity, not
   wall-clock time.
-- The next latency slice is to split the remaining atomic setup/placement work
-  by upload bytes/mesh batches and bring LOD providers under the same measured
-  deadline. That is the path from bounded progress to consistently hitch-free
-  streaming.
+- The next latency slice is to split the remaining atomic setup/static-placement
+  work by upload bytes/mesh batches and bring LOD providers under the same
+  measured deadline. That is the path from bounded progress to consistently
+  hitch-free streaming.
 
 See [ROADMAP.md's M40 row](../../ROADMAP.md) for the full closure
 history and commit references.

@@ -444,9 +444,11 @@ the coarse live cell-count cap with a measured, resumable main-thread apply:
    out-of-ring geometry and stale terrain hole masks disappear on the boundary
    crossing, while replacements may arrive over later frames.
 10. One active payload progresses through NIF finalization (one NIF/unit),
-    atomic terrain/water/precombine setup, then placed references (one outer
-    REFR/unit). A unit already in progress always finishes; the next observes
-    the deadline.
+    atomic terrain/water/precombine setup, then placed references (one
+    SCOL/PKIN synthetic child/unit). NPC children go one level deeper:
+    placement setup, skeleton, every body/head accessory, and every armor NIF
+    are resumable units on both FaceGen paths. A unit already in progress always
+    finishes; the next observes the deadline.
 11. The cell root is registered before setup begins and each yielded entity
     range extends its `CellRootIndex` entry. A stale generation or worldspace
     drain can therefore reclaim a half-applied cell through `unload_cell`, not a
@@ -454,12 +456,19 @@ the coarse live cell-count cap with a measured, resumable main-thread apply:
 
 This is not yet a claim that exterior entry is pause-free. LOD work is bounded
 by attempt count rather than elapsed time, and one placement cell can still be
-much more expensive than one terrain block. A single complex NIF/REFR and the
-terrain/precombine/upload/BLAS setup phase also remain atomic and may exceed the
-nominal deadline once. The next latency boundary is byte/mesh-batch slicing for
-those units plus a measured LOD budget, followed by provider/cache reuse across
-transitions. The foreground cell remains the minimum coherent handoff
-throughout.
+much more expensive than one terrain block. A single complex NIF, ordinary
+static placement, or terrain/precombine/upload/BLAS setup phase remains atomic
+and may exceed the nominal deadline once. The next latency boundary is
+byte/mesh-batch slicing for those units plus a measured LOD budget, followed by
+provider/cache reuse across transitions. The foreground cell remains the
+minimum coherent handoff throughout.
+
+Live FNV validation (WastelandNV `0,0`, radius 2, interactive bootstrap,
+2026-07-27) assembled three streamed actors requiring 224.7 ms, 87.4 ms, and
+93.7 ms of active work without making any whole actor atomic: 55 top-level NPC
+units yielded 40 times while frames continued. The largest surviving unit was
+one armor NIF at 47.9 ms. That is the next concrete latency seam — per-NIF
+mesh/upload batching — rather than actor-wide assembly.
 
 ---
 
@@ -596,7 +605,7 @@ Steps 1–5 are refactors that pay down the scattered-quirk debt; step 6 is the 
 rendering capability the user asked for, built on the boundary the earlier steps
 establish.
 
-7. **Loading continuity (§5.6)** — **first three cuts done (2026-07-27).**
+7. **Loading continuity (§5.6)** — **first four cuts done (2026-07-27).**
    Interactive exterior entry is foreground-first: the center cell blocks as one
    coherent transaction and the rest of the radius applies through the worker.
    Bootstrap and steady state share request, import, exterior setup, and REFR
@@ -605,9 +614,10 @@ establish.
    interactive work runs only on full-detail-idle frames at two attempts per
    provider, while stale geometry is reclaimed immediately. Steady-state
    full-detail apply now uses one 4 ms cooperative deadline across per-NIF
-   finalization and per-REFR spawn, with resumable cell roots and cancellation.
-   Follow-ups: split atomic terrain/precombine/large-REFR GPU work, bring LOD
-   under the measured deadline, and reuse providers across door transitions.
+   finalization, per-synthetic-reference spawn, and per-NPC top-level NIF
+   assembly, with resumable cell roots and cancellation. Follow-ups: split
+   atomic terrain/precombine/static-placement GPU work, bring LOD under the
+   measured deadline, and reuse providers across door transitions.
 
 ---
 
