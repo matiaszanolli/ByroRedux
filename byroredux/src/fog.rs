@@ -21,6 +21,7 @@ const MAX_SIGMA_PER_METER: f32 = 10.0;
 
 const LOCAL_VOLUME_ALBEDO_PEAK: f32 = 0.9;
 const LOCAL_VOLUME_EDGE_SOFTNESS: f32 = 0.45;
+const LOCAL_VOLUME_ALPHA_FALLBACK: f32 = 0.35;
 
 /// Canonical, game-independent fog parameters stored on cell/weather runtime
 /// resources. No legacy near/far distances participate in volumetric shading.
@@ -84,6 +85,47 @@ impl Default for FogMedium {
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
+}
+
+/// Select the legacy particle preset from both host and texture semantics.
+///
+/// Bethesda commonly names a particle host generically (`SuperSpray01-
+/// Emitter`) while the sprite carries the only useful semantic
+/// (`fxsmokewispsthin01.dds`). Texture intent therefore participates before
+/// authored emitter overlays are applied. Smoke wins over a containing fire
+/// node because the texture describes the actual emitted domain.
+pub(crate) fn particle_preset(host_name: &str, texture_path: Option<&str>) -> ParticleEmitter {
+    let host_name = host_name.to_ascii_lowercase();
+    let texture_path = texture_path.unwrap_or("").to_ascii_lowercase();
+    let contains_any = |tokens: &[&str]| {
+        tokens
+            .iter()
+            .any(|token| host_name.contains(token) || texture_path.contains(token))
+    };
+    let has_component_prefix = |prefix: &str| {
+        [&host_name, &texture_path].iter().any(|value| {
+            value
+                .split(|character: char| !character.is_ascii_alphanumeric())
+                .any(|component| {
+                    component.starts_with(prefix)
+                        || component
+                            .strip_prefix("fx")
+                            .is_some_and(|suffix| suffix.starts_with(prefix))
+                })
+        })
+    };
+
+    if has_fog_token(&host_name) || has_fog_token(&texture_path) || has_component_prefix("ash") {
+        ParticleEmitter::smoke()
+    } else if contains_any(&["spark", "ember", "cinder"]) {
+        ParticleEmitter::embers()
+    } else if contains_any(&["torch", "fire", "flame", "brazier", "candle"]) {
+        ParticleEmitter::torch_flame()
+    } else if contains_any(&["magic", "enchant", "sparkle", "glow"]) {
+        ParticleEmitter::magic_sparkles()
+    } else {
+        ParticleEmitter::torch_flame()
+    }
 }
 
 /// Fit `exp(-σ_t d)` to a legacy linear fog ramp. Returns inverse metres.
@@ -213,7 +255,18 @@ pub(crate) fn fog_volume_from_particle(
     // The legacy billboard alpha describes transmittance through the visible
     // particle footprint. Fold in expected live occupancy so a sparse emitter
     // does not become a solid ellipsoid, then recover sigma_t from Beer-Lambert.
-    let mean_alpha = ((emitter.start_color[3] + emitter.end_color[3]) * 0.5).clamp(0.0, 0.98);
+    let endpoint_alpha = ((emitter.start_color[3] + emitter.end_color[3]) * 0.5).clamp(0.0, 0.98);
+    // ImportedParticleEmitter currently retains only the first/last color
+    // keys. Vanilla smoke often fades to zero at both endpoints while its
+    // omitted interior keys and sprite alpha carry the visible density. A
+    // semantically explicit alpha-over medium must not collapse to vacuum in
+    // that representation; use a conservative proxy until texture-average
+    // alpha is available directly at this boundary.
+    let mean_alpha = if endpoint_alpha <= 1.0e-4 {
+        LOCAL_VOLUME_ALPHA_FALLBACK
+    } else {
+        endpoint_alpha
+    };
     let expected_live = emitter.rate.max(0.0) * life;
     let occupancy = if emitter.max_particles == 0 {
         0.0
@@ -365,9 +418,12 @@ pub(crate) fn fog_volume_from_mesh(
 }
 
 pub(crate) fn has_fog_token(value: &str) -> bool {
-    const FOG_TOKENS: [&str; 7] = ["fog", "smoke", "mist", "steam", "vapor", "cloud", "dust"];
+    const FOG_TOKENS: [&str; 6] = ["fog", "smoke", "mist", "steam", "vapor", "cloud"];
     let value = value.to_ascii_lowercase();
     FOG_TOKENS.iter().any(|token| value.contains(token))
+        || value
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|component| component.starts_with("dust") || component.starts_with("fxdust"))
 }
 
 #[cfg(test)]
@@ -459,6 +515,50 @@ mod tests {
         let mut emitter = ParticleEmitter::smoke();
         emitter.texture_path = Some("textures\\fx\\groundmist01.dds".to_string());
         assert!(fog_volume_from_particle("EmitterNode", &emitter).is_some());
+    }
+
+    #[test]
+    fn smoke_texture_overrides_a_generic_particle_host() {
+        let preset = particle_preset(
+            "SuperSpray01-Emitter",
+            Some("textures\\effects\\fxsmokewispsthin01.dds"),
+        );
+        assert_eq!(preset.dst_blend, 7);
+        assert_eq!(preset.start_color, ParticleEmitter::smoke().start_color);
+
+        let sparks = particle_preset("FireSparks", None);
+        assert_eq!(sparks.start_size, ParticleEmitter::embers().start_size);
+        assert_eq!(sparks.dst_blend, 0);
+
+        let flash = particle_preset("EmitterNode", Some("textures\\effects\\flash01.dds"));
+        assert_eq!(flash.dst_blend, ParticleEmitter::torch_flame().dst_blend);
+    }
+
+    #[test]
+    fn zero_endpoint_smoke_curve_uses_a_finite_density_fallback() {
+        let mut emitter = particle_preset(
+            "SuperSpray01-Emitter",
+            Some("textures\\effects\\fxsmokewispsthin01.dds"),
+        );
+        emitter.start_color[3] = 0.0;
+        emitter.end_color[3] = 0.0;
+        emitter.rate = 35.0;
+        emitter.life = 8.333;
+        emitter.start_size = 1.5;
+        emitter.end_size = 1.5;
+
+        let volume = fog_volume_from_particle("SuperSpray01-Emitter", &emitter).unwrap();
+        assert!(volume.extinction_per_meter.is_finite());
+        assert!(volume.extinction_per_meter > 0.0);
+    }
+
+    #[test]
+    fn dust_requires_a_component_boundary() {
+        assert!(has_fog_token("textures\\effects\\fxdustcloud01.dds"));
+        assert!(has_fog_token("textures/effects/dust_plume.dds"));
+        assert!(!has_fog_token(
+            "textures\\dungeons\\industrial\\wastelandfakesky01.dds"
+        ));
     }
 
     #[test]

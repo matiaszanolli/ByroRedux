@@ -14,7 +14,7 @@ use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
     BSBound, BSXFlags, Billboard, BillboardMode, GlobalTransform, LocalBound, MeshHandle, Name,
-    Parent, ParticleEmitter, SceneFlags, SkinnedMesh, TextureHandle, Transform, World, WorldBound,
+    Parent, SceneFlags, SkinnedMesh, TextureHandle, Transform, World, WorldBound,
     MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3};
@@ -503,39 +503,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             .as_deref()
             .map(|s| s.to_ascii_lowercase())
             .unwrap_or_default();
-        // Embers / sparks check FIRST so a node like "FireSparks" lands
-        // on the bright-glint preset rather than the larger torch flame
-        // (the `fire` substring would otherwise win).
-        let mut preset = if host_name.contains("spark")
-            || host_name.contains("ember")
-            || host_name.contains("cinder")
-        {
-            ParticleEmitter::embers()
-        } else if host_name.contains("torch")
-            || host_name.contains("fire")
-            || host_name.contains("flame")
-            || host_name.contains("brazier")
-            || host_name.contains("candle")
-        {
-            ParticleEmitter::torch_flame()
-        } else if host_name.contains("smoke")
-            || host_name.contains("steam")
-            || host_name.contains("ash")
-        {
-            ParticleEmitter::smoke()
-        } else if host_name.contains("magic")
-            || host_name.contains("enchant")
-            || host_name.contains("sparkle")
-            || host_name.contains("glow")
-        {
-            ParticleEmitter::magic_sparkles()
-        } else {
-            // Fallback — many vanilla NIFs don't name the host node
-            // descriptively (e.g. just "EmitterNode"). Default to a
-            // visible flame so the audit's "every torch invisible"
-            // failure is still resolved end-to-end.
-            ParticleEmitter::torch_flame()
-        };
+        let mut preset = crate::fog::particle_preset(&host_name, emitter.texture_path.as_deref());
         // NIFAL particles slice (#1513) — overlay every authored emitter
         // override (colour curve #707, NiPSysEmitter base params, birth
         // rate NiPSysEmitterCtlr, force fields #984) onto the heuristic

@@ -64,6 +64,12 @@ of them one physical and temporal contract.
 - Alpha-over particle systems whose host or texture identifies fog, smoke,
   mist, steam, vapor, cloud, or dust are replaced at the NIF→ECS boundary.
   Additive flame/ember/magic particles remain billboards.
+- Particle preset selection inspects the sprite texture as well as the host
+  node. This covers generic Bethesda hosts such as `SuperSpray01-Emitter`
+  whose only smoke intent is `fxsmokewispsthin01.dds`. When the retained
+  color-curve endpoints are both transparent, conversion uses a conservative
+  0.35 alpha proxy rather than collapsing the authored medium to vacuum; a
+  decoded texture-average alpha remains the higher-fidelity follow-up.
 - Cell-placed alpha-over fog/smoke/mist/steam/vapor/cloud/dust meshes are
   intercepted before texture upload, raster entity creation, or BLAS build.
   Their geometry AABB is extruded along thin axes into a soft box primitive;
@@ -145,6 +151,10 @@ the current combined timer as a final budget verdict.
   and the three workshop masters). VOLI therefore cannot calibrate Fallout 4
   defaults from this corpus. The reusable probe lives at
   `crates/plugin/examples/dump_voli_subs.rs`.
+- FNV `FreesideAtomicWrangler` contains two alpha-over
+  `fxsmokewispsthin01.dds` particle emitters under generic
+  `SuperSpray01-Emitter` hosts. Both become `FogVolume` entities in the live
+  ECS; the old sprite texture is no longer uploaded for them.
 
 ## Follow-up boundary
 

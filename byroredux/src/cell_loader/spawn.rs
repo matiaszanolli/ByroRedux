@@ -8,8 +8,8 @@
 
 use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::{
-    BSXFlags, Billboard, GlobalTransform, LightSource, LocalBound, MeshHandle, ParticleEmitter,
-    SceneFlags, TextureHandle, Transform, World, WorldBound,
+    BSXFlags, Billboard, GlobalTransform, LightSource, LocalBound, MeshHandle, SceneFlags,
+    TextureHandle, Transform, World, WorldBound,
 };
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
@@ -613,27 +613,7 @@ fn spawn_particle_emitters(
         );
         let world_pos = GlobalTransform::compose_translation(ref_pos, ref_rot, ref_scale, nif_pos);
         let host = em.host_name.as_deref().unwrap_or("").to_ascii_lowercase();
-        let mut preset =
-            if host.contains("spark") || host.contains("ember") || host.contains("cinder") {
-                ParticleEmitter::embers()
-            } else if host.contains("torch")
-                || host.contains("fire")
-                || host.contains("flame")
-                || host.contains("brazier")
-                || host.contains("candle")
-            {
-                ParticleEmitter::torch_flame()
-            } else if host.contains("smoke") || host.contains("steam") || host.contains("ash") {
-                ParticleEmitter::smoke()
-            } else if host.contains("magic")
-                || host.contains("enchant")
-                || host.contains("sparkle")
-                || host.contains("glow")
-            {
-                ParticleEmitter::magic_sparkles()
-            } else {
-                ParticleEmitter::torch_flame()
-            };
+        let mut preset = crate::fog::particle_preset(&host, em.texture_path.as_deref());
         // NIFAL particles slice (#1513) — overlay every authored emitter
         // override (colour curve #707, NiPSysEmitter base params, birth
         // rate, force fields #984) onto the heuristic preset through the
@@ -664,6 +644,14 @@ fn spawn_particle_emitters(
         // seeded optical density; lighting visibility remains the shared
         // BLAS-backed TLAS query in the volumetric inject pass.
         if let Some(fog_volume) = crate::fog::fog_volume_from_particle(&host, &preset) {
+            log::debug!(
+                target: "byroredux::fog",
+                "replaced alpha-over particle emitter with local fog volume: \
+                 type={:?} host={:?} texture={:?}",
+                em.original_type,
+                em.host_name,
+                preset.texture_path,
+            );
             let entity = world.spawn();
             world.insert(
                 entity,
@@ -675,6 +663,24 @@ fn spawn_particle_emitters(
             );
             world.insert(entity, fog_volume);
             continue;
+        }
+        if preset.dst_blend == 7 {
+            log::debug!(
+                target: "byroredux::fog",
+                "alpha-over particle emitter kept on billboard path: \
+                 type={:?} host={:?} texture={:?} alpha={:.3}->{:.3} \
+                 rate={:.3} life={:.3} max_particles={} size={:.3}->{:.3}",
+                em.original_type,
+                em.host_name,
+                preset.texture_path,
+                preset.start_color[3],
+                preset.end_color[3],
+                preset.rate,
+                preset.life,
+                preset.max_particles,
+                preset.start_size,
+                preset.end_size,
+            );
         }
 
         // A particle without a real sprite is not a valid white quad. The
@@ -913,6 +919,7 @@ fn spawn_fog_mesh_instance(
     else {
         if fog_semantics {
             log::debug!(
+                target: "byroredux::fog",
                 "authored fog mesh candidate kept on legacy path: model={:?} texture={:?} \
                  name={:?} has_alpha={} dst_blend={} material_kind={}",
                 pc.mesh_cache_key,
@@ -926,6 +933,7 @@ fn spawn_fog_mesh_instance(
         return false;
     };
     log::debug!(
+        target: "byroredux::fog",
         "replaced authored fog mesh with local volume: model={:?} texture={:?} name={:?}",
         pc.mesh_cache_key,
         texture_path,
