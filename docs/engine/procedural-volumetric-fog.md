@@ -3,8 +3,9 @@
 ## Decision record
 
 **Status:** froxel core plus authored global/local conversion landed (physical
-single scattering, temporal history, RT visibility, FSR contract, XCLL/WTHR
-→ engine-native medium, smoke/fog particles → clustered local primitives).
+spectral single scattering, temporal history, RT visibility, FSR contract,
+XCLL/WTHR → engine-native medium, smoke/fog particles → clustered local
+primitives).
 
 **Location:** `crates/renderer/src/vulkan/volumetrics.rs`,
 `crates/renderer/shaders/volumetrics_{inject,integrate}.comp`,
@@ -41,6 +42,10 @@ of them one physical and temporal contract.
 - XCLL/WTHR near/far ramps are converted once at the cell/weather translation
   boundary. Runtime volumetrics consume extinction in inverse metres,
   single-scatter albedo, and coverage; they never evaluate the legacy ramp.
+- The authored linear fog colour is normalized by its strongest channel and
+  multiplied into the global single-scatter albedo. This preserves the legacy
+  hue without changing extinction or raising the medium's peak scattering
+  energy; authored black remains a finite, purely absorptive medium.
 - The extinction fit minimizes
   `Σ (exp(-sigma_t*d)-T_legacy(d))²/d²` over the authored interval. Skyrim's
   authored maximum opacity is included in the target transmittance. Invalid,

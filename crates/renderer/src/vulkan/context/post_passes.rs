@@ -148,6 +148,7 @@ impl VulkanContext {
         frame_counter: u32,
         volumetric_time_seconds: f32,
         sky_params: &SkyParams,
+        fog_color: [f32; 3],
         fog_far: f32,
         fog_extinction_per_meter: f32,
         fog_single_scatter_albedo: f32,
@@ -448,6 +449,11 @@ impl VulkanContext {
                                     super::super::volumetrics::DEFAULT_SCALE_HEIGHT_METERS
                                         * super::super::volumetrics::WORLD_UNITS_PER_METER,
                                 ],
+                                fog_tint: {
+                                    let tint =
+                                        super::super::volumetrics::normalize_fog_tint(fog_color);
+                                    [tint[0], tint[1], tint[2], 0.0]
+                                },
                                 temporal_params: [
                                     super::super::volumetrics::DEFAULT_TEMPORAL_HISTORY_WEIGHT,
                                     super::super::volumetrics::DEFAULT_DENSITY_REJECTION,

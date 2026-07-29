@@ -3,8 +3,8 @@
 The renderer is a Vulkan 1.3 implementation built on `ash` (raw Vulkan
 bindings), `ash-window` (surface creation), and `gpu-allocator` (GPU
 memory). It supports `VK_KHR_ray_query` for hardware ray-traced shadows,
-reflections, and 1-bounce GI on RTX-class hardware and falls back to
-non-RT rendering on devices without the extension. The Vulkan 1.3
+reflections, and bounded material-aware path-traced GI on RTX-class hardware
+and falls back to non-RT rendering on devices without the extension. The Vulkan 1.3
 `Synchronization2` device feature is enabled.
 
 Source: `crates/renderer/src/vulkan/`
@@ -378,13 +378,16 @@ guard `VUID-03667` at refit time (#1144 / #1145).
   (#289) with a two-stage barrier chain (HOST_WRITE→TRANSFER_READ→AS_READ).
   `MAX_INSTANCES = 0x40000` (262144); `MAX_INDIRECT_DRAWS` is sized identically.
 - **Ray query in the fragment shader + caustic splat compute**: shadow,
-  reflection, 1-bounce GI, window-portal, and refracted-light caustic rays —
-  all against the same TLAS. Shadow query is driven by the streaming-RIS
-  reservoir pipeline (M31.5). Reflection rays get exponential distance
-  falloff + roughness-driven angular jitter (#320). 1-bounce GI samples
-  cosine-weighted hemisphere directions with `tMin = 0.05` matching the bias
-  (#669); far hits fall back to a simplified cost model beyond the GI ray
-  horizon, with a smoothed fade across the `rtLOD` boundary (#9873add6).
+  reflection, bounded path-traced GI, window-portal, and refracted-light
+  caustic rays — all against the same TLAS. Shadow query is driven by the
+  streaming-RIS reservoir pipeline (M31.5). Reflection rays get exponential
+  distance falloff + roughness-driven angular jitter (#320). GI samples an
+  initial cosine-weighted hemisphere direction, then transports an
+  energy-conserving diffuse/GGX BSDF through up to two diffuse events and
+  bounded glass/specular segments. Environment misses are directional and
+  secondary direct light uses material-aware next-event evaluation.
+  `tMin = 0.05` matches the origin bias (#669); far hits retain a smoothed
+  fade across the `rtLOD` boundary (#9873add6).
   Caustic ray uses `OPAQUE | TerminateOnFirstHit` (#640). Every consumer is
   gated on `sceneFlags.x > 0.5` (rt_flag = ray_query supported AND TLAS
   written this frame).

@@ -999,3 +999,79 @@ fn gpu_light_glsl_copies_stay_in_lockstep() {
         }
     }
 }
+
+/// The bounded GI path must remain material-aware. The pre-fix implementation
+/// multiplied every secondary hit by `hitAlbedo / PI` and sampled another
+/// cosine hemisphere, turning polished conductors into diffuse color emitters.
+/// These source-level pins complement the SPIR-V compile check: they catch a
+/// semantically valid shader rollback that would otherwise compile cleanly.
+#[test]
+fn bounded_path_uses_ggx_bsdf_transport_and_directional_environment() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+    let pbr = include_str!("../../../shaders/include/pbr.glsl");
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+
+    for needle in [
+        "vec3 sampleVisibleGgxNormal(",
+        "vec3 evaluatePathBsdf(",
+        "bool samplePathBsdf(",
+        "specularPdf = D * G1V / max(4.0 * NdotV, 1e-6);",
+    ] {
+        assert!(
+            pbr.contains(needle),
+            "bounded path PBR helper `{needle}` is missing"
+        );
+    }
+    for needle in [
+        "vec3 pathEnvironmentRadiance(",
+        "vec3 pathHitRadiance(",
+        "pathLuminance(lights[i].color_type.rgb * candidateBsdf)",
+    ] {
+        assert!(
+            lighting.contains(needle),
+            "bounded path lighting helper `{needle}` is missing"
+        );
+    }
+    for needle in [
+        "vec3 primaryDiffuseWeight = (1.0 - fresnelSchlick(NdotV, F0))",
+        "pathEnvironmentRadiance(pathDir)",
+        "pathHitRadiance(",
+        "samplePathBsdf(",
+        "throughput *= bsdfWeight;",
+    ] {
+        assert!(
+            frag.contains(needle),
+            "triangle.frag bounded path no longer uses `{needle}`"
+        );
+    }
+    assert!(
+        !frag.contains("hitAlbedo * hitIrradiance * (1.0 / PI)"),
+        "secondary path hits must not regress to unconditional Lambert shading"
+    );
+}
+
+/// Quality work may change the estimator, but the accepted #2161 cost point is
+/// still a six-segment path with two diffuse events. Specular/glass transport
+/// fits inside the same segment ceiling and must not silently expand the
+/// worst-case ray-query budget.
+#[test]
+fn bounded_path_preserves_the_accepted_segment_and_diffuse_budgets() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+    assert!(
+        frag.contains("const int MAX_PATH_SEGMENTS = 6;"),
+        "bounded path segment ceiling drifted from the accepted #2161 cost point"
+    );
+    assert!(
+        frag.contains("const int MAX_DIFFUSE_BOUNCES = 2;"),
+        "the accepted two-diffuse-event color-bleed path must remain enabled"
+    );
+    assert!(
+        frag.contains("const int MAX_SHADED_HITS = 2;")
+            && frag.contains("if (shadedHits < MAX_SHADED_HITS)"),
+        "glossy chains must not expand the accepted local-light shadow-query ceiling"
+    );
+    assert!(
+        frag.contains("for (int segment = 0; segment < MAX_PATH_SEGMENTS; ++segment)"),
+        "bounded path must enforce MAX_PATH_SEGMENTS in its traversal loop"
+    );
+}

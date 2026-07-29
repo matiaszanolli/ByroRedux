@@ -174,7 +174,8 @@ the `sf_smoke` baseline tool). Single-mesh sweetroll ~3000-5000 FPS
 
 **RT lighting.** Full pipeline: SSBO multi-light, ray-query shadows
 with streaming weighted reservoir sampling (16 reservoirs/fragment, Phase 19;
-unbiased weight clamped at 64×), RT reflections + 1-bounce GI, SVGF
+unbiased weight clamped at 64×), RT reflections + bounded material-aware
+path-traced GI (two diffuse events, with GGX/glass transport), SVGF
 temporal denoiser with motion-vector reprojection and mesh-id
 disocclusion, composite + ACES tone map, TAA with Halton(2,3) jitter
 and YCoCg variance clamp. BLAS per-mesh with compaction + LRU
@@ -749,7 +750,8 @@ palette SSBO, unified vertex shader.
 
 **RT renderer**
 M22 RT-first multi-light (SSBO lights, ray query shadows, RT
-reflections, 1-bounce GI, SVGF temporal, composite + ACES) ·
+reflections, bounded material-aware path-traced GI, SVGF temporal,
+composite + ACES) ·
 M31 RT performance at scale (batched BLAS, TLAS culling,
 importance-sorted shadow budget, distance-based ray fallback, BLAS
 LRU eviction, deferred SSBO rebuild) ·

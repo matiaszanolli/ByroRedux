@@ -27,7 +27,7 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 | **ESM records (FNV)** | ~25 structured types (items, NPCs, factions, cells, CREA, LVLC, SCPT, PACK, QUST, DIAL, MESG, PERK, SPEL, MGEF, …) plus a separate long-tail bucket (sounds / idle / grasses / debris). See [ROADMAP Status](ROADMAP.md#status) for the current count — it's tracked by a floor-based integration test, not a number pinned here. |
 | **Cross-game translation** | **NIFAL** (NIF Abstraction Layer) — one explicit `translate()` boundary per data category resolves each game's native NIF into a single canonical, game-agnostic representation; no per-game branches downstream. See [docs/engine/nifal.md](docs/engine/nifal.md). |
 | **Test count, LOC, file count, workspace size** | See [ROADMAP Project Stats](ROADMAP.md#project-stats) — refreshed per `/session-close` so the README doesn't drift behind. |
-| **Renderer** | Vulkan 1.3 + `VK_KHR_ray_query` — multi-light RT shadows, reflections, 1-bounce GI, SVGF temporal denoiser, TAA, streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction, Disney/Burley BSDF lobe for PBR (BGSM/BGEM + Starfield) content |
+| **Renderer** | Vulkan 1.3 + `VK_KHR_ray_query` — multi-light RT shadows, reflections, bounded material-aware path-traced GI, SVGF temporal denoiser, TAA, streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction, Disney/Burley BSDF lobe for PBR (BGSM/BGEM + Starfield) content |
 | **Physics** | Rapier3D — collision import from NIF `bhk` chain, dynamic bodies, fixed 60 Hz substep |
 | **Scripting** | Papyrus `.psc` parser (full AST) + `.pex` bytecode decompiler; recognizer-driven attach of compiled vanilla scripts at cell load; ECS-native event + timer runtime |
 | **UI** | Scaleform / SWF menus via Ruffle (offscreen wgpu → Vulkan texture overlay) |
@@ -50,8 +50,9 @@ launcher. It does not redistribute Bethesda game data.
 
 - **Full RT lighting pipeline** — ray-query shadows with streaming weighted
   reservoir sampling (8 reservoirs / fragment, unbiased weight clamped at
-  64×), RT reflections with roughness-driven jitter, 1-bounce GI with
-  cosine-weighted hemisphere sampling, SVGF temporal denoiser with
+  64×), RT reflections with roughness-driven jitter, bounded path-traced GI
+  with GGX visible-normal and diffuse sampling (up to two diffuse events,
+  with glass/specular transport), SVGF temporal denoiser with
   motion-vector reprojection and mesh-id disocclusion, TAA with Halton(2,3)
   jitter and YCoCg variance clamp, ACES tone mapping. PBR surfaces shade
   through a Disney/Burley BSDF lobe (anisotropic GGX, Burley retro-reflective

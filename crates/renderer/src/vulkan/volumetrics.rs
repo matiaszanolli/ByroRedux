@@ -91,6 +91,11 @@ pub struct VolumetricsParams {
     /// x = single-scatter albedo, y = backward HG lobe g,
     /// z = forward-lobe mixture, w = height-fog scale height in world units.
     pub medium_params: [f32; 4],
+    /// rgb = normalized authored fog chromaticity. The inject shader
+    /// multiplies this by `medium_params.x` to recover spectral
+    /// single-scatter albedo without letting tint alter extinction or the
+    /// authored medium's peak scattering energy. w is reserved.
+    pub fog_tint: [f32; 4],
     /// x = temporal history weight, y = relative density rejection strength,
     /// z = total time in seconds, w = procedural coverage.
     pub temporal_params: [f32; 4],
@@ -165,6 +170,29 @@ pub const DEFAULT_SINGLE_SCATTER_ALBEDO: f32 = 0.95;
 pub const DEFAULT_SCALE_HEIGHT_METERS: f32 = 30.0;
 pub const DEFAULT_TEMPORAL_HISTORY_WEIGHT: f32 = 0.92;
 pub const DEFAULT_DENSITY_REJECTION: f32 = 4.0;
+
+/// Convert authored fog colour into a finite, energy-neutral chromaticity.
+///
+/// Bethesda's fog colour is an apparent in-scattering tint, while the
+/// canonical medium stores a separate scalar single-scatter albedo. Dividing
+/// by the strongest channel preserves the authored channel ratios and leaves
+/// that scalar as the peak spectral albedo. Black remains black absorption;
+/// invalid and negative channels contribute no scattering.
+pub fn normalize_fog_tint(color: [f32; 3]) -> [f32; 3] {
+    let sanitized = color.map(|channel| {
+        if channel.is_finite() {
+            channel.max(0.0)
+        } else {
+            0.0
+        }
+    });
+    let peak = sanitized[0].max(sanitized[1]).max(sanitized[2]);
+    if peak <= 1.0e-6 {
+        [0.0; 3]
+    } else {
+        sanitized.map(|channel| (channel / peak).clamp(0.0, 1.0))
+    }
+}
 
 /// Optical depth through an exponential height medium
 /// `sigma_t(y) = sigma0 * exp(-(y - base_height) / scale_height)`.
@@ -1630,6 +1658,45 @@ mod unit_tests {
         let world_optical_depth = sigma_per_world_unit * DEFAULT_VOLUME_FAR;
         let metre_optical_depth = sigma_per_metre * reach_metres;
         assert!((world_optical_depth - metre_optical_depth).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn authored_fog_tint_preserves_chromaticity_and_peak_energy() {
+        let tint = normalize_fog_tint([0.65, 0.7, 0.8]);
+        assert!((tint[0] - 0.8125).abs() < 1.0e-6);
+        assert!((tint[1] - 0.875).abs() < 1.0e-6);
+        assert_eq!(tint[2], 1.0);
+
+        let spectral_albedo = tint.map(|channel| channel * DEFAULT_SINGLE_SCATTER_ALBEDO);
+        assert_eq!(
+            spectral_albedo[2], DEFAULT_SINGLE_SCATTER_ALBEDO,
+            "fog tint must not increase the medium's peak scattering energy"
+        );
+    }
+
+    #[test]
+    fn black_or_invalid_fog_tint_stays_finite_and_absorptive() {
+        assert_eq!(normalize_fog_tint([0.0; 3]), [0.0; 3]);
+        assert_eq!(
+            normalize_fog_tint([f32::NAN, -1.0, f32::INFINITY]),
+            [0.0; 3]
+        );
+        assert_eq!(normalize_fog_tint([f32::NAN, 2.0, -4.0]), [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn injector_consumes_authored_fog_tint_as_spectral_albedo() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        for contract in [
+            "vec4 fog_tint;",
+            "params.fog_tint.rgb",
+            "global_extinction * global_albedo",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "procedural fog lost its authored spectral-albedo contract: {contract}"
+            );
+        }
     }
 
     #[test]

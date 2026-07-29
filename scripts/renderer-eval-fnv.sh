@@ -9,6 +9,11 @@ output_root="${BYROREDUX_FNV_EVAL_OUT:-${repo_root}/target/renderer-eval-fnv}"
 frames="${BYROREDUX_FNV_EVAL_FRAMES:-64}"
 cell="${BYROREDUX_FNV_EVAL_CELL:-GSProspectorSaloonInterior}"
 runner="${BYROREDUX_RENDER_EVAL_RUNNER:-}"
+# Keep renderer diagnostics in the occupied saloon instead of Character
+# mode's arbitrary cold-start DoorTeleport (currently a rear closet).
+# These are renderer Y-up coordinates and remain overridable for other cells.
+camera_pos="${BYROREDUX_FNV_EVAL_CAMERA_POS:-300,3560,750}"
+camera_forward="${BYROREDUX_FNV_EVAL_CAMERA_FORWARD:--0.587,-0.059,-0.807}"
 
 for asset in \
     "${data_root}/FalloutNV.esm" \
@@ -52,6 +57,9 @@ capture() {
         --bsa "${data_root}/Fallout - Meshes.bsa" \
         --textures-bsa "${data_root}/Fallout - Textures.bsa" \
         --textures-bsa "${data_root}/Fallout - Textures2.bsa" \
+        --fly \
+        --camera-pos "${camera_pos}" \
+        --camera-forward "${camera_forward}" \
         --rotation-mode "${rotation_mode}" \
         --bench-frames "${frames}" \
         --screenshot "${png}" >"${log}" 2>&1

@@ -2961,12 +2961,14 @@ void main() {
 #endif
     }
 
-    // ── 1-bounce RT ambient GI ──────────────────────────────────────
+    // ── Bounded path-traced ambient GI ──────────────────────────────
     //
-    // Cast a single cosine-weighted hemisphere ray per fragment. If it
-    // hits geometry, sample the hit surface's texture color and multiply
-    // by the ambient light level to approximate indirect illumination.
-    // At 60+ FPS, temporal noise integration produces smooth color bleeding.
+    // The primary event is the diffuse lobe only: glossy/metallic primary
+    // reflection already lives on the direct attachment above, while the
+    // albedo-demodulated indirect attachment can represent only the local
+    // diffuse factor that composite re-applies. Secondary hits sample the
+    // material's GGX/diffuse mixture and evaluate the same BSDF for local
+    // lights, so conductors no longer turn into Lambertian color emitters.
     vec3 indirect = vec3(0.0);
     // RT ambient occlusion derived from the GI ray's hit distance. Close
     // hits darken the ambient term so recesses/corners/behind-wall regions
@@ -2983,7 +2985,11 @@ void main() {
     // bounce.
     float giEmissiveLum =
         emissiveMult * max(emissiveColor.r, max(emissiveColor.g, emissiveColor.b));
-    if (rtEnabled && !isWindow && !isGlass && giEmissiveLum < 0.01 && rtLOD < RT_LOD_GI) {
+    vec3 primaryDiffuseWeight = (1.0 - fresnelSchlick(NdotV, F0))
+        * (1.0 - metalness);
+    if (rtEnabled && !isWindow && !isGlass && giEmissiveLum < 0.01
+        && rtLOD < RT_LOD_GI
+        && pathLuminance(primaryDiffuseWeight) > 1e-5) {
         float giDist = length(fragWorldPos - cameraPos.xyz);
         float giFade = 1.0 - smoothstep(4000.0, 6000.0, giDist);
         if (giFade > 0.01) {
@@ -3035,20 +3041,22 @@ void main() {
             vec3 giDir = cosineWeightedHemisphere(N_geom, n1, n2);
             vec3 giOrigin = fragWorldPos + N_bias * 0.1;
 
-            // Bounded diffuse/specular path. Two diffuse events provide real
-            // second-bounce illumination and colour bleeding. Glass
-            // interfaces do not consume that diffuse budget: they redirect
-            // throughput with Fresnel reflection/refraction, so illumination
-            // can travel through a closed bottle or pane before reaching a
-            // diffuse receiver.
+            // Bounded material-aware path. Two diffuse events provide real
+            // second-bounce illumination and colour bleeding. GGX and glass
+            // events redirect throughput without consuming that diffuse
+            // budget, so illumination can cross polished metal or a closed
+            // bottle/pane before reaching a diffuse receiver. Segment and
+            // locally-lit-hit caps keep worst-case ray-query work unchanged.
             const int MAX_PATH_SEGMENTS = 6;
             const int MAX_DIFFUSE_BOUNCES = 2;
+            const int MAX_SHADED_HITS = 2;
             vec3 pathOrigin = giOrigin;
             vec3 pathDir = giDir;
-            vec3 throughput = vec3(1.0);
+            vec3 throughput = primaryDiffuseWeight;
             vec3 pathRadiance = vec3(0.0);
             float pathDistance = 0.0;
             int diffuseBounces = 0;
+            int shadedHits = 0;
             bool measuredAo = false;
 
             for (int segment = 0; segment < MAX_PATH_SEGMENTS; ++segment) {
@@ -3060,7 +3068,7 @@ void main() {
 
                 if (rayQueryGetIntersectionTypeEXT(giRQ, true)
                     == gl_RayQueryCommittedIntersectionNoneEXT) {
-                    pathRadiance += throughput * sceneFlags.yzw * 0.5;
+                    pathRadiance += throughput * pathEnvironmentRadiance(pathDir);
                     break;
                 }
 
@@ -3127,28 +3135,41 @@ void main() {
 
                 vec3 hitAlbedo = clamp(
                     rayHitAlbedo(hitMat, hitBase.rgb), vec3(0.0), vec3(1.0));
-                vec3 hitEmissive = hitEmission;
-                // The first diffuse event gets the two strongest local lights
-                // with glass-aware visibility. A second diffuse event is much
-                // lower energy and uses the bounded one-light/one-shadow
-                // evaluator; otherwise two-bounce GI can explode into dozens
-                // of nested ray queries per full-resolution pixel.
-                vec3 hitIrradiance = diffuseBounces == 0
-                    ? giHitIrradiance(hitPos, hitN, dbgFlags)
-                    : reflectionHitIrradiance(hitPos, hitN, dbgFlags);
-                pathRadiance += throughput
-                    * (hitAlbedo * hitIrradiance * (1.0 / PI) + hitEmissive);
-
-                diffuseBounces++;
-                if (diffuseBounces >= MAX_DIFFUSE_BOUNCES) break;
-                throughput *= hitAlbedo;
-                if (max(max(throughput.r, throughput.g), throughput.b) < 0.02) break;
+                vec3 viewDir = -pathDir;
+                // The first two material hits get 2 then 1 strongest local
+                // lights. Later specular hits still carry environment and
+                // emission, but cannot expand the accepted shadow-query cap.
+                vec3 hitDirect = vec3(0.0);
+                if (shadedHits < MAX_SHADED_HITS) {
+                    uint visibleLightLimit = shadedHits == 0 ? 2u : 1u;
+                    hitDirect = pathHitRadiance(
+                        hitPos, hitN, viewDir,
+                        hitMat, hitAlbedo, dbgFlags, visibleLightLimit);
+                    shadedHits++;
+                }
+                pathRadiance += throughput * (hitDirect + hitEmission);
 
                 vec2 bounceRand = hash2_pixel_frame(
                     uvec2(gl_FragCoord.xy),
                     uint(giSeed) + uint(segment + 1) * 0x85EBCA6Bu);
-                pathDir = cosineWeightedHemisphere(
-                    hitN, bounceRand.x, bounceRand.y);
+                vec2 lobeRand = hash2_pixel_frame(
+                    uvec2(gl_FragCoord.xy),
+                    uint(giSeed) + uint(segment + 1) * 0xC2B2AE35u);
+                vec3 bsdfWeight;
+                bool sampledSpecular;
+                if (!samplePathBsdf(
+                        hitN, viewDir,
+                        hitAlbedo, hitMat.metalness, hitMat.roughness, hitMat.ior,
+                        lobeRand.x, bounceRand,
+                        pathDir, bsdfWeight, sampledSpecular)) break;
+
+                if (!sampledSpecular) {
+                    diffuseBounces++;
+                    if (diffuseBounces >= MAX_DIFFUSE_BOUNCES) break;
+                }
+                throughput *= bsdfWeight;
+                if (max(max(throughput.r, throughput.g), throughput.b) < 0.02) break;
+
                 pathOrigin = hitPos + hitN * 0.1;
             }
             indirect = min(pathRadiance, vec3(8.0));

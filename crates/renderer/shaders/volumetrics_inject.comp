@@ -54,6 +54,10 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // x = single-scatter albedo, y = backward HG g,
     // z = forward-lobe mix, w = exponential height scale.
     vec4 medium_params;
+    // rgb = normalized authored CELL/WTHR fog chromaticity. Multiplying by
+    // medium_params.x yields spectral single-scatter albedo while keeping
+    // extinction and the authored peak scattering energy independent of hue.
+    vec4 fog_tint;
     // x = history weight, y = density-change rejection strength,
     // z = total time seconds, w = procedural coverage.
     vec4 temporal_params;
@@ -473,9 +477,9 @@ void main() {
     float global_extinction = params.camera_pos.w * density_scale;
     vec4 local_medium = sampleLocalMedium(world_pos);
     float extinction_coef = global_extinction + local_medium.a;
-    vec3 scattering_coef = vec3(
-        global_extinction * clamp(params.medium_params.x, 0.0, 1.0)
-    ) + local_medium.rgb;
+    vec3 global_albedo = clamp(params.fog_tint.rgb, vec3(0.0), vec3(1.0))
+        * clamp(params.medium_params.x, 0.0, 1.0);
+    vec3 scattering_coef = global_extinction * global_albedo + local_medium.rgb;
 
     // Phase 2c — visibility ray from sample point toward the sun.
     // Sun is directional (effectively at infinity), so:

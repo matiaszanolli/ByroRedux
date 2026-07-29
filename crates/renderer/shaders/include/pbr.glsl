@@ -273,3 +273,166 @@ vec3 multiScatterEnergyCompensation(vec3 F0, float NdotV, float roughness) {
     return 1.0 + F0 * (1.0 / max(Ess, 1e-3) - 1.0);
 }
 
+// ── Bounded path-transport BSDF ─────────────────────────────────────
+//
+// Primary raster shading has derivatives, authored tangents, and all of the
+// material-specific Disney extensions above. A ray-query hit has only its
+// geometric normal, so secondary transport deliberately uses the isotropic
+// core shared by every material: energy-conserving Lambert + GGX reflection.
+// That is still materially different from the former path, which treated
+// every non-glass hit — including polished conductors — as Lambertian.
+//
+// The GGX sampler follows Eric Heitz, "Sampling the GGX Distribution of
+// Visible Normals" (JCGT 7(4), 2018). Sampling the visible-normal
+// distribution avoids the below-surface rejection and high grazing-angle
+// variance of raw NDF sampling. `roughness` remains perceptual roughness;
+// the shader-wide convention is alpha = roughness².
+
+float pathLuminance(vec3 value) {
+    return dot(max(value, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722));
+}
+
+float ggxSmithG1(float NdotW, float roughness) {
+    float n = clamp(NdotW, 0.0, 1.0);
+    float alpha = max(roughness * roughness, 0.025 * 0.025);
+    float alpha2 = alpha * alpha;
+    return (2.0 * n)
+        / max(n + sqrt(alpha2 + (1.0 - alpha2) * n * n), 1e-6);
+}
+
+vec3 sampleVisibleGgxNormal(
+    vec3 N, vec3 V, float roughness, vec2 randomSample
+) {
+    vec3 T;
+    vec3 B;
+    buildOrthoBasis(N, T, B);
+
+    float alpha = max(roughness * roughness, 0.025 * 0.025);
+    vec3 localV = vec3(dot(V, T), dot(V, B), max(dot(V, N), 1e-5));
+    vec3 stretchedV = normalize(
+        vec3(alpha * localV.x, alpha * localV.y, localV.z));
+
+    float lensq = dot(stretchedV.xy, stretchedV.xy);
+    vec3 basis1 = lensq > 1e-7
+        ? vec3(-stretchedV.y, stretchedV.x, 0.0) * inversesqrt(lensq)
+        : vec3(1.0, 0.0, 0.0);
+    vec3 basis2 = cross(stretchedV, basis1);
+
+    float radius = sqrt(randomSample.x);
+    float phi = 2.0 * PI * randomSample.y;
+    float diskX = radius * cos(phi);
+    float diskY = radius * sin(phi);
+    float blend = 0.5 * (1.0 + stretchedV.z);
+    diskY = mix(sqrt(max(0.0, 1.0 - diskX * diskX)), diskY, blend);
+
+    vec3 projectedNormal = diskX * basis1 + diskY * basis2
+        + sqrt(max(0.0, 1.0 - diskX * diskX - diskY * diskY)) * stretchedV;
+    vec3 localH = normalize(vec3(
+        alpha * projectedNormal.x,
+        alpha * projectedNormal.y,
+        max(projectedNormal.z, 0.0)));
+    return normalize(T * localH.x + B * localH.y + N * localH.z);
+}
+
+vec3 evaluatePathBsdf(
+    vec3 N, vec3 V, vec3 L,
+    vec3 baseColor, float metalness, float roughness, float ior,
+    out float diffusePdf, out float specularPdf
+) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    diffusePdf = NdotL * (1.0 / PI);
+    specularPdf = 0.0;
+    if (NdotV <= 1e-5 || NdotL <= 1e-5) return vec3(0.0);
+
+    vec3 halfSum = V + L;
+    if (dot(halfSum, halfSum) <= 1e-8) return vec3(0.0);
+    vec3 H = normalize(halfSum);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+    if (NdotH <= 1e-5 || VdotH <= 1e-5) return vec3(0.0);
+
+    float safeRoughness = clamp(roughness, 0.025, 1.0);
+    float D = distributionGGX(NdotH, safeRoughness);
+    float G1V = ggxSmithG1(NdotV, safeRoughness);
+    float G = G1V * ggxSmithG1(NdotL, safeRoughness);
+    vec3 F0 = mix(
+        vec3(dielectricF0FromIor(max(ior, 1e-3))),
+        clamp(baseColor, vec3(0.0), vec3(1.0)),
+        clamp(metalness, 0.0, 1.0));
+    vec3 F = fresnelSchlick(VdotH, F0);
+
+    vec3 diffuse = (1.0 - F)
+        * (1.0 - clamp(metalness, 0.0, 1.0))
+        * max(baseColor, vec3(0.0))
+        * (1.0 / PI);
+    vec3 specular = D * G * F / max(4.0 * NdotV * NdotL, 1e-6);
+
+    // VNDF half-vector density transformed through reflection:
+    // p(wi) = D(h) G1(wo) / (4 |n·wo|).
+    specularPdf = D * G1V / max(4.0 * NdotV, 1e-6);
+    return diffuse + specular;
+}
+
+float pathSpecularProbability(
+    vec3 N, vec3 V,
+    vec3 baseColor, float metalness, float ior
+) {
+    float NdotV = max(dot(N, V), 0.0);
+    vec3 F0 = mix(
+        vec3(dielectricF0FromIor(max(ior, 1e-3))),
+        clamp(baseColor, vec3(0.0), vec3(1.0)),
+        clamp(metalness, 0.0, 1.0));
+    vec3 F = fresnelSchlick(NdotV, F0);
+    float specularEnergy = pathLuminance(F);
+    float diffuseEnergy = pathLuminance(
+        (1.0 - F) * (1.0 - clamp(metalness, 0.0, 1.0)) * baseColor);
+    if (diffuseEnergy <= 1e-5) return 1.0;
+    if (specularEnergy <= 1e-5) return 0.0;
+    return clamp(
+        specularEnergy / (specularEnergy + diffuseEnergy),
+        0.05, 0.95);
+}
+
+bool samplePathBsdf(
+    vec3 N, vec3 V,
+    vec3 baseColor, float metalness, float roughness, float ior,
+    float lobeSample, vec2 directionSample,
+    out vec3 sampledDirection, out vec3 sampleWeight,
+    out bool sampledSpecular
+) {
+    float specularProbability = pathSpecularProbability(
+        N, V, baseColor, metalness, ior);
+    sampledSpecular = lobeSample < specularProbability;
+    if (sampledSpecular) {
+        vec3 H = sampleVisibleGgxNormal(N, V, roughness, directionSample);
+        sampledDirection = normalize(reflect(-V, H));
+    } else {
+        sampledDirection = cosineWeightedHemisphere(
+            N, directionSample.x, directionSample.y);
+    }
+
+    float NdotL = max(dot(N, sampledDirection), 0.0);
+    if (NdotL <= 1e-5) {
+        sampleWeight = vec3(0.0);
+        return false;
+    }
+
+    float diffusePdf;
+    float specularPdf;
+    vec3 bsdf = evaluatePathBsdf(
+        N, V, sampledDirection,
+        baseColor, metalness, roughness, ior,
+        diffusePdf, specularPdf);
+    float mixturePdf = mix(
+        diffusePdf, specularPdf, specularProbability);
+    if (mixturePdf <= 1e-7) {
+        sampleWeight = vec3(0.0);
+        return false;
+    }
+
+    sampleWeight = bsdf * (NdotL / mixturePdf);
+    return !any(isnan(sampleWeight))
+        && !any(isinf(sampleWeight))
+        && max(max(sampleWeight.r, sampleWeight.g), sampleWeight.b) > 0.0;
+}

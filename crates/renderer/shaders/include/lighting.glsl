@@ -324,6 +324,98 @@ bool giLightSample(
     return contrib >= 1.0e-4;
 }
 
+// Radiance seen by a bounded path that escapes the TLAS. Interiors retain
+// their authored cell ambient; Skyrim DALC cells use the authored directional
+// cube; exteriors blend horizon ambient into the sky zenith along the actual
+// ray direction. The old path returned `sceneFlags.yzw * 0.5` everywhere,
+// which made an upward sky ray and a downward horizon ray indistinguishable.
+vec3 pathEnvironmentRadiance(vec3 direction) {
+    vec3 rayDir = normalize(direction);
+    if (jitter.w > 0.5) {
+        float skyWeight = smoothstep(-0.2, 0.8, rayDir.y);
+        return mix(sceneFlags.yzw, skyTint.xyz, skyWeight);
+    }
+    if (dalcFlags.x > 0.5) {
+        return sampleDalcCube(rayDir);
+    }
+    return sceneFlags.yzw * 0.5;
+}
+
+// Direct outgoing radiance at a bounded-path hit. Candidate selection remains
+// bounded by GI_HIT_LIGHT_CAP and the caller-selected visible-light limit, but
+// scores and accumulates the actual material BRDF rather than treating every
+// hit as Lambertian `baseColor / PI`.
+vec3 pathHitRadiance(
+    vec3 p, vec3 n, vec3 viewDir,
+    GpuMaterial mat, vec3 baseColor,
+    uint dbgFlags, uint visibleLightLimit
+) {
+    uint selected[GI_HIT_LIGHT_CAP];
+    float selectedScore[GI_HIT_LIGHT_CAP];
+    for (uint k = 0u; k < GI_HIT_LIGHT_CAP; ++k) {
+        selected[k] = 0xFFFFFFFFu;
+        selectedScore[k] = -1.0;
+    }
+
+    for (uint i = 0u; i < lightCount; ++i) {
+        vec3 candidateL;
+        float candidateDist;
+        float candidateContrib;
+        if (!giLightSample(
+                i, p, n, dbgFlags,
+                candidateL, candidateDist, candidateContrib)) continue;
+        float diffusePdf;
+        float specularPdf;
+        vec3 candidateBsdf = evaluatePathBsdf(
+            n, viewDir, candidateL,
+            baseColor, mat.metalness, mat.roughness, mat.ior,
+            diffusePdf, specularPdf);
+        float score = candidateContrib
+            * pathLuminance(lights[i].color_type.rgb * candidateBsdf);
+        int insertAt = -1;
+        for (uint k = 0u; k < GI_HIT_LIGHT_CAP; ++k) {
+            if (score > selectedScore[k]) {
+                insertAt = int(k);
+                break;
+            }
+        }
+        if (insertAt < 0) continue;
+        for (int k = int(GI_HIT_LIGHT_CAP) - 1; k > insertAt; --k) {
+            selected[k] = selected[k - 1];
+            selectedScore[k] = selectedScore[k - 1];
+        }
+        selected[insertAt] = i;
+        selectedScore[insertAt] = score;
+    }
+
+    vec3 radiance = vec3(0.0);
+    uint visibleCount = 0u;
+    for (uint k = 0u; k < GI_HIT_LIGHT_CAP; ++k) {
+        uint i = selected[k];
+        if (i == 0xFFFFFFFFu) break;
+        vec3 L;
+        float dist;
+        float contribution;
+        if (!giLightSample(
+                i, p, n, dbgFlags, L, dist, contribution)) continue;
+        float diffusePdf;
+        float specularPdf;
+        vec3 bsdf = evaluatePathBsdf(
+            n, viewDir, L,
+            baseColor, mat.metalness, mat.roughness, mat.ior,
+            diffusePdf, specularPdf);
+        if (pathLuminance(bsdf) <= 1e-6) continue;
+        vec3 visibility = traceShadowTransmittance(
+            p + n * 0.1, L, max(dist - 0.2, 0.05), lights[i].params.y);
+        if (max(max(visibility.r, visibility.g), visibility.b) <= 0.001) continue;
+        radiance += lights[i].color_type.rgb
+            * contribution * bsdf * visibility;
+        visibleCount++;
+        if (visibleCount >= visibleLightLimit) break;
+    }
+    return radiance;
+}
+
 // Reflection/refraction rays run per glossy primary fragment, so evaluating
 // the full GI light cap here multiplies one primary ray into dozens of nested
 // queries in glass-heavy views. Pick the single strongest local light and use

@@ -2693,6 +2693,7 @@ impl VulkanContext {
                 self.frame_counter,
                 volumetric_time_seconds,
                 sky_params,
+                fog_color,
                 fog_far,
                 fog_extinction_per_meter,
                 fog_single_scatter_albedo,

@@ -16,7 +16,7 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | File | Role |
 |------|------|
 | `triangle.vert` | Main geometry vertex shader — model transform, skinned-vertex read, motion-vector output, tangent-space setup, terrain splat-weight passthrough |
-| `triangle.frag` | Main PBR fragment shader — Disney BSDF, RT ray-query shadows / reflections / 1-bounce GI, glass RT refraction, terrain splatting, terrain blend |
+| `triangle.frag` | Main PBR fragment shader — Disney BSDF, RT ray-query shadows / reflections / bounded material-aware path-traced GI, glass RT refraction, terrain splatting, terrain blend |
 | `water.vert` | Water quad vertex — flat local-space mesh (no per-frame BLAS rebuild) |
 | `water.frag` | Water surface — RT reflection/refraction, Fresnel mix, caustic accumulator `imageAtomicAdd`, shoreline foam RT ray |
 | `ui.vert` | UI quad passthrough — position already in NDC [-1, 1] |

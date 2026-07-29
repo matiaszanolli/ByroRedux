@@ -114,8 +114,8 @@ tolerance-based regression comparison on a stable GPU runner.
 ## Current scope and next cases
 
 This first suite evaluates static diffuse, roughness/metalness sweeps, glass,
-emissive contribution, direct shadows, reflections, one-bounce GI, SVGF, and
-TAA. It does not yet cover:
+emissive contribution, direct shadows, reflections, bounded material-aware
+path-traced GI, SVGF, and TAA. It does not yet cover:
 
 - Motion-vector and disocclusion behavior
 - Skinned BLAS updates

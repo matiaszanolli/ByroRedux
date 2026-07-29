@@ -170,7 +170,8 @@ these calls feed.
 fence wait → `acquire_next_image` → projection jitter computed (TAA's own
 Halton sequence, or the phase/offset FSR queried from the SDK) → the
 `upload_*` calls above → `record_geometry_pass(...)` (`draw.rs:943` — PBR +
-RT ray queries for shadows, reflections, and 1-bounce GI) →
+RT ray queries for shadows, reflections, and bounded material-aware
+path-traced GI) →
 `record_post_passes(...)`, which records, in fixed order per its own doc
 comment: water-caustic barrier → SVGF temporal + à-trous denoise →
 caustic splat → volumetrics → TAA resolve (FSR mode skips this) → SSAO →
