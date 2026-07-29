@@ -150,6 +150,7 @@ fn light_dump_handles_missing_and_present_resources() {
         fog_color: [0.65, 0.7, 0.8],
         fog_near: 15000.0,
         fog_far: 80000.0,
+        fog_medium: crate::fog::FogMedium::from_legacy_ramp(15000.0, 80000.0, None),
         directional_fade: None,
         fog_clip: None,
         fog_power: None,

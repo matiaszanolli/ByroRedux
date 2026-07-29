@@ -211,6 +211,27 @@ pub struct SkyrimAmbientCube {
     pub fresnel_power: f32,
 }
 
+/// FO4 72-byte WTHR FNAM height-fog extension.
+///
+/// The first eight FNAM floats remain the shared day/night distance, power,
+/// and maximum-opacity fields on [`WeatherRecord`]. FO4 form versions 119 and
+/// 120 append these ten values. They are retained verbatim so the procedural
+/// medium can adopt the authored height profile without reparsing records or
+/// guessing field offsets later.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct WeatherHeightFog {
+    pub day_near_height_mid: f32,
+    pub day_near_height_range: f32,
+    pub night_near_height_mid: f32,
+    pub night_near_height_range: f32,
+    pub day_high_density_scale: f32,
+    pub night_high_density_scale: f32,
+    pub day_far_height_mid: f32,
+    pub day_far_height_range: f32,
+    pub night_far_height_mid: f32,
+    pub night_far_height_range: f32,
+}
+
 /// Parsed WTHR record.
 #[derive(Debug, Clone)]
 pub struct WeatherRecord {
@@ -226,6 +247,17 @@ pub struct WeatherRecord {
     pub fog_night_near: f32,
     /// Fog night far distance (game units).
     pub fog_night_far: f32,
+    /// Skyrim/FO4 FNAM daytime fog-curve power. Defaults to 1 for earlier games.
+    pub fog_day_power: f32,
+    /// Skyrim/FO4 FNAM nighttime fog-curve power. Defaults to 1 for earlier games.
+    pub fog_night_power: f32,
+    /// Skyrim/FO4 FNAM maximum daytime fog opacity. Defaults to 1.
+    pub fog_day_max: f32,
+    /// Skyrim/FO4 FNAM maximum nighttime fog opacity. Defaults to 1.
+    pub fog_night_max: f32,
+    /// FO4 form-version 119/120 height-fog extension from 72-byte FNAM.
+    /// `None` for earlier 16/24/32-byte layouts.
+    pub fog_height: Option<WeatherHeightFog>,
     /// Wind speed (0–255 scaled).
     pub wind_speed: u8,
     /// Sun glare intensity (0–255 scaled).
@@ -264,6 +296,11 @@ impl Default for WeatherRecord {
             fog_day_far: 10000.0,
             fog_night_near: 0.0,
             fog_night_far: 10000.0,
+            fog_day_power: 1.0,
+            fog_night_power: 1.0,
+            fog_day_max: 1.0,
+            fog_night_max: 1.0,
+            fog_height: None,
             wind_speed: 0,
             sun_glare: 0,
             sun_damage: 0,
@@ -278,13 +315,17 @@ impl Default for WeatherRecord {
 /// Parse a WTHR record from its sub-records.
 ///
 /// Game-specific schema dispatch:
-/// - **Oblivion / FO3 / FNV / FO4 / FO76 / Starfield** — Gamebryo/FO3-
-///   era layout. 10-group × 6-TOD NAM0 (160 or 240 bytes on disk;
+/// - **Oblivion / FO3 / FNV / Starfield** — Gamebryo/FO3-era layout.
+///   10-group × 6-TOD NAM0 (160 or 240 bytes on disk;
 ///   synthesise HIGH_NOON / MIDNIGHT when the on-disk record only
 ///   ships 4 slots — see #533).
 /// - **Skyrim** — re-routes to [`parse_wthr_skyrim`], which handles
 ///   the 17-group × 4-TOD NAM0 (272 B), 8-float FNAM, 19-B DATA, and
 ///   4× 32-B DALC ambient cube. See #539 / M33-04..07.
+/// - **FO4 / FO76** — Creation-era NAM0 uses 17 or 19 groups and 4 or
+///   8 authored TOD slots. The shared table retains the first 10 groups
+///   and synthesises HIGH_NOON/MIDNIGHT from DAY/NIGHT. FO4's 72-byte
+///   FNAM retains all 18 xEdit-defined floats.
 pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRecord {
     if matches!(game, GameKind::Skyrim) {
         return parse_wthr_skyrim(form_id, subs);
@@ -308,6 +349,26 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRe
             //     `[[SkyColor; 6]; 10]` struct layout remains authoritative for
             //     downstream consumers (`weather_system` 7-key interpolator,
             //     `build_tod_keys`). See #533 / audit M33-01.
+            b"NAM0"
+                if matches!(game, GameKind::Fallout4 | GameKind::Fallout76)
+                    && creation_nam0_shape(sub.data.len()).is_some() =>
+            {
+                let (on_disk_groups, on_disk_slots) =
+                    creation_nam0_shape(sub.data.len()).expect("shape checked by match guard");
+                for group in 0..SKY_COLOR_GROUPS.min(on_disk_groups) {
+                    for slot in 0..4 {
+                        let offset = (group * on_disk_slots + slot) * 4;
+                        record.sky_colors[group][slot] = SkyColor {
+                            r: sub.data[offset],
+                            g: sub.data[offset + 1],
+                            b: sub.data[offset + 2],
+                            a: sub.data[offset + 3],
+                        };
+                    }
+                    record.sky_colors[group][TOD_HIGH_NOON] = record.sky_colors[group][TOD_DAY];
+                    record.sky_colors[group][TOD_MIDNIGHT] = record.sky_colors[group][TOD_NIGHT];
+                }
+            }
             b"NAM0" if sub.data.len() >= SKY_COLOR_GROUPS * 4 * 4 => {
                 let on_disk_slots = if sub.data.len() >= SKY_COLOR_GROUPS * SKY_TIME_SLOTS * 4 {
                     SKY_TIME_SLOTS
@@ -337,7 +398,11 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRe
             // `[day_near, day_far, night_near, night_far]`. Game-dependent
             // total size: 16 B in Oblivion, 24 B in FNV/FO3 (trailing 8 B
             // have not been cross-checked against a UESP-authoritative
-            // schema so they are ignored here).
+            // schema so they are ignored here), and 72 B in FO4.
+            //
+            // FO4's exact xEdit-defined tail is day/night power + max,
+            // followed by ten height-fog values introduced across form
+            // versions 119 and 120. Preserve all of it when present.
             //
             // Pre-fix the FNAM arm had an empty body with a comment
             // ("fallback when HNAM is absent"). But FNV and FO3 do not
@@ -350,6 +415,30 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRe
                 record.fog_day_far = r.f32().unwrap_or(10000.0);
                 record.fog_night_near = r.f32().unwrap_or(0.0);
                 record.fog_night_far = r.f32().unwrap_or(10000.0);
+                if matches!(game, GameKind::Fallout4 | GameKind::Fallout76)
+                    && sub.data.len() >= SKYRIM_FNAM_SIZE
+                {
+                    record.fog_day_power = r.f32().unwrap_or(1.0);
+                    record.fog_night_power = r.f32().unwrap_or(1.0);
+                    record.fog_day_max = r.f32().unwrap_or(1.0);
+                    record.fog_night_max = r.f32().unwrap_or(1.0);
+                }
+                if matches!(game, GameKind::Fallout4 | GameKind::Fallout76)
+                    && sub.data.len() >= FO4_FNAM_SIZE
+                {
+                    record.fog_height = Some(WeatherHeightFog {
+                        day_near_height_mid: r.f32().unwrap_or(0.0),
+                        day_near_height_range: r.f32().unwrap_or(10000.0),
+                        night_near_height_mid: r.f32().unwrap_or(0.0),
+                        night_near_height_range: r.f32().unwrap_or(10000.0),
+                        day_high_density_scale: r.f32().unwrap_or(1.0),
+                        night_high_density_scale: r.f32().unwrap_or(1.0),
+                        day_far_height_mid: r.f32().unwrap_or(0.0),
+                        day_far_height_range: r.f32().unwrap_or(10000.0),
+                        night_far_height_mid: r.f32().unwrap_or(0.0),
+                        night_far_height_range: r.f32().unwrap_or(10000.0),
+                    });
+                }
             }
 
             // HNAM — Oblivion-only HDR / eye-adapt / sunlight-dimmer
@@ -461,6 +550,19 @@ pub fn parse_wthr(form_id: u32, subs: &[SubRecord], game: GameKind) -> WeatherRe
     record
 }
 
+/// Return the exact Creation-era NAM0 `(group_count, tod_slot_count)` for
+/// canonical FO4/FO76 payload sizes. xEdit gates the extra four TOD samples at
+/// form version 111 and the final two fog-high groups at form version 119.
+fn creation_nam0_shape(size: usize) -> Option<(usize, usize)> {
+    match size {
+        272 => Some((17, 4)),
+        304 => Some((19, 4)),
+        544 => Some((17, 8)),
+        608 => Some((19, 8)),
+        _ => None,
+    }
+}
+
 /// Number of NAM0 colour groups on a Skyrim WTHR record's on-disk
 /// layout. Reading more reveals the extras (Sky Glare / Cloud LOD /
 /// Effects Lighting / Moon Glare) that the engine doesn't yet
@@ -482,10 +584,11 @@ const SKYRIM_DALC_SIZE: usize = 32;
 /// Skyrim WTHR FNAM sub-record size (32 bytes = 8 × f32). Layout per
 /// UESP / xEdit:
 /// `[day_near, day_far, night_near, night_far, day_power, night_power,
-///   day_max, night_max]`. v1 only consumes the first four
-/// (distances); the power / max fields go to follow-up renderer wiring
-/// once the volumetric fog path can honour them.
+///   day_max, night_max]`.
 const SKYRIM_FNAM_SIZE: usize = 32;
+
+/// FO4 WTHR FNAM sub-record size (72 bytes = 18 × f32).
+const FO4_FNAM_SIZE: usize = 72;
 
 /// Skyrim WTHR DATA sub-record size (19 bytes). Holds wind speed,
 /// transition timings, sun glare / damage, precipitation / thunder
@@ -579,14 +682,17 @@ fn parse_wthr_skyrim(form_id: u32, subs: &[SubRecord]) -> WeatherRecord {
 
             // FNAM — 32 bytes = 8 × f32 on Skyrim. First 4 are fog
             // distances (compatible with the FO3-era 4-distance
-            // model). Trailing 4 are day/night fog power + max —
-            // captured in a follow-up; v1 discards.
+            // model). Trailing 4 are day/night fog power + max.
             b"FNAM" if sub.data.len() >= SKYRIM_FNAM_SIZE => {
                 let mut r = SubReader::new(&sub.data);
                 record.fog_day_near = r.f32().unwrap_or(0.0);
                 record.fog_day_far = r.f32().unwrap_or(10000.0);
                 record.fog_night_near = r.f32().unwrap_or(0.0);
                 record.fog_night_far = r.f32().unwrap_or(10000.0);
+                record.fog_day_power = r.f32().unwrap_or(1.0);
+                record.fog_night_power = r.f32().unwrap_or(1.0);
+                record.fog_day_max = r.f32().unwrap_or(1.0);
+                record.fog_night_max = r.f32().unwrap_or(1.0);
             }
 
             // DATA — 19 bytes. v1 extracts wind speed + classification.
@@ -865,6 +971,92 @@ mod tests {
         assert!((w.fog_day_far - 16_000.0).abs() < 0.01);
         assert!((w.fog_night_near + 600.0).abs() < 0.01);
         assert!((w.fog_night_far - 6_000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn parse_fo4_nam0_uses_creation_group_stride() {
+        // Form-version 119+ FO4 NAM0: 19 groups × 8 TOD slots × RGBA.
+        // Give every group/slot a distinct marker. A stale 6-slot stride
+        // reads group 0's late TOD colors as group 1, which this catches.
+        let mut nam0 = vec![0u8; 19 * 8 * 4];
+        for group in 0..19 {
+            for slot in 0..8 {
+                let offset = (group * 8 + slot) * 4;
+                nam0[offset] = group as u8 + 1;
+                nam0[offset + 1] = slot as u8 + 1;
+                nam0[offset + 2] = 0xA5;
+                nam0[offset + 3] = 0xFF;
+            }
+        }
+
+        let w = parse_wthr(0xF04, &[make_sub(b"NAM0", nam0)], GameKind::Fallout4);
+        assert_eq!(w.sky_colors[SKY_FOG][TOD_SUNRISE].r, 2);
+        assert_eq!(w.sky_colors[SKY_FOG][TOD_SUNRISE].g, 1);
+        assert_eq!(w.sky_colors[SKY_HORIZON][TOD_NIGHT].r, 9);
+        assert_eq!(w.sky_colors[SKY_HORIZON][TOD_NIGHT].g, 4);
+        assert_eq!(
+            w.sky_colors[SKY_FOG][TOD_HIGH_NOON],
+            w.sky_colors[SKY_FOG][TOD_DAY]
+        );
+        assert_eq!(
+            w.sky_colors[SKY_FOG][TOD_MIDNIGHT],
+            w.sky_colors[SKY_FOG][TOD_NIGHT]
+        );
+    }
+
+    #[test]
+    fn parse_fo4_fnam_retains_all_eighteen_floats() {
+        let values = [
+            600.0f32, 12_000.0, 700.0, 9_000.0, 0.45, 0.25, 0.8, 0.6, 64.0, 10_000.0, 96.0,
+            8_000.0, 1.2, 0.9, 128.0, 20_000.0, 256.0, 16_000.0,
+        ];
+        let mut fnam = Vec::with_capacity(FO4_FNAM_SIZE);
+        for value in values {
+            fnam.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let w = parse_wthr(0xF04, &[make_sub(b"FNAM", fnam)], GameKind::Fallout4);
+        assert_eq!(w.fog_day_near, 600.0);
+        assert_eq!(w.fog_day_far, 12_000.0);
+        assert_eq!(w.fog_night_near, 700.0);
+        assert_eq!(w.fog_night_far, 9_000.0);
+        assert_eq!(w.fog_day_power, 0.45);
+        assert_eq!(w.fog_night_power, 0.25);
+        assert_eq!(w.fog_day_max, 0.8);
+        assert_eq!(w.fog_night_max, 0.6);
+
+        let height = w
+            .fog_height
+            .expect("72-byte FO4 FNAM must retain its height extension");
+        assert_eq!(height.day_near_height_mid, 64.0);
+        assert_eq!(height.day_near_height_range, 10_000.0);
+        assert_eq!(height.night_near_height_mid, 96.0);
+        assert_eq!(height.night_near_height_range, 8_000.0);
+        assert_eq!(height.day_high_density_scale, 1.2);
+        assert_eq!(height.night_high_density_scale, 0.9);
+        assert_eq!(height.day_far_height_mid, 128.0);
+        assert_eq!(height.day_far_height_range, 20_000.0);
+        assert_eq!(height.night_far_height_mid, 256.0);
+        assert_eq!(height.night_far_height_range, 16_000.0);
+    }
+
+    #[test]
+    fn starfield_long_fnam_does_not_assume_the_fo4_tail_schema() {
+        let mut fnam = vec![0xA5; FO4_FNAM_SIZE];
+        fnam[0..4].copy_from_slice(&100.0_f32.to_le_bytes());
+        fnam[4..8].copy_from_slice(&10_000.0_f32.to_le_bytes());
+        fnam[8..12].copy_from_slice(&200.0_f32.to_le_bytes());
+        fnam[12..16].copy_from_slice(&8_000.0_f32.to_le_bytes());
+
+        let w = parse_wthr(0x5F, &[make_sub(b"FNAM", fnam)], GameKind::Starfield);
+        assert_eq!(w.fog_day_near, 100.0);
+        assert_eq!(w.fog_day_far, 10_000.0);
+        assert_eq!(w.fog_day_power, 1.0);
+        assert_eq!(w.fog_day_max, 1.0);
+        assert!(
+            w.fog_height.is_none(),
+            "unverified Starfield bytes must not be decoded as FO4 height fog"
+        );
     }
 
     /// Real 56-byte Oblivion HNAM must NOT be interpreted as fog.
@@ -1307,10 +1499,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_skyrim_fnam_lifts_four_fog_distances() {
-        // 8 × f32 = 32 B. First 4 are fog distances; trailing 4
-        // (day_power, night_power, day_max, night_max) are
-        // captured-on-disk-only in v1.
+    fn parse_skyrim_fnam_lifts_distances_power_and_max_opacity() {
+        // 8 × f32 = 32 B: four distances followed by day/night power
+        // and day/night maximum opacity.
         let mut fnam = Vec::new();
         for v in [
             1_200.0f32, 80_000.0, 1_200.0, 40_000.0, 0.4, 0.4, 0.85, 0.85,
@@ -1326,6 +1517,10 @@ mod tests {
         assert!((w.fog_day_far - 80_000.0).abs() < 0.001);
         assert!((w.fog_night_near - 1_200.0).abs() < 0.001);
         assert!((w.fog_night_far - 40_000.0).abs() < 0.001);
+        assert!((w.fog_day_power - 0.4).abs() < 0.001);
+        assert!((w.fog_night_power - 0.4).abs() < 0.001);
+        assert!((w.fog_day_max - 0.85).abs() < 0.001);
+        assert!((w.fog_night_max - 0.85).abs() < 0.001);
     }
 
     #[test]

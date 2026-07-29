@@ -2,8 +2,9 @@
 
 ## Decision record
 
-**Status:** first production slice landed (froxel core, physical single
-scattering, temporal history, RT visibility, FSR contract).
+**Status:** froxel core plus the first authored-data conversion slice landed
+(physical single scattering, temporal history, RT visibility, FSR contract,
+XCLL/WTHR → engine-native medium).
 
 **Location:** `crates/renderer/src/vulkan/volumetrics.rs`,
 `crates/renderer/shaders/volumetrics_{inject,integrate}.comp`,
@@ -37,6 +38,15 @@ of them one physical and temporal contract.
   exponential from 5 m to the configured far plane.
 - The raw V-buffer stores `(in-scattered radiance.rgb, sigma_t)`. The
   integrated volume stores `(accumulated radiance.rgb, transmittance)`.
+- XCLL/WTHR near/far ramps are converted once at the cell/weather translation
+  boundary. Runtime volumetrics consume extinction in inverse metres,
+  single-scatter albedo, and coverage; they never evaluate the legacy ramp.
+- The extinction fit minimizes
+  `Σ (exp(-sigma_t*d)-T_legacy(d))²/d²` over the authored interval. Skyrim's
+  authored maximum opacity is included in the target transmittance. Invalid,
+  degenerate, or explicitly zero-opacity ramps produce a disabled medium.
+- WTHR stores separate physical day/night media. Time-of-day and weather
+  transitions interpolate those canonical coefficients directly.
 - One jittered sample is evaluated per froxel. Previous raw V-buffer history
   is reprojected with the previous camera matrix and blended at 0.92 steady
   state. Relative extinction changes exponentially reduce that weight.
@@ -95,16 +105,38 @@ Target ranges for the reference 160×90×64 grid remain 0.2–0.5 ms inject and
 0.3–0.8 ms integrate. Record inject and integrate separately before treating
 the current combined timer as a final budget verdict.
 
+## Corpus findings
+
+- The canonical XCLL size map remains game-dispatched and corpus-verified:
+  Skyrim uses the 92-byte layout with fog power/max; Starfield, not Skyrim,
+  owns the distinct 108-byte height-fog block with near/far height
+  midpoint/range fields.
+- Skyrim WTHR's 32-byte FNAM now retains all eight floats: day/night near,
+  far, power, and maximum opacity.
+- Fallout 4's extended WTHR layout is not the FO3/FNV stride. Its canonical
+  608-byte NAM0 is 19 color groups by 8 time-of-day slots; the parser now
+  walks that stride without bleeding late-TOD colors into the next group.
+  Its 72-byte FNAM retains all 18
+  [xEdit-defined fields](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.5/Core/wbDefinitionsFO4.pas#L15106-L15125),
+  including the ten form-version 119/120 near/far height and high-density
+  values. The current homogeneous fit consumes distance and maximum opacity;
+  power and height are preserved for the authored height-profile slice rather
+  than guessed into the wrong curve.
+- A raw recursive survey found zero `VOLI` records in `Fallout4.esm` and all
+  six official Fallout 4 DLC masters (`DLCRobot`, `DLCCoast`, `DLCNukaWorld`,
+  and the three workshop masters). VOLI therefore cannot calibrate Fallout 4
+  defaults from this corpus. The reusable probe lives at
+  `crates/plugin/examples/dump_voli_subs.rs`.
+
 ## Follow-up boundary
 
-The next slice is data conversion, not another rendering rewrite:
+The next slice is authored local-volume replacement:
 
-1. fit engine-native extinction values from XCLL/WTHR curves and inspect FO4
-   VOLI records;
-2. replace detected fog billboards/particle emitters with clustered volume
+1. replace detected fog billboards/particle emitters with clustered volume
    primitives;
-3. generate tileable Perlin-Worley/detail volumes and drive Nubis coverage from
+2. generate tileable Perlin-Worley/detail volumes and drive Nubis coverage from
    weather;
+3. map the verified Starfield height-fog block without guessing its curve;
 4. add the 32³ aerial-perspective LUT and a non-RT cascade visibility variant;
 5. extend the existing glass transmittance hook with ratio tracking and a
    majorant grid for path-traced heterogeneous media.

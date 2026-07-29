@@ -810,9 +810,14 @@ pub struct FrameInputs<'a> {
     pub fog_near: f32,
     /// Fog far distance.
     pub fog_far: f32,
-    /// XCLL FNV+ cubic-fog clip distance. `0.0` (with `fog_power == 0.0`)
-    /// falls back to the linear `fog_near..fog_far` ramp. See #865 /
-    /// FNV-D3-NEW-06.
+    /// Engine-native extinction coefficient σ_t in inverse metres.
+    pub fog_extinction_per_meter: f32,
+    /// Single-scatter albedo ρ = σ_s / σ_t.
+    pub fog_single_scatter_albedo: f32,
+    /// Nubis-style procedural density coverage in `[0, 1]`.
+    pub fog_coverage: f32,
+    /// XCLL FNV+ cubic-fog clip distance retained for diagnostics and
+    /// explicit legacy compatibility.
     ///
     /// **Currently unconsumed** (#1926, #1927 / REN-D8-01, REN-D8-02):
     /// `composite.frag` parsed and mixed this curve inside the
@@ -874,6 +879,9 @@ impl VulkanContext {
             fog_color,
             fog_near,
             fog_far,
+            fog_extinction_per_meter,
+            fog_single_scatter_albedo,
+            fog_coverage,
             fog_clip,
             fog_power,
             ui_texture_handle,
@@ -1466,7 +1474,11 @@ impl VulkanContext {
                 fog_color[0],
                 fog_color[1],
                 fog_color[2],
-                if fog_far > fog_near { 1.0 } else { 0.0 }, // fog enabled flag
+                if fog_extinction_per_meter > 0.0 {
+                    1.0
+                } else {
+                    0.0
+                }, // fog enabled flag
             ],
             // jitter[2] carries the debug-bypass bitmask for the
             // fragment shader (see `parse_render_debug_flags_env` and
@@ -2400,11 +2412,15 @@ impl VulkanContext {
                     fog_color[0],
                     fog_color[1],
                     fog_color[2],
-                    if fog_far > fog_near { 1.0 } else { 0.0 },
+                    if fog_extinction_per_meter > 0.0 {
+                        1.0
+                    } else {
+                        0.0
+                    },
                 ],
-                // Preserve the legacy curve inputs for the upcoming offline
-                // XCLL/WTHR → physical sigma_t fitting pass. Runtime
-                // composition no longer evaluates this non-physical ramp.
+                // Preserve the legacy curve inputs for diagnostics and an
+                // explicit compatibility path. Runtime composition evaluates
+                // only the engine-native physical medium.
                 fog_params: [fog_near, fog_far, fog_clip, fog_power],
                 depth_params: [
                     if sky_params.is_exterior { 1.0 } else { 0.0 },
@@ -2440,11 +2456,12 @@ impl VulkanContext {
                     1.0 / 1024.0,
                 ],
                 height_fog_params: [
-                    super::super::volumetrics::DEFAULT_SCATTERING_COEF,
+                    fog_extinction_per_meter.max(0.0)
+                        / super::super::volumetrics::WORLD_UNITS_PER_METER,
                     super::super::volumetrics::DEFAULT_SCALE_HEIGHT_METERS
                         * super::super::volumetrics::WORLD_UNITS_PER_METER,
-                    super::super::volumetrics::DEFAULT_SINGLE_SCATTER_ALBEDO,
-                    if sky_params.is_exterior && fog_far > fog_near {
+                    fog_single_scatter_albedo.clamp(0.0, 1.0),
+                    if sky_params.is_exterior && fog_extinction_per_meter > 0.0 {
                         1.0
                     } else {
                         0.0
@@ -2674,6 +2691,9 @@ impl VulkanContext {
                 volumetric_time_seconds,
                 sky_params,
                 fog_far,
+                fog_extinction_per_meter,
+                fog_single_scatter_albedo,
+                fog_coverage,
                 fsr_frame,
                 underwater,
             ) {

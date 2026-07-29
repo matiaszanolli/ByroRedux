@@ -60,7 +60,7 @@ fn pack_depth_state(cmd: &DrawCommand) -> u8 {
 /// cached (the values can't change within a process), so the per-frame
 /// cost is two atomic loads. `None` (unset / unparseable / negative)
 /// leaves the corresponding authored value untouched.
-fn apply_fog_overrides(near: f32, far: f32) -> (f32, f32) {
+fn apply_fog_overrides(near: f32, far: f32) -> (f32, f32, bool) {
     use std::sync::OnceLock;
     static OVERRIDES: OnceLock<(Option<f32>, Option<f32>)> = OnceLock::new();
     let (n_ovr, f_ovr) = OVERRIDES.get_or_init(|| {
@@ -80,7 +80,11 @@ fn apply_fog_overrides(near: f32, far: f32) -> (f32, f32) {
         }
         o
     });
-    (n_ovr.unwrap_or(near), f_ovr.unwrap_or(far))
+    (
+        n_ovr.unwrap_or(near),
+        f_ovr.unwrap_or(far),
+        n_ovr.is_some() || f_ovr.is_some(),
+    )
 }
 
 /// Daytime peak of `SkyParamsRes::sun_intensity` (per `systems.rs:1446`,
@@ -306,11 +310,13 @@ pub(crate) struct RenderFrameView {
     pub fog_color: [f32; 3],
     pub fog_near: f32,
     pub fog_far: f32,
-    /// XCLL cubic-fog clip distance (FNV+). `0.0` = no curve authored,
-    /// composite falls through to the linear `fog_near..fog_far` ramp.
-    /// When `> 0` and paired with `fog_power > 0`, composite uses
-    /// `pow(distance / fog_clip, fog_power)` instead of the linear
-    /// blend. See #865 / FNV-D3-NEW-06.
+    /// Engine-native participating medium fitted at the cell/weather
+    /// translation boundary. The renderer consumes this instead of deriving
+    /// extinction from the legacy distance ramp.
+    pub fog_medium: crate::fog::FogMedium,
+    /// XCLL cubic-fog clip distance (FNV+). Retained for diagnostics and
+    /// explicit legacy compatibility; the active volumetric path consumes
+    /// `fog_medium`.
     pub fog_clip: f32,
     /// XCLL cubic-fog falloff exponent (FNV+). `0.0` = no curve. See
     /// `fog_clip` for the activation contract.
@@ -587,28 +593,22 @@ pub(crate) fn build_render_data(
         .as_ref()
         .map(|l| l.ambient)
         .unwrap_or([0.08, 0.08, 0.08]);
-    // Fog is passed through as authored. Cross-checking FalloutNV.esm:
-    // 89% of interior cells author both fog_near and fog_far (median
-    // 64/4000); only ~10% leave them zero — for those, the author's
-    // intent is "no distance fog, rely on XCLL ambient fill." The
-    // composite pass gates the fog mix on `fog_params.y > fog_params.x`,
-    // so leaving both at zero disables it cleanly. Exterior cells set
-    // fog via WTHR/CLMT in weather_system, which writes into
-    // CellLightingRes before render.
+    // Retain the authored fog color and legacy ramp for diagnostics and
+    // compatibility UBOs. The active path consumes `fog_medium`; exterior
+    // weather updates all of these values together in `weather_system`.
     let fog_color = cell_lit.as_ref().map(|l| l.fog_color).unwrap_or([0.0; 3]);
-    // CLMT-authored fog_near can be negative (artistic intent: "fog
-    // starts before the camera"). The composite shader's gate
-    // `fog_far > fog_near` would still pass with a negative near, but
-    // `smoothstep(neg, pos, dist)` then returns nonzero at dist=0 and
-    // every fragment — including the camera origin — gets fog mixed in.
-    // Clamping at the render-side boundary keeps both the camera UBO
-    // upload (draw.rs:356) and the composite UBO upload (draw.rs:1566)
-    // in sync without a per-fragment branch. #666.
+    // CLMT-authored fog_near can be negative. Clamp only the retained legacy
+    // value; the canonical medium was already fit from the original ramp at
+    // translation time. This keeps the camera and composite UBOs aligned.
     let fog_near = cell_lit
         .as_ref()
         .map(|l| l.fog_near.max(0.0))
         .unwrap_or(0.0);
     let fog_far = cell_lit.as_ref().map(|l| l.fog_far).unwrap_or(0.0);
+    let authored_fog_medium = cell_lit
+        .as_ref()
+        .map(|lighting| lighting.fog_medium)
+        .unwrap_or_default();
     // `BYRO_FOG_NEAR` / `BYRO_FOG_FAR` overrides (Bethesda units) for
     // offline / diagnostic renders. The authored weather/XCLL ramp matches
     // the original game's ~tens-of-K-BU view distance; when inspecting the
@@ -618,11 +618,17 @@ pub(crate) fn build_render_data(
     // point (downstream of `weather_system`'s per-frame fog write) so it is
     // authoritative every frame. Cached so the hot path doesn't `getenv`
     // per frame. No-op when unset. Mirrors the `BYRO_HOUR` convention.
-    let (fog_near, fog_far) = apply_fog_overrides(fog_near, fog_far);
-    // #865 / FNV-D3-NEW-06 — XCLL cubic-fog curve (FNV+). Both fields
-    // default to 0.0 (no curve), in which case composite falls through
-    // to the linear `fog_near..fog_far` ramp. Authored values pack into
-    // `fog_params.z` / `.w` for the composite shader (see draw.rs).
+    let (fog_near, fog_far, fog_overridden) = apply_fog_overrides(fog_near, fog_far);
+    // Diagnostic overrides deliberately bypass the load-time table. Keep the
+    // normal hot path conversion-free; only an explicitly enabled override
+    // pays the fit here.
+    let fog_medium = if fog_overridden {
+        crate::fog::FogMedium::from_legacy_ramp(fog_near, fog_far, None)
+    } else {
+        authored_fog_medium
+    };
+    // Retain the authored XCLL cubic-fog curve for diagnostics and a future
+    // explicit compatibility toggle. The physical path does not evaluate it.
     let fog_clip = cell_lit
         .as_ref()
         .and_then(|l| l.fog_clip)
@@ -652,6 +658,7 @@ pub(crate) fn build_render_data(
         fog_color,
         fog_near,
         fog_far,
+        fog_medium,
         fog_clip,
         fog_power,
         sky,

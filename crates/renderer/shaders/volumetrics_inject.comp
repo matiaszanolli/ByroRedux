@@ -1,20 +1,16 @@
-// M55 Phase 2 — Volumetric lighting injection (Phase 2c: + RT shadows).
+// Procedural volumetric-lighting injection with RT visibility.
 //
 // For each froxel (uvw in volume space) compute the in-scattered
-// radiance from a single directional sun, modulated by the
-// Henyey-Greenstein phase function and gated on a ray-query
-// visibility check against the scene TLAS — so cathedral light
-// shafts through windows respect occluders. Output is RGBA16F:
+// radiance from directional and clustered local lights, modulated by
+// Henyey-Greenstein phase functions and gated on ray-query visibility
+// checks against the scene TLAS. Output is RGBA16F:
 //   rgb = inscattered radiance (HDR linear, pre-tone-map)
-//   a   = extinction coefficient (1 / m)
+//   a   = extinction coefficient (1 / world unit)
 //
-// Phase 2 simplifications (will fall out in subsequent phases):
-//   - One light only (sun). Phase 2b reads `GpuLight` SSBO and loops.
-//   - Constant participating-medium density. Phase 6 reads REGN
-//     records for per-region density.
-//   - Linear slice→view-distance distribution. Phase 5 will swap to
-//     the standard exponential distribution (denser slices near the
-//     camera) once temporal reprojection lands.
+// Density is procedural FBM with curl-noise domain warp. The base σ_t
+// arrives from the engine-native XCLL/WTHR conversion table; slices use
+// the shared 5 m linear floor plus exponential tail and raw V-buffer
+// history is reprojected per froxel.
 //
 // Reference: Hillaire, "Physically based and unified volumetric
 // rendering in Frostbite," SIGGRAPH 2015. The injection step is
@@ -59,7 +55,7 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // z = forward-lobe mix, w = exponential height scale.
     vec4 medium_params;
     // x = history weight, y = density-change rejection strength,
-    // z = total time seconds, w = reserved.
+    // z = total time seconds, w = procedural coverage.
     vec4 temporal_params;
 } params;
 
@@ -183,7 +179,7 @@ vec3 warpFogDomain(vec3 worldMetres, float timeSeconds) {
 
 float proceduralDensityScale(vec3 worldPos, float refHeight) {
     const float WORLD_UNITS_PER_METRE = 70.0;
-    const float COVERAGE = 0.55; // Weather-driven once WTHR conversion lands.
+    float coverage = clamp(params.temporal_params.w, 0.01, 1.0);
     float heightAbove = max(worldPos.y - refHeight, 0.0);
     float heightTerm = exp(-heightAbove / max(params.medium_params.w, 1.0));
     vec3 metres = warpFogDomain(
@@ -194,7 +190,7 @@ float proceduralDensityScale(vec3 worldPos, float refHeight) {
     n += valueNoise3D(metres / 9.0) * 0.2857143;
     n += valueNoise3D(metres / 4.5) * 0.1428571;
     // Nubis coverage remap: coverage is a visually meaningful occupancy knob.
-    float coverageDensity = clamp((n - (1.0 - COVERAGE)) / COVERAGE, 0.0, 1.0);
+    float coverageDensity = clamp((n - (1.0 - coverage)) / coverage, 0.0, 1.0);
     return heightTerm * mix(0.2, 1.35, coverageDensity);
 }
 

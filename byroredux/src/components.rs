@@ -273,6 +273,10 @@ pub(crate) struct CellLightingRes {
     pub(crate) fog_near: f32,
     /// Fog far distance (game units).
     pub(crate) fog_far: f32,
+    /// Engine-native participating medium fitted once from the authored
+    /// XCLL ramp. Volumetric rendering consumes this instead of evaluating
+    /// `fog_near..fog_far` at runtime.
+    pub(crate) fog_medium: crate::fog::FogMedium,
     // ── Extended XCLL fields (FNV 40-byte tail + Skyrim 92-byte tail) ──
     // All of these are now read by the `cell.lighting` console command
     // and/or the lighting plumbing (see #865 for the fog curve), so the
@@ -280,13 +284,11 @@ pub(crate) struct CellLightingRes {
     /// Directional light fade multiplier — bytes 28-31 of the XCLL.
     /// FNV+ XCLL.
     pub(crate) directional_fade: Option<f32>,
-    /// Cubic-fog clip distance — bytes 32-35. FNV+ XCLL. Used together
-    /// with `fog_power` to drive a non-linear fog curve in place of
-    /// the linear `fog_near..fog_far` ramp. Plumbed to the composite
-    /// shader via `fog_params.z` (#865 / FNV-D3-NEW-06).
+    /// Cubic-fog clip distance — bytes 32-35. FNV+ XCLL. Retained with
+    /// `fog_power` for diagnostics and explicit legacy compatibility;
+    /// the physical volumetric path consumes `fog_medium`.
     pub(crate) fog_clip: Option<f32>,
-    /// Cubic-fog falloff exponent — bytes 36-39. FNV+ XCLL. Plumbed
-    /// to the composite shader via `fog_params.w` (#865).
+    /// Cubic-fog falloff exponent — bytes 36-39. FNV+ XCLL.
     pub(crate) fog_power: Option<f32>,
     /// Fog far color (RGB 0-1) — bytes 72-74. Skyrim+ XCLL. Distinct
     /// from `fog_color` (which is the near-distance fog tint).
@@ -334,6 +336,11 @@ impl CellLightingRes {
             fog_color: lit.fog_color,
             fog_near: lit.fog_near,
             fog_far: lit.fog_far,
+            fog_medium: crate::fog::FogMedium::from_legacy_ramp(
+                lit.fog_near,
+                lit.fog_far,
+                lit.fog_max,
+            ),
             directional_fade: lit.directional_fade,
             fog_clip: lit.fog_clip,
             fog_power: lit.fog_power,
@@ -860,6 +867,10 @@ pub(crate) struct WeatherDataRes {
     pub(crate) sky_colors: [[[f32; 3]; 6]; 10],
     /// Fog distances: [day_near, day_far, night_near, night_far].
     pub(crate) fog: [f32; 4],
+    /// Engine-native day/night media fitted once at WTHR translation.
+    /// `weather_system` interpolates these coefficients directly and never
+    /// reconstructs a medium from the legacy distance ramps.
+    pub(crate) fog_media: [crate::fog::FogMedium; 2],
     /// Per-climate sunrise/sunset hour breakpoints — `weather_system`
     /// uses these to drive the TOD slot interpolator so Capital
     /// Wasteland and Mojave run on their own schedules (FO3 sunrise

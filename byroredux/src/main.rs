@@ -21,6 +21,7 @@ mod components;
 mod cornell;
 mod debug_load;
 mod env_translate;
+mod fog;
 mod game_profiles;
 mod helpers;
 mod material_translate;
@@ -707,6 +708,9 @@ impl App {
                 fog_color: frame.fog_color,
                 fog_near: frame.fog_near,
                 fog_far: frame.fog_far,
+                fog_extinction_per_meter: frame.fog_medium.extinction_per_meter,
+                fog_single_scatter_albedo: frame.fog_medium.single_scatter_albedo,
+                fog_coverage: frame.fog_medium.coverage,
                 fog_clip: frame.fog_clip,
                 fog_power: frame.fog_power,
                 ui_texture_handle: ui_tex,

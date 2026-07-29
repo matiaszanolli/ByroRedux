@@ -405,6 +405,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     let night_factor = night_a + (night_b - night_a) * t;
     let fog_near = wd.fog[0] + (wd.fog[2] - wd.fog[0]) * night_factor;
     let fog_far = wd.fog[1] + (wd.fog[3] - wd.fog[1]) * night_factor;
+    let fog_medium = wd.fog_media[0].lerp(wd.fog_media[1], night_factor);
 
     // M33.1 — if a WTHR cross-fade is in flight, run the same TOD-slot
     // pick + per-group sampling on the target snapshot and blend each
@@ -412,58 +413,69 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // per-side (target may use the same `keys` table since `tod_hours`
     // is on WeatherDataRes; we re-derive it from the target's own
     // breakpoints to stay correct if the target ships a different CLMT).
-    let (zenith, horizon, lower, sun_col, ambient, sunlight, fog_col, fog_near, fog_far) =
-        if transition_t > 0.0 {
-            let tr = world
-                .try_resource::<WeatherTransitionRes>()
-                .expect("transition_t > 0 implies WeatherTransitionRes");
-            let target = &tr.target;
+    let (
+        zenith,
+        horizon,
+        lower,
+        sun_col,
+        ambient,
+        sunlight,
+        fog_col,
+        fog_near,
+        fog_far,
+        fog_medium,
+    ) = if transition_t > 0.0 {
+        let tr = world
+            .try_resource::<WeatherTransitionRes>()
+            .expect("transition_t > 0 implies WeatherTransitionRes");
+        let target = &tr.target;
 
-            let keys_b = build_tod_keys(target.tod_hours);
-            let (b_a, b_b, b_t) = pick_tod_pair(&keys_b, hour);
+        let keys_b = build_tod_keys(target.tod_hours);
+        let (b_a, b_b, b_t) = pick_tod_pair(&keys_b, hour);
 
-            let (
-                target_zenith,
-                target_horizon,
-                target_lower,
-                target_sun_col,
-                target_ambient,
-                target_sunlight,
-                target_fog_col,
-            ) = sample_wthr_colors(&target.sky_colors, b_a, b_b, b_t);
-            // #1018 / REN-D15-NEW-09 — `night_factor` above was derived
-            // from the SOURCE weather's `(slot_a, slot_b, t)`. The
-            // target's fog distance must use the target's own TOD
-            // slot pair (already computed for `sample_wthr_colors`)
-            // so colour and distance stay in lockstep when the source
-            // and target ship different CLMTs (rare today: typically
-            // both weathers share a CLMT, which makes the two
-            // night_factors equal; matters as soon as a WTHR cross-
-            // fade spans worldspace boundaries or mod content).
-            let target_night_a = tod_slot_night_factor(b_a);
-            let target_night_b = tod_slot_night_factor(b_b);
-            let target_night_factor = target_night_a + (target_night_b - target_night_a) * b_t;
-            let target_fog_near =
-                target.fog[0] + (target.fog[2] - target.fog[0]) * target_night_factor;
-            let target_fog_far =
-                target.fog[1] + (target.fog[3] - target.fog[1]) * target_night_factor;
+        let (
+            target_zenith,
+            target_horizon,
+            target_lower,
+            target_sun_col,
+            target_ambient,
+            target_sunlight,
+            target_fog_col,
+        ) = sample_wthr_colors(&target.sky_colors, b_a, b_b, b_t);
+        // #1018 / REN-D15-NEW-09 — `night_factor` above was derived
+        // from the SOURCE weather's `(slot_a, slot_b, t)`. The
+        // target's fog distance must use the target's own TOD
+        // slot pair (already computed for `sample_wthr_colors`)
+        // so colour and distance stay in lockstep when the source
+        // and target ship different CLMTs (rare today: typically
+        // both weathers share a CLMT, which makes the two
+        // night_factors equal; matters as soon as a WTHR cross-
+        // fade spans worldspace boundaries or mod content).
+        let target_night_a = tod_slot_night_factor(b_a);
+        let target_night_b = tod_slot_night_factor(b_b);
+        let target_night_factor = target_night_a + (target_night_b - target_night_a) * b_t;
+        let target_fog_near = target.fog[0] + (target.fog[2] - target.fog[0]) * target_night_factor;
+        let target_fog_far = target.fog[1] + (target.fog[3] - target.fog[1]) * target_night_factor;
+        let target_fog_medium = target.fog_media[0].lerp(target.fog_media[1], target_night_factor);
 
-            (
-                lerp3(zenith, target_zenith, transition_t),
-                lerp3(horizon, target_horizon, transition_t),
-                lerp3(lower, target_lower, transition_t),
-                lerp3(sun_col, target_sun_col, transition_t),
-                lerp3(ambient, target_ambient, transition_t),
-                lerp3(sunlight, target_sunlight, transition_t),
-                lerp3(fog_col, target_fog_col, transition_t),
-                lerp1(fog_near, target_fog_near, transition_t),
-                lerp1(fog_far, target_fog_far, transition_t),
-            )
-        } else {
-            (
-                zenith, horizon, lower, sun_col, ambient, sunlight, fog_col, fog_near, fog_far,
-            )
-        };
+        (
+            lerp3(zenith, target_zenith, transition_t),
+            lerp3(horizon, target_horizon, transition_t),
+            lerp3(lower, target_lower, transition_t),
+            lerp3(sun_col, target_sun_col, transition_t),
+            lerp3(ambient, target_ambient, transition_t),
+            lerp3(sunlight, target_sunlight, transition_t),
+            lerp3(fog_col, target_fog_col, transition_t),
+            lerp1(fog_near, target_fog_near, transition_t),
+            lerp1(fog_far, target_fog_far, transition_t),
+            fog_medium.lerp(target_fog_medium, transition_t),
+        )
+    } else {
+        (
+            zenith, horizon, lower, sun_col, ambient, sunlight, fog_col, fog_near, fog_far,
+            fog_medium,
+        )
+    };
 
     // Sun direction + intensity — derived from this WTHR's
     // `tod_hours` via `compute_sun_arc`, so the sun stays in lockstep
@@ -594,6 +606,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             cell_lit.fog_color = fog_col;
             cell_lit.fog_near = fog_near;
             cell_lit.fog_far = fog_far;
+            cell_lit.fog_medium = fog_medium;
         }
     }
 
@@ -607,6 +620,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         if let Some(tr) = world.try_resource::<WeatherTransitionRes>() {
             let new_sky = tr.target.sky_colors;
             let new_fog = tr.target.fog;
+            let new_fog_media = tr.target.fog_media;
             let new_tod = tr.target.tod_hours;
             let tr_target_wind = tr.target.wind_speed;
             let tr_target_dalc = tr.target.skyrim_dalc_per_tod;
@@ -614,6 +628,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             if let Some(mut wd) = world.try_resource_mut::<WeatherDataRes>() {
                 wd.sky_colors = new_sky;
                 wd.fog = new_fog;
+                wd.fog_media = new_fog_media;
                 wd.tod_hours = new_tod;
                 // #1101 / REN-D15-001 — promote wind_speed so cloud scroll
                 // uses the target weather after cross-fade completion.
@@ -1176,6 +1191,11 @@ mod interior_gate_tests {
             fog_color: INTERIOR_FOG_COLOR,
             fog_near: INTERIOR_FOG_NEAR,
             fog_far: INTERIOR_FOG_FAR,
+            fog_medium: crate::fog::FogMedium::from_legacy_ramp(
+                INTERIOR_FOG_NEAR,
+                INTERIOR_FOG_FAR,
+                None,
+            ),
             // Test fixture — extended XCLL fields not exercised here.
             directional_fade: None,
             fog_clip: None,
@@ -1210,6 +1230,10 @@ mod interior_gate_tests {
         world.insert_resource(WeatherDataRes {
             sky_colors,
             fog: [100.0, 60000.0, 200.0, 30000.0],
+            fog_media: [
+                crate::fog::FogMedium::from_legacy_ramp(100.0, 60000.0, None),
+                crate::fog::FogMedium::from_legacy_ramp(200.0, 30000.0, None),
+            ],
             tod_hours: [6.0, 10.0, 18.0, 22.0],
             skyrim_dalc_per_tod: None,
             wind_speed: 0,
@@ -1226,6 +1250,7 @@ mod interior_gate_tests {
     #[test]
     fn interior_cell_fog_is_not_overwritten_by_weather() {
         let world = build_world(true);
+        let authored_medium = world.try_resource::<CellLightingRes>().unwrap().fog_medium;
         weather_system(&world, 0.016);
 
         let cell_lit = world.try_resource::<CellLightingRes>().unwrap();
@@ -1242,6 +1267,10 @@ mod interior_gate_tests {
         assert!(
             (cell_lit.fog_far - 4000.0).abs() < 1e-5,
             "interior fog_far was overwritten — #782 regression"
+        );
+        assert_eq!(
+            cell_lit.fog_medium, authored_medium,
+            "interior canonical fog medium was overwritten by weather_system"
         );
         // Sibling fields gated together with fog — same regression risk.
         assert_eq!(
@@ -1278,6 +1307,11 @@ mod interior_gate_tests {
             "exterior fog_color was not updated by weather_system: {:?}",
             cell_lit.fog_color
         );
+        assert_eq!(
+            cell_lit.fog_medium,
+            crate::fog::FogMedium::from_legacy_ramp(100.0, 60000.0, None),
+            "midday exterior must consume the canonical daytime medium"
+        );
     }
 }
 
@@ -1310,6 +1344,7 @@ mod no_wthr_fallback_tests {
             fog_color: [0.0, 0.0, 0.0],
             fog_near: 0.0,
             fog_far: 0.0,
+            fog_medium: crate::fog::FogMedium::DISABLED,
             directional_fade: None,
             fog_clip: None,
             fog_power: None,
@@ -1365,6 +1400,7 @@ mod no_wthr_fallback_tests {
         assert_eq!(cell_lit.fog_color, canonical.fog_color);
         assert_eq!(cell_lit.fog_near, canonical.fog_near);
         assert_eq!(cell_lit.fog_far, canonical.fog_far);
+        assert_eq!(cell_lit.fog_medium, canonical.fog_medium);
     }
 
     /// Interior gate survives the fallback path — `is_interior=true`

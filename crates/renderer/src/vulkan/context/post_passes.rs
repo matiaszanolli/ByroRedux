@@ -149,6 +149,9 @@ impl VulkanContext {
         volumetric_time_seconds: f32,
         sky_params: &SkyParams,
         fog_far: f32,
+        fog_extinction_per_meter: f32,
+        fog_single_scatter_albedo: f32,
+        fog_coverage: f32,
         fsr_frame: Option<FsrFrameParameters>,
         underwater: [f32; 4],
     ) -> Result<()> {
@@ -297,163 +300,175 @@ impl VulkanContext {
             // "lit" everywhere, not just through real windows.
             if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
                 if let Some(ref mut vol) = self.volumetrics {
-                    let vol_tlas = self
-                        .accel_manager
-                        .as_ref()
-                        .and_then(|accel| accel.tlas_handle(frame));
-                    // Phase 2b point/spot light injection needs the SAME
-                    // per-frame cluster grid / light-index buffers the
-                    // fragment shader reads — reused rather than building a
-                    // separate froxel-space light-culling structure. No
-                    // cluster_cull pipeline (RT unsupported / not yet built)
-                    // means no lights this frame; skip injection entirely
-                    // rather than binding stale/undefined buffers.
-                    let vol_lights = self.cluster_cull.as_ref().map(|cc| {
-                        (
-                            self.scene_buffers.light_buffers()[frame].buffer,
-                            self.scene_buffers.light_buffer_size(),
-                            cc.scene_cluster_grid_buffers[frame],
-                            cc.scene_light_index_buffers[frame],
-                        )
-                    });
-                    if let (Some(tlas), Some((light_buf, light_buf_size, grid_buf, index_buf))) =
-                        (vol_tlas, vol_lights)
-                    {
-                        vol.write_tlas(&self.device, frame, tlas);
-                        // Cluster grid / light-index buffer sizes mirror the
-                        // formulas in `ClusterCullPipeline::new`
-                        // (`compute.rs`): grid entries are `{offset:u32,
-                        // count:u32}` = 8 B each; the index list is one u32
-                        // per (cluster, light-slot) pair.
-                        const CLUSTER_ENTRY_SIZE: vk::DeviceSize = 8;
-                        let grid_size = CLUSTER_ENTRY_SIZE
-                            * crate::shader_constants::TOTAL_CLUSTERS as vk::DeviceSize;
-                        let index_size = std::mem::size_of::<u32>() as vk::DeviceSize
-                            * crate::shader_constants::TOTAL_CLUSTERS as vk::DeviceSize
-                            * crate::shader_constants::MAX_LIGHTS_PER_CLUSTER as vk::DeviceSize;
-                        // Compute→compute visibility: cluster_cull's own
-                        // trailing barrier (draw_frame, ~line 2960) only
-                        // targets FRAGMENT_SHADER (the rasterizer's read).
-                        // This dispatch reads the same buffers from a LATER
-                        // COMPUTE_SHADER stage, which that barrier does not
-                        // cover — a separate barrier is required by the
-                        // Vulkan spec even though both writes happened
-                        // earlier in the same command buffer.
-                        memory_barrier(
-                            &self.device,
-                            cmd,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::AccessFlags::SHADER_WRITE,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::AccessFlags::SHADER_READ,
-                        );
-                        vol.write_lights_and_clusters(
-                            &self.device,
-                            frame,
-                            light_buf,
-                            light_buf_size,
-                            grid_buf,
-                            grid_size,
-                            index_buf,
-                            index_size,
-                        );
-                        let sun_radiance = if sky_params.sun_intensity > 0.0 {
-                            [
-                                sky_params.sun_color[0] * sky_params.sun_intensity,
-                                sky_params.sun_color[1] * sky_params.sun_intensity,
-                                sky_params.sun_color[2] * sky_params.sun_intensity,
-                                fog_far,
-                            ]
-                        } else {
-                            [0.0, 0.0, 0.0, fog_far]
-                        };
-                        let scatter_coef = super::super::volumetrics::DEFAULT_SCATTERING_COEF;
-                        let vol_params = super::super::volumetrics::VolumetricsParams {
-                            inv_view_proj: inv_vp_arr,
-                            prev_view_proj: [
-                                [
-                                    prev_view_proj[0],
-                                    prev_view_proj[1],
-                                    prev_view_proj[2],
-                                    prev_view_proj[3],
-                                ],
-                                [
-                                    prev_view_proj[4],
-                                    prev_view_proj[5],
-                                    prev_view_proj[6],
-                                    prev_view_proj[7],
-                                ],
-                                [
-                                    prev_view_proj[8],
-                                    prev_view_proj[9],
-                                    prev_view_proj[10],
-                                    prev_view_proj[11],
-                                ],
-                                [
-                                    prev_view_proj[12],
-                                    prev_view_proj[13],
-                                    prev_view_proj[14],
-                                    prev_view_proj[15],
-                                ],
-                            ],
-                            camera_pos: [camera_pos[0], camera_pos[1], camera_pos[2], scatter_coef],
-                            prev_camera_pos: [
-                                previous_camera_pos[0],
-                                previous_camera_pos[1],
-                                previous_camera_pos[2],
-                                0.0,
-                            ],
-                            sun_dir: [
-                                sky_params.sun_direction[0],
-                                sky_params.sun_direction[1],
-                                sky_params.sun_direction[2],
-                                super::super::volumetrics::DEFAULT_PHASE_G,
-                            ],
-                            sun_color: sun_radiance,
-                            volume_params: [
-                                vol.far_distance_world(),
-                                super::super::volumetrics::LINEAR_DEPTH,
-                                super::super::volumetrics::LINEAR_SLICE_FRACTION,
-                                (frame_counter & 0x00ff_ffff) as f32,
-                            ],
-                            // #markarth-precision — inv_view_proj is relative;
-                            // the inject shader adds this to recover absolute
-                            // froxel positions for the TLAS shadow rays. w =
-                            // is_exterior — see doc comment on the struct field.
-                            render_origin: [
-                                render_origin.x,
-                                render_origin.y,
-                                render_origin.z,
-                                if sky_params.is_exterior { 1.0 } else { 0.0 },
-                            ],
-                            medium_params: [
-                                super::super::volumetrics::DEFAULT_SINGLE_SCATTER_ALBEDO,
-                                super::super::volumetrics::DEFAULT_BACKWARD_PHASE_G,
-                                super::super::volumetrics::DEFAULT_DUAL_LOBE_MIX,
-                                super::super::volumetrics::DEFAULT_SCALE_HEIGHT_METERS
-                                    * super::super::volumetrics::WORLD_UNITS_PER_METER,
-                            ],
-                            temporal_params: [
-                                super::super::volumetrics::DEFAULT_TEMPORAL_HISTORY_WEIGHT,
-                                super::super::volumetrics::DEFAULT_DENSITY_REJECTION,
-                                volumetric_time_seconds,
-                                0.0,
-                            ],
-                        };
-                        if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_volumetrics_start(&self.device, cmd, frame);
-                        }
-                        let vol_result = vol.dispatch(&self.device, cmd, frame, &vol_params);
-                        if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_volumetrics_end(&self.device, cmd, frame);
-                        }
-                        if let Err(e) = vol_result {
-                            log::warn!("Volumetrics dispatch failed: {e}");
-                        }
-                    } else {
-                        // Never let a prior cell's integrated fog hang over a
-                        // frame whose TLAS/cluster inputs are not ready yet.
+                    let scatter_coef = fog_extinction_per_meter.max(0.0)
+                        / super::super::volumetrics::WORLD_UNITS_PER_METER;
+                    if scatter_coef <= 0.0 {
                         vol.record_neutral_frame(&self.device, cmd, frame);
+                    } else {
+                        let vol_tlas = self
+                            .accel_manager
+                            .as_ref()
+                            .and_then(|accel| accel.tlas_handle(frame));
+                        // Phase 2b point/spot light injection needs the SAME
+                        // per-frame cluster grid / light-index buffers the
+                        // fragment shader reads — reused rather than building a
+                        // separate froxel-space light-culling structure. No
+                        // cluster_cull pipeline (RT unsupported / not yet built)
+                        // means no lights this frame; skip injection entirely
+                        // rather than binding stale/undefined buffers.
+                        let vol_lights = self.cluster_cull.as_ref().map(|cc| {
+                            (
+                                self.scene_buffers.light_buffers()[frame].buffer,
+                                self.scene_buffers.light_buffer_size(),
+                                cc.scene_cluster_grid_buffers[frame],
+                                cc.scene_light_index_buffers[frame],
+                            )
+                        });
+                        if let (
+                            Some(tlas),
+                            Some((light_buf, light_buf_size, grid_buf, index_buf)),
+                        ) = (vol_tlas, vol_lights)
+                        {
+                            vol.write_tlas(&self.device, frame, tlas);
+                            // Cluster grid / light-index buffer sizes mirror the
+                            // formulas in `ClusterCullPipeline::new`
+                            // (`compute.rs`): grid entries are `{offset:u32,
+                            // count:u32}` = 8 B each; the index list is one u32
+                            // per (cluster, light-slot) pair.
+                            const CLUSTER_ENTRY_SIZE: vk::DeviceSize = 8;
+                            let grid_size = CLUSTER_ENTRY_SIZE
+                                * crate::shader_constants::TOTAL_CLUSTERS as vk::DeviceSize;
+                            let index_size = std::mem::size_of::<u32>() as vk::DeviceSize
+                                * crate::shader_constants::TOTAL_CLUSTERS as vk::DeviceSize
+                                * crate::shader_constants::MAX_LIGHTS_PER_CLUSTER as vk::DeviceSize;
+                            // Compute→compute visibility: cluster_cull's own
+                            // trailing barrier (draw_frame, ~line 2960) only
+                            // targets FRAGMENT_SHADER (the rasterizer's read).
+                            // This dispatch reads the same buffers from a LATER
+                            // COMPUTE_SHADER stage, which that barrier does not
+                            // cover — a separate barrier is required by the
+                            // Vulkan spec even though both writes happened
+                            // earlier in the same command buffer.
+                            memory_barrier(
+                                &self.device,
+                                cmd,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::AccessFlags::SHADER_WRITE,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::AccessFlags::SHADER_READ,
+                            );
+                            vol.write_lights_and_clusters(
+                                &self.device,
+                                frame,
+                                light_buf,
+                                light_buf_size,
+                                grid_buf,
+                                grid_size,
+                                index_buf,
+                                index_size,
+                            );
+                            let sun_radiance = if sky_params.sun_intensity > 0.0 {
+                                [
+                                    sky_params.sun_color[0] * sky_params.sun_intensity,
+                                    sky_params.sun_color[1] * sky_params.sun_intensity,
+                                    sky_params.sun_color[2] * sky_params.sun_intensity,
+                                    fog_far,
+                                ]
+                            } else {
+                                [0.0, 0.0, 0.0, fog_far]
+                            };
+                            let vol_params = super::super::volumetrics::VolumetricsParams {
+                                inv_view_proj: inv_vp_arr,
+                                prev_view_proj: [
+                                    [
+                                        prev_view_proj[0],
+                                        prev_view_proj[1],
+                                        prev_view_proj[2],
+                                        prev_view_proj[3],
+                                    ],
+                                    [
+                                        prev_view_proj[4],
+                                        prev_view_proj[5],
+                                        prev_view_proj[6],
+                                        prev_view_proj[7],
+                                    ],
+                                    [
+                                        prev_view_proj[8],
+                                        prev_view_proj[9],
+                                        prev_view_proj[10],
+                                        prev_view_proj[11],
+                                    ],
+                                    [
+                                        prev_view_proj[12],
+                                        prev_view_proj[13],
+                                        prev_view_proj[14],
+                                        prev_view_proj[15],
+                                    ],
+                                ],
+                                camera_pos: [
+                                    camera_pos[0],
+                                    camera_pos[1],
+                                    camera_pos[2],
+                                    scatter_coef,
+                                ],
+                                prev_camera_pos: [
+                                    previous_camera_pos[0],
+                                    previous_camera_pos[1],
+                                    previous_camera_pos[2],
+                                    0.0,
+                                ],
+                                sun_dir: [
+                                    sky_params.sun_direction[0],
+                                    sky_params.sun_direction[1],
+                                    sky_params.sun_direction[2],
+                                    super::super::volumetrics::DEFAULT_PHASE_G,
+                                ],
+                                sun_color: sun_radiance,
+                                volume_params: [
+                                    vol.far_distance_world(),
+                                    super::super::volumetrics::LINEAR_DEPTH,
+                                    super::super::volumetrics::LINEAR_SLICE_FRACTION,
+                                    (frame_counter & 0x00ff_ffff) as f32,
+                                ],
+                                // #markarth-precision — inv_view_proj is relative;
+                                // the inject shader adds this to recover absolute
+                                // froxel positions for the TLAS shadow rays. w =
+                                // is_exterior — see doc comment on the struct field.
+                                render_origin: [
+                                    render_origin.x,
+                                    render_origin.y,
+                                    render_origin.z,
+                                    if sky_params.is_exterior { 1.0 } else { 0.0 },
+                                ],
+                                medium_params: [
+                                    fog_single_scatter_albedo.clamp(0.0, 1.0),
+                                    super::super::volumetrics::DEFAULT_BACKWARD_PHASE_G,
+                                    super::super::volumetrics::DEFAULT_DUAL_LOBE_MIX,
+                                    super::super::volumetrics::DEFAULT_SCALE_HEIGHT_METERS
+                                        * super::super::volumetrics::WORLD_UNITS_PER_METER,
+                                ],
+                                temporal_params: [
+                                    super::super::volumetrics::DEFAULT_TEMPORAL_HISTORY_WEIGHT,
+                                    super::super::volumetrics::DEFAULT_DENSITY_REJECTION,
+                                    volumetric_time_seconds,
+                                    fog_coverage.clamp(0.01, 1.0),
+                                ],
+                            };
+                            if let Some(ref mut timers) = self.gpu_timers {
+                                timers.cmd_volumetrics_start(&self.device, cmd, frame);
+                            }
+                            let vol_result = vol.dispatch(&self.device, cmd, frame, &vol_params);
+                            if let Some(ref mut timers) = self.gpu_timers {
+                                timers.cmd_volumetrics_end(&self.device, cmd, frame);
+                            }
+                            if let Err(e) = vol_result {
+                                log::warn!("Volumetrics dispatch failed: {e}");
+                            }
+                        } else {
+                            // Never let a prior cell's integrated fog hang over a
+                            // frame whose TLAS/cluster inputs are not ready yet.
+                            vol.record_neutral_frame(&self.device, cmd, frame);
+                        }
                     }
                 }
             }

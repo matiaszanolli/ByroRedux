@@ -51,6 +51,7 @@ fn fnv_authored_curve_propagates_to_frame_view() {
         fog_color: [0.5, 0.4, 0.3],
         fog_near: 64.0,
         fog_far: 8192.0,
+        fog_medium: crate::fog::FogMedium::from_legacy_ramp(64.0, 8192.0, None),
         directional_fade: None,
         // Doc Mitchell's House values per the audit fixture.
         fog_clip: Some(4096.0),
@@ -67,6 +68,10 @@ fn fnv_authored_curve_propagates_to_frame_view() {
     let view = run_view(&world);
     assert_eq!(view.fog_clip, 4096.0);
     assert_eq!(view.fog_power, 2.0);
+    assert_eq!(
+        view.fog_medium,
+        crate::fog::FogMedium::from_legacy_ramp(64.0, 8192.0, None)
+    );
 }
 
 #[test]
@@ -80,6 +85,7 @@ fn missing_curve_yields_zero_so_shader_falls_back_to_linear() {
         fog_color: [0.5, 0.4, 0.3],
         fog_near: 64.0,
         fog_far: 8192.0,
+        fog_medium: crate::fog::FogMedium::from_legacy_ramp(64.0, 8192.0, None),
         directional_fade: None,
         fog_clip: None,
         fog_power: None,
@@ -98,6 +104,7 @@ fn missing_curve_yields_zero_so_shader_falls_back_to_linear() {
         "no curve authored → shader pickup must be 0"
     );
     assert_eq!(view.fog_power, 0.0);
+    assert!(view.fog_medium.extinction_per_meter > 0.0);
 }
 
 #[test]
@@ -106,4 +113,5 @@ fn no_cell_lighting_resource_defaults_to_zero() {
     let view = run_view(&world);
     assert_eq!(view.fog_clip, 0.0);
     assert_eq!(view.fog_power, 0.0);
+    assert_eq!(view.fog_medium, crate::fog::FogMedium::DISABLED);
 }

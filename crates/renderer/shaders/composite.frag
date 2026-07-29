@@ -545,11 +545,10 @@ void main() {
         // now permanently pinned to 1.0 (draw.rs), so this fallback's
         // `depth_params.z < 0.5` guard can never pass. Removed per the
         // lockstep note this branch used to carry (#1926 / REN-D8-01);
-        // the volumetric path (`vol.a` / `vol.rgb` above) is the sole
-        // exterior fog source now. `fog_color` / `fog_params` stay in
-        // the UBO, reserved-and-unconsumed for the future REGN-driven
-        // volumetric density tint (M55 Phase 6) — nothing in this
-        // shader reads them today.
+        // the volumetric path (`vol.a` / `vol.rgb` above) plus the analytic
+        // beyond-grid continuation are the sole fog sources now.
+        // `fog_color` tints that continuation; `fog_params` remains reserved
+        // for an explicit legacy-compatibility mode.
 
         outColor = vec4(combined, direct4.a);
     }

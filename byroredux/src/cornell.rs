@@ -369,6 +369,7 @@ pub(crate) fn install_cornell_lighting(world: &mut World, sun: bool) {
         fog_color: [0.0, 0.0, 0.0],
         fog_near: 100_000.0,
         fog_far: 1_000_000.0,
+        fog_medium: crate::fog::FogMedium::from_legacy_ramp(100_000.0, 1_000_000.0, None),
         directional_fade: None,
         fog_clip: None,
         fog_power: None,

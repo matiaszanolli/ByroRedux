@@ -92,7 +92,7 @@ pub struct VolumetricsParams {
     /// z = forward-lobe mixture, w = height-fog scale height in world units.
     pub medium_params: [f32; 4],
     /// x = temporal history weight, y = relative density rejection strength,
-    /// z = total time in seconds, w = reserved.
+    /// z = total time in seconds, w = procedural coverage.
     pub temporal_params: [f32; 4],
 }
 
@@ -104,15 +104,6 @@ pub const DEFAULT_VOLUME_FAR: f32 = DEFAULT_GRID_FAR_METERS * WORLD_UNITS_PER_ME
 pub const LINEAR_DEPTH_METERS: f32 = 5.0;
 pub const LINEAR_DEPTH: f32 = LINEAR_DEPTH_METERS * WORLD_UNITS_PER_METER;
 pub const LINEAR_SLICE_FRACTION: f32 = 0.125;
-
-/// Default participating-medium scattering coefficient (1 / world unit).
-/// Lowered from 0.005 (2026-07-18 — "too bloomy/hazy" feedback on
-/// vanilla content) to 0.0035: at 200 m view distance, transmittance
-/// goes from `exp(-0.005*200) ≈ 37%` to `exp(-0.0035*200) ≈ 50%`,
-/// visibly thinning the haze while keeping the atmospheric depth cue
-/// at long draw distances.
-pub const DEFAULT_SCATTERING_COEF_PER_METER: f32 = 0.0035;
-pub const DEFAULT_SCATTERING_COEF: f32 = DEFAULT_SCATTERING_COEF_PER_METER / WORLD_UNITS_PER_METER;
 
 /// Default forward Henyey-Greenstein asymmetry for atmospheric scattering.
 pub const DEFAULT_PHASE_G: f32 = 0.8;
@@ -1369,8 +1360,10 @@ mod unit_tests {
 
         // Unit conversion must preserve the authored optical depth:
         // sigma_world * distance_world == sigma_m * distance_m.
-        let world_optical_depth = DEFAULT_SCATTERING_COEF * DEFAULT_VOLUME_FAR;
-        let metre_optical_depth = DEFAULT_SCATTERING_COEF_PER_METER * reach_metres;
+        let sigma_per_metre = 0.02;
+        let sigma_per_world_unit = sigma_per_metre / WORLD_UNITS_PER_METER;
+        let world_optical_depth = sigma_per_world_unit * DEFAULT_VOLUME_FAR;
+        let metre_optical_depth = sigma_per_metre * reach_metres;
         assert!((world_optical_depth - metre_optical_depth).abs() < 1.0e-6);
     }
 

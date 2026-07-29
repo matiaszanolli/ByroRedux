@@ -434,6 +434,7 @@ mod reverb_tests {
             fog_color: [0.5, 0.5, 0.5],
             fog_near: 100.0,
             fog_far: 1000.0,
+            fog_medium: crate::fog::FogMedium::from_legacy_ramp(100.0, 1000.0, None),
             directional_fade: None,
             fog_clip: None,
             fog_power: None,

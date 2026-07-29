@@ -231,6 +231,11 @@ pub(crate) fn translate_exterior_cell_lighting(
         fog_color: wthr.sky_colors[SKY_FOG][TOD_DAY].to_rgb_f32(),
         fog_near: wthr.fog_day_near,
         fog_far: wthr.fog_day_far,
+        fog_medium: crate::fog::FogMedium::from_legacy_ramp(
+            wthr.fog_day_near,
+            wthr.fog_day_far,
+            Some(wthr.fog_day_max),
+        ),
         // WTHR-driven exterior lighting; the extended XCLL tail applies to
         // interior cells (and not-yet-wired exterior lighting overrides). #861.
         directional_fade: None,
@@ -314,6 +319,18 @@ pub(crate) fn translate_weather(
             wthr.fog_night_near,
             wthr.fog_night_far,
         ],
+        fog_media: [
+            crate::fog::FogMedium::from_legacy_ramp(
+                wthr.fog_day_near,
+                wthr.fog_day_far,
+                Some(wthr.fog_day_max),
+            ),
+            crate::fog::FogMedium::from_legacy_ramp(
+                wthr.fog_night_near,
+                wthr.fog_night_far,
+                Some(wthr.fog_night_max),
+            ),
+        ],
         // #463 — per-climate sunrise/sunset breakpoints (validated helper).
         tod_hours: crate::scene::climate_tod_hours(climate),
         skyrim_dalc_per_tod,
@@ -354,6 +371,7 @@ pub(crate) fn procedural_fallback_cell_lighting(sun_dir: [f32; 3]) -> CellLighti
         fog_color: FB_FOG_COLOR,
         fog_near: FB_FOG_NEAR,
         fog_far: FB_FOG_FAR,
+        fog_medium: crate::fog::FogMedium::from_legacy_ramp(FB_FOG_NEAR, FB_FOG_FAR, None),
         directional_fade: None,
         fog_clip: None,
         fog_power: None,
@@ -421,6 +439,10 @@ pub(crate) fn procedural_fallback_weather() -> WeatherDataRes {
         sky_colors,
         // Day/night fog distances kept identical — no authored night distance.
         fog: [FB_FOG_NEAR, FB_FOG_FAR, FB_FOG_NEAR, FB_FOG_FAR],
+        fog_media: [
+            crate::fog::FogMedium::from_legacy_ramp(FB_FOG_NEAR, FB_FOG_FAR, None),
+            crate::fog::FogMedium::from_legacy_ramp(FB_FOG_NEAR, FB_FOG_FAR, None),
+        ],
         // Pre-#463 hardcoded TOD breakpoints.
         tod_hours: [6.0, 10.0, 18.0, 22.0],
         skyrim_dalc_per_tod: None,
@@ -883,6 +905,8 @@ mod tests {
         w.fog_day_far = 200.0;
         w.fog_night_near = 300.0;
         w.fog_night_far = 400.0;
+        w.fog_day_max = 0.9;
+        w.fog_night_max = 0.4;
         w.wind_speed = 7;
         w.sky_colors[SKY_UPPER][TOD_DAY] = SkyColor {
             r: 255,
@@ -893,6 +917,14 @@ mod tests {
 
         let wd = translate_weather(&w, None);
         assert_eq!(wd.fog, [100.0, 200.0, 300.0, 400.0]);
+        assert_eq!(
+            wd.fog_media[0],
+            crate::fog::FogMedium::from_legacy_ramp(100.0, 200.0, Some(0.9))
+        );
+        assert_eq!(
+            wd.fog_media[1],
+            crate::fog::FogMedium::from_legacy_ramp(300.0, 400.0, Some(0.4))
+        );
         assert_eq!(wd.wind_speed, 7);
         // No climate → the validated `climate_tod_hours` fallback.
         assert_eq!(wd.tod_hours, [6.0, 10.0, 18.0, 22.0]);
@@ -909,6 +941,7 @@ mod tests {
         assert_eq!(cl.ambient, [0.15, 0.14, 0.12]);
         assert_eq!(cl.directional_dir, sun_dir);
         assert_eq!((cl.fog_near, cl.fog_far), (15000.0, 80000.0));
+        assert!(cl.fog_medium.extinction_per_meter > 0.0);
         assert!(!cl.is_interior);
 
         let sky = procedural_fallback_sky(sun_dir);
@@ -921,6 +954,7 @@ mod tests {
         let wd = procedural_fallback_weather();
         assert_eq!(wd.tod_hours, [6.0, 10.0, 18.0, 22.0]);
         assert_eq!(wd.wind_speed, 0);
+        assert_eq!(wd.fog_media, [cl.fog_medium; 2]);
         assert!(wd.skyrim_dalc_per_tod.is_none());
         // Synthetic table: the day slot of the read groups carries the
         // procedural colour, and the lerp endpoints are equal.
