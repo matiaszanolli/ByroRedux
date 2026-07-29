@@ -57,6 +57,9 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // x = history weight, y = density-change rejection strength,
     // z = total time seconds, w = procedural coverage.
     vec4 temporal_params;
+    // xyz = minimum corner of the camera-centered local-volume cluster cube;
+    // w = reciprocal cluster-cell size.
+    vec4 local_volume_grid;
 } params;
 
 // Phase 2c — scene TLAS. Updated each frame from the host side via
@@ -103,7 +106,109 @@ layout(std430, set = 0, binding = 5) readonly buffer ClusterLightIndices {
 // after projecting the jittered current froxel center through prev_view_proj.
 layout(set = 0, binding = 6) uniform sampler3D previousFroxel;
 
+// Spatially bounded authored media. The CPU transforms ECS primitives to
+// absolute world space, sorts them near-to-far, and builds a camera-centered
+// 16^3 fixed-capacity cluster list every frame. This keeps the per-froxel loop
+// bounded even in scenes with many legacy smoke systems.
+struct GpuFogVolume {
+    vec4 center_shape;             // xyz center, w 0 sphere / 1 ellipsoid / 2 box
+    vec4 half_extents_extinction;  // xyz half extents, w sigma_t / world unit
+    vec4 inverse_rotation;         // world-to-local quaternion
+    vec4 albedo_edge;              // rgb single-scatter albedo, w edge softness
+};
+
+layout(std430, set = 0, binding = 7) readonly buffer FogVolumeBuffer {
+    uint fogVolumeCount;
+    uint _fogPad0, _fogPad1, _fogPad2;
+    GpuFogVolume fogVolumes[];
+};
+
+struct FogClusterEntry {
+    uint offset;
+    uint count;
+};
+
+layout(std430, set = 0, binding = 8) readonly buffer FogClusterBuffer {
+    FogClusterEntry fogClusters[];
+};
+
+layout(std430, set = 0, binding = 9) readonly buffer FogClusterIndexBuffer {
+    uint fogClusterIndices[];
+};
+
 const float PI = 3.14159265358979323846;
+const uint FOG_CLUSTER_DIM = 16u;
+const uint MAX_FOG_VOLUMES_PER_CLUSTER = 8u;
+
+float valueNoise3D(vec3 p);
+vec3 warpFogDomain(vec3 worldMetres, float timeSeconds);
+
+vec3 rotateByQuaternion(vec3 value, vec4 q) {
+    return value + 2.0 * cross(q.xyz, cross(q.xyz, value) + q.w * value);
+}
+
+// Returns (sigma_s.rgb, sigma_t) for authored local media at worldPos.
+vec4 sampleLocalMedium(vec3 worldPos) {
+    if (fogVolumeCount == 0u || params.local_volume_grid.w <= 0.0) {
+        return vec4(0.0);
+    }
+
+    vec3 gridCoord = (worldPos - params.local_volume_grid.xyz)
+        * params.local_volume_grid.w;
+    if (any(lessThan(gridCoord, vec3(0.0)))
+            || any(greaterThanEqual(gridCoord, vec3(float(FOG_CLUSTER_DIM))))) {
+        return vec4(0.0);
+    }
+    uvec3 cell = min(uvec3(gridCoord), uvec3(FOG_CLUSTER_DIM - 1u));
+    uint clusterIndex = cell.x
+        + cell.y * FOG_CLUSTER_DIM
+        + cell.z * FOG_CLUSTER_DIM * FOG_CLUSTER_DIM;
+    FogClusterEntry cluster = fogClusters[clusterIndex];
+    uint primitiveCount = min(cluster.count, MAX_FOG_VOLUMES_PER_CLUSTER);
+
+    vec4 medium = vec4(0.0);
+    for (uint i = 0u; i < primitiveCount; ++i) {
+        uint volumeIndex = fogClusterIndices[cluster.offset + i];
+        if (volumeIndex >= fogVolumeCount) {
+            continue;
+        }
+        GpuFogVolume volume = fogVolumes[volumeIndex];
+        vec3 extents = max(volume.half_extents_extinction.xyz, vec3(1.0e-4));
+        vec3 localOffset = rotateByQuaternion(
+            worldPos - volume.center_shape.xyz,
+            volume.inverse_rotation
+        );
+        vec3 normalizedOffset = localOffset / extents;
+        float shape = volume.center_shape.w;
+        float normalizedRadius;
+        if (shape > 1.5) {
+            normalizedRadius = max(
+                abs(normalizedOffset.x),
+                max(abs(normalizedOffset.y), abs(normalizedOffset.z))
+            );
+        } else if (shape < 0.5) {
+            normalizedRadius = length(localOffset) / extents.x;
+        } else {
+            normalizedRadius = length(normalizedOffset);
+        }
+        if (normalizedRadius >= 1.0) {
+            continue;
+        }
+
+        float edge = clamp(volume.albedo_edge.w, 1.0e-3, 1.0);
+        float densityProfile = 1.0 - smoothstep(1.0 - edge, 1.0, normalizedRadius);
+        vec3 metres = warpFogDomain(worldPos / 70.0, params.temporal_params.z);
+        float noise = valueNoise3D(metres / 2.5) * 0.7
+            + valueNoise3D(metres / 1.25) * 0.3;
+        float coverage = clamp(params.temporal_params.w, 0.05, 1.0);
+        float occupied = clamp((noise - (1.0 - coverage)) / coverage, 0.0, 1.0);
+        densityProfile *= mix(0.35, 1.25, occupied);
+        float sigmaT = max(volume.half_extents_extinction.w, 0.0) * densityProfile;
+        medium.a += sigmaT;
+        medium.rgb += sigmaT * clamp(volume.albedo_edge.rgb, vec3(0.0), vec3(1.0));
+    }
+    return medium;
+}
 
 // Simplified point/spot attenuation — mirrors `pointSpotAtten`'s
 // default-tier curve (`include/lighting.glsl`) but self-contained:
@@ -365,9 +470,12 @@ void main() {
     // Procedural fog density — height falloff × 3D value noise around
     // the base scattering coefficient (see `proceduralDensityScale`).
     float density_scale = proceduralDensityScale(world_pos, params.camera_pos.y);
-    float extinction_coef = params.camera_pos.w * density_scale;
-    float scattering_coef = extinction_coef
-        * clamp(params.medium_params.x, 0.0, 1.0);
+    float global_extinction = params.camera_pos.w * density_scale;
+    vec4 local_medium = sampleLocalMedium(world_pos);
+    float extinction_coef = global_extinction + local_medium.a;
+    vec3 scattering_coef = vec3(
+        global_extinction * clamp(params.medium_params.x, 0.0, 1.0)
+    ) + local_medium.rgb;
 
     // Phase 2c — visibility ray from sample point toward the sun.
     // Sun is directional (effectively at infinity), so:

@@ -331,6 +331,10 @@ pub(super) fn spawn_placed_instances(
         spawned_nif_lights,
     };
     for (sub_mesh_index, mesh) in imported.iter().enumerate() {
+        if spawn_fog_mesh_instance(world, &pc, mesh, &resolved_paths[sub_mesh_index]) {
+            count += 1;
+            continue;
+        }
         if spawn_mesh_instance(
             world,
             ctx,
@@ -653,6 +657,26 @@ fn spawn_particle_emitters(
             preset.dst_blend = dst;
         }
 
+        // Alpha-over fog/smoke is participating media, not transparent
+        // geometry. Replace the billboard system at the translation
+        // boundary so it cannot fight froxel history or FSR later. The local
+        // ellipsoid retains the authored emitter's swept extent and alpha-
+        // seeded optical density; lighting visibility remains the shared
+        // BLAS-backed TLAS query in the volumetric inject pass.
+        if let Some(fog_volume) = crate::fog::fog_volume_from_particle(&host, &preset) {
+            let entity = world.spawn();
+            world.insert(
+                entity,
+                Transform::new(world_pos, ref_rot, ref_scale.abs().max(1.0e-4)),
+            );
+            world.insert(
+                entity,
+                GlobalTransform::new(world_pos, ref_rot, ref_scale.abs().max(1.0e-4)),
+            );
+            world.insert(entity, fog_volume);
+            continue;
+        }
+
         // A particle without a real sprite is not a valid white quad. The
         // old renderer hardcoded bindless slot zero, turning every such
         // billboard into the giant white streaks seen in Railroad HQ.
@@ -869,6 +893,77 @@ struct PlacementCtx<'a> {
     placement_root: byroredux_core::ecs::EntityId,
     collisions_empty: bool,
     spawned_nif_lights: usize,
+}
+
+/// Replace one authored alpha-over fog/smoke mesh with an analytic local
+/// medium before any texture upload, raster entity, or BLAS work occurs.
+fn spawn_fog_mesh_instance(
+    world: &mut World,
+    pc: &PlacementCtx,
+    mesh: &byroredux_nif::import::ImportedMesh,
+    paths: &ResolvedMeshPaths,
+) -> bool {
+    use byroredux_core::ecs::{Name, Parent};
+
+    let texture_path = paths.textures.base_color.as_deref();
+    let fog_semantics = pc.mesh_cache_key.is_some_and(crate::fog::has_fog_token)
+        || texture_path.is_some_and(crate::fog::has_fog_token)
+        || mesh.name.as_deref().is_some_and(crate::fog::has_fog_token);
+    let Some(fog_volume) = crate::fog::fog_volume_from_mesh(pc.mesh_cache_key, texture_path, mesh)
+    else {
+        if fog_semantics {
+            log::debug!(
+                "authored fog mesh candidate kept on legacy path: model={:?} texture={:?} \
+                 name={:?} has_alpha={} dst_blend={} material_kind={}",
+                pc.mesh_cache_key,
+                texture_path,
+                mesh.name,
+                mesh.material.has_alpha,
+                mesh.material.dst_blend_mode,
+                mesh.material.material_kind,
+            );
+        }
+        return false;
+    };
+    log::debug!(
+        "replaced authored fog mesh with local volume: model={:?} texture={:?} name={:?}",
+        pc.mesh_cache_key,
+        texture_path,
+        mesh.name,
+    );
+
+    let nif_rotation = Quat::from_xyzw(
+        mesh.rotation[0],
+        mesh.rotation[1],
+        mesh.rotation[2],
+        mesh.rotation[3],
+    );
+    let nif_position = Vec3::from_array(mesh.translation);
+    let (world_position, world_rotation, world_scale) = GlobalTransform::compose_trs(
+        pc.ref_pos,
+        pc.ref_rot,
+        pc.ref_scale,
+        nif_position,
+        nif_rotation,
+        mesh.scale,
+    );
+
+    let entity = world.spawn();
+    world.insert(
+        entity,
+        Transform::new(nif_position, nif_rotation, mesh.scale),
+    );
+    world.insert(
+        entity,
+        GlobalTransform::new(world_position, world_rotation, world_scale),
+    );
+    world.insert(entity, fog_volume);
+    world.insert(entity, Parent(pc.placement_root));
+    crate::helpers::add_child(world, pc.placement_root, entity);
+    if let Some(symbol) = paths.name_sym {
+        world.insert(entity, Name(symbol));
+    }
+    true
 }
 
 /// Spawn the render entity (+ optional physics ghost + ESM light

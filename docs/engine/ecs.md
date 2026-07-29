@@ -531,7 +531,7 @@ one module per domain (see `components/mod.rs`). Grouped by domain:
 | Hierarchy / spatial | `Parent`, `Children` (`hierarchy`), `CellRoot` (`cell_root`), `Transform` (Packed), `GlobalTransform` (Packed), `LocalBound`, `WorldBound`, `BSBound` |
 | Identity | `Name` (Sparse, FixedString-keyed), `FormIdComponent` |
 | Render | `MeshHandle`, `TextureHandle`, `Material`, `LightSource` + `LightFlicker`, `Camera` + `ActiveCamera`, `Billboard` (+ `BillboardMode`), `BSXFlags`, `SceneFlags`, `RenderLayer` |
-| Volumetrics / water | `FogVolume` (+ `FogBounds`, `FogSource`) for the M55 froxel driver (#1277); `WaterPlane`, `WaterVolume`, `WaterMaterial`, `WaterFlow`, `WaterKind`, `SubmersionState` (M38) |
+| Volumetrics / water | `FogVolume` (+ `FogBounds`, `FogShape`, `FogSource`) for clustered authored local media in the froxel driver; `WaterPlane`, `WaterVolume`, `WaterMaterial`, `WaterFlow`, `WaterKind`, `SubmersionState` (M38) |
 | Skinning | `SkinnedMesh` (+ `MAX_BONES_PER_MESH`) — GPU pre-skinning bone palette / weights / partition data (M29) |
 | Particles | `ParticleEmitter`, `ParticleSoA`, `ParticleForceField`, `EmitterShape` |
 | Attach points | `AttachPoint`, `AttachPoints`, `ChildAttachConnections` (BSConnectPoint, #985) |

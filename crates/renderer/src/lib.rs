@@ -44,3 +44,4 @@ pub use vulkan::upscaling::{
     FrameExtentSet, FsrQuality, RendererConfig, UpscalerMode, VolumetricsConfig,
     VolumetricsConfigError,
 };
+pub use vulkan::volumetrics::GpuFogVolume;

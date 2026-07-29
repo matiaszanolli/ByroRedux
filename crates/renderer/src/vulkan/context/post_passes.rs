@@ -152,6 +152,7 @@ impl VulkanContext {
         fog_extinction_per_meter: f32,
         fog_single_scatter_albedo: f32,
         fog_coverage: f32,
+        fog_volumes: &[super::super::volumetrics::GpuFogVolume],
         fsr_frame: Option<FsrFrameParameters>,
         underwater: [f32; 4],
     ) -> Result<()> {
@@ -302,7 +303,7 @@ impl VulkanContext {
                 if let Some(ref mut vol) = self.volumetrics {
                     let scatter_coef = fog_extinction_per_meter.max(0.0)
                         / super::super::volumetrics::WORLD_UNITS_PER_METER;
-                    if scatter_coef <= 0.0 {
+                    if scatter_coef <= 0.0 && fog_volumes.is_empty() {
                         vol.record_neutral_frame(&self.device, cmd, frame);
                     } else {
                         let vol_tlas = self
@@ -453,11 +454,15 @@ impl VulkanContext {
                                     volumetric_time_seconds,
                                     fog_coverage.clamp(0.01, 1.0),
                                 ],
+                                // Filled by `dispatch` after it builds the
+                                // camera-centered local-volume cluster grid.
+                                local_volume_grid: [0.0; 4],
                             };
                             if let Some(ref mut timers) = self.gpu_timers {
                                 timers.cmd_volumetrics_start(&self.device, cmd, frame);
                             }
-                            let vol_result = vol.dispatch(&self.device, cmd, frame, &vol_params);
+                            let vol_result =
+                                vol.dispatch(&self.device, cmd, frame, &vol_params, fog_volumes);
                             if let Some(ref mut timers) = self.gpu_timers {
                                 timers.cmd_volumetrics_end(&self.device, cmd, frame);
                             }

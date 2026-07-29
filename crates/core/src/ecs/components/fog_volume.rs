@@ -1,95 +1,102 @@
-//! Volumetric fog driver — bridges authored fog data into a uniform ECS
-//! representation that the M55 volumetrics inject pass will consume in
-//! later steps. Part of the "Full M55 promotion + godray emerges for
-//! free" workstream tracked at issue #1277.
+//! Engine-native participating-medium volume.
 //!
-//! Step 1 (this file): data plumbing only. The component carries the
-//! authored values; no consumer reads it yet (volumetrics output is
-//! gated off via `VOLUMETRIC_OUTPUT_CONSUMED = false` in
-//! `crates/renderer/src/vulkan/volumetrics.rs`).
-//!
-//! ## Sources that will eventually feed this
-//!
-//! | Source            | Step | Wired today? |
-//! |-------------------|------|--------------|
-//! | `NiFogProperty`   | 1    | yes (rare — 1 vanilla instance) |
-//! | `XCLL` cell fog   | 1    | follow-up (`CellLightingRes` already exists; cell-scope spawn deferred) |
-//! | `REGN` density    | 2    | no |
-//! | `WTHR` cell fog   | 3    | no |
-//! | Authored mesh     | 5    | no |
-//!
-//! ## Storage choice
-//!
-//! `SparseSetStorage` — almost every entity is fog-less, and the
-//! consumer (volumetric inject UBO assembly) iterates the small set
-//! per frame, not every entity.
+//! Legacy cell/weather depth ramps are converted once into the canonical
+//! `FogMedium` resource used by the global froxel medium. `FogVolume` is the
+//! complementary ECS representation for spatially bounded authored content:
+//! particle smoke, fog billboards, and explicit volume meshes. Render code
+//! transforms these local primitives to world space and injects their
+//! extinction/scattering into the same froxel V-buffer as atmospheric fog.
 
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
-use crate::math::Vec3;
+use crate::math::{Quat, Vec3};
 
-/// One coherent volumetric-fog region in the scene.
+/// One coherent local participating-medium region.
 ///
-/// `bounds == None` means cell-scope (no spatial restriction — applies
-/// everywhere visible, like the XCLL depth-fog ramp). `Some` restricts
-/// the volume to the bounding sphere; the inject pass will modulate
-/// density to zero outside it.
+/// `bounds == None` is reserved for cell-scope sources. Runtime XCLL/WTHR fog
+/// currently bypasses that form and reaches the renderer through the canonical
+/// medium resource, so the froxel primitive collector consumes bounded volumes
+/// only.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct FogVolume {
-    /// World-space bounding sphere. `None` = cell-scope.
+    /// Local-space primitive bounds. `None` means cell scope.
     pub bounds: Option<FogBounds>,
-    /// Fog color, RGB. Stored as raw monitor-space floats per
-    /// `feedback_color_space.md` — do NOT srgb-decode at consume time.
-    pub color: [f32; 3],
-    /// Distance (engine units) at which the linear ramp starts. XCLL
-    /// `fog_near` for cell-scope; 0 for NiFogProperty mesh-scope.
-    pub near: f32,
-    /// Distance (engine units) at which the ramp reaches full
-    /// extinction. XCLL `fog_far` for cell-scope; NiFogProperty
-    /// `fog_depth` for mesh-scope.
-    pub far: f32,
-    /// FNV+ XCLL cubic-curve clip distance. When both `clip` and
-    /// `power` are `Some`, the curve `pow(dist / clip, power)`
-    /// replaces the linear `near..far` ramp.
-    pub clip: Option<f32>,
-    /// FNV+ XCLL cubic-curve falloff exponent. Paired with `clip`.
-    pub power: Option<f32>,
-    /// Where this volume came from — diagnostic + dispatch hint for
-    /// the future consumer. Never branched on at upload time.
+    /// Extinction coefficient sigma_t in inverse metres.
+    pub extinction_per_meter: f32,
+    /// RGB single-scatter albedo. This permits authored smoke tint while
+    /// preserving the physical `sigma_s = sigma_t * albedo` relationship.
+    pub single_scatter_albedo: [f32; 3],
+    /// Fraction of the normalized primitive radius occupied by the soft edge.
+    /// `0` is a hard boundary; `1` fades from the primitive center outward.
+    pub edge_softness: f32,
+    /// Provenance for diagnostics and future per-source tuning.
     pub source: FogSource,
 }
 
-/// Spatial extent for a non-cell-scope volume. Bounding-sphere
-/// representation mirrors [`crate::ecs::WorldBound`].
+impl FogVolume {
+    /// Whether this volume carries finite, positive medium data suitable for
+    /// GPU injection.
+    pub fn is_renderable(self) -> bool {
+        self.bounds.is_some()
+            && self.extinction_per_meter.is_finite()
+            && self.extinction_per_meter > 0.0
+            && self
+                .single_scatter_albedo
+                .iter()
+                .all(|component| component.is_finite())
+    }
+}
+
+/// Local-space extent for a bounded fog primitive.
+///
+/// The owning entity's `GlobalTransform` supplies the outer transform.
+/// `center` and `rotation` allow an emitter-derived volume to follow the
+/// particle plume rather than remaining centered on the emitter origin.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct FogBounds {
     pub center: Vec3,
-    pub radius: f32,
+    pub rotation: Quat,
+    pub half_extents: Vec3,
+    pub shape: FogShape,
 }
 
-/// Provenance of a fog volume. Drives debug output and any
-/// per-source modulation the consumer needs; the inject pass
-/// otherwise treats every source identically.
+impl FogBounds {
+    /// Conservative local-space sphere radius used for CPU frustum culling.
+    pub fn bounding_radius(self) -> f32 {
+        match self.shape {
+            FogShape::Sphere => self.half_extents.x.abs(),
+            FogShape::Ellipsoid | FogShape::Box => self.half_extents.abs().length(),
+        }
+    }
+}
+
+/// Analytic density primitive evaluated by the froxel inject shader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub enum FogShape {
+    Sphere,
+    Ellipsoid,
+    Box,
+}
+
+/// Provenance of a fog volume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub enum FogSource {
-    /// Cell-wide depth fog from the cell's XCLL record (or LGTM
-    /// template fallback) — the dominant source in practice.
+    /// Cell-wide medium converted from XCLL/LGTM.
     Xcll,
-    /// Per-node `NiFogProperty` authored on a NIF. Rare in vanilla
-    /// (1 instance across all supported games per
-    /// `crates/nif/src/blocks/properties.rs`'s doc comment) but
-    /// included for completeness.
+    /// Per-node `NiFogProperty`.
     NiFog,
-    /// `REGN` per-region density (Step 2, not yet wired).
+    /// Per-region medium.
     Regn,
-    /// `WTHR` weather-driven cell-wide density (Step 3, not yet wired).
+    /// Weather-driven medium.
     Wthr,
-    /// Authored fog-volume NIF mesh content — alpha-blended fog
-    /// planes the cell artist placed (Step 5, not yet wired).
+    /// Alpha-blended fog plane or explicit authored volume mesh.
     AuthoredMesh,
+    /// A legacy fog/smoke particle emitter replaced by a local volume.
+    ParticleEmitter,
 }
 
 impl Component for FogVolume {
@@ -101,52 +108,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cell_scope_fog_has_no_bounds() {
-        let fog = FogVolume {
-            bounds: None,
-            color: [0.18, 0.14, 0.10],
-            near: 64.0,
-            far: 4096.0,
-            clip: None,
-            power: None,
-            source: FogSource::Xcll,
-        };
-        assert!(fog.bounds.is_none());
-        assert_eq!(fog.source, FogSource::Xcll);
-    }
-
-    #[test]
-    fn mesh_scope_fog_carries_bounds_and_source() {
+    fn bounded_physical_medium_is_renderable() {
         let fog = FogVolume {
             bounds: Some(FogBounds {
-                center: Vec3::new(100.0, 0.0, 50.0),
-                radius: 200.0,
+                center: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                half_extents: Vec3::new(10.0, 20.0, 10.0),
+                shape: FogShape::Ellipsoid,
             }),
-            color: [0.1, 0.4, 0.1],
-            near: 0.0,
-            far: 200.0,
-            clip: None,
-            power: None,
-            source: FogSource::NiFog,
+            extinction_per_meter: 0.4,
+            single_scatter_albedo: [0.8, 0.75, 0.7],
+            edge_softness: 0.35,
+            source: FogSource::ParticleEmitter,
         };
-        assert!(fog.bounds.is_some());
-        assert_eq!(fog.source, FogSource::NiFog);
+        assert!(fog.is_renderable());
+        assert_eq!(fog.source, FogSource::ParticleEmitter);
     }
 
     #[test]
-    fn cubic_curve_fields_are_optional_pair() {
-        let fog = FogVolume {
+    fn cell_scope_and_invalid_density_are_not_gpu_primitives() {
+        let cell_scope = FogVolume {
             bounds: None,
-            color: [0.2, 0.2, 0.25],
-            near: 0.0,
-            far: 8192.0,
-            clip: Some(2000.0),
-            power: Some(2.0),
+            extinction_per_meter: 0.1,
+            single_scatter_albedo: [0.9; 3],
+            edge_softness: 0.0,
             source: FogSource::Xcll,
         };
-        // Pair semantic: consumer should treat both-Some as "use the
-        // cubic curve", and either-None as "fall through to linear".
-        assert_eq!(fog.clip, Some(2000.0));
-        assert_eq!(fog.power, Some(2.0));
+        assert!(!cell_scope.is_renderable());
+
+        let invalid = FogVolume {
+            bounds: Some(FogBounds {
+                center: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                half_extents: Vec3::ONE,
+                shape: FogShape::Sphere,
+            }),
+            extinction_per_meter: f32::NAN,
+            ..cell_scope
+        };
+        assert!(!invalid.is_renderable());
+    }
+
+    #[test]
+    fn primitive_bound_radius_is_conservative() {
+        let ellipsoid = FogBounds {
+            center: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            half_extents: Vec3::new(3.0, 4.0, 12.0),
+            shape: FogShape::Ellipsoid,
+        };
+        assert_eq!(ellipsoid.bounding_radius(), 13.0);
+
+        let sphere = FogBounds {
+            half_extents: Vec3::splat(7.0),
+            shape: FogShape::Sphere,
+            ..ellipsoid
+        };
+        assert_eq!(sphere.bounding_radius(), 7.0);
     }
 }

@@ -153,6 +153,17 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     );
     register_component::<LocalBound>(registry, "LocalBound", vec!["center", "radius"]);
     register_component::<WorldBound>(registry, "WorldBound", vec!["center", "radius"]);
+    register_component::<FogVolume>(
+        registry,
+        "FogVolume",
+        vec![
+            "bounds",
+            "extinction_per_meter",
+            "single_scatter_albedo",
+            "edge_softness",
+            "source",
+        ],
+    );
     register_component::<Billboard>(registry, "Billboard", vec!["mode"]);
     register_component::<MeshHandle>(registry, "MeshHandle", vec!["0"]);
     register_component::<TextureHandle>(registry, "TextureHandle", vec!["0"]);

@@ -2,9 +2,9 @@
 
 ## Decision record
 
-**Status:** froxel core plus the first authored-data conversion slice landed
-(physical single scattering, temporal history, RT visibility, FSR contract,
-XCLL/WTHR → engine-native medium).
+**Status:** froxel core plus authored global/local conversion landed (physical
+single scattering, temporal history, RT visibility, FSR contract, XCLL/WTHR
+→ engine-native medium, smoke/fog particles → clustered local primitives).
 
 **Location:** `crates/renderer/src/vulkan/volumetrics.rs`,
 `crates/renderer/shaders/volumetrics_{inject,integrate}.comp`,
@@ -61,6 +61,24 @@ of them one physical and temporal contract.
 - When TLAS or clustered-light inputs are temporarily unavailable, the current
   integrated slot is cleared to neutral instead of retaining a previous
   cell's fog.
+- Alpha-over particle systems whose host or texture identifies fog, smoke,
+  mist, steam, vapor, cloud, or dust are replaced at the NIF→ECS boundary.
+  Additive flame/ember/magic particles remain billboards.
+- Cell-placed alpha-over fog/smoke/mist/steam/vapor/cloud/dust meshes are
+  intercepted before texture upload, raster entity creation, or BLAS build.
+  Their geometry AABB is extruded along thin axes into a soft box primitive;
+  ordinary alpha surfaces remain unchanged. Legacy baked `fxlightrays` meshes
+  remain suppressed because shafts emerge from medium scattering plus
+  BLAS/TLAS visibility.
+- Particle alpha seeds physical extinction through Beer-Lambert after expected
+  live-particle occupancy is applied. Emitter shape, lifetime, velocity,
+  cone, gravity, particle size, placement rotation, and placement scale define
+  an ellipsoid with a soft radial density profile.
+- Local primitives are transformed to absolute world space, frustum/distance
+  culled, and assigned to a camera-centered 16×16×16 world-space grid with at
+  most eight near-sorted volume references per cluster. Each froxel evaluates
+  only its cluster list. Their directional and local-light visibility uses the
+  same scene TLAS/BLAS ray queries as atmospheric fog.
 
 ## Configuration
 
@@ -130,10 +148,8 @@ the current combined timer as a final budget verdict.
 
 ## Follow-up boundary
 
-The next slice is authored local-volume replacement:
-
-1. replace detected fog billboards/particle emitters with clustered volume
-   primitives;
+1. extend authored-mesh replacement to the loose-NIF route and add the optional
+   tri-planar 2D-mask density path for silhouettes that need texture fidelity;
 2. generate tileable Perlin-Worley/detail volumes and drive Nubis coverage from
    weather;
 3. map the verified Starfield height-fog block without guessing its curve;

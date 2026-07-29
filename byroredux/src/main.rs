@@ -94,6 +94,8 @@ struct App {
     water_commands: Vec<byroredux_renderer::vulkan::water::WaterDrawCommand>,
     /// Reusable per-frame light buffer (cleared each frame, allocation retained).
     gpu_lights: Vec<byroredux_renderer::GpuLight>,
+    /// Reusable per-frame analytic local fog primitives.
+    gpu_fog_volumes: Vec<byroredux_renderer::GpuFogVolume>,
     /// #2172 / PERF-D1-02 — decorate-sort scratch for `collect_lights`'
     /// GI-priority ordering. Held here for the same reason `gpu_lights`
     /// is: the buffer is rebuilt from scratch every frame, so only the
@@ -330,6 +332,7 @@ impl App {
             draw_commands: Vec::new(),
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),
+            gpu_fog_volumes: Vec::new(),
             light_sort_scratch: Vec::new(),
             bone_world: Vec::new(),
             // M29.6 — slot pool capacity. The persistent bind_inverses
@@ -535,6 +538,7 @@ impl App {
                 &mut self.draw_commands,
                 &mut self.water_commands,
                 &mut self.gpu_lights,
+                &mut self.gpu_fog_volumes,
                 &mut self.light_sort_scratch,
                 &mut self.bone_world,
                 &mut self.skin_offsets,
@@ -699,6 +703,7 @@ impl App {
                 view_proj: &frame.view_proj,
                 draw_commands: &self.draw_commands,
                 lights: &self.gpu_lights,
+                fog_volumes: &self.gpu_fog_volumes,
                 bone_world: &self.bone_world,
                 bind_inverse_pending_uploads: &pending_with_data,
                 materials: self.material_table.materials(),

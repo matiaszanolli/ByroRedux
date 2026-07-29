@@ -52,7 +52,7 @@ pub use cell_root::CellRoot;
 pub use collision::{CollisionShape, MotionType, RigidBodyData};
 pub use escort::{EscortBehavior, EscortState, Escorted};
 pub use faction_ranks::FactionRanks;
-pub use fog_volume::{FogBounds, FogSource, FogVolume};
+pub use fog_volume::{FogBounds, FogShape, FogSource, FogVolume};
 pub use follow::{FollowBehavior, FollowState};
 pub use form_id::FormIdComponent;
 pub use furniture::{Furniture, FurnitureMarker, FurnitureMarkerKind};

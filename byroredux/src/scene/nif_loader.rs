@@ -558,17 +558,26 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             preset.dst_blend = dst;
         }
 
-        let texture_handle = resolve_texture(ctx, tex_provider, preset.texture_path.as_deref());
-        if texture_handle == ctx.texture_registry.fallback()
-            || texture_handle == ctx.texture_registry.neutral_fallback()
-        {
-            log::debug!(
-                "skipping particle emitter {:?}: no resolvable sprite texture {:?}",
-                emitter.original_type,
-                preset.texture_path,
-            );
-            continue;
-        }
+        let fog_volume = crate::fog::fog_volume_from_particle(&host_name, &preset);
+        let texture_handle = if fog_volume.is_none() {
+            let handle = resolve_texture(ctx, tex_provider, preset.texture_path.as_deref());
+            if handle == ctx.texture_registry.fallback()
+                || handle == ctx.texture_registry.neutral_fallback()
+            {
+                log::debug!(
+                    "skipping particle emitter {:?}: no resolvable sprite texture {:?}",
+                    emitter.original_type,
+                    preset.texture_path,
+                );
+                continue;
+            }
+            Some(handle)
+        } else {
+            // The fog primitive is texture-independent. Its density was seeded
+            // from authored alpha and it is modulated procedurally in froxel
+            // space, so an absent sprite must not suppress the replacement.
+            None
+        };
 
         // #1333: when the particle block authored a non-zero local offset
         // (relative to the host node), spawn a dedicated child entity
@@ -603,8 +612,15 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             add_child(world, host_entity, child);
             child
         };
-        world.insert(target_entity, TextureHandle(texture_handle));
-        world.insert(target_entity, preset);
+        if let Some(fog_volume) = fog_volume {
+            world.insert(target_entity, fog_volume);
+        } else {
+            world.insert(
+                target_entity,
+                TextureHandle(texture_handle.expect("non-fog particle resolved a texture")),
+            );
+            world.insert(target_entity, preset);
+        }
     }
 
     // Phase 3: Spawn mesh entities with parent links.

@@ -200,10 +200,13 @@ cube:
 ### Fog as a component — `FogVolume`
 
 [`crates/core/src/ecs/components/fog_volume.rs`](../../crates/core/src/ecs/components/fog_volume.rs)
-defines a `FogVolume` component (NiFogProperty- and XCLL-fed depth fog,
-optional cubic clip/power curve). The XCLL→cell-scope `FogVolume` spawn
-is a deferred follow-up; the active cell-fog path today is the
-`CellLightingRes` fog fields → composite-shader plumbing above.
+defines the engine-native bounded-medium component: physical extinction,
+RGB single-scatter albedo, edge softness, and a local sphere/ellipsoid/box
+primitive. Recognized alpha-over smoke/fog particle emitters are converted to
+this component during NIF scene translation; the froxel pass consumes them
+through its local-volume cluster grid. Cell-wide XCLL/LGTM and WTHR media use
+the canonical `FogMedium` resource path instead of duplicating global state on
+an entity.
 
 ### Lighting template fallback — LGTM / LTMP (#566)
 

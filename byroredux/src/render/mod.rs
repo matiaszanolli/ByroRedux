@@ -345,7 +345,7 @@ pub(crate) struct RenderFrameView {
 
 /// Build the view-projection matrix and draw command list from ECS queries.
 ///
-/// All scratch buffers — `draw_commands`, `gpu_lights`,
+/// All scratch buffers — `draw_commands`, `gpu_lights`, `gpu_fog_volumes`,
 /// `light_sort_scratch`, `bone_world`, `skin_offsets` — are owned by the
 /// caller and cleared on entry (or, for `light_sort_scratch`, at its point
 /// of use in `collect_lights`) so
@@ -361,6 +361,7 @@ pub(crate) fn build_render_data(
     draw_commands: &mut Vec<DrawCommand>,
     water_commands: &mut Vec<WaterDrawCommand>,
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
+    gpu_fog_volumes: &mut Vec<byroredux_renderer::GpuFogVolume>,
     // Decorate-sort scratch for `collect_lights`' GI-priority ordering.
     // Caller-owned purely so its capacity survives the frame (#2172).
     light_sort_scratch: &mut Vec<(f32, byroredux_renderer::GpuLight)>,
@@ -375,6 +376,7 @@ pub(crate) fn build_render_data(
     draw_commands.clear();
     water_commands.clear();
     gpu_lights.clear();
+    gpu_fog_volumes.clear();
     skin_offsets.clear();
     // R1 Phase 2 — clear the material table so the per-frame dedup
     // starts from scratch. `intern` calls below populate it as the
@@ -459,6 +461,8 @@ pub(crate) fn build_render_data(
         aperture,
         focus_dist,
     } = camera::assemble_camera(world);
+
+    fog_volumes::collect_fog_volumes(world, &frustum, cam_pos, gpu_fog_volumes);
 
     // Static mesh main loop — see `render::static_meshes::collect_static_mesh_draws`.
     let t_static = mark(profile);
@@ -679,6 +683,7 @@ pub(crate) fn build_render_data(
 // orchestrator above acquires the World queries once and threads
 // references through.
 mod camera;
+mod fog_volumes;
 // `pub(crate)` so the `light.atten` console command (REND-#1451) can
 // read `LIGHT_RANGE_EXTENSION` to report the effective brightness at
 // the authored radius.

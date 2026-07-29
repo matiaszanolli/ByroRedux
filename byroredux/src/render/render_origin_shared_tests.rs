@@ -26,6 +26,7 @@ fn run_view(world: &World) -> RenderFrameView {
         &mut water_commands,
         &mut gpu_lights,
         &mut Vec::new(),
+        &mut Vec::new(),
         &mut bone_world,
         &mut skin_offsets,
         &mut skin_slot_pool,

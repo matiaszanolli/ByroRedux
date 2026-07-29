@@ -1127,10 +1127,7 @@ fn spawn_synth_child(
         return;
     }
 
-    if model_lower.contains("fxlightrays")
-        || model_lower.contains("fxlight")
-        || model_lower.contains("fxfog")
-    {
+    if model_lower.contains("fxlightrays") || model_lower.contains("fxlight") {
         if let Some(ref ld) = stat.light_data {
             let entity = world.spawn();
             world.insert(entity, Transform::from_translation(ref_pos));

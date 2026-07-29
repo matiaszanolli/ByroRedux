@@ -5,6 +5,11 @@
 //! pixel: conversion happens once when cell/weather data enters the ECS, and
 //! runtime code consumes only [`FogMedium`].
 
+use byroredux_core::ecs::{
+    EmitterShape, FogBounds, FogShape, FogSource, FogVolume, ParticleEmitter,
+};
+use byroredux_core::math::{Quat, Vec3};
+
 /// Bethesda world units per metre. Positions remain in Bethesda units in the
 /// renderer and TLAS; physical medium coefficients are stored per metre.
 pub(crate) const WORLD_UNITS_PER_METER: f32 = 70.0;
@@ -13,6 +18,9 @@ const FIT_SAMPLES: usize = 256;
 const FIT_ITERATIONS: usize = 80;
 const MIN_SIGMA_PER_METER: f32 = 1.0e-8;
 const MAX_SIGMA_PER_METER: f32 = 10.0;
+
+const LOCAL_VOLUME_ALBEDO_PEAK: f32 = 0.9;
+const LOCAL_VOLUME_EDGE_SOFTNESS: f32 = 0.45;
 
 /// Canonical, game-independent fog parameters stored on cell/weather runtime
 /// resources. No legacy near/far distances participate in volumetric shading.
@@ -157,6 +165,211 @@ fn weighted_fit_error(sigma: f32, near_m: f32, far_m: f32, max_opacity: f32) -> 
     weighted_squared_error / weight_sum.max(f32::MIN_POSITIVE)
 }
 
+/// Translate a legacy smoke/fog particle emitter into a physical local volume.
+///
+/// Classification deliberately requires both authored fog semantics (host or
+/// texture naming) and alpha-over blending. Additive flame, ember, and magic
+/// emitters retain their billboard path: replacing luminous particles with a
+/// passive medium would discard their emissive intent.
+pub(crate) fn fog_volume_from_particle(
+    host_name: &str,
+    emitter: &ParticleEmitter,
+) -> Option<FogVolume> {
+    if !is_fog_particle(
+        host_name,
+        emitter.texture_path.as_deref(),
+        emitter.dst_blend,
+    ) {
+        return None;
+    }
+
+    let life = emitter.life.max(0.0);
+    let speed = (emitter.speed.abs() + emitter.speed_variation.abs() * 0.5).max(0.0);
+    let cone_angle = (emitter.declination.abs() + emitter.declination_variation.abs() * 0.5)
+        .clamp(0.0, std::f32::consts::FRAC_PI_2);
+    let vertical_distance = speed * cone_angle.cos() * life;
+    let lateral_distance = speed * cone_angle.sin() * life;
+    let gravity = Vec3::from_array(emitter.gravity);
+    let displacement = Vec3::Y * vertical_distance + gravity * (0.5 * life * life);
+
+    let spawn_half_extents = match emitter.shape {
+        EmitterShape::Point => Vec3::ZERO,
+        EmitterShape::Box { half_extents } => Vec3::from_array(half_extents).abs(),
+        EmitterShape::Sphere { radius } => Vec3::splat(radius.abs()),
+        EmitterShape::Cylinder { radius, height } => {
+            Vec3::new(radius.abs(), height.abs() * 0.5, radius.abs())
+        }
+    };
+    let particle_radius = ((emitter.start_size.abs() + emitter.start_size_variation.abs() * 0.5)
+        .max(emitter.end_size.abs())
+        * 0.5)
+        .max(0.25);
+    let mut half_extents =
+        spawn_half_extents + Vec3::splat(particle_radius) + displacement.abs() * 0.5;
+    half_extents.x += lateral_distance;
+    half_extents.z += lateral_distance;
+    half_extents = half_extents.max(Vec3::splat(0.25));
+
+    // The legacy billboard alpha describes transmittance through the visible
+    // particle footprint. Fold in expected live occupancy so a sparse emitter
+    // does not become a solid ellipsoid, then recover sigma_t from Beer-Lambert.
+    let mean_alpha = ((emitter.start_color[3] + emitter.end_color[3]) * 0.5).clamp(0.0, 0.98);
+    let expected_live = emitter.rate.max(0.0) * life;
+    let occupancy = if emitter.max_particles == 0 {
+        0.0
+    } else {
+        (expected_live / emitter.max_particles as f32).clamp(0.05, 1.0)
+    };
+    let effective_alpha = (mean_alpha * occupancy).clamp(0.0, 0.98);
+    if effective_alpha <= 1.0e-4 {
+        return None;
+    }
+    let representative_width_m =
+        (2.0 * half_extents.x.min(half_extents.z) / WORLD_UNITS_PER_METER).max(0.01);
+    let extinction_per_meter =
+        (-(1.0 - effective_alpha).ln() / representative_width_m).clamp(0.0, 20.0);
+
+    let a0 = emitter.start_color[3].max(0.0);
+    let a1 = emitter.end_color[3].max(0.0);
+    let alpha_sum = a0 + a1;
+    let tint = if alpha_sum > 1.0e-5 {
+        Vec3::new(
+            (emitter.start_color[0] * a0 + emitter.end_color[0] * a1) / alpha_sum,
+            (emitter.start_color[1] * a0 + emitter.end_color[1] * a1) / alpha_sum,
+            (emitter.start_color[2] * a0 + emitter.end_color[2] * a1) / alpha_sum,
+        )
+    } else {
+        Vec3::ONE
+    }
+    .max(Vec3::ZERO);
+    let tint_peak = tint.max_element().max(1.0e-4);
+    let single_scatter_albedo =
+        (tint / tint_peak * LOCAL_VOLUME_ALBEDO_PEAK).clamp(Vec3::ZERO, Vec3::splat(0.99));
+
+    Some(FogVolume {
+        bounds: Some(FogBounds {
+            // Center the primitive on the swept particle path, not just the
+            // emitter origin. Curl/noise modulation happens in the shader.
+            center: displacement * 0.5,
+            rotation: Quat::IDENTITY,
+            half_extents,
+            shape: FogShape::Ellipsoid,
+        }),
+        extinction_per_meter,
+        single_scatter_albedo: single_scatter_albedo.to_array(),
+        edge_softness: LOCAL_VOLUME_EDGE_SOFTNESS,
+        source: FogSource::ParticleEmitter,
+    })
+}
+
+fn is_fog_particle(host_name: &str, texture_path: Option<&str>, dst_blend: u8) -> bool {
+    // Gamebryo destination factor 7 is ONE_MINUS_SRC_ALPHA. Restrict the
+    // conversion to alpha-over media; destination ONE (0) is additive light.
+    if dst_blend != 7 {
+        return false;
+    }
+    has_fog_token(host_name) || has_fog_token(texture_path.unwrap_or(""))
+}
+
+/// Replace an alpha-over fog/smoke quad mesh with an extruded analytic medium.
+///
+/// Geometry supplies the authored silhouette/bounds; a thin axis is expanded
+/// into a real volume so a legacy plane no longer depends on camera-facing
+/// transparency. Vertex/material alpha seeds extinction, while procedural
+/// density modulation remains shader-owned.
+pub(crate) fn fog_volume_from_mesh(
+    model_path: Option<&str>,
+    texture_path: Option<&str>,
+    mesh: &byroredux_nif::import::ImportedMesh,
+) -> Option<FogVolume> {
+    if mesh.material.dst_blend_mode != 7 || !mesh.material.has_alpha {
+        return None;
+    }
+    let name = mesh.name.as_deref().unwrap_or("");
+    if !has_fog_token(model_path.unwrap_or(""))
+        && !has_fog_token(texture_path.unwrap_or(""))
+        && !has_fog_token(name)
+    {
+        return None;
+    }
+
+    let first = Vec3::from_array(*mesh.positions.first()?);
+    if !first.is_finite() {
+        return None;
+    }
+    let (mut lower, mut upper) = (first, first);
+    for position in &mesh.positions[1..] {
+        let position = Vec3::from_array(*position);
+        if !position.is_finite() {
+            continue;
+        }
+        lower = lower.min(position);
+        upper = upper.max(position);
+    }
+    let center = (lower + upper) * 0.5;
+    let mut half_extents = (upper - lower).abs() * 0.5;
+    let dominant_extent = half_extents.max_element();
+    if dominant_extent <= 1.0e-4 {
+        return None;
+    }
+    let extrusion = (dominant_extent * 0.15).max(4.0);
+    if half_extents.x < extrusion {
+        half_extents.x = extrusion;
+    }
+    if half_extents.y < extrusion {
+        half_extents.y = extrusion;
+    }
+    if half_extents.z < extrusion {
+        half_extents.z = extrusion;
+    }
+
+    let vertex_alpha = if mesh.colors.is_empty() {
+        1.0
+    } else {
+        mesh.colors
+            .iter()
+            .map(|color| color[3].clamp(0.0, 1.0))
+            .sum::<f32>()
+            / mesh.colors.len() as f32
+    };
+    let effective_alpha =
+        (vertex_alpha * mesh.material.mat_alpha.clamp(0.0, 1.0)).clamp(1.0e-4, 0.98);
+    let thickness_m = (2.0 * half_extents.min_element() / WORLD_UNITS_PER_METER).max(0.01);
+    let extinction_per_meter = (-(1.0 - effective_alpha).ln() / thickness_m).clamp(0.0, 20.0);
+
+    let vertex_tint = if mesh.colors.is_empty() {
+        Vec3::ONE
+    } else {
+        mesh.colors.iter().fold(Vec3::ZERO, |sum, color| {
+            sum + Vec3::new(color[0], color[1], color[2])
+        }) / mesh.colors.len() as f32
+    };
+    let material_tint = Vec3::from_array(mesh.material.diffuse_color).max(Vec3::ZERO);
+    let tint = (vertex_tint * material_tint).max(Vec3::ZERO);
+    let tint_peak = tint.max_element().max(1.0e-4);
+    let single_scatter_albedo =
+        (tint / tint_peak * LOCAL_VOLUME_ALBEDO_PEAK).clamp(Vec3::ZERO, Vec3::splat(0.99));
+
+    Some(FogVolume {
+        bounds: Some(FogBounds {
+            center,
+            rotation: Quat::IDENTITY,
+            half_extents,
+            shape: FogShape::Box,
+        }),
+        extinction_per_meter,
+        single_scatter_albedo: single_scatter_albedo.to_array(),
+        edge_softness: 0.35,
+        source: FogSource::AuthoredMesh,
+    })
+}
+
+pub(crate) fn has_fog_token(value: &str) -> bool {
+    const FOG_TOKENS: [&str; 7] = ["fog", "smoke", "mist", "steam", "vapor", "cloud", "dust"];
+    let value = value.to_ascii_lowercase();
+    FOG_TOKENS.iter().any(|token| value.contains(token))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +428,81 @@ mod tests {
         );
         assert!(dusk.extinction_per_meter > day.extinction_per_meter);
         assert!(dusk.extinction_per_meter < night.extinction_per_meter);
+    }
+
+    #[test]
+    fn smoke_particle_becomes_a_finite_ellipsoid() {
+        let emitter = ParticleEmitter::smoke();
+        let volume = fog_volume_from_particle("CampfireSmoke", &emitter).unwrap();
+        let bounds = volume.bounds.unwrap();
+        assert_eq!(bounds.shape, FogShape::Ellipsoid);
+        assert!(bounds.half_extents.y > bounds.half_extents.x);
+        assert!(volume.extinction_per_meter.is_finite());
+        assert!(volume.extinction_per_meter > 0.0);
+        assert!(volume.is_renderable());
+    }
+
+    #[test]
+    fn additive_and_non_fog_particles_keep_billboards() {
+        assert!(fog_volume_from_particle("FireSparks", &ParticleEmitter::embers()).is_none());
+        assert!(
+            fog_volume_from_particle("MagicGlow", &ParticleEmitter::magic_sparkles()).is_none()
+        );
+
+        let mut alpha_over_flame = ParticleEmitter::torch_flame();
+        alpha_over_flame.dst_blend = 7;
+        assert!(fog_volume_from_particle("TorchFlame", &alpha_over_flame).is_none());
+    }
+
+    #[test]
+    fn generic_host_can_be_classified_by_authored_texture() {
+        let mut emitter = ParticleEmitter::smoke();
+        emitter.texture_path = Some("textures\\fx\\groundmist01.dds".to_string());
+        assert!(fog_volume_from_particle("EmitterNode", &emitter).is_some());
+    }
+
+    #[test]
+    fn alpha_fog_quad_is_extruded_into_a_box_medium() {
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            vec![
+                [-20.0, 0.0, -10.0],
+                [20.0, 0.0, -10.0],
+                [20.0, 0.0, 10.0],
+                [-20.0, 0.0, 10.0],
+            ],
+            vec![[0.7, 0.8, 0.9, 0.5]; 4],
+            vec![[0.0, 1.0, 0.0]; 4],
+            Vec::new(),
+            vec![[0.0, 0.0]; 4],
+            vec![0, 1, 2, 0, 2, 3],
+        );
+        mesh.material.has_alpha = true;
+        mesh.material.dst_blend_mode = 7;
+        let volume =
+            fog_volume_from_mesh(Some("meshes\\fx\\fxmistlow01.nif"), None, &mesh).unwrap();
+        let bounds = volume.bounds.unwrap();
+        assert_eq!(bounds.shape, FogShape::Box);
+        assert!(bounds.half_extents.y >= 4.0);
+        assert!(volume.extinction_per_meter.is_finite());
+    }
+
+    #[test]
+    fn ordinary_alpha_surface_is_not_reclassified_as_fog() {
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![[1.0; 4]; 3],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![0, 1, 2],
+        );
+        mesh.material.has_alpha = true;
+        mesh.material.dst_blend_mode = 7;
+        assert!(fog_volume_from_mesh(
+            Some("meshes\\architecture\\windowpane.nif"),
+            Some("textures\\architecture\\window.dds"),
+            &mesh,
+        )
+        .is_none());
     }
 }

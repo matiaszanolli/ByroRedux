@@ -778,6 +778,8 @@ pub struct FrameInputs<'a> {
     pub draw_commands: &'a [DrawCommand],
     /// Scene lights for this frame.
     pub lights: &'a [scene_buffer::GpuLight],
+    /// Spatially bounded authored participating-medium primitives.
+    pub fog_volumes: &'a [super::super::volumetrics::GpuFogVolume],
     /// M29.5/M29.6 — per-frame bone-world matrices for the GPU palette
     /// compute pass (`skin_palette.comp`). `bone_world[i]` is the per-slot
     /// raw world transform sourced from `GlobalTransform`; indexed by
@@ -870,6 +872,7 @@ impl VulkanContext {
             view_proj,
             draw_commands,
             lights,
+            fog_volumes,
             bone_world,
             bind_inverse_pending_uploads,
             materials,
@@ -2694,6 +2697,7 @@ impl VulkanContext {
                 fog_extinction_per_meter,
                 fog_single_scatter_albedo,
                 fog_coverage,
+                fog_volumes,
                 fsr_frame,
                 underwater,
             ) {

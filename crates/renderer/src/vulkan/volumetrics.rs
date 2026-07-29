@@ -45,7 +45,7 @@ const VOLUMETRICS_INTEGRATE_COMP_SPV: &[u8] =
 /// binding shape, but the std140 field layout is the host's
 /// responsibility (each `vec4` is 16-byte aligned, `mat4` is
 /// 4 × vec4 = 64 bytes).
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Clone, Copy)]
 pub struct VolumetricsParams {
     /// Inverse view-projection matrix; reconstructs world-space rays
@@ -94,6 +94,58 @@ pub struct VolumetricsParams {
     /// x = temporal history weight, y = relative density rejection strength,
     /// z = total time in seconds, w = procedural coverage.
     pub temporal_params: [f32; 4],
+    /// xyz = minimum corner of the camera-centered local-volume cluster cube;
+    /// w = reciprocal world-space cluster-cell size.
+    pub local_volume_grid: [f32; 4],
+}
+
+/// Maximum authored local volumes uploaded after CPU frustum/distance culling.
+pub const MAX_GPU_FOG_VOLUMES: usize = 128;
+/// Camera-centered world-space cluster resolution used for local fog.
+pub const FOG_VOLUME_CLUSTER_DIM: usize = 16;
+pub const FOG_VOLUME_CLUSTER_COUNT: usize =
+    FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM;
+/// Bounded primitive references per cluster. Overflow keeps the nearest
+/// volumes because the CPU input list is distance-sorted.
+pub const MAX_FOG_VOLUMES_PER_CLUSTER: usize = 8;
+const FOG_VOLUME_INDEX_COUNT: usize = FOG_VOLUME_CLUSTER_COUNT * MAX_FOG_VOLUMES_PER_CLUSTER;
+
+/// World-space analytic medium primitive consumed by
+/// `volumetrics_inject.comp`.
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GpuFogVolume {
+    /// xyz = absolute center; w = shape (0 sphere, 1 ellipsoid, 2 box).
+    pub center_shape: [f32; 4],
+    /// xyz = world-space half extents; w = extinction per world unit.
+    pub half_extents_extinction: [f32; 4],
+    /// Quaternion rotating world offsets into primitive-local space.
+    pub inverse_rotation: [f32; 4],
+    /// rgb = single-scatter albedo; w = normalized edge softness.
+    pub albedo_edge: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuFogVolumeUpload {
+    count: [u32; 4],
+    volumes: [GpuFogVolume; MAX_GPU_FOG_VOLUMES],
+}
+
+impl Default for GpuFogVolumeUpload {
+    fn default() -> Self {
+        Self {
+            count: [0; 4],
+            volumes: [GpuFogVolume::default(); MAX_GPU_FOG_VOLUMES],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct GpuFogClusterEntry {
+    offset: u32,
+    count: u32,
 }
 
 /// Gamebryo/Fallout world-coordinate scale. The renderer keeps positions in
@@ -184,6 +236,88 @@ pub fn hybrid_slice_coordinate(
     }
 }
 
+fn build_fog_volume_clusters(
+    volumes: &[GpuFogVolume],
+    camera_pos: [f32; 3],
+    far_distance: f32,
+    upload: &mut GpuFogVolumeUpload,
+    entries: &mut [GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT],
+    indices: &mut [u32; FOG_VOLUME_INDEX_COUNT],
+) -> [f32; 4] {
+    let far = far_distance.max(1.0);
+    let cell_size = (2.0 * far) / FOG_VOLUME_CLUSTER_DIM as f32;
+    let grid_min = [
+        camera_pos[0] - far,
+        camera_pos[1] - far,
+        camera_pos[2] - far,
+    ];
+
+    entries.fill(GpuFogClusterEntry::default());
+    indices.fill(0);
+    for (cluster_index, entry) in entries.iter_mut().enumerate() {
+        entry.offset = (cluster_index * MAX_FOG_VOLUMES_PER_CLUSTER) as u32;
+    }
+
+    let volume_count = volumes.len().min(MAX_GPU_FOG_VOLUMES);
+    upload.count = [volume_count as u32, 0, 0, 0];
+    upload.volumes[..volume_count].copy_from_slice(&volumes[..volume_count]);
+
+    for (volume_index, volume) in upload.volumes[..volume_count].iter().enumerate() {
+        let center = [
+            volume.center_shape[0],
+            volume.center_shape[1],
+            volume.center_shape[2],
+        ];
+        let radius = (volume.half_extents_extinction[0] * volume.half_extents_extinction[0]
+            + volume.half_extents_extinction[1] * volume.half_extents_extinction[1]
+            + volume.half_extents_extinction[2] * volume.half_extents_extinction[2])
+            .sqrt();
+        if !center.iter().all(|value| value.is_finite()) || !radius.is_finite() {
+            continue;
+        }
+
+        let mut ranges = [(0usize, 0usize); 3];
+        let mut intersects_grid = true;
+        for axis in 0..3 {
+            let lower = (center[axis] - radius - grid_min[axis]) / cell_size;
+            let upper = (center[axis] + radius - grid_min[axis]) / cell_size;
+            if upper < 0.0 || lower >= FOG_VOLUME_CLUSTER_DIM as f32 {
+                intersects_grid = false;
+                break;
+            }
+            ranges[axis] = (
+                lower
+                    .floor()
+                    .clamp(0.0, (FOG_VOLUME_CLUSTER_DIM - 1) as f32) as usize,
+                upper
+                    .floor()
+                    .clamp(0.0, (FOG_VOLUME_CLUSTER_DIM - 1) as f32) as usize,
+            );
+        }
+        if !intersects_grid {
+            continue;
+        }
+
+        for z in ranges[2].0..=ranges[2].1 {
+            for y in ranges[1].0..=ranges[1].1 {
+                for x in ranges[0].0..=ranges[0].1 {
+                    let cluster_index = x
+                        + y * FOG_VOLUME_CLUSTER_DIM
+                        + z * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM;
+                    let entry = &mut entries[cluster_index];
+                    if entry.count as usize >= MAX_FOG_VOLUMES_PER_CLUSTER {
+                        continue;
+                    }
+                    indices[entry.offset as usize + entry.count as usize] = volume_index as u32;
+                    entry.count += 1;
+                }
+            }
+        }
+    }
+
+    [grid_min[0], grid_min[1], grid_min[2], cell_size.recip()]
+}
+
 /// Single source of truth for whether the composite shader actually
 /// consumes the integrated volumetric output.
 ///
@@ -271,6 +405,16 @@ pub struct VolumetricsPipeline {
     /// Per frame-in-flight host-mapped UBO carrying
     /// `VolumetricsParams`. Written each frame from `dispatch()`.
     param_buffers: Vec<GpuBuffer>,
+    /// Per-frame host-mapped local-volume primitive, cluster-grid, and
+    /// cluster-index SSBOs. Bindings are static; contents are rebuilt for the
+    /// idle frame slot before injection.
+    fog_volume_buffers: Vec<GpuBuffer>,
+    fog_cluster_buffers: Vec<GpuBuffer>,
+    fog_cluster_index_buffers: Vec<GpuBuffer>,
+    /// Reused CPU staging state for cluster construction.
+    fog_volume_upload: Box<GpuFogVolumeUpload>,
+    fog_cluster_entries: Box<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]>,
+    fog_cluster_indices: Box<[u32; FOG_VOLUME_INDEX_COUNT]>,
 
     // ── Integration pass (Phase 3) ───────────────────────────────────
     integration_pipeline: vk::Pipeline,
@@ -337,6 +481,14 @@ impl VolumetricsPipeline {
             config,
             lighting_volumes: Vec::new(),
             param_buffers: Vec::new(),
+            fog_volume_buffers: Vec::new(),
+            fog_cluster_buffers: Vec::new(),
+            fog_cluster_index_buffers: Vec::new(),
+            fog_volume_upload: Box::new(GpuFogVolumeUpload::default()),
+            fog_cluster_entries: Box::new(
+                [GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT],
+            ),
+            fog_cluster_indices: Box::new([0; FOG_VOLUME_INDEX_COUNT]),
             integration_pipeline: vk::Pipeline::null(),
             integration_pipeline_layout: vk::PipelineLayout::null(),
             integration_descriptor_set_layout: vk::DescriptorSetLayout::null(),
@@ -415,6 +567,31 @@ impl VolumetricsPipeline {
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
             ));
             partial.param_buffers.push(buf);
+            partial
+                .fog_volume_buffers
+                .push(try_or_cleanup!(GpuBuffer::create_host_visible(
+                    device,
+                    allocator,
+                    std::mem::size_of::<GpuFogVolumeUpload>() as vk::DeviceSize,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                )));
+            partial
+                .fog_cluster_buffers
+                .push(try_or_cleanup!(GpuBuffer::create_host_visible(
+                    device,
+                    allocator,
+                    std::mem::size_of::<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]>()
+                        as vk::DeviceSize,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                )));
+            partial.fog_cluster_index_buffers.push(try_or_cleanup!(
+                GpuBuffer::create_host_visible(
+                    device,
+                    allocator,
+                    std::mem::size_of::<[u32; FOG_VOLUME_INDEX_COUNT]>() as vk::DeviceSize,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                )
+            ));
         }
 
         // ── 3. Descriptor set layout ──────────────────────────────────
@@ -467,6 +644,23 @@ impl VolumetricsPipeline {
             vk::DescriptorSetLayoutBinding::default()
                 .binding(6)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 7/8/9: analytic local fog primitives and their camera-centered
+            // 16^3 world-space clustered cull list.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(7)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(8)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(9)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
@@ -553,11 +747,30 @@ impl VolumetricsPipeline {
                 offset: 0,
                 range: param_size,
             }];
+            let fog_volume_info = [vk::DescriptorBufferInfo {
+                buffer: partial.fog_volume_buffers[f].buffer,
+                offset: 0,
+                range: std::mem::size_of::<GpuFogVolumeUpload>() as vk::DeviceSize,
+            }];
+            let fog_cluster_info = [vk::DescriptorBufferInfo {
+                buffer: partial.fog_cluster_buffers[f].buffer,
+                offset: 0,
+                range: std::mem::size_of::<[GpuFogClusterEntry; FOG_VOLUME_CLUSTER_COUNT]>()
+                    as vk::DeviceSize,
+            }];
+            let fog_index_info = [vk::DescriptorBufferInfo {
+                buffer: partial.fog_cluster_index_buffers[f].buffer,
+                offset: 0,
+                range: std::mem::size_of::<[u32; FOG_VOLUME_INDEX_COUNT]>() as vk::DeviceSize,
+            }];
             let set = partial.descriptor_sets[f];
             let writes = [
                 write_storage_image(set, 0, &lighting_info),
                 write_uniform_buffer(set, 1, &params_info),
                 write_combined_image_sampler(set, 6, &history_info),
+                write_storage_buffer(set, 7, &fog_volume_info),
+                write_storage_buffer(set, 8, &fog_cluster_info),
+                write_storage_buffer(set, 9, &fog_index_info),
             ];
             // SAFETY: the written descriptor sets and the referenced froxel image
             // view + param UBO are freshly created here and not yet in use by any
@@ -948,6 +1161,7 @@ impl VolumetricsPipeline {
         cmd: vk::CommandBuffer,
         frame: usize,
         params: &VolumetricsParams,
+        fog_volumes: &[GpuFogVolume],
     ) -> Result<()> {
         // #1105 / REN-D18-003 — injection descriptor binding 2 (TLAS) is
         // not written at construction; caller is required to call
@@ -977,16 +1191,55 @@ impl VolumetricsPipeline {
         // to make the write visible to the compute stage.
         let mut frame_params = *params;
         frame_params.prev_camera_pos[3] = if self.history_valid { 1.0 } else { 0.0 };
+        let camera_position = [
+            frame_params.camera_pos[0],
+            frame_params.camera_pos[1],
+            frame_params.camera_pos[2],
+        ];
+        let fog_far = self.far_distance_world().max(1.0);
+        frame_params.local_volume_grid = if fog_volumes.is_empty() {
+            self.fog_volume_upload.count = [0; 4];
+            let cell_size = (2.0 * fog_far) / FOG_VOLUME_CLUSTER_DIM as f32;
+            [
+                camera_position[0] - fog_far,
+                camera_position[1] - fog_far,
+                camera_position[2] - fog_far,
+                cell_size.recip(),
+            ]
+        } else {
+            build_fog_volume_clusters(
+                fog_volumes,
+                camera_position,
+                fog_far,
+                &mut self.fog_volume_upload,
+                &mut self.fog_cluster_entries,
+                &mut self.fog_cluster_indices,
+            )
+        };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&frame_params))?;
+        self.fog_volume_buffers[frame].write_mapped(
+            device,
+            std::slice::from_ref(self.fog_volume_upload.as_ref()),
+        )?;
+        if !fog_volumes.is_empty() {
+            self.fog_cluster_buffers[frame].write_mapped(
+                device,
+                std::slice::from_ref(self.fog_cluster_entries.as_ref()),
+            )?;
+            self.fog_cluster_index_buffers[frame].write_mapped(
+                device,
+                std::slice::from_ref(self.fog_cluster_indices.as_ref()),
+            )?;
+        }
         // HOST → COMPUTE_SHADER (UBO flush; execution dependency required even
-        // for HOST_COHERENT memory to make the write visible to the compute stage).
+        // for HOST_COHERENT memory to make UBO/SSBO writes visible to compute).
         memory_barrier(
             device,
             cmd,
             vk::PipelineStageFlags::HOST,
             vk::AccessFlags::HOST_WRITE,
             vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::AccessFlags::UNIFORM_READ,
+            vk::AccessFlags::UNIFORM_READ | vk::AccessFlags::SHADER_READ,
         );
 
         let subresource = super::descriptors::color_subresource_single_mip();
@@ -1306,6 +1559,18 @@ impl VolumetricsPipeline {
         // `Arc<Mutex<Allocator>>` clone releases now, not when
         // VulkanContext::Drop's `Arc::try_unwrap` has already given up.
         self.param_buffers.clear();
+        for buf in &mut self.fog_volume_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.fog_volume_buffers.clear();
+        for buf in &mut self.fog_cluster_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.fog_cluster_buffers.clear();
+        for buf in &mut self.fog_cluster_index_buffers {
+            buf.destroy(device, allocator);
+        }
+        self.fog_cluster_index_buffers.clear();
         for buf in &mut self.integration_param_buffers {
             buf.destroy(device, allocator);
         }
@@ -1412,6 +1677,69 @@ mod unit_tests {
             VolumetricsConfig::default(),
         );
         assert_eq!([extent.width, extent.height, extent.depth], [107, 60, 64]);
+    }
+
+    #[test]
+    fn gpu_fog_volume_layout_matches_std430_shader_contract() {
+        assert_eq!(std::mem::size_of::<GpuFogVolume>(), 64);
+        assert_eq!(std::mem::align_of::<GpuFogVolume>(), 16);
+        assert_eq!(
+            std::mem::size_of::<GpuFogVolumeUpload>(),
+            16 + MAX_GPU_FOG_VOLUMES * 64
+        );
+        assert_eq!(std::mem::size_of::<GpuFogClusterEntry>(), 8);
+    }
+
+    #[test]
+    fn local_volume_cluster_grid_references_center_primitive() {
+        let volume = GpuFogVolume {
+            center_shape: [0.0, 0.0, 0.0, 1.0],
+            half_extents_extinction: [10.0, 20.0, 10.0, 0.01],
+            inverse_rotation: [0.0, 0.0, 0.0, 1.0],
+            albedo_edge: [0.9, 0.9, 0.9, 0.4],
+        };
+        let mut upload = GpuFogVolumeUpload::default();
+        let mut entries = Box::new([GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT]);
+        let mut indices = Box::new([0; FOG_VOLUME_INDEX_COUNT]);
+        let grid = build_fog_volume_clusters(
+            &[volume],
+            [0.0; 3],
+            160.0,
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+
+        assert_eq!(upload.count[0], 1);
+        assert_eq!(grid, [-160.0, -160.0, -160.0, 0.05]);
+        let center = FOG_VOLUME_CLUSTER_DIM / 2;
+        let center_cluster = center
+            + center * FOG_VOLUME_CLUSTER_DIM
+            + center * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM;
+        assert_eq!(entries[center_cluster].count, 1);
+        assert_eq!(indices[entries[center_cluster].offset as usize], 0);
+    }
+
+    #[test]
+    fn volume_outside_cluster_cube_produces_no_references() {
+        let volume = GpuFogVolume {
+            center_shape: [10_000.0, 0.0, 0.0, 1.0],
+            half_extents_extinction: [1.0, 1.0, 1.0, 0.01],
+            inverse_rotation: [0.0, 0.0, 0.0, 1.0],
+            albedo_edge: [0.9, 0.9, 0.9, 0.4],
+        };
+        let mut upload = GpuFogVolumeUpload::default();
+        let mut entries = Box::new([GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT]);
+        let mut indices = Box::new([0; FOG_VOLUME_INDEX_COUNT]);
+        build_fog_volume_clusters(
+            &[volume],
+            [0.0; 3],
+            160.0,
+            &mut upload,
+            &mut entries,
+            &mut indices,
+        );
+        assert!(entries.iter().all(|entry| entry.count == 0));
     }
 }
 
