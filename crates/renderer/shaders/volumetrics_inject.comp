@@ -34,8 +34,11 @@ layout(set = 0, binding = 0, rgba16f) uniform writeonly image3D froxel;
 
 layout(set = 0, binding = 1) uniform VolumetricsParams {
     mat4 inv_view_proj;
-    // xyz = camera world position, w = scattering coefficient (1 / m)
+    mat4 prev_view_proj;
+    // xyz = camera world position, w = extinction coefficient (1 / world unit)
     vec4 camera_pos;
+    // xyz = previous camera world position, w = history-valid flag
+    vec4 prev_camera_pos;
     // xyz = direction TO the sun (world space, unit length — matches
     // GpuLight.direction_angle / GpuCamera.sun_direction and every other
     // consumer in the renderer, #1937), w = HG phase function asymmetry
@@ -43,15 +46,21 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     vec4 sun_dir;
     // rgb = sun radiance (already multiplied by intensity), a = unused
     vec4 sun_color;
-    // x = volume far plane (m), y/z/w = unused. Defines the maximum
-    // along-ray distance covered by the volume's depth slices.
-    vec4 volume_extent;
+    // x = volume far plane, y = 5 m linear floor, z = fraction of slices
+    // assigned to that floor, w = frame index. Distances are world units.
+    vec4 volume_params;
     // #markarth-precision — xyz = camera-relative render origin; added to the
     // inv_view_proj-reconstructed far point to recover ABSOLUTE froxel world
     // positions (the TLAS shadow rays below are cast in absolute space).
     // w = is_exterior (1.0 exterior, 0.0 interior) — selects the shadow-ray
     // strategy below.
     vec4 render_origin;
+    // x = single-scatter albedo, y = backward HG g,
+    // z = forward-lobe mix, w = exponential height scale.
+    vec4 medium_params;
+    // x = history weight, y = density-change rejection strength,
+    // z = total time seconds, w = reserved.
+    vec4 temporal_params;
 } params;
 
 // Phase 2c — scene TLAS. Updated each frame from the host side via
@@ -94,6 +103,10 @@ layout(std430, set = 0, binding = 5) readonly buffer ClusterLightIndices {
     uint clusterLightIndices[];
 };
 
+// Previous frame's raw V-buffer (rgb in-scattering, a extinction), sampled
+// after projecting the jittered current froxel center through prev_view_proj.
+layout(set = 0, binding = 6) uniform sampler3D previousFroxel;
+
 const float PI = 3.14159265358979323846;
 
 // Simplified point/spot attenuation — mirrors `pointSpotAtten`'s
@@ -109,15 +122,9 @@ float froxelLightAtten(float dist, float R, float shape) {
     return phys * wcull;
 }
 
-// Procedural fog density — NOT the REGN-weather-record-driven density
-// the module header's "Phase 6" comment describes (that needs new ESM
-// record parsing, separate future work); this is a lightweight
-// height-falloff × 3D value-noise modulation of the otherwise-constant
-// `params.camera_pos.w` scattering coefficient, so fog reads as
-// atmospheric haze rather than a flat uniform veil. Static (not time-
-// animated) for now — a `time` uniform isn't currently plumbed into
-// `VolumetricsParams`; animating the noise offset per-frame would be a
-// small follow-up if drifting fog is wanted later.
+// Procedural fog density. Low-frequency structure stays ALU-generated at
+// froxel resolution; detail textures can layer on later without making this
+// bandwidth-bound pass dependent on them.
 float hash3(vec3 p) {
     p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
     p *= 17.0;
@@ -146,23 +153,49 @@ float valueNoise3D(vec3 p) {
     return mix(nxy0, nxy1, f.z);
 }
 
-// Density multiplier at `worldPos`, relative to `refHeight` (the
-// camera's own height — no data-driven "floor" reference exists yet,
-// so fog is denser at and below eye level and thins going up, which
-// reads correctly for both a ground-hugging interior haze and an
-// exterior morning-mist look). `HEIGHT_FALLOFF` and `NOISE_SCALE` are
-// plain tuning constants (matching this pipeline's existing
-// `DEFAULT_SCATTERING_COEF` / `DEFAULT_PHASE_G` precedent — not yet
-// wired to a runtime debug knob).
+// Curl of a periodic vector potential. The field is divergence-free by
+// construction, so domain warping swirls without the "shower door" look of a
+// uniform texture scroll. Inputs and amplitudes are physical metres.
+vec3 curlField(vec3 p) {
+    return vec3(
+        -sin(p.y) - cos(p.z),
+        -sin(p.z) - cos(p.x),
+        -sin(p.x) - cos(p.y)
+    ) * 0.5;
+}
+
+vec3 rotateY(vec3 p, float angle) {
+    float c = cos(angle);
+    float s = sin(angle);
+    return vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z);
+}
+
+vec3 warpFogDomain(vec3 worldMetres, float timeSeconds) {
+    vec3 slow = curlField(worldMetres * 0.045 + vec3(0.07, 0.01, -0.04) * timeSeconds);
+    vec3 layerPos = rotateY(worldMetres, 0.5235987756);
+    vec3 fast = rotateY(
+        curlField(layerPos * 0.11 + vec3(-0.03, 0.05, 0.08) * timeSeconds),
+        -0.5235987756
+    );
+    return worldMetres + slow * 5.0 + fast * 2.0
+        - vec3(0.15, 0.0, 0.05) * timeSeconds;
+}
+
 float proceduralDensityScale(vec3 worldPos, float refHeight) {
-    const float HEIGHT_FALLOFF = 1.0 / 300.0; // e-folding distance ~300 m above ref height
-    const float NOISE_SCALE = 1.0 / 180.0;    // ~180 m per noise lattice cell
-    const float NOISE_STRENGTH = 0.6;         // density varies +/-60% around the mean
+    const float WORLD_UNITS_PER_METRE = 70.0;
+    const float COVERAGE = 0.55; // Weather-driven once WTHR conversion lands.
     float heightAbove = max(worldPos.y - refHeight, 0.0);
-    float heightTerm = exp(-heightAbove * HEIGHT_FALLOFF);
-    float n = valueNoise3D(worldPos * NOISE_SCALE);
-    float noiseTerm = 1.0 - NOISE_STRENGTH * 0.5 + NOISE_STRENGTH * n;
-    return heightTerm * noiseTerm;
+    float heightTerm = exp(-heightAbove / max(params.medium_params.w, 1.0));
+    vec3 metres = warpFogDomain(
+        worldPos / WORLD_UNITS_PER_METRE,
+        params.temporal_params.z
+    );
+    float n = valueNoise3D(metres / 18.0) * 0.5714286;
+    n += valueNoise3D(metres / 9.0) * 0.2857143;
+    n += valueNoise3D(metres / 4.5) * 0.1428571;
+    // Nubis coverage remap: coverage is a visually meaningful occupancy knob.
+    float coverageDensity = clamp((n - (1.0 - COVERAGE)) / COVERAGE, 0.0, 1.0);
+    return heightTerm * mix(0.2, 1.35, coverageDensity);
 }
 
 // Binary occlusion test: true if the ray hits ANY geometry in `mask`'s
@@ -212,14 +245,72 @@ float henyey_greenstein(float cos_theta, float g) {
     return (1.0 - g2) / (4.0 * PI * pow(max(denom, 1e-4), 1.5));
 }
 
-// Reconstruct world position at froxel center.
+float sliceDistance(float normalizedSlice) {
+    float u = clamp(normalizedSlice, 0.0, 1.0);
+    float farDistance = max(params.volume_params.x, 1.0);
+    float linearDepth = clamp(params.volume_params.y, 1.0, farDistance);
+    float linearFraction = clamp(params.volume_params.z, 1.0e-4, 0.9999);
+    if (u <= linearFraction) {
+        return linearDepth * (u / linearFraction);
+    }
+    float q = (u - linearFraction) / (1.0 - linearFraction);
+    return linearDepth * pow(farDistance / linearDepth, q);
+}
+
+float sliceCoordinate(float distanceAlongRay) {
+    float farDistance = max(params.volume_params.x, 1.0);
+    float linearDepth = clamp(params.volume_params.y, 1.0, farDistance);
+    float linearFraction = clamp(params.volume_params.z, 1.0e-4, 0.9999);
+    float d = clamp(distanceAlongRay, 0.0, farDistance);
+    if (d <= linearDepth) {
+        return linearFraction * (d / linearDepth);
+    }
+    return linearFraction + (1.0 - linearFraction)
+        * log(d / linearDepth) / log(farDistance / linearDepth);
+}
+
+// Progressive best-candidate blue-noise ranks on a toroidal 8x8 tile. The
+// compact constant avoids an extra texture fetch in this bandwidth-sensitive
+// pass while preserving the high-frequency distribution temporal accumulation
+// expects. Cranley-Patterson rotation below supplies the temporal dimension.
+const uint BLUE_NOISE_RANKS[64] = uint[64](
+     0u, 41u, 11u, 59u,  2u, 40u, 10u, 32u,
+    51u, 28u, 39u, 24u, 54u, 17u, 42u, 20u,
+    12u, 62u,  4u, 53u, 14u, 33u,  6u, 52u,
+    48u, 29u, 36u, 22u, 47u, 25u, 35u, 21u,
+     3u, 50u, 15u, 38u,  1u, 61u,  8u, 49u,
+    45u, 23u, 60u, 31u, 44u, 26u, 55u, 18u,
+    13u, 43u,  5u, 58u,  9u, 46u,  7u, 34u,
+    63u, 16u, 57u, 27u, 37u, 19u, 56u, 30u
+);
+
+float blueNoiseRank(ivec2 pixel, int channel) {
+    ivec2 tiled = ivec2(
+        (pixel.x + channel * 3) & 7,
+        (pixel.y + channel * 5) & 7
+    );
+    return (float(BLUE_NOISE_RANKS[tiled.y * 8 + tiled.x]) + 0.5) / 64.0;
+}
+
+vec3 froxelJitter(ivec3 coord) {
+    float frame = params.volume_params.w;
+    ivec2 p = coord.xy + ivec2(coord.z * 17, coord.z * 29);
+    vec3 rank = vec3(
+        blueNoiseRank(p, 0),
+        blueNoiseRank(p.yx, 1),
+        blueNoiseRank(p + ivec2(37, 11), 2)
+    );
+    return fract(rank + frame * vec3(0.754877666, 0.569840296, 0.438289));
+}
+
+// Reconstruct world position at a jittered froxel sample.
 // uv ∈ [0,1] is screen space; t is along-ray distance from camera.
 vec3 froxel_to_world(vec2 uv, float t) {
     // Get the world-space ray through this froxel column by inverting
     // the projection at the far plane (Vulkan default NDC z = 1 = far).
     vec4 ndc_far = vec4(uv * 2.0 - 1.0, 1.0, 1.0);
     vec4 world_far = params.inv_view_proj * ndc_far;
-    world_far.xyz /= world_far.w;
+    world_far.xyz /= max(abs(world_far.w), 1.0e-6);
     // #markarth-precision — inv_view_proj is camera-relative; lift the far
     // point to ABSOLUTE world so the froxel positions (and the TLAS shadow
     // rays cast from them) share the absolute TLAS space. camera_pos is
@@ -229,6 +320,20 @@ vec3 froxel_to_world(vec2 uv, float t) {
     return params.camera_pos.xyz + ray_dir * t;
 }
 
+bool reprojectHistory(vec3 worldPos, out vec3 previousUvw) {
+    vec3 currentRelative = worldPos - params.render_origin.xyz;
+    vec4 previousClip = params.prev_view_proj * vec4(currentRelative, 1.0);
+    if (previousClip.w <= 1.0e-6) {
+        return false;
+    }
+    vec2 previousUv = previousClip.xy / previousClip.w * 0.5 + 0.5;
+    float previousDistance = length(worldPos - params.prev_camera_pos.xyz);
+    float previousSlice = sliceCoordinate(previousDistance);
+    previousUvw = vec3(previousUv, previousSlice);
+    return all(greaterThanEqual(previousUvw, vec3(0.0)))
+        && all(lessThanEqual(previousUvw, vec3(1.0)));
+}
+
 void main() {
     ivec3 coord = ivec3(gl_GlobalInvocationID.xyz);
     ivec3 size = imageSize(froxel);
@@ -236,32 +341,13 @@ void main() {
         return;
     }
 
-    // Froxel center in normalized volume space.
-    vec3 uvw = (vec3(coord) + 0.5) / vec3(size);
+    vec3 jitter = froxelJitter(coord);
+    vec2 sampleUv = (vec2(coord.xy) + jitter.xy) / vec2(size.xy);
+    float sliceFront = float(coord.z) / float(size.z);
+    float sliceBack = float(coord.z + 1) / float(size.z);
+    float t = mix(sliceDistance(sliceFront), sliceDistance(sliceBack), jitter.z);
 
-    // Slice → along-ray distance (linear for Phase 2; exponential
-    // distribution lands with Phase 5 temporal reprojection).
-    //
-    // #1462 (resolved) — depth-slice convention reconciled across all
-    // three passes. `integrate`'s Riemann sum stores each slice's
-    // (inscatter_total, transmittance) valid at the FRONT of that
-    // slab (transmittance is only updated by the slab's own
-    // attenuation AFTER the store), and `composite` samples the
-    // integrated volume by texel EDGE (`worldDist / VOLUME_FAR`, no
-    // half-texel shift) — both already agreed on a front-edge
-    // convention. This pass previously evaluated its shadow ray /
-    // phase function at the slice CENTER (`uvw.z = (coord.z+0.5) /
-    // size.z`), a ~half-slab bias against the other two. Use the
-    // FRONT edge here too (`coord.z / size.z`, no `+0.5`) so the
-    // in-scattered radiance this pass computes is actually valid at
-    // the same world distance `integrate` and `composite` treat it as.
-    // `uvw.xy` keeps its center-of-column sampling — screen-space XY
-    // has no equivalent edge/center ambiguity (composite samples
-    // `fragUV` directly, per-fragment, not froxel-column-binned).
-    float slice_front = float(coord.z) / float(size.z);
-    float t = slice_front * params.volume_extent.x;
-
-    vec3 world_pos = froxel_to_world(uvw.xy, t);
+    vec3 world_pos = froxel_to_world(sampleUv, t);
 
     // View direction points FROM the sample point TOWARD the camera.
     vec3 view_dir = normalize(params.camera_pos.xyz - world_pos);
@@ -272,17 +358,20 @@ void main() {
 
     // HG phase: angle between light arrival direction and view direction.
     float cos_theta = dot(light_in, view_dir);
-    float phase = henyey_greenstein(cos_theta, params.sun_dir.w);
+    float forwardPhase = henyey_greenstein(cos_theta, params.sun_dir.w);
+    float backwardPhase = henyey_greenstein(cos_theta, params.medium_params.y);
+    float phase = mix(
+        backwardPhase,
+        forwardPhase,
+        clamp(params.medium_params.z, 0.0, 1.0)
+    );
 
     // Procedural fog density — height falloff × 3D value noise around
     // the base scattering coefficient (see `proceduralDensityScale`).
     float density_scale = proceduralDensityScale(world_pos, params.camera_pos.y);
-    float scattering_coef = params.camera_pos.w * density_scale;
-    // Single-scattering albedo of 1 (pure scattering, no absorption)
-    // is a defensible default for clear haze. Smoke / dust / fog
-    // with non-trivial absorption follows from a separate
-    // absorption-coef param later.
-    float extinction_coef = scattering_coef;
+    float extinction_coef = params.camera_pos.w * density_scale;
+    float scattering_coef = extinction_coef
+        * clamp(params.medium_params.x, 0.0, 1.0);
 
     // Phase 2c — visibility ray from sample point toward the sun.
     // Sun is directional (effectively at infinity), so:
@@ -332,7 +421,7 @@ void main() {
         visibility = 1.0;
     } else {
         bool sawGlass = traceOcclusion(
-            ray_origin, ray_dir, 0.05, params.volume_extent.x, SHADOW_MASK_GLASS
+            ray_origin, ray_dir, 0.05, params.volume_params.x, SHADOW_MASK_GLASS
         );
         visibility = sawGlass ? 1.0 : 0.0;
     }
@@ -356,8 +445,8 @@ void main() {
             ? max(params.sun_color.a, CLUSTER_FAR_FLOOR)
             : CLUSTER_FAR_FALLBACK;
         float logRatio = log(clusterFar / CLUSTER_NEAR);
-        uint tileX = min(uint(uvw.x * float(CLUSTER_TILES_X)), CLUSTER_TILES_X - 1u);
-        uint tileY = min(uint(uvw.y * float(CLUSTER_TILES_Y)), CLUSTER_TILES_Y - 1u);
+        uint tileX = min(uint(sampleUv.x * float(CLUSTER_TILES_X)), CLUSTER_TILES_X - 1u);
+        uint tileY = min(uint(sampleUv.y * float(CLUSTER_TILES_Y)), CLUSTER_TILES_Y - 1u);
         uint sliceZ = uint(
             log(max(t, CLUSTER_NEAR) / CLUSTER_NEAR) / logRatio * float(CLUSTER_SLICES_Z)
         );
@@ -416,5 +505,18 @@ void main() {
         }
     }
 
-    imageStore(froxel, coord, vec4(inscatter, extinction_coef));
+    vec4 current = vec4(inscatter, extinction_coef);
+    if (params.prev_camera_pos.w > 0.5) {
+        vec3 previousUvw;
+        if (reprojectHistory(world_pos, previousUvw)) {
+            vec4 history = texture(previousFroxel, previousUvw);
+            float relativeDensityDelta = abs(history.a - current.a)
+                / max(max(history.a, current.a), 1.0e-6);
+            float historyWeight = clamp(params.temporal_params.x, 0.0, 0.98)
+                * exp(-params.temporal_params.y * relativeDensityDelta);
+            current = mix(current, history, historyWeight);
+        }
+    }
+
+    imageStore(froxel, coord, current);
 }

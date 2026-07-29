@@ -28,6 +28,7 @@ use super::buffer::GpuBuffer;
 use super::descriptors::{
     write_combined_image_sampler, write_uniform_buffer, DescriptorPoolBuilder,
 };
+use super::gbuffer::FSR_MASK_FORMAT;
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::FrameExtentSet;
@@ -47,18 +48,21 @@ const COMPOSITE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/composite.frag.s
 pub struct CompositeParams {
     /// xyz = RGB, w = fog enabled (1.0 = yes, 0.0 = no).
     pub fog_color: [f32; 4],
-    /// x = fog near, y = fog far, z = XCLL cubic-fog clip distance
-    /// (0 = no curve), w = XCLL cubic-fog falloff exponent (0 = no
-    /// curve). When `z > 0 && w > 0`, composite uses
-    /// `pow(dist / z, w)` instead of the linear `near..far` ramp.
-    /// See #865 / FNV-D3-NEW-06.
+    /// Legacy XCLL curve inputs retained for the offline physical-fit
+    /// conversion. Runtime fog does not evaluate this linear/cubic ramp.
     pub fog_params: [f32; 4],
     /// x = is_exterior (1.0 = sky enabled), y = exposure (default 0.85),
     /// z = volumetric_consumed flag (1.0 when host
     /// `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED` is true, else 0.0 — gates
     /// the composite shader's `combined * vol.a + vol.rgb` consumption,
-    /// see #1013), w = reserved.
+    /// see #1013), w = frame index for pre-resolve blue-noise dither.
     pub depth_params: [f32; 4],
+    /// x = froxel grid far plane, y = linear-depth floor, z = linear
+    /// slice fraction, w = pre-resolve dither amplitude.
+    pub volume_params: [f32; 4],
+    /// x = base extinction, y = exponential scale height, z = albedo,
+    /// w = analytic beyond-grid fallback enabled.
+    pub height_fog_params: [f32; 4],
     /// xyz = zenith (top-of-sky) color in linear RGB, w = sun angular size (cos threshold).
     pub sky_zenith: [f32; 4],
     /// xyz = horizon color in linear RGB, w = unused.
@@ -195,6 +199,8 @@ impl CompositePipeline {
         water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
         volumetric_views: &[vk::ImageView],
         bloom_views: &[vk::ImageView],
+        reactive_views: &[vk::ImageView],
+        transparency_views: &[vk::ImageView],
         bindless_layout: vk::DescriptorSetLayout,
         extents: FrameExtentSet,
     ) -> Result<Self> {
@@ -210,6 +216,8 @@ impl CompositePipeline {
             water_caustic_views,
             volumetric_views,
             bloom_views,
+            reactive_views,
+            transparency_views,
             bindless_layout,
             extents,
         );
@@ -232,6 +240,8 @@ impl CompositePipeline {
         water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
         volumetric_views: &[vk::ImageView],
         bloom_views: &[vk::ImageView],
+        reactive_views: &[vk::ImageView],
+        transparency_views: &[vk::ImageView],
         bindless_layout: vk::DescriptorSetLayout,
         extents: FrameExtentSet,
     ) -> Result<Self> {
@@ -241,6 +251,8 @@ impl CompositePipeline {
         debug_assert_eq!(water_caustic_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(volumetric_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(bloom_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(reactive_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(transparency_views.len(), MAX_FRAMES_IN_FLIGHT);
         // Build a partially-valid Self so we can use destroy() for cleanup
         // on any error. Fields that haven't been created yet use null
         // handles — destroy() calls vkDestroy* on null (always a no-op).
@@ -492,9 +504,9 @@ impl CompositePipeline {
         });
 
         // ── 3. Composite render pass ─────────────────────────────────
-        // Single color attachment = render-resolution linear HDR. The final
-        // shader-read layout is the common input state for both FSR and the
-        // native blit bridge.
+        // Attachment 0 is render-resolution linear HDR. Attachments 1/2 load
+        // the main pass' FSR masks and MAX-blend fog coverage into them before
+        // the SDK consumes the complete scene.
         let composite_color = vk::AttachmentDescription::default()
             .format(HDR_FORMAT)
             .samples(vk::SampleCountFlags::TYPE_1)
@@ -504,12 +516,33 @@ impl CompositePipeline {
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let fsr_mask = vk::AttachmentDescription::default()
+            .format(FSR_MASK_FORMAT)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::LOAD)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+            .final_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
 
         let composite_color_ref = vk::AttachmentReference {
             attachment: 0,
             layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         };
-        let composite_color_refs = [composite_color_ref];
+        let composite_reactive_ref = vk::AttachmentReference {
+            attachment: 1,
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        };
+        let composite_transparency_ref = vk::AttachmentReference {
+            attachment: 2,
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        };
+        let composite_color_refs = [
+            composite_color_ref,
+            composite_reactive_ref,
+            composite_transparency_ref,
+        ];
 
         let composite_subpass = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
@@ -572,6 +605,7 @@ impl CompositePipeline {
             .dst_access_mask(
                 vk::AccessFlags::SHADER_READ
                     | vk::AccessFlags::UNIFORM_READ
+                    | vk::AccessFlags::COLOR_ATTACHMENT_READ
                     | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
             );
 
@@ -587,7 +621,7 @@ impl CompositePipeline {
             )
             .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::TRANSFER_READ);
 
-        let attachments = [composite_color];
+        let attachments = [composite_color, fsr_mask, fsr_mask];
         let subpasses = [composite_subpass];
         let dependencies = [composite_dep_in, composite_dep_out];
         let rp_info = vk::RenderPassCreateInfo::default()
@@ -604,8 +638,12 @@ impl CompositePipeline {
         });
 
         // ── 4. Composite framebuffers (one per frame slot) ──────────
-        for &view in &partial.scene_image_views {
-            let attachments = [view];
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            let attachments = [
+                partial.scene_image_views[i],
+                reactive_views[i],
+                transparency_views[i],
+            ];
             let fb_info = vk::FramebufferCreateInfo::default()
                 .render_pass(partial.composite_render_pass)
                 .attachments(&attachments)
@@ -903,9 +941,19 @@ impl CompositePipeline {
             .depth_test_enable(false)
             .depth_write_enable(false);
 
-        let color_blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
+        let scene_blend = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
-            .blend_enable(false)];
+            .blend_enable(false);
+        let mask_blend = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::R)
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::ONE)
+            .dst_color_blend_factor(vk::BlendFactor::ONE)
+            .color_blend_op(vk::BlendOp::MAX)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+            .alpha_blend_op(vk::BlendOp::MAX);
+        let color_blend_attachments = [scene_blend, mask_blend, mask_blend];
         let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
             .logic_op_enable(false)
             .attachments(&color_blend_attachments);
@@ -967,11 +1015,19 @@ impl CompositePipeline {
         frame: usize,
         bindless_set: vk::DescriptorSet,
     ) {
-        let clear_values = [vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
+        let clear_values = [
+            vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
             },
-        }];
+            vk::ClearValue {
+                color: vk::ClearColorValue { float32: [0.0; 4] },
+            },
+            vk::ClearValue {
+                color: vk::ClearColorValue { float32: [0.0; 4] },
+            },
+        ];
         let rp_begin = vk::RenderPassBeginInfo::default()
             .render_pass(self.composite_render_pass)
             .framebuffer(self.composite_framebuffers[frame])
@@ -1047,6 +1103,8 @@ impl CompositePipeline {
         water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
         volumetric_views: &[vk::ImageView],
         bloom_views: &[vk::ImageView],
+        reactive_views: &[vk::ImageView],
+        transparency_views: &[vk::ImageView],
         extents: FrameExtentSet,
     ) -> Result<()> {
         // Destroy old framebuffers
@@ -1311,8 +1369,12 @@ impl CompositePipeline {
             }
 
             // Recreate per-frame scene-composition framebuffers.
-            for &view in &self.scene_image_views {
-                let attachments = [view];
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                let attachments = [
+                    self.scene_image_views[i],
+                    reactive_views[i],
+                    transparency_views[i],
+                ];
                 let fb_info = vk::FramebufferCreateInfo::default()
                     .render_pass(self.composite_render_pass)
                     .attachments(&attachments)
@@ -1592,37 +1654,39 @@ mod composite_params_layout_tests {
         assert_eq!(offset_of!(CompositeParams, fog_color), 0);
         assert_eq!(offset_of!(CompositeParams, fog_params), 16);
         assert_eq!(offset_of!(CompositeParams, depth_params), 32);
-        assert_eq!(offset_of!(CompositeParams, sky_zenith), 48);
-        assert_eq!(offset_of!(CompositeParams, sky_horizon), 64);
+        assert_eq!(offset_of!(CompositeParams, volume_params), 48);
+        assert_eq!(offset_of!(CompositeParams, height_fog_params), 64);
+        assert_eq!(offset_of!(CompositeParams, sky_zenith), 80);
+        assert_eq!(offset_of!(CompositeParams, sky_horizon), 96);
         // #541 — `sky_lower` slotted between `sky_horizon` and
         // `sun_dir`. Every subsequent field shifts by 16 B; the GLSL
         // declaration in `composite.frag` is updated in lockstep.
-        assert_eq!(offset_of!(CompositeParams, sky_lower), 80);
-        assert_eq!(offset_of!(CompositeParams, sun_dir), 96);
-        assert_eq!(offset_of!(CompositeParams, sun_color), 112);
-        assert_eq!(offset_of!(CompositeParams, cloud_params), 128);
-        assert_eq!(offset_of!(CompositeParams, cloud_params_1), 144);
+        assert_eq!(offset_of!(CompositeParams, sky_lower), 112);
+        assert_eq!(offset_of!(CompositeParams, sun_dir), 128);
+        assert_eq!(offset_of!(CompositeParams, sun_color), 144);
+        assert_eq!(offset_of!(CompositeParams, cloud_params), 160);
+        assert_eq!(offset_of!(CompositeParams, cloud_params_1), 176);
         // M33.1 — cloud layers 2/3 inserted between cloud_params_1 and
         // camera_pos so the new vec4s slot in cleanly without disturbing
         // the trailing camera_pos + inv_view_proj layout shape.
-        assert_eq!(offset_of!(CompositeParams, cloud_params_2), 160);
-        assert_eq!(offset_of!(CompositeParams, cloud_params_3), 176);
+        assert_eq!(offset_of!(CompositeParams, cloud_params_2), 192);
+        assert_eq!(offset_of!(CompositeParams, cloud_params_3), 208);
         // #428 — `camera_pos` was added after `cloud_params` and before
         // `inv_view_proj`. Fixing the offset here prevents a future
         // reorder from silently corrupting the fog-distance origin.
-        assert_eq!(offset_of!(CompositeParams, camera_pos), 192);
-        assert_eq!(offset_of!(CompositeParams, inv_view_proj), 208);
+        assert_eq!(offset_of!(CompositeParams, camera_pos), 224);
+        assert_eq!(offset_of!(CompositeParams, inv_view_proj), 240);
         // Underwater post-FX field — appended after inv_view_proj.
         // Same lockstep contract as the cloud_params expansion above:
         // adding a new vec4 here bumps the asserted total by 16 and
         // adds a matching `vec4 underwater;` declaration in the
         // `composite.frag` UBO block. See `composite.frag` end-of-
         // shader underwater branch.
-        assert_eq!(offset_of!(CompositeParams, underwater), 272);
+        assert_eq!(offset_of!(CompositeParams, underwater), 304);
         assert_eq!(
             size_of::<CompositeParams>(),
-            272 + 16,
-            "CompositeParams must be 288 bytes (14 × vec4 + mat4)"
+            304 + 16,
+            "CompositeParams must be 320 bytes (16 × vec4 + mat4)"
         );
     }
 

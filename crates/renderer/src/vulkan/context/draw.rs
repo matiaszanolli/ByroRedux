@@ -920,6 +920,7 @@ impl VulkanContext {
         }
 
         let frame = self.current_frame;
+        let volumetric_time_seconds = self.volumetric_time_seconds;
         // Use a local to avoid borrow complexity; copy out at end.
         let mut t = FrameTimings::default();
         // #1197 / PERF-DIM7-03 — reset per-frame descriptor-writes
@@ -1334,6 +1335,7 @@ impl VulkanContext {
         // Automatic camera-cut detection catches debug teleports and scripted
         // snaps that do not flow through the cell-transition reset hooks.
         // Signal derivation + rationale in `camera_frame_deltas`.
+        let previous_camera_position = self.prev_camera_position;
         let CameraFrameDeltas {
             camera_delta,
             cam_forward_dot,
@@ -2400,11 +2402,9 @@ impl VulkanContext {
                     fog_color[2],
                     if fog_far > fog_near { 1.0 } else { 0.0 },
                 ],
-                // #865 / FNV-D3-NEW-06 — pack XCLL cubic-fog curve
-                // into z/w. Composite uses the curve formula
-                // `pow(dist / fog_clip, fog_power)` when both are
-                // > 0; else falls through to the linear
-                // `fog_near..fog_far` ramp.
+                // Preserve the legacy curve inputs for the upcoming offline
+                // XCLL/WTHR → physical sigma_t fitting pass. Runtime
+                // composition no longer evaluates this non-physical ramp.
                 fog_params: [fog_near, fog_far, fog_clip, fog_power],
                 depth_params: [
                     if sky_params.is_exterior { 1.0 } else { 0.0 },
@@ -2427,7 +2427,28 @@ impl VulkanContext {
                     } else {
                         0.0
                     },
-                    0.0,
+                    (self.frame_counter & 0x00ff_ffff) as f32,
+                ],
+                volume_params: [
+                    self.volumetrics
+                        .as_ref()
+                        .map_or(super::super::volumetrics::DEFAULT_VOLUME_FAR, |volume| {
+                            volume.far_distance_world()
+                        }),
+                    super::super::volumetrics::LINEAR_DEPTH,
+                    super::super::volumetrics::LINEAR_SLICE_FRACTION,
+                    1.0 / 1024.0,
+                ],
+                height_fog_params: [
+                    super::super::volumetrics::DEFAULT_SCATTERING_COEF,
+                    super::super::volumetrics::DEFAULT_SCALE_HEIGHT_METERS
+                        * super::super::volumetrics::WORLD_UNITS_PER_METER,
+                    super::super::volumetrics::DEFAULT_SINGLE_SCATTER_ALBEDO,
+                    if sky_params.is_exterior && fog_far > fog_near {
+                        1.0
+                    } else {
+                        0.0
+                    },
                 ],
                 sky_zenith: [
                     sky_params.zenith_color[0],
@@ -2646,7 +2667,11 @@ impl VulkanContext {
                 camera_pos,
                 render_origin,
                 vp,
+                &pvp,
                 inv_vp_arr,
+                previous_camera_position,
+                self.frame_counter,
+                volumetric_time_seconds,
                 sky_params,
                 fog_far,
                 fsr_frame,
@@ -2821,6 +2846,10 @@ impl VulkanContext {
         if let Some(ref mut taa) = self.taa {
             taa.mark_frame_completed();
         }
+        if let Some(ref mut volumetrics) = self.volumetrics {
+            volumetrics.mark_frame_completed();
+        }
+        self.volumetric_time_seconds += frame_time_delta_ms.max(0.0) * 0.001;
         if self
             .frame_upscaler
             .as_mut()

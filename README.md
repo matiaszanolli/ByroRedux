@@ -181,6 +181,10 @@ cargo run --release -- --cornell --fsr-quality balanced
 #   presets: native-aa (1.0x) | quality (1.5x) | balanced (1.7x) | performance (2.0x)
 cargo run --release -- --cornell --upscaler taa    # native-resolution fallback
 
+# Procedural fog grid (derived from render resolution, not output resolution)
+cargo run --release -- --cornell-sun \
+  --froxel-xy-divisor 12 --froxel-z-slices 64 --fog-grid-far-m 128
+
 # Upscaler image-quality matrix (SSIM vs the native TAA render, 5 camera paths)
 cargo test --release -p byroredux --test upscaler_quality -- --ignored --nocapture
 

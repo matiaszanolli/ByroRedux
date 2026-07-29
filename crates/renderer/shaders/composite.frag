@@ -28,22 +28,15 @@ layout(set = 0, binding = 0) uniform sampler2D hdrTex;       // direct light
 layout(set = 0, binding = 1) uniform sampler2D indirectTex;  // demodulated indirect
 layout(set = 0, binding = 2) uniform sampler2D albedoTex;    // surface albedo (multiplies demodulated indirect)
 layout(set = 0, binding = 3) uniform CompositeParams {
-    // Reserved-and-unconsumed (#1926 / REN-D8-01): the aerial-perspective
-    // fallback that read these two fields was removed once
-    // VOLUMETRIC_OUTPUT_CONSUMED made it permanently dead. Kept in the
-    // UBO for the future REGN-driven volumetric density tint (M55 Phase 6).
-    vec4 fog_color;      // xyz = RGB, w = enabled (1.0 = yes)
+    vec4 fog_color;      // xyz = beyond-grid aerial tint, w = enabled
     // x = near, y = far, z = XCLL cubic-fog clip distance (0 = no
     // curve), w = XCLL cubic-fog falloff exponent (0 = no curve).
-    // Formula (currently unconsumed by any shader — see fog_color's
-    // note above and #1927 / REN-D8-02): when z > 0 && w > 0, use
-    // pow(dist / z, w) instead of the linear (dist - near) / (far -
-    // near) blend. See #865 / FNV-D3-NEW-06. The removed consumer was
-    // exterior-gated and mixed toward sky-haze — meaningless for the
-    // FNV interiors this curve targets; a future revival needs its own
-    // interior-scoped branch mixing toward fog_color instead.
+    // Runtime no longer evaluates this non-physical curve. It remains in the
+    // contract until XCLL/WTHR values are fitted offline into sigma_t tables.
     vec4 fog_params;
-    vec4 depth_params;   // x = is_exterior (1.0 = sky enabled), y = exposure, z = volumetric_consumed (bool as float), w = unused
+    vec4 depth_params;   // x = is_exterior, y = exposure, z = volumetric consumed, w = frame index
+    vec4 volume_params;  // x = grid far, y = linear floor, z = linear fraction, w = dither amplitude
+    vec4 height_fog_params; // x = sigma_t0, y = scale height, z = albedo, w = fallback enabled
     vec4 sky_zenith;     // xyz = zenith color (linear RGB), w = sun_size (cos threshold)
     vec4 sky_horizon;    // xyz = horizon color (linear RGB), w = unused
     vec4 sky_lower;      // xyz = below-horizon ground tint (WTHR SKY_LOWER), w = unused (#541)
@@ -100,6 +93,72 @@ layout(set = 1, binding = 0) uniform sampler2D textures[];
 
 layout(location = 0) in vec2 fragUV;
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out float outReactive;
+layout(location = 2) out float outTransparency;
+
+float hybridSliceCoordinate(float distanceAlongRay) {
+    float farDistance = max(params.volume_params.x, 1.0);
+    float linearDepth = clamp(params.volume_params.y, 1.0, farDistance);
+    float linearFraction = clamp(params.volume_params.z, 1.0e-4, 0.9999);
+    float d = clamp(distanceAlongRay, 0.0, farDistance);
+    if (d <= linearDepth) {
+        return linearFraction * (d / linearDepth);
+    }
+    return linearFraction + (1.0 - linearFraction)
+        * log(d / linearDepth) / log(farDistance / linearDepth);
+}
+
+// Analytic optical depth for sigma_t(y)=sigma0*exp(-(y-y0)/H).
+// Keep the horizontal-ray branch explicit: the general quotient becomes 0/0
+// as dy/ds approaches zero and was a plausible source of exterior white-outs.
+float heightFogOpticalDepth(
+    float sigma0,
+    float rayOriginY,
+    float rayDirectionY,
+    float distance,
+    float baseHeight,
+    float scaleHeight
+) {
+    if (sigma0 <= 0.0 || distance <= 0.0) {
+        return 0.0;
+    }
+    float safeScale = max(scaleHeight, 1.0e-4);
+    float logSigmaAtOrigin = log(sigma0)
+        - (rayOriginY - baseHeight) / safeScale;
+    float sigmaAtOrigin = exp(clamp(logSigmaAtOrigin, -80.0, 80.0));
+    float lengthAlongRay = max(distance, 0.0);
+    float slope = rayDirectionY / safeScale;
+    if (abs(slope) < 1.0e-6) {
+        return sigmaAtOrigin * lengthAlongRay;
+    }
+    if (slope > 0.0) {
+        float integral = (1.0 - exp(-slope * lengthAlongRay)) / slope;
+        return max(sigmaAtOrigin * integral, 0.0);
+    }
+    float endY = rayOriginY + rayDirectionY * lengthAlongRay;
+    float logSigmaAtEnd = log(sigma0) - (endY - baseHeight) / safeScale;
+    float sigmaAtEnd = exp(clamp(logSigmaAtEnd, -80.0, 80.0));
+    return max((sigmaAtEnd - sigmaAtOrigin) / -slope, 0.0);
+}
+
+const uint BLUE_NOISE_RANKS[64] = uint[64](
+     0u, 41u, 11u, 59u,  2u, 40u, 10u, 32u,
+    51u, 28u, 39u, 24u, 54u, 17u, 42u, 20u,
+    12u, 62u,  4u, 53u, 14u, 33u,  6u, 52u,
+    48u, 29u, 36u, 22u, 47u, 25u, 35u, 21u,
+     3u, 50u, 15u, 38u,  1u, 61u,  8u, 49u,
+    45u, 23u, 60u, 31u, 44u, 26u, 55u, 18u,
+    13u, 43u,  5u, 58u,  9u, 46u,  7u, 34u,
+    63u, 16u, 57u, 27u, 37u, 19u, 56u, 30u
+);
+
+float preResolveDither() {
+    uint frame = uint(params.depth_params.w);
+    ivec2 pixel = ivec2(gl_FragCoord.xy) + ivec2(frame * 5u, frame * 3u);
+    int index = (pixel.y & 7) * 8 + (pixel.x & 7);
+    float rank = (float(BLUE_NOISE_RANKS[index]) + 0.5) / 64.0;
+    return (rank - 0.5) * params.volume_params.w;
+}
 
 // Reconstruct world-space view direction from screen UV and inverse VP.
 vec3 screen_to_world_dir(vec2 uv) {
@@ -317,6 +376,8 @@ vec3 compute_sky(vec3 dir) {
 }
 
 void main() {
+    outReactive = 0.0;
+    outTransparency = 0.0;
     vec4 direct4 = texture(hdrTex, fragUV);
     vec3 direct = direct4.rgb;
 
@@ -327,6 +388,7 @@ void main() {
         // Sky pixel: reconstruct view direction and compute sky color.
         vec3 dir = screen_to_world_dir(fragUV);
         vec3 sky = compute_sky(dir);
+        sky += vec3(preResolveDither());
 
         // Pass `direct4.a` through (mirroring the geometry branch at
         // line 279) so the alpha-blend marker bit `DEN-6 / #676`
@@ -392,6 +454,7 @@ void main() {
         vec3 caustic = albedo * causticLum;
 
         vec3 combined = direct + indirect * albedo + caustic;
+        float fogTransmittance = 1.0;
 
         // M55 Phase 3 — volumetric modulation via single sampler3D tap.
         // The volumetric pipeline pre-integrates `(∫inscatter, T_cum)`
@@ -401,27 +464,17 @@ void main() {
         // Frostbite §5.3 so the tone-mapper sees the inscattered
         // radiance and the scene together.
         //
-        // The volumetric volume is screen-space in xy and depth-slice
-        // in z under linear distribution, so the sample coordinate is
-        // (fragUV, worldDist / VOLUME_FAR). No NDC projection needed,
-        // no per-step loop.
+        // The volumetric volume is screen-space in XY and hybrid linear /
+        // exponential in Z. One sampler3D tap retrieves the pre-integrated
+        // result through the fragment.
         if (depth < 0.9999) {
             vec2 ndc_xy = fragUV * 2.0 - 1.0;
             vec4 clip = vec4(ndc_xy, depth, 1.0);
             vec4 world = params.inv_view_proj * clip;
-            vec3 worldPos = world.xyz / world.w;
+            vec3 worldPos = world.xyz / max(abs(world.w), 1.0e-6);
             float worldDist = length(worldPos - params.camera_pos.xyz);
-            // clamp(0, 1 - eps): max-slice texel still samples within
-            // the volume rather than the CLAMP_TO_EDGE neighbour, which
-            // would over-extrapolate transmittance for fragments past
-            // the volume far plane.
-            //
-            // #1462 (resolved) — this texel-EDGE mapping now agrees
-            // with `integrate`'s front-of-slab Riemann storage and
-            // `inject`'s front-edge sampling (see the reconciliation
-            // note in `volumetrics_inject.comp`). All three passes
-            // share one convention.
-            float slice = clamp(worldDist / VOLUME_FAR, 0.0, 0.9999);
+            float gridFar = params.volume_params.x;
+            float slice = hybridSliceCoordinate(min(worldDist, gridFar));
             vec4 vol = texture(volumetricFroxel, vec3(fragUV, slice));
             // vol.rgb = ∫inscatter accumulated 0..slice (HDR-linear)
             // vol.a   = cumulative transmittance through 0..slice
@@ -442,6 +495,30 @@ void main() {
             // attenuated by `T_cum` — the integrate pass already weighted
             // each slab's contribution by its own running transmittance).
             combined = combined * vol.a + vol.rgb;
+            fogTransmittance *= vol.a;
+
+            // Beyond-grid aerial perspective. Start at the grid boundary so
+            // this composes after the froxel integral without double-counting.
+            // The exact horizontal branch lives in heightFogOpticalDepth.
+            if (worldDist > gridFar && params.height_fog_params.w > 0.5) {
+                vec3 rayDir = (worldPos - params.camera_pos.xyz)
+                    / max(worldDist, 1.0e-6);
+                vec3 segmentOrigin = params.camera_pos.xyz + rayDir * gridFar;
+                float tau = heightFogOpticalDepth(
+                    params.height_fog_params.x,
+                    segmentOrigin.y,
+                    rayDir.y,
+                    worldDist - gridFar,
+                    params.camera_pos.y,
+                    params.height_fog_params.y
+                );
+                float transmittance = exp(-min(tau, 80.0));
+                vec3 aerial = params.fog_color.rgb
+                    * params.height_fog_params.z
+                    * (1.0 - transmittance);
+                combined = combined * transmittance + aerial;
+                fogTransmittance *= transmittance;
+            }
         }
 
         // M58 — bloom add. Sampled with bilinear from mip 0 of the
@@ -453,6 +530,13 @@ void main() {
         // the half-res bloom view.
         vec3 bloom = texture(bloomTex, fragUV).rgb;
         combined += bloom * BLOOM_INTENSITY;
+        combined += vec3(preResolveDither());
+        float fogOpacity = clamp(1.0 - fogTransmittance, 0.0, 1.0);
+        // Fog has no coherent surface motion. Route its coverage through the
+        // transparency/composition mask and conservatively flag dense fog as
+        // reactive so FSR does not lock onto the geometry behind it.
+        outTransparency = fogOpacity;
+        outReactive = smoothstep(0.35, 0.8, fogOpacity) * 0.9;
 
         // Aerial-perspective fog fallback (Markarth probe 2026-05-10)
         // stood in for the volumetric froxel pipeline while M-LIGHT v2

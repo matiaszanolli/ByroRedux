@@ -142,7 +142,11 @@ impl VulkanContext {
         camera_pos: [f32; 3],
         render_origin: byroredux_core::math::Vec3,
         vp: &[f32; 16],
+        prev_view_proj: &[f32; 16],
         inv_vp_arr: [[f32; 4]; 4],
+        previous_camera_pos: [f32; 3],
+        frame_counter: u32,
+        volumetric_time_seconds: f32,
         sky_params: &SkyParams,
         fog_far: f32,
         fsr_frame: Option<FsrFrameParameters>,
@@ -366,7 +370,39 @@ impl VulkanContext {
                         let scatter_coef = super::super::volumetrics::DEFAULT_SCATTERING_COEF;
                         let vol_params = super::super::volumetrics::VolumetricsParams {
                             inv_view_proj: inv_vp_arr,
+                            prev_view_proj: [
+                                [
+                                    prev_view_proj[0],
+                                    prev_view_proj[1],
+                                    prev_view_proj[2],
+                                    prev_view_proj[3],
+                                ],
+                                [
+                                    prev_view_proj[4],
+                                    prev_view_proj[5],
+                                    prev_view_proj[6],
+                                    prev_view_proj[7],
+                                ],
+                                [
+                                    prev_view_proj[8],
+                                    prev_view_proj[9],
+                                    prev_view_proj[10],
+                                    prev_view_proj[11],
+                                ],
+                                [
+                                    prev_view_proj[12],
+                                    prev_view_proj[13],
+                                    prev_view_proj[14],
+                                    prev_view_proj[15],
+                                ],
+                            ],
                             camera_pos: [camera_pos[0], camera_pos[1], camera_pos[2], scatter_coef],
+                            prev_camera_pos: [
+                                previous_camera_pos[0],
+                                previous_camera_pos[1],
+                                previous_camera_pos[2],
+                                0.0,
+                            ],
                             sun_dir: [
                                 sky_params.sun_direction[0],
                                 sky_params.sun_direction[1],
@@ -374,11 +410,11 @@ impl VulkanContext {
                                 super::super::volumetrics::DEFAULT_PHASE_G,
                             ],
                             sun_color: sun_radiance,
-                            volume_extent: [
-                                super::super::volumetrics::DEFAULT_VOLUME_FAR,
-                                0.0,
-                                0.0,
-                                0.0,
+                            volume_params: [
+                                vol.far_distance_world(),
+                                super::super::volumetrics::LINEAR_DEPTH,
+                                super::super::volumetrics::LINEAR_SLICE_FRACTION,
+                                (frame_counter & 0x00ff_ffff) as f32,
                             ],
                             // #markarth-precision — inv_view_proj is relative;
                             // the inject shader adds this to recover absolute
@@ -389,6 +425,19 @@ impl VulkanContext {
                                 render_origin.y,
                                 render_origin.z,
                                 if sky_params.is_exterior { 1.0 } else { 0.0 },
+                            ],
+                            medium_params: [
+                                super::super::volumetrics::DEFAULT_SINGLE_SCATTER_ALBEDO,
+                                super::super::volumetrics::DEFAULT_BACKWARD_PHASE_G,
+                                super::super::volumetrics::DEFAULT_DUAL_LOBE_MIX,
+                                super::super::volumetrics::DEFAULT_SCALE_HEIGHT_METERS
+                                    * super::super::volumetrics::WORLD_UNITS_PER_METER,
+                            ],
+                            temporal_params: [
+                                super::super::volumetrics::DEFAULT_TEMPORAL_HISTORY_WEIGHT,
+                                super::super::volumetrics::DEFAULT_DENSITY_REJECTION,
+                                volumetric_time_seconds,
+                                0.0,
                             ],
                         };
                         if let Some(ref mut timers) = self.gpu_timers {
@@ -401,6 +450,10 @@ impl VulkanContext {
                         if let Err(e) = vol_result {
                             log::warn!("Volumetrics dispatch failed: {e}");
                         }
+                    } else {
+                        // Never let a prior cell's integrated fog hang over a
+                        // frame whose TLAS/cluster inputs are not ready yet.
+                        vol.record_neutral_frame(&self.device, cmd, frame);
                     }
                 }
             }

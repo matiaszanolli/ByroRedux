@@ -7,50 +7,28 @@
 //! The composite fragment shader samples the integrated volume and
 //! modulates the scene color: `final = scene * vol.a + vol.rgb`.
 //!
-//! ## Phase 1 — skeleton (this file)
+//! The raw V-buffer stores `(in-scattered radiance.rgb, sigma_t)` and the
+//! integrated volume stores `(accumulated radiance.rgb, transmittance)`.
+//! Horizontal dimensions derive from the post-upscaler-query render extent;
+//! depth uses a 5 m linear floor followed by exponential slices. Injection
+//! evaluates procedural density, dual-lobe HG scattering, clustered local
+//! lights, and directional/local TLAS visibility. One sample per froxel is
+//! blue-noise jittered and reprojected from the previous raw V-buffer.
 //!
-//! Allocates the 3D froxel images (per frame-in-flight). After
-//! allocation, `initialize_layouts` transitions them to `GENERAL` and
-//! clears them to `(rgb=0 inscatter, a=1 transmittance)` so that the
-//! composite formula `final = scene * vol.a + vol.rgb` is a no-op on
-//! the first frame before the inject/integrate passes run. No visual
-//! change yet — purpose is to validate the plumbing (3D-image
-//! allocation, descriptor binding, dispatch shape, layout transitions,
-//! post-dispatch barrier) without producing artifacts on real content.
-//!
-//! ## Phase 2+ (planned, not yet implemented)
-//!
-//! - Density+lighting injection: read `GpuLight` SSBO, raymarch each
-//!   froxel against the TLAS for shadow visibility, accumulate
-//!   anisotropic single-scattering (Henyey-Greenstein phase function).
-//! - Ray-march integration: marches Z from near to far, accumulating
-//!   `scattering * transmittance` and updating cumulative
-//!   transmittance. Writes a separate "integrated" 3D texture that
-//!   composite samples.
-//! - Composite modulation: replaces the existing fog mix in
-//!   `composite.frag` (LIGHT-N2 site, line 346) with froxel sampling.
-//! - Temporal reprojection: blends prior-frame integrated volume via
-//!   `prev_view_proj`, suppresses ghosting on light-state changes.
-//! - REGN-driven density per cell type.
-//!
-//! ## Resource layout (Phase 1)
-//!
-//! | Binding | Resource          | Type                            |
-//! |---------|-------------------|---------------------------------|
-//! | 0       | lighting froxel   | image3D (rgba16f, storage)      |
-//!
-//! Phase 2 extends with: TLAS, GpuLight SSBO, scene UBO (camera + jitter),
-//! density UBO, integrated froxel output.
+//! `composite.frag` consumes one integrated 3D sample, adds analytic
+//! beyond-grid height fog, and writes volumetric coverage into FSR's reactive
+//! and transparency/composition masks.
 
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
     image_barrier_general_write_to_read, image_barrier_undef_to_general, memory_barrier,
-    write_acceleration_structure, write_storage_buffer, write_storage_image, write_uniform_buffer,
-    DescriptorPoolBuilder,
+    write_acceleration_structure, write_combined_image_sampler, write_storage_buffer,
+    write_storage_image, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
+use super::upscaling::VolumetricsConfig;
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y, WORKGROUP_Z};
 use anyhow::{Context, Result};
 use ash::vk;
@@ -73,13 +51,17 @@ pub struct VolumetricsParams {
     /// Inverse view-projection matrix; reconstructs world-space rays
     /// from screen-space (uv, NDC z = 1 = far) per froxel.
     pub inv_view_proj: [[f32; 4]; 4],
-    /// xyz = camera world position (m), w = scattering coefficient
-    /// (1 / m). The scattering coefficient also drives extinction in
-    /// Phase 2 (single-scattering-albedo = 1).
+    /// Previous view-projection matrix rebased to consume positions relative
+    /// to this frame's render origin. Used to reproject V-buffer history.
+    pub prev_view_proj: [[f32; 4]; 4],
+    /// xyz = camera world position (Bethesda units), w = base extinction
+    /// coefficient (1 / world unit).
     pub camera_pos: [f32; 4],
+    /// xyz = previous absolute camera position; w = history-valid flag.
+    pub prev_camera_pos: [f32; 4],
     /// xyz = direction TO the sun (world space, unit; matches
     /// GpuCamera.sun_direction / GpuLight.direction_angle, #1937), w = HG
-    /// phase asymmetry parameter g in (-1, 1). Hazy sunlight ≈ 0.4–0.6.
+    /// phase asymmetry parameter g in (-1, 1).
     pub sun_dir: [f32; 4],
     /// rgb = sun radiance (already scaled by intensity), a = the cell's
     /// XCLL fog-far distance (matches the `screen.w` field
@@ -90,9 +72,10 @@ pub struct VolumetricsParams {
     /// pre-built light list; reusing the identical fog-far basis keeps
     /// the two slicing schemes aligned instead of drifting apart.
     pub sun_color: [f32; 4],
-    /// x = volume far plane (m) — maps slice z = 1 to this distance
-    /// along the view ray. y/z/w = unused.
-    pub volume_extent: [f32; 4],
+    /// x = grid far plane, y = linear-depth floor, z = fraction of slices
+    /// assigned to the linear section, w = monotonic frame index. Distances
+    /// are in Bethesda world units.
+    pub volume_params: [f32; 4],
     /// #markarth-precision — xyz = camera-relative render origin; the inject
     /// shader adds it to the `inv_view_proj`-reconstructed far point so froxel
     /// world positions (and their TLAS shadow rays) are absolute. w = 1.0 for
@@ -105,11 +88,22 @@ pub struct VolumetricsParams {
     /// investigation note in `context/draw.rs` near `VolumetricsParams`
     /// construction.
     pub render_origin: [f32; 4],
+    /// x = single-scatter albedo, y = backward HG lobe g,
+    /// z = forward-lobe mixture, w = height-fog scale height in world units.
+    pub medium_params: [f32; 4],
+    /// x = temporal history weight, y = relative density rejection strength,
+    /// z = total time in seconds, w = reserved.
+    pub temporal_params: [f32; 4],
 }
 
 /// Gamebryo/Fallout world-coordinate scale. The renderer keeps positions in
 /// Bethesda units all the way through TLAS and shader reconstruction.
 pub const WORLD_UNITS_PER_METER: f32 = 70.0;
+pub const DEFAULT_GRID_FAR_METERS: f32 = 128.0;
+pub const DEFAULT_VOLUME_FAR: f32 = DEFAULT_GRID_FAR_METERS * WORLD_UNITS_PER_METER;
+pub const LINEAR_DEPTH_METERS: f32 = 5.0;
+pub const LINEAR_DEPTH: f32 = LINEAR_DEPTH_METERS * WORLD_UNITS_PER_METER;
+pub const LINEAR_SLICE_FRACTION: f32 = 0.125;
 
 /// Default participating-medium scattering coefficient (1 / world unit).
 /// Lowered from 0.005 (2026-07-18 — "too bloomy/hazy" feedback on
@@ -120,18 +114,84 @@ pub const WORLD_UNITS_PER_METER: f32 = 70.0;
 pub const DEFAULT_SCATTERING_COEF_PER_METER: f32 = 0.0035;
 pub const DEFAULT_SCATTERING_COEF: f32 = DEFAULT_SCATTERING_COEF_PER_METER / WORLD_UNITS_PER_METER;
 
-/// Default Henyey-Greenstein asymmetry. 0.4 is mild forward
-/// scattering — atmospheric haze; bumps the sun-side glow without
-/// over-tinting the camera-side fog.
-pub const DEFAULT_PHASE_G: f32 = 0.4;
+/// Default forward Henyey-Greenstein asymmetry for atmospheric scattering.
+pub const DEFAULT_PHASE_G: f32 = 0.8;
+pub const DEFAULT_BACKWARD_PHASE_G: f32 = -0.3;
+pub const DEFAULT_DUAL_LOBE_MIX: f32 = 0.7;
+pub const DEFAULT_SINGLE_SCATTER_ALBEDO: f32 = 0.95;
+pub const DEFAULT_SCALE_HEIGHT_METERS: f32 = 30.0;
+pub const DEFAULT_TEMPORAL_HISTORY_WEIGHT: f32 = 0.92;
+pub const DEFAULT_DENSITY_REJECTION: f32 = 4.0;
 
-/// Default volume extent (world units). 200 m / 14,000 Gamebryo units is a
-/// reasonable interior+near-
-/// exterior reach; longer ranges would need exponential slice
-/// distribution (Phase 5) to keep near-camera detail. Source of truth
-/// is `crate::shader_constants::VOLUME_FAR`; `build.rs` emits the
-/// matching `#define VOLUME_FAR` into `composite.frag`.
-pub const DEFAULT_VOLUME_FAR: f32 = crate::shader_constants::VOLUME_FAR;
+/// Optical depth through an exponential height medium
+/// `sigma_t(y) = sigma0 * exp(-(y - base_height) / scale_height)`.
+///
+/// The explicit horizontal branch is intentional: evaluating the analytic
+/// quotient at `ray_direction_y → 0` is the classic 0/0 NaN that turns an
+/// otherwise ordinary exterior frame white.
+pub fn height_fog_optical_depth(
+    sigma0: f32,
+    ray_origin_y: f32,
+    ray_direction_y: f32,
+    distance: f32,
+    base_height: f32,
+    scale_height: f32,
+) -> f32 {
+    if sigma0 <= 0.0 || distance <= 0.0 {
+        return 0.0;
+    }
+    let safe_scale = scale_height.max(1.0e-4);
+    let log_sigma_at_origin = sigma0.ln() - (ray_origin_y - base_height) / safe_scale;
+    let sigma_at_origin = log_sigma_at_origin.clamp(-80.0, 80.0).exp();
+    let length = distance.max(0.0);
+    let slope = ray_direction_y / safe_scale;
+    if slope.abs() < 1.0e-6 {
+        return sigma_at_origin * length;
+    }
+    if slope > 0.0 {
+        let integral = -(-slope * length).exp_m1() / slope;
+        return (sigma_at_origin * integral).max(0.0);
+    }
+    let end_y = ray_origin_y + ray_direction_y * length;
+    let log_sigma_at_end = sigma0.ln() - (end_y - base_height) / safe_scale;
+    let sigma_at_end = log_sigma_at_end.clamp(-80.0, 80.0).exp();
+    ((sigma_at_end - sigma_at_origin) / -slope).max(0.0)
+}
+
+pub fn hybrid_slice_distance(
+    normalized_slice: f32,
+    far_distance: f32,
+    linear_depth: f32,
+    linear_fraction: f32,
+) -> f32 {
+    let u = normalized_slice.clamp(0.0, 1.0);
+    let far = far_distance.max(1.0e-4);
+    let linear = linear_depth.clamp(1.0e-4, far);
+    let fraction = linear_fraction.clamp(1.0e-4, 0.9999);
+    if u <= fraction {
+        linear * (u / fraction)
+    } else {
+        let q = (u - fraction) / (1.0 - fraction);
+        linear * (far / linear).powf(q)
+    }
+}
+
+pub fn hybrid_slice_coordinate(
+    distance: f32,
+    far_distance: f32,
+    linear_depth: f32,
+    linear_fraction: f32,
+) -> f32 {
+    let far = far_distance.max(1.0e-4);
+    let linear = linear_depth.clamp(1.0e-4, far);
+    let fraction = linear_fraction.clamp(1.0e-4, 0.9999);
+    let d = distance.clamp(0.0, far);
+    if d <= linear {
+        fraction * (d / linear)
+    } else {
+        fraction + (1.0 - fraction) * (d / linear).ln() / (far / linear).ln()
+    }
+}
 
 /// Single source of truth for whether the composite shader actually
 /// consumes the integrated volumetric output.
@@ -156,11 +216,8 @@ pub const DEFAULT_VOLUME_FAR: f32 = crate::shader_constants::VOLUME_FAR;
 /// `VolumetricsParams::render_origin`'s doc comment and the
 /// interior-godray investigation note in `context/draw.rs`.
 ///
-/// **#1463** remains an open, non-blocking item: `integration_param_buffer`
-/// is single-buffered (sound only because `dt` is immutable today). If a
-/// future Phase 5 exponential-slice distribution makes `dt` per-frame,
-/// convert it to per-FIF first (mirror `param_buffers`) or frame N+1's
-/// host write will race frame N's in-flight integrate read.
+/// Integration parameters are per-FIF; changing reach or slice distribution
+/// cannot race a prior frame's in-flight UBO read.
 pub const VOLUMETRIC_OUTPUT_CONSUMED: bool = true;
 
 /// Integration shader uniform — slab thickness `dt` shared across all
@@ -169,23 +226,27 @@ pub const VOLUMETRIC_OUTPUT_CONSUMED: bool = true;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct IntegrationParams {
-    /// x = dt (m) = `DEFAULT_VOLUME_FAR / FROXEL_DEPTH`. y/z/w = unused.
-    step: [f32; 4],
+    /// x = grid far, y = linear-depth floor, z = linear slice fraction,
+    /// w = depth-slice count. Distances are in world units.
+    grid: [f32; 4],
 }
 
-/// Froxel volume dimensions. The (160, 90) horizontal grid follows
-/// Frostbite SIGGRAPH 2015 (one froxel ≈ 12×12 pixels at 1920×1080,
-/// 8×8 at 1280×720). 128 depth slices give ~5–10 m granularity in
-/// the near field (where most scattering matters) under an
-/// exponential slice distribution to be added in Phase 2.
-///
-/// Memory cost at RGBA16F: 160·90·128·8 = 14.06 MiB per volume. Each
-/// frame-in-flight slot holds two volumes (inject + integrated) =
-/// ~28.12 MiB/slot, ×2 frames-in-flight = ~56.24 MiB total. Well under
-/// the per-pass budget; fits in any RT-class GPU's L2.
-pub const FROXEL_WIDTH: u32 = 160;
-pub const FROXEL_HEIGHT: u32 = 90;
-pub const FROXEL_DEPTH: u32 = 128;
+/// Derive the froxel volume from the *render* extent. This is deliberately
+/// downstream of the FSR preset query: using output resolution here would
+/// silently overspend whenever FSR Quality/Balanced/Performance is active.
+pub fn froxel_extent(render_extent: vk::Extent2D, config: VolumetricsConfig) -> vk::Extent3D {
+    vk::Extent3D {
+        width: render_extent
+            .width
+            .div_ceil(config.froxel_xy_divisor)
+            .max(1),
+        height: render_extent
+            .height
+            .div_ceil(config.froxel_xy_divisor)
+            .max(1),
+        depth: config.froxel_z_slices,
+    }
+}
 
 /// RGB scattered radiance (HDR) + alpha transmittance. RGBA16F
 /// matches Frostbite's reference layout — 8 bytes per froxel,
@@ -208,6 +269,9 @@ pub struct VolumetricsPipeline {
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
+    history_sampler: vk::Sampler,
+    extent: vk::Extent3D,
+    config: VolumetricsConfig,
     /// Per frame-in-flight injection-pass output: per-froxel
     /// `(rgb=inscatter, a=extinction)`. Read by the integration pass.
     /// Phase 5 will additionally read the prior slot for temporal
@@ -230,7 +294,9 @@ pub struct VolumetricsPipeline {
     /// Single-shot integration UBO holding `dt`. Written once in
     /// `new_inner` because dt is constant under linear slice
     /// distribution; Phase 5 will switch to per-frame exponential dt.
-    integration_param_buffer: Option<GpuBuffer>,
+    integration_param_buffers: Vec<GpuBuffer>,
+    history_valid: bool,
+    dispatched_this_frame: bool,
 
     /// Per-frame-in-flight latch: `true` once `write_tlas` has written
     /// binding 2 for this slot. The injection descriptor set is created
@@ -250,8 +316,11 @@ impl VolumetricsPipeline {
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
+        render_extent: vk::Extent2D,
+        config: VolumetricsConfig,
     ) -> Result<Self> {
-        let result = Self::new_inner(device, allocator, pipeline_cache);
+        let config = config.validate()?;
+        let result = Self::new_inner(device, allocator, pipeline_cache, render_extent, config);
         if let Err(ref e) = result {
             log::debug!("Volumetrics pipeline creation failed at: {e}");
         }
@@ -262,13 +331,19 @@ impl VolumetricsPipeline {
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
+        render_extent: vk::Extent2D,
+        config: VolumetricsConfig,
     ) -> Result<Self> {
+        let extent = froxel_extent(render_extent, config);
         let mut partial = Self {
             pipeline: vk::Pipeline::null(),
             pipeline_layout: vk::PipelineLayout::null(),
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_sets: Vec::new(),
+            history_sampler: vk::Sampler::null(),
+            extent,
+            config,
             lighting_volumes: Vec::new(),
             param_buffers: Vec::new(),
             integration_pipeline: vk::Pipeline::null(),
@@ -277,7 +352,9 @@ impl VolumetricsPipeline {
             integration_descriptor_pool: vk::DescriptorPool::null(),
             integration_descriptor_sets: Vec::new(),
             integrated_volumes: Vec::new(),
-            integration_param_buffer: None,
+            integration_param_buffers: Vec::new(),
+            history_valid: false,
+            dispatched_this_frame: false,
             tlas_written: [false; MAX_FRAMES_IN_FLIGHT],
             lights_written: [false; MAX_FRAMES_IN_FLIGHT],
         };
@@ -305,15 +382,37 @@ impl VolumetricsPipeline {
                 device,
                 allocator,
                 &format!("volumetrics_lighting_{i}"),
+                extent,
             ));
             partial.lighting_volumes.push(slot);
             let integrated = try_or_cleanup!(Self::create_froxel_volume(
                 device,
                 allocator,
                 &format!("volumetrics_integrated_{i}"),
+                extent,
             ));
             partial.integrated_volumes.push(integrated);
         }
+
+        // Linear filtering is used for reprojection across froxel boundaries.
+        // All volumes remain in GENERAL for storage writes and history reads.
+        // SAFETY: `device` is live; the create info contains no borrowed
+        // extension chain, and the resulting sampler is owned by `partial`
+        // until construction rollback or `destroy`.
+        partial.history_sampler = try_or_cleanup!(unsafe {
+            device
+                .create_sampler(
+                    &vk::SamplerCreateInfo::default()
+                        .mag_filter(vk::Filter::LINEAR)
+                        .min_filter(vk::Filter::LINEAR)
+                        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+                        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE),
+                    None,
+                )
+                .context("Volumetrics history sampler")
+        });
 
         // ── 2. Per-frame parameter UBOs ───────────────────────────────
         let param_size = std::mem::size_of::<VolumetricsParams>() as vk::DeviceSize;
@@ -371,6 +470,12 @@ impl VolumetricsPipeline {
             vk::DescriptorSetLayoutBinding::default()
                 .binding(5)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // 6: previous frame's raw V-buffer for temporal reprojection.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(6)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
@@ -444,8 +549,13 @@ impl VolumetricsPipeline {
 
         // ── 6. Write descriptor sets ──────────────────────────────────
         for f in 0..MAX_FRAMES_IN_FLIGHT {
+            let previous = (f + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
             let lighting_info = [vk::DescriptorImageInfo::default()
                 .image_view(partial.lighting_volumes[f].view)
+                .image_layout(vk::ImageLayout::GENERAL)];
+            let history_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.history_sampler)
+                .image_view(partial.lighting_volumes[previous].view)
                 .image_layout(vk::ImageLayout::GENERAL)];
             let params_info = [vk::DescriptorBufferInfo {
                 buffer: partial.param_buffers[f].buffer,
@@ -456,6 +566,7 @@ impl VolumetricsPipeline {
             let writes = [
                 write_storage_image(set, 0, &lighting_info),
                 write_uniform_buffer(set, 1, &params_info),
+                write_combined_image_sampler(set, 6, &history_info),
             ];
             // SAFETY: the written descriptor sets and the referenced froxel image
             // view + param UBO are freshly created here and not yet in use by any
@@ -463,30 +574,31 @@ impl VolumetricsPipeline {
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
 
-        // ── 7. Integration pass UBO (single-shot, dt is constant) ─────
-        // #1463: single-buffered (NOT per-FIF) because `dt` is immutable —
-        // written once here and read-only thereafter, so all FIF integrate
-        // descriptor sets may safely alias it. Phase 5 wants a per-slice /
-        // per-frame exponential `dt`; if you start writing this buffer per
-        // frame, FIRST convert it to a per-FIF `Vec<GpuBuffer>` (mirror the
-        // `param_buffers` pattern) or frame N+1's host write will race frame
-        // N's in-flight integrate read (WAR hazard). See the FLIP CHECKLIST
-        // on `VOLUMETRIC_OUTPUT_CONSUMED`.
+        // ── 7. Per-FIF integration parameters ─────────────────────────
+        // The hybrid distribution makes slab thickness depend on Z. Keep the
+        // parameters per-FIF so future weather-driven reach changes cannot
+        // introduce a host-write / in-flight-read WAR hazard.
         let int_param_size = std::mem::size_of::<IntegrationParams>() as vk::DeviceSize;
-        let mut int_param_buffer = try_or_cleanup!(GpuBuffer::create_host_visible(
-            device,
-            allocator,
-            int_param_size,
-            vk::BufferUsageFlags::UNIFORM_BUFFER,
-        ));
-        let dt = DEFAULT_VOLUME_FAR / FROXEL_DEPTH as f32;
         let int_params = IntegrationParams {
-            step: [dt, 0.0, 0.0, 0.0],
+            grid: [
+                config.grid_far_meters as f32 * WORLD_UNITS_PER_METER,
+                LINEAR_DEPTH,
+                LINEAR_SLICE_FRACTION,
+                extent.depth as f32,
+            ],
         };
-        try_or_cleanup!(int_param_buffer
-            .write_mapped(device, std::slice::from_ref(&int_params))
-            .context("write integration params"));
-        partial.integration_param_buffer = Some(int_param_buffer);
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            let mut buffer = try_or_cleanup!(GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                int_param_size,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+            ));
+            try_or_cleanup!(buffer
+                .write_mapped(device, std::slice::from_ref(&int_params))
+                .context("write integration params"));
+            partial.integration_param_buffers.push(buffer);
+        }
 
         // ── 8. Integration descriptor set layout ──────────────────────
         let int_bindings = [
@@ -580,11 +692,6 @@ impl VolumetricsPipeline {
         });
 
         // ── 11. Write integration descriptor sets ─────────────────────
-        let int_param_buffer_handle = partial
-            .integration_param_buffer
-            .as_ref()
-            .expect("integration param buffer was just constructed")
-            .buffer;
         for f in 0..MAX_FRAMES_IN_FLIGHT {
             let inj_info = [vk::DescriptorImageInfo::default()
                 .image_view(partial.lighting_volumes[f].view)
@@ -593,7 +700,7 @@ impl VolumetricsPipeline {
                 .image_view(partial.integrated_volumes[f].view)
                 .image_layout(vk::ImageLayout::GENERAL)];
             let ubo_info = [vk::DescriptorBufferInfo {
-                buffer: int_param_buffer_handle,
+                buffer: partial.integration_param_buffers[f].buffer,
                 offset: 0,
                 range: int_param_size,
             }];
@@ -610,12 +717,15 @@ impl VolumetricsPipeline {
         }
 
         log::info!(
-            "Volumetrics pipeline created: {}x{}x{} froxels, 2× {} MiB / slot (inject + integrated), dt={:.2}m",
-            FROXEL_WIDTH,
-            FROXEL_HEIGHT,
-            FROXEL_DEPTH,
-            (FROXEL_WIDTH as u64 * FROXEL_HEIGHT as u64 * FROXEL_DEPTH as u64 * 8) / (1024 * 1024),
-            dt
+            "Volumetrics pipeline created from render {}x{}: {}x{}x{} froxels (1/{} XY), 2× {} MiB / slot, far={} m",
+            render_extent.width,
+            render_extent.height,
+            extent.width,
+            extent.height,
+            extent.depth,
+            config.froxel_xy_divisor,
+            (extent.width as u64 * extent.height as u64 * extent.depth as u64 * 8) / (1024 * 1024),
+            config.grid_far_meters,
         );
 
         Ok(partial)
@@ -625,15 +735,12 @@ impl VolumetricsPipeline {
         device: &ash::Device,
         allocator: &SharedAllocator,
         name: &str,
+        extent: vk::Extent3D,
     ) -> Result<FroxelSlot> {
         let img_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_3D)
             .format(FROXEL_FORMAT)
-            .extent(vk::Extent3D {
-                width: FROXEL_WIDTH,
-                height: FROXEL_HEIGHT,
-                depth: FROXEL_DEPTH,
-            })
+            .extent(extent)
             .mip_levels(1)
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
@@ -877,7 +984,9 @@ impl VolumetricsPipeline {
         // `GpuBuffer::create_host_visible`, but the execution
         // dependency (HOST → COMPUTE) is still required by the spec
         // to make the write visible to the compute stage.
-        self.param_buffers[frame].write_mapped(device, std::slice::from_ref(params))?;
+        let mut frame_params = *params;
+        frame_params.prev_camera_pos[3] = if self.history_valid { 1.0 } else { 0.0 };
+        self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&frame_params))?;
         // HOST → COMPUTE_SHADER (UBO flush; execution dependency required even
         // for HOST_COHERENT memory to make the write visible to the compute stage).
         memory_barrier(
@@ -903,6 +1012,14 @@ impl VolumetricsPipeline {
             .new_layout(vk::ImageLayout::GENERAL)
             .image(self.lighting_volumes[frame].image)
             .subresource_range(subresource);
+        let previous = (frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+        let history_ready = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(self.lighting_volumes[previous].image)
+            .subresource_range(subresource);
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -910,7 +1027,7 @@ impl VolumetricsPipeline {
             vk::DependencyFlags::empty(),
             &[],
             &[],
-            &[pre_inject],
+            &[pre_inject, history_ready],
         );
 
         // ── Stage C: dispatch injection ──────────────────────────────
@@ -923,9 +1040,9 @@ impl VolumetricsPipeline {
             &[self.descriptor_sets[frame]],
             &[],
         );
-        let inj_groups_x = FROXEL_WIDTH.div_ceil(WORKGROUP_X);
-        let inj_groups_y = FROXEL_HEIGHT.div_ceil(WORKGROUP_Y);
-        let inj_groups_z = FROXEL_DEPTH.div_ceil(WORKGROUP_Z);
+        let inj_groups_x = self.extent.width.div_ceil(WORKGROUP_X);
+        let inj_groups_y = self.extent.height.div_ceil(WORKGROUP_Y);
+        let inj_groups_z = self.extent.depth.div_ceil(WORKGROUP_Z);
         device.cmd_dispatch(cmd, inj_groups_x, inj_groups_y, inj_groups_z);
 
         // ── Stage D: barrier between injection and integration ──────
@@ -970,9 +1087,9 @@ impl VolumetricsPipeline {
             &[],
         );
         // 2D dispatch: one thread per (x, y) column; each thread Z-marches
-        // all FROXEL_DEPTH slices internally.
-        let int_groups_x = FROXEL_WIDTH.div_ceil(WORKGROUP_X);
-        let int_groups_y = FROXEL_HEIGHT.div_ceil(WORKGROUP_Y);
+        // all depth slices internally.
+        let int_groups_x = self.extent.width.div_ceil(WORKGROUP_X);
+        let int_groups_y = self.extent.height.div_ceil(WORKGROUP_Y);
         device.cmd_dispatch(cmd, int_groups_x, int_groups_y, 1);
 
         // ── Stage F: post-integration barrier ────────────────────────
@@ -989,7 +1106,95 @@ impl VolumetricsPipeline {
             &[post_int],
         );
 
+        self.dispatched_this_frame = true;
         Ok(())
+    }
+
+    pub fn signal_history_reset(&mut self) {
+        self.history_valid = false;
+        self.dispatched_this_frame = false;
+    }
+
+    /// Advance temporal validity only after the command buffer that wrote the
+    /// new V-buffer was submitted successfully.
+    pub fn mark_frame_completed(&mut self) {
+        if self.dispatched_this_frame {
+            self.history_valid = true;
+            self.dispatched_this_frame = false;
+        }
+    }
+
+    pub fn config(&self) -> VolumetricsConfig {
+        self.config
+    }
+
+    pub fn extent(&self) -> vk::Extent3D {
+        self.extent
+    }
+
+    pub fn far_distance_world(&self) -> f32 {
+        self.config.grid_far_meters as f32 * WORLD_UNITS_PER_METER
+    }
+
+    /// Clear a frame slot to the neutral composite value when required RT or
+    /// clustered-light inputs are unavailable. This prevents the last valid
+    /// fog volume from hanging over a newly loaded scene.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be recording outside a render pass and `frame` must name an
+    /// idle frame-in-flight slot.
+    pub unsafe fn record_neutral_frame(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
+        let subresource = super::descriptors::color_subresource_single_mip();
+        let image = self.integrated_volumes[frame].image;
+        let to_clear = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(image)
+            .subresource_range(subresource);
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_clear],
+        );
+        device.cmd_clear_color_image(
+            cmd,
+            image,
+            vk::ImageLayout::GENERAL,
+            &vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+            &[subresource],
+        );
+        let to_sample = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(image)
+            .subresource_range(subresource);
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_sample],
+        );
+        self.history_valid = false;
+        self.dispatched_this_frame = false;
     }
 
     /// All per-frame-in-flight integration-output views, in slot order.
@@ -1110,9 +1315,10 @@ impl VolumetricsPipeline {
         // `Arc<Mutex<Allocator>>` clone releases now, not when
         // VulkanContext::Drop's `Arc::try_unwrap` has already given up.
         self.param_buffers.clear();
-        if let Some(mut buf) = self.integration_param_buffer.take() {
+        for buf in &mut self.integration_param_buffers {
             buf.destroy(device, allocator);
         }
+        self.integration_param_buffers.clear();
         if self.integration_pipeline != vk::Pipeline::null() {
             device.destroy_pipeline(self.integration_pipeline, None);
             self.integration_pipeline = vk::Pipeline::null();
@@ -1145,6 +1351,10 @@ impl VolumetricsPipeline {
             device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
             self.descriptor_set_layout = vk::DescriptorSetLayout::null();
         }
+        if self.history_sampler != vk::Sampler::null() {
+            device.destroy_sampler(self.history_sampler, None);
+            self.history_sampler = vk::Sampler::null();
+        }
     }
 }
 
@@ -1155,13 +1365,60 @@ mod unit_tests {
     #[test]
     fn physical_volume_reach_and_extinction_are_converted_to_world_units() {
         let reach_metres = DEFAULT_VOLUME_FAR / WORLD_UNITS_PER_METER;
-        assert!((reach_metres - 200.0).abs() < 1.0e-4);
+        assert!((reach_metres - 128.0).abs() < 1.0e-4);
 
-        // Unit conversion must preserve the authored 200 m optical depth:
+        // Unit conversion must preserve the authored optical depth:
         // sigma_world * distance_world == sigma_m * distance_m.
         let world_optical_depth = DEFAULT_SCATTERING_COEF * DEFAULT_VOLUME_FAR;
         let metre_optical_depth = DEFAULT_SCATTERING_COEF_PER_METER * reach_metres;
         assert!((world_optical_depth - metre_optical_depth).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn horizontal_height_fog_ray_is_finite_and_matches_constant_density() {
+        let tau = height_fog_optical_depth(0.01, 140.0, 0.0, 1_000.0, 0.0, 2_100.0);
+        let expected = 0.01 * (-140.0_f32 / 2_100.0).exp() * 1_000.0;
+        assert!(tau.is_finite());
+        assert!((tau - expected).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn steep_downward_height_fog_ray_stays_finite() {
+        let tau = height_fog_optical_depth(0.01, 10_000.0, -1.0, 1.0e8, 0.0, 2_100.0);
+        assert!(tau.is_finite());
+        assert!(tau >= 0.0);
+    }
+
+    #[test]
+    fn hybrid_slice_mapping_round_trips_and_keeps_first_five_metres_linear() {
+        let far = DEFAULT_VOLUME_FAR;
+        for u in [0.0, 0.03, LINEAR_SLICE_FRACTION, 0.25, 0.5, 1.0] {
+            let distance = hybrid_slice_distance(u, far, LINEAR_DEPTH, LINEAR_SLICE_FRACTION);
+            let reconstructed =
+                hybrid_slice_coordinate(distance, far, LINEAR_DEPTH, LINEAR_SLICE_FRACTION);
+            assert!((reconstructed - u).abs() < 1.0e-5);
+        }
+        assert_eq!(
+            hybrid_slice_distance(
+                LINEAR_SLICE_FRACTION,
+                far,
+                LINEAR_DEPTH,
+                LINEAR_SLICE_FRACTION,
+            ),
+            LINEAR_DEPTH
+        );
+    }
+
+    #[test]
+    fn froxel_extent_uses_render_resolution_and_configured_divisor() {
+        let extent = froxel_extent(
+            vk::Extent2D {
+                width: 1280,
+                height: 720,
+            },
+            VolumetricsConfig::default(),
+        );
+        assert_eq!([extent.width, extent.height, extent.depth], [107, 60, 64]);
     }
 }
 

@@ -88,10 +88,60 @@ impl fmt::Display for UpscalerMode {
     }
 }
 
+/// Resolution and reach knobs for the procedural volumetric-fog grid.
+///
+/// All three values are integers so the process-wide renderer config remains
+/// `Eq` and can still be compared cheaply by settings/telemetry code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumetricsConfig {
+    /// One froxel column per N render-resolution pixels in X and Y.
+    pub froxel_xy_divisor: u32,
+    /// Number of depth slices in the view-aligned volume.
+    pub froxel_z_slices: u32,
+    /// Froxel-grid far plane in physical metres.
+    pub grid_far_meters: u32,
+}
+
+impl Default for VolumetricsConfig {
+    fn default() -> Self {
+        Self {
+            froxel_xy_divisor: 12,
+            froxel_z_slices: 64,
+            grid_far_meters: 128,
+        }
+    }
+}
+
+impl VolumetricsConfig {
+    pub fn validate(self) -> Result<Self, VolumetricsConfigError> {
+        if !(4..=32).contains(&self.froxel_xy_divisor) {
+            return Err(VolumetricsConfigError::XyDivisor(self.froxel_xy_divisor));
+        }
+        if !(16..=256).contains(&self.froxel_z_slices) {
+            return Err(VolumetricsConfigError::ZSlices(self.froxel_z_slices));
+        }
+        if !(32..=512).contains(&self.grid_far_meters) {
+            return Err(VolumetricsConfigError::FarMeters(self.grid_far_meters));
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum VolumetricsConfigError {
+    #[error("froxel XY divisor {0} is outside the supported 4..=32 range")]
+    XyDivisor(u32),
+    #[error("froxel Z slice count {0} is outside the supported 16..=256 range")]
+    ZSlices(u32),
+    #[error("fog grid far plane {0} m is outside the supported 32..=512 m range")]
+    FarMeters(u32),
+}
+
 /// Renderer options parsed once by the application and passed into Vulkan.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RendererConfig {
     pub upscaler: UpscalerMode,
+    pub volumetrics: VolumetricsConfig,
 }
 
 /// Scene-render and presentation extents for one swapchain generation.

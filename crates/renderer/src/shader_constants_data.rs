@@ -180,23 +180,17 @@ pub const THREADS_PER_CLUSTER: u32 = 32;
 // globally instead.
 pub const BLOOM_INTENSITY: f32 = 0.15;
 
-// M55 — volumetric far plane in Bethesda world units. Must match
-// `volumetrics::DEFAULT_VOLUME_FAR`
-// (Rust side) and the `params.volume_extent.x` value passed to the
-// injection compute pass; otherwise the slice→view-distance mapping
-// disagrees and fog appears compressed or stretched. With Phase 3
-// pre-integration the per-fragment cost is now ONE sampler3D tap, so
-// no step-count dial is needed in `composite.frag` — quality scales
-// with the froxel resolution and dt set on the host. Consumed by
-// `composite.frag` (slice math) and `volumetrics_integrate.comp` (dt =
-// VOLUME_FAR / FROXEL_DEPTH).
+// M55 — default volumetric far plane in Bethesda world units. Runtime
+// shaders now receive this through their UBO because the reach is configurable;
+// the generated define remains as the canonical default for diagnostics and
+// shader-contract tests.
 //
 // The renderer deliberately preserves Gamebryo coordinates (70 units per
 // metre). The original 200.0 value was documented and tuned as 200 metres but
 // consumed directly beside world-space positions, truncating the volume at
-// 2.86 m. 14,000 units restores the intended 200 m reach; volumetric density
+// 2.86 m. 8,960 units gives the default 128 m reach; volumetric density
 // is converted from 1/m to 1/world-unit on the host side in volumetrics.rs.
-pub const VOLUME_FAR: f32 = 14_000.0;
+pub const VOLUME_FAR: f32 = 8_960.0;
 
 // Per-instance flag bits on `GpuInstance.flags` (lower 16 bits — the
 // upper 16 bits pack the terrain-tile slot per

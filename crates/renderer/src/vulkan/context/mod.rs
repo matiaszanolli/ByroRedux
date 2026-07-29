@@ -1000,6 +1000,10 @@ pub struct VulkanContext {
     /// SVGF read the raw u32 directly (no precision issue on the
     /// Rust side).
     pub frame_counter: u32,
+    /// Wall-clock-like animation time for stateless volumetric domain warp.
+    /// Advanced only after a successful queue submit so failed/aborted frames
+    /// cannot move density without producing the corresponding V-buffer.
+    pub volumetric_time_seconds: f32,
     /// FSR-authored jitter sequence and one-frame reset state. Present only
     /// for the FSR path; TAA retains its independent legacy sequence.
     pub fsr_temporal: Option<FsrTemporalState>,
@@ -1380,13 +1384,9 @@ pub struct VulkanContext {
     /// sampled views. Non-optional: the R32_UINT atomic storage image the
     /// pass needs is universally supported on desktop GPUs.
     pub caustic: Option<CausticPipeline>,
-    /// Volumetric lighting pipeline (M55, Tier 8). Phase 1 ships a
-    /// no-op clear of the per-frame froxel volume — the plumbing is
-    /// in place; visual output lands in subsequent phases (density+
-    /// lighting injection, ray-march integration, composite sampling).
-    /// `None` when 3D-image allocation or pipeline creation fails on
-    /// initial setup; the dispatch site is gated on `Some` so a
-    /// failure simply skips the pass for the rest of the session.
+    /// Procedural volumetric-lighting pipeline: render-resolution-derived
+    /// froxel V-buffer, temporal density history, TLAS/BLAS visibility, and
+    /// pre-integrated composite output. `None` only when initialization fails.
     pub volumetrics: Option<VolumetricsPipeline>,
     /// Bloom pyramid pipeline (M58, Tier 8). Reads the scene HDR
     /// after TAA, produces a multi-scale blurred bright-content
@@ -2290,24 +2290,22 @@ impl VulkanContext {
             );
         }
 
-        // 14a-bis. Volumetrics pipeline (M55 Phase 1 — no-op clear).
-        // Allocates the per-frame-in-flight 3D froxel volumes
-        // (160×90×128 RGBA16F, ~14 MiB / slot) and the compute
-        // pipeline that clears them. Subsequent phases will replace
-        // the clear with real density + lighting injection and
-        // ray-march integration. Skipped silently on failure — the
-        // dispatch site is gated on `Some` so the rest of the
-        // pipeline stays unaffected.
-        let mut volumetrics =
-            match VolumetricsPipeline::new(&device, &gpu_allocator, pipeline_cache) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    log::warn!(
-                        "Volumetrics pipeline creation failed: {e} — no volumetric lighting"
-                    );
-                    None
-                }
-            };
+        // 14a-bis. Procedural volumetrics. Froxel XY derives from the render
+        // extent after FSR sizing; Z/reach come from the validated renderer
+        // config. Each FIF slot owns raw V-buffer + integrated RGBA16F volumes.
+        let mut volumetrics = match VolumetricsPipeline::new(
+            &device,
+            &gpu_allocator,
+            pipeline_cache,
+            render_extent,
+            renderer_config.volumetrics,
+        ) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                log::warn!("Volumetrics pipeline creation failed: {e} — no volumetric lighting");
+                None
+            }
+        };
         if let Some(ref v) = volumetrics {
             if let Err(e) = unsafe {
                 // SAFETY: `device` + `graphics_queue` are live and
@@ -2375,6 +2373,12 @@ impl VulkanContext {
             (0..n_frames).map(|i| gbuffer_ref.normal_view(i)).collect();
         let albedo_views: Vec<vk::ImageView> =
             (0..n_frames).map(|i| gbuffer_ref.albedo_view(i)).collect();
+        let reactive_views: Vec<vk::ImageView> = (0..n_frames)
+            .map(|i| gbuffer_ref.reactive_view(i))
+            .collect();
+        let transparency_views: Vec<vk::ImageView> = (0..n_frames)
+            .map(|i| gbuffer_ref.transparency_view(i))
+            .collect();
 
         // 14b2. SVGF temporal denoiser — reads raw_indirect + motion +
         // mesh_id from the G-buffer, writes accumulated_indirect images
@@ -2608,6 +2612,8 @@ impl VulkanContext {
             &water_caustic_views,
             &volumetric_views,
             &bloom_views,
+            &reactive_views,
+            &transparency_views,
             texture_registry.descriptor_set_layout,
             frame_extents,
         ) {
@@ -2718,12 +2724,6 @@ impl VulkanContext {
             (0..n_frames).map(|i| gbuffer_ref.motion_view(i)).collect();
         let mesh_id_views: Vec<vk::ImageView> =
             (0..n_frames).map(|i| gbuffer_ref.mesh_id_view(i)).collect();
-        let reactive_views: Vec<vk::ImageView> = (0..n_frames)
-            .map(|i| gbuffer_ref.reactive_view(i))
-            .collect();
-        let transparency_views: Vec<vk::ImageView> = (0..n_frames)
-            .map(|i| gbuffer_ref.transparency_view(i))
-            .collect();
         let framebuffers = create_main_framebuffers(
             &device,
             render_pass,
@@ -2839,6 +2839,7 @@ impl VulkanContext {
             renderer_config,
             frame_extents,
             frame_counter: 0,
+            volumetric_time_seconds: 0.0,
             fsr_temporal,
             render_debug_flags: parse_render_debug_flags_env(),
             // REND-#1451 — default knee = 0.5 (authored radius at half
@@ -3012,6 +3013,9 @@ impl VulkanContext {
         }
         if let Some(ref mut fsr) = self.fsr_temporal {
             fsr.signal_reset();
+        }
+        if let Some(ref mut volumetrics) = self.volumetrics {
+            volumetrics.signal_history_reset();
         }
         // The first frame after a discontinuity must not encode object motion
         // against transforms from the retired scene/camera history.

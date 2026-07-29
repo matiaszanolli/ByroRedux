@@ -514,7 +514,15 @@ impl VulkanContext {
 
         // Collect fresh G-buffer views before we borrow &mut self.svgf /
         // self.composite. Motion and mesh_id are needed by SVGF.
-        let (raw_indirect_views, motion_views_in, mesh_id_views_in, normal_views_in, albedo_views) = {
+        let (
+            raw_indirect_views,
+            motion_views_in,
+            mesh_id_views_in,
+            normal_views_in,
+            albedo_views,
+            reactive_views,
+            transparency_views,
+        ) = {
             let gbuffer_ref = self
                 .gbuffer
                 .as_ref()
@@ -529,7 +537,9 @@ impl VulkanContext {
             // the descriptor write picks up the new image views.
             let nm: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.normal_view(i)).collect();
             let ab: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.albedo_view(i)).collect();
-            (ri, mo, mi, nm, ab)
+            let re: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.reactive_view(i)).collect();
+            let tr: Vec<vk::ImageView> = (0..n).map(|i| gbuffer_ref.transparency_view(i)).collect();
+            (ri, mo, mi, nm, ab, re, tr)
         };
 
         // Recreate SVGF history images + rewrite its descriptor sets
@@ -762,11 +772,57 @@ impl VulkanContext {
             }
         }
 
+        // Froxel XY is derived from the new render resolution (after the FSR
+        // preset query), so the volume cannot survive a render-extent change.
+        // The resize path is device-idle here; rebuild the whole pass to keep
+        // images, per-FIF history descriptors, and dispatch dimensions atomic.
+        let volumetrics_config = self
+            .volumetrics
+            .as_ref()
+            .map_or(self.renderer_config.volumetrics, |volume| volume.config());
+        if let Some(mut old_volumetrics) = self.volumetrics.take() {
+            let allocator = self
+                .allocator
+                .as_ref()
+                .expect("allocator missing during resize");
+            // SAFETY: `recreate_swapchain` waited for the device to become
+            // idle before this phase, so no command buffer can reference the
+            // old froxel images, descriptors, or pipelines.
+            unsafe { old_volumetrics.destroy(&self.device, allocator) };
+        }
+        let allocator = self
+            .allocator
+            .as_ref()
+            .expect("allocator missing during resize");
+        let mut new_volumetrics = super::super::volumetrics::VolumetricsPipeline::new(
+            &self.device,
+            allocator,
+            self.pipeline_cache,
+            self.frame_extents.render,
+            volumetrics_config,
+        )
+        .context("recreate render-resolution froxel volume")?;
+        // SAFETY: `new_volumetrics` exclusively owns freshly-created images;
+        // the device, queue, and transfer pool are live and device-idle here.
+        if let Err(error) = unsafe {
+            new_volumetrics.initialize_layouts(
+                &self.device,
+                &self.graphics_queue,
+                self.transfer_pool,
+            )
+        } {
+            // SAFETY: initialization failed before the pipeline was published
+            // to `self` or submitted by a frame, so its owned handles have no
+            // in-flight users and can be destroyed immediately.
+            unsafe { new_volumetrics.destroy(&self.device, allocator) };
+            return Err(error).context("initialize recreated froxel layouts");
+        }
+        self.volumetrics = Some(new_volumetrics);
+
         // Snapshot bloom + volumetric output views — composite binding 6
         // (volumetric) and binding 7 (bloom) need to be (re-)written.
-        // Volumetric is fixed froxel size (160×90×128 per volumetrics.rs)
-        // so its views survive resize untouched; we still re-bind for
-        // canonical lockstep with init. See #905.
+        // Volumetrics was recreated immediately above because its XY follows
+        // render resolution. See #905.
         let bloom_views: Vec<vk::ImageView> = match self.bloom.as_ref() {
             Some(b) => b.output_views(),
             None => {
@@ -812,6 +868,8 @@ impl VulkanContext {
                 &water_caustic_views,
                 &volumetric_views,
                 &bloom_views,
+                &reactive_views,
+                &transparency_views,
                 self.frame_extents,
             )?;
         }

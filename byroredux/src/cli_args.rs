@@ -5,7 +5,7 @@
 use std::sync::OnceLock;
 
 use anyhow::{bail, Result};
-use byroredux_renderer::{FsrQuality, RendererConfig, UpscalerMode};
+use byroredux_renderer::{FsrQuality, RendererConfig, UpscalerMode, VolumetricsConfig};
 
 /// Process-wide effective args list. Phase 20 / 20.1 — main()
 /// computes the expanded args (after `--game <key>` expansion)
@@ -84,7 +84,25 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
             )
         ),
     };
-    Ok(RendererConfig { upscaler })
+    let parse_u32 = |flag: &str, default: u32| -> Result<u32> {
+        let Some(value) = option(flag)? else {
+            return Ok(default);
+        };
+        value
+            .parse::<u32>()
+            .map_err(|_| anyhow::anyhow!("{flag} requires an unsigned integer, got '{value}'"))
+    };
+    let defaults = VolumetricsConfig::default();
+    let volumetrics = VolumetricsConfig {
+        froxel_xy_divisor: parse_u32("--froxel-xy-divisor", defaults.froxel_xy_divisor)?,
+        froxel_z_slices: parse_u32("--froxel-z-slices", defaults.froxel_z_slices)?,
+        grid_far_meters: parse_u32("--fog-grid-far-m", defaults.grid_far_meters)?,
+    }
+    .validate()?;
+    Ok(RendererConfig {
+        upscaler,
+        volumetrics,
+    })
 }
 
 /// Parse an upscaler spec — the same grammar the CLI accepts, minus the flag
@@ -231,6 +249,29 @@ mod tests {
             .unwrap();
             assert_eq!(parsed.upscaler, UpscalerMode::Fsr3(quality));
         }
+    }
+
+    #[test]
+    fn renderer_config_exposes_validated_froxel_knobs() {
+        let parsed = parse_renderer_config(&args(&[
+            "byroredux",
+            "--froxel-xy-divisor",
+            "16",
+            "--froxel-z-slices",
+            "128",
+            "--fog-grid-far-m",
+            "96",
+        ]))
+        .unwrap();
+        assert_eq!(parsed.volumetrics.froxel_xy_divisor, 16);
+        assert_eq!(parsed.volumetrics.froxel_z_slices, 128);
+        assert_eq!(parsed.volumetrics.grid_far_meters, 96);
+
+        assert!(parse_renderer_config(&args(&["byroredux", "--froxel-z-slices", "8"])).is_err());
+        assert!(
+            parse_renderer_config(&args(&["byroredux", "--fog-grid-far-m", "not-a-number"]))
+                .is_err()
+        );
     }
 
     #[test]
