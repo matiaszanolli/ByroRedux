@@ -5,7 +5,8 @@
 **Status:** froxel core plus authored global/local conversion landed (physical
 spectral single scattering, temporal history, RT visibility, FSR contract,
 XCLL/WTHR → engine-native medium, smoke/fog particles → clustered local
-primitives).
+primitives, boot-generated tileable Perlin-Worley base/detail density,
+weather-classified coverage).
 
 **Location:** `crates/renderer/src/vulkan/volumetrics.rs`,
 `crates/renderer/shaders/volumetrics_{inject,integrate}.comp`,
@@ -52,6 +53,15 @@ of them one physical and temporal contract.
   degenerate, or explicitly zero-opacity ramps produce a disabled medium.
 - WTHR stores separate physical day/night media. Time-of-day and weather
   transitions interpolate those canonical coefficients directly.
+- WTHR classification drives Nubis-style occupancy: pleasant 0.40,
+  unclassified 0.55, cloudy 0.70, snow 0.80, and rainy 0.86. Precipitation
+  takes priority for combined flags; ordinary weather-transition interpolation
+  blends coverage without a shader-side game-format branch.
+- The injector samples a deterministic 64³ R8 base volume (three tileable
+  Perlin octaves plus Worley billows) and a 32³ R8 erosion volume (two Worley
+  octaves plus Perlin detail). Both are generated once at renderer boot,
+  uploaded through staging, then sampled with trilinear repeat. Total resident
+  density data is 288 KiB.
 - One jittered sample is evaluated per froxel. Previous raw V-buffer history
   is reprojected with the previous camera matrix and blended at 0.92 steady
   state. Relative extinction changes exponentially reduce that weight.
@@ -116,19 +126,24 @@ The timer brackets inject plus integrate.
 | Dimension | Value | Froxel extent | Volumetrics GPU | Status / evidence |
 |---|---:|---:|---:|---|
 | XY divisor | 8 | 107×60×64 | — | allocation/dispatch smoke passed; timed warmup pending |
-| XY divisor | 12 | 72×40×64 | 0.12–0.13 ms | repeated measured frames; Vulkan smoke passed |
+| XY divisor | 12 | 72×40×64 | 0.10–0.11 ms | Perlin-Worley/detail volumes; repeated FNV warm frames |
 | XY divisor | 16 | 54×30×64 | — | pending |
 | Z slices | 32 | 72×40×32 | — | pending |
-| Z slices | 64 | 72×40×64 | 0.12–0.13 ms | default |
+| Z slices | 64 | 72×40×64 | 0.10–0.11 ms | default |
 | Z slices | 128 | 72×40×128 | — | pending |
-| Samples/froxel | 1 | 72×40×64 | 0.12–0.13 ms | temporal reprojection enabled |
+| Samples/froxel | 1 | 72×40×64 | 0.10–0.11 ms | temporal reprojection enabled |
 | Samples/froxel | 4 | — | — | follow-up quality mode |
 | Directional visibility | RT, 1 ray | 72×40×64 | included above | TLAS/BLAS path |
 | Directional visibility | cascade, 1 tap | — | — | follow-up non-RT path |
-| Procedural octaves | 3 ALU | 72×40×64 | included above | current default |
-| Detail-volume octaves | 0 / 2 / 3 | — | — | boot-generated R8 volumes follow-up |
+| Base density | 64³ R8, 3 Perlin + 1 Worley | 72×40×64 | included above | 256 KiB, deterministic and tileable |
+| Detail erosion | 32³ R8, 2 Worley + 1 Perlin | 72×40×64 | included above | 32 KiB, deterministic and tileable |
 | Aerial LUT | off | 72×40×64 | included above | analytic fallback active |
 | Aerial LUT | on | — | — | 32³ LUT follow-up |
+
+The 2026-07-29 Prospector rotation matrix measured 0.100–0.106 ms combined
+inject+integrate after the texture-volume change, versus 0.110–0.125 ms for
+the prior three-octave ALU field. Shipping rotation mode 1 moved from 0.116 to
+0.105 ms; the four-mode mean fell from 0.1163 to 0.1035 ms (about 11%).
 
 Target ranges for the reference 160×90×64 grid remain 0.2–0.5 ms inject and
 0.3–0.8 ms integrate. Record inject and integrate separately before treating
@@ -165,9 +180,7 @@ the current combined timer as a final budget verdict.
 
 1. extend authored-mesh replacement to the loose-NIF route and add the optional
    tri-planar 2D-mask density path for silhouettes that need texture fidelity;
-2. generate tileable Perlin-Worley/detail volumes and drive Nubis coverage from
-   weather;
-3. map the verified Starfield height-fog block without guessing its curve;
-4. add the 32³ aerial-perspective LUT and a non-RT cascade visibility variant;
-5. extend the existing glass transmittance hook with ratio tracking and a
+2. map the verified Starfield height-fog block without guessing its curve;
+3. add the 32³ aerial-perspective LUT and a non-RT cascade visibility variant;
+4. extend the existing glass transmittance hook with ratio tracking and a
    majorant grid for path-traced heterogeneous media.

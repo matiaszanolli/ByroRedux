@@ -2306,14 +2306,14 @@ impl VulkanContext {
                 None
             }
         };
-        if let Some(ref v) = volumetrics {
+        if let Some(ref mut v) = volumetrics {
             if let Err(e) = unsafe {
                 // SAFETY: `device` + `graphics_queue` are live and
                 // `transfer_pool` is a command pool from this device; the
                 // volumetrics pipeline `v`'s froxel images were just created
                 // above by the same device, so recording their one-time layout
-                // transition is sound.
-                v.initialize_layouts(&device, &graphics_queue, transfer_pool)
+                // transition and immutable density uploads is sound.
+                v.initialize_layouts(&device, &gpu_allocator, &graphics_queue, transfer_pool)
             } {
                 log::warn!("Volumetrics froxel layout init failed: {e} — disabling volumetrics");
                 if let Some(mut pipe) = volumetrics.take() {

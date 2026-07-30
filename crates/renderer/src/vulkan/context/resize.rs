@@ -807,6 +807,7 @@ impl VulkanContext {
         if let Err(error) = unsafe {
             new_volumetrics.initialize_layouts(
                 &self.device,
+                allocator,
                 &self.graphics_queue,
                 self.transfer_pool,
             )

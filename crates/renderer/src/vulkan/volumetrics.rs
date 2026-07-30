@@ -34,6 +34,9 @@ use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 
+mod noise;
+use noise::{generate_density_noise, BASE_NOISE_SIZE, DETAIL_NOISE_SIZE};
+
 const VOLUMETRICS_INJECT_COMP_SPV: &[u8] =
     include_bytes!("../../shaders/volumetrics_inject.comp.spv");
 const VOLUMETRICS_INTEGRATE_COMP_SPV: &[u8] =
@@ -408,6 +411,7 @@ pub fn froxel_extent(render_extent: vk::Extent2D, config: VolumetricsConfig) -> 
 /// alpha-equivalent (the implicit 0.0 we'd reconstruct) loses the
 /// transmittance channel entirely.
 const FROXEL_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
+const DENSITY_NOISE_FORMAT: vk::Format = vk::Format::R8_UNORM;
 
 struct FroxelSlot {
     image: vk::Image,
@@ -423,6 +427,9 @@ pub struct VolumetricsPipeline {
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
     history_sampler: vk::Sampler,
+    density_noise_sampler: vk::Sampler,
+    base_noise_volume: Option<FroxelSlot>,
+    detail_noise_volume: Option<FroxelSlot>,
     extent: vk::Extent3D,
     config: VolumetricsConfig,
     /// Per frame-in-flight injection-pass output: per-froxel
@@ -505,6 +512,9 @@ impl VolumetricsPipeline {
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_sets: Vec::new(),
             history_sampler: vk::Sampler::null(),
+            density_noise_sampler: vk::Sampler::null(),
+            base_noise_volume: None,
+            detail_noise_volume: None,
             extent,
             config,
             lighting_volumes: Vec::new(),
@@ -549,21 +559,53 @@ impl VolumetricsPipeline {
         // Two volumes per frame: lighting (injection output → integration
         // input) and integrated (integration output → composite read).
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let slot = try_or_cleanup!(Self::create_froxel_volume(
+            let slot = try_or_cleanup!(Self::create_volume(
                 device,
                 allocator,
                 &format!("volumetrics_lighting_{i}"),
                 extent,
+                FROXEL_FORMAT,
+                vk::ImageUsageFlags::STORAGE
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_DST,
             ));
             partial.lighting_volumes.push(slot);
-            let integrated = try_or_cleanup!(Self::create_froxel_volume(
+            let integrated = try_or_cleanup!(Self::create_volume(
                 device,
                 allocator,
                 &format!("volumetrics_integrated_{i}"),
                 extent,
+                FROXEL_FORMAT,
+                vk::ImageUsageFlags::STORAGE
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_DST,
             ));
             partial.integrated_volumes.push(integrated);
         }
+        partial.base_noise_volume = Some(try_or_cleanup!(Self::create_volume(
+            device,
+            allocator,
+            "volumetrics_base_noise",
+            vk::Extent3D {
+                width: BASE_NOISE_SIZE,
+                height: BASE_NOISE_SIZE,
+                depth: BASE_NOISE_SIZE,
+            },
+            DENSITY_NOISE_FORMAT,
+            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+        )));
+        partial.detail_noise_volume = Some(try_or_cleanup!(Self::create_volume(
+            device,
+            allocator,
+            "volumetrics_detail_noise",
+            vk::Extent3D {
+                width: DETAIL_NOISE_SIZE,
+                height: DETAIL_NOISE_SIZE,
+                depth: DETAIL_NOISE_SIZE,
+            },
+            DENSITY_NOISE_FORMAT,
+            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+        )));
 
         // Linear filtering is used for reprojection across froxel boundaries.
         // All volumes remain in GENERAL for storage writes and history reads.
@@ -583,6 +625,26 @@ impl VolumetricsPipeline {
                     None,
                 )
                 .context("Volumetrics history sampler")
+        });
+
+        // The density generator is periodic at the voxel boundary, so
+        // trilinear filtering remains continuous across every repeat seam.
+        // SAFETY: `device` is live, the create info has no extension chain,
+        // and the sampler handle is owned by `partial` until rollback or
+        // explicit pipeline destruction.
+        partial.density_noise_sampler = try_or_cleanup!(unsafe {
+            device
+                .create_sampler(
+                    &vk::SamplerCreateInfo::default()
+                        .mag_filter(vk::Filter::LINEAR)
+                        .min_filter(vk::Filter::LINEAR)
+                        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+                        .address_mode_u(vk::SamplerAddressMode::REPEAT)
+                        .address_mode_v(vk::SamplerAddressMode::REPEAT)
+                        .address_mode_w(vk::SamplerAddressMode::REPEAT),
+                    None,
+                )
+                .context("Volumetrics density-noise sampler")
         });
 
         // ── 2. Per-frame parameter UBOs ───────────────────────────────
@@ -691,6 +753,18 @@ impl VolumetricsPipeline {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // Immutable boot-generated Perlin-Worley base density and
+            // higher-frequency erosion detail.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(10)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(11)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
         validate_set_layout(
             0,
@@ -792,6 +866,20 @@ impl VolumetricsPipeline {
                 range: std::mem::size_of::<[u32; FOG_VOLUME_INDEX_COUNT]>() as vk::DeviceSize,
             }];
             let set = partial.descriptor_sets[f];
+            let base_noise_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.density_noise_sampler)
+                .image_view(partial.base_noise_volume.as_ref().expect("base noise").view)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+            let detail_noise_info = [vk::DescriptorImageInfo::default()
+                .sampler(partial.density_noise_sampler)
+                .image_view(
+                    partial
+                        .detail_noise_volume
+                        .as_ref()
+                        .expect("detail noise")
+                        .view,
+                )
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let writes = [
                 write_storage_image(set, 0, &lighting_info),
                 write_uniform_buffer(set, 1, &params_info),
@@ -799,6 +887,8 @@ impl VolumetricsPipeline {
                 write_storage_buffer(set, 7, &fog_volume_info),
                 write_storage_buffer(set, 8, &fog_cluster_info),
                 write_storage_buffer(set, 9, &fog_index_info),
+                write_combined_image_sampler(set, 10, &base_noise_info),
+                write_combined_image_sampler(set, 11, &detail_noise_info),
             ];
             // SAFETY: the written descriptor sets and the referenced froxel image
             // view + param UBO are freshly created here and not yet in use by any
@@ -963,27 +1053,23 @@ impl VolumetricsPipeline {
         Ok(partial)
     }
 
-    fn create_froxel_volume(
+    fn create_volume(
         device: &ash::Device,
         allocator: &SharedAllocator,
         name: &str,
         extent: vk::Extent3D,
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
     ) -> Result<FroxelSlot> {
         let img_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_3D)
-            .format(FROXEL_FORMAT)
+            .format(format)
             .extent(extent)
             .mip_levels(1)
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
-            // TRANSFER_DST required for `initialize_layouts` to clear the
-            // image to (rgb=0, a=1) via `cmd_clear_color_image` (#1082).
-            .usage(
-                vk::ImageUsageFlags::STORAGE
-                    | vk::ImageUsageFlags::SAMPLED
-                    | vk::ImageUsageFlags::TRANSFER_DST,
-            )
+            .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
         // SAFETY: `device` is live; `img_info` outlives the call; the returned
@@ -1042,7 +1128,7 @@ impl VolumetricsPipeline {
                     &vk::ImageViewCreateInfo::default()
                         .image(image)
                         .view_type(vk::ImageViewType::TYPE_3D)
-                        .format(FROXEL_FORMAT)
+                        .format(format)
                         .subresource_range(super::descriptors::color_subresource_single_mip()),
                     None,
                 )
@@ -1080,16 +1166,43 @@ impl VolumetricsPipeline {
     /// lost, and the froxel images are not concurrently accessed by another
     /// command buffer.
     pub unsafe fn initialize_layouts(
-        &self,
+        &mut self,
         device: &ash::Device,
+        allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         pool: vk::CommandPool,
     ) -> Result<()> {
-        super::texture::with_one_time_commands(device, queue, pool, |cmd| {
-            // ── 1. UNDEFINED → GENERAL layout transition ─────────────────
-            // dst_stage includes TRANSFER so the subsequent clear is
-            // ordered after the layout transition.
-            let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 2);
+        let base_texels = generate_density_noise(BASE_NOISE_SIZE, false);
+        let detail_texels = generate_density_noise(DETAIL_NOISE_SIZE, true);
+        let make_staging = |bytes: &[u8]| -> Result<GpuBuffer> {
+            let mut buffer = GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                bytes.len() as vk::DeviceSize,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+            )?;
+            if let Err(error) = buffer.write_mapped(device, bytes) {
+                buffer.destroy(device, allocator);
+                return Err(error);
+            }
+            Ok(buffer)
+        };
+        let mut base_staging = make_staging(&base_texels)?;
+        let mut detail_staging = match make_staging(&detail_texels) {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                base_staging.destroy(device, allocator);
+                return Err(error);
+            }
+        };
+
+        let upload_result = super::texture::with_one_time_commands(device, queue, pool, |cmd| {
+            let full_range = super::descriptors::color_subresource_single_mip();
+            let base_noise = self.base_noise_volume.as_ref().expect("base noise");
+            let detail_noise = self.detail_noise_volume.as_ref().expect("detail noise");
+
+            // ── 1. Initialize writable froxels and upload-only noise images.
+            let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 2 + 2);
             for slot in self
                 .lighting_volumes
                 .iter()
@@ -1101,13 +1214,21 @@ impl VolumetricsPipeline {
                         | vk::AccessFlags::TRANSFER_WRITE,
                 ));
             }
-            // NONE as srcStageMask: UNDEFINED → GENERAL on the lighting +
-            // integrated volumes has no prior writes to expose; NONE is
-            // the Vulkan 1.3 idiom post-#949 / #1100 / #1122.
-            // SAFETY: `cmd` is recording (provided by with_one_time_commands);
-            // every barrier targets a froxel image owned by `self`, freshly
-            // allocated and not concurrently accessed by another command buffer;
-            // NONE->{COMPUTE,TRANSFER} correctly orders the layout init before the clear.
+            for noise in [base_noise, detail_noise] {
+                barriers.push(
+                    vk::ImageMemoryBarrier::default()
+                        .src_access_mask(vk::AccessFlags::empty())
+                        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                        .image(noise.image)
+                        .subresource_range(full_range),
+                );
+            }
+            // SAFETY: `cmd` is recording; every image is freshly allocated
+            // and exclusively owned by this pipeline. The barriers move
+            // froxels/noise from UNDEFINED to the layouts used by the
+            // immediately following transfer commands.
             unsafe {
                 device.cmd_pipeline_barrier(
                     cmd,
@@ -1120,23 +1241,21 @@ impl VolumetricsPipeline {
                 );
             }
 
-            // ── 2. Clear every froxel image to (inscatter=0, T=1) ───────
+            // ── 2. Clear froxels to the no-fog sentinel.
             // Zero inscatter + unit transmittance is the correct "no fog"
             // sentinel: composite `final = scene * vol.a + vol.rgb`
-            // becomes `scene * 1 + 0 = scene`. TRANSFER_DST usage was
-            // added to the image creation flags for this call (#1082).
+            // becomes `scene * 1 + 0 = scene`.
             let clear_value = vk::ClearColorValue {
                 float32: [0.0, 0.0, 0.0, 1.0],
             };
-            let full_range = super::descriptors::color_subresource_single_mip();
             for slot in self
                 .lighting_volumes
                 .iter()
                 .chain(self.integrated_volumes.iter())
             {
-                // SAFETY: image is in GENERAL layout (transition above),
-                // has TRANSFER_DST usage, and is not referenced by any
-                // in-flight command buffer (called once after new()).
+                // SAFETY: this freshly allocated froxel is in GENERAL, has
+                // TRANSFER_DST usage, and cannot be referenced by an in-flight
+                // frame before initialization publishes the pipeline.
                 unsafe {
                     device.cmd_clear_color_image(
                         cmd,
@@ -1148,9 +1267,47 @@ impl VolumetricsPipeline {
                 }
             }
 
-            // ── 3. TRANSFER_WRITE → COMPUTE_SHADER barrier ──────────────
-            // Ensures the clear is visible before the first inject/integrate
-            // dispatch reads or writes the froxel images.
+            // ── 3. Copy deterministic R8 fields into their immutable images.
+            let subresource = vk::ImageSubresourceLayers::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .mip_level(0)
+                .base_array_layer(0)
+                .layer_count(1);
+            let base_copy = vk::BufferImageCopy::default()
+                .image_subresource(subresource)
+                .image_extent(vk::Extent3D {
+                    width: BASE_NOISE_SIZE,
+                    height: BASE_NOISE_SIZE,
+                    depth: BASE_NOISE_SIZE,
+                });
+            let detail_copy = vk::BufferImageCopy::default()
+                .image_subresource(subresource)
+                .image_extent(vk::Extent3D {
+                    width: DETAIL_NOISE_SIZE,
+                    height: DETAIL_NOISE_SIZE,
+                    depth: DETAIL_NOISE_SIZE,
+                });
+            // SAFETY: both staging buffers are live and fully populated; both
+            // destination images are in TRANSFER_DST_OPTIMAL with matching R8
+            // extents and TRANSFER_DST usage.
+            unsafe {
+                device.cmd_copy_buffer_to_image(
+                    cmd,
+                    base_staging.buffer,
+                    base_noise.image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[base_copy],
+                );
+                device.cmd_copy_buffer_to_image(
+                    cmd,
+                    detail_staging.buffer,
+                    detail_noise.image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[detail_copy],
+                );
+            }
+
+            // ── 4. Publish transfer writes to the compute injector.
             memory_barrier(
                 device,
                 cmd,
@@ -1159,9 +1316,45 @@ impl VolumetricsPipeline {
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
             );
+            let noise_ready = [base_noise, detail_noise].map(|noise| {
+                vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image(noise.image)
+                    .subresource_range(full_range)
+            });
+            // SAFETY: `cmd` is recording and the noise images were written by
+            // the preceding copies. This makes those writes visible and moves
+            // both images into their descriptor-declared sampled layout.
+            unsafe {
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &noise_ready,
+                );
+            }
 
             Ok(())
-        })
+        });
+
+        // The one-time submit waits for the queue before returning, so neither
+        // staging buffer can still be referenced here.
+        base_staging.destroy(device, allocator);
+        detail_staging.destroy(device, allocator);
+        upload_result?;
+        log::info!(
+            "Volumetric density noise uploaded: {}^3 base + {}^3 detail ({} KiB R8)",
+            BASE_NOISE_SIZE,
+            DETAIL_NOISE_SIZE,
+            (base_texels.len() + detail_texels.len()) / 1024,
+        );
+        Ok(())
     }
 
     /// Dispatch both volumetric compute passes for this frame:
@@ -1572,6 +1765,8 @@ impl VolumetricsPipeline {
             .lighting_volumes
             .drain(..)
             .chain(self.integrated_volumes.drain(..))
+            .chain(self.base_noise_volume.take())
+            .chain(self.detail_noise_volume.take())
         {
             device.destroy_image_view(slot.view, None);
             device.destroy_image(slot.image, None);
@@ -1639,6 +1834,10 @@ impl VolumetricsPipeline {
             device.destroy_sampler(self.history_sampler, None);
             self.history_sampler = vk::Sampler::null();
         }
+        if self.density_noise_sampler != vk::Sampler::null() {
+            device.destroy_sampler(self.density_noise_sampler, None);
+            self.density_noise_sampler = vk::Sampler::null();
+        }
     }
 }
 
@@ -1685,12 +1884,15 @@ mod unit_tests {
     }
 
     #[test]
-    fn injector_consumes_authored_fog_tint_as_spectral_albedo() {
+    fn injector_consumes_authored_spectral_albedo_and_density_volumes() {
         let shader = include_str!("../../shaders/volumetrics_inject.comp");
         for contract in [
             "vec4 fog_tint;",
             "params.fog_tint.rgb",
             "global_extinction * global_albedo",
+            "sampler3D baseDensityNoise",
+            "sampler3D detailDensityNoise",
+            "sampledDensity(metres, 96.0, 23.0)",
         ] {
             assert!(
                 shader.contains(contract),

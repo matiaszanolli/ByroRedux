@@ -7,9 +7,10 @@
 //   rgb = inscattered radiance (HDR linear, pre-tone-map)
 //   a   = extinction coefficient (1 / world unit)
 //
-// Density is procedural FBM with curl-noise domain warp. The base σ_t
-// arrives from the engine-native XCLL/WTHR conversion table; slices use
-// the shared 5 m linear floor plus exponential tail and raw V-buffer
+// Density samples boot-generated tileable Perlin-Worley base/detail volumes
+// through a curl-warped domain. The base σ_t arrives from the engine-native
+// XCLL/WTHR conversion table; slices use the shared 5 m linear floor plus
+// exponential tail and raw V-buffer
 // history is reprojected per froxel.
 //
 // Reference: Hillaire, "Physically based and unified volumetric
@@ -140,12 +141,15 @@ layout(std430, set = 0, binding = 9) readonly buffer FogClusterIndexBuffer {
     uint fogClusterIndices[];
 };
 
+layout(set = 0, binding = 10) uniform sampler3D baseDensityNoise;
+layout(set = 0, binding = 11) uniform sampler3D detailDensityNoise;
+
 const float PI = 3.14159265358979323846;
 const uint FOG_CLUSTER_DIM = 16u;
 const uint MAX_FOG_VOLUMES_PER_CLUSTER = 8u;
 
-float valueNoise3D(vec3 p);
 vec3 warpFogDomain(vec3 worldMetres, float timeSeconds);
+float sampledDensity(vec3 metres, float baseScale, float detailScale);
 
 vec3 rotateByQuaternion(vec3 value, vec4 q) {
     return value + 2.0 * cross(q.xyz, cross(q.xyz, value) + q.w * value);
@@ -202,11 +206,7 @@ vec4 sampleLocalMedium(vec3 worldPos) {
         float edge = clamp(volume.albedo_edge.w, 1.0e-3, 1.0);
         float densityProfile = 1.0 - smoothstep(1.0 - edge, 1.0, normalizedRadius);
         vec3 metres = warpFogDomain(worldPos / 70.0, params.temporal_params.z);
-        float noise = valueNoise3D(metres / 2.5) * 0.7
-            + valueNoise3D(metres / 1.25) * 0.3;
-        float coverage = clamp(params.temporal_params.w, 0.05, 1.0);
-        float occupied = clamp((noise - (1.0 - coverage)) / coverage, 0.0, 1.0);
-        densityProfile *= mix(0.35, 1.25, occupied);
+        densityProfile *= mix(0.35, 1.25, sampledDensity(metres, 24.0, 5.5));
         float sigmaT = max(volume.half_extents_extinction.w, 0.0) * densityProfile;
         medium.a += sigmaT;
         medium.rgb += sigmaT * clamp(volume.albedo_edge.rgb, vec3(0.0), vec3(1.0));
@@ -225,37 +225,6 @@ float froxelLightAtten(float dist, float R, float shape) {
     float phys = 1.0 / (1.0 + shape * dn * dn);
     float wcull = 1.0 - smoothstep(knee, max(R, knee + 1.0), dist);
     return phys * wcull;
-}
-
-// Procedural fog density. Low-frequency structure stays ALU-generated at
-// froxel resolution; detail textures can layer on later without making this
-// bandwidth-bound pass dependent on them.
-float hash3(vec3 p) {
-    p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
-    p *= 17.0;
-    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
-}
-
-// Trilinear value noise over the unit lattice containing `p`, in [0, 1].
-float valueNoise3D(vec3 p) {
-    vec3 i = floor(p);
-    vec3 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f); // smoothstep-shaped interpolant
-    float n000 = hash3(i + vec3(0.0, 0.0, 0.0));
-    float n100 = hash3(i + vec3(1.0, 0.0, 0.0));
-    float n010 = hash3(i + vec3(0.0, 1.0, 0.0));
-    float n110 = hash3(i + vec3(1.0, 1.0, 0.0));
-    float n001 = hash3(i + vec3(0.0, 0.0, 1.0));
-    float n101 = hash3(i + vec3(1.0, 0.0, 1.0));
-    float n011 = hash3(i + vec3(0.0, 1.0, 1.0));
-    float n111 = hash3(i + vec3(1.0, 1.0, 1.0));
-    float nx00 = mix(n000, n100, f.x);
-    float nx10 = mix(n010, n110, f.x);
-    float nx01 = mix(n001, n101, f.x);
-    float nx11 = mix(n011, n111, f.x);
-    float nxy0 = mix(nx00, nx10, f.y);
-    float nxy1 = mix(nx01, nx11, f.y);
-    return mix(nxy0, nxy1, f.z);
 }
 
 // Curl of a periodic vector potential. The field is divergence-free by
@@ -286,21 +255,36 @@ vec3 warpFogDomain(vec3 worldMetres, float timeSeconds) {
         - vec3(0.15, 0.0, 0.05) * timeSeconds;
 }
 
+// Nubis-style coverage remap followed by high-frequency edge erosion.
+// Coverage comes from authored WTHR classification and is interpolated by the
+// weather transition system before it reaches this shader.
+float sampledDensity(vec3 metres, float baseScale, float detailScale) {
+    float coverage = clamp(params.temporal_params.w, 0.01, 1.0);
+    float base = texture(baseDensityNoise, metres / baseScale).r;
+    vec3 detailCoords = rotateY(metres, 0.3769911184) / detailScale;
+    float detail = texture(detailDensityNoise, detailCoords).r;
+    float threshold = 1.0 - coverage;
+    float softness = mix(0.045, 0.13, coverage);
+    float occupied = smoothstep(
+        threshold - softness,
+        threshold + softness,
+        base
+    );
+    float boundary = 4.0 * occupied * (1.0 - occupied);
+    float erosion = (1.0 - detail) * boundary * mix(0.42, 0.18, coverage);
+    return clamp(occupied - erosion, 0.0, 1.0);
+}
+
 float proceduralDensityScale(vec3 worldPos, float refHeight) {
     const float WORLD_UNITS_PER_METRE = 70.0;
-    float coverage = clamp(params.temporal_params.w, 0.01, 1.0);
     float heightAbove = max(worldPos.y - refHeight, 0.0);
     float heightTerm = exp(-heightAbove / max(params.medium_params.w, 1.0));
     vec3 metres = warpFogDomain(
         worldPos / WORLD_UNITS_PER_METRE,
         params.temporal_params.z
     );
-    float n = valueNoise3D(metres / 18.0) * 0.5714286;
-    n += valueNoise3D(metres / 9.0) * 0.2857143;
-    n += valueNoise3D(metres / 4.5) * 0.1428571;
-    // Nubis coverage remap: coverage is a visually meaningful occupancy knob.
-    float coverageDensity = clamp((n - (1.0 - coverage)) / coverage, 0.0, 1.0);
-    return heightTerm * mix(0.2, 1.35, coverageDensity);
+    float density = sampledDensity(metres, 96.0, 23.0);
+    return heightTerm * mix(0.2, 1.35, density);
 }
 
 // Binary occlusion test: true if the ray hits ANY geometry in `mask`'s

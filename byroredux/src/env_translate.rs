@@ -289,6 +289,26 @@ pub(crate) fn translate_sky(
     }
 }
 
+/// Convert Bethesda WTHR classification flags into the procedural medium's
+/// occupancy control. Precipitation takes priority when records combine flags;
+/// unclassified legacy weather retains the historical neutral coverage.
+fn fog_coverage_from_weather(classification: u8) -> f32 {
+    use byroredux_plugin::esm::records::weather::{
+        WTHR_CLOUDY, WTHR_PLEASANT, WTHR_RAINY, WTHR_SNOW,
+    };
+    if classification & WTHR_RAINY != 0 {
+        0.86
+    } else if classification & WTHR_SNOW != 0 {
+        0.80
+    } else if classification & WTHR_CLOUDY != 0 {
+        0.70
+    } else if classification & WTHR_PLEASANT != 0 {
+        0.40
+    } else {
+        0.55
+    }
+}
+
 /// WTHR (+ climate for TOD breakpoints) → [`WeatherDataRes`], the full NAM0
 /// table the per-frame interpolator walks. `skyrim_dalc_per_tod` is `Some`
 /// only for Skyrim WTHR (converted Z-up → Y-up once here); `None` elsewhere.
@@ -311,6 +331,23 @@ pub(crate) fn translate_weather(
             DalcCubeYup::from_skyrim_zup(&cubes[3]),
         ]
     });
+    let coverage = fog_coverage_from_weather(wthr.classification);
+    let mut fog_media = [
+        crate::fog::FogMedium::from_legacy_ramp(
+            wthr.fog_day_near,
+            wthr.fog_day_far,
+            Some(wthr.fog_day_max),
+        ),
+        crate::fog::FogMedium::from_legacy_ramp(
+            wthr.fog_night_near,
+            wthr.fog_night_far,
+            Some(wthr.fog_night_max),
+        ),
+    ];
+    for medium in &mut fog_media {
+        medium.coverage = coverage;
+    }
+
     WeatherDataRes {
         sky_colors,
         fog: [
@@ -319,18 +356,7 @@ pub(crate) fn translate_weather(
             wthr.fog_night_near,
             wthr.fog_night_far,
         ],
-        fog_media: [
-            crate::fog::FogMedium::from_legacy_ramp(
-                wthr.fog_day_near,
-                wthr.fog_day_far,
-                Some(wthr.fog_day_max),
-            ),
-            crate::fog::FogMedium::from_legacy_ramp(
-                wthr.fog_night_near,
-                wthr.fog_night_far,
-                Some(wthr.fog_night_max),
-            ),
-        ],
+        fog_media,
         // #463 — per-climate sunrise/sunset breakpoints (validated helper).
         tod_hours: crate::scene::climate_tod_hours(climate),
         skyrim_dalc_per_tod,
@@ -932,6 +958,30 @@ mod tests {
         assert!(wd.skyrim_dalc_per_tod.is_none());
         // The NAM0 table round-trips to f32.
         assert_eq!(wd.sky_colors[SKY_UPPER][TOD_DAY], [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn weather_classification_drives_density_coverage_with_precipitation_priority() {
+        use byroredux_plugin::esm::records::weather::{
+            WTHR_CLOUDY, WTHR_PLEASANT, WTHR_RAINY, WTHR_SNOW,
+        };
+        for (classification, expected) in [
+            (0, 0.55),
+            (WTHR_PLEASANT, 0.40),
+            (WTHR_CLOUDY, 0.70),
+            (WTHR_SNOW, 0.80),
+            (WTHR_RAINY, 0.86),
+            (WTHR_PLEASANT | WTHR_RAINY, 0.86),
+        ] {
+            assert_eq!(fog_coverage_from_weather(classification), expected);
+            let weather = WeatherRecord {
+                classification,
+                ..WeatherRecord::default()
+            };
+            let translated = translate_weather(&weather, None);
+            assert_eq!(translated.fog_media[0].coverage, expected);
+            assert_eq!(translated.fog_media[1].coverage, expected);
+        }
     }
 
     #[test]
