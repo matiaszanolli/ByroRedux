@@ -26,37 +26,59 @@ vec2 parallaxDisplaceUV(
     vec3 viewWorld,
     vec3 N,
     vec3 worldPos,
+    vec4 vertexTangent,
     uint parallaxMapIdx,
     float heightScale,
     float maxPasses
 ) {
-    // Build TBN from screen-space derivatives (same recipe as
-    // perturbNormal — keep the derivation identical so the tangent
-    // basis is consistent across the two passes). The `screenSign`
-    // multiplier on B encodes UV-mirror handedness so V_ts.y has
-    // the same sign convention on mirrored shells as on non-mirrored
-    // ones — otherwise parallax slide along V would be inverted on
-    // every symmetrical mesh half. Companion fix to #1104; the
-    // perturbNormal Path-2 site carries the same correction.
-    vec3 dPdx = dFdx(worldPos);
-    vec3 dPdy = dFdy(worldPos);
-    vec2 dUVdx = dFdx(uv);
-    vec2 dUVdy = dFdy(uv);
-    vec3 T = normalize(dPdx * dUVdy.y - dPdy * dUVdx.y);
-    vec3 B = normalize(dPdy * dUVdx.x - dPdx * dUVdy.x);
-    float screenSign = sign(dUVdx.x * dUVdy.y - dUVdx.y * dUVdy.x);
-    T = normalize(T - dot(T, N) * N);
-    B = screenSign * cross(N, T);
+    // Prefer the authored/synthesized vertex tangent, exactly like
+    // perturbNormal. The old POM path always rebuilt a derivative tangent,
+    // so normal-map detail and parallax motion could disagree at UV seams.
+    // The derivative branch remains for synthetic geometry with no tangent.
+    vec3 frameN = dot(viewWorld, N) >= 0.0 ? N : -N;
+    vec3 T;
+    float tangentSign;
+    if (dot(vertexTangent.xyz, vertexTangent.xyz) > 1e-4) {
+        T = normalize(vertexTangent.xyz);
+        tangentSign = vertexTangent.w < 0.0 ? -1.0 : 1.0;
+    } else {
+        vec3 dPdx = dFdx(worldPos);
+        vec3 dPdy = dFdy(worldPos);
+        vec2 dUVdx = dFdx(uv);
+        vec2 dUVdy = dFdy(uv);
+        T = dPdx * dUVdy.y - dPdy * dUVdx.y;
+        float uvDet = dUVdx.x * dUVdy.y - dUVdx.y * dUVdy.x;
+        tangentSign = uvDet < 0.0 ? -1.0 : 1.0;
+    }
 
-    // View direction in tangent space. xy is the planar slide the
-    // ray makes per unit of depth; z > 0 means we're looking into
-    // the surface (which is always the case for back-face-culled
-    // draws we parallax-map anyway).
-    vec3 V_ts = vec3(dot(viewWorld, T), dot(viewWorld, B), dot(viewWorld, N));
+    T -= dot(T, frameN) * frameN;
+    if (dot(T, T) < 1e-8 || heightScale <= 0.0) {
+        return uv;
+    }
+    T = normalize(T);
+    vec3 B = tangentSign * cross(frameN, T);
+
+    // View direction in tangent space. xy is the planar slide the ray
+    // makes per unit of depth; z > 0 because frameN is view-facing even
+    // on authored two-sided surfaces.
+    vec3 V_ts = vec3(
+        dot(viewWorld, T),
+        dot(viewWorld, B),
+        dot(viewWorld, frameN)
+    );
     float vz = max(V_ts.z, 0.05);
     vec2 planarSlide = V_ts.xy / vz * heightScale;
 
-    int steps = int(clamp(maxPasses, 4.0, 32.0));
+    // Spend the authored maximum near grazing angles, where displacement
+    // changes fastest, and converge toward eight layers head-on. Materials
+    // authored with a four-pass budget retain four passes exactly.
+    float layerBudget = clamp(maxPasses, 4.0, 32.0);
+    float layerFloor = min(layerBudget, 8.0);
+    int steps = int(mix(
+        layerBudget,
+        layerFloor,
+        clamp(V_ts.z, 0.0, 1.0)
+    ) + 0.5);
     float layerDepth = 1.0 / float(steps);
     vec2 deltaUV = planarSlide / float(steps);
 
@@ -70,12 +92,12 @@ vec2 parallaxDisplaceUV(
         }
         currentUV -= deltaUV;
         currentDepth += layerDepth;
-        sampledHeight = texture(textures[nonuniformEXT(parallaxMapIdx)], currentUV).r;
+        sampledHeight = texture(
+            textures[nonuniformEXT(parallaxMapIdx)], currentUV).r;
     }
 
-    // Linear interpolate against the previous layer for smoother
-    // transitions — avoids visible stair-stepping when the step count
-    // is low.
+    // Secant-style interpolation between the last two layers removes the
+    // visible four-step terrace without paying for a second ray march.
     vec2 prevUV = currentUV + deltaUV;
     float afterDepth = sampledHeight - currentDepth;
     float beforeDepth =

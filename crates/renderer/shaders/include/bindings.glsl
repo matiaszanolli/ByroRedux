@@ -258,12 +258,11 @@ layout(set = 1, binding = 15) uniform sampler2D depthHistoryTex;
 // or for splat unorms (4× u8 packed into one float-aliased u32):
 //   `vec4 splat = unpackUnorm4x8(floatBitsToUint(vertexData[base + 20]));`
 //
-// The current RT hit shader (`getHitUV` below) only reads UV at
-// offsets 10..11 and is safe; this comment is the pit-of-failure
+// The current RT hit shader reads positions, normals, UVs, and tangents
+// only from the safe float lanes above. This comment is the pit-of-failure
 // guardrail for future RT shader authors. The
-// `triangle_frag_no_unsafe_vertex_data_reads` test (scene_buffer.rs)
-// statically grep-checks the source so the next forbidden read
-// fails CI immediately.
+// `rt_hit_shaders_have_no_unsafe_vertex_data_reads` test statically checks
+// the source so the next forbidden read fails CI immediately.
 layout(std430, set = 1, binding = 8) readonly buffer GlobalVertices {
     // flat array, stride = `VERTEX_STRIDE_FLOATS` floats (104 bytes).
     // The named const lives below so RT hit-fetch sites have one source of
@@ -279,7 +278,8 @@ layout(std430, set = 1, binding = 8) readonly buffer GlobalVertices {
 // hit-shader code — reads from the same named source. Pre-fix
 // `getHitUV` once carried its own local stride literal (REN-D6-
 // NEW-01); the inline literal worked but each new hit-fetch site
-// VERTEX_STRIDE_FLOATS and VERTEX_UV_OFFSET_FLOATS from shader_constants.glsl.
+// VERTEX_STRIDE_FLOATS plus the position/normal/UV/tangent offsets come from
+// shader_constants.glsl.
 layout(std430, set = 1, binding = 9) readonly buffer GlobalIndices {
     uint indexData[];
 };

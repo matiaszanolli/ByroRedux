@@ -411,7 +411,7 @@ fn water_fragment_uses_shared_material_aware_ray_hits() {
     );
     for needle in [
         "materials[inst.materialId]",
-        "getHitUV(instIdx, primIdx, bary)",
+        "instIdx, primIdx, bary, direction, mat",
         "rayHitHasCoverage(inst, mat, uv, baseSample)",
         "rayHitAlbedo(mat, baseSample.rgb)",
         "rayHitEmission(mat, uv, baseSample.rgb, 0.0)",
@@ -423,6 +423,7 @@ fn water_fragment_uses_shared_material_aware_ray_hits() {
     }
     for helper in [
         "vec2 getHitUV(",
+        "vec2 resolveRayHitUV(",
         "bool rayHitHasCoverage(",
         "vec3 rayHitAlbedo(",
         "vec3 rayHitEmission(",
@@ -438,6 +439,52 @@ fn water_fragment_uses_shared_material_aware_ray_hits() {
             && !frag.contains("avgAlbedoB"),
         "water rays must not regress to the flat instance-average shortcut."
     );
+}
+
+/// Every secondary path that samples a committed material hit must resolve
+/// the same parallax-displaced UV as the primary raster surface. The BVH
+/// remains the authored triangle mesh; this pins material-space consistency,
+/// not displaced silhouettes.
+#[test]
+fn secondary_ray_material_hits_resolve_parallax_uvs() {
+    let hit = include_str!("../../../shaders/include/ray_hit.glsl");
+    let raytrace = include_str!("../../../shaders/include/raytrace.glsl");
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    let triangle = include_str!("../../../shaders/triangle.frag");
+    let water = include_str!("../../../shaders/water.frag");
+
+    for needle in [
+        "bool getRayHitTangentFrame(",
+        "vec2 resolveRayHitUV(",
+        "VERTEX_NORMAL_OFFSET_FLOATS",
+        "VERTEX_TANGENT_OFFSET_FLOATS",
+        "mat.parallaxMapIndex == 0u",
+        "(dbgFlags & DBG_BYPASS_POM) != 0u",
+        "textureLod(",
+    ] {
+        assert!(
+            hit.contains(needle),
+            "shared secondary-hit POM is missing `{needle}`."
+        );
+    }
+
+    for (source_name, source, expected_calls) in [
+        ("raytrace.glsl", raytrace, 1),
+        ("lighting.glsl", lighting, 2),
+        ("triangle.frag", triangle, 2),
+        ("water.frag", water, 1),
+    ] {
+        assert_eq!(
+            source.matches("resolveRayHitUV(").count(),
+            expected_calls,
+            "{source_name} must route every material-sampling ray hit \
+             through shared parallax UV resolution."
+        );
+        assert!(
+            !source.contains("transformRayHitUV("),
+            "{source_name} must not bypass shared parallax UV resolution."
+        );
+    }
 }
 
 /// Reflection tint belongs only to reflected radiance, and transmitted rays
@@ -612,7 +659,7 @@ fn triangle_shaders_keep_the_render_origin_relative_varying_convention() {
             "flat-shading normal",
         ),
         (
-            "fragWorldPosRel,  // #1496 — POM builds its TBN",
+            "fragWorldPosRel,  // #1496 — derivative fallback stays origin-relative",
             "POM / parallaxDisplaceUV",
         ),
         (
@@ -708,7 +755,7 @@ fn composite_screen_to_world_dir_subtracts_camera_pos() {
 /// Pre-fix, a future RT shader author following the existing
 /// `vertexData[base + N]` pattern could silently read u32 /
 /// packed-u8 bit patterns as floats. This test grep-checks the
-/// only shader that currently reads `vertexData` (triangle.frag)
+/// shared secondary-hit include plus its triangle fragment consumer
 /// for any forbidden offset — `+ 12` through `+ 15` (bone
 /// indices) or `+ 20` / `+ 21` (splat weights) — that ISN'T
 /// wrapped in `floatBitsToUint(…)` or `unpackUnorm4x8(…)`.
@@ -718,8 +765,17 @@ fn composite_screen_to_world_dir_subtracts_camera_pos() {
 /// indices but does so through `floatBitsToUint`; the regex
 /// excludes that pattern.
 #[test]
-fn triangle_frag_no_unsafe_vertex_data_reads() {
-    let src = include_str!("../../../shaders/triangle.frag");
+fn rt_hit_shaders_have_no_unsafe_vertex_data_reads() {
+    let sources = [
+        (
+            "triangle.frag",
+            include_str!("../../../shaders/triangle.frag"),
+        ),
+        (
+            "ray_hit.glsl",
+            include_str!("../../../shaders/include/ray_hit.glsl"),
+        ),
+    ];
 
     // Strip safe-recovery wrappers so a forbidden raw read
     // surfaces as a literal `vertexData[... + 11..14|19|20]`.
@@ -727,46 +783,48 @@ fn triangle_frag_no_unsafe_vertex_data_reads() {
     // we reject any line that contains the forbidden offset
     // pattern AND no `floatBitsToUint` / `unpackUnorm4x8` /
     // `floatBitsToInt` recovery call. Whitespace tolerant.
-    for (lineno, line) in src.lines().enumerate() {
-        // Skip the SSBO-declaration block — it documents the
-        // unsafe offsets but doesn't read them.
-        if line.contains("WARNING")
-            || line.contains("│")
-            || line.contains("//")
-                && (line.contains("floatBitsToUint") || line.contains("unpackUnorm4x8"))
-        {
-            continue;
-        }
-        // Look for `vertexData[ ... + N ]` where N is 12-15 or
-        // 20-21. Tolerate whitespace and the `(vOff + iN)` outer
-        // expression that the existing `getHitUV` site uses.
-        for forbidden in [12, 13, 14, 15, 20, 21] {
-            let needle_simple = format!("+ {}]", forbidden);
-            let needle_alt = format!("+{}]", forbidden);
-            if line.contains(&needle_simple) || line.contains(&needle_alt) {
-                // Allow the read when it's wrapped in a
-                // recovery call.
-                if line.contains("floatBitsToUint")
-                    || line.contains("unpackUnorm4x8")
-                    || line.contains("floatBitsToInt")
-                {
-                    continue;
+    for (source_name, src) in sources {
+        for (lineno, line) in src.lines().enumerate() {
+            // Skip the SSBO-declaration block — it documents the
+            // unsafe offsets but doesn't read them.
+            if line.contains("WARNING")
+                || line.contains("│")
+                || line.contains("//")
+                    && (line.contains("floatBitsToUint") || line.contains("unpackUnorm4x8"))
+            {
+                continue;
+            }
+            // Look for `vertexData[ ... + N ]` where N is 12-15 or
+            // 20-21. Tolerate whitespace and the `(vOff + iN)` outer
+            // expression that the existing `getHitUV` site uses.
+            for forbidden in [12, 13, 14, 15, 20, 21] {
+                let needle_simple = format!("+ {}]", forbidden);
+                let needle_alt = format!("+{}]", forbidden);
+                if line.contains(&needle_simple) || line.contains(&needle_alt) {
+                    // Allow the read when it's wrapped in a
+                    // recovery call.
+                    if line.contains("floatBitsToUint")
+                        || line.contains("unpackUnorm4x8")
+                        || line.contains("floatBitsToInt")
+                    {
+                        continue;
+                    }
+                    panic!(
+                        "{source_name}:{}: unsafe `vertexData[... + {}]` read \
+                             (offset {} is {} — not an IEEE-754 float). Use \
+                             `floatBitsToUint(...)` or `unpackUnorm4x8(...)` to \
+                             recover the bit pattern. See #575 / SH-1.\nLine: {}",
+                        lineno + 1,
+                        forbidden,
+                        forbidden,
+                        if (12..=15).contains(&forbidden) {
+                            "u32 (bone index)"
+                        } else {
+                            "packed 4× u8 unorm (splat weight)"
+                        },
+                        line.trim()
+                    );
                 }
-                panic!(
-                    "triangle.frag:{}: unsafe `vertexData[... + {}]` read \
-                         (offset {} is {} — not an IEEE-754 float). Use \
-                         `floatBitsToUint(...)` or `unpackUnorm4x8(...)` to \
-                         recover the bit pattern. See #575 / SH-1.\nLine: {}",
-                    lineno + 1,
-                    forbidden,
-                    forbidden,
-                    if (12..=15).contains(&forbidden) {
-                        "u32 (bone index)"
-                    } else {
-                        "packed 4× u8 unorm (splat weight)"
-                    },
-                    line.trim()
-                );
             }
         }
     }

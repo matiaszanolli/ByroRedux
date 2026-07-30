@@ -90,6 +90,11 @@ fn main() {
         "#define VERTEX_UV_OFFSET_FLOATS {VERTEX_UV_OFFSET_FLOATS}u"
     )
     .unwrap();
+    writeln!(
+        out,
+        "#define VERTEX_TANGENT_OFFSET_FLOATS {VERTEX_TANGENT_OFFSET_FLOATS}u"
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "// Skinning").unwrap();

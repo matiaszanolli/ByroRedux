@@ -184,7 +184,8 @@ void main() {
             baseUV,
             V0,
             N0,
-            fragWorldPosRel,  // #1496 — POM builds its TBN from dFdx(worldPos) only
+            fragWorldPosRel,  // #1496 — derivative fallback stays origin-relative
+            fragTangent,
             mat.parallaxMapIndex,
             mat.parallaxHeightScale,
             mat.parallaxMaxPasses
@@ -1783,11 +1784,8 @@ void main() {
             } else {
                 GpuInstance tInst = instances[tIdx];
                 GpuMaterial tMat = materials[tInst.materialId];
-                vec2 tUV = getHitUV(uint(tIdx), uint(tPrim), tBary);
-                // #494 — BGSM UV transform on the refraction hit too.
-                // R1 Phase 6 — read transform from materials table.
-                tUV = tUV * vec2(tMat.uvScaleU, tMat.uvScaleV)
-                    + vec2(tMat.uvOffsetU, tMat.uvOffsetV);
+                vec2 tUV = resolveRayHitUV(
+                    uint(tIdx), uint(tPrim), tBary, refractDir, tMat);
                 // Sample the refracted surface at a blurred mip level
                 // so the world seen through glass is soft rather than
                 // razor-sharp. Real glass scatters transmitted light;
@@ -3084,8 +3082,8 @@ void main() {
                 vec3 hitN = frontFace ? rawHitN : -rawHitN;
 
                 vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(giRQ, true);
-                vec2 hitUV = transformRayHitUV(
-                    hitMat, getHitUV(uint(hitIdx), uint(hitPrim), hitBary));
+                vec2 hitUV = resolveRayHitUV(
+                    uint(hitIdx), uint(hitPrim), hitBary, pathDir, hitMat);
                 vec4 hitBase;
                 if (!rayHitHasCoverage(hitInst, hitMat, hitUV, hitBase)) {
                     pathOrigin = hitPos + pathDir * 0.1;

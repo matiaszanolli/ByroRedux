@@ -87,9 +87,12 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
         float candidateT = rayQueryGetIntersectionTEXT(rq, true);
         GpuInstance candidateInst = instances[candidateIdx];
         GpuMaterial candidateMat = materials[candidateInst.materialId];
-        vec2 candidateUV = transformRayHitUV(
-            candidateMat,
-            getHitUV(uint(candidateIdx), uint(candidatePrim), candidateBary));
+        vec2 candidateUV = resolveRayHitUV(
+            uint(candidateIdx),
+            uint(candidatePrim),
+            candidateBary,
+            direction,
+            candidateMat);
         vec4 candidateBase;
         bool covered = rayHitHasCoverage(
             candidateInst, candidateMat, candidateUV, candidateBase);

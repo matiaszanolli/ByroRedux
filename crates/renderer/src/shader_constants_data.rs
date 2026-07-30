@@ -57,6 +57,7 @@ pub const SKIN_OUTPUT_STRIDE_FLOATS: u32 = 3;
 // crates/renderer/src/vertex.rs.
 pub const VERTEX_NORMAL_OFFSET_FLOATS: u32 = 7;
 pub const VERTEX_UV_OFFSET_FLOATS: u32 = 10;
+pub const VERTEX_TANGENT_OFFSET_FLOATS: u32 = 22;
 
 // Skinning — see `byroredux_core::ecs::components::skinned_mesh::MAX_BONES_PER_MESH`
 // for the vanilla-content survey that fixes this ceiling at 144 (FO76 prewardress = 133).

@@ -277,8 +277,8 @@ vec3 traceWaterRay(
 
         GpuInstance inst = instances[instIdx];
         GpuMaterial mat = materials[inst.materialId];
-        vec2 uv = transformRayHitUV(
-            mat, getHitUV(instIdx, primIdx, bary));
+        vec2 uv = resolveRayHitUV(
+            instIdx, primIdx, bary, direction, mat);
         vec4 baseSample;
 
         if (rayHitHasCoverage(inst, mat, uv, baseSample)) {

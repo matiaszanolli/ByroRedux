@@ -106,6 +106,15 @@ Source: `crates/renderer/src/vulkan/`
   `rspirv` cross-checks every descriptor layout against the shader's
   declared bindings at pipeline create time (#427); mismatch = hard fail
   instead of silent undefined behaviour at dispatch.
+- **POM material-hit parity** (2026-07-29): primary POM now prefers the
+  authored/synthesized vertex tangent (with the render-origin-relative
+  derivative frame retained as a zero-tangent fallback) and spends the
+  authored layer budget adaptively toward grazing angles. Reflection, GI,
+  refraction-terminus, water, and material-aware shadow hits reconstruct a
+  view-facing tangent frame from committed-hit barycentrics and resolve the
+  same height-displaced material UV before sampling albedo, alpha, or glow.
+  The acceleration structure remains the authored triangle mesh, so POM
+  changes material detail but does not claim displaced silhouettes.
 - **GPU skinning** (M29 Phase 1+2, sessions 18–20; bone-palette M29.5/M29.6):
   see the [GPU skinning](#gpu-skinning) section below.
 - **Caustic scatter** (M22 / #321 Option A): `caustic_splat.comp` projects

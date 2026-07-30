@@ -215,8 +215,8 @@ vec3 traceShadowTransmittance(
         // coverage and terminal emitter shells need material sampling.
         if (!alphaSensitive && !nearEmitter) return vec3(0.0);
 
-        vec2 hitUV = transformRayHitUV(
-            hitMat, getHitUV(uint(hitIdx), uint(hitPrim), hitBary));
+        vec2 hitUV = resolveRayHitUV(
+            uint(hitIdx), uint(hitPrim), hitBary, direction, hitMat);
         vec4 hitBase;
         bool covered = rayHitHasCoverage(hitInst, hitMat, hitUV, hitBase);
         vec3 hitEmission = rayHitEmission(hitMat, hitUV, hitBase.rgb, 0.0);
@@ -253,8 +253,8 @@ vec3 traceShadowTransmittance(
         float hitT = rayQueryGetIntersectionTEXT(glassRQ, true);
         GpuInstance hitInst = instances[hitIdx];
         GpuMaterial hitMat = materials[hitInst.materialId];
-        vec2 hitUV = transformRayHitUV(
-            hitMat, getHitUV(uint(hitIdx), uint(hitPrim), hitBary));
+        vec2 hitUV = resolveRayHitUV(
+            uint(hitIdx), uint(hitPrim), hitBary, direction, hitMat);
         vec4 glassTex;
         bool covered = rayHitHasCoverage(hitInst, hitMat, hitUV, glassTex);
         if (!covered) {
