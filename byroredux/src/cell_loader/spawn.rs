@@ -566,7 +566,10 @@ fn spawn_nif_lights(
             LightSource {
                 radius,
                 color: light.color,
-                flags: 0,
+                // A direct NiPointLight has no ESM LIGH DATA flags. Preserve
+                // its pre-authored-shadow behavior explicitly instead of
+                // letting raw `flags == 0` masquerade as an unshadowed LIGH.
+                flags: byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
                 ..Default::default()
             },
         );

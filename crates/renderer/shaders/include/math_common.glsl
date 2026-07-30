@@ -7,17 +7,17 @@
 
 
 // Sample the 6-axis directional ambient cube along surface normal `N`.
-// Weights are the non-negative components of N on each cardinal axis,
-// so a normal pointing straight up reads `dalcPosY` only (sky-fill);
-// a normal pointing into a wall reads a mix of the lateral axes (cavity
-// fill). Sum of weights = |N.x| + |N.y| + |N.z| ≥ 1 (unit normal),
-// matching the typical 6-axis-cube convention from Halo / Frostbite —
-// the per-axis values are authored knowing this weighting. Replaces the
-// hand-tuned `AMBIENT_AO_FLOOR = 0.3` constant with a directionally-
-// correct sample of the WTHR-authored hemisphere. See #993.
+// Weights are the squared components of N, with the sign selecting the
+// positive or negative face on each axis. For a unit normal they sum to
+// exactly 1, so diagonal and normal-mapped surfaces interpolate the cube
+// without gaining up to sqrt(3) extra irradiance. This is the standard
+// ambient-cube evaluation used by Valve's Source shading model. Replaces
+// the hand-tuned `AMBIENT_AO_FLOOR = 0.3` constant with a directionally-
+// correct sample of the WTHR/XCLL-authored hemisphere. See #993.
 vec3 sampleDalcCube(vec3 N) {
-    vec3 pw = max(N, vec3(0.0));
-    vec3 nw = max(-N, vec3(0.0));
+    vec3 n2 = N * N;
+    vec3 pw = mix(vec3(0.0), n2, greaterThanEqual(N, vec3(0.0)));
+    vec3 nw = mix(vec3(0.0), n2, lessThan(N, vec3(0.0)));
     return dalcPosX.xyz * pw.x + dalcNegX.xyz * nw.x
          + dalcPosY.xyz * pw.y + dalcNegY.xyz * nw.y
          + dalcPosZ.xyz * pw.z + dalcNegZ.xyz * nw.z;
@@ -139,4 +139,3 @@ vec3 cosineWeightedHemisphere(vec3 N, float u1, float u2) {
     buildOrthoBasis(N, T, B);
     return normalize(T * (r * cos(theta)) + B * (r * sin(theta)) + N * sqrt(max(1.0 - u1, 0.0)));
 }
-

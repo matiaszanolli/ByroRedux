@@ -138,8 +138,15 @@ fn resolve_shape_inner(
     // Box
     if let Some(s) = block.as_any().downcast_ref::<BhkBoxShape>() {
         let [hx, hy, hz] = s.dimensions;
+        // Half-extents are magnitudes, not positions. The Z-up → Y-up
+        // change of basis therefore permutes axes without carrying the
+        // position transform's sign: (x, y, z) → (x, z, y). Applying
+        // `havok_to_engine` here used to emit a negative Z extent for every
+        // authored box, which Rapier's `.max(1e-3)` clamp silently collapsed
+        // to a paper-thin collider (NIFAL-D6-02 / #2204).
+        let half_extents = Vec3::new(hx, hz, hy).abs() * scale.abs();
         return Some(CollisionShape::Cuboid {
-            half_extents: finite_vec(havok_to_engine(hx, hy, hz) * scale)?,
+            half_extents: finite_vec(half_extents)?,
         });
     }
 
@@ -396,18 +403,7 @@ fn resolve_tri_strips_data_refs(
         }
     }
 
-    // #1779 — drop the shape if any vertex is non-finite (corrupt/truncated
-    // NIF) so the synthesized-trimesh fallback fires instead of poisoning
-    // parry's broadphase with NaN AABB bounds, mirroring the primitive
-    // finite guards (#1409 / NIFAL-S4).
-    if all_verts.is_empty() || all_verts.iter().any(|v| !v.is_finite()) {
-        return None;
-    }
-
-    Some(CollisionShape::TriMesh {
-        vertices: all_verts,
-        indices: all_indices,
-    })
+    finish_trimesh(all_verts, all_indices)
 }
 
 /// Convert hkPackedNiTriStripsData into a TriMesh. `havok_scale` is the world
@@ -420,10 +416,6 @@ fn resolve_packed_mesh(
     havok_scale: f32,
     extra_scale: [f32; 3],
 ) -> Option<CollisionShape> {
-    if data.vertices.is_empty() {
-        return None;
-    }
-
     let vertices: Vec<Vec3> = data
         .vertices
         .iter()
@@ -442,13 +434,7 @@ fn resolve_packed_mesh(
         .map(|t| [t.v0 as u32, t.v1 as u32, t.v2 as u32])
         .collect();
 
-    // #1779 — non-finite vertices (NaN/±Inf from a corrupt decode) would
-    // poison parry's broadphase; drop to the synth-trimesh fallback instead.
-    if vertices.iter().any(|v| !v.is_finite()) {
-        return None;
-    }
-
-    Some(CollisionShape::TriMesh { vertices, indices })
+    finish_trimesh(vertices, indices)
 }
 
 /// Convert bhkCompressedMeshShapeData into a TriMesh.
@@ -495,56 +481,87 @@ fn resolve_compressed_mesh(
             all_verts.push(havok_to_engine(x, y, z) * scale);
         }
 
-        // Havok chunk indices reference into the flat u16 vertex component array
-        // (pre-multiplied by 3). Since we store vertices as [u16; 3] triples,
-        // divide each index by 3 to get the vertex triple index.
+        // `Num Vertices` is the only component-counted field: the parser
+        // already divides it by three when it constructs `Vec<[u16; 3]>`.
+        // Chunk indices are ordinary vertex indices, exactly as nif.xml's
+        // "Vertex indices as used by strips" contract says. Dividing them by
+        // three again destroyed most Skyrim collision geometry
+        // (NIFAL-D6-01 / #2203).
         if chunk.strips.is_empty() {
             // Plain triangle list: every 3 indices = 1 triangle.
             let mut i = 0;
             while i + 2 < chunk.indices.len() {
-                let a = chunk.indices[i] as u32 / 3 + base;
-                let b = chunk.indices[i + 1] as u32 / 3 + base;
-                let c = chunk.indices[i + 2] as u32 / 3 + base;
-                if a != b && b != c && a != c {
-                    all_indices.push([a, b, c]);
-                }
+                all_indices.push([
+                    chunk.indices[i] as u32 + base,
+                    chunk.indices[i + 1] as u32 + base,
+                    chunk.indices[i + 2] as u32 + base,
+                ]);
                 i += 3;
             }
         } else {
-            // Triangle strips: convert each strip to triangles.
+            // Triangle strips occupy the prefix described by `strips`.
+            // Any residual indices are a plain triangle list (nif.xml:
+            // strips records only runs longer than one triangle).
             let mut idx_offset = 0usize;
             for &strip_len in &chunk.strips {
-                let end = idx_offset + strip_len as usize;
-                let strip = &chunk.indices[idx_offset..end.min(chunk.indices.len())];
+                if idx_offset >= chunk.indices.len() {
+                    break;
+                }
+                let end = idx_offset
+                    .saturating_add(strip_len as usize)
+                    .min(chunk.indices.len());
+                let strip = &chunk.indices[idx_offset..end];
                 for j in 2..strip.len() {
                     let (a, b, c) = if j % 2 == 0 {
                         (strip[j - 2], strip[j - 1], strip[j])
                     } else {
-                        (strip[j - 1], strip[j - 2], strip[j])
+                        // Same odd-triangle convention as
+                        // `NiTriStripsData::to_triangles`: swap the last two.
+                        (strip[j - 2], strip[j], strip[j - 1])
                     };
-                    if a != b && b != c && a != c {
-                        all_indices.push([
-                            a as u32 / 3 + base,
-                            b as u32 / 3 + base,
-                            c as u32 / 3 + base,
-                        ]);
-                    }
+                    all_indices.push([a as u32 + base, b as u32 + base, c as u32 + base]);
                 }
                 idx_offset = end;
+            }
+
+            // NIFAL-D6-04 / #2208: 88% of Skyrim strip chunks carry this
+            // trailing triangle-list block. The old loop abandoned it.
+            let mut i = idx_offset;
+            while i + 2 < chunk.indices.len() {
+                all_indices.push([
+                    chunk.indices[i] as u32 + base,
+                    chunk.indices[i + 1] as u32 + base,
+                    chunk.indices[i + 2] as u32 + base,
+                ]);
+                i += 3;
             }
         }
     }
 
-    // #1779 — same non-finite guard as the other TriMesh resolvers; a
-    // bad dequantized chunk vertex must not reach parry's broadphase.
-    if all_verts.is_empty() || all_verts.iter().any(|v| !v.is_finite()) {
+    finish_trimesh(all_verts, all_indices)
+}
+
+/// Enforce the canonical `TriMesh` boundary shared by every NIF collision
+/// resolver: `Some(TriMesh)` means at least one usable triangle exists.
+///
+/// Returning a vertex-only / degenerate mesh is worse than returning `None`:
+/// the cell loader treats `Some` as authored collision and suppresses its
+/// synthesized-render-mesh fallback. Invalid triangles are discarded so a
+/// corrupt tail cannot poison otherwise usable authored geometry.
+fn finish_trimesh(vertices: Vec<Vec3>, mut indices: Vec<[u32; 3]>) -> Option<CollisionShape> {
+    if vertices.is_empty() || vertices.iter().any(|v| !v.is_finite()) {
         return None;
     }
 
-    Some(CollisionShape::TriMesh {
-        vertices: all_verts,
-        indices: all_indices,
-    })
+    let vertex_count = vertices.len() as u32;
+    indices.retain(|[a, b, c]| {
+        a != b && b != c && a != c && *a < vertex_count && *b < vertex_count && *c < vertex_count
+    });
+    if indices.is_empty() {
+        return None;
+    }
+
+    Some(CollisionShape::TriMesh { vertices, indices })
 }
 
 #[cfg(test)]
@@ -557,9 +574,10 @@ mod cycle_tests {
     //! resolves on both arms.
     use super::*;
     use crate::blocks::collision::{
-        BhkAabbPhantom, BhkConvexListShape, BhkConvexSweepShape, BhkListShape, BhkMeshShape,
-        BhkMultiSphereShape, BhkNiTriStripsShape, BhkPackedNiTriStripsShape, BhkSimpleShapePhantom,
-        BhkSphereShape, HkPackedNiTriStripsData, PackedTriangle,
+        BhkAabbPhantom, BhkBoxShape, BhkCompressedMeshShapeData, BhkConvexListShape,
+        BhkConvexSweepShape, BhkListShape, BhkMeshShape, BhkMultiSphereShape, BhkNiTriStripsShape,
+        BhkPackedNiTriStripsShape, BhkSimpleShapePhantom, BhkSphereShape, CmsChunk,
+        HkPackedNiTriStripsData, PackedTriangle,
     };
     use crate::blocks::tri_shape::NiTriStripsData;
     use crate::blocks::NiObject;
@@ -715,6 +733,150 @@ mod cycle_tests {
         }));
         let mut visited = HashSet::new();
         assert!(resolve_shape(&scene, BlockRef(0u32), &mut visited).is_none());
+    }
+
+    #[test]
+    fn box_extents_permute_axes_without_position_sign() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 2.0;
+        scene.blocks.push(Box::new(BhkBoxShape {
+            material: 0,
+            radius: 0.0,
+            dimensions: [1.0, 2.0, 3.0],
+        }));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::Cuboid { half_extents }) => {
+                assert_eq!(half_extents, Vec3::new(2.0, 6.0, 4.0));
+                assert!(
+                    half_extents.x >= 0.0 && half_extents.y >= 0.0 && half_extents.z >= 0.0,
+                    "canonical half-extents must remain magnitudes"
+                );
+            }
+            other => panic!("expected Cuboid, got {other:?}"),
+        }
+    }
+
+    fn compressed_data(chunks: Vec<CmsChunk>) -> BhkCompressedMeshShapeData {
+        BhkCompressedMeshShapeData {
+            bits_per_index: 0,
+            bits_per_w_index: 0,
+            mask_w_index: 0,
+            mask_index: 0,
+            error: 1.0,
+            aabb_min: [0.0; 4],
+            aabb_max: [0.0; 4],
+            chunk_materials: Vec::new(),
+            chunk_transforms: Vec::new(),
+            big_verts: Vec::new(),
+            big_tris: Vec::new(),
+            chunks,
+        }
+    }
+
+    fn compressed_chunk(vertex_count: usize, indices: Vec<u16>, strips: Vec<u16>) -> CmsChunk {
+        CmsChunk {
+            translation: [0.0; 4],
+            material_index: 0,
+            transform_index: 0,
+            vertices: (0..vertex_count)
+                .map(|i| [i as u16, (i % 2) as u16, 0])
+                .collect(),
+            indices,
+            strips,
+        }
+    }
+
+    #[test]
+    fn compressed_mesh_indices_are_vertex_indices() {
+        // Mirrors the measured rttempleplazafloorr01 shape: 24 vertices,
+        // 24 sequential indices, eight plain triangles. The pre-fix `/3`
+        // collapsed most triples to one repeated vertex.
+        let data = compressed_data(vec![compressed_chunk(24, (0u16..24).collect(), Vec::new())]);
+        match resolve_compressed_mesh(&data, 1.0) {
+            Some(CollisionShape::TriMesh { vertices, indices }) => {
+                assert_eq!(vertices.len(), 24);
+                assert_eq!(indices.len(), 8);
+                assert_eq!(indices[0], [0, 1, 2]);
+                assert_eq!(indices[7], [21, 22, 23]);
+            }
+            other => panic!("expected eight-triangle compressed mesh, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compressed_mesh_preserves_strip_tail_triangle_list() {
+        let data = compressed_data(vec![compressed_chunk(
+            7,
+            vec![0, 1, 2, 3, 4, 5, 6],
+            vec![4],
+        )]);
+        match resolve_compressed_mesh(&data, 1.0) {
+            Some(CollisionShape::TriMesh { indices, .. }) => {
+                assert_eq!(indices.len(), 3, "two strip tris + one list tri");
+                assert_eq!(indices[0], [0, 1, 2]);
+                assert_eq!(indices[1], [1, 3, 2]);
+                assert_eq!(indices[2], [4, 5, 6]);
+            }
+            other => panic!("expected strip plus trailing list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compressed_mesh_overlong_strip_table_does_not_panic() {
+        // First authored strip overruns the three available indices; the
+        // second strip used to slice from start=4 to clamped end=3 and panic.
+        let data = compressed_data(vec![compressed_chunk(3, vec![0, 1, 2], vec![4, 1])]);
+        match resolve_compressed_mesh(&data, 1.0) {
+            Some(CollisionShape::TriMesh { indices, .. }) => {
+                assert_eq!(indices, vec![[0, 1, 2]]);
+            }
+            other => panic!("valid prefix triangle should survive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collision_trimesh_resolvers_drop_geometry_without_triangles() {
+        let compressed = compressed_data(vec![compressed_chunk(3, vec![0, 0, 0], Vec::new())]);
+        assert!(
+            resolve_compressed_mesh(&compressed, 1.0).is_none(),
+            "degenerate compressed geometry must enable the synth fallback"
+        );
+
+        let packed = HkPackedNiTriStripsData {
+            triangles: Vec::new(),
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        };
+        assert!(
+            resolve_packed_mesh(&packed, 1.0, [1.0; 3]).is_none(),
+            "vertex-only packed geometry must enable the synth fallback"
+        );
+
+        let mut scene = NifScene::default();
+        scene.blocks.push(tri_strips_data(
+            vec![
+                NiPoint3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                NiPoint3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+            ],
+            Vec::new(),
+        ));
+        assert!(
+            resolve_tri_strips_data_refs(&scene, &[BlockRef(0u32)], [1.0; 3]).is_none(),
+            "vertex-only NiTriStrips geometry must enable the synth fallback"
+        );
     }
 
     #[test]

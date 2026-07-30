@@ -2447,10 +2447,15 @@ void main() {
             vec3 shadowableRadiance = shadowableLightRadiance(
                 i, N, V, NdotV, F0, albedo, roughness, metalness,
                 specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
+            bool castsShadow = lights[i].params.z > 0.5;
 
             // Accumulate as if unshadowed (legacy subtractive estimator
             // only — ReSTIR adds the single shadowed sample after the loop).
-            if (!useRestir) {
+            // Authored non-shadow lights bypass the visibility estimator and
+            // retain their ordinary direct contribution. Skyrim uses these
+            // heavily with Portal-strict room scoping; treating every one as
+            // a shadow-map light produced shadows vanilla never authored.
+            if (!useRestir || !castsShadow) {
                 Lo += shadowableRadiance;
             }
 
@@ -2524,7 +2529,7 @@ void main() {
 
             // Stream this light into the shared shadow reservoir. Both
             // interior and exterior sources reach this exact path.
-            if (rtEnabled && shadowFade > 0.01) {
+            if (rtEnabled && castsShadow && shadowFade > 0.01) {
                 // Target pdf: luminance of the to-be-subtracted radiance
                 // (`shadowableRadiance` computed above). Sampling
                 // proportional to this approximates the optimal
@@ -2623,7 +2628,8 @@ void main() {
                 // contents (surface identity + geometric normal + light index
                 // in range + finite-positive weight). The final visibility ray
                 // re-validates the selected light at the current surface.
-                if (sameSurface && rpLightIndex < lightCount && rp.M > 0.0
+                if (sameSurface && rpLightIndex < lightCount
+                    && lights[rpLightIndex].params.z > 0.5 && rp.M > 0.0
                     && rp.W > 0.0 && !isnan(rp.W) && !isinf(rp.W)) {
                     vec3 rpRad = shadowableLightRadiance(
                         rpLightIndex, N, V, NdotV, F0, albedo, roughness,
@@ -2715,7 +2721,8 @@ void main() {
 
                     // Re-evaluate the neighbour's pick at THIS surface, gated on
                     // geometric-normal similarity (skip cross-edge neighbours).
-                    if (rnLightIndex < lightCount && rn.M > 0.0
+                    if (rnLightIndex < lightCount
+                        && lights[rnLightIndex].params.z > 0.5 && rn.M > 0.0
                         && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)
                         && dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS) {
                         vec3 rnRad = shadowableLightRadiance(
@@ -2744,7 +2751,8 @@ void main() {
                 restirW = min(restirWSum / (restirM * restirPHat), RESERVOIR_W_CLAMP);
             }
             vec3 frameContribution = vec3(0.0); // this frame's rad·W·V estimate
-            if (restirY != 0xFFFFFFFFu && restirW > 0.0 && shadowFade > 0.01) {
+            if (restirY != 0xFFFFFFFFu && restirW > 0.0
+                && lights[restirY].params.z > 0.5 && shadowFade > 0.01) {
                 uint i = restirY;
                 vec3 lightPos = lights[i].position_radius.xyz;
                 float radius = lights[i].position_radius.w;
@@ -2852,6 +2860,7 @@ void main() {
         for (uint s = 0; s < NUM_RESERVOIRS; s++) {
             if (resLight[s] == 0xFFFFFFFFu) continue;
             uint i = resLight[s];
+            if (lights[i].params.z <= 0.5) continue;
             float W = min((resWSum / max(resWSel[s], 1e-6)) * invK, RESERVOIR_W_CLAMP);
             vec3 lightPos = lights[i].position_radius.xyz;
             float radius = lights[i].position_radius.w;

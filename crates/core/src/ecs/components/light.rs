@@ -88,6 +88,23 @@ pub const LIGHT_FLAG_PULSE: u32 = 0x0000_0080;
 /// definitions — see `LightFlicker::animation_flags` below.)
 pub const LIGHT_FLAG_PULSE_SLOW: u32 = 0x0000_0100;
 
+// ── Skyrim/Fallout shadow behavior bits ─────────────────────────────
+//
+// These are raw LIGH DATA flags, not animation behaviors. xEdit's TES5
+// definitions identify the three mutually-compatible shadow projections
+// at 0x400/0x800/0x1000; a light with none of them is intentionally
+// unshadowed (often paired with Portal-strict at 0x2000).
+
+/// Authored cone/spotlight shadow projection.
+pub const LIGHT_FLAG_SHADOW_SPOTLIGHT: u32 = 0x0000_0400;
+/// Authored hemispherical shadow projection.
+pub const LIGHT_FLAG_SHADOW_HEMISPHERE: u32 = 0x0000_0800;
+/// Authored omnidirectional shadow projection.
+pub const LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL: u32 = 0x0000_1000;
+/// Any authored shadow projection accepted by the renderer.
+pub const LIGHT_FLAG_SHADOW_MASK: u32 =
+    LIGHT_FLAG_SHADOW_SPOTLIGHT | LIGHT_FLAG_SHADOW_HEMISPHERE | LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL;
+
 /// Procedural light-animation behavior plus the parameters sourced from
 /// the LIGH DATA subrecord (`period_secs`, `intensity_amplitude`,
 /// `movement_amplitude`). Attached at spawn time to every light whose

@@ -539,6 +539,28 @@ mod dalc_cube_tests {
     }
 
     #[test]
+    fn from_xcll_zup_maps_ordered_faces_to_engine_axes() {
+        let faces = [
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [6.0, 0.0, 0.0],
+        ];
+        let yup = DalcCubeYup::from_xcll_zup(&faces, [0.2, 0.4, 0.6], 1.5);
+
+        assert_eq!(yup.pos_x, faces[0]);
+        assert_eq!(yup.neg_x, faces[1]);
+        assert_eq!(yup.neg_z, faces[2]);
+        assert_eq!(yup.pos_z, faces[3]);
+        assert_eq!(yup.pos_y, faces[4]);
+        assert_eq!(yup.neg_y, faces[5]);
+        assert_eq!(yup.specular, [0.2, 0.4, 0.6]);
+        assert_eq!(yup.fresnel_power, 1.5);
+    }
+
+    #[test]
     fn from_skyrim_zup_maps_bethesda_up_to_engine_pos_y() {
         let yup = DalcCubeYup::from_skyrim_zup(&distinctive_cube());
         // Bethesda +Z (sky-fill) lands on engine +Y.
@@ -672,6 +694,33 @@ pub(crate) struct DalcCubeYup {
 }
 
 impl DalcCubeYup {
+    /// Convert the Skyrim XCLL directional-ambient face array from
+    /// Bethesda Z-up into engine Y-up axes.
+    ///
+    /// XCLL stores faces in `[+X, -X, +Y, -Y, +Z, -Z]` order. This is
+    /// the same axis permutation as [`Self::from_skyrim_zup`], but the
+    /// source values have already been decoded to linear RGB floats.
+    pub(crate) fn from_xcll_zup(
+        faces: &[[f32; 3]; 6],
+        specular: [f32; 3],
+        fresnel_power: f32,
+    ) -> Self {
+        Self {
+            pos_x: faces[0],
+            neg_x: faces[1],
+            // Z-up "up" → Y-up "up".
+            pos_y: faces[4],
+            // Z-up "down" → Y-up "down".
+            neg_y: faces[5],
+            // Z-up "north" (+Y) → Y-up "south" (-Z).
+            neg_z: faces[2],
+            // Z-up "south" (-Y) → Y-up "north" (+Z).
+            pos_z: faces[3],
+            specular,
+            fresnel_power,
+        }
+    }
+
     /// Convert a Bethesda-Z-up `SkyrimAmbientCube` into engine Y-up
     /// axes. The byte→field mapping in the WTHR parser is literal
     /// (no axis swap), so we apply the swap here once per TOD slot,

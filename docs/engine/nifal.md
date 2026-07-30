@@ -169,7 +169,7 @@ a richer canonical size model), and per-emitter (vs scene-first) attribution for
 multi-emitter NIFs. Tooling: `crates/nif/examples/emitter_dump.rs`
 (`rate / radius / bscale / speed / declination / life / initColor`).
 
-### Collision — **audited (2026-05-28)**
+### Collision — **audited (2026-05-28; remediation 2026-07-30)**
 
 Havok → engine transform + `havok_scale` are applied uniformly in
 `import/collision.rs::resolve_shape`, and the bhk* shapes map to `CollisionShape` /
@@ -187,6 +187,17 @@ documented limitations, not gaps: `BhkNPCollisionObject` (FO4+ Havok-serialised
 blob — decoder is a separate project; cell loader falls back to synthesized static
 trimesh) and `BhkPCollisionObject` phantoms (need a `TriggerVolume` ECS path, not a
 rigid body) — see the table at the top of `import/collision.rs`.
+
+The 2026-07-30 playable-cell remediation corrected four canonical-boundary bugs
+found by the later real-data audit: compressed-mesh chunk indices are direct
+vertex indices (only the authored vertex component count is divided by three);
+strip runs may be followed by a plain triangle-list tail; a resolved `TriMesh`
+must contain at least one finite, in-range, non-degenerate triangle or return
+`None` so the cell loader's synthesized fallback remains available; and cuboid
+half-extents use the Z-up → Y-up axis permutation without the position
+transform's sign. Release runs against Skyrim SE now keep the player grounded in
+both `BleakFallsBarrow01` and the `WhiterunDragonsreach` control. Oblivion's
+separate inverted-contact-normal follow-up remains tracked by #2193.
 
 ### Animation / controllers — **converged (surveyed 2026-06-02)**
 

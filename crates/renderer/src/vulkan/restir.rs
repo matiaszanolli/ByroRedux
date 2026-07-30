@@ -189,6 +189,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn authored_non_shadow_lights_bypass_restir_visibility() {
+        let src = include_str!("../../shaders/triangle.frag");
+        assert!(
+            src.contains("bool castsShadow = lights[i].params.z > 0.5;")
+                && src.contains("if (!useRestir || !castsShadow)")
+                && src.contains("if (rtEnabled && castsShadow && shadowFade > 0.01)"),
+            "non-shadow LIGH sources must contribute directly without entering ReSTIR"
+        );
+        assert!(
+            src.contains("lights[rpLightIndex].params.z > 0.5")
+                && src.contains("lights[rnLightIndex].params.z > 0.5")
+                && src.contains("lights[restirY].params.z > 0.5"),
+            "temporal, spatial, and final ReSTIR stages must reject stale non-shadow selections"
+        );
+    }
+
     /// Ping-pong: curr/prev are always different slots at
     /// MAX_FRAMES_IN_FLIGHT == 2 (else temporal history aliases the write).
     #[test]

@@ -12,7 +12,7 @@
 //! translation in `merge_external_material`; see
 //! `feedback_format_translation.md`.
 
-use byroredux_core::ecs::{GlobalTransform, LightSource, World};
+use byroredux_core::ecs::{GlobalTransform, LightSource, World, LIGHT_FLAG_SHADOW_MASK};
 
 use crate::components::{CellLightingRes, SkyParamsRes};
 
@@ -140,7 +140,10 @@ pub(super) fn collect_lights(
             // is a no-op for them but the shader still reads `params.x`
             // unconditionally — pass `0.0` (the "use default" sentinel)
             // so the shader's directional branch ignores it cleanly.
-            params: [0.0, 0.0, 0.0, 0.0],
+            // z = cast-shadow contract. The cell directional always
+            // participates in visibility; a zero RGB source is rejected by
+            // the shader's contribution gate before reservoir streaming.
+            params: [0.0, 0.0, 1.0, 0.0],
         });
     }
 
@@ -177,6 +180,7 @@ pub(super) fn collect_lights(
                 // range` and `falloff_shape`.
                 let effective_range = light.radius * LIGHT_RANGE_EXTENSION;
                 let source_radius = emitter_radius(light.radius);
+                let casts_shadows = light.flags & LIGHT_FLAG_SHADOW_MASK != 0;
                 let falloff_shape = if light.falloff_exponent > 0.0 {
                     light.falloff_exponent
                 } else {
@@ -198,8 +202,15 @@ pub(super) fn collect_lights(
                     direction_angle: [0.0, 0.0, 0.0, 0.0],
                     // x = standardized attenuation curve shape; y = finite
                     // emitter proxy used to stop shadow segments at the
-                    // luminous shell instead of inside the fixture.
-                    params: [falloff_shape, source_radius, 0.0, 0.0],
+                    // luminous shell instead of inside the fixture; z =
+                    // authored LIGH cast-shadow behavior. Skyrim lights
+                    // without 0x400/0x800/0x1000 are deliberately unshadowed.
+                    params: [
+                        falloff_shape,
+                        source_radius,
+                        if casts_shadows { 1.0 } else { 0.0 },
+                        0.0,
+                    ],
                 });
             }
         }
@@ -530,6 +541,16 @@ mod gi_light_priority_tests {
     }
 
     fn spawn_point_light(world: &mut World, pos: [f32; 3], color: [f32; 3], radius: f32) {
+        spawn_point_light_with_flags(world, pos, color, radius, 0);
+    }
+
+    fn spawn_point_light_with_flags(
+        world: &mut World,
+        pos: [f32; 3],
+        color: [f32; 3],
+        radius: f32,
+        flags: u32,
+    ) {
         let e = world.spawn();
         world.insert(
             e,
@@ -544,9 +565,43 @@ mod gi_light_priority_tests {
             LightSource {
                 radius,
                 color,
+                flags,
                 ..Default::default()
             },
         );
+    }
+
+    #[test]
+    fn collect_lights_uploads_authored_cast_shadow_bit() {
+        let mut world = World::new();
+        spawn_point_light_with_flags(
+            &mut world,
+            [10.0, 0.0, 0.0],
+            [0.5; 3],
+            256.0,
+            0x0000_2001, // Dynamic + Portal-strict, deliberately unshadowed.
+        );
+        spawn_point_light_with_flags(
+            &mut world,
+            [20.0, 0.0, 0.0],
+            [0.5; 3],
+            256.0,
+            byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL | 0x0000_2001,
+        );
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights, &mut Vec::new());
+
+        let unshadowed = lights
+            .iter()
+            .find(|light| light.position_radius[0] == 10.0)
+            .expect("unshadowed fixture light");
+        let shadowed = lights
+            .iter()
+            .find(|light| light.position_radius[0] == 20.0)
+            .expect("shadowed fixture light");
+        assert_eq!(unshadowed.params[2], 0.0);
+        assert_eq!(shadowed.params[2], 1.0);
     }
 
     /// Integration-level regression: three point lights inserted in an

@@ -1108,6 +1108,25 @@ fn bounded_path_uses_ggx_bsdf_transport_and_directional_environment() {
     );
 }
 
+/// Ambient-cube interpolation must conserve irradiance for unit normals.
+///
+/// Linear `abs(N)` weights sum to as much as sqrt(3), which made diagonal
+/// normal-map texels visibly brighter than axis-aligned texels after interior
+/// XCLL cubes were connected. Squared components form a partition of unity.
+#[test]
+fn directional_ambient_cube_uses_energy_conserving_squared_normal_weights() {
+    let math = include_str!("../../../shaders/include/math_common.glsl");
+
+    assert!(
+        math.contains("vec3 n2 = N * N;"),
+        "directional ambient cube must weight faces by squared normal components"
+    );
+    assert!(
+        !math.contains("vec3 pw = max(N, vec3(0.0));"),
+        "linear abs-normal cube weights inflate diagonal irradiance"
+    );
+}
+
 /// Quality work may change the estimator, but the accepted #2161 cost point is
 /// still a six-segment path with two diffuse events. Specular/glass transport
 /// fits inside the same segment ceiling and must not silently expand the

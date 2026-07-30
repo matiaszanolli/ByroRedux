@@ -471,6 +471,7 @@ fn spawn_point_light(world: &mut World, pos: Vec3, radius: f32, color: [f32; 3],
         LightSource {
             radius,
             color,
+            flags: byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
             ..Default::default()
         },
     );

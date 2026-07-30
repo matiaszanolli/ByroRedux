@@ -115,6 +115,14 @@ fn flatten_to_parts(
             out.push((parent_iso, SharedShape::ball((*radius).max(1e-3))));
         }
         CollisionShape::Cuboid { half_extents } => {
+            debug_assert!(
+                half_extents.is_finite()
+                    && half_extents.x >= 0.0
+                    && half_extents.y >= 0.0
+                    && half_extents.z >= 0.0,
+                "canonical Cuboid half-extents must be finite non-negative magnitudes, got \
+                 {half_extents:?}"
+            );
             out.push((
                 parent_iso,
                 SharedShape::cuboid(
@@ -247,6 +255,15 @@ mod tests {
         assert_eq!(parts.len(), 1);
         let he = parts[0].1.as_cuboid().unwrap().half_extents;
         assert_eq!((he.x, he.y, he.z), (1.0, 2.0, 3.0));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "canonical Cuboid half-extents")]
+    fn negative_cuboid_extent_trips_canonical_boundary_assertion() {
+        let _ = parts(&CollisionShape::Cuboid {
+            half_extents: Vec3::new(1.0, 2.0, -3.0),
+        });
     }
 
     #[test]

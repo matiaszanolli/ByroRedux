@@ -183,12 +183,9 @@ pub struct GpuLight {
     pub color_type: [f32; 4],
     /// xyz = direction (spot/directional), w = spot outer angle cosine.
     pub direction_angle: [f32; 4],
-    /// x = falloff_exponent (LIGH DATA bytes 16-19; 0.0 means
-    /// "use default 1.0"). y/z/w reserved for future per-light
-    /// shading parameters (Bethesda authors near-clip, FOV, godray
-    /// bias on the same LIGH record but none drive the BRDF today).
-    /// x = attenuation exponent, y = finite luminous-source radius used by
-    /// shadow segments, zw reserved.
+    /// x = attenuation exponent; y = finite luminous-source radius used by
+    /// shadow segments; z = cast-shadow flag (1.0 authored shadow projection,
+    /// 0.0 deliberately unshadowed); w reserved.
     pub params: [f32; 4],
 }
 

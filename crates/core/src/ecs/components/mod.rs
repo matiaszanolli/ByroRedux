@@ -64,7 +64,8 @@ pub use inventory::{
 };
 pub use light::{
     LightFlicker, LightSource, LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE,
-    LIGHT_FLAG_PULSE_SLOW,
+    LIGHT_FLAG_PULSE_SLOW, LIGHT_FLAG_SHADOW_HEMISPHERE, LIGHT_FLAG_SHADOW_MASK,
+    LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL, LIGHT_FLAG_SHADOW_SPOTLIGHT,
 };
 pub use local_bound::LocalBound;
 pub use material::Material;
