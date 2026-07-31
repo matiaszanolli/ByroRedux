@@ -97,7 +97,9 @@ pub struct VolumetricsParams {
     /// rgb = normalized authored fog chromaticity. The inject shader
     /// multiplies this by `medium_params.x` to recover spectral
     /// single-scatter albedo without letting tint alter extinction or the
-    /// authored medium's peak scattering energy. w is reserved.
+    /// authored medium's peak scattering energy. w = the sanitized peak of
+    /// the authored apparent fog colour, allowing the homogeneous-medium
+    /// source term to converge back to that colour even in sunless interiors.
     pub fog_tint: [f32; 4],
     /// x = temporal history weight, y = relative density rejection strength,
     /// z = total time in seconds, w = procedural coverage.
@@ -195,6 +197,26 @@ pub fn normalize_fog_tint(color: [f32; 3]) -> [f32; 3] {
     } else {
         sanitized.map(|channel| (channel / peak).clamp(0.0, 1.0))
     }
+}
+
+/// Pack an authored apparent fog colour for volumetric injection.
+///
+/// RGB stores energy-neutral chromaticity for directional/local-light
+/// scattering, while A stores the original peak radiance. Their product
+/// reconstructs the sanitized authored colour for the medium's equilibrium
+/// source term. This is what keeps interior fog visible when a CELL has no
+/// directional source: extinction alone can only darken the scene.
+pub fn pack_fog_tint(color: [f32; 3]) -> [f32; 4] {
+    let sanitized = color.map(|channel| {
+        if channel.is_finite() {
+            channel.max(0.0)
+        } else {
+            0.0
+        }
+    });
+    let peak = sanitized[0].max(sanitized[1]).max(sanitized[2]);
+    let tint = normalize_fog_tint(sanitized);
+    [tint[0], tint[1], tint[2], peak]
 }
 
 /// Optical depth through an exponential height medium
@@ -1874,6 +1896,18 @@ mod unit_tests {
     }
 
     #[test]
+    fn packed_fog_tint_reconstructs_authored_equilibrium_radiance() {
+        let authored = [0.65, 0.7, 0.8];
+        let packed = pack_fog_tint(authored);
+        assert!((packed[3] - 0.8).abs() < 1.0e-6);
+        for channel in 0..3 {
+            assert!((packed[channel] * packed[3] - authored[channel]).abs() < 1.0e-6);
+        }
+
+        assert_eq!(pack_fog_tint([f32::NAN, -1.0, f32::INFINITY]), [0.0; 4]);
+    }
+
+    #[test]
     fn black_or_invalid_fog_tint_stays_finite_and_absorptive() {
         assert_eq!(normalize_fog_tint([0.0; 3]), [0.0; 3]);
         assert_eq!(
@@ -1889,6 +1923,8 @@ mod unit_tests {
         for contract in [
             "vec4 fog_tint;",
             "params.fog_tint.rgb",
+            "params.fog_tint.a",
+            "vec3 authored_inscatter = global_extinction",
             "global_extinction * global_albedo",
             "sampler3D baseDensityNoise",
             "sampler3D detailDensityNoise",

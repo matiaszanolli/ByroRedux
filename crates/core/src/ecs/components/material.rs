@@ -497,6 +497,13 @@ pub fn is_glass_keyword_path(path: &str) -> bool {
 
 pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
     let path = inputs.texture_path.unwrap_or("");
+    // Parent directories describe an asset family, not necessarily the
+    // surface material. In particular, Skyrim stores stone walls, rubble,
+    // and bronze trim together under `dungeons\dwemerruins`; matching
+    // `dwemer` against the whole path turns the entire ruin into metal.
+    // Keep the broad material-word rules below, but constrain the cultural
+    // aliases to the actual texture filename.
+    let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
 
     // Weathered scrap/junk cladding (FNV/FO3 shanty-town architecture —
     // `textures\architecture\megaton\metalscrap{shingles,beams,panels}*.dds`,
@@ -524,17 +531,19 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
             metalness: 0.0,
         };
     }
-    if contains_any_ci(
-        path,
-        &["metal", "iron", "steel", "dwemer", "dwarven", "chainmail"],
-    ) {
+    if contains_any_ci(path, &["metal", "iron", "steel", "chainmail"])
+        || contains_any_ci(filename, &["dwemer", "dwarven"])
+    {
         // Weathered/industrial metal. Pre-2026-06-03 this was
         // roughness=0.3 (mirror chrome), which is correct for polished
         // steel but wrong for the worn post-apocalyptic surfaces in FNV
-        // / FO3. Raised to 0.6 → brushed/oxidised metal. Still clearly
-        // metallic (metalness=0.9) but the GGX highlight is much softer.
+        // / FO3. Raised to 0.55 → brushed/oxidised metal. This remains
+        // below the renderer's rough-reflection cutoff (`roughness < 0.6`),
+        // so a known conductor still receives environment response instead
+        // of reading as dark diffuse paint. The GGX highlight remains much
+        // softer than the old 0.3 mirror-chrome classification.
         return PbrMaterial {
-            roughness: 0.6,
+            roughness: 0.55,
             metalness: 0.9,
         };
     }
@@ -919,8 +928,9 @@ mod tests {
         let m = Material::default();
         let metal = classify(&m, r"Textures\Weapons\Iron\IronSword.dds");
         assert!(metal.metalness > 0.8);
-        // Roughness raised from 0.3 → 0.6 (worn/industrial metal, not mirror chrome).
-        assert!(metal.roughness >= 0.5 && metal.roughness < 0.8);
+        // Worn/industrial metal stays rough, but must remain inside the
+        // renderer's `< 0.6` environment-reflection tier.
+        assert_eq!(metal.roughness, 0.55);
 
         let wood = classify(&m, "textures/clutter/barrel/barrel01.dds");
         assert_eq!(wood.metalness, 0.0);
@@ -928,6 +938,30 @@ mod tests {
 
         let glass = classify(&m, "textures/clutter/ICE/IceShard01.dds");
         assert!(glass.roughness < 0.2);
+    }
+
+    /// Mzulft's Dwemer architecture uses the `dwemerruins` directory for
+    /// both bronze trim and ordinary stone. Explicit metal filenames must
+    /// enter the reflection tier without letting that shared parent directory
+    /// turn every wall and floor into a conductor.
+    #[test]
+    fn classify_pbr_dwemer_material_words_ignore_asset_family_directory() {
+        let m = Material::default();
+        let bronze = classify(&m, r"textures\dungeons\dwemerruins\dwemetaltiles01.dds");
+        assert_eq!(bronze.metalness, 0.9);
+        assert!(bronze.roughness < 0.6);
+
+        for path in [
+            r"textures\dungeons\dwemerruins\dwestonewall01.dds",
+            r"textures\dungeons\dwemerruins\dwestonefloor02.dds",
+            r"textures\dungeons\dwemerruins\dwekingrock01.dds",
+        ] {
+            let stone = classify(&m, path);
+            assert_eq!(
+                stone.metalness, 0.0,
+                "the dwemerruins directory alone must not classify {path} as metal"
+            );
+        }
     }
 
     /// Prospector Saloon (`GSProspectorSaloonInterior`) bar-counter panel

@@ -1,6 +1,6 @@
 use super::*;
 
-use byroredux_nif::import::MeshResolver;
+use byroredux_nif::import::{MaterialTextureSet, MeshResolver};
 use byroredux_renderer::VulkanContext;
 
 /// Provides file data by searching BSA/BA2 archives.
@@ -307,9 +307,50 @@ pub(crate) fn resolve_texture_with_clamp(
     ctx.texture_registry.fallback()
 }
 
+/// Resolve every non-base texture role with the material's authored sampler
+/// addressing mode, then re-attach the already-resolved base handle.
+///
+/// A NIF material owns one `TexClampMode` for its texture set. Keeping this
+/// walk here prevents the cell and loose-NIF spawn paths from drifting, and
+/// guarantees that normal/detail/gloss/height/mask textures use the same
+/// addressing profile as their base colour. Missing secondary roles stay at
+/// handle 0; an authored-but-missing secondary texture also collapses to 0 so
+/// the shader treats that optional contribution as absent instead of sampling
+/// the diagnostic magenta fallback.
+pub(crate) fn resolve_material_texture_handles_with_clamp(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    textures: &MaterialTextureSet<Option<String>>,
+    base_handle: u32,
+    clamp_mode: u8,
+) -> MaterialTextureSet<u32> {
+    let fallback = ctx.texture_registry.fallback();
+    map_secondary_texture_handles(textures, base_handle, |path| {
+        let handle = resolve_texture_with_clamp(ctx, tex_provider, Some(path), clamp_mode);
+        if handle == fallback {
+            0
+        } else {
+            handle
+        }
+    })
+}
+
+fn map_secondary_texture_handles(
+    textures: &MaterialTextureSet<Option<String>>,
+    base_handle: u32,
+    mut resolve: impl FnMut(&str) -> u32,
+) -> MaterialTextureSet<u32> {
+    let mut secondary = textures.clone();
+    secondary.base_color = None;
+    let mut handles = secondary.map_ref(|path| path.as_deref().map(&mut resolve).unwrap_or(0));
+    handles.base_color = base_handle;
+    handles
+}
+
 #[cfg(test)]
 mod tests {
-    use super::missing_archive_errors;
+    use super::{map_secondary_texture_handles, missing_archive_errors};
+    use byroredux_nif::import::MaterialTextureSet;
 
     /// #1776 — the aggregate guard must fire exactly for a kind that was
     /// requested on the CLI yet opened zero archives (the wrong-CWD / mistyped
@@ -327,5 +368,50 @@ mod tests {
         assert!(missing_archive_errors(false, true, false, true).is_empty());
         // mixed: meshes opened, textures requested-but-empty → one error.
         assert_eq!(missing_archive_errors(true, false, true, true).len(), 1);
+    }
+
+    #[test]
+    fn common_material_texture_walk_covers_every_secondary_role_once() {
+        let some = |name: &str| Some(name.to_string());
+        let textures = MaterialTextureSet {
+            base_color: some("base"),
+            normal: some("normal"),
+            emissive: some("emissive"),
+            detail: some("detail"),
+            smooth_spec: some("smooth_spec"),
+            dark: some("dark"),
+            height: some("height"),
+            environment: some("environment"),
+            environment_mask: some("environment_mask"),
+            tint: some("tint"),
+            inner_layer: some("inner_layer"),
+            specular: some("specular"),
+            lighting: some("lighting"),
+            flow: some("flow"),
+            wrinkle: some("wrinkle"),
+            greyscale_lut: some("greyscale_lut"),
+            reflectance: some("reflectance"),
+            emittance_gradient: some("emittance_gradient"),
+            decals: [
+                some("decal_0"),
+                some("decal_1"),
+                some("decal_2"),
+                some("decal_3"),
+            ],
+        };
+
+        let mut seen = Vec::new();
+        let mut next_handle = 1u32;
+        let handles = map_secondary_texture_handles(&textures, 777, |path| {
+            seen.push(path.to_string());
+            let handle = next_handle;
+            next_handle += 1;
+            handle
+        });
+
+        assert_eq!(handles.base_color, 777);
+        assert!(!seen.iter().any(|path| path == "base"));
+        assert_eq!(seen.len(), textures.secondary_values().count());
+        assert!(handles.secondary_values().all(|&handle| handle != 0));
     }
 }

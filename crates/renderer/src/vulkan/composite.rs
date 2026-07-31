@@ -1699,6 +1699,24 @@ mod composite_params_layout_tests {
         assert!(!shader.contains("texelFetch(waterCausticTex, ivec2(gl_FragCoord.xy), 0)"));
     }
 
+    /// The depth clear value is exactly 1.0. A loose epsilon such as 0.9999
+    /// is not a harmless float comparison with the engine's long 300k far
+    /// plane: it classifies ordinary geometry beyond ~997 game units as
+    /// background, bypassing its direct and indirect lighting in composite.
+    #[test]
+    fn background_classification_uses_exact_clear_depth() {
+        let shader = include_str!("../../shaders/composite.frag");
+
+        assert!(shader.contains("float depth = texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r;"));
+        assert!(shader.contains("bool has_surface = depth < 1.0;"));
+        assert!(shader.contains("bool is_sky = !has_surface"));
+        assert!(shader.contains("if (has_surface) {"));
+        assert!(
+            !shader.contains("depth >= 0.9999") && !shader.contains("depth < 0.9999"),
+            "composite depth classification must reserve only the exact clear value for background"
+        );
+    }
+
     /// #2217 — the caustic term is semantically fragile in a way the
     /// SPIR-V reflection test cannot see. That test pins structural and
     /// branch properties; it passes just as happily when the combined

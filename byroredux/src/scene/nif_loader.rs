@@ -24,7 +24,8 @@ use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{
     build_material_provider, build_texture_provider, derive_normal_map_path,
-    merge_external_material, resolve_texture, MaterialProvider, TextureProvider,
+    merge_external_material, resolve_material_texture_handles_with_clamp, resolve_texture,
+    resolve_texture_with_clamp, MaterialProvider, TextureProvider,
 };
 use crate::components::{
     decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, IsDecalMesh, IsFxMesh,
@@ -768,7 +769,12 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             .map(|p| p.to_string())
             .or(owned_textures.base_color);
 
-        let tex_handle = resolve_texture(ctx, tex_provider, owned_textures.base_color.as_deref());
+        let tex_handle = resolve_texture_with_clamp(
+            ctx,
+            tex_provider,
+            owned_textures.base_color.as_deref(),
+            mesh.material.texture_clamp_mode,
+        );
 
         let quat = Quat::from_xyzw(
             mesh.rotation[0],
@@ -888,17 +894,16 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             }
         }
 
-        // Resolve all secondary roles through the same semantic contract.
-        let mut resolve = |path: &Option<String>| -> u32 {
-            path.as_deref()
-                .map(|p| resolve_texture(ctx, tex_provider, Some(p)))
-                .filter(|&h| h != ctx.texture_registry.fallback())
-                .unwrap_or(0)
-        };
-        let mut secondary_textures = owned_textures.clone();
-        secondary_textures.base_color = None;
-        let mut texture_handles = secondary_textures.map_ref(&mut resolve);
-        texture_handles.base_color = tex_handle;
+        // Resolve all secondary roles with the same authored sampler addressing
+        // mode as base colour. This is the exact helper used by placed cell
+        // meshes, eliminating the old loose-NIF/material-slot divergence.
+        let texture_handles = resolve_material_texture_handles_with_clamp(
+            ctx,
+            tex_provider,
+            &owned_textures,
+            tex_handle,
+            mesh.material.texture_clamp_mode,
+        );
         let normal_has_alpha = texture_handles.normal != 0
             && ctx
                 .texture_registry

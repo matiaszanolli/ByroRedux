@@ -449,11 +449,7 @@ impl VulkanContext {
                                     super::super::volumetrics::DEFAULT_SCALE_HEIGHT_METERS
                                         * super::super::volumetrics::WORLD_UNITS_PER_METER,
                                 ],
-                                fog_tint: {
-                                    let tint =
-                                        super::super::volumetrics::normalize_fog_tint(fog_color);
-                                    [tint[0], tint[1], tint[2], 0.0]
-                                },
+                                fog_tint: super::super::volumetrics::pack_fog_tint(fog_color),
                                 temporal_params: [
                                     super::super::volumetrics::DEFAULT_TEMPORAL_HISTORY_WEIGHT,
                                     super::super::volumetrics::DEFAULT_DENSITY_REJECTION,

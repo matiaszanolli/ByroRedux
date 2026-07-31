@@ -381,8 +381,18 @@ void main() {
     vec4 direct4 = texture(hdrTex, fragUV);
     vec3 direct = direct4.rgb;
 
-    float depth = texture(depthTex, fragUV).r;
-    bool is_sky = (depth >= 0.9999) && (params.depth_params.x > 0.5);
+    // Depth is a classification signal here, not a continuously filtered
+    // colour. Fetch the exact render-resolution texel so a geometry/clear
+    // edge cannot be bilinearly blended into the wrong branch.
+    //
+    // The depth attachment is cleared to exactly 1.0. Do not use an
+    // epsilon such as the old 0.9999 sentinel: with the engine's 0.1 / 300k
+    // projection that value is already reached at ~997 game units (~14 m in
+    // FO4), so valid geometry beyond that distance was mistaken for empty
+    // depth and lost its direct + indirect lighting in this pass.
+    float depth = texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r;
+    bool has_surface = depth < 1.0;
+    bool is_sky = !has_surface && (params.depth_params.x > 0.5);
 
     if (is_sky) {
         // Sky pixel: reconstruct view direction and compute sky color.
@@ -467,7 +477,7 @@ void main() {
         // The volumetric volume is screen-space in XY and hybrid linear /
         // exponential in Z. One sampler3D tap retrieves the pre-integrated
         // result through the fragment.
-        if (depth < 0.9999) {
+        if (has_surface) {
             vec2 ndc_xy = fragUV * 2.0 - 1.0;
             vec4 clip = vec4(ndc_xy, depth, 1.0);
             vec4 world = params.inv_view_proj * clip;

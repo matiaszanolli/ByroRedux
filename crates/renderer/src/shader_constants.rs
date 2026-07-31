@@ -715,6 +715,25 @@ mod tests {
         );
     }
 
+    /// Skyrim interiors frequently carry all authored ambience in XCLL's
+    /// DALC cube and leave the legacy flat ambient black. Rough conductors
+    /// outside the sharp RT-reflection reach must therefore use the DALC cube
+    /// as their low-frequency environment probe, sampled in the reflection
+    /// direction rather than the surface-normal direction. Because DALC is
+    /// diffuse irradiance, the specular path must convert it to an approximate
+    /// incident radiance instead of injecting the full irradiance as a chrome
+    /// reflection.
+    #[test]
+    fn triangle_frag_metal_reflection_fallback_uses_energy_normalized_dalc_probe() {
+        let src = include_str!("../shaders/triangle.frag");
+
+        assert!(
+            src.contains("vec3 ambientFallback = dalcFlags.x > 0.5")
+                && src.contains("? sampleDalcCube(R) * (1.0 / PI)"),
+            "rough-metal reflection fallback must convert DALC irradiance along R to radiance"
+        );
+    }
+
     /// Thin glass must be a surface-wide behavior decision. A regression to
     /// the per-fragment IOR budget gate recreates the close-range checkerboard
     /// when a large dome consumes the remaining budget non-uniformly.

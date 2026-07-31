@@ -2099,7 +2099,22 @@ void main() {
         vec3 R = reflect(-V, N_view);
         // Fresnel-weighted reflection: stronger at grazing angles.
         vec3 F = fresnelSchlick(NdotV, F0);
-        vec3 ambientFallback = sceneFlags.yzw;
+        // Skyrim's XCLL/WTHR lighting commonly authors the room ambience in
+        // the six-direction DALC cube while leaving the legacy flat ambient
+        // (`sceneFlags.yzw`) black. Using only the latter made every rough
+        // conductor lose its environment response as soon as the sharp RT
+        // ray faded out — Mzulft's bronze panels then read as dark diffuse
+        // paint despite metalness=0.9. The DALC cube is already the engine's
+        // low-frequency ambient probe; sampling it along the reflection
+        // vector gives metals a view-dependent fallback and keeps the RT-to-
+        // probe transition continuous. DALC values are diffuse irradiance,
+        // however, not incident radiance: divide by PI before feeding the
+        // specular path. Treating irradiance as radiance produced the clipped
+        // white "chrome" lobes on Mzulft's bronze machinery. Non-DALC games
+        // retain the legacy flat ambient path unchanged.
+        vec3 ambientFallback = dalcFlags.x > 0.5
+            ? sampleDalcCube(R) * (1.0 / PI)
+            : sceneFlags.yzw;
         float reflClarity = 1.0 - roughness;
 
         vec3 envColor;

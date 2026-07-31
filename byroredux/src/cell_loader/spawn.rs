@@ -19,7 +19,8 @@ use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::VulkanContext;
 
 use crate::asset_provider::{
-    derive_normal_map_path, resolve_texture, resolve_texture_with_clamp, TextureProvider,
+    derive_normal_map_path, resolve_material_texture_handles_with_clamp, resolve_texture,
+    resolve_texture_with_clamp, TextureProvider,
 };
 use crate::components::{
     decal_uses_implicit_alpha_blend, texture_path_is_fx_mesh, AlphaBlend, DoorTeleport,
@@ -1293,20 +1294,16 @@ fn spawn_mesh_instance(
             world.insert(entity, IsFxMesh);
         }
     }
-    // Resolve every semantic role into the same common shape used by NIF
-    // translation. No source-game slot interpretation survives this point.
-    let mut resolve = |path: &Option<String>| -> u32 {
-        path.as_deref()
-            .map(|p| resolve_texture(ctx, tex_provider, Some(p)))
-            .filter(|&h| h != ctx.texture_registry.fallback())
-            .unwrap_or(0)
-    };
-    let mut secondary_textures = eff_textures.clone();
-    secondary_textures.base_color = None;
-    let mut texture_handles = secondary_textures.map_ref(&mut resolve);
-    // Base color was already resolved with the authored clamp mode; reusing
-    // that handle avoids a duplicate cache acquire and preserves its sampler.
-    texture_handles.base_color = tex_handle;
+    // Resolve every secondary semantic role with the SAME authored clamp mode
+    // as base colour. The shared helper is also used by loose-NIF spawning so
+    // structures, clutter, actors, and exterior statics cannot drift.
+    let texture_handles = resolve_material_texture_handles_with_clamp(
+        ctx,
+        tex_provider,
+        &eff_textures,
+        tex_handle,
+        mesh.material.texture_clamp_mode,
+    );
     let normal_has_alpha = texture_handles.normal != 0
         && ctx
             .texture_registry

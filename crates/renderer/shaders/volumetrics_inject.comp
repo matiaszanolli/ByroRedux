@@ -58,6 +58,10 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // rgb = normalized authored CELL/WTHR fog chromaticity. Multiplying by
     // medium_params.x yields spectral single-scatter albedo while keeping
     // extinction and the authored peak scattering energy independent of hue.
+    // a = sanitized authored fog-colour peak. rgb * a reconstructs the
+    // apparent fog radiance used by the homogeneous equilibrium source term;
+    // without it, sunless interiors only absorb light and their procedural
+    // fog is effectively invisible.
     vec4 fog_tint;
     // x = history weight, y = density-change rejection strength,
     // z = total time seconds, w = procedural coverage.
@@ -465,6 +469,15 @@ void main() {
         * clamp(params.medium_params.x, 0.0, 1.0);
     vec3 scattering_coef = global_extinction * global_albedo + local_medium.rgb;
 
+    // CELL/WTHR fog colour is an apparent in-scattering colour, not merely a
+    // hue for direct-light scattering. Treat it as the homogeneous medium's
+    // equilibrium radiance: integration yields L_fog * (1 - T), the physical
+    // exponential equivalent of Bethesda's legacy fog-colour blend. This
+    // base source is essential indoors, where sun radiance is normally zero;
+    // local and directional lights below add spatial structure on top.
+    vec3 authored_inscatter = global_extinction
+        * params.fog_tint.rgb * max(params.fog_tint.a, 0.0);
+
     // Phase 2c — visibility ray from sample point toward the sun.
     // Sun is directional (effectively at infinity), so:
     //   - origin = world_pos. No surface-normal bias needed; the
@@ -520,7 +533,8 @@ void main() {
 
     // In-scattered radiance from the sun at this voxel, gated on
     // shadow visibility. HG normalisation already includes 1/4π.
-    vec3 inscatter = scattering_coef * phase * params.sun_color.rgb * visibility;
+    vec3 inscatter = authored_inscatter
+        + scattering_coef * phase * params.sun_color.rgb * visibility;
 
     // Phase 2b — point/spot light in-scattering, reusing the same cluster
     // grid as surface shading. Every local light admitted by the bounded loop
