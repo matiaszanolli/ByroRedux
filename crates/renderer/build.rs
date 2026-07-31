@@ -127,6 +127,11 @@ fn main() {
     .unwrap();
     writeln!(out, "#define SHADOW_MASK_OPAQUE {SHADOW_MASK_OPAQUE}u").unwrap();
     writeln!(out, "#define SHADOW_MASK_GLASS {SHADOW_MASK_GLASS}u").unwrap();
+    writeln!(
+        out,
+        "#define SHADOW_MASK_STRUCTURE {SHADOW_MASK_STRUCTURE}u"
+    )
+    .unwrap();
     writeln!(out, "#define SHADOW_FADE_START {SHADOW_FADE_START:?}").unwrap();
     writeln!(out, "#define SHADOW_FADE_END {SHADOW_FADE_END:?}").unwrap();
     writeln!(
