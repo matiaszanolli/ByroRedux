@@ -99,6 +99,7 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         texture_avg_rgb: HashMap::new(),
         fallback_handle: 0,
         neutral_fallback_handle: 1,
+        cube_fallback_handle: None,
         descriptor_pool: vk::DescriptorPool::null(),
         descriptor_set_layout: vk::DescriptorSetLayout::null(),
         bindless_sets: Vec::new(),
@@ -313,6 +314,21 @@ fn cache_separates_entries_by_clamp_mode() {
     assert_eq!(reg.textures[1].ref_count, 2);
 }
 
+#[test]
+fn cache_separates_2d_and_cubemap_views() {
+    let mut reg = make_registry_with_entry("shared.dds", 1);
+    assert_eq!(
+        reg.acquire_cubemap_by_path_with_clamp("shared.dds", 3),
+        None,
+        "a samplerCube request must not alias a sampler2D descriptor",
+    );
+    let outcome = reg
+        .queue_or_hit_for_view("shared.dds", vec![0; 128], 3, TextureViewKind::Cube)
+        .unwrap();
+    assert!(matches!(outcome, EnqueueOutcome::Reserved(2)));
+    assert!(reg.path_map.contains_key("textures/shared.dds|3|cube"));
+}
+
 /// Sibling: `acquire_by_path_with_clamp(path, 3)` must hit the
 /// same entry the legacy `acquire_by_path` produced — the default
 /// arm is `WRAP_S_WRAP_T = 3` so existing call sites that don't
@@ -405,13 +421,14 @@ fn pending_write_records_on_other_slots_only() {
     let image_view = vk::ImageView::null();
     let sampler = vk::Sampler::null();
 
-    reg.record_pending_writes_for_other_slots(7, image_view, sampler);
+    reg.record_pending_writes_for_other_slots(7, 0, image_view, sampler);
 
     // Current slot (0): empty.
     assert_eq!(reg.pending_set_writes[0].len(), 0);
     // Other slot (1): received the deferred write.
     assert_eq!(reg.pending_set_writes[1].len(), 1);
     assert_eq!(reg.pending_set_writes[1][0].handle, 7);
+    assert_eq!(reg.pending_set_writes[1][0].binding, 0);
 }
 
 /// Swapping the current slot flips which queue receives deferred
@@ -422,7 +439,7 @@ fn pending_write_records_on_other_slots_only() {
 fn pending_write_current_slot_change_flips_deferred_target() {
     let mut reg = make_registry_for_overflow_test(16, 0);
     reg.current_slot = 0;
-    reg.record_pending_writes_for_other_slots(1, vk::ImageView::null(), vk::Sampler::null());
+    reg.record_pending_writes_for_other_slots(1, 0, vk::ImageView::null(), vk::Sampler::null());
     assert_eq!(reg.pending_set_writes[0].len(), 0);
     assert_eq!(reg.pending_set_writes[1].len(), 1);
 
@@ -430,7 +447,7 @@ fn pending_write_current_slot_change_flips_deferred_target() {
     // do this after the caller waits on slot 1's fence). A
     // subsequent write now queues on slot 0 instead.
     reg.current_slot = 1;
-    reg.record_pending_writes_for_other_slots(2, vk::ImageView::null(), vk::Sampler::null());
+    reg.record_pending_writes_for_other_slots(2, 0, vk::ImageView::null(), vk::Sampler::null());
     assert_eq!(reg.pending_set_writes[0].len(), 1);
     assert_eq!(reg.pending_set_writes[0][0].handle, 2);
     // Slot 1's queue is untouched by this call (handle 2 didn't
@@ -450,6 +467,7 @@ fn pending_writes_accumulate_and_preserve_order() {
     for handle in [3, 7, 11, 4] {
         reg.record_pending_writes_for_other_slots(
             handle,
+            0,
             vk::ImageView::null(),
             vk::Sampler::null(),
         );
@@ -471,7 +489,7 @@ fn pending_writes_accumulate_and_preserve_order() {
 fn pending_writes_cleared_by_recreate_semantics() {
     let mut reg = make_registry_for_overflow_test(16, 0);
     reg.current_slot = 0;
-    reg.record_pending_writes_for_other_slots(5, vk::ImageView::null(), vk::Sampler::null());
+    reg.record_pending_writes_for_other_slots(5, 0, vk::ImageView::null(), vk::Sampler::null());
     assert!(!reg.pending_set_writes[1].is_empty());
 
     // Simulate the `recreate_descriptor_sets` queue-clear step

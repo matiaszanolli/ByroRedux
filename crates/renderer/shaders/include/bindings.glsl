@@ -6,6 +6,9 @@
 
 // Bindless texture array.
 layout(set = 0, binding = 0) uniform sampler2D textures[];
+// Authored DDS environment cubemaps. Kept in a separate binding so a cube
+// image view is never consumed through the sampler2D type above.
+layout(set = 0, binding = 1) uniform samplerCube cubemaps[];
 
 // Per-instance data from the instance SSBO. R1 Phase 6 collapsed the
 // per-material fields onto the `MaterialBuffer` SSBO indexed by
@@ -289,7 +292,9 @@ layout(std430, set = 1, binding = 9) readonly buffer GlobalIndices {
 // `INSTANCE_FLAG_TERRAIN_SPLAT` bit (flags bit 3) is set. The tile
 // index is packed into the top 16 bits of `flags`.
 struct GpuTerrainTile {
-    uint layerTextureIndex[8];
+    uint layerDiffuseIndex[8];
+    uint layerNormalIndex[8];
+    uint layerSpecularIndex[8];
 };
 // Binding 11: RT mipmap glass ray budget counter. The CPU zeroes this
 // before each render pass; Phase-3 IOR glass fragments atomically increment

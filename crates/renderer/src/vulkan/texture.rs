@@ -3,8 +3,8 @@
 use super::allocator::SharedAllocator;
 use super::buffer::{StagingGuard, StagingPool};
 use super::descriptors::{
-    color_subresource_mips, image_barrier_transfer_dst_to_shader_read,
-    image_barrier_undef_to_transfer_dst,
+    color_subresource_mips_layers, image_barrier_transfer_dst_to_shader_read_layers,
+    image_barrier_undef_to_transfer_dst_layers,
 };
 use super::GpuUploadCtx;
 use anyhow::{Context, Result};
@@ -12,11 +12,29 @@ use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 use gpu_allocator::MemoryLocation;
 
+/// Image-view dimension used to select the matching bindless descriptor
+/// binding (`sampler2D` vs `samplerCube`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextureViewKind {
+    D2,
+    Cube,
+}
+
+impl TextureViewKind {
+    pub const fn descriptor_binding(self) -> u32 {
+        match self {
+            Self::D2 => 0,
+            Self::Cube => 1,
+        }
+    }
+}
+
 /// A GPU-resident texture with image, view, and sampler.
 pub struct Texture {
     pub image: vk::Image,
     pub image_view: vk::ImageView,
     pub sampler: vk::Sampler,
+    pub view_kind: TextureViewKind,
     allocation: Option<vk_alloc::Allocation>,
     /// Stashed at construction so `Drop` can self-free if `destroy()`
     /// was missed — the canonical lifecycle is still
@@ -70,6 +88,8 @@ impl Texture {
             format: vk::Format::R8G8B8A8_SRGB,
             block_size: 4, // bytes per pixel — uncompressed RGBA
             compressed: false,
+            array_layers: 1,
+            is_cubemap: false,
             data_offset: 0, // unused: caller passes the pixel slice directly
             expand: None,   // already R8G8B8A8
         };
@@ -226,7 +246,13 @@ impl Texture {
             .copy_from_slice(&pixel_data[..total_size as usize]);
 
         // 2. Device-local image.
+        let image_flags = if meta.is_cubemap {
+            vk::ImageCreateFlags::CUBE_COMPATIBLE
+        } else {
+            vk::ImageCreateFlags::empty()
+        };
         let image_info = vk::ImageCreateInfo::default()
+            .flags(image_flags)
             .image_type(vk::ImageType::TYPE_2D)
             .format(meta.format)
             .extent(vk::Extent3D {
@@ -235,7 +261,7 @@ impl Texture {
                 depth: 1,
             })
             .mip_levels(meta.mip_count)
-            .array_layers(1)
+            .array_layers(meta.array_layers)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
             .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
@@ -296,43 +322,49 @@ impl Texture {
         }
 
         // Build per-mip copy regions.
-        let mut regions = Vec::with_capacity(meta.mip_count as usize);
+        let mut regions = Vec::with_capacity((meta.mip_count * meta.array_layers) as usize);
         let mut buffer_offset: vk::DeviceSize = 0;
-        for mip in 0..meta.mip_count {
-            let mip_w = (meta.width >> mip).max(1);
-            let mip_h = (meta.height >> mip).max(1);
-            let mip_bytes = dds::mip_size(
-                meta.width,
-                meta.height,
-                mip,
-                meta.block_size,
-                meta.compressed,
-            );
+        // DDS cubemap payloads are face-major: all mips for +X, then all
+        // mips for -X, +Y, -Y, +Z, -Z. A 2D texture is the one-layer
+        // degenerate case of the same loop.
+        for layer in 0..meta.array_layers {
+            for mip in 0..meta.mip_count {
+                let mip_w = (meta.width >> mip).max(1);
+                let mip_h = (meta.height >> mip).max(1);
+                let mip_bytes = dds::mip_size(
+                    meta.width,
+                    meta.height,
+                    mip,
+                    meta.block_size,
+                    meta.compressed,
+                );
 
-            regions.push(vk::BufferImageCopy {
-                buffer_offset,
-                buffer_row_length: 0,
-                buffer_image_height: 0,
-                image_subresource: vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: mip,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
-                image_extent: vk::Extent3D {
-                    width: mip_w,
-                    height: mip_h,
-                    depth: 1,
-                },
-            });
-            buffer_offset += mip_bytes as vk::DeviceSize;
+                regions.push(vk::BufferImageCopy {
+                    buffer_offset,
+                    buffer_row_length: 0,
+                    buffer_image_height: 0,
+                    image_subresource: vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: mip,
+                        base_array_layer: layer,
+                        layer_count: 1,
+                    },
+                    image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+                    image_extent: vk::Extent3D {
+                        width: mip_w,
+                        height: mip_h,
+                        depth: 1,
+                    },
+                });
+                buffer_offset += mip_bytes as vk::DeviceSize;
+            }
         }
 
         // 3-5. Record layout transitions + copy into the provided cmd.
         // Per-image barriers (not global) so multiple uploads recorded
         // into the same cmd don't serialise on each other unnecessarily.
-        let barrier_to_dst = image_barrier_undef_to_transfer_dst(image, meta.mip_count);
+        let barrier_to_dst =
+            image_barrier_undef_to_transfer_dst_layers(image, meta.mip_count, meta.array_layers);
 
         // NONE as srcStageMask: UNDEFINED → TRANSFER_DST_OPTIMAL has no
         // prior writes to expose; NONE is the Vulkan 1.3 idiom
@@ -363,7 +395,11 @@ impl Texture {
             );
         }
 
-        let barrier_to_read = image_barrier_transfer_dst_to_shader_read(image, meta.mip_count);
+        let barrier_to_read = image_barrier_transfer_dst_to_shader_read_layers(
+            image,
+            meta.mip_count,
+            meta.array_layers,
+        );
 
         unsafe {
             // SAFETY: `cmd` is still recording; `image` is device-owned and
@@ -382,11 +418,23 @@ impl Texture {
         }
 
         // 7. Image view (CPU-only, independent of GPU work).
+        let view_kind = if meta.is_cubemap {
+            TextureViewKind::Cube
+        } else {
+            TextureViewKind::D2
+        };
         let view_info = vk::ImageViewCreateInfo::default()
             .image(image)
-            .view_type(vk::ImageViewType::TYPE_2D)
+            .view_type(if meta.is_cubemap {
+                vk::ImageViewType::CUBE
+            } else {
+                vk::ImageViewType::TYPE_2D
+            })
             .format(meta.format)
-            .subresource_range(color_subresource_mips(meta.mip_count));
+            .subresource_range(color_subresource_mips_layers(
+                meta.mip_count,
+                meta.array_layers,
+            ));
 
         let image_view = unsafe {
             // SAFETY: `device` is the live logical device; `view_info` is a
@@ -399,11 +447,12 @@ impl Texture {
         };
 
         log::info!(
-            "DDS texture recorded: {}x{}, {:?}, {} mips",
+            "DDS texture recorded: {}x{}, {:?}, {} mips, {:?}",
             meta.width,
             meta.height,
             meta.format,
             meta.mip_count,
+            view_kind,
         );
 
         // #1921 — the returned size is for `StagingGuard::release_to`,
@@ -427,6 +476,7 @@ impl Texture {
                 image,
                 image_view,
                 sampler,
+                view_kind,
                 allocation: Some(image_alloc),
                 device: device.clone(),
                 allocator: Some(allocator.clone()),

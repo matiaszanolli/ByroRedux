@@ -155,12 +155,22 @@ pub fn color_subresource_single_mip() -> vk::ImageSubresourceRange {
 /// multi-mip texture uploads (DDS path).
 #[inline]
 pub fn color_subresource_mips(level_count: u32) -> vk::ImageSubresourceRange {
+    color_subresource_mips_layers(level_count, 1)
+}
+
+/// `COLOR` aspect, all requested mips and array layers. Cubemap uploads use
+/// six layers; ordinary DDS uploads route through [`color_subresource_mips`].
+#[inline]
+pub fn color_subresource_mips_layers(
+    level_count: u32,
+    layer_count: u32,
+) -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange {
         aspect_mask: vk::ImageAspectFlags::COLOR,
         base_mip_level: 0,
         level_count,
         base_array_layer: 0,
-        layer_count: 1,
+        layer_count,
     }
 }
 
@@ -254,13 +264,22 @@ pub fn image_barrier_undef_to_transfer_dst(
     image: vk::Image,
     mip_count: u32,
 ) -> vk::ImageMemoryBarrier<'static> {
+    image_barrier_undef_to_transfer_dst_layers(image, mip_count, 1)
+}
+
+#[inline]
+pub fn image_barrier_undef_to_transfer_dst_layers(
+    image: vk::Image,
+    mip_count: u32,
+    layer_count: u32,
+) -> vk::ImageMemoryBarrier<'static> {
     vk::ImageMemoryBarrier::default()
         .old_layout(vk::ImageLayout::UNDEFINED)
         .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .image(image)
-        .subresource_range(color_subresource_mips(mip_count))
+        .subresource_range(color_subresource_mips_layers(mip_count, layer_count))
         .src_access_mask(vk::AccessFlags::empty())
         .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
 }
@@ -272,13 +291,22 @@ pub fn image_barrier_transfer_dst_to_shader_read(
     image: vk::Image,
     mip_count: u32,
 ) -> vk::ImageMemoryBarrier<'static> {
+    image_barrier_transfer_dst_to_shader_read_layers(image, mip_count, 1)
+}
+
+#[inline]
+pub fn image_barrier_transfer_dst_to_shader_read_layers(
+    image: vk::Image,
+    mip_count: u32,
+    layer_count: u32,
+) -> vk::ImageMemoryBarrier<'static> {
     vk::ImageMemoryBarrier::default()
         .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
         .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .image(image)
-        .subresource_range(color_subresource_mips(mip_count))
+        .subresource_range(color_subresource_mips_layers(mip_count, layer_count))
         .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
         .dst_access_mask(vk::AccessFlags::SHADER_READ)
 }

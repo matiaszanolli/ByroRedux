@@ -449,6 +449,19 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             landscape_textures.insert(*ltex_id, path.clone());
         }
     }
+    // Keep the full LTEX → TXST material association alongside the legacy
+    // diffuse-only lookup. LAND rendering needs TX01/TX07 for normal and
+    // specular/smoothness layers; reducing the relation to TX00 here made
+    // exterior materials weaker than the same texture set on placed meshes.
+    let landscape_texture_sets: HashMap<u32, TextureSet> = ltex_to_txst
+        .iter()
+        .filter_map(|(&ltex_id, txst_id)| {
+            texture_sets
+                .get(txst_id)
+                .cloned()
+                .map(|set| (ltex_id, set))
+        })
+        .collect();
 
     let total_exterior: usize = exterior_cells.values().map(|m| m.len()).sum();
     let wrld_names: Vec<&str> = exterior_cells.keys().map(|s| s.as_str()).collect();
@@ -488,6 +501,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         exterior_cells,
         statics,
         landscape_textures,
+        landscape_texture_sets,
         worldspaces,
         worldspace_climates,
         texture_sets,

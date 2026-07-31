@@ -158,7 +158,7 @@ const _: () = assert!(
 pub const MAX_INDIRECT_DRAWS: usize = MAX_INSTANCES;
 
 /// Maximum number of `GpuTerrainTile` slots held in the per-frame
-/// terrain-tile SSBO. 1024 × 32 B = 32 KB per frame — one slot per
+/// terrain-tile SSBO. 1024 × 96 B = 96 KB — one slot per
 /// terrain-mesh entity. A 3×3 loaded-cell grid emits 9 tiles; larger
 /// exterior loads stay well under the cap. Capped at 65535 by the
 /// 16-bit index packed into `GpuInstance.flags` (bits 16..31). See #470.

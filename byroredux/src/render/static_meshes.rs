@@ -484,6 +484,12 @@ pub(super) fn collect_static_mesh_draws(
                 } else {
                     [0.0; 4]
                 };
+                // The existing shared scalar is semantically an environment
+                // reflection strength for both the ordinary Envmap variant
+                // and MultiLayerParallax. Reuse it for the canonical field so
+                // the authored `Material::env_map_scale` reaches the cubemap
+                // shader without expanding the pinned GpuMaterial layout.
+                let env_map_scale = mat.map(|m| m.env_map_scale).unwrap_or(0.0);
                 let (
                     multi_layer_envmap_strength,
                     multi_layer_inner_thickness,
@@ -492,7 +498,7 @@ pub(super) fn collect_static_mesh_draws(
                 ) = if material_kind == 11 {
                     (
                         stf.and_then(|f| f.multi_layer_envmap_strength)
-                            .unwrap_or(0.0),
+                            .unwrap_or(env_map_scale),
                         stf.and_then(|f| f.multi_layer_inner_thickness)
                             .unwrap_or(0.0),
                         stf.and_then(|f| f.multi_layer_refraction_scale)
@@ -501,7 +507,7 @@ pub(super) fn collect_static_mesh_draws(
                             .unwrap_or([1.0, 1.0]),
                     )
                 } else {
-                    (0.0, 0.0, 0.0, [1.0, 1.0])
+                    (env_map_scale, 0.0, 0.0, [1.0, 1.0])
                 };
                 let (eye_left_center, eye_cubemap_scale, eye_right_center) = if material_kind == 16
                 {

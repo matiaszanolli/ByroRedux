@@ -19,11 +19,14 @@ use byroredux_core::ecs::{GlobalTransform, MeshHandle, TextureHandle, Transform,
 use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
+use byroredux_plugin::esm::cell::TextureSet;
 use byroredux_renderer::vulkan::GpuUploadCtx;
+use byroredux_renderer::vulkan::scene_buffer::GpuTerrainTile;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
-use crate::components::TerrainTileSlot;
+use crate::components::{MaterialTextureHandles, TerrainTileSlot};
+use byroredux_nif::import::MaterialTextureSet;
 
 /// Number of times a LAND diffuse/splat texture tiles across one exterior
 /// cell edge. Bethesda's LAND format carries no per-texture tiling field, so
@@ -51,10 +54,14 @@ pub(super) struct CellSplatLayers {
 }
 
 pub(super) struct CellSplatLayer {
-    /// Bindless texture handle (resolved via LTEX → TXST → diffuse path).
+    /// Bindless diffuse handle (resolved via LTEX → TXST → TX00).
     /// 0 means the texture failed to load; fragment shader skips (index 0
     /// is the fallback checkerboard).
-    pub texture_index: u32,
+    pub diffuse_index: u32,
+    /// Optional TX01 tangent-space normal paired with the diffuse layer.
+    pub normal_index: u32,
+    /// Optional TX07 specular-colour map paired with the layer.
+    pub specular_index: u32,
     /// Per-quadrant contribution. `[SW, SE, NW, NE]` — `None` means the
     /// quadrant didn't paint this LTEX. Each `Some` is a 17×17 alpha grid.
     pub per_quadrant_alpha: [Option<Vec<f32>>; 4],
@@ -73,6 +80,7 @@ pub(super) fn build_cell_splat_layers(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     landscape_textures: &HashMap<u32, String>,
+    landscape_texture_sets: &HashMap<u32, TextureSet>,
     land: &esm::cell::LandscapeData,
 ) -> CellSplatLayers {
     use std::collections::hash_map::Entry;
@@ -147,7 +155,7 @@ pub(super) fn build_cell_splat_layers(
 
     let mut layers = Vec::with_capacity(sorted.len());
     for (ltex, _layer_key, per_quadrant_alpha) in sorted {
-        let texture_index = if let Some(tex_path) = landscape_textures.get(&ltex) {
+        let diffuse_index = if let Some(tex_path) = landscape_textures.get(&ltex) {
             resolve_texture(ctx, tex_provider, Some(tex_path.as_str()))
         } else {
             log::debug!(
@@ -156,13 +164,46 @@ pub(super) fn build_cell_splat_layers(
             );
             0
         };
+        let texture_set = landscape_texture_sets.get(&ltex);
+        let normal_index = resolve_optional_terrain_texture(
+            ctx,
+            tex_provider,
+            texture_set.and_then(|set| set.normal.as_deref()),
+        );
+        let specular_index = resolve_optional_terrain_texture(
+            ctx,
+            tex_provider,
+            texture_set.and_then(|set| set.specular.as_deref()),
+        );
         layers.push(CellSplatLayer {
-            texture_index,
+            diffuse_index,
+            normal_index,
+            specular_index,
             per_quadrant_alpha,
         });
     }
 
     CellSplatLayers { layers }
+}
+
+/// Optional LAND material roles use handle 0 when absent or unresolved. The
+/// diagnostic checkerboard is useful for a missing diffuse surface, but a
+/// missing normal/specular contribution must be treated as "no contribution"
+/// or it perturbs lighting with magenta placeholder data.
+fn resolve_optional_terrain_texture(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    path: Option<&str>,
+) -> u32 {
+    let Some(path) = path else {
+        return 0;
+    };
+    let handle = resolve_texture(ctx, tex_provider, Some(path));
+    if handle == ctx.texture_registry.fallback() {
+        0
+    } else {
+        handle
+    }
 }
 
 /// In-place coverage-aware selection of the top 8 splat layers from
@@ -302,6 +343,7 @@ pub(super) struct TerrainSpawnCtx<'a> {
     pub ctx: &'a mut VulkanContext,
     pub tex_provider: &'a TextureProvider,
     pub landscape_textures: &'a HashMap<u32, String>,
+    pub landscape_texture_sets: &'a HashMap<u32, TextureSet>,
     pub blas_specs: &'a mut Vec<(u32, u32, u32)>,
 }
 
@@ -316,6 +358,7 @@ pub(super) fn spawn_terrain_mesh(
         ctx,
         tex_provider,
         landscape_textures,
+        landscape_texture_sets,
         blas_specs,
     } = spawn;
     const GRID: usize = 33;
@@ -326,7 +369,13 @@ pub(super) fn spawn_terrain_mesh(
 
     // Collect cell-global splat layers before the vertex loop — we need
     // all 8 resolved before we can pack per-vertex weights. #470.
-    let splat_layers = build_cell_splat_layers(ctx, tex_provider, landscape_textures, land);
+    let splat_layers = build_cell_splat_layers(
+        ctx,
+        tex_provider,
+        landscape_textures,
+        landscape_texture_sets,
+        land,
+    );
     // #1343 — `build_cell_splat_layers` acquired (refcounted) one texture per
     // splat layer above, but those handles only reach an unload-droppable
     // owner at `allocate_terrain_tile` below. If we bail before that (no
@@ -336,7 +385,13 @@ pub(super) fn spawn_terrain_mesh(
     let splat_tex_indices: Vec<u32> = splat_layers
         .layers
         .iter()
-        .map(|l| l.texture_index)
+        .flat_map(|layer| {
+            [
+                layer.diffuse_index,
+                layer.normal_index,
+                layer.specular_index,
+            ]
+        })
         .collect();
 
     // Build vertices (33×33 = 1089).
@@ -462,8 +517,8 @@ pub(super) fn spawn_terrain_mesh(
     // disagreement is handled best-effort — the chosen base wins on its
     // own quadrants and the ATXT splat layers paint the rest. See #470
     // (D7 follow-up).
+    let base_ltex = land.quadrants.iter().find_map(|q| q.base);
     let tex_handle = {
-        let base_ltex = land.quadrants.iter().find_map(|q| q.base);
         if let Some(ltex_id) = base_ltex {
             if ltex_id == 0 {
                 // BTXT with form ID 0 = "default dirt" per UESP.
@@ -483,20 +538,46 @@ pub(super) fn spawn_terrain_mesh(
             resolve_texture(ctx, tex_provider, Some("textures\\landscape\\dirt02.dds"))
         }
     };
+    let base_texture_set = base_ltex.and_then(|id| landscape_texture_sets.get(&id));
+    let base_normal_index = resolve_optional_terrain_texture(
+        ctx,
+        tex_provider,
+        base_texture_set.and_then(|set| set.normal.as_deref()),
+    );
+    let base_specular_index = resolve_optional_terrain_texture(
+        ctx,
+        tex_provider,
+        base_texture_set.and_then(|set| set.specular.as_deref()),
+    );
 
     // Allocate a terrain tile slot only when the cell actually has splat
     // layers. BTXT-only cells skip this and render with the pre-#470
     // single-texture path for free. The slot is freed in `unload_cell`
     // via `VulkanContext::free_terrain_tile_slot`.
     let terrain_tile_index = if !splat_layers.layers.is_empty() {
-        let mut indices_arr = [0u32; 8];
+        let mut diffuse_indices = [0u32; 8];
+        let mut normal_indices = [0u32; 8];
+        let mut specular_indices = [0u32; 8];
         for (i, layer) in splat_layers.layers.iter().enumerate() {
-            indices_arr[i] = layer.texture_index;
+            diffuse_indices[i] = layer.diffuse_index;
+            normal_indices[i] = layer.normal_index;
+            specular_indices[i] = layer.specular_index;
         }
-        ctx.allocate_terrain_tile(indices_arr)
+        ctx.allocate_terrain_tile(GpuTerrainTile {
+            layer_diffuse_index: diffuse_indices,
+            layer_normal_index: normal_indices,
+            layer_specular_index: specular_indices,
+        })
     } else {
         None
     };
+    if !splat_layers.layers.is_empty() && terrain_tile_index.is_none() {
+        log::warn!(
+            "Terrain ({grid_x},{grid_y}): terrain material table is full; \
+             rendering BTXT only"
+        );
+        release_splat_layer_textures(ctx, &splat_tex_indices);
+    }
 
     // Queue BLAS build into the caller's batched-spec list — terrain
     // must be in the TLAS for RT shadows/GI, but we collapse N submits
@@ -511,6 +592,21 @@ pub(super) fn spawn_terrain_mesh(
     world.insert(entity, MeshHandle(mesh_handle));
     if tex_handle != 0 {
         world.insert(entity, TextureHandle(tex_handle));
+    }
+    if base_normal_index != 0 || base_specular_index != 0 {
+        let mut textures = MaterialTextureSet::default();
+        textures.base_color = tex_handle;
+        textures.normal = base_normal_index;
+        textures.specular = base_specular_index;
+        world.insert(
+            entity,
+            MaterialTextureHandles {
+                textures,
+                normal_has_alpha: ctx.texture_registry.handle_has_alpha(base_normal_index),
+                parallax_height_scale: 0.04,
+                parallax_max_passes: 4.0,
+            },
+        );
     }
     if let Some(slot) = terrain_tile_index {
         world.insert(entity, TerrainTileSlot(slot));

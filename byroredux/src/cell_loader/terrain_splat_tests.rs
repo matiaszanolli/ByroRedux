@@ -9,7 +9,9 @@ use super::terrain::{quadrant_samples_for_vertex, splat_weight_for_vertex, CellS
 
 fn mk_layer(per_quadrant_alpha: [Option<Vec<f32>>; 4]) -> CellSplatLayer {
     CellSplatLayer {
-        texture_index: 1,
+        diffuse_index: 1,
+        normal_index: 0,
+        specular_index: 0,
         per_quadrant_alpha,
     }
 }

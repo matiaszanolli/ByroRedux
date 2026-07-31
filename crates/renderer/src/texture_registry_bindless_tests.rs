@@ -3,13 +3,13 @@
 //! `MAX_BINDLESS_TEXTURES` constant.
 
 //! Regression tests for #950 / SAFE-25: the bindless texture
-//! descriptor set layout (set=0, binding=0) must agree with the
+//! descriptor set layout (set=0, 2D binding 0 + cube binding 1) must agree with the
 //! shaders that sample it (`triangle.frag` + `ui.frag`).
 //!
 //! Production `TextureRegistry::new` calls `validate_set_layout`
 //! before `vkCreateDescriptorSetLayout`, but that runtime check
 //! only fires when a real Vulkan device exists. These tests pull
-//! the binding through the same `build_bindless_descriptor_binding`
+//! the bindings through the same `build_bindless_descriptor_bindings`
 //! helper production uses and validate it against the
 //! include_bytes!'d SPIR-V at `cargo test` time, so a future shader
 //! refactor that drops or renames `textures[]` trips before the
@@ -38,10 +38,10 @@ fn frag_shaders() -> [crate::vulkan::reflect::ReflectedShader<'static>; 2] {
 /// from the actual clamp ceiling.
 #[test]
 fn bindless_binding_matches_triangle_ui_frag() {
-    let binding = build_bindless_descriptor_binding(1024);
+    let bindings = build_bindless_descriptor_bindings(1024);
     crate::vulkan::reflect::validate_set_layout(
         0,
-        std::slice::from_ref(&binding),
+        &bindings,
         &frag_shaders(),
         "bindless textures (set=0)",
         &[],
@@ -56,11 +56,11 @@ fn bindless_binding_matches_triangle_ui_frag() {
 /// or STORAGE_IMAGE doesn't pass silently.
 #[test]
 fn wrong_descriptor_type_trips_diagnostic() {
-    let binding =
-        build_bindless_descriptor_binding(1024).descriptor_type(vk::DescriptorType::SAMPLED_IMAGE);
+    let mut bindings = build_bindless_descriptor_bindings(1024);
+    bindings[0] = bindings[0].descriptor_type(vk::DescriptorType::SAMPLED_IMAGE);
     let err = crate::vulkan::reflect::validate_set_layout(
         0,
-        std::slice::from_ref(&binding),
+        &bindings,
         &frag_shaders(),
         "bindless textures (set=0, drift)",
         &[],

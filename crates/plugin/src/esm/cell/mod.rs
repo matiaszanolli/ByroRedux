@@ -906,6 +906,12 @@ pub struct EsmCellIndex {
     /// Landscape texture definitions: LTEX form ID → diffuse texture path.
     /// Resolved via LTEX.TNAM → TXST.TX00 (FO3+) or LTEX.ICON (Oblivion).
     pub landscape_textures: HashMap<u32, String>,
+    /// Full landscape material sets keyed by LTEX form ID. FO3+ LTEX records
+    /// point at TXST records through TNAM; retaining that association lets
+    /// LAND consume the normal/specular channels instead of collapsing the
+    /// terrain material back to TX00 diffuse-only. Oblivion ICON-authored
+    /// LTEX records have no sibling TXST and therefore do not enter this map.
+    pub landscape_texture_sets: HashMap<u32, TextureSet>,
     /// Full decoded WRLD records, keyed by lowercased EDID. The
     /// `worldspace_climates` map below is preserved for back-compat
     /// with the cell loader's CLMT lookup; `worldspaces` is the
@@ -1058,6 +1064,8 @@ impl EsmCellIndex {
 
         self.statics.extend(other.statics);
         self.landscape_textures.extend(other.landscape_textures);
+        self.landscape_texture_sets
+            .extend(other.landscape_texture_sets);
         self.worldspaces.extend(other.worldspaces);
         self.worldspace_climates.extend(other.worldspace_climates);
         self.texture_sets.extend(other.texture_sets);

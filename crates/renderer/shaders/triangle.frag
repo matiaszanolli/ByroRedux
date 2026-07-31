@@ -192,6 +192,15 @@ void main() {
         );
     }
 
+    bool terrainSplatActive =
+        (inst.flags & INSTANCE_FLAG_TERRAIN_SPLAT) != 0u;
+    GpuTerrainTile terrainTile;
+    vec4 terrainSplat[2] = vec4[2](fragSplat0, fragSplat1);
+    if (terrainSplatActive) {
+        uint terrainTileIdx = (inst.flags >> 16) & 0xFFFFu;
+        terrainTile = terrainTiles[nonuniformEXT(terrainTileIdx)];
+    }
+
     vec4 texColor = texture(textures[nonuniformEXT(fragTexIndex)], sampleUV);
     // #1653 — a BC1 diffuse carries no authored alpha channel: BC1 is
     // 1-bit punch-through, decoded as BC1_RGBA only so alpha-test cutouts
@@ -247,14 +256,11 @@ void main() {
     // per-tile `GpuTerrainTile` alpha-blend on top in layer order via
     // `mix(prev, layer, weight)`. Matches the UESP-documented ATXT
     // blend semantics. Static meshes skip the branch entirely.
-    if ((inst.flags & INSTANCE_FLAG_TERRAIN_SPLAT) != 0u) {
-        uint tileIdx = (inst.flags >> 16) & 0xFFFFu;
-        GpuTerrainTile tile = terrainTiles[nonuniformEXT(tileIdx)];
-        vec4 splat[2] = vec4[2](fragSplat0, fragSplat1);
+    if (terrainSplatActive) {
         for (uint i = 0u; i < 8u; ++i) {
-            float w = splat[i / 4u][i & 3u];
+            float w = terrainSplat[i / 4u][i & 3u];
             if (w <= 0.0) continue;
-            uint layerIdx = tile.layerTextureIndex[i];
+            uint layerIdx = terrainTile.layerDiffuseIndex[i];
             if (layerIdx == 0u) continue; // layer slot unused
             vec4 layerColor = texture(
                 textures[nonuniformEXT(layerIdx)], sampleUV);
@@ -338,6 +344,22 @@ void main() {
             sampleUV
         ).rgb;
     }
+    // LAND TX07 is a per-layer specular-colour map. Apply the same ordered
+    // ATXT alpha composition used for diffuse so exterior terrain retains
+    // the full TXST material instead of shading every layer with one scalar
+    // default. Missing layer maps (index 0) intentionally keep the previous
+    // contribution.
+    if (terrainSplatActive) {
+        for (uint i = 0u; i < 8u; ++i) {
+            float w = terrainSplat[i / 4u][i & 3u];
+            uint specIdx = terrainTile.layerSpecularIndex[i];
+            if (w <= 0.0 || specIdx == 0u) continue;
+            vec3 layerSpec = texture(
+                textures[nonuniformEXT(specIdx)], sampleUV
+            ).rgb;
+            specColor = mix(specColor, layerSpec, w);
+        }
+    }
     uint normalMapIdx = mat.normalMapIndex;
 
     // Surface normal — perturbed by normal map if available.
@@ -357,6 +379,7 @@ void main() {
     if (!gl_FrontFacing) {
         N = -N;
     }
+    vec3 terrainGeometryNormal = N;
     // #783 / M-NORMALS — per-fragment normal-map perturbation.
     //
     // Re-enabled-by-default 2026-05-03 (#786 closeout). The
@@ -392,20 +415,53 @@ void main() {
         // BGSM-authored materials) skips the TBN transform and uses
         // the sampled normal directly. Bethesda authors object-space
         // normals on a small set of static meshes whose tangent space
-        // isn't reliably reconstructable; in that case the normal map
-        // already carries world-space (or model-space, treated as the
-        // same here since the static mesh's local frame matches the
-        // world frame after the placement transform) normals and the
-        // tangent-space TBN multiply would double-rotate them. The
+        // isn't reliably reconstructable. The sample is object/model
+        // space, so it still needs the placement's normal matrix; skipping
+        // that transform made every rotated/scaled REFR light as though it
+        // were axis-aligned. The tangent-space TBN multiply remains skipped.
+        // The
         // same `* 2.0 - 1.0` decode + BC5 Z-reconstruction the
         // tangent-space path uses applies, just without the TBN.
         if ((mat.materialFlags & MAT_FLAG_MODEL_SPACE_NORMALS) != 0u) {
             vec3 mn = texture(textures[nonuniformEXT(normalMapIdx)], sampleUV).rgb;
             mn = mn * 2.0 - 1.0;
             mn.z = sqrt(max(0.0, 1.0 - dot(mn.xy, mn.xy)));
-            N = normalize(mn);
+            mat3 model3 = mat3(inst.model);
+            vec3 worldMn;
+            if ((inst.flags & INSTANCE_FLAG_NON_UNIFORM_SCALE) != 0u) {
+                float det = determinant(model3);
+                worldMn = abs(det) > 1e-6
+                    ? transpose(inverse(model3)) * mn
+                    : mn;
+            } else {
+                worldMn = model3 * mn;
+            }
+            N = dot(worldMn, worldMn) > 0.0
+                ? normalize(worldMn)
+                : N;
         } else {
             N = perturbNormal(N, fragWorldPosRel, sampleUV, normalMapIdx, fragTangent);  // #1496 — TBN from dFdx(worldPos) only
+        }
+    }
+    // LAND TX01 normal maps follow the same splat weights and ordering as
+    // diffuse. Perturb each layer from the common geometric frame, then
+    // alpha-compose the resulting world normals. This avoids feeding a
+    // previously perturbed normal back into the next layer's TBN.
+    if (terrainSplatActive
+        && (dbgFlags & DBG_BYPASS_NORMAL_MAP) == 0u)
+    {
+        for (uint i = 0u; i < 8u; ++i) {
+            float w = terrainSplat[i / 4u][i & 3u];
+            uint layerNormalIdx = terrainTile.layerNormalIndex[i];
+            if (w <= 0.0 || layerNormalIdx == 0u) continue;
+            vec3 layerNormal = perturbNormal(
+                terrainGeometryNormal,
+                fragWorldPosRel,
+                sampleUV,
+                layerNormalIdx,
+                fragTangent
+            );
+            N = normalize(mix(N, layerNormal, w));
         }
     }
 
@@ -2083,11 +2139,12 @@ void main() {
     // its reflection ray) or is on the deliberately cheap Fresnel fallback.
     // Do not let fallback glass escape the glass ray budget through this
     // general glossy-surface path.
+    bool hasAuthoredCubemap = mat.envMapIndex != 0u;
     bool hasExplicitEnvironment =
-        mat.envMapIndex != 0u || mat.materialKind == 1u;
+        hasAuthoredCubemap || mat.materialKind == 1u;
     bool needsEnvironmentReflection =
         metalness > 0.3 || hasExplicitEnvironment;
-    if (rtEnabled && roughness < 0.6 && !isGlass
+    if (roughness < 0.6 && !isGlass
         && needsEnvironmentReflection) {
         // V-aligned normal flip (#668). The bump map at line 638 can perturb
         // `N` such that dot(N, V) < 0 on grazing views or noisy normal maps;
@@ -2099,6 +2156,15 @@ void main() {
         vec3 R = reflect(-V, N_view);
         // Fresnel-weighted reflection: stronger at grazing angles.
         vec3 F = fresnelSchlick(NdotV, F0);
+        float environmentMask = mat.envMaskIndex != 0u
+            ? texture(
+                textures[nonuniformEXT(mat.envMaskIndex)],
+                sampleUV
+            ).r
+            : 1.0;
+        float environmentStrength = hasExplicitEnvironment
+            ? max(mat.multiLayerEnvmapStrength, 0.0)
+            : 1.0;
         // Skyrim's XCLL/WTHR lighting commonly authors the room ambience in
         // the six-direction DALC cube while leaving the legacy flat ambient
         // (`sceneFlags.yzw`) black. Using only the latter made every rough
@@ -2112,13 +2178,26 @@ void main() {
         // specular path. Treating irradiance as radiance produced the clipped
         // white "chrome" lobes on Mzulft's bronze machinery. Non-DALC games
         // retain the legacy flat ambient path unchanged.
-        vec3 ambientFallback = dalcFlags.x > 0.5
-            ? sampleDalcCube(R) * (1.0 / PI)
-            : sceneFlags.yzw;
+        vec3 ambientFallback;
+        if (hasAuthoredCubemap) {
+            // Renderer world space is Y-up; Bethesda cubemaps are authored in
+            // the source Z-up basis. Invert the canonical (x,z,-y) import
+            // transform before selecting the DDS cube face.
+            vec3 cubeDirection = normalize(vec3(R.x, -R.z, R.y));
+            ambientFallback = textureLod(
+                cubemaps[nonuniformEXT(mat.envMapIndex)],
+                cubeDirection,
+                roughness * 8.0
+            ).rgb;
+        } else {
+            ambientFallback = dalcFlags.x > 0.5
+                ? sampleDalcCube(R) * (1.0 / PI)
+                : sceneFlags.yzw;
+        }
         float reflClarity = 1.0 - roughness;
 
         vec3 envColor;
-        if (rtLOD < RT_LOD_REFLECT) {
+        if (rtEnabled && rtLOD < RT_LOD_REFLECT) {
             // Deterministic rough reflection: a single SHARP ray, GGX-lobe
             // blur applied as a roughness-scaled mip on the hit sample
             // (`traceReflection`'s mipBias). mip ~ roughness·8 spans the
@@ -2145,7 +2224,8 @@ void main() {
         // surfaces (low roughness) keep their near-mirror reflection. The
         // specular lobe spreads — and thus dims per-direction — as roughness
         // rises; this is the cheap energy stand-in for that.
-        Lo += envColor * F * (1.0 - roughness);
+        Lo += envColor * F * (1.0 - roughness)
+            * environmentMask * environmentStrength;
     }
 
     // World-space distance from camera for cluster depth slicing.

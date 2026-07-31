@@ -28,7 +28,8 @@ pub(super) fn fill_terrain_tiles(
 /// Free-function core of `VulkanContext::free_terrain_tile` — Vulkan-free
 /// so unit tests can exercise the state transition. Releases `slot` back
 /// to `free_list`, clears the corresponding `tiles` entry, sets `*dirty`,
-/// and returns the previous layer-texture indices so the caller can
+/// and returns the previous tile so the caller can walk every owned
+/// texture index and
 /// release the per-layer texture refcounts they bumped through
 /// `acquire_by_path` at allocation time. Returns `None` when the slot
 /// index is out of range or already vacant. See #627.
@@ -37,7 +38,7 @@ pub(super) fn release_terrain_tile_slot(
     free_list: &mut Vec<u32>,
     dirty: &mut bool,
     slot: u32,
-) -> Option<[u32; 8]> {
+) -> Option<GpuTerrainTile> {
     let idx = slot as usize;
     if idx >= tiles.len() {
         return None;
@@ -45,7 +46,7 @@ pub(super) fn release_terrain_tile_slot(
     let tile = tiles[idx].take()?;
     free_list.push(slot);
     *dirty = true;
-    Some(tile.layer_texture_index)
+    Some(tile)
 }
 
 impl VulkanContext {
@@ -55,13 +56,11 @@ impl VulkanContext {
     /// alongside `INSTANCE_FLAG_TERRAIN_SPLAT`. Returns `None` when the
     /// registry is full — caller falls back to the single-texture
     /// path. See #470.
-    pub fn allocate_terrain_tile(&mut self, layer_texture_index: [u32; 8]) -> Option<u32> {
+    pub fn allocate_terrain_tile(&mut self, tile: GpuTerrainTile) -> Option<u32> {
         let slot = self.terrain_tile_free_list.pop()?;
         let idx = slot as usize;
         debug_assert!(idx < self.terrain_tiles.len());
-        self.terrain_tiles[idx] = Some(GpuTerrainTile {
-            layer_texture_index,
-        });
+        self.terrain_tiles[idx] = Some(tile);
         self.terrain_tiles_dirty = true;
         Some(slot)
     }
@@ -72,11 +71,11 @@ impl VulkanContext {
     /// frame-in-flight reads stale-but-valid data rather than
     /// undefined.
     ///
-    /// Returns the previous slot's 8 layer texture indices so the
+    /// Returns the previous slot so the
     /// caller can issue symmetric `drop_texture` calls on the refcounts
     /// that `resolve_texture` bumped at allocation time. Returns `None`
     /// when the slot is out of range or already vacant. See #627.
-    pub fn free_terrain_tile(&mut self, slot: u32) -> Option<[u32; 8]> {
+    pub fn free_terrain_tile(&mut self, slot: u32) -> Option<GpuTerrainTile> {
         release_terrain_tile_slot(
             &mut self.terrain_tiles,
             &mut self.terrain_tile_free_list,
@@ -275,7 +274,9 @@ mod tests {
     fn fill_reuses_scratch_capacity_across_dirty_refills() {
         let mut tiles: Vec<Option<GpuTerrainTile>> = vec![None; MAX_TERRAIN_TILES];
         tiles[0] = Some(GpuTerrainTile {
-            layer_texture_index: [1, 2, 3, 4, 5, 6, 7, 8],
+            layer_diffuse_index: [1, 2, 3, 4, 5, 6, 7, 8],
+            layer_normal_index: [11, 12, 13, 14, 15, 16, 17, 18],
+            layer_specular_index: [21, 22, 23, 24, 25, 26, 27, 28],
         });
         let mut dest: Vec<GpuTerrainTile> = Vec::new();
         let mut dirty = true;
@@ -285,7 +286,12 @@ mod tests {
         let cap_after_first = dest.capacity();
         assert!(cap_after_first >= MAX_TERRAIN_TILES);
         assert_eq!(dest.len(), MAX_TERRAIN_TILES);
-        assert_eq!(dest[0].layer_texture_index, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(dest[0].layer_diffuse_index, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(dest[0].layer_normal_index, [11, 12, 13, 14, 15, 16, 17, 18]);
+        assert_eq!(
+            dest[0].layer_specular_index,
+            [21, 22, 23, 24, 25, 26, 27, 28]
+        );
         assert!(!dirty);
 
         // Subsequent refills MUST NOT grow capacity — clear + extend
@@ -327,7 +333,9 @@ mod tests {
         assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
         assert_eq!(dest.len(), 4);
         for tile in &dest {
-            assert_eq!(tile.layer_texture_index, [0; 8]);
+            assert_eq!(tile.layer_diffuse_index, [0; 8]);
+            assert_eq!(tile.layer_normal_index, [0; 8]);
+            assert_eq!(tile.layer_specular_index, [0; 8]);
         }
     }
 
@@ -341,14 +349,22 @@ mod tests {
     fn release_returns_previous_layer_indices_and_clears_slot() {
         let mut tiles: Vec<Option<GpuTerrainTile>> = vec![None; 4];
         tiles[2] = Some(GpuTerrainTile {
-            layer_texture_index: [11, 22, 33, 44, 55, 66, 77, 88],
+            layer_diffuse_index: [11, 22, 33, 44, 55, 66, 77, 88],
+            layer_normal_index: [111, 122, 133, 144, 155, 166, 177, 188],
+            layer_specular_index: [211, 222, 233, 244, 255, 266, 277, 288],
         });
         let mut free_list: Vec<u32> = vec![0, 1, 3];
         let mut dirty = false;
 
         let released = release_terrain_tile_slot(&mut tiles, &mut free_list, &mut dirty, 2);
 
-        assert_eq!(released, Some([11, 22, 33, 44, 55, 66, 77, 88]));
+        let released = released.expect("populated tile");
+        assert_eq!(released.layer_diffuse_index, [11, 22, 33, 44, 55, 66, 77, 88]);
+        assert_eq!(released.layer_normal_index, [111, 122, 133, 144, 155, 166, 177, 188]);
+        assert_eq!(
+            released.layer_specular_index,
+            [211, 222, 233, 244, 255, 266, 277, 288]
+        );
         assert!(tiles[2].is_none(), "slot must be vacated after release");
         assert_eq!(free_list, vec![0, 1, 3, 2], "slot returned to free list");
         assert!(dirty, "release schedules SSBO refresh");

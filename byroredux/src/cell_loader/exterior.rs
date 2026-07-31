@@ -401,6 +401,7 @@ impl ExteriorCellApplyJob {
                     ctx: &mut *ctx,
                     tex_provider,
                     landscape_textures: &index.landscape_textures,
+                    landscape_texture_sets: &index.landscape_texture_sets,
                     blas_specs: &mut *blas_sink,
                 },
                 gx,

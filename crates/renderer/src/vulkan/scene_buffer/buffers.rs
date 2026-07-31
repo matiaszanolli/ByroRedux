@@ -450,7 +450,8 @@ fn allocate_scene_render_buffers(
     // Indirect buffer: one VkDrawIndexedIndirectCommand (20 B) per batch. #309.
     let indirect_buf_size = (std::mem::size_of::<vk::DrawIndexedIndirectCommand>()
         * MAX_INDIRECT_DRAWS) as vk::DeviceSize;
-    // Terrain tile SSBO: 32 B per slot × MAX_TERRAIN_TILES. #470.
+    // Terrain tile SSBO: 96 B per slot × MAX_TERRAIN_TILES. Diffuse,
+    // normal, and smooth/spec indices stay aligned per LAND layer.
     let terrain_tile_buf_size =
         (std::mem::size_of::<GpuTerrainTile>() * MAX_TERRAIN_TILES) as vk::DeviceSize;
 

@@ -75,8 +75,8 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     // hands them off to `texture_registry.drop_texture`. Without this,
     // a 7×7 WastelandNV reload leaks ~150 texture refcounts (#627).
     for &slot in &terrain_tile_slots {
-        if let Some(layer_indices) = ctx.free_terrain_tile(slot) {
-            for idx in layer_indices {
+        if let Some(tile) = ctx.free_terrain_tile(slot) {
+            for idx in tile.texture_indices() {
                 // Same skip rule as `collect_victim_gpu_handles`'
                 // `push_tex_drop`: never drop the placeholder (0) or the
                 // shared registry fallback slot.

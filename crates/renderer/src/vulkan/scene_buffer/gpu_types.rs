@@ -5,12 +5,29 @@
 //! [`super::gpu_instance_layout_tests`].
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GpuTerrainTile {
-    /// Bindless texture indices for layers 0-7. Unused slots are 0
-    /// (the fallback "error" texture); splat weights for unused layers
-    /// are zero so the fragment's `mix` is a no-op.
-    pub layer_texture_index: [u32; 8],
+    /// Bindless diffuse indices for LAND overlay layers 0-7.
+    pub layer_diffuse_index: [u32; 8],
+    /// Tangent-space normal maps paired with [`Self::layer_diffuse_index`].
+    /// Zero means the layer contributes geometry normal only.
+    pub layer_normal_index: [u32; 8],
+    /// Specular-colour maps paired with [`Self::layer_diffuse_index`].
+    /// Zero means the layer keeps the material's scalar specular colour.
+    pub layer_specular_index: [u32; 8],
+}
+
+impl GpuTerrainTile {
+    /// Every texture reference owned by this tile. The cell-unload path uses
+    /// this exhaustive iterator to release the same diffuse/normal/specular
+    /// acquisitions that terrain spawning retained.
+    pub fn texture_indices(&self) -> impl Iterator<Item = u32> + '_ {
+        self.layer_diffuse_index
+            .iter()
+            .chain(self.layer_normal_index.iter())
+            .chain(self.layer_specular_index.iter())
+            .copied()
+    }
 }
 
 /// Previous rigid-instance transform, aligned one-for-one with the current

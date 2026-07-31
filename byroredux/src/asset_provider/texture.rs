@@ -240,6 +240,25 @@ pub(crate) fn resolve_texture_with_clamp(
     tex_path: Option<&str>,
     clamp_mode: u8,
 ) -> u32 {
+    resolve_texture_view_with_clamp(ctx, tex_provider, tex_path, clamp_mode, false)
+}
+
+fn resolve_environment_texture_with_clamp(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    tex_path: Option<&str>,
+    clamp_mode: u8,
+) -> u32 {
+    resolve_texture_view_with_clamp(ctx, tex_provider, tex_path, clamp_mode, true)
+}
+
+fn resolve_texture_view_with_clamp(
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    tex_path: Option<&str>,
+    clamp_mode: u8,
+    cubemap: bool,
+) -> u32 {
     // F2 (2026-05-26 sweep) — "no path authored" is semantically
     // different from "path authored but lookup failed." The former is
     // a Bethesda artist deliberately shipping a surface that the
@@ -252,7 +271,11 @@ pub(crate) fn resolve_texture_with_clamp(
     // the file wasn't in the archive," which is the diagnostic we
     // want to keep visible.
     let Some(tex_path) = tex_path else {
-        return ctx.texture_registry.neutral_fallback();
+        return if cubemap {
+            0
+        } else {
+            ctx.texture_registry.neutral_fallback()
+        };
     };
     // Strip Bethesda build-server prefixes (e.g. `skyrimhd\build\pc\data\`)
     // so cache + BSA lookups both use the canonical `textures\…` path.
@@ -267,10 +290,14 @@ pub(crate) fn resolve_texture_with_clamp(
     // unload. `load_dds` on the miss path bumps from 0→1 on fresh
     // uploads; both routes produce exactly one outstanding ref per
     // caller. See #524.
-    if let Some(cached) = ctx
-        .texture_registry
-        .acquire_by_path_with_clamp(tex_path, clamp_mode)
-    {
+    let cached = if cubemap {
+        ctx.texture_registry
+            .acquire_cubemap_by_path_with_clamp(tex_path, clamp_mode)
+    } else {
+        ctx.texture_registry
+            .acquire_by_path_with_clamp(tex_path, clamp_mode)
+    };
+    if let Some(cached) = cached {
         return cached;
     }
     if let Some(dds_bytes) = tex_provider.extract(tex_path) {
@@ -283,15 +310,26 @@ pub(crate) fn resolve_texture_with_clamp(
         // (`load_references`). Pre-fix every fresh DDS paid its own
         // `with_one_time_commands` (submit + fence-wait) — ~50 ms
         // per ~100-DDS edge crossing.
-        match ctx.texture_registry.enqueue_dds_with_clamp(
-            &ctx.device,
-            tex_path,
-            dds_bytes,
-            clamp_mode,
-        ) {
+        let queued = if cubemap {
+            ctx.texture_registry.enqueue_cubemap_dds_with_clamp(
+                &ctx.device,
+                tex_path,
+                dds_bytes,
+                clamp_mode,
+            )
+        } else {
+            ctx.texture_registry.enqueue_dds_with_clamp(
+                &ctx.device,
+                tex_path,
+                dds_bytes,
+                clamp_mode,
+            )
+        };
+        match queued {
             Ok(h) => {
                 log::debug!(
-                    "Queued DDS texture: '{}' (clamp_mode {}, handle {h})",
+                    "Queued DDS {}texture: '{}' (clamp_mode {}, handle {h})",
+                    if cubemap { "cube " } else { "" },
                     tex_path,
                     clamp_mode,
                 );
@@ -304,7 +342,11 @@ pub(crate) fn resolve_texture_with_clamp(
     } else {
         log::debug!("Texture not found in archive: '{}'", tex_path);
     }
-    ctx.texture_registry.fallback()
+    if cubemap {
+        0
+    } else {
+        ctx.texture_registry.fallback()
+    }
 }
 
 /// Resolve every non-base texture role with the material's authored sampler
@@ -325,8 +367,12 @@ pub(crate) fn resolve_material_texture_handles_with_clamp(
     clamp_mode: u8,
 ) -> MaterialTextureSet<u32> {
     let fallback = ctx.texture_registry.fallback();
-    map_secondary_texture_handles(textures, base_handle, |path| {
-        let handle = resolve_texture_with_clamp(ctx, tex_provider, Some(path), clamp_mode);
+    map_secondary_texture_handles(textures, base_handle, |path, cubemap| {
+        let handle = if cubemap {
+            resolve_environment_texture_with_clamp(ctx, tex_provider, Some(path), clamp_mode)
+        } else {
+            resolve_texture_with_clamp(ctx, tex_provider, Some(path), clamp_mode)
+        };
         if handle == fallback {
             0
         } else {
@@ -338,11 +384,20 @@ pub(crate) fn resolve_material_texture_handles_with_clamp(
 fn map_secondary_texture_handles(
     textures: &MaterialTextureSet<Option<String>>,
     base_handle: u32,
-    mut resolve: impl FnMut(&str) -> u32,
+    mut resolve: impl FnMut(&str, bool) -> u32,
 ) -> MaterialTextureSet<u32> {
     let mut secondary = textures.clone();
     secondary.base_color = None;
-    let mut handles = secondary.map_ref(|path| path.as_deref().map(&mut resolve).unwrap_or(0));
+    let environment = secondary.environment.take();
+    let mut handles = secondary.map_ref(|path| {
+        path.as_deref()
+            .map(|path| resolve(path, false))
+            .unwrap_or(0)
+    });
+    handles.environment = environment
+        .as_deref()
+        .map(|path| resolve(path, true))
+        .unwrap_or(0);
     handles.base_color = base_handle;
     handles
 }
@@ -402,16 +457,23 @@ mod tests {
 
         let mut seen = Vec::new();
         let mut next_handle = 1u32;
-        let handles = map_secondary_texture_handles(&textures, 777, |path| {
-            seen.push(path.to_string());
+        let handles = map_secondary_texture_handles(&textures, 777, |path, cubemap| {
+            seen.push((path.to_string(), cubemap));
             let handle = next_handle;
             next_handle += 1;
             handle
         });
 
         assert_eq!(handles.base_color, 777);
-        assert!(!seen.iter().any(|path| path == "base"));
+        assert!(!seen.iter().any(|(path, _)| path == "base"));
         assert_eq!(seen.len(), textures.secondary_values().count());
+        assert_eq!(
+            seen.iter()
+                .filter(|(_, cubemap)| *cubemap)
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["environment"],
+        );
         assert!(handles.secondary_values().all(|&handle| handle != 0));
     }
 }

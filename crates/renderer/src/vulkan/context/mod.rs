@@ -1807,13 +1807,14 @@ impl VulkanContext {
         }));
 
         // 11. Texture registry with checkerboard fallback.
-        // Bindless array size is driven by the device limit (query in
-        // device.rs, clamped at 65535) instead of a hardcoded 1024 that
-        // large cells would silently overflow. See #425.
+        // Bindless capacity is split evenly across the 2D and cubemap
+        // bindings so their combined sampled-image descriptor count stays
+        // within the device's update-after-bind per-stage limit.
+        let max_textures_per_binding = (device_caps.max_bindless_sampled_images / 2).max(2);
         let mut texture_registry = TextureRegistry::new(
             &device,
             &gpu_allocator,
-            device_caps.max_bindless_sampled_images,
+            max_textures_per_binding,
             device_caps.max_sampler_anisotropy,
             frame_extents
                 .material_mip_bias(renderer_config.upscaler)

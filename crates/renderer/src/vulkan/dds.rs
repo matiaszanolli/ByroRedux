@@ -7,6 +7,14 @@ const DDS_MAGIC: u32 = 0x20534444; // "DDS "
 const HEADER_SIZE: usize = 128; // 4 magic + 124 DDS_HEADER
 const DX10_EXT_SIZE: usize = 20;
 
+// DDS_HEADER.dwCaps2 cubemap bits.
+const DDSCAPS2_CUBEMAP: u32 = 0x0000_0200;
+const DDSCAPS2_CUBEMAP_ALL_FACES: u32 = 0x0000_fc00;
+
+// DDS_HEADER_DXT10 fields used by Bethesda cubemaps.
+const D3D10_RESOURCE_DIMENSION_TEXTURE2D: u32 = 3;
+const D3D10_RESOURCE_MISC_TEXTURECUBE: u32 = 0x4;
+
 // DDS_PIXELFORMAT flags
 const DDPF_FOURCC: u32 = 0x4;
 const DDPF_RGB: u32 = 0x40;
@@ -56,6 +64,12 @@ pub struct DdsMetadata {
     pub block_size: u32,
     /// Whether the format is block-compressed (BC).
     pub compressed: bool,
+    /// Number of image array layers in the upload payload. Ordinary 2D
+    /// textures use one; a cubemap uses the six DDS faces in +X, -X, +Y,
+    /// -Y, +Z, -Z order.
+    pub array_layers: u32,
+    /// Whether the six layers must be exposed through a Vulkan CUBE view.
+    pub is_cubemap: bool,
     /// Byte offset where pixel data begins (128 standard, 148 for DX10 extended header).
     pub data_offset: usize,
     /// Set for an uncompressed `DDPF_RGB` DDS that is NOT 32-bpp
@@ -229,6 +243,14 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
     let height = read_u32(data, 12);
     let width = read_u32(data, 16);
     let mip_count = read_u32(data, 28).max(1);
+    let caps2 = read_u32(data, 112);
+    let legacy_cubemap = caps2 & DDSCAPS2_CUBEMAP != 0;
+    if legacy_cubemap {
+        ensure!(
+            caps2 & DDSCAPS2_CUBEMAP_ALL_FACES == DDSCAPS2_CUBEMAP_ALL_FACES,
+            "DDS cubemap is missing one or more of its six faces (caps2={caps2:#010x})",
+        );
+    }
 
     // DDS_PIXELFORMAT at offset 76 within file (offset 72 within DDS_HEADER + 4 magic)
     let pf_flags = read_u32(data, 80);
@@ -243,6 +265,28 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                 "DDS DX10 extended header truncated"
             );
             let dxgi_format = read_u32(data, HEADER_SIZE);
+            let resource_dimension = read_u32(data, HEADER_SIZE + 4);
+            let misc_flag = read_u32(data, HEADER_SIZE + 8);
+            let array_size = read_u32(data, HEADER_SIZE + 12);
+            ensure!(
+                resource_dimension == D3D10_RESOURCE_DIMENSION_TEXTURE2D,
+                "Unsupported DDS DX10 resource dimension: {resource_dimension}",
+            );
+            let is_cubemap = misc_flag & D3D10_RESOURCE_MISC_TEXTURECUBE != 0;
+            if is_cubemap {
+                // Bethesda BA2 synthesis uses the legacy-compatible six-face
+                // count, while native DX10 DDS writers commonly store one
+                // cube. Both describe one cubemap to this renderer.
+                ensure!(
+                    array_size == 1 || array_size == 6,
+                    "DDS cubemap arrays are not supported (arraySize={array_size})",
+                );
+            } else {
+                ensure!(
+                    array_size == 1,
+                    "DDS texture arrays are not supported (arraySize={array_size})",
+                );
+            }
             let (format, block_size, compressed) = map_dxgi_format(dxgi_format)?;
             Ok(DdsMetadata {
                 width,
@@ -251,6 +295,8 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                 format,
                 block_size,
                 compressed,
+                array_layers: if is_cubemap { 6 } else { 1 },
+                is_cubemap,
                 data_offset: HEADER_SIZE + DX10_EXT_SIZE,
                 expand: None,
             })
@@ -263,6 +309,8 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                 format,
                 block_size,
                 compressed: true,
+                array_layers: if legacy_cubemap { 6 } else { 1 },
+                is_cubemap: legacy_cubemap,
                 data_offset: HEADER_SIZE,
                 expand: None,
             })
@@ -278,6 +326,8 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                 format: vk::Format::R8G8B8A8_SRGB,
                 block_size: 4, // bytes per pixel
                 compressed: false,
+                array_layers: if legacy_cubemap { 6 } else { 1 },
+                is_cubemap: legacy_cubemap,
                 data_offset: HEADER_SIZE,
                 expand: None,
             })
@@ -304,6 +354,8 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                 format: vk::Format::R8G8B8A8_SRGB,
                 block_size: 4,
                 compressed: false,
+                array_layers: if legacy_cubemap { 6 } else { 1 },
+                is_cubemap: legacy_cubemap,
                 data_offset: HEADER_SIZE,
                 expand: Some(RgbExpand {
                     src_bpp: bpp,
@@ -336,30 +388,34 @@ pub fn expand_uncompressed_rgb(meta: &DdsMetadata, data: &[u8]) -> Vec<u8> {
     };
     let src_bpp = (ex.src_bpp / 8) as usize; // source bytes per pixel
     let mut total_pixels = 0usize;
-    for m in 0..meta.mip_count {
-        let w = (meta.width >> m).max(1) as usize;
-        let h = (meta.height >> m).max(1) as usize;
-        total_pixels += w * h;
+    for _layer in 0..meta.array_layers {
+        for m in 0..meta.mip_count {
+            let w = (meta.width >> m).max(1) as usize;
+            let h = (meta.height >> m).max(1) as usize;
+            total_pixels += w * h;
+        }
     }
     let mut out = Vec::with_capacity(total_pixels * 4);
     let mut src_off = meta.data_offset;
-    for m in 0..meta.mip_count {
-        let w = (meta.width >> m).max(1) as usize;
-        let h = (meta.height >> m).max(1) as usize;
-        for _ in 0..(w * h) {
-            let mut val = 0u32;
-            for b in 0..src_bpp {
-                val |= (data.get(src_off + b).copied().unwrap_or(0) as u32) << (8 * b);
+    for _layer in 0..meta.array_layers {
+        for m in 0..meta.mip_count {
+            let w = (meta.width >> m).max(1) as usize;
+            let h = (meta.height >> m).max(1) as usize;
+            for _ in 0..(w * h) {
+                let mut val = 0u32;
+                for b in 0..src_bpp {
+                    val |= (data.get(src_off + b).copied().unwrap_or(0) as u32) << (8 * b);
+                }
+                src_off += src_bpp;
+                out.push(scale_channel(val, ex.r_mask));
+                out.push(scale_channel(val, ex.g_mask));
+                out.push(scale_channel(val, ex.b_mask));
+                out.push(if ex.a_mask != 0 {
+                    scale_channel(val, ex.a_mask)
+                } else {
+                    255
+                });
             }
-            src_off += src_bpp;
-            out.push(scale_channel(val, ex.r_mask));
-            out.push(scale_channel(val, ex.g_mask));
-            out.push(scale_channel(val, ex.b_mask));
-            out.push(if ex.a_mask != 0 {
-                scale_channel(val, ex.a_mask)
-            } else {
-                255
-            });
         }
     }
     out
@@ -420,7 +476,7 @@ pub fn total_data_size(meta: &DdsMetadata) -> u64 {
             meta.compressed,
         ) as u64;
     }
-    total
+    total * u64::from(meta.array_layers)
 }
 
 fn map_fourcc(fourcc: u32) -> Result<(vk::Format, u32)> {
@@ -596,6 +652,25 @@ mod tests {
         let meta = parse_dds(&data).unwrap();
         assert_eq!(meta.format, vk::Format::BC3_SRGB_BLOCK);
         assert_eq!(meta.block_size, 16);
+    }
+
+    #[test]
+    fn legacy_cubemap_exposes_six_faces() {
+        let mut data = make_dds_header(64, 64, 7, b"DXT1");
+        data[112..116]
+            .copy_from_slice(&(DDSCAPS2_CUBEMAP | DDSCAPS2_CUBEMAP_ALL_FACES).to_le_bytes());
+        let meta = parse_dds(&data).unwrap();
+        assert!(meta.is_cubemap);
+        assert_eq!(meta.array_layers, 6);
+    }
+
+    #[test]
+    fn dx10_cubemap_exposes_six_faces() {
+        let mut data = make_dx10_header(128, 128, 8, DXGI_FORMAT_BC3_UNORM_SRGB);
+        data[136..140].copy_from_slice(&D3D10_RESOURCE_MISC_TEXTURECUBE.to_le_bytes());
+        let meta = parse_dds(&data).unwrap();
+        assert!(meta.is_cubemap);
+        assert_eq!(meta.array_layers, 6);
     }
 
     /// #1653 — the implicit blend-discard gate hinges on a two-part
@@ -803,6 +878,8 @@ mod tests {
             format: vk::Format::BC1_RGB_SRGB_BLOCK,
             block_size: 8,
             compressed: true,
+            array_layers: 1,
+            is_cubemap: false,
             data_offset: 128,
             expand: None,
         };
@@ -828,6 +905,8 @@ mod tests {
             format: vk::Format::R8G8B8A8_SRGB,
             block_size: 4, // bytes per pixel
             compressed: false,
+            array_layers: 1,
+            is_cubemap: false,
             data_offset: 128,
             expand: None,
         };
@@ -837,6 +916,23 @@ mod tests {
         //   = 65536 + 16384 + 4096 + 1024 + 256 + 64 + 16 + 4 + 1
         //   = 87381 pixels × 4 bytes = 349_524.
         assert_eq!(total, 349_524);
+    }
+
+    #[test]
+    fn cubemap_total_data_size_includes_all_six_faces() {
+        let meta = DdsMetadata {
+            width: 4,
+            height: 4,
+            mip_count: 1,
+            format: vk::Format::BC1_RGBA_SRGB_BLOCK,
+            block_size: 8,
+            compressed: true,
+            array_layers: 6,
+            is_cubemap: true,
+            data_offset: 128,
+            expand: None,
+        };
+        assert_eq!(total_data_size(&meta), 48);
     }
 
     // ── #1074 / FO4-D2-008 — 7 previously-unsupported DXGI formats ───────────

@@ -18,7 +18,7 @@ use crate::vulkan::allocator::SharedAllocator;
 use crate::vulkan::buffer::StagingPool;
 use crate::vulkan::descriptors::write_combined_image_sampler_at;
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
-use crate::vulkan::texture::Texture;
+use crate::vulkan::texture::{Texture, TextureViewKind};
 use crate::vulkan::GpuUploadCtx;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -54,6 +54,7 @@ pub type TextureHandle = u32;
 #[derive(Debug, Clone, Copy)]
 struct PendingSetWrite {
     handle: TextureHandle,
+    binding: u32,
     image_view: vk::ImageView,
     sampler: vk::Sampler,
 }
@@ -70,6 +71,7 @@ struct PendingDdsUpload {
     handle: TextureHandle,
     dds_bytes: Vec<u8>,
     clamp_mode: u8,
+    view_kind: TextureViewKind,
     /// Lowercased path — for diagnostic logging only. The path_map
     /// entry is set up by `enqueue_dds_with_clamp` at queue time.
     path: String,
@@ -148,8 +150,13 @@ pub struct TextureRegistry {
     /// "broken"). With this split, those surfaces render as the
     /// artist intended.
     neutral_fallback_handle: TextureHandle,
+    /// First successfully uploaded cubemap, pinned for the registry lifetime
+    /// and also written to cube binding element 0. It is the dimension-correct
+    /// fallback for stale/dropped cubemap handles.
+    cube_fallback_handle: Option<TextureHandle>,
     descriptor_pool: vk::DescriptorPool,
-    /// Layout for set 0: binding 0 = sampler2D[max_textures], PARTIALLY_BOUND.
+    /// Layout for set 0: binding 0 = sampler2D[max_textures], binding 1 =
+    /// samplerCube[max_textures], both PARTIALLY_BOUND.
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     /// One bindless descriptor set per frame-in-flight.
     bindless_sets: Vec<vk::DescriptorSet>,
@@ -220,21 +227,23 @@ pub struct TextureRegistry {
     slot_capacity_warning_emitted: bool,
 }
 
-/// Build the bindless texture descriptor-set-layout binding (set=0,
-/// binding=0) consumed by `triangle.frag` + `ui.frag` + composite (the
-/// raster pipelines). Pure data — no Vulkan device required — so the
+/// Build the bindless texture descriptor-set-layout bindings consumed by the
+/// raster pipelines. Binding 0 is the ordinary 2D array; binding 1 is the
+/// authored environment cubemap array. Pure data — no Vulkan device required — so the
 /// `cargo test` reflection check can validate against the
 /// include_bytes!'d SPIR-V before the first frame runs. Production
 /// `TextureRegistry::new` routes through the same helper so test and
 /// runtime can't drift. See #427 / #950.
-pub(crate) fn build_bindless_descriptor_binding(
+pub(crate) fn build_bindless_descriptor_bindings(
     max_textures: u32,
-) -> vk::DescriptorSetLayoutBinding<'static> {
-    vk::DescriptorSetLayoutBinding::default()
-        .binding(0)
-        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        .descriptor_count(max_textures)
-        .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+) -> [vk::DescriptorSetLayoutBinding<'static>; 2] {
+    [0, 1].map(|binding| {
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(binding)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(max_textures)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+    })
 }
 
 impl TextureRegistry {
@@ -294,7 +303,8 @@ impl TextureRegistry {
         max_sampler_anisotropy: f32,
         mip_lod_bias: f32,
     ) -> Result<Self> {
-        // Descriptor set layout: binding 0 = sampler2D[max_textures].
+        // Descriptor set layout: binding 0 = sampler2D[max_textures],
+        // binding 1 = samplerCube[max_textures].
         // PARTIALLY_BOUND allows uninitialized array elements (the shader
         // only accesses indices that correspond to loaded textures).
         // UPDATE_AFTER_BIND allows writing new texture descriptors to a set
@@ -316,11 +326,11 @@ impl TextureRegistry {
         // allocate-info struct *and* enable the device feature in
         // device.rs in the same change.
         let binding_flags = [vk::DescriptorBindingFlags::PARTIALLY_BOUND
-            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND];
+            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND; 2];
         let mut binding_flags_info =
             vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
 
-        let binding = build_bindless_descriptor_binding(max_textures);
+        let bindings = build_bindless_descriptor_bindings(max_textures);
 
         // Validate against every shader that consumes the bindless texture
         // array — triangle.frag, ui.frag, composite.vert/frag (#427).
@@ -328,7 +338,7 @@ impl TextureRegistry {
         // layout, but validation here asserts set=0 agreement with triangle/ui.
         crate::vulkan::reflect::validate_set_layout(
             0,
-            std::slice::from_ref(&binding),
+            &bindings,
             &[
                 crate::vulkan::reflect::ReflectedShader {
                     name: "triangle.frag",
@@ -346,7 +356,7 @@ impl TextureRegistry {
 
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
             .flags(vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
-            .bindings(std::slice::from_ref(&binding))
+            .bindings(&bindings)
             .push_next(&mut binding_flags_info);
 
         // RL-14 / #203 — build a partially-valid `Self` with null handles up
@@ -364,6 +374,7 @@ impl TextureRegistry {
             path_map: HashMap::new(),
             fallback_handle: 0,
             neutral_fallback_handle: 0,
+            cube_fallback_handle: None,
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
             bindless_sets: Vec::new(),
@@ -394,10 +405,11 @@ impl TextureRegistry {
                 }
             };
 
-        // Pool: 2 sets (per frame-in-flight), each with max_textures samplers.
+        // Pool: two bindings in each per-frame set, each with max_textures
+        // combined image samplers.
         let pool_size = vk::DescriptorPoolSize {
             ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: max_textures * MAX_FRAMES_IN_FLIGHT as u32,
+            descriptor_count: max_textures * 2 * MAX_FRAMES_IN_FLIGHT as u32,
         };
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
@@ -471,7 +483,7 @@ impl TextureRegistry {
         let anisotropy_enable = max_sampler_anisotropy > 1.0;
 
         log::info!(
-            "TextureRegistry created: bindless array[{}] × {} frames, anisotropy {}, mip bias {:.3}",
+            "TextureRegistry created: bindless 2D+cube arrays[{}] × {} frames, anisotropy {}, mip bias {:.3}",
             max_textures,
             MAX_FRAMES_IN_FLIGHT,
             if anisotropy_enable {
@@ -586,7 +598,13 @@ impl TextureRegistry {
         clamp_mode: u8,
     ) -> Result<TextureHandle> {
         let clamp_mode = clamp_mode.min(3);
-        let normalized = clamp_keyed_path(path, clamp_mode);
+        let meta = super::vulkan::dds::parse_dds(dds_bytes)?;
+        anyhow::ensure!(
+            !meta.is_cubemap,
+            "DDS '{}' is a cubemap; use the environment-map loader",
+            path,
+        );
+        let normalized = texture_keyed_path(path, clamp_mode, TextureViewKind::D2);
 
         if let Some(&handle) = self.path_map.get(&normalized) {
             if let Some(entry) = self.textures.get_mut(handle as usize) {
@@ -675,7 +693,39 @@ impl TextureRegistry {
         dds_bytes: Vec<u8>,
         clamp_mode: u8,
     ) -> Result<TextureHandle> {
-        let outcome = self.queue_or_hit(path, dds_bytes, clamp_mode)?;
+        let meta = super::vulkan::dds::parse_dds(&dds_bytes)?;
+        anyhow::ensure!(
+            !meta.is_cubemap,
+            "DDS '{}' is a cubemap; use enqueue_cubemap_dds_with_clamp",
+            path,
+        );
+        self.enqueue_dds_for_view(device, path, dds_bytes, clamp_mode, TextureViewKind::D2)
+    }
+
+    /// Queue a six-face DDS environment map for the bindless samplerCube
+    /// binding. Validation happens before reserving a handle, so a legacy 2D
+    /// sphere map cannot be consumed through an incompatible cube descriptor.
+    pub fn enqueue_cubemap_dds_with_clamp(
+        &mut self,
+        device: &ash::Device,
+        path: &str,
+        dds_bytes: Vec<u8>,
+        clamp_mode: u8,
+    ) -> Result<TextureHandle> {
+        let meta = super::vulkan::dds::parse_dds(&dds_bytes)?;
+        anyhow::ensure!(meta.is_cubemap, "DDS '{}' is not a six-face cubemap", path);
+        self.enqueue_dds_for_view(device, path, dds_bytes, clamp_mode, TextureViewKind::Cube)
+    }
+
+    fn enqueue_dds_for_view(
+        &mut self,
+        device: &ash::Device,
+        path: &str,
+        dds_bytes: Vec<u8>,
+        clamp_mode: u8,
+        view_kind: TextureViewKind,
+    ) -> Result<TextureHandle> {
+        let outcome = self.queue_or_hit_for_view(path, dds_bytes, clamp_mode, view_kind)?;
         // For a fresh enqueue, redirect the freshly-reserved
         // descriptor to the fallback checkerboard. Any
         // GpuInstance.texture_index that resolves to this handle
@@ -683,14 +733,14 @@ impl TextureRegistry {
         // unbound descriptor — same defence `drop_texture` uses on
         // the release side. Cache hits skip this step (the existing
         // entry already has its real descriptor wired).
-        if matches!(outcome, EnqueueOutcome::Reserved(_)) {
+        if view_kind == TextureViewKind::D2 && matches!(outcome, EnqueueOutcome::Reserved(_)) {
             let fallback_idx = self.fallback_handle as usize;
             if fallback_idx < self.textures.len() {
                 if let Some(fallback) = self.textures[fallback_idx].texture.as_ref() {
                     let image_view = fallback.image_view;
                     let sampler = fallback.sampler;
                     let handle = outcome.handle();
-                    self.apply_descriptor_write(device, handle, image_view, sampler);
+                    self.apply_descriptor_write(device, handle, 0, image_view, sampler);
                 }
             }
         }
@@ -705,14 +755,25 @@ impl TextureRegistry {
     /// transitions, path_map membership) without needing an
     /// `ash::Device` for the fallback descriptor redirect. See
     /// `enqueue_*` tests in the `tests` module below.
+    #[cfg(test)]
     fn queue_or_hit(
         &mut self,
         path: &str,
         dds_bytes: Vec<u8>,
         clamp_mode: u8,
     ) -> Result<EnqueueOutcome> {
+        self.queue_or_hit_for_view(path, dds_bytes, clamp_mode, TextureViewKind::D2)
+    }
+
+    fn queue_or_hit_for_view(
+        &mut self,
+        path: &str,
+        dds_bytes: Vec<u8>,
+        clamp_mode: u8,
+        view_kind: TextureViewKind,
+    ) -> Result<EnqueueOutcome> {
         let clamp_mode = clamp_mode.min(3);
-        let normalized = clamp_keyed_path(path, clamp_mode);
+        let normalized = texture_keyed_path(path, clamp_mode, view_kind);
 
         // Cache hit: same shape as `load_dds_with_clamp` — bump
         // refcount and return the existing handle without touching
@@ -743,6 +804,7 @@ impl TextureRegistry {
             handle,
             dds_bytes,
             clamp_mode,
+            view_kind,
             path: path.to_string(),
         });
         Ok(EnqueueOutcome::Reserved(handle))
@@ -829,6 +891,20 @@ impl TextureRegistry {
                             continue;
                         }
                     };
+                    let parsed_view_kind = if meta.is_cubemap {
+                        TextureViewKind::Cube
+                    } else {
+                        TextureViewKind::D2
+                    };
+                    if parsed_view_kind != upload.view_kind {
+                        log::warn!(
+                            "DDS '{}' changed view kind between queue and flush ({:?} -> {:?}); dropping upload",
+                            upload.path,
+                            upload.view_kind,
+                            parsed_view_kind,
+                        );
+                        continue;
+                    }
                     self.texture_has_alpha.insert(
                         upload.handle,
                         super::vulkan::dds::format_has_alpha(meta.format),
@@ -915,11 +991,21 @@ impl TextureRegistry {
             // Write descriptor for the real image view + sampler.
             let image_view = texture.image_view;
             let sampler = texture.sampler;
-            self.apply_descriptor_write(device, handle, image_view, sampler);
+            let binding = texture.view_kind.descriptor_binding();
+            let pin_as_cube_fallback =
+                texture.view_kind == TextureViewKind::Cube && self.cube_fallback_handle.is_none();
+            if pin_as_cube_fallback {
+                self.cube_fallback_handle = Some(handle);
+                self.apply_descriptor_write(device, 0, binding, image_view, sampler);
+            }
+            self.apply_descriptor_write(device, handle, binding, image_view, sampler);
 
             // Move the texture into its reserved slot.
             if let Some(entry) = self.textures.get_mut(handle as usize) {
                 entry.texture = Some(texture);
+                if pin_as_cube_fallback {
+                    entry.ref_count = u32::MAX;
+                }
             } else {
                 log::warn!(
                     "flush_pending_uploads: handle {handle} out of bounds; dropping texture"
@@ -963,7 +1049,7 @@ impl TextureRegistry {
     pub fn get_by_path_with_clamp(&self, path: &str, clamp_mode: u8) -> Option<TextureHandle> {
         let clamp_mode = clamp_mode.min(3);
         self.path_map
-            .get(&clamp_keyed_path(path, clamp_mode))
+            .get(&texture_keyed_path(path, clamp_mode, TextureViewKind::D2))
             .copied()
     }
 
@@ -990,8 +1076,28 @@ impl TextureRegistry {
         path: &str,
         clamp_mode: u8,
     ) -> Option<TextureHandle> {
+        self.acquire_by_path_for_view(path, clamp_mode, TextureViewKind::D2)
+    }
+
+    /// Cubemap counterpart of [`Self::acquire_by_path_with_clamp`]. Cube and
+    /// 2D requests for the same DDS path deliberately occupy distinct cache
+    /// keys because they target different descriptor bindings.
+    pub fn acquire_cubemap_by_path_with_clamp(
+        &mut self,
+        path: &str,
+        clamp_mode: u8,
+    ) -> Option<TextureHandle> {
+        self.acquire_by_path_for_view(path, clamp_mode, TextureViewKind::Cube)
+    }
+
+    fn acquire_by_path_for_view(
+        &mut self,
+        path: &str,
+        clamp_mode: u8,
+        view_kind: TextureViewKind,
+    ) -> Option<TextureHandle> {
         let clamp_mode = clamp_mode.min(3);
-        let normalized = clamp_keyed_path(path, clamp_mode);
+        let normalized = texture_keyed_path(path, clamp_mode, view_kind);
         let &handle = self.path_map.get(&normalized)?;
         let entry = self.textures.get_mut(handle as usize)?;
         entry.ref_count = entry.ref_count.saturating_add(1);
@@ -1075,6 +1181,7 @@ impl TextureRegistry {
         let Some(old) = entry.texture.take() else {
             return;
         };
+        let old_view_kind = old.view_kind;
         entry
             .pending_destroy
             .push_back((self.current_frame_id, old));
@@ -1084,12 +1191,22 @@ impl TextureRegistry {
         // checkerboard instead of a freed image view. Current slot is
         // written immediately; other slots queued until their fence
         // signals (#92).
-        let fallback_idx = self.fallback_handle as usize;
-        if fallback_idx < self.textures.len() {
+        let fallback_idx = match old_view_kind {
+            TextureViewKind::D2 => Some(self.fallback_handle),
+            TextureViewKind::Cube => self.cube_fallback_handle,
+        }
+        .map(|h| h as usize);
+        if let Some(fallback_idx) = fallback_idx.filter(|&idx| idx < self.textures.len()) {
             if let Some(fallback) = self.textures[fallback_idx].texture.as_ref() {
                 let image_view = fallback.image_view;
                 let sampler = fallback.sampler;
-                self.apply_descriptor_write(device, handle, image_view, sampler);
+                self.apply_descriptor_write(
+                    device,
+                    handle,
+                    old_view_kind.descriptor_binding(),
+                    image_view,
+                    sampler,
+                );
             }
         }
     }
@@ -1202,7 +1319,9 @@ impl TextureRegistry {
         let writes: Vec<vk::WriteDescriptorSet> = drained
             .iter()
             .enumerate()
-            .map(|(i, w)| write_combined_image_sampler_at(set, 0, w.handle, &image_infos[i]))
+            .map(|(i, w)| {
+                write_combined_image_sampler_at(set, w.binding, w.handle, &image_infos[i])
+            })
             .collect();
         // SAFETY: caller contract (see doc comment above) guarantees the
         // caller already waited on `slot`'s fence, so no in-flight command
@@ -1221,6 +1340,7 @@ impl TextureRegistry {
         &mut self,
         device: &ash::Device,
         handle: TextureHandle,
+        binding: u32,
         image_view: vk::ImageView,
         sampler: vk::Sampler,
     ) {
@@ -1233,7 +1353,7 @@ impl TextureRegistry {
             .sampler(sampler);
         let write = write_combined_image_sampler_at(
             self.bindless_sets[self.current_slot],
-            0,
+            binding,
             handle,
             &image_info,
         );
@@ -1243,7 +1363,7 @@ impl TextureRegistry {
         unsafe {
             device.update_descriptor_sets(&[write], &[]);
         }
-        self.record_pending_writes_for_other_slots(handle, image_view, sampler);
+        self.record_pending_writes_for_other_slots(handle, binding, image_view, sampler);
     }
 
     /// Pure queue bookkeeping: push a pending write onto every slot
@@ -1253,6 +1373,7 @@ impl TextureRegistry {
     fn record_pending_writes_for_other_slots(
         &mut self,
         handle: TextureHandle,
+        binding: u32,
         image_view: vk::ImageView,
         sampler: vk::Sampler,
     ) {
@@ -1262,6 +1383,7 @@ impl TextureRegistry {
             }
             queue.push(PendingSetWrite {
                 handle,
+                binding,
                 image_view,
                 sampler,
             });
@@ -1318,7 +1440,7 @@ impl TextureRegistry {
             .expect("entry was just populated above");
         let image_view = live.image_view;
         let sampler = live.sampler;
-        self.apply_descriptor_write(ctx.device, handle, image_view, sampler);
+        self.apply_descriptor_write(ctx.device, handle, 0, image_view, sampler);
 
         Ok(())
     }
@@ -1411,7 +1533,7 @@ impl TextureRegistry {
         // Recreate pool + sets (must match new() flags: UPDATE_AFTER_BIND).
         let pool_size = vk::DescriptorPoolSize {
             ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: self.max_textures * MAX_FRAMES_IN_FLIGHT as u32,
+            descriptor_count: self.max_textures * 2 * MAX_FRAMES_IN_FLIGHT as u32,
         };
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
@@ -1449,19 +1571,34 @@ impl TextureRegistry {
         // will redirect them to the fallback on their next update.
         // Collect into a Vec first so the `self.textures` immutable
         // borrow doesn't alias `apply_descriptor_write`'s `&mut self`.
-        let rewrites: Vec<(TextureHandle, vk::ImageView, vk::Sampler)> = self
+        let rewrites: Vec<(TextureHandle, u32, vk::ImageView, vk::Sampler)> = self
             .textures
             .iter()
             .enumerate()
             .filter_map(|(i, entry)| {
-                entry
-                    .texture
-                    .as_ref()
-                    .map(|t| (i as TextureHandle, t.image_view, t.sampler))
+                entry.texture.as_ref().map(|t| {
+                    (
+                        i as TextureHandle,
+                        t.view_kind.descriptor_binding(),
+                        t.image_view,
+                        t.sampler,
+                    )
+                })
             })
             .collect();
-        for (handle, image_view, sampler) in rewrites {
-            self.apply_descriptor_write(device, handle, image_view, sampler);
+        for (handle, binding, image_view, sampler) in rewrites {
+            self.apply_descriptor_write(device, handle, binding, image_view, sampler);
+        }
+        if let Some(cube_fallback_handle) = self.cube_fallback_handle {
+            if let Some(cube) = self
+                .textures
+                .get(cube_fallback_handle as usize)
+                .and_then(|entry| entry.texture.as_ref())
+            {
+                let image_view = cube.image_view;
+                let sampler = cube.sampler;
+                self.apply_descriptor_write(device, 0, 1, image_view, sampler);
+            }
         }
 
         log::info!(
@@ -1543,7 +1680,13 @@ impl TextureRegistry {
         handle: TextureHandle,
         texture: &Texture,
     ) {
-        self.apply_descriptor_write(device, handle, texture.image_view, texture.sampler);
+        self.apply_descriptor_write(
+            device,
+            handle,
+            texture.view_kind.descriptor_binding(),
+            texture.image_view,
+            texture.sampler,
+        );
     }
 }
 
@@ -1580,10 +1723,18 @@ fn normalize_path(path: &str) -> String {
 /// (`clamp_mode = 0`) keeps the legacy single-entry shape so existing
 /// `acquire_by_path` / `get_by_path` (which look up the no-clamp key
 /// implicitly) still hit.
+#[cfg(test)]
 fn clamp_keyed_path(path: &str, clamp_mode: u8) -> String {
+    texture_keyed_path(path, clamp_mode, TextureViewKind::D2)
+}
+
+fn texture_keyed_path(path: &str, clamp_mode: u8, view_kind: TextureViewKind) -> String {
     let mut s = normalize_path(path);
     s.push('|');
     s.push_str(&clamp_mode.to_string());
+    if view_kind == TextureViewKind::Cube {
+        s.push_str("|cube");
+    }
     s
 }
 
