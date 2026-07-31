@@ -85,7 +85,7 @@ struct GpuLight {
     vec4 position_radius; // xyz = position, w = radius
     vec4 color_type;       // rgb = color, w = type (0=point, 1=spot, 2=directional)
     vec4 direction_angle;  // xyz = direction, w = spot angle cosine
-    vec4 params;           // x = falloff_exponent; yzw reserved
+    vec4 params;           // x = falloff, y = emitter radius, z = full shadows, w = structure visibility
 };
 
 layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
@@ -523,10 +523,11 @@ void main() {
     vec3 inscatter = scattering_coef * phase * params.sun_color.rgb * visibility;
 
     // Phase 2b — point/spot light in-scattering, reusing the same cluster
-    // grid as surface shading. The two most influential cluster entries get
-    // real opaque/glass visibility rays; the bounded count keeps the froxel
-    // pass predictable while allowing lanterns and spotlights to form local
-    // wall-occluded shafts instead of uniform ambient fog glow.
+    // grid as surface shading. Every local light admitted by the bounded loop
+    // gets a real visibility ray: full-shadow sources query all opaque
+    // geometry, while no-prop-shadow sources query the Architecture-only TLAS
+    // mask. Letting the latter bypass visibility made fog glow through dungeon
+    // walls even when surface lighting was corrected.
     {
         // Mirrors `getClusterIndex` (`include/clusters.glsl`) exactly,
         // so a froxel maps to the SAME cluster the fragment shader
@@ -548,7 +549,6 @@ void main() {
 
         const float ISOTROPIC_PHASE = 1.0 / (4.0 * PI);
         const uint MAX_FROXEL_LIGHTS = 4u;
-        const uint MAX_SHADOWED_FROXEL_LIGHTS = 2u;
         ClusterEntry cluster = clusters[clusterIdx];
         uint lightLoopCount = min(cluster.count, MAX_FROXEL_LIGHTS);
         for (uint ci = 0u; ci < lightLoopCount; ++ci) {
@@ -573,17 +573,21 @@ void main() {
                 atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
             }
             float localVisibility = 1.0;
-            if (ci < MAX_SHADOWED_FROXEL_LIGHTS && atten > 1.0e-4) {
+            bool needsVisibility =
+                lights[li].params.z > 0.5 || lights[li].params.w > 0.5;
+            if (needsVisibility && atten > 1.0e-4) {
                 vec3 toLightDir = toLight / max(dist, 0.001);
                 // Stop at the finite luminous shell (`params.y`) instead of
                 // tracing into the middle of a bulb/flame and letting the
                 // fixture nullify its own volumetric glow.
                 float shadowDist = max(dist - lights[li].params.y, 0.05);
+                uint opaqueMask = lights[li].params.z > 0.5
+                    ? SHADOW_MASK_OPAQUE
+                    : SHADOW_MASK_STRUCTURE;
                 if (traceOcclusion(
-                        world_pos, toLightDir, 0.05, shadowDist,
-                        SHADOW_MASK_OPAQUE)) {
+                        world_pos, toLightDir, 0.05, shadowDist, opaqueMask)) {
                     localVisibility = 0.0;
-                } else if (traceOcclusion(
+                } else if (lights[li].params.z > 0.5 && traceOcclusion(
                         world_pos, toLightDir, 0.05, shadowDist,
                         SHADOW_MASK_GLASS)) {
                     // This pass does not bind the material/texture tables;

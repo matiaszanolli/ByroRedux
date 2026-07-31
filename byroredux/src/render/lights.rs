@@ -143,7 +143,7 @@ pub(super) fn collect_lights(
             // z = cast-shadow contract. The cell directional always
             // participates in visibility; a zero RGB source is rejected by
             // the shader's contribution gate before reservoir streaming.
-            params: [0.0, 0.0, 1.0, 0.0],
+            params: [0.0, 0.0, 1.0, 1.0],
         });
     }
 
@@ -203,13 +203,16 @@ pub(super) fn collect_lights(
                     // x = standardized attenuation curve shape; y = finite
                     // emitter proxy used to stop shadow segments at the
                     // luminous shell instead of inside the fixture; z =
-                    // authored LIGH cast-shadow behavior. Skyrim lights
-                    // without 0x400/0x800/0x1000 are deliberately unshadowed.
+                    // authored LIGH full-shadow behavior; w = structural
+                    // visibility. Every physical light is blocked by
+                    // Architecture geometry. Skyrim lights without
+                    // 0x400/0x800/0x1000 skip clutter/actor prop shadows,
+                    // not walls.
                     params: [
                         falloff_shape,
                         source_radius,
                         if casts_shadows { 1.0 } else { 0.0 },
-                        0.0,
+                        1.0,
                     ],
                 });
             }
@@ -601,7 +604,9 @@ mod gi_light_priority_tests {
             .find(|light| light.position_radius[0] == 20.0)
             .expect("shadowed fixture light");
         assert_eq!(unshadowed.params[2], 0.0);
+        assert_eq!(unshadowed.params[3], 1.0);
         assert_eq!(shadowed.params[2], 1.0);
+        assert_eq!(shadowed.params[3], 1.0);
     }
 
     /// Integration-level regression: three point lights inserted in an

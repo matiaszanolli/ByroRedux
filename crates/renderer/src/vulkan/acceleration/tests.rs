@@ -1496,36 +1496,67 @@ fn static_blas_flags_is_fast_trace_plus_allow_compaction() {
 /// is caught by `cargo test`, not by a silent RT dropout in-engine).
 #[test]
 fn shadow_mask_bucket_selection_is_pinned() {
-    use crate::shader_constants::{SHADOW_MASK_GLASS, SHADOW_MASK_OPAQUE};
+    use crate::shader_constants::{SHADOW_MASK_GLASS, SHADOW_MASK_OPAQUE, SHADOW_MASK_STRUCTURE};
     use crate::vulkan::scene_buffer::{
-        MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_GLASS, MATERIAL_KIND_NO_LIGHTING,
+        MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS,
+        MATERIAL_KIND_NO_LIGHTING,
     };
+    use byroredux_core::ecs::components::RenderLayer;
 
-    // Glass → glass bucket; every non-glass kind → opaque bucket.
+    // Glass → glass bucket regardless of layer.
     assert_eq!(
-        shadow_mask_for_material(MATERIAL_KIND_GLASS),
+        shadow_mask_for_instance(MATERIAL_KIND_GLASS, RenderLayer::Architecture, true),
         SHADOW_MASK_GLASS as u8,
         "glass material must select the glass shadow bucket",
     );
-    for kind in [
-        0u32, // default / opaque PBR
-        MATERIAL_KIND_EFFECT_SHADER,
-        MATERIAL_KIND_NO_LIGHTING,
-    ] {
+
+    // Solid architecture participates in both the complete opaque set and
+    // structure-only visibility.
+    assert_eq!(
+        shadow_mask_for_instance(0, RenderLayer::Architecture, false),
+        (SHADOW_MASK_OPAQUE | SHADOW_MASK_STRUCTURE) as u8,
+    );
+
+    // Clutter/actors remain ordinary opaque occluders for authored full
+    // shadows but are absent from structure-only visibility.
+    for layer in [RenderLayer::Clutter, RenderLayer::Actor, RenderLayer::Decal] {
         assert_eq!(
-            shadow_mask_for_material(kind),
+            shadow_mask_for_instance(0, layer, false),
             SHADOW_MASK_OPAQUE as u8,
-            "non-glass material kind {kind} must select the opaque shadow bucket",
         );
     }
+
+    // Alpha/effect proxy geometry must not become a structural wall.
+    assert_eq!(
+        shadow_mask_for_instance(0, RenderLayer::Architecture, true),
+        SHADOW_MASK_OPAQUE as u8,
+    );
+    for kind in [MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION] {
+        assert_eq!(
+            shadow_mask_for_instance(kind, RenderLayer::Architecture, false),
+            SHADOW_MASK_OPAQUE as u8,
+            "effect proxy kind {kind} must not select the structure bucket",
+        );
+    }
+    assert_eq!(
+        shadow_mask_for_instance(MATERIAL_KIND_NO_LIGHTING, RenderLayer::Architecture, false,),
+        (SHADOW_MASK_OPAQUE | SHADOW_MASK_STRUCTURE) as u8,
+    );
 
     // The buckets must stay nonzero, distinct, and 8-bit: a bucket of 0 is
     // culled by every ray query (silent total RT dropout); a collision
     // collapses the godray two-pass narrowing; > 0xFF truncates under `as u8`.
     assert_ne!(SHADOW_MASK_OPAQUE, 0);
     assert_ne!(SHADOW_MASK_GLASS, 0);
+    assert_ne!(SHADOW_MASK_STRUCTURE, 0);
     assert_ne!(SHADOW_MASK_OPAQUE, SHADOW_MASK_GLASS);
+    assert_ne!(SHADOW_MASK_OPAQUE, SHADOW_MASK_STRUCTURE);
+    assert_ne!(SHADOW_MASK_GLASS, SHADOW_MASK_STRUCTURE);
     const {
-        assert!(SHADOW_MASK_OPAQUE <= 0xFF && SHADOW_MASK_GLASS <= 0xFF);
+        assert!(
+            SHADOW_MASK_OPAQUE <= 0xFF
+                && SHADOW_MASK_GLASS <= 0xFF
+                && SHADOW_MASK_STRUCTURE <= 0xFF
+        );
     }
 }

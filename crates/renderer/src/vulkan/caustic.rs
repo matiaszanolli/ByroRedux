@@ -1032,3 +1032,23 @@ impl CausticPipeline {
 // folded the constant into the build.rs codegen path. Canonical check:
 //   shader_constants::tests::generated_header_contains_all_defines
 //   shader_constants::tests::affected_shaders_include_constants_header
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn caustic_source_light_is_visibility_tested_before_refraction() {
+        let shader = include_str!("../../shaders/caustic_splat.comp");
+        for contract in [
+            "bool needsVisibility = L.params.z > 0.5 || L.params.w > 0.5;",
+            "L.params.z > 0.5 ? SHADOW_MASK_OPAQUE : SHADOW_MASK_STRUCTURE",
+            "G + ns * 0.1",
+            "-LtoG",
+            "sourceVisibilityDist",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "caustic source path lost structural visibility contract: {contract}"
+            );
+        }
+    }
+}

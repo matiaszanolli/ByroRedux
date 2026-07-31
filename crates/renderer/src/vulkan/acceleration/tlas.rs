@@ -9,7 +9,7 @@ use super::super::buffer::GpuBuffer;
 use super::constants::{MIN_TLAS_INSTANCE_RESERVE, UPDATABLE_AS_FLAGS};
 use super::predicates::{
     align_scratch_address, decide_use_update, draw_command_eligible_for_tlas,
-    scratch_alignment_padding, scratch_needs_growth, shadow_mask_for_material,
+    scratch_alignment_padding, scratch_needs_growth, shadow_mask_for_instance,
     shrink_scratch_if_oversized, tlas_instance_transform,
 };
 use super::types::TlasState;
@@ -262,7 +262,11 @@ impl AccelerationManager {
             // Bucket select + 8-bit narrowing pulled into a pure helper so
             // the assignment is unit-tested and the `as u8` sits behind the
             // compile-time ceiling pin in `shader_constants_data.rs` (#1913).
-            let shadow_mask = shadow_mask_for_material(draw_cmd.material_kind);
+            let shadow_mask = shadow_mask_for_instance(
+                draw_cmd.material_kind,
+                draw_cmd.render_layer,
+                draw_cmd.alpha_blend,
+            );
             instances.push(vk::AccelerationStructureInstanceKHR {
                 transform,
                 // #419 — SSBO-compacted index from the shared map, NOT

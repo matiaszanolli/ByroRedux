@@ -83,15 +83,13 @@ pub const MATERIAL_KIND_FIRE_REFRACTION: u32 = 103;
 // TLAS instance shadow-ray mask buckets (the 8-bit mask AND'd against a
 // ray query's cullMask — see the extension-point comment at
 // `acceleration/tlas.rs`'s `instance_custom_index_and_mask` site). Every
-// instance gets exactly one bucket; every EXISTING ray query still passes
-// cullMask=0xFF (matches every bucket, no behavior change) except the new
-// interior-godray two-pass shadow ray in `volumetrics_inject.comp`, which
-// queries `SHADOW_MASK_OPAQUE` alone first, then `SHADOW_MASK_GLASS` alone
-// with a bounded tMax. Only 2 of 8 bits used; remaining bits are reserved
-// for future per-light-type segregation (per the original REN-D8-NEW-07
-// extension-point note).
+// Instances may carry more than one bit: opaque Architecture-layer geometry
+// carries both OPAQUE and STRUCTURE so portal-strict/no-prop-shadow lights can
+// still be blocked by walls while authored shadow lights query every opaque
+// object. Glass stays in its own bucket for RGB transmission.
 pub const SHADOW_MASK_OPAQUE: u32 = 0x01;
 pub const SHADOW_MASK_GLASS: u32 = 0x02;
+pub const SHADOW_MASK_STRUCTURE: u32 = 0x04;
 
 // Shared direct-shadow distance contract. These values apply to every
 // environment; cell kind may change light sources and GI inputs, never the
@@ -127,7 +125,13 @@ const _: () = {
         "SHADOW_MASK_GLASS must be a nonzero 8-bit value (packed as u8 into Packed24_8)"
     );
     assert!(
-        SHADOW_MASK_OPAQUE != SHADOW_MASK_GLASS,
+        SHADOW_MASK_STRUCTURE != 0 && SHADOW_MASK_STRUCTURE <= 0xFF,
+        "SHADOW_MASK_STRUCTURE must be a nonzero 8-bit value (packed as u8 into Packed24_8)"
+    );
+    assert!(
+        SHADOW_MASK_OPAQUE != SHADOW_MASK_GLASS
+            && SHADOW_MASK_OPAQUE != SHADOW_MASK_STRUCTURE
+            && SHADOW_MASK_GLASS != SHADOW_MASK_STRUCTURE,
         "SHADOW_MASK buckets must be distinct or ray-query narrowing collapses"
     );
 };

@@ -1127,6 +1127,20 @@ fn directional_ambient_cube_uses_energy_conserving_squared_normal_weights() {
     );
 }
 
+/// Authored DALC/XCLL ambient replaces the legacy synthetic point-light fill.
+///
+/// Running both made the unshadowed fallback wash across the directional,
+/// AO-modulated room lighting and visibly erase shadow contrast.
+#[test]
+fn directional_ambient_cube_disables_legacy_point_light_ambient_fill() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+
+    assert!(
+        frag.contains("if (lightType < 1.5 && dalcFlags.x <= 0.5)"),
+        "legacy point-light ambient fill must be disabled for authored DALC/XCLL cells"
+    );
+}
+
 /// Quality work may change the estimator, but the accepted #2161 cost point is
 /// still a six-segment path with two diffuse events. Specular/glass transport
 /// fits inside the same segment ceiling and must not silently expand the

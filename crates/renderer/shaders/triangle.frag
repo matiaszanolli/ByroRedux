@@ -2383,7 +2383,7 @@ void main() {
                 atten = 1.0;
             }
 
-            // RL-03 — per-light ambient fill (point/spot only; a
+            // RL-03 — legacy per-light ambient fill (point/spot only; a
             // directional source has no "ambient" component in the
             // Gamebryo model). Gamebryo's
             // original D3D9 lighting adds `Material.Ambient ×
@@ -2415,13 +2415,17 @@ void main() {
             // the single brightest nearby light's contribution, not the
             // count of lights in range.
             const float LIGHT_AMBIENT_FILL_FACTOR = 0.15;
-            // Gate promised by the comment above but missing until #1914:
-            // a directional source (lightType >= 1.5) has no "ambient"
-            // component in the Gamebryo model — without this
-            // gate every exterior fragment picked up an unshadowed,
-            // normal-independent `sunColor * albedo * 0.15` term added
-            // directly to `Lo`, washing out RT sun-shadow contrast.
-            if (lightType < 1.5) {
+            // This is a fallback for formats/cells that have only a flat
+            // ambient color. Skyrim DALC/XCLL already supplies the authored
+            // room fill directionally and AO-modulated below; stacking this
+            // unshadowed, normal-independent term on top filled across
+            // shadows and made point-light influence look disconnected from
+            // walls. `dalcFlags.x` covers both exterior WTHR.DALC and the
+            // interior XCLL cube bridged by the engine.
+            //
+            // The light-type gate also keeps a directional source from
+            // contributing a made-up ambient component.
+            if (lightType < 1.5 && dalcFlags.x <= 0.5) {
                 lightAmbientFill = max(
                     lightAmbientFill,
                     lightColor * atten * albedo
@@ -2447,15 +2451,16 @@ void main() {
             vec3 shadowableRadiance = shadowableLightRadiance(
                 i, N, V, NdotV, F0, albedo, roughness, metalness,
                 specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
-            bool castsShadow = lights[i].params.z > 0.5;
+            bool needsVisibility =
+                lights[i].params.z > 0.5 || lights[i].params.w > 0.5;
 
             // Accumulate as if unshadowed (legacy subtractive estimator
             // only — ReSTIR adds the single shadowed sample after the loop).
-            // Authored non-shadow lights bypass the visibility estimator and
-            // retain their ordinary direct contribution. Skyrim uses these
-            // heavily with Portal-strict room scoping; treating every one as
-            // a shadow-map light produced shadows vanilla never authored.
-            if (!useRestir || !castsShadow) {
+            // A source with neither visibility bit contributes directly.
+            // Physical cell lights set structural visibility even when their
+            // authored full-shadow bit is clear, so dungeon walls still gate
+            // their radiance without clutter/actors becoming prop casters.
+            if (!useRestir || !needsVisibility) {
                 Lo += shadowableRadiance;
             }
 
@@ -2529,7 +2534,7 @@ void main() {
 
             // Stream this light into the shared shadow reservoir. Both
             // interior and exterior sources reach this exact path.
-            if (rtEnabled && castsShadow && shadowFade > 0.01) {
+            if (rtEnabled && needsVisibility && shadowFade > 0.01) {
                 // Target pdf: luminance of the to-be-subtracted radiance
                 // (`shadowableRadiance` computed above). Sampling
                 // proportional to this approximates the optimal
@@ -2629,7 +2634,8 @@ void main() {
                 // in range + finite-positive weight). The final visibility ray
                 // re-validates the selected light at the current surface.
                 if (sameSurface && rpLightIndex < lightCount
-                    && lights[rpLightIndex].params.z > 0.5 && rp.M > 0.0
+                    && (lights[rpLightIndex].params.z > 0.5
+                        || lights[rpLightIndex].params.w > 0.5) && rp.M > 0.0
                     && rp.W > 0.0 && !isnan(rp.W) && !isinf(rp.W)) {
                     vec3 rpRad = shadowableLightRadiance(
                         rpLightIndex, N, V, NdotV, F0, albedo, roughness,
@@ -2722,7 +2728,8 @@ void main() {
                     // Re-evaluate the neighbour's pick at THIS surface, gated on
                     // geometric-normal similarity (skip cross-edge neighbours).
                     if (rnLightIndex < lightCount
-                        && lights[rnLightIndex].params.z > 0.5 && rn.M > 0.0
+                        && (lights[rnLightIndex].params.z > 0.5
+                            || lights[rnLightIndex].params.w > 0.5) && rn.M > 0.0
                         && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)
                         && dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS) {
                         vec3 rnRad = shadowableLightRadiance(
@@ -2752,7 +2759,9 @@ void main() {
             }
             vec3 frameContribution = vec3(0.0); // this frame's rad·W·V estimate
             if (restirY != 0xFFFFFFFFu && restirW > 0.0
-                && lights[restirY].params.z > 0.5 && shadowFade > 0.01) {
+                && (lights[restirY].params.z > 0.5
+                    || lights[restirY].params.w > 0.5)
+                && shadowFade > 0.01) {
                 uint i = restirY;
                 vec3 lightPos = lights[i].position_radius.xyz;
                 float radius = lights[i].position_radius.w;
@@ -2791,8 +2800,8 @@ void main() {
                         rayDir = normalize(jitteredDir);
                         rayDist = 100000.0;
                     }
-                    transmissionSum += traceShadowTransmittance(
-                        rayOrigin, rayDir, max(rayDist, 0.01), lights[i].params.y);
+                    transmissionSum += traceLightTransmittance(
+                        i, rayOrigin, rayDir, max(rayDist, 0.01));
                 }
                 vec3 transmissionFrame = transmissionSum / float(SHADOW_RAYS);
                 vec3 rad = shadowableLightRadiance(
@@ -2860,7 +2869,7 @@ void main() {
         for (uint s = 0; s < NUM_RESERVOIRS; s++) {
             if (resLight[s] == 0xFFFFFFFFu) continue;
             uint i = resLight[s];
-            if (lights[i].params.z <= 0.5) continue;
+            if (lights[i].params.z <= 0.5 && lights[i].params.w <= 0.5) continue;
             float W = min((resWSum / max(resWSel[s], 1e-6)) * invK, RESERVOIR_W_CLAMP);
             vec3 lightPos = lights[i].position_radius.xyz;
             float radius = lights[i].position_radius.w;
@@ -2944,8 +2953,8 @@ void main() {
                 rayDist = 100000.0;
             }
 
-            vec3 transmission = traceShadowTransmittance(
-                rayOrigin, rayDir, max(rayDist, 0.01), lights[i].params.y);
+            vec3 transmission = traceLightTransmittance(
+                i, rayOrigin, rayDir, max(rayDist, 0.01));
             if (any(lessThan(transmission, vec3(0.999)))) {
                 // Unbiased shadow attenuation: W compensates for the
                 // WRS sampling probability. Opaque blockers subtract the

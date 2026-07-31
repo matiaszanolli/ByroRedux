@@ -291,6 +291,51 @@ vec3 traceShadowTransmittance(
     return transmission;
 }
 
+// Binary visibility against opaque Architecture-layer TLAS instances only.
+// This is the structural half of Skyrim's portal-strict light behavior:
+// walls/floors block the source, while clutter and actors do not become
+// authored prop-shadow casters for a LIGH record whose shadow flag is clear.
+vec3 traceStructureVisibility(vec3 origin, vec3 direction, float maxDist) {
+    rayQueryEXT structureRQ;
+    rayQueryInitializeEXT(
+        structureRQ,
+        topLevelAS,
+        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        SHADOW_MASK_STRUCTURE,
+        origin,
+        0.05,
+        direction,
+        maxDist
+    );
+    rayQueryProceedEXT(structureRQ);
+    bool blocked = rayQueryGetIntersectionTypeEXT(structureRQ, true)
+        != gl_RayQueryCommittedIntersectionNoneEXT;
+    return blocked ? vec3(0.0) : vec3(1.0);
+}
+
+// Per-light visibility policy shared by direct ReSTIR paths. Authored shadow
+// lights keep full opaque + dielectric transport; no-prop-shadow lights still
+// query structure so radiance cannot leak through dungeon shells.
+vec3 traceLightTransmittance(
+    uint lightIndex,
+    vec3 origin,
+    vec3 direction,
+    float maxDist
+) {
+    if (lights[lightIndex].params.z > 0.5) {
+        return traceShadowTransmittance(
+            origin,
+            direction,
+            maxDist,
+            lights[lightIndex].params.y
+        );
+    }
+    if (lights[lightIndex].params.w > 0.5) {
+        return traceStructureVisibility(origin, direction, maxDist);
+    }
+    return vec3(1.0);
+}
+
 // ── Indirect-hit lighting ───────────────────────────────────────────
 
 bool giLightSample(

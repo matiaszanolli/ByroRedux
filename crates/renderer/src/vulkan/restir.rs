@@ -190,19 +190,28 @@ mod tests {
     }
 
     #[test]
-    fn authored_non_shadow_lights_bypass_restir_visibility() {
+    fn authored_non_shadow_lights_keep_structural_restir_visibility() {
         let src = include_str!("../../shaders/triangle.frag");
+        let lighting = include_str!("../../shaders/include/lighting.glsl");
         assert!(
-            src.contains("bool castsShadow = lights[i].params.z > 0.5;")
-                && src.contains("if (!useRestir || !castsShadow)")
-                && src.contains("if (rtEnabled && castsShadow && shadowFade > 0.01)"),
-            "non-shadow LIGH sources must contribute directly without entering ReSTIR"
+            src.contains("bool needsVisibility =")
+                && src.contains("lights[i].params.z > 0.5 || lights[i].params.w > 0.5;")
+                && src.contains("if (!useRestir || !needsVisibility)")
+                && src.contains("if (rtEnabled && needsVisibility && shadowFade > 0.01)"),
+            "no-prop-shadow LIGH sources must retain structural ReSTIR visibility"
         );
         assert!(
-            src.contains("lights[rpLightIndex].params.z > 0.5")
-                && src.contains("lights[rnLightIndex].params.z > 0.5")
-                && src.contains("lights[restirY].params.z > 0.5"),
-            "temporal, spatial, and final ReSTIR stages must reject stale non-shadow selections"
+            src.contains("lights[rpLightIndex].params.w > 0.5")
+                && src.contains("lights[rnLightIndex].params.w > 0.5")
+                && src.contains("lights[restirY].params.w > 0.5")
+                && src.contains("traceLightTransmittance("),
+            "temporal, spatial, and final ReSTIR stages must preserve structural selections"
+        );
+        assert!(
+            lighting.contains("vec3 traceStructureVisibility(")
+                && lighting.contains("SHADOW_MASK_STRUCTURE")
+                && lighting.contains("vec3 traceLightTransmittance("),
+            "direct-light visibility must provide an Architecture-only TLAS path"
         );
     }
 

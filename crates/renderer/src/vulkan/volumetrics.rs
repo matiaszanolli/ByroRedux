@@ -1902,6 +1902,26 @@ mod unit_tests {
     }
 
     #[test]
+    fn every_contributing_local_fog_light_obeys_structural_visibility() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        for contract in [
+            "lights[li].params.z > 0.5 || lights[li].params.w > 0.5",
+            "? SHADOW_MASK_OPAQUE",
+            ": SHADOW_MASK_STRUCTURE",
+            "world_pos, toLightDir, 0.05, shadowDist, opaqueMask",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "local volumetric light lost structural visibility contract: {contract}"
+            );
+        }
+        assert!(
+            !shader.contains("MAX_SHADOWED_FROXEL_LIGHTS"),
+            "a contributing local fog light must not bypass visibility by list position"
+        );
+    }
+
+    #[test]
     fn horizontal_height_fog_ray_is_finite_and_matches_constant_density() {
         let tau = height_fog_optical_depth(0.01, 140.0, 0.0, 1_000.0, 0.0, 2_100.0);
         let expected = 0.01 * (-140.0_f32 / 2_100.0).exp() * 1_000.0;

@@ -41,7 +41,7 @@ struct GpuLight {
     vec4 position_radius;
     vec4 color_type;
     vec4 direction_angle;
-    vec4 params;  // x = falloff exponent, y = emitter radius; zw reserved
+    vec4 params;  // x = falloff, y = emitter radius, z = full shadows, w = structure visibility
 };
 
 layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
@@ -145,6 +145,23 @@ vec3 reconstructWorldPos(ivec2 pixel, float depth) {
     // #markarth-precision — invViewProj is the camera-RELATIVE inverse; lift to
     // ABSOLUTE world (caustic source selection + TLAS interactions are absolute).
     return world.xyz / world.w + renderOrigin.xyz;
+}
+
+bool traceOcclusion(vec3 origin, vec3 direction, float maxDist, uint mask) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(
+        rq,
+        topLevelAS,
+        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        mask,
+        origin,
+        0.05,
+        direction,
+        maxDist
+    );
+    rayQueryProceedEXT(rq);
+    return rayQueryGetIntersectionTypeEXT(rq, true)
+        != gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
 void main() {
@@ -309,6 +326,7 @@ void main() {
         // refractor that was authored facing away from the sun.
         vec3 LtoG;
         float lightReach;
+        float sourceVisibilityDist;
         if (Ltype == 2u) {
             // INVARIANT (REG-03 / #1635, #1459): `direction_angle.xyz` points
             // TO the light (light-incoming, matching GpuLight convention /
@@ -325,6 +343,7 @@ void main() {
             LtoG = -normalize(L.direction_angle.xyz);
             lightReach = clamp(dot(N, -LtoG), 0.0, 1.0);
             if (lightReach < 0.001) continue;
+            sourceVisibilityDist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
         } else {
             LtoG = G - Lp;
             float d2 = dot(LtoG, LtoG);
@@ -338,12 +357,30 @@ void main() {
             lightReach = smoothstep(1.0, 0.8, t);
             if (lightReach < 0.001) continue;
             LtoG = LtoG * inversesqrt(d2);
+            sourceVisibilityDist =
+                max(sqrt(d2) - max(L.params.y, 0.0), 0.05);
         }
-        processedLights++;
 
         // Refract through the outward-facing surface normal. If the light
         // hits the back of the surface, flip the normal.
         vec3 ns = (dot(N, -LtoG) > 0.0) ? N : -N;
+        bool needsVisibility = L.params.z > 0.5 || L.params.w > 0.5;
+        if (needsVisibility) {
+            uint sourceMask =
+                L.params.z > 0.5 ? SHADOW_MASK_OPAQUE : SHADOW_MASK_STRUCTURE;
+            // Verify that radiance reaches the refractor before generating a
+            // caustic. Pre-fix the pass checked only radius/N·L, so glass
+            // behind a dungeon wall projected a bright pool into the room.
+            if (traceOcclusion(
+                    G + ns * 0.1,
+                    -LtoG,
+                    sourceVisibilityDist,
+                    sourceMask)) {
+                continue;
+            }
+        }
+        processedLights++;
+
         vec3 refr = refract(LtoG, ns, 1.0 / ior);
         if (dot(refr, refr) < 0.0001) continue; // total internal reflection
         float entryCos = clamp(dot(-LtoG, ns), 0.0, 1.0);

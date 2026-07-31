@@ -584,18 +584,31 @@ pub(super) fn compute_blas_budget(
     (device_local_bytes / 3).max(MIN_BLAS_BUDGET_BYTES)
 }
 
-/// Pick the 8-bit shadow-ray `cullMask` bucket for a TLAS instance from its
-/// material kind: glass geometry goes in `SHADOW_MASK_GLASS`, everything else
-/// in `SHADOW_MASK_OPAQUE` (REN-D8-NEW-07 extension point). Lifted out of the
-/// inline `build_tlas` select so the bucket assignment is unit-testable and the
-/// `as u8` narrowing sits behind the compile-time ceiling pinned in
-/// `shader_constants_data.rs` (#1913). Returns `u8` because that is the width
-/// of the `Packed24_8` mask field it feeds.
+/// Build the 8-bit ray-query mask for one TLAS instance.
+///
+/// Glass occupies its transmission bucket only. Every other material is
+/// opaque; opaque, non-blended Architecture geometry additionally carries the
+/// STRUCTURE bit so a light may respect walls without making clutter/actors
+/// cast authored object shadows.
 #[inline]
-pub(super) fn shadow_mask_for_material(material_kind: u32) -> u8 {
+pub(super) fn shadow_mask_for_instance(
+    material_kind: u32,
+    render_layer: byroredux_core::ecs::components::RenderLayer,
+    alpha_blend: bool,
+) -> u8 {
     if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_GLASS {
         crate::shader_constants::SHADOW_MASK_GLASS as u8
     } else {
-        crate::shader_constants::SHADOW_MASK_OPAQUE as u8
+        let mut mask = crate::shader_constants::SHADOW_MASK_OPAQUE;
+        let structural_material = material_kind
+            != crate::vulkan::scene_buffer::MATERIAL_KIND_EFFECT_SHADER
+            && material_kind != crate::vulkan::scene_buffer::MATERIAL_KIND_FIRE_REFRACTION;
+        if render_layer == byroredux_core::ecs::components::RenderLayer::Architecture
+            && !alpha_blend
+            && structural_material
+        {
+            mask |= crate::shader_constants::SHADOW_MASK_STRUCTURE;
+        }
+        mask as u8
     }
 }
