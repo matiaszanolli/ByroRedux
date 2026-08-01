@@ -85,6 +85,17 @@ pub(crate) fn player_controller_system(world: &World, dt: f32) {
     }
 }
 
+fn player_accepts_movement_input(world: &World, player: EntityId) -> bool {
+    let controls_allow_movement = world
+        .try_resource::<byroredux_scripting::PlayerControlState>()
+        .map(|controls| controls.movement_enabled && !controls.ai_driven)
+        .unwrap_or(true);
+    let restrained = world
+        .get::<byroredux_scripting::ActorControlState>(player)
+        .is_some_and(|state| state.restrained);
+    controls_allow_movement && !restrained
+}
+
 /// Drive the kinematic character body forward one frame.
 ///
 /// Reads:
@@ -137,27 +148,34 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     };
     drop(player_res);
 
+    // Papyrus startup fragments can independently disable movement, hand the
+    // player to AI, or restrain the actor. Keep gravity/collision ticking in
+    // all three cases; only suppress user-authored horizontal/jump intent.
+    let accepts_movement_input = player_accepts_movement_input(world, player_entity);
+
     let Some(input) = world.try_resource::<InputState>() else {
         return;
     };
     let yaw = input.yaw;
     let mut move_dir = Vec3::ZERO;
-    if input.keys_held.contains(&winit::keyboard::KeyCode::KeyW) {
+    if accepts_movement_input && input.keys_held.contains(&winit::keyboard::KeyCode::KeyW) {
         move_dir.z += 1.0;
     }
-    if input.keys_held.contains(&winit::keyboard::KeyCode::KeyS) {
+    if accepts_movement_input && input.keys_held.contains(&winit::keyboard::KeyCode::KeyS) {
         move_dir.z -= 1.0;
     }
-    if input.keys_held.contains(&winit::keyboard::KeyCode::KeyA) {
+    if accepts_movement_input && input.keys_held.contains(&winit::keyboard::KeyCode::KeyA) {
         move_dir.x -= 1.0;
     }
-    if input.keys_held.contains(&winit::keyboard::KeyCode::KeyD) {
+    if accepts_movement_input && input.keys_held.contains(&winit::keyboard::KeyCode::KeyD) {
         move_dir.x += 1.0;
     }
-    let want_jump_now = input.keys_held.contains(&winit::keyboard::KeyCode::Space);
-    let want_sprint = input
-        .keys_held
-        .contains(&winit::keyboard::KeyCode::ControlLeft);
+    let want_jump_now =
+        accepts_movement_input && input.keys_held.contains(&winit::keyboard::KeyCode::Space);
+    let want_sprint = accepts_movement_input
+        && input
+            .keys_held
+            .contains(&winit::keyboard::KeyCode::ControlLeft);
     drop(input);
 
     // Snapshot character params + current state.
@@ -639,6 +657,28 @@ pub(crate) fn integrate_vertical(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn papyrus_control_and_restraint_state_gate_player_movement() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let player = world.spawn();
+        assert!(player_accepts_movement_input(&world, player));
+
+        world
+            .resource_mut::<byroredux_scripting::PlayerControlState>()
+            .ai_driven = true;
+        assert!(!player_accepts_movement_input(&world, player));
+
+        world
+            .resource_mut::<byroredux_scripting::PlayerControlState>()
+            .ai_driven = false;
+        world.insert(
+            player,
+            byroredux_scripting::ActorControlState { restrained: true },
+        );
+        assert!(!player_accepts_movement_input(&world, player));
+    }
 
     /// Free-fall: gravity accumulates frame-by-frame, capped at
     /// terminal velocity. Pin the integration so a refactor can't

@@ -547,6 +547,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads_resource::<ActiveCamera>()
             .reads_resource::<InputState>()
+            .reads_resource::<byroredux_scripting::PlayerControlState>()
             .reads_resource::<byroredux_physics::PhysicsWorld>()
             .writes_resource::<byroredux_physics::PhysicsWorld>()
             // #1787 / CONC-D4-01 — the character controller snapshots
@@ -557,6 +558,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .reads::<byroredux_physics::CharacterController>()
             .writes::<byroredux_physics::CharacterController>()
             .reads::<byroredux_physics::RapierHandles>()
+            .reads::<byroredux_scripting::ActorControlState>()
             .reads::<Transform>()
             .writes::<Transform>(),
     );

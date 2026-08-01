@@ -120,6 +120,10 @@ pub struct ActiveScenePackageAction {
     pub scene_form_id: u32,
     pub action_index: u32,
     pub actor: EntityId,
+    /// Original SCEN package stack, retained so EvaluatePackage can rerun
+    /// authored condition selection instead of blindly restarting the last
+    /// winner.
+    pub package_candidates: Vec<u32>,
     pub package_form_id: u32,
     pub template_form_id: u32,
     pub command: ScenePackageCommand,
@@ -139,6 +143,7 @@ impl Component for ScenePackagePlayback {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScenePackageEvent {
     Started(ActiveScenePackageAction),
+    Reevaluated(ActiveScenePackageAction),
     Finished {
         action_index: u32,
         package_form_id: u32,
@@ -165,10 +170,20 @@ impl Component for ScenePackageCompletionBatch {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// One-shot Actor.EvaluatePackage ingress. The package system drains this on
+/// its next tick and replans every active scene package owned by the actor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EvaluatePackageRequest;
+
+impl Component for EvaluatePackageRequest {
+    type Storage = SparseSetStorage<Self>;
+}
+
 pub fn register(world: &mut World) {
     world.register::<ScenePackagePlayback>();
     world.register::<ScenePackageEventBatch>();
     world.register::<ScenePackageCompletionBatch>();
+    world.register::<EvaluatePackageRequest>();
     if world.try_resource::<PackageRegistry>().is_none() {
         world.insert_resource(PackageRegistry::default());
     }
@@ -538,6 +553,10 @@ pub fn scene_package_system(world: &World, dt: f32) {
     drain::<ScenePackageEventBatch>(world);
     let external = snapshot::<ScenePackageCompletionBatch>(world);
     drain::<ScenePackageCompletionBatch>(world);
+    let reevaluate: HashSet<EntityId> = snapshot::<EvaluatePackageRequest>(world)
+        .into_keys()
+        .collect();
+    drain::<EvaluatePackageRequest>(world);
     let scene_events = snapshot::<SceneEventBatch>(world);
     let mut playbacks = snapshot::<ScenePackagePlayback>(world);
     let scene_form_ids: HashMap<EntityId, u32> = world
@@ -617,6 +636,7 @@ pub fn scene_package_system(world: &World, dt: f32) {
                             scene_form_id: scene_form_ids.get(&entity).copied().unwrap_or_default(),
                             action_index: *action_index,
                             actor,
+                            package_candidates: package_ids.clone(),
                             package_form_id: package.form_id,
                             template_form_id: template.form_id,
                             command: resolve_command(
@@ -647,6 +667,41 @@ pub fn scene_package_system(world: &World, dt: f32) {
                     _ => {}
                 }
             }
+        }
+
+        for action in &mut playback.active_actions {
+            if !reevaluate.contains(&action.actor) {
+                continue;
+            }
+            let Some(package) = select_package(
+                &action.package_candidates,
+                &packages,
+                world,
+                action.actor,
+                player_entity,
+            ) else {
+                log::debug!(
+                    target: "scripting::package",
+                    "EvaluatePackage found no eligible SCEN package for actor {:?}",
+                    action.actor
+                );
+                continue;
+            };
+            let template = package
+                .package_template_form_id
+                .and_then(|form_id| packages.get(&form_id).cloned())
+                .unwrap_or_else(|| package.clone());
+            action.package_form_id = package.form_id;
+            action.template_form_id = template.form_id;
+            action.command = resolve_command(
+                &package,
+                &template,
+                &targets,
+                world,
+                action.actor,
+                player_entity,
+            );
+            output.push(ScenePackageEvent::Reevaluated(action.clone()));
         }
 
         let external: HashSet<u32> = external
@@ -773,6 +828,49 @@ mod tests {
             .get::<SceneActionCompletionBatch>(scene)
             .is_some_and(|batch| batch.0.contains(&7)));
         assert_eq!(world.get::<Transform>(actor).unwrap().translation.x, 100.0);
+    }
+
+    #[test]
+    fn evaluate_package_reselects_and_restarts_active_scene_command() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        world.register::<Transform>();
+        let scene = world.spawn();
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::ZERO));
+        world.insert(scene, ScenePlayer::new(0x100));
+        let (package, template) = package_and_template();
+        install_package_records(&mut world, [package, template]);
+        install_package_target_positions(&mut world, [(0x600, Vec3::new(100.0, 0.0, 0.0))]);
+        world.insert(
+            scene,
+            SceneEventBatch(vec![SceneEvent::ActionStarted {
+                action_index: 7,
+                action_type: SceneActionType::Package,
+                actor_alias: 1,
+                actor_entity: Some(actor),
+                topic_form_id: None,
+                packages: vec![0x400],
+            }]),
+        );
+        scene_package_system(&world, 0.0);
+        world.insert(actor, EvaluatePackageRequest);
+
+        scene_package_system(&world, 0.0);
+
+        let playback = world.get::<ScenePackagePlayback>(scene).unwrap();
+        assert_eq!(playback.active_actions[0].package_candidates, vec![0x400]);
+        assert!(matches!(
+            playback.active_actions[0].command,
+            ScenePackageCommand::MoveTo { .. }
+        ));
+        assert!(world
+            .get::<ScenePackageEventBatch>(scene)
+            .is_some_and(|batch| batch.0.iter().any(|event| matches!(
+                event,
+                ScenePackageEvent::Reevaluated(action) if action.actor == actor
+            ))));
+        assert!(!world.has::<EvaluatePackageRequest>(actor));
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub mod fragment;
 pub mod globals;
 pub mod package;
 pub mod papyrus_demo;
+pub mod player_control;
 pub mod quest_stages;
 pub mod recurring_update;
 pub mod registry;
@@ -47,9 +48,11 @@ pub use fragment::{
 pub use globals::Globals;
 pub use package::{
     install_package_records, install_package_target_positions, scene_package_system,
-    ActiveScenePackageAction, PackageRegistry, PackageTargetRegistry, ScenePackageCommand,
-    ScenePackageCompletionBatch, ScenePackageEvent, ScenePackageEventBatch, ScenePackagePlayback,
+    ActiveScenePackageAction, EvaluatePackageRequest, PackageRegistry, PackageTargetRegistry,
+    ScenePackageCommand, ScenePackageCompletionBatch, ScenePackageEvent, ScenePackageEventBatch,
+    ScenePackagePlayback,
 };
+pub use player_control::{ActorControlState, PlayerControlSelection, PlayerControlState};
 pub use quest_stages::{
     install_engine_start_quest, install_start_game_quests, quest_startup_system, QuestEventRead,
     QuestEventSubscriberId, QuestFormId, SequencedQuestStageAdvanced, StartGameQuestRegistry,
@@ -119,6 +122,7 @@ pub fn register(world: &mut World) {
     dialogue::register(world);
     // Skyrim+ PACK template resolution and scene-owned package execution.
     package::register(world);
+    player_control::register(world);
     vm_state::register(world);
     // M47.0 Phase 1 — register the R5 prototype storages so
     // `papyrus_demo` scripts can attach their state components when

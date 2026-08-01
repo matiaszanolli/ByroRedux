@@ -311,6 +311,55 @@ pub fn apply_effect(
             }
             None
         }
+        Effect::SetPlayerRestrained { restrained } => {
+            let Some(player) = world
+                .try_resource::<crate::papyrus_demo::PlayerEntity>()
+                .map(|player| player.0)
+            else {
+                log::debug!("fragment SetRestrained skipped: player entity is unavailable");
+                return None;
+            };
+            let Some(mut states) = world.query_mut::<crate::ActorControlState>() else {
+                log::debug!("fragment SetRestrained skipped: actor-control storage is unavailable");
+                return None;
+            };
+            if let Some(state) = states.get_mut(player) {
+                state.restrained = *restrained;
+            } else {
+                states.insert(
+                    player,
+                    crate::ActorControlState {
+                        restrained: *restrained,
+                    },
+                );
+            }
+            None
+        }
+        Effect::SetPlayerControls { enabled, selection } => {
+            if let Some(mut controls) = world.try_resource_mut::<crate::PlayerControlState>() {
+                controls.apply_selection(*enabled, *selection);
+            }
+            None
+        }
+        Effect::SetPlayerAiDriven { ai_driven } => {
+            if let Some(mut controls) = world.try_resource_mut::<crate::PlayerControlState>() {
+                controls.ai_driven = *ai_driven;
+            }
+            None
+        }
+        Effect::SetHudCartMode { cart_mode } => {
+            if let Some(mut controls) = world.try_resource_mut::<crate::PlayerControlState>() {
+                controls.hud_cart_mode = *cart_mode;
+            }
+            None
+        }
+        Effect::EvaluatePackage { actor } => {
+            let actor = resolve_object(vmad, world, context, actor)?;
+            if let Some(mut requests) = world.query_mut::<crate::EvaluatePackageRequest>() {
+                requests.insert(actor, crate::EvaluatePackageRequest);
+            }
+            None
+        }
         _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives),
     }
 }
@@ -372,7 +421,12 @@ fn apply_quest_scoped_effect(
         | Effect::StartScene { .. }
         | Effect::StopScene { .. }
         | Effect::Activate { .. }
-        | Effect::SetOpen { .. } => {
+        | Effect::SetOpen { .. }
+        | Effect::SetPlayerRestrained { .. }
+        | Effect::SetPlayerControls { .. }
+        | Effect::SetPlayerAiDriven { .. }
+        | Effect::SetHudCartMode { .. }
+        | Effect::EvaluatePackage { .. } => {
             unreachable!("object-targeting effects are handled by apply_effect directly")
         }
     }

@@ -38,6 +38,7 @@ use std::collections::{HashMap, HashSet};
 use byroredux_papyrus::ast::{Expr, Stmt};
 use byroredux_papyrus::span::Spanned;
 
+use crate::player_control::PlayerControlSelection;
 use crate::translate::compose::{
     as_num, int_arg, is_game_get_player, method_call, quest_via, ObjectRef, QuestRef,
 };
@@ -109,6 +110,21 @@ pub enum Effect {
     /// `<target>.SetOpen(open)` — synchronizes the canonical two-state
     /// activator and its `::isOpen_var` CTDA-visible VM variable.
     SetOpen { target: ObjectRef, open: bool },
+    /// `Game.GetPlayer().SetRestrained(restrained)`.
+    SetPlayerRestrained { restrained: bool },
+    /// Selectively enable/disable the domains named by the two Papyrus
+    /// `*PlayerControls` global functions.
+    SetPlayerControls {
+        enabled: bool,
+        selection: PlayerControlSelection,
+    },
+    /// `Game.SetPlayerAIDriven(ai_driven)`.
+    SetPlayerAiDriven { ai_driven: bool },
+    /// `Game.SetHudCartMode(cart_mode)` presentation state.
+    SetHudCartMode { cart_mode: bool },
+    /// `<actor>.EvaluatePackage()` — queues the actor's active scene package
+    /// for condition re-selection and command restart on the next package tick.
+    EvaluatePackage { actor: ObjectRef },
 }
 
 /// The local-variable scope built while lowering a fragment body.
@@ -239,6 +255,12 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_stop_scene,
     prim_activate,
     prim_set_open,
+    prim_set_player_restrained,
+    prim_disable_player_controls,
+    prim_enable_player_controls,
+    prim_set_player_ai_driven,
+    prim_set_hud_cart_mode,
+    prim_evaluate_package,
 ];
 
 // ── Effect primitives ────────────────────────────────────────────────
@@ -383,6 +405,90 @@ fn prim_set_open(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+fn prim_set_player_restrained(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetRestrained")?;
+    if !is_game_get_player(object) || args.len() > 1 {
+        return None;
+    }
+    Some(Effect::SetPlayerRestrained {
+        restrained: bool_arg(args, 0)?.unwrap_or(true),
+    })
+}
+
+fn prim_disable_player_controls(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    prim_player_controls(e, "DisablePlayerControls", false)
+}
+
+fn prim_enable_player_controls(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    prim_player_controls(e, "EnablePlayerControls", true)
+}
+
+fn prim_player_controls(e: &Expr, method: &str, enabled: bool) -> Option<Effect> {
+    let args = game_call(e, method)?;
+    if args.len() > 9 {
+        return None;
+    }
+    let defaults = PlayerControlSelection::PAPYRUS_DEFAULT;
+    let selection = PlayerControlSelection {
+        movement: bool_arg(args, 0)?.unwrap_or(defaults.movement),
+        fighting: bool_arg(args, 1)?.unwrap_or(defaults.fighting),
+        camera_switching: bool_arg(args, 2)?.unwrap_or(defaults.camera_switching),
+        looking: bool_arg(args, 3)?.unwrap_or(defaults.looking),
+        sneaking: bool_arg(args, 4)?.unwrap_or(defaults.sneaking),
+        menu: bool_arg(args, 5)?.unwrap_or(defaults.menu),
+        activation: bool_arg(args, 6)?.unwrap_or(defaults.activation),
+        journal_tabs: bool_arg(args, 7)?.unwrap_or(defaults.journal_tabs),
+        pov_type: optional_int_arg(args, 8, defaults.pov_type)?,
+    };
+    Some(Effect::SetPlayerControls { enabled, selection })
+}
+
+fn prim_set_player_ai_driven(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = game_call(e, "SetPlayerAIDriven")?;
+    if args.len() > 1 {
+        return None;
+    }
+    Some(Effect::SetPlayerAiDriven {
+        ai_driven: bool_arg(args, 0)?.unwrap_or(true),
+    })
+}
+
+fn prim_set_hud_cart_mode(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = game_call(e, "SetHudCartMode")?;
+    if args.len() > 1 {
+        return None;
+    }
+    Some(Effect::SetHudCartMode {
+        cart_mode: bool_arg(args, 0)?.unwrap_or(true),
+    })
+}
+
+fn prim_evaluate_package(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "EvaluatePackage")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::EvaluatePackage {
+        actor: receiver_object(object, scope)?,
+    })
+}
+
+fn game_call<'a>(e: &'a Expr, method: &str) -> Option<&'a [byroredux_papyrus::ast::CallArg]> {
+    let (object, args) = method_call(e, method)?;
+    matches!(object, Expr::Ident(name) if name.0.eq_ignore_ascii_case("Game")).then_some(args)
+}
+
+fn optional_int_arg(
+    args: &[byroredux_papyrus::ast::CallArg],
+    idx: usize,
+    default: i32,
+) -> Option<i32> {
+    match args.get(idx) {
+        None => Some(default),
+        Some(_) => i32::try_from(int_arg(args, idx)?).ok(),
+    }
+}
+
 // ── Receiver / quest-expr resolution ─────────────────────────────────
 
 /// Resolve a call receiver to a [`QuestRef`]:
@@ -421,7 +527,8 @@ fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
     if let Expr::Cast { expr, .. } = object {
         return receiver_object(&expr.node, scope);
     }
-    if let Some((alias, args)) = method_call(object, "GetRef") {
+    let alias_getter = method_call(object, "GetRef").or_else(|| method_call(object, "GetActorRef"));
+    if let Some((alias, args)) = alias_getter {
         if !args.is_empty() {
             return None;
         }
@@ -805,6 +912,74 @@ mod tests {
                     open: true,
                 },
             ])
+        );
+    }
+
+    #[test]
+    fn lowers_exact_mq101_player_control_selection() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_191()\n\
+             Game.DisablePlayerControls(false, true, true, false, false, false, true, true, 0)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::SetPlayerControls {
+                enabled: false,
+                selection: PlayerControlSelection {
+                    movement: false,
+                    fighting: true,
+                    camera_switching: true,
+                    looking: false,
+                    sneaking: false,
+                    menu: false,
+                    activation: true,
+                    journal_tabs: true,
+                    pov_type: 0,
+                },
+            }])
+        );
+    }
+
+    #[test]
+    fn lowers_player_release_and_cinematic_state_calls() {
+        let mut body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_316()\n\
+             Game.GetPlayer().SetRestrained(false)\n EndFunction\n",
+        );
+        body.extend(first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_316()\n\
+             Game.SetPlayerAIDriven(false)\n EndFunction\n",
+        ));
+        body.extend(first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_316()\n\
+             Game.SetHudCartMode(false)\n EndFunction\n",
+        ));
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::SetPlayerRestrained { restrained: false },
+                Effect::SetPlayerAiDriven { ai_driven: false },
+                Effect::SetHudCartMode { cart_mode: false },
+            ])
+        );
+    }
+
+    #[test]
+    fn lowers_alias_actor_evaluate_package() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_292()\n\
+             Alias_Hadvar.GetActorRef().EvaluatePackage()\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::EvaluatePackage {
+                actor: ObjectRef::Property("Alias_Hadvar".into()),
+            }])
         );
     }
 

@@ -925,6 +925,83 @@ fn dispatch_activate_then_set_open_updates_mq101_style_gate() {
 }
 
 #[test]
+fn dispatch_player_control_and_evaluate_package_effects() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const HADVAR_ALIAS: i16 = 1;
+    let mut world = fixture();
+    let player = world.resource::<PlayerEntity>().0;
+    let hadvar = world.spawn();
+    world
+        .resource_mut::<crate::SceneActorBindings>()
+        .bind(Q, i32::from(HADVAR_ALIAS), hadvar);
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                scripts: vec![ScriptInstance {
+                    name: "QF_MQ101".into(),
+                    status: 0,
+                    properties: vec![ScriptProperty {
+                        name: "Alias_Hadvar".into(),
+                        status: 1,
+                        value: PropertyValue::Object {
+                            form_id: 0,
+                            alias: HADVAR_ALIAS,
+                        },
+                    }],
+                }],
+                ..Default::default()
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![
+                Effect::SetPlayerRestrained { restrained: true },
+                Effect::SetPlayerControls {
+                    enabled: false,
+                    selection: crate::PlayerControlSelection {
+                        movement: true,
+                        fighting: false,
+                        looking: true,
+                        ..crate::PlayerControlSelection::PAPYRUS_DEFAULT
+                    },
+                },
+                Effect::SetPlayerAiDriven { ai_driven: true },
+                Effect::SetHudCartMode { cart_mode: true },
+                Effect::EvaluatePackage {
+                    actor: crate::translate::compose::ObjectRef::Property(
+                        "::Alias_Hadvar_var".into(),
+                    ),
+                },
+            ],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+
+    quest_fragment_dispatch_system(&world);
+
+    assert!(
+        world
+            .get::<crate::ActorControlState>(player)
+            .unwrap()
+            .restrained
+    );
+    let controls = world.resource::<crate::PlayerControlState>();
+    assert!(!controls.movement_enabled);
+    assert!(controls.fighting_enabled, "unselected domain is untouched");
+    assert!(!controls.looking_enabled);
+    assert!(controls.ai_driven);
+    assert!(controls.hud_cart_mode);
+    assert!(world.has::<crate::EvaluatePackageRequest>(hadvar));
+}
+
+#[test]
 fn dispatch_ignores_stage_without_a_fragment() {
     let world = fixture();
     {

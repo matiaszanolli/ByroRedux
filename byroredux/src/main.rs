@@ -1179,6 +1179,14 @@ impl ApplicationHandler for App {
                 self.release_world_input_for_ui();
                 return;
             }
+            let looking_enabled = self
+                .world
+                .try_resource::<byroredux_scripting::PlayerControlState>()
+                .map(|controls| controls.looking_enabled)
+                .unwrap_or(true);
+            if !looking_enabled {
+                return;
+            }
             let mut input = self.world.resource_mut::<InputState>();
             if input.mouse_captured {
                 let sensitivity = input.look_sensitivity;

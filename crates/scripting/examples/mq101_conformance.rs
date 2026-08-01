@@ -93,6 +93,11 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",
         Effect::SetOpen { .. } => "SetOpen",
+        Effect::SetPlayerRestrained { .. } => "SetPlayerRestrained",
+        Effect::SetPlayerControls { .. } => "SetPlayerControls",
+        Effect::SetPlayerAiDriven { .. } => "SetPlayerAiDriven",
+        Effect::SetHudCartMode { .. } => "SetHudCartMode",
+        Effect::EvaluatePackage { .. } => "EvaluatePackage",
     }
 }
 
