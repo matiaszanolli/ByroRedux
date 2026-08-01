@@ -45,8 +45,11 @@ impl<'a> Packfile<'a> {
         if section_count == 0 || section_count > 64 {
             return Err(HkxError::InvalidData("implausible section count"));
         }
+        let section_table_bytes = section_count
+            .checked_mul(SECTION_HEADER_SIZE)
+            .ok_or(HkxError::InvalidData("section table size overflow"))?;
         let section_table_end = HEADER_SIZE
-            .checked_add(section_count.saturating_mul(SECTION_HEADER_SIZE))
+            .checked_add(section_table_bytes)
             .ok_or(HkxError::InvalidData("section table overflow"))?;
         if section_table_end > bytes.len() {
             return Err(HkxError::Truncated("section table"));

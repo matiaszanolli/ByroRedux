@@ -70,14 +70,19 @@ pub(crate) fn populate_havok_idle_runtime(
 
     let mut installed = 0;
     for idle in idles {
-        let mut resolved = None;
+        let mut resolved_handle = None;
+        let mut resolved_clip = None;
         for path in idle_animation_candidates(&idle.animation_event) {
+            if let Some(handle) = world.resource::<AnimationClipRegistry>().get_by_path(&path) {
+                resolved_handle = Some(handle);
+                break;
+            }
             let Some(bytes) = provider.extract_mesh(&path) else {
                 continue;
             };
             match byroredux_hkx::decode_spline_animation(&bytes) {
                 Ok(animation) => {
-                    resolved = Some((path, animation));
+                    resolved_clip = Some((path, animation));
                     break;
                 }
                 Err(error) => {
@@ -90,7 +95,7 @@ pub(crate) fn populate_havok_idle_runtime(
                 }
             }
         }
-        let Some((path, animation)) = resolved else {
+        if resolved_handle.is_none() && resolved_clip.is_none() {
             log::debug!(
                 "Skyrim IDLE {:08X} ({}): no character animation HKX for event '{}'",
                 idle.form_id,
@@ -98,15 +103,20 @@ pub(crate) fn populate_havok_idle_runtime(
                 idle.animation_event,
             );
             continue;
-        };
+        }
 
-        let clip = {
-            let mut pool = world.resource_mut::<StringPool>();
-            convert_hkx_clip(&path, &skeleton, &animation, &mut pool)
+        let handle = if let Some(handle) = resolved_handle {
+            handle
+        } else {
+            let (path, animation) = resolved_clip.expect("resolved clip checked above");
+            let clip = {
+                let mut pool = world.resource_mut::<StringPool>();
+                convert_hkx_clip(&path, &skeleton, &animation, &mut pool)
+            };
+            world
+                .resource_mut::<AnimationClipRegistry>()
+                .get_or_insert_by_path(path, || clip)
         };
-        let handle = world
-            .resource_mut::<AnimationClipRegistry>()
-            .get_or_insert_by_path(path.clone(), || clip);
         world
             .resource_mut::<HavokIdleCatalog>()
             .handles

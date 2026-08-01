@@ -10,8 +10,7 @@ mod animation;
 mod packfile;
 
 pub use animation::{
-    decode_skeleton, decode_spline_animation, decode_static_spline_animation, HkxAnimation,
-    HkxBone, HkxSkeleton, HkxTransform,
+    decode_skeleton, decode_spline_animation, HkxAnimation, HkxBone, HkxSkeleton, HkxTransform,
 };
 
 use thiserror::Error;
@@ -30,8 +29,6 @@ pub enum HkxError {
     MissingClass(&'static str),
     #[error("invalid HKX data: {0}")]
     InvalidData(&'static str),
-    #[error("spline clip contains dynamic data in transform track {track}")]
-    DynamicSplineTrack { track: usize },
 }
 
 pub type Result<T> = std::result::Result<T, HkxError>;

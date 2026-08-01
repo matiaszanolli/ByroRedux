@@ -261,12 +261,6 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
     })
 }
 
-/// Compatibility name retained for callers that first integrated the static
-/// cart pose. It now decodes both static and dynamic spline tracks.
-pub fn decode_static_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
-    decode_spline_animation(bytes)
-}
-
 #[derive(Debug, Clone)]
 struct BlockTrack {
     translation: VectorCurve,
@@ -683,7 +677,7 @@ fn decode_three_component_40(bytes: &[u8]) -> Result<[f32; 4]> {
     }
     let factor = 1.0 / (2047.0 * std::f32::consts::SQRT_2);
     let stored = [
-        (((packed >> 0) & 0x0fff) as i32 - 2047) as f32 * factor,
+        ((packed & 0x0fff) as i32 - 2047) as f32 * factor,
         (((packed >> 12) & 0x0fff) as i32 - 2047) as f32 * factor,
         (((packed >> 24) & 0x0fff) as i32 - 2047) as f32 * factor,
     ];
@@ -824,7 +818,7 @@ mod tests {
             .extract(r"meshes\actors\character\animations\carttravelplayeridle.hkx")
             .unwrap();
         let skeleton = decode_skeleton(&skeleton).unwrap();
-        let clip = decode_static_spline_animation(&clip).unwrap();
+        let clip = decode_spline_animation(&clip).unwrap();
         assert_eq!(skeleton.bones.len(), 99);
         assert_eq!(clip.tracks.len(), 99);
         assert_eq!(clip.track_to_bone.len(), 99);
