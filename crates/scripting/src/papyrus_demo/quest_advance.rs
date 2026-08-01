@@ -350,15 +350,18 @@ pub fn quest_advance_system(world: &World) {
     // future consumer can demux by `quest` regardless of where it
     // lands.
     //
-    // #1864 / SCR-D7-NEW-01 — insert the whole batch ONCE. `advances_emitted`
-    // can hold >1 event whenever two different scripted doors/triggers fire
-    // in the same tick; looping `insert()` onto this one shared sink entity
-    // would silently collapse every advance but the last (SparseSetStorage
-    // overwrites in place on a repeat insert to the same entity).
+    // #1864 / SCR-D7-NEW-01 — append the whole producer batch while holding
+    // the storage write lock. Another same-frame producer may already have
+    // populated the compatibility sink; replacing it would lose its events.
+    // The sequenced journal in QuestStageState remains authoritative.
     let Some(mut q) = world.query_mut::<QuestStageAdvancedBatch>() else {
         return;
     };
-    q.insert(player_entity, QuestStageAdvancedBatch(advances_emitted));
+    if let Some(batch) = q.get_mut(player_entity) {
+        batch.0.extend(advances_emitted);
+    } else {
+        q.insert(player_entity, QuestStageAdvancedBatch(advances_emitted));
+    }
 }
 
 #[cfg(test)]

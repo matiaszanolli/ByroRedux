@@ -21,7 +21,9 @@ use byroredux_plugin::esm::records::{
 
 use crate::condition::{evaluate, ConditionContext};
 use crate::papyrus_demo::PlayerEntity;
-use crate::quest_stages::{QuestFormId, QuestStageAdvancedBatch};
+use crate::quest_stages::{
+    QuestFormId, QuestStageAdvancedBatch, QuestStageState, SCENE_QUEST_EVENT_SUBSCRIBER,
+};
 
 /// Immutable scene definitions and the ECS entity assigned to each one.
 #[derive(Debug, Clone, Default)]
@@ -756,17 +758,42 @@ pub fn scene_playback_system(world: &World, dt: f32) {
     drain::<SceneStopRequest>(world);
     drain::<SceneActionCompletionBatch>(world);
 
-    let quest_starts: HashSet<QuestFormId> = world
-        .query::<QuestStageAdvancedBatch>()
-        .map(|query| {
-            query
-                .iter()
-                .flat_map(|(_, batch)| batch.0.iter())
-                .filter(|advance| advance.previous_stage == 0)
-                .map(|advance| advance.quest)
+    // The journal is authoritative and independently cursor-driven: scene
+    // playback can run at any cadence without racing another consumer for a
+    // one-frame marker. The component batch remains accepted as compatibility
+    // ingress for tests/tools and is deduplicated by the HashSet.
+    let mut quest_starts: HashSet<QuestFormId> = world
+        .try_resource_mut::<QuestStageState>()
+        .map(|mut state| {
+            let read = state.poll_quest_events(SCENE_QUEST_EVENT_SUBSCRIBER);
+            if read.missed_events > 0 {
+                log::error!(
+                    target: "scripting::scene",
+                    "scene quest-event subscriber missed {} retained transition(s); \
+                     Begin On Quest Start edges may require state resync",
+                    read.missed_events
+                );
+            }
+            read.events
+                .into_iter()
+                .filter(|advance| advance.event.previous_stage == 0)
+                .map(|advance| advance.event.quest)
                 .collect()
         })
         .unwrap_or_default();
+    quest_starts.extend(
+        world
+            .query::<QuestStageAdvancedBatch>()
+            .map(|query| {
+                query
+                    .iter()
+                    .flat_map(|(_, batch)| batch.0.iter())
+                    .filter(|advance| advance.previous_stage == 0)
+                    .map(|advance| advance.quest)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default(),
+    );
 
     let players: Vec<(EntityId, ScenePlayer)> = world
         .query::<ScenePlayer>()
@@ -808,6 +835,8 @@ pub fn scene_playback_system(world: &World, dt: f32) {
     let empty_completions = HashSet::new();
     let mut updates = Vec::with_capacity(definitions.len());
     for (entity, mut player, scene) in definitions {
+        let previous_state = player.state;
+        let previous_phase = player.current_phase;
         let auto_start = scene.flags & SCENE_BEGIN_ON_QUEST_START != 0
             && scene
                 .quest_form_id
@@ -828,6 +857,18 @@ pub fn scene_playback_system(world: &World, dt: f32) {
                 dt,
             },
         );
+        if player.state != previous_state || player.current_phase != previous_phase {
+            log::info!(
+                target: "scripting::scene",
+                "SCEN {:08X} '{}' {:?}/phase {} -> {:?}/phase {}",
+                scene.form_id,
+                scene.editor_id,
+                previous_state,
+                previous_phase,
+                player.state,
+                player.current_phase,
+            );
+        }
         updates.push((entity, player, output.events, output.fragments));
     }
 
@@ -869,7 +910,9 @@ mod tests {
     };
     use byroredux_plugin::esm::records::{ScenePhase, SCENE_BEGIN_ON_QUEST_START};
 
-    use crate::quest_stages::{QuestStageAdvanced, QuestStageState};
+    use crate::quest_stages::{
+        install_engine_start_quest, quest_startup_system, QuestStageAdvanced, QuestStageState,
+    };
 
     const SCENE: u32 = 0x100;
     const QUEST: u32 = 0x200;
@@ -1229,6 +1272,30 @@ mod tests {
 
         assert_eq!(state(&world, entity).state, ScenePlaybackState::Playing);
         assert!(events(&world, entity).contains(&SceneEvent::SceneStarted));
+    }
+
+    #[test]
+    fn engine_root_quest_bootstrap_auto_starts_flagged_scene() {
+        let mut scene = base_scene();
+        scene.flags = SCENE_BEGIN_ON_QUEST_START;
+        let (mut world, entity, _) = setup(scene);
+        assert!(install_engine_start_quest(
+            &mut world,
+            QuestFormId(QUEST),
+            Some(10),
+        ));
+
+        quest_startup_system(&world, 0.0);
+        scene_playback_system(&world, 0.0);
+
+        assert_eq!(state(&world, entity).state, ScenePlaybackState::Playing);
+        assert!(events(&world, entity).contains(&SceneEvent::SceneStarted));
+        assert_eq!(
+            world
+                .resource::<QuestStageState>()
+                .get_stage(QuestFormId(QUEST)),
+            10
+        );
     }
 
     #[test]

@@ -648,6 +648,10 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // frame (before end-of-frame cleanup drains it).
     scheduler.add_exclusive(Stage::Update, trigger_detection_dispatch);
     scheduler.add_exclusive(Stage::Update, quest_advance_dispatch);
+    // ESM data is installed before the player/event sink exists. Bootstrap
+    // Start Game Enabled quests here so Begin On Quest Start scenes observe
+    // the same-frame transition.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::quest_startup_system);
     // SCEN playback must observe the original quest-start batch before the
     // fragment dispatcher can replace the shared sink with chained SetStage
     // advances. Phase conditions affected by those fragments are retried on

@@ -9,6 +9,10 @@ use super::super::script_instance::{
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
+/// `QUST.DATA` / `QUST.DNAM` bit 0: activate the quest during game bootstrap
+/// instead of waiting for Story Manager or an explicit Papyrus `Start()` call.
+pub const QUEST_FLAG_START_GAME_ENABLED: u16 = 0x0001;
+
 /// One stage of a quest, defined by an `INDX` / `QSDT` sub-record
 /// pair. Stage data carried inside the block (CNAM log text, SCHR
 /// script-on-advance) attaches to the most recently opened stage.
@@ -25,10 +29,9 @@ pub struct QuestStage {
     /// to u16 here — vanilla Skyrim stage indices stay well inside
     /// u16 range; if a mod ever ships a larger index this widens.
     pub index: u16,
-    /// Stage flags from QSDT byte 0. Bit 0 = Start Up Stage (the
-    /// stage the quest advances to when activated), bit 1 = Shut Down
-    /// Stage (terminal stage), bit 2 = Keep Instance Data From Here On
-    /// (Skyrim+ Radiant). Other bits per UESP.
+    /// Version-specific stage flags. FO3/FNV store them in `QSDT`; Skyrim+
+    /// stores them in `INDX` byte 2 (`0x02` = Start Up Stage, `0x04` = Shut
+    /// Down Stage, `0x08` = Keep Instance Data From Here On).
     pub flags: u8,
     /// `CNAM` log entry text shown in the Pip-Boy / quest journal
     /// when this stage is reached. Empty when the stage carries no
@@ -250,7 +253,7 @@ pub struct QustRecord {
     pub script_ref: u32,
     /// Quest flags from DATA byte 0 (`Start Game Enabled`, `Allow
     /// Repeated Stages`, `Event Based`, ...).
-    pub quest_flags: u8,
+    pub quest_flags: u16,
     /// Priority from DATA byte 1. Higher = displayed first in pip-boy.
     pub priority: u8,
     /// All defined stages, in authoring order (which is also INDX
@@ -258,10 +261,9 @@ pub struct QustRecord {
     /// stages; the longest vanilla FNV quest (Heartache by the
     /// Number) has 60+.
     pub stages: Vec<QuestStage>,
-    /// `INDX` of the stage flagged Start Up Stage (QSDT bit 0). The
-    /// Story Manager advances the quest to this index on activation;
-    /// `None` when no stage has the bit set (rare — typically only
-    /// scripted-start quests).
+    /// `INDX` of the stage flagged Start Up Stage (legacy QSDT bit 0;
+    /// Skyrim+ INDX flag `0x02`). The Story Manager advances the quest to
+    /// this index on activation; `None` when no stage has the bit set.
     pub start_up_stage: Option<u16>,
     /// All defined objectives, in authoring order. Objectives are
     /// usually a strict subset of stages (one objective per major
@@ -295,7 +297,12 @@ pub struct QustRecord {
 /// block, and any of the three closes whatever was open before.
 enum QustBlock {
     None,
-    Stage(QuestStage),
+    Stage {
+        stage: QuestStage,
+        /// Skyrim+ puts stage flags in `INDX`; its `QSDT` is per-log-entry
+        /// completion/failure state and must not overwrite them.
+        flags_from_index: bool,
+    },
     Objective(QuestObjective),
     Alias(QuestAlias),
 }
@@ -316,8 +323,12 @@ pub fn parse_qust(
     // finishes.
     fn flush_block(out: &mut QustRecord, block: QustBlock) {
         match block {
-            QustBlock::Stage(stage) => {
-                if stage.flags & 0x01 != 0 && out.start_up_stage.is_none() {
+            QustBlock::Stage {
+                stage,
+                flags_from_index,
+            } => {
+                let start_up_mask = if flags_from_index { 0x02 } else { 0x01 };
+                if stage.flags & start_up_mask != 0 && out.start_up_stage.is_none() {
                     out.start_up_stage = Some(stage.index);
                 }
                 out.stages.push(stage);
@@ -336,8 +347,14 @@ pub fn parse_qust(
                 out.script_ref = SubReader::new(&sub.data).u32_or_default();
             }
             b"DATA" if sub.data.len() >= 2 => {
-                out.quest_flags = sub.data[0];
+                out.quest_flags = u16::from(sub.data[0]);
                 out.priority = sub.data[1];
+            }
+            // Skyrim+ widened flags to u16 and moved the quest header to
+            // DNAM: flags, priority, form version, four unknown bytes, type.
+            b"DNAM" if sub.data.len() >= 3 => {
+                out.quest_flags = u16::from_le_bytes([sub.data[0], sub.data[1]]);
+                out.priority = sub.data[2];
             }
             // Skyrim+ Papyrus attachment. Two independent decodes of the
             // same bytes: the trailing fragment section (stage→
@@ -358,13 +375,22 @@ pub fn parse_qust(
                 flush_block(&mut out, prev);
                 let mut r = SubReader::new(&sub.data);
                 let index = r.u16_or_default();
-                block = QustBlock::Stage(QuestStage {
-                    index,
-                    ..Default::default()
-                });
+                let flags_from_index = sub.data.len() >= 3;
+                block = QustBlock::Stage {
+                    stage: QuestStage {
+                        index,
+                        flags: sub.data.get(2).copied().unwrap_or_default(),
+                        ..Default::default()
+                    },
+                    flags_from_index,
+                };
             }
             b"QSDT" if !sub.data.is_empty() => {
-                if let QustBlock::Stage(stage) = &mut block {
+                if let QustBlock::Stage {
+                    stage,
+                    flags_from_index: false,
+                } = &mut block
+                {
                     stage.flags = sub.data[0];
                 }
             }
@@ -384,7 +410,7 @@ pub fn parse_qust(
             // FNV authoring path; Skyrim+ moves objective text onto
             // NNAM). Dispatch on the open block.
             b"CNAM" => match &mut block {
-                QustBlock::Stage(stage) => {
+                QustBlock::Stage { stage, .. } => {
                     stage.log_text = read_lstring_or_zstring(&sub.data);
                 }
                 QustBlock::Objective(obj) => {
@@ -420,7 +446,7 @@ pub fn parse_qust(
             // The bytecode itself isn't decoded here — flagged for
             // M47.2's consumer.
             b"SCHR" | b"SCDA" => {
-                if let QustBlock::Stage(stage) = &mut block {
+                if let QustBlock::Stage { stage, .. } = &mut block {
                     stage.has_script = true;
                 }
             }
@@ -430,7 +456,7 @@ pub fn parse_qust(
             // another fill type). Stage and Alias are the two block
             // kinds that currently collect conditions here.
             b"CTDA" => match &mut block {
-                QustBlock::Stage(stage) => push_ctda(sub, remap, &mut stage.conditions),
+                QustBlock::Stage { stage, .. } => push_ctda(sub, remap, &mut stage.conditions),
                 QustBlock::Alias(alias) => push_ctda(sub, remap, &mut alias.match_conditions),
                 QustBlock::Objective(_) | QustBlock::None => {}
             },
@@ -686,6 +712,30 @@ mod tests {
         assert_eq!(q.script_ref, 0x0010_BEEF);
         assert_eq!(q.quest_flags, 0x05);
         assert_eq!(q.priority, 20);
+    }
+
+    #[test]
+    fn parse_skyrim_qust_uses_dnam_header_and_indx_stage_flags() {
+        let subs = vec![
+            sub(b"EDID", b"MQ101\0"),
+            // flags=Run Once|Start Game Enabled, priority=80.
+            sub(b"DNAM", &[0x01, 0x01, 80, 0, 0, 0, 0, 0, 1, 0, 0, 0]),
+            // Skyrim INDX: u16 stage, u8 flags, u8 unknown. Stage zero is
+            // the startup stage even though its following QSDT is clear.
+            sub(b"INDX", &[0x00, 0x00, 0x02, 0x00]),
+            sub(b"QSDT", &[0x00]),
+            // QSDT bit 0 means Complete Quest on Skyrim, not Start Up Stage;
+            // it must not make the terminal stage the startup stage.
+            sub(b"INDX", &[0x84, 0x03, 0x00, 0x00]),
+            sub(b"QSDT", &[0x01]),
+        ];
+
+        let quest = parse_qust(0x0003_372B, &subs, &None);
+        assert_eq!(quest.quest_flags, 0x0101);
+        assert_eq!(quest.priority, 80);
+        assert_eq!(quest.start_up_stage, Some(0));
+        assert_eq!(quest.stages[0].flags, 0x02);
+        assert_eq!(quest.stages[1].flags, 0x00);
     }
 
     #[test]

@@ -34,6 +34,7 @@
 //! VMAD doesn't carry, is skipped (logged), never guessed.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use byroredux_core::ecs::components::{GlobalTransform, Inventory, ItemStack, Transform};
 use byroredux_core::ecs::resource::Resource;
@@ -42,6 +43,7 @@ use byroredux_plugin::esm::records::script_instance::ScriptInstanceData;
 
 use crate::quest_stages::{
     QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
+    FRAGMENT_QUEST_EVENT_SUBSCRIBER,
 };
 use byroredux_papyrus::ast::{Script, ScriptItem, StateItem, Stmt};
 use byroredux_papyrus::span::Spanned;
@@ -53,15 +55,15 @@ use crate::translate::effects::{lower_fragment, Effect};
 /// cell load by [`populate_quest_fragments_from_pex`] from the QUST `VMAD`
 /// fragment bindings the decoder recovers; consumed by
 /// [`quest_fragment_dispatch_system`].
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct QuestStageFragments {
-    map: HashMap<(QuestFormId, u16), Vec<Effect>>,
+    map: Arc<HashMap<(QuestFormId, u16), Vec<Effect>>>,
     /// The QF_ script's own property table per quest — the same VMAD
     /// scripts-section bytes the QUST record's fragment section is read
     /// alongside. Lets a fragment's cross-quest `Property`-targeted
     /// effect (`SomeOtherQuest.SetStage(..)` via a `Quest Property`)
     /// resolve at dispatch time instead of always skipping.
-    vmad: HashMap<QuestFormId, ScriptInstanceData>,
+    vmad: Arc<HashMap<QuestFormId, ScriptInstanceData>>,
 }
 
 impl Resource for QuestStageFragments {}
@@ -69,7 +71,7 @@ impl Resource for QuestStageFragments {}
 impl QuestStageFragments {
     /// Register a stage's lowered fragment effects.
     pub fn insert(&mut self, quest: QuestFormId, stage: u16, effects: Vec<Effect>) {
-        self.map.insert((quest, stage), effects);
+        Arc::make_mut(&mut self.map).insert((quest, stage), effects);
     }
 
     /// The lowered effects for a `(quest, stage)`, if any.
@@ -83,7 +85,7 @@ impl QuestStageFragments {
     /// scripts — nothing a `Property` lookup could ever match.
     pub fn insert_vmad(&mut self, quest: QuestFormId, vmad: ScriptInstanceData) {
         if vmad.has_script() {
-            self.vmad.insert(quest, vmad);
+            Arc::make_mut(&mut self.vmad).insert(quest, vmad);
         }
     }
 
@@ -477,35 +479,63 @@ pub fn populate_quest_fragments_from_script(
 /// is empty (and this a no-op) on loads without `--scripts-bsa` or on
 /// pre-Papyrus games.
 pub fn quest_fragment_dispatch_system(world: &World) {
-    // Snapshot the stage advances this frame. #1864 / SCR-D7-NEW-01 — a
-    // batch can hold >1 advance from the same frame; iterate every entry,
-    // not just the sink entity's single (pre-fix) marker value.
-    let mut queue: Vec<(QuestFormId, u16)> = Vec::new();
+    // Snapshot compatibility ingress before taking resource locks. The
+    // sequenced journal below is authoritative; batches remain accepted for
+    // direct tests/tools and are deduplicated against journal entries.
+    let mut legacy_events = Vec::new();
     if let Some(markers) = world.query::<QuestStageAdvancedBatch>() {
         for (_entity, batch) in markers.iter() {
-            for ev in &batch.0 {
-                queue.push((ev.quest, ev.new_stage));
-            }
+            legacy_events.extend(batch.0.iter().copied());
         }
-    }
-    if queue.is_empty() {
-        return;
     }
 
-    // Nothing to dispatch if no fragments are registered (today's runtime).
-    {
-        let frags = world.resource::<QuestStageFragments>();
-        if frags.is_empty() {
-            return;
-        }
-    }
+    // Static fragment data is cloned before taking mutable quest resources.
+    // This avoids a read→write nested resource-lock order and lets the paired
+    // mutable resources use the ECS's TypeId-sorted deadlock-safe API.
+    let frags = world.resource::<QuestStageFragments>().clone();
 
     let mut chained: Vec<QuestStageAdvanced> = Vec::new();
     let mut steps = 0usize;
     {
-        let frags = world.resource::<QuestStageFragments>();
-        let mut stages = world.resource_mut::<QuestStageState>();
-        let mut objectives = world.resource_mut::<QuestObjectiveState>();
+        let (mut stages, mut objectives) =
+            world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
+        let mut queue: Vec<(QuestFormId, u16)> = Vec::new();
+        // Compatibility batches mirror journal events but carry no sequence.
+        // Count mirrors as a multiset: all sequenced journal commits remain in
+        // order, including two legitimate identical transitions, and only the
+        // corresponding unsequenced copies are suppressed.
+        let mut journal_mirrors: HashMap<(QuestFormId, u16, u16), usize> = HashMap::new();
+        let journal_read = stages.poll_quest_events(FRAGMENT_QUEST_EVENT_SUBSCRIBER);
+        if journal_read.missed_events > 0 {
+            log::error!(
+                target: "scripting::quest_fragments",
+                "fragment subscriber missed {} retained quest transition(s); \
+                 canonical quest state remains valid but skipped fragment effects cannot be reconstructed",
+                journal_read.missed_events
+            );
+        }
+        for sequenced in journal_read.events {
+            let event = sequenced.event;
+            *journal_mirrors
+                .entry((event.quest, event.previous_stage, event.new_stage))
+                .or_default() += 1;
+            queue.push((event.quest, event.new_stage));
+        }
+        for event in legacy_events {
+            let key = (event.quest, event.previous_stage, event.new_stage);
+            if let Some(mirrors) = journal_mirrors.get_mut(&key) {
+                if *mirrors > 0 {
+                    *mirrors -= 1;
+                    continue;
+                }
+            }
+            queue.push((event.quest, event.new_stage));
+        }
+
+        if queue.is_empty() || frags.is_empty() {
+            return;
+        }
+
         while let Some((quest, stage)) = queue.pop() {
             steps += 1;
             if steps > MAX_CASCADE {
@@ -543,6 +573,12 @@ pub fn quest_fragment_dispatch_system(world: &World) {
                 chained.push(adv);
             }
         }
+
+        // Chained SetStage calls were dispatched synchronously above while
+        // this same state lock excluded other producers. Advance only this
+        // consumer's cursor so they are not replayed next time; every other
+        // subscriber retains its independent position.
+        stages.acknowledge_quest_events(FRAGMENT_QUEST_EVENT_SUBSCRIBER);
     }
 
     // Emit markers for the chained advances so other consumers (journal

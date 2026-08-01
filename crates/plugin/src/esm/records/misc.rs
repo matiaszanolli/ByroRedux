@@ -68,7 +68,7 @@ pub use pack::{
 };
 pub use quest::{
     parse_qust, AliasFillType, AliasFlags, AliasInjectedData, QuestAlias, QuestObjective,
-    QuestStage, QustRecord, ALIAS_FLAG_ALLOW_REUSE,
+    QuestStage, QustRecord, ALIAS_FLAG_ALLOW_REUSE, QUEST_FLAG_START_GAME_ENABLED,
 };
 pub use scene::{
     parse_scen, ScenRecord, SceneAction, SceneActionType, SceneActor, ScenePhase,

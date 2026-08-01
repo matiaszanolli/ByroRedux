@@ -37,7 +37,11 @@ pub use fragment::{
     QuestStageFragments,
 };
 pub use globals::Globals;
-pub use quest_stages::QuestFormId;
+pub use quest_stages::{
+    install_engine_start_quest, install_start_game_quests, quest_startup_system, QuestEventRead,
+    QuestEventSubscriberId, QuestFormId, SequencedQuestStageAdvanced, StartGameQuestRegistry,
+    QUEST_EVENT_RETENTION,
+};
 pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, RecurringUpdate};
 pub use registry::{ScriptRegistry, ScriptSpawnFn};
 pub use scene::{
@@ -84,6 +88,7 @@ pub fn register(world: &mut World) {
     // dispatch consumes (the `default*Trigger` family).
     trigger::register(world);
     recurring_update::register(world);
+    quest_stages::register(world);
     // M47.2 (b2) — quest-stage fragment dispatch. Registers the
     // QuestStageAdvanced component storage (via quest_advance below it's
     // also registered, idempotent) and the QuestStageFragments /

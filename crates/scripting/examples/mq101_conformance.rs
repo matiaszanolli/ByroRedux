@@ -25,11 +25,16 @@ use byroredux_papyrus::ast::ScriptItem;
 use byroredux_pex::{decompile::decompile_script, parse};
 use byroredux_plugin::esm::records::condition::RunOn;
 use byroredux_plugin::esm::records::script_instance::SceneFragmentEvent;
-use byroredux_plugin::esm::records::SceneActionType;
+use byroredux_plugin::esm::records::{
+    SceneActionType, QUEST_FLAG_START_GAME_ENABLED, SCENE_BEGIN_ON_QUEST_START,
+};
+use byroredux_scripting::papyrus_demo::PlayerEntity;
+use byroredux_scripting::quest_stages::QuestStageState;
 use byroredux_scripting::translate::effects::{lower_fragment, Effect};
 use byroredux_scripting::{
-    install_scene_quest_aliases, refresh_scene_actor_bindings, ConditionFunction,
-    SceneAliasCandidate, ScenePlaybackState, ScenePlayer, SceneRegistry,
+    install_engine_start_quest, install_scene_quest_aliases, install_scene_records,
+    quest_startup_system, refresh_scene_actor_bindings, scene_playback_system, ConditionFunction,
+    QuestFormId, SceneAliasCandidate, ScenePlaybackState, ScenePlayer, SceneRegistry,
 };
 
 const MQ101_FORM_ID: u32 = 0x0003_372b;
@@ -188,11 +193,22 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         "MQ101 record",
         quest.editor_id.eq_ignore_ascii_case("MQ101"),
         format!(
-            "QUST {:08X} EDID={} stages={} objectives={}",
+            "QUST {:08X} EDID={} flags={:02X} startup={:?} stages={} objectives={}",
             quest.form_id,
             quest.editor_id,
+            quest.quest_flags,
+            quest.start_up_stage,
             quest.stages.len(),
             quest.objectives.len()
+        ),
+    );
+    checks.record(
+        "quest startup contract",
+        quest.quest_flags & QUEST_FLAG_START_GAME_ENABLED == 0 && quest.start_up_stage == Some(0),
+        format!(
+            "engine-root quest (Start Game Enabled={}), authored startup stage {:?}",
+            quest.quest_flags & QUEST_FLAG_START_GAME_ENABLED != 0,
+            quest.start_up_stage
         ),
     );
     checks.record(
@@ -256,6 +272,19 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                 .unwrap_or_else(|| "missing".to_owned())
         ),
     );
+    checks.record(
+        "primary scene auto-start",
+        primary_scene.is_some_and(|scene| scene.flags & SCENE_BEGIN_ON_QUEST_START != 0),
+        primary_scene
+            .map(|scene| {
+                format!(
+                    "MQ101Scene1 flags={:08X}, Begin On Quest Start={}",
+                    scene.flags,
+                    scene.flags & SCENE_BEGIN_ON_QUEST_START != 0
+                )
+            })
+            .unwrap_or_else(|| "MQ101Scene1 missing".to_owned()),
+    );
 
     // Construct the same immutable registry + per-scene player shape the
     // live cell loader installs. This catches parser/runtime type drift even
@@ -287,6 +316,47 @@ fn run() -> Result<Checks, Box<dyn Error>> {
             } else {
                 "missing"
             }
+        ),
+    );
+
+    let mut bootstrap_world = World::new();
+    byroredux_scripting::register(&mut bootstrap_world);
+    let bootstrap_player = bootstrap_world.spawn();
+    bootstrap_world.insert_resource(PlayerEntity(bootstrap_player));
+    bootstrap_world.insert_resource(QuestStageState::default());
+    install_scene_records(
+        &mut bootstrap_world,
+        mq101_scenes.iter().map(|scene| (**scene).clone()),
+    );
+    install_engine_start_quest(
+        &mut bootstrap_world,
+        QuestFormId(quest.form_id),
+        quest.start_up_stage,
+    );
+    quest_startup_system(&bootstrap_world, 0.0);
+    scene_playback_system(&bootstrap_world, 0.0);
+    let bootstrapped_primary = primary_scene.and_then(|scene| {
+        let entity = bootstrap_world
+            .resource::<SceneRegistry>()
+            .scene_entity(scene.form_id)?;
+        bootstrap_world
+            .get::<ScenePlayer>(entity)
+            .map(|player| player.clone())
+    });
+    checks.record(
+        "new-game scene bootstrap",
+        bootstrap_world
+            .resource::<QuestStageState>()
+            .is_started(QuestFormId(MQ101_FORM_ID))
+            && bootstrapped_primary
+                .as_ref()
+                .is_some_and(|player| player.state != ScenePlaybackState::Dormant),
+        format!(
+            "MQ101 stage={}, MQ101Scene1 state={:?}",
+            bootstrap_world
+                .resource::<QuestStageState>()
+                .get_stage(QuestFormId(MQ101_FORM_ID)),
+            bootstrapped_primary.as_ref().map(|player| &player.state)
         ),
     );
 

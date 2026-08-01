@@ -72,8 +72,8 @@ pub use misc::{
     PackTargetKind, PerkRecord, ProjRecord, QuestAlias, QuestObjective, QuestStage, QustRecord,
     RegnRecord, RepuRecord, ScenRecord, SceneAction, SceneActionType, SceneActor, ScenePhase,
     SlgmRecord, SpelRecord, TermRecord, WatrRecord, ALIAS_FLAG_ALLOW_REUSE,
-    SCENE_BEGIN_ON_QUEST_START, SCENE_INTERRUPTIBLE, SCENE_REPEAT_CONDITIONS, SCENE_SHOW_ALL_TEXT,
-    SCENE_STOP_QUEST_ON_END,
+    QUEST_FLAG_START_GAME_ENABLED, SCENE_BEGIN_ON_QUEST_START, SCENE_INTERRUPTIBLE,
+    SCENE_REPEAT_CONDITIONS, SCENE_SHOW_ALL_TEXT, SCENE_STOP_QUEST_ON_END,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use tree::{parse_tree, TreeRecord};

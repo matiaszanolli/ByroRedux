@@ -159,6 +159,25 @@ pub(crate) fn populate_scene_runtime(
     world: &mut byroredux_core::ecs::world::World,
     index: &byroredux_plugin::esm::records::EsmIndex,
 ) {
+    let start_game_quests =
+        byroredux_scripting::install_start_game_quests(world, index.quests.values().cloned());
+    let mut engine_start_quests = 0usize;
+    if index.game == byroredux_plugin::esm::reader::GameKind::Skyrim {
+        // Skyrim.exe treats MQ101 (Unbound) as the canonical new-game root
+        // even though its QUST does not carry Start Game Enabled. Its INDX
+        // metadata still supplies startup stage 0.
+        const MQ101: u32 = 0x0003_372B;
+        if let Some(quest) = index.quests.get(&MQ101) {
+            engine_start_quests += usize::from(byroredux_scripting::install_engine_start_quest(
+                world,
+                byroredux_scripting::QuestFormId(quest.form_id),
+                quest.start_up_stage,
+            ));
+        }
+    }
+    log::info!(
+        "Installed {start_game_quests} Start Game Enabled and {engine_start_quests} engine-root quest definitions"
+    );
     if index.scenes.is_empty() {
         return;
     }
