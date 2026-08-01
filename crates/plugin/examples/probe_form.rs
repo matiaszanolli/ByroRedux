@@ -44,6 +44,11 @@ fn main() -> anyhow::Result<()> {
             println!("{:08X}  PROJ       editor_id={:?}", fid, r.editor_id);
         } else if let Some(r) = index.explosions.get(&fid) {
             println!("{:08X}  EXPL       editor_id={:?}", fid, r.editor_id);
+        } else if let Some(r) = index.packages.get(&fid) {
+            println!(
+                "{:08X}  PACK       editor_id={:?} procedure={}",
+                fid, r.editor_id, r.procedure_type
+            );
         } else if index.creatures.contains_key(&fid) {
             println!("{:08X}  CREA       (creature)", fid);
         } else {

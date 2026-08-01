@@ -1,6 +1,7 @@
 //! Exterior cell loading — per-worldspace context + single-cell loader
 //! used by both the bulk `--grid` path and the streaming system.
 
+use byroredux_core::ecs::components::CellFormId;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::math::coord::{cell_grid_to_world_yup, EXTERIOR_CELL_UNITS};
@@ -105,6 +106,7 @@ pub fn load_worldspace_persistent_cell(
 
     let cell_root = world.spawn();
     register_cell_root(world, cell_root);
+    world.insert(cell_root, CellFormId(cell.form_id));
     let first_entity = world.next_entity_id();
     let result = load_references(
         &local_refs,
@@ -538,6 +540,7 @@ impl ExteriorCellApplyJob {
 
         let cell_root = world.spawn();
         register_cell_root(world, cell_root);
+        world.insert(cell_root, CellFormId(cell.form_id));
         let first_entity = world.next_entity_id();
         let has_land = cell.landscape.is_some();
         log::info!(

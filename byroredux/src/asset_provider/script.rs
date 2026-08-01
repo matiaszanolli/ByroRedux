@@ -149,7 +149,8 @@ pub(crate) fn populate_quest_fragments(
     }
 }
 
-/// Install every parsed Skyrim+ `SCEN` definition into the ECS runtime.
+/// Install every parsed Skyrim+ `SCEN` definition and its referenced
+/// `DIAL`/`INFO` topics into the ECS runtime.
 ///
 /// The scripting crate deduplicates by FormID and preserves existing player
 /// state, so this is safe on cell transitions and repeated load-order parses.
@@ -178,12 +179,116 @@ pub(crate) fn populate_scene_runtime(
     log::info!(
         "Installed {start_game_quests} Start Game Enabled and {engine_start_quests} engine-root quest definitions"
     );
-    if index.scenes.is_empty() {
-        return;
+    if !index.scenes.is_empty() {
+        // The current runtime consumes dialogue only through SCEN actions.
+        // Keep the registry proportional to that live surface instead of
+        // duplicating every ambient/conversation DIAL retained by EsmIndex.
+        let dialogue_topics: std::collections::HashSet<u32> = index
+            .scenes
+            .values()
+            .flat_map(|scene| {
+                scene
+                    .actions
+                    .iter()
+                    .filter_map(|action| action.topic_form_id)
+            })
+            .collect();
+        let dialogue_count = byroredux_scripting::install_dialogue_records(
+            world,
+            dialogue_topics
+                .iter()
+                .filter_map(|topic| index.dialogues.get(topic).cloned()),
+        );
+        if dialogue_count > 0 {
+            log::info!(
+                "Installed {dialogue_count} scene-referenced DIAL definitions into the ECS dialogue runtime"
+            );
+        }
+        let mut package_ids: std::collections::HashSet<u32> = index
+            .scenes
+            .values()
+            .flat_map(|scene| &scene.actions)
+            .flat_map(|action| action.packages.iter().copied())
+            .collect();
+        let template_ids: Vec<u32> = package_ids
+            .iter()
+            .filter_map(|form_id| index.packages.get(form_id))
+            .filter_map(|package| package.package_template_form_id)
+            .collect();
+        package_ids.extend(template_ids);
+        let package_count = byroredux_scripting::install_package_records(
+            world,
+            package_ids
+                .iter()
+                .filter_map(|form_id| index.packages.get(form_id).cloned()),
+        );
+
+        // Scene Travel/Patrol/Escort packages overwhelmingly target invisible
+        // XMarkers. Those references are intentionally not render-spawned, so
+        // retain their authored coordinates as a lightweight movement target
+        // registry rather than requiring a live ECS entity.
+        let package_target_ids: std::collections::HashSet<u32> = package_ids
+            .iter()
+            .filter_map(|form_id| index.packages.get(form_id))
+            .flat_map(|package| &package.data_inputs)
+            .filter_map(|input| match input.value {
+                byroredux_plugin::esm::records::PackDataValue::Location(location) => {
+                    match location.target {
+                        byroredux_plugin::esm::records::PackLocationTarget::NearReference(
+                            form_id,
+                        ) => Some(form_id),
+                        _ => None,
+                    }
+                }
+                byroredux_plugin::esm::records::PackDataValue::Target(target) => {
+                    match target.target {
+                        byroredux_plugin::esm::records::PackDataTargetKind::SpecificReference(
+                            form_id,
+                        )
+                        | byroredux_plugin::esm::records::PackDataTargetKind::LinkedReference(
+                            form_id,
+                        ) => Some(form_id),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        let mut package_target_positions = Vec::new();
+        let mut collect_cell_targets = |cell: &byroredux_plugin::esm::cell::CellData| {
+            package_target_positions.extend(cell.references.iter().filter_map(|placed| {
+                package_target_ids.contains(&placed.form_id).then_some((
+                    placed.form_id,
+                    byroredux_core::math::Vec3::from_array(
+                        byroredux_core::math::coord::zup_to_yup_pos(placed.position),
+                    ),
+                ))
+            }));
+        };
+        for cell in index.cells.cells.values() {
+            collect_cell_targets(cell);
+        }
+        for grids in index.cells.exterior_cells.values() {
+            for cell in grids.values() {
+                collect_cell_targets(cell);
+            }
+        }
+        for cell in index.cells.worldspace_persistent_cells.values() {
+            collect_cell_targets(cell);
+        }
+        let package_target_count =
+            byroredux_scripting::install_package_target_positions(world, package_target_positions);
+        if package_count > 0 {
+            log::info!(
+                "Installed {package_count} scene PACK definitions and {package_target_count}/{} authored movement targets",
+                package_target_ids.len()
+            );
+        }
+        let count =
+            byroredux_scripting::install_scene_records(world, index.scenes.values().cloned());
+        byroredux_scripting::install_scene_quest_aliases(world, index.quests.values().cloned());
+        log::info!("Installed {count} SCEN definitions into the ECS scene runtime");
     }
-    let count = byroredux_scripting::install_scene_records(world, index.scenes.values().cloned());
-    byroredux_scripting::install_scene_quest_aliases(world, index.quests.values().cloned());
-    log::info!("Installed {count} SCEN definitions into the ECS scene runtime");
 }
 
 /// Build a [`ScriptProvider`] from CLI arguments. Accepts repeated

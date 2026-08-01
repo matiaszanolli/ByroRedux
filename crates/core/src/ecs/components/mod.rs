@@ -1,5 +1,6 @@
 //! Built-in engine components.
 
+pub mod actor_state;
 pub mod actor_values;
 pub mod animated;
 pub mod attach_points;
@@ -38,6 +39,7 @@ pub mod wander;
 pub mod water;
 pub mod world_bound;
 
+pub use actor_state::Dead;
 pub use actor_values::{ActorValue, ActorValues};
 pub use animated::{
     AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,
@@ -48,7 +50,7 @@ pub use attach_points::{AttachPoint, AttachPoints, ChildAttachConnections};
 pub use billboard::{Billboard, BillboardMode};
 pub use bsx::{BSBound, BSXFlags};
 pub use camera::{ActiveCamera, Camera};
-pub use cell_root::CellRoot;
+pub use cell_root::{CellFormId, CellRoot};
 pub use collision::{CollisionShape, MotionType, RigidBodyData};
 pub use escort::{EscortBehavior, EscortState, Escorted};
 pub use faction_ranks::FactionRanks;

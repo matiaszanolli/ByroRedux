@@ -694,18 +694,29 @@ fn tick_player(
         finish_scene(player, scene, &mut output.events, &mut output.fragments);
         return output;
     };
-    let ending_actions_complete = player
+    let ending_actions: Vec<&ActiveSceneAction> = player
         .active_actions
         .iter()
         .filter(|action| action.end_phase == player.current_phase)
-        .all(|action| action.completed);
-    if !ending_actions_complete
-        || !evaluate(
+        .collect();
+    // Creation Kit phase semantics are alternatives: a phase ends when all
+    // actions ending here reach Done OR its authored completion conditions
+    // pass. This distinction matters for Sandbox/Follow-style packages that
+    // never become Done and intentionally rely on CTDAs to release the phase.
+    // An entirely empty, unconditional phase still advances; an empty phase
+    // with CTDAs waits for those CTDAs instead of using vacuous `all(true)`.
+    let ending_actions_complete = if ending_actions.is_empty() {
+        phase.completion_conditions.is_empty()
+    } else {
+        ending_actions.iter().all(|action| action.completed)
+    };
+    let completion_conditions_pass = !phase.completion_conditions.is_empty()
+        && evaluate(
             &phase.completion_conditions,
             context.world,
             &condition_context,
-        )
-    {
+        );
+    if !ending_actions_complete && !completion_conditions_pass {
         return output;
     }
 
@@ -1179,6 +1190,68 @@ mod tests {
             completed: true,
         }));
         assert!(final_events.contains(&SceneEvent::SceneFinished));
+    }
+
+    #[test]
+    fn completion_conditions_can_release_an_unfinished_package_action() {
+        let mut scene = base_scene();
+        scene.phases[0].completion_conditions.push(Condition {
+            function_index: 58, // GetStage
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(10.0),
+            param_1: QUEST,
+            run_on: RunOn::Subject,
+            ..Default::default()
+        });
+        scene.actions.push(SceneAction {
+            action_type: SceneActionType::Package,
+            actor_id: 4,
+            index: 20,
+            start_phase: 0,
+            end_phase: 0,
+            packages: vec![0x400],
+            ..Default::default()
+        });
+        let (mut world, entity, _) = setup(scene);
+        world.insert(entity, SceneStartRequest);
+        scene_playback_system(&world, 0.0);
+        scene_playback_system(&world, 0.0);
+        assert_eq!(state(&world, entity).state, ScenePlaybackState::Playing);
+
+        world
+            .resource_mut::<QuestStageState>()
+            .set_stage(QuestFormId(QUEST), 10);
+        scene_playback_system(&world, 0.0);
+
+        assert_eq!(state(&world, entity).state, ScenePlaybackState::Finished);
+        assert!(events(&world, entity).contains(&SceneEvent::ActionStopped {
+            action_index: 20,
+            completed: false,
+        }));
+    }
+
+    #[test]
+    fn empty_phase_with_completion_conditions_waits_for_them() {
+        let mut scene = base_scene();
+        scene.phases[0].completion_conditions.push(Condition {
+            function_index: 58, // GetStage
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(10.0),
+            param_1: QUEST,
+            run_on: RunOn::Subject,
+            ..Default::default()
+        });
+        let (mut world, entity, _) = setup(scene);
+        world.insert(entity, SceneStartRequest);
+        scene_playback_system(&world, 0.0);
+        scene_playback_system(&world, 0.0);
+        assert_eq!(state(&world, entity).state, ScenePlaybackState::Playing);
+
+        world
+            .resource_mut::<QuestStageState>()
+            .set_stage(QuestFormId(QUEST), 10);
+        scene_playback_system(&world, 0.0);
+        assert_eq!(state(&world, entity).state, ScenePlaybackState::Finished);
     }
 
     #[test]

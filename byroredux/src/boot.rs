@@ -407,6 +407,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // Pre-register component storages that the physics sync system
     // queries on the first frame (before anything has been inserted).
     world.register::<byroredux_physics::RapierHandles>();
+    // MQ101 scene CTDAs read actor death and authored CELL identity through
+    // shared sparse components. Register them before any scene/cell exists so
+    // condition evaluation safely sees the default alive/unowned state.
+    world.register::<byroredux_core::ecs::components::Dead>();
+    world.register::<byroredux_core::ecs::components::CellFormId>();
     // WATAL Phase 2 — pre-register `WaterContact` so the buoyancy phase's
     // `query_mut::<WaterContact>().insert(..)` succeeds the first time a
     // body enters water (mirrors the `RapierHandles` pre-register).
@@ -657,6 +662,14 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // advances. Phase conditions affected by those fragments are retried on
     // the following tick.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::scene_playback_system);
+    // PACK actions resolve their Skyrim PKCU template/data inputs, move actors
+    // toward authored invisible-marker coordinates for Travel-family leaves,
+    // and queue Done completions for scene playback's next tick.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::scene_package_system);
+    // Dialogue consumes the ActionStarted batch emitted immediately above,
+    // exposes authored INFO subtitle/presentation state for the rest of the
+    // frame, and queues completions for scene playback's next tick.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::scene_dialogue_system);
     // Dispatch quest fragments right after the advance that emits the
     // `QuestStageAdvanced` markers, before end-of-frame cleanup drains
     // them (populated live from parsed QUST VMAD fragments, #1739 / `8a70b81a`).

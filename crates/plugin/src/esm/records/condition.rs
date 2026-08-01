@@ -352,6 +352,7 @@ fn param1_is_form_id(function_index: u32) -> bool {
         | 14  // GetActorValue — AVIF FormID
         | 58  // GetStage      — quest FormID
         | 59  // GetStageDone  — quest FormID (param_2 = stage, a literal)
+        | 67  // GetInCell     — CELL FormID
         | 68  // GetIsClass    — CLAS FormID
         | 69  // GetIsRace     — RACE FormID
         | 72  // GetIsID       — base FormID
@@ -700,6 +701,20 @@ mod tests {
         remap_condition_form_ids(&mut cond, &Some(remap));
 
         assert_eq!(cond.param_1, 0x0200_0042);
+    }
+
+    #[test]
+    fn remap_get_in_cell_target_cell() {
+        let remap = FormIdRemap::regular(2, vec![0]);
+        let mut cond = Condition {
+            function_index: 67,
+            param_1: 0x0100_00A5,
+            ..Default::default()
+        };
+
+        remap_condition_form_ids(&mut cond, &Some(remap));
+
+        assert_eq!(cond.param_1, 0x0200_00A5);
     }
 
     #[test]

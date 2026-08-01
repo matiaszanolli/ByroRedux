@@ -11,9 +11,11 @@
 
 pub mod cleanup;
 pub mod condition;
+pub mod dialogue;
 pub mod events;
 pub mod fragment;
 pub mod globals;
+pub mod package;
 pub mod papyrus_demo;
 pub mod quest_stages;
 pub mod recurring_update;
@@ -28,6 +30,11 @@ pub use condition::{
     evaluate as evaluate_condition_list, evaluate_condition, evaluate_function, ConditionContext,
     ConditionFunction,
 };
+pub use dialogue::{
+    estimate_dialogue_duration, install_dialogue_records, scene_dialogue_system,
+    ActiveDialogueLine, DialogueLine, DialogueLineCompletionBatch, DialoguePlayback,
+    DialoguePresentationEvent, DialoguePresentationEventBatch, DialogueRegistry,
+};
 pub use events::{
     ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, HitEvent, OnCellLoadEvent,
     OnEquipEvent, OnTriggerEnterEvent, TimerExpired,
@@ -37,6 +44,11 @@ pub use fragment::{
     QuestStageFragments,
 };
 pub use globals::Globals;
+pub use package::{
+    install_package_records, install_package_target_positions, scene_package_system,
+    ActiveScenePackageAction, PackageRegistry, PackageTargetRegistry, ScenePackageCommand,
+    ScenePackageCompletionBatch, ScenePackageEvent, ScenePackageEventBatch, ScenePackagePlayback,
+};
 pub use quest_stages::{
     install_engine_start_quest, install_start_game_quests, quest_startup_system, QuestEventRead,
     QuestEventSubscriberId, QuestFormId, SequencedQuestStageAdvanced, StartGameQuestRegistry,
@@ -97,6 +109,11 @@ pub fn register(world: &mut World) {
     // Skyrim+ SCEN orchestration: immutable definitions live in a resource,
     // while one ScenePlayer component per record owns mutable playback state.
     scene::register(world);
+    // DIAL/INFO selection and persistent subtitle state consume the scene
+    // runtime's dialogue starts and return canonical action completions.
+    dialogue::register(world);
+    // Skyrim+ PACK template resolution and scene-owned package execution.
+    package::register(world);
     // M47.0 Phase 1 — register the R5 prototype storages so
     // `papyrus_demo` scripts can attach their state components when
     // their owning REFR spawns. Without this call, `query_mut::<…>`

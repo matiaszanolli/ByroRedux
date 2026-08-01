@@ -34,7 +34,8 @@ use byroredux_scripting::translate::effects::{lower_fragment, Effect};
 use byroredux_scripting::{
     install_engine_start_quest, install_scene_quest_aliases, install_scene_records,
     quest_startup_system, refresh_scene_actor_bindings, scene_playback_system, ConditionFunction,
-    QuestFormId, SceneAliasCandidate, ScenePlaybackState, ScenePlayer, SceneRegistry,
+    DialogueRegistry, QuestFormId, SceneAliasCandidate, ScenePlaybackState, ScenePlayer,
+    SceneRegistry,
 };
 
 const MQ101_FORM_ID: u32 = 0x0003_372b;
@@ -319,6 +320,47 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         ),
     );
 
+    let mq101_topic_ids: HashSet<u32> = mq101_scenes
+        .iter()
+        .flat_map(|scene| &scene.actions)
+        .filter(|action| action.action_type == SceneActionType::Dialogue)
+        .filter_map(|action| action.topic_form_id)
+        .collect();
+    let runtime_dialogue_registry = DialogueRegistry::from_records(
+        mq101_topic_ids
+            .iter()
+            .filter_map(|topic| index.dialogues.get(topic).cloned()),
+    );
+    let empty_runtime_topics: Vec<String> = mq101_topic_ids
+        .iter()
+        .filter_map(|topic| {
+            runtime_dialogue_registry
+                .topic(*topic)
+                .filter(|record| record.infos.is_empty())
+                .map(|record| format!("{:08X} {}", record.form_id, record.editor_id))
+        })
+        .collect();
+    let mq101_info_count: usize = mq101_topic_ids
+        .iter()
+        .filter_map(|topic| runtime_dialogue_registry.topic(*topic))
+        .map(|topic| topic.infos.len())
+        .sum();
+    checks.record(
+        "dialogue runtime plan",
+        runtime_dialogue_registry.len() == mq101_topic_ids.len()
+            && mq101_info_count > 0,
+        format!(
+            "{} unique scene DIAL topics expose {mq101_info_count} authored INFO responses; {} empty placeholder(s) use fail-safe completion{}",
+            runtime_dialogue_registry.len(),
+            empty_runtime_topics.len(),
+            if empty_runtime_topics.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", preview(&empty_runtime_topics, 8))
+            }
+        ),
+    );
+
     let mut bootstrap_world = World::new();
     byroredux_scripting::register(&mut bootstrap_world);
     let bootstrap_player = bootstrap_world.spawn();
@@ -363,6 +405,16 @@ fn run() -> Result<Checks, Box<dyn Error>> {
     let quest_alias_ids: HashSet<i32> = quest.aliases.iter().map(|alias| alias.alias_id).collect();
     let mut dialogue_actions = 0usize;
     let mut package_actions = 0usize;
+    let mut package_action_stacks = BTreeMap::<usize, usize>::new();
+    let mut package_procedures = BTreeMap::<u32, usize>::new();
+    let mut package_procedure_samples = BTreeMap::<u32, Vec<String>>::new();
+    let mut package_templates = BTreeMap::<String, usize>::new();
+    let mut package_tree_procedures = BTreeMap::<String, usize>::new();
+    let mut package_tree_procedure_samples = BTreeMap::<String, Vec<String>>::new();
+    let mut unresolved_package_templates = Vec::new();
+    let mut package_execution_kinds = BTreeMap::<String, usize>::new();
+    let mut unresolved_movement_targets = Vec::new();
+    let mut package_actions_with_phase_completion_conditions = 0usize;
     let mut timer_actions = 0usize;
     let mut unknown_actions = Vec::new();
     let mut invalid_ranges = Vec::new();
@@ -439,7 +491,201 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         for action in &scene.actions {
             match action.action_type {
                 SceneActionType::Dialogue => dialogue_actions += 1,
-                SceneActionType::Package => package_actions += 1,
+                SceneActionType::Package => {
+                    package_actions += 1;
+                    *package_action_stacks
+                        .entry(action.packages.len())
+                        .or_default() += 1;
+                    if scene
+                        .phases
+                        .get(action.end_phase as usize)
+                        .is_some_and(|phase| !phase.completion_conditions.is_empty())
+                    {
+                        package_actions_with_phase_completion_conditions += 1;
+                    }
+                    for package_form_id in &action.packages {
+                        if let Some(package) = index.packages.get(package_form_id) {
+                            *package_procedures
+                                .entry(package.procedure_type)
+                                .or_default() += 1;
+                            let samples = package_procedure_samples
+                                .entry(package.procedure_type)
+                                .or_default();
+                            if samples.len() < 5 {
+                                samples.push(format!(
+                                    "{}:{} {}",
+                                    scene.editor_id, action.index, package.editor_id
+                                ));
+                            }
+                            let procedure_tree = match package.package_template_form_id {
+                                Some(template_form_id) => {
+                                    match index.packages.get(&template_form_id) {
+                                        Some(template) => {
+                                            *package_templates
+                                                .entry(format!(
+                                                    "{:08X} {}",
+                                                    template.form_id, template.editor_id
+                                                ))
+                                                .or_default() += 1;
+                                            Some(template)
+                                        }
+                                        None => {
+                                            unresolved_package_templates.push(format!(
+                                                "{}:{} {} -> {template_form_id:08X}",
+                                                scene.editor_id, action.index, package.editor_id
+                                            ));
+                                            None
+                                        }
+                                    }
+                                }
+                                None if !package.procedures.is_empty() => Some(package),
+                                None => {
+                                    unresolved_package_templates.push(format!(
+                                        "{}:{} {} has no template/tree",
+                                        scene.editor_id, action.index, package.editor_id
+                                    ));
+                                    None
+                                }
+                            };
+                            if let Some(tree) = procedure_tree {
+                                for procedure in &tree.procedures {
+                                    *package_tree_procedures
+                                        .entry(procedure.procedure_type.clone())
+                                        .or_default() += 1;
+                                    let samples = package_tree_procedure_samples
+                                        .entry(procedure.procedure_type.clone())
+                                        .or_default();
+                                    if samples.len() < 5 {
+                                        samples.push(format!(
+                                            "{}:{} {} via {}{}",
+                                            scene.editor_id,
+                                            action.index,
+                                            package.editor_id,
+                                            tree.editor_id,
+                                            if procedure.success_completes_package() {
+                                                " [completes]"
+                                            } else {
+                                                ""
+                                            }
+                                        ));
+                                    }
+                                }
+                                if let Some(procedure) = tree
+                                    .procedures
+                                    .iter()
+                                    .find(|procedure| procedure.success_completes_package())
+                                    .or_else(|| tree.procedures.first())
+                                {
+                                    let kind = match procedure.procedure_type.as_str() {
+                                        "Travel" | "Patrol" | "Escort" | "FollowTo" => {
+                                            let target = procedure
+                                                .data_input_indexes
+                                                .iter()
+                                                .filter_map(|index| {
+                                                    package
+                                                        .data_inputs
+                                                        .iter()
+                                                        .find(|input| input.index == *index)
+                                                })
+                                                .find_map(|input| match input.value {
+                                                    byroredux_plugin::esm::records::PackDataValue::Location(location) => match location.target {
+                                                        byroredux_plugin::esm::records::PackLocationTarget::NearReference(form_id) => Some(form_id),
+                                                        _ => None,
+                                                    },
+                                                    byroredux_plugin::esm::records::PackDataValue::Target(target) => match target.target {
+                                                        byroredux_plugin::esm::records::PackDataTargetKind::SpecificReference(form_id)
+                                                        | byroredux_plugin::esm::records::PackDataTargetKind::LinkedReference(form_id) => Some(form_id),
+                                                        _ => None,
+                                                    },
+                                                    _ => None,
+                                                });
+                                            if let Some(target) = target {
+                                                if target == 0x14 {
+                                                    "move-dynamic"
+                                                } else {
+                                                    let resolved =
+                                                        index.cells.cells.values().any(|cell| {
+                                                            cell.references.iter().any(|placed| {
+                                                                placed.form_id == target
+                                                            })
+                                                        }) || index
+                                                            .cells
+                                                            .exterior_cells
+                                                            .values()
+                                                            .any(|grids| {
+                                                                grids.values().any(|cell| {
+                                                                    cell.references.iter().any(
+                                                                        |placed| {
+                                                                            placed.form_id == target
+                                                                        },
+                                                                    )
+                                                                })
+                                                            })
+                                                            || index
+                                                                .cells
+                                                                .worldspace_persistent_cells
+                                                                .values()
+                                                                .any(|cell| {
+                                                                    cell.references.iter().any(
+                                                                        |placed| {
+                                                                            placed.form_id == target
+                                                                        },
+                                                                    )
+                                                                });
+                                                    if resolved {
+                                                        "move-to"
+                                                    } else {
+                                                        unresolved_movement_targets.push(format!(
+                                                            "{}:{} {} {} -> {target:08X}",
+                                                            scene.editor_id,
+                                                            action.index,
+                                                            package.editor_id,
+                                                            procedure.procedure_type,
+                                                        ));
+                                                        "await-target"
+                                                    }
+                                                }
+                                            } else {
+                                                let dynamic = procedure
+                                                    .data_input_indexes
+                                                    .iter()
+                                                    .filter_map(|index| {
+                                                        package.data_inputs.iter().find(|input| input.index == *index)
+                                                    })
+                                                    .any(|input| match input.value {
+                                                        byroredux_plugin::esm::records::PackDataValue::Location(location) => matches!(location.location_type, 2 | 3 | 8 | 9),
+                                                        byroredux_plugin::esm::records::PackDataValue::Target(target) => matches!(
+                                                            target.target,
+                                                            byroredux_plugin::esm::records::PackDataTargetKind::ReferenceAlias(_)
+                                                                | byroredux_plugin::esm::records::PackDataTargetKind::SelfTarget
+                                                        ),
+                                                        _ => false,
+                                                    });
+                                                if dynamic {
+                                                    "move-dynamic"
+                                                } else {
+                                                    unresolved_movement_targets.push(format!(
+                                                        "{}:{} {} {} has no resolvable target input",
+                                                        scene.editor_id,
+                                                        action.index,
+                                                        package.editor_id,
+                                                        procedure.procedure_type,
+                                                    ));
+                                                    "await-target"
+                                                }
+                                            }
+                                        }
+                                        "Acquire" | "Activate" | "Shout" | "Sit"
+                                        | "UseIdleMarker" | "UseWeapon" => "interaction",
+                                        _ => "await-external",
+                                    };
+                                    *package_execution_kinds.entry(kind.to_owned()).or_default() +=
+                                        1;
+                                }
+                            }
+                        }
+                    }
+                }
                 SceneActionType::Timer => timer_actions += 1,
                 SceneActionType::Unknown(raw) => {
                     unknown_actions
@@ -606,12 +852,21 @@ fn run() -> Result<Checks, Box<dyn Error>> {
     );
     checks.record(
         "scene record linkage",
-        unresolved_topics.is_empty() && unresolved_packages.is_empty(),
-        if unresolved_topics.is_empty() && unresolved_packages.is_empty() {
-            "all action DIAL and PACK FormIDs resolve".to_owned()
+        unresolved_topics.is_empty()
+            && unresolved_packages.is_empty()
+            && unresolved_package_templates.is_empty(),
+        if unresolved_topics.is_empty()
+            && unresolved_packages.is_empty()
+            && unresolved_package_templates.is_empty()
+        {
+            format!(
+                "all action DIAL/PACK FormIDs and {} custom package trees resolve",
+                package_templates.len()
+            )
         } else {
             let mut failures = unresolved_topics;
             failures.extend(unresolved_packages);
+            failures.extend(unresolved_package_templates);
             format!("{} unresolved: {}", failures.len(), preview(&failures, 8))
         },
     );
@@ -861,6 +1116,30 @@ fn run() -> Result<Checks, Box<dyn Error>> {
     println!("MQ101 scene records:    {}", mq101_scenes.len());
     println!("scene phases:           {total_scene_phases}");
     println!("scene actions:          {total_scene_actions}");
+    println!(
+        "package action stacks:  {:?} ({} end on phases with completion CTDAs)",
+        package_action_stacks, package_actions_with_phase_completion_conditions
+    );
+    println!("package procedures:     {package_procedures:?}");
+    for (procedure, samples) in &package_procedure_samples {
+        println!("  {procedure}: {}", samples.join(", "));
+    }
+    println!("package templates:      {} unique", package_templates.len());
+    for (template, count) in &package_templates {
+        println!("  {template}: {count}");
+    }
+    println!("procedure-tree leaves:  {package_tree_procedures:?}");
+    for (procedure, samples) in &package_tree_procedure_samples {
+        println!("  {procedure}: {}", samples.join(", "));
+    }
+    println!("package execution plan: {package_execution_kinds:?}");
+    if !unresolved_movement_targets.is_empty() {
+        println!(
+            "movement targets awaiting richer resolution: {}: {}",
+            unresolved_movement_targets.len(),
+            preview(&unresolved_movement_targets, 12)
+        );
+    }
     println!("scene event bindings:   {total_scene_fragments}");
     println!(
         "scene CTDAs:             {} across {} functions ({quest_alias_conditions} RunOn::QuestAlias)",

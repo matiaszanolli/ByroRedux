@@ -8,7 +8,7 @@
 //! caller.
 
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::{CellRoot, World};
+use byroredux_core::ecs::{CellFormId, CellRoot, World};
 use byroredux_core::math::Vec3;
 use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
@@ -484,6 +484,7 @@ pub fn load_cell_with_masters(
     let last_entity = world.next_entity_id();
     let cell_root = world.spawn();
     stamp_cell_root(world, cell_root, first_entity, last_entity);
+    world.insert(cell_root, CellFormId(cell.form_id));
 
     // SCEN players are global quest runtime entities, not cell-owned content.
     // Install them only after capturing/stamping the cell entity range so an

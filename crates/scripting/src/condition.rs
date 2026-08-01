@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **16 functions** at their canonical CTDA
+//! lineage. This catalog ships **18 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -31,8 +31,10 @@
 //! |-------|------------------------|-----------------------------|
 //! | 1     | GetDistance            | `GlobalTransform`           |
 //! | 14    | GetActorValue          | `ActorValues[param_1]`      |
+//! | 46    | GetDead                | `Dead` marker               |
 //! | 58    | GetStage               | `QuestStageState[param_1]`  |
 //! | 59    | GetStageDone           | `QuestStageState[param_1]`  |
+//! | 67    | GetInCell              | `CellRoot` + `CellFormId`   |
 //! | 68    | GetIsClass             | `Background.class_form_id`  |
 //! | 69    | GetIsRace              | `Background.race_form_id`   |
 //! | 72    | GetIsID                | `FormIdComponent`           |
@@ -75,6 +77,10 @@ pub enum ConditionFunction {
     /// `GetDistance(target_form_id) → f32`. Squared-distance reduces
     /// to a single sqrt at evaluation time. FO3 / FNV / Skyrim index **1**.
     GetDistance,
+    /// `GetDead → f32`. Returns 1.0 while the Run-On actor carries the
+    /// sparse `Dead` lifecycle marker, otherwise 0.0. FO3 / FNV / Skyrim
+    /// function index **46**.
+    GetDead,
     /// `GetStage(quest_form_id) → f32`. Looks up the current stage
     /// for `param_1` quest in the `QuestStageState` resource.
     /// FO3 / FNV / Skyrim index 58.
@@ -85,6 +91,10 @@ pub enum ConditionFunction {
     /// idempotency primitive for "this quest milestone has fired
     /// before." FO3 / FNV / Skyrim index 59.
     GetStageDone,
+    /// `GetInCell(cell_form_id) → f32`. Follows the Run-On entity's
+    /// `CellRoot` to the root's global-space `CellFormId` and returns 1.0 on
+    /// an exact match. FO3 / FNV / Skyrim function index **67**.
+    GetInCell,
     /// `GetFactionRank(faction_form_id) → f32`. Reads the Run-On actor's
     /// `FactionRanks` component: the integer rank when the actor is in
     /// the faction, else -1 (Bethesda's "not in faction" sentinel — also
@@ -161,8 +171,10 @@ impl ConditionFunction {
         match index {
             1 => Self::GetDistance,
             14 => Self::GetActorValue,
+            46 => Self::GetDead,
             58 => Self::GetStage,
             59 => Self::GetStageDone,
+            67 => Self::GetInCell,
             68 => Self::GetIsClass,
             69 => Self::GetIsRace,
             72 => Self::GetIsID,
@@ -181,11 +193,13 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 16] = [
+    pub const CATALOG: [ConditionFunction; 18] = [
         Self::GetDistance,
         Self::GetActorValue,
+        Self::GetDead,
         Self::GetStage,
         Self::GetStageDone,
+        Self::GetInCell,
         Self::GetIsClass,
         Self::GetIsRace,
         Self::GetIsID,
@@ -205,8 +219,10 @@ impl ConditionFunction {
         match self {
             Self::GetDistance => "GetDistance",
             Self::GetActorValue => "GetActorValue",
+            Self::GetDead => "GetDead",
             Self::GetStage => "GetStage",
             Self::GetStageDone => "GetStageDone",
+            Self::GetInCell => "GetInCell",
             Self::GetIsClass => "GetIsClass",
             Self::GetIsRace => "GetIsRace",
             Self::GetIsID => "GetIsID",
@@ -452,6 +468,17 @@ pub fn evaluate_function(
             };
             (subject_pos - target_pos).length()
         }
+        ConditionFunction::GetDead => {
+            // Death is a sparse lifecycle marker: absence is the overwhelmingly
+            // common alive state, while combat/scripts/resurrection can share
+            // one explicit component with authored CTDA checks.
+            use byroredux_core::ecs::components::Dead;
+            if world.has::<Dead>(entity) {
+                1.0
+            } else {
+                0.0
+            }
+        }
         ConditionFunction::GetStage => {
             // GetStage(quest_form_id). The current quest stage lives
             // in the [`crate::quest_stages::QuestStageState`] resource.
@@ -478,6 +505,20 @@ pub fn evaluate_function(
             } else {
                 0.0
             }
+        }
+        ConditionFunction::GetInCell => {
+            // Cell ownership is stamped on every loaded entity. The global
+            // authored CELL FormID lives once on its root, avoiding duplicate
+            // identity data across every mesh, actor, and child entity.
+            use byroredux_core::ecs::components::{CellFormId, CellRoot};
+            let cell_root = world.get::<CellRoot>(entity).map_or(entity, |root| root.0);
+            world.get::<CellFormId>(cell_root).map_or(0.0, |cell| {
+                if cell.0 == condition.param_1 {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
         }
         ConditionFunction::GetFactionRank => {
             // GetFactionRank(faction_form_id) → the Run-On actor's rank in
@@ -975,6 +1016,44 @@ mod tests {
         let actor: EntityId = 7;
         let list = vec![cond(72, ComparisonOp::Eq, 0.0, false).with_param_1(0x0001_4D8A)];
         assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    // ── GetDead / GetInCell (MQ101 scene gates) ─────────────────────────
+
+    #[test]
+    fn get_dead_tracks_sparse_actor_lifecycle_marker() {
+        use byroredux_core::ecs::components::Dead;
+
+        let mut world = World::new();
+        let alive = world.spawn();
+        let dead = world.spawn();
+        world.insert(dead, Dead);
+
+        let condition = vec![cond(46, ComparisonOp::Eq, 1.0, false)];
+        assert!(!evaluate(&condition, &world, &ctx(alive)));
+        assert!(evaluate(&condition, &world, &ctx(dead)));
+    }
+
+    #[test]
+    fn get_in_cell_resolves_authored_identity_through_cell_root() {
+        use byroredux_core::ecs::components::{CellFormId, CellRoot};
+
+        const HELGEN_KEEP: u32 = 0x000A_6A7D;
+        let mut world = World::new();
+        let root = world.spawn();
+        let actor = world.spawn();
+        let unowned = world.spawn();
+        world.insert(root, CellRoot(root));
+        world.insert(root, CellFormId(HELGEN_KEEP));
+        world.insert(actor, CellRoot(root));
+
+        let in_helgen = vec![cond(67, ComparisonOp::Eq, 1.0, false).with_param_1(HELGEN_KEEP)];
+        assert!(evaluate(&in_helgen, &world, &ctx(actor)));
+        assert!(evaluate(&in_helgen, &world, &ctx(root)));
+        assert!(!evaluate(&in_helgen, &world, &ctx(unowned)));
+
+        let in_other_cell = vec![cond(67, ComparisonOp::Eq, 1.0, false).with_param_1(0x0000_1234)];
+        assert!(!evaluate(&in_other_cell, &world, &ctx(actor)));
     }
 
     // ── HasPerk (#1667) ─────────────────────────────────────────────────

@@ -46,6 +46,27 @@ pub struct PackRecord {
     /// like Escort-someone-to-someone) is not decoded — no implemented
     /// procedure needs it yet.
     pub target: Option<PackTarget>,
+    /// Skyrim+ `PKCU` package-template reference. Concrete type-18
+    /// packages normally inherit their procedure tree from a type-19 PACK;
+    /// templates themselves carry a null reference.
+    pub package_template_form_id: Option<u32>,
+    /// Number of authored package-data inputs declared by `PKCU`.
+    pub data_input_count: u32,
+    /// CK-maintained package-data schema version from `PKCU`.
+    pub package_template_version: u32,
+    /// Skyrim+ owning quest from the header QNAM. Package-data alias targets
+    /// are interpreted in this quest's alias namespace.
+    pub owner_quest_form_id: Option<u32>,
+    /// Skyrim+ typed package-data values (`ANAM` + CNAM/PLDT/PTDA/…).
+    /// `index` is the sparse template slot carried by the pre-`XNAM` UNAM
+    /// list, so procedure `PKC2` references can resolve without assuming
+    /// dense or positional numbering.
+    pub data_inputs: Vec<PackDataInput>,
+    /// Leaf procedures decoded from a Skyrim+ type-19 procedure tree.
+    /// Structural Sequence/Simultaneous/Stacked branches remain implicit;
+    /// the ordered leaves are sufficient for procedure capability surveys
+    /// and the first scene-package executor.
+    pub procedures: Vec<PackProcedure>,
     /// `CTDA` conditions gating whether this package is eligible at all
     /// (M42.2). Empty = unconditionally eligible (Bethesda's "no
     /// conditions = always fires"). The plugin crate only *carries* these
@@ -114,6 +135,71 @@ pub struct PackTarget {
     /// per the source spec (undocumented generically); Follow interprets
     /// it as a stand-off distance.
     pub count_or_distance: i32,
+}
+
+/// One sparse Skyrim+ package-template input and its concrete value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackDataInput {
+    pub index: u8,
+    pub value_type: String,
+    pub value: PackDataValue,
+}
+
+/// Typed value carried by a Skyrim+ package data input.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PackDataValue {
+    Bool(bool),
+    Integer(u32),
+    Float(f32),
+    Location(PackLocation),
+    Target(PackDataTarget),
+    Topics(Vec<PackTopicData>),
+    /// Preserves currently-unknown CK input types losslessly.
+    Raw {
+        sub_type: [u8; 4],
+        data: Vec<u8>,
+    },
+}
+
+/// Skyrim+ 12-byte PTDA target selector used by package data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackDataTarget {
+    pub target_type: i32,
+    pub target: PackDataTargetKind,
+    pub count_or_distance: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackDataTargetKind {
+    SpecificReference(u32),
+    ObjectId(u32),
+    ObjectType(u32),
+    LinkedReference(u32),
+    ReferenceAlias(i32),
+    SelfTarget,
+    Other(u32),
+}
+
+/// One PDTO topic value used by package procedures such as Say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackTopicData {
+    pub topic_type: u32,
+    pub value: u32,
+}
+
+/// One leaf in a Skyrim+ custom package procedure tree.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PackProcedure {
+    pub procedure_type: String,
+    pub flags: u32,
+    pub data_input_indexes: Vec<u8>,
+    pub conditions: ConditionList,
+}
+
+impl PackProcedure {
+    pub fn success_completes_package(&self) -> bool {
+        self.flags & 1 != 0
+    }
 }
 
 /// The `union` half of PTDT. Only types 0/1 carry a resolvable FormID,
@@ -520,6 +606,229 @@ fn remap_fid(raw: u32, remap: &Option<crate::esm::reader::FormIdRemap>) -> u32 {
     remap.as_ref().map_or(raw, |r| r.remap(raw))
 }
 
+fn parse_location(
+    data: &[u8],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> Option<PackLocation> {
+    if data.len() < 12 {
+        return None;
+    }
+    let mut r = SubReader::new(data);
+    let location_type = r.u32_or_default();
+    let raw = r.u32_or_default();
+    let radius = r.i32_or_default();
+    let target = match location_type {
+        0 => PackLocationTarget::NearReference(remap_fid(raw, remap)),
+        1 => PackLocationTarget::InCell(remap_fid(raw, remap)),
+        4 => PackLocationTarget::ObjectId(remap_fid(raw, remap)),
+        // Skyrim type 6 is a KYWD FormID, but the legacy public enum does
+        // not expose a keyword variant. Keep it raw here; typed scene
+        // package execution currently resolves specific references only.
+        _ => PackLocationTarget::Other(raw),
+    };
+    Some(PackLocation {
+        location_type,
+        target,
+        radius,
+    })
+}
+
+fn parse_data_target(
+    data: &[u8],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> Option<PackDataTarget> {
+    if data.len() < 12 {
+        return None;
+    }
+    let mut r = SubReader::new(data);
+    let target_type = r.i32_or_default();
+    let raw = r.u32_or_default();
+    let count_or_distance = r.i32_or_default();
+    let target = match target_type {
+        0 => PackDataTargetKind::SpecificReference(remap_fid(raw, remap)),
+        1 => PackDataTargetKind::ObjectId(remap_fid(raw, remap)),
+        2 => PackDataTargetKind::ObjectType(raw),
+        3 => PackDataTargetKind::LinkedReference(remap_fid(raw, remap)),
+        4 => PackDataTargetKind::ReferenceAlias(raw as i32),
+        6 => PackDataTargetKind::SelfTarget,
+        _ => PackDataTargetKind::Other(raw),
+    };
+    Some(PackDataTarget {
+        target_type,
+        target,
+        count_or_distance,
+    })
+}
+
+fn parse_data_value(
+    value_type: &str,
+    subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> PackDataValue {
+    if value_type == "Topic" {
+        let topics = subs
+            .iter()
+            .filter(|sub| sub.sub_type == *b"PDTO" && sub.data.len() >= 8)
+            .map(|sub| {
+                let mut r = SubReader::new(&sub.data);
+                let topic_type = r.u32_or_default();
+                let raw = r.u32_or_default();
+                PackTopicData {
+                    topic_type,
+                    value: if topic_type == 0 {
+                        remap_fid(raw, remap)
+                    } else {
+                        raw
+                    },
+                }
+            })
+            .collect();
+        return PackDataValue::Topics(topics);
+    }
+
+    let Some(value) = subs.first() else {
+        return PackDataValue::Raw {
+            sub_type: *b"NONE",
+            data: Vec::new(),
+        };
+    };
+    match (&value.sub_type, value_type) {
+        (b"CNAM", "Bool") => PackDataValue::Bool(value.data.first().copied().unwrap_or(0) != 0),
+        (b"CNAM", "Integer") if value.data.len() >= 4 => PackDataValue::Integer(
+            u32::from_le_bytes(value.data[..4].try_into().expect("four-byte slice")),
+        ),
+        (b"CNAM", "Float") if value.data.len() >= 4 => PackDataValue::Float(f32::from_bits(
+            u32::from_le_bytes(value.data[..4].try_into().expect("four-byte slice")),
+        )),
+        (b"PLDT", _) => parse_location(&value.data, remap)
+            .map(PackDataValue::Location)
+            .unwrap_or_else(|| PackDataValue::Raw {
+                sub_type: value.sub_type,
+                data: value.data.clone(),
+            }),
+        (b"PTDA", _) => parse_data_target(&value.data, remap)
+            .map(PackDataValue::Target)
+            .unwrap_or_else(|| PackDataValue::Raw {
+                sub_type: value.sub_type,
+                data: value.data.clone(),
+            }),
+        _ => PackDataValue::Raw {
+            sub_type: value.sub_type,
+            data: value.data.clone(),
+        },
+    }
+}
+
+fn parse_skyrim_package_data(
+    subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> Vec<PackDataInput> {
+    let Some(pkcu) = subs.iter().position(|sub| sub.sub_type == *b"PKCU") else {
+        return Vec::new();
+    };
+    let Some(xnam) = subs
+        .iter()
+        .enumerate()
+        .skip(pkcu + 1)
+        .find_map(|(index, sub)| (sub.sub_type == *b"XNAM").then_some(index))
+    else {
+        return Vec::new();
+    };
+    let metadata_start = subs[pkcu + 1..xnam]
+        .iter()
+        .position(|sub| sub.sub_type == *b"UNAM")
+        .map_or(xnam, |offset| pkcu + 1 + offset);
+    let indexes: Vec<u8> = subs[metadata_start..xnam]
+        .iter()
+        .filter(|sub| sub.sub_type == *b"UNAM")
+        .filter_map(|sub| sub.data.first().copied())
+        .collect();
+
+    let mut inputs = Vec::new();
+    let mut cursor = pkcu + 1;
+    while cursor < metadata_start {
+        if subs[cursor].sub_type != *b"ANAM" {
+            cursor += 1;
+            continue;
+        }
+        let value_type = read_zstring(&subs[cursor].data);
+        let value_start = cursor + 1;
+        let mut value_end = value_start;
+        while value_end < metadata_start && subs[value_end].sub_type != *b"ANAM" {
+            value_end += 1;
+        }
+        let ordinal = inputs.len();
+        inputs.push(PackDataInput {
+            index: indexes
+                .get(ordinal)
+                .copied()
+                .unwrap_or_else(|| ordinal.min(u8::MAX as usize) as u8),
+            value: parse_data_value(&value_type, &subs[value_start..value_end], remap),
+            value_type,
+        });
+        cursor = value_end;
+    }
+    inputs
+}
+
+fn parse_skyrim_procedures(
+    subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> Vec<PackProcedure> {
+    let Some(xnam) = subs.iter().position(|sub| sub.sub_type == *b"XNAM") else {
+        return Vec::new();
+    };
+    let mut procedures = Vec::new();
+    let mut current: Option<PackProcedure> = None;
+    for sub in &subs[xnam + 1..] {
+        match &sub.sub_type {
+            b"ANAM" => {
+                if let Some(procedure) = current.take() {
+                    if !procedure.procedure_type.is_empty() {
+                        procedures.push(procedure);
+                    }
+                }
+                if read_zstring(&sub.data) == "Procedure" {
+                    current = Some(PackProcedure::default());
+                }
+            }
+            b"CTDA" => {
+                if let Some(procedure) = current.as_mut() {
+                    push_ctda(sub, remap, &mut procedure.conditions);
+                }
+            }
+            b"PNAM" => {
+                if let Some(procedure) = current.as_mut() {
+                    procedure.procedure_type = read_zstring(&sub.data);
+                }
+            }
+            b"FNAM" if sub.data.len() >= 4 => {
+                if let Some(procedure) = current.as_mut() {
+                    procedure.flags =
+                        u32::from_le_bytes(sub.data[..4].try_into().expect("four-byte slice"));
+                }
+            }
+            b"PKC2" => {
+                if let (Some(procedure), Some(index)) =
+                    (current.as_mut(), sub.data.first().copied())
+                {
+                    procedure.data_input_indexes.push(index);
+                }
+            }
+            // A post-tree UNAM begins the public-input metadata array. POBA
+            // begins the package-fragment trailer. Neither belongs to a leaf.
+            b"UNAM" | b"POBA" => break,
+            _ => {}
+        }
+    }
+    if let Some(procedure) = current {
+        if !procedure.procedure_type.is_empty() {
+            procedures.push(procedure);
+        }
+    }
+    procedures
+}
+
 pub fn parse_pack(
     form_id: u32,
     subs: &[SubRecord],
@@ -530,7 +839,8 @@ pub fn parse_pack(
         form_id,
         ..Default::default()
     };
-    for sub in subs {
+    let pkcu_index = subs.iter().position(|sub| sub.sub_type == *b"PKCU");
+    for (sub_index, sub) in subs.iter().enumerate() {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"PKDT" if sub.data.len() >= 8 => {
@@ -544,6 +854,13 @@ pub fn parse_pack(
                 // the byte restores the clean 0..=16 enum (verified
                 // against a full FalloutNV.esm sweep).
                 out.procedure_type = r.u8_or_default() as u32;
+            }
+            b"PKCU" if sub.data.len() >= 12 => {
+                let mut r = SubReader::new(&sub.data);
+                out.data_input_count = r.u32_or_default();
+                let template = remap_fid(r.u32_or_default(), remap);
+                out.package_template_form_id = (template != 0).then_some(template);
+                out.package_template_version = r.u32_or_default();
             }
             b"PSDT" if sub.data.len() >= 8 => {
                 // FO3/FNV PSDT (8 bytes): month i8, dayOfWeek i8, date u8,
@@ -587,21 +904,7 @@ pub fn parse_pack(
             // carry a FormID that needs remapping to global space; the
             // others are self-referential and pass through raw.
             b"PLDT" if sub.data.len() >= 12 => {
-                let mut r = SubReader::new(&sub.data);
-                let location_type = r.u32_or_default();
-                let raw = r.u32_or_default();
-                let radius = r.i32_or_default();
-                let target = match location_type {
-                    0 => PackLocationTarget::NearReference(remap_fid(raw, remap)),
-                    1 => PackLocationTarget::InCell(remap_fid(raw, remap)),
-                    4 => PackLocationTarget::ObjectId(remap_fid(raw, remap)),
-                    _ => PackLocationTarget::Other(raw),
-                };
-                out.location = Some(PackLocation {
-                    location_type,
-                    target,
-                    radius,
-                });
+                out.location = parse_location(&sub.data, remap);
             }
             // FO3/FNV PTDT (M42.5): Target Type u32, Target union u32
             // (FormID or raw value depending on type), Count/Distance i32.
@@ -632,9 +935,26 @@ pub fn parse_pack(
             // CTDA list (no per-block nesting like QUST stages), combined
             // with the standard OR-precedence rule. FormID params are
             // remapped to global load-order space here, same as PLDT above.
-            b"CTDA" => push_ctda(sub, remap, &mut out.conditions),
+            b"CTDA" if pkcu_index.is_none_or(|pkcu| sub_index < pkcu) => {
+                push_ctda(sub, remap, &mut out.conditions)
+            }
             _ => {}
         }
+    }
+    out.data_inputs = parse_skyrim_package_data(subs, remap);
+    out.procedures = parse_skyrim_procedures(subs, remap);
+    if let Some(pkcu) = subs.iter().position(|sub| sub.sub_type == *b"PKCU") {
+        out.owner_quest_form_id = subs[..pkcu]
+            .iter()
+            .rev()
+            .find(|sub| sub.sub_type == *b"QNAM" && sub.data.len() >= 4)
+            .map(|sub| {
+                remap_fid(
+                    u32::from_le_bytes(sub.data[..4].try_into().expect("four-byte slice")),
+                    remap,
+                )
+            })
+            .filter(|form_id| *form_id != 0);
     }
     out
 }
@@ -682,6 +1002,126 @@ mod tests {
             "procedure must be the byte value, not the polluted u32"
         );
         assert!(p.is_sandbox());
+    }
+
+    #[test]
+    fn parse_pack_reads_skyrim_template_and_sparse_data_inputs() {
+        let mut pkcu = Vec::new();
+        pkcu.extend_from_slice(&3u32.to_le_bytes());
+        pkcu.extend_from_slice(&0x0001_6FAAu32.to_le_bytes());
+        pkcu.extend_from_slice(&3u32.to_le_bytes());
+        let location = pldt(0, 0x000B_62F9, 128);
+        let float = 2048.0f32.to_le_bytes();
+        let subs = vec![
+            sub(b"QNAM", &0x0003_372Bu32.to_le_bytes()),
+            sub(b"PKCU", &pkcu),
+            sub(b"ANAM", b"Location\0"),
+            sub(b"PLDT", &location),
+            sub(b"ANAM", b"Bool\0"),
+            sub(b"CNAM", &[1]),
+            sub(b"ANAM", b"Float\0"),
+            sub(b"CNAM", &float),
+            sub(b"UNAM", &[0]),
+            sub(b"UNAM", &[2]),
+            sub(b"UNAM", &[4]),
+            sub(b"XNAM", &[5]),
+        ];
+        let p = parse_pack(0xA1, &subs, &None, GameKind::Skyrim);
+        assert_eq!(p.package_template_form_id, Some(0x0001_6FAA));
+        assert_eq!(p.owner_quest_form_id, Some(0x0003_372B));
+        assert_eq!(p.data_input_count, 3);
+        assert_eq!(p.package_template_version, 3);
+        assert_eq!(p.data_inputs.len(), 3);
+        assert_eq!(p.data_inputs[0].index, 0);
+        assert_eq!(
+            p.data_inputs[0].value,
+            PackDataValue::Location(PackLocation {
+                location_type: 0,
+                target: PackLocationTarget::NearReference(0x000B_62F9),
+                radius: 128,
+            })
+        );
+        assert_eq!(p.data_inputs[1].index, 2);
+        assert_eq!(p.data_inputs[1].value, PackDataValue::Bool(true));
+        assert_eq!(p.data_inputs[2].index, 4);
+        assert_eq!(p.data_inputs[2].value, PackDataValue::Float(2048.0));
+    }
+
+    #[test]
+    fn parse_pack_reads_skyrim_procedure_leaves_and_completion_flag() {
+        let subs = vec![
+            sub(b"XNAM", &[5]),
+            sub(b"ANAM", b"Sequence\0"),
+            sub(b"CITC", &0u32.to_le_bytes()),
+            sub(b"PRCB", &[1, 0, 0, 0, 0, 0, 0, 0]),
+            sub(b"ANAM", b"Procedure\0"),
+            sub(b"CITC", &0u32.to_le_bytes()),
+            sub(b"PNAM", b"Travel\0"),
+            sub(b"FNAM", &1u32.to_le_bytes()),
+            sub(b"PKC2", &[0]),
+            sub(b"PKC2", &[2]),
+            sub(b"PKC2", &[4]),
+            sub(b"UNAM", &[0]),
+            sub(b"BNAM", b"Place to Travel\0"),
+        ];
+        let p = parse_pack(0xA1, &subs, &None, GameKind::Skyrim);
+        assert_eq!(p.procedures.len(), 1);
+        assert_eq!(p.procedures[0].procedure_type, "Travel");
+        assert!(p.procedures[0].success_completes_package());
+        assert_eq!(p.procedures[0].data_input_indexes, vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn parse_pack_keeps_package_and_procedure_conditions_separate() {
+        let mut package_condition = vec![0u8; 32];
+        package_condition[8..12].copy_from_slice(&72u32.to_le_bytes());
+        let mut procedure_condition = vec![0u8; 32];
+        procedure_condition[8..12].copy_from_slice(&58u32.to_le_bytes());
+        let mut pkcu = Vec::new();
+        pkcu.extend_from_slice(&0u32.to_le_bytes());
+        pkcu.extend_from_slice(&0x0001_6FAAu32.to_le_bytes());
+        pkcu.extend_from_slice(&1u32.to_le_bytes());
+        let subs = vec![
+            sub(b"CTDA", &package_condition),
+            sub(b"PKCU", &pkcu),
+            sub(b"XNAM", &[1]),
+            sub(b"ANAM", b"Procedure\0"),
+            sub(b"CTDA", &procedure_condition),
+            sub(b"PNAM", b"Travel\0"),
+            sub(b"FNAM", &1u32.to_le_bytes()),
+        ];
+
+        let p = parse_pack(0xA1, &subs, &None, GameKind::Skyrim);
+
+        assert_eq!(p.conditions.len(), 1);
+        assert_eq!(p.conditions[0].function_index, 72);
+        assert_eq!(p.procedures.len(), 1);
+        assert_eq!(p.procedures[0].conditions.len(), 1);
+        assert_eq!(p.procedures[0].conditions[0].function_index, 58);
+    }
+
+    #[test]
+    fn parse_pack_reads_skyrim_ptda_target_variants() {
+        let mut target = Vec::new();
+        target.extend_from_slice(&4i32.to_le_bytes());
+        target.extend_from_slice(&7u32.to_le_bytes());
+        target.extend_from_slice(&256i32.to_le_bytes());
+        let subs = vec![
+            sub(b"PKCU", &12u8.to_le_bytes()),
+            sub(b"ANAM", b"TargetSelector\0"),
+            sub(b"PTDA", &target),
+            sub(b"UNAM", &[9]),
+            sub(b"XNAM", &[1]),
+        ];
+        let p = parse_pack(0xA1, &subs, &None, GameKind::Skyrim);
+        assert_eq!(
+            p.data_inputs[0].value,
+            PackDataValue::Target(PackDataTarget {
+                target_type: 4,
+                target: PackDataTargetKind::ReferenceAlias(7),
+                count_or_distance: 256,
+            })
+        );
     }
 
     fn pack(procedure: u32, schedule: Option<PackSchedule>) -> PackRecord {
