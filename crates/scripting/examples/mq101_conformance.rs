@@ -97,7 +97,14 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::SetPlayerControls { .. } => "SetPlayerControls",
         Effect::SetPlayerAiDriven { .. } => "SetPlayerAiDriven",
         Effect::SetHudCartMode { .. } => "SetHudCartMode",
+        Effect::PlayIdle { .. } => "PlayIdle",
+        Effect::SetVehicle { .. } => "SetVehicle",
+        Effect::SetMotionType { .. } => "SetMotionType",
+        Effect::SetSittingRotation { .. } => "SetSittingRotation",
+        Effect::ExitCart { .. } => "ExitCart",
+        Effect::RegisterPlayerAnimationEvent { .. } => "RegisterPlayerAnimationEvent",
         Effect::EvaluatePackage { .. } => "EvaluatePackage",
+        Effect::Wait { .. } => "Wait",
     }
 }
 

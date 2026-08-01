@@ -49,7 +49,7 @@ use byroredux_papyrus::ast::{Script, ScriptItem, StateItem, Stmt};
 use byroredux_papyrus::span::Spanned;
 
 use crate::translate::compose::{ObjectRef, QuestRef};
-use crate::translate::effects::{lower_fragment, Effect};
+use crate::translate::effects::{lower_fragment, ActorRef, Effect};
 
 /// Lowered quest-stage fragments, keyed by `(quest, stage)`. Populated at
 /// cell load by [`populate_quest_fragments_from_pex`] from the QUST `VMAD`
@@ -101,6 +101,35 @@ impl QuestStageFragments {
 
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+}
+
+/// One suspended latent fragment tail. The VMAD snapshot is retained so a
+/// continuation resolves properties exactly as the original dispatch did,
+/// even if the installed fragment table changes before the wait expires.
+#[derive(Debug, Clone)]
+struct PendingFragmentExecution {
+    context: QuestFormId,
+    vmad: Option<ScriptInstanceData>,
+    effects: Vec<Effect>,
+    remaining_seconds: f32,
+}
+
+/// Runtime queue for `Utility.Wait` continuations.
+#[derive(Debug, Clone, Default)]
+pub struct FragmentExecutionQueue {
+    pending: Vec<PendingFragmentExecution>,
+}
+
+impl Resource for FragmentExecutionQueue {}
+
+impl FragmentExecutionQueue {
+    pub fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
     }
 }
 
@@ -187,6 +216,49 @@ fn resolve_object(
         log::debug!("fragment effect skipped: object ref '{name}' has no live entity");
     }
     entity
+}
+
+fn resolve_actor(
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    context: QuestFormId,
+    via: &ActorRef,
+) -> Option<byroredux_core::ecs::storage::EntityId> {
+    match via {
+        ActorRef::Player => world
+            .try_resource::<crate::papyrus_demo::PlayerEntity>()
+            .map(|player| player.0),
+        ActorRef::Object(via) => resolve_object(vmad, world, context, via),
+    }
+}
+
+fn update_actor_cinematic_state(
+    world: &World,
+    actor: byroredux_core::ecs::storage::EntityId,
+    update: impl FnOnce(&mut crate::ActorCinematicState),
+) -> bool {
+    let Some(mut states) = world.query_mut::<crate::ActorCinematicState>() else {
+        return false;
+    };
+    if states.get_mut(actor).is_none() {
+        states.insert(actor, crate::ActorCinematicState::default());
+    }
+    let Some(state) = states.get_mut(actor) else {
+        return false;
+    };
+    update(state);
+    true
+}
+
+fn exit_cart_idle_property(seat: u8) -> Option<&'static str> {
+    match seat {
+        1 => Some("IdleCartPassengerAExit"),
+        2 => Some("IdleCartPassengerBExit"),
+        3 => Some("IdleCartPassengerDExit"),
+        4 => Some("IdleCartPassengerCExit"),
+        5 => Some("IdleCartDriverExit"),
+        _ => None,
+    }
 }
 
 /// Apply one effect to the canonical stage/objective state (or, for the
@@ -353,6 +425,103 @@ pub fn apply_effect(
             }
             None
         }
+        Effect::PlayIdle { actor, idle } => {
+            let actor = resolve_actor(vmad, world, context, actor)?;
+            let idle_form_id = resolve_property_form_id(vmad, idle.property_name())?;
+            if !update_actor_cinematic_state(world, actor, |state| {
+                state.request_idle(idle_form_id);
+            }) {
+                log::debug!("fragment PlayIdle skipped: cinematic actor storage is unavailable");
+            }
+            None
+        }
+        Effect::SetVehicle { actor, vehicle } => {
+            let actor = resolve_actor(vmad, world, context, actor)?;
+            let vehicle = match vehicle {
+                Some(vehicle) => Some(resolve_object(vmad, world, context, vehicle)?),
+                None => None,
+            };
+            let relative_pose = vehicle.and_then(|vehicle| {
+                let actor_transform = world.get::<Transform>(actor)?;
+                let vehicle_transform = world.get::<Transform>(vehicle)?;
+                if vehicle_transform.scale.abs() <= f32::EPSILON {
+                    return None;
+                }
+                let inverse_rotation = vehicle_transform.rotation.conjugate();
+                Some((
+                    inverse_rotation
+                        * (actor_transform.translation - vehicle_transform.translation)
+                        / vehicle_transform.scale,
+                    inverse_rotation * actor_transform.rotation,
+                ))
+            });
+            if !update_actor_cinematic_state(world, actor, |state| {
+                state.vehicle = vehicle;
+                if vehicle.is_some() {
+                    state.cart_seat = None;
+                }
+                state.vehicle_local_translation = relative_pose.map(|pose| pose.0);
+                state.vehicle_local_rotation = relative_pose.map(|pose| pose.1);
+            }) {
+                log::debug!("fragment SetVehicle skipped: cinematic actor storage is unavailable");
+            }
+            None
+        }
+        Effect::SetMotionType {
+            target,
+            motion_type,
+            allow_activate,
+        } => {
+            let target = resolve_object(vmad, world, context, target)?;
+            if let Some(mut requests) = world.query_mut::<crate::MotionTypeChangeRequest>() {
+                requests.insert(
+                    target,
+                    crate::MotionTypeChangeRequest {
+                        motion_type: *motion_type,
+                        allow_activate: *allow_activate,
+                    },
+                );
+            }
+            None
+        }
+        Effect::SetSittingRotation { degrees } => {
+            if let Some(mut state) = world.try_resource_mut::<crate::CinematicPresentationState>() {
+                state.sitting_rotation_degrees = *degrees;
+            }
+            None
+        }
+        Effect::ExitCart { actor, seat } => {
+            let actor = resolve_object(vmad, world, context, actor)?;
+            let idle_form_id = exit_cart_idle_property(*seat)
+                .and_then(|property| resolve_property_form_id(vmad, property));
+            if !update_actor_cinematic_state(world, actor, |state| {
+                state.vehicle = None;
+                state.vehicle_local_translation = None;
+                state.vehicle_local_rotation = None;
+                state.cart_seat = Some(*seat);
+                state.awaited_event = Some(crate::CinematicAnimationEvent::ExitCartEnd);
+                if let Some(idle_form_id) = idle_form_id {
+                    state.request_idle(idle_form_id);
+                }
+            }) {
+                log::debug!("fragment ExitCart skipped: cinematic actor storage is unavailable");
+            }
+            None
+        }
+        Effect::RegisterPlayerAnimationEvent { event } => {
+            if let Some(mut state) = world.try_resource_mut::<crate::CinematicPresentationState>() {
+                match event {
+                    crate::CinematicAnimationEvent::PlayImod => {
+                        state.player_imod_event_registered = true;
+                    }
+                    crate::CinematicAnimationEvent::IdleFurnitureExit => {
+                        state.player_furniture_exit_event_registered = true;
+                    }
+                    crate::CinematicAnimationEvent::ExitCartEnd => {}
+                }
+            }
+            None
+        }
         Effect::EvaluatePackage { actor } => {
             let actor = resolve_object(vmad, world, context, actor)?;
             if let Some(mut requests) = world.query_mut::<crate::EvaluatePackageRequest>() {
@@ -360,6 +529,7 @@ pub fn apply_effect(
             }
             None
         }
+        Effect::Wait { .. } => None,
         _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives),
     }
 }
@@ -426,7 +596,14 @@ fn apply_quest_scoped_effect(
         | Effect::SetPlayerControls { .. }
         | Effect::SetPlayerAiDriven { .. }
         | Effect::SetHudCartMode { .. }
-        | Effect::EvaluatePackage { .. } => {
+        | Effect::PlayIdle { .. }
+        | Effect::SetVehicle { .. }
+        | Effect::SetMotionType { .. }
+        | Effect::SetSittingRotation { .. }
+        | Effect::ExitCart { .. }
+        | Effect::RegisterPlayerAnimationEvent { .. }
+        | Effect::EvaluatePackage { .. }
+        | Effect::Wait { .. } => {
             unreachable!("object-targeting effects are handled by apply_effect directly")
         }
     }
@@ -442,10 +619,90 @@ pub fn apply_effects(
     stages: &mut QuestStageState,
     objectives: &mut QuestObjectiveState,
 ) -> Vec<QuestStageAdvanced> {
-    effects
-        .iter()
-        .filter_map(|e| apply_effect(e, context, vmad, world, stages, objectives))
-        .collect()
+    let mut advances = Vec::new();
+    for (index, effect) in effects.iter().enumerate() {
+        if let Effect::Wait { seconds } = effect {
+            let tail = &effects[index + 1..];
+            if !tail.is_empty() {
+                if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
+                    queue.pending.push(PendingFragmentExecution {
+                        context,
+                        vmad: vmad.cloned(),
+                        effects: tail.to_vec(),
+                        remaining_seconds: *seconds,
+                    });
+                } else {
+                    log::debug!(
+                        "fragment continuation dropped: FragmentExecutionQueue is unavailable"
+                    );
+                }
+            }
+            break;
+        }
+        if let Some(advance) = apply_effect(effect, context, vmad, world, stages, objectives) {
+            advances.push(advance);
+        }
+    }
+    advances
+}
+
+/// Tick latent fragment continuations and execute every tail whose
+/// `Utility.Wait` has elapsed. A resumed tail can encounter another wait and
+/// requeue itself through [`apply_effects`].
+pub fn fragment_continuation_system(world: &World, dt: f32) {
+    let mut ready = Vec::new();
+    {
+        let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() else {
+            return;
+        };
+        let mut still_pending = Vec::with_capacity(queue.pending.len());
+        for mut pending in std::mem::take(&mut queue.pending) {
+            pending.remaining_seconds -= dt.max(0.0);
+            if pending.remaining_seconds <= 0.0 {
+                ready.push(pending);
+            } else {
+                still_pending.push(pending);
+            }
+        }
+        queue.pending = still_pending;
+    }
+    if ready.is_empty() {
+        return;
+    }
+
+    let mut emitted = Vec::new();
+    for pending in ready {
+        let advances = {
+            let (mut stages, mut objectives) =
+                world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
+            apply_effects(
+                &pending.effects,
+                pending.context,
+                pending.vmad.as_ref(),
+                world,
+                &mut stages,
+                &mut objectives,
+            )
+        };
+        emitted.extend(advances);
+    }
+
+    if emitted.is_empty() {
+        return;
+    }
+    let Some(player_entity) = world
+        .try_resource::<crate::papyrus_demo::PlayerEntity>()
+        .map(|player| player.0)
+    else {
+        return;
+    };
+    if let Some(mut batches) = world.query_mut::<QuestStageAdvancedBatch>() {
+        if let Some(batch) = batches.get_mut(player_entity) {
+            batch.0.extend(emitted);
+        } else {
+            batches.insert(player_entity, QuestStageAdvancedBatch(emitted));
+        }
+    }
 }
 
 /// Maximum stage-fragment cascade depth in one dispatch pass — a fragment
@@ -461,6 +718,7 @@ const MAX_CASCADE: usize = 64;
 /// keeps [`quest_fragment_dispatch_system`] panic-free out of the box.
 pub fn register(world: &mut World) {
     world.insert_resource(QuestStageFragments::default());
+    world.insert_resource(FragmentExecutionQueue::default());
     world.insert_resource(QuestObjectiveState::default());
 }
 
@@ -589,11 +847,11 @@ pub fn populate_quest_fragments_from_script(
 /// [`QuestStageFragments::insert_vmad`]), when one was registered, so
 /// `Self`/owning-quest-targeted effects always apply and a cross-quest
 /// `Property`-targeted effect resolves too, as long as the named property
-/// is an `Object`-typed binding on the quest's own VMAD. `AddItem`/`MoveTo`
-/// are lowered and applied directly against the live ECS world; other
-/// object-targeting effects (`Enable`/`Disable`/…) still decline at the
-/// *lowering* stage — [`lower_fragment`] doesn't emit them yet. The table
-/// is empty (and this a no-op) on loads without `--scripts-bsa` or on
+/// is an `Object`-typed binding on the quest's own VMAD. Object, scene,
+/// player-control, package, and cinematic effects apply directly against the
+/// live ECS world; latent tails are handed to [`FragmentExecutionQueue`].
+/// Unrecognized operations still decline the whole fragment at lowering. The
+/// table is empty (and this a no-op) on loads without `--scripts-bsa` or on
 /// pre-Papyrus games.
 pub fn quest_fragment_dispatch_system(world: &World) {
     // Snapshot compatibility ingress before taking resource locks. The

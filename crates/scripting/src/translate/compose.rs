@@ -105,6 +105,10 @@ pub fn as_num(e: &Expr) -> Option<f32> {
         Expr::FloatLit(f) => Some(*f as f32),
         Expr::BoolLit(b) => Some(if *b { 1.0 } else { 0.0 }),
         Expr::Cast { expr, .. } => as_num(&expr.node),
+        Expr::UnaryOp {
+            op: UnaryOp::Neg,
+            operand,
+        } => as_num(&operand.node).map(|value| -value),
         _ => None,
     }
 }

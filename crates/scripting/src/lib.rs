@@ -9,6 +9,7 @@
 //! The core lifecycle: event marker appears → systems process it →
 //! cleanup removes it at end of frame.
 
+pub mod cinematic;
 pub mod cleanup;
 pub mod condition;
 pub mod dialogue;
@@ -27,6 +28,10 @@ pub mod translate;
 pub mod trigger;
 pub mod vm_state;
 
+pub use cinematic::{
+    ActorCinematicState, CinematicAnimationEvent, CinematicPresentationState,
+    MotionTypeChangeRequest,
+};
 pub use cleanup::event_cleanup_system;
 pub use condition::{
     evaluate as evaluate_condition_list, evaluate_condition, evaluate_function, ConditionContext,
@@ -42,8 +47,8 @@ pub use events::{
     OnEquipEvent, OnTriggerEnterEvent, TimerExpired,
 };
 pub use fragment::{
-    apply_effects, populate_quest_fragments_from_pex, quest_fragment_dispatch_system,
-    QuestStageFragments,
+    apply_effects, fragment_continuation_system, populate_quest_fragments_from_pex,
+    quest_fragment_dispatch_system, FragmentExecutionQueue, QuestStageFragments,
 };
 pub use globals::Globals;
 pub use package::{
@@ -123,6 +128,7 @@ pub fn register(world: &mut World) {
     // Skyrim+ PACK template resolution and scene-owned package execution.
     package::register(world);
     player_control::register(world);
+    cinematic::register(world);
     vm_state::register(world);
     // M47.0 Phase 1 — register the R5 prototype storages so
     // `papyrus_demo` scripts can attach their state components when

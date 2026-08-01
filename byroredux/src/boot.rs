@@ -684,6 +684,19 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // `QuestStageAdvanced` markers, before end-of-frame cleanup drains
     // them (populated live from parsed QUST VMAD fragments, #1739 / `8a70b81a`).
     scheduler.add_exclusive(Stage::Update, quest_fragment_dispatch);
+    // Latent Utility.Wait tails resume after their authored delay. Running
+    // immediately after fresh fragment dispatch lets one timing path serve
+    // both newly-suspended and already-pending continuations.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::fragment_continuation_system,
+    );
+    // Apply Papyrus SetMotionType requests after both immediate and resumed
+    // fragment effects, before the Physics stage consumes body state.
+    scheduler.add_exclusive(Stage::Update, crate::systems::scripted_motion_type_system);
+    // SetVehicle actors inherit the cart's current root pose before the
+    // PostUpdate transform pass propagates it through their skeletons.
+    scheduler.add_exclusive(Stage::Update, crate::systems::vehicle_attachment_system);
     scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_init_dispatch);
     // `recurring_update_tick_system` ticks `RecurringUpdate` and emits
     // `OnUpdateEvent`. It sits between the demo's OnInit (which

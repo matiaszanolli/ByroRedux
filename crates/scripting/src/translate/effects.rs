@@ -20,9 +20,10 @@
 //!
 //! Quest-scoped stage/objective operations and a conservative set of
 //! VMAD-resolved object effects are modelled. Object receivers can be direct
-//! FormID properties or quest-alias `GetRef()` properties; every other shape
-//! still declines as a whole. The table currently covers inventory/movement,
-//! scene start/stop, and the MQ101 lever/gate `Activate` + `SetOpen` sequence.
+//! FormID properties, quest-alias `GetRef()`/`GetActorRef()` results, or locals
+//! proven to hold those results; every other shape still declines as a whole.
+//! The table covers quest/object state, scene control, player controls, and the
+//! MQ101 cart cinematic boundary (idle, vehicle, motion, sitting, latent wait).
 //!
 //! ## Local binding
 //!
@@ -35,9 +36,11 @@
 
 use std::collections::{HashMap, HashSet};
 
+use byroredux_core::ecs::components::MotionType;
 use byroredux_papyrus::ast::{Expr, Stmt};
 use byroredux_papyrus::span::Spanned;
 
+use crate::cinematic::CinematicAnimationEvent;
 use crate::player_control::PlayerControlSelection;
 use crate::translate::compose::{
     as_num, int_arg, is_game_get_player, method_call, quest_via, ObjectRef, QuestRef,
@@ -122,9 +125,43 @@ pub enum Effect {
     SetPlayerAiDriven { ai_driven: bool },
     /// `Game.SetHudCartMode(cart_mode)` presentation state.
     SetHudCartMode { cart_mode: bool },
+    /// `<actor>.PlayIdle(<idle>)`. The runtime preserves the IDLE FormID as
+    /// an animation-backend request even when the current game uses HKX.
+    PlayIdle { actor: ActorRef, idle: ObjectRef },
+    /// `<actor>.SetVehicle(<vehicle>)`; `None` detaches the actor.
+    SetVehicle {
+        actor: ActorRef,
+        vehicle: Option<ObjectRef>,
+    },
+    /// `<object>.SetMotionType(...)`, bridged to the app physics layer by a
+    /// one-shot `MotionTypeChangeRequest`.
+    SetMotionType {
+        target: ObjectRef,
+        motion_type: MotionType,
+        allow_activate: bool,
+    },
+    /// `Game.SetSittingRotation(degrees)` camera/presentation state.
+    SetSittingRotation { degrees: f32 },
+    /// MQ101's `ExitCart(alias, seat)` helper. It detaches the actor and
+    /// requests the helper's exact seat-specific exit IDLE.
+    ExitCart { actor: ObjectRef, seat: u8 },
+    /// MQ101 helper registrations for `PlayImod` / `IdleFurnitureExit`.
+    RegisterPlayerAnimationEvent { event: CinematicAnimationEvent },
     /// `<actor>.EvaluatePackage()` — queues the actor's active scene package
     /// for condition re-selection and command restart on the next package tick.
     EvaluatePackage { actor: ObjectRef },
+    /// Latent `Utility.Wait(seconds)`. Production dispatch pauses here and
+    /// resumes the remaining effects through `FragmentExecutionQueue`.
+    Wait { seconds: f32 },
+}
+
+/// An actor receiver is either the canonical player or a VMAD-resolved
+/// object/alias. Keeping the player explicit avoids inventing a VMAD property
+/// for `Game.GetPlayer()`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActorRef {
+    Player,
+    Object(ObjectRef),
 }
 
 /// The local-variable scope built while lowering a fragment body.
@@ -139,6 +176,8 @@ pub enum Effect {
 #[derive(Default)]
 struct Scope {
     quest_locals: HashMap<String, QuestRef>,
+    object_locals: HashMap<String, ObjectRef>,
+    player_locals: HashSet<String>,
     decl_locals: HashSet<String>,
 }
 
@@ -195,12 +234,41 @@ pub fn lower_fragment(body: &[Spanned<Stmt>]) -> Option<Vec<Effect>> {
 ///   this table can't lower — decline rather than silently drop the
 ///   side-effect (#1907), matching the flat-sequence decline contract.
 fn bind_local(scope: &mut Scope, name: String, init: &Expr) -> Option<()> {
-    if let Some(via) = quest_expr_ref(init, scope) {
-        scope.quest_locals.insert(name, via);
+    enum Binding {
+        Quest(QuestRef),
+        Player,
+        Object(ObjectRef),
+        Plain,
+    }
+    let binding = if let Some(via) = quest_expr_ref(init, scope) {
+        Binding::Quest(via)
+    } else if player_expr_ref(init, scope) {
+        Binding::Player
+    } else if let Some(via) = object_expr_ref(init, scope) {
+        Binding::Object(via)
     } else if is_side_effect_free(init) {
-        scope.decl_locals.insert(name);
+        Binding::Plain
     } else {
         return None;
+    };
+
+    scope.quest_locals.remove(&name);
+    scope.object_locals.remove(&name);
+    scope.player_locals.remove(&name);
+    scope.decl_locals.remove(&name);
+    match binding {
+        Binding::Quest(via) => {
+            scope.quest_locals.insert(name, via);
+        }
+        Binding::Player => {
+            scope.player_locals.insert(name);
+        }
+        Binding::Object(via) => {
+            scope.object_locals.insert(name, via);
+        }
+        Binding::Plain => {
+            scope.decl_locals.insert(name);
+        }
     }
     Some(())
 }
@@ -260,7 +328,15 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_enable_player_controls,
     prim_set_player_ai_driven,
     prim_set_hud_cart_mode,
+    prim_play_idle,
+    prim_set_vehicle,
+    prim_set_motion_type,
+    prim_set_sitting_rotation,
+    prim_exit_cart,
+    prim_player_imod_animation,
+    prim_player_furniture_animation,
     prim_evaluate_package,
+    prim_wait,
 ];
 
 // ── Effect primitives ────────────────────────────────────────────────
@@ -463,6 +539,136 @@ fn prim_set_hud_cart_mode(e: &Expr, _scope: &Scope) -> Option<Effect> {
     })
 }
 
+fn prim_play_idle(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "PlayIdle")?;
+    if args.len() != 1 {
+        return None;
+    }
+    Some(Effect::PlayIdle {
+        actor: receiver_actor(object, scope)?,
+        idle: receiver_object(&args[0].value.node, scope)?,
+    })
+}
+
+fn prim_set_vehicle(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetVehicle")?;
+    if args.len() != 1 {
+        return None;
+    }
+    let vehicle = match &args[0].value.node {
+        Expr::NoneLit => None,
+        value => Some(receiver_object(value, scope)?),
+    };
+    Some(Effect::SetVehicle {
+        actor: receiver_actor(object, scope)?,
+        vehicle,
+    })
+}
+
+fn prim_set_motion_type(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetMotionType")?;
+    if args.is_empty() || args.len() > 2 {
+        return None;
+    }
+    let target = receiver_object(object, scope)?;
+    let motion_type = motion_type_arg(&args[0].value.node, &target, scope)?;
+    let allow_activate = bool_arg(args, 1)?.unwrap_or(true);
+    Some(Effect::SetMotionType {
+        target,
+        motion_type,
+        allow_activate,
+    })
+}
+
+fn motion_type_arg(value: &Expr, target: &ObjectRef, scope: &Scope) -> Option<MotionType> {
+    if let Expr::Cast { expr, .. } = value {
+        return motion_type_arg(&expr.node, target, scope);
+    }
+    if let Expr::IntLit(raw) = value {
+        return match *raw {
+            1 => Some(MotionType::Dynamic),
+            4 => Some(MotionType::Keyframed),
+            5 => Some(MotionType::Static),
+            7 => Some(MotionType::CharacterKinematic),
+            _ => None,
+        };
+    }
+    let Expr::MemberAccess { object, member } = value else {
+        return None;
+    };
+    if receiver_object(&object.node, scope).as_ref() != Some(target) {
+        return None;
+    }
+    match member.node.0.to_ascii_lowercase().as_str() {
+        "motion_dynamic" => Some(MotionType::Dynamic),
+        "motion_keyframed" => Some(MotionType::Keyframed),
+        "motion_fixed" => Some(MotionType::Static),
+        "motion_character" => Some(MotionType::CharacterKinematic),
+        _ => None,
+    }
+}
+
+fn prim_set_sitting_rotation(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = game_call(e, "SetSittingRotation")?;
+    if args.len() != 1 {
+        return None;
+    }
+    let degrees = as_num(&args[0].value.node)?;
+    degrees
+        .is_finite()
+        .then_some(Effect::SetSittingRotation { degrees })
+}
+
+fn prim_exit_cart(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "ExitCart")?;
+    if args.len() != 2 {
+        return None;
+    }
+    // `ExitCart` is an MQ101 quest helper, so require a proven quest receiver
+    // rather than accepting an arbitrary object method with the same name.
+    receiver_quest(object, scope)?;
+    let seat = u8::try_from(int_arg(args, 1)?).ok()?;
+    if !(1..=5).contains(&seat) {
+        return None;
+    }
+    Some(Effect::ExitCart {
+        actor: receiver_object(&args[0].value.node, scope)?,
+        seat,
+    })
+}
+
+fn prim_player_imod_animation(e: &Expr, scope: &Scope) -> Option<Effect> {
+    prim_player_animation_event(
+        e,
+        scope,
+        "PlayerImodAnimation",
+        CinematicAnimationEvent::PlayImod,
+    )
+}
+
+fn prim_player_furniture_animation(e: &Expr, scope: &Scope) -> Option<Effect> {
+    prim_player_animation_event(
+        e,
+        scope,
+        "PlayerFurnitureAnimation",
+        CinematicAnimationEvent::IdleFurnitureExit,
+    )
+}
+
+fn prim_player_animation_event(
+    e: &Expr,
+    scope: &Scope,
+    method: &str,
+    event: CinematicAnimationEvent,
+) -> Option<Effect> {
+    let (object, args) = method_call(e, method)?;
+    if !args.is_empty() {
+        return None;
+    }
+    receiver_quest(object, scope)?;
+    Some(Effect::RegisterPlayerAnimationEvent { event })
+}
+
 fn prim_evaluate_package(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "EvaluatePackage")?;
     if !args.is_empty() {
@@ -473,9 +679,26 @@ fn prim_evaluate_package(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+fn prim_wait(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = static_call(e, "Utility", "Wait")?;
+    if args.len() != 1 {
+        return None;
+    }
+    let seconds = as_num(&args[0].value.node)?;
+    (seconds.is_finite() && seconds >= 0.0).then_some(Effect::Wait { seconds })
+}
+
 fn game_call<'a>(e: &'a Expr, method: &str) -> Option<&'a [byroredux_papyrus::ast::CallArg]> {
+    static_call(e, "Game", method)
+}
+
+fn static_call<'a>(
+    e: &'a Expr,
+    type_name: &str,
+    method: &str,
+) -> Option<&'a [byroredux_papyrus::ast::CallArg]> {
     let (object, args) = method_call(e, method)?;
-    matches!(object, Expr::Ident(name) if name.0.eq_ignore_ascii_case("Game")).then_some(args)
+    matches!(object, Expr::Ident(name) if name.0.eq_ignore_ascii_case(type_name)).then_some(args)
 }
 
 fn optional_int_arg(
@@ -513,16 +736,49 @@ fn receiver_quest(object: &Expr, scope: &Scope) -> Option<QuestRef> {
 /// Classify the RHS of a `local = <expr>` binding as a quest reference,
 /// resolving a local-to-local copy through `scope`.
 fn quest_expr_ref(value: &Expr, scope: &Scope) -> Option<QuestRef> {
-    receiver_quest(value, scope)
+    match value {
+        Expr::Cast { expr, .. } => quest_expr_ref(&expr.node, scope),
+        _ => receiver_quest(value, scope),
+    }
+}
+
+/// Resolve a pure object lookup used as a local initializer. Bare properties
+/// are deliberately excluded here because the decompiled local declaration's
+/// type is not carried into this helper; the unambiguous supported shapes are
+/// alias `GetRef`/`GetActorRef` calls and copies of an already-known object
+/// local.
+fn object_expr_ref(value: &Expr, scope: &Scope) -> Option<ObjectRef> {
+    if let Expr::Cast { expr, .. } = value {
+        return object_expr_ref(&expr.node, scope);
+    }
+    if let Expr::Ident(name) = value {
+        return scope
+            .object_locals
+            .get(&name.0.to_ascii_lowercase())
+            .cloned();
+    }
+    let (alias, args) =
+        method_call(value, "GetRef").or_else(|| method_call(value, "GetActorRef"))?;
+    if !args.is_empty() {
+        return None;
+    }
+    receiver_object(alias, scope)
+}
+
+fn player_expr_ref(value: &Expr, scope: &Scope) -> bool {
+    match value {
+        Expr::Cast { expr, .. } => player_expr_ref(&expr.node, scope),
+        Expr::Ident(name) => scope.player_locals.contains(&name.0.to_ascii_lowercase()),
+        _ => is_game_get_player(value),
+    }
 }
 
 /// Resolve an object-targeting effect's receiver or argument to an
 /// [`ObjectRef`]. Unlike [`receiver_quest`], there is no unambiguous
 /// bare-identifier case (no `Self`/`GetOwningQuest()` equivalent — see
-/// [`ObjectRef`]'s doc) — a bare property name is the *only* shape
-/// accepted; a local variable (quest-bound or otherwise) declines,
-/// because this increment doesn't track which property a local was
-/// copied from.
+/// [`ObjectRef`]'s doc). A bare property is accepted, and a local is accepted
+/// only when [`bind_local`] proved it came from a VMAD alias getter; unrelated
+/// or plain locals still decline.
 fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
     if let Expr::Cast { expr, .. } = object {
         return receiver_object(&expr.node, scope);
@@ -538,13 +794,28 @@ fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
         return None;
     };
     let key = name.0.to_ascii_lowercase();
+    if let Some(via) = scope.object_locals.get(&key) {
+        return Some(via.clone());
+    }
     // `Self` is never the object here (see `ObjectRef`'s doc) — decline
     // explicitly rather than relying on no VMAD ever naming a property
     // "self".
-    if key == "self" || scope.quest_locals.contains_key(&key) || scope.decl_locals.contains(&key) {
+    if key == "self"
+        || scope.quest_locals.contains_key(&key)
+        || scope.player_locals.contains(&key)
+        || scope.decl_locals.contains(&key)
+    {
         return None;
     }
     Some(ObjectRef::Property(name.0.clone()))
+}
+
+fn receiver_actor(object: &Expr, scope: &Scope) -> Option<ActorRef> {
+    if player_expr_ref(object, scope) {
+        Some(ActorRef::Player)
+    } else {
+        receiver_object(object, scope).map(ActorRef::Object)
+    }
 }
 
 /// A boolean positional argument — `Bool`/`Int` literal, unwrapping a
@@ -980,6 +1251,89 @@ mod tests {
             Some(vec![Effect::EvaluatePackage {
                 actor: ObjectRef::Property("Alias_Hadvar".into()),
             }])
+        );
+    }
+
+    #[test]
+    fn lowers_mq101_player_idle_and_animation_event_helpers() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_295()\n\
+             Quest temp = Self as Quest\n\
+             mq101questscript kmyQuest = temp as mq101questscript\n\
+             Game.GetPlayer().PlayIdle(IdleExecutionerAlduinReactionDeath)\n\
+             kmyQuest.PlayerImodAnimation()\n\
+             kmyQuest.PlayerFurnitureAnimation()\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::PlayIdle {
+                    actor: ActorRef::Player,
+                    idle: ObjectRef::Property("IdleExecutionerAlduinReactionDeath".into()),
+                },
+                Effect::RegisterPlayerAnimationEvent {
+                    event: CinematicAnimationEvent::PlayImod,
+                },
+                Effect::RegisterPlayerAnimationEvent {
+                    event: CinematicAnimationEvent::IdleFurnitureExit,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn lowers_mq101_cart_exit_motion_and_sitting_rotation() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_177()\n\
+             Quest temp = Self as Quest\n\
+             mq101questscript kmyQuest = temp as mq101questscript\n\
+             kmyQuest.ExitCart(Alias_Prisoner, 3)\n\
+             Alias_Cart.GetRef().SetMotionType(Alias_Cart.GetRef().Motion_Keyframed, true)\n\
+             Game.SetSittingRotation(-55.0)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::ExitCart {
+                    actor: ObjectRef::Property("Alias_Prisoner".into()),
+                    seat: 3,
+                },
+                Effect::SetMotionType {
+                    target: ObjectRef::Property("Alias_Cart".into()),
+                    motion_type: MotionType::Keyframed,
+                    allow_activate: true,
+                },
+                Effect::SetSittingRotation { degrees: -55.0 },
+            ])
+        );
+    }
+
+    #[test]
+    fn tracks_actor_and_vehicle_locals_across_a_latent_wait() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_175()\n\
+             Actor rider = Alias_Rider.GetActorRef()\n\
+             ObjectReference cart = Alias_Cart.GetRef()\n\
+             rider.SetVehicle(cart)\n\
+             Utility.Wait(0.25)\n\
+             rider.SetVehicle(None)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::SetVehicle {
+                    actor: ActorRef::Object(ObjectRef::Property("Alias_Rider".into())),
+                    vehicle: Some(ObjectRef::Property("Alias_Cart".into())),
+                },
+                Effect::Wait { seconds: 0.25 },
+                Effect::SetVehicle {
+                    actor: ActorRef::Object(ObjectRef::Property("Alias_Rider".into())),
+                    vehicle: None,
+                },
+            ])
         );
     }
 

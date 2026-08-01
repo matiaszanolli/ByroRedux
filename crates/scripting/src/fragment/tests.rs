@@ -1002,6 +1002,197 @@ fn dispatch_player_control_and_evaluate_package_effects() {
 }
 
 #[test]
+fn dispatch_cart_animation_vehicle_and_motion_effects() {
+    use crate::cinematic::CinematicAnimationEvent;
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::ecs::components::MotionType;
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const RIDER_ALIAS: i16 = 40;
+    const CART_ALIAS: i16 = 41;
+    const PLAYER_IDLE: u32 = 0x0001_1000;
+    const EXIT_IDLE_D: u32 = 0x0001_1003;
+    let mut world = fixture();
+    let player = world.resource::<PlayerEntity>().0;
+    let rider = world.spawn();
+    let cart = world.spawn();
+    world.register::<byroredux_core::ecs::components::Transform>();
+    world.insert(
+        player,
+        byroredux_core::ecs::components::Transform::from_translation(
+            byroredux_core::math::Vec3::new(12.0, 0.0, 0.0),
+        ),
+    );
+    world.insert(
+        cart,
+        byroredux_core::ecs::components::Transform::from_translation(
+            byroredux_core::math::Vec3::new(10.0, 0.0, 0.0),
+        ),
+    );
+    {
+        let mut bindings = world.resource_mut::<crate::SceneActorBindings>();
+        bindings.bind(Q, i32::from(RIDER_ALIAS), rider);
+        bindings.bind(Q, i32::from(CART_ALIAS), cart);
+    }
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                scripts: vec![ScriptInstance {
+                    name: "MQ101QuestScript".into(),
+                    status: 0,
+                    properties: vec![
+                        ScriptProperty {
+                            name: "Alias_Rider".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: 0,
+                                alias: RIDER_ALIAS,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "Alias_Cart".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: 0,
+                                alias: CART_ALIAS,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "PlayerIdle".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: PLAYER_IDLE,
+                                alias: -1,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "IdleCartPassengerDExit".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: EXIT_IDLE_D,
+                                alias: -1,
+                            },
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![
+                Effect::SetVehicle {
+                    actor: ActorRef::Player,
+                    vehicle: Some(crate::translate::compose::ObjectRef::Property(
+                        "Alias_Cart".into(),
+                    )),
+                },
+                Effect::PlayIdle {
+                    actor: ActorRef::Player,
+                    idle: crate::translate::compose::ObjectRef::Property("PlayerIdle".into()),
+                },
+                Effect::ExitCart {
+                    actor: crate::translate::compose::ObjectRef::Property("Alias_Rider".into()),
+                    seat: 3,
+                },
+                Effect::SetMotionType {
+                    target: crate::translate::compose::ObjectRef::Property("Alias_Cart".into()),
+                    motion_type: MotionType::Keyframed,
+                    allow_activate: true,
+                },
+                Effect::SetSittingRotation { degrees: -55.0 },
+                Effect::RegisterPlayerAnimationEvent {
+                    event: CinematicAnimationEvent::PlayImod,
+                },
+                Effect::RegisterPlayerAnimationEvent {
+                    event: CinematicAnimationEvent::IdleFurnitureExit,
+                },
+            ],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+
+    quest_fragment_dispatch_system(&world);
+
+    let player_cinematic = world.get::<crate::ActorCinematicState>(player).unwrap();
+    assert_eq!(player_cinematic.requested_idle_form_id, Some(PLAYER_IDLE));
+    assert_eq!(player_cinematic.vehicle, Some(cart));
+    assert_eq!(
+        player_cinematic.vehicle_local_translation,
+        Some(byroredux_core::math::Vec3::new(2.0, 0.0, 0.0))
+    );
+    let rider_cinematic = world.get::<crate::ActorCinematicState>(rider).unwrap();
+    assert_eq!(rider_cinematic.vehicle, None);
+    assert_eq!(rider_cinematic.cart_seat, Some(3));
+    assert_eq!(rider_cinematic.requested_idle_form_id, Some(EXIT_IDLE_D));
+    assert_eq!(
+        rider_cinematic.awaited_event,
+        Some(CinematicAnimationEvent::ExitCartEnd)
+    );
+    assert_eq!(
+        world
+            .get::<crate::MotionTypeChangeRequest>(cart)
+            .unwrap()
+            .motion_type,
+        MotionType::Keyframed
+    );
+    let presentation = world.resource::<crate::CinematicPresentationState>();
+    assert_eq!(presentation.sitting_rotation_degrees, -55.0);
+    assert!(presentation.player_imod_event_registered);
+    assert!(presentation.player_furniture_exit_event_registered);
+}
+
+#[test]
+fn utility_wait_resumes_fragment_tail_in_order() {
+    let world = fixture();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert(
+            Q,
+            10,
+            vec![
+                Effect::SetSittingRotation { degrees: 10.0 },
+                Effect::Wait { seconds: 0.5 },
+                Effect::SetSittingRotation { degrees: -55.0 },
+                Effect::Wait { seconds: 0.25 },
+                Effect::SetHudCartMode { cart_mode: true },
+            ],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(
+        world
+            .resource::<crate::CinematicPresentationState>()
+            .sitting_rotation_degrees,
+        10.0
+    );
+    assert_eq!(world.resource::<FragmentExecutionQueue>().len(), 1);
+
+    fragment_continuation_system(&world, 0.6);
+    assert_eq!(
+        world
+            .resource::<crate::CinematicPresentationState>()
+            .sitting_rotation_degrees,
+        -55.0
+    );
+    assert_eq!(world.resource::<FragmentExecutionQueue>().len(), 1);
+    assert!(!world.resource::<crate::PlayerControlState>().hud_cart_mode);
+
+    fragment_continuation_system(&world, 0.3);
+    assert!(world.resource::<FragmentExecutionQueue>().is_empty());
+    assert!(world.resource::<crate::PlayerControlState>().hud_cart_mode);
+}
+
+#[test]
 fn dispatch_ignores_stage_without_a_fragment() {
     let world = fixture();
     {

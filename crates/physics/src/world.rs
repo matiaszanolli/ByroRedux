@@ -5,6 +5,7 @@
 //! inside this struct — sets, broad phase, narrow phase, pipeline,
 //! integration parameters, and a fixed-timestep accumulator.
 
+use byroredux_core::ecs::components::MotionType;
 use byroredux_core::ecs::resource::Resource;
 use rapier3d::prelude::*;
 
@@ -277,6 +278,36 @@ impl PhysicsWorld {
             return true;
         }
         false
+    }
+
+    /// Change a live body's motion type in place for Papyrus
+    /// `ObjectReference.SetMotionType`.
+    ///
+    /// The ECS-side `RigidBodyData` is updated by the caller; this method
+    /// updates the already-registered Rapier body so the change takes effect
+    /// immediately instead of waiting for newcomer registration (which only
+    /// runs before a `RapierHandles` component exists).
+    pub fn set_motion_type(
+        &mut self,
+        handle: RigidBodyHandle,
+        motion_type: MotionType,
+        wake_up: bool,
+    ) -> bool {
+        let body_type = match motion_type {
+            MotionType::Static => RigidBodyType::Fixed,
+            MotionType::Keyframed | MotionType::CharacterKinematic => {
+                RigidBodyType::KinematicPositionBased
+            }
+            MotionType::Dynamic => RigidBodyType::Dynamic,
+        };
+        let Some(body) = self.bodies.get_mut(handle) else {
+            return false;
+        };
+        body.set_body_type(body_type, wake_up);
+        if wake_up {
+            self.wake();
+        }
+        true
     }
 
     /// Read a dynamic body's mass (BU³ × density). Buoyancy derives the
@@ -791,6 +822,19 @@ mod tests {
     fn empty_world_has_no_bodies() {
         let w = PhysicsWorld::new();
         assert_eq!(w.body_count(), 0);
+    }
+
+    #[test]
+    fn scripted_motion_type_updates_a_live_body() {
+        let mut world = PhysicsWorld::new();
+        let handle = world.bodies.insert(RigidBodyBuilder::dynamic().build());
+
+        assert!(world.set_motion_type(handle, MotionType::Keyframed, true));
+        assert_eq!(
+            world.bodies[handle].body_type(),
+            RigidBodyType::KinematicPositionBased
+        );
+        assert!(world.pending_wake());
     }
 
     /// Test helper: insert a 100×2×100 BU slab at `(x, y, z)` with the
