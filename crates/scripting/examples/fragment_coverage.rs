@@ -63,6 +63,10 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::CompleteAllObjectives { .. } => "CompleteAllObjectives",
         Effect::AddItem { .. } => "AddItem",
         Effect::MoveTo { .. } => "MoveTo",
+        Effect::StartScene { .. } => "StartScene",
+        Effect::StopScene { .. } => "StopScene",
+        Effect::Activate { .. } => "Activate",
+        Effect::SetOpen { .. } => "SetOpen",
     }
 }
 
