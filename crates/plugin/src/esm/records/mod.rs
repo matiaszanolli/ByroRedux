@@ -63,14 +63,17 @@ pub use misc::{
     parse_cobj, parse_csty, parse_dial, parse_eczn, parse_efsh, parse_ench, parse_expl, parse_eyes,
     parse_hair, parse_hdpt, parse_idle, parse_imgs, parse_imod, parse_info, parse_ipct, parse_ipds,
     parse_lgtm, parse_mesg, parse_mgef, parse_minimal_esm_record, parse_navi, parse_navm,
-    parse_pack, parse_perk, parse_proj, parse_qust, parse_regn, parse_repu, parse_slgm, parse_spel,
-    parse_term, parse_watr, ActiRecord, AliasFillType, AliasFlags, AliasInjectedData, ArmaRecord,
-    AvifRecord, BptdRecord, CobjRecord, CstyRecord, DialRecord, EcznRecord, EfshRecord, EnchRecord,
-    ExplRecord, EyesRecord, HairRecord, HdptRecord, IdleRecord, ImgsRecord, ImodRecord, InfoRecord,
-    IpctRecord, IpdsRecord, LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord, NaviRecord,
-    NavmRecord, PackLocation, PackLocationTarget, PackRecord, PackSchedule, PackTarget,
+    parse_pack, parse_perk, parse_proj, parse_qust, parse_regn, parse_repu, parse_scen, parse_slgm,
+    parse_spel, parse_term, parse_watr, ActiRecord, AliasFillType, AliasFlags, AliasInjectedData,
+    ArmaRecord, AvifRecord, BptdRecord, CobjRecord, CstyRecord, DialRecord, EcznRecord, EfshRecord,
+    EnchRecord, ExplRecord, EyesRecord, HairRecord, HdptRecord, IdleRecord, ImgsRecord, ImodRecord,
+    InfoRecord, IpctRecord, IpdsRecord, LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord,
+    NaviRecord, NavmRecord, PackLocation, PackLocationTarget, PackRecord, PackSchedule, PackTarget,
     PackTargetKind, PerkRecord, ProjRecord, QuestAlias, QuestObjective, QuestStage, QustRecord,
-    RegnRecord, RepuRecord, SlgmRecord, SpelRecord, TermRecord, WatrRecord,
+    RegnRecord, RepuRecord, ScenRecord, SceneAction, SceneActionType, SceneActor, ScenePhase,
+    SlgmRecord, SpelRecord, TermRecord, WatrRecord, ALIAS_FLAG_ALLOW_REUSE,
+    SCENE_BEGIN_ON_QUEST_START, SCENE_INTERRUPTIBLE, SCENE_REPEAT_CONDITIONS, SCENE_SHOW_ALL_TEXT,
+    SCENE_STOP_QUEST_ON_END,
 };
 pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
 pub use tree::{parse_tree, TreeRecord};
@@ -171,6 +174,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     // twice. See audit FNV-ESM-2.
     let mut cells: HashMap<String, CellData> = HashMap::new();
     let mut exterior_cells: HashMap<String, HashMap<(i32, i32), CellData>> = HashMap::new();
+    let mut worldspace_persistent_cells: HashMap<String, CellData> = HashMap::new();
     let mut statics: HashMap<u32, StaticObject> = HashMap::new();
     let mut landscape_textures: HashMap<u32, String> = HashMap::new();
     let mut worldspaces: HashMap<String, super::cell::WorldspaceRecord> = HashMap::new();
@@ -248,6 +252,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 &mut reader,
                 end,
                 &mut exterior_cells,
+                &mut worldspace_persistent_cells,
                 &mut worldspaces,
                 &mut worldspace_climates,
             )?,
@@ -400,7 +405,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             }
             b"WTHR" | b"CLMT" | b"SCPT" | b"WATR" | b"NAVI" | b"NAVM" | b"REGN" | b"ECZN"
             | b"LGTM" | b"IMGS" | b"HDPT" | b"EYES" | b"HAIR" | b"PACK" | b"QUST" | b"DIAL"
-            | b"MESG" | b"PERK" => {
+            | b"SCEN" | b"MESG" | b"PERK" => {
                 dispatch_misc_gameplay_a::dispatch_misc_gameplay_a_group(
                     &label,
                     &mut reader,
@@ -456,10 +461,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     let landscape_texture_sets: HashMap<u32, TextureSet> = ltex_to_txst
         .iter()
         .filter_map(|(&ltex_id, txst_id)| {
-            texture_sets
-                .get(txst_id)
-                .cloned()
-                .map(|set| (ltex_id, set))
+            texture_sets.get(txst_id).cloned().map(|set| (ltex_id, set))
         })
         .collect();
 
@@ -495,10 +497,16 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             }
         }
     }
+    for cell in worldspace_persistent_cells.values_mut() {
+        for navm in cell.navmeshes.drain(..) {
+            index.navmeshes.insert(navm.form_id, navm);
+        }
+    }
 
     index.cells = EsmCellIndex {
         cells,
         exterior_cells,
+        worldspace_persistent_cells,
         statics,
         landscape_textures,
         landscape_texture_sets,

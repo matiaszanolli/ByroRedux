@@ -275,6 +275,7 @@ pub(crate) fn setup_scene(
             ) {
                 Ok(wctx) => {
                     has_nif_content = true;
+                    crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
                     apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
                     let mut state =
                         WorldStreamingState::new(wctx, tex_provider, mat_provider, radius);

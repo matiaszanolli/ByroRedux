@@ -43,8 +43,9 @@
 //! the scripts; ACTI / REFR / STAT / CONT (the records the M47.2
 //! recognizers consume) do not — the scripts section is the whole VMAD
 //! for them. This decoder reads only the scripts section and ignores any
-//! trailing bytes; the QUST fragment section has its own decoder,
-//! [`parse_quest_fragments`], below (#1739 / `8a70b81a`).
+//! trailing bytes; QUST and SCEN fragment sections have their own
+//! decoders, [`parse_quest_fragments`] and [`parse_scene_fragments`],
+//! below (#1739 / `8a70b81a`).
 //!
 //! Parsing is bounds-checked and *graceful*: a truncated VMAD yields the
 //! scripts decoded so far rather than panicking, matching the engine's
@@ -317,6 +318,112 @@ pub fn parse_quest_fragments(vmad: &[u8]) -> Vec<QuestScriptFragment> {
         };
         out.push(QuestScriptFragment {
             stage,
+            script_name,
+            fragment_name,
+        });
+    }
+    out
+}
+
+/// Event that invokes one compiled Papyrus fragment attached to a `SCEN`.
+///
+/// Scene-wide begin/end fragments are selected by bit position in the VMAD
+/// header. Phase fragments carry both an event flag and an authored phase
+/// index. Unknown values are retained so later game-version work can inspect
+/// them without changing the parser's recover-don't-crash contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SceneFragmentEvent {
+    Begin,
+    End,
+    PhaseStart { phase_index: u8 },
+    PhaseCompletion { phase_index: u8 },
+    UnknownScene { flag_bit: u8 },
+    UnknownPhase { flag: u8, phase_index: u8 },
+}
+
+/// One `SCEN` event → compiled Papyrus function binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneScriptFragment {
+    pub event: SceneFragmentEvent,
+    pub script_name: String,
+    pub fragment_name: String,
+}
+
+/// Decode the trailing Skyrim `SCEN` fragment section of a complete VMAD.
+///
+/// The scripts prefix is skipped with [`ScriptInstanceData::parse_with_consumed`].
+/// The remaining version-2 section stores scene-wide begin/end fragments,
+/// followed by phase start/completion fragments. The layout follows xEdit's
+/// `wbScriptFragmentsScen` definition and was cross-checked against vanilla
+/// `Skyrim.esm` scene VMADs.
+///
+/// Graceful + conservative: short input or a non-version-2 section yields the
+/// complete bindings decoded before the fault (or an empty vector when the
+/// header itself cannot be trusted).
+pub fn parse_scene_fragments(vmad: &[u8]) -> Vec<SceneScriptFragment> {
+    let (_, consumed) = ScriptInstanceData::parse_with_consumed(vmad);
+    let Some(section) = vmad.get(consumed..) else {
+        return Vec::new();
+    };
+    let mut c = Cursor::new(section);
+    if c.u8() != Some(2) {
+        return Vec::new();
+    }
+    let Some(scene_flags) = c.u8() else {
+        return Vec::new();
+    };
+    let Some(_file_name) = c.wstring() else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for bit in 0u8..8 {
+        if scene_flags & (1u8 << bit) == 0 {
+            continue;
+        }
+        let Some(_unknown) = c.u8() else { return out };
+        let Some(script_name) = c.wstring() else {
+            return out;
+        };
+        let Some(fragment_name) = c.wstring() else {
+            return out;
+        };
+        let event = match bit {
+            0 => SceneFragmentEvent::Begin,
+            1 => SceneFragmentEvent::End,
+            flag_bit => SceneFragmentEvent::UnknownScene { flag_bit },
+        };
+        out.push(SceneScriptFragment {
+            event,
+            script_name,
+            fragment_name,
+        });
+    }
+
+    let Some(phase_count) = c.u16() else {
+        return out;
+    };
+    out.reserve(phase_count as usize);
+    for _ in 0..phase_count {
+        let (Some(flag), Some(phase_index), Some(_unknown_i16)) = (c.u8(), c.u8(), c.i16()) else {
+            break;
+        };
+        let (Some(_unknown_0), Some(_unknown_1)) = (c.u8(), c.u8()) else {
+            break;
+        };
+        let Some(script_name) = c.wstring() else {
+            break;
+        };
+        let Some(fragment_name) = c.wstring() else {
+            break;
+        };
+        let event = match flag {
+            1 => SceneFragmentEvent::PhaseStart { phase_index },
+            2 => SceneFragmentEvent::PhaseCompletion { phase_index },
+            flag => SceneFragmentEvent::UnknownPhase { flag, phase_index },
+        };
+        out.push(SceneScriptFragment {
+            event,
             script_name,
             fragment_name,
         });
@@ -679,6 +786,81 @@ mod tests {
         let frags = parse_quest_fragments(&vmad);
         assert_eq!(frags.len(), 1);
         assert_eq!(frags[0].fragment_name, "Fragment_0");
+    }
+
+    // ---- SCEN fragment section ----------------------------------------
+
+    fn push_wstring(bytes: &mut Vec<u8>, value: &str) {
+        bytes.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+    }
+
+    fn scene_fragment_section() -> Vec<u8> {
+        let mut v = Vec::new();
+        v.push(2); // fragment version
+        v.push(0b11); // begin + end scene fragments
+        push_wstring(&mut v, "SF_MQ101Scene1New_000BECD4");
+
+        for fragment in ["Fragment_0", "Fragment_1"] {
+            v.push(0); // unknown
+            push_wstring(&mut v, "SF_MQ101Scene1New_000BECD4");
+            push_wstring(&mut v, fragment);
+        }
+
+        v.extend_from_slice(&2u16.to_le_bytes()); // phase fragment count
+        for (flag, phase_index, fragment) in [(1, 3, "Fragment_2"), (2, 3, "Fragment_3")] {
+            v.push(flag);
+            v.push(phase_index);
+            v.extend_from_slice(&0i16.to_le_bytes());
+            v.push(0);
+            v.push(0);
+            push_wstring(&mut v, "SF_MQ101Scene1New_000BECD4");
+            push_wstring(&mut v, fragment);
+        }
+        v
+    }
+
+    #[test]
+    fn decodes_scene_begin_end_and_phase_fragment_bindings() {
+        let mut vmad = empty_scripts_prefix();
+        vmad.extend_from_slice(&scene_fragment_section());
+
+        let fragments = parse_scene_fragments(&vmad);
+        assert_eq!(fragments.len(), 4);
+        assert_eq!(fragments[0].event, SceneFragmentEvent::Begin);
+        assert_eq!(fragments[0].fragment_name, "Fragment_0");
+        assert_eq!(fragments[1].event, SceneFragmentEvent::End);
+        assert_eq!(
+            fragments[2].event,
+            SceneFragmentEvent::PhaseStart { phase_index: 3 }
+        );
+        assert_eq!(
+            fragments[3].event,
+            SceneFragmentEvent::PhaseCompletion { phase_index: 3 }
+        );
+        assert!(fragments
+            .iter()
+            .all(|fragment| fragment.script_name == "SF_MQ101Scene1New_000BECD4"));
+    }
+
+    #[test]
+    fn scene_fragment_decode_is_conservative_and_truncation_safe() {
+        let mut unknown_version = empty_scripts_prefix();
+        let mut section = scene_fragment_section();
+        section[0] = 5;
+        unknown_version.extend_from_slice(&section);
+        assert!(parse_scene_fragments(&unknown_version).is_empty());
+
+        let mut truncated = empty_scripts_prefix();
+        let mut section = scene_fragment_section();
+        section.truncate(section.len() - 10);
+        truncated.extend_from_slice(&section);
+        let fragments = parse_scene_fragments(&truncated);
+        assert_eq!(fragments.len(), 3);
+        assert_eq!(
+            fragments[2].event,
+            SceneFragmentEvent::PhaseStart { phase_index: 3 }
+        );
     }
 
     // ── #2186 — alias-bound properties must decline ─────────────────

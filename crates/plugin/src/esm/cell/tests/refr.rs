@@ -406,6 +406,19 @@ fn parse_refr_extracts_multiple_xlkr_linked_refs() {
     assert_eq!(r.linked_refs[1].target, 0x33333333);
 }
 
+#[test]
+fn parse_refr_extracts_packed_xlrt_location_ref_types() {
+    let mut xlrt = Vec::new();
+    xlrt.extend_from_slice(&0x0006_54F1u32.to_le_bytes());
+    xlrt.extend_from_slice(&0x0006_54F2u32.to_le_bytes());
+    xlrt.extend_from_slice(&[0xAA, 0xBB]); // tolerated partial tail
+    let record = build_refr_with_subs(0xBEEF, &[(b"XLRT", &xlrt)]);
+
+    let placed = parse_one_refr(&record);
+
+    assert_eq!(placed.location_ref_types, vec![0x0006_54F1, 0x0006_54F2]);
+}
+
 /// Regression for #412 — XPRM populates `primitive` so invisible
 /// activators / trigger boxes have a runtime-usable volume.
 #[test]

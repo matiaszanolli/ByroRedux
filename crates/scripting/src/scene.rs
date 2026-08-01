@@ -1,0 +1,1291 @@
+//! ECS runtime for Skyrim+ `SCEN` records.
+//!
+//! Parsed scene records are immutable definitions held by [`SceneRegistry`].
+//! Each definition owns one persistent [`ScenePlayer`] entity containing only
+//! playback state.  Actions communicate with their eventual dialogue/package
+//! executors through transient [`SceneEventBatch`] components, while compiled
+//! Papyrus bindings are surfaced as [`SceneFragmentInvocationBatch`] events.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use byroredux_core::ecs::resource::Resource;
+use byroredux_core::ecs::sparse_set::SparseSetStorage;
+use byroredux_core::ecs::storage::{Component, EntityId};
+use byroredux_core::ecs::world::World;
+use byroredux_plugin::esm::records::script_instance::{SceneFragmentEvent, SceneScriptFragment};
+use byroredux_plugin::esm::records::{
+    AliasFillType, QuestAlias, QustRecord, ScenRecord, SceneAction, SceneActionType,
+    ALIAS_FLAG_ALLOW_REUSE, SCENE_BEGIN_ON_QUEST_START,
+};
+
+use crate::condition::{evaluate, ConditionContext};
+use crate::papyrus_demo::PlayerEntity;
+use crate::quest_stages::{QuestFormId, QuestStageAdvancedBatch};
+
+/// Immutable scene definitions and the ECS entity assigned to each one.
+#[derive(Debug, Clone, Default)]
+pub struct SceneRegistry {
+    definitions: HashMap<u32, Arc<ScenRecord>>,
+    entities: HashMap<u32, EntityId>,
+}
+
+impl Resource for SceneRegistry {}
+
+impl SceneRegistry {
+    /// Build a definition-only registry, useful for tools and conformance
+    /// probes that do not own an ECS [`World`].
+    pub fn from_records(records: impl IntoIterator<Item = ScenRecord>) -> Self {
+        let mut registry = Self::default();
+        for record in records {
+            registry
+                .definitions
+                .insert(record.form_id, Arc::new(record));
+        }
+        registry
+    }
+
+    pub fn definition(&self, form_id: u32) -> Option<&ScenRecord> {
+        self.definitions.get(&form_id).map(Arc::as_ref)
+    }
+
+    pub fn scene_entity(&self, form_id: u32) -> Option<EntityId> {
+        self.entities.get(&form_id).copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.definitions.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.definitions.is_empty()
+    }
+
+    fn definition_arc(&self, form_id: u32) -> Option<Arc<ScenRecord>> {
+        self.definitions.get(&form_id).cloned()
+    }
+}
+
+/// Runtime resolution of `(owning quest, alias id)` to an actor entity.
+///
+/// Scene playback does not require a binding to advance: an unresolved actor
+/// is carried as `None` in [`SceneEvent::ActionStarted`].  This lets the scene
+/// layer ship independently of the quest-alias spawner while preserving the
+/// exact alias needed when that integration lands.
+#[derive(Debug, Clone, Default)]
+pub struct SceneActorBindings {
+    actors: HashMap<(QuestFormId, i32), EntityId>,
+    dirty: bool,
+}
+
+impl Resource for SceneActorBindings {}
+
+impl SceneActorBindings {
+    pub fn bind(&mut self, quest: QuestFormId, alias_id: i32, entity: EntityId) {
+        self.actors.insert((quest, alias_id), entity);
+    }
+
+    pub fn unbind(&mut self, quest: QuestFormId, alias_id: i32) -> Option<EntityId> {
+        self.actors.remove(&(quest, alias_id))
+    }
+
+    pub fn resolve(&self, quest: QuestFormId, alias_id: i32) -> Option<EntityId> {
+        self.actors.get(&(quest, alias_id)).copied()
+    }
+}
+
+/// Identity carried by a spawned reference that may fill a quest alias.
+/// `reference_form_id` is the ACHR/REFR identity, `base_form_id` is its NPC_
+/// (or other base record), and `location_ref_types` are the placement's XLRT
+/// LCRT tags.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SceneAliasCandidate {
+    pub reference_form_id: u32,
+    pub base_form_id: u32,
+    pub location_ref_types: Vec<u32>,
+}
+
+impl Component for SceneAliasCandidate {
+    type Storage = SparseSetStorage<Self>;
+}
+
+#[derive(Debug, Clone, Default)]
+struct SceneQuestAliasRegistry {
+    aliases: HashMap<QuestFormId, Vec<QuestAlias>>,
+}
+
+impl Resource for SceneQuestAliasRegistry {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScenePlaybackState {
+    Dormant,
+    WaitingForStart,
+    WaitingForPhaseStart,
+    Playing,
+    Finished,
+    Stopped,
+}
+
+/// Runtime state for one active action. The authored action remains in the
+/// registry; this component stores only mutable lifecycle state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveSceneAction {
+    pub action_index: u32,
+    pub action_type: SceneActionType,
+    pub end_phase: u32,
+    pub remaining_seconds: Option<f32>,
+    pub completed: bool,
+}
+
+/// Persistent playback state for one scene definition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenePlayer {
+    pub scene_form_id: u32,
+    pub state: ScenePlaybackState,
+    pub current_phase: u32,
+    pub active_actions: Vec<ActiveSceneAction>,
+    /// Action indices completed during the current run. Skyrim's
+    /// `IsSceneActionComplete` CTDA can query an action after it has left the
+    /// active set, so completion cannot be represented only on
+    /// [`ActiveSceneAction`]. Cleared whenever the scene starts again.
+    pub completed_actions: HashSet<u32>,
+}
+
+impl ScenePlayer {
+    pub fn new(scene_form_id: u32) -> Self {
+        Self {
+            scene_form_id,
+            state: ScenePlaybackState::Dormant,
+            current_phase: 0,
+            active_actions: Vec::new(),
+            completed_actions: HashSet::new(),
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        matches!(
+            self.state,
+            ScenePlaybackState::WaitingForStart
+                | ScenePlaybackState::WaitingForPhaseStart
+                | ScenePlaybackState::Playing
+        )
+    }
+}
+
+impl Component for ScenePlayer {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Explicitly request that the scene attached to this entity start.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SceneStartRequest;
+
+impl Component for SceneStartRequest {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Explicitly stop the scene attached to this entity.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SceneStopRequest;
+
+impl Component for SceneStopRequest {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// External completion signals for dialogue, package, or unknown actions.
+/// Timer actions normally complete internally but accept the same signal.
+#[derive(Debug, Clone, Default)]
+pub struct SceneActionCompletionBatch(pub Vec<u32>);
+
+impl Component for SceneActionCompletionBatch {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Scene/action lifecycle output consumed by dialogue, package, animation,
+/// audio, and future quest orchestration systems.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SceneEvent {
+    SceneStarted,
+    PhaseStarted {
+        phase_index: u32,
+    },
+    ActionStarted {
+        action_index: u32,
+        action_type: SceneActionType,
+        actor_alias: i32,
+        actor_entity: Option<EntityId>,
+        topic_form_id: Option<u32>,
+        packages: Vec<u32>,
+    },
+    ActionCompleted {
+        action_index: u32,
+    },
+    ActionStopped {
+        action_index: u32,
+        completed: bool,
+    },
+    PhaseCompleted {
+        phase_index: u32,
+    },
+    SceneFinished,
+    SceneStopped,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SceneEventBatch(pub Vec<SceneEvent>);
+
+impl Component for SceneEventBatch {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// One SCEN VMAD binding selected by the player state machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneFragmentInvocation {
+    pub scene_form_id: u32,
+    pub event: SceneFragmentEvent,
+    pub script_name: String,
+    pub fragment_name: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SceneFragmentInvocationBatch(pub Vec<SceneFragmentInvocation>);
+
+impl Component for SceneFragmentInvocationBatch {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Register scene components/resources without replacing an already-populated
+/// registry. Called by the scripting subsystem's top-level `register` hook.
+pub fn register(world: &mut World) {
+    world.register::<ScenePlayer>();
+    world.register::<SceneAliasCandidate>();
+    world.register::<SceneStartRequest>();
+    world.register::<SceneStopRequest>();
+    world.register::<SceneActionCompletionBatch>();
+    world.register::<SceneEventBatch>();
+    world.register::<SceneFragmentInvocationBatch>();
+    if world.try_resource::<SceneRegistry>().is_none() {
+        world.insert_resource(SceneRegistry::default());
+    }
+    if world.try_resource::<SceneActorBindings>().is_none() {
+        world.insert_resource(SceneActorBindings::default());
+    }
+    if world.try_resource::<SceneQuestAliasRegistry>().is_none() {
+        world.insert_resource(SceneQuestAliasRegistry::default());
+    }
+}
+
+/// Install parsed definitions and create one persistent scene-player entity
+/// per new FormID. Re-installing a load order refreshes definitions in place
+/// without resetting live playback state or creating duplicate entities.
+pub fn install_scene_records(
+    world: &mut World,
+    records: impl IntoIterator<Item = ScenRecord>,
+) -> usize {
+    if world.try_resource::<SceneRegistry>().is_none() {
+        register(world);
+    }
+
+    let records: Vec<ScenRecord> = records.into_iter().collect();
+    let existing = {
+        let registry = world.resource::<SceneRegistry>();
+        registry.entities.clone()
+    };
+
+    let mut installed = Vec::with_capacity(records.len());
+    for record in records {
+        let form_id = record.form_id;
+        let entity = existing.get(&form_id).copied().unwrap_or_else(|| {
+            let entity = world.spawn();
+            world.insert(entity, ScenePlayer::new(form_id));
+            entity
+        });
+        installed.push((form_id, entity, record));
+    }
+
+    let count = installed.len();
+    let mut registry = world.resource_mut::<SceneRegistry>();
+    for (form_id, entity, record) in installed {
+        registry.definitions.insert(form_id, Arc::new(record));
+        registry.entities.insert(form_id, entity);
+    }
+    count
+}
+
+/// Install the parsed QUST alias definitions used by scene actor slots.
+/// Definitions replace prior copies by quest FormID and mark the live binding
+/// table for a refresh after the cell loader attaches alias candidates.
+pub fn install_scene_quest_aliases(
+    world: &mut World,
+    records: impl IntoIterator<Item = QustRecord>,
+) -> usize {
+    if world.try_resource::<SceneQuestAliasRegistry>().is_none() {
+        register(world);
+    }
+    let records: Vec<QustRecord> = records.into_iter().collect();
+    let count = records.len();
+    {
+        let mut registry = world.resource_mut::<SceneQuestAliasRegistry>();
+        for record in records {
+            registry
+                .aliases
+                .insert(QuestFormId(record.form_id), record.aliases);
+        }
+    }
+    world.resource_mut::<SceneActorBindings>().dirty = true;
+    count
+}
+
+/// Notify the alias resolver that the live candidate set changed.
+pub fn mark_scene_actor_bindings_dirty(world: &World) {
+    if let Some(mut bindings) = world.try_resource_mut::<SceneActorBindings>() {
+        bindings.dirty = true;
+    }
+}
+
+fn candidate_matches_fill(fill: &AliasFillType, candidate: &SceneAliasCandidate) -> bool {
+    match fill {
+        AliasFillType::ForcedReference(reference) => candidate.reference_form_id == *reference,
+        AliasFillType::UniqueActor(base) => candidate.base_form_id == *base,
+        AliasFillType::LocationAliasReference { lcrt, .. } => {
+            candidate.location_ref_types.contains(lcrt)
+        }
+        AliasFillType::ForcedLocation(_)
+        | AliasFillType::CreatedObject { .. }
+        | AliasFillType::ExternalAlias { .. }
+        | AliasFillType::FromEvent { .. } => false,
+    }
+}
+
+/// Rebuild quest-alias → entity bindings from currently loaded candidates.
+///
+/// Direct references, unique actors, and XLRT location-ref roles are resolved
+/// now. Creation/event/location aliases still require their owning systems.
+/// Unless an alias opts into `Allow Reuse`, one entity fills only the first
+/// matching role in authored alias order; this is what lets two MQ101 soldier
+/// aliases sharing one LCRT select two distinct actors deterministically.
+pub fn refresh_scene_actor_bindings(world: &World) -> usize {
+    let should_refresh = world
+        .try_resource::<SceneActorBindings>()
+        .is_some_and(|bindings| bindings.dirty);
+    if !should_refresh {
+        return 0;
+    }
+
+    let mut candidates: Vec<(EntityId, SceneAliasCandidate)> = world
+        .query::<SceneAliasCandidate>()
+        .map(|query| {
+            query
+                .iter()
+                .map(|(entity, candidate)| (entity, candidate.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    candidates.sort_by_key(|(entity, _)| *entity);
+
+    let mut quests: Vec<(QuestFormId, Vec<QuestAlias>)> = world
+        .resource::<SceneQuestAliasRegistry>()
+        .aliases
+        .iter()
+        .map(|(&quest, aliases)| (quest, aliases.clone()))
+        .collect();
+    quests.sort_by_key(|(quest, _)| quest.0);
+    let registered_quests: HashSet<QuestFormId> = quests.iter().map(|(quest, _)| *quest).collect();
+    let mut resolved = world.resource::<SceneActorBindings>().actors.clone();
+    resolved.retain(|(quest, _), _| !registered_quests.contains(quest));
+    let mut external_aliases = Vec::new();
+
+    for (quest, aliases) in &quests {
+        let mut used = HashSet::new();
+        for alias in aliases.iter().filter(|alias| !alias.is_location) {
+            if let Some(AliasFillType::ExternalAlias {
+                quest: source_quest,
+                alias_id: source_alias,
+            }) = alias.fill_type
+            {
+                external_aliases.push((*quest, alias.clone(), source_quest, source_alias));
+                continue;
+            }
+
+            let allow_reuse = alias.flags.has(ALIAS_FLAG_ALLOW_REUSE);
+            let chosen = candidates.iter().find_map(|(entity, candidate)| {
+                if !allow_reuse && used.contains(entity) {
+                    return None;
+                }
+                let fill_matches = alias
+                    .fill_type
+                    .as_ref()
+                    .map_or(!alias.match_conditions.is_empty(), |fill| {
+                        candidate_matches_fill(fill, candidate)
+                    });
+                if !fill_matches
+                    || !evaluate(
+                        &alias.match_conditions,
+                        world,
+                        &ConditionContext::for_subject(*entity).with_quest(*quest),
+                    )
+                {
+                    return None;
+                }
+                Some(*entity)
+            });
+            if let Some(entity) = chosen {
+                resolved.insert((*quest, alias.alias_id), entity);
+                if !allow_reuse {
+                    used.insert(entity);
+                }
+                if let Some(target_alias) = alias.force_into_alias {
+                    resolved.insert((*quest, target_alias), entity);
+                }
+            }
+        }
+    }
+
+    // External aliases can chain. Iterate to a fixed point bounded by the
+    // number of external definitions; a cycle makes no progress and exits.
+    for _ in 0..external_aliases.len() {
+        let mut changed = false;
+        for (quest, alias, source_quest, source_alias) in &external_aliases {
+            let Some(entity) = resolved
+                .get(&(QuestFormId(*source_quest), *source_alias))
+                .copied()
+            else {
+                continue;
+            };
+            changed |= resolved.insert((*quest, alias.alias_id), entity) != Some(entity);
+            if let Some(target_alias) = alias.force_into_alias {
+                changed |= resolved.insert((*quest, target_alias), entity) != Some(entity);
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let count = resolved
+        .keys()
+        .filter(|(quest, _)| registered_quests.contains(quest))
+        .count();
+    let mut bindings = world.resource_mut::<SceneActorBindings>();
+    bindings.actors = resolved;
+    bindings.dirty = false;
+    count
+}
+
+fn snapshot_entities<T: Component>(world: &World) -> HashSet<EntityId> {
+    world
+        .query::<T>()
+        .map(|query| query.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default()
+}
+
+fn drain<T: Component>(world: &World) {
+    let Some(mut query) = world.query_mut::<T>() else {
+        return;
+    };
+    let entities: Vec<EntityId> = query.iter().map(|(entity, _)| entity).collect();
+    for entity in entities {
+        query.remove(entity);
+    }
+}
+
+fn fragments_for(
+    scene: &ScenRecord,
+    event: SceneFragmentEvent,
+    out: &mut Vec<SceneFragmentInvocation>,
+) {
+    out.extend(
+        scene
+            .fragments
+            .iter()
+            .filter(|binding| binding.event == event)
+            .map(|binding: &SceneScriptFragment| SceneFragmentInvocation {
+                scene_form_id: scene.form_id,
+                event: binding.event,
+                script_name: binding.script_name.clone(),
+                fragment_name: binding.fragment_name.clone(),
+            }),
+    );
+}
+
+fn actor_entity(
+    scene: &ScenRecord,
+    action: &SceneAction,
+    bindings: &SceneActorBindings,
+) -> Option<EntityId> {
+    let quest = QuestFormId(scene.quest_form_id?);
+    (action.actor_id >= 0)
+        .then(|| bindings.resolve(quest, action.actor_id))
+        .flatten()
+}
+
+fn start_phase_actions(
+    player: &mut ScenePlayer,
+    scene: &ScenRecord,
+    bindings: &SceneActorBindings,
+    events: &mut Vec<SceneEvent>,
+) {
+    for action in scene
+        .actions
+        .iter()
+        .filter(|action| action.start_phase == player.current_phase)
+    {
+        if player
+            .active_actions
+            .iter()
+            .any(|active| active.action_index == action.index)
+        {
+            continue;
+        }
+        player.active_actions.push(ActiveSceneAction {
+            action_index: action.index,
+            action_type: action.action_type,
+            end_phase: action.end_phase,
+            remaining_seconds: (action.action_type == SceneActionType::Timer)
+                .then_some(action.timer_seconds.unwrap_or_default().max(0.0)),
+            completed: false,
+        });
+        events.push(SceneEvent::ActionStarted {
+            action_index: action.index,
+            action_type: action.action_type,
+            actor_alias: action.actor_id,
+            actor_entity: actor_entity(scene, action, bindings),
+            topic_form_id: action.topic_form_id,
+            packages: action.packages.clone(),
+        });
+    }
+}
+
+fn stop_actions(player: &mut ScenePlayer, phase: Option<u32>, events: &mut Vec<SceneEvent>) {
+    let mut retained = Vec::with_capacity(player.active_actions.len());
+    for action in player.active_actions.drain(..) {
+        if phase.is_none_or(|phase| action.end_phase <= phase) {
+            events.push(SceneEvent::ActionStopped {
+                action_index: action.action_index,
+                completed: action.completed,
+            });
+        } else {
+            retained.push(action);
+        }
+    }
+    player.active_actions = retained;
+}
+
+fn finish_scene(
+    player: &mut ScenePlayer,
+    scene: &ScenRecord,
+    events: &mut Vec<SceneEvent>,
+    fragments: &mut Vec<SceneFragmentInvocation>,
+) {
+    stop_actions(player, None, events);
+    player.state = ScenePlaybackState::Finished;
+    events.push(SceneEvent::SceneFinished);
+    fragments_for(scene, SceneFragmentEvent::End, fragments);
+}
+
+struct TickContext<'a> {
+    world: &'a World,
+    subject: EntityId,
+    bindings: &'a SceneActorBindings,
+    explicit_start: bool,
+    auto_start: bool,
+    stop_requested: bool,
+    completions: &'a HashSet<u32>,
+    dt: f32,
+}
+
+#[derive(Default)]
+struct TickOutput {
+    events: Vec<SceneEvent>,
+    fragments: Vec<SceneFragmentInvocation>,
+}
+
+fn tick_player(
+    player: &mut ScenePlayer,
+    scene: &ScenRecord,
+    context: &TickContext<'_>,
+) -> TickOutput {
+    let mut output = TickOutput::default();
+    if context.stop_requested && player.is_running() {
+        stop_actions(player, None, &mut output.events);
+        player.state = ScenePlaybackState::Stopped;
+        output.events.push(SceneEvent::SceneStopped);
+        fragments_for(scene, SceneFragmentEvent::End, &mut output.fragments);
+        return output;
+    }
+
+    if (context.explicit_start || context.auto_start) && !player.is_running() {
+        player.current_phase = 0;
+        player.active_actions.clear();
+        player.completed_actions.clear();
+        player.state = ScenePlaybackState::WaitingForStart;
+    }
+
+    let condition_context = scene.quest_form_id.map(QuestFormId).map_or_else(
+        || ConditionContext::for_subject(context.subject),
+        |quest| ConditionContext::for_subject(context.subject).with_quest(quest),
+    );
+    if player.state == ScenePlaybackState::WaitingForStart {
+        if !evaluate(&scene.conditions, context.world, &condition_context) {
+            return output;
+        }
+        player.state = ScenePlaybackState::WaitingForPhaseStart;
+        output.events.push(SceneEvent::SceneStarted);
+        fragments_for(scene, SceneFragmentEvent::Begin, &mut output.fragments);
+        if scene.phases.is_empty() {
+            finish_scene(player, scene, &mut output.events, &mut output.fragments);
+            return output;
+        }
+    }
+
+    if player.state == ScenePlaybackState::WaitingForPhaseStart {
+        let Some(phase) = scene.phases.get(player.current_phase as usize) else {
+            finish_scene(player, scene, &mut output.events, &mut output.fragments);
+            return output;
+        };
+        if !evaluate(&phase.start_conditions, context.world, &condition_context) {
+            return output;
+        }
+        output.events.push(SceneEvent::PhaseStarted {
+            phase_index: player.current_phase,
+        });
+        if let Ok(phase_index) = u8::try_from(player.current_phase) {
+            fragments_for(
+                scene,
+                SceneFragmentEvent::PhaseStart { phase_index },
+                &mut output.fragments,
+            );
+        }
+        start_phase_actions(player, scene, context.bindings, &mut output.events);
+        player.state = ScenePlaybackState::Playing;
+        // A newly-entered phase lives for at least one scheduler tick. This
+        // gives fragment/action consumers a frame to react before empty
+        // completion conditions can advance it.
+        return output;
+    }
+
+    if player.state != ScenePlaybackState::Playing {
+        return output;
+    }
+
+    for action in &mut player.active_actions {
+        if action.completed {
+            continue;
+        }
+        if context.completions.contains(&action.action_index) {
+            action.completed = true;
+        } else if let Some(remaining) = &mut action.remaining_seconds {
+            *remaining -= context.dt.max(0.0);
+            if *remaining <= 0.0 {
+                action.completed = true;
+            }
+        }
+        if action.completed {
+            player.completed_actions.insert(action.action_index);
+            output.events.push(SceneEvent::ActionCompleted {
+                action_index: action.action_index,
+            });
+        }
+    }
+
+    let Some(phase) = scene.phases.get(player.current_phase as usize) else {
+        finish_scene(player, scene, &mut output.events, &mut output.fragments);
+        return output;
+    };
+    let ending_actions_complete = player
+        .active_actions
+        .iter()
+        .filter(|action| action.end_phase == player.current_phase)
+        .all(|action| action.completed);
+    if !ending_actions_complete
+        || !evaluate(
+            &phase.completion_conditions,
+            context.world,
+            &condition_context,
+        )
+    {
+        return output;
+    }
+
+    output.events.push(SceneEvent::PhaseCompleted {
+        phase_index: player.current_phase,
+    });
+    if let Ok(phase_index) = u8::try_from(player.current_phase) {
+        fragments_for(
+            scene,
+            SceneFragmentEvent::PhaseCompletion { phase_index },
+            &mut output.fragments,
+        );
+    }
+    stop_actions(player, Some(player.current_phase), &mut output.events);
+
+    player.current_phase += 1;
+    if player.current_phase as usize >= scene.phases.len() {
+        finish_scene(player, scene, &mut output.events, &mut output.fragments);
+    } else {
+        player.state = ScenePlaybackState::WaitingForPhaseStart;
+    }
+    output
+}
+
+/// Advance all installed scenes by one frame.
+///
+/// Start/stop/completion inputs are consumed exactly once. Outputs replace the
+/// previous frame's batches on each scene entity and are also drained by the
+/// global end-of-frame cleanup system.
+pub fn scene_playback_system(world: &World, dt: f32) {
+    refresh_scene_actor_bindings(world);
+
+    // Ensure direct unit-test/manual invocations retain one-frame semantics
+    // even when the scheduler's cleanup system is not run between calls.
+    drain::<SceneEventBatch>(world);
+    drain::<SceneFragmentInvocationBatch>(world);
+
+    let explicit_starts = snapshot_entities::<SceneStartRequest>(world);
+    let stop_requests = snapshot_entities::<SceneStopRequest>(world);
+    let completion_batches: HashMap<EntityId, HashSet<u32>> = world
+        .query::<SceneActionCompletionBatch>()
+        .map(|query| {
+            query
+                .iter()
+                .map(|(entity, batch)| (entity, batch.0.iter().copied().collect()))
+                .collect()
+        })
+        .unwrap_or_default();
+    drain::<SceneStartRequest>(world);
+    drain::<SceneStopRequest>(world);
+    drain::<SceneActionCompletionBatch>(world);
+
+    let quest_starts: HashSet<QuestFormId> = world
+        .query::<QuestStageAdvancedBatch>()
+        .map(|query| {
+            query
+                .iter()
+                .flat_map(|(_, batch)| batch.0.iter())
+                .filter(|advance| advance.previous_stage == 0)
+                .map(|advance| advance.quest)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let players: Vec<(EntityId, ScenePlayer)> = world
+        .query::<ScenePlayer>()
+        .map(|query| {
+            query
+                .iter()
+                .filter(|(entity, player)| {
+                    !quest_starts.is_empty()
+                        || player.is_running()
+                        || explicit_starts.contains(entity)
+                        || stop_requests.contains(entity)
+                        || completion_batches.contains_key(entity)
+                })
+                .map(|(entity, player)| (entity, player.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if players.is_empty() {
+        return;
+    }
+
+    let definitions: Vec<(EntityId, ScenePlayer, Arc<ScenRecord>)> = {
+        let registry = world.resource::<SceneRegistry>();
+        players
+            .into_iter()
+            .filter_map(|(entity, player)| {
+                registry
+                    .definition_arc(player.scene_form_id)
+                    .map(|definition| (entity, player, definition))
+            })
+            .collect()
+    };
+    let bindings = world.resource::<SceneActorBindings>().clone();
+    let subject = world
+        .try_resource::<PlayerEntity>()
+        .map(|player| player.0)
+        .unwrap_or_default();
+
+    let empty_completions = HashSet::new();
+    let mut updates = Vec::with_capacity(definitions.len());
+    for (entity, mut player, scene) in definitions {
+        let auto_start = scene.flags & SCENE_BEGIN_ON_QUEST_START != 0
+            && scene
+                .quest_form_id
+                .is_some_and(|quest| quest_starts.contains(&QuestFormId(quest)));
+        let output = tick_player(
+            &mut player,
+            &scene,
+            &TickContext {
+                world,
+                subject,
+                bindings: &bindings,
+                explicit_start: explicit_starts.contains(&entity),
+                auto_start,
+                stop_requested: stop_requests.contains(&entity),
+                completions: completion_batches
+                    .get(&entity)
+                    .unwrap_or(&empty_completions),
+                dt,
+            },
+        );
+        updates.push((entity, player, output.events, output.fragments));
+    }
+
+    {
+        let mut query = world
+            .query_mut::<ScenePlayer>()
+            .expect("ScenePlayer storage registered");
+        for (entity, player, _, _) in &updates {
+            query.insert(*entity, player.clone());
+        }
+    }
+    {
+        let mut query = world
+            .query_mut::<SceneEventBatch>()
+            .expect("SceneEventBatch storage registered");
+        for (entity, _, events, _) in &updates {
+            if !events.is_empty() {
+                query.insert(*entity, SceneEventBatch(events.clone()));
+            }
+        }
+    }
+    {
+        let mut query = world
+            .query_mut::<SceneFragmentInvocationBatch>()
+            .expect("SceneFragmentInvocationBatch storage registered");
+        for (entity, _, _, fragments) in updates {
+            if !fragments.is_empty() {
+                query.insert(entity, SceneFragmentInvocationBatch(fragments));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_plugin::esm::records::condition::{
+        ComparisonOp, Condition, ConditionValue, RunOn,
+    };
+    use byroredux_plugin::esm::records::{ScenePhase, SCENE_BEGIN_ON_QUEST_START};
+
+    use crate::quest_stages::{QuestStageAdvanced, QuestStageState};
+
+    const SCENE: u32 = 0x100;
+    const QUEST: u32 = 0x200;
+
+    #[test]
+    fn quest_alias_refresh_resolves_direct_unique_and_distinct_xlrt_roles() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let forced = world.spawn();
+        let unique = world.spawn();
+        let soldier_a = world.spawn();
+        let soldier_b = world.spawn();
+        for (entity, candidate) in [
+            (
+                forced,
+                SceneAliasCandidate {
+                    reference_form_id: 0xA1,
+                    base_form_id: 0xB1,
+                    location_ref_types: Vec::new(),
+                },
+            ),
+            (
+                unique,
+                SceneAliasCandidate {
+                    reference_form_id: 0xA2,
+                    base_form_id: 0xB2,
+                    location_ref_types: Vec::new(),
+                },
+            ),
+            (
+                soldier_a,
+                SceneAliasCandidate {
+                    reference_form_id: 0xA3,
+                    base_form_id: 0xB3,
+                    location_ref_types: vec![0xC1],
+                },
+            ),
+            (
+                soldier_b,
+                SceneAliasCandidate {
+                    reference_form_id: 0xA4,
+                    base_form_id: 0xB3,
+                    location_ref_types: vec![0xC1],
+                },
+            ),
+        ] {
+            world.insert(entity, candidate);
+        }
+        install_scene_quest_aliases(
+            &mut world,
+            [QustRecord {
+                form_id: QUEST,
+                aliases: vec![
+                    QuestAlias {
+                        alias_id: 1,
+                        name: "Forced".to_owned(),
+                        fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                        force_into_alias: Some(10),
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 2,
+                        name: "Unique".to_owned(),
+                        fill_type: Some(AliasFillType::UniqueActor(0xB2)),
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 3,
+                        name: "SoldierA".to_owned(),
+                        fill_type: Some(AliasFillType::LocationAliasReference {
+                            lcrt: 0xC1,
+                            alfa: 0,
+                        }),
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 4,
+                        name: "SoldierB".to_owned(),
+                        fill_type: Some(AliasFillType::LocationAliasReference {
+                            lcrt: 0xC1,
+                            alfa: 0,
+                        }),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+        );
+
+        assert_eq!(refresh_scene_actor_bindings(&world), 5);
+        let bindings = world.resource::<SceneActorBindings>();
+        assert_eq!(bindings.resolve(QuestFormId(QUEST), 1), Some(forced));
+        assert_eq!(bindings.resolve(QuestFormId(QUEST), 10), Some(forced));
+        assert_eq!(bindings.resolve(QuestFormId(QUEST), 2), Some(unique));
+        assert_eq!(bindings.resolve(QuestFormId(QUEST), 3), Some(soldier_a));
+        assert_eq!(bindings.resolve(QuestFormId(QUEST), 4), Some(soldier_b));
+        assert_eq!(refresh_scene_actor_bindings(&world), 0, "clean fast path");
+    }
+
+    fn fragment(event: SceneFragmentEvent, name: &str) -> SceneScriptFragment {
+        SceneScriptFragment {
+            event,
+            script_name: "SF_TestScene_00000100".to_owned(),
+            fragment_name: name.to_owned(),
+        }
+    }
+
+    fn base_scene() -> ScenRecord {
+        ScenRecord {
+            form_id: SCENE,
+            editor_id: "TestScene".to_owned(),
+            quest_form_id: Some(QUEST),
+            phases: vec![ScenePhase {
+                name: "Opening".to_owned(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn setup(scene: ScenRecord) -> (World, EntityId, EntityId) {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let player = world.spawn();
+        world.insert_resource(PlayerEntity(player));
+        world.insert_resource(QuestStageState::default());
+        assert_eq!(install_scene_records(&mut world, [scene]), 1);
+        let entity = world
+            .resource::<SceneRegistry>()
+            .scene_entity(SCENE)
+            .expect("scene entity");
+        (world, entity, player)
+    }
+
+    fn state(world: &World, entity: EntityId) -> ScenePlayer {
+        world
+            .get::<ScenePlayer>(entity)
+            .expect("scene player")
+            .clone()
+    }
+
+    fn events(world: &World, entity: EntityId) -> Vec<SceneEvent> {
+        world
+            .get::<SceneEventBatch>(entity)
+            .map(|batch| batch.0.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn install_is_idempotent_and_refreshes_the_definition() {
+        let scene = base_scene();
+        let (mut world, entity, _) = setup(scene.clone());
+        let mut replacement = scene;
+        replacement.editor_id = "Refreshed".to_owned();
+
+        assert_eq!(install_scene_records(&mut world, [replacement]), 1);
+        let registry = world.resource::<SceneRegistry>();
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.scene_entity(SCENE), Some(entity));
+        assert_eq!(registry.definition(SCENE).unwrap().editor_id, "Refreshed");
+    }
+
+    #[test]
+    fn explicit_start_enters_phase_starts_action_and_dispatches_fragments() {
+        let mut scene = base_scene();
+        scene.actions.push(SceneAction {
+            action_type: SceneActionType::Dialogue,
+            actor_id: 7,
+            index: 12,
+            topic_form_id: Some(0x300),
+            ..Default::default()
+        });
+        scene.fragments = vec![
+            fragment(SceneFragmentEvent::Begin, "Fragment_0"),
+            fragment(
+                SceneFragmentEvent::PhaseStart { phase_index: 0 },
+                "Fragment_1",
+            ),
+        ];
+        let (mut world, entity, actor) = setup(scene);
+        world
+            .resource_mut::<SceneActorBindings>()
+            .bind(QuestFormId(QUEST), 7, actor);
+        world.insert(entity, SceneStartRequest);
+
+        scene_playback_system(&world, 0.016);
+
+        let player = state(&world, entity);
+        assert_eq!(player.state, ScenePlaybackState::Playing);
+        assert_eq!(player.current_phase, 0);
+        assert_eq!(player.active_actions.len(), 1);
+        assert!(events(&world, entity).contains(&SceneEvent::ActionStarted {
+            action_index: 12,
+            action_type: SceneActionType::Dialogue,
+            actor_alias: 7,
+            actor_entity: Some(actor),
+            topic_form_id: Some(0x300),
+            packages: Vec::new(),
+        }));
+        let invocations = world
+            .get::<SceneFragmentInvocationBatch>(entity)
+            .expect("fragment invocations");
+        assert_eq!(invocations.0.len(), 2);
+        assert_eq!(invocations.0[0].event, SceneFragmentEvent::Begin);
+        assert_eq!(
+            invocations.0[1].event,
+            SceneFragmentEvent::PhaseStart { phase_index: 0 }
+        );
+    }
+
+    #[test]
+    fn timer_and_external_completion_preserve_overlapping_action_lifetimes() {
+        let mut scene = base_scene();
+        scene.phases.push(ScenePhase {
+            name: "Second".to_owned(),
+            ..Default::default()
+        });
+        scene.actions = vec![
+            SceneAction {
+                action_type: SceneActionType::Package,
+                actor_id: 4,
+                index: 20,
+                start_phase: 0,
+                end_phase: 1,
+                packages: vec![0x400],
+                ..Default::default()
+            },
+            SceneAction {
+                action_type: SceneActionType::Timer,
+                actor_id: -1,
+                index: 21,
+                start_phase: 0,
+                end_phase: 0,
+                timer_seconds: Some(1.0),
+                ..Default::default()
+            },
+        ];
+        let (mut world, entity, _) = setup(scene);
+        world.insert(entity, SceneStartRequest);
+        scene_playback_system(&world, 0.0);
+        assert_eq!(state(&world, entity).active_actions.len(), 2);
+
+        scene_playback_system(&world, 0.5);
+        assert_eq!(state(&world, entity).state, ScenePlaybackState::Playing);
+        scene_playback_system(&world, 0.5);
+        let after_timer = state(&world, entity);
+        assert_eq!(after_timer.state, ScenePlaybackState::WaitingForPhaseStart);
+        assert_eq!(after_timer.current_phase, 1);
+        assert_eq!(after_timer.active_actions.len(), 1);
+        assert_eq!(after_timer.active_actions[0].action_index, 20);
+
+        scene_playback_system(&world, 0.0);
+        assert_eq!(state(&world, entity).state, ScenePlaybackState::Playing);
+        world.insert(entity, SceneActionCompletionBatch(vec![20]));
+        scene_playback_system(&world, 0.0);
+
+        let finished = state(&world, entity);
+        assert_eq!(finished.state, ScenePlaybackState::Finished);
+        assert!(finished.active_actions.is_empty());
+        let final_events = events(&world, entity);
+        assert!(final_events.contains(&SceneEvent::ActionCompleted { action_index: 20 }));
+        assert!(final_events.contains(&SceneEvent::ActionStopped {
+            action_index: 20,
+            completed: true,
+        }));
+        assert!(final_events.contains(&SceneEvent::SceneFinished));
+    }
+
+    #[test]
+    fn completed_action_history_drives_scene_action_completion_condition() {
+        let mut scene = base_scene();
+        scene.phases.push(ScenePhase {
+            name: "WaitForOpeningAction".to_owned(),
+            completion_conditions: vec![Condition {
+                function_index: 550,
+                comparator: ComparisonOp::Eq,
+                comparand: ConditionValue::Literal(1.0),
+                param_1: SCENE,
+                param_2: 21,
+                run_on: RunOn::Subject,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        scene.actions.push(SceneAction {
+            action_type: SceneActionType::Timer,
+            actor_id: -1,
+            index: 21,
+            start_phase: 0,
+            end_phase: 0,
+            timer_seconds: Some(0.0),
+            ..Default::default()
+        });
+        let (mut world, entity, _) = setup(scene);
+        world.insert(entity, SceneStartRequest);
+
+        scene_playback_system(&world, 0.0); // enter phase 0
+        scene_playback_system(&world, 0.0); // complete action 21
+        scene_playback_system(&world, 0.0); // enter phase 1
+        scene_playback_system(&world, 0.0); // CTDA observes completion history
+
+        let finished = state(&world, entity);
+        assert_eq!(finished.state, ScenePlaybackState::Finished);
+        assert!(finished.completed_actions.contains(&21));
+
+        world.insert(entity, SceneStartRequest);
+        scene_playback_system(&world, 0.0);
+        assert!(
+            state(&world, entity).completed_actions.is_empty(),
+            "a new run must not inherit completed actions from the old run"
+        );
+    }
+
+    #[test]
+    fn phase_start_conditions_are_retried_until_true() {
+        let mut scene = base_scene();
+        scene.phases[0].start_conditions.push(Condition {
+            function_index: 58,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(10.0),
+            param_1: QUEST,
+            run_on: RunOn::Subject,
+            ..Default::default()
+        });
+        let (mut world, entity, _) = setup(scene);
+        world.insert(entity, SceneStartRequest);
+
+        scene_playback_system(&world, 0.0);
+        assert_eq!(
+            state(&world, entity).state,
+            ScenePlaybackState::WaitingForPhaseStart
+        );
+
+        world
+            .resource_mut::<QuestStageState>()
+            .set_stage(QuestFormId(QUEST), 10);
+        scene_playback_system(&world, 0.0);
+        assert_eq!(state(&world, entity).state, ScenePlaybackState::Playing);
+    }
+
+    #[test]
+    fn quest_start_event_auto_starts_flagged_scene() {
+        let mut scene = base_scene();
+        scene.flags = SCENE_BEGIN_ON_QUEST_START;
+        let (mut world, entity, _) = setup(scene);
+        let sink = world.spawn();
+        world.insert(
+            sink,
+            QuestStageAdvancedBatch(vec![QuestStageAdvanced {
+                quest: QuestFormId(QUEST),
+                previous_stage: 0,
+                new_stage: 10,
+            }]),
+        );
+
+        scene_playback_system(&world, 0.0);
+
+        assert_eq!(state(&world, entity).state, ScenePlaybackState::Playing);
+        assert!(events(&world, entity).contains(&SceneEvent::SceneStarted));
+    }
+
+    #[test]
+    fn phase_condition_resolves_run_on_quest_alias() {
+        use byroredux_core::character::CharacterLevel;
+
+        let mut scene = base_scene();
+        scene.phases[0].start_conditions.push(Condition {
+            function_index: 80,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(12.0),
+            run_on: RunOn::QuestAlias,
+            extra_data_id: 7,
+            ..Default::default()
+        });
+        let (mut world, entity, actor) = setup(scene);
+        world.register::<CharacterLevel>();
+        world.insert(actor, CharacterLevel { level: 12, xp: 0 });
+        world
+            .resource_mut::<SceneActorBindings>()
+            .bind(QuestFormId(QUEST), 7, actor);
+        world.insert(entity, SceneStartRequest);
+
+        scene_playback_system(&world, 0.0);
+
+        assert_eq!(state(&world, entity).state, ScenePlaybackState::Playing);
+    }
+
+    #[test]
+    fn stop_request_stops_active_actions_and_dispatches_end_fragment() {
+        let mut scene = base_scene();
+        scene.actions.push(SceneAction {
+            action_type: SceneActionType::Package,
+            index: 1,
+            end_phase: 0,
+            ..Default::default()
+        });
+        scene.fragments = vec![fragment(SceneFragmentEvent::End, "Fragment_End")];
+        let (mut world, entity, _) = setup(scene);
+        world.insert(entity, SceneStartRequest);
+        scene_playback_system(&world, 0.0);
+        world.insert(entity, SceneStopRequest);
+
+        scene_playback_system(&world, 0.0);
+
+        assert_eq!(state(&world, entity).state, ScenePlaybackState::Stopped);
+        assert!(events(&world, entity).contains(&SceneEvent::ActionStopped {
+            action_index: 1,
+            completed: false,
+        }));
+        assert_eq!(
+            world
+                .get::<SceneFragmentInvocationBatch>(entity)
+                .expect("end fragment")
+                .0[0]
+                .event,
+            SceneFragmentEvent::End
+        );
+    }
+}

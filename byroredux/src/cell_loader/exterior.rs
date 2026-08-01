@@ -13,7 +13,8 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 use super::load::{register_cell_root, stamp_cell_root_range};
 use super::load_order::parse_record_indexes_in_load_order;
 use super::references::{
-    flush_pending_cell_textures, load_references_budgeted, ReferenceLoadJob, ReferenceLoadProgress,
+    flush_pending_cell_textures, load_references, load_references_budgeted, ReferenceLoadJob,
+    ReferenceLoadProgress,
 };
 use super::{terrain, water, FrameTimeBudget};
 
@@ -68,6 +69,175 @@ pub struct OneCellLoadInfo {
     /// Mid-cell terrain ground point in Y-up world space (only used by
     /// the bulk loader to seat the initial camera).
     pub center: Vec3,
+}
+
+/// Spawn the active worldspace's persistent CELL once, outside the
+/// coordinate-streamed tile set.
+///
+/// Bethesda stores globally persistent exterior actors here (Skyrim's
+/// Hadvar/Ralof ACHRs are the MQ101-critical examples). Giving the CELL its
+/// own root keeps those entities alive across ordinary tile unloads while
+/// still making the whole set reclaimable on a worldspace transition.
+pub fn load_worldspace_persistent_cell(
+    wctx: &ExteriorWorldContext,
+    center_grid: (i32, i32),
+    full_3d_radius: i32,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+) -> Option<EntityId> {
+    super::load::ensure_globals_resource(world, &wctx.record_index.globals);
+    let index = &wctx.record_index.cells;
+    let cell = index
+        .worldspace_persistent_cells
+        .get(&wctx.worldspace_key)?;
+
+    let mut local_refs = Vec::new();
+    let mut remote_actor_refs = Vec::new();
+    for placed in &cell.references {
+        if persistent_position_is_local(placed.position, center_grid, full_3d_radius) {
+            local_refs.push(placed.clone());
+        } else if wctx.record_index.npcs.contains_key(&placed.base_form_id) {
+            remote_actor_refs.push(placed);
+        }
+    }
+
+    let cell_root = world.spawn();
+    register_cell_root(world, cell_root);
+    let first_entity = world.next_entity_id();
+    let result = load_references(
+        &local_refs,
+        index,
+        &wctx.record_index,
+        &wctx.record_index.npcs,
+        &wctx.record_index.races,
+        wctx.record_index.game,
+        world,
+        ctx,
+        tex_provider,
+        mat_provider,
+        &format!("{} persistent", wctx.worldspace_key),
+        wctx.load_order.as_ref(),
+        &std::collections::HashSet::new(),
+    );
+    let live_actor_candidates: std::collections::HashMap<u32, (EntityId, bool)> = world
+        .query::<byroredux_scripting::SceneAliasCandidate>()
+        .map(|query| {
+            query
+                .iter()
+                .map(|(entity, candidate)| {
+                    (
+                        candidate.reference_form_id,
+                        (
+                            entity,
+                            world.has::<byroredux_core::ecs::GlobalTransform>(entity),
+                        ),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let local_actor_refs: Vec<_> = local_refs
+        .iter()
+        .filter(|placed| wctx.record_index.npcs.contains_key(&placed.base_form_id))
+        .collect();
+    let local_actor_3d = local_actor_refs
+        .iter()
+        .filter(|placed| {
+            live_actor_candidates
+                .get(&placed.form_id)
+                .is_some_and(|(_, loaded_3d)| *loaded_3d)
+        })
+        .count();
+    let mut logical_stub_refs = remote_actor_refs;
+    logical_stub_refs.extend(
+        local_actor_refs
+            .iter()
+            .copied()
+            .filter(|placed| !live_actor_candidates.contains_key(&placed.form_id)),
+    );
+    // Persistent actors outside the active 3D radius retain their logical
+    // reference/base identity for quest-alias resolution, but deliberately
+    // carry no Transform/GlobalTransform or render hierarchy. `HasLoaded3D`
+    // therefore remains false until a future persistent-3D streamer promotes
+    // them. Local actors were fully spawned above and must not get duplicate
+    // logical stubs.
+    for placed in &logical_stub_refs {
+        let entity = world.spawn();
+        let plugin_name = super::load_order::plugin_for_form_id(placed.form_id, &wctx.load_order)
+            .unwrap_or("Engine.esm");
+        let form_id = world
+            .resource_mut::<byroredux_core::form_id::FormIdPool>()
+            .intern(byroredux_core::form_id::FormIdPair {
+                plugin: byroredux_core::form_id::PluginId::from_filename(plugin_name),
+                local: byroredux_core::form_id::LocalFormId(placed.form_id),
+            });
+        world.insert(
+            entity,
+            byroredux_core::ecs::components::FormIdComponent(form_id),
+        );
+        world.insert(
+            entity,
+            byroredux_scripting::SceneAliasCandidate {
+                reference_form_id: placed.form_id,
+                base_form_id: placed.base_form_id,
+                location_ref_types: placed.location_ref_types.clone(),
+            },
+        );
+    }
+    if !logical_stub_refs.is_empty() {
+        byroredux_scripting::mark_scene_actor_bindings_dirty(world);
+    }
+    stamp_cell_root_range(world, cell_root, first_entity, world.next_entity_id());
+    flush_pending_cell_textures(ctx);
+    log::info!(target: "engine::scene_persistent",
+        "Worldspace '{}' persistent CELL {:08X}: {} local refs -> {} entities; {}/{} local actors have 3D, {} logical-only actor identities ({} authored refs total)",
+        wctx.worldspace_key,
+        cell.form_id,
+        local_refs.len(),
+        result.entity_count,
+        local_actor_3d,
+        local_actor_refs.len(),
+        logical_stub_refs.len(),
+        cell.references.len(),
+    );
+    Some(cell_root)
+}
+
+fn persistent_position_is_local(
+    position_zup: [f32; 3],
+    center_grid: (i32, i32),
+    radius: i32,
+) -> bool {
+    let gx = (position_zup[0] / EXTERIOR_CELL_UNITS).floor() as i32;
+    let gy = (position_zup[1] / EXTERIOR_CELL_UNITS).floor() as i32;
+    (gx - center_grid.0).abs().max((gy - center_grid.1).abs()) <= radius.max(0)
+}
+
+#[cfg(test)]
+mod persistent_grid_tests {
+    use super::persistent_position_is_local;
+
+    #[test]
+    fn persistent_3d_filter_uses_floor_for_negative_cells_and_chebyshev_radius() {
+        assert!(persistent_position_is_local(
+            [4.25 * 4096.0, -19.75 * 4096.0, 0.0],
+            (4, -20),
+            0,
+        ));
+        assert!(persistent_position_is_local(
+            [5.0 * 4096.0, -21.0 * 4096.0, 0.0],
+            (4, -20),
+            1,
+        ));
+        assert!(!persistent_position_is_local(
+            [6.0 * 4096.0, -20.0 * 4096.0, 0.0],
+            (4, -20),
+            1,
+        ));
+        assert!(!persistent_position_is_local([-0.01, 0.0, 0.0], (0, 0), 0,));
+    }
 }
 
 /// Resumable main-thread application of one exterior cell.

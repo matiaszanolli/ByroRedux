@@ -648,6 +648,11 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // frame (before end-of-frame cleanup drains it).
     scheduler.add_exclusive(Stage::Update, trigger_detection_dispatch);
     scheduler.add_exclusive(Stage::Update, quest_advance_dispatch);
+    // SCEN playback must observe the original quest-start batch before the
+    // fragment dispatcher can replace the shared sink with chained SetStage
+    // advances. Phase conditions affected by those fragments are retried on
+    // the following tick.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::scene_playback_system);
     // Dispatch quest fragments right after the advance that emits the
     // `QuestStageAdvanced` markers, before end-of-frame cleanup drains
     // them (populated live from parsed QUST VMAD fragments, #1739 / `8a70b81a`).

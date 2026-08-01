@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **13 functions** at their canonical CTDA
+//! lineage. This catalog ships **16 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -38,8 +38,11 @@
 //! | 72    | GetIsID                | `FormIdComponent`           |
 //! | 73    | GetFactionRank         | `FactionRanks`              |
 //! | 80    | GetLevel               | `CharacterLevel`            |
+//! | 182   | GetEquipped            | `Inventory` + `EquipmentSlots` |
 //! | 449   | HasPerk (448 on Skyrim)| `PerkList`                  |
 //! | 533   | GetXPForNextLevel      | `CharacterRuleset` leveling |
+//! | 550   | IsSceneActionComplete  | `ScenePlayer` history       |
+//! | 555   | HasLoaded3D             | `GlobalTransform`           |
 //! | 573   | GetReputation          | `FactionReputation` (FNV)   |
 //! | 575   | GetReputationThreshold | `FactionReputation` + bands |
 //!
@@ -50,6 +53,9 @@
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::condition::{Condition, ConditionList, ConditionValue, RunOn};
+
+use crate::quest_stages::QuestFormId;
+use crate::scene::SceneActorBindings;
 
 /// Identifier for a condition function. Wraps the raw u32 function
 /// index from `Condition.function_index` with a typed constructor so
@@ -89,11 +95,24 @@ pub enum ConditionFunction {
     /// `CharacterLevel` component (0.0 when absent). No parameter.
     /// FO3 / FNV / Skyrim index **80**.
     GetLevel,
+    /// `GetEquipped(item_form_id) → f32`. Returns 1.0 when an inventory
+    /// stack matching `param_1` occupies at least one biped equipment slot on
+    /// the Run-On actor. Skyrim function index **182**.
+    GetEquipped,
     /// `GetXPForNextLevel → f32`. The experience required for the actor's
     /// next level, from the per-game `CharacterRuleset`'s `LevelingModel`
     /// (`xp_to_next(level)`); 0.0 without the ruleset resource. No parameter.
     /// The first runtime consumer of the leveling model. FNV index **533**.
     GetXPForNextLevel,
+    /// `IsSceneActionComplete(scene_form_id, action_index) → f32`. Returns
+    /// 1.0 after the named action completes during the scene's current run,
+    /// including after the action has left the active set. Skyrim function
+    /// index **550**.
+    IsSceneActionComplete,
+    /// `HasLoaded3D → f32`. ByroRedux instantiates a reference's spatial 3D
+    /// state as a `GlobalTransform`; returns 1.0 while that component is live.
+    /// Skyrim function index **555**.
+    HasLoaded3D,
     /// `GetIsClass(class_form_id) → f32`. 1.0 when the Run-On actor's
     /// `Background.class_form_id` matches `param_1` (a `CLAS` FormID), else
     /// 0.0 (also 0.0 without `Background`). FO3 / FNV / Skyrim index **68**.
@@ -149,8 +168,11 @@ impl ConditionFunction {
             72 => Self::GetIsID,
             73 => Self::GetFactionRank,
             80 => Self::GetLevel,
+            182 => Self::GetEquipped,
             448 | 449 => Self::HasPerk,
             533 => Self::GetXPForNextLevel,
+            550 => Self::IsSceneActionComplete,
+            555 => Self::HasLoaded3D,
             573 => Self::GetReputation,
             575 => Self::GetReputationThreshold,
             other => Self::Unknown(other),
@@ -159,7 +181,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 13] = [
+    pub const CATALOG: [ConditionFunction; 16] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetStage,
@@ -169,8 +191,11 @@ impl ConditionFunction {
         Self::GetIsID,
         Self::GetFactionRank,
         Self::GetLevel,
+        Self::GetEquipped,
         Self::HasPerk,
         Self::GetXPForNextLevel,
+        Self::IsSceneActionComplete,
+        Self::HasLoaded3D,
         Self::GetReputation,
         Self::GetReputationThreshold,
     ];
@@ -187,8 +212,11 @@ impl ConditionFunction {
             Self::GetIsID => "GetIsID",
             Self::GetFactionRank => "GetFactionRank",
             Self::GetLevel => "GetLevel",
+            Self::GetEquipped => "GetEquipped",
             Self::HasPerk => "HasPerk",
             Self::GetXPForNextLevel => "GetXPForNextLevel",
+            Self::IsSceneActionComplete => "IsSceneActionComplete",
+            Self::HasLoaded3D => "HasLoaded3D",
             Self::GetReputation => "GetReputation",
             Self::GetReputationThreshold => "GetReputationThreshold",
             Self::Unknown(_) => "Unknown",
@@ -231,6 +259,9 @@ pub struct ConditionContext {
     /// Subject's linked-reference chain head. `None` until M47.0.x
     /// linked-ref wiring lands.
     pub linked_reference: Option<EntityId>,
+    /// Owning quest for `RunOn::QuestAlias` resolution. Scene evaluation
+    /// supplies this; consumers outside a quest leave it `None`.
+    pub quest: Option<QuestFormId>,
 }
 
 impl ConditionContext {
@@ -243,7 +274,15 @@ impl ConditionContext {
             target: None,
             combat_target: None,
             linked_reference: None,
+            quest: None,
         }
+    }
+
+    /// Attach an owning quest so `RunOn::QuestAlias` CTDAs can resolve the
+    /// alias id carried in `Condition.extra_data_id`.
+    pub fn with_quest(mut self, quest: QuestFormId) -> Self {
+        self.quest = Some(quest);
+        self
     }
 
     /// Resolve a [`RunOn`] choice to a concrete EntityId. Returns
@@ -263,7 +302,12 @@ impl ConditionContext {
             RunOn::Reference => {
                 resolve_entity_by_global_form_id(world, condition.reference_form_id)
             }
-            RunOn::QuestAlias | RunOn::PackageData | RunOn::EventData => {
+            RunOn::QuestAlias => {
+                let quest = self.quest?;
+                let bindings = world.try_resource::<SceneActorBindings>()?;
+                bindings.resolve(quest, condition.extra_data_id as i32)
+            }
+            RunOn::PackageData | RunOn::EventData => {
                 log::trace!(
                     "M47.1: RunOn::{:?} (extra_data_id={:08X}) — \
                      alias / package / event resolvers deferred",
@@ -456,6 +500,28 @@ pub fn evaluate_function(
                 .get::<CharacterLevel>(entity)
                 .map_or(0.0, |l| f32::from(l.level))
         }
+        ConditionFunction::GetEquipped => {
+            // `EquipmentSlots` stores inventory indices rather than item
+            // FormIDs. Resolve each occupied index through the actor's
+            // Inventory and compare its base record with param_1.
+            use byroredux_core::ecs::components::{EquipmentSlots, Inventory};
+            let Some(slots) = world.get::<EquipmentSlots>(entity) else {
+                return 0.0;
+            };
+            let Some(inventory) = world.get::<Inventory>(entity) else {
+                return 0.0;
+            };
+            let equipped = slots.occupants.iter().flatten().any(|&index| {
+                inventory
+                    .get(index)
+                    .is_some_and(|stack| stack.count > 0 && stack.base_form_id == condition.param_1)
+            });
+            if equipped {
+                1.0
+            } else {
+                0.0
+            }
+        }
         ConditionFunction::GetXPForNextLevel => {
             // GetXPForNextLevel → XP required for the actor's next level, from
             // the per-game `LevelingModel` in the `CharacterRuleset` resource.
@@ -466,6 +532,32 @@ pub fn evaluate_function(
             };
             let level = world.get::<CharacterLevel>(entity).map_or(0, |l| l.level);
             rs.leveling.xp_to_next(level)
+        }
+        ConditionFunction::IsSceneActionComplete => {
+            // param_1 is a global-space SCEN FormID and param_2 is the
+            // authored action index. The runtime retains completion history
+            // until the next start because completed actions are removed from
+            // the active set when their end phase closes.
+            use crate::scene::{ScenePlayer, SceneRegistry};
+            let Some(scene_entity) = world
+                .try_resource::<SceneRegistry>()
+                .and_then(|registry| registry.scene_entity(condition.param_1))
+            else {
+                return 0.0;
+            };
+            world
+                .get::<ScenePlayer>(scene_entity)
+                .map_or(0.0, |player| {
+                    if player.completed_actions.contains(&condition.param_2)
+                        || player.active_actions.iter().any(|action| {
+                            action.action_index == condition.param_2 && action.completed
+                        })
+                    {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                })
         }
         ConditionFunction::GetIsClass => {
             // GetIsClass(class_form_id) → 1.0 iff the actor's `Background.class`
@@ -480,6 +572,17 @@ pub fn evaluate_function(
                     0.0
                 }
             })
+        }
+        ConditionFunction::HasLoaded3D => {
+            // A loaded reference has joined the spatial ECS and therefore
+            // carries a GlobalTransform. Cell unload removes that component,
+            // making stale alias bindings correctly report false.
+            use byroredux_core::ecs::components::GlobalTransform;
+            if world.get::<GlobalTransform>(entity).is_some() {
+                1.0
+            } else {
+                0.0
+            }
         }
         ConditionFunction::GetIsRace => {
             // GetIsRace(race_form_id) → 1.0 iff the actor's `Background.race`
@@ -944,6 +1047,48 @@ mod tests {
         let bare: EntityId = 9;
         let list = vec![cond(80, ComparisonOp::Eq, 0.0, false)];
         assert!(evaluate(&list, &world, &ctx(bare)));
+    }
+
+    #[test]
+    fn get_equipped_resolves_occupied_inventory_item() {
+        use byroredux_core::ecs::components::{EquipmentSlots, Inventory, ItemStack};
+
+        const WORN: u32 = 0x0001_2E49;
+        const CARRIED: u32 = 0x0001_2EB7;
+        let mut world = World::new();
+        let actor = world.spawn();
+        let mut inventory = Inventory::new();
+        let worn = inventory.push(ItemStack::new(WORN, 1));
+        inventory.push(ItemStack::new(CARRIED, 1));
+        let mut equipment = EquipmentSlots::new();
+        equipment.equip(1 << 2, worn);
+        world.insert(actor, inventory);
+        world.insert(actor, equipment);
+
+        assert!(evaluate(
+            &vec![cond(182, ComparisonOp::Eq, 1.0, false).with_param_1(WORN)],
+            &world,
+            &ctx(actor),
+        ));
+        assert!(evaluate(
+            &vec![cond(182, ComparisonOp::Eq, 0.0, false).with_param_1(CARRIED)],
+            &world,
+            &ctx(actor),
+        ));
+    }
+
+    #[test]
+    fn has_loaded_3d_tracks_live_spatial_component() {
+        use byroredux_core::ecs::components::GlobalTransform;
+
+        let mut world = World::new();
+        let loaded = world.spawn();
+        let not_loaded = world.spawn();
+        world.insert(loaded, GlobalTransform::default());
+
+        let condition = vec![cond(555, ComparisonOp::Eq, 1.0, false)];
+        assert!(evaluate(&condition, &world, &ctx(loaded)));
+        assert!(!evaluate(&condition, &world, &ctx(not_loaded)));
     }
 
     #[test]

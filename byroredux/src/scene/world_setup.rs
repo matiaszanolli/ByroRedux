@@ -508,6 +508,20 @@ pub(crate) fn stream_initial_radius(
     cy: i32,
     mode: ExteriorBootstrapMode,
 ) -> Vec3 {
+    if state.persistent_root.is_none() {
+        let wctx = state.wctx.clone();
+        let tex_provider = state.tex_provider.clone();
+        state.persistent_root = crate::cell_loader::load_worldspace_persistent_cell(
+            wctx.as_ref(),
+            (cx, cy),
+            state.radius_load,
+            world,
+            ctx,
+            tex_provider.as_ref(),
+            Some(&mut state.mat_provider),
+        );
+    }
+
     let deltas = streaming::compute_streaming_deltas(
         &state.loaded,
         (cx, cy),

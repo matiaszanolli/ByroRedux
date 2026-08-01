@@ -485,6 +485,11 @@ pub fn load_cell_with_masters(
     let cell_root = world.spawn();
     stamp_cell_root(world, cell_root, first_entity, last_entity);
 
+    // SCEN players are global quest runtime entities, not cell-owned content.
+    // Install them only after capturing/stamping the cell entity range so an
+    // interior unload cannot despawn a running cross-cell scene.
+    crate::asset_provider::populate_scene_runtime(world, &index);
+
     // Capture the cell's editor_id BEFORE the `index.cells` move below
     // — `cell` borrows from `index.cells.cells`, so the borrow has to
     // end before the move consumes the parent map.

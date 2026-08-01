@@ -19,7 +19,8 @@
 //! 1       3     pad (ignored)
 //! 4       4     comparand (f32 literal, or u32 Global FormID when
 //!               type_byte bit 2 = "Use Global" is set)
-//! 8       4     function_index (u32 — Oblivion used u16, FO3+ widened)
+//! 8       2     function_index (u16 in Oblivion through Skyrim+)
+//! 10      2     unused
 //! 12      4     param_1 (function-specific — often a FormID)
 //! 16      4     param_2 (function-specific)
 //! 20      4     run_on_type
@@ -227,7 +228,8 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
     let data = &sub.data;
     // Layout by length (#1548): Oblivion (TES4) CTDA is 24 bytes; FO3 / FNV
     // are 28; Skyrim+ is 32. Offsets 0-19 (type, comparand, function@8,
-    // param1@12, param2@16) are byte-identical across all three — the
+    // function u16@8 + unused@10, param1@12, param2@16) are byte-identical
+    // across all three — the
     // Oblivion 24-byte record simply lacks the run_on@20 / reference@24
     // tail (its bytes 20-23 are unused). Pre-fix the hard `< 28` reject
     // dropped every Oblivion condition silently.
@@ -263,7 +265,12 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
         ConditionValue::Literal(f32::from_le_bytes(comparand_bytes))
     };
 
-    let function_index = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+    // xEdit defines this as `itU16` in TES4, FO3, FNV, and TES5. Bytes
+    // 10..12 are explicitly unused and are not reliably zero in vanilla
+    // Skyrim SCEN conditions (e.g. `3A 00 53 00` is GetStage, function 58,
+    // not function 0x0053_003A). Keep the public field widened to u32 for
+    // catalog ergonomics, but decode only the authored low word.
+    let function_index = u16::from_le_bytes([data[8], data[9]]) as u32;
     let param_1 = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
     let param_2 = u32::from_le_bytes([data[16], data[17], data[18], data[19]]);
     // run_on / reference exist only on the 28+ byte (FO3+) layout; on
@@ -349,7 +356,9 @@ fn param1_is_form_id(function_index: u32) -> bool {
         | 69  // GetIsRace     — RACE FormID
         | 72  // GetIsID       — base FormID
         | 73  // GetFactionRank — faction FormID
+        | 182 // GetEquipped — inventory object FormID
         | 448 | 449 // HasPerk — perk FormID (448 Skyrim, 449 FO3/FNV)
+        | 550 // IsSceneActionComplete — SCEN FormID (param_2 = action index)
         | 573 // GetReputation — REPU FormID (param_2 = axis, a literal)
         | 575 // GetReputationThreshold — REPU FormID (param_2 = axis)
     )
@@ -491,6 +500,16 @@ mod tests {
         assert_eq!(cond.param_1, 0xCAFE);
         assert_eq!(cond.run_on, RunOn::Subject);
         assert!(!cond.or_next);
+    }
+
+    #[test]
+    fn parse_ctda_ignores_nonzero_unused_bytes_after_u16_function() {
+        let mut sub = make_ctda_28(0, 1.0_f32.to_le_bytes(), 58, 0, 0, 0, 0);
+        sub.data[10..12].copy_from_slice(&0x3053u16.to_le_bytes());
+
+        let cond = parse_ctda(&sub).expect("valid CTDA");
+
+        assert_eq!(cond.function_index, 58);
     }
 
     #[test]
@@ -651,6 +670,36 @@ mod tests {
         remap_condition_form_ids(&mut cond, &Some(remap));
         assert_eq!(cond.param_1, 0x0200_0001, "quest param_1 remapped");
         assert_eq!(cond.param_2, 0x0BAD_F00D, "param_2 is a literal, untouched");
+    }
+
+    #[test]
+    fn remap_scene_action_completion_scene_but_not_action_index() {
+        let remap = FormIdRemap::regular(2, vec![0]);
+        let mut cond = Condition {
+            function_index: 550,
+            param_1: 0x0100_0001,
+            param_2: 21,
+            ..Default::default()
+        };
+
+        remap_condition_form_ids(&mut cond, &Some(remap));
+
+        assert_eq!(cond.param_1, 0x0200_0001, "SCEN FormID remapped");
+        assert_eq!(cond.param_2, 21, "action index remains a literal");
+    }
+
+    #[test]
+    fn remap_get_equipped_inventory_object() {
+        let remap = FormIdRemap::regular(2, vec![0]);
+        let mut cond = Condition {
+            function_index: 182,
+            param_1: 0x0100_0042,
+            ..Default::default()
+        };
+
+        remap_condition_form_ids(&mut cond, &Some(remap));
+
+        assert_eq!(cond.param_1, 0x0200_0042);
     }
 
     #[test]

@@ -359,8 +359,14 @@ mod tests {
         let released = release_terrain_tile_slot(&mut tiles, &mut free_list, &mut dirty, 2);
 
         let released = released.expect("populated tile");
-        assert_eq!(released.layer_diffuse_index, [11, 22, 33, 44, 55, 66, 77, 88]);
-        assert_eq!(released.layer_normal_index, [111, 122, 133, 144, 155, 166, 177, 188]);
+        assert_eq!(
+            released.layer_diffuse_index,
+            [11, 22, 33, 44, 55, 66, 77, 88]
+        );
+        assert_eq!(
+            released.layer_normal_index,
+            [111, 122, 133, 144, 155, 166, 177, 188]
+        );
         assert_eq!(
             released.layer_specular_index,
             [211, 222, 233, 244, 255, 266, 277, 288]

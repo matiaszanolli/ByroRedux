@@ -1,7 +1,7 @@
 //! Misc-gameplay dispatch, part A — split out of
 //! `parse_esm_with_load_order` (#2060). Weather/climate/world-state
 //! (WTHR/CLMT/SCPT/WATR/NAVI/NAVM/REGN/ECZN/LGTM/IMGS/HDPT/EYES/HAIR)
-//! plus AI/dialogue records (PACK/QUST/DIAL/MESG/PERK) — all typed-only,
+//! plus AI/dialogue records (PACK/QUST/SCEN/DIAL/MESG/PERK) — all typed-only,
 //! no `cells.statics` placement. See `dispatch_misc_gameplay_b.rs` for
 //! the combat/magic/supporting half of this domain.
 
@@ -103,6 +103,15 @@ pub(super) fn dispatch_misc_gameplay_a_group(
             let qust_remap = reader.get_form_id_remap();
             extract_records(reader, end, b"QUST", &mut |fid, subs| {
                 index.quests.insert(fid, parse_qust(fid, subs, &qust_remap));
+            })?;
+        }
+        b"SCEN" => {
+            // Scene package/topic/quest references and CTDA parameters are
+            // plugin-local. Normalize them at ingestion so the runtime scene
+            // player can compare against the merged index directly.
+            let scen_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"SCEN", &mut |fid, subs| {
+                index.scenes.insert(fid, parse_scen(fid, subs, &scen_remap));
             })?;
         }
         // DIAL tops a nested GRUP tree: a top-level GRUP labelled

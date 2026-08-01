@@ -55,6 +55,7 @@ pub(super) fn parse_synthetic_wrld(
     HashMap<String, super::super::WorldspaceRecord>,
     HashMap<String, u32>,
     HashMap<String, HashMap<(i32, i32), CellData>>,
+    HashMap<String, CellData>,
 ) {
     let mut reader = EsmReader::new(buf);
     let gh = reader.read_group_header().expect("WRLD group header");
@@ -62,15 +63,17 @@ pub(super) fn parse_synthetic_wrld(
     let mut exterior = HashMap::new();
     let mut worldspaces = HashMap::new();
     let mut climates = HashMap::new();
+    let mut persistent = HashMap::new();
     super::super::wrld::parse_wrld_group(
         &mut reader,
         end,
         &mut exterior,
+        &mut persistent,
         &mut worldspaces,
         &mut climates,
     )
     .expect("parse_wrld_group");
-    (worldspaces, climates, exterior)
+    (worldspaces, climates, exterior, persistent)
 }
 
 #[test]
@@ -107,7 +110,7 @@ fn parse_wrld_captures_oblivion_root_worldspace_fields() {
     );
     let buf = build_wrld_group(&[wrld]);
 
-    let (worldspaces, climates, _exterior) = parse_synthetic_wrld(&buf);
+    let (worldspaces, climates, _exterior, _persistent) = parse_synthetic_wrld(&buf);
     let tam = worldspaces.get("tamriel").expect("tamriel decoded");
     assert_eq!(tam.form_id, 0x0000_003C);
     assert_eq!(tam.editor_id, "Tamriel");
@@ -157,7 +160,7 @@ fn parse_wrld_captures_derived_worldspace_parent_link() {
         ],
     );
     let buf = build_wrld_group(&[wrld]);
-    let (worldspaces, _climates, _exterior) = parse_synthetic_wrld(&buf);
+    let (worldspaces, _climates, _exterior, _persistent) = parse_synthetic_wrld(&buf);
     let se = worldspaces
         .get("seworld")
         .expect("derived worldspace decoded");
@@ -197,6 +200,71 @@ fn build_world_children_group(wrld_form_id: u32, payload: &[u8]) -> Vec<u8> {
     group.extend_from_slice(&[0u8; 8]); // timestamp + VC
     group.extend_from_slice(payload);
     group
+}
+
+fn build_cell_children_group(cell_form_id: u32, group_type: u32, payload: &[u8]) -> Vec<u8> {
+    let mut group = Vec::new();
+    group.extend_from_slice(b"GRUP");
+    group.extend_from_slice(&((24 + payload.len()) as u32).to_le_bytes());
+    group.extend_from_slice(&cell_form_id.to_le_bytes());
+    group.extend_from_slice(&group_type.to_le_bytes());
+    group.extend_from_slice(&[0u8; 8]);
+    group.extend_from_slice(payload);
+    group
+}
+
+fn build_placed_actor_record(reference_form_id: u32, base_form_id: u32) -> Vec<u8> {
+    let mut sub_data = Vec::new();
+    put_sub(&mut sub_data, b"NAME", &base_form_id.to_le_bytes());
+    put_sub(&mut sub_data, b"DATA", &[0u8; 24]);
+
+    let mut record = Vec::new();
+    record.extend_from_slice(b"ACHR");
+    record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    record.extend_from_slice(&0u32.to_le_bytes());
+    record.extend_from_slice(&reference_form_id.to_le_bytes());
+    record.extend_from_slice(&[0u8; 8]);
+    record.extend_from_slice(&sub_data);
+    record
+}
+
+#[test]
+fn parse_wrld_indexes_persistent_cell_actor_references() {
+    let wrld_fid = 0x0000_003c;
+    let cell_fid = 0x0000_00d7;
+    let hadvar_ref = 0x0002_bfa2;
+    let hadvar_base = 0x0002_bf9f;
+
+    let wrld = build_wrld_record(wrld_fid, &[(b"EDID", b"Tamriel\0".to_vec())]);
+    // A worldspace persistent CELL deliberately has no XCLC grid. Its
+    // group-type-8 children must not be discarded as an unowned group.
+    let mut xclc = Vec::new();
+    xclc.extend_from_slice(&0i32.to_le_bytes());
+    xclc.extend_from_slice(&0i32.to_le_bytes());
+    let cell = build_cell_record(
+        cell_fid,
+        &[(b"EDID", b"Wilderness\0".to_vec()), (b"XCLC", xclc)],
+    );
+    let actor = build_placed_actor_record(hadvar_ref, hadvar_base);
+    let actor_group = build_cell_children_group(cell_fid, 8, &actor);
+    let mut persistent_payload = cell;
+    persistent_payload.extend_from_slice(&actor_group);
+    // Real Skyrim layout: world children type 1 → outer type 6 carrying
+    // the persistent CELL → inner type 8 carrying persistent actors.
+    let persistent_group = build_cell_children_group(cell_fid, 6, &persistent_payload);
+    let children = build_world_children_group(wrld_fid, &persistent_group);
+    let buf = build_wrld_group(&[wrld, children]);
+
+    let (_worldspaces, _climates, exterior, persistent) = parse_synthetic_wrld(&buf);
+    assert!(exterior.get("tamriel").is_some_and(HashMap::is_empty));
+    let cell = persistent
+        .get("tamriel")
+        .expect("Tamriel persistent CELL must be indexed");
+    assert_eq!(cell.form_id, cell_fid);
+    assert_eq!(cell.grid, Some((0, 0)));
+    assert_eq!(cell.references.len(), 1);
+    assert_eq!(cell.references[0].form_id, hadvar_ref);
+    assert_eq!(cell.references[0].base_form_id, hadvar_base);
 }
 
 /// #1220 / D3-NEW-01 regression — exterior CELL XCRI + XPRI sub-records
@@ -249,7 +317,11 @@ fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
             (b"XPRI", xpri),
         ],
     );
-    let children = build_world_children_group(wrld_fid, &cell);
+    // Normal streamed tiles sit under exterior block/sub-block groups;
+    // only the CELL directly owned by the type-1 group is persistent.
+    let sub_block = build_cell_children_group(0, 5, &cell);
+    let block = build_cell_children_group(0, 4, &sub_block);
+    let children = build_world_children_group(wrld_fid, &block);
 
     let wrld = build_wrld_record(wrld_fid, &[(b"EDID", b"Commonwealth\0".to_vec())]);
 
@@ -265,7 +337,7 @@ fn parse_wrld_exterior_cell_captures_precombined_xcri_xpri() {
     buf.extend_from_slice(&[0u8; 8]); // timestamp + VC
     buf.extend_from_slice(&wrld_grup_payload);
 
-    let (_worldspaces, _climates, exterior) = parse_synthetic_wrld(&buf);
+    let (_worldspaces, _climates, exterior, _persistent) = parse_synthetic_wrld(&buf);
     let commonwealth = exterior
         .get("commonwealth")
         .expect("Commonwealth WRLD's children must be indexed");
@@ -310,7 +382,7 @@ fn parse_wrld_truncated_payloads_default_safely() {
         ],
     );
     let buf = build_wrld_group(&[wrld]);
-    let (worldspaces, _climates, _exterior) = parse_synthetic_wrld(&buf);
+    let (worldspaces, _climates, _exterior, _persistent) = parse_synthetic_wrld(&buf);
     let w = worldspaces.get("truncatedworld").expect("decoded");
     assert_eq!(w.parent_flags, 0x07, "1-byte PNAM folds into the low byte");
     assert_eq!(w.usable_min, (0.0, 0.0), "short NAM0 stays at default");
@@ -344,7 +416,7 @@ fn wrld_dnam_captures_default_water_height() {
         ],
     );
     let buf = build_wrld_group(&[wrld]);
-    let (worldspaces, _climates, _exterior) = parse_synthetic_wrld(&buf);
+    let (worldspaces, _climates, _exterior, _persistent) = parse_synthetic_wrld(&buf);
     let w = worldspaces.get("wastelandnv").expect("WastelandNV decoded");
     assert_eq!(
         w.default_water_height,
@@ -366,7 +438,7 @@ fn wrld_short_dnam_leaves_default_water_none() {
         ],
     );
     let buf = build_wrld_group(&[wrld]);
-    let (worldspaces, _c, _e) = parse_synthetic_wrld(&buf);
+    let (worldspaces, _c, _e, _persistent) = parse_synthetic_wrld(&buf);
     let w = worldspaces.get("nodnamworld").expect("decoded");
     assert_eq!(w.default_water_height, None);
 }
@@ -401,7 +473,7 @@ fn wrld_nam3_nam4_ofst_captured() {
         ],
     );
     let buf = build_wrld_group(&[wrld]);
-    let (worldspaces, _c, _e) = parse_synthetic_wrld(&buf);
+    let (worldspaces, _c, _e, _persistent) = parse_synthetic_wrld(&buf);
     let w = worldspaces.get("wasteland").expect("Wasteland decoded");
 
     assert_eq!(w.lod_water_form, Some(0x0000_0018), "NAM3 captured");
@@ -438,7 +510,7 @@ fn wrld_oblivion_shape_leaves_lod_water_none() {
         ],
     );
     let buf = build_wrld_group(&[wrld]);
-    let (worldspaces, _c, _e) = parse_synthetic_wrld(&buf);
+    let (worldspaces, _c, _e, _persistent) = parse_synthetic_wrld(&buf);
     let w = worldspaces.get("tamrielobl").expect("decoded");
     assert_eq!(w.lod_water_form, None);
     assert_eq!(w.lod_water_height, None);

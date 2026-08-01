@@ -149,6 +149,24 @@ pub(crate) fn populate_quest_fragments(
     }
 }
 
+/// Install every parsed Skyrim+ `SCEN` definition into the ECS runtime.
+///
+/// The scripting crate deduplicates by FormID and preserves existing player
+/// state, so this is safe on cell transitions and repeated load-order parses.
+/// It intentionally does not require a script archive: SCEN phase/action data
+/// and VMAD function bindings are carried by the plugin record itself.
+pub(crate) fn populate_scene_runtime(
+    world: &mut byroredux_core::ecs::world::World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) {
+    if index.scenes.is_empty() {
+        return;
+    }
+    let count = byroredux_scripting::install_scene_records(world, index.scenes.values().cloned());
+    byroredux_scripting::install_scene_quest_aliases(world, index.quests.values().cloned());
+    log::info!("Installed {count} SCEN definitions into the ECS scene runtime");
+}
+
 /// Build a [`ScriptProvider`] from CLI arguments. Accepts repeated
 /// `--scripts-bsa <path>` flags so modded script archives can layer over
 /// the vanilla one (first hit wins, so list overrides before the base).

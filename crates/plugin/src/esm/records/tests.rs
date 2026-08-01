@@ -73,6 +73,49 @@ fn extract_records_walks_one_group() {
     }
 }
 
+#[test]
+fn scen_group_dispatches_into_typed_scene_index() {
+    let scene = build_record(
+        b"SCEN",
+        0x000B_ECD4,
+        &[
+            (b"EDID", b"MQ101Scene1\0".to_vec()),
+            (b"FNAM", 5u32.to_le_bytes().to_vec()),
+            (b"HNAM", Vec::new()),
+            (b"NAM0", b"Cart ride\0".to_vec()),
+            (b"NEXT", Vec::new()),
+            (b"NEXT", Vec::new()),
+            (b"WNAM", 240u32.to_le_bytes().to_vec()),
+            (b"HNAM", Vec::new()),
+            (b"ALID", 12u32.to_le_bytes().to_vec()),
+            (b"LNAM", 1u32.to_le_bytes().to_vec()),
+            (b"DNAM", 26u32.to_le_bytes().to_vec()),
+            (b"ANAM", 2u16.to_le_bytes().to_vec()),
+            (b"INAM", 120u32.to_le_bytes().to_vec()),
+            (b"SNAM", 0u32.to_le_bytes().to_vec()),
+            (b"ENAM", 0u32.to_le_bytes().to_vec()),
+            (b"SNAM", 2.5f32.to_le_bytes().to_vec()),
+            (b"ANAM", Vec::new()),
+            (b"PNAM", 0x0003_372Bu32.to_le_bytes().to_vec()),
+            (b"INAM", 120u32.to_le_bytes().to_vec()),
+        ],
+    );
+    let group = wrap_group(b"SCEN", &scene);
+    let mut esm = build_record(b"TES4", 0, &[]);
+    esm.extend_from_slice(&group);
+
+    let index = parse_esm(&esm).expect("parse synthetic SCEN");
+    let scene = index.scenes.get(&0x000B_ECD4).expect("SCEN indexed");
+    assert_eq!(scene.editor_id, "MQ101Scene1");
+    assert_eq!(scene.quest_form_id, Some(0x0003_372B));
+    assert_eq!(scene.phases.len(), 1);
+    assert_eq!(scene.actors.len(), 1);
+    assert_eq!(scene.actions.len(), 1);
+    assert_eq!(scene.actions[0].action_type, SceneActionType::Timer);
+    assert_eq!(scene.actions[0].timer_seconds, Some(2.5));
+    assert_eq!(scene.last_action_index, Some(120));
+}
+
 /// Regression: #631 / FNV-D2-03 — `DIAL` records with a nested
 /// Topic Children sub-GRUP (`group_type == 7`, label = parent
 /// DIAL form_id) must populate `DialRecord.infos` with each
@@ -899,8 +942,9 @@ fn categories_table_row_count_pinned() {
     // Bumped 94 → 95 in #1773 (FNV-D4-NEW-01: trees — TREE typed map was
     //   the lone populated map missing from `categories()`, so a TREE
     //   category-wipe passed the parse-rate CI floor silently).
+    // Bumped 95 → 96 for typed Skyrim+ SCEN phase/action records.
     // Bump in lockstep with the struct + `categories()` edits.
-    assert_eq!(EsmIndex::categories().len(), 95);
+    assert_eq!(EsmIndex::categories().len(), 96);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

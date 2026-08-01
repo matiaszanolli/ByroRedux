@@ -16,6 +16,7 @@ pub(crate) fn parse_wrld_group(
     reader: &mut EsmReader,
     end: usize,
     all_exterior_cells: &mut HashMap<String, HashMap<(i32, i32), CellData>>,
+    all_persistent_cells: &mut HashMap<String, CellData>,
     worldspaces: &mut HashMap<String, WorldspaceRecord>,
     worldspace_climates: &mut HashMap<String, u32>,
 ) -> Result<()> {
@@ -30,10 +31,17 @@ pub(crate) fn parse_wrld_group(
                 // World children (type 1): contains exterior cell blocks for the current WRLD.
                 1 => {
                     if let Some(ref name) = current_wrld_name {
-                        let cells = all_exterior_cells
-                            .entry(name.to_ascii_lowercase())
-                            .or_default();
-                        parse_wrld_children(reader, sub_end, cells)?;
+                        let key = name.to_ascii_lowercase();
+                        let cells = all_exterior_cells.entry(key.clone()).or_default();
+                        let mut persistent_cell = all_persistent_cells.remove(&key);
+                        // A type-1 world-children group begins with the
+                        // WRLD's structurally persistent CELL. It can still
+                        // author XCLC=(0,0), so topology—not XCLC absence—
+                        // distinguishes it from the streamed tile at (0,0).
+                        parse_wrld_children(reader, sub_end, cells, &mut persistent_cell, true)?;
+                        if let Some(cell) = persistent_cell {
+                            all_persistent_cells.insert(key, cell);
+                        }
                     } else {
                         reader.skip_group(&sub_group);
                     }
@@ -223,8 +231,13 @@ pub(crate) fn parse_wrld_children(
     reader: &mut EsmReader,
     end: usize,
     exterior_cells: &mut HashMap<(i32, i32), CellData>,
+    persistent_cell: &mut Option<CellData>,
+    force_persistent: bool,
 ) -> Result<()> {
-    let mut current_cell: Option<(i32, i32)> = None;
+    // `Some(Some(grid))` is a normal streamed tile, while `Some(None)` is
+    // the worldspace's persistent CELL. Plain `None` means no CELL record
+    // has established ownership for a following child group.
+    let mut current_cell: Option<Option<(i32, i32)>> = None;
 
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
@@ -234,16 +247,28 @@ pub(crate) fn parse_wrld_children(
             match sub_group.group_type {
                 // Exterior block (4) and sub-block (5): recurse.
                 4 | 5 => {
-                    parse_wrld_children(reader, sub_end, exterior_cells)?;
+                    parse_wrld_children(reader, sub_end, exterior_cells, persistent_cell, false)?;
+                }
+                // Skyrim wraps the worldspace persistent CELL in an outer
+                // type-6 group (labelled with that CELL's FormID), then
+                // places the CELL record and its type-8 actor children
+                // inside it. At this level there is no current CELL yet, so
+                // recurse and mark the enclosed CELL as world-persistent.
+                6 if current_cell.is_none() => {
+                    parse_wrld_children(reader, sub_end, exterior_cells, persistent_cell, true)?;
                 }
                 // Cell children (6=temporary, 8=persistent, 9=visible distant).
                 6 | 8 | 9 => {
-                    if let Some(grid) = current_cell {
+                    if let Some(cell_target) = current_cell {
                         let mut refs = Vec::new();
                         let mut land = None;
                         let mut navmeshes = Vec::new();
                         parse_refr_group(reader, sub_end, &mut refs, &mut land, &mut navmeshes)?;
-                        if let Some(cell) = exterior_cells.get_mut(&grid) {
+                        let cell = match cell_target {
+                            Some(grid) => exterior_cells.get_mut(&grid),
+                            None => persistent_cell.as_mut(),
+                        };
+                        if let Some(cell) = cell {
                             cell.references.extend(refs);
                             cell.navmeshes.extend(navmeshes);
                             if land.is_some() && cell.landscape.is_none() {
@@ -439,54 +464,56 @@ pub(crate) fn parse_wrld_children(
                     }
                 }
 
-                if let Some(g) = grid {
-                    let ownership = ownership_owner.map(|owner| CellOwnership {
-                        owner_form_id: owner,
-                        faction_rank: ownership_rank,
-                        global_var_form_id: ownership_global,
-                    });
-                    exterior_cells.insert(
-                        g,
-                        CellData {
-                            form_id: header.form_id,
-                            editor_id,
-                            display_name,
-                            references: Vec::new(),
-                            is_interior: false,
-                            grid: Some(g),
-                            lighting: None,
-                            landscape: None,
-                            water_height,
-                            image_space_form,
-                            water_type_form,
-                            acoustic_space_form,
-                            music_type_form,
-                            music_type_enum,
-                            climate_override,
-                            location_form,
-                            regions,
-                            lighting_template_form,
-                            ownership,
-                            regional_color_override,
-                            // #1220 / D3-NEW-01 — FO4+ PreCombined Mesh
-                            // refs on exterior cells. The cell loader's
-                            // conditional-absorption gate ties XPRI
-                            // honour-vs-ignore to the precombined-spawn
-                            // count; exterior call-site wiring lands
-                            // separately under #1221. Until then these
-                            // fields are populated but the exterior
-                            // loader doesn't yet invoke the
-                            // precombined-spawn pass, so the absorbed
-                            // set is effectively dormant (REFRs render
-                            // as before).
-                            precombined_mesh_hashes,
-                            absorbed_refs,
-                            navmeshes: Vec::new(),
-                        },
-                    );
-                    current_cell = Some(g);
+                let ownership = ownership_owner.map(|owner| CellOwnership {
+                    owner_form_id: owner,
+                    faction_rank: ownership_rank,
+                    global_var_form_id: ownership_global,
+                });
+                let cell = CellData {
+                    form_id: header.form_id,
+                    editor_id,
+                    display_name,
+                    references: Vec::new(),
+                    is_interior: false,
+                    grid,
+                    lighting: None,
+                    landscape: None,
+                    water_height,
+                    image_space_form,
+                    water_type_form,
+                    acoustic_space_form,
+                    music_type_form,
+                    music_type_enum,
+                    climate_override,
+                    location_form,
+                    regions,
+                    lighting_template_form,
+                    ownership,
+                    regional_color_override,
+                    // #1220 / D3-NEW-01 — FO4+ PreCombined Mesh
+                    // refs on exterior cells. The cell loader's
+                    // conditional-absorption gate ties XPRI
+                    // honour-vs-ignore to the precombined-spawn
+                    // count; exterior call-site wiring lands
+                    // separately under #1221. Until then these
+                    // fields are populated but the exterior
+                    // loader doesn't yet invoke the
+                    // precombined-spawn pass, so the absorbed
+                    // set is effectively dormant (REFRs render
+                    // as before).
+                    precombined_mesh_hashes,
+                    absorbed_refs,
+                    navmeshes: Vec::new(),
+                };
+                if force_persistent {
+                    *persistent_cell = Some(cell);
+                    current_cell = Some(None);
+                } else if let Some(g) = grid {
+                    exterior_cells.insert(g, cell);
+                    current_cell = Some(Some(g));
                 } else {
-                    current_cell = None;
+                    *persistent_cell = Some(cell);
+                    current_cell = Some(None);
                 }
             } else {
                 reader.skip_record(&header);

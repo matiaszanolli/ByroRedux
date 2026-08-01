@@ -18,6 +18,7 @@ pub mod papyrus_demo;
 pub mod quest_stages;
 pub mod recurring_update;
 pub mod registry;
+pub mod scene;
 pub mod timer;
 pub mod translate;
 pub mod trigger;
@@ -39,6 +40,13 @@ pub use globals::Globals;
 pub use quest_stages::QuestFormId;
 pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, RecurringUpdate};
 pub use registry::{ScriptRegistry, ScriptSpawnFn};
+pub use scene::{
+    install_scene_quest_aliases, install_scene_records, mark_scene_actor_bindings_dirty,
+    refresh_scene_actor_bindings, scene_playback_system, ActiveSceneAction,
+    SceneActionCompletionBatch, SceneActorBindings, SceneAliasCandidate, SceneEvent,
+    SceneEventBatch, SceneFragmentInvocation, SceneFragmentInvocationBatch, ScenePlaybackState,
+    ScenePlayer, SceneRegistry, SceneStartRequest, SceneStopRequest,
+};
 pub use timer::{timer_tick_system, ScriptTimer};
 pub use translate::{
     translate_pex, translate_script, CanonicalEvent, RecognizeCtx, Recognized, ScriptSource,
@@ -81,6 +89,9 @@ pub fn register(world: &mut World) {
     // also registered, idempotent) and the QuestStageFragments /
     // QuestObjectiveState resources the dispatcher reads.
     fragment::register(world);
+    // Skyrim+ SCEN orchestration: immutable definitions live in a resource,
+    // while one ScenePlayer component per record owns mutable playback state.
+    scene::register(world);
     // M47.0 Phase 1 — register the R5 prototype storages so
     // `papyrus_demo` scripts can attach their state components when
     // their owning REFR spawns. Without this call, `query_mut::<…>`

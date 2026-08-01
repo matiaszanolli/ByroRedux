@@ -6,8 +6,9 @@
 //! path), expanding container placements, resolving base records,
 //! and committing the per-cell NifImportRegistry deltas.
 
+use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::{EntityId, GlobalTransform, LightSource, Transform, World};
-use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::VulkanContext;
@@ -501,7 +502,27 @@ pub(super) fn load_references_budgeted(
                     }
                     NpcSpawnProgress::Complete(result) => {
                         job.accum.npc_spawn_wall += result.work_wall;
-                        if result.root.is_some() {
+                        if let Some(root) = result.root {
+                            // Actor jobs build their own placement root rather
+                            // than routing through `spawn_placed_instances`, so
+                            // stamp the canonical ACHR identity and the three
+                            // fields Skyrim quest-alias resolution consumes.
+                            let plugin_name = plugin_for_form_id(placed_ref.form_id, load_order)
+                                .unwrap_or("Engine.esm");
+                            let placement = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+                                plugin: PluginId::from_filename(plugin_name),
+                                local: LocalFormId(placed_ref.form_id),
+                            });
+                            world.insert(root, FormIdComponent(placement));
+                            world.insert(
+                                root,
+                                byroredux_scripting::SceneAliasCandidate {
+                                    reference_form_id: placed_ref.form_id,
+                                    base_form_id: child_form_id,
+                                    location_ref_types: placed_ref.location_ref_types.clone(),
+                                },
+                            );
+                            byroredux_scripting::mark_scene_actor_bindings_dirty(world);
                             job.accum.npc_spawned += 1;
                             if job.accum.npc_spawned_sample.len() < 8
                                 && !job.accum.npc_spawned_sample.contains(&child_form_id)

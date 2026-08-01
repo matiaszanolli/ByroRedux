@@ -23,6 +23,7 @@ fn placed_ref(form_id: u32) -> PlacedRef {
         teleport: None,
         primitive: None,
         linked_refs: Vec::new(),
+        location_ref_types: Vec::new(),
         rooms: Vec::new(),
         portals: Vec::new(),
         radius_override: None,

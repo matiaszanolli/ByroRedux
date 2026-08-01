@@ -12,6 +12,7 @@ use crate::papyrus_demo::mg07_door::UiMessageCommand;
 use crate::papyrus_demo::{CameraShakeCommand, ControllerRumbleCommand};
 use crate::quest_stages::QuestStageAdvancedBatch;
 use crate::recurring_update::OnUpdateEvent;
+use crate::scene::{SceneEventBatch, SceneFragmentInvocationBatch};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 
@@ -38,6 +39,8 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
     drain_component::<CameraShakeCommand>(world);
     drain_component::<ControllerRumbleCommand>(world);
     drain_component::<UiMessageCommand>(world);
+    drain_component::<SceneEventBatch>(world);
+    drain_component::<SceneFragmentInvocationBatch>(world);
     // M47.0 Phase 5 canonical markers — all one-frame transients. Each
     // has (or will have) an engine emit site: OnTriggerEnterEvent from
     // `trigger_detection_system` (M47.2), OnCellLoadEvent from the cell
@@ -66,7 +69,11 @@ mod tests {
     use crate::events::{
         ActivateEvent, HitEvent, OnCellLoadEvent, OnEquipEvent, OnTriggerEnterEvent, TimerExpired,
     };
+    use crate::scene::{
+        SceneEvent, SceneEventBatch, SceneFragmentInvocation, SceneFragmentInvocationBatch,
+    };
     use byroredux_core::ecs::world::World;
+    use byroredux_plugin::esm::records::script_instance::SceneFragmentEvent;
 
     fn setup_world() -> World {
         let mut world = World::new();
@@ -104,6 +111,17 @@ mod tests {
         world.insert(d, OnTriggerEnterEvent { triggerer: a });
         world.insert(e, OnCellLoadEvent);
         world.insert(f, OnEquipEvent { wearer: a });
+        let g = world.spawn();
+        world.insert(g, SceneEventBatch(vec![SceneEvent::SceneStarted]));
+        world.insert(
+            g,
+            SceneFragmentInvocationBatch(vec![SceneFragmentInvocation {
+                scene_form_id: 1,
+                event: SceneFragmentEvent::Begin,
+                script_name: "SF_Test".to_owned(),
+                fragment_name: "Fragment_0".to_owned(),
+            }]),
+        );
 
         event_cleanup_system(&world, 0.0);
 
@@ -113,6 +131,8 @@ mod tests {
         assert!(!world.has::<OnTriggerEnterEvent>(d));
         assert!(!world.has::<OnCellLoadEvent>(e));
         assert!(!world.has::<OnEquipEvent>(f));
+        assert!(!world.has::<SceneEventBatch>(g));
+        assert!(!world.has::<SceneFragmentInvocationBatch>(g));
     }
 
     #[test]

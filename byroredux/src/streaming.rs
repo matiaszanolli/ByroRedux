@@ -204,6 +204,10 @@ pub struct WorldStreamingState {
     pub mat_provider: MaterialProvider,
     /// Currently-loaded cells.
     pub loaded: HashMap<(i32, i32), LoadedCell>,
+    /// Root owning the active worldspace's persistent CELL. Unlike `loaded`,
+    /// this is not keyed by a grid coordinate and never participates in
+    /// radius eviction; it is reclaimed only when the worldspace drains.
+    pub persistent_root: Option<EntityId>,
     /// Distant-terrain LOD blocks, keyed by block-coord (#1373). Streamed
     /// each cell-boundary crossing alongside the full-detail cells: blocks
     /// entering the LOD radius spawn, blocks leaving unload, and boundary
@@ -305,6 +309,7 @@ impl WorldStreamingState {
             tex_provider: Arc::new(tex_provider),
             mat_provider,
             loaded: HashMap::new(),
+            persistent_root: None,
             lod_blocks: HashMap::new(),
             lod_missing_blocks: HashMap::new(),
             object_lod_blocks: HashMap::new(),

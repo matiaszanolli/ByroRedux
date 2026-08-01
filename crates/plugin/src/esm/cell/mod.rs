@@ -376,6 +376,10 @@ pub struct PlacedRef {
     /// NPC ↔ patrol marker, door ↔ teleport partner, switch ↔ light).
     /// Pre-#412 NPCs didn't patrol and doors didn't pair.
     pub linked_refs: Vec<LinkedRef>,
+    /// `XLRT` location-reference types attached to this placement. Skyrim
+    /// quest aliases with `ALRT` select live references by these `LCRT`
+    /// FormIDs (for example MQ101's distinct prisoner/soldier roles).
+    pub location_ref_types: Vec<u32>,
     /// Room membership form IDs from the REFR's `XRMR` sub-record —
     /// the room(s) this ref belongs to for FO4 cell-subdivided interior
     /// culling. Empty when the REFR is not room-scoped. See #412.
@@ -901,6 +905,12 @@ pub struct EsmCellIndex {
     pub cells: HashMap<String, CellData>,
     /// Exterior cells, keyed by (worldspace_name_lowercase, (grid_x, grid_y)).
     pub exterior_cells: HashMap<String, HashMap<(i32, i32), CellData>>,
+    /// The one persistent CELL owned by each worldspace, keyed by the
+    /// lowercased worldspace editor ID. Persistent exterior references are
+    /// not tied to a streamed `(x, y)` tile: quest actors such as Skyrim's
+    /// Hadvar and Ralof live here and must remain instantiated while the
+    /// worldspace is active.
+    pub worldspace_persistent_cells: HashMap<String, CellData>,
     /// All base object records with model paths, keyed by form ID.
     pub statics: HashMap<u32, StaticObject>,
     /// Landscape texture definitions: LTEX form ID → diffuse texture path.
@@ -999,15 +1009,15 @@ pub struct EsmCellIndex {
 /// (legacy fixtures with no REFR identity) is
 /// never keyed — those refs always append, so distinct unnamed refs can't
 /// collapse onto each other.
-fn merge_cell_references(base: &CellData, over: &mut CellData) {
-    let mut merged = base.references.clone();
+fn merge_placed_references(base: &[PlacedRef], over: &mut Vec<PlacedRef>) {
+    let mut merged = base.to_vec();
     let mut by_form: HashMap<u32, usize> = merged
         .iter()
         .enumerate()
         .filter(|(_, r)| r.form_id != 0)
         .map(|(i, r)| (r.form_id, i))
         .collect();
-    for over_ref in over.references.drain(..) {
+    for over_ref in over.drain(..) {
         if over_ref.form_id != 0 {
             if let Some(&i) = by_form.get(&over_ref.form_id) {
                 merged[i] = over_ref;
@@ -1017,7 +1027,11 @@ fn merge_cell_references(base: &CellData, over: &mut CellData) {
         }
         merged.push(over_ref);
     }
-    over.references = merged;
+    *over = merged;
+}
+
+fn merge_cell_references(base: &CellData, over: &mut CellData) {
+    merge_placed_references(&base.references, &mut over.references);
 }
 
 impl EsmCellIndex {
@@ -1060,6 +1074,14 @@ impl EsmCellIndex {
                 }
                 entry.insert(coord, over_cell);
             }
+        }
+
+        for (worldspace, mut over_cell) in other.worldspace_persistent_cells {
+            if let Some(base) = self.worldspace_persistent_cells.get(&worldspace) {
+                merge_cell_references(base, &mut over_cell);
+            }
+            self.worldspace_persistent_cells
+                .insert(worldspace, over_cell);
         }
 
         self.statics.extend(other.statics);

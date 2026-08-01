@@ -106,6 +106,7 @@ pub(super) fn apply_ai_package_behavior(
         target: None,
         combat_target: None,
         linked_reference: None,
+        quest: None,
     };
     let condition_met = |pk: &byroredux_plugin::esm::records::PackRecord| {
         package_conditions_pass(&pk.conditions, world, &cond_ctx)

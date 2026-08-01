@@ -15,6 +15,7 @@
 //!   / `ACTI` / `TERM`
 //! - [`pack`] — `PACK`
 //! - [`quest`] — `QUST`
+//! - [`scene`] — Skyrim+ `SCEN` phase/action orchestration
 //! - [`dialogue`] — `DIAL` / `INFO` / `MESG`
 //! - [`magic`] — `PERK` / `SPEL` / `MGEF` / `ENCH`
 //! - [`effects`] — `AVIF` / `PROJ` / `EFSH` / `IMOD` / `EXPL` / `IPCT`
@@ -34,6 +35,7 @@ mod equipment;
 mod magic;
 pub mod pack;
 mod quest;
+mod scene;
 mod water;
 mod world;
 
@@ -66,7 +68,12 @@ pub use pack::{
 };
 pub use quest::{
     parse_qust, AliasFillType, AliasFlags, AliasInjectedData, QuestAlias, QuestObjective,
-    QuestStage, QustRecord,
+    QuestStage, QustRecord, ALIAS_FLAG_ALLOW_REUSE,
+};
+pub use scene::{
+    parse_scen, ScenRecord, SceneAction, SceneActionType, SceneActor, ScenePhase,
+    SCENE_BEGIN_ON_QUEST_START, SCENE_INTERRUPTIBLE, SCENE_REPEAT_CONDITIONS, SCENE_SHOW_ALL_TEXT,
+    SCENE_STOP_QUEST_ON_END,
 };
 pub use water::{parse_watr, watr_to_params, WaterParams, WatrRecord};
 pub use world::{

@@ -105,7 +105,8 @@ pub(crate) use euler::{euler_zup_to_quat_yup, euler_zup_to_quat_yup_refr};
 
 #[allow(unused_imports)]
 pub use exterior::{
-    build_exterior_world_context, load_one_exterior_cell, ExteriorWorldContext, OneCellLoadInfo,
+    build_exterior_world_context, load_one_exterior_cell, load_worldspace_persistent_cell,
+    ExteriorWorldContext, OneCellLoadInfo,
 };
 pub(crate) use exterior::{ExteriorCellApplyJob, ExteriorCellApplyProgress};
 pub(crate) use load::apply_interior_cell_lighting;

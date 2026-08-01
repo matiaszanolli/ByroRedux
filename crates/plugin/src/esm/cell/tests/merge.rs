@@ -59,6 +59,7 @@ fn placed(form_id: u32, base_form_id: u32) -> PlacedRef {
         teleport: None,
         primitive: None,
         linked_refs: Vec::new(),
+        location_ref_types: Vec::new(),
         rooms: Vec::new(),
         portals: Vec::new(),
         radius_override: None,
@@ -293,6 +294,40 @@ fn merge_from_exterior_cells_merge_per_worldspace() {
     assert!(tam.contains_key(&(0, 0)));
     assert!(tam.contains_key(&(1, 0)));
     assert!(master.exterior_cells.contains_key("soulcairn"));
+}
+
+#[test]
+fn merge_from_worldspace_persistent_cell_merges_refs_by_form_id() {
+    let mut master = EsmCellIndex::default();
+    master.worldspace_persistent_cells.insert(
+        "tamriel".into(),
+        cell_with_refs(
+            "Wilderness",
+            vec![placed(0x100, 0xaaa), placed(0x101, 0xbbb)],
+        ),
+    );
+
+    let mut child = EsmCellIndex::default();
+    child.worldspace_persistent_cells.insert(
+        "tamriel".into(),
+        cell_with_refs(
+            "Wilderness",
+            vec![placed(0x101, 0xbeef), placed(0x102, 0xccc)],
+        ),
+    );
+
+    master.merge_from(child);
+
+    let cell = master.worldspace_persistent_cells.get("tamriel").unwrap();
+    let refs: std::collections::HashMap<_, _> = cell
+        .references
+        .iter()
+        .map(|placed| (placed.form_id, placed.base_form_id))
+        .collect();
+    assert_eq!(refs.len(), 3);
+    assert_eq!(refs.get(&0x100), Some(&0xaaa));
+    assert_eq!(refs.get(&0x101), Some(&0xbeef));
+    assert_eq!(refs.get(&0x102), Some(&0xccc));
 }
 
 // ── WRLD record decoding (#965 / OBL-D3-NEW-01) ─────────────────────

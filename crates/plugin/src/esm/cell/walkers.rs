@@ -817,6 +817,7 @@ pub(crate) fn parse_refr_group(
             let mut teleport: Option<TeleportDest> = None;
             let mut primitive: Option<PrimitiveBounds> = None;
             let mut linked_refs: Vec<LinkedRef> = Vec::new();
+            let mut location_ref_types: Vec<u32> = Vec::new();
             let mut rooms: Vec<u32> = Vec::new();
             let mut portals: Vec<PortalLink> = Vec::new();
             let mut radius_override: Option<f32> = None;
@@ -840,7 +841,7 @@ pub(crate) fn parse_refr_group(
                 let mut r = SubReader::new(&sub.data);
                 match &sub.sub_type {
                     b"NAME" => {
-                        base_form_id = r.u32_or_default();
+                        base_form_id = reader.remap_form_id(r.u32_or_default());
                     }
                     // VMAD on the placement itself — the same wire format as a
                     // base record's VMAD (version / objectFormat / scriptCount
@@ -913,6 +914,15 @@ pub(crate) fn parse_refr_group(
                         let keyword = r.u32_or_default();
                         let target = r.u32_or_default();
                         linked_refs.push(LinkedRef { keyword, target });
+                    }
+                    // XLRT — one or more LCRT FormIDs classifying this
+                    // placed reference for Radiant Story / quest-alias
+                    // selection. xEdit models the payload as a packed array;
+                    // tolerate any trailing partial word.
+                    b"XLRT" => {
+                        while r.remaining() >= 4 {
+                            location_ref_types.push(reader.remap_form_id(r.u32_or_default()));
+                        }
                     }
                     // XRMR — Room membership. Layout per UESP:
                     // count(u32) + count × room_ref(u32). Pre-#412 FO4
@@ -1046,6 +1056,7 @@ pub(crate) fn parse_refr_group(
                     teleport,
                     primitive,
                     linked_refs,
+                    location_ref_types,
                     rooms,
                     portals,
                     radius_override,

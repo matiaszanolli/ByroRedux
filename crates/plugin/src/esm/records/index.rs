@@ -16,7 +16,8 @@ use super::{
     IdleRecord, ImgsRecord, ImodRecord, IpctRecord, IpdsRecord, ItemRecord, LeveledList,
     LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord, NaviRecord, NavmRecord, NpcRecord,
     OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord, RepuRecord,
-    ScriptRecord, SlgmRecord, SpelRecord, TermRecord, TreeRecord, WatrRecord, WeatherRecord,
+    ScenRecord, ScriptRecord, SlgmRecord, SpelRecord, TermRecord, TreeRecord, WatrRecord,
+    WeatherRecord,
 };
 use std::collections::HashMap;
 
@@ -107,6 +108,9 @@ pub struct EsmIndex {
     pub packages: HashMap<u32, PackRecord>,
     /// `QUST` quests — Story Manager / Radiant Story entry points.
     pub quests: HashMap<u32, QustRecord>,
+    /// Skyrim+ `SCEN` records — condition-gated phase timelines containing
+    /// dialogue, package, and timer actions plus Papyrus event fragments.
+    pub scenes: HashMap<u32, ScenRecord>,
     /// `DIAL` dialogue topics — owned by quests via QSTI refs. INFO
     /// children land on `DialRecord.infos` via the dedicated
     /// `extract_dial_with_info` walker (group_type == 7 Topic
@@ -409,6 +413,7 @@ impl EsmIndex {
             ("hair", |s| s.hair.len()),
             ("packages", |s| s.packages.len()),
             ("quests", |s| s.quests.len()),
+            ("scenes", |s| s.scenes.len()),
             ("dialogues", |s| s.dialogues.len()),
             ("messages", |s| s.messages.len()),
             ("perks", |s| s.perks.len()),
@@ -690,6 +695,7 @@ impl EsmIndex {
         self.hair.extend(other.hair);
         self.packages.extend(other.packages);
         self.quests.extend(other.quests);
+        self.scenes.extend(other.scenes);
         self.dialogues.extend(other.dialogues);
         self.messages.extend(other.messages);
         self.perks.extend(other.perks);
@@ -732,7 +738,29 @@ impl EsmIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::esm::records::ActiRecord;
+    use crate::esm::records::{ActiRecord, ScenePhase};
+
+    #[test]
+    fn merge_from_preserves_scene_timelines() {
+        let mut plugin = EsmIndex::default();
+        plugin.scenes.insert(
+            0x000B_ECD4,
+            ScenRecord {
+                form_id: 0x000B_ECD4,
+                editor_id: "MQ101Scene1".into(),
+                phases: vec![ScenePhase {
+                    name: "Cart ride".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let mut merged = EsmIndex::default();
+        merged.merge_from(plugin);
+
+        assert_eq!(merged.scenes[&0x000B_ECD4].phases[0].name, "Cart ride");
+    }
 
     #[test]
     fn merge_from_preserves_skyrim_plus_equipment_graph() {

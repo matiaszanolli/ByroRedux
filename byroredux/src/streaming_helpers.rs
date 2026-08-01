@@ -177,6 +177,7 @@ pub fn drain_streaming_state(
     };
     cancel_active_streaming_apply(world, ctx, &mut state);
     let cells: Vec<_> = state.loaded.drain().collect();
+    let persistent_root = state.persistent_root.take();
     // #1536 — LOD blocks (terrain + object) carry no `CellRoot`, so
     // `unload_cell`'s `CellRootIndex` victim walk can't reach them; their
     // ONLY reclaim path is `unload_{,object_}lod_block`. Pre-fix
@@ -192,14 +193,18 @@ pub fn drain_streaming_state(
         &mut state.placement_lod_blocks,
     );
     log::info!(
-        "Cell transition: draining {} streamed cells + {} terrain-LOD + {} object-LOD + {} placement-LOD blocks before swap",
+        "Cell transition: draining {} streamed cells + {} persistent worldspace CELL + {} terrain-LOD + {} object-LOD + {} placement-LOD blocks before swap",
         cells.len(),
+        usize::from(persistent_root.is_some()),
         lod_blocks.len(),
         object_lod_blocks.len(),
         placement_lod_blocks.len(),
     );
     for ((_gx, _gy), slot) in cells {
         cell_loader::unload_cell(world, ctx, slot.cell_root);
+    }
+    if let Some(cell_root) = persistent_root {
+        cell_loader::unload_cell(world, ctx, cell_root);
     }
     for block in &lod_blocks {
         cell_loader::unload_lod_block(world, ctx, block);

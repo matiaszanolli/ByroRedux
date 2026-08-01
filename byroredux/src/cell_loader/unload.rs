@@ -195,6 +195,12 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     for eid in victims {
         world.despawn(eid);
     }
+    if victim_count > 0 {
+        // Quest-alias bindings may point at actor candidates owned by this
+        // cell. Rebuild lazily on the next scene tick so stale EntityIds
+        // cannot survive an interior transition or exterior stream-out.
+        byroredux_scripting::mark_scene_actor_bindings_dirty(world);
+    }
 
     // #2148 / ECS-2507-02 — hand back the sparse-index memory those despawns
     // just orphaned. `SparseSetStorage::sparse` is indexed by raw `EntityId`

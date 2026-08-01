@@ -389,6 +389,7 @@ fn exec_load_exterior(
             return;
         }
     };
+    crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
     crate::scene::apply_worldspace_weather(world, ctx, &tex_provider, &wctx);
     let mut state =
         streaming::WorldStreamingState::new(wctx, tex_provider, mat_provider, clamped_radius);

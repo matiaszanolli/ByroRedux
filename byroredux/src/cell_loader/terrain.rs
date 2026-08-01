@@ -20,8 +20,8 @@ use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_plugin::esm::cell::TextureSet;
-use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::vulkan::scene_buffer::GpuTerrainTile;
+use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::{Vertex, VulkanContext};
 
 use crate::asset_provider::{resolve_texture, TextureProvider};

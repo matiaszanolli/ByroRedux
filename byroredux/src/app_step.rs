@@ -455,6 +455,10 @@ impl App {
                     Some(&worldspace),
                 ) {
                     Ok(wctx) => {
+                        crate::asset_provider::populate_scene_runtime(
+                            &mut self.world,
+                            &wctx.record_index,
+                        );
                         crate::scene::apply_worldspace_weather(
                             &mut self.world,
                             ctx,
