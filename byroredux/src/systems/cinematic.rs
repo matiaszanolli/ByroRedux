@@ -8,8 +8,8 @@ use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::string::StringPool;
 use byroredux_physics::{PhysicsWorld, RapierHandles};
 use byroredux_scripting::{
-    ActorCinematicState, AnimationTextKeyEvents, CinematicAnimationEvent,
-    CinematicPresentationState, HorseTetherState, MotionTypeChangeRequest,
+    ActorCinematicState, AnimationTextKeyEvents, CinematicAnimationEvent, HorseTetherState,
+    MotionTypeChangeRequest,
 };
 
 /// Consume queued Skyrim `PlayIdle` requests once their IDLE FormID has a
@@ -186,22 +186,8 @@ pub(crate) fn cinematic_animation_event_system(world: &World, _dt: f32) {
     else {
         return;
     };
-    let Some(mut presentation) = world.try_resource_mut::<CinematicPresentationState>() else {
-        return;
-    };
     for (_, event) in deliveries.iter().filter(|(entity, _)| *entity == player) {
-        let registered = match event {
-            CinematicAnimationEvent::PlayImod => presentation.player_imod_event_registered,
-            CinematicAnimationEvent::IdleFurnitureExit => {
-                presentation.player_furniture_exit_event_registered
-            }
-            CinematicAnimationEvent::ExitCartEnd => false,
-        };
-        if registered {
-            presentation.last_player_animation_event = Some(*event);
-            presentation.player_animation_event_serial =
-                presentation.player_animation_event_serial.wrapping_add(1);
-        }
+        byroredux_scripting::dispatch_player_cinematic_animation_event(world, *event);
     }
 }
 
@@ -450,10 +436,16 @@ mod tests {
         let exit_cart_end = pool.intern("ExitCartEnd");
         let furniture_exit = pool.intern("IdleFurnitureExit");
         world.insert_resource(pool);
-        world.insert_resource(CinematicPresentationState {
-            player_furniture_exit_event_registered: true,
-            ..Default::default()
-        });
+        world.insert_resource(byroredux_scripting::CinematicPresentationState::default());
+        world.insert_resource(byroredux_scripting::quest_stages::QuestStageState::default());
+        let quest = byroredux_scripting::QuestFormId(0x0003_372B);
+        world
+            .resource_mut::<byroredux_scripting::CinematicPresentationState>()
+            .register_player_animation_event(
+                CinematicAnimationEvent::IdleFurnitureExit,
+                quest,
+                Vec::new(),
+            );
 
         let player = world.spawn();
         world.insert_resource(byroredux_scripting::papyrus_demo::PlayerEntity(player));
@@ -490,13 +482,21 @@ mod tests {
         );
         assert_eq!(actor.animation_event_serial, 2);
         drop(actor);
-        let presentation = world.resource::<CinematicPresentationState>();
-        assert!(presentation.player_furniture_exit_event_registered);
+        let presentation = world.resource::<byroredux_scripting::CinematicPresentationState>();
+        assert!(!presentation
+            .is_player_animation_event_registered(CinematicAnimationEvent::IdleFurnitureExit));
         assert_eq!(
             presentation.last_player_animation_event,
             Some(CinematicAnimationEvent::IdleFurnitureExit)
         );
         assert_eq!(presentation.player_animation_event_serial, 1);
+        drop(presentation);
+        assert_eq!(
+            world
+                .resource::<byroredux_scripting::quest_stages::QuestStageState>()
+                .get_stage(quest),
+            160
+        );
     }
 
     #[test]

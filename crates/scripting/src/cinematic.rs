@@ -13,12 +13,40 @@ use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_core::math::{Quat, Vec3};
 
+use crate::quest_stages::{QuestFormId, QuestStageAdvanced, QuestStageState};
+
 /// Animation event awaited by an MQ101 cinematic helper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CinematicAnimationEvent {
     PlayImod,
     IdleFurnitureExit,
     ExitCartEnd,
+}
+
+impl CinematicAnimationEvent {
+    fn mq101_callback_stage(self) -> Option<u16> {
+        match self {
+            Self::PlayImod => Some(145),
+            Self::IdleFurnitureExit => Some(160),
+            Self::ExitCartEnd => None,
+        }
+    }
+}
+
+/// One vanilla `ImageSpaceModifier.Apply(strength)` invocation delivered by
+/// an animation callback. The renderer does not interpret IMAD curves yet;
+/// retaining the concrete FormID and authored strength keeps the presentation
+/// request explicit instead of losing it at the scripting boundary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageSpaceModifierApplication {
+    pub form_id: u32,
+    pub strength: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PlayerAnimationEventRegistration {
+    quest: QuestFormId,
+    image_space_modifiers: Vec<ImageSpaceModifierApplication>,
 }
 
 /// Per-actor cinematic state written by `PlayIdle`, `SetVehicle`, and the
@@ -91,28 +119,112 @@ impl Component for MotionTypeChangeRequest {
 
 /// Engine-wide cinematic presentation state controlled by Skyrim globals and
 /// MQ101's animation-event helper functions.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CinematicPresentationState {
     pub sitting_rotation_degrees: f32,
-    pub player_imod_event_registered: bool,
-    pub player_furniture_exit_event_registered: bool,
     pub last_player_animation_event: Option<CinematicAnimationEvent>,
     pub player_animation_event_serial: u64,
+    /// IMAD applications issued by callbacks and awaiting a renderer-side
+    /// image-space implementation.
+    pub applied_image_space_modifiers: Vec<ImageSpaceModifierApplication>,
+    player_imod_event: Option<PlayerAnimationEventRegistration>,
+    player_furniture_exit_event: Option<PlayerAnimationEventRegistration>,
 }
 
 impl Default for CinematicPresentationState {
     fn default() -> Self {
         Self {
             sitting_rotation_degrees: 0.0,
-            player_imod_event_registered: false,
-            player_furniture_exit_event_registered: false,
             last_player_animation_event: None,
             player_animation_event_serial: 0,
+            applied_image_space_modifiers: Vec::new(),
+            player_imod_event: None,
+            player_furniture_exit_event: None,
         }
     }
 }
 
 impl Resource for CinematicPresentationState {}
+
+impl CinematicPresentationState {
+    /// Register one of MQ101's player animation callbacks. Re-registering the
+    /// same event replaces the previous one, matching Papyrus subscription
+    /// identity `(listener, source, event-name)`.
+    pub fn register_player_animation_event(
+        &mut self,
+        event: CinematicAnimationEvent,
+        quest: QuestFormId,
+        image_space_modifiers: Vec<ImageSpaceModifierApplication>,
+    ) -> bool {
+        let registration = PlayerAnimationEventRegistration {
+            quest,
+            image_space_modifiers,
+        };
+        match event {
+            CinematicAnimationEvent::PlayImod => self.player_imod_event = Some(registration),
+            CinematicAnimationEvent::IdleFurnitureExit => {
+                self.player_furniture_exit_event = Some(registration)
+            }
+            CinematicAnimationEvent::ExitCartEnd => return false,
+        }
+        true
+    }
+
+    pub fn is_player_animation_event_registered(&self, event: CinematicAnimationEvent) -> bool {
+        match event {
+            CinematicAnimationEvent::PlayImod => self.player_imod_event.is_some(),
+            CinematicAnimationEvent::IdleFurnitureExit => {
+                self.player_furniture_exit_event.is_some()
+            }
+            CinematicAnimationEvent::ExitCartEnd => false,
+        }
+    }
+
+    fn take_player_animation_event(
+        &mut self,
+        event: CinematicAnimationEvent,
+    ) -> Option<PlayerAnimationEventRegistration> {
+        match event {
+            CinematicAnimationEvent::PlayImod => self.player_imod_event.take(),
+            CinematicAnimationEvent::IdleFurnitureExit => self.player_furniture_exit_event.take(),
+            CinematicAnimationEvent::ExitCartEnd => None,
+        }
+    }
+}
+
+/// Invoke the vanilla MQ101 quest callback registered for a player animation
+/// event. Both handlers are one-shot: they advance their owning quest to the
+/// stage proven by `MQ101QuestScript.OnAnimationEvent`, then unregister.
+pub fn dispatch_player_cinematic_animation_event(
+    world: &World,
+    event: CinematicAnimationEvent,
+) -> Option<QuestStageAdvanced> {
+    let target_stage = event.mq101_callback_stage()?;
+    // Do not consume a one-shot registration if canonical quest state is not
+    // installed. Structural resources cannot disappear while `&World` lives,
+    // so the subsequent mutable lookup is guaranteed to remain available.
+    world.try_resource::<QuestStageState>()?;
+
+    let registration = {
+        let mut presentation = world.try_resource_mut::<CinematicPresentationState>()?;
+        let registration = presentation.take_player_animation_event(event)?;
+        presentation.last_player_animation_event = Some(event);
+        presentation.player_animation_event_serial =
+            presentation.player_animation_event_serial.wrapping_add(1);
+        presentation
+            .applied_image_space_modifiers
+            .extend(registration.image_space_modifiers.iter().copied());
+        registration
+    };
+
+    let mut stages = world.resource_mut::<QuestStageState>();
+    let previous_stage = stages.set_stage(registration.quest, target_stage);
+    Some(QuestStageAdvanced {
+        quest: registration.quest,
+        previous_stage,
+        new_stage: target_stage,
+    })
+}
 
 pub fn register(world: &mut World) {
     world.register::<ActorCinematicState>();
@@ -146,5 +258,51 @@ mod tests {
         };
         assert_eq!(state.horse, 7);
         assert_eq!(state.horse_local_translation.z, -140.0);
+    }
+
+    #[test]
+    fn mq101_player_callbacks_apply_stage_and_unregister_once() {
+        let mut world = World::new();
+        register(&mut world);
+        world.insert_resource(QuestStageState::default());
+        let quest = QuestFormId(0x0003_372B);
+        let applications = vec![
+            ImageSpaceModifierApplication {
+                form_id: 0x0010_1DAC,
+                strength: 1.0,
+            },
+            ImageSpaceModifierApplication {
+                form_id: 0x0010_CDC7,
+                strength: 1.0,
+            },
+        ];
+        world
+            .resource_mut::<CinematicPresentationState>()
+            .register_player_animation_event(
+                CinematicAnimationEvent::PlayImod,
+                quest,
+                applications.clone(),
+            );
+
+        let advance =
+            dispatch_player_cinematic_animation_event(&world, CinematicAnimationEvent::PlayImod)
+                .expect("registered callback");
+        assert_eq!(advance.new_stage, 145);
+        assert_eq!(world.resource::<QuestStageState>().get_stage(quest), 145);
+
+        let presentation = world.resource::<CinematicPresentationState>();
+        assert!(
+            !presentation.is_player_animation_event_registered(CinematicAnimationEvent::PlayImod)
+        );
+        assert_eq!(presentation.applied_image_space_modifiers, applications);
+        assert_eq!(presentation.player_animation_event_serial, 1);
+        drop(presentation);
+
+        assert!(dispatch_player_cinematic_animation_event(
+            &world,
+            CinematicAnimationEvent::PlayImod
+        )
+        .is_none());
+        assert_eq!(world.resource::<QuestStageState>().get_stage(quest), 145);
     }
 }

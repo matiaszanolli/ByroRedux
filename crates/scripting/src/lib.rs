@@ -30,7 +30,8 @@ pub mod trigger;
 pub mod vm_state;
 
 pub use cinematic::{
-    ActorCinematicState, CinematicAnimationEvent, CinematicPresentationState, HorseTetherState,
+    dispatch_player_cinematic_animation_event, ActorCinematicState, CinematicAnimationEvent,
+    CinematicPresentationState, HorseTetherState, ImageSpaceModifierApplication,
     MotionTypeChangeRequest,
 };
 pub use cleanup::event_cleanup_system;

@@ -9,6 +9,7 @@ use crate::quest_stages::{
 };
 use crate::translate::compose::QuestRef;
 use crate::translate::effects::Effect;
+use crate::CinematicAnimationEvent;
 use byroredux_core::ecs::world::World;
 
 const Q: QuestFormId = QuestFormId(0x0001_2345);
@@ -1155,8 +1156,121 @@ fn dispatch_cart_animation_vehicle_and_motion_effects() {
     );
     let presentation = world.resource::<crate::CinematicPresentationState>();
     assert_eq!(presentation.sitting_rotation_degrees, -55.0);
-    assert!(presentation.player_imod_event_registered);
-    assert!(presentation.player_furniture_exit_event_registered);
+    assert!(presentation.is_player_animation_event_registered(CinematicAnimationEvent::PlayImod));
+    assert!(presentation
+        .is_player_animation_event_registered(CinematicAnimationEvent::IdleFurnitureExit));
+}
+
+#[test]
+fn furniture_exit_callback_advances_quest_and_dispatches_stage_fragment_once() {
+    let world = fixture();
+    {
+        let mut fragments = world.resource_mut::<QuestStageFragments>();
+        fragments.insert(Q, 160, vec![Effect::SetSittingRotation { degrees: 0.0 }]);
+    }
+    {
+        let mut presentation = world.resource_mut::<crate::CinematicPresentationState>();
+        presentation.sitting_rotation_degrees = -55.0;
+        presentation.register_player_animation_event(
+            CinematicAnimationEvent::IdleFurnitureExit,
+            Q,
+            Vec::new(),
+        );
+    }
+
+    let advance = crate::dispatch_player_cinematic_animation_event(
+        &world,
+        CinematicAnimationEvent::IdleFurnitureExit,
+    )
+    .expect("registered callback should advance MQ101");
+    assert_eq!(advance.new_stage, 160);
+    quest_fragment_dispatch_system(&world);
+
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 160);
+    let presentation = world.resource::<crate::CinematicPresentationState>();
+    assert_eq!(presentation.sitting_rotation_degrees, 0.0);
+    assert!(!presentation
+        .is_player_animation_event_registered(CinematicAnimationEvent::IdleFurnitureExit));
+    assert_eq!(presentation.player_animation_event_serial, 1);
+    drop(presentation);
+
+    assert!(crate::dispatch_player_cinematic_animation_event(
+        &world,
+        CinematicAnimationEvent::IdleFurnitureExit
+    )
+    .is_none());
+}
+
+#[test]
+fn play_imod_callback_resolves_vmad_applications_before_stage_handoff() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const PLAYER_ALDUIN_IMAD: u32 = 0x0010_1DAC;
+    const DRAGON_ATTACK_BLUR_IMAD: u32 = 0x0010_CDC7;
+    let world = fixture();
+    {
+        let mut fragments = world.resource_mut::<QuestStageFragments>();
+        fragments.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                scripts: vec![ScriptInstance {
+                    name: "MQ101QuestScript".into(),
+                    status: 0,
+                    properties: vec![
+                        ScriptProperty {
+                            name: "PlayerAlduinIMOD".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: PLAYER_ALDUIN_IMAD,
+                                alias: -1,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "CGDragonAttackBlurLong".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: DRAGON_ATTACK_BLUR_IMAD,
+                                alias: -1,
+                            },
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::RegisterPlayerAnimationEvent {
+                event: CinematicAnimationEvent::PlayImod,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    crate::dispatch_player_cinematic_animation_event(&world, CinematicAnimationEvent::PlayImod)
+        .expect("fragment should register callback");
+
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 145);
+    let presentation = world.resource::<crate::CinematicPresentationState>();
+    assert_eq!(
+        presentation.applied_image_space_modifiers,
+        vec![
+            crate::ImageSpaceModifierApplication {
+                form_id: PLAYER_ALDUIN_IMAD,
+                strength: 1.0,
+            },
+            crate::ImageSpaceModifierApplication {
+                form_id: DRAGON_ATTACK_BLUR_IMAD,
+                strength: 1.0,
+            },
+        ]
+    );
+    assert!(!presentation.is_player_animation_event_registered(CinematicAnimationEvent::PlayImod));
 }
 
 #[test]

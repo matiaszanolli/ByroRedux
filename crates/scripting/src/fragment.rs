@@ -641,15 +641,21 @@ pub fn apply_effect(
         }
         Effect::RegisterPlayerAnimationEvent { event } => {
             if let Some(mut state) = world.try_resource_mut::<crate::CinematicPresentationState>() {
-                match event {
+                let image_space_modifiers = match event {
                     crate::CinematicAnimationEvent::PlayImod => {
-                        state.player_imod_event_registered = true;
+                        ["PlayerAlduinIMOD", "CGDragonAttackBlurLong"]
+                            .into_iter()
+                            .filter_map(|property| resolve_property_form_id(vmad, property))
+                            .map(|form_id| crate::ImageSpaceModifierApplication {
+                                form_id,
+                                strength: 1.0,
+                            })
+                            .collect()
                     }
-                    crate::CinematicAnimationEvent::IdleFurnitureExit => {
-                        state.player_furniture_exit_event_registered = true;
-                    }
-                    crate::CinematicAnimationEvent::ExitCartEnd => {}
-                }
+                    crate::CinematicAnimationEvent::IdleFurnitureExit
+                    | crate::CinematicAnimationEvent::ExitCartEnd => Vec::new(),
+                };
+                state.register_player_animation_event(*event, context, image_space_modifiers);
             }
             None
         }
