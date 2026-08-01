@@ -24,6 +24,136 @@ Commits hold that record.
 
 ---
 
+## Session 62 — Volumetric fog/GI, MQ101 cinematic vertical slice (SCEN/PACK-scene + Havok HKX), streaming resumability, ten-issue bug-bash  (2026-07-26 → 2026-08-01, `5f0220eb..7e068c7d`, 61 commits)
+
+Four large threads ran in parallel rather than one planned arc. The renderer
+picked up its biggest single-session feature push since the FSR work —
+procedural volumetric fog, clustered local fog volumes, and a
+material-aware bounded path-traced GI extension. Scripting shipped the
+engine's first cinematic vertical slice: SCEN scene records and PACK
+scene-package actions now have an ECS runtime, driving Skyrim's MQ101
+cart-escape quest end-to-end, backed by a new from-scratch Havok HKX
+packfile reader. Streaming picked up cooperative-yield machinery
+(resumable NPC assembly, deadline-budgeted cell application) aimed at the
+frame-time spikes large cells cause. And the standing audit cadence closed
+ten numbered issues. `/session-close` itself caught four stale test
+assertions — three `variant_pack_gating_tests` and one shader-contract
+string match — broken by an intentional field-reuse refactor
+(`bca0f127`) two days earlier and never updated; fixed as part of this
+close (see Net).
+
+- **Volumetric fog and GI.** A procedural froxel-grid volumetric fog pass
+  with hybrid Z-slice distribution and temporal reprojection landed first
+  (`5d362541`), then moved off ad-hoc constants onto physically-motivated
+  density/extinction coefficients (`94ded998`). Clustered **local** fog
+  volumes followed — per-volume density fields composited into the same
+  froxel grid rather than a single global fog term (`733dff8f`), with
+  particle-emitter selection and fog-volume handling streamlined together
+  since they share spawn-time bookkeeping (`8a15b064`). The GI ray gained
+  fog chromaticity so path-traced bounces pick up colored volumetric
+  scattering instead of treating it as neutral density (`f8efde63`), and
+  fog density volumes are now generated procedurally at boot instead of
+  requiring an authored tileable texture (`5bfef7da`).
+- **Shading and material fixes.** Parallax occlusion mapping landed with
+  consistency fixes to material-hit resolution (`9ade7506`); light
+  visibility gained structural per-light visibility flags and a
+  `SHADOW_MASK_STRUCTURE` definition for shadow-casting classification
+  (`0888c5f9`, `28c43975`, `3b922734`). Material texture handling was
+  reworked alongside cubemap support (`80682517`, `bca0f127`) — the same
+  change that made `multi_layer_envmap_strength` alias the shared
+  `env_map_scale` field for every material kind, not just kind 11 (a
+  deliberate reuse the comment at the call site explains; the three
+  gating tests asserting the old kind-11-only behavior were stale, not the
+  code). Water reflection rays were fixed to actually reflect the surface
+  they hit rather than a fixed direction (`ae3fa9c7`), with ray-hit
+  reconstruction and material sampling optimized alongside (`5d8bb982`).
+  A new fire-refraction material kind shipped (`24e5cb6a`) together with a
+  fix preserving scene content under fire-refraction proxies that had been
+  overwriting it (`9bedceee`); the combined caustic decode in
+  `composite.frag`, dropped by an earlier refactor, was restored
+  (`4d7abd28`). GPU-contract docs (`shader-pipeline.md`,
+  `memory-budget.md`) were refreshed to match (`0d225f0f`).
+- **MQ101 cinematic vertical slice (M47.2).** SCEN records got a full ECS
+  runtime — `SceneRegistry`, `ScenePlayer`, `ActiveSceneAction`,
+  `SceneActorBindings`, and a playback system driving scene actions and
+  external-completion signals (`6df3bad8`) — followed by a quest-startup
+  system so engine-defined quests auto-start scenes off `QuestStageState`
+  (`9e27220b`). PACK scene-package actions (the mechanism MQ101 uses to
+  drive the cart NPCs) got their own runtime: `PackageRegistry` +
+  `PackageTargetRegistry` + `ScenePackageCommand` + a lifecycle system
+  gating completion on scene-phase conditions (`022cf421`). New fragment
+  effects landed in sequence to cover the quest's actual script content —
+  two-state activator + `StartScene`/`StopScene` (`583a349a`), further
+  scene-management/activation effect types (`5f7296ab`), player
+  control-state effects (`f1321893`), `EquipItem` (biped-slot-mask
+  catalog) and `TetherToHorse` (cart-to-horse pose preservation)
+  (`64d4e10c`), and the cinematic-specific set — `PlayIdle`,
+  `SetVehicle`, `SetMotionType`, `SetSittingRotation`, `ExitCart` — plus a
+  `FragmentExecutionQueue` for latent-wait sequencing across fragment
+  steps (`0ff8612b`, `7e068c7d`). Backing all of it, `crates/hkx` shipped
+  from scratch: a minimal safe reader for Skyrim's 64-bit Havok 2010
+  packfiles, decoding `hkaSkeleton` and both static and
+  spline-compressed `hkaSplineCompressedAnimation` tracks with no
+  behavior-graph execution (`02c24e4f`, streamlined `714b06df`) — wired
+  into the animation asset provider to install the MQ101 cart-idle catalog
+  from real game data when available. A conformance probe cross-checks the
+  whole chain against quest and asset data (`751670ae`), and the
+  now-superseded hardcoded `ScriptRegistry` boot registration was retired
+  in favor of the live `.pex`/`.psc` recognizer path (#2191, `09069aff`).
+  **This is a scoped vertical slice, not general NPC animation** — the HKX
+  reader currently drives one curated cinematic catalog, and the ROADMAP
+  "Havok `.hkx` animation not yet decoded" framing (Tier-5 prose) needs
+  updating to reflect that *some* Havok animation now decodes, not that
+  general AI-package locomotion animation exists.
+- **Streaming resumability.** Large-cell frame-time spikes got three
+  independent mitigations: resumable NPC assembly breaks per-actor NIF
+  loading into independently-resumable units instead of blocking until a
+  whole actor finishes (`9bf4c493`); `FrameTimeBudget` +
+  `StreamingCellApplyJob` make cell application (NIF finalization, terrain
+  setup, REFR spawning) deadline-bounded and cooperative across frames
+  instead of running to completion in one (`9926fa50`); and
+  `LodReconcileInput`/`LodWorkBudget` give terrain/object/placement LOD
+  streaming a single shared, closest-first work budget instead of three
+  independently-greedy passes (`484893de`). Exterior cell entry now loads
+  the foreground first so the player-visible area populates before
+  background LOD rings compete for the same budget (`67081437`).
+- **Materials and NIF import.** Texture roles are now unified across games
+  in one place rather than resolved per-game at each call site
+  (`1d94eb24`), with a broader material-handling refactor plus its own
+  audit pass (`88aa3339`) and a follow-up refactor scoped to the NIF
+  import pipeline specifically (`05d68926`, comment fix `c8c8a834`).
+- **Ten-issue bug-bash + tooling.** #2202 (Skyrim vestibule floor-collider
+  gap) census'd the spawn column when the floor probe misses (`6b5d60ec`)
+  and the door-spawn floor ladder was extended to reach the real cell
+  floor and threshold (`a88eab6e`), advancing the RT-1 grounding tracker
+  (doc correction `f905ea5a`). Also closed: #2197 (`draw_frame`'s FSR +
+  camera-delta blocks extracted for readability, `afe3816a`), #2193
+  (NiTriStrips de-stripper de-duplicated, collision winding pinned,
+  `a4c11bfb`), #2181 (save-guard `serde(default)` made key-position
+  independent, `8709e12d`), #2164 (8 remaining renderer LOW-bundle
+  findings, `09c1b6db`), #2161 (decision recorded: accept the main-pass
+  shader cost from Session 61's investigation, `87c93b8e`), #1942
+  (`--cornell-sun` exterior RT-harness variant, `87217b62`), #1856
+  (FO3/FNV-vs-Skyrim water-shader split documented and pinned,
+  `595a1898`), #1849 (WRLD `NAM3`/`NAM4` LOD-water fields + `OFST` offset
+  table parsed, `560c6741`), and #1848 (superseded save/load requests now
+  reported instead of silently dropped, `997c2418`). Scaleform gained
+  input routing for winit-driven menus (`3ea5e275`). Three specialist
+  subagents (`ecs-specialist`, `legacy-specialist`, `renderer-specialist`)
+  were added to the project's `.claude/agents/` (`db625997`), and a
+  runtime-telemetry audit + the R6a-stale-17 bench closeout correction
+  were filed (`0a3e0da5`, `c29824fa`).
+
+Net: tests 3965 → **4186 passing** (+221; includes the 4 stale assertions
+`/session-close` fixed), 132 ignored (unchanged). Rust source lines
+(`src/` dirs) ~298 673 → **~321 724** (+~23 051); total incl. tests
+~319 555 → **~340 505** (+~20 950). Workspace members 25 → **26** (new
+`crates/hkx`). Open issue directories 2078 → 2087. **Bench-of-record is
+now 59 commits stale** (record at `3a02b02d`, 2026-07-26) — past the
+30-commit gate, and this session's renderer work (volumetric fog, GI,
+water, POM, shadows) is exactly the kind of change the gate exists to
+catch; filed as R6a-stale-18, not yet re-run.
+
 ## Session 61 — FSR 3.1 phases 5–7 + default flip, Scaleform host bridge (R4 closed), two regressions caught by measurement  (2026-07-24 → 2026-07-26, `98a0fd7a..3a02b02d`, 43 commits)
 
 Three planned threads and one unplanned. The planned ones: finish the FSR 3.1
