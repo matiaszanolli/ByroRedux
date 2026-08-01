@@ -4,7 +4,7 @@ use byroredux_core::ecs::components::RigidBodyData;
 use byroredux_core::ecs::Transform;
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_physics::{PhysicsWorld, RapierHandles};
-use byroredux_scripting::{ActorCinematicState, MotionTypeChangeRequest};
+use byroredux_scripting::{ActorCinematicState, HorseTetherState, MotionTypeChangeRequest};
 
 /// Apply Papyrus `SetMotionType` requests to both canonical ECS body data and
 /// an already-live Rapier body, then drain the one-shot request.
@@ -54,10 +54,44 @@ pub(crate) fn scripted_motion_type_system(world: &World, _dt: f32) {
     }
 }
 
-/// Keep actors attached by Papyrus `SetVehicle` at their captured local cart
-/// pose. This runs in Update before transform propagation, so the actor's
-/// complete skeleton observes the new root pose in the same frame.
+/// Resolve MQ101's complete attachment chain: package-driven horse -> tethered
+/// cart -> `SetVehicle` riders. This runs in Update before transform
+/// propagation, so carts, riders, and their skeletons observe the new root
+/// poses in the same frame.
 pub(crate) fn vehicle_attachment_system(world: &World, _dt: f32) {
+    let tethered_carts: Vec<(
+        EntityId,
+        byroredux_core::math::Vec3,
+        byroredux_core::math::Quat,
+    )> = {
+        match (
+            world.query::<HorseTetherState>(),
+            world.query::<Transform>(),
+        ) {
+            (Some(tethers), Some(transforms)) => tethers
+                .iter()
+                .filter_map(|(cart, tether)| {
+                    let horse = transforms.get(tether.horse)?;
+                    Some((
+                        cart,
+                        horse.translation
+                            + horse.rotation * (tether.horse_local_translation * horse.scale),
+                        horse.rotation * tether.horse_local_rotation,
+                    ))
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    if let Some(mut transforms) = world.query_mut::<Transform>() {
+        for (cart, translation, rotation) in tethered_carts {
+            if let Some(transform) = transforms.get_mut(cart) {
+                transform.translation = translation;
+                transform.rotation = rotation;
+            }
+        }
+    }
+
     let attachments: Vec<(
         EntityId,
         byroredux_core::math::Vec3,
@@ -176,5 +210,53 @@ mod tests {
             (actor_transform.rotation * Vec3::Z - Vec3::X).length() < 1e-5,
             "actor inherits vehicle rotation"
         );
+    }
+
+    #[test]
+    fn tethered_cart_and_rider_follow_package_driven_horse_in_one_tick() {
+        use byroredux_core::math::{Quat, Vec3};
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<ActorCinematicState>();
+        world.register::<HorseTetherState>();
+        let horse = world.spawn();
+        let cart = world.spawn();
+        let rider = world.spawn();
+        world.insert(
+            horse,
+            Transform::new(
+                Vec3::new(100.0, 0.0, 50.0),
+                Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                1.0,
+            ),
+        );
+        world.insert(cart, Transform::IDENTITY);
+        world.insert(rider, Transform::IDENTITY);
+        world.insert(
+            cart,
+            HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::new(0.0, 0.0, -10.0),
+                horse_local_rotation: Quat::IDENTITY,
+            },
+        );
+        world.insert(
+            rider,
+            ActorCinematicState {
+                vehicle: Some(cart),
+                vehicle_local_translation: Some(Vec3::new(0.0, 2.0, 0.0)),
+                vehicle_local_rotation: Some(Quat::IDENTITY),
+                ..Default::default()
+            },
+        );
+
+        vehicle_attachment_system(&world, 0.0);
+
+        let cart_transform = world.get::<Transform>(cart).unwrap();
+        assert!((cart_transform.translation - Vec3::new(90.0, 0.0, 50.0)).length() < 1e-5);
+        let rider_transform = world.get::<Transform>(rider).unwrap();
+        assert!((rider_transform.translation - Vec3::new(90.0, 2.0, 50.0)).length() < 1e-5);
+        assert!((rider_transform.rotation * Vec3::Z - Vec3::X).length() < 1e-5);
     }
 }

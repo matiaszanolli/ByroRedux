@@ -160,6 +160,17 @@ pub(crate) fn populate_scene_runtime(
     world: &mut byroredux_core::ecs::world::World,
     index: &byroredux_plugin::esm::records::EsmIndex,
 ) {
+    let equip_item_count = byroredux_scripting::install_equip_item_catalog(
+        world,
+        index.items.iter().filter_map(|(&form_id, item)| {
+            let byroredux_plugin::esm::records::ItemKind::Armor { biped_flags, .. } = &item.kind
+            else {
+                return None;
+            };
+            Some((form_id, *biped_flags))
+        }),
+    );
+    log::info!("Installed {equip_item_count} armor biped-slot definitions for scripted EquipItem");
     let start_game_quests =
         byroredux_scripting::install_start_game_quests(world, index.quests.values().cloned());
     let mut engine_start_quests = 0usize;

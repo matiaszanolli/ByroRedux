@@ -538,9 +538,7 @@ fn spawn_with_form_id(
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 
     world.register::<FormIdComponent>();
-    let mut pool = world
-        .remove_resource::<FormIdPool>()
-        .unwrap_or_else(FormIdPool::new);
+    let mut pool = world.remove_resource::<FormIdPool>().unwrap_or_default();
     let fid = pool.intern(FormIdPair {
         plugin: PluginId::from_filename("Skyrim.esm"),
         local: LocalFormId(form_id_raw),
@@ -1146,6 +1144,168 @@ fn dispatch_cart_animation_vehicle_and_motion_effects() {
     assert_eq!(presentation.sitting_rotation_degrees, -55.0);
     assert!(presentation.player_imod_event_registered);
     assert!(presentation.player_furniture_exit_event_registered);
+}
+
+#[test]
+fn actor_3d_load_gate_polls_without_blocking_then_resumes() {
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::ecs::components::Transform;
+
+    let mut world = fixture();
+    world.register::<Transform>();
+    let player = world.resource::<PlayerEntity>().0;
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert(
+            Q,
+            10,
+            vec![
+                Effect::WaitForActors3DLoaded {
+                    actors: vec![ActorRef::Player],
+                    poll_seconds: 0.2,
+                },
+                Effect::SetHudCartMode { cart_mode: true },
+            ],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<FragmentExecutionQueue>().len(), 1);
+    assert!(!world.resource::<crate::PlayerControlState>().hud_cart_mode);
+
+    fragment_continuation_system(&world, 0.2);
+    assert_eq!(world.resource::<FragmentExecutionQueue>().len(), 1);
+    world.insert(player, Transform::IDENTITY);
+    fragment_continuation_system(&world, 0.2);
+
+    assert!(world.resource::<FragmentExecutionQueue>().is_empty());
+    assert!(world.resource::<crate::PlayerControlState>().hud_cart_mode);
+}
+
+#[test]
+fn dispatch_tethers_cart_and_equips_carried_armor() {
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::ecs::components::{EquipmentSlots, Inventory, ItemStack, Transform};
+    use byroredux_core::math::Vec3;
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const RIDER_ALIAS: i16 = 40;
+    const CART_ALIAS: i16 = 41;
+    const HORSE_ALIAS: i16 = 42;
+    const GAG: u32 = 0x0004_6B44;
+    const GAG_SLOT: u32 = 1 << 12;
+
+    let mut world = fixture();
+    world.register::<Transform>();
+    let rider = world.spawn();
+    let cart = world.spawn();
+    let horse = world.spawn();
+    world.insert(
+        rider,
+        Inventory {
+            items: vec![ItemStack::new(0xdead, 1), ItemStack::new(GAG, 1)],
+        },
+    );
+    world.insert(rider, EquipmentSlots::new());
+    world.insert(cart, Transform::from_translation(Vec3::ZERO));
+    world.insert(
+        horse,
+        Transform::from_translation(Vec3::new(10.0, 0.0, 0.0)),
+    );
+    crate::install_equip_item_catalog(&mut world, [(GAG, GAG_SLOT)]);
+    {
+        let mut bindings = world.resource_mut::<crate::SceneActorBindings>();
+        bindings.bind(Q, i32::from(RIDER_ALIAS), rider);
+        bindings.bind(Q, i32::from(CART_ALIAS), cart);
+        bindings.bind(Q, i32::from(HORSE_ALIAS), horse);
+    }
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                scripts: vec![ScriptInstance {
+                    name: "QF_MQ101".into(),
+                    status: 0,
+                    properties: vec![
+                        ScriptProperty {
+                            name: "Alias_Rider".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: 0,
+                                alias: RIDER_ALIAS,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "Alias_Cart".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: 0,
+                                alias: CART_ALIAS,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "Alias_Horse".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: 0,
+                                alias: HORSE_ALIAS,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "ArmorGag".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: GAG,
+                                alias: -1,
+                            },
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![
+                Effect::TetherToHorse {
+                    cart: crate::translate::compose::ObjectRef::Property("Alias_Cart".into()),
+                    horse: crate::translate::compose::ObjectRef::Property("Alias_Horse".into()),
+                },
+                Effect::EquipItem {
+                    actor: ActorRef::Object(crate::translate::compose::ObjectRef::Property(
+                        "Alias_Rider".into(),
+                    )),
+                    item: crate::translate::compose::ObjectRef::Property("ArmorGag".into()),
+                    silent: false,
+                },
+            ],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+
+    quest_fragment_dispatch_system(&world);
+
+    let tether = world.get::<crate::HorseTetherState>(cart).unwrap();
+    assert_eq!(tether.horse, horse);
+    assert_eq!(tether.horse_local_translation, Vec3::new(-10.0, 0.0, 0.0));
+    assert_eq!(
+        world
+            .get::<crate::MotionTypeChangeRequest>(cart)
+            .unwrap()
+            .motion_type,
+        byroredux_core::ecs::components::MotionType::Keyframed
+    );
+    assert_eq!(
+        world.get::<EquipmentSlots>(rider).unwrap().at(12),
+        Some(InventoryIndex(1))
+    );
 }
 
 #[test]

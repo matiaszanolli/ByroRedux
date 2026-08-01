@@ -54,6 +54,23 @@ impl Component for ActorCinematicState {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// A cart hitched by Skyrim's native `ObjectReference.TetherToHorse` call.
+///
+/// Papyrus supplies the cart as the receiver and the horse as the argument.
+/// The app-side cinematic system preserves the captured cart pose relative to
+/// the horse, forming the first half of MQ101's movement chain:
+/// package-driven horse -> tethered cart -> `SetVehicle` riders.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HorseTetherState {
+    pub horse: EntityId,
+    pub horse_local_translation: Vec3,
+    pub horse_local_rotation: Quat,
+}
+
+impl Component for HorseTetherState {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// One-shot request consumed by the binary's Rapier integration system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MotionTypeChangeRequest {
@@ -88,6 +105,7 @@ impl Resource for CinematicPresentationState {}
 
 pub fn register(world: &mut World) {
     world.register::<ActorCinematicState>();
+    world.register::<HorseTetherState>();
     world.register::<MotionTypeChangeRequest>();
     if world.try_resource::<CinematicPresentationState>().is_none() {
         world.insert_resource(CinematicPresentationState::default());
@@ -106,5 +124,16 @@ mod tests {
 
         assert_eq!(state.requested_idle_form_id, Some(0x1234));
         assert_eq!(state.idle_request_serial, 2);
+    }
+
+    #[test]
+    fn horse_tether_state_retains_authored_relation_and_pose() {
+        let state = HorseTetherState {
+            horse: 7,
+            horse_local_translation: Vec3::new(0.0, 0.0, -140.0),
+            horse_local_rotation: Quat::IDENTITY,
+        };
+        assert_eq!(state.horse, 7);
+        assert_eq!(state.horse_local_translation.z, -140.0);
     }
 }

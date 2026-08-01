@@ -13,6 +13,7 @@ pub mod cinematic;
 pub mod cleanup;
 pub mod condition;
 pub mod dialogue;
+pub mod equipment;
 pub mod events;
 pub mod fragment;
 pub mod globals;
@@ -29,7 +30,7 @@ pub mod trigger;
 pub mod vm_state;
 
 pub use cinematic::{
-    ActorCinematicState, CinematicAnimationEvent, CinematicPresentationState,
+    ActorCinematicState, CinematicAnimationEvent, CinematicPresentationState, HorseTetherState,
     MotionTypeChangeRequest,
 };
 pub use cleanup::event_cleanup_system;
@@ -42,6 +43,7 @@ pub use dialogue::{
     ActiveDialogueLine, DialogueLine, DialogueLineCompletionBatch, DialoguePlayback,
     DialoguePresentationEvent, DialoguePresentationEventBatch, DialogueRegistry,
 };
+pub use equipment::{install_equip_item_catalog, EquipItemCatalog};
 pub use events::{
     ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, HitEvent, OnCellLoadEvent,
     OnEquipEvent, OnTriggerEnterEvent, TimerExpired,
@@ -127,6 +129,7 @@ pub fn register(world: &mut World) {
     dialogue::register(world);
     // Skyrim+ PACK template resolution and scene-owned package execution.
     package::register(world);
+    equipment::register(world);
     player_control::register(world);
     cinematic::register(world);
     vm_state::register(world);

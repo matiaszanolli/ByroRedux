@@ -36,7 +36,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use byroredux_core::ecs::components::{GlobalTransform, Inventory, ItemStack, Transform};
+use byroredux_core::ecs::components::{
+    EquipmentSlots, GlobalTransform, Inventory, InventoryIndex, ItemStack, Transform,
+};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::script_instance::{PropertyValue, ScriptInstanceData};
@@ -113,9 +115,20 @@ struct PendingFragmentExecution {
     vmad: Option<ScriptInstanceData>,
     effects: Vec<Effect>,
     remaining_seconds: f32,
+    resume_when: FragmentResumeCondition,
 }
 
-/// Runtime queue for `Utility.Wait` continuations.
+#[derive(Debug, Clone)]
+enum FragmentResumeCondition {
+    DelayElapsed,
+    Actors3DLoaded {
+        actors: Vec<ActorRef>,
+        poll_seconds: f32,
+    },
+}
+
+/// Runtime queue for latent time waits and bounded-work `Is3DLoaded` polling
+/// continuations.
 #[derive(Debug, Clone, Default)]
 pub struct FragmentExecutionQueue {
     pending: Vec<PendingFragmentExecution>,
@@ -232,6 +245,18 @@ fn resolve_actor(
     }
 }
 
+fn actors_3d_loaded(
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    context: QuestFormId,
+    actors: &[ActorRef],
+) -> bool {
+    actors.iter().all(|actor| {
+        resolve_actor(vmad, world, context, actor)
+            .is_some_and(|entity| world.has::<Transform>(entity))
+    })
+}
+
 fn update_actor_cinematic_state(
     world: &World,
     actor: byroredux_core::ecs::storage::EntityId,
@@ -310,6 +335,55 @@ pub fn apply_effect(
                 .get_mut(container_entity)
                 .expect("just present or inserted above")
                 .push(ItemStack::new(item_form_id, *count));
+            None
+        }
+        Effect::EquipItem {
+            actor,
+            item,
+            silent: _,
+        } => {
+            let actor = resolve_actor(vmad, world, context, actor)?;
+            let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
+            let Some(slot_mask) = world
+                .try_resource::<crate::EquipItemCatalog>()
+                .and_then(|catalog| catalog.slot_mask(item_form_id))
+            else {
+                log::debug!(
+                    "fragment EquipItem skipped: item {item_form_id:08X} has no armor biped-slot metadata"
+                );
+                return None;
+            };
+            let Some((mut inventories, mut equipment)) =
+                world.query_2_mut_mut::<Inventory, EquipmentSlots>()
+            else {
+                log::debug!(
+                    "fragment EquipItem skipped: inventory/equipment storage is unavailable"
+                );
+                return None;
+            };
+            let Some(inventory) = inventories.get_mut(actor) else {
+                log::debug!("fragment EquipItem skipped: actor has no Inventory");
+                return None;
+            };
+            let Some(index) = inventory
+                .items
+                .iter()
+                .position(|stack| stack.base_form_id == item_form_id && stack.count > 0)
+                .and_then(|index| u32::try_from(index).ok())
+                .map(InventoryIndex)
+            else {
+                log::debug!(
+                    "fragment EquipItem skipped: actor does not carry item {item_form_id:08X}"
+                );
+                return None;
+            };
+            if equipment.get_mut(actor).is_none() {
+                equipment.insert(actor, EquipmentSlots::new());
+            }
+            equipment
+                .get_mut(actor)
+                .expect("just present or inserted above")
+                .equip(slot_mask, index);
             None
         }
         Effect::MoveTo { moved, destination } => {
@@ -467,6 +541,50 @@ pub fn apply_effect(
             }
             None
         }
+        Effect::TetherToHorse { cart, horse } => {
+            let cart = resolve_object(vmad, world, context, cart)?;
+            let horse = resolve_object(vmad, world, context, horse)?;
+            let Some(cart_transform) = world.get::<Transform>(cart) else {
+                log::debug!("fragment TetherToHorse skipped: cart has no Transform");
+                return None;
+            };
+            let Some(horse_transform) = world.get::<Transform>(horse) else {
+                log::debug!("fragment TetherToHorse skipped: horse has no Transform");
+                return None;
+            };
+            if horse_transform.scale.abs() <= f32::EPSILON {
+                log::debug!("fragment TetherToHorse skipped: horse has zero scale");
+                return None;
+            }
+            let inverse_rotation = horse_transform.rotation.conjugate();
+            let state = crate::HorseTetherState {
+                horse,
+                horse_local_translation: inverse_rotation
+                    * (cart_transform.translation - horse_transform.translation)
+                    / horse_transform.scale,
+                horse_local_rotation: inverse_rotation * cart_transform.rotation,
+            };
+            drop(cart_transform);
+            drop(horse_transform);
+            if let Some(mut tethers) = world.query_mut::<crate::HorseTetherState>() {
+                tethers.insert(cart, state);
+            }
+            // The native engine realizes this relation through Havok. Redux's
+            // deterministic transform follower needs the cart to stop being
+            // pulled back from a dynamic Rapier body after PostUpdate, so make
+            // the tethered cart keyframed through the same one-shot bridge as
+            // authored SetMotionType calls.
+            if let Some(mut requests) = world.query_mut::<crate::MotionTypeChangeRequest>() {
+                requests.insert(
+                    cart,
+                    crate::MotionTypeChangeRequest {
+                        motion_type: byroredux_core::ecs::components::MotionType::Keyframed,
+                        allow_activate: true,
+                    },
+                );
+            }
+            None
+        }
         Effect::SetMotionType {
             target,
             motion_type,
@@ -529,7 +647,7 @@ pub fn apply_effect(
             }
             None
         }
-        Effect::Wait { .. } => None,
+        Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } => None,
         _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives),
     }
 }
@@ -587,6 +705,7 @@ fn apply_quest_scoped_effect(
             None
         }
         Effect::AddItem { .. }
+        | Effect::EquipItem { .. }
         | Effect::MoveTo { .. }
         | Effect::StartScene { .. }
         | Effect::StopScene { .. }
@@ -598,12 +717,14 @@ fn apply_quest_scoped_effect(
         | Effect::SetHudCartMode { .. }
         | Effect::PlayIdle { .. }
         | Effect::SetVehicle { .. }
+        | Effect::TetherToHorse { .. }
         | Effect::SetMotionType { .. }
         | Effect::SetSittingRotation { .. }
         | Effect::ExitCart { .. }
         | Effect::RegisterPlayerAnimationEvent { .. }
         | Effect::EvaluatePackage { .. }
-        | Effect::Wait { .. } => {
+        | Effect::Wait { .. }
+        | Effect::WaitForActors3DLoaded { .. } => {
             unreachable!("object-targeting effects are handled by apply_effect directly")
         }
     }
@@ -621,7 +742,22 @@ pub fn apply_effects(
 ) -> Vec<QuestStageAdvanced> {
     let mut advances = Vec::new();
     for (index, effect) in effects.iter().enumerate() {
-        if let Effect::Wait { seconds } = effect {
+        let suspension = match effect {
+            Effect::Wait { seconds } => Some((*seconds, FragmentResumeCondition::DelayElapsed)),
+            Effect::WaitForActors3DLoaded {
+                actors,
+                poll_seconds,
+            } if !actors_3d_loaded(vmad, world, context, actors) => Some((
+                *poll_seconds,
+                FragmentResumeCondition::Actors3DLoaded {
+                    actors: actors.clone(),
+                    poll_seconds: *poll_seconds,
+                },
+            )),
+            Effect::WaitForActors3DLoaded { .. } => None,
+            _ => None,
+        };
+        if let Some((remaining_seconds, resume_when)) = suspension {
             let tail = &effects[index + 1..];
             if !tail.is_empty() {
                 if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
@@ -629,7 +765,8 @@ pub fn apply_effects(
                         context,
                         vmad: vmad.cloned(),
                         effects: tail.to_vec(),
-                        remaining_seconds: *seconds,
+                        remaining_seconds,
+                        resume_when,
                     });
                 } else {
                     log::debug!(
@@ -638,6 +775,9 @@ pub fn apply_effects(
                 }
             }
             break;
+        }
+        if matches!(effect, Effect::WaitForActors3DLoaded { .. }) {
+            continue;
         }
         if let Some(advance) = apply_effect(effect, context, vmad, world, stages, objectives) {
             advances.push(advance);
@@ -651,20 +791,38 @@ pub fn apply_effects(
 /// requeue itself through [`apply_effects`].
 pub fn fragment_continuation_system(world: &World, dt: f32) {
     let mut ready = Vec::new();
-    {
+    let pending = {
         let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() else {
             return;
         };
-        let mut still_pending = Vec::with_capacity(queue.pending.len());
-        for mut pending in std::mem::take(&mut queue.pending) {
-            pending.remaining_seconds -= dt.max(0.0);
-            if pending.remaining_seconds <= 0.0 {
-                ready.push(pending);
-            } else {
-                still_pending.push(pending);
+        std::mem::take(&mut queue.pending)
+    };
+    let mut still_pending = Vec::with_capacity(pending.len());
+    for mut pending in pending {
+        pending.remaining_seconds -= dt.max(0.0);
+        if pending.remaining_seconds > 0.0 {
+            still_pending.push(pending);
+            continue;
+        }
+        match &pending.resume_when {
+            FragmentResumeCondition::DelayElapsed => ready.push(pending),
+            FragmentResumeCondition::Actors3DLoaded {
+                actors,
+                poll_seconds,
+            } => {
+                if actors_3d_loaded(pending.vmad.as_ref(), world, pending.context, actors) {
+                    ready.push(pending);
+                } else {
+                    pending.remaining_seconds = *poll_seconds;
+                    still_pending.push(pending);
+                }
             }
         }
-        queue.pending = still_pending;
+    }
+    if !still_pending.is_empty() {
+        if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
+            queue.pending.extend(still_pending);
+        }
     }
     if ready.is_empty() {
         return;
@@ -717,6 +875,8 @@ const MAX_CASCADE: usize = 64;
 /// caller-inserted), so initialising them at world-init is safe and
 /// keeps [`quest_fragment_dispatch_system`] panic-free out of the box.
 pub fn register(world: &mut World) {
+    world.register::<Inventory>();
+    world.register::<EquipmentSlots>();
     world.insert_resource(QuestStageFragments::default());
     world.insert_resource(FragmentExecutionQueue::default());
     world.insert_resource(QuestObjectiveState::default());

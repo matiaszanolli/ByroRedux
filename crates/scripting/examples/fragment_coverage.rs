@@ -62,6 +62,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::SetObjectiveFailed { .. } => "SetObjectiveFailed",
         Effect::CompleteAllObjectives { .. } => "CompleteAllObjectives",
         Effect::AddItem { .. } => "AddItem",
+        Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
@@ -73,12 +74,14 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::SetHudCartMode { .. } => "SetHudCartMode",
         Effect::PlayIdle { .. } => "PlayIdle",
         Effect::SetVehicle { .. } => "SetVehicle",
+        Effect::TetherToHorse { .. } => "TetherToHorse",
         Effect::SetMotionType { .. } => "SetMotionType",
         Effect::SetSittingRotation { .. } => "SetSittingRotation",
         Effect::ExitCart { .. } => "ExitCart",
         Effect::RegisterPlayerAnimationEvent { .. } => "RegisterPlayerAnimationEvent",
         Effect::EvaluatePackage { .. } => "EvaluatePackage",
         Effect::Wait { .. } => "Wait",
+        Effect::WaitForActors3DLoaded { .. } => "WaitForActors3DLoaded",
     }
 }
 

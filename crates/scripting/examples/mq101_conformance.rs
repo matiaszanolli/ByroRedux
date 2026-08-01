@@ -88,6 +88,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::SetObjectiveFailed { .. } => "SetObjectiveFailed",
         Effect::CompleteAllObjectives { .. } => "CompleteAllObjectives",
         Effect::AddItem { .. } => "AddItem",
+        Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
@@ -99,12 +100,14 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::SetHudCartMode { .. } => "SetHudCartMode",
         Effect::PlayIdle { .. } => "PlayIdle",
         Effect::SetVehicle { .. } => "SetVehicle",
+        Effect::TetherToHorse { .. } => "TetherToHorse",
         Effect::SetMotionType { .. } => "SetMotionType",
         Effect::SetSittingRotation { .. } => "SetSittingRotation",
         Effect::ExitCart { .. } => "ExitCart",
         Effect::RegisterPlayerAnimationEvent { .. } => "RegisterPlayerAnimationEvent",
         Effect::EvaluatePackage { .. } => "EvaluatePackage",
         Effect::Wait { .. } => "Wait",
+        Effect::WaitForActors3DLoaded { .. } => "WaitForActors3DLoaded",
     }
 }
 
@@ -1126,6 +1129,48 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                                     preview(&missing_bindings, 8)
                                 )
                             },
+                        );
+                        let cart_init_effects = functions
+                            .get("fragment_175")
+                            .and_then(|function| lower_fragment(&function.body));
+                        let cart_init_kinds = cart_init_effects.as_ref().map(|effects| {
+                            let mut kinds = BTreeMap::<&'static str, usize>::new();
+                            for effect in effects {
+                                *kinds.entry(effect_kind(effect)).or_default() += 1;
+                            }
+                            kinds
+                        });
+                        let cart_init_actor_gate_count =
+                            cart_init_effects.as_ref().and_then(|effects| {
+                                effects.iter().find_map(|effect| match effect {
+                                    Effect::WaitForActors3DLoaded { actors, .. } => {
+                                        Some(actors.len())
+                                    }
+                                    _ => None,
+                                })
+                            });
+                        let cart_init_ok = cart_init_kinds.as_ref().is_some_and(|kinds| {
+                            cart_init_actor_gate_count == Some(9)
+                                && kinds.get("WaitForActors3DLoaded") == Some(&1)
+                                && kinds.get("TetherToHorse") == Some(&2)
+                                && kinds.get("Wait") == Some(&1)
+                                && kinds.get("SetVehicle") == Some(&10)
+                                && kinds.get("PlayIdle") == Some(&10)
+                                && kinds.get("EquipItem") == Some(&1)
+                        });
+                        checks.record(
+                            "cart init fragment",
+                            cart_init_ok,
+                            cart_init_kinds.map_or_else(
+                                || "Fragment_175 did not lower".to_owned(),
+                                |kinds| {
+                                    format!(
+                                        "{} effects, {:?} actors gated: {kinds:?}",
+                                        cart_init_effects.unwrap().len(),
+                                        cart_init_actor_gate_count
+                                    )
+                                },
+                            ),
                         );
 
                         let pct = if behavioral == 0 {

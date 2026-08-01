@@ -694,8 +694,8 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // Apply Papyrus SetMotionType requests after both immediate and resumed
     // fragment effects, before the Physics stage consumes body state.
     scheduler.add_exclusive(Stage::Update, crate::systems::scripted_motion_type_system);
-    // SetVehicle actors inherit the cart's current root pose before the
-    // PostUpdate transform pass propagates it through their skeletons.
+    // Resolve horse -> tethered cart -> SetVehicle rider poses before the
+    // PostUpdate transform pass propagates the chain through actor skeletons.
     scheduler.add_exclusive(Stage::Update, crate::systems::vehicle_attachment_system);
     scheduler.add_exclusive(Stage::Update, dlc2_ttr4a_on_init_dispatch);
     // `recurring_update_tick_system` ticks `RecurringUpdate` and emits

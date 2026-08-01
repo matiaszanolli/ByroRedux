@@ -37,7 +37,7 @@
 use std::collections::{HashMap, HashSet};
 
 use byroredux_core::ecs::components::MotionType;
-use byroredux_papyrus::ast::{Expr, Stmt};
+use byroredux_papyrus::ast::{BinaryOp, Expr, Stmt, UnaryOp};
 use byroredux_papyrus::span::Spanned;
 
 use crate::cinematic::CinematicAnimationEvent;
@@ -89,6 +89,15 @@ pub enum Effect {
         item: ObjectRef,
         count: u32,
     },
+    /// `<actor>.EquipItem(<item>, false, <silent>)`. The supported shape
+    /// deliberately declines `abPreventUnequip=true` until locked equipment
+    /// has canonical state; the runtime updates `Inventory` +
+    /// `EquipmentSlots` using the plugin-derived `EquipItemCatalog`.
+    EquipItem {
+        actor: ActorRef,
+        item: ObjectRef,
+        silent: bool,
+    },
     /// `<moved>.MoveTo(<destination>)` — the conservative 2-arg shape
     /// only. A 3rd+ argument (offsets / match-rotation) declines the
     /// whole fragment rather than silently dropping the offset and
@@ -133,6 +142,9 @@ pub enum Effect {
         actor: ActorRef,
         vehicle: Option<ObjectRef>,
     },
+    /// `<cart>.TetherToHorse(<horse>)`. The app preserves the captured cart
+    /// pose relative to the package-driven horse.
+    TetherToHorse { cart: ObjectRef, horse: ObjectRef },
     /// `<object>.SetMotionType(...)`, bridged to the app physics layer by a
     /// one-shot `MotionTypeChangeRequest`.
     SetMotionType {
@@ -153,6 +165,14 @@ pub enum Effect {
     /// Latent `Utility.Wait(seconds)`. Production dispatch pauses here and
     /// resumes the remaining effects through `FragmentExecutionQueue`.
     Wait { seconds: f32 },
+    /// The exact bounded-work polling loop used by MQ101 Fragment_175:
+    /// `While !actor.Is3DLoaded() || ...; Utility.Wait(poll); EndWhile`.
+    /// Each continuation tick evaluates the list once and reschedules itself,
+    /// avoiding a blocking script loop while preserving the authored gate.
+    WaitForActors3DLoaded {
+        actors: Vec<ActorRef>,
+        poll_seconds: f32,
+    },
 }
 
 /// An actor receiver is either the canonical player or a VMAD-resolved
@@ -181,12 +201,14 @@ struct Scope {
     decl_locals: HashSet<String>,
 }
 
-/// Lower a **flat** fragment body to its canonical effects, or decline.
+/// Lower a predominantly flat fragment body to its canonical effects, or
+/// decline.
 ///
 /// Returns `None` (decline, the whole fragment) if the body contains any
-/// control flow (`If`/`While`) or any statement no effect primitive
-/// claims — never a partial lowering. An empty body lowers to an empty
-/// effect list (a no-op fragment is trivially understood).
+/// control flow outside MQ101's exact `Is3DLoaded` polling-loop shape, or any
+/// statement no effect primitive claims — never a partial lowering. An empty
+/// body lowers to an empty effect list (a no-op fragment is trivially
+/// understood).
 pub fn lower_fragment(body: &[Spanned<Stmt>]) -> Option<Vec<Effect>> {
     let mut scope = Scope::default();
     let mut effects = Vec::new();
@@ -215,8 +237,11 @@ pub fn lower_fragment(body: &[Spanned<Stmt>]) -> Option<Vec<Effect>> {
             // `Return` with no value is Champollion's fragment terminator.
             Stmt::Return(None) => {}
             Stmt::ExprStmt(e) => effects.push(classify_effect(&e.node, &scope)?),
-            // Control flow / valued return in a fragment are outside this
-            // increment's flat-sequence model — decline.
+            Stmt::While { condition, body } => {
+                effects.push(lower_3d_loaded_wait(&condition.node, body, &scope)?);
+            }
+            // Other control flow / valued return remain outside this
+            // increment's conservative sequence model — decline.
             _ => return None,
         }
     }
@@ -318,6 +343,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_objective_failed,
     prim_complete_all_objectives,
     prim_add_item,
+    prim_equip_item,
     prim_move_to,
     prim_start_scene,
     prim_stop_scene,
@@ -330,6 +356,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_hud_cart_mode,
     prim_play_idle,
     prim_set_vehicle,
+    prim_tether_to_horse,
     prim_set_motion_type,
     prim_set_sitting_rotation,
     prim_exit_cart,
@@ -338,6 +365,66 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_evaluate_package,
     prim_wait,
 ];
+
+/// Recognize MQ101's actor-load gate without opening the general-purpose
+/// control-flow surface. The condition must be an OR tree whose leaves are
+/// exactly `!<actor>.Is3DLoaded()`, and the loop body must be one positive
+/// `Utility.Wait` call.
+fn lower_3d_loaded_wait(condition: &Expr, body: &[Spanned<Stmt>], scope: &Scope) -> Option<Effect> {
+    let [statement] = body else {
+        return None;
+    };
+    let Stmt::ExprStmt(wait) = &statement.node else {
+        return None;
+    };
+    let Effect::Wait {
+        seconds: poll_seconds,
+    } = prim_wait(&wait.node, scope)?
+    else {
+        return None;
+    };
+    if poll_seconds <= 0.0 {
+        return None;
+    }
+
+    let mut actors = Vec::new();
+    collect_not_3d_loaded_actors(condition, scope, &mut actors)?;
+    (!actors.is_empty()).then_some(Effect::WaitForActors3DLoaded {
+        actors,
+        poll_seconds,
+    })
+}
+
+fn collect_not_3d_loaded_actors(
+    condition: &Expr,
+    scope: &Scope,
+    actors: &mut Vec<ActorRef>,
+) -> Option<()> {
+    if let Expr::BinaryOp {
+        left,
+        op: BinaryOp::Or,
+        right,
+    } = condition
+    {
+        collect_not_3d_loaded_actors(&left.node, scope, actors)?;
+        collect_not_3d_loaded_actors(&right.node, scope, actors)?;
+        return Some(());
+    }
+
+    let Expr::UnaryOp {
+        op: UnaryOp::Not,
+        operand,
+    } = condition
+    else {
+        return None;
+    };
+    let (receiver, args) = method_call(&operand.node, "Is3DLoaded")?;
+    if !args.is_empty() {
+        return None;
+    }
+    actors.push(receiver_actor(receiver, scope)?);
+    Some(())
+}
 
 // ── Effect primitives ────────────────────────────────────────────────
 
@@ -408,6 +495,23 @@ fn prim_add_item(e: &Expr, scope: &Scope) -> Option<Effect> {
         container,
         item,
         count,
+    })
+}
+
+fn prim_equip_item(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "EquipItem")?;
+    if args.is_empty() || args.len() > 3 {
+        return None;
+    }
+    // Prevent-unequip needs persistent locked-equipment state. Decline that
+    // shape instead of claiming it and silently losing the lock contract.
+    if bool_arg(args, 1)?.unwrap_or(false) {
+        return None;
+    }
+    Some(Effect::EquipItem {
+        actor: receiver_actor(object, scope)?,
+        item: receiver_object(&args[0].value.node, scope)?,
+        silent: bool_arg(args, 2)?.unwrap_or(false),
     })
 }
 
@@ -562,6 +666,17 @@ fn prim_set_vehicle(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::SetVehicle {
         actor: receiver_actor(object, scope)?,
         vehicle,
+    })
+}
+
+fn prim_tether_to_horse(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "TetherToHorse")?;
+    if args.len() != 1 {
+        return None;
+    }
+    Some(Effect::TetherToHorse {
+        cart: receiver_object(object, scope)?,
+        horse: receiver_object(&args[0].value.node, scope)?,
     })
 }
 
@@ -858,7 +973,7 @@ mod tests {
                 ScriptItem::Function(f) => return f.body.clone(),
                 ScriptItem::Event(e) => return e.body.clone(),
                 ScriptItem::State(st) => {
-                    for si in &st.body {
+                    if let Some(si) = st.body.first() {
                         match &si.node {
                             StateItem::Function(f) => return f.body.clone(),
                             StateItem::Event(e) => return e.body.clone(),
@@ -1335,6 +1450,63 @@ mod tests {
                 },
             ])
         );
+    }
+
+    #[test]
+    fn lowers_mq101_cart_load_gate_tether_and_equipment_sequence() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_175()\n\
+             Actor player = Game.GetPlayer()\n\
+             Actor rider = Alias_Rider.GetActorRef()\n\
+             ObjectReference cart = Alias_Cart.GetRef()\n\
+             While !player.Is3DLoaded() || !rider.Is3DLoaded()\n\
+                 Utility.Wait(0.2)\n\
+             EndWhile\n\
+             cart.TetherToHorse(Alias_Horse.GetActorRef() as ObjectReference)\n\
+             rider.EquipItem(ArmorGag as Form, false, true)\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::WaitForActors3DLoaded {
+                    actors: vec![
+                        ActorRef::Player,
+                        ActorRef::Object(ObjectRef::Property("Alias_Rider".into())),
+                    ],
+                    poll_seconds: 0.2,
+                },
+                Effect::TetherToHorse {
+                    cart: ObjectRef::Property("Alias_Cart".into()),
+                    horse: ObjectRef::Property("Alias_Horse".into()),
+                },
+                Effect::EquipItem {
+                    actor: ActorRef::Object(ObjectRef::Property("Alias_Rider".into())),
+                    item: ObjectRef::Property("ArmorGag".into()),
+                    silent: true,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn declines_unmodeled_loop_and_prevent_unequip() {
+        let arbitrary_loop = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_1()\n\
+             While Self.GetStage() < 10\n Utility.Wait(0.2)\n EndWhile\n\
+             EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&arbitrary_loop), None);
+
+        let locked_item = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_2()\n\
+             Alias_Rider.GetActorRef().EquipItem(ArmorGag, true, false)\n\
+             EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&locked_item), None);
     }
 
     #[test]
