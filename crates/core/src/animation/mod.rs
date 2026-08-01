@@ -718,6 +718,39 @@ mod tests {
     }
 
     #[test]
+    fn clamped_completion_key_fires_once_at_clip_end() {
+        use crate::string::StringPool;
+        let mut pool = StringPool::new();
+        let clip = AnimationClip {
+            name: "cart exit".into(),
+            duration: 1.0,
+            cycle_type: CycleType::Clamp,
+            frequency: 1.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: vec![(1.0, pool.intern("ExitCartEnd"))],
+        };
+        let mut player = AnimationPlayer::new(0);
+
+        advance_time(&mut player, &clip, 2.0);
+        assert_eq!(
+            collect_text_key_events(&clip, &pool, player.prev_time, player.local_time, false,),
+            vec!["exitcartend"]
+        );
+
+        advance_time(&mut player, &clip, 1.0);
+        assert!(
+            collect_text_key_events(&clip, &pool, player.prev_time, player.local_time, false,)
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn find_key_pair_basic() {
         let times = vec![0.0, 0.5, 1.0];
         let (i0, i1, t) = interpolation::find_key_pair(times.len(), |i| times[i], 0.25);

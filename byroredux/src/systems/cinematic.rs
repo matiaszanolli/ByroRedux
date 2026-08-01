@@ -5,8 +5,12 @@ use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::RigidBodyData;
 use byroredux_core::ecs::Transform;
 use byroredux_core::ecs::{EntityId, World};
+use byroredux_core::string::StringPool;
 use byroredux_physics::{PhysicsWorld, RapierHandles};
-use byroredux_scripting::{ActorCinematicState, HorseTetherState, MotionTypeChangeRequest};
+use byroredux_scripting::{
+    ActorCinematicState, AnimationTextKeyEvents, CinematicAnimationEvent,
+    CinematicPresentationState, HorseTetherState, MotionTypeChangeRequest,
+};
 
 /// Consume queued Skyrim `PlayIdle` requests once their IDLE FormID has a
 /// decoded HKX clip. Unresolved requests remain pending, allowing a later cell
@@ -64,6 +68,83 @@ pub(crate) fn havok_idle_playback_system(world: &World, _dt: f32) {
                 target.consumed_idle_serial = serial;
             }
         }
+    }
+}
+
+/// Deliver behavior-level animation notifications after clip advancement and
+/// before transient text-key events are drained in `Late`.
+pub(crate) fn cinematic_animation_event_system(world: &World, _dt: f32) {
+    let deliveries: Vec<(EntityId, CinematicAnimationEvent)> = {
+        let Some(pool) = world.try_resource::<StringPool>() else {
+            return;
+        };
+        let Some(event_query) = world.query::<AnimationTextKeyEvents>() else {
+            return;
+        };
+        let mut deliveries = Vec::new();
+        for (entity, events) in event_query.iter() {
+            for event in &events.0 {
+                let Some(label) = pool.resolve(event.label) else {
+                    continue;
+                };
+                if let Some(kind) = cinematic_event_from_label(label) {
+                    deliveries.push((entity, kind));
+                }
+            }
+        }
+        deliveries
+    };
+    if deliveries.is_empty() {
+        return;
+    }
+
+    if let Some(mut states) = world.query_mut::<ActorCinematicState>() {
+        for (entity, event) in &deliveries {
+            let Some(state) = states.get_mut(*entity) else {
+                continue;
+            };
+            state.last_animation_event = Some(*event);
+            state.animation_event_serial = state.animation_event_serial.wrapping_add(1);
+            if state.awaited_event == Some(*event) {
+                state.awaited_event = None;
+            }
+        }
+    }
+
+    let Some(player) = world
+        .try_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+        .map(|player| player.0)
+    else {
+        return;
+    };
+    let Some(mut presentation) = world.try_resource_mut::<CinematicPresentationState>() else {
+        return;
+    };
+    for (_, event) in deliveries.iter().filter(|(entity, _)| *entity == player) {
+        let registered = match event {
+            CinematicAnimationEvent::PlayImod => presentation.player_imod_event_registered,
+            CinematicAnimationEvent::IdleFurnitureExit => {
+                presentation.player_furniture_exit_event_registered
+            }
+            CinematicAnimationEvent::ExitCartEnd => false,
+        };
+        if registered {
+            presentation.last_player_animation_event = Some(*event);
+            presentation.player_animation_event_serial =
+                presentation.player_animation_event_serial.wrapping_add(1);
+        }
+    }
+}
+
+fn cinematic_event_from_label(label: &str) -> Option<CinematicAnimationEvent> {
+    if label.eq_ignore_ascii_case("PlayImod") {
+        Some(CinematicAnimationEvent::PlayImod)
+    } else if label.eq_ignore_ascii_case("IdleFurnitureExit") {
+        Some(CinematicAnimationEvent::IdleFurnitureExit)
+    } else if label.eq_ignore_ascii_case("ExitCartEnd") {
+        Some(CinematicAnimationEvent::ExitCartEnd)
+    } else {
+        None
     }
 }
 
@@ -203,6 +284,7 @@ pub(crate) fn vehicle_attachment_system(world: &World, _dt: f32) {
 mod tests {
     use super::*;
     use byroredux_core::ecs::components::MotionType;
+    use byroredux_scripting::AnimationTextKeyEvent;
 
     #[test]
     fn idle_request_starts_scoped_havok_player_once_per_serial() {
@@ -283,6 +365,62 @@ mod tests {
             MotionType::Keyframed
         );
         assert!(!world.has::<MotionTypeChangeRequest>(entity));
+    }
+
+    #[test]
+    fn clip_events_complete_cart_wait_and_reach_registered_player_callback() {
+        let mut world = World::new();
+        world.register::<ActorCinematicState>();
+        world.register::<AnimationTextKeyEvents>();
+        let mut pool = StringPool::new();
+        let exit_cart_end = pool.intern("ExitCartEnd");
+        let furniture_exit = pool.intern("IdleFurnitureExit");
+        world.insert_resource(pool);
+        world.insert_resource(CinematicPresentationState {
+            player_furniture_exit_event_registered: true,
+            ..Default::default()
+        });
+
+        let player = world.spawn();
+        world.insert_resource(byroredux_scripting::papyrus_demo::PlayerEntity(player));
+        world.insert(
+            player,
+            ActorCinematicState {
+                awaited_event: Some(CinematicAnimationEvent::ExitCartEnd),
+                ..Default::default()
+            },
+        );
+        world.insert(
+            player,
+            AnimationTextKeyEvents(vec![
+                AnimationTextKeyEvent {
+                    label: exit_cart_end,
+                    time: 1.0,
+                },
+                AnimationTextKeyEvent {
+                    label: furniture_exit,
+                    time: 1.0,
+                },
+            ]),
+        );
+
+        cinematic_animation_event_system(&world, 0.0);
+
+        let actor = world.get::<ActorCinematicState>(player).unwrap();
+        assert_eq!(actor.awaited_event, None);
+        assert_eq!(
+            actor.last_animation_event,
+            Some(CinematicAnimationEvent::IdleFurnitureExit)
+        );
+        assert_eq!(actor.animation_event_serial, 2);
+        drop(actor);
+        let presentation = world.resource::<CinematicPresentationState>();
+        assert!(presentation.player_furniture_exit_event_registered);
+        assert_eq!(
+            presentation.last_player_animation_event,
+            Some(CinematicAnimationEvent::IdleFurnitureExit)
+        );
+        assert_eq!(presentation.player_animation_event_serial, 1);
     }
 
     #[test]

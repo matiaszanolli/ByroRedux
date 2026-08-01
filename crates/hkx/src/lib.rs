@@ -10,7 +10,8 @@ mod animation;
 mod packfile;
 
 pub use animation::{
-    decode_skeleton, decode_spline_animation, HkxAnimation, HkxBone, HkxSkeleton, HkxTransform,
+    decode_skeleton, decode_spline_animation, HkxAnimation, HkxAnnotation, HkxBone, HkxSkeleton,
+    HkxTransform,
 };
 
 use thiserror::Error;

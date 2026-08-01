@@ -41,6 +41,15 @@ pub struct HkxAnimation {
     /// Transform-track index → skeleton bone index. Empty bindings in the
     /// packfile are expanded to the Havok identity mapping here.
     pub track_to_bone: Vec<u16>,
+    /// Authored Havok annotation events across every annotation track.
+    pub annotations: Vec<HkxAnnotation>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HkxAnnotation {
+    pub track_name: String,
+    pub time: f32,
+    pub text: String,
 }
 
 /// Decode the first `hkaSkeleton` in a Skyrim-era 64-bit packfile.
@@ -251,6 +260,7 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
             .map(|bytes| Ok(u16::from_le_bytes(bytes.try_into().unwrap())))
             .collect::<Result<Vec<_>>>()?
     };
+    let annotations = read_annotations(&pack, object, duration)?;
 
     Ok(HkxAnimation {
         duration,
@@ -258,7 +268,84 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         frame_duration,
         tracks,
         track_to_bone,
+        annotations,
     })
+}
+
+fn read_annotations(
+    pack: &Packfile<'_>,
+    animation: usize,
+    duration: f32,
+) -> Result<Vec<HkxAnnotation>> {
+    const TRACK_SIZE: usize = 0x18;
+    const ANNOTATION_SIZE: usize = 0x10;
+    const MAX_TRACKS: usize = 4096;
+    const MAX_ANNOTATIONS: usize = 65_536;
+
+    let track_count = pack.u32(animation + 0x30, "annotation-track count")? as usize;
+    if track_count > MAX_TRACKS {
+        return Err(HkxError::InvalidData("implausible annotation-track count"));
+    }
+    if track_count == 0 {
+        return Ok(Vec::new());
+    }
+    let tracks = pack
+        .local_target(animation + 0x28)
+        .ok_or(HkxError::InvalidData("annotation-track array is unbound"))?;
+    let tracks_size = track_count
+        .checked_mul(TRACK_SIZE)
+        .ok_or(HkxError::InvalidData("annotation-track size overflow"))?;
+    pack.data_slice(tracks, tracks_size, "annotation tracks")?;
+
+    let mut result = Vec::new();
+    let mut total_annotations = 0usize;
+    for track_index in 0..track_count {
+        let track = tracks + track_index * TRACK_SIZE;
+        let track_name = pack
+            .local_target(track)
+            .map(|offset| pack.cstr(offset, "annotation-track name"))
+            .transpose()?
+            .unwrap_or_default()
+            .to_owned();
+        let annotation_count = pack.u32(track + 0x10, "annotation count")? as usize;
+        total_annotations = total_annotations
+            .checked_add(annotation_count)
+            .ok_or(HkxError::InvalidData("annotation count overflow"))?;
+        if total_annotations > MAX_ANNOTATIONS {
+            return Err(HkxError::InvalidData("implausible annotation count"));
+        }
+        if annotation_count == 0 {
+            continue;
+        }
+        let annotations = pack
+            .local_target(track + 0x08)
+            .ok_or(HkxError::InvalidData("annotation array is unbound"))?;
+        let annotations_size = annotation_count
+            .checked_mul(ANNOTATION_SIZE)
+            .ok_or(HkxError::InvalidData("annotation array size overflow"))?;
+        pack.data_slice(annotations, annotations_size, "annotations")?;
+
+        for annotation_index in 0..annotation_count {
+            let annotation = annotations + annotation_index * ANNOTATION_SIZE;
+            let time = pack.f32(annotation, "annotation time")?;
+            if !time.is_finite() || time < 0.0 || time > duration + 0.001 {
+                return Err(HkxError::InvalidData("annotation time is out of range"));
+            }
+            let text_offset = pack
+                .local_target(annotation + 0x08)
+                .ok_or(HkxError::InvalidData("annotation text is unbound"))?;
+            let text = pack.cstr(text_offset, "annotation text")?;
+            if !text.is_empty() {
+                result.push(HkxAnnotation {
+                    track_name: track_name.clone(),
+                    time: time.min(duration),
+                    text: text.to_owned(),
+                });
+            }
+        }
+    }
+    result.sort_by(|left, right| left.time.total_cmp(&right.time));
+    Ok(result)
 }
 
 #[derive(Debug, Clone)]
@@ -845,6 +932,11 @@ mod tests {
             r"meshes\actors\character\animations\cartprisonerbidle.hkx",
             r"meshes\actors\character\animations\cartprisonercidle.hkx",
             r"meshes\actors\character\animations\cartprisonerdidle.hkx",
+            r"meshes\actors\character\animations\cartdriverexit.hkx",
+            r"meshes\actors\character\animations\cartprisoneraexit.hkx",
+            r"meshes\actors\character\animations\cartprisonerbexit.hkx",
+            r"meshes\actors\character\animations\cartprisonercexit.hkx",
+            r"meshes\actors\character\animations\cartprisonerdexit.hkx",
         ] {
             let bytes = archive.extract(path).unwrap();
             let dynamic = decode_spline_animation(&bytes)

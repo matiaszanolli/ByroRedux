@@ -765,6 +765,13 @@ pub(crate) fn build_scheduler() -> Scheduler {
             .writes::<byroredux_scripting::events::AnimationTextKeyEvents>()
             .writes::<byroredux_core::animation::AnimationStack>(),
     );
+    // Translate clip text keys into Skyrim behavior/Papyrus completion
+    // notifications in the same frame, before Late drains the transient
+    // AnimationTextKeyEvents components.
+    scheduler.add_exclusive(
+        Stage::Update,
+        crate::systems::cinematic_animation_event_system,
+    );
     // M27 Phase 3 — `spin_system` writes Transform on entities
     // tagged with `Spinning` (the demo cube). `animation_system`
     // also writes Transform on its own (disjoint) entity set.

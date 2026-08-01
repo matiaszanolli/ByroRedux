@@ -41,6 +41,10 @@ pub struct ActorCinematicState {
     pub idle_request_serial: u64,
     /// Completion event the quest is waiting to receive from the animation.
     pub awaited_event: Option<CinematicAnimationEvent>,
+    /// Most recent behavior-level animation event delivered for this actor.
+    pub last_animation_event: Option<CinematicAnimationEvent>,
+    /// Monotonic delivery generation, including repeated identical events.
+    pub animation_event_serial: u64,
 }
 
 impl ActorCinematicState {
@@ -89,6 +93,8 @@ pub struct CinematicPresentationState {
     pub sitting_rotation_degrees: f32,
     pub player_imod_event_registered: bool,
     pub player_furniture_exit_event_registered: bool,
+    pub last_player_animation_event: Option<CinematicAnimationEvent>,
+    pub player_animation_event_serial: u64,
 }
 
 impl Default for CinematicPresentationState {
@@ -97,6 +103,8 @@ impl Default for CinematicPresentationState {
             sitting_rotation_degrees: 0.0,
             player_imod_event_registered: false,
             player_furniture_exit_event_registered: false,
+            last_player_animation_event: None,
+            player_animation_event_serial: 0,
         }
     }
 }

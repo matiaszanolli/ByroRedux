@@ -111,7 +111,13 @@ pub(crate) fn populate_havok_idle_runtime(
             let (path, animation) = resolved_clip.expect("resolved clip checked above");
             let clip = {
                 let mut pool = world.resource_mut::<StringPool>();
-                convert_hkx_clip(&path, &skeleton, &animation, &mut pool)
+                convert_hkx_clip(
+                    &path,
+                    &idle.animation_event,
+                    &skeleton,
+                    &animation,
+                    &mut pool,
+                )
             };
             world
                 .resource_mut::<AnimationClipRegistry>()
@@ -158,6 +164,7 @@ fn idle_animation_candidates(event: &str) -> Vec<String> {
 
 fn convert_hkx_clip(
     path: &str,
+    idle_event: &str,
     skeleton: &HkxSkeleton,
     animation: &HkxAnimation,
     pool: &mut StringPool,
@@ -217,10 +224,36 @@ fn convert_hkx_clip(
         );
     }
 
+    let completion_events = behavior_completion_events(idle_event);
+    let mut authored_labels: Vec<_> = animation
+        .annotations
+        .iter()
+        .map(|annotation| annotation.text.as_str())
+        .collect();
+    let mut text_keys: Vec<_> = animation
+        .annotations
+        .iter()
+        .map(|annotation| (annotation.time, pool.intern(&annotation.text)))
+        .collect();
+    for event in completion_events {
+        if !authored_labels
+            .iter()
+            .any(|label| label.eq_ignore_ascii_case(event))
+        {
+            text_keys.push((animation.duration, pool.intern(event)));
+            authored_labels.push(event);
+        }
+    }
+    text_keys.sort_by(|left, right| left.0.total_cmp(&right.0));
+
     AnimationClip {
         name: path.to_owned(),
         duration: animation.duration,
-        cycle_type: CycleType::Loop,
+        cycle_type: if behavior_completion_events(idle_event).is_empty() {
+            CycleType::Loop
+        } else {
+            CycleType::Clamp
+        },
         frequency: 1.0,
         weight: 1.0,
         accum_root_name: None,
@@ -229,7 +262,26 @@ fn convert_hkx_clip(
         color_channels: Vec::new(),
         bool_channels: Vec::new(),
         texture_flip_channels: Vec::new(),
-        text_keys: Vec::new(),
+        text_keys,
+    }
+}
+
+/// Skyrim's cart completion notifications are behavior-graph events rather
+/// than annotations embedded in the individual spline clip. Preserve that
+/// authored boundary while the runtime deliberately avoids executing the
+/// full Havok behavior VM.
+fn behavior_completion_events(idle_event: &str) -> &'static [&'static str] {
+    let event = idle_event.trim_matches('\0').trim();
+    if event
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("idlecart"))
+        && event
+            .get(event.len().saturating_sub(4)..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case("exit"))
+    {
+        &["ExitCartEnd", "IdleFurnitureExit"]
+    } else {
+        &[]
     }
 }
 
@@ -250,6 +302,15 @@ mod tests {
             idle_animation_candidates("IdleCartPrisonerCIdle")[0],
             r"meshes\actors\character\animations\cartprisonercidle.hkx"
         );
+        assert_eq!(
+            idle_animation_candidates("IdleCartPrisonerAExit")[0],
+            r"meshes\actors\character\animations\cartprisoneraexit.hkx"
+        );
+        assert_eq!(
+            behavior_completion_events("IdleCartPrisonerAExit"),
+            &["ExitCartEnd", "IdleFurnitureExit"]
+        );
+        assert!(behavior_completion_events("IdleCartPrisonerASway").is_empty());
     }
 
     #[test]
@@ -297,6 +358,39 @@ mod tests {
                 catalog.handles.contains_key(&form_id),
                 "IDLE {form_id:08X} did not resolve to a decoded HKX"
             );
+        }
+
+        let registry = world.resource::<AnimationClipRegistry>();
+        let pool = world.resource::<StringPool>();
+        for event_name in [
+            "IdleCartDriverExit",
+            "IdleCartPrisonerAExit",
+            "IdleCartPrisonerBExit",
+            "IdleCartPrisonerCExit",
+            "IdleCartPrisonerDExit",
+        ] {
+            let idle = index
+                .idle_animations
+                .values()
+                .find(|idle| idle.animation_event.eq_ignore_ascii_case(event_name))
+                .unwrap_or_else(|| panic!("Skyrim.esm is missing IDLE event {event_name}"));
+            let handle = catalog
+                .handles
+                .get(&idle.form_id)
+                .unwrap_or_else(|| panic!("IDLE {} did not install", idle.editor_id));
+            let clip = registry.get(*handle).unwrap();
+            assert_eq!(clip.cycle_type, CycleType::Clamp, "{event_name}");
+            for completion in ["ExitCartEnd", "IdleFurnitureExit"] {
+                let &(time, _) = clip
+                    .text_keys
+                    .iter()
+                    .find(|(_, label)| {
+                        pool.resolve(*label)
+                            .is_some_and(|label| label.eq_ignore_ascii_case(completion))
+                    })
+                    .unwrap_or_else(|| panic!("{event_name} is missing {completion}"));
+                assert!((time - clip.duration).abs() < 1e-6, "{event_name}");
+            }
         }
     }
 }
