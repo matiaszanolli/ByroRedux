@@ -24,6 +24,7 @@ pub mod scene;
 pub mod timer;
 pub mod translate;
 pub mod trigger;
+pub mod vm_state;
 
 pub use cleanup::event_cleanup_system;
 pub use condition::{
@@ -68,6 +69,10 @@ pub use translate::{
     translate_pex, translate_script, CanonicalEvent, RecognizeCtx, Recognized, ScriptSource,
 };
 pub use trigger::{trigger_detection_system, TriggerShape, TriggerVolume};
+pub use vm_state::{
+    two_state_activator_system, ScriptVariables, TwoStateActivator, TwoStateTransition,
+    TwoStateTransitionBatch,
+};
 
 use byroredux_core::ecs::world::World;
 
@@ -114,6 +119,7 @@ pub fn register(world: &mut World) {
     dialogue::register(world);
     // Skyrim+ PACK template resolution and scene-owned package execution.
     package::register(world);
+    vm_state::register(world);
     // M47.0 Phase 1 — register the R5 prototype storages so
     // `papyrus_demo` scripts can attach their state components when
     // their owning REFR spawns. Without this call, `query_mut::<…>`

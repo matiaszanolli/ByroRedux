@@ -9,3 +9,4 @@
 
 pub mod quest_stage_gate;
 pub mod rumble;
+pub mod two_state_activator;

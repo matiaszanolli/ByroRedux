@@ -51,7 +51,8 @@ pub enum QuestRef {
 
 /// The object-targeting sibling of [`QuestRef`] — how an `AddItem`/
 /// `MoveTo`-family effect names its `ObjectReference`/`Actor` receiver or
-/// argument.
+/// argument. Auto-property backing identifiers (`::Name_var`) are normalized
+/// to their authored VMAD property name at dispatch.
 ///
 /// Unlike a quest reference, there is no unambiguous bare-receiver case
 /// (no `Self`/`GetOwningQuest()` equivalent): the fragment script
@@ -68,7 +69,9 @@ pub enum ObjectRef {
 impl ObjectRef {
     pub fn property_name(&self) -> &str {
         let ObjectRef::Property(name) = self;
-        name
+        name.strip_prefix("::")
+            .and_then(|name| name.strip_suffix("_var"))
+            .unwrap_or(name)
     }
 }
 
@@ -240,7 +243,7 @@ fn is_param_ref(e: &Expr, player_param: Option<&str>) -> bool {
 }
 
 /// `e` is a `Game.GetPlayer()` call (unwrapping an optional cast).
-fn is_game_get_player(e: &Expr) -> bool {
+pub(crate) fn is_game_get_player(e: &Expr) -> bool {
     if let Expr::Cast { expr, .. } = e {
         return is_game_get_player(&expr.node);
     }

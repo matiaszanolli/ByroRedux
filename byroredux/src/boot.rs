@@ -666,6 +666,14 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // toward authored invisible-marker coordinates for Travel-family leaves,
     // and queue Done completions for scene playback's next tick.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::scene_package_system);
+    // Package Activate leaves emit the same canonical OnActivate marker as
+    // player interaction. Consume it immediately so GetVMScriptVariable
+    // phase gates observe the updated two-state activator on the next scene
+    // tick, before end-of-frame event cleanup.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::two_state_activator_system,
+    );
     // Dialogue consumes the ActionStarted batch emitted immediately above,
     // exposes authored INFO subtitle/presentation state for the rest of the
     // frame, and queues completions for scene playback's next tick.

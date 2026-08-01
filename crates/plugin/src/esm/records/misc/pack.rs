@@ -792,7 +792,7 @@ fn parse_skyrim_procedures(
                     current = Some(PackProcedure::default());
                 }
             }
-            b"CTDA" => {
+            b"CTDA" | b"CIS1" | b"CIS2" => {
                 if let Some(procedure) = current.as_mut() {
                     push_ctda(sub, remap, &mut procedure.conditions);
                 }
@@ -935,7 +935,7 @@ pub fn parse_pack(
             // CTDA list (no per-block nesting like QUST stages), combined
             // with the standard OR-precedence rule. FormID params are
             // remapped to global load-order space here, same as PLDT above.
-            b"CTDA" if pkcu_index.is_none_or(|pkcu| sub_index < pkcu) => {
+            b"CTDA" | b"CIS1" | b"CIS2" if pkcu_index.is_none_or(|pkcu| sub_index < pkcu) => {
                 push_ctda(sub, remap, &mut out.conditions)
             }
             _ => {}

@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **18 functions** at their canonical CTDA
+//! lineage. This catalog ships **19 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -47,6 +47,7 @@
 //! | 555   | HasLoaded3D             | `GlobalTransform`           |
 //! | 573   | GetReputation          | `FactionReputation` (FNV)   |
 //! | 575   | GetReputationThreshold | `FactionReputation` + bands |
+//! | 630   | GetVMScriptVariable    | `ScriptVariables`           |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
 //! function → safe-default" contract) and are logged at debug for
@@ -153,6 +154,11 @@ pub enum ConditionFunction {
     /// output (the wiki notes vanilla scripts that wrongly read the raw value
     /// instead). **FNV-only**, function index **575**.
     GetReputationThreshold,
+    /// `GetVMScriptVariable(reference_form_id, variable_name) → f32`.
+    /// Resolves the explicit object-reference parameter and reads the
+    /// `CIS2`-named variable from its canonical [`crate::ScriptVariables`]
+    /// component. Skyrim function index **630**.
+    GetVMScriptVariable,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
     /// header doc-comment).
@@ -187,13 +193,14 @@ impl ConditionFunction {
             555 => Self::HasLoaded3D,
             573 => Self::GetReputation,
             575 => Self::GetReputationThreshold,
+            630 => Self::GetVMScriptVariable,
             other => Self::Unknown(other),
         }
     }
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 18] = [
+    pub const CATALOG: [ConditionFunction; 19] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -212,6 +219,7 @@ impl ConditionFunction {
         Self::HasLoaded3D,
         Self::GetReputation,
         Self::GetReputationThreshold,
+        Self::GetVMScriptVariable,
     ];
 
     /// The canonical xEdit function name (for console listing / parsing).
@@ -235,6 +243,7 @@ impl ConditionFunction {
             Self::HasLoaded3D => "HasLoaded3D",
             Self::GetReputation => "GetReputation",
             Self::GetReputationThreshold => "GetReputationThreshold",
+            Self::GetVMScriptVariable => "GetVMScriptVariable",
             Self::Unknown(_) => "Unknown",
         }
     }
@@ -719,6 +728,22 @@ pub fn evaluate_function(
             fnv_faction_thresholds::thresholds_for(condition.param_1)
                 .map_or(0.0, |t| f32::from(t.range(u32::from(points))))
         }
+        ConditionFunction::GetVMScriptVariable => {
+            // Unlike most CTDAs, the object being inspected is an explicit
+            // function parameter rather than the Run-On entity. CIS2 carries
+            // the variable name; the numeric CTDA param_2 bytes are an
+            // editor/runtime artifact and must not be interpreted as an id.
+            let Some(target) = resolve_entity_by_global_form_id(world, condition.param_1) else {
+                return 0.0;
+            };
+            let Some(variable) = condition.param_2_text else {
+                return 0.0;
+            };
+            world
+                .get::<crate::vm_state::ScriptVariables>(target)
+                .and_then(|variables| variables.get(variable))
+                .unwrap_or(0.0)
+        }
         ConditionFunction::Unknown(index) => {
             log::trace!(
                 "M47.1: condition function index {index} not in M47.1 catalog — \
@@ -1016,6 +1041,33 @@ mod tests {
         let actor: EntityId = 7;
         let list = vec![cond(72, ComparisonOp::Eq, 0.0, false).with_param_1(0x0001_4D8A)];
         assert!(evaluate(&list, &world, &ctx(actor)));
+    }
+
+    #[test]
+    fn get_vm_script_variable_reads_cis2_named_state_from_reference() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        use byroredux_plugin::esm::records::condition::ConditionStringId;
+
+        const GATE: u32 = 0x0009_0A05;
+        let mut world = World::new();
+        crate::register(&mut world);
+        let mut pool = FormIdPool::new();
+        let gate_form_id = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(GATE),
+        });
+        world.insert_resource(pool);
+        let subject = world.spawn();
+        let gate = world.spawn();
+        world.insert(gate, FormIdComponent(gate_form_id));
+        let mut variables = crate::ScriptVariables::default();
+        variables.set_by_name("::isOpen_var", 1.0);
+        world.insert(gate, variables);
+        let mut condition = cond(630, ComparisonOp::Eq, 1.0, false).with_param_1(GATE);
+        condition.param_2_text = Some(ConditionStringId::from_text("::isOpen_var"));
+
+        assert!(evaluate(&vec![condition], &world, &ctx(subject)));
     }
 
     // ── GetDead / GetInCell (MQ101 scene gates) ─────────────────────────

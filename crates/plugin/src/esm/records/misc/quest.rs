@@ -455,7 +455,7 @@ pub fn parse_qust(
             // type's predicate list, or an additional gate alongside
             // another fill type). Stage and Alias are the two block
             // kinds that currently collect conditions here.
-            b"CTDA" => match &mut block {
+            b"CTDA" | b"CIS1" | b"CIS2" => match &mut block {
                 QustBlock::Stage { stage, .. } => push_ctda(sub, remap, &mut stage.conditions),
                 QustBlock::Alias(alias) => push_ctda(sub, remap, &mut alias.match_conditions),
                 QustBlock::Objective(_) | QustBlock::None => {}

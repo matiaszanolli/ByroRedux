@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use byroredux_bsa::BsaArchive;
 use byroredux_core::ecs::World;
-use byroredux_papyrus::ast::ScriptItem;
+use byroredux_papyrus::ast::{Expr, ScriptItem, Stmt};
 use byroredux_pex::{decompile::decompile_script, parse};
 use byroredux_plugin::esm::records::condition::RunOn;
 use byroredux_plugin::esm::records::script_instance::SceneFragmentEvent;
@@ -33,9 +33,9 @@ use byroredux_scripting::quest_stages::QuestStageState;
 use byroredux_scripting::translate::effects::{lower_fragment, Effect};
 use byroredux_scripting::{
     install_engine_start_quest, install_scene_quest_aliases, install_scene_records,
-    quest_startup_system, refresh_scene_actor_bindings, scene_playback_system, ConditionFunction,
-    DialogueRegistry, QuestFormId, SceneAliasCandidate, ScenePlaybackState, ScenePlayer,
-    SceneRegistry,
+    quest_startup_system, refresh_scene_actor_bindings, scene_playback_system, translate_pex,
+    ConditionFunction, DialogueRegistry, QuestFormId, SceneAliasCandidate, ScenePlaybackState,
+    ScenePlayer, SceneRegistry,
 };
 
 const MQ101_FORM_ID: u32 = 0x0003_372b;
@@ -57,6 +57,9 @@ const CRITICAL_ANIMATIONS: &[&str] = &[
     "meshes\\actors\\character\\animations\\cartprisonercidle.hkx",
     "meshes\\actors\\character\\animations\\cartprisonerdidle.hkx",
 ];
+
+const TWO_STATE_ACTIVATOR_SCRIPT: &str = "scripts\\default2stateactivator.pex";
+const MQ101_GATE_1: u32 = 0x0009_0A05;
 
 #[derive(Default)]
 struct Checks {
@@ -86,6 +89,38 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::CompleteAllObjectives { .. } => "CompleteAllObjectives",
         Effect::AddItem { .. } => "AddItem",
         Effect::MoveTo { .. } => "MoveTo",
+        Effect::StartScene { .. } => "StartScene",
+        Effect::StopScene { .. } => "StopScene",
+        Effect::Activate { .. } => "Activate",
+        Effect::SetOpen { .. } => "SetOpen",
+    }
+}
+
+fn expression_call_name(expression: &Expr) -> Option<String> {
+    let Expr::Call { callee, .. } = expression else {
+        return None;
+    };
+    match &callee.node {
+        Expr::MemberAccess { member, .. } => Some(member.node.0.to_ascii_lowercase()),
+        Expr::Ident(name) => Some(name.0.to_ascii_lowercase()),
+        _ => Some("<dynamic-call>".to_owned()),
+    }
+}
+
+fn statement_shape(statement: &Stmt) -> String {
+    match statement {
+        Stmt::ExprStmt(expression) => expression_call_name(&expression.node)
+            .map_or_else(|| "expr".to_owned(), |name| format!("call:{name}")),
+        Stmt::VarDecl(variable) => variable
+            .initial_value
+            .as_ref()
+            .and_then(|value| expression_call_name(&value.node))
+            .map_or_else(|| "let".to_owned(), |name| format!("let:{name}")),
+        Stmt::Assign { value, .. } => expression_call_name(&value.node)
+            .map_or_else(|| "assign".to_owned(), |name| format!("assign:{name}")),
+        Stmt::If { .. } => "if".to_owned(),
+        Stmt::While { .. } => "while".to_owned(),
+        Stmt::Return(_) => "return".to_owned(),
     }
 }
 
@@ -752,6 +787,18 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         ),
     );
     checks.record(
+        "scene condition coverage",
+        unsupported_scene_condition_functions.is_empty(),
+        if unsupported_scene_condition_functions.is_empty() {
+            format!(
+                "all {} authored CTDAs map to runtime functions",
+                scene_condition_functions.values().sum::<usize>()
+            )
+        } else {
+            format!("unsupported: {unsupported_scene_condition_functions:?}")
+        },
+    );
+    checks.record(
         "scene actor linkage",
         unresolved_aliases.is_empty() && unresolved_action_actors.is_empty(),
         if unresolved_aliases.is_empty() && unresolved_action_actors.is_empty() {
@@ -954,6 +1001,28 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         },
     );
 
+    let gate_script_instance = index
+        .cells
+        .cells
+        .values()
+        .flat_map(|cell| &cell.references)
+        .find(|reference| reference.form_id == MQ101_GATE_1)
+        .and_then(|reference| reference.script_instance.as_ref());
+    let two_state_recognition = scripts
+        .extract(TWO_STATE_ACTIVATOR_SCRIPT)
+        .ok()
+        .and_then(|bytes| translate_pex(&bytes, index.game, gate_script_instance, None));
+    checks.record(
+        "two-state gate runtime",
+        two_state_recognition
+            .as_ref()
+            .is_some_and(|recognized| recognized.archetype.starts_with("two_state_activator@")),
+        two_state_recognition.map_or_else(
+            || "default2StateActivator PEX did not recognize".to_owned(),
+            |recognized| format!("{} recognized from vanilla PEX", recognized.archetype),
+        ),
+    );
+
     let qf_path = CRITICAL_SCRIPTS[0];
     match scripts.extract(qf_path) {
         Err(error) => checks.record("QF decompile", false, format!("extract failed: {error}")),
@@ -991,6 +1060,8 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                         let mut behavioral = 0usize;
                         let mut lowered = 0usize;
                         let mut effects = BTreeMap::<&'static str, usize>::new();
+                        let mut declined_shapes = BTreeMap::<String, usize>::new();
+                        let mut declined_samples = Vec::new();
 
                         for binding in &quest.fragments {
                             let key = binding.fragment_name.to_ascii_lowercase();
@@ -1007,6 +1078,18 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                                 lowered += 1;
                                 for effect in &fragment_effects {
                                     *effects.entry(effect_kind(effect)).or_default() += 1;
+                                }
+                            } else {
+                                let shape = function
+                                    .body
+                                    .iter()
+                                    .map(|statement| statement_shape(&statement.node))
+                                    .collect::<Vec<_>>()
+                                    .join(";");
+                                *declined_shapes.entry(shape.clone()).or_default() += 1;
+                                if declined_samples.len() < 16 {
+                                    declined_samples
+                                        .push(format!("{} {}", binding.fragment_name, shape));
                                 }
                             }
                         }
@@ -1049,6 +1132,11 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                             for (kind, count) in effects {
                                 println!("  {kind:<24} {count}");
                             }
+                            println!("declined top-level shapes:");
+                            for (shape, count) in declined_shapes.iter().take(20) {
+                                println!("  {count:>3} {shape}");
+                            }
+                            println!("declined samples: {}", declined_samples.join(", "));
                         }
                     }
                 }

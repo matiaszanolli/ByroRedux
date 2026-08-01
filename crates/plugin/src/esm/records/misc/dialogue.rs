@@ -163,7 +163,7 @@ pub fn parse_info(
                 let remapped = remap.as_ref().map_or(raw, |r| r.remap(raw));
                 out.actor_form_id = remapped;
             }
-            b"CTDA" => push_ctda(sub, remap, &mut out.conditions),
+            b"CTDA" | b"CIS1" | b"CIS2" => push_ctda(sub, remap, &mut out.conditions),
             _ => {}
         }
     }

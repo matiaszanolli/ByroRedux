@@ -18,14 +18,11 @@
 //!
 //! ## Scope (this increment)
 //!
-//! Only **quest-scoped** effects — those resolvable without runtime
-//! FormID→entity binding — are modelled: `SetStage` and the objective
-//! ops. Object-targeting effects (`Enable`/`Disable`/`MoveTo`/`AddItem`,
-//! …) need a FormID→entity resolver that does not exist yet, so a
-//! fragment that uses them declines (safe — no behavior attached) until
-//! that resolver lands. The dominant fragment templates
-//! (`{$=$;$.setstage(#)}`, `{self.setobjectivecompleted(#,#);…}`) are
-//! covered.
+//! Quest-scoped stage/objective operations and a conservative set of
+//! VMAD-resolved object effects are modelled. Object receivers can be direct
+//! FormID properties or quest-alias `GetRef()` properties; every other shape
+//! still declines as a whole. The table currently covers inventory/movement,
+//! scene start/stop, and the MQ101 lever/gate `Activate` + `SetOpen` sequence.
 //!
 //! ## Local binding
 //!
@@ -41,11 +38,13 @@ use std::collections::{HashMap, HashSet};
 use byroredux_papyrus::ast::{Expr, Stmt};
 use byroredux_papyrus::span::Spanned;
 
-use crate::translate::compose::{as_num, int_arg, method_call, quest_via, ObjectRef, QuestRef};
+use crate::translate::compose::{
+    as_num, int_arg, is_game_get_player, method_call, quest_via, ObjectRef, QuestRef,
+};
 
-/// A canonical, quest-scoped effect a fragment statement lowers to. The
-/// runtime applies these against [`QuestStageState`] /
-/// [`QuestObjectiveState`]; see [`crate::fragment`].
+/// A canonical effect a fragment statement lowers to. The runtime applies
+/// quest-scoped variants against [`QuestStageState`] / [`QuestObjectiveState`]
+/// and object variants through the fragment's VMAD; see [`crate::fragment`].
 ///
 /// [`QuestStageState`]: crate::quest_stages::QuestStageState
 /// [`QuestObjectiveState`]: crate::quest_stages::QuestObjectiveState
@@ -94,6 +93,22 @@ pub enum Effect {
         moved: ObjectRef,
         destination: ObjectRef,
     },
+    /// `<scene>.Start()` — resolves a VMAD-bound SCEN FormID and queues the
+    /// canonical scene start request at dispatch.
+    StartScene { scene: ObjectRef },
+    /// `<scene>.Stop()` — the symmetric explicit stop request.
+    StopScene { scene: ObjectRef },
+    /// `<target>.Activate()` (or an explicit `Game.GetPlayer()` activator).
+    /// Dispatch emits the canonical one-frame [`crate::ActivateEvent`].
+    Activate {
+        target: ObjectRef,
+        /// `None` means the player/default activator; `Some` resolves a
+        /// VMAD property or quest-alias `GetRef()` expression.
+        activator: Option<ObjectRef>,
+    },
+    /// `<target>.SetOpen(open)` — synchronizes the canonical two-state
+    /// activator and its `::isOpen_var` CTDA-visible VM variable.
+    SetOpen { target: ObjectRef, open: bool },
 }
 
 /// The local-variable scope built while lowering a fragment body.
@@ -220,6 +235,10 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_complete_all_objectives,
     prim_add_item,
     prim_move_to,
+    prim_start_scene,
+    prim_stop_scene,
+    prim_activate,
+    prim_set_open,
 ];
 
 // ── Effect primitives ────────────────────────────────────────────────
@@ -307,6 +326,63 @@ fn prim_move_to(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::MoveTo { moved, destination })
 }
 
+fn prim_start_scene(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "Start")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::StartScene {
+        scene: receiver_object(object, scope)?,
+    })
+}
+
+fn prim_stop_scene(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "Stop")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::StopScene {
+        scene: receiver_object(object, scope)?,
+    })
+}
+
+fn prim_activate(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "Activate")?;
+    if args.len() > 2 {
+        return None;
+    }
+    // ObjectReference.Activate's optional first arg is the activator. The
+    // MQ101 fragment corpus uses either the default or Game.GetPlayer();
+    // decline other runtime expressions rather than invent their identity.
+    let activator = match args.first().map(|arg| &arg.value.node) {
+        None | Some(Expr::NoneLit) => None,
+        Some(expression) if is_game_get_player(expression) => None,
+        Some(expression) => Some(receiver_object(expression, scope)?),
+    };
+    // `abDefaultProcessingOnly=true` explicitly bypasses attached-script
+    // OnActivate handling, which this canonical event represents. Accept
+    // only the default/false shape until native-only activation exists.
+    if bool_arg(args, 1)? == Some(true) {
+        return None;
+    }
+    Some(Effect::Activate {
+        target: receiver_object(object, scope)?,
+        activator,
+    })
+}
+
+fn prim_set_open(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetOpen")?;
+    if args.len() > 1 {
+        return None;
+    }
+    let open = bool_arg(args, 0)?.unwrap_or(true);
+    Some(Effect::SetOpen {
+        target: receiver_object(object, scope)?,
+        open,
+    })
+}
+
 // ── Receiver / quest-expr resolution ─────────────────────────────────
 
 /// Resolve a call receiver to a [`QuestRef`]:
@@ -342,6 +418,15 @@ fn quest_expr_ref(value: &Expr, scope: &Scope) -> Option<QuestRef> {
 /// because this increment doesn't track which property a local was
 /// copied from.
 fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
+    if let Expr::Cast { expr, .. } = object {
+        return receiver_object(&expr.node, scope);
+    }
+    if let Some((alias, args)) = method_call(object, "GetRef") {
+        if !args.is_empty() {
+            return None;
+        }
+        return receiver_object(alias, scope);
+    }
     let Expr::Ident(name) = object else {
         return None;
     };
@@ -636,6 +721,91 @@ mod tests {
              SomeRef.MoveTo(SomeMarker, 0.0, 0.0, 10.0)\n EndFunction\n",
         );
         assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn lowers_scene_start_and_stop_requests() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_13()\n\
+             IntroScene.Start()\n\
+             OldScene.Stop()\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::StartScene {
+                    scene: ObjectRef::Property("IntroScene".into()),
+                },
+                Effect::StopScene {
+                    scene: ObjectRef::Property("OldScene".into()),
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn lowers_activate_and_set_open_gate_sequence() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_14()\n\
+             KeepGate.Activate(Game.GetPlayer())\n\
+             KeepGate.SetOpen()\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::Activate {
+                    target: ObjectRef::Property("KeepGate".into()),
+                    activator: None,
+                },
+                Effect::SetOpen {
+                    target: ObjectRef::Property("KeepGate".into()),
+                    open: true,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn activate_default_processing_only_declines() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_15()\n\
+             KeepGate.Activate(Game.GetPlayer(), true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn lowers_real_mq101_alias_activate_and_cast_set_open_shape() {
+        // Parse the two statements separately: the source parser deliberately
+        // discards newlines, so two adjacent chained calls are ambiguous in
+        // handwritten PSC. The PEX decompiler supplies two distinct AST
+        // statements, which is the production shape this combined body models.
+        let mut body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_76()\n\
+             Alias_KeepLever1.GetRef().Activate(Alias_Soldier.GetRef(), false)\n EndFunction\n",
+        );
+        body.extend(first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_76()\n\
+             (KeepGate1 as default2stateactivator).SetOpen(true)\n EndFunction\n",
+        ));
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::Activate {
+                    target: ObjectRef::Property("Alias_KeepLever1".into()),
+                    activator: Some(ObjectRef::Property("Alias_Soldier".into())),
+                },
+                Effect::SetOpen {
+                    target: ObjectRef::Property("KeepGate1".into()),
+                    open: true,
+                },
+            ])
+        );
     }
 
     #[test]

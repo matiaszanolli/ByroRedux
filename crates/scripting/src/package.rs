@@ -96,6 +96,8 @@ pub enum ScenePackageCommand {
     TimedInteraction {
         procedure_type: String,
         remaining_seconds: f32,
+        target: Option<EntityId>,
+        dispatched: bool,
     },
     AwaitExternal {
         procedure_type: String,
@@ -363,6 +365,36 @@ fn input_destination(
     }
 }
 
+fn input_target_entity(
+    input: &PackDataInput,
+    package: &PackRecord,
+    world: &World,
+    actor: EntityId,
+    player: Option<EntityId>,
+) -> Option<EntityId> {
+    let PackDataValue::Target(target) = &input.value else {
+        return None;
+    };
+    match target.target {
+        PackDataTargetKind::SpecificReference(form_id)
+        | PackDataTargetKind::LinkedReference(form_id) => {
+            if form_id == 0x14 {
+                player
+            } else {
+                resolve_entity_by_global_form_id(world, form_id)
+            }
+        }
+        PackDataTargetKind::ReferenceAlias(alias_id) => {
+            let quest = QuestFormId(package.owner_quest_form_id?);
+            world
+                .try_resource::<SceneActorBindings>()?
+                .resolve(quest, alias_id)
+        }
+        PackDataTargetKind::SelfTarget => Some(actor),
+        _ => None,
+    }
+}
+
 fn resolve_command(
     package: &PackRecord,
     template: &PackRecord,
@@ -434,9 +466,14 @@ fn resolve_command(
         procedure_type.as_str(),
         "Acquire" | "Activate" | "Shout" | "Sit" | "UseIdleMarker" | "UseWeapon"
     ) {
+        let target = inputs
+            .iter()
+            .find_map(|input| input_target_entity(input, package, world, actor, player));
         return ScenePackageCommand::TimedInteraction {
             procedure_type,
             remaining_seconds: INTERACTION_FALLBACK_SECONDS,
+            target,
+            dispatched: false,
         };
     }
     ScenePackageCommand::AwaitExternal { procedure_type }
@@ -445,8 +482,26 @@ fn resolve_command(
 fn tick_command(world: &World, action: &mut ActiveScenePackageAction, dt: f32) -> bool {
     match &mut action.command {
         ScenePackageCommand::TimedInteraction {
-            remaining_seconds, ..
+            procedure_type,
+            remaining_seconds,
+            target,
+            dispatched,
         } => {
+            if !*dispatched {
+                if procedure_type == "Activate" {
+                    if let (Some(target), Some(mut events)) =
+                        (*target, world.query_mut::<crate::events::ActivateEvent>())
+                    {
+                        events.insert(
+                            target,
+                            crate::events::ActivateEvent {
+                                activator: action.actor,
+                            },
+                        );
+                    }
+                }
+                *dispatched = true;
+            }
             *remaining_seconds -= dt.max(0.0);
             *remaining_seconds <= 0.0
         }
@@ -807,5 +862,88 @@ mod tests {
             crate::scene::ScenePlaybackState::Finished
         );
         assert_eq!(world.get::<Transform>(actor).unwrap().translation.x, 100.0);
+    }
+
+    #[test]
+    fn activate_package_drives_two_state_vm_variable_end_to_end() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+        const GATE: u32 = 0x0009_0A05;
+        let mut world = World::new();
+        crate::register(&mut world);
+        let mut pool = FormIdPool::new();
+        let gate_id = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(GATE),
+        });
+        world.insert_resource(pool);
+        let scene = world.spawn();
+        let actor = world.spawn();
+        let gate = world.spawn();
+        world.insert(scene, ScenePlayer::new(0x100));
+        world.insert(gate, FormIdComponent(gate_id));
+        world.insert(
+            gate,
+            crate::TwoStateActivator {
+                do_once: true,
+                ..Default::default()
+            },
+        );
+        let mut variables = crate::ScriptVariables::default();
+        variables.set_by_name("::isOpen_var", 0.0);
+        world.insert(gate, variables);
+        install_package_records(
+            &mut world,
+            [
+                PackRecord {
+                    form_id: 0x400,
+                    package_template_form_id: Some(0x500),
+                    data_inputs: vec![PackDataInput {
+                        index: 0,
+                        value_type: "TargetSelector".to_owned(),
+                        value: PackDataValue::Target(PackDataTarget {
+                            target_type: 0,
+                            target: PackDataTargetKind::SpecificReference(GATE),
+                            count_or_distance: 0,
+                        }),
+                    }],
+                    ..Default::default()
+                },
+                PackRecord {
+                    form_id: 0x500,
+                    procedures: vec![PackProcedure {
+                        procedure_type: "Activate".to_owned(),
+                        flags: 1,
+                        data_input_indexes: vec![0],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+        );
+        world.insert(
+            scene,
+            SceneEventBatch(vec![SceneEvent::ActionStarted {
+                action_index: 17,
+                action_type: SceneActionType::Package,
+                actor_alias: 1,
+                actor_entity: Some(actor),
+                topic_form_id: None,
+                packages: vec![0x400],
+            }]),
+        );
+
+        scene_package_system(&world, 0.0);
+        crate::two_state_activator_system(&world, 0.0);
+
+        assert!(world.get::<crate::TwoStateActivator>(gate).unwrap().is_open);
+        assert_eq!(
+            world
+                .get::<crate::ScriptVariables>(gate)
+                .unwrap()
+                .get_by_name("::isOpen_var"),
+            Some(1.0)
+        );
     }
 }

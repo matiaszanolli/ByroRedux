@@ -765,6 +765,166 @@ fn dispatch_move_to_via_registered_vmad() {
 }
 
 #[test]
+fn dispatch_scene_start_via_registered_vmad() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    use byroredux_plugin::esm::records::ScenRecord;
+
+    const SCENE_FORM: u32 = 0x0000_8000;
+    let mut world = fixture();
+    crate::install_scene_records(
+        &mut world,
+        [ScenRecord {
+            form_id: SCENE_FORM,
+            ..Default::default()
+        }],
+    );
+    let scene_entity = world
+        .resource::<crate::SceneRegistry>()
+        .scene_entity(SCENE_FORM)
+        .unwrap();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                scripts: vec![ScriptInstance {
+                    name: "QF_Test".into(),
+                    status: 0,
+                    properties: vec![ScriptProperty {
+                        name: "IntroScene".into(),
+                        status: 1,
+                        value: PropertyValue::Object {
+                            form_id: SCENE_FORM,
+                            alias: -1,
+                        },
+                    }],
+                }],
+                ..Default::default()
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::StartScene {
+                scene: crate::translate::compose::ObjectRef::Property("IntroScene".into()),
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+
+    quest_fragment_dispatch_system(&world);
+
+    assert!(world.has::<crate::SceneStartRequest>(scene_entity));
+}
+
+#[test]
+fn dispatch_activate_then_set_open_updates_mq101_style_gate() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    const GATE_FORM: u32 = 0x0009_0A05;
+    const LEVER_ALIAS: i16 = 40;
+    const SOLDIER_ALIAS: i16 = 41;
+    let mut world = fixture();
+    let gate = spawn_with_form_id(&mut world, GATE_FORM);
+    let lever = world.spawn();
+    let soldier = world.spawn();
+    {
+        let mut bindings = world.resource_mut::<crate::SceneActorBindings>();
+        bindings.bind(Q, i32::from(LEVER_ALIAS), lever);
+        bindings.bind(Q, i32::from(SOLDIER_ALIAS), soldier);
+    }
+    world.insert(
+        gate,
+        crate::TwoStateActivator {
+            do_once: true,
+            ..Default::default()
+        },
+    );
+    world.insert(gate, crate::ScriptVariables::default());
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                scripts: vec![ScriptInstance {
+                    name: "QF_MQ101".into(),
+                    status: 0,
+                    properties: vec![
+                        ScriptProperty {
+                            name: "Alias_KeepLever1".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: 0,
+                                alias: LEVER_ALIAS,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "Alias_BarracksRoomSoldier02".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: 0,
+                                alias: SOLDIER_ALIAS,
+                            },
+                        },
+                        ScriptProperty {
+                            name: "KeepGate1".into(),
+                            status: 1,
+                            value: PropertyValue::Object {
+                                form_id: GATE_FORM,
+                                alias: -1,
+                            },
+                        },
+                    ],
+                }],
+                ..Default::default()
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![
+                Effect::Activate {
+                    target: crate::translate::compose::ObjectRef::Property(
+                        "::Alias_KeepLever1_var".into(),
+                    ),
+                    activator: Some(crate::translate::compose::ObjectRef::Property(
+                        "::Alias_BarracksRoomSoldier02_var".into(),
+                    )),
+                },
+                Effect::SetOpen {
+                    target: crate::translate::compose::ObjectRef::Property(
+                        "::KeepGate1_var".into(),
+                    ),
+                    open: true,
+                },
+            ],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+
+    quest_fragment_dispatch_system(&world);
+
+    assert_eq!(
+        world.get::<crate::ActivateEvent>(lever).unwrap().activator,
+        soldier
+    );
+    assert!(world.get::<crate::TwoStateActivator>(gate).unwrap().is_open);
+    assert_eq!(
+        world
+            .get::<crate::ScriptVariables>(gate)
+            .unwrap()
+            .get_by_name("::isOpen_var"),
+        Some(1.0)
+    );
+}
+
+#[test]
 fn dispatch_ignores_stage_without_a_fragment() {
     let world = fixture();
     {

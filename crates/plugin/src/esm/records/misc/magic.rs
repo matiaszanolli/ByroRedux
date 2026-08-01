@@ -431,7 +431,7 @@ pub fn parse_perk(
                     *extra_flags = sub.data.clone();
                 }
             }
-            b"CTDA" => {
+            b"CTDA" | b"CIS1" | b"CIS2" => {
                 if let PerkBlock::Open {
                     ref mut conditions, ..
                 } = &mut block

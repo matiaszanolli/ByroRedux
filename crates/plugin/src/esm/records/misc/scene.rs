@@ -186,7 +186,7 @@ pub fn parse_scen(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             b"NAM0" if phase.is_some() => {
                 phase.as_mut().expect("checked is_some").phase.name = read_zstring(&sub.data);
             }
-            b"CTDA" if phase.is_some() => {
+            b"CTDA" | b"CIS1" | b"CIS2" if phase.is_some() => {
                 let open = phase.as_mut().expect("checked is_some");
                 if open.next_markers == 0 {
                     push_ctda(sub, remap, &mut open.phase.start_conditions);
@@ -301,7 +301,9 @@ pub fn parse_scen(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             b"DEVA" if action.is_some() => {
                 action.as_mut().expect("checked is_some").emotion_value = read_u32(sub);
             }
-            b"CTDA" if action.is_none() => push_ctda(sub, remap, &mut out.conditions),
+            b"CTDA" | b"CIS1" | b"CIS2" if action.is_none() => {
+                push_ctda(sub, remap, &mut out.conditions)
+            }
             _ => {}
         }
     }

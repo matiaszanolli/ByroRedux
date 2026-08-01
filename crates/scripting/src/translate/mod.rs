@@ -48,6 +48,7 @@ use byroredux_plugin::esm::records::script_instance::ScriptInstanceData;
 /// fragment population flows through the stage-contract path instead.
 const RECOGNIZERS: &[Recognizer] = &[
     // Per-script (long tail):
+    recognizers::two_state_activator::recognize,
     recognizers::rumble::recognize,
     // Generic families (one recognizer covers many scripts):
     recognizers::quest_stage_gate::recognize,

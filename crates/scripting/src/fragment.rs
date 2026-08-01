@@ -39,7 +39,7 @@ use std::sync::Arc;
 use byroredux_core::ecs::components::{GlobalTransform, Inventory, ItemStack, Transform};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::world::World;
-use byroredux_plugin::esm::records::script_instance::ScriptInstanceData;
+use byroredux_plugin::esm::records::script_instance::{PropertyValue, ScriptInstanceData};
 
 use crate::quest_stages::{
     QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
@@ -152,28 +152,39 @@ fn resolve_property_form_id(vmad: Option<&ScriptInstanceData>, name: &str) -> Op
     vmad?.scripts.iter().find_map(|s| s.object_form_id(name))
 }
 
-/// Resolve an [`ObjectRef`] all the way to a live entity: VMAD property →
-/// FormID (`resolve_property_form_id`) → the currently-loaded entity
-/// carrying that FormID (`resolve_entity_by_global_form_id`, the same
-/// resolver the M42.5–8 AI packages and M47.1 condition functions use).
+/// Resolve an [`ObjectRef`] all the way to a live entity. Direct VMAD object
+/// properties go through FormID → loaded entity; alias-bound properties go
+/// through the owning quest's [`crate::scene::SceneActorBindings`].
 /// `debug`-logs and returns `None` at whichever hop fails — an unresolved
-/// object is a runtime data fact (not loaded, not spawned yet), not a
-/// shape the fragment failed to understand.
+/// object is a runtime data fact (not loaded, not spawned yet), not a shape
+/// the fragment failed to understand.
 fn resolve_object(
     vmad: Option<&ScriptInstanceData>,
     world: &World,
+    context: QuestFormId,
     via: &ObjectRef,
 ) -> Option<byroredux_core::ecs::storage::EntityId> {
     let name = via.property_name();
-    let Some(form_id) = resolve_property_form_id(vmad, name) else {
-        log::debug!("fragment effect skipped: object ref '{name}' has no VMAD FormID binding");
+    let Some(value) = vmad?
+        .scripts
+        .iter()
+        .find_map(|script| script.property(name))
+        .map(|property| &property.value)
+    else {
+        log::debug!("fragment effect skipped: object ref '{name}' has no VMAD binding");
         return None;
     };
-    let entity = crate::condition::resolve_entity_by_global_form_id(world, form_id);
+    let entity = match value {
+        PropertyValue::Object { form_id, alias: -1 } => {
+            crate::condition::resolve_entity_by_global_form_id(world, *form_id)
+        }
+        PropertyValue::Object { alias, .. } if *alias >= 0 => world
+            .try_resource::<crate::scene::SceneActorBindings>()
+            .and_then(|bindings| bindings.resolve(context, i32::from(*alias))),
+        _ => None,
+    };
     if entity.is_none() {
-        log::debug!(
-            "fragment effect skipped: object ref '{name}' (FormID {form_id:08X}) has no live entity"
-        );
+        log::debug!("fragment effect skipped: object ref '{name}' has no live entity");
     }
     entity
 }
@@ -209,7 +220,7 @@ pub fn apply_effect(
             item,
             count,
         } => {
-            let container_entity = resolve_object(vmad, world, container)?;
+            let container_entity = resolve_object(vmad, world, context, container)?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
             let Some(mut inventories) = world.query_mut::<Inventory>() else {
                 log::debug!("fragment AddItem skipped: Inventory component never registered");
@@ -230,8 +241,8 @@ pub fn apply_effect(
             None
         }
         Effect::MoveTo { moved, destination } => {
-            let moved_entity = resolve_object(vmad, world, moved)?;
-            let destination_entity = resolve_object(vmad, world, destination)?;
+            let moved_entity = resolve_object(vmad, world, context, moved)?;
+            let destination_entity = resolve_object(vmad, world, context, destination)?;
             let Some(translation) = world
                 .get::<GlobalTransform>(destination_entity)
                 .map(|gt| gt.translation)
@@ -251,6 +262,53 @@ pub fn apply_effect(
                 return None;
             };
             transform.translation = translation;
+            None
+        }
+        Effect::StartScene { scene } | Effect::StopScene { scene } => {
+            let scene_form_id = resolve_property_form_id(vmad, scene.property_name())?;
+            let Some(scene_entity) = world
+                .try_resource::<crate::scene::SceneRegistry>()
+                .and_then(|registry| registry.scene_entity(scene_form_id))
+            else {
+                log::debug!(
+                    "fragment scene effect skipped: '{}' resolved to SCEN {scene_form_id:08X}, but it is not installed",
+                    scene.property_name()
+                );
+                return None;
+            };
+            if matches!(effect, Effect::StartScene { .. }) {
+                if let Some(mut requests) = world.query_mut::<crate::scene::SceneStartRequest>() {
+                    requests.insert(scene_entity, crate::scene::SceneStartRequest);
+                }
+            } else if let Some(mut requests) = world.query_mut::<crate::scene::SceneStopRequest>() {
+                requests.insert(scene_entity, crate::scene::SceneStopRequest);
+            }
+            None
+        }
+        Effect::Activate { target, activator } => {
+            let target_entity = resolve_object(vmad, world, context, target)?;
+            let activator = match activator {
+                Some(activator) => resolve_object(vmad, world, context, activator)?,
+                None => world
+                    .try_resource::<crate::papyrus_demo::PlayerEntity>()
+                    .map(|player| player.0)
+                    .unwrap_or(target_entity),
+            };
+            let Some(mut events) = world.query_mut::<crate::ActivateEvent>() else {
+                log::debug!("fragment Activate skipped: ActivateEvent component never registered");
+                return None;
+            };
+            events.insert(target_entity, crate::ActivateEvent { activator });
+            None
+        }
+        Effect::SetOpen { target, open } => {
+            let target_entity = resolve_object(vmad, world, context, target)?;
+            if !crate::vm_state::set_two_state_open(world, target_entity, *open) {
+                log::debug!(
+                    "fragment SetOpen skipped: '{}' is not a recognized two-state activator",
+                    target.property_name()
+                );
+            }
             None
         }
         _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives),
@@ -309,7 +367,12 @@ fn apply_quest_scoped_effect(
             objectives.complete_all(quest);
             None
         }
-        Effect::AddItem { .. } | Effect::MoveTo { .. } => {
+        Effect::AddItem { .. }
+        | Effect::MoveTo { .. }
+        | Effect::StartScene { .. }
+        | Effect::StopScene { .. }
+        | Effect::Activate { .. }
+        | Effect::SetOpen { .. } => {
             unreachable!("object-targeting effects are handled by apply_effect directly")
         }
     }

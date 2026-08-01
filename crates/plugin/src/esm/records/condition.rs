@@ -161,6 +161,29 @@ pub enum ConditionValue {
     Global(u32),
 }
 
+/// Stable, case-insensitive identity for a CTDA string parameter.
+///
+/// Skyrim stores condition string parameters in `CIS1` / `CIS2`
+/// subrecords adjacent to the owning `CTDA`; the numeric parameter slot in
+/// the CTDA itself is not a persistent string identifier. Keeping a compact
+/// hash here preserves [`Condition`]'s cheap `Copy` representation while
+/// allowing the runtime to address Papyrus variables by their authored name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConditionStringId(pub u64);
+
+impl ConditionStringId {
+    pub fn from_text(text: &str) -> Self {
+        // FNV-1a over ASCII-folded bytes. Papyrus identifiers are
+        // case-insensitive; non-ASCII bytes pass through unchanged.
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for byte in text.bytes() {
+            hash ^= u64::from(byte.to_ascii_lowercase());
+            hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+        }
+        Self(hash)
+    }
+}
+
 impl Default for ConditionValue {
     fn default() -> Self {
         Self::Literal(0.0)
@@ -190,6 +213,11 @@ pub struct Condition {
     /// Second function-specific parameter. Often unused — many
     /// functions take only one arg.
     pub param_2: u32,
+    /// `CIS1` string parameter, when authored for this CTDA.
+    pub param_1_text: Option<ConditionStringId>,
+    /// `CIS2` string parameter, notably the variable name for Skyrim
+    /// `GetVMScriptVariable`.
+    pub param_2_text: Option<ConditionStringId>,
     /// Who the function evaluates against.
     pub run_on: RunOn,
     /// Specific REFR FormID — only meaningful when [`run_on`] is
@@ -300,6 +328,8 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
         comparand,
         param_1,
         param_2,
+        param_1_text: None,
+        param_2_text: None,
         run_on,
         reference_form_id,
         extra_data_id,
@@ -313,7 +343,11 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
 /// the OR-precedence evaluator at `byroredux_scripting::condition::evaluate`
 /// requires sequential order to correctly chunk OR groups.
 pub fn parse_condition_list(subs: &[SubRecord]) -> ConditionList {
-    subs.iter().filter_map(parse_ctda).collect()
+    let mut out = Vec::new();
+    for sub in subs {
+        push_ctda(sub, &None, &mut out);
+    }
+    out
 }
 
 /// Parse one `CTDA` sub-record, remap its FormIDs, and append it to `out`.
@@ -329,9 +363,31 @@ pub fn parse_condition_list(subs: &[SubRecord]) -> ConditionList {
 /// Undecodable CTDAs are skipped (`parse_ctda` returns `None`); order is
 /// preserved, which the OR-precedence evaluator requires.
 pub fn push_ctda(sub: &SubRecord, remap: &Option<FormIdRemap>, out: &mut ConditionList) {
-    if let Some(mut cond) = parse_ctda(sub) {
-        remap_condition_form_ids(&mut cond, remap);
-        out.push(cond);
+    match &sub.sub_type {
+        b"CTDA" => {
+            if let Some(mut cond) = parse_ctda(sub) {
+                remap_condition_form_ids(&mut cond, remap);
+                out.push(cond);
+            }
+        }
+        b"CIS1" | b"CIS2" => {
+            let Some(condition) = out.last_mut() else {
+                return;
+            };
+            let end = sub
+                .data
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(sub.data.len());
+            let text = String::from_utf8_lossy(&sub.data[..end]);
+            let id = ConditionStringId::from_text(&text);
+            if sub.sub_type == *b"CIS1" {
+                condition.param_1_text = Some(id);
+            } else {
+                condition.param_2_text = Some(id);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -362,6 +418,7 @@ fn param1_is_form_id(function_index: u32) -> bool {
         | 550 // IsSceneActionComplete — SCEN FormID (param_2 = action index)
         | 573 // GetReputation — REPU FormID (param_2 = axis, a literal)
         | 575 // GetReputationThreshold — REPU FormID (param_2 = axis)
+        | 630 // GetVMScriptVariable — object-reference FormID (CIS2 = variable)
     )
 }
 
@@ -501,6 +558,23 @@ mod tests {
         assert_eq!(cond.param_1, 0xCAFE);
         assert_eq!(cond.run_on, RunOn::Subject);
         assert!(!cond.or_next);
+    }
+
+    #[test]
+    fn condition_list_attaches_cis2_to_the_preceding_ctda() {
+        let ctda = make_ctda_28(0, 1.0_f32.to_le_bytes(), 630, 0x0009_0A05, 0, 0, 0);
+        let cis2 = SubRecord {
+            sub_type: *b"CIS2",
+            data: b"::isOpen_var\0".to_vec(),
+        };
+
+        let conditions = parse_condition_list(&[ctda, cis2]);
+
+        assert_eq!(conditions.len(), 1);
+        assert_eq!(
+            conditions[0].param_2_text,
+            Some(ConditionStringId::from_text("::ISOPEN_VAR"))
+        );
     }
 
     #[test]
@@ -687,6 +761,25 @@ mod tests {
 
         assert_eq!(cond.param_1, 0x0200_0001, "SCEN FormID remapped");
         assert_eq!(cond.param_2, 21, "action index remains a literal");
+    }
+
+    #[test]
+    fn remap_vm_script_variable_object_reference() {
+        let remap = FormIdRemap::regular(2, vec![0]);
+        let mut cond = Condition {
+            function_index: 630,
+            param_1: 0x0100_0A05,
+            param_2_text: Some(ConditionStringId::from_text("::isOpen_var")),
+            ..Default::default()
+        };
+
+        remap_condition_form_ids(&mut cond, &Some(remap));
+
+        assert_eq!(cond.param_1, 0x0200_0A05);
+        assert_eq!(
+            cond.param_2_text,
+            Some(ConditionStringId::from_text("::isOpen_var"))
+        );
     }
 
     #[test]

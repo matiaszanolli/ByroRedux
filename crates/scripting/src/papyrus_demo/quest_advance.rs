@@ -175,6 +175,7 @@ pub fn da10_main_door(owning_quest: QuestFormId) -> QuestAdvanceOnActivate {
         reference_form_id: 0,
         extra_data_id: 0,
         or_next: false,
+        ..Default::default()
     };
     QuestAdvanceOnActivate {
         owning_quest,
