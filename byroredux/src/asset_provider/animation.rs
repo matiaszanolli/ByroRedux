@@ -225,6 +225,15 @@ fn convert_hkx_clip(
     }
 
     let completion_events = behavior_completion_events(idle_event);
+    let accum_root_name = if completion_events.is_empty() {
+        None
+    } else {
+        skeleton
+            .bones
+            .iter()
+            .find(|bone| bone.name.eq_ignore_ascii_case("NPC COM [COM ]"))
+            .map(|bone| pool.intern(&bone.name))
+    };
     let mut authored_labels: Vec<_> = animation
         .annotations
         .iter()
@@ -256,7 +265,7 @@ fn convert_hkx_clip(
         },
         frequency: 1.0,
         weight: 1.0,
-        accum_root_name: None,
+        accum_root_name,
         channels,
         float_channels: Vec::new(),
         color_channels: Vec::new(),
@@ -380,6 +389,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("IDLE {} did not install", idle.editor_id));
             let clip = registry.get(*handle).unwrap();
             assert_eq!(clip.cycle_type, CycleType::Clamp, "{event_name}");
+            assert_eq!(
+                clip.accum_root_name.and_then(|name| pool.resolve(name)),
+                Some("npc com [com ]"),
+                "{event_name} did not bind Skyrim's COM trajectory"
+            );
             for completion in ["ExitCartEnd", "IdleFurnitureExit"] {
                 let &(time, _) = clip
                     .text_keys

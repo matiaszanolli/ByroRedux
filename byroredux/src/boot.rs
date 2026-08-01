@@ -430,6 +430,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<crate::components::FootstepEmitter>();
     world.register::<crate::components::HavokAnimationTarget>();
     world.register::<byroredux_core::animation::AnimationPlayer>();
+    world.register::<byroredux_core::animation::RootMotionDelta>();
 
     // M42 — pre-register the Sandbox marker storages so
     // `sandbox_seat_system`'s `query_mut::<Seated>().insert(...)` and the
@@ -768,6 +769,7 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // Translate clip text keys into Skyrim behavior/Papyrus completion
     // notifications in the same frame, before Late drains the transient
     // AnimationTextKeyEvents components.
+    scheduler.add_exclusive(Stage::Update, crate::systems::cinematic_root_motion_system);
     scheduler.add_exclusive(
         Stage::Update,
         crate::systems::cinematic_animation_event_system,

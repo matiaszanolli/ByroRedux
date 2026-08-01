@@ -7,7 +7,8 @@ use byroredux_core::animation::{
     advance_stack, advance_time, sample_blended_transform, sample_bool_channel,
     sample_color_channel, sample_float_channel, sample_rotation, sample_scale, sample_translation,
     split_root_motion, visit_stack_text_events, visit_text_key_events, AnimationClipRegistry,
-    AnimationPlayer, AnimationStack, ColorTarget, FloatTarget, RootMotionDelta,
+    AnimationPlayer, AnimationStack, ColorTarget, CycleType, FloatTarget, RootMotionDelta,
+    TransformChannel,
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{
@@ -63,6 +64,30 @@ fn write_root_motion(world: &World, entity: EntityId, motion: Vec3) {
         if let Some(rm) = rmq.get_mut(entity) {
             rm.0 = motion;
         }
+    }
+}
+
+/// Convert an accumulation root's absolute sampled translation into the
+/// displacement crossed during this tick. Havok cart exits author COM in
+/// seat-relative coordinates, so applying the absolute sample every frame
+/// would compound hundreds of units of motion.
+fn sampled_root_motion_delta(
+    clip: &byroredux_core::animation::AnimationClip,
+    channel: &TransformChannel,
+    previous_time: f32,
+    current_time: f32,
+) -> Vec3 {
+    let horizontal = |time| {
+        sample_translation(channel, time)
+            .map(|position| split_root_motion(position).1)
+            .unwrap_or(Vec3::ZERO)
+    };
+    let previous = horizontal(previous_time);
+    let current = horizontal(current_time);
+    if clip.cycle_type == CycleType::Loop && current_time < previous_time {
+        (horizontal(clip.duration) - previous) + (current - horizontal(0.0))
+    } else {
+        current - previous
     }
 }
 
@@ -533,9 +558,10 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                 if let Some(pos) = sample_translation(channel, current_time) {
                     if is_accum_root(channel_name) {
                         // Split: vertical → animation, horizontal → root motion delta.
-                        let (anim_pos, delta) = split_root_motion(pos);
+                        let (anim_pos, _) = split_root_motion(pos);
                         transform.translation = anim_pos;
-                        root_motion += delta;
+                        root_motion +=
+                            sampled_root_motion_delta(clip, channel, ps.prev_time, current_time);
                         accum_root_animated = true;
                     } else {
                         transform.translation = pos;
@@ -1126,6 +1152,7 @@ mod animation_system_e2e_tests {
     use super::*;
     use byroredux_core::animation::{
         AnimationClip, AnimationClipRegistry, CycleType, KeyType, RotationKey, TransformChannel,
+        TranslationKey,
     };
     use byroredux_core::ecs::{Children, Parent, World};
     use std::collections::HashMap;
@@ -1175,6 +1202,57 @@ mod animation_system_e2e_tests {
         }
     }
 
+    fn cart_com_channel() -> TransformChannel {
+        TransformChannel {
+            translation_keys: vec![
+                TranslationKey {
+                    time: 0.0,
+                    value: Vec3::new(-30.0, 140.0, 200.0),
+                    forward: Vec3::ZERO,
+                    backward: Vec3::ZERO,
+                    tbc: None,
+                },
+                TranslationKey {
+                    time: 1.0,
+                    value: Vec3::new(0.0, 70.0, 0.0),
+                    forward: Vec3::ZERO,
+                    backward: Vec3::ZERO,
+                    tbc: None,
+                },
+            ],
+            translation_type: KeyType::Linear,
+            rotation_keys: Vec::new(),
+            rotation_type: KeyType::Linear,
+            scale_keys: Vec::new(),
+            scale_type: KeyType::Linear,
+            priority: 0,
+        }
+    }
+
+    #[test]
+    fn cart_com_absolute_pose_becomes_per_frame_horizontal_delta() {
+        let channel = cart_com_channel();
+        let clip = AnimationClip {
+            name: "cart exit".into(),
+            duration: 1.0,
+            cycle_type: CycleType::Clamp,
+            frequency: 1.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: HashMap::new(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: Vec::new(),
+        };
+
+        assert_eq!(
+            sampled_root_motion_delta(&clip, &channel, 0.25, 0.75),
+            Vec3::new(15.0, 0.0, -100.0)
+        );
+    }
+
     /// Insert the resources the system reads. Returns the bone entity
     /// (the one keyed by `bone_name` and parented under `root`).
     fn build_skeleton_and_clip(bone_name: &str) -> (World, EntityId, EntityId, u32) {
@@ -1221,6 +1299,46 @@ mod animation_system_e2e_tests {
         };
 
         (world, root, bone, handle)
+    }
+
+    #[test]
+    fn animation_system_emits_cart_com_delta_and_keeps_vertical_pose_on_bone() {
+        let bone_name = "NPC COM [COM ]";
+        let (mut world, root, bone, _) = build_skeleton_and_clip(bone_name);
+        world.register::<RootMotionDelta>();
+        let bone_name = world.resource::<StringPool>().get(bone_name).unwrap();
+        let mut channels = HashMap::new();
+        channels.insert(bone_name, cart_com_channel());
+        let handle = world
+            .resource_mut::<AnimationClipRegistry>()
+            .add(AnimationClip {
+                name: "cart exit".into(),
+                duration: 1.0,
+                cycle_type: CycleType::Clamp,
+                frequency: 1.0,
+                weight: 1.0,
+                accum_root_name: Some(bone_name),
+                channels,
+                float_channels: Vec::new(),
+                color_channels: Vec::new(),
+                bool_channels: Vec::new(),
+                texture_flip_channels: Vec::new(),
+                text_keys: Vec::new(),
+            });
+        world.insert(root, RootMotionDelta(Vec3::ZERO));
+        world.insert(root, AnimationPlayer::new(handle).with_root(root));
+
+        animation_system(&world, 0.5);
+
+        assert_eq!(
+            world.get::<RootMotionDelta>(root).unwrap().0,
+            Vec3::new(15.0, 0.0, -100.0)
+        );
+        assert_eq!(
+            world.get::<Transform>(bone).unwrap().translation,
+            Vec3::new(0.0, 105.0, 0.0),
+            "COM height remains skeletal pose while horizontal travel is extracted"
+        );
     }
 
     /// End-to-end pin for #794: a player attached to the root entity

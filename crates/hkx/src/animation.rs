@@ -947,6 +947,25 @@ mod tests {
                 .tracks
                 .iter()
                 .all(|track| track.len() == dynamic.num_frames as usize));
+            if path.ends_with("exit.hkx") {
+                let com_track = dynamic
+                    .track_to_bone
+                    .iter()
+                    .position(|bone| {
+                        skeleton.bones[usize::from(*bone)]
+                            .name
+                            .eq_ignore_ascii_case("NPC COM [COM ]")
+                    })
+                    .unwrap();
+                let first = dynamic.tracks[com_track].first().unwrap().translation;
+                let last = dynamic.tracks[com_track].last().unwrap().translation;
+                let horizontal_travel =
+                    ((last[0] - first[0]).powi(2) + (last[1] - first[1]).powi(2)).sqrt();
+                assert!(
+                    horizontal_travel > 10.0,
+                    "{path} has no authored COM exit trajectory"
+                );
+            }
             assert!(
                 dynamic.tracks.iter().any(|track| {
                     track.windows(2).any(|pair| {

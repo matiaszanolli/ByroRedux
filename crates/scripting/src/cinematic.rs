@@ -1,10 +1,10 @@
 //! Runtime boundaries for scripted actor cinematics.
 //!
 //! Skyrim's MQ101 startup drives Havok idles, vehicle attachment, furniture
-//! exits, and rigid-body motion from Papyrus. The renderer does not yet play
-//! Havok `.hkx` clips. These components retain the exact authored request;
-//! the binary resolves supported Skyrim IDLEs through its archive-backed HKX
-//! catalog while scripting stays renderer/backend-independent.
+//! exits, and rigid-body motion from Papyrus. The binary resolves and plays
+//! the supported Skyrim IDLEs through its archive-backed HKX catalog; these
+//! components retain authored requests, vehicle-relative exit orientation,
+//! and behavior-event delivery while scripting stays backend-independent.
 
 use byroredux_core::ecs::components::MotionType;
 use byroredux_core::ecs::resource::Resource;
@@ -41,6 +41,9 @@ pub struct ActorCinematicState {
     pub idle_request_serial: u64,
     /// Completion event the quest is waiting to receive from the animation.
     pub awaited_event: Option<CinematicAnimationEvent>,
+    /// World orientation captured while detaching from a vehicle. Root-motion
+    /// deltas use it until the exit clip reaches `ExitCartEnd`.
+    pub exit_root_motion_rotation: Option<Quat>,
     /// Most recent behavior-level animation event delivered for this actor.
     pub last_animation_event: Option<CinematicAnimationEvent>,
     /// Monotonic delivery generation, including repeated identical events.

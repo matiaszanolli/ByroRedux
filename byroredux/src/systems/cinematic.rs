@@ -1,7 +1,7 @@
 //! App-side sinks for scripted cinematic requests.
 
 use crate::components::{HavokAnimationTarget, HavokIdleCatalog};
-use byroredux_core::animation::AnimationPlayer;
+use byroredux_core::animation::{AnimationPlayer, RootMotionDelta};
 use byroredux_core::ecs::components::RigidBodyData;
 use byroredux_core::ecs::Transform;
 use byroredux_core::ecs::{EntityId, World};
@@ -62,12 +62,78 @@ pub(crate) fn havok_idle_playback_system(world: &World, _dt: f32) {
     } else {
         return;
     }
+    if let Some(mut root_motion) = world.query_mut::<RootMotionDelta>() {
+        for (actor, _, _, _) in &requests {
+            root_motion.insert(*actor, RootMotionDelta(byroredux_core::math::Vec3::ZERO));
+        }
+    }
     if let Some(mut targets) = world.query_mut::<HavokAnimationTarget>() {
         for (actor, serial, _, _) in requests {
             if let Some(target) = targets.get_mut(actor) {
                 target.consumed_idle_serial = serial;
             }
         }
+    }
+}
+
+/// Apply a cart-exit clip's local COM displacement to its actor root. This is
+/// sequenced immediately after animation sampling and before `ExitCartEnd`
+/// clears the captured vehicle orientation.
+pub(crate) fn cinematic_root_motion_system(world: &World, _dt: f32) {
+    let motions: Vec<(
+        EntityId,
+        byroredux_core::math::Vec3,
+        byroredux_core::math::Quat,
+    )> = {
+        let Some(states) = world.query::<ActorCinematicState>() else {
+            return;
+        };
+        let Some(root_motion) = world.query::<RootMotionDelta>() else {
+            return;
+        };
+        let transforms = world.query::<Transform>();
+        root_motion
+            .iter()
+            .filter_map(|(actor, motion)| {
+                let state = states.get(actor)?;
+                if state.awaited_event != Some(CinematicAnimationEvent::ExitCartEnd) {
+                    return None;
+                }
+                let rotation = state.exit_root_motion_rotation.or_else(|| {
+                    transforms
+                        .as_ref()
+                        .and_then(|transforms| transforms.get(actor).map(|actor| actor.rotation))
+                })?;
+                Some((actor, motion.0, rotation))
+            })
+            .collect()
+    };
+    if motions.is_empty() {
+        return;
+    }
+
+    let mut positions = Vec::with_capacity(motions.len());
+    if let Some(mut transforms) = world.query_mut::<Transform>() {
+        for (actor, local_delta, rotation) in &motions {
+            let Some(transform) = transforms.get_mut(*actor) else {
+                continue;
+            };
+            if local_delta.is_finite() {
+                transform.translation += *rotation * (*local_delta * transform.scale);
+            }
+            transform.rotation = *rotation;
+            positions.push((*actor, transform.translation));
+        }
+    }
+    if let Some(mut root_motion) = world.query_mut::<RootMotionDelta>() {
+        for (actor, _, _) in &motions {
+            if let Some(motion) = root_motion.get_mut(*actor) {
+                motion.0 = byroredux_core::math::Vec3::ZERO;
+            }
+        }
+    }
+    for (actor, position) in positions {
+        byroredux_physics::set_kinematic_translation(world, actor, position);
     }
 }
 
@@ -107,6 +173,9 @@ pub(crate) fn cinematic_animation_event_system(world: &World, _dt: f32) {
             state.animation_event_serial = state.animation_event_serial.wrapping_add(1);
             if state.awaited_event == Some(*event) {
                 state.awaited_event = None;
+                if *event == CinematicAnimationEvent::ExitCartEnd {
+                    state.exit_root_motion_rotation = None;
+                }
             }
         }
     }
@@ -292,6 +361,7 @@ mod tests {
         world.register::<ActorCinematicState>();
         world.register::<HavokAnimationTarget>();
         world.register::<AnimationPlayer>();
+        world.register::<RootMotionDelta>();
         let mut catalog = HavokIdleCatalog::default();
         catalog.handles.insert(0x0010_6AE3, 17);
         world.insert_resource(catalog);
@@ -319,6 +389,10 @@ mod tests {
         assert_eq!(player.clip_handle, 17);
         assert_eq!(player.root_entity, Some(skeleton));
         drop(player);
+        assert_eq!(
+            world.get::<RootMotionDelta>(actor).unwrap().0,
+            byroredux_core::math::Vec3::ZERO
+        );
         assert_eq!(
             world
                 .get::<HavokAnimationTarget>(actor)
@@ -387,6 +461,7 @@ mod tests {
             player,
             ActorCinematicState {
                 awaited_event: Some(CinematicAnimationEvent::ExitCartEnd),
+                exit_root_motion_rotation: Some(byroredux_core::math::Quat::IDENTITY),
                 ..Default::default()
             },
         );
@@ -408,6 +483,7 @@ mod tests {
 
         let actor = world.get::<ActorCinematicState>(player).unwrap();
         assert_eq!(actor.awaited_event, None);
+        assert_eq!(actor.exit_root_motion_rotation, None);
         assert_eq!(
             actor.last_animation_event,
             Some(CinematicAnimationEvent::IdleFurnitureExit)
@@ -421,6 +497,39 @@ mod tests {
             Some(CinematicAnimationEvent::IdleFurnitureExit)
         );
         assert_eq!(presentation.player_animation_event_serial, 1);
+    }
+
+    #[test]
+    fn cart_exit_root_motion_moves_and_orients_actor_then_drains_delta() {
+        use byroredux_core::math::{Quat, Vec3};
+
+        let mut world = World::new();
+        world.register::<ActorCinematicState>();
+        world.register::<RootMotionDelta>();
+        world.register::<Transform>();
+        let actor = world.spawn();
+        let exit_rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        world.insert(
+            actor,
+            ActorCinematicState {
+                awaited_event: Some(CinematicAnimationEvent::ExitCartEnd),
+                exit_root_motion_rotation: Some(exit_rotation),
+                ..Default::default()
+            },
+        );
+        world.insert(
+            actor,
+            Transform::new(Vec3::new(100.0, 0.0, 50.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(actor, RootMotionDelta(Vec3::new(0.0, 0.0, -10.0)));
+
+        cinematic_root_motion_system(&world, 0.0);
+
+        let transform = world.get::<Transform>(actor).unwrap();
+        assert!((transform.translation - Vec3::new(90.0, 0.0, 50.0)).length() < 1e-5);
+        assert_eq!(transform.rotation, exit_rotation);
+        drop(transform);
+        assert_eq!(world.get::<RootMotionDelta>(actor).unwrap().0, Vec3::ZERO);
     }
 
     #[test]

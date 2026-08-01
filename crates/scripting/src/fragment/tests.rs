@@ -1023,6 +1023,15 @@ fn dispatch_cart_animation_vehicle_and_motion_effects() {
             byroredux_core::math::Vec3::new(12.0, 0.0, 0.0),
         ),
     );
+    let rider_exit_rotation = byroredux_core::math::Quat::from_rotation_y(0.75);
+    world.insert(
+        rider,
+        byroredux_core::ecs::components::Transform::new(
+            byroredux_core::math::Vec3::ZERO,
+            rider_exit_rotation,
+            1.0,
+        ),
+    );
     world.insert(
         cart,
         byroredux_core::ecs::components::Transform::from_translation(
@@ -1132,6 +1141,10 @@ fn dispatch_cart_animation_vehicle_and_motion_effects() {
     assert_eq!(
         rider_cinematic.awaited_event,
         Some(CinematicAnimationEvent::ExitCartEnd)
+    );
+    assert_eq!(
+        rider_cinematic.exit_root_motion_rotation,
+        Some(rider_exit_rotation)
     );
     assert_eq!(
         world

@@ -612,12 +612,25 @@ pub fn apply_effect(
             let actor = resolve_object(vmad, world, context, actor)?;
             let idle_form_id = exit_cart_idle_property(*seat)
                 .and_then(|property| resolve_property_form_id(vmad, property));
+            let attachment = world
+                .get::<crate::ActorCinematicState>(actor)
+                .and_then(|state| Some((state.vehicle?, state.vehicle_local_rotation?)));
+            let exit_root_motion_rotation = world.query::<Transform>().and_then(|transforms| {
+                attachment
+                    .and_then(|(vehicle, local_rotation)| {
+                        transforms
+                            .get(vehicle)
+                            .map(|vehicle| vehicle.rotation * local_rotation)
+                    })
+                    .or_else(|| transforms.get(actor).map(|actor| actor.rotation))
+            });
             if !update_actor_cinematic_state(world, actor, |state| {
                 state.vehicle = None;
                 state.vehicle_local_translation = None;
                 state.vehicle_local_rotation = None;
                 state.cart_seat = Some(*seat);
                 state.awaited_event = Some(crate::CinematicAnimationEvent::ExitCartEnd);
+                state.exit_root_motion_rotation = exit_root_motion_rotation;
                 if let Some(idle_form_id) = idle_form_id {
                     state.request_idle(idle_form_id);
                 }
