@@ -1,0 +1,11 @@
+[package]
+name = "byroredux-hkx"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+byroredux-bsa = { workspace = true }
+

@@ -490,6 +490,7 @@ pub fn load_cell_with_masters(
     // Install them only after capturing/stamping the cell entity range so an
     // interior unload cannot despawn a running cross-cell scene.
     crate::asset_provider::populate_scene_runtime(world, &index);
+    crate::asset_provider::populate_havok_idle_runtime(world, &index, tex_provider);
 
     // Capture the cell's editor_id BEFORE the `index.cells` move below
     // — `cell` borrows from `index.cells.cells`, so the borrow has to

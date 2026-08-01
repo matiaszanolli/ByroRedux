@@ -205,8 +205,9 @@ impl GameKind {
     }
 
     /// True when the engine animates actors via Havok Behavior Format
-    /// (`.hkx` files + behaviour graphs). Skyrim onwards. M41.0 ships
-    /// these games at bind pose; M41.x adds a minimal `.hkx` decoder.
+    /// (`.hkx` files + behaviour graphs). Skyrim onwards. The current runtime
+    /// decodes Skyrim 64-bit spline-compressed IDLE clips; later games remain
+    /// explicit compatibility work.
     pub fn has_havok_animations(self) -> bool {
         matches!(
             self,

@@ -98,7 +98,7 @@ name = "Skyrim Special Edition"
 subdir = "Skyrim Special Edition/Data"
 root = ""
 esm = "Skyrim.esm"
-default_bsas = ["Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa"]
+default_bsas = ["Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa", "Skyrim - Animations.bsa"]
 default_textures_bsas = [
     "Skyrim - Textures0.bsa",
     "Skyrim - Textures1.bsa",

@@ -2,9 +2,9 @@
 //!
 //! Skyrim's MQ101 startup drives Havok idles, vehicle attachment, furniture
 //! exits, and rigid-body motion from Papyrus. The renderer does not yet play
-//! Havok `.hkx` clips, but these components retain the exact authored request
-//! so the gameplay state and the eventual animation backend share one source
-//! of truth instead of reducing those calls to no-ops.
+//! Havok `.hkx` clips. These components retain the exact authored request;
+//! the binary resolves supported Skyrim IDLEs through its archive-backed HKX
+//! catalog while scripting stays renderer/backend-independent.
 
 use byroredux_core::ecs::components::MotionType;
 use byroredux_core::ecs::resource::Resource;

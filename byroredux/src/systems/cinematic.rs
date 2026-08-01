@@ -1,10 +1,71 @@
 //! App-side sinks for scripted cinematic requests.
 
+use crate::components::{HavokAnimationTarget, HavokIdleCatalog};
+use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::RigidBodyData;
 use byroredux_core::ecs::Transform;
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_physics::{PhysicsWorld, RapierHandles};
 use byroredux_scripting::{ActorCinematicState, HorseTetherState, MotionTypeChangeRequest};
+
+/// Consume queued Skyrim `PlayIdle` requests once their IDLE FormID has a
+/// decoded HKX clip. Unresolved requests remain pending, allowing a later cell
+/// load to install the relevant archive without losing the authored request.
+pub(crate) fn havok_idle_playback_system(world: &World, _dt: f32) {
+    let requests: Vec<(EntityId, u64, EntityId, u32)> = {
+        let Some(catalog) = world.try_resource::<HavokIdleCatalog>() else {
+            return;
+        };
+        let Some(states) = world.query::<ActorCinematicState>() else {
+            return;
+        };
+        let Some(targets) = world.query::<HavokAnimationTarget>() else {
+            return;
+        };
+        states
+            .iter()
+            .filter_map(|(actor, state)| {
+                let target = targets.get(actor)?;
+                if state.idle_request_serial == target.consumed_idle_serial {
+                    return None;
+                }
+                let handle = catalog
+                    .handles
+                    .get(&state.requested_idle_form_id?)
+                    .copied()?;
+                Some((
+                    actor,
+                    state.idle_request_serial,
+                    target.skeleton_root,
+                    handle,
+                ))
+            })
+            .collect()
+    };
+    if requests.is_empty() {
+        return;
+    }
+
+    if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
+        for (actor, _, skeleton_root, handle) in &requests {
+            let replacement = AnimationPlayer::new(*handle).with_root(*skeleton_root);
+            if let Some(player) = players.get_mut(*actor) {
+                *player = replacement;
+            } else {
+                players.insert(*actor, replacement);
+            }
+        }
+    } else {
+        return;
+    }
+    if let Some(mut targets) = world.query_mut::<HavokAnimationTarget>() {
+        for (actor, serial, _, _) in requests {
+            if let Some(target) = targets.get_mut(actor) {
+                target.consumed_idle_serial = serial;
+            }
+        }
+    }
+}
 
 /// Apply Papyrus `SetMotionType` requests to both canonical ECS body data and
 /// an already-live Rapier body, then drain the one-shot request.
@@ -142,6 +203,56 @@ pub(crate) fn vehicle_attachment_system(world: &World, _dt: f32) {
 mod tests {
     use super::*;
     use byroredux_core::ecs::components::MotionType;
+
+    #[test]
+    fn idle_request_starts_scoped_havok_player_once_per_serial() {
+        let mut world = World::new();
+        world.register::<ActorCinematicState>();
+        world.register::<HavokAnimationTarget>();
+        world.register::<AnimationPlayer>();
+        let mut catalog = HavokIdleCatalog::default();
+        catalog.handles.insert(0x0010_6AE3, 17);
+        world.insert_resource(catalog);
+
+        let skeleton = world.spawn();
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            ActorCinematicState {
+                requested_idle_form_id: Some(0x0010_6AE3),
+                idle_request_serial: 1,
+                ..Default::default()
+            },
+        );
+        world.insert(
+            actor,
+            HavokAnimationTarget {
+                skeleton_root: skeleton,
+                consumed_idle_serial: 0,
+            },
+        );
+
+        havok_idle_playback_system(&world, 0.0);
+        let player = world.get::<AnimationPlayer>(actor).unwrap();
+        assert_eq!(player.clip_handle, 17);
+        assert_eq!(player.root_entity, Some(skeleton));
+        drop(player);
+        assert_eq!(
+            world
+                .get::<HavokAnimationTarget>(actor)
+                .unwrap()
+                .consumed_idle_serial,
+            1
+        );
+
+        world.get_mut::<AnimationPlayer>(actor).unwrap().local_time = 0.25;
+        havok_idle_playback_system(&world, 0.0);
+        assert_eq!(
+            world.get::<AnimationPlayer>(actor).unwrap().local_time,
+            0.25,
+            "the same request serial must not restart every frame"
+        );
+    }
 
     #[test]
     fn request_updates_canonical_body_data_then_drains() {

@@ -804,9 +804,9 @@ pub fn prebaked_facegen_tint_path(plugin_name: &str, form_id: u32) -> Option<Str
 /// identical to the kf-era path; the head NIF replaces the race-
 /// default head only.
 ///
-/// **Animation deferred**: Skyrim+ vanilla ships zero `.kf` files
-/// (Havok `.hkx` only). Pre-baked-track NPCs spawn in bind pose
-/// today; M41.x lands a Havok stub for idle.
+/// Skyrim+ vanilla ships zero `.kf` files. Pre-baked-track NPCs expose their
+/// skeleton root as a Havok animation target; supported IDLE events are
+/// resolved from `.hkx` by the archive-backed runtime.
 ///
 /// Like [`spawn_npc_entity`], this synchronous compatibility entry point drives
 /// the shared resumable job with an unlimited budget.

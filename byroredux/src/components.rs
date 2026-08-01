@@ -1235,6 +1235,30 @@ impl Resource for SeatReservations {}
 pub(crate) struct SandboxSitClip(pub(crate) Option<(u32, f32)>);
 impl Resource for SandboxSitClip {}
 
+/// Skeleton subtree owned by an actor that can consume Skyrim behavior-IDLE
+/// requests. The request serial makes repeated `PlayIdle` calls observable
+/// even when they target the same IDLE FormID.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HavokAnimationTarget {
+    pub(crate) skeleton_root: EntityId,
+    pub(crate) consumed_idle_serial: u64,
+}
+
+impl Component for HavokAnimationTarget {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Process-lifetime IDLE FormID → decoded animation handle mapping.
+///
+/// Clips live in `AnimationClipRegistry`; this small companion preserves the
+/// plugin-level identity used by Papyrus `PlayIdle` calls.
+#[derive(Default)]
+pub(crate) struct HavokIdleCatalog {
+    pub(crate) handles: HashMap<u32, u32>,
+}
+
+impl Resource for HavokIdleCatalog {}
+
 #[cfg(test)]
 mod fx_mesh_classification_tests {
     //! PERF-D3-NEW-02 / #1136 — pin the 6-needle FX-decoration set so a

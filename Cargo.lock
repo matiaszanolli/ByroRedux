@@ -421,6 +421,7 @@ dependencies = [
  "byroredux-debug-server",
  "byroredux-debug-ui",
  "byroredux-facegen",
+ "byroredux-hkx",
  "byroredux-nif",
  "byroredux-physics",
  "byroredux-platform",
@@ -548,6 +549,14 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "cc",
+]
+
+[[package]]
+name = "byroredux-hkx"
+version = "0.1.0"
+dependencies = [
+ "byroredux-bsa",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

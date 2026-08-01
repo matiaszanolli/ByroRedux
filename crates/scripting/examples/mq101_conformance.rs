@@ -53,9 +53,15 @@ const CRITICAL_SCRIPTS: &[&str] = &[
 const CRITICAL_ANIMATIONS: &[&str] = &[
     "meshes\\actors\\character\\animations\\carttravelplayeridle.hkx",
     "meshes\\actors\\character\\animations\\carttraveldriveridle.hkx",
+    "meshes\\actors\\character\\animations\\cartdriveridlesway.hkx",
+    "meshes\\actors\\character\\animations\\cartprisoneraidle.hkx",
     "meshes\\actors\\character\\animations\\cartprisonerbidle.hkx",
     "meshes\\actors\\character\\animations\\cartprisonercidle.hkx",
     "meshes\\actors\\character\\animations\\cartprisonerdidle.hkx",
+    "meshes\\actors\\character\\animations\\cartprisonerasway.hkx",
+    "meshes\\actors\\character\\animations\\cartprisonerbsway.hkx",
+    "meshes\\actors\\character\\animations\\cartprisonercsway.hkx",
+    "meshes\\actors\\character\\animations\\cartprisonerdsway.hkx",
 ];
 
 const TWO_STATE_ACTIVATOR_SCRIPT: &str = "scripts\\default2stateactivator.pex";

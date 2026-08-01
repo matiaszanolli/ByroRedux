@@ -32,6 +32,7 @@ byroredux-platform = { workspace = true }
 # (ScriptTimer) so the M45 save registry can snapshot them.
 byroredux-scripting = { workspace = true, features = ["save"] }
 byroredux-nif = { workspace = true }
+byroredux-hkx = { workspace = true }
 byroredux-spt = { workspace = true }
 byroredux-bsa = { workspace = true }
 byroredux-bgsm = { workspace = true }

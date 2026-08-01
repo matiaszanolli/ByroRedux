@@ -90,6 +90,7 @@ struct RuntimeArmor {
 
 struct PrebakedNpcState {
     placement_root: EntityId,
+    skel_root: Option<EntityId>,
     skel_map: SkeletonMap,
     facegen_path: Option<String>,
     tint_path: Option<String>,
@@ -756,6 +757,13 @@ fn advance_runtime_unit(
                 state.equipment_slots.take().unwrap_or_default(),
             );
             if let Some(skeleton) = state.skel_root {
+                world.insert(
+                    state.placement_root,
+                    crate::components::HavokAnimationTarget {
+                        skeleton_root: skeleton,
+                        consumed_idle_serial: 0,
+                    },
+                );
                 if let Some(handle) = pick_idle_handle(idle_pool, npc.form_id) {
                     let duration = world
                         .resource::<AnimationClipRegistry>()
@@ -927,6 +935,7 @@ fn prepare_prebaked_state(
 
     PrebakedNpcState {
         placement_root,
+        skel_root: None,
         skel_map: HashMap::new(),
         facegen_path: prebaked_facegen_nif_path(plugin_name, npc.form_id),
         tint_path: prebaked_facegen_tint_path(plugin_name, npc.form_id),
@@ -976,6 +985,7 @@ fn advance_prebaked_unit(
             if let Some(root) = skel_root {
                 parent_part(world, state.placement_root, root);
             }
+            state.skel_root = skel_root;
             state.skel_map = skel_map;
             state.phase = PrebakedPhase::Facegen;
             UnitOutcome::Continue
@@ -1067,6 +1077,15 @@ fn advance_prebaked_unit(
                     npc.editor_id,
                     state.equipped_armor_count,
                     state.armor.len(),
+                );
+            }
+            if let Some(skeleton_root) = state.skel_root {
+                world.insert(
+                    state.placement_root,
+                    crate::components::HavokAnimationTarget {
+                        skeleton_root,
+                        consumed_idle_serial: 0,
+                    },
                 );
             }
             apply_ai_package_behavior(world, state.placement_root, npc, index);

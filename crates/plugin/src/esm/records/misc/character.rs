@@ -144,14 +144,19 @@ pub fn parse_csty(form_id: u32, subs: &[SubRecord]) -> CstyRecord {
 
 /// IDLE — idle animation record. NPC behavior tree references —
 /// "lean against wall", "smoke", "drink", etc. Each NPC's PACK
-/// references IDLEs by form ID. Stub captures EDID + animation file
-/// path (MODL). See audit `FNV-D2-NEW-02` / #809.
+/// references IDLEs by form ID. Pre-Skyrim records author a direct `MODL`
+/// path; Skyrim+ records route an `ENAM` animation event through the `DNAM`
+/// behavior graph.
 #[derive(Debug, Clone, Default)]
 pub struct IdleRecord {
     pub form_id: u32,
     pub editor_id: String,
     /// `MODL` — animation file path (typically `.kf`).
     pub animation_path: String,
+    /// `DNAM` — Skyrim behavior-graph path.
+    pub behavior_graph_path: String,
+    /// `ENAM` — Skyrim behavior event resolved to an animation-set HKX.
+    pub animation_event: String,
 }
 
 pub fn parse_idle(form_id: u32, subs: &[SubRecord]) -> IdleRecord {
@@ -163,9 +168,12 @@ pub fn parse_idle(form_id: u32, subs: &[SubRecord]) -> IdleRecord {
         match &sub.sub_type {
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"MODL" => out.animation_path = read_zstring(&sub.data),
+            b"DNAM" => out.behavior_graph_path = read_zstring(&sub.data),
+            b"ENAM" => out.animation_event = read_zstring(&sub.data),
             _ => {}
         }
     }
+
     out
 }
 
@@ -192,6 +200,23 @@ mod tests {
         assert_eq!(h.editor_id, "HumanHead01");
         assert_eq!(h.model_path, "meshes\\characters\\head.nif");
         assert_eq!(h.flags, 0x01);
+    }
+
+    #[test]
+    fn parse_skyrim_idle_picks_behavior_graph_and_event() {
+        let subs = vec![
+            sub(b"EDID", b"IdleCartPrisonerASway\0"),
+            sub(b"DNAM", b"Actors\\Character\\DefaultMale.hkx\0"),
+            sub(b"ENAM", b"IdleCartPrisonerASway\0"),
+        ];
+        let idle = parse_idle(0x0010_6AE3, &subs);
+        assert_eq!(idle.editor_id, "IdleCartPrisonerASway");
+        assert_eq!(
+            idle.behavior_graph_path,
+            "Actors\\Character\\DefaultMale.hkx"
+        );
+        assert_eq!(idle.animation_event, "IdleCartPrisonerASway");
+        assert!(idle.animation_path.is_empty());
     }
 
     #[test]

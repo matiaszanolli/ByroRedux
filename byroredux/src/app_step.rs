@@ -459,6 +459,11 @@ impl App {
                             &mut self.world,
                             &wctx.record_index,
                         );
+                        crate::asset_provider::populate_havok_idle_runtime(
+                            &mut self.world,
+                            &wctx.record_index,
+                            &tex_provider,
+                        );
                         crate::scene::apply_worldspace_weather(
                             &mut self.world,
                             ctx,

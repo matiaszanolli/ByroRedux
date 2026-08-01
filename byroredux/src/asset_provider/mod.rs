@@ -1,10 +1,12 @@
 //! BSA/BA2-backed texture and mesh extraction.
 
+mod animation;
 mod archive;
 mod material;
 mod script;
 mod texture;
 
+pub(crate) use animation::*;
 pub(crate) use archive::*;
 pub(crate) use material::*;
 pub(crate) use script::*;

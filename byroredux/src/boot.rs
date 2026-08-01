@@ -350,6 +350,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // and future Papyrus `ObjectReference` lookups all resolve.
     world.insert_resource(byroredux_core::form_id::FormIdPool::new());
     world.insert_resource(AnimationClipRegistry::new());
+    world.insert_resource(crate::components::HavokIdleCatalog::default());
     world.insert_resource(NameIndex::new());
     world.insert_resource(SubtreeCache::new());
     world.insert_resource(CellRootIndex::new());
@@ -427,6 +428,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // `Some` even before the first emitter is inserted (e.g. on
     // startup with no scene loaded).
     world.register::<crate::components::FootstepEmitter>();
+    world.register::<crate::components::HavokAnimationTarget>();
+    world.register::<byroredux_core::animation::AnimationPlayer>();
 
     // M42 — pre-register the Sandbox marker storages so
     // `sandbox_seat_system`'s `query_mut::<Seated>().insert(...)` and the
@@ -691,6 +694,10 @@ pub(crate) fn build_scheduler() -> Scheduler {
         Stage::Update,
         byroredux_scripting::fragment_continuation_system,
     );
+    // Translate the resulting Skyrim PlayIdle FormID requests into decoded
+    // HKX AnimationPlayers. The parallel animation batch observes a request
+    // no later than the following frame, preserving deterministic restarts.
+    scheduler.add_exclusive(Stage::Update, crate::systems::havok_idle_playback_system);
     // Apply Papyrus SetMotionType requests after both immediate and resumed
     // fragment effects, before the Physics stage consumes body state.
     scheduler.add_exclusive(Stage::Update, crate::systems::scripted_motion_type_system);
