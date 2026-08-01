@@ -728,7 +728,7 @@ mod tests {
         let src = include_str!("../shaders/triangle.frag");
 
         assert!(
-            src.contains("vec3 ambientFallback = dalcFlags.x > 0.5")
+            src.contains("ambientFallback = dalcFlags.x > 0.5")
                 && src.contains("? sampleDalcCube(R) * (1.0 / PI)"),
             "rough-metal reflection fallback must convert DALC irradiance along R to radiance"
         );

@@ -96,7 +96,10 @@ fn default_kind_zero_skips_all_variant_packs() {
     );
     assert_eq!(c.hair_tint_rgb, [0.0; 3], "kind=0 must skip hair tint pack");
     assert_eq!(c.sparkle_rgba, [0.0; 4], "kind=0 must skip sparkle pack");
-    assert_eq!(c.multi_layer_envmap_strength, 0.0);
+    // multi_layer_envmap_strength aliases the shared env_map_scale field
+    // (Material::default() = 1.0) for every kind, not just 11 — see
+    // static_meshes.rs's `else` arm.
+    assert_eq!(c.multi_layer_envmap_strength, 1.0);
     assert_eq!(c.multi_layer_inner_thickness, 0.0);
     assert_eq!(c.multi_layer_refraction_scale, 0.0);
     assert_eq!(c.multi_layer_inner_scale, [1.0, 1.0]);
@@ -115,7 +118,8 @@ fn kind_5_skin_tint_packs_only_skin_fields() {
     // Other groups stay default-zero — gate worked.
     assert_eq!(c.hair_tint_rgb, [0.0; 3]);
     assert_eq!(c.sparkle_rgba, [0.0; 4]);
-    assert_eq!(c.multi_layer_envmap_strength, 0.0);
+    // Aliases env_map_scale (default 1.0) outside kind 11 — see above.
+    assert_eq!(c.multi_layer_envmap_strength, 1.0);
     assert_eq!(c.eye_left_center, [0.0; 3]);
 }
 
@@ -149,7 +153,8 @@ fn kind_16_eye_envmap_packs_only_eye_fields() {
     // Other groups stay default-zero.
     assert_eq!(c.skin_tint_rgba, [0.0; 4]);
     assert_eq!(c.hair_tint_rgb, [0.0; 3]);
-    assert_eq!(c.multi_layer_envmap_strength, 0.0);
+    // Aliases env_map_scale (default 1.0) outside kind 11 — see above.
+    assert_eq!(c.multi_layer_envmap_strength, 1.0);
 }
 
 /// Regression for #620 / SK-D4-01. Material with
