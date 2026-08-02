@@ -1,6 +1,8 @@
 //! Per-frame render data collection from ECS queries.
 
 use byroredux_core::ecs::{resources::SkinSlotPool, ActiveCamera, EntityId, Transform, World};
+use byroredux_core::math::Vec3;
+use byroredux_physics::PhysicsWorld;
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::vulkan::water::WaterDrawCommand;
 use byroredux_renderer::{MaterialTable, SkyParams};
@@ -10,6 +12,101 @@ use std::collections::HashMap;
 use crate::components::CellLightingRes;
 
 static FRAME_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Downward-raycast distance (world units) for the height-fog ground
+/// reference below — same order of magnitude as
+/// `systems::locomotion::LOCOMOTION_GROUND_RAY_MAX_DISTANCE`, kept as its
+/// own constant since that one is private to the locomotion module and the
+/// two rays serve unrelated purposes (foot-placement vs. fog altitude).
+const FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE: f32 = 4096.0;
+
+/// World-space Y used as the height-fog reference altitude (REN-D16-01 /
+/// #2225). Both `proceduralDensityScale` (froxel injection) and
+/// `heightFogOpticalDepth` (beyond-grid aerial-perspective continuation)
+/// used the camera's own eye height before this fix, so fog density
+/// always peaked at eye level and followed the player vertically instead
+/// of thinning with real altitude — climbing a hill never cleared the
+/// fog, and vertical-only camera motion (stairs, an elevator, the fly
+/// camera) changed density at a fixed world point for reasons temporal
+/// reprojection can't model, producing ghost bands.
+///
+/// A single downward ray-cast from the camera against static collision
+/// (mirrors `systems::locomotion`'s ground-snap ray) anchors the reference
+/// to the ground/floor near the camera instead: pure vertical motion at a
+/// fixed XZ no longer moves the reference at all, and walking up a slope
+/// tracks the slope's own height rather than the camera's eye height.
+/// Falls back to the camera's own Y — the pre-fix behavior — when no
+/// ground is found below (open sky, no `PhysicsWorld` resource yet).
+fn fog_height_reference(world: &World, cam_pos: Vec3) -> f32 {
+    world
+        .try_resource::<PhysicsWorld>()
+        .and_then(|pw| pw.cast_ray_down(cam_pos, FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE))
+        .unwrap_or(cam_pos.y)
+}
+
+#[cfg(test)]
+mod fog_height_reference_tests {
+    use super::*;
+    use byroredux_core::ecs::components::collision::CollisionShape;
+    use byroredux_core::ecs::components::{GlobalTransform, RigidBodyData};
+    use byroredux_core::math::Quat;
+    use byroredux_physics::{physics_sync_system, RapierHandles};
+
+    /// REN-D16-01 / #2225 — no `PhysicsWorld` resource at all (e.g. the
+    /// bench demo scene, or before the first cell load) must fall back to
+    /// the camera's own Y, the pre-fix behavior, rather than panicking or
+    /// silently returning some other value.
+    #[test]
+    fn falls_back_to_camera_y_without_a_physics_world() {
+        let world = World::new();
+        let cam_pos = Vec3::new(100.0, 250.0, -40.0);
+        assert_eq!(fog_height_reference(&world, cam_pos), cam_pos.y);
+    }
+
+    /// An empty `PhysicsWorld` (registered, but no colliders synced in
+    /// yet) must also fall back to the camera's own Y — `cast_ray_down`
+    /// returns `None` on an empty query pipeline, not a false hit at Y=0.
+    #[test]
+    fn falls_back_to_camera_y_with_an_empty_physics_world() {
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        let cam_pos = Vec3::new(0.0, 500.0, 0.0);
+        assert_eq!(fog_height_reference(&world, cam_pos), cam_pos.y);
+    }
+
+    /// With a real static floor collider below the camera, the reference
+    /// must be the floor's height, not the camera's — the entire point of
+    /// this fix. Spawns a collider entity through the same ECS path the
+    /// cell loader uses (`CollisionShape` + `RigidBodyData` +
+    /// `GlobalTransform`, synced via `physics_sync_system`), matching
+    /// `rapier_release_tests.rs`'s established test pattern.
+    #[test]
+    fn returns_floor_height_when_a_static_collider_is_below_the_camera() {
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        world.register::<RapierHandles>();
+
+        let floor = world.spawn();
+        world.insert(floor, CollisionShape::Ball { radius: 16.0 });
+        world.insert(floor, RigidBodyData::STATIC);
+        world.insert(
+            floor,
+            GlobalTransform::new(Vec3::new(0.0, 100.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        physics_sync_system(&world, 0.0);
+        world.resource_mut::<PhysicsWorld>().update_query_pipeline();
+
+        // Camera is far above the floor's centre (Y=100 + radius 16 = 116
+        // top surface); same XZ column so the downward ray hits it.
+        let cam_pos = Vec3::new(0.0, 800.0, 0.0);
+        let reference = fog_height_reference(&world, cam_pos);
+        assert!(
+            (reference - 116.0).abs() < 0.1,
+            "expected the floor's top surface (~116.0), got {reference}"
+        );
+        assert_ne!(reference, cam_pos.y, "must not fall back to camera Y when a floor exists");
+    }
+}
 
 /// Convert an `f32` to a `u32` key whose unsigned ordering matches
 /// IEEE 754 total ordering of the source values across the full real
@@ -352,6 +449,9 @@ pub(crate) struct RenderFrameView {
     /// XCLL cubic-fog falloff exponent (FNV+). `0.0` = no curve. See
     /// `fog_clip` for the activation contract.
     pub fog_power: f32,
+    /// World-space Y anchor for height-fog density (REN-D16-01 / #2225).
+    /// See [`fog_height_reference`] for how this is derived.
+    pub fog_height_reference: f32,
     pub sky: SkyParams,
     /// Camera right vector (world space, unit length). Used by the renderer
     /// to compute the per-frame aperture disk offset for depth of field.
@@ -494,6 +594,9 @@ pub(crate) fn build_render_data(
     } = camera::assemble_camera(world);
 
     fog_volumes::collect_fog_volumes(world, &frustum, cam_pos, gpu_fog_volumes);
+
+    // Height-fog reference altitude — see `fog_height_reference` doc.
+    let fog_height_ref = fog_height_reference(world, cam_pos);
 
     // Static mesh main loop — see `render::static_meshes::collect_static_mesh_draws`.
     let t_static = mark(profile);
@@ -695,6 +798,7 @@ pub(crate) fn build_render_data(
         fog_medium,
         fog_clip,
         fog_power,
+        fog_height_reference: fog_height_ref,
         sky,
         cam_right: cam_right.to_array(),
         cam_up: cam_up.to_array(),

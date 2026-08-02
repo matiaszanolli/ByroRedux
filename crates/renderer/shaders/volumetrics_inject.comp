@@ -69,6 +69,10 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // xyz = minimum corner of the camera-centered local-volume cluster cube;
     // w = reciprocal cluster-cell size.
     vec4 local_volume_grid;
+    // x = height-fog reference altitude (REN-D16-01 / #2225), absolute
+    // world space matching camera_pos/render_origin — ground height near
+    // the camera, or camera Y as a fallback. yzw reserved.
+    vec4 fog_reference;
 } params;
 
 // Phase 2c — scene TLAS. Updated each frame from the host side via
@@ -438,7 +442,10 @@ void main() {
 
     // Procedural fog density — height falloff × 3D value noise around
     // the base scattering coefficient (see `proceduralDensityScale`).
-    float density_scale = proceduralDensityScale(world_pos, params.camera_pos.y);
+    // REN-D16-01 / #2225 — anchor to the ground/floor near the camera
+    // (params.fog_reference.x), not the camera's own eye height, so
+    // density thins with real altitude instead of following the player.
+    float density_scale = proceduralDensityScale(world_pos, params.fog_reference.x);
     float global_extinction = params.camera_pos.w * density_scale;
     vec4 local_medium = sampleLocalMedium(world_pos);
     float extinction_coef = global_extinction + local_medium.a;

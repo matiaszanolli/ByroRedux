@@ -107,6 +107,15 @@ pub struct VolumetricsParams {
     /// xyz = minimum corner of the camera-centered local-volume cluster cube;
     /// w = reciprocal world-space cluster-cell size.
     pub local_volume_grid: [f32; 4],
+    /// x = world-space height-fog reference altitude (REN-D16-01 / #2225)
+    /// — absolute space, matching `camera_pos`/`render_origin`. A downward
+    /// ray-cast ground height near the camera, or the camera's own Y as a
+    /// fallback when no ground is found. Consumed by
+    /// `proceduralDensityScale`'s `refHeight` parameter instead of
+    /// `camera_pos.y`, which made froxel fog density peak at eye level and
+    /// follow the player vertically instead of thinning with real
+    /// altitude. yzw reserved.
+    pub fog_reference: [f32; 4],
 }
 
 /// Maximum authored local volumes uploaded after CPU frustum/distance culling.

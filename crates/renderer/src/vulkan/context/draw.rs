@@ -837,6 +837,13 @@ pub struct FrameInputs<'a> {
     /// XCLL FNV+ cubic-fog falloff exponent. `0.0` disables the curve.
     /// See the `fog_clip` doc for current unconsumed status.
     pub fog_power: f32,
+    /// World-space Y anchor for height-fog density (REN-D16-01 / #2225) —
+    /// a downward ray-cast from the camera against static collision, or
+    /// the camera's own Y as a fallback when no ground is found below.
+    /// Threaded through to `VolumetricsParams`/`CompositeParams` in place
+    /// of the camera's raw Y, which pre-fix made fog density follow the
+    /// player vertically instead of thinning with real altitude.
+    pub fog_height_reference: f32,
     /// Optional UI overlay texture handle.
     pub ui_texture_handle: Option<u32>,
     /// Sky / weather parameters.
@@ -890,6 +897,7 @@ impl VulkanContext {
             fog_coverage,
             fog_clip,
             fog_power,
+            fog_height_reference,
             ui_texture_handle,
             sky_params,
             dof,
@@ -2538,7 +2546,7 @@ impl VulkanContext {
                 ],
                 // #428 — composite-pass fog needs the camera origin to
                 // compute per-pixel world-space distance from a depth
-                // sample. `w` is unused padding.
+                // sample.
                 // #markarth-precision — `inv_view_proj` is the camera-RELATIVE
                 // inverse, so composite reconstructs world in relative space.
                 // It uses that as `length(worldPos - camera_pos)` (fog
@@ -2546,11 +2554,18 @@ impl VulkanContext {
                 // `camera_pos` from the unprojected far point, #1490), all
                 // origin-invariant differences, so supply the camera position
                 // in the SAME relative space.
+                //
+                // REN-D16-01 / #2225 — `w` (previously unused padding) now
+                // carries the height-fog reference altitude in the same
+                // render-origin-relative space, consumed by
+                // `heightFogOpticalDepth`'s `baseHeight` parameter instead of
+                // `camera_pos.y` (which made beyond-grid fog follow the
+                // camera's own eye height vertically instead of the ground).
                 camera_pos: [
                     camera_pos[0] - render_origin.x,
                     camera_pos[1] - render_origin.y,
                     camera_pos[2] - render_origin.z,
-                    0.0,
+                    fog_height_reference - render_origin.y,
                 ],
                 inv_view_proj: inv_vp_arr,
                 underwater,
@@ -2702,6 +2717,7 @@ impl VulkanContext {
                 fog_extinction_per_meter,
                 fog_single_scatter_albedo,
                 fog_coverage,
+                fog_height_reference,
                 fog_volumes,
                 fsr_frame,
                 underwater,

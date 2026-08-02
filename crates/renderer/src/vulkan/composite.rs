@@ -100,11 +100,15 @@ pub struct CompositeParams {
     /// Drifts in the opposite U direction (mirrors layer 1).
     /// `z` = 0.0 disables the layer when no BNAM texture is available.
     pub cloud_params_3: [f32; 4],
-    /// `xyz` = camera world position; `w` unused. Needed for per-pixel
-    /// world-space fog distance in composite (#428). Before this field
-    /// landed, fog was computed in `triangle.frag` and baked into the
-    /// G-buffer indirect-light attachment — which leaked into SVGF
+    /// `xyz` = camera world position, render-origin-relative. Needed for
+    /// per-pixel world-space fog distance in composite (#428). Before this
+    /// field landed, fog was computed in `triangle.frag` and baked into
+    /// the G-buffer indirect-light attachment — which leaked into SVGF
     /// history and produced multi-frame ghosting on fog transitions.
+    /// `w` = height-fog reference altitude (REN-D16-01 / #2225), same
+    /// relative space as `xyz` — a downward ray-cast ground height near
+    /// the camera, or the camera's own Y as a fallback. Consumed by
+    /// `heightFogOpticalDepth`'s `baseHeight` parameter.
     pub camera_pos: [f32; 4],
     /// Inverse view-projection matrix for reconstructing world-space ray direction
     /// (and, with `camera_pos`, world-space fragment positions for fog) from

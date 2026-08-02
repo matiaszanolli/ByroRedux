@@ -743,6 +743,7 @@ impl App {
                 fog_coverage: frame.fog_medium.coverage,
                 fog_clip: frame.fog_clip,
                 fog_power: frame.fog_power,
+                fog_height_reference: frame.fog_height_reference,
                 ui_texture_handle: ui_tex,
                 sky_params: &frame.sky,
                 dof,

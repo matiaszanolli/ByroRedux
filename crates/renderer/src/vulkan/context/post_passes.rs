@@ -154,6 +154,7 @@ impl VulkanContext {
         fog_extinction_per_meter: f32,
         fog_single_scatter_albedo: f32,
         fog_coverage: f32,
+        fog_height_reference: f32,
         fog_volumes: &[super::super::volumetrics::GpuFogVolume],
         fsr_frame: Option<FsrFrameParameters>,
         underwater: [f32; 4],
@@ -461,6 +462,7 @@ impl VulkanContext {
                                 // Filled by `dispatch` after it builds the
                                 // camera-centered local-volume cluster grid.
                                 local_volume_grid: [0.0; 4],
+                                fog_reference: [fog_height_reference, 0.0, 0.0, 0.0],
                             };
                             if let Some(ref mut timers) = self.gpu_timers {
                                 timers.cmd_volumetrics_start(&self.device, cmd, frame);
