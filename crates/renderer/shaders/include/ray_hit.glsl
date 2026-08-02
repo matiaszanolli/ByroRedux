@@ -32,26 +32,73 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
     return w * uv0 + barycentrics.x * uv1 + barycentrics.y * uv2;
 }
 
-// World-space geometric (face) normal of a ray-query hit triangle, from
-// its vertex POSITIONS (stride offset 0) transformed by the instance
-// model matrix. Used by two-surface glass refraction to refract the ray a
-// second time as it exits the glass back face.
-vec3 getHitTriNormal(uint instanceIdx, uint primitiveIdx) {
+// World-space positions of a ray-query hit triangle's three vertices.
+//
+// REN-2026-07-28-02 / #2219 — for a skinned instance (boneOffset != 0)
+// the BLAS follows the DEFORMED geometry, but before this fix every
+// caller reconstructed positions from the BIND-POSE global vertex SSBO
+// transformed by the entity's root `model` matrix — correct topology,
+// wrong pose. `skin_vertices.comp` writes already-deformed, already-
+// absolute-world positions (position-only, SKIN_OUTPUT_STRIDE_FLOATS
+// floats/vertex) to a per-entity buffer whose GPU address is threaded
+// through `GpuInstance.skinnedVertexAddress`; dereference that instead
+// of the bind-pose path when it's set, and skip the model-matrix
+// multiply (the deformed positions are already absolute-world — same
+// convention `tlas_instance_transform` already uses to emit an identity
+// TLAS transform for skinned instances). `i0`/`i1`/`i2` from the shared
+// global index buffer are already mesh-local (0-based) — the same
+// numbering `skin_vertices.comp`'s output buffer uses — so no offset
+// subtraction is needed, only no `+ vOff`.
+//
+// Residual limitation: this fixes the GEOMETRIC (face) normal/tangent
+// reconstruction, which only needs positions. The INTERPOLATED smooth
+// normal/tangent in `getRayHitTangentFrame` still reads authored
+// per-vertex attributes from the bind-pose buffer — `skin_vertices.comp`
+// writes position only, so a deformed smooth normal/tangent isn't
+// available without either widening that output buffer or re-deriving
+// the skin transform per-vertex from the bone palette in this shader,
+// neither of which this fix attempts.
+void getHitTriWorldPositions(
+    uint instanceIdx,
+    uint primitiveIdx,
+    out vec3 w0,
+    out vec3 w1,
+    out vec3 w2
+) {
     GpuInstance hi = instances[instanceIdx];
-    uint vOff = hi.vertexOffset;
     uint iOff = hi.indexOffset;
     uint i0 = indexData[iOff + primitiveIdx * 3 + 0];
     uint i1 = indexData[iOff + primitiveIdx * 3 + 1];
     uint i2 = indexData[iOff + primitiveIdx * 3 + 2];
+    if (hi.boneOffset != 0u && hi.skinnedVertexAddress != 0ul) {
+        SkinnedVertexRef ref = SkinnedVertexRef(hi.skinnedVertexAddress);
+        uint p0 = i0 * SKIN_OUTPUT_STRIDE_FLOATS;
+        uint p1 = i1 * SKIN_OUTPUT_STRIDE_FLOATS;
+        uint p2 = i2 * SKIN_OUTPUT_STRIDE_FLOATS;
+        w0 = vec3(ref.data[p0], ref.data[p0 + 1], ref.data[p0 + 2]);
+        w1 = vec3(ref.data[p1], ref.data[p1 + 1], ref.data[p1 + 2]);
+        w2 = vec3(ref.data[p2], ref.data[p2 + 1], ref.data[p2 + 2]);
+        return;
+    }
+    uint vOff = hi.vertexOffset;
     uint p0 = (vOff + i0) * VERTEX_STRIDE_FLOATS;
     uint p1 = (vOff + i1) * VERTEX_STRIDE_FLOATS;
     uint p2 = (vOff + i2) * VERTEX_STRIDE_FLOATS;
     vec3 v0 = vec3(vertexData[p0], vertexData[p0 + 1], vertexData[p0 + 2]);
     vec3 v1 = vec3(vertexData[p1], vertexData[p1 + 1], vertexData[p1 + 2]);
     vec3 v2 = vec3(vertexData[p2], vertexData[p2 + 1], vertexData[p2 + 2]);
-    vec3 w0 = (hi.model * vec4(v0, 1.0)).xyz;
-    vec3 w1 = (hi.model * vec4(v1, 1.0)).xyz;
-    vec3 w2 = (hi.model * vec4(v2, 1.0)).xyz;
+    w0 = (hi.model * vec4(v0, 1.0)).xyz;
+    w1 = (hi.model * vec4(v1, 1.0)).xyz;
+    w2 = (hi.model * vec4(v2, 1.0)).xyz;
+}
+
+// World-space geometric (face) normal of a ray-query hit triangle. Used by
+// two-surface glass refraction to refract the ray a second time as it
+// exits the glass back face, and by `getRayHitTangentFrame`'s flat-shading
+// and degenerate-normal fallbacks.
+vec3 getHitTriNormal(uint instanceIdx, uint primitiveIdx) {
+    vec3 w0, w1, w2;
+    getHitTriWorldPositions(instanceIdx, primitiveIdx, w0, w1, w2);
     return normalize(cross(w1 - w0, w2 - w0));
 }
 
@@ -144,12 +191,11 @@ bool getRayHitTangentFrame(
     float tangentSign = localTangent.w < 0.0 ? -1.0 : 1.0;
 
     if (dot(worldT, worldT) < 1e-8) {
-        vec3 p0 = vec3(vertexData[b0], vertexData[b0 + 1], vertexData[b0 + 2]);
-        vec3 p1 = vec3(vertexData[b1], vertexData[b1 + 1], vertexData[b1 + 2]);
-        vec3 p2 = vec3(vertexData[b2], vertexData[b2 + 1], vertexData[b2 + 2]);
-        vec3 wp0 = (hitInst.model * vec4(p0, 1.0)).xyz;
-        vec3 wp1 = (hitInst.model * vec4(p1, 1.0)).xyz;
-        vec3 wp2 = (hitInst.model * vec4(p2, 1.0)).xyz;
+        // REN-2026-07-28-02 / #2219 — deformed positions for skinned
+        // instances, matching getHitTriNormal above (UVs are pose-
+        // invariant, so they stay on the bind-pose read below).
+        vec3 wp0, wp1, wp2;
+        getHitTriWorldPositions(instanceIdx, primitiveIdx, wp0, wp1, wp2);
         vec2 uv0 = transformRayHitUV(
             mat,
             vec2(vertexData[b0 + VERTEX_UV_OFFSET_FLOATS],

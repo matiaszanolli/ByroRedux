@@ -1,4 +1,9 @@
 #version 450
+// REN-2026-07-28-02 / #2219 — GpuInstance grew a uint64_t member; this
+// mirror never dereferences it, but the type must be recognized to keep
+// the struct byte-for-byte identical to the other 4 declaration sites.
+#extension GL_EXT_buffer_reference : require
+#extension GL_ARB_gpu_shader_int64 : require
 
 // UI overlay vertex shader — passthrough to clip space, no transforms.
 // Vertices are already in NDC ([-1,1] range).
@@ -26,6 +31,8 @@ struct GpuInstance {
     float avgAlbedoG;      // offset 100
     float avgAlbedoB;      // offset 104
     uint surfaceId;        // offset 108 — stable temporal-shadow identity
+    uint64_t skinnedVertexAddress; // offset 112 — #2219, unused here
+    uvec2 _reserved;               // offset 120 -> total 128
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

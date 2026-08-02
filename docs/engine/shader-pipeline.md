@@ -170,7 +170,7 @@ After `vkCmdEndRenderPass` all attachments transition to `SHADER_READ_ONLY_OPTIM
 | 304 | 16 | `dof_params` | x = aperture half-radius; y = focus distance; z = `light_atten_knee` (ambient-cull falloff knee); w = `camera_static` flag (1.0 = parked, gates GI reprojection) |
 | 320 | 16 | `render_origin` | xyz = camera-relative render origin (#markarth-precision); **w = FSR one-frame history-reset flag** (1.0 = reset pending), read by `triangle.frag`'s FSR-temporal debug view (#2164). Not a free slot — same trap as `VolumetricsParams.render_origin.w` (#1928) |
 
-### `GpuInstance` — 112 bytes, SSBO (Set 1, Binding 4)
+### `GpuInstance` — 128 bytes, SSBO (Set 1, Binding 4)
 
 One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 
@@ -189,6 +189,8 @@ One entry per draw call (up to `MAX_INSTANCES` = 262 144).
 | 100 | 4 | `avg_albedo_g` | Pre-computed average albedo G |
 | 104 | 4 | `avg_albedo_b` | Pre-computed average albedo B |
 | 108 | 4 | `surface_id` | Stable ECS-derived surface identity — written to the Mesh ID attachment by opaque draws so TAA/SVGF history survives draw-order changes |
+| 112 | 8 | `skinned_vertex_address` | GPU address (`uint64_t`) of this entity's skinned-vertex output buffer, `0` for rigid instances — #2219, dereferenced via `GL_EXT_buffer_reference` for deformed-pose RT hit-normal reconstruction |
+| 120 | 8 | `_reserved` | Padding to a 16-byte-aligned std430 stride — no live data |
 
 **Instance flags** (`flags` field, offset 84):
 

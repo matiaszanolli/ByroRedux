@@ -40,6 +40,23 @@ struct GpuInstance {
     float avgAlbedoG;      // offset 100
     float avgAlbedoB;      // offset 104
     uint surfaceId;        // offset 108 — stable temporal-shadow identity
+    // REN-2026-07-28-02 / #2219 — GPU address of this entity's skinned-
+    // vertex output buffer (position-only, SKIN_OUTPUT_STRIDE_FLOATS
+    // floats/vertex, already absolute world space). `0` for rigid
+    // instances (boneOffset == 0). Dereferenced via the SkinnedVertexRef
+    // buffer_reference type below by ray_hit.glsl's hit-normal helpers
+    // instead of the bind-pose vertexData SSBO, which otherwise produces
+    // a bind-pose-shaped normal at the entity's root transform for every
+    // animated actor's secondary rays (reflection/shadow/refraction).
+    uint64_t skinnedVertexAddress; // offset 112, 8 bytes
+    uvec2 _reserved;               // offset 120, 8 bytes -> total 128
+};
+
+// REN-2026-07-28-02 / #2219 — buffer_reference handle for
+// `GpuInstance.skinnedVertexAddress`. Requires `GL_EXT_buffer_reference`
+// enabled in the including shader (triangle.frag / water.frag).
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer SkinnedVertexRef {
+    float data[];
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

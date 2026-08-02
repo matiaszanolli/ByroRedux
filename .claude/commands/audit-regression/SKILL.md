@@ -132,7 +132,7 @@ run regardless of Step 1's window. A FAIL here is still reported as a regression
   attachment — verify the array stays gone, not "intact".
 - `#[repr(C)]` GPU structs hold their size pins in
   `crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs`:
-  `GpuInstance` = 112 B (`gpu_instance_is_112_bytes_std430_compatible`) and
+  `GpuInstance` = 128 B (`gpu_instance_is_128_bytes_std430_compatible`) and
   `GpuCamera` = 336 B (`gpu_camera_is_336_bytes`). Run them:
   `cargo test -p byroredux-renderer gpu_`.
 

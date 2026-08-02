@@ -1,5 +1,10 @@
 #version 460
 #extension GL_EXT_nonuniform_qualifier : require
+// REN-2026-07-28-02 / #2219 — GpuInstance grew a uint64_t member; this
+// mirror never dereferences it, but the type must be recognized to keep
+// the struct byte-for-byte identical to the other 4 declaration sites.
+#extension GL_EXT_buffer_reference : require
+#extension GL_ARB_gpu_shader_int64 : require
 
 // ── Water surface vertex shader ───────────────────────────────────────
 //
@@ -55,6 +60,8 @@ struct GpuInstance {
     float avgAlbedoG;
     float avgAlbedoB;
     uint surfaceId;
+    uint64_t skinnedVertexAddress; // offset 112 — #2219, unused here
+    uvec2 _reserved;               // offset 120 -> total 128
 };
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {

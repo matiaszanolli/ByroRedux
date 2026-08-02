@@ -145,6 +145,50 @@ fn uses_rigid_motion_history(bone_offset: u32, alpha_blend: bool) -> bool {
     bone_offset == 0 && !alpha_blend
 }
 
+/// Resolve the `GpuInstance.skinned_vertex_address` value for a draw
+/// (REN-2026-07-28-02 / #2219). Pure decision function, extracted from the
+/// live `vkGetBufferDeviceAddress` call site so the branch logic is
+/// unit-testable without a device: rigid draws (`bone_offset == 0`) always
+/// get `0` regardless of `slot_address` (defensive — a stray populated
+/// slot must never leak into a rigid instance's field), and a skinned draw
+/// with no registered `SkinSlot` yet (first-sight frame, or a
+/// pool-exhaustion fallback) also gets `0`, falling back to the bind-pose
+/// hit-normal path `ray_hit.glsl` already had before this fix.
+#[inline]
+fn skinned_vertex_address_for_draw(
+    bone_offset: u32,
+    slot_address: Option<vk::DeviceAddress>,
+) -> vk::DeviceAddress {
+    if bone_offset == 0 {
+        return 0;
+    }
+    slot_address.unwrap_or(0)
+}
+
+#[cfg(test)]
+mod skinned_vertex_address_tests {
+    use super::skinned_vertex_address_for_draw;
+
+    #[test]
+    fn rigid_draw_never_carries_an_address() {
+        assert_eq!(skinned_vertex_address_for_draw(0, Some(0xDEAD_BEEF)), 0);
+        assert_eq!(skinned_vertex_address_for_draw(0, None), 0);
+    }
+
+    #[test]
+    fn skinned_draw_with_a_slot_carries_its_address() {
+        assert_eq!(
+            skinned_vertex_address_for_draw(64, Some(0xDEAD_BEEF)),
+            0xDEAD_BEEF
+        );
+    }
+
+    #[test]
+    fn skinned_draw_without_a_slot_yet_falls_back_to_zero() {
+        assert_eq!(skinned_vertex_address_for_draw(64, None), 0);
+    }
+}
+
 /// TAA sub-pixel jitter via Halton(2,3) sequence, in NDC. Each frame shifts
 /// the projection by a different sub-pixel offset so temporal blending
 /// reconstructs a super-sampled result; the vertex shader applies it AFTER
@@ -2101,6 +2145,39 @@ impl VulkanContext {
                 ],
                 None => draw_cmd.avg_albedo,
             };
+            // REN-2026-07-28-02 / #2219 — skinned instances' secondary-ray
+            // hit-normal reconstruction needs the deformed (post-skin)
+            // vertex positions, not the bind-pose global vertex SSBO
+            // `getHitTriNormal` otherwise reads unconditionally. Look up
+            // this entity's SkinSlot (populated earlier this frame by the
+            // skin-dispatch chain) and query its output buffer's GPU
+            // address; `ray_hit.glsl` dereferences it via
+            // GL_EXT_buffer_reference for `boneOffset != 0` instances
+            // instead of the bind-pose path. Zero for rigid draws and for
+            // skinned draws with no slot yet (first-sight frame, or a
+            // pool-exhaustion fallback) — the shader's own `boneOffset !=
+            // 0` branch means a stray zero address is never dereferenced
+            // by a rigid draw, and a skinned draw with no slot yet already
+            // has no primed skinned BLAS this frame either, so falling
+            // back to the bind-pose hit-normal path is consistent with
+            // what the rest of the RT pipeline does for that draw.
+            let slot_address = (draw_cmd.bone_offset != 0)
+                .then(|| self.skin_slots.get(&draw_cmd.entity_id))
+                .flatten()
+                .map(|slot| {
+                    // SAFETY: `slot.output_buffer.buffer` is a live
+                    // DEVICE_LOCAL buffer created with
+                    // SHADER_DEVICE_ADDRESS usage (see
+                    // `SkinComputePipeline::create_slot`).
+                    unsafe {
+                        self.device.get_buffer_device_address(
+                            &vk::BufferDeviceAddressInfo::default()
+                                .buffer(slot.output_buffer.buffer),
+                        )
+                    }
+                });
+            let skinned_vertex_address =
+                skinned_vertex_address_for_draw(draw_cmd.bone_offset, slot_address);
             gpu_instances.push(GpuInstance {
                 // #markarth-precision — rebase the model translation by the
                 // camera-relative render origin so `model * pos` stays near 0
@@ -2127,6 +2204,8 @@ impl VulkanContext {
                 // Stable across per-frame sort/batch changes. Zero remains
                 // reserved for synthetic/default instances.
                 surface_id: draw_cmd.entity_id.wrapping_add(1),
+                skinned_vertex_address,
+                _reserved: [0; 2],
             });
 
             // Frustum-culled draws still need an SSBO entry so RT hit

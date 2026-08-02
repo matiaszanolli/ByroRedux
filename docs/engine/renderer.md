@@ -497,8 +497,9 @@ transform, NiMaterialProperty diffuse/ambient — was duplicated onto every
 per-instance struct, so a cell that places one material 10–30 times carried
 the same ~35 fields that many times. R1 factored them into a deduped
 **`GpuMaterial`** (300 bytes) and a per-frame **`MaterialTable`** SSBO
-(binding 13, `MAX_MATERIALS = 16384`). `GpuInstance` (112 bytes) now
-references its material via `material_id: u32`, and identical materials
+(binding 13, `MAX_MATERIALS = 16384`). `GpuInstance` (128 bytes as of
+#2219; 112 bytes at R1) references its material via `material_id: u32`,
+and identical materials
 collapse to the same id via `MaterialTable::intern`. `triangle.frag` reads
 `materials[inst.materialId].foo` for every per-material field.
 
@@ -529,12 +530,14 @@ material-level) stay on `GpuInstance.flags`:
 `INSTANCE_FLAG_NON_UNIFORM_SCALE`, `_ALPHA_BLEND`, `_CAUSTIC_SOURCE`,
 `_TERRAIN_SPLAT`, `_PRESKINNED`, `_FLAT_SHADING`.
 
-> **Shader Struct Sync (CRITICAL).** `GpuInstance` is duplicated across
-> four GLSL copies (`triangle.vert`, `triangle.frag`, `water.vert`,
-> `ui.vert`); `GpuCamera` across `triangle.vert/frag`, `water.vert/frag`,
-> `cluster_cull.comp`, `caustic_splat.comp`. Post-R1 the contract narrowed
-> so only `triangle.frag` mirrors the full `GpuMaterial`. The
-> `gpu_instance_is_112_bytes_std430_compatible`, `gpu_camera_is_336_bytes`
+> **Shader Struct Sync (CRITICAL).** `GpuInstance` is declared at five GLSL
+> sites (`include/bindings.glsl` — shared by `triangle.frag` and
+> `water.frag` — plus standalone hand-mirrored copies in `triangle.vert`,
+> `ui.vert`, `caustic_splat.comp`, and `water.vert`); `GpuCamera` across
+> `triangle.vert/frag`, `water.vert/frag`, `cluster_cull.comp`,
+> `caustic_splat.comp`. Post-R1 the contract narrowed so only
+> `triangle.frag` mirrors the full `GpuMaterial`. The
+> `gpu_instance_is_128_bytes_std430_compatible`, `gpu_camera_is_336_bytes`
 > (the live 336-byte `GpuCamera` layout), and `GpuMaterial`-size tests pin
 > the byte layout; the `feedback_shader_struct_sync` note records the update
 > protocol.

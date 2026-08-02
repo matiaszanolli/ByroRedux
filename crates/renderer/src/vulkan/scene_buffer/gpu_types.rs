@@ -58,7 +58,7 @@ pub type GpuPreviousModel = [[f32; 4]; 4];
 /// declaration — when you add a field here, update the expected suffix
 /// in the assertion and rename the sentinel to match the new last field.
 ///
-/// Layout: 112 bytes per instance, 16-byte aligned (7×16). R1 Phase 6
+/// Layout: 128 bytes per instance, 16-byte aligned (8×16). R1 Phase 6
 /// collapsed the per-material fields (texture indices, PBR scalars,
 /// alpha state, Skyrim+ shader-variant payloads, BSEffect falloff,
 /// BGSM UV transform, NiMaterialProperty diffuse/ambient, ~30 fields
@@ -68,7 +68,9 @@ pub type GpuPreviousModel = [[f32; 4]; 4];
 /// strictly per-DRAW data: the model matrix, mesh refs, the
 /// caustic-source `avg_albedo` (still consumed by `caustic_splat.comp`
 /// off its own descriptor set), `flags` (mixed per-instance bits +
-/// terrain tile slot), and the `material_id` indirection.
+/// terrain tile slot), the `material_id` indirection, and (#2219) the
+/// skinned-vertex-buffer GPU address for deformed-pose RT hit-normal
+/// reconstruction.
 ///
 /// **Layout history** (every step preserves earlier offsets):
 ///   - 192 → 224 (#492, UV + material_alpha)
@@ -77,6 +79,7 @@ pub type GpuPreviousModel = [[f32; 4]; 4];
 ///   - 352 → 384 (#620, BSEffectShaderProperty falloff cone)
 ///   - 384 → 400 (R1 Phase 3, `material_id` slot)
 ///   - 400 → 112 (R1 Phase 6, drop the migrated per-material fields)
+///   - 112 → 128 (#2219, `skinned_vertex_address` + reserved padding)
 ///
 /// The `size_of::<GpuInstance>() == 112` test below asserts the
 /// invariant; shader-side `GpuInstance` must match.
@@ -120,8 +123,10 @@ pub struct GpuInstance {
     /// inflate this struct from 112 B (now) to 400 B.
     pub material_id: u32, // 4 B, offset 88
     /// Per-draw optical IOR. This occupies the former padding slot so the
-    /// 112-byte std430 layout stays unchanged; the caustic pass consumes it
-    /// without needing a duplicate material-table descriptor.
+    /// std430 layout size didn't change when this field was added (112 B
+    /// at the time; #2219 later grew the struct to 128 B for an unrelated
+    /// reason — see `skinned_vertex_address`); the caustic pass consumes
+    /// it without needing a duplicate material-table descriptor.
     ///
     /// Named `_pad_id0` until #2164/L-3 — live data wearing a padding
     /// name at 4 of its 5 mirror sites, which is how a "free slot at
@@ -142,8 +147,23 @@ pub struct GpuInstance {
     /// Stable draw identity used by temporal direct-shadow reservoirs.
     /// Unlike the per-frame instance-buffer index, this follows the ECS
     /// entity when depth sorting or animated actors reorder draw commands.
-    pub surface_id: u32, // 4 B, offset 108 → total 112
-                              // Struct is 112 bytes (7×16), 16-byte aligned for std430.
+    pub surface_id: u32, // 4 B, offset 108
+    /// GPU virtual address of this entity's skinned-vertex output buffer
+    /// (REN-2026-07-28-02 / #2219), queried via `vkGetBufferDeviceAddress`
+    /// on `SkinSlot::output_buffer` at slot-allocation time. `0` for rigid
+    /// instances (`bone_offset == 0`). `ray_hit.glsl`'s hit-normal helpers
+    /// dereference this via `GL_EXT_buffer_reference` for skinned instances
+    /// instead of reading the bind-pose global vertex SSBO, which is
+    /// already-absolute-world position data with no per-vertex normal or
+    /// tangent to reconstruct from except the raw triangle positions
+    /// themselves — exactly what the bind-pose path already does, just
+    /// pointed at the deformed buffer and skipping the (already-identity)
+    /// model-matrix multiply.
+    pub skinned_vertex_address: u64, // 8 B, offset 112
+    /// Reserved — pads the struct back to a 16-byte-aligned std430 stride
+    /// (120 → 128 after `skinned_vertex_address`). No live data.
+    pub _reserved: [u32; 2], // 8 B, offset 120 → total 128
+                              // Struct is 128 bytes (8×16), 16-byte aligned for std430.
 }
 
 impl Default for GpuInstance {
@@ -174,6 +194,8 @@ impl Default for GpuInstance {
             avg_albedo_g: 0.5,
             avg_albedo_b: 0.5,
             surface_id: 0,
+            skinned_vertex_address: 0,
+            _reserved: [0; 2],
         }
     }
 }

@@ -15,7 +15,7 @@ Constants in [`scene_buffer/constants.rs`](../../crates/renderer/src/vulkan/scen
 | Buffer | Constant | Entries | Entry size | Per-frame | × 2 FIF |
 |---|---|---|---|---|---|
 | Light SSBO | `MAX_LIGHTS` = 512 | 512 | 64 B | 32 KB | **64 KB** |
-| Instance SSBO | `MAX_INSTANCES` = 262 144 | 262 144 | 112 B | 29.4 MB | **58.8 MB** |
+| Instance SSBO | `MAX_INSTANCES` = 262 144 | 262 144 | 128 B (#2219) | 33.6 MB | **67.1 MB** |
 | Previous-model SSBO (`33d9a468`) | `MAX_INSTANCES` = 262 144 | 262 144 | 64 B (`mat4`) | 16.8 MB | **33.6 MB** |
 | Indirect draw SSBO | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
 | Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 348 B | 5.7 MB | **11.4 MB** |
@@ -32,7 +32,7 @@ scratch (`1 366 × MAX_BONES_PER_MESH(144) × 64 B ≈ 12.6 MB`, M29.6). Total
 [`scene_buffer/buffers.rs`](../../crates/renderer/src/vulkan/scene_buffer/buffers.rs)
 `allocate_scene_render_buffers`.
 
-**Total resident scene buffers:** ≈ **215 MB** across all copies.
+**Total resident scene buffers:** ≈ **223 MB** across all copies.
 
 Exceeding `MAX_INSTANCES` logs a one-shot `warn!` and clamps to
 `MAX_INSTANCES` (#956/#992) — it is no longer a `debug_assert`. Exceeding
@@ -392,7 +392,7 @@ the fence slot is complete before the tick runs (#418).
 | Subsystem | Typical | Peak |
 |---|---|---|
 | G-buffer (8 attachments × 2 FIF, incl. FSR reactive/transparency masks) | ~23 MB | ~47 MB (4K) |
-| Scene SSBOs | ~215 MB | ~215 MB |
+| Scene SSBOs | ~223 MB | ~223 MB |
 | ReSTIR reservoirs (2 FIF) | ~133 MB (1080p) | ~531 MB (4K) |
 | SVGF history (2 FIF) | ~50 MB (1080p) | ~199 MB (4K) |
 | TAA history (2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |

@@ -23,17 +23,19 @@ use std::mem::offset_of;
 /// update protocol (grep for `struct GpuInstance` in the shaders tree
 /// before touching this struct).
 #[test]
-fn gpu_instance_is_112_bytes_std430_compatible() {
+fn gpu_instance_is_128_bytes_std430_compatible() {
     // R1 Phase 6 collapsed the per-material fields onto the
     // separate `MaterialTable` SSBO. What's left here is
     // strictly per-DRAW: model (64 B) + 4 mesh refs +
     // bone_offset + flags + material_id + avg_albedo (kept
     // for caustic compute reads off its own descriptor set)
-    // packed into 7 vec4 slots = 112 B.
+    // packed into 7 vec4 slots = 112 B, plus one more vec4 slot
+    // (8 B `skinned_vertex_address` + 8 B `_reserved`) added by
+    // #2219 for skinned-instance RT hit-normal reconstruction = 128 B.
     assert_eq!(
         size_of::<GpuInstance>(),
-        112,
-        "GpuInstance must stay 112 B to match std430 shader layout"
+        128,
+        "GpuInstance must stay 128 B to match std430 shader layout"
     );
 }
 
@@ -82,6 +84,8 @@ fn gpu_instance_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuInstance, avg_albedo_g), 100);
     assert_eq!(offset_of!(GpuInstance, avg_albedo_b), 104);
     assert_eq!(offset_of!(GpuInstance, surface_id), 108);
+    assert_eq!(offset_of!(GpuInstance, skinned_vertex_address), 112);
+    assert_eq!(offset_of!(GpuInstance, _reserved), 120);
 }
 
 /// R1 Phase 6 sentinel — list of fields that USED to live on
@@ -252,6 +256,10 @@ fn every_shader_struct_gpu_instance_names_material_kind_slot() {
             // Stable temporal-shadow identity. Must occupy the former
             // avg-albedo padding lane in every mirror.
             "surfaceId",
+            // #2219 — skinned-instance deformed-vertex buffer address.
+            // Every mirror must declare it (even the 4 that never
+            // dereference it) so the std430 stride stays byte-identical.
+            "skinnedVertexAddress",
         ] {
             assert!(
                 src.contains(needle),
