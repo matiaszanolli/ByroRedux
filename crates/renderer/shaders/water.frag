@@ -666,7 +666,16 @@ void main() {
             // to-sun direction. refract() returns vec3(0) on total-internal-
             // reflection, which can't happen for light entering the denser
             // medium from above — but length-gate anyway in case grazing.
-            vec3 refractDir = refract(-sunDir, Nsurface, 1.0 / 1.33);
+            //
+            // #REN-D15-01 — refract through the wave-perturbed normal, not
+            // the flat plane normal. Nsurface is constant (0,1,0) for every
+            // fragment of a flat water plane, so refracting through it
+            // produces a rigid, structureless translation of the water
+            // plane's screen footprint instead of a focused caustic — the
+            // same Nperturbed already used by the primary refraction ray
+            // above (line ~547) is required to focus light into a caustic
+            // pattern.
+            vec3 refractDir = refract(-sunDir, Nperturbed, 1.0 / 1.33);
             if (length(refractDir) > 1e-4) {
                 // 3. Find floor via TLAS ray (single bounce).
                 //
@@ -714,7 +723,11 @@ void main() {
                             // Travel falloff matches caustic_splat
                             // (1 / (1 + t²·k)) — caustics fade with
                             // depth as the refracted column spreads.
-                            float NdotSun = max(dot(Nsurface, sunDir), 0.0);
+                            // Matches the refraction normal above (Nperturbed) —
+                            // using the flat Nsurface here would weight the
+                            // caustic by the plane's macro facing instead of
+                            // the same wave-perturbed geometry that focused it.
+                            float NdotSun = max(dot(Nperturbed, sunDir), 0.0);
                             float travelFall = 1.0 / (1.0 + floorT * floorT * 1e-4);
                             float contrib = sunDirection.w * sunVisibility
                                 * NdotSun * travelFall;
