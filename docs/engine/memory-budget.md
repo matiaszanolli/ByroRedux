@@ -167,14 +167,32 @@ Quality-preset internal-resolution scale factor and the four-preset (Quality/
 Balanced/Performance/Ultra Performance) breakdown are tracked in ROADMAP.md's
 Session 60 closeout, not duplicated here.
 
-### Volumetrics (M55) — the one exception: NOT resolution-scaled
+### Volumetrics (M55) — resolution-scaled since Session 62
 
-[`volumetrics.rs`](../../crates/renderer/src/vulkan/volumetrics.rs) —
-unlike every other entry in this section, the froxel grid is a
-**fixed** 160×90×128 RGBA16F volume regardless of swapchain
-resolution (screen-space XY, but a constant grid size, not
-per-pixel). Two volumes (injection + integrated) × 2 FIF × 14 MiB
-each ≈ **56 MB fixed**, at any resolution.
+[`volumetrics.rs`](../../crates/renderer/src/vulkan/volumetrics.rs) — like
+every other entry in this section, the froxel grid scales with the
+**render** resolution (`froxel_extent`, deliberately downstream of the FSR
+preset query — using the final output resolution here would silently
+overspend whenever FSR Quality/Balanced/Performance is active). One froxel
+column per `froxel_xy_divisor` (default 12) render pixels in X/Y,
+`froxel_z_slices` (default 64) depth slices, RGBA16F (8 B/froxel). Two
+volumes per frame (lighting + integrated) × 2 FIF.
+
+Formula: `ceil(width / 12) × ceil(height / 12) × 64 froxels × 8 B × 2 volumes × 2 FIF`
+
+| Resolution | Grid (W×H×64) | Total (2 volumes, 2 FIF) |
+|---|---|---|
+| 1920×1080 | 160×90×64 | ~29.5 MB |
+| 2560×1440 | 214×120×64 | ~52.6 MB |
+| 3840×2160 | 320×180×64 | ~118.0 MB |
+
+Prior to Session 62 (2026-07-26→2026-08-01) the grid was a **fixed**
+160×90×128 volume regardless of resolution (≈59.0 MB total, the flat
+`56 MB` figure this section previously documented at every resolution —
+that older figure used a binary-MiB basis rather than this doc's
+decimal-MB convention elsewhere) — understating peak 4K VRAM by almost
+exactly 2× (118.0 MB vs. 59.0 MB) until this table was recomputed against
+the current formula.
 
 ---
 
@@ -381,14 +399,14 @@ the fence slot is complete before the tick runs (#418).
 | Glass + water caustics (2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |
 | SSAO (2 FIF) | ~4 MB (1080p) | ~17 MB (4K) |
 | Bloom pyramid | ~4 MB (1080p) | ~14 MB (4K) |
-| Volumetrics froxel grid (fixed) | ~56 MB | ~56 MB |
+| Volumetrics froxel grid (2 volumes, 2 FIF) | ~29.5 MB (1080p) | ~118 MB (4K) |
 | FSR 3.1 upscaler output (2 FIF, output resolution) | ~33 MB (1080p) | ~133 MB (4K) — SDK working memory not separately tracked |
 | Vertex / index pools | ~208 MB | ~1.66 GB cap |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~1.53 GB** | **< 4 GB target** |
+| **Estimated total** | **~1.50 GB** | **< 4 GB target** |
 
 The 6 GB RT-minimum and 4 GB budget ceiling are not enforced by code;
 they are design targets. The RTX 4070 Ti (12 GB) has headroom for all
