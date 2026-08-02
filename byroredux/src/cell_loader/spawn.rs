@@ -571,6 +571,13 @@ fn spawn_nif_lights(
                 // its pre-authored-shadow behavior explicitly instead of
                 // letting raw `flags == 0` masquerade as an unshadowed LIGH.
                 flags: byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+                // #2205 — kind/direction/outer_angle were resolved at NIF
+                // import (`imported_light_from_base`) and previously had
+                // nowhere to go; carry them through to the canonical
+                // component instead of dropping them here.
+                kind: light.kind,
+                direction: light.direction,
+                outer_angle: light.outer_angle,
                 ..Default::default()
             },
         );

@@ -12,7 +12,7 @@
 //! translation in `merge_external_material`; see
 //! `feedback_format_translation.md`.
 
-use byroredux_core::ecs::{GlobalTransform, LightSource, World, LIGHT_FLAG_SHADOW_MASK};
+use byroredux_core::ecs::{GlobalTransform, LightKind, LightSource, World, LIGHT_FLAG_SHADOW_MASK};
 use byroredux_renderer::shader_constants::{SHADOW_POLICY_FULL, SHADOW_POLICY_STRUCTURE};
 
 use crate::components::{CellLightingRes, SkyParamsRes};
@@ -187,6 +187,25 @@ pub(super) fn collect_lights(
                 } else {
                     FALLOFF_EXPONENT_DEFAULT
                 };
+                // #2205 — `GpuLight.color_type.w` type code (see its doc
+                // comment: 0=point, 1=spot, 2=directional). `Ambient` has
+                // no radiating representation in that contract and falls
+                // back to the point code — a pre-existing gap tracked
+                // separately as NIFAL-D3-02, not this fix's concern.
+                let light_type = match light.kind {
+                    LightKind::Point | LightKind::Ambient => 0.0,
+                    LightKind::Spot => 1.0,
+                    LightKind::Directional => 2.0,
+                };
+                // `direction_angle.w` is the spot outer-angle COSINE, not
+                // the authored radians — the shader never sees a raw
+                // angle (same translation-layer convention as `radius` /
+                // `falloff_exponent` above).
+                let outer_angle_cos = if light.kind == LightKind::Spot {
+                    light.outer_angle.cos()
+                } else {
+                    0.0
+                };
                 gpu_lights.push(byroredux_renderer::GpuLight {
                     position_radius: [
                         t.translation.x,
@@ -198,9 +217,14 @@ pub(super) fn collect_lights(
                         light.color[0] * scale,
                         light.color[1] * scale,
                         light.color[2] * scale,
-                        0.0,
-                    ], // 0 = point
-                    direction_angle: [0.0, 0.0, 0.0, 0.0],
+                        light_type,
+                    ],
+                    direction_angle: [
+                        light.direction[0],
+                        light.direction[1],
+                        light.direction[2],
+                        outer_angle_cos,
+                    ],
                     // x = standardized attenuation curve shape; y = finite
                     // emitter proxy used to stop shadow segments at the
                     // luminous shell instead of inside the fixture; z = the
@@ -694,6 +718,116 @@ mod gi_light_priority_tests {
             "index 0 must always be the directional (type 2.0), regardless \
              of point-light brightness — got type {}",
             lights[0].color_type[3]
+        );
+    }
+}
+
+/// #2205 — `LightKind` resolved at NIF import (`NiDirectionalLight` /
+/// `NiSpotLight` / `NiPointLight`) must reach `GpuLight.color_type.w`
+/// instead of every placed `LightSource` uploading as a point light.
+/// Pre-fix, an Oblivion `NiDirectionalLight` (kind resolved correctly at
+/// import, then discarded — the canonical `LightSource` had no field to
+/// receive it) rendered as a full-white omni light over an 8,192-unit
+/// sphere instead of a directional contribution.
+#[cfg(test)]
+mod light_kind_wiring_tests {
+    use super::*;
+    use byroredux_core::ecs::{LightKind, LightSource};
+
+    fn spawn_light(world: &mut World, light: LightSource) {
+        let e = world.spawn();
+        world.insert(
+            e,
+            GlobalTransform::new(
+                byroredux_core::math::Vec3::new(1.0, 2.0, 3.0),
+                byroredux_core::math::Quat::IDENTITY,
+                1.0,
+            ),
+        );
+        world.insert(e, light);
+    }
+
+    #[test]
+    fn directional_light_source_uploads_as_directional_gpu_light() {
+        let mut world = World::new();
+        spawn_light(
+            &mut world,
+            LightSource {
+                color: [1.0, 1.0, 1.0],
+                radius: 0.0,
+                kind: LightKind::Directional,
+                direction: [0.0, -1.0, 0.0],
+                ..Default::default()
+            },
+        );
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights, &mut Vec::new());
+
+        assert_eq!(lights.len(), 1);
+        assert!(
+            (lights[0].color_type[3] - 2.0).abs() < 1e-6,
+            "a LightKind::Directional source must upload type 2.0 (directional), got {}",
+            lights[0].color_type[3]
+        );
+        assert_eq!(&lights[0].direction_angle[0..3], &[0.0, -1.0, 0.0]);
+    }
+
+    #[test]
+    fn spot_light_source_uploads_as_spot_gpu_light_with_cosine_angle() {
+        let mut world = World::new();
+        let outer_angle = std::f32::consts::FRAC_PI_4; // 45 degrees, radians
+        spawn_light(
+            &mut world,
+            LightSource {
+                color: [1.0, 1.0, 1.0],
+                radius: 500.0,
+                kind: LightKind::Spot,
+                direction: [1.0, 0.0, 0.0],
+                outer_angle,
+                ..Default::default()
+            },
+        );
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights, &mut Vec::new());
+
+        assert_eq!(lights.len(), 1);
+        assert!(
+            (lights[0].color_type[3] - 1.0).abs() < 1e-6,
+            "a LightKind::Spot source must upload type 1.0 (spot), got {}",
+            lights[0].color_type[3]
+        );
+        assert_eq!(&lights[0].direction_angle[0..3], &[1.0, 0.0, 0.0]);
+        assert!(
+            (lights[0].direction_angle[3] - outer_angle.cos()).abs() < 1e-6,
+            "direction_angle.w must be the outer-angle COSINE the shader \
+             compares against, not the raw authored radians — got {}",
+            lights[0].direction_angle[3]
+        );
+    }
+
+    #[test]
+    fn point_light_source_still_uploads_as_point_gpu_light() {
+        let mut world = World::new();
+        spawn_light(
+            &mut world,
+            LightSource {
+                color: [1.0, 1.0, 1.0],
+                radius: 500.0,
+                ..Default::default()
+            },
+        );
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights, &mut Vec::new());
+
+        assert_eq!(lights.len(), 1);
+        assert_eq!(
+            lights[0].color_type[3], 0.0,
+            "default LightKind::Point must keep uploading type 0.0 — every \
+             pre-#2205 producer (ESM LIGH REFRs, procedural fill, sun \
+             proxies) relies on this via ..Default::default()"
         );
     }
 }

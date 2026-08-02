@@ -16,6 +16,13 @@ use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::FixedString;
 use std::sync::Arc;
 
+/// #2205 — the canonical kind tag now lives on `LightSource`
+/// (`crates/core/src/ecs/components/light.rs`) so the spawn boundary can
+/// carry it straight through without a second type. Re-exported here so
+/// every existing `byroredux_nif::import::LightKind` call site keeps
+/// working unchanged.
+pub use byroredux_core::ecs::components::LightKind;
+
 /// One light source extracted from a NIF scene, positioned in world space.
 ///
 /// Populated from NiAmbientLight / NiDirectionalLight / NiPointLight /
@@ -55,15 +62,6 @@ pub struct ImportedLight {
     /// the same NIF write into the light's `LightSource` per-frame.
     /// See #983.
     pub name: Option<Arc<str>>,
-}
-
-/// Kind of a parsed NIF light.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LightKind {
-    Ambient,
-    Directional,
-    Point,
-    Spot,
 }
 
 /// One projected-texture effect extracted from a NIF scene, positioned

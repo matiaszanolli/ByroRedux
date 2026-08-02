@@ -95,7 +95,18 @@ is game-agnostic downstream.
 
 `ImportedLight` resolves to a `LightKind` enum (ambient / directional / point /
 spot) with a derived effective radius; the renderer never inspects the source block
-type.
+type. `LightKind` itself now lives on the canonical `LightSource` component
+(`crates/core/src/ecs/components/light.rs`) — `byroredux_nif::import::LightKind` is
+a re-export of the same type, not a second copy.
+
+Was **half-stale 2026-07-27 → 2026-08-02** (NIFAL-D3-01 / #2205): `kind` /
+`direction` / `outer_angle` were resolved correctly at import but the canonical
+`LightSource` had no field to receive them, so every placed light — including
+Oblivion's ubiquitous `NiDirectionalLight` fixtures — spawned as a point light.
+Fixed by adding the three fields to `LightSource` and wiring
+`GpuLight.color_type.w` / `direction_angle` from them at the render boundary
+(`byroredux/src/render/lights.rs`); the renderer-side point/spot/directional
+support this unblocks already existed (`lighting.glsl`).
 
 ### Nodes — **triaged (2026-05-28)**
 

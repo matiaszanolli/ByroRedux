@@ -98,7 +98,11 @@ vec3 shadowableLightRadiance(
         float spotAngle = lights[i].direction_angle.w;
         atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
         float spotFactor = dot(-L, spotDir);
-        atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
+        // #2205 — guard against a degenerate near-zero authored outer
+        // angle (cos ≈ 1.0), matching giLightSample's guard below now
+        // that spot lights are actually reachable instead of silently
+        // downgraded to point lights.
+        atten *= clamp((spotFactor - spotAngle) / max(1.0 - spotAngle, 1e-4), 0.0, 1.0);
     } else {
         // Directional light.
         L = normalize(lights[i].direction_angle.xyz);

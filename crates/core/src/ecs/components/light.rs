@@ -3,7 +3,7 @@
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
 
-/// A point/spot light source placed in the world.
+/// A point/spot/directional light source placed in the world.
 ///
 /// Populated from LIGH record DATA subrecord (radius, color, flags).
 /// Per-frame controller animation (NiLight{Color,Dimmer,Intensity,Radius}
@@ -44,6 +44,26 @@ pub struct LightSource {
     /// direct lights and procedural defaults (interior fill, sun
     /// proxies) leave the field at `0.0`.
     pub falloff_exponent: f32,
+    /// #2205 — kind tag driving `GpuLight.color_type.w` (point / spot /
+    /// directional). Pre-fix this field didn't exist: every producer
+    /// emitted a point light regardless of the source NIF block, so
+    /// e.g. Oblivion's `NiDirectionalLight` fixtures (vines, statues,
+    /// hair/ear meshes) rendered as full-white omni lights over an
+    /// 8,192-unit sphere instead of a directional contribution.
+    /// Defaults to [`LightKind::Point`] — every producer that has no
+    /// kind signal (ESM LIGH REFRs, procedural fill, sun proxies)
+    /// keeps exactly the prior implicit behaviour.
+    pub kind: LightKind,
+    /// #2205 — unit direction (Y-up), meaningful only for `Directional`
+    /// and `Spot`. Zero for `Point`/`Ambient`.
+    pub direction: [f32; 3],
+    /// #2205 — outer cone half-angle **in radians** for `Spot` (`0.0`
+    /// for every other kind). The renderer boundary
+    /// (`byroredux/src/render/lights.rs`) converts this to the cosine
+    /// `GpuLight.direction_angle.w` expects — the shader never sees a
+    /// raw angle, matching the file's existing LIGH-translation
+    /// convention for `radius`/`falloff_exponent`.
+    pub outer_angle: f32,
 }
 
 impl Default for LightSource {
@@ -55,12 +75,37 @@ impl Default for LightSource {
             dimmer: 1.0,
             intensity: 1.0,
             falloff_exponent: 0.0,
+            kind: LightKind::Point,
+            direction: [0.0, 0.0, 0.0],
+            outer_angle: 0.0,
         }
     }
 }
 
 impl Component for LightSource {
     type Storage = SparseSetStorage<Self>;
+}
+
+/// Kind of a placed [`LightSource`], driving both shadow-projection
+/// defaults and the `GpuLight.color_type.w` renderer contract
+/// (0=point, 1=spot, 2=directional — see `GpuLight` doc comment;
+/// `Ambient` has no radiating representation there and falls back to
+/// the point code, a pre-existing gap tracked separately as
+/// NIFAL-D3-02, not this field's concern).
+///
+/// #2205 — moved here (was NIF-import-local `LightKind`) so the
+/// canonical ECS component can carry it without `crates/core`
+/// depending on `crates/nif`; `byroredux_nif::import::LightKind` is a
+/// re-export of this type, so every existing NIF-side call site is
+/// source-compatible unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub enum LightKind {
+    #[default]
+    Point,
+    Spot,
+    Directional,
+    Ambient,
 }
 
 // ── Shared flicker / pulse behavior bits ─────────────────────────────

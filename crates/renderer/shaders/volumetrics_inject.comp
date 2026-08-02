@@ -571,7 +571,12 @@ void main() {
                 float spotAngle = lights[li].direction_angle.w;
                 vec3 Ldir = toLight / max(dist, 0.001);
                 float spotFactor = dot(-Ldir, spotDir);
-                atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
+                // #2205 — guard against a degenerate near-zero authored
+                // outer angle (cos ≈ 1.0), matching giLightSample's
+                // guard (lighting.glsl) now that spot lights are
+                // actually reachable instead of silently downgraded to
+                // point lights.
+                atten *= clamp((spotFactor - spotAngle) / max(1.0 - spotAngle, 1e-4), 0.0, 1.0);
             }
             float localVisibility = 1.0;
             bool needsVisibility = shadowPolicyNeedsVisibility(lights[li].params.z);

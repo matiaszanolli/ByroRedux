@@ -961,6 +961,7 @@ mod tests {
                 dimmer: 0.75,
                 intensity: 1.25,
                 falloff_exponent: 2.0,
+                ..Default::default()
             },
         );
         src.insert(
