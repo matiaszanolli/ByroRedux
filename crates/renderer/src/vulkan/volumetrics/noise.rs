@@ -1,5 +1,7 @@
 //! Deterministic, tileable density volumes generated once at renderer boot.
 
+use std::sync::OnceLock;
+
 pub(super) const BASE_NOISE_SIZE: u32 = 64;
 pub(super) const DETAIL_NOISE_SIZE: u32 = 32;
 
@@ -157,6 +159,29 @@ pub(super) fn generate_density_noise(size: u32, detail: bool) -> Vec<u8> {
     texels
 }
 
+static BASE_NOISE_CACHE: OnceLock<Vec<u8>> = OnceLock::new();
+static DETAIL_NOISE_CACHE: OnceLock<Vec<u8>> = OnceLock::new();
+
+/// Memoized [`generate_density_noise`] for the boot-time base volume.
+///
+/// #2231 / REN-D5-03 — `VolumetricsPipeline::initialize_layouts` runs on
+/// every window resize (the whole pipeline, including its noise images, is
+/// rebuilt because the froxel grid follows render resolution — see
+/// `context/resize.rs`), but this noise is resolution-independent and
+/// deterministic (`generated_volumes_are_deterministic_and_useful` below):
+/// regenerating it via ~10^7 hash evaluations bought nothing on a resize
+/// and was a real CPU stall every time. Computed once per process and
+/// reused for every subsequent resize's fresh-image upload.
+pub(super) fn cached_base_density_noise() -> &'static [u8] {
+    BASE_NOISE_CACHE.get_or_init(|| generate_density_noise(BASE_NOISE_SIZE, false))
+}
+
+/// Detail-volume counterpart of [`cached_base_density_noise`]; see its doc
+/// comment for the resize-regeneration bug this closes.
+pub(super) fn cached_detail_density_noise() -> &'static [u8] {
+    DETAIL_NOISE_CACHE.get_or_init(|| generate_density_noise(DETAIL_NOISE_SIZE, true))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +217,30 @@ mod tests {
                 "noise mean is unusable: {mean}"
             );
         }
+    }
+
+    /// #2231 / REN-D5-03 — pins that the boot-noise accessors are actually
+    /// memoized (not just individually deterministic, which the test above
+    /// already covers): repeated calls must return the exact same backing
+    /// bytes as a single ground-truth `generate_density_noise` call,
+    /// proving `initialize_layouts` on a resize reuses the cached buffer
+    /// instead of re-running ~10^7 hash evaluations.
+    #[test]
+    fn cached_density_noise_matches_direct_generation_and_is_stable_across_calls() {
+        let expected_base = generate_density_noise(BASE_NOISE_SIZE, false);
+        assert_eq!(cached_base_density_noise(), expected_base.as_slice());
+        assert_eq!(
+            cached_base_density_noise().as_ptr(),
+            cached_base_density_noise().as_ptr(),
+            "second call must return the same backing allocation, not a fresh one"
+        );
+
+        let expected_detail = generate_density_noise(DETAIL_NOISE_SIZE, true);
+        assert_eq!(cached_detail_density_noise(), expected_detail.as_slice());
+        assert_eq!(
+            cached_detail_density_noise().as_ptr(),
+            cached_detail_density_noise().as_ptr(),
+            "second call must return the same backing allocation, not a fresh one"
+        );
     }
 }

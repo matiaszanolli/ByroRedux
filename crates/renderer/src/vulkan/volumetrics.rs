@@ -39,7 +39,9 @@ use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
 
 mod noise;
-use noise::{generate_density_noise, BASE_NOISE_SIZE, DETAIL_NOISE_SIZE};
+use noise::{
+    cached_base_density_noise, cached_detail_density_noise, BASE_NOISE_SIZE, DETAIL_NOISE_SIZE,
+};
 
 const VOLUMETRICS_INJECT_COMP_SPV: &[u8] =
     include_bytes!("../../shaders/volumetrics_inject.comp.spv");
@@ -1214,8 +1216,13 @@ impl VolumetricsPipeline {
         queue: &std::sync::Mutex<vk::Queue>,
         pool: vk::CommandPool,
     ) -> Result<()> {
-        let base_texels = generate_density_noise(BASE_NOISE_SIZE, false);
-        let detail_texels = generate_density_noise(DETAIL_NOISE_SIZE, true);
+        // #2231 / REN-D5-03 — memoized: this function reruns on every window
+        // resize (the whole pipeline is rebuilt because the froxel grid
+        // follows render resolution), but the noise itself is resolution-
+        // independent, so regenerating it via ~10^7 hash evaluations per
+        // resize was pure waste. See `noise::cached_base_density_noise`.
+        let base_texels = cached_base_density_noise();
+        let detail_texels = cached_detail_density_noise();
         let make_staging = |bytes: &[u8]| -> Result<GpuBuffer> {
             let mut buffer = GpuBuffer::create_host_visible(
                 device,
@@ -1229,8 +1236,8 @@ impl VolumetricsPipeline {
             }
             Ok(buffer)
         };
-        let mut base_staging = make_staging(&base_texels)?;
-        let mut detail_staging = match make_staging(&detail_texels) {
+        let mut base_staging = make_staging(base_texels)?;
+        let mut detail_staging = match make_staging(detail_texels) {
             Ok(buffer) => buffer,
             Err(error) => {
                 base_staging.destroy(device, allocator);
@@ -2033,6 +2040,69 @@ mod unit_tests {
             16 + MAX_GPU_FOG_VOLUMES * 64
         );
         assert_eq!(std::mem::size_of::<GpuFogClusterEntry>(), 8);
+    }
+
+    /// #2228 / REN-D3-01 — the size/align pin above cannot catch a within-
+    /// struct field reorder: every `GpuFogVolume` field is an identically
+    /// sized 16 B `vec4`, so any permutation still sums to 64 B / align 16
+    /// and passes that test while silently swapping what each field means
+    /// on the GPU (e.g. `inverse_rotation` read as `albedo_edge`). Pin each
+    /// field's exact byte offset here — the source-of-truth order the GLSL
+    /// struct below is checked against.
+    #[test]
+    fn gpu_fog_volume_field_offsets_match_declared_order() {
+        use std::mem::offset_of;
+        assert_eq!(offset_of!(GpuFogVolume, center_shape), 0);
+        assert_eq!(offset_of!(GpuFogVolume, half_extents_extinction), 16);
+        assert_eq!(offset_of!(GpuFogVolume, inverse_rotation), 32);
+        assert_eq!(offset_of!(GpuFogVolume, albedo_edge), 48);
+    }
+
+    /// #2228 / REN-D3-01 — cross-checks `volumetrics_inject.comp`'s
+    /// `struct GpuFogVolume` declaration order against the Rust field order
+    /// pinned above (the offset source of truth). A GLSL-only reorder is
+    /// invisible to every Rust-side test — including the one above — since
+    /// nothing on the Rust side reads the shader source. This closes that
+    /// gap the same way `gpu_material_glsl_field_order_matches_rust_struct`
+    /// does for `GpuMaterial` (scene_buffer/gpu_instance_layout_tests.rs).
+    #[test]
+    fn gpu_fog_volume_glsl_field_order_matches_rust_struct() {
+        const RUST_FIELD_ORDER: [&str; 4] = [
+            "center_shape",
+            "half_extents_extinction",
+            "inverse_rotation",
+            "albedo_edge",
+        ];
+
+        let glsl_src = include_str!("../../shaders/volumetrics_inject.comp");
+        let struct_start = glsl_src
+            .find("struct GpuFogVolume {")
+            .expect("volumetrics_inject.comp must declare `struct GpuFogVolume`");
+        let body_end = glsl_src[struct_start..]
+            .find("};")
+            .expect("GpuFogVolume struct body must be closed with `};`");
+        let body = &glsl_src[struct_start..struct_start + body_end];
+
+        let glsl_fields: Vec<&str> = body
+            .lines()
+            .skip(1) // the `struct GpuFogVolume {` line itself
+            .filter_map(|line| {
+                let line = line.split("//").next().unwrap_or("").trim();
+                if line.is_empty() {
+                    return None;
+                }
+                // "vec4 center_shape;" -> "center_shape"
+                line.trim_end_matches(';').split_whitespace().nth(1)
+            })
+            .collect();
+
+        assert_eq!(
+            glsl_fields, RUST_FIELD_ORDER,
+            "volumetrics_inject.comp's `struct GpuFogVolume` field order must match the \
+             Rust struct's offset order {RUST_FIELD_ORDER:?} — a reorder on either side \
+             compiles clean and passes the size/align pin while silently corrupting every \
+             fog-volume sample on the GPU (#2228 / REN-D3-01)",
+        );
     }
 
     #[test]
