@@ -77,6 +77,75 @@ pub(crate) fn cornell_sun_mode(args: &[String]) -> Option<bool> {
     }
 }
 
+/// Pick the first door whose placement belongs to the collision-ready
+/// foreground exterior cell. Interior loads pass `None` and preserve the
+/// historical "first door in the cell" behaviour.
+///
+/// The persistent worldspace CELL is materialised before the streamed
+/// foreground tile and can contain doors from every cell in the 3D radius.
+/// Treating that combined ECS set as if it were one interior cell lets an
+/// arbitrary persistent door win even when its terrain is still queued. The
+/// character then starts over an unloaded tile and free-falls before streaming
+/// can catch up.
+fn select_door_spawn_position(
+    door_positions: impl IntoIterator<Item = Vec3>,
+    exterior_foreground: Option<(i32, i32)>,
+) -> Option<Vec3> {
+    door_positions.into_iter().find(|position| {
+        exterior_foreground.is_none_or(|foreground| {
+            crate::streaming::world_pos_to_grid(position.x, position.z) == foreground
+        })
+    })
+}
+
+/// Ground the character beneath the camera/terrain-center spawn column.
+///
+/// This is both the normal no-door path and the safety net for a door whose
+/// capsule probes find no collision-ready floor. Falling back to the requested
+/// foreground column is strictly safer than trusting an authored door height:
+/// the latter may belong to a persistent exterior reference whose tile has not
+/// streamed yet.
+fn spawn_on_camera_ground(
+    world: &World,
+    cam_pos: Vec3,
+    cc: byroredux_physics::CharacterController,
+    reason: &str,
+) -> Vec3 {
+    let pw = world.resource::<byroredux_physics::PhysicsWorld>();
+    match pw.static_colliders_aabb() {
+        Some((min, max, _)) => {
+            let aabb_height = (max[1] - min[1]).max(1.0);
+            let ray_origin = Vec3::new(cam_pos.x, max[1] + 50.0, cam_pos.z);
+            let max_distance = aabb_height + 100.0;
+            match pw.cast_ray_down(ray_origin, max_distance) {
+                Some(hit_y) => {
+                    log::info!(
+                        "M28.5 spawn ray-cast: hit floor at y={:.1} under \
+                         ({:.1}, {:.1}); placing capsule at y={:.1} ({reason})",
+                        hit_y,
+                        cam_pos.x,
+                        cam_pos.z,
+                        hit_y + cc.half_height + 4.0,
+                    );
+                    Vec3::new(cam_pos.x, hit_y + cc.half_height + 4.0, cam_pos.z)
+                }
+                None => {
+                    log::warn!(
+                        "M28.5 spawn ray-cast: NO floor found under ({:.1}, \
+                         {:.1}) within {:.1} BU; falling back to \
+                         aabb.max.y + 200 ({reason})",
+                        cam_pos.x,
+                        cam_pos.z,
+                        max_distance,
+                    );
+                    Vec3::new(cam_pos.x, max[1] + 200.0, cam_pos.z)
+                }
+            }
+        }
+        None => cam_pos - Vec3::Y * cc.eye_height,
+    }
+}
+
 mod world_setup;
 // Re-export the streaming setup helpers so the M40 Phase 2 cell-
 // transition orchestrator in `main.rs::App::step_cell_transition` can
@@ -620,13 +689,18 @@ pub(crate) fn setup_scene(
         // Offset 4.0 BU on the upward shift matches the KCC's
         // `controller.offset`, so the capsule rests against (not
         // embedded in) the door's floor reference.
+        let exterior_foreground = streaming_slot
+            .as_ref()
+            .and_then(|state| state.last_player_grid);
         let door_spawn = {
             let dq = world.query::<crate::components::DoorTeleport>();
             let tq = world.query::<Transform>();
             match (dq, tq) {
-                (Some(dq), Some(tq)) => dq
-                    .iter()
-                    .find_map(|(entity, _door)| tq.get(entity).map(|t| t.translation)),
+                (Some(dq), Some(tq)) => select_door_spawn_position(
+                    dq.iter()
+                        .filter_map(|(entity, _door)| tq.get(entity).map(|t| t.translation)),
+                    exterior_foreground,
+                ),
                 _ => None,
             }
         };
@@ -783,7 +857,7 @@ pub(crate) fn setup_scene(
                 nudge.z,
                 match floor_y {
                     Some(y) => format!("hit y={y:.1} via {floor_rung}"),
-                    None => "MISS on all 3 rungs (used door height)".to_string(),
+                    None => "MISS on all 3 rungs (rejecting door spawn)".to_string(),
                 },
                 spawn.x,
                 spawn.y,
@@ -799,10 +873,7 @@ pub(crate) fn setup_scene(
                 },
                 if floor_probe_failed {
                     " — FLOOR PROBE MISS: nudged XZ found no floor within range; \
-                     falling back to door height, which may itself be off any \
-                     walkable surface (#2013). If the character free-falls or \
-                     rests ungrounded from this spawn, the nudge distance or \
-                     direction likely needs revisiting for this room's layout."
+                     rejecting this door and using the camera-ground fallback."
                 } else {
                     ""
                 },
@@ -823,44 +894,13 @@ pub(crate) fn setup_scene(
                     SPAWN_CENSUS_RADIUS_BU,
                 );
             }
-            spawn
-        } else {
-            let pw = world.resource::<byroredux_physics::PhysicsWorld>();
-            match pw.static_colliders_aabb() {
-                Some((min, max, _)) => {
-                    let aabb_height = (max[1] - min[1]).max(1.0);
-                    // Start the ray ~50 BU above the top of the cell.
-                    let ray_origin = Vec3::new(cam_pos.x, max[1] + 50.0, cam_pos.z);
-                    // Look down through the entire cell + slack.
-                    let max_distance = aabb_height + 100.0;
-                    match pw.cast_ray_down(ray_origin, max_distance) {
-                        Some(hit_y) => {
-                            log::info!(
-                                "M28.5 spawn ray-cast: hit floor at y={:.1} under \
-                                 ({:.1}, {:.1}); placing capsule at y={:.1} (no \
-                                 DoorTeleport in cell — fell through to ray-cast)",
-                                hit_y,
-                                cam_pos.x,
-                                cam_pos.z,
-                                hit_y + cc.half_height + 4.0,
-                            );
-                            Vec3::new(cam_pos.x, hit_y + cc.half_height + 4.0, cam_pos.z)
-                        }
-                        None => {
-                            log::warn!(
-                                "M28.5 spawn ray-cast: NO floor found under ({:.1}, \
-                                 {:.1}) within {:.1} BU; falling back to \
-                                 aabb.max.y + 200 (M28.5 spawn fallback)",
-                                cam_pos.x,
-                                cam_pos.z,
-                                max_distance,
-                            );
-                            Vec3::new(cam_pos.x, max[1] + 200.0, cam_pos.z)
-                        }
-                    }
-                }
-                None => cam_pos - Vec3::Y * cc.eye_height,
+            if floor_probe_failed {
+                spawn_on_camera_ground(world, cam_pos, cc, "door floor probe missed")
+            } else {
+                spawn
             }
+        } else {
+            spawn_on_camera_ground(world, cam_pos, cc, "no foreground DoorTeleport")
         };
         let body = world.spawn();
         world.insert(body, Transform::new(body_pos, Quat::IDENTITY, 1.0));
@@ -1071,3 +1111,5 @@ mod cloud_tile_scale_tests;
 mod procedural_fallback_tests;
 #[cfg(test)]
 mod radius_parse_tests;
+#[cfg(test)]
+mod spawn_tests;
