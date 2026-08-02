@@ -155,8 +155,11 @@ layout(set = 0, binding = 10) uniform sampler3D baseDensityNoise;
 layout(set = 0, binding = 11) uniform sampler3D detailDensityNoise;
 
 const float PI = 3.14159265358979323846;
-const uint FOG_CLUSTER_DIM = 16u;
-const uint MAX_FOG_VOLUMES_PER_CLUSTER = 8u;
+// FOG_VOLUME_CLUSTER_DIM / MAX_FOG_VOLUMES_PER_CLUSTER come from the
+// #include'd shader_constants.glsl header (generated from
+// shader_constants_data.rs — #2229 / REN-D3-02). Previously hand-declared
+// here as local literals with no shared source with the Rust-side
+// `vulkan::volumetrics` copies.
 
 vec3 warpFogDomain(vec3 worldMetres, float timeSeconds);
 float sampledDensity(vec3 metres, float baseScale, float detailScale);
@@ -174,13 +177,13 @@ vec4 sampleLocalMedium(vec3 worldPos) {
     vec3 gridCoord = (worldPos - params.local_volume_grid.xyz)
         * params.local_volume_grid.w;
     if (any(lessThan(gridCoord, vec3(0.0)))
-            || any(greaterThanEqual(gridCoord, vec3(float(FOG_CLUSTER_DIM))))) {
+            || any(greaterThanEqual(gridCoord, vec3(float(FOG_VOLUME_CLUSTER_DIM))))) {
         return vec4(0.0);
     }
-    uvec3 cell = min(uvec3(gridCoord), uvec3(FOG_CLUSTER_DIM - 1u));
+    uvec3 cell = min(uvec3(gridCoord), uvec3(FOG_VOLUME_CLUSTER_DIM - 1u));
     uint clusterIndex = cell.x
-        + cell.y * FOG_CLUSTER_DIM
-        + cell.z * FOG_CLUSTER_DIM * FOG_CLUSTER_DIM;
+        + cell.y * FOG_VOLUME_CLUSTER_DIM
+        + cell.z * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM;
     FogClusterEntry cluster = fogClusters[clusterIndex];
     uint primitiveCount = min(cluster.count, MAX_FOG_VOLUMES_PER_CLUSTER);
 

@@ -337,6 +337,19 @@ fn main() {
     writeln!(out, "#define WATER_WATERFALL {WATER_WATERFALL}u").unwrap();
     writeln!(out).unwrap();
 
+    writeln!(out, "// Local fog-volume clustering (M55/Session 62).").unwrap();
+    writeln!(
+        out,
+        "#define FOG_VOLUME_CLUSTER_DIM {FOG_VOLUME_CLUSTER_DIM}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "#define MAX_FOG_VOLUMES_PER_CLUSTER {MAX_FOG_VOLUMES_PER_CLUSTER}u"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
     writeln!(
         out,
         "// Debug-viz bit flags (set via console for renderer bisects)."

@@ -29,7 +29,11 @@ use super::descriptors::{
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::VolumetricsConfig;
-use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y, WORKGROUP_Z};
+use crate::shader_constants::{
+    FOG_VOLUME_CLUSTER_DIM as GLSL_FOG_VOLUME_CLUSTER_DIM,
+    MAX_FOG_VOLUMES_PER_CLUSTER as GLSL_MAX_FOG_VOLUMES_PER_CLUSTER, WORKGROUP_X, WORKGROUP_Y,
+    WORKGROUP_Z,
+};
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -121,12 +125,19 @@ pub struct VolumetricsParams {
 /// Maximum authored local volumes uploaded after CPU frustum/distance culling.
 pub const MAX_GPU_FOG_VOLUMES: usize = 128;
 /// Camera-centered world-space cluster resolution used for local fog.
-pub const FOG_VOLUME_CLUSTER_DIM: usize = 16;
+/// #2229 / REN-D3-02 — derived from `shader_constants_data.rs`'s
+/// `FOG_VOLUME_CLUSTER_DIM` (the single source of truth shared with
+/// `volumetrics_inject.comp`'s generated `#define`) rather than a second
+/// hand-written literal, which previously risked silently desyncing CPU
+/// cluster-list indexing from the GPU shader's own copy.
+pub const FOG_VOLUME_CLUSTER_DIM: usize = GLSL_FOG_VOLUME_CLUSTER_DIM as usize;
 pub const FOG_VOLUME_CLUSTER_COUNT: usize =
     FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM * FOG_VOLUME_CLUSTER_DIM;
 /// Bounded primitive references per cluster. Overflow keeps the nearest
-/// volumes because the CPU input list is distance-sorted.
-pub const MAX_FOG_VOLUMES_PER_CLUSTER: usize = 8;
+/// volumes because the CPU input list is distance-sorted. See
+/// `FOG_VOLUME_CLUSTER_DIM` doc for why this derives from the shared
+/// constant instead of a local literal.
+pub const MAX_FOG_VOLUMES_PER_CLUSTER: usize = GLSL_MAX_FOG_VOLUMES_PER_CLUSTER as usize;
 const FOG_VOLUME_INDEX_COUNT: usize = FOG_VOLUME_CLUSTER_COUNT * MAX_FOG_VOLUMES_PER_CLUSTER;
 
 /// World-space analytic medium primitive consumed by

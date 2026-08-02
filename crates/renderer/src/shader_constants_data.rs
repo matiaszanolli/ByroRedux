@@ -303,6 +303,17 @@ pub const WATER_RIVER: u32 = 1;
 pub const WATER_RAPIDS: u32 = 2;
 pub const WATER_WATERFALL: u32 = 3;
 
+// Local fog-volume clustering (M55/Session 62). Lockstep with
+// `volumetrics_inject.comp`'s `sampleLocalMedium` and
+// `vulkan::volumetrics`, which derive their own `usize` copies from these
+// (#2229 / REN-D3-02 — previously hand-duplicated as GLSL literals with no
+// shared source, the same defect class as #1190/#1401).
+/// Camera-centered world-space cluster resolution used for local fog.
+pub const FOG_VOLUME_CLUSTER_DIM: u32 = 16;
+/// Bounded primitive references per cluster. Overflow keeps the nearest
+/// volumes because the CPU input list is distance-sorted.
+pub const MAX_FOG_VOLUMES_PER_CLUSTER: u32 = 8;
+
 // Debug-viz bit flags packed into `jitter.z` by the renderer
 // (`parse_render_debug_flags_env` + `GpuCamera` upload). Runtime-set
 // via `BYROREDUX_RENDER_DEBUG=<bitmask>` env var or console for

@@ -119,6 +119,8 @@ mod tests {
             ("WATER_RIVER", format!("#define WATER_RIVER {WATER_RIVER}u")),
             ("WATER_RAPIDS", format!("#define WATER_RAPIDS {WATER_RAPIDS}u")),
             ("WATER_WATERFALL", format!("#define WATER_WATERFALL {WATER_WATERFALL}u")),
+            ("FOG_VOLUME_CLUSTER_DIM", format!("#define FOG_VOLUME_CLUSTER_DIM {FOG_VOLUME_CLUSTER_DIM}u")),
+            ("MAX_FOG_VOLUMES_PER_CLUSTER", format!("#define MAX_FOG_VOLUMES_PER_CLUSTER {MAX_FOG_VOLUMES_PER_CLUSTER}u")),
             // #1920 — 10 defines `build.rs` emits that this value-pin had
             // never covered (found by an audit sweep alongside the
             // 2-day-old SHADOW_MASK_* pair, which shipped without a pin).
@@ -405,6 +407,30 @@ mod tests {
             "cluster_cull.comp must not redeclare THREADS_PER_CLUSTER — \
              the #define from shader_constants.glsl is the source of truth (#1151)",
         );
+    }
+
+    /// #2229 / REN-D3-02 — `volumetrics_inject.comp` must NOT redeclare
+    /// `FOG_VOLUME_CLUSTER_DIM`/`MAX_FOG_VOLUMES_PER_CLUSTER` (or the
+    /// pre-fix shorter name `FOG_CLUSTER_DIM`) as local `const uint`s. Both
+    /// were previously hand-written directly in the shader with no shared
+    /// source against the Rust-side `vulkan::volumetrics` copies — the
+    /// exact defect class #1190/#1401 already fixed once for other
+    /// constant pairs. Positive coverage that the values flow through
+    /// lives in `generated_header_contains_all_defines`.
+    #[test]
+    fn volumetrics_fog_cluster_constants_not_redeclared() {
+        let src = include_str!("../shaders/volumetrics_inject.comp");
+        for needle in [
+            "const uint FOG_CLUSTER_DIM",
+            "const uint FOG_VOLUME_CLUSTER_DIM",
+            "const uint MAX_FOG_VOLUMES_PER_CLUSTER",
+        ] {
+            assert!(
+                !src.contains(needle),
+                "volumetrics_inject.comp must not redeclare {needle} — \
+                 the #define from shader_constants.glsl is the source of truth (#2229)",
+            );
+        }
     }
 
     /// #2045 (TD7-101) — `triangle.frag` must NOT redeclare

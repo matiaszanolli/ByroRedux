@@ -103,6 +103,10 @@
 #define WATER_RAPIDS 2u
 #define WATER_WATERFALL 3u
 
+// Local fog-volume clustering (M55/Session 62).
+#define FOG_VOLUME_CLUSTER_DIM 16u
+#define MAX_FOG_VOLUMES_PER_CLUSTER 8u
+
 // Debug-viz bit flags (set via console for renderer bisects).
 #define DBG_BYPASS_POM 1u
 #define DBG_BYPASS_DETAIL 2u
