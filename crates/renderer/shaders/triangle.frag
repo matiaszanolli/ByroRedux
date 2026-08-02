@@ -857,8 +857,10 @@ void main() {
     // the camera-through direction by the normal map's tangent-plane
     // component, trace the real scene behind the proxy, then let the
     // separately-authored BSEffect flame cards composite over it. The proxy
-    // is excluded from BLAS/TLAS, so this ray cannot hit the haze mesh itself
-    // and the proxy cannot cast shadows or feed GI.
+    // instance still exists in the BLAS/TLAS (it is NOT excluded), but
+    // `traceShadowTransmittance` (shadow_transport.glsl) skips it exactly
+    // like `MATERIAL_KIND_EFFECT_SHADER` — REN-D2-01, #2224 — so it cannot
+    // cast a shadow.
     if (mat.materialKind == MATERIAL_KIND_FIRE_REFRACTION) {
         // Without ray queries there is no faithful source image to distort.
         // Discard preserves the already-rendered scene instead of reverting

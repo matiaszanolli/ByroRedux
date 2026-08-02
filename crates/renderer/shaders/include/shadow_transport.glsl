@@ -27,7 +27,14 @@ vec3 traceShadowTransmittance(
         float hitT = rayQueryGetIntersectionTEXT(opaqueRQ, true);
         GpuInstance hitInst = instances[hitIdx];
         GpuMaterial hitMat = materials[hitInst.materialId];
-        bool effectCard = hitMat.materialKind == MATERIAL_KIND_EFFECT_SHADER;
+        // REN-D2-01 — fire-refraction proxies are distortion overlays, not
+        // shadow casters (matching MATERIAL_KIND_EFFECT_SHADER's treatment
+        // below): they carry SHADOW_MASK_OPAQUE for the ordinary opaque
+        // ray-query mask, so without this skip they occlude every shadow
+        // ray from every other surface even though the proxy itself is
+        // meant to be shadow-transparent.
+        bool effectCard = hitMat.materialKind == MATERIAL_KIND_EFFECT_SHADER
+            || hitMat.materialKind == MATERIAL_KIND_FIRE_REFRACTION;
         if (effectCard) {
             float advance = hitT + 0.1;
             opaqueRemaining -= advance;
