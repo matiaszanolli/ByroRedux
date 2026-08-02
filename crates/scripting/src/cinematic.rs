@@ -12,6 +12,8 @@ use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_core::math::{Quat, Vec3};
+use byroredux_plugin::esm::records::{ImadColorKey, ImadRecord, ImadScalarKey};
+use std::collections::HashMap;
 
 use crate::quest_stages::{QuestFormId, QuestStageAdvanced, QuestStageState};
 
@@ -34,13 +36,58 @@ impl CinematicAnimationEvent {
 }
 
 /// One vanilla `ImageSpaceModifier.Apply(strength)` invocation delivered by
-/// an animation callback. The renderer does not interpret IMAD curves yet;
-/// retaining the concrete FormID and authored strength keeps the presentation
-/// request explicit instead of losing it at the scripting boundary.
+/// an animation callback.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageSpaceModifierApplication {
     pub form_id: u32,
     pub strength: f32,
+}
+
+/// Fully sampled image-space state for the current frame. Identity values
+/// make the renderer path a no-op outside authored cinematic effects.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageSpaceModifierFrame {
+    pub blur_radius_pixels: f32,
+    pub double_vision_strength: f32,
+    pub motion_blur_strength: f32,
+    pub radial_blur_strength: f32,
+    pub radial_blur_ramp_up: f32,
+    pub radial_blur_start: f32,
+    pub radial_blur_ramp_down: f32,
+    pub radial_blur_down_start: f32,
+    pub radial_blur_center: [f32; 2],
+    pub saturation: f32,
+    pub brightness: f32,
+    pub contrast: f32,
+    pub tint_color: [f32; 4],
+    pub fade_color: [f32; 4],
+}
+
+impl Default for ImageSpaceModifierFrame {
+    fn default() -> Self {
+        Self {
+            blur_radius_pixels: 0.0,
+            double_vision_strength: 0.0,
+            motion_blur_strength: 0.0,
+            radial_blur_strength: 0.0,
+            radial_blur_ramp_up: 0.0,
+            radial_blur_start: 0.0,
+            radial_blur_ramp_down: 0.0,
+            radial_blur_down_start: 1.0,
+            radial_blur_center: [0.5, 0.5],
+            saturation: 1.0,
+            brightness: 1.0,
+            contrast: 1.0,
+            tint_color: [1.0, 1.0, 1.0, 0.0],
+            fade_color: [0.0, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ActiveImageSpaceModifier {
+    application: ImageSpaceModifierApplication,
+    elapsed_seconds: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,9 +171,12 @@ pub struct CinematicPresentationState {
     pub sitting_rotation_degrees: f32,
     pub last_player_animation_event: Option<CinematicAnimationEvent>,
     pub player_animation_event_serial: u64,
-    /// IMAD applications issued by callbacks and awaiting a renderer-side
-    /// image-space implementation.
+    /// Historical IMAD applications issued by animation callbacks.
     pub applied_image_space_modifiers: Vec<ImageSpaceModifierApplication>,
+    /// Sampled aggregate consumed by the renderer this frame.
+    pub image_space_modifier_frame: ImageSpaceModifierFrame,
+    image_space_modifier_catalog: HashMap<u32, ImadRecord>,
+    active_image_space_modifiers: Vec<ActiveImageSpaceModifier>,
     player_imod_event: Option<PlayerAnimationEventRegistration>,
     player_furniture_exit_event: Option<PlayerAnimationEventRegistration>,
 }
@@ -138,6 +188,9 @@ impl Default for CinematicPresentationState {
             last_player_animation_event: None,
             player_animation_event_serial: 0,
             applied_image_space_modifiers: Vec::new(),
+            image_space_modifier_frame: ImageSpaceModifierFrame::default(),
+            image_space_modifier_catalog: HashMap::new(),
+            active_image_space_modifiers: Vec::new(),
             player_imod_event: None,
             player_furniture_exit_event: None,
         }
@@ -214,6 +267,16 @@ pub fn dispatch_player_cinematic_animation_event(
         presentation
             .applied_image_space_modifiers
             .extend(registration.image_space_modifiers.iter().copied());
+        presentation.active_image_space_modifiers.extend(
+            registration
+                .image_space_modifiers
+                .iter()
+                .copied()
+                .map(|application| ActiveImageSpaceModifier {
+                    application,
+                    elapsed_seconds: 0.0,
+                }),
+        );
         registration
     };
 
@@ -224,6 +287,194 @@ pub fn dispatch_player_cinematic_animation_event(
         previous_stage,
         new_stage: target_stage,
     })
+}
+
+/// Replace the runtime IMAD catalog with the resolved plugin load-order view.
+pub fn install_image_space_modifiers(
+    world: &mut World,
+    records: impl IntoIterator<Item = ImadRecord>,
+) -> usize {
+    if world.try_resource::<CinematicPresentationState>().is_none() {
+        world.insert_resource(CinematicPresentationState::default());
+    }
+    let catalog: HashMap<_, _> = records
+        .into_iter()
+        .map(|record| (record.form_id, record))
+        .collect();
+    let count = catalog.len();
+    world
+        .resource_mut::<CinematicPresentationState>()
+        .image_space_modifier_catalog = catalog;
+    count
+}
+
+/// Sample every active IMAD and advance its authored lifetime. Schedule after
+/// animation-event delivery so a callback is visible in the same frame.
+pub fn image_space_modifier_system(world: &World, dt: f32) {
+    let Some(mut state) = world.try_resource_mut::<CinematicPresentationState>() else {
+        return;
+    };
+    let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
+    for active in &mut state.active_image_space_modifiers {
+        active.elapsed_seconds += dt;
+    }
+    state.image_space_modifier_frame = assemble_image_space_frame(
+        &state.image_space_modifier_catalog,
+        &state.active_image_space_modifiers,
+    );
+
+    let CinematicPresentationState {
+        image_space_modifier_catalog: catalog,
+        active_image_space_modifiers: active,
+        ..
+    } = &mut *state;
+    active.retain(|instance| {
+        catalog
+            .get(&instance.application.form_id)
+            .is_some_and(|record| instance.elapsed_seconds < record.duration_seconds.max(0.0))
+    });
+}
+
+fn assemble_image_space_frame(
+    catalog: &HashMap<u32, ImadRecord>,
+    active: &[ActiveImageSpaceModifier],
+) -> ImageSpaceModifierFrame {
+    let mut frame = ImageSpaceModifierFrame::default();
+    let mut radial_center_weight = 0.0;
+    let mut radial_center_sum = [0.0; 2];
+
+    for active in active {
+        let Some(record) = catalog.get(&active.application.form_id) else {
+            continue;
+        };
+        let strength = active.application.strength;
+        if !strength.is_finite() || strength <= 0.0 {
+            continue;
+        }
+        let time = if record.duration_seconds > 0.0 {
+            (active.elapsed_seconds / record.duration_seconds).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
+        frame.blur_radius_pixels += sample_scalar(&record.blur_radius, time, 0.0) * strength;
+        frame.double_vision_strength +=
+            sample_scalar(&record.double_vision_strength, time, 0.0) * strength;
+        frame.motion_blur_strength +=
+            sample_scalar(&record.motion_blur_strength, time, 0.0) * strength;
+        let radial = sample_scalar(&record.radial_blur_strength, time, 0.0) * strength;
+        frame.radial_blur_strength += radial;
+        frame.radial_blur_ramp_up +=
+            sample_scalar(&record.radial_blur_ramp_up, time, 0.0) * strength;
+        frame.radial_blur_start += sample_scalar(&record.radial_blur_start, time, 0.0) * strength;
+        frame.radial_blur_ramp_down +=
+            sample_scalar(&record.radial_blur_ramp_down, time, 0.0) * strength;
+        frame.radial_blur_down_start +=
+            (sample_scalar(&record.radial_blur_down_start, time, 1.0) - 1.0) * strength;
+        if radial.abs() > f32::EPSILON {
+            let weight = radial.abs();
+            radial_center_sum[0] += record.radial_blur_center[0] * weight;
+            radial_center_sum[1] += record.radial_blur_center[1] * weight;
+            radial_center_weight += weight;
+        }
+
+        frame.saturation *= grade_factor(
+            &record.saturation_mult,
+            &record.saturation_add,
+            time,
+            strength,
+        );
+        frame.brightness *= grade_factor(
+            &record.brightness_mult,
+            &record.brightness_add,
+            time,
+            strength,
+        );
+        frame.contrast *= grade_factor(&record.contrast_mult, &record.contrast_add, time, strength);
+        composite_color(
+            &mut frame.tint_color,
+            sample_color(&record.tint_color, time, [1.0, 1.0, 1.0, 0.0]),
+            strength,
+        );
+        composite_color(
+            &mut frame.fade_color,
+            sample_color(&record.fade_color, time, [0.0; 4]),
+            strength,
+        );
+    }
+
+    if radial_center_weight > 0.0 {
+        frame.radial_blur_center = [
+            radial_center_sum[0] / radial_center_weight,
+            radial_center_sum[1] / radial_center_weight,
+        ];
+    }
+    frame
+}
+
+fn grade_factor(mult: &[ImadScalarKey], add: &[ImadScalarKey], time: f32, strength: f32) -> f32 {
+    let authored = sample_scalar(mult, time, 1.0) + sample_scalar(add, time, 0.0);
+    (1.0 + (authored - 1.0) * strength).max(0.0)
+}
+
+fn sample_scalar(keys: &[ImadScalarKey], time: f32, default: f32) -> f32 {
+    let Some(first) = keys.first() else {
+        return default;
+    };
+    if time <= first.time {
+        return first.value;
+    }
+    for pair in keys.windows(2) {
+        let [left, right] = pair else { unreachable!() };
+        if time <= right.time {
+            let width = right.time - left.time;
+            let alpha = if width.abs() <= f32::EPSILON {
+                1.0
+            } else {
+                ((time - left.time) / width).clamp(0.0, 1.0)
+            };
+            return left.value + (right.value - left.value) * alpha;
+        }
+    }
+    keys.last().map_or(default, |key| key.value)
+}
+
+fn sample_color(keys: &[ImadColorKey], time: f32, default: [f32; 4]) -> [f32; 4] {
+    let Some(first) = keys.first() else {
+        return default;
+    };
+    if time <= first.time {
+        return first.color;
+    }
+    for pair in keys.windows(2) {
+        let [left, right] = pair else { unreachable!() };
+        if time <= right.time {
+            let width = right.time - left.time;
+            let alpha = if width.abs() <= f32::EPSILON {
+                1.0
+            } else {
+                ((time - left.time) / width).clamp(0.0, 1.0)
+            };
+            return std::array::from_fn(|i| {
+                left.color[i] + (right.color[i] - left.color[i]) * alpha
+            });
+        }
+    }
+    keys.last().map_or(default, |key| key.color)
+}
+
+fn composite_color(target: &mut [f32; 4], source: [f32; 4], strength: f32) {
+    let alpha = (source[3] * strength).clamp(0.0, 1.0);
+    let prior_alpha = target[3].clamp(0.0, 1.0);
+    let combined_alpha = alpha + prior_alpha * (1.0 - alpha);
+    if combined_alpha > f32::EPSILON {
+        for channel in 0..3 {
+            target[channel] = (source[channel] * alpha
+                + target[channel] * prior_alpha * (1.0 - alpha))
+                / combined_alpha;
+        }
+    }
+    target[3] = combined_alpha;
 }
 
 pub fn register(world: &mut World) {
@@ -304,5 +555,110 @@ mod tests {
         )
         .is_none());
         assert_eq!(world.resource::<QuestStageState>().get_stage(quest), 145);
+    }
+
+    #[test]
+    fn scalar_curves_interpolate_and_hold_endpoints() {
+        let keys = [
+            ImadScalarKey {
+                time: 0.0,
+                value: 0.0,
+            },
+            ImadScalarKey {
+                time: 0.5,
+                value: 4.0,
+            },
+            ImadScalarKey {
+                time: 1.0,
+                value: 2.0,
+            },
+        ];
+        assert_eq!(sample_scalar(&keys, -1.0, 9.0), 0.0);
+        assert_eq!(sample_scalar(&keys, 0.25, 9.0), 2.0);
+        assert_eq!(sample_scalar(&keys, 0.75, 9.0), 3.0);
+        assert_eq!(sample_scalar(&keys, 2.0, 9.0), 2.0);
+        assert_eq!(sample_scalar(&[], 0.5, 9.0), 9.0);
+    }
+
+    #[test]
+    fn callback_drives_timed_image_space_frame_then_expires() {
+        const IMAD: u32 = 0x0010_1DAC;
+        let mut world = World::new();
+        register(&mut world);
+        world.insert_resource(QuestStageState::default());
+        let curve = vec![
+            ImadScalarKey {
+                time: 0.0,
+                value: 0.0,
+            },
+            ImadScalarKey {
+                time: 0.5,
+                value: 4.0,
+            },
+            ImadScalarKey {
+                time: 1.0,
+                value: 0.0,
+            },
+        ];
+        install_image_space_modifiers(
+            &mut world,
+            [ImadRecord {
+                form_id: IMAD,
+                duration_seconds: 2.0,
+                radial_blur_center: [0.25, 0.75],
+                blur_radius: curve.clone(),
+                radial_blur_strength: vec![ImadScalarKey {
+                    time: 0.5,
+                    value: 1.0,
+                }],
+                saturation_mult: vec![ImadScalarKey {
+                    time: 0.5,
+                    value: 0.5,
+                }],
+                tint_color: vec![ImadColorKey {
+                    time: 0.5,
+                    color: [0.5, 0.75, 1.0, 0.4],
+                }],
+                ..Default::default()
+            }],
+        );
+        world
+            .resource_mut::<CinematicPresentationState>()
+            .register_player_animation_event(
+                CinematicAnimationEvent::PlayImod,
+                QuestFormId(0x0003_372B),
+                vec![ImageSpaceModifierApplication {
+                    form_id: IMAD,
+                    strength: 1.0,
+                }],
+            );
+        dispatch_player_cinematic_animation_event(&world, CinematicAnimationEvent::PlayImod)
+            .expect("registered callback");
+
+        image_space_modifier_system(&world, 1.0);
+        let frame = world
+            .resource::<CinematicPresentationState>()
+            .image_space_modifier_frame;
+        assert_eq!(frame.blur_radius_pixels, 4.0);
+        assert_eq!(frame.radial_blur_strength, 1.0);
+        assert_eq!(frame.radial_blur_center, [0.25, 0.75]);
+        assert_eq!(frame.saturation, 0.5);
+        assert!((frame.tint_color[3] - 0.4).abs() < 1.0e-6);
+
+        image_space_modifier_system(&world, 1.1);
+        assert_eq!(
+            world
+                .resource::<CinematicPresentationState>()
+                .image_space_modifier_frame
+                .blur_radius_pixels,
+            0.0
+        );
+        image_space_modifier_system(&world, 0.0);
+        assert_eq!(
+            world
+                .resource::<CinematicPresentationState>()
+                .image_space_modifier_frame,
+            ImageSpaceModifierFrame::default()
+        );
     }
 }

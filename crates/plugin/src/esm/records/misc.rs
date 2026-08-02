@@ -20,6 +20,7 @@
 //! - [`magic`] — `PERK` / `SPEL` / `MGEF` / `ENCH`
 //! - [`effects`] — `AVIF` / `PROJ` / `EFSH` / `IMOD` / `EXPL` / `IPCT`
 //!   / `IPDS` / `REPU`
+//! - [`imagespace`] — animated `IMAD` lens and color-grade curves
 //! - [`equipment`] — `ARMA` / `BPTD` / `COBJ` / `SLGM` /
 //!   `MinimalEsmRecord`
 //!
@@ -32,6 +33,7 @@ mod character;
 pub mod dialogue;
 mod effects;
 mod equipment;
+mod imagespace;
 mod magic;
 pub mod pack;
 mod quest;
@@ -55,6 +57,7 @@ pub use equipment::{
     parse_arma, parse_bptd, parse_cobj, parse_minimal_esm_record, parse_slgm, ArmaRecord,
     BptdRecord, CobjRecord, MinimalEsmRecord, SlgmRecord,
 };
+pub use imagespace::{parse_imad, ImadColorKey, ImadRecord, ImadScalarKey};
 pub use magic::{
     parse_ench, parse_mgef, parse_perk, parse_spel, EnchRecord, MgefRecord, PerkRecord, SpelRecord,
 };

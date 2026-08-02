@@ -2,9 +2,10 @@
 //!
 //! Scene composition now produces render-resolution linear HDR. The frame
 //! upscaler reconstructs it into an output-resolution HDR target, and this
-//! final fullscreen pass applies exposure/ACES/underwater before writing the
-//! sRGB swapchain. Keeping this pass after the upscale boundary is what makes
-//! the native-copy bridge and the FSR dispatch interchangeable.
+//! final fullscreen pass applies IMAD lens/color curves, exposure, ACES, and
+//! underwater treatment before writing the sRGB swapchain. Keeping this pass
+//! after the upscale boundary is what makes the native-copy bridge and the
+//! FSR dispatch interchangeable.
 
 use super::descriptors::{write_combined_image_sampler, DescriptorPoolBuilder};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -20,6 +21,61 @@ struct PresentationPushConstants {
     underwater: [f32; 4],
     exposure: f32,
     padding: [f32; 3],
+    lens: [f32; 4],
+    radial_curve: [f32; 4],
+    grade: [f32; 4],
+    radial_center: [f32; 4],
+    tint_color: [f32; 4],
+    fade_color: [f32; 4],
+}
+
+/// Output-resolution image-space state supplied by the gameplay runtime.
+/// Defaults are exact identity, so games and frames without active IMADs pay
+/// only the shader's uniform branch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageSpaceModifierView {
+    pub blur_radius_pixels: f32,
+    pub double_vision_strength: f32,
+    pub motion_blur_strength: f32,
+    pub radial_blur_strength: f32,
+    pub radial_blur_ramp_up: f32,
+    pub radial_blur_start: f32,
+    pub radial_blur_ramp_down: f32,
+    pub radial_blur_down_start: f32,
+    pub radial_blur_center: [f32; 2],
+    pub saturation: f32,
+    pub brightness: f32,
+    pub contrast: f32,
+    pub tint_color: [f32; 4],
+    pub fade_color: [f32; 4],
+}
+
+impl Default for ImageSpaceModifierView {
+    fn default() -> Self {
+        Self {
+            blur_radius_pixels: 0.0,
+            double_vision_strength: 0.0,
+            motion_blur_strength: 0.0,
+            radial_blur_strength: 0.0,
+            radial_blur_ramp_up: 0.0,
+            radial_blur_start: 0.0,
+            radial_blur_ramp_down: 0.0,
+            radial_blur_down_start: 1.0,
+            radial_blur_center: [0.5, 0.5],
+            saturation: 1.0,
+            brightness: 1.0,
+            contrast: 1.0,
+            tint_color: [1.0, 1.0, 1.0, 0.0],
+            fade_color: [0.0, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PresentationFrame {
+    pub exposure: f32,
+    pub underwater: [f32; 4],
+    pub image_space: ImageSpaceModifierView,
 }
 
 pub struct PresentationPipeline {
@@ -329,14 +385,13 @@ impl PresentationPipeline {
     ///
     /// `cmd` must be recording outside a render pass and `image_index` must
     /// name the currently-acquired swapchain image.
-    pub unsafe fn dispatch(
+    pub(crate) unsafe fn dispatch(
         &self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         frame: usize,
         image_index: usize,
-        exposure: f32,
-        underwater: [f32; 4],
+        input: PresentationFrame,
     ) {
         let clear = [vk::ClearValue {
             color: vk::ClearColorValue {
@@ -360,9 +415,35 @@ impl PresentationPipeline {
             max_depth: 1.0,
         };
         let constants = PresentationPushConstants {
-            underwater,
-            exposure,
+            underwater: input.underwater,
+            exposure: input.exposure,
             padding: [0.0; 3],
+            lens: [
+                input.image_space.blur_radius_pixels,
+                input.image_space.double_vision_strength,
+                input.image_space.motion_blur_strength,
+                input.image_space.radial_blur_strength,
+            ],
+            radial_curve: [
+                input.image_space.radial_blur_ramp_up,
+                input.image_space.radial_blur_start,
+                input.image_space.radial_blur_ramp_down,
+                input.image_space.radial_blur_down_start,
+            ],
+            grade: [
+                input.image_space.saturation,
+                input.image_space.brightness,
+                input.image_space.contrast,
+                0.0,
+            ],
+            radial_center: [
+                input.image_space.radial_blur_center[0],
+                input.image_space.radial_blur_center[1],
+                0.0,
+                0.0,
+            ],
+            tint_color: input.image_space.tint_color,
+            fade_color: input.image_space.fade_color,
         };
         let constant_bytes = unsafe {
             // SAFETY: `PresentationPushConstants` is repr(C), contains only
@@ -521,10 +602,25 @@ mod tests {
 
     #[test]
     fn presentation_push_constants_match_shader_alignment() {
-        assert_eq!(std::mem::size_of::<PresentationPushConstants>(), 32);
+        assert_eq!(std::mem::size_of::<PresentationPushConstants>(), 128);
         assert_eq!(
             std::mem::offset_of!(PresentationPushConstants, exposure),
             16
         );
+        assert_eq!(std::mem::offset_of!(PresentationPushConstants, lens), 32);
+        assert_eq!(
+            std::mem::offset_of!(PresentationPushConstants, fade_color),
+            112
+        );
+    }
+
+    #[test]
+    fn image_space_defaults_are_identity() {
+        let view = ImageSpaceModifierView::default();
+        assert_eq!(view.saturation, 1.0);
+        assert_eq!(view.brightness, 1.0);
+        assert_eq!(view.contrast, 1.0);
+        assert_eq!(view.blur_radius_pixels, 0.0);
+        assert_eq!(view.tint_color[3], 0.0);
     }
 }

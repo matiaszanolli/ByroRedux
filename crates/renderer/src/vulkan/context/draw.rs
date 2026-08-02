@@ -4,6 +4,7 @@ use super::super::descriptors::memory_barrier;
 use super::super::frame_upscaler::FsrFrameParameters;
 use super::super::material::GpuMaterial;
 use super::super::pipeline::PipelineKey;
+use super::super::presentation::ImageSpaceModifierView;
 use super::super::scene_buffer::{
     self, GpuInstance, GpuTerrainTile, INSTANCE_FLAG_ALPHA_BLEND, INSTANCE_FLAG_CAUSTIC_SOURCE,
     INSTANCE_FLAG_DIFFUSE_ALPHA, INSTANCE_FLAG_FLAT_SHADING, INSTANCE_FLAG_NON_UNIFORM_SCALE,
@@ -857,6 +858,8 @@ pub struct FrameInputs<'a> {
     /// below the water surface in world units. `[0, 0, 0, 0]` disables
     /// underwater FX.
     pub underwater: [f32; 4],
+    /// Timed Bethesda IMAD lens and color-grade channels.
+    pub image_space_modifier: ImageSpaceModifierView,
     /// #1195 / PERF-DIM7-01 — per-frame dirty set for the skin compute
     /// dispatch + skinned-BLAS refit gate. Entities NOT in this set whose
     /// slots already have `has_populated_output = true` AND a live BLAS skip
@@ -894,6 +897,7 @@ impl VulkanContext {
             timings,
             water_commands,
             underwater,
+            image_space_modifier,
             pose_dirty,
         } = inputs;
         // #1796 / D6-02 — reset before either early-return guard below so
@@ -2701,6 +2705,7 @@ impl VulkanContext {
                 fog_volumes,
                 fsr_frame,
                 underwater,
+                image_space_modifier,
             ) {
                 let _ = self
                     .frame_sync

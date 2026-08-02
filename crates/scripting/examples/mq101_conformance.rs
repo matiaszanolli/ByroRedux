@@ -33,10 +33,12 @@ use byroredux_scripting::papyrus_demo::PlayerEntity;
 use byroredux_scripting::quest_stages::QuestStageState;
 use byroredux_scripting::translate::effects::{lower_fragment, Effect};
 use byroredux_scripting::{
-    install_engine_start_quest, install_scene_quest_aliases, install_scene_records,
-    quest_startup_system, refresh_scene_actor_bindings, scene_playback_system, translate_pex,
-    ConditionFunction, DialogueRegistry, QuestFormId, SceneAliasCandidate, ScenePlaybackState,
-    ScenePlayer, SceneRegistry,
+    dispatch_player_cinematic_animation_event, image_space_modifier_system,
+    install_engine_start_quest, install_image_space_modifiers, install_scene_quest_aliases,
+    install_scene_records, quest_startup_system, refresh_scene_actor_bindings,
+    scene_playback_system, translate_pex, CinematicAnimationEvent, CinematicPresentationState,
+    ConditionFunction, DialogueRegistry, ImageSpaceModifierApplication, QuestFormId,
+    SceneAliasCandidate, ScenePlaybackState, ScenePlayer, SceneRegistry,
 };
 
 const MQ101_FORM_ID: u32 = 0x0003_372b;
@@ -1237,6 +1239,75 @@ fn run() -> Result<Checks, Box<dyn Error>> {
             })
             .collect::<Vec<_>>()
             .join(", "),
+    );
+    let authored_imads: Vec<_> = modifier_forms
+        .iter()
+        .filter_map(|(_, form_id)| form_id.and_then(|id| index.imagespace_modifiers.get(&id)))
+        .cloned()
+        .collect();
+    let curve_contract = authored_imads.len() == 2
+        && authored_imads
+            .iter()
+            .all(|record| record.duration_seconds > 0.0 && !record.blur_radius.is_empty())
+        && authored_imads
+            .iter()
+            .any(|record| !record.radial_blur_strength.is_empty());
+    checks.record(
+        "callback IMAD curves",
+        curve_contract,
+        authored_imads
+            .iter()
+            .map(|record| {
+                format!(
+                    "{}={:.1}s/{} blur keys/{} radial keys",
+                    record.editor_id,
+                    record.duration_seconds,
+                    record.blur_radius.len(),
+                    record.radial_blur_strength.len()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+
+    let mut imad_world = World::new();
+    byroredux_scripting::register(&mut imad_world);
+    imad_world.insert_resource(QuestStageState::default());
+    install_image_space_modifiers(&mut imad_world, authored_imads);
+    let applications: Vec<_> = modifier_forms
+        .iter()
+        .filter_map(|(_, form_id)| {
+            form_id.map(|form_id| ImageSpaceModifierApplication {
+                form_id,
+                strength: 1.0,
+            })
+        })
+        .collect();
+    imad_world
+        .resource_mut::<CinematicPresentationState>()
+        .register_player_animation_event(
+            CinematicAnimationEvent::PlayImod,
+            QuestFormId(MQ101_FORM_ID),
+            applications,
+        );
+    let callback_dispatched =
+        dispatch_player_cinematic_animation_event(&imad_world, CinematicAnimationEvent::PlayImod)
+            .is_some();
+    image_space_modifier_system(&imad_world, 1.0);
+    let sampled_imad = imad_world
+        .resource::<CinematicPresentationState>()
+        .image_space_modifier_frame;
+    checks.record(
+        "callback IMAD runtime",
+        callback_dispatched
+            && sampled_imad.blur_radius_pixels > 0.0
+            && sampled_imad.radial_blur_strength > 0.0,
+        format!(
+            "t=1.0s blur={:.3}px radial={:.3} saturation={:.3}",
+            sampled_imad.blur_radius_pixels,
+            sampled_imad.radial_blur_strength,
+            sampled_imad.saturation
+        ),
     );
 
     let gate_script_instance = index

@@ -13,11 +13,11 @@ use super::{
     ActiRecord, ArmaRecord, AvifRecord, BptdRecord, ClassRecord, ClimateRecord, CobjRecord,
     ContainerRecord, CstyRecord, DialRecord, EcznRecord, EfshRecord, EnchRecord, ExplRecord,
     EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, HairRecord, HdptRecord,
-    IdleRecord, ImgsRecord, ImodRecord, IpctRecord, IpdsRecord, ItemRecord, LeveledList,
-    LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord, NaviRecord, NavmRecord, NpcRecord,
-    OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord, RepuRecord,
-    ScenRecord, ScriptRecord, SlgmRecord, SpelRecord, TermRecord, TreeRecord, WatrRecord,
-    WeatherRecord,
+    IdleRecord, ImadRecord, ImgsRecord, ImodRecord, IpctRecord, IpdsRecord, ItemRecord,
+    LeveledList, LgtmRecord, MesgRecord, MgefRecord, MinimalEsmRecord, NaviRecord, NavmRecord,
+    NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
+    RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SpelRecord, TermRecord, TreeRecord,
+    WatrRecord, WeatherRecord,
 };
 use std::collections::HashMap;
 
@@ -274,8 +274,9 @@ pub struct EsmIndex {
     pub debris: HashMap<u32, MinimalEsmRecord>,
     /// `GRAS` grass.
     pub grasses: HashMap<u32, MinimalEsmRecord>,
-    /// `IMAD` imagespace modifier — referenced by CELL.XCIM transitions.
-    pub imagespace_modifiers: HashMap<u32, MinimalEsmRecord>,
+    /// `IMAD` image-space modifier — timed lens/color curves applied by
+    /// Papyrus cinematics and CELL.XCIM transitions.
+    pub imagespace_modifiers: HashMap<u32, ImadRecord>,
     /// `LSCR` load screen.
     pub load_screens: HashMap<u32, MinimalEsmRecord>,
     /// `LSCT` load screen type.
@@ -712,6 +713,7 @@ impl EsmIndex {
         self.terminals.extend(other.terminals);
         self.form_lists.extend(other.form_lists);
         self.trees.extend(other.trees);
+        self.imagespace_modifiers.extend(other.imagespace_modifiers);
 
         // Skyrim+ equipment graph. These maps are not optional metadata:
         // NPC.DOFT resolves through `outfits`, and both that outfit armor and
@@ -760,6 +762,32 @@ mod tests {
         merged.merge_from(plugin);
 
         assert_eq!(merged.scenes[&0x000B_ECD4].phases[0].name, "Cart ride");
+    }
+
+    #[test]
+    fn merge_from_preserves_and_overrides_imagespace_modifiers() {
+        let mut merged = EsmIndex::default();
+        merged.imagespace_modifiers.insert(
+            0x10,
+            ImadRecord {
+                form_id: 0x10,
+                duration_seconds: 1.0,
+                ..Default::default()
+            },
+        );
+        let mut plugin = EsmIndex::default();
+        plugin.imagespace_modifiers.insert(
+            0x10,
+            ImadRecord {
+                form_id: 0x10,
+                duration_seconds: 7.0,
+                ..Default::default()
+            },
+        );
+
+        merged.merge_from(plugin);
+
+        assert_eq!(merged.imagespace_modifiers[&0x10].duration_seconds, 7.0);
     }
 
     #[test]

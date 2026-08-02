@@ -160,6 +160,15 @@ pub(crate) fn populate_scene_runtime(
     world: &mut byroredux_core::ecs::world::World,
     index: &byroredux_plugin::esm::records::EsmIndex,
 ) {
+    let imad_count = byroredux_scripting::install_image_space_modifiers(
+        world,
+        index.imagespace_modifiers.values().cloned(),
+    );
+    if imad_count > 0 {
+        log::info!(
+            "Installed {imad_count} IMAD definitions into the cinematic presentation runtime"
+        );
+    }
     let equip_item_count = byroredux_scripting::install_equip_item_catalog(
         world,
         index.items.iter().filter_map(|(&form_id, item)| {

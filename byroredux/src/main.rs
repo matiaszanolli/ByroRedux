@@ -51,7 +51,7 @@ use byroredux_core::string::StringPool;
 use byroredux_platform::window::{self, WindowConfig};
 use byroredux_renderer::vulkan::context::{DrawCommand, FrameInputs};
 use byroredux_renderer::vulkan::GpuUploadCtx;
-use byroredux_renderer::{RendererConfig, VulkanContext};
+use byroredux_renderer::{ImageSpaceModifierView, RendererConfig, VulkanContext};
 use byroredux_ui::UiManager;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -698,6 +698,28 @@ impl App {
                 .world
                 .try_resource::<DeltaTime>()
                 .map_or(1000.0 / 60.0, |delta| delta.0 * 1000.0);
+            let image_space_modifier = self
+                .world
+                .try_resource::<byroredux_scripting::CinematicPresentationState>()
+                .map_or_else(ImageSpaceModifierView::default, |state| {
+                    let frame = state.image_space_modifier_frame;
+                    ImageSpaceModifierView {
+                        blur_radius_pixels: frame.blur_radius_pixels,
+                        double_vision_strength: frame.double_vision_strength,
+                        motion_blur_strength: frame.motion_blur_strength,
+                        radial_blur_strength: frame.radial_blur_strength,
+                        radial_blur_ramp_up: frame.radial_blur_ramp_up,
+                        radial_blur_start: frame.radial_blur_start,
+                        radial_blur_ramp_down: frame.radial_blur_ramp_down,
+                        radial_blur_down_start: frame.radial_blur_down_start,
+                        radial_blur_center: frame.radial_blur_center,
+                        saturation: frame.saturation,
+                        brightness: frame.brightness,
+                        contrast: frame.contrast,
+                        tint_color: frame.tint_color,
+                        fade_color: frame.fade_color,
+                    }
+                });
             match ctx.draw_frame(FrameInputs {
                 clear_color,
                 view_proj: &frame.view_proj,
@@ -725,6 +747,7 @@ impl App {
                 timings: frame_timings.as_mut(),
                 water_commands: &self.water_commands,
                 underwater: compute_underwater_params(&self.world),
+                image_space_modifier,
                 pose_dirty: self.skin_slot_pool.pose_dirty(),
             }) {
                 Ok(needs_recreate) => {

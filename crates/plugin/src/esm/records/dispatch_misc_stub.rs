@@ -1,9 +1,9 @@
 //! Long-tail supplementary-record dispatch — split out of
 //! `parse_esm_with_load_order` (#2060). #810 / FNV-D2-NEW-03: 31
 //! record types bulk-dispatched via the shared `parse_minimal_esm_record`
-//! (EDID + optional FULL only) plus five Oblivion-unique base records
-//! (BSGN/CLOT/APPA/SGST/SLGM — the last four dual-target for
-//! `cells.statics`).
+//! (EDID + optional FULL only), typed IMAD image-space curves, and five
+//! Oblivion-unique base records (BSGN/CLOT/APPA/SGST/SLGM — the last four
+//! dual-target for `cells.statics`).
 
 use super::*;
 
@@ -17,13 +17,14 @@ pub(super) fn dispatch_misc_stub_group(
     index: &mut EsmIndex,
 ) -> Result<()> {
     match label {
-        // #810 / FNV-D2-NEW-03 — 31 long-tail records that fell
+        // #810 / FNV-D2-NEW-03 — long-tail records that fell
         // through the catch-all skip. Bulk-dispatched here using
         // the shared `parse_minimal_esm_record` (EDID + optional
         // FULL). When a real consumer arrives for any one of
         // these, replace the dispatch arm + `MinimalEsmRecord`
         // map with a dedicated parser pair via the established
-        // #808 / #809 pattern.
+        // #808 / #809 pattern. IMAD has made that transition because
+        // cinematic presentation now consumes its curves.
         //
         // Audio metadata (11):
         b"ALOC" => extract_records(reader, end, b"ALOC", &mut |fid, subs| {
@@ -100,7 +101,7 @@ pub(super) fn dispatch_misc_stub_group(
         b"IMAD" => extract_records(reader, end, b"IMAD", &mut |fid, subs| {
             index
                 .imagespace_modifiers
-                .insert(fid, parse_minimal_esm_record(fid, subs));
+                .insert(fid, parse_imad(fid, subs));
         })?,
         b"LSCR" => extract_records(reader, end, b"LSCR", &mut |fid, subs| {
             index

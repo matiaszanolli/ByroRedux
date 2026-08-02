@@ -9,6 +9,7 @@
 
 use super::super::descriptors::memory_barrier;
 use super::super::frame_upscaler::{FsrFrameParameters, UpscaleDispatchInputs};
+use super::super::presentation::{ImageSpaceModifierView, PresentationFrame};
 use super::{SkyParams, VulkanContext};
 use anyhow::Result;
 use ash::vk;
@@ -156,6 +157,7 @@ impl VulkanContext {
         fog_volumes: &[super::super::volumetrics::GpuFogVolume],
         fsr_frame: Option<FsrFrameParameters>,
         underwater: [f32; 4],
+        image_space_modifier: ImageSpaceModifierView,
     ) -> Result<()> {
         // SAFETY: `cmd` is in the recording state — opened by
         // `begin_command_buffer` in `draw_frame` and not yet closed — and
@@ -674,7 +676,17 @@ impl VulkanContext {
             self.presentation
                 .as_ref()
                 .expect("presentation pipeline must exist while recording")
-                .dispatch(&self.device, cmd, frame, img, exposure, underwater);
+                .dispatch(
+                    &self.device,
+                    cmd,
+                    frame,
+                    img,
+                    PresentationFrame {
+                        exposure,
+                        underwater,
+                        image_space: image_space_modifier,
+                    },
+                );
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_presentation_end(&self.device, cmd, frame);
             }

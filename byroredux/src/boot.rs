@@ -774,6 +774,12 @@ pub(crate) fn build_scheduler() -> Scheduler {
         Stage::Update,
         crate::systems::cinematic_animation_event_system,
     );
+    // Sample freshly delivered ImageSpaceModifier.Apply callbacks after the
+    // animation event system so MQ101's blur begins in this rendered frame.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::image_space_modifier_system,
+    );
     // M27 Phase 3 — `spin_system` writes Transform on entities
     // tagged with `Spinning` (the demo cube). `animation_system`
     // also writes Transform on its own (disjoint) entity set.
