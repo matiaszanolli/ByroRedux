@@ -3447,7 +3447,27 @@ void main() {
     // avoiding multi-frame ghosting on fog transitions. `fog` UBO is
     // still read above for the RT ray-miss background color.
 
-    if ((dbgFlags & DBG_VIZ_GI_BOUNCE) != 0u) {
+    if ((dbgFlags & DBG_VIZ_NONFINITE) != 0u) {
+        // #2218 — bisect which shading term first goes non-finite. Checked
+        // upstream to downstream since a non-finite value poisons every sum
+        // it feeds: `indirect` (raw GI bounce) → `indirectLight` (+ambient
+        // +AO) → `directLight` (direct + shadow + emissive). See the
+        // DBG_VIZ_NONFINITE doc comment (shader_constants_data.rs) for the
+        // colour legend and the FO3 Megaton white-geometry motivation.
+        vec3 nfViz;
+        if (any(isnan(indirect)) || any(isinf(indirect))) {
+            nfViz = vec3(1.0, 0.0, 1.0); // magenta
+        } else if (any(isnan(indirectLight)) || any(isinf(indirectLight))) {
+            nfViz = vec3(1.0, 1.0, 0.0); // yellow
+        } else if (any(isnan(directLight)) || any(isinf(directLight))) {
+            nfViz = vec3(1.0, 0.0, 0.0); // red
+        } else {
+            nfViz = vec3(0.0, 1.0, 0.0); // green — all checked terms finite
+        }
+        outColor = vec4(nfViz, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else if ((dbgFlags & DBG_VIZ_GI_BOUNCE) != 0u) {
         // `indirect` is the stochastic ray-query bounce before authored
         // ambient and AO are folded into `indirectLight` below. Route it via
         // the direct attachment to bypass SVGF and local-albedo modulation.

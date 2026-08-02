@@ -590,6 +590,11 @@ pub(super) fn compute_blas_budget(
 /// opaque; opaque, non-blended Architecture geometry additionally carries the
 /// STRUCTURE bit so a light may respect walls without making clutter/actors
 /// cast authored object shadows.
+///
+/// `SHADOW_MASK_OPAQUE` and `SHADOW_MASK_GLASS` are disjoint — no instance
+/// ever carries both (see #2227). A ray query that wants to treat glass as an
+/// occluder too must pass `SHADOW_MASK_OPAQUE | SHADOW_MASK_GLASS`, not
+/// `OPAQUE` alone.
 #[inline]
 pub(super) fn shadow_mask_for_instance(
     material_kind: u32,

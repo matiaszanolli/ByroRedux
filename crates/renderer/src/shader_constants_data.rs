@@ -82,11 +82,21 @@ pub const MATERIAL_KIND_FIRE_REFRACTION: u32 = 103;
 
 // TLAS instance shadow-ray mask buckets (the 8-bit mask AND'd against a
 // ray query's cullMask — see the extension-point comment at
-// `acceleration/tlas.rs`'s `instance_custom_index_and_mask` site). Every
-// Instances may carry more than one bit: opaque Architecture-layer geometry
-// carries both OPAQUE and STRUCTURE so portal-strict/no-prop-shadow lights can
-// still be blocked by walls while authored shadow lights query every opaque
+// `acceleration/tlas.rs`'s `instance_custom_index_and_mask` site). Instances
+// may carry more than one bit: opaque Architecture-layer geometry carries
+// both OPAQUE and STRUCTURE so portal-strict/no-prop-shadow lights can still
+// be blocked by walls while authored shadow lights query every opaque
 // object. Glass stays in its own bucket for RGB transmission.
+//
+// #2227 — OPAQUE and GLASS are DISJOINT: no instance ever carries both, and
+// a ray query given only one bit as its `cullMask` will pass straight
+// through every instance in the other bucket without registering a hit. Both
+// of today's ray-query consumers (`caustic_splat.comp`, `volumetrics_inject.comp`)
+// deliberately query ONE bucket at a time (they trace glass and opaque
+// separately to distinguish "occluded" from "occluded by transparent
+// media"), so this is not a live bug — but a future single-mask consumer
+// that wants full-scene occlusion (treat glass as opaque for its purposes)
+// MUST query `SHADOW_MASK_OPAQUE | SHADOW_MASK_GLASS`, not `OPAQUE` alone.
 pub const SHADOW_MASK_OPAQUE: u32 = 0x01;
 pub const SHADOW_MASK_GLASS: u32 = 0x02;
 pub const SHADOW_MASK_STRUCTURE: u32 = 0x04;
@@ -542,6 +552,22 @@ pub const DBG_VIZ_GI_BOUNCE: u32 = 0x200000;
 /// forgotten camera-cut resets visible without a RenderDoc capture.
 pub const DBG_VIZ_FSR_TEMPORAL: u32 = 0x400000;
 
+/// 0x800000 — #2218 diagnostic: bisect which shading term first goes
+/// non-finite (NaN/Inf). FO3 Megaton's exterior geometry saturates to pure
+/// white and survives a 42x exposure crush untouched — a value that ignores
+/// a 42x reduction is non-finite, not merely bright (`ACES(Inf) → 1.0`;
+/// `NaN` propagates to white through tone mapping). Checks, upstream to
+/// downstream: `indirect` (the raw stochastic GI bounce, pre-ambient/AO) →
+/// `indirectLight` (adds authored ambient + AO) → `directLight` (the
+/// ReSTIR-shaded, shadow-ray-gated direct term + emissive) — the terms that
+/// feed the final composite. A fault reports at the earliest term it
+/// reaches, since a non-finite value there also poisons every downstream sum.
+///   magenta = `indirect` (GI bounce) non-finite
+///   yellow  = `indirectLight` (ambient + GI + AO) non-finite
+///   red     = `directLight` (direct + shadow + emissive) non-finite
+///   green   = every checked term finite at this fragment
+pub const DBG_VIZ_NONFINITE: u32 = 0x800000;
+
 /// Single source of truth for every `DBG_*` debug-viz bit, in emit order.
 /// Both `build.rs` (GLSL header emit) and `shader_constants.rs`'s test
 /// module (`generated_header_contains_all_defines` value-pin,
@@ -579,6 +605,7 @@ pub const DBG_BITS: &[(&str, u32)] = &[
     ("DBG_VIZ_MATERIAL_STATE", DBG_VIZ_MATERIAL_STATE),
     ("DBG_VIZ_GI_BOUNCE", DBG_VIZ_GI_BOUNCE),
     ("DBG_VIZ_FSR_TEMPORAL", DBG_VIZ_FSR_TEMPORAL),
+    ("DBG_VIZ_NONFINITE", DBG_VIZ_NONFINITE),
 ];
 
 /// #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot WRS

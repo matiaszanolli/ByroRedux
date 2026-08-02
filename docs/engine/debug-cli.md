@@ -934,6 +934,11 @@ Accepts plain decimal (`8`) or hex (`0x8`). Constants are defined in
 | `0x4`  | `DBG_VIZ_NORMALS`               | Output the post-perturb world-space normal as RGB and exit (also written to G-buffer). |
 | `0x8`  | `DBG_VIZ_TANGENT`               | Color fragments by tangent presence: green = authored or synthesized tangent reaches `perturbNormal` Path 1, red = zero tangent → screen-space derivative Path 2 fallback. |
 | `0x10` | `DBG_BYPASS_NORMAL_MAP`         | Skip `perturbNormal(...)` entirely; lighting uses the geometric vertex normal. Use to bisect whether an artifact comes from the TBN reconstruction or from downstream specular / ambient code. |
+| `0x800000` | `DBG_VIZ_NONFINITE`         | Bisect which shading term first goes non-finite (NaN/Inf): magenta = `indirect` (raw GI bounce), yellow = `indirectLight` (+ambient/AO), red = `directLight` (direct + shadow + emissive), green = all checked terms finite. Added for #2218 (FO3 Megaton exterior geometry saturating to pure white regardless of exposure). |
+
+(Bits `0x20`–`0x400000` also exist — see `crates/renderer/src/shader_constants_data.rs`'s
+`DBG_BITS` catalog, the single source of truth, for the full up-to-date list; this table
+covers the oldest bits plus ones with a written diagnostic recipe below.)
 
 Combine bits with bitwise-OR — e.g. `BYROREDUX_RENDER_DEBUG=0x14` runs the
 normals visualization *with* the normal-map perturbation skipped, showing pure
@@ -966,6 +971,30 @@ Standard order, in increasing cost:
    Skyrim+/FO4 + the `synthesize_tangents` fallback on FO3/FNV/Oblivion both
    feed `vertexTangent.xyz`). Red fragments mean the import path didn't produce
    a tangent for that mesh — investigate the NIF parser for that specific block.
+
+#### Diagnostic recipe — geometry saturates to white regardless of exposure (#2218)
+
+Symptom: crushing exposure by an order of magnitude or more scales sky/authored
+content as expected but does not move the affected geometry by a single pixel.
+`ACES(Inf) → 1.0` and any `NaN` propagates to white through tone mapping, so a
+value immune to exposure is non-finite, not merely bright.
+
+1. **`BYROREDUX_RENDER_DEBUG=0x800000`** (`DBG_VIZ_NONFINITE`) + relaunch on the
+   affected cell/camera. Green everywhere means none of the checked terms
+   (`indirect`, `indirectLight`, `directLight`) are non-finite at the visible
+   fragments — the fault is upstream of these three sums (e.g. a NaN baked into
+   an input texture/vertex attribute, or a divide-by-zero feeding one of them
+   that this bit doesn't isolate further) or downstream in composite/tone
+   mapping; widen the search there. Magenta/yellow/red pinpoints which of the
+   three terms goes non-finite first (see the bit's table entry above).
+2. Once a term is identified, RenderDoc-capture that specific pass (or add a
+   narrower `isnan`/`isinf` check inside it) to find the exact non-finite
+   input — a divide with a possibly-zero denominator, an unclamped `pow`/`log`
+   on a negative or zero base, or a bad UBO/SSBO read are the usual suspects.
+3. Do not patch exposure, ACES, or any downstream term from static reasoning
+   alone — fix the actual non-finite producer once identified (see the
+   project's standing rule against speculative Vulkan/shader fixes whose
+   failure modes are invisible to `cargo test`).
 
 ### Headless `--cmd` (no TCP, no window)
 
