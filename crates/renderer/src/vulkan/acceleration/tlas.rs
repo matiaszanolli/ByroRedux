@@ -171,8 +171,10 @@ impl AccelerationManager {
                     // reflections / GI until its cell unloads and reloads.
                     missing_rigid_blas += 1;
                     if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
-                        missing_samples
-                            .push(format!("rigid mesh_handle={} (no BLAS)", mesh_handle));
+                        missing_samples.push(format!(
+                            "rigid entity {:?} mesh_handle={} (no BLAS)",
+                            draw_cmd.entity_id, mesh_handle
+                        ));
                     }
                     continue;
                 };
