@@ -33,7 +33,7 @@ mod types;
 
 pub use constants::SKINNED_BLAS_REFIT_THRESHOLD;
 pub use predicates::build_instance_map;
-pub use types::{BlasEntry, SkinnedBlasGeometry, TlasState};
+pub use types::{BlasBuildSource, BlasEntry, SkinnedBlasGeometry, TlasState};
 
 // Surfaces a CPU-side scratch-shrink helper to sibling modules (notably
 // `vulkan::context::draw`, which calls it on the per-frame `Vec` it

@@ -1022,6 +1022,7 @@ pub(crate) fn setup_scene(
         ctx.allocator.as_ref().unwrap(),
         &ctx.graphics_queue,
         ctx.transfer_pool,
+        ctx.device_caps.ray_query_supported,
     ) {
         log::warn!("Failed to build geometry SSBO: {e}");
     }

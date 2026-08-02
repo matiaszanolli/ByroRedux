@@ -91,6 +91,15 @@ pub const SHADOW_MASK_OPAQUE: u32 = 0x01;
 pub const SHADOW_MASK_GLASS: u32 = 0x02;
 pub const SHADOW_MASK_STRUCTURE: u32 = 0x04;
 
+// Per-light shadow policy encoded in `GpuLight.params.z`.  Every renderer
+// pass decodes this same value rather than maintaining pass-local boolean
+// combinations.  NONE is useful for synthetic/debug lights, STRUCTURE keeps
+// unshadowed Bethesda fixtures from leaking through Architecture geometry,
+// and FULL enables opaque prop/actor blockers plus dielectric transmission.
+pub const SHADOW_POLICY_NONE: u32 = 0;
+pub const SHADOW_POLICY_STRUCTURE: u32 = 1;
+pub const SHADOW_POLICY_FULL: u32 = 2;
+
 // Shared direct-shadow distance contract. These values apply to every
 // environment; cell kind may change light sources and GI inputs, never the
 // direct-light shadow reach. The trace distance covers the complete fade
@@ -103,6 +112,11 @@ const _: () = {
     assert!(SHADOW_FADE_START >= 0.0);
     assert!(SHADOW_FADE_START < SHADOW_FADE_END);
     assert!(DIRECTIONAL_SHADOW_TRACE_DISTANCE >= SHADOW_FADE_END);
+};
+
+const _: () = {
+    assert!(SHADOW_POLICY_NONE < SHADOW_POLICY_STRUCTURE);
+    assert!(SHADOW_POLICY_STRUCTURE < SHADOW_POLICY_FULL);
 };
 
 // #1913 — these buckets are declared `u32` here but packed into the 8-bit

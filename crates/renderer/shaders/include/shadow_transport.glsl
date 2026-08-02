@@ -1,0 +1,122 @@
+#ifndef BYRO_SHADOW_TRANSPORT_GLSL
+#define BYRO_SHADOW_TRANSPORT_GLSL
+
+// Material-aware RGB visibility along a light segment. Opaque geometry is an
+// alpha-aware binary blocker; glass accumulates tint, absorption and Fresnel
+// loss interface by interface.  Callers must include bindings.glsl and
+// ray_hit.glsl and shadow_common.glsl before this file.
+vec3 traceShadowTransmittance(
+    vec3 origin, vec3 direction, float maxDist, float emitterRadius
+) {
+    const int MAX_OPAQUE_LAYERS = 8;
+    vec3 opaqueOrigin = origin;
+    float opaqueRemaining = maxDist;
+    for (int layer = 0; layer < MAX_OPAQUE_LAYERS; ++layer) {
+        rayQueryEXT opaqueRQ;
+        rayQueryInitializeEXT(
+            opaqueRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
+            SHADOW_MASK_OPAQUE,
+            opaqueOrigin, 0.05, direction, opaqueRemaining);
+        while (rayQueryProceedEXT(opaqueRQ)) {}
+        if (rayQueryGetIntersectionTypeEXT(opaqueRQ, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT) break;
+
+        int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(opaqueRQ, true);
+        int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(opaqueRQ, true);
+        vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(opaqueRQ, true);
+        float hitT = rayQueryGetIntersectionTEXT(opaqueRQ, true);
+        GpuInstance hitInst = instances[hitIdx];
+        GpuMaterial hitMat = materials[hitInst.materialId];
+        bool effectCard = hitMat.materialKind == MATERIAL_KIND_EFFECT_SHADER;
+        if (effectCard) {
+            float advance = hitT + 0.1;
+            opaqueRemaining -= advance;
+            if (opaqueRemaining <= 0.05) break;
+            opaqueOrigin += direction * advance;
+            continue;
+        }
+
+        bool alphaSensitive = hitMat.alphaThreshold > 0.0
+            || (hitInst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u;
+        bool nearEmitter = emitterRadius > 0.0
+            && opaqueRemaining - hitT <= emitterRadius
+            && max(max(hitMat.emissiveR, hitMat.emissiveG), hitMat.emissiveB)
+                * max(hitMat.emissiveMult, 1.0) > 0.01;
+        if (!alphaSensitive && !nearEmitter) return vec3(0.0);
+
+        vec2 hitUV = resolveRayHitUV(
+            uint(hitIdx), uint(hitPrim), hitBary, direction, hitMat);
+        vec4 hitBase;
+        bool covered = rayHitHasCoverage(hitInst, hitMat, hitUV, hitBase);
+        vec3 hitEmission = rayHitEmission(hitMat, hitUV, hitBase.rgb, 0.0);
+        bool sourceShell = nearEmitter
+            && max(max(hitEmission.r, hitEmission.g), hitEmission.b) > 0.01;
+        if (covered && !sourceShell) return vec3(0.0);
+
+        float advance = hitT + 0.1;
+        opaqueRemaining -= advance;
+        if (opaqueRemaining <= 0.05) break;
+        opaqueOrigin += direction * advance;
+    }
+
+    const int MAX_GLASS_INTERFACES = 4;
+    vec3 transmission = vec3(1.0);
+    vec3 rayOrigin = origin;
+    float remaining = maxDist;
+
+    for (int layer = 0; layer < MAX_GLASS_INTERFACES; ++layer) {
+        rayQueryEXT glassRQ;
+        rayQueryInitializeEXT(
+            glassRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
+            SHADOW_MASK_GLASS,
+            rayOrigin, 0.05, direction, remaining);
+        while (rayQueryProceedEXT(glassRQ)) {}
+        if (rayQueryGetIntersectionTypeEXT(glassRQ, true)
+            == gl_RayQueryCommittedIntersectionNoneEXT) {
+            break;
+        }
+
+        int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(glassRQ, true);
+        int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(glassRQ, true);
+        vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(glassRQ, true);
+        float hitT = rayQueryGetIntersectionTEXT(glassRQ, true);
+        GpuInstance hitInst = instances[hitIdx];
+        GpuMaterial hitMat = materials[hitInst.materialId];
+        vec2 hitUV = resolveRayHitUV(
+            uint(hitIdx), uint(hitPrim), hitBary, direction, hitMat);
+        vec4 glassTex;
+        bool covered = rayHitHasCoverage(hitInst, hitMat, hitUV, glassTex);
+        if (!covered) {
+            float advance = hitT + 0.1;
+            remaining -= advance;
+            if (remaining <= 0.05) break;
+            rayOrigin += direction * advance;
+            continue;
+        }
+        vec3 tint = clamp(
+            glassTex.rgb * vec3(hitMat.diffuseR, hitMat.diffuseG, hitMat.diffuseB),
+            vec3(0.02), vec3(1.0));
+        float authoredOpacity = clamp(glassTex.a * hitMat.materialAlpha, 0.0, 1.0);
+        vec3 hitN = getHitTriNormal(uint(hitIdx), uint(hitPrim));
+        if (dot(hitN, direction) > 0.0) hitN = -hitN;
+        float cosTheta = clamp(dot(-direction, hitN), 0.0, 1.0);
+        float ior = max(hitMat.ior, 1.0);
+        float f0 = (ior - 1.0) / (ior + 1.0);
+        f0 *= f0;
+        float fresnel = f0 + (1.0 - f0) * pow(1.0 - cosTheta, 5.0);
+
+        float absorption = mix(0.08, 0.45, authoredOpacity);
+        transmission *= mix(vec3(1.0), tint, absorption) * (1.0 - fresnel);
+        if (max(max(transmission.r, transmission.g), transmission.b) < 0.01) {
+            return vec3(0.0);
+        }
+
+        float advance = hitT + 0.1;
+        remaining -= advance;
+        if (remaining <= 0.05) break;
+        rayOrigin += direction * advance;
+    }
+    return transmission;
+}
+
+#endif

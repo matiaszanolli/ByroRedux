@@ -577,10 +577,13 @@ impl App {
                     ctx.allocator.as_ref().unwrap(),
                     &ctx.graphics_queue,
                     ctx.transfer_pool,
+                    ctx.device_caps.ray_query_supported,
                 ) {
                     log::warn!("Failed to rebuild geometry SSBO: {e}");
                 }
             }
+
+            ctx.build_global_blas_for_draws(&self.draw_commands);
 
             world_resource_set::<DebugStats>(&self.world, |s| {
                 s.draw_command_count = self.draw_commands.len() as u32;

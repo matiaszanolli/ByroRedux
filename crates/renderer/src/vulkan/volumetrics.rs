@@ -1941,9 +1941,9 @@ mod unit_tests {
     fn every_contributing_local_fog_light_obeys_structural_visibility() {
         let shader = include_str!("../../shaders/volumetrics_inject.comp");
         for contract in [
-            "lights[li].params.z > 0.5 || lights[li].params.w > 0.5",
-            "? SHADOW_MASK_OPAQUE",
-            ": SHADOW_MASK_STRUCTURE",
+            "shadowPolicyNeedsVisibility(lights[li].params.z)",
+            "shadowPolicyOpaqueMask(lights[li].params.z)",
+            "shadowPolicyUsesGlass(lights[li].params.z)",
             "world_pos, toLightDir, 0.05, shadowDist, opaqueMask",
         ] {
             assert!(

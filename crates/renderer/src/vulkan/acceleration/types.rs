@@ -7,6 +7,23 @@
 use super::super::buffer::GpuBuffer;
 use ash::vk;
 
+/// Raw device-buffer slice used to build one static mesh BLAS.
+///
+/// Per-mesh uploads use zero byte offsets; global-only exterior LOD meshes use
+/// subranges of MeshRegistry's shared vertex/index buffers.  Keeping the build
+/// contract buffer-based avoids duplicating hundreds of LOD allocations just
+/// to make their nearby structure available to shadow rays.
+#[derive(Clone, Copy)]
+pub struct BlasBuildSource {
+    pub mesh_handle: u32,
+    pub vertex_buffer: vk::Buffer,
+    pub index_buffer: vk::Buffer,
+    pub vertex_byte_offset: vk::DeviceSize,
+    pub index_byte_offset: vk::DeviceSize,
+    pub vertex_count: u32,
+    pub index_count: u32,
+}
+
 /// Vertex/index buffer + count pair describing the skinned geometry a
 /// per-entity BLAS refit reads from. Groups the four GPU-geometry
 /// arguments that travel together into [`super::AccelerationManager::refit_skinned_blas`].

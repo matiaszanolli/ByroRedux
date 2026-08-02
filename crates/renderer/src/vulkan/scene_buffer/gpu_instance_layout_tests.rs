@@ -450,6 +450,7 @@ fn secondary_ray_material_hits_resolve_parallax_uvs() {
     let hit = include_str!("../../../shaders/include/ray_hit.glsl");
     let raytrace = include_str!("../../../shaders/include/raytrace.glsl");
     let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    let shadow_transport = include_str!("../../../shaders/include/shadow_transport.glsl");
     let triangle = include_str!("../../../shaders/triangle.frag");
     let water = include_str!("../../../shaders/water.frag");
 
@@ -470,7 +471,8 @@ fn secondary_ray_material_hits_resolve_parallax_uvs() {
 
     for (source_name, source, expected_calls) in [
         ("raytrace.glsl", raytrace, 1),
-        ("lighting.glsl", lighting, 2),
+        ("lighting.glsl", lighting, 0),
+        ("shadow_transport.glsl", shadow_transport, 2),
         ("triangle.frag", triangle, 2),
         ("water.frag", water, 1),
     ] {

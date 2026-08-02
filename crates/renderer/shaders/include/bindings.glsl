@@ -175,7 +175,7 @@ struct GpuLight {
     vec4 position_radius;  // xyz = position, w = radius
     vec4 color_type;       // rgb = color, w = type (0=point, 1=spot, 2=directional)
     vec4 direction_angle;  // xyz = direction, w = spot angle cosine
-    vec4 params;           // x = falloff, y = emitter radius, z = full shadows, w = structure visibility
+    vec4 params;           // x = falloff, y = emitter radius, z = SHADOW_POLICY_*, w = reserved
 };
 
 layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {

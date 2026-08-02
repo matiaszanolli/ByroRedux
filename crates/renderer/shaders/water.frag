@@ -113,6 +113,8 @@ layout(location = 7) out float outFsrTransparency;
 // descriptor or pipeline-layout surface.
 #include "include/bindings.glsl"
 #include "include/ray_hit.glsl"
+#include "include/shadow_common.glsl"
+#include "include/shadow_transport.glsl"
 
 // #1256 / Phase D of #1210 — water-side caustic accumulator.
 // Per-FIF R32_UINT storage image owned by WaterCausticAccum (#1255),
@@ -647,23 +649,17 @@ void main() {
         // overhead sun (the #1459 bug) — keep it consistent with
         // caustic_splat.comp.
         vec3 sunDir = normalize(sunDirection.xyz);       // direction TO the sun
-        // 1. Shadow ray toward sun (terminate-on-first-hit). Fire along
-        //    +sunDir (toward the sun) so an occluder between the surface and
-        //    the sky blocks the caustic — matches triangle.frag:3083+.
-        rayQueryEXT shadowRq;
-        rayQueryInitializeEXT(
-            shadowRq, topLevelAS,
-            gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-            0xFF,
+        // 1. Use the same material-aware full policy as surface lighting:
+        // opaque structure/props block, while glass transmits tinted energy.
+        vec3 sunTransmission = traceShadowTransmittance(
             vWorldPos + Nsurface * 0.05,
-            0.05,
             sunDir,
-            DIRECTIONAL_SHADOW_TRACE_DISTANCE
+            DIRECTIONAL_SHADOW_TRACE_DISTANCE,
+            0.0
         );
-        rayQueryProceedEXT(shadowRq);
-        bool sunVisible =
-            rayQueryGetIntersectionTypeEXT(shadowRq, true)
-            == gl_RayQueryCommittedIntersectionNoneEXT;
+        float sunVisibility = dot(
+            sunTransmission, vec3(0.2126, 0.7152, 0.0722));
+        bool sunVisible = sunVisibility > 0.001;
         if (sunVisible) {
             // 2. Snell refraction. refract() takes the incident *propagation*
             // direction (light travel = sun → surface = `-sunDir`), NOT the
@@ -720,7 +716,8 @@ void main() {
                             // depth as the refracted column spreads.
                             float NdotSun = max(dot(Nsurface, sunDir), 0.0);
                             float travelFall = 1.0 / (1.0 + floorT * floorT * 1e-4);
-                            float contrib = sunDirection.w * NdotSun * travelFall;
+                            float contrib = sunDirection.w * sunVisibility
+                                * NdotSun * travelFall;
                             float scale = CAUSTIC_FIXED_SCALE;
                             float clamp_max = float(0xFFFFFFFFu) / scale;
                             uint fixed_val =

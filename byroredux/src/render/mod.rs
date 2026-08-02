@@ -501,6 +501,7 @@ pub(crate) fn build_render_data(
         world,
         &frustum,
         vp_mat,
+        cam_pos,
         skin_offsets,
         draw_commands,
         material_table,

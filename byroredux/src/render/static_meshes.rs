@@ -23,7 +23,7 @@ use byroredux_core::ecs::{
     AnimatedUvTransform, AnimatedVisibility, EntityId, GlobalTransform, Material, MeshHandle,
     RenderLayer, TextureHandle, World, WorldBound,
 };
-use byroredux_core::math::Mat4;
+use byroredux_core::math::{Mat4, Vec3};
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::MaterialTable;
 
@@ -34,6 +34,13 @@ use crate::components::{
 
 use super::camera::FrustumPlanes;
 use super::f32_sortable_u32;
+
+/// Include an LOD sphere when any part of it can intersect the conservative
+/// receiver-fade + directional-trace reach around the camera.
+fn lod_shadow_caster_in_range(center: Vec3, radius: f32, cam_pos: Vec3) -> bool {
+    center.distance(cam_pos)
+        <= byroredux_renderer::shader_constants::LOD_SHADOW_CASTER_DISTANCE + radius.max(0.0)
+}
 
 /// Walk every (GlobalTransform, MeshHandle) entity, apply per-entity
 /// optional-component overrides, frustum-cull, intern materials, and
@@ -46,6 +53,7 @@ pub(super) fn collect_static_mesh_draws(
     world: &World,
     frustum: &FrustumPlanes,
     vp_mat: Mat4,
+    cam_pos: Vec3,
     skin_offsets: &HashMap<EntityId, u32>,
     draw_commands: &mut Vec<DrawCommand>,
     material_table: &mut MaterialTable,
@@ -123,10 +131,9 @@ pub(super) fn collect_static_mesh_draws(
     // coplanar depth/TLAS occluders. This is deliberately separate from the
     // RenderLayer::Decal class, which also includes ordinary alpha cutouts.
     let decal_mesh_q = world.query::<IsDecalMesh>();
-    // Distant-terrain LOD blocks (#view-dist) — coarse raster-only meshes
-    // with no BLAS. They flow through this same loop (single-texture, no
-    // material → identity-PBR fallback) but are forced `in_tlas = false`
-    // so they never enter the TLAS / RT budget. See `IsLodTerrain`.
+    // Distant-terrain/object LOD blocks (#view-dist). They flow through this
+    // same loop; a conservative camera-local subset enters the TLAS as
+    // structure shadow casters while farther blocks remain raster-only.
     let lod_q = world.query::<IsLodTerrain>();
     // DEBUG BISECT (#markarth-fragments) — `BYRO_NO_CULL=1` forces every
     // static visible (skips the frustum cull) to test whether the
@@ -187,8 +194,9 @@ pub(super) fn collect_static_mesh_draws(
             // without a WorldBound (or radius 0, i.e. not yet computed)
             // pass through as visible. See #237 (original cull) +
             // #516 (split raster / TLAS predicate).
+            let world_bound = wb_q.as_ref().and_then(|q| q.get(entity));
             let in_raster = no_cull
-                || match wb_q.as_ref().and_then(|q| q.get(entity)) {
+                || match world_bound {
                     Some(wb) if wb.radius > 0.0 => frustum.contains_sphere(wb.center, wb.radius),
                     _ => true,
                 };
@@ -204,9 +212,12 @@ pub(super) fn collect_static_mesh_draws(
                 .as_ref()
                 .is_some_and(|q| q.get(entity).is_some());
             let is_lod = lod_q.as_ref().is_some_and(|q| q.get(entity).is_some());
+            let lod_shadow_caster = is_lod
+                && world_bound
+                    .is_some_and(|wb| lod_shadow_caster_in_range(wb.center, wb.radius, cam_pos));
             let mat = mat_q.as_ref().and_then(|q| q.get(entity));
             let material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
-            let in_tlas = !is_lod
+            let in_tlas = (!is_lod || lod_shadow_caster)
                 && !is_decal_mesh
                 && material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
                 && material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION;
@@ -727,5 +738,25 @@ pub(super) fn collect_static_mesh_draws(
                 draw_commands.push(cmd);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lod_shadow_reach_includes_intersecting_sphere() {
+        let reach = byroredux_renderer::shader_constants::LOD_SHADOW_CASTER_DISTANCE;
+        assert!(lod_shadow_caster_in_range(
+            Vec3::new(reach + 99.0, 0.0, 0.0),
+            100.0,
+            Vec3::ZERO,
+        ));
+        assert!(!lod_shadow_caster_in_range(
+            Vec3::new(reach + 101.0, 0.0, 0.0),
+            100.0,
+            Vec3::ZERO,
+        ));
     }
 }

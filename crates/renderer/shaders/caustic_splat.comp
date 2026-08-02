@@ -41,7 +41,7 @@ struct GpuLight {
     vec4 position_radius;
     vec4 color_type;
     vec4 direction_angle;
-    vec4 params;  // x = falloff, y = emitter radius, z = full shadows, w = structure visibility
+    vec4 params;  // x = falloff, y = emitter radius, z = SHADOW_POLICY_*, w = reserved
 };
 
 layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
@@ -106,6 +106,8 @@ layout(std430, set = 0, binding = 5) readonly buffer InstanceBuffer {
 
 layout(set = 0, binding = 6) uniform accelerationStructureEXT topLevelAS;
 
+#include "include/shadow_common.glsl"
+
 // ── Output: scalar caustic accumulator (R32_UINT, atomic add) ───────
 layout(set = 0, binding = 7, r32ui) uniform uimage2D causticAccum;
 
@@ -145,23 +147,6 @@ vec3 reconstructWorldPos(ivec2 pixel, float depth) {
     // #markarth-precision — invViewProj is the camera-RELATIVE inverse; lift to
     // ABSOLUTE world (caustic source selection + TLAS interactions are absolute).
     return world.xyz / world.w + renderOrigin.xyz;
-}
-
-bool traceOcclusion(vec3 origin, vec3 direction, float maxDist, uint mask) {
-    rayQueryEXT rq;
-    rayQueryInitializeEXT(
-        rq,
-        topLevelAS,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-        mask,
-        origin,
-        0.05,
-        direction,
-        maxDist
-    );
-    rayQueryProceedEXT(rq);
-    return rayQueryGetIntersectionTypeEXT(rq, true)
-        != gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
 void main() {
@@ -364,19 +349,32 @@ void main() {
         // Refract through the outward-facing surface normal. If the light
         // hits the back of the surface, flip the normal.
         vec3 ns = (dot(N, -LtoG) > 0.0) ? N : -N;
-        bool needsVisibility = L.params.z > 0.5 || L.params.w > 0.5;
+        float sourceVisibility = 1.0;
+        bool needsVisibility = shadowPolicyNeedsVisibility(L.params.z);
         if (needsVisibility) {
-            uint sourceMask =
-                L.params.z > 0.5 ? SHADOW_MASK_OPAQUE : SHADOW_MASK_STRUCTURE;
+            uint sourceMask = shadowPolicyOpaqueMask(L.params.z);
             // Verify that radiance reaches the refractor before generating a
             // caustic. Pre-fix the pass checked only radius/N·L, so glass
             // behind a dungeon wall projected a bright pool into the room.
-            if (traceOcclusion(
+            if (traceShadowBinary(
                     G + ns * 0.1,
                     -LtoG,
+                    0.05,
                     sourceVisibilityDist,
                     sourceMask)) {
                 continue;
+            }
+            if (shadowPolicyUsesGlass(L.params.z)
+                && traceShadowBinary(
+                    G + ns * 0.1,
+                    -LtoG,
+                    0.05,
+                    sourceVisibilityDist,
+                    SHADOW_MASK_GLASS)) {
+                // Material tables are intentionally absent from this compact
+                // pass. Match volumetric injection's conservative neutral
+                // dielectric interface transmission.
+                sourceVisibility = 0.75;
             }
         }
         processedLights++;
@@ -512,7 +510,8 @@ void main() {
         // Two dielectric interfaces transmit `(1-F)^2` under the parallel-
         // interface approximation used for the exit direction.
         float interfaceTransmission = (1.0 - entryFresnel) * (1.0 - entryFresnel);
-        float contrib = lum * lightFall * lightReach * travelFall * tintLum
+        float contrib = lum * lightFall * lightReach * sourceVisibility
+            * travelFall * tintLum
             * interfaceTransmission * strength * emaWeight;
 
         // Clamp anchored to the u32 atomic range: max representable

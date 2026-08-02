@@ -87,11 +87,11 @@ pub type MeshCacheKey = (String, u32);
 
 /// A mesh stored on the GPU: vertex + index buffers and index count.
 pub struct GpuMesh {
-    /// `None` for global-SSBO-only scene meshes (distant terrain LOD,
-    /// #1370): they rasterize from the global vertex/index buffer and
-    /// carry no per-mesh buffers. Such a mesh must never be BLAS-built
-    /// (it is uploaded `rt_enabled = false`) and is skipped by the
-    /// per-mesh draw fallback. Every other upload path sets `Some`.
+    /// `None` for global-SSBO-only scene meshes (distant terrain/object LOD,
+    /// #1370): they rasterize from the shared vertex/index buffers and carry
+    /// no per-mesh allocations. Nearby LOD structure may still build a static
+    /// BLAS from its subrange of those shared buffers; the per-mesh draw
+    /// fallback continues to skip it. Every other upload path sets `Some`.
     pub vertex_buffer: Option<GpuBuffer>,
     pub index_buffer: Option<GpuBuffer>,
     pub index_count: u32,
@@ -117,8 +117,9 @@ pub struct GpuMesh {
     /// VUID-vkCmdBuildAccelerationStructuresKHR-geometry-03673.
     ///
     /// The upload side deliberately clears this for effect-shader proxy
-    /// volumes, decals, water, and global-SSBO-only LOD blocks so rays
-    /// don't hit their non-physical hulls as solid geometry. The static
+    /// volumes, decals, water, and global-only LOD because this flag describes
+    /// dedicated-buffer eligibility. The bounded LOD shadow path validates and
+    /// uses the RT-capable shared buffers separately. The static
     /// BLAS path has always honoured that via its own `for_rt` gate; the
     /// skinned path now reads this flag instead of assuming every
     /// skinned mesh is RT-capable.
@@ -489,9 +490,9 @@ impl MeshRegistry {
         Ok(id)
     }
 
-    /// Upload a scene mesh that draws ONLY from the global geometry SSBO —
-    /// no per-mesh vertex/index buffers, no BLAS (#1370). Used by distant
-    /// terrain LOD blocks: they rasterize from the global buffer with
+    /// Upload a scene mesh that draws only from the global geometry SSBO —
+    /// no per-mesh vertex/index allocations (#1370). Used by distant terrain
+    /// and object LOD blocks: they rasterize from the global buffer with
     /// `rt_enabled = false`, so the per-mesh buffers
     /// [`Self::upload_scene_mesh`] would create are pure boot-time waste
     /// (~2 synchronous fence-waits + 2 tiny device-local sub-allocations per
@@ -500,8 +501,8 @@ impl MeshRegistry {
     /// The returned mesh carries `None` buffers, so it MUST be drawn via the
     /// global indirect path (`global_bound == true`); the per-mesh draw
     /// fallback skips it (it renders once `rebuild_geometry_ssbo` runs — a
-    /// ≤1-frame distant pop-in) and it must never be BLAS-built (the BLAS
-    /// path asserts `Some`).
+    /// ≤1-frame distant pop-in). A bounded nearby subset may be BLAS-built
+    /// directly from its offsets in the RT-capable shared buffers.
     pub fn upload_scene_mesh_global_only(
         &mut self,
         vertices: &[Vertex],
@@ -527,8 +528,8 @@ impl MeshRegistry {
             global_index_offset: i_offset,
             vertex_count: vertices.len() as u32,
             is_scene_mesh: true,
-            // No per-mesh buffers at all, so there is nothing a BLAS could
-            // be built from — the strongest form of "not RT-capable".
+            // No dedicated buffers: the ordinary per-mesh BLAS path must skip
+            // this handle. The bounded LOD path uses the shared pool instead.
             rt_capable: false,
         }));
         // Parallel-indexed refcount; lockstep with `meshes` push (mirrors
@@ -718,6 +719,7 @@ impl MeshRegistry {
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
+        rt_enabled: bool,
     ) -> Result<()> {
         if self.pending_vertices.is_empty() {
             return Ok(());
@@ -741,17 +743,23 @@ impl MeshRegistry {
             queue,
             command_pool,
         };
+        let rt_usage = if rt_enabled {
+            vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+        } else {
+            vk::BufferUsageFlags::empty()
+        };
         self.global_vertex_buffer = Some(GpuBuffer::create_device_local_buffer(
             ctx,
             vertex_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER | rt_usage,
             &self.pending_vertices,
             self.geometry_staging_pool.as_mut(),
         )?);
         self.global_index_buffer = Some(GpuBuffer::create_device_local_buffer(
             ctx,
             index_size,
-            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER | rt_usage,
             &self.pending_indices,
             self.geometry_staging_pool.as_mut(),
         )?);
@@ -785,6 +793,7 @@ impl MeshRegistry {
         allocator: &SharedAllocator,
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
+        rt_enabled: bool,
     ) -> Result<()> {
         // If any scene meshes were dropped since the last build, compact
         // the pending buffers and rewrite every live mesh's offsets. Pure
@@ -826,7 +835,7 @@ impl MeshRegistry {
         // Rebuild from all accumulated data. The internal
         // `geometry_staging_pool` (lazy-initialised in `build_geometry_ssbo`
         // on first call, then reused) keeps the staging-buffer churn bounded.
-        self.build_geometry_ssbo(device, allocator, queue, command_pool)
+        self.build_geometry_ssbo(device, allocator, queue, command_pool, rt_enabled)
     }
 
     /// Returns true when new meshes have been loaded since the last SSBO

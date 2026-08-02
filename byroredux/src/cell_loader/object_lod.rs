@@ -354,6 +354,9 @@ pub(crate) fn unload_object_lod_block(
     block: &ObjectLodBlock,
 ) {
     for &h in &block.mesh_handles {
+        if let Some(accel) = ctx.accel_manager.as_mut() {
+            accel.drop_blas(h);
+        }
         ctx.mesh_registry.drop_mesh(h);
     }
     // #1537 — release the shared atlas refcount once (acquired once per quad

@@ -67,6 +67,8 @@ layout(location = 7) out float outFsrTransparency;
 #include "include/raytrace.glsl"
 #include "include/clusters.glsl"
 #include "include/pbr.glsl"
+#include "include/shadow_common.glsl"
+#include "include/shadow_transport.glsl"
 #include "include/lighting.glsl"
 #include "include/material_sampling.glsl"
 
@@ -2546,8 +2548,7 @@ void main() {
             vec3 shadowableRadiance = shadowableLightRadiance(
                 i, N, V, NdotV, F0, albedo, roughness, metalness,
                 specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
-            bool needsVisibility =
-                lights[i].params.z > 0.5 || lights[i].params.w > 0.5;
+            bool needsVisibility = shadowPolicyNeedsVisibility(lights[i].params.z);
 
             // Accumulate as if unshadowed (legacy subtractive estimator
             // only — ReSTIR adds the single shadowed sample after the loop).
@@ -2729,8 +2730,8 @@ void main() {
                 // in range + finite-positive weight). The final visibility ray
                 // re-validates the selected light at the current surface.
                 if (sameSurface && rpLightIndex < lightCount
-                    && (lights[rpLightIndex].params.z > 0.5
-                        || lights[rpLightIndex].params.w > 0.5) && rp.M > 0.0
+                    && shadowPolicyNeedsVisibility(lights[rpLightIndex].params.z)
+                    && rp.M > 0.0
                     && rp.W > 0.0 && !isnan(rp.W) && !isinf(rp.W)) {
                     vec3 rpRad = shadowableLightRadiance(
                         rpLightIndex, N, V, NdotV, F0, albedo, roughness,
@@ -2823,8 +2824,8 @@ void main() {
                     // Re-evaluate the neighbour's pick at THIS surface, gated on
                     // geometric-normal similarity (skip cross-edge neighbours).
                     if (rnLightIndex < lightCount
-                        && (lights[rnLightIndex].params.z > 0.5
-                            || lights[rnLightIndex].params.w > 0.5) && rn.M > 0.0
+                        && shadowPolicyNeedsVisibility(lights[rnLightIndex].params.z)
+                        && rn.M > 0.0
                         && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)
                         && dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS) {
                         vec3 rnRad = shadowableLightRadiance(
@@ -2854,8 +2855,7 @@ void main() {
             }
             vec3 frameContribution = vec3(0.0); // this frame's rad·W·V estimate
             if (restirY != 0xFFFFFFFFu && restirW > 0.0
-                && (lights[restirY].params.z > 0.5
-                    || lights[restirY].params.w > 0.5)
+                && shadowPolicyNeedsVisibility(lights[restirY].params.z)
                 && shadowFade > 0.01) {
                 uint i = restirY;
                 vec3 lightPos = lights[i].position_radius.xyz;
@@ -2893,7 +2893,7 @@ void main() {
                         vec3 jitteredDir =
                             L + (Tb * diskSample.x + Bb * diskSample.y) * sunAngularRadius;
                         rayDir = normalize(jitteredDir);
-                        rayDist = 100000.0;
+                        rayDist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
                     }
                     transmissionSum += traceLightTransmittance(
                         i, rayOrigin, rayDir, max(rayDist, 0.01));
@@ -2964,7 +2964,7 @@ void main() {
         for (uint s = 0; s < NUM_RESERVOIRS; s++) {
             if (resLight[s] == 0xFFFFFFFFu) continue;
             uint i = resLight[s];
-            if (lights[i].params.z <= 0.5 && lights[i].params.w <= 0.5) continue;
+            if (!shadowPolicyNeedsVisibility(lights[i].params.z)) continue;
             float W = min((resWSum / max(resWSel[s], 1e-6)) * invK, RESERVOIR_W_CLAMP);
             vec3 lightPos = lights[i].position_radius.xyz;
             float radius = lights[i].position_radius.w;
@@ -3036,16 +3036,9 @@ void main() {
                 float sunAngularRadius = skyTint.w;
                 vec3 jitteredDir = L + (T * diskSample.x + B * diskSample.y) * sunAngularRadius;
                 rayDir = normalize(jitteredDir);
-                // 100 000 units covers the diagonal of a 7×7 exterior
-                // grid (~58K units) with ~40K headroom so distant
-                // mountains + cell-edge architecture still occlude
-                // the sun. Pre-#102 the 10K cap clipped to one cell,
-                // losing shadows from anything ≥2 cells away —
-                // visible as "floating" lighting on distant terrain
-                // faces and missing cast shadows from opposite-cell
-                // architecture. BVH traversal is log-time so the
-                // larger tmax is not a meaningful cost.
-                rayDist = 100000.0;
+                // Shared directional reach: the complete shadow fade interval
+                // is traced by every pass, then receivers taper to zero.
+                rayDist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
             }
 
             vec3 transmission = traceLightTransmittance(

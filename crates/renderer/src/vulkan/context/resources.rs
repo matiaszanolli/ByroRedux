@@ -138,11 +138,24 @@ impl VulkanContext {
         };
         let allocator = self.allocator.as_ref().expect("allocator missing");
 
-        // Gather mesh references for the batch — skip any missing handles.
-        let meshes: Vec<(u32, &crate::mesh::GpuMesh, u32, u32)> = mesh_specs
+        // Gather raw sources for the batch — ordinary meshes use their
+        // dedicated RT-capable buffers at byte offset zero.
+        let meshes: Vec<crate::vulkan::acceleration::BlasBuildSource> = mesh_specs
             .iter()
             .filter_map(|&(handle, vc, ic)| {
-                self.mesh_registry.get(handle).map(|m| (handle, m, vc, ic))
+                let mesh = self.mesh_registry.get(handle)?;
+                if !mesh.rt_capable {
+                    return None;
+                }
+                Some(crate::vulkan::acceleration::BlasBuildSource {
+                    mesh_handle: handle,
+                    vertex_buffer: mesh.vertex_buffer.as_ref()?.buffer,
+                    index_buffer: mesh.index_buffer.as_ref()?.buffer,
+                    vertex_byte_offset: 0,
+                    index_byte_offset: 0,
+                    vertex_count: vc,
+                    index_count: ic,
+                })
             })
             .collect();
 
@@ -157,6 +170,81 @@ impl VulkanContext {
             Ok(count) => count,
             Err(e) => {
                 log::warn!("Batched BLAS build failed: {e}");
+                0
+            }
+        }
+    }
+
+    /// Build the nearby global-only LOD meshes selected for this frame's TLAS.
+    ///
+    /// Sources are byte-offset subranges of the global buffers, so exterior
+    /// terrain/object LOD gains structure shadows without restoring per-block
+    /// buffer allocations or upload fence waits. Existing BLAS are filtered
+    /// before batching; the per-frame scan also catches an already-resident
+    /// LOD block the moment camera motion brings it into shadow range.
+    pub fn build_global_blas_for_draws(&mut self, draw_commands: &[super::DrawCommand]) -> usize {
+        let (Some(global_vb), Some(global_ib), Some(accel)) = (
+            self.mesh_registry.global_vertex_buffer.as_ref(),
+            self.mesh_registry.global_index_buffer.as_ref(),
+            self.accel_manager.as_ref(),
+        ) else {
+            return 0;
+        };
+
+        let mut handles: Vec<u32> = draw_commands
+            .iter()
+            .filter_map(|cmd| {
+                if !cmd.in_tlas || accel.has_blas(cmd.mesh_handle) {
+                    return None;
+                }
+                let mesh = self.mesh_registry.get(cmd.mesh_handle)?;
+                (mesh.vertex_buffer.is_none() && mesh.index_buffer.is_none())
+                    .then_some(cmd.mesh_handle)
+            })
+            .collect();
+        handles.sort_unstable();
+        handles.dedup();
+
+        let vertex_stride = std::mem::size_of::<crate::Vertex>() as u64;
+        let index_stride = std::mem::size_of::<u32>() as u64;
+        let sources: Vec<crate::vulkan::acceleration::BlasBuildSource> = handles
+            .into_iter()
+            .filter_map(|handle| {
+                let mesh = self.mesh_registry.get(handle)?;
+                Some(crate::vulkan::acceleration::BlasBuildSource {
+                    mesh_handle: handle,
+                    vertex_buffer: global_vb.buffer,
+                    index_buffer: global_ib.buffer,
+                    vertex_byte_offset: u64::from(mesh.global_vertex_offset) * vertex_stride,
+                    index_byte_offset: u64::from(mesh.global_index_offset) * index_stride,
+                    vertex_count: mesh.vertex_count,
+                    index_count: mesh.index_count,
+                })
+            })
+            .collect();
+
+        if sources.is_empty() {
+            return 0;
+        }
+        let allocator = self.allocator.as_ref().expect("allocator missing");
+        let accel = self
+            .accel_manager
+            .as_mut()
+            .expect("checked acceleration manager above");
+        match accel.build_blas_batched(
+            &self.device,
+            allocator,
+            &self.graphics_queue,
+            self.transfer_pool,
+            Some(&self.transfer_fence),
+            &sources,
+        ) {
+            Ok(count) => {
+                log::debug!("Built {count} global-buffer LOD shadow BLAS");
+                count
+            }
+            Err(e) => {
+                log::warn!("Global-buffer LOD BLAS batch failed: {e}");
                 0
             }
         }

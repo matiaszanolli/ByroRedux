@@ -1039,8 +1039,9 @@ mod tests {
     fn caustic_source_light_is_visibility_tested_before_refraction() {
         let shader = include_str!("../../shaders/caustic_splat.comp");
         for contract in [
-            "bool needsVisibility = L.params.z > 0.5 || L.params.w > 0.5;",
-            "L.params.z > 0.5 ? SHADOW_MASK_OPAQUE : SHADOW_MASK_STRUCTURE",
+            "bool needsVisibility = shadowPolicyNeedsVisibility(L.params.z);",
+            "uint sourceMask = shadowPolicyOpaqueMask(L.params.z);",
+            "shadowPolicyUsesGlass(L.params.z)",
             "G + ns * 0.1",
             "-LtoG",
             "sourceVisibilityDist",

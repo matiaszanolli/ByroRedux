@@ -132,6 +132,13 @@ fn main() {
         "#define SHADOW_MASK_STRUCTURE {SHADOW_MASK_STRUCTURE}u"
     )
     .unwrap();
+    writeln!(out, "#define SHADOW_POLICY_NONE {SHADOW_POLICY_NONE}u").unwrap();
+    writeln!(
+        out,
+        "#define SHADOW_POLICY_STRUCTURE {SHADOW_POLICY_STRUCTURE}u"
+    )
+    .unwrap();
+    writeln!(out, "#define SHADOW_POLICY_FULL {SHADOW_POLICY_FULL}u").unwrap();
     writeln!(out, "#define SHADOW_FADE_START {SHADOW_FADE_START:?}").unwrap();
     writeln!(out, "#define SHADOW_FADE_END {SHADOW_FADE_END:?}").unwrap();
     writeln!(

@@ -579,6 +579,9 @@ pub(crate) fn unload_placement_lod_block(
     block: &PlacementLodBlock,
 ) {
     for &h in &block.mesh_handles {
+        if let Some(accel) = ctx.accel_manager.as_mut() {
+            accel.drop_blas(h);
+        }
         ctx.mesh_registry.drop_mesh(h);
     }
     for &t in &block.texture_handles {

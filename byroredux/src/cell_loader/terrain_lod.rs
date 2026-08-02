@@ -427,12 +427,15 @@ pub(crate) fn stream_lod_blocks(
     complete
 }
 
-/// Tear down one streamed LOD block (#1373): free its global-SSBO geometry
-/// — `drop_mesh` marks the SSBO dirty so the next `rebuild_geometry_ssbo`
-/// compacts the dead range out — and despawn its entity. LOD blocks carry
-/// no BLAS (rt-disabled) and no `CellRoot`, so this is their only reclaim
-/// path (mirrors the scene-mesh half of `cell_loader::unload_cell`).
+/// Tear down one streamed LOD block (#1373): retire its optional nearby-shadow
+/// BLAS, free its global-SSBO geometry, and despawn its entity. `drop_mesh`
+/// marks the SSBO dirty so the next `rebuild_geometry_ssbo` compacts the dead
+/// range out. LOD blocks have no `CellRoot`, so this is their only reclaim path
+/// (mirrors the scene-mesh half of `cell_loader::unload_cell`).
 pub(crate) fn unload_lod_block(world: &mut World, ctx: &mut VulkanContext, block: &LodBlock) {
+    if let Some(accel) = ctx.accel_manager.as_mut() {
+        accel.drop_blas(block.mesh_handle);
+    }
     ctx.mesh_registry.drop_mesh(block.mesh_handle);
     // #1537 — release the base ground texture refcount. `World::despawn`
     // has no GPU side effects, so without this the `resolve_texture` bump

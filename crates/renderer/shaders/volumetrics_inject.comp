@@ -77,6 +77,8 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
 // needed because sun radiance is constant.
 layout(set = 0, binding = 2) uniform accelerationStructureEXT topLevelAS;
 
+#include "include/shadow_common.glsl"
+
 // Phase 2b — point/spot light in-scattering. Bindings 3/4/5 mirror the
 // SAME per-frame lights SSBO + cluster grid + light-index list
 // `cluster_cull.comp` builds for the fragment shader (struct layouts
@@ -89,7 +91,7 @@ struct GpuLight {
     vec4 position_radius; // xyz = position, w = radius
     vec4 color_type;       // rgb = color, w = type (0=point, 1=spot, 2=directional)
     vec4 direction_angle;  // xyz = direction, w = spot angle cosine
-    vec4 params;           // x = falloff, y = emitter radius, z = full shadows, w = structure visibility
+    vec4 params;           // x = falloff, y = emitter radius, z = SHADOW_POLICY_*, w = reserved
 };
 
 layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
@@ -291,31 +293,6 @@ float proceduralDensityScale(vec3 worldPos, float refHeight) {
     return heightTerm * mix(0.2, 1.35, density);
 }
 
-// Binary occlusion test: true if the ray hits ANY geometry in `mask`'s
-// bucket within [tMin, tMax]. TERMINATE_ON_FIRST_HIT — only presence
-// matters, no closest-hit shading. `mask` selects the TLAS instance
-// bucket (SHADOW_MASK_OPAQUE / SHADOW_MASK_GLASS, see
-// `shader_constants.glsl` and the instance-mask assignment in
-// `acceleration/tlas.rs`) — both buckets are built with the same
-// per-triangle OPAQUE geometry flag, so this is a presence check, not
-// an alpha test.
-bool traceOcclusion(vec3 origin, vec3 dir, float tMin, float tMax, uint mask) {
-    rayQueryEXT rq;
-    rayQueryInitializeEXT(
-        rq,
-        topLevelAS,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-        mask,
-        origin,
-        tMin,
-        dir,
-        tMax
-    );
-    rayQueryProceedEXT(rq);
-    return rayQueryGetIntersectionTypeEXT(rq, true)
-        != gl_RayQueryCommittedIntersectionNoneEXT;
-}
-
 // Henyey-Greenstein single-lobe phase function. cos_theta is the
 // cosine of the angle between the light incoming direction and the
 // view direction (toward the camera). g controls anisotropy:
@@ -513,7 +490,7 @@ void main() {
     vec3 ray_dir = -light_in;
     float visibility;
     bool isExterior = params.render_origin.w > 0.5;
-    bool opaqueHit = traceOcclusion(
+    bool opaqueHit = traceShadowBinary(
         ray_origin,
         ray_dir,
         0.05,
@@ -525,7 +502,7 @@ void main() {
     } else if (isExterior) {
         visibility = 1.0;
     } else {
-        bool sawGlass = traceOcclusion(
+        bool sawGlass = traceShadowBinary(
             ray_origin, ray_dir, 0.05, params.volume_params.x, SHADOW_MASK_GLASS
         );
         visibility = sawGlass ? 1.0 : 0.0;
@@ -587,21 +564,19 @@ void main() {
                 atten *= clamp((spotFactor - spotAngle) / (1.0 - spotAngle), 0.0, 1.0);
             }
             float localVisibility = 1.0;
-            bool needsVisibility =
-                lights[li].params.z > 0.5 || lights[li].params.w > 0.5;
+            bool needsVisibility = shadowPolicyNeedsVisibility(lights[li].params.z);
             if (needsVisibility && atten > 1.0e-4) {
                 vec3 toLightDir = toLight / max(dist, 0.001);
                 // Stop at the finite luminous shell (`params.y`) instead of
                 // tracing into the middle of a bulb/flame and letting the
                 // fixture nullify its own volumetric glow.
                 float shadowDist = max(dist - lights[li].params.y, 0.05);
-                uint opaqueMask = lights[li].params.z > 0.5
-                    ? SHADOW_MASK_OPAQUE
-                    : SHADOW_MASK_STRUCTURE;
-                if (traceOcclusion(
+                uint opaqueMask = shadowPolicyOpaqueMask(lights[li].params.z);
+                if (traceShadowBinary(
                         world_pos, toLightDir, 0.05, shadowDist, opaqueMask)) {
                     localVisibility = 0.0;
-                } else if (lights[li].params.z > 0.5 && traceOcclusion(
+                } else if (shadowPolicyUsesGlass(lights[li].params.z)
+                    && traceShadowBinary(
                         world_pos, toLightDir, 0.05, shadowDist,
                         SHADOW_MASK_GLASS)) {
                     // This pass does not bind the material/texture tables;

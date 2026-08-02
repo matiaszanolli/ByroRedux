@@ -13,6 +13,7 @@
 //! `feedback_format_translation.md`.
 
 use byroredux_core::ecs::{GlobalTransform, LightSource, World, LIGHT_FLAG_SHADOW_MASK};
+use byroredux_renderer::shader_constants::{SHADOW_POLICY_FULL, SHADOW_POLICY_STRUCTURE};
 
 use crate::components::{CellLightingRes, SkyParamsRes};
 
@@ -140,10 +141,10 @@ pub(super) fn collect_lights(
             // is a no-op for them but the shader still reads `params.x`
             // unconditionally — pass `0.0` (the "use default" sentinel)
             // so the shader's directional branch ignores it cleanly.
-            // z = cast-shadow contract. The cell directional always
+            // z = unified shadow policy. The cell directional always
             // participates in visibility; a zero RGB source is rejected by
             // the shader's contribution gate before reservoir streaming.
-            params: [0.0, 0.0, 1.0, 1.0],
+            params: [0.0, 0.0, SHADOW_POLICY_FULL as f32, 0.0],
         });
     }
 
@@ -202,17 +203,21 @@ pub(super) fn collect_lights(
                     direction_angle: [0.0, 0.0, 0.0, 0.0],
                     // x = standardized attenuation curve shape; y = finite
                     // emitter proxy used to stop shadow segments at the
-                    // luminous shell instead of inside the fixture; z =
-                    // authored LIGH full-shadow behavior; w = structural
-                    // visibility. Every physical light is blocked by
-                    // Architecture geometry. Skyrim lights without
-                    // 0x400/0x800/0x1000 skip clutter/actor prop shadows,
-                    // not walls.
+                    // luminous shell instead of inside the fixture; z = the
+                    // unified policy consumed by every visibility pass; w is
+                    // reserved. Every physical light is blocked by
+                    // Architecture geometry. Skyrim lights without authored
+                    // shadow bits use STRUCTURE, skipping clutter/actor prop
+                    // shadows but never walls.
                     params: [
                         falloff_shape,
                         source_radius,
-                        if casts_shadows { 1.0 } else { 0.0 },
-                        1.0,
+                        if casts_shadows {
+                            SHADOW_POLICY_FULL as f32
+                        } else {
+                            SHADOW_POLICY_STRUCTURE as f32
+                        },
+                        0.0,
                     ],
                 });
             }
@@ -603,10 +608,10 @@ mod gi_light_priority_tests {
             .iter()
             .find(|light| light.position_radius[0] == 20.0)
             .expect("shadowed fixture light");
-        assert_eq!(unshadowed.params[2], 0.0);
-        assert_eq!(unshadowed.params[3], 1.0);
-        assert_eq!(shadowed.params[2], 1.0);
-        assert_eq!(shadowed.params[3], 1.0);
+        assert_eq!(unshadowed.params[2], SHADOW_POLICY_STRUCTURE as f32);
+        assert_eq!(unshadowed.params[3], 0.0);
+        assert_eq!(shadowed.params[2], SHADOW_POLICY_FULL as f32);
+        assert_eq!(shadowed.params[3], 0.0);
     }
 
     /// Integration-level regression: three point lights inserted in an

@@ -13,7 +13,7 @@ use super::predicates::{
     align_scratch_address, blas_over_budget, scratch_alignment_padding, scratch_needs_growth,
     should_evict_mid_batch, submit_one_time,
 };
-use super::types::BlasEntry;
+use super::types::{BlasBuildSource, BlasEntry};
 use super::AccelerationManager;
 use crate::deferred_destroy::DEFAULT_COUNTDOWN;
 use crate::mesh::GpuMesh;
@@ -65,6 +65,13 @@ impl AccelerationManager {
         for ref mut t in self.tlas.iter_mut().flatten() {
             t.needs_full_rebuild = true;
         }
+    }
+
+    /// Whether `handle` currently owns a live static BLAS.
+    pub fn has_blas(&self, handle: u32) -> bool {
+        self.blas_entries
+            .get(handle as usize)
+            .is_some_and(Option::is_some)
     }
 
     /// Drain and destroy BLAS entries whose defer countdown has reached
@@ -454,7 +461,7 @@ impl AccelerationManager {
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         transfer_fence: Option<&std::sync::Mutex<vk::Fence>>,
-        meshes: &[(u32, &GpuMesh, u32, u32)], // (mesh_handle, mesh, vertex_count, index_count)
+        meshes: &[BlasBuildSource],
     ) -> Result<usize> {
         if meshes.is_empty() {
             return Ok(0);
@@ -543,33 +550,23 @@ impl AccelerationManager {
         let mut triangles_data: Vec<vk::AccelerationStructureGeometryTrianglesDataKHR> =
             Vec::with_capacity(meshes.len());
 
-        for &(_mesh_handle, mesh, vertex_count, _index_count) in meshes {
+        for source in meshes {
             // SAFETY: the per-mesh vertex buffer was created with
             // SHADER_DEVICE_ADDRESS; the returned address is valid for the
             // buffer's lifetime.
             let vertex_address = unsafe {
                 device.get_buffer_device_address(
-                    &vk::BufferDeviceAddressInfo::default().buffer(
-                    mesh.vertex_buffer
-                        .as_ref()
-                        .expect("BLAS build requires a per-mesh vertex buffer; global-only meshes are rt-disabled and must not be BLAS-built")
-                        .buffer,
-                ),
+                    &vk::BufferDeviceAddressInfo::default().buffer(source.vertex_buffer),
                 )
-            };
+            } + source.vertex_byte_offset;
             // SAFETY: the per-mesh index buffer was created with
             // SHADER_DEVICE_ADDRESS; the returned address is valid for the
             // buffer's lifetime.
             let index_address = unsafe {
                 device.get_buffer_device_address(
-                    &vk::BufferDeviceAddressInfo::default().buffer(
-                    mesh.index_buffer
-                        .as_ref()
-                        .expect("BLAS build requires a per-mesh index buffer; global-only meshes are rt-disabled and must not be BLAS-built")
-                        .buffer,
-                ),
+                    &vk::BufferDeviceAddressInfo::default().buffer(source.index_buffer),
                 )
-            };
+            } + source.index_byte_offset;
 
             let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR::default()
                 .vertex_format(vk::Format::R32G32B32_SFLOAT)
@@ -577,7 +574,7 @@ impl AccelerationManager {
                     device_address: vertex_address,
                 })
                 .vertex_stride(vertex_stride)
-                .max_vertex(vertex_count.saturating_sub(1))
+                .max_vertex(source.vertex_count.saturating_sub(1))
                 .index_type(vk::IndexType::UINT32)
                 .index_data(vk::DeviceOrHostAddressConstKHR {
                     device_address: index_address,
@@ -614,7 +611,10 @@ impl AccelerationManager {
         // BLAS that the budget can't actually free (#920).
         let mut pending_bytes: vk::DeviceSize = 0;
         // Now build geometries referencing the stored triangles data.
-        for (idx, &(mesh_handle, _mesh, vertex_count, index_count)) in meshes.iter().enumerate() {
+        for (idx, source) in meshes.iter().enumerate() {
+            let mesh_handle = source.mesh_handle;
+            let vertex_count = source.vertex_count;
+            let index_count = source.index_count;
             // Mid-batch eviction check. Trigger only every N iterations
             // so the cost is amortized; the predicate itself is pure
             // arithmetic. #510.

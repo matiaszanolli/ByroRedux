@@ -25,6 +25,11 @@ pub const VERTEX_STRIDE_BYTES: u64 = VERTEX_STRIDE_FLOATS as u64 * 4;
 /// (#2170).
 pub const SKIN_OUTPUT_STRIDE_BYTES: u64 = SKIN_OUTPUT_STRIDE_FLOATS as u64 * 4;
 
+/// Conservative camera-space radius for exterior LOD shadow casters. A
+/// receiver can retain a shadow through `SHADOW_FADE_END`, and its directional
+/// ray can travel another `DIRECTIONAL_SHADOW_TRACE_DISTANCE` toward a caster.
+pub const LOD_SHADOW_CASTER_DISTANCE: f32 = SHADOW_FADE_END + DIRECTIONAL_SHADOW_TRACE_DISTANCE;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +131,9 @@ mod tests {
             ("SHADOW_MASK_OPAQUE", format!("#define SHADOW_MASK_OPAQUE {SHADOW_MASK_OPAQUE}u")),
             ("SHADOW_MASK_GLASS", format!("#define SHADOW_MASK_GLASS {SHADOW_MASK_GLASS}u")),
             ("SHADOW_MASK_STRUCTURE", format!("#define SHADOW_MASK_STRUCTURE {SHADOW_MASK_STRUCTURE}u")),
+            ("SHADOW_POLICY_NONE", format!("#define SHADOW_POLICY_NONE {SHADOW_POLICY_NONE}u")),
+            ("SHADOW_POLICY_STRUCTURE", format!("#define SHADOW_POLICY_STRUCTURE {SHADOW_POLICY_STRUCTURE}u")),
+            ("SHADOW_POLICY_FULL", format!("#define SHADOW_POLICY_FULL {SHADOW_POLICY_FULL}u")),
             ("SHADOW_FADE_START", format!("#define SHADOW_FADE_START {SHADOW_FADE_START:?}")),
             ("SHADOW_FADE_END", format!("#define SHADOW_FADE_END {SHADOW_FADE_END:?}")),
             ("DIRECTIONAL_SHADOW_TRACE_DISTANCE", format!("#define DIRECTIONAL_SHADOW_TRACE_DISTANCE {DIRECTIONAL_SHADOW_TRACE_DISTANCE:?}")),
@@ -194,6 +202,36 @@ mod tests {
             assert!(
                 source.contains("DIRECTIONAL_SHADOW_TRACE_DISTANCE"),
                 "{name} must use the shared directional shadow distance"
+            );
+        }
+    }
+
+    #[test]
+    fn every_shadow_query_pass_uses_the_shared_policy_contract() {
+        for (name, source) in [
+            ("triangle.frag", include_str!("../shaders/triangle.frag")),
+            ("water.frag", include_str!("../shaders/water.frag")),
+            (
+                "volumetrics_inject.comp",
+                include_str!("../shaders/volumetrics_inject.comp"),
+            ),
+            (
+                "caustic_splat.comp",
+                include_str!("../shaders/caustic_splat.comp"),
+            ),
+        ] {
+            assert!(
+                source.contains("#include \"include/shadow_common.glsl\""),
+                "{name} must decode the shared per-light shadow policy"
+            );
+        }
+        for (name, source) in [
+            ("triangle.frag", include_str!("../shaders/triangle.frag")),
+            ("water.frag", include_str!("../shaders/water.frag")),
+        ] {
+            assert!(
+                source.contains("#include \"include/shadow_transport.glsl\""),
+                "{name} must use shared material-aware shadow transport"
             );
         }
     }

@@ -201,9 +201,9 @@ pub struct GpuLight {
     /// xyz = direction (spot/directional), w = spot outer angle cosine.
     pub direction_angle: [f32; 4],
     /// x = attenuation exponent; y = finite luminous-source radius used by
-    /// shadow segments; z = authored full-shadow flag; w = structural
-    /// visibility flag. A light with z=0/w=1 is blocked by Architecture TLAS
-    /// instances but does not make clutter or actors cast prop shadows.
+    /// shadow segments; z = `SHADOW_POLICY_*` encoded as f32; w = reserved.
+    /// Structure-policy lights are blocked by Architecture TLAS instances but
+    /// do not make clutter or actors cast authored prop shadows.
     pub params: [f32; 4],
 }
 

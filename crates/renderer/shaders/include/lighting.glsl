@@ -162,167 +162,15 @@ vec3 shadowableLightRadiance(
     return brdfResult * unshadowedRadiance;
 }
 
-// ── Ray-traced visibility with dielectric transmission ─────────────
-
-// Return RGB visibility along a light segment. Opaque geometry is a binary
-// blocker; glass is accumulated interface by interface so clear/tinted panes
-// transmit light instead of casting wall-like black shadows. TLAS instance
-// masks keep both traversals coherent even though every BLAS is flagged
-// opaque at the geometry level.
-vec3 traceShadowTransmittance(
-    vec3 origin, vec3 direction, float maxDist, float emitterRadius
-) {
-    // Alpha-aware opaque traversal. Ray-query geometry is intentionally built
-    // opaque, so alpha-test holes and effect cards must be continued through
-    // explicitly. Treating their triangle bounds as solid is what let flame
-    // cards and lamp globes shadow the point light they visually emit.
-    const int MAX_OPAQUE_LAYERS = 8;
-    vec3 opaqueOrigin = origin;
-    float opaqueRemaining = maxDist;
-    for (int layer = 0; layer < MAX_OPAQUE_LAYERS; ++layer) {
-        rayQueryEXT opaqueRQ;
-        rayQueryInitializeEXT(
-            opaqueRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
-            SHADOW_MASK_OPAQUE,
-            opaqueOrigin, 0.05, direction, opaqueRemaining);
-        while (rayQueryProceedEXT(opaqueRQ)) {}
-        if (rayQueryGetIntersectionTypeEXT(opaqueRQ, true)
-            == gl_RayQueryCommittedIntersectionNoneEXT) break;
-
-        int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(opaqueRQ, true);
-        int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(opaqueRQ, true);
-        vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(opaqueRQ, true);
-        float hitT = rayQueryGetIntersectionTEXT(opaqueRQ, true);
-        GpuInstance hitInst = instances[hitIdx];
-        GpuMaterial hitMat = materials[hitInst.materialId];
-        bool effectCard = hitMat.materialKind == MATERIAL_KIND_EFFECT_SHADER;
-        if (effectCard) {
-            float advance = hitT + 0.1;
-            opaqueRemaining -= advance;
-            if (opaqueRemaining <= 0.05) break;
-            opaqueOrigin += direction * advance;
-            continue;
-        }
-
-        bool alphaSensitive = hitMat.alphaThreshold > 0.0
-            || (hitInst.flags & INSTANCE_FLAG_ALPHA_BLEND) != 0u;
-        bool nearEmitter = emitterRadius > 0.0
-            && opaqueRemaining - hitT <= emitterRadius
-            && max(max(hitMat.emissiveR, hitMat.emissiveG), hitMat.emissiveB)
-                * max(hitMat.emissiveMult, 1.0) > 0.01;
-        // The overwhelmingly common case is a fully opaque, non-emissive
-        // blocker. Keep that path binary and texture-free; only authored
-        // coverage and terminal emitter shells need material sampling.
-        if (!alphaSensitive && !nearEmitter) return vec3(0.0);
-
-        vec2 hitUV = resolveRayHitUV(
-            uint(hitIdx), uint(hitPrim), hitBary, direction, hitMat);
-        vec4 hitBase;
-        bool covered = rayHitHasCoverage(hitInst, hitMat, hitUV, hitBase);
-        vec3 hitEmission = rayHitEmission(hitMat, hitUV, hitBase.rgb, 0.0);
-        bool sourceShell = nearEmitter
-            && max(max(hitEmission.r, hitEmission.g), hitEmission.b) > 0.01;
-        if (covered && !sourceShell) return vec3(0.0);
-
-        float advance = hitT + 0.1;
-        opaqueRemaining -= advance;
-        if (opaqueRemaining <= 0.05) break;
-        opaqueOrigin += direction * advance;
-    }
-
-    const int MAX_GLASS_INTERFACES = 4;
-    vec3 transmission = vec3(1.0);
-    vec3 rayOrigin = origin;
-    float remaining = maxDist;
-
-    for (int layer = 0; layer < MAX_GLASS_INTERFACES; ++layer) {
-        rayQueryEXT glassRQ;
-        rayQueryInitializeEXT(
-            glassRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
-            SHADOW_MASK_GLASS,
-            rayOrigin, 0.05, direction, remaining);
-        while (rayQueryProceedEXT(glassRQ)) {}
-        if (rayQueryGetIntersectionTypeEXT(glassRQ, true)
-            == gl_RayQueryCommittedIntersectionNoneEXT) {
-            break;
-        }
-
-        int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(glassRQ, true);
-        int hitPrim = rayQueryGetIntersectionPrimitiveIndexEXT(glassRQ, true);
-        vec2 hitBary = rayQueryGetIntersectionBarycentricsEXT(glassRQ, true);
-        float hitT = rayQueryGetIntersectionTEXT(glassRQ, true);
-        GpuInstance hitInst = instances[hitIdx];
-        GpuMaterial hitMat = materials[hitInst.materialId];
-        vec2 hitUV = resolveRayHitUV(
-            uint(hitIdx), uint(hitPrim), hitBary, direction, hitMat);
-        vec4 glassTex;
-        bool covered = rayHitHasCoverage(hitInst, hitMat, hitUV, glassTex);
-        if (!covered) {
-            float advance = hitT + 0.1;
-            remaining -= advance;
-            if (remaining <= 0.05) break;
-            rayOrigin += direction * advance;
-            continue;
-        }
-        vec3 tint = clamp(
-            glassTex.rgb * vec3(hitMat.diffuseR, hitMat.diffuseG, hitMat.diffuseB),
-            vec3(0.02), vec3(1.0));
-        float authoredOpacity = clamp(glassTex.a * hitMat.materialAlpha, 0.0, 1.0);
-        vec3 hitN = getHitTriNormal(uint(hitIdx), uint(hitPrim));
-        if (dot(hitN, direction) > 0.0) hitN = -hitN;
-        float cosTheta = clamp(dot(-direction, hitN), 0.0, 1.0);
-        float f0 = dielectricF0FromIor(max(hitMat.ior, 1.0));
-        float fresnel = fresnelSchlick(cosTheta, vec3(f0)).r;
-
-        // Opacity in Bethesda glass mostly encodes surface tint/decal
-        // strength, not solid occlusion. Apply modest Beer-style absorption
-        // per interface and the dielectric Fresnel transmission loss.
-        float absorption = mix(0.08, 0.45, authoredOpacity);
-        transmission *= mix(vec3(1.0), tint, absorption) * (1.0 - fresnel);
-        if (max(max(transmission.r, transmission.g), transmission.b) < 0.01) {
-            return vec3(0.0);
-        }
-
-        float advance = hitT + 0.1;
-        remaining -= advance;
-        if (remaining <= 0.05) break;
-        rayOrigin += direction * advance;
-    }
-    return transmission;
-}
-
-// Binary visibility against opaque Architecture-layer TLAS instances only.
-// This is the structural half of Skyrim's portal-strict light behavior:
-// walls/floors block the source, while clutter and actors do not become
-// authored prop-shadow casters for a LIGH record whose shadow flag is clear.
-vec3 traceStructureVisibility(vec3 origin, vec3 direction, float maxDist) {
-    rayQueryEXT structureRQ;
-    rayQueryInitializeEXT(
-        structureRQ,
-        topLevelAS,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-        SHADOW_MASK_STRUCTURE,
-        origin,
-        0.05,
-        direction,
-        maxDist
-    );
-    rayQueryProceedEXT(structureRQ);
-    bool blocked = rayQueryGetIntersectionTypeEXT(structureRQ, true)
-        != gl_RayQueryCommittedIntersectionNoneEXT;
-    return blocked ? vec3(0.0) : vec3(1.0);
-}
-
-// Per-light visibility policy shared by direct ReSTIR paths. Authored shadow
-// lights keep full opaque + dielectric transport; no-prop-shadow lights still
-// query structure so radiance cannot leak through dungeon shells.
+// Per-light visibility policy shared by direct, reflected and GI paths.
 vec3 traceLightTransmittance(
     uint lightIndex,
     vec3 origin,
     vec3 direction,
     float maxDist
 ) {
-    if (lights[lightIndex].params.z > 0.5) {
+    float policy = lights[lightIndex].params.z;
+    if (decodeShadowPolicy(policy) == SHADOW_POLICY_FULL) {
         return traceShadowTransmittance(
             origin,
             direction,
@@ -330,7 +178,7 @@ vec3 traceLightTransmittance(
             lights[lightIndex].params.y
         );
     }
-    if (lights[lightIndex].params.w > 0.5) {
+    if (decodeShadowPolicy(policy) == SHADOW_POLICY_STRUCTURE) {
         return traceStructureVisibility(origin, direction, maxDist);
     }
     return vec3(1.0);
@@ -362,7 +210,7 @@ bool giLightSample(
         }
     } else {
         L = normalize(lights[i].direction_angle.xyz);
-        dist = 100000.0;
+        dist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
         atten = 1.0;
     }
     contrib = atten * max(dot(n, L), 0.0);
@@ -450,8 +298,8 @@ vec3 pathHitRadiance(
             baseColor, mat.metalness, mat.roughness, mat.ior,
             diffusePdf, specularPdf);
         if (pathLuminance(bsdf) <= 1e-6) continue;
-        vec3 visibility = traceShadowTransmittance(
-            p + n * 0.1, L, max(dist - 0.2, 0.05), lights[i].params.y);
+        vec3 visibility = traceLightTransmittance(
+            i, p + n * 0.1, L, max(dist - 0.2, 0.05));
         if (max(max(visibility.r, visibility.g), visibility.b) <= 0.001) continue;
         radiance += lights[i].color_type.rgb
             * contribution * bsdf * visibility;
@@ -510,8 +358,8 @@ vec3 reflectionHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
         float dist;
         float contrib;
         if (!giLightSample(i, p, n, dbgFlags, L, dist, contrib)) continue;
-        vec3 visibility = traceShadowTransmittance(
-            p + n * 0.1, L, max(dist - 0.2, 0.05), lights[i].params.y);
+        vec3 visibility = traceLightTransmittance(
+            i, p + n * 0.1, L, max(dist - 0.2, 0.05));
         if (max(max(visibility.r, visibility.g), visibility.b) <= 0.001) continue;
         return lights[i].color_type.rgb * contrib * visibility;
     }
@@ -566,8 +414,8 @@ vec3 giHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
         float dist;
         float contrib;
         if (!giLightSample(i, p, n, dbgFlags, L, dist, contrib)) continue;
-        vec3 visibility = traceShadowTransmittance(
-            p + n * 0.1, L, max(dist - 0.2, 0.05), lights[i].params.y);
+        vec3 visibility = traceLightTransmittance(
+            i, p + n * 0.1, L, max(dist - 0.2, 0.05));
         if (max(max(visibility.r, visibility.g), visibility.b) <= 0.001) continue;
         e += lights[i].color_type.rgb * contrib * visibility;
         visibleCount++;
