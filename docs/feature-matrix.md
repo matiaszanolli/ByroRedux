@@ -44,10 +44,11 @@ closed by #699.)
 | **Water + RT caustics** | ✓ All games | Vertex displacement, Fresnel, RT reflection/refraction; caustic splat compute (M38) |
 | **Bloom** | ✓ All games | Dual-pass pyramid (downsample + upsample) |
 | **SSAO** | ✓ All games | Screen-space, sampled in `triangle.frag` |
-| **Volumetrics** | ~ Scaffold | Froxel injection + integration shaders shipped; content-driven density not wired |
+| **Volumetrics** | ~ Partial | Procedural froxel-grid fog + clustered local fog volumes shipped (Session 62); authored CELL/WTHR extinction/chromaticity/peak-radiance/coverage now consumed; REGN-driven per-cell density and god-ray light shafts remain open (M55) |
 | **Depth of field** | ~ TAA-accumulated | Aperture disk jitter via TAA history; no explicit CoC pass |
 | **Disney BSDF** | ✓ FO4/Starfield/BGSM | `MAT_FLAG_PBR_BSDF`; subsurface/sheen/anisotropic |
 | **Glass RT refraction** | ✓ All games | `MATERIAL_KIND_GLASS` triggers RT refraction ray budget |
+| **Fire refraction** | ~ Partial | `MATERIAL_KIND_FIRE_REFRACTION` (103, Session 62) — normal-driven heat-haze distortion proxy; known consistency gaps in shadow masking, G-buffer overwrite, and composition sort order (#2236, #2237) |
 | **Terrain LOD (M35)** | ~ Partial | `.btr` (Skyrim+/FO4) + `.bto` + `_far.nif` (Oblivion/FO3/FNV) shipped; distance-based multi-band selection + `.btr` normal maps deferred |
 
 ### FO4 Precombined Geometry (M49 — closed 2026-06-02)
