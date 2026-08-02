@@ -193,6 +193,27 @@ pub(super) fn collect_static_mesh_draws(
                     _ => true,
                 };
 
+            // Resolve the two consumption predicates before touching the
+            // remaining optional components or hashing a material. A draw
+            // outside the frustum that is also excluded from the TLAS cannot
+            // be consumed by any renderer path: LOD terrain is raster-only,
+            // while decal/effect proxy geometry is intentionally not a ray
+            // occluder. Dropping these no-op records here also avoids their
+            // instance-SSBO upload.
+            let is_decal_mesh = decal_mesh_q
+                .as_ref()
+                .is_some_and(|q| q.get(entity).is_some());
+            let is_lod = lod_q.as_ref().is_some_and(|q| q.get(entity).is_some());
+            let mat = mat_q.as_ref().and_then(|q| q.get(entity));
+            let material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
+            let in_tlas = !is_lod
+                && !is_decal_mesh
+                && material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+                && material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION;
+            if !in_raster && !in_tlas {
+                continue;
+            }
+
             {
                 let tex_handle = tex_q
                     .as_ref()
@@ -218,14 +239,6 @@ pub(super) fn collect_static_mesh_draws(
                     .copied()
                     .unwrap_or_default();
                 let is_decal = render_layer_for_entity == RenderLayer::Decal;
-                let is_decal_mesh = decal_mesh_q
-                    .as_ref()
-                    .is_some_and(|q| q.get(entity).is_some());
-                // Distant-terrain LOD blocks stay out of the TLAS. Effect
-                // shader proxy volumes are excluded below once material_kind
-                // is known. Synthesized collision-only colliders are separate
-                // MeshHandle-free ghost entities and never reach this query.
-                let is_lod = lod_q.as_ref().is_some_and(|q| q.get(entity).is_some());
                 let bone_offset = skin_offsets.get(&entity).copied().unwrap_or(0);
                 let material_texture_handles =
                     texture_maps_q.as_ref().and_then(|q| q.get(entity)).copied();
@@ -257,9 +270,6 @@ pub(super) fn collect_static_mesh_draws(
                     .as_ref()
                     .and_then(|q| q.get(entity))
                     .map(|s| s.0);
-
-                // Material data + PBR classification.
-                let mat = mat_q.as_ref().and_then(|q| q.get(entity));
 
                 let (
                     // #1480 — roughness is the canonical resolve-once value
@@ -372,15 +382,6 @@ pub(super) fn collect_static_mesh_draws(
                 // material_kind on any draw. Verified via the
                 // translation-completeness harness (zero drift in
                 // per-game m_kind% / mat_path% pre/post deletion).
-                let material_kind = mat.map(|m| m.material_kind).unwrap_or(0);
-                // Additive beams/glows are view-facing raster volumes, not
-                // solid occluders. Keeping them out of the TLAS prevents fake
-                // shadows/GI hits and avoids traversing their large hulls.
-                let in_tlas = !is_lod
-                    && !is_decal_mesh
-                    && material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
-                    && material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION;
-
                 // Step 2 — normal-alpha-as-spec gloss-flag BINDING (Skyrim/
                 // Gamebryo convention). When a lit Skyrim-era surface
                 // (env_map_scale ~ 0 — the matte-default population) ships no

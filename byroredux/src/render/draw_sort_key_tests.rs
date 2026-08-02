@@ -1,4 +1,4 @@
-use super::{draw_sort_key, DrawCommand};
+use super::{draw_sort_key, sort_draw_commands, DrawCommand};
 
 /// Minimal DrawCommand builder — only the fields that affect the
 /// sort key are interesting. Everything else is zeroed.
@@ -617,6 +617,50 @@ fn mixed_in_raster_and_rt_only_partition_is_stable() {
         cmds.iter().map(|x| x.entity_id).collect::<Vec<_>>(),
         vec![1, 4, 3, 2]
     );
+}
+
+/// The production path only sorts draws that can produce raster batches.
+/// RT-only occluders must remain in the instance/TLAS tail, but their
+/// pipeline/mesh/depth ordering has no raster consumer.
+#[test]
+fn production_sort_orders_only_the_raster_prefix() {
+    let mut rt_opaque = cmd(false, false, false);
+    rt_opaque.in_raster = false;
+    rt_opaque.entity_id = 10;
+
+    let mut raster_transparent = cmd(true, false, false);
+    raster_transparent.entity_id = 20;
+
+    let mut rt_transparent = cmd(true, false, false);
+    rt_transparent.in_raster = false;
+    rt_transparent.entity_id = 30;
+
+    let mut raster_opaque = cmd(false, false, false);
+    raster_opaque.entity_id = 40;
+
+    let mut draws = vec![rt_opaque, raster_transparent, rt_transparent, raster_opaque];
+    let raster_len = sort_draw_commands(&mut draws);
+
+    assert_eq!(raster_len, 2);
+    assert!(draws[..raster_len].iter().all(|draw| draw.in_raster));
+    assert!(draws[raster_len..].iter().all(|draw| !draw.in_raster));
+    assert_eq!(draws[0].entity_id, 40, "opaque raster draw sorts first");
+    assert_eq!(
+        draws[1].entity_id, 20,
+        "transparent raster draw sorts after opaque"
+    );
+}
+
+#[test]
+fn production_sort_handles_an_rt_only_frame() {
+    let mut first = cmd(false, false, false);
+    first.in_raster = false;
+    let mut second = cmd(true, false, false);
+    second.in_raster = false;
+    let mut draws = vec![first, second];
+
+    assert_eq!(sort_draw_commands(&mut draws), 0);
+    assert!(draws.iter().all(|draw| !draw.in_raster));
 }
 
 // ── D2-NEW-05 / #1806 — wireframe is a PipelineKey axis, so the sort

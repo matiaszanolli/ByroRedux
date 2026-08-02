@@ -293,6 +293,37 @@ pub(crate) fn draw_sort_key(
     }
 }
 
+/// Partition RT-only occluders behind raster-visible draws, then sort only
+/// the raster prefix that the draw-batch builder consumes.
+///
+/// RT-only entries still need an instance slot and a TLAS entry so rays from
+/// visible fragments can hit them, but `draw_frame` deliberately excludes
+/// them from raster batches. Sorting that tail by pipeline, mesh, and depth
+/// therefore burns CPU without changing either raster output or ray-query
+/// identity. The in-place partition retains the cap-on-overflow contract:
+/// `MAX_INSTANCES` always drops off-frustum entries before raster draws.
+///
+/// Returns the length of the sorted raster prefix.
+pub(crate) fn sort_draw_commands(draw_commands: &mut [DrawCommand]) -> usize {
+    let mut raster_len = 0;
+    for index in 0..draw_commands.len() {
+        if draw_commands[index].in_raster {
+            draw_commands.swap(raster_len, index);
+            raster_len += 1;
+        }
+    }
+
+    const DRAW_SORT_PARALLEL_THRESHOLD: usize = 3000;
+    let raster_draws = &mut draw_commands[..raster_len];
+    if raster_draws.len() >= DRAW_SORT_PARALLEL_THRESHOLD {
+        raster_draws.par_sort_unstable_by_key(draw_sort_key);
+    } else {
+        raster_draws.sort_unstable_by_key(draw_sort_key);
+    }
+
+    raster_len
+}
+
 /// Per-frame view + lighting + sky payload returned by
 /// [`build_render_data`]. The draw command list / GPU light list /
 /// bone palette / skin offsets / material table are written into the
@@ -532,17 +563,15 @@ pub(crate) fn build_render_data(
     // Typical Bethesda cell counts sit in 400–1500 (Prospector ~811,
     // GSDocMitchell ~263, exterior radius-3 grid ~1200), so serial remains
     // the common path either way; this only moves the 2000–3000 band. The
-    // fallback to `par_sort_unstable_by_key` still covers exterior
-    // radius-5+ grids and Skyrim+ city interiors (MedTek ~14.5K draws is
-    // far above the threshold on both settings).
-    const DRAW_SORT_PARALLEL_THRESHOLD: usize = 3000;
+    // threshold is applied to the raster-visible prefix, not the complete
+    // instance/TLAS list: RT-only occluders never enter a raster batch and
+    // do not benefit from pipeline/mesh/depth ordering. Large visible sets
+    // still use `par_sort_unstable_by_key`; scenes whose total draw count is
+    // large only because of off-frustum ray-query occluders avoid sorting
+    // that tail entirely.
     let ms_particles = took(t_particles);
     let t_sort = mark(profile);
-    if draw_commands.len() >= DRAW_SORT_PARALLEL_THRESHOLD {
-        draw_commands.par_sort_unstable_by_key(draw_sort_key);
-    } else {
-        draw_commands.sort_unstable_by_key(draw_sort_key);
-    }
+    let raster_draws = sort_draw_commands(draw_commands);
     let ms_sort = took(t_sort);
     // ⚠ No-resort contract (#1026 / F-WAT-05).
     //
@@ -570,7 +599,7 @@ pub(crate) fn build_render_data(
     let ms_lights = took(t_lights);
     if profile {
         log::info!(
-            "build_render_data: skinned={ms_skin:.2}ms static_loop={ms_static:.2}ms ({n_draws} draws) particles={ms_particles:.2}ms sort={ms_sort:.2}ms lights={ms_lights:.2}ms"
+            "build_render_data: skinned={ms_skin:.2}ms static_loop={ms_static:.2}ms ({n_draws} draws, {raster_draws} raster) particles={ms_particles:.2}ms sort={ms_sort:.2}ms lights={ms_lights:.2}ms"
         );
     }
 
