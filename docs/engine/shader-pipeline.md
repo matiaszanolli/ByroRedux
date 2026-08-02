@@ -299,7 +299,9 @@ Prefixed by a 16-byte header (`u32 count` + 3 × `u32` padding). Up to
 | 32–43 | `direction.xyz` | Unit direction (spot/directional) |
 | 44 | `spot_angle_cos` | Spot outer cone angle (cosine) |
 | 48 | `falloff_exponent` | LIGH DATA falloff exponent (0 = 1.0) |
-| 52–63 | *(reserved)* | — |
+| 52 | `shadow_segment_radius` | Finite luminous-source radius used by shadow segments |
+| 56 | `shadow_policy` | `SHADOW_POLICY_*` encoded as f32 — see `decodeShadowPolicy` in `shadow_common.glsl` |
+| 60–63 | *(reserved)* | — |
 
 ---
 
