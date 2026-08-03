@@ -174,7 +174,19 @@ pub fn extract_bs_geometry(
             .iter()
             .map(|&raw| {
                 let xyzw = unpack_udec3_xyzw(raw);
-                [xyzw[0], xyzw[1], xyzw[2], xyzw[3]]
+                // #2246 (REN-D19-02) — the W channel is only 2 bits, so
+                // `unpack_udec3_xyzw`'s [0,3] → [-1,1] remap can land on
+                // -1/3 or +1/3, not just ±1, unlike every other game's
+                // import path (`bitangent_sign()` in `types.rs`, used by
+                // `tangent.rs` / `sse_recon.rs`), which always derives an
+                // exact ±1.0. Normalize here so no downstream consumer of
+                // `vertexTangent.w` needs its own defensive re-clamp —
+                // `material_sampling.glsl`'s `perturbNormal` already does
+                // one (`vertexTangent.w < 0.0 ? -1.0 : 1.0`), but that
+                // shouldn't be the only thing standing between an
+                // off-nominal packed value and a wrong tangent frame.
+                let bitangent_sign = if xyzw[3] < 0.0 { -1.0 } else { 1.0 };
+                [xyzw[0], xyzw[1], xyzw[2], bitangent_sign]
             })
             .collect()
     } else if !normals.is_empty() && !uvs.is_empty() && !positions.is_empty() {

@@ -55,19 +55,51 @@ fn tangent_extraction_count_and_values() {
     let raw_val = encode_udec3(1023, 511, 511, 3); // tangent (1, 0, 0, +1)
     let tangents_raw: Vec<u32> = vec![raw_val; n];
 
-    // Simulate the extraction loop in extract_bs_geometry.
+    // Simulate the (post-#2246) extraction loop in extract_bs_geometry.
     let tangents: Vec<[f32; 4]> = tangents_raw
         .iter()
         .map(|&raw| {
             let xyzw = unpack_udec3_xyzw(raw);
-            [xyzw[0], xyzw[1], xyzw[2], xyzw[3]]
+            let bitangent_sign = if xyzw[3] < 0.0 { -1.0 } else { 1.0 };
+            [xyzw[0], xyzw[1], xyzw[2], bitangent_sign]
         })
         .collect();
 
     assert_eq!(tangents.len(), n, "tangent count must equal vertex count");
     for t in &tangents {
         assert!((t[0] - 1.0).abs() < 0.003, "tangent.x ≈ 1.0");
-        assert!((t[3] - 1.0).abs() < 0.003, "bitangent sign ≈ +1.0");
+        assert_eq!(t[3], 1.0, "bitangent sign must be exactly +1.0");
+    }
+}
+
+/// Regression for #2246 (REN-D19-02): the 2-bit W channel can decode to
+/// -1/3 or +1/3 (`unpack_udec3_xyzw`'s raw sub-values 1 or 2), not just
+/// the intended ±1 sign — unlike every other game's import path
+/// (`bitangent_sign()` in `types.rs`, used by `tangent.rs` /
+/// `sse_recon.rs`), which always derives an exact ±1.0. The extraction
+/// map must clamp whatever comes out to exactly ±1.0 so no downstream
+/// consumer of `vertexTangent.w` needs its own defensive re-clamp.
+#[test]
+fn tangent_extraction_normalizes_off_nominal_sign_to_exact_plus_or_minus_one() {
+    // w=1 → raw sign (1/3)*2-1 = -1/3 (off-nominal, not ±1).
+    let negative_raw = encode_udec3(1023, 511, 511, 1);
+    // w=2 → raw sign (2/3)*2-1 = +1/3 (off-nominal, not ±1).
+    let positive_raw = encode_udec3(1023, 511, 511, 2);
+
+    for (raw, expected_sign) in [(negative_raw, -1.0_f32), (positive_raw, 1.0_f32)] {
+        let xyzw = unpack_udec3_xyzw(raw);
+        assert!(
+            (xyzw[3].abs() - 1.0).abs() > 0.1,
+            "fixture must actually be off-nominal, got raw sign {}",
+            xyzw[3]
+        );
+        // Mirrors the (post-fix) extraction map in extract_bs_geometry.
+        let bitangent_sign = if xyzw[3] < 0.0 { -1.0 } else { 1.0 };
+        assert_eq!(
+            bitangent_sign, expected_sign,
+            "off-nominal packed sign {} must clamp to exactly {}",
+            xyzw[3], expected_sign
+        );
     }
 }
 
