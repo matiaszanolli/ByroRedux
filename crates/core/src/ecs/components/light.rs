@@ -64,6 +64,21 @@ pub struct LightSource {
     /// raw angle, matching the file's existing LIGH-translation
     /// convention for `radius`/`falloff_exponent`.
     pub outer_angle: f32,
+    /// #2250 (REN-D22-01) — canonical shadow-projection type, already
+    /// decoded through the per-game boundary
+    /// (`canonical_light_shadow_flags` in
+    /// `byroredux/src/systems/light_anim.rs`) at spawn time. Bit layout
+    /// matches [`LIGHT_FLAG_SHADOW_SPOTLIGHT`] /
+    /// [`LIGHT_FLAG_SHADOW_HEMISPHERE`] / [`LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL`]
+    /// for readability, but unlike [`Self::flags`] (which intentionally
+    /// keeps every other bit raw and game-native) this field is never
+    /// re-interpreted per game again downstream — `render/lights.rs`
+    /// reads it directly (`!= 0` ⇒ casts shadows) instead of decoding
+    /// [`Self::flags`] against a fixed TES5 bit layout unconditionally,
+    /// which is what #2250 fixed. `0` for producers with no ESM LIGH
+    /// DATA at all (NIF-direct lights, procedural fill) that instead
+    /// author their shadow behavior explicitly at spawn time.
+    pub shadow_flags: u32,
 }
 
 impl Default for LightSource {
@@ -78,6 +93,7 @@ impl Default for LightSource {
             kind: LightKind::Point,
             direction: [0.0, 0.0, 0.0],
             outer_angle: 0.0,
+            shadow_flags: 0,
         }
     }
 }

@@ -25,7 +25,7 @@
 // back the `Transform` write pass and its import.
 use byroredux_core::ecs::{
     EntityId, LightFlicker, LightSource, World, LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW,
-    LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
+    LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW, LIGHT_FLAG_SHADOW_MASK,
 };
 use byroredux_plugin::esm::reader::GameKind;
 
@@ -50,6 +50,26 @@ pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32)
         _ => SHARED_LIGHT_ANIMATION_MASK,
     };
     source_flags & source_animation_mask
+}
+
+/// Decode a game's raw LIGH flags into the shared runtime shadow-projection
+/// behavior (#2250 / REN-D22-01), mirroring [`canonical_light_animation_flags`]
+/// above.
+///
+/// `LIGHT_FLAG_SHADOW_MASK` (`0x400`/`0x800`/`0x1000`) is directly verified
+/// against TES5's LIGH layout (`light.rs`'s doc comment), and the `0x400`
+/// bit specifically against F4Edit's Fallout 4 definitions too (see this
+/// module's `canonical_light_animation_flags` doc comment — both agree
+/// `0x400` = Shadow Spotlight). No divergence has been identified yet for
+/// `0x800`/`0x1000` on Fallout 4, or for any bit here on Oblivion / FO3 /
+/// FNV / FO76 / Starfield's own LIGH DATA layouts — those stay on the
+/// shared mask rather than silently decoding zero, matching
+/// `canonical_light_animation_flags`'s own default-to-shared-mask
+/// treatment of every game it hasn't specifically gated. A verified
+/// per-game divergence gets its own `match` arm here, exactly like
+/// `GameKind::Fallout4` does above.
+pub(crate) fn canonical_light_shadow_flags(_game: GameKind, source_flags: u32) -> u32 {
+    source_flags & LIGHT_FLAG_SHADOW_MASK
 }
 
 /// Damping multiplier applied to the raw `intensity_amplitude`
@@ -293,5 +313,62 @@ mod tests {
             canonical_light_animation_flags(GameKind::Skyrim, source),
             source,
         );
+    }
+
+    /// Regression for #2250 (REN-D22-01): `canonical_light_shadow_flags`
+    /// must mask down to only the three verified shadow-projection bits —
+    /// unrelated LIGH flags (Dynamic, Portal-strict, CanCarry, etc.) must
+    /// never leak through as a spurious "casts shadows" signal.
+    #[test]
+    fn unrelated_flags_do_not_leak_into_shadow_decode() {
+        const DYNAMIC_AND_PORTAL_STRICT: u32 = 0x0000_2001;
+        assert_eq!(
+            canonical_light_shadow_flags(GameKind::Skyrim, DYNAMIC_AND_PORTAL_STRICT),
+            0,
+        );
+    }
+
+    /// The three authored shadow-projection bits must all survive the
+    /// decode on the verified (Skyrim) game.
+    #[test]
+    fn authored_shadow_bits_survive_the_decode() {
+        use byroredux_core::ecs::{
+            LIGHT_FLAG_SHADOW_HEMISPHERE, LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+            LIGHT_FLAG_SHADOW_SPOTLIGHT,
+        };
+        let source = LIGHT_FLAG_SHADOW_SPOTLIGHT
+            | LIGHT_FLAG_SHADOW_HEMISPHERE
+            | LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL
+            | 0x0000_2001; // plus unrelated bits, must not affect the result
+        assert_eq!(
+            canonical_light_shadow_flags(GameKind::Skyrim, source),
+            LIGHT_FLAG_SHADOW_SPOTLIGHT
+                | LIGHT_FLAG_SHADOW_HEMISPHERE
+                | LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+        );
+    }
+
+    /// No shadow-flag divergence has been identified for any game yet
+    /// (unlike animation flags, where Fallout 4 gets its own arm) — every
+    /// `GameKind` decodes through the same shared mask today. This pins
+    /// that default so a future verified divergence is a deliberate,
+    /// visible `match` arm addition, not a silent behavior change.
+    #[test]
+    fn every_game_shares_the_same_shadow_mask_today() {
+        use byroredux_core::ecs::LIGHT_FLAG_SHADOW_MASK;
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ] {
+            assert_eq!(
+                canonical_light_shadow_flags(game, LIGHT_FLAG_SHADOW_MASK),
+                LIGHT_FLAG_SHADOW_MASK,
+                "{game:?} must decode the full shadow mask until a verified divergence is found"
+            );
+        }
     }
 }

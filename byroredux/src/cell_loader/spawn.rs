@@ -226,6 +226,9 @@ pub(super) fn spawn_placed_instances(
     // game's raw LIGH flag layout. Kept separate from `light_data.flags`,
     // whose non-animation bits retain their source-game meanings.
     light_animation_flags: u32,
+    // #2250 (REN-D22-01) — canonical shadow-projection type, decoded the
+    // same way as `light_animation_flags` above (`canonical_light_shadow_flags`).
+    light_shadow_flags: u32,
     refr_overlay: Option<&RefrTextureOverlay>,
     clip_handle: Option<u32>,
     // #renderlayer — base content-class derived from the REFR's base
@@ -327,6 +330,7 @@ pub(super) fn spawn_placed_instances(
         refr_overlay,
         light_data,
         light_animation_flags,
+        light_shadow_flags,
         placement_root,
         collisions_empty: collisions.is_empty(),
         spawned_nif_lights,
@@ -571,6 +575,10 @@ fn spawn_nif_lights(
                 // its pre-authored-shadow behavior explicitly instead of
                 // letting raw `flags == 0` masquerade as an unshadowed LIGH.
                 flags: byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+                // #2250 — same explicit preservation for the canonical
+                // field `render/lights.rs` actually reads; not game-format
+                // derived, so no `canonical_light_shadow_flags` call needed.
+                shadow_flags: byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
                 // #2205 — kind/direction/outer_angle were resolved at NIF
                 // import (`imported_light_from_base`) and previously had
                 // nowhere to go; carry them through to the canonical
@@ -907,6 +915,7 @@ struct PlacementCtx<'a> {
     refr_overlay: Option<&'a RefrTextureOverlay>,
     light_data: Option<&'a esm::cell::LightData>,
     light_animation_flags: u32,
+    light_shadow_flags: u32,
     placement_root: byroredux_core::ecs::EntityId,
     collisions_empty: bool,
     spawned_nif_lights: usize,
@@ -1014,6 +1023,7 @@ fn spawn_mesh_instance(
         refr_overlay,
         light_data,
         light_animation_flags,
+        light_shadow_flags,
         placement_root,
         collisions_empty,
         spawned_nif_lights,
@@ -1524,6 +1534,7 @@ fn spawn_mesh_instance(
                     color: ld.color,
                     flags: ld.flags,
                     falloff_exponent: ld.falloff_exponent,
+                    shadow_flags: light_shadow_flags,
                     ..Default::default()
                 },
             );

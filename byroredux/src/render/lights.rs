@@ -12,7 +12,7 @@
 //! translation in `merge_external_material`; see
 //! `feedback_format_translation.md`.
 
-use byroredux_core::ecs::{GlobalTransform, LightKind, LightSource, World, LIGHT_FLAG_SHADOW_MASK};
+use byroredux_core::ecs::{GlobalTransform, LightKind, LightSource, World};
 use byroredux_renderer::shader_constants::{SHADOW_POLICY_FULL, SHADOW_POLICY_STRUCTURE};
 
 use crate::components::{CellLightingRes, SkyParamsRes};
@@ -181,7 +181,12 @@ pub(super) fn collect_lights(
                 // range` and `falloff_shape`.
                 let effective_range = light.radius * LIGHT_RANGE_EXTENSION;
                 let source_radius = emitter_radius(light.radius);
-                let casts_shadows = light.flags & LIGHT_FLAG_SHADOW_MASK != 0;
+                // #2250 (REN-D22-01) — `shadow_flags` is already decoded
+                // through the per-game boundary (`canonical_light_shadow_flags`)
+                // at spawn time; reading `light.flags` directly here would
+                // apply Skyrim's raw TES5 bit layout unconditionally to
+                // every game's LIGH DATA, verified or not.
+                let casts_shadows = light.shadow_flags != 0;
                 let falloff_shape = if light.falloff_exponent > 0.0 {
                     light.falloff_exponent
                 } else {
@@ -581,7 +586,7 @@ mod gi_light_priority_tests {
         pos: [f32; 3],
         color: [f32; 3],
         radius: f32,
-        flags: u32,
+        shadow_flags: u32,
     ) {
         let e = world.spawn();
         world.insert(
@@ -597,12 +602,18 @@ mod gi_light_priority_tests {
             LightSource {
                 radius,
                 color,
-                flags,
+                shadow_flags,
                 ..Default::default()
             },
         );
     }
 
+    /// #2250 (REN-D22-01) — `collect_lights` must read the already-
+    /// canonicalized `LightSource::shadow_flags`, not decode raw LIGH
+    /// flags against a fixed bit layout itself. `shadow_flags` here
+    /// stands in for whatever `canonical_light_shadow_flags` would have
+    /// produced from the spawn-time cell loader — this test only cares
+    /// about the render-side consumption half of that boundary.
     #[test]
     fn collect_lights_uploads_authored_cast_shadow_bit() {
         let mut world = World::new();
@@ -611,14 +622,14 @@ mod gi_light_priority_tests {
             [10.0, 0.0, 0.0],
             [0.5; 3],
             256.0,
-            0x0000_2001, // Dynamic + Portal-strict, deliberately unshadowed.
+            0, // No canonical shadow bits — deliberately unshadowed.
         );
         spawn_point_light_with_flags(
             &mut world,
             [20.0, 0.0, 0.0],
             [0.5; 3],
             256.0,
-            byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL | 0x0000_2001,
+            byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
         );
 
         let mut lights = Vec::new();

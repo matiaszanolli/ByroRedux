@@ -1113,6 +1113,7 @@ fn spawn_synth_child(
                     color: ld.color,
                     flags: ld.flags,
                     falloff_exponent: ld.falloff_exponent,
+                    shadow_flags: crate::systems::canonical_light_shadow_flags(game, ld.flags),
                     ..Default::default()
                 },
             );
@@ -1160,6 +1161,7 @@ fn spawn_synth_child(
                     color: ld.color,
                     flags: ld.flags,
                     falloff_exponent: ld.falloff_exponent,
+                    shadow_flags: crate::systems::canonical_light_shadow_flags(game, ld.flags),
                     ..Default::default()
                 },
             );
@@ -1341,6 +1343,10 @@ fn spawn_synth_child(
         stat.light_data
             .as_ref()
             .map(|ld| crate::systems::canonical_light_animation_flags(game, ld.flags))
+            .unwrap_or(0),
+        stat.light_data
+            .as_ref()
+            .map(|ld| crate::systems::canonical_light_shadow_flags(game, ld.flags))
             .unwrap_or(0),
         refr_overlay.as_ref(),
         clip_handle,

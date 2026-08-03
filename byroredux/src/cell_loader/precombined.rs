@@ -316,6 +316,7 @@ pub(super) fn spawn_precombined_meshes(
             scale,
             /* light_data = */ None,
             /* light_animation_flags = */ 0,
+            /* light_shadow_flags = */ 0,
             /* refr_overlay = */ None,
             /* clip_handle = */ None,
             RenderLayer::Architecture,
