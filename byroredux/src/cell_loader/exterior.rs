@@ -271,11 +271,158 @@ impl ExteriorCellApplyJob {
     }
 }
 
+/// Preferred base-game worldspaces, ordered from newest supported Fallout
+/// default through the Gamebryo/Creation-era defaults.
+const PREFERRED_WORLDSPACES: [&str; 4] = ["wastelandnv", "wasteland", "tamriel", "skyrim"];
+
+fn select_worldspace_key<T>(
+    exterior_cells: &std::collections::HashMap<String, std::collections::HashMap<(i32, i32), T>>,
+    center_x: i32,
+    center_y: i32,
+    radius: i32,
+    wrld_override: Option<&str>,
+) -> Option<String> {
+    if let Some(name) = wrld_override.and_then(|requested| {
+        exterior_cells
+            .keys()
+            .find(|candidate| candidate.eq_ignore_ascii_case(requested))
+            .cloned()
+    }) {
+        log::info!("Using worldspace '{name}' (from --wrld override)");
+        return Some(name);
+    }
+
+    let min_x = center_x.saturating_sub(radius);
+    let max_x = center_x.saturating_add(radius);
+    let min_y = center_y.saturating_sub(radius);
+    let max_y = center_y.saturating_add(radius);
+    let mut containing: Vec<_> = exterior_cells
+        .iter()
+        .filter(|(_, cells)| {
+            cells
+                .keys()
+                .any(|(gx, gy)| *gx >= min_x && *gx <= max_x && *gy >= min_y && *gy <= max_y)
+        })
+        .collect();
+
+    // Stable fallback: prefer the worldspace with more cells, then the
+    // lexicographically first EDID. HashMap iteration order must never decide
+    // which game world the same command loads (#2340).
+    containing.sort_unstable_by(|(name_a, cells_a), (name_b, cells_b)| {
+        cells_b
+            .len()
+            .cmp(&cells_a.len())
+            .then_with(|| name_a.cmp(name_b))
+    });
+
+    if containing.len() > 1 {
+        let candidates = containing
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        log::warn!(
+            "Grid ({center_x},{center_y}) ±{radius} is present in multiple worldspaces: \
+             {candidates}; applying the deterministic preferred/size tie-break"
+        );
+    }
+
+    if let Some(name) = PREFERRED_WORLDSPACES.iter().find_map(|preferred| {
+        containing
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(preferred))
+            .map(|(candidate, _)| (*candidate).clone())
+    }) {
+        return Some(name);
+    }
+    if let Some((name, _)) = containing.first() {
+        return Some((*name).clone());
+    }
+
+    if let Some(name) = PREFERRED_WORLDSPACES.iter().find_map(|preferred| {
+        exterior_cells
+            .keys()
+            .find(|candidate| candidate.eq_ignore_ascii_case(preferred))
+            .cloned()
+    }) {
+        return Some(name);
+    }
+
+    let mut by_size: Vec<_> = exterior_cells.iter().collect();
+    by_size.sort_unstable_by(|(name_a, cells_a), (name_b, cells_b)| {
+        cells_b
+            .len()
+            .cmp(&cells_a.len())
+            .then_with(|| name_a.cmp(name_b))
+    });
+    by_size.first().map(|(name, _)| (*name).clone())
+}
+
+#[cfg(test)]
+mod worldspace_selection_tests {
+    use super::{select_worldspace_key, PREFERRED_WORLDSPACES};
+    use std::collections::HashMap;
+
+    fn cells(coords: &[(i32, i32)]) -> HashMap<(i32, i32), ()> {
+        coords.iter().copied().map(|coord| (coord, ())).collect()
+    }
+
+    #[test]
+    fn preferred_containing_worldspace_wins_ambiguous_grid_deterministically() {
+        for preferred in PREFERRED_WORLDSPACES {
+            let names = ["smallworld", preferred, "largeworld"];
+            for rotation in 0..names.len() {
+                let mut worldspaces = HashMap::new();
+                for offset in 0..names.len() {
+                    let name = names[(rotation + offset) % names.len()];
+                    let coords = if name == "largeworld" {
+                        &[(0, 0), (1, 0), (2, 0)][..]
+                    } else {
+                        &[(0, 0)][..]
+                    };
+                    worldspaces.insert(name.to_string(), cells(coords));
+                }
+
+                assert_eq!(
+                    select_worldspace_key(&worldspaces, 0, 0, 0, None).as_deref(),
+                    Some(preferred)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lone_non_default_grid_match_still_beats_game_default() {
+        let worldspaces = HashMap::from([
+            ("wasteland".to_string(), cells(&[(0, 0)])),
+            ("anchorage".to_string(), cells(&[(20, 20)])),
+        ]);
+
+        assert_eq!(
+            select_worldspace_key(&worldspaces, 20, 20, 0, None).as_deref(),
+            Some("anchorage")
+        );
+    }
+
+    #[test]
+    fn ambiguous_non_default_grid_match_uses_stable_most_cells_fallback() {
+        let worldspaces = HashMap::from([
+            ("smallworld".to_string(), cells(&[(0, 0)])),
+            ("largeworld".to_string(), cells(&[(0, 0), (1, 0), (2, 0)])),
+        ]);
+
+        assert_eq!(
+            select_worldspace_key(&worldspaces, 0, 0, 0, None).as_deref(),
+            Some("largeworld")
+        );
+    }
+}
+
 /// Build the once-per-session context for exterior streaming.
 ///
 /// Parses every plugin in load order, picks the worldspace using the
 /// same priority chain the bulk loader has used since #444 (override →
-/// preferred game-default → grid-coord match → max cells), and
+/// grid-coord match, with preferred-game tie-breaking → max cells), and
 /// resolves the worldspace's climate + default weather.
 ///
 /// `center_x` / `center_y` / `radius` are used only by the
@@ -302,73 +449,26 @@ pub fn build_exterior_world_context(
     let (record_index, load_order) = parse_record_indexes_in_load_order(&plugin_paths)?;
     let index = &record_index.cells;
 
-    // Find the best worldspace. Priority (D4-1 / #1655 reordered 2↔3):
+    // Find the best worldspace. Priority (D4-1 / #1655, #2340):
     //   1. Caller-supplied `--wrld <name>` (case-insensitive EDID match).
-    //   2. Worldspace that actually contains the requested grid coord — the
-    //      user asked for a specific `--grid`, so a worldspace holding it must
-    //      win over a hardcoded default.
-    //   3. Preferred game-default list: WastelandNV (FNV), Wasteland
-    //      (FO3 Capital Wasteland), Tamriel (Oblivion), Skyrim (Skyrim) —
-    //      fallback only when no worldspace contains the grid.
+    //   2. Worldspace(s) that contain the requested grid coord. A unique
+    //      match wins; ambiguous matches use the preferred game-default list,
+    //      then stable most-cells/name ordering.
+    //   3. When no worldspace contains the grid, the preferred game-default
+    //      list: WastelandNV (FNV), Wasteland (FO3 Capital Wasteland), Tamriel
+    //      (Oblivion), Skyrim (Skyrim).
     //   4. Worldspace with the most cells (ultimate fallback).
     // Pre-fix the Wasteland EDID was missing, so `--esm Fallout3.esm
     // --grid 0,0` landed on the max-cells fallback and silently picked
     // the wrong worldspace when any DLC master added its own. See #444.
-    let worldspace_key = {
-        let override_match = wrld_override.and_then(|name| {
-            let lower = name.to_ascii_lowercase();
-            index
-                .exterior_cells
-                .keys()
-                .find(|k| k.eq_ignore_ascii_case(&lower))
-                .cloned()
-        });
-        if let Some(ref name) = override_match {
-            log::info!("Using worldspace '{name}' (from --wrld override)");
-        }
-        override_match
-            .or_else(|| {
-                // D4-1 / #1655 — grid-containment runs BEFORE the preferred-
-                // default list: the user asked for a specific `--grid`, so the
-                // worldspace that actually contains that grid must win over the
-                // hardcoded base-game default. Pre-fix, a `--grid` into an FO3
-                // DLC worldspace (Anchorage / Point Lookout / Zeta) without
-                // `--wrld` silently landed on Capital Wasteland because the
-                // preferred list matched first. Also protects multi-plugin
-                // loads where a DLC worldspace with many cells but no grid 0,0
-                // would otherwise outvote the base game's Wasteland (#444).
-                let min_x = center_x.saturating_sub(radius);
-                let max_x = center_x.saturating_add(radius);
-                let min_y = center_y.saturating_sub(radius);
-                let max_y = center_y.saturating_add(radius);
-                index
-                    .exterior_cells
-                    .iter()
-                    .find(|(_, cells)| {
-                        cells.keys().any(|(gx, gy)| {
-                            *gx >= min_x && *gx <= max_x && *gy >= min_y && *gy <= max_y
-                        })
-                    })
-                    .map(|(name, _)| name.clone())
-            })
-            .or_else(|| {
-                // Preferred base-game default — only when no worldspace
-                // contains the requested grid (e.g. a stray grid coord).
-                let preferred = ["wastelandnv", "wasteland", "tamriel", "skyrim"];
-                preferred
-                    .iter()
-                    .find(|&&name| index.exterior_cells.contains_key(name))
-                    .map(|s| s.to_string())
-            })
-            .or_else(|| {
-                index
-                    .exterior_cells
-                    .iter()
-                    .max_by_key(|(_, cells)| cells.len())
-                    .map(|(name, _)| name.clone())
-            })
-            .ok_or_else(|| anyhow::anyhow!("No worldspace found in plugin set"))?
-    };
+    let worldspace_key = select_worldspace_key(
+        &index.exterior_cells,
+        center_x,
+        center_y,
+        radius,
+        wrld_override,
+    )
+    .ok_or_else(|| anyhow::anyhow!("No worldspace found in plugin set"))?;
 
     log::info!(
         "Exterior world context built: worldspace '{}' (target ({},{}) ±{})",

@@ -40,9 +40,9 @@
 //! 3. For each `WaterPlane` entity, bind its `MeshHandle` vertex/index
 //!    buffers, then [`WaterPipeline::record_draw`] for the push constants
 //!    + `cmd_draw_indexed` with its instance index. The instance SSBO
-//!    entry must already be populated (water planes are real instances —
-//!    they reuse the same per-instance model matrix the rest of the scene
-//!    uses). Neither step disturbs the bindings from step 1.
+//!      entry must already be populated (water planes are real instances —
+//!      they reuse the same per-instance model matrix the rest of the scene
+//!      uses). Neither step disturbs the bindings from step 1.
 
 use super::descriptors::{write_storage_image, DescriptorPoolBuilder};
 use super::pipeline::load_shader_module;

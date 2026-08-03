@@ -594,10 +594,12 @@ pub(super) fn spawn_terrain_mesh(
         world.insert(entity, TextureHandle(tex_handle));
     }
     if base_normal_index != 0 || base_specular_index != 0 {
-        let mut textures = MaterialTextureSet::default();
-        textures.base_color = tex_handle;
-        textures.normal = base_normal_index;
-        textures.specular = base_specular_index;
+        let textures = MaterialTextureSet {
+            base_color: tex_handle,
+            normal: base_normal_index,
+            specular: base_specular_index,
+            ..Default::default()
+        };
         world.insert(
             entity,
             MaterialTextureHandles {

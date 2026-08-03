@@ -453,7 +453,7 @@ fn sample_keyed<T, V: Copy>(
             return lerp(value_of(left), value_of(right), alpha);
         }
     }
-    keys.last().map_or(default, |key| value_of(key))
+    keys.last().map_or(default, value_of)
 }
 
 fn sample_scalar(keys: &[ImadScalarKey], time: f32, default: f32) -> f32 {

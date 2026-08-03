@@ -251,6 +251,8 @@ impl VulkanContext {
     /// between the main render pass end and `end_command_buffer`, at the
     /// fixed position `record_post_passes` calls it from.
     fn record_svgf_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        // SAFETY: `cmd` is recording outside a render pass, and every optional
+        // pipeline/resource used here is owned by this live context for `frame`.
         unsafe {
             if let Some(ref wca) = self.water_caustic_accum {
                 wca.barrier_post_render_pass(&self.device, cmd, frame);
@@ -308,6 +310,8 @@ impl VulkanContext {
         frame: usize,
         camera_static: bool,
     ) {
+        // SAFETY: `cmd` is recording outside a render pass, and the live
+        // caustic/TLAS resources are indexed by the current in-flight `frame`.
         unsafe {
             if !self.caustic_failed {
                 if let Some(ref mut caustic) = self.caustic {
@@ -351,14 +355,15 @@ impl VulkanContext {
     /// `record_post_passes`). Runs before TAA / SSAO / composite so the
     /// fragment shader can sample the integrated volume.
     ///
-    /// ── Composite-output gate (#928, flipped live by 977eb95a) ──
+    /// **Composite-output gate (#928, flipped live by 977eb95a).**
+    ///
     /// `VOLUMETRIC_OUTPUT_CONSUMED` (volumetrics.rs) is now `true`: the
     /// per-froxel single-shadow-ray banding that justified the original
     /// `* 0.0` discard (diagnosed 2026-05-09 against Prospector cups and
-    /// lanterns) was addressed, and `composite.frag` (`combined = combined
-    /// * vol.a + vol.rgb`) consumes the integrated volume every frame. The
-    /// inject + integrate dispatch is live GPU cost, not dead weight — do
-    /// NOT "optimize" it away as unused work. See #928 / 977eb95a.
+    /// lanterns) was addressed, and `composite.frag` consumes the integrated
+    /// volume every frame (`combined = combined * vol.a + vol.rgb`). The inject
+    /// and integrate dispatches are live GPU work, not dead weight; do not
+    /// "optimize" them away as unused work. See #928 / 977eb95a.
     ///
     /// Gated on TLAS being available, mirroring caustic (caustic.rs:627 /
     /// draw.rs:1648). When no TLAS exists (RT unsupported, scene not yet
@@ -414,6 +419,8 @@ impl VulkanContext {
             fog_height_reference,
             fog_volumes,
         } = inputs;
+        // SAFETY: `cmd` is recording outside a render pass, and all volumetric,
+        // cluster, TLAS, and timer resources belong to this live context/frame.
         unsafe {
             if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
                 if let Some(ref mut vol) = self.volumetrics {
@@ -617,6 +624,8 @@ impl VulkanContext {
     /// between the main render pass end and `end_command_buffer`, at the
     /// fixed position `record_post_passes` calls it from.
     fn record_taa_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        // SAFETY: `cmd` is recording outside a render pass, and the TAA,
+        // composite, and timer resources are live for the current `frame`.
         unsafe {
             if !self.taa_failed {
                 if let Some(ref mut taa) = self.taa {
@@ -660,6 +669,8 @@ impl VulkanContext {
         camera_pos: [f32; 3],
         render_origin: byroredux_core::math::Vec3,
     ) {
+        // SAFETY: `cmd` is recording outside a render pass, and the SSAO
+        // pipeline, descriptors, and timers are live for the current `frame`.
         unsafe {
             if let Some(ref mut ssao) = self.ssao {
                 let vp_arr = [
@@ -727,6 +738,8 @@ impl VulkanContext {
     /// between the main render pass end and `end_command_buffer`, at the
     /// fixed position `record_post_passes` calls it from.
     fn record_bloom_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        // SAFETY: `cmd` is recording outside a render pass, and bloom's input
+        // view, pipeline resources, and timers are live for the current frame.
         unsafe {
             if let Some(ref mut bloom) = self.bloom {
                 if let Some(ref composite) = self.composite {
@@ -765,6 +778,8 @@ impl VulkanContext {
     /// between the main render pass end and `end_command_buffer`, at the
     /// fixed position `record_post_passes` calls it from.
     fn record_composite_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        // SAFETY: `cmd` is recording outside a render pass, and the composite
+        // pipeline plus per-frame bindless descriptors remain live here.
         unsafe {
             if let Some(ref composite) = self.composite {
                 let bindless_set = self.texture_registry.descriptor_set(frame);
@@ -793,6 +808,8 @@ impl VulkanContext {
         frame: usize,
         fsr_frame: Option<FsrFrameParameters>,
     ) {
+        // SAFETY: `cmd` is recording outside a render pass, and every image,
+        // descriptor, upscaler resource, and timer is live for `frame`.
         unsafe {
             let scene_color = self
                 .composite
@@ -861,6 +878,8 @@ impl VulkanContext {
         underwater: [f32; 4],
         image_space_modifier: ImageSpaceModifierView,
     ) {
+        // SAFETY: `cmd` is recording outside a render pass, and presentation,
+        // exposure, swapchain-image, and timer resources are live for this frame.
         unsafe {
             let exposure = self
                 .exposure
