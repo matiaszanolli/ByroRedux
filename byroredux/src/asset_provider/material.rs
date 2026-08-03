@@ -123,7 +123,7 @@ pub(crate) fn bgem_uses_glass_behavior(bgem: &BgemFile) -> bool {
         && bgem.base.two_sided
         && bgem.base.non_occluder
         && !bgem.base.decal;
-    let reflective_surface_maps = bgem.base.environment_mapping
+    let reflective_surface_maps = bgem.env_mapping_enabled()
         && !bgem.envmap_texture.is_empty()
         && !bgem.envmap_mask_texture.is_empty()
         && !bgem.normal_texture.is_empty();
@@ -522,6 +522,14 @@ impl MaterialProvider {
     fn peek_magic(&self, path: &str) -> Option<byroredux_bgsm::MaterialKind> {
         let bytes = self.extract_from_archives(path)?;
         byroredux_bgsm::detect_kind(&bytes)
+    }
+
+    /// Seed a parsed BGEM directly so merge tests exercise the production
+    /// dispatch path without constructing an archive fixture.
+    #[cfg(test)]
+    pub(crate) fn insert_bgem_for_test(&mut self, path: &str, bgem: BgemFile) {
+        let key = normalize_material_path(path).to_ascii_lowercase();
+        self.bgem_cache.insert(key, Arc::new(bgem));
     }
 
     /// Resolve a BGEM effect-material file. No template inheritance.
@@ -1103,6 +1111,10 @@ pub(crate) fn merge_external_material(
         // runs the keyword classifier. glass_enabled surfaces get the glass
         // roughness override from classify_glass_into_material downstream.
         material.from_bgsm = true;
+        // #2366 — v20+ BGEMs can explicitly opt into the PBR specular
+        // workflow. Preserve an existing true value and promote false only
+        // when the parsed effect-material flag requests it.
+        material.is_pbr |= bgem.effect_pbr_specular;
         touched = true;
         fill(
             &mut material.textures.base_color,

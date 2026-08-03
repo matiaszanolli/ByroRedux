@@ -79,6 +79,13 @@ fn apply_bs_lighting_shader(
         .or_else(|| {
             crate::import::mesh::material_path_from_name(shader.root_material_path.as_deref(), pool)
         });
+        // #2353 — a material-reference stub contains only the external path.
+        // Every remaining field is a parser placeholder, not NIF-authored
+        // material data; copying it would falsely suppress the external CDB
+        // values when Starfield material resolution is completed.
+        if shader.material_reference {
+            return;
+        }
         if let Some(ts_idx) = shader.texture_set_ref.index() {
             if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                 if let Some(path) = tex_set.textures.first() {

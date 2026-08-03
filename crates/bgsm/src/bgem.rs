@@ -77,6 +77,21 @@ pub struct BgemFile {
 }
 
 impl BgemFile {
+    /// Whether environment mapping is enabled in the version-specific BGEM
+    /// storage slot.
+    ///
+    /// Versions before 10 author the value in the shared material prefix;
+    /// versions 10 and later move it into the BGEM subclass section. Keeping
+    /// that layout distinction here prevents consumers from reading the
+    /// shared field that is necessarily `false` for modern files.
+    pub fn env_mapping_enabled(&self) -> bool {
+        if self.base.version < 10 {
+            self.base.environment_mapping
+        } else {
+            self.environment_mapping
+        }
+    }
+
     pub(crate) fn parse(r: &mut Reader<'_>) -> Result<Self> {
         let magic = r.read_u32()?;
         if magic != SIGNATURE {
@@ -230,6 +245,44 @@ pub(crate) mod tests {
         buf
     }
 
+    /// Minimum v20 fixture with an authored subclass environment-map flag.
+    fn minimal_v20_bytes(environment_mapping: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&SIGNATURE.to_le_bytes());
+        append_base_v2(&mut buf, 20);
+
+        // Five always-present and three v11+ texture strings.
+        for _ in 0..8 {
+            append_string(&mut buf, "");
+        }
+
+        // v10+ subclass environment mapping pair.
+        buf.push(u8::from(environment_mapping));
+        buf.extend_from_slice(&0.75f32.to_le_bytes());
+
+        // Six effect flags.
+        buf.extend_from_slice(&[0; 6]);
+
+        // Base color and scale, then four falloff scalars.
+        for value in [1.0f32; 8] {
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+
+        // Lighting influence, minimum environment-map LOD, soft depth.
+        buf.extend_from_slice(&1.0f32.to_le_bytes());
+        buf.push(0);
+        buf.extend_from_slice(&100.0f32.to_le_bytes());
+
+        // v11+ emittance color and v15+ adaptive-emissive scalars.
+        for value in [1.0f32; 6] {
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+
+        buf.push(0); // v16+ glowmap
+        buf.push(0); // v20+ effect_pbr_specular
+        buf
+    }
+
     #[test]
     fn parse_minimal_v2_bgem() {
         let bytes = minimal_v2_bytes();
@@ -273,6 +326,22 @@ pub(crate) mod tests {
         assert_eq!(m.base_texture, "textures/effects/forcefield.dds");
         assert_eq!(m.base_color, [0.5, 0.8, 1.0]);
         assert_eq!(m.base_color_scale, 2.0);
+        assert_eq!(r.pos(), bytes.len());
+    }
+
+    /// Regression for #2358: v10-v20 files store environment mapping in the
+    /// BGEM subclass field while the shared-prefix copy remains false.
+    #[test]
+    fn parse_v20_env_mapping_accessor_uses_subclass_field() {
+        let bytes = minimal_v20_bytes(true);
+        let mut r = Reader::new(&bytes);
+        let m = BgemFile::parse(&mut r).expect("parse v20 BGEM");
+
+        assert_eq!(m.base.version, 20);
+        assert!(!m.base.environment_mapping);
+        assert!(m.environment_mapping);
+        assert!(m.env_mapping_enabled());
+        assert_eq!(m.environment_mapping_mask_scale, 0.75);
         assert_eq!(r.pos(), bytes.len());
     }
 }

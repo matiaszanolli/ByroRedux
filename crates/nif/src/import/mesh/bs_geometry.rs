@@ -144,7 +144,11 @@ pub fn extract_bs_geometry(
         .collect();
 
     // Unpack UDEC3 normals from raw u32 (10:10:10:2 unsigned-fixed). Y-up already.
-    let normals: Vec<[f32; 3]> = if !mesh_data.normals_raw.is_empty() {
+    // Keep authorship separate from the populated fallback vector: synthesized
+    // tangents require real normals, not the renderer-safe placeholder below
+    // (#2363).
+    let normals_authored = !mesh_data.normals_raw.is_empty();
+    let normals: Vec<[f32; 3]> = if normals_authored {
         mesh_data
             .normals_raw
             .iter()
@@ -189,7 +193,7 @@ pub fn extract_bs_geometry(
                 [xyzw[0], xyzw[1], xyzw[2], bitangent_sign]
             })
             .collect()
-    } else if !normals.is_empty() && !uvs.is_empty() && !positions.is_empty() {
+    } else if normals_authored && !uvs.is_empty() && !positions.is_empty() {
         // #1232 — no authored UDEC3 tangents but geometry is otherwise
         // populated. Route through the Y-up synthesis sibling instead of
         // dropping to `Vec::new()`, which would force every such mesh to
@@ -197,6 +201,9 @@ pub fn extract_bs_geometry(
         // and inherit the #1104 UV-mirror handedness bug. Mirrors the
         // #1204 BSTriShape SSE-reconstructed branch — both consumers
         // share the helper now that `synthesize_tangents_yup` exists.
+        // #2363 — the fallback normal vector is deliberately populated for
+        // rendering, so testing `normals.is_empty()` here was vacuous and
+        // synthesized a tangent basis from fabricated `[0, 1, 0]` normals.
         // `mesh_data.triangles` is already `Vec<[u16; 3]>`, so no index
         // conversion is needed (BSGeometry is Starfield-native Y-up).
         synthesize_tangents_yup(&positions, &normals, &uvs, &mesh_data.triangles)

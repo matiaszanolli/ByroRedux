@@ -12,7 +12,10 @@ use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
 use crate::blocks::shader::{BSLightingShaderProperty, BSShaderTextureSet, ShaderTypeData};
 use crate::blocks::tri_shape::NiTriShape;
 use crate::blocks::NiObject;
+use crate::header::NifHeader;
+use crate::stream::NifStream;
 use crate::types::{BlockRef, NiTransform};
+use crate::version::NifVersion;
 use byroredux_core::string::StringPool;
 use std::sync::Arc;
 
@@ -63,6 +66,35 @@ fn lighting_shader_with_name(name: &str) -> BSLightingShaderProperty {
         shader_type_data: ShaderTypeData::None,
         starfield_tail: Vec::new(),
     }
+}
+
+/// Parse the real 12-byte Starfield material-reference body so importer tests
+/// exercise the parser's placeholder-bearing stub rather than a hand-built
+/// approximation.
+fn parsed_starfield_material_reference(name: &str) -> BSLightingShaderProperty {
+    let header = NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: crate::version::bsver::STARFIELD,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: vec![Arc::from(name)],
+        max_string_length: name.len() as u32,
+        num_groups: 0,
+    };
+    let mut data = Vec::new();
+    data.extend_from_slice(&0i32.to_le_bytes()); // name string-table index
+    data.extend_from_slice(&0u32.to_le_bytes()); // extra-data ref count
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller ref
+    let mut stream = NifStream::new(&data, &header);
+    let shader = BSLightingShaderProperty::parse(&mut stream)
+        .expect("Starfield material reference must parse as a stub");
+    assert!(shader.material_reference);
+    assert_eq!(stream.position(), data.len() as u64);
+    shader
 }
 
 /// Minimal NiTriShape whose `shader_property_ref` points at block `idx`.
@@ -116,6 +148,34 @@ fn bslighting_mat_reference_captured() {
         Some("materials\\armor\\dragonscale.mat"),
         "BSLightingShaderProperty .mat name must populate material_path"
     );
+}
+
+/// Regression for #2353: a parsed material-reference stub contributes its
+/// external path only. Its fabricated scalar defaults must not claim inline
+/// material authorship.
+#[test]
+fn bslighting_material_reference_stub_does_not_claim_material_data() {
+    let shader = parsed_starfield_material_reference("materials\\sf\\armor.mat");
+    let scene = NifScene {
+        blocks: vec![Box::new(shader)],
+        ..NifScene::default()
+    };
+    let shape = tri_shape_with_shader_ref(0);
+    let mut pool = StringPool::new();
+    let info = extract_material_info(&scene, &shape, &[], &mut pool);
+
+    assert_eq!(
+        info.material_path.and_then(|path| pool.resolve(path)),
+        Some("materials\\sf\\armor.mat"),
+        "the external material path must survive the stub guard",
+    );
+    assert!(!info.has_material_data);
+    assert!(!info.specular_authored);
+    assert!(!info.has_uv_transform);
+    assert!(matches!(
+        info.emissive_source,
+        byroredux_core::ecs::components::material::EmissiveSource::None
+    ));
 }
 
 /// Parity: existing `.bgsm` suffix must still work after the refactor.

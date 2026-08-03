@@ -1094,6 +1094,74 @@ fn legacy_bgem_transmissive_feature_bundle_selects_shared_glass() {
     );
 }
 
+/// Regression for #2358: BGEM v10-v20 moved environment mapping out of the
+/// shared prefix and into the subclass section. The classifier must consume
+/// that modern field instead of the shared copy, which parses as false.
+#[test]
+fn v20_bgem_transmissive_bundle_reads_subclass_environment_mapping() {
+    use byroredux_bgsm::{AlphaBlendMode, BaseMaterial};
+
+    let bgem = BgemFile {
+        base: BaseMaterial {
+            version: 20,
+            alpha: 0.9,
+            alpha_blend_mode: AlphaBlendMode {
+                function: 1,
+                src_blend: 6,
+                dst_blend: 7,
+            },
+            z_buffer_write: false,
+            z_buffer_test: true,
+            two_sided: true,
+            non_occluder: true,
+            environment_mapping: false,
+            ..Default::default()
+        },
+        environment_mapping: true,
+        envmap_texture: "Shared/Cubemaps/mipblur_DefaultOutside1.dds".into(),
+        envmap_mask_texture: "Effects/Glass/glassmask.dds".into(),
+        normal_texture: "Effects/Glass/glass_n.dds".into(),
+        effect_lighting_enabled: true,
+        falloff_enabled: true,
+        ..Default::default()
+    };
+
+    assert!(bgem_uses_glass_behavior(&bgem));
+    assert!(bgem_uses_thin_glass_behavior(&bgem));
+}
+
+/// Regression for #2366: the parsed v20+ BGEM PBR opt-in must reach the
+/// canonical imported-material flag through the real merge path.
+#[test]
+fn bgem_effect_pbr_specular_promotes_imported_material_to_pbr() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/effect_pbr.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            base: byroredux_bgsm::BaseMaterial {
+                version: 20,
+                ..Default::default()
+            },
+            effect_pbr_specular: true,
+            ..Default::default()
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+    assert!(!mesh.material.is_pbr);
+
+    assert!(merge_external_material(
+        &mut mesh.material,
+        &mut provider,
+        &mut pool,
+    ));
+    assert!(
+        mesh.material.is_pbr,
+        "BGEM effect_pbr_specular=true must promote ImportedMaterial.is_pbr"
+    );
+}
+
 #[test]
 fn closed_bgem_glass_does_not_select_thin_surface_behavior() {
     let bgem = BgemFile {

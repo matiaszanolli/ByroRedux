@@ -5,8 +5,16 @@
 //! `tangents: Vec::new()` for all Starfield meshes, forcing every mesh
 //! to the shader's screen-space derivative Path-2 in `perturbNormal`.
 
+use super::extract_bs_geometry;
+use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
 use crate::blocks::bs_geometry::unpack_udec3_xyzw;
-use crate::blocks::bs_geometry::{BSGeometryMesh, BSGeometryMeshData, BSGeometryMeshKind};
+use crate::blocks::bs_geometry::{
+    BSGeometry, BSGeometryMesh, BSGeometryMeshData, BSGeometryMeshKind,
+};
+use crate::scene::NifScene;
+use crate::types::{BlockRef, NiMatrix3, NiPoint3, NiTransform};
+use byroredux_core::string::StringPool;
+use std::sync::Arc;
 
 /// Helper: encode 10-bit x/y/z and 2-bit w into a UDEC3 word.
 fn encode_udec3(x: u32, y: u32, z: u32, w: u32) -> u32 {
@@ -110,12 +118,9 @@ fn tangent_extraction_normalizes_off_nominal_sign_to_exact_plus_or_minus_one() {
 /// `perturbNormal` Path-2 (screen-space derivative TBN), which
 /// inherits the #1104 UV-mirror handedness bug.
 ///
-/// This test exercises the helper directly with a synthetic triangle.
-/// The full extract path is too involved for a unit test (requires a
-/// `BSGeometry` block + `NifScene` + `StringPool`); the in-extractor
-/// gate is the matching `else if !normals.is_empty() && !uvs.is_empty()
-/// && !positions.is_empty()` branch in `bs_geometry.rs`. Mirrors the
-/// shape of `synthesize_tangents_yup_*` tests in
+/// This test exercises the helper directly with a synthetic triangle and
+/// authored normals. The full extraction gate is covered separately below.
+/// Mirrors the shape of `synthesize_tangents_yup_*` tests in
 /// `tangent_convention_tests.rs`.
 #[test]
 fn empty_tangents_raw_routes_through_synthesize_when_geometry_populated() {
@@ -143,6 +148,77 @@ fn empty_tangents_raw_routes_through_synthesize_when_geometry_populated() {
             t
         );
     }
+}
+
+/// #2363 — missing authored normals must not be disguised by the extractor's
+/// renderer-safe `[0, 1, 0]` fallback. Before the fix, the populated fallback
+/// made the tangent synthesis guard vacuously true whenever UVs existed,
+/// fabricating a tangent basis from normals that were never present on disk.
+#[test]
+fn placeholder_normals_with_uvs_do_not_trigger_tangent_synthesis() {
+    let transform = NiTransform {
+        rotation: NiMatrix3 {
+            rows: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        },
+        translation: NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        scale: 1.0,
+    };
+    let shape = BSGeometry {
+        av: NiAVObjectData {
+            net: NiObjectNETData {
+                name: Some(Arc::from("PlaceholderNormalShape")),
+                extra_data_refs: Vec::new(),
+                controller_ref: BlockRef::NULL,
+            },
+            flags: 0x200,
+            transform,
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        bounding_sphere: ([0.0, 0.0, 0.0], 0.0),
+        bound_min_max: [0.0; 6],
+        skin_instance_ref: BlockRef::NULL,
+        shader_property_ref: BlockRef::NULL,
+        alpha_property_ref: BlockRef::NULL,
+        meshes: vec![BSGeometryMesh {
+            tri_size: 3 * std::mem::size_of::<u16>() as u32,
+            num_verts: 3,
+            flags: 0,
+            kind: BSGeometryMeshKind::Internal {
+                mesh_data: Box::new(BSGeometryMeshData {
+                    version: 2,
+                    triangles: vec![[0, 1, 2]],
+                    scale: 1.0,
+                    weights_per_vert: 0,
+                    vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+                    uvs0: vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                    uvs1: Vec::new(),
+                    colors: Vec::new(),
+                    normals_raw: Vec::new(),
+                    tangents_raw: Vec::new(),
+                    skin_weights: Vec::new(),
+                    lods: Vec::new(),
+                    meshlets: Vec::new(),
+                    cull_data: Vec::new(),
+                }),
+            },
+        }],
+    };
+
+    let scene = NifScene::default();
+    let mut pool = StringPool::new();
+    let mesh = extract_bs_geometry(&scene, &shape, &shape.av.transform, &mut pool, None)
+        .expect("populated internal BSGeometry must import");
+
+    assert_eq!(mesh.normals, vec![[0.0, 1.0, 0.0]; 3]);
+    assert!(
+        mesh.tangents.is_empty(),
+        "placeholder normals must not authorize tangent synthesis"
+    );
 }
 
 /// Empty `tangents_raw` AND empty geometry (degenerate input) — the
