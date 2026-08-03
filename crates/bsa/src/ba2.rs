@@ -51,7 +51,9 @@
 //! let bytes = archive.extract("meshes/interiors/desk01.nif")?;
 //! ```
 
-use crate::safety::{checked_chunk_size, checked_chunk_size_usize, checked_entry_count};
+use crate::safety::{
+    checked_chunk_size, checked_chunk_size_usize, checked_chunk_total, checked_entry_count,
+};
 use flate2::read::ZlibDecoder;
 use std::collections::HashMap;
 use std::fs::File;
@@ -599,8 +601,13 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
         }
 
         // `num_chunks` is a u8 (max 255), so the `Vec::with_capacity`
-        // here is inherently bounded and needs no extra check.
+        // here is inherently bounded and needs no extra check. The
+        // per-chunk sizes below are each capped individually, but
+        // `packed_total`/`unpacked_total` additionally cap the *sum*
+        // across the whole chunk list — see #2356 (SF-BA2-01).
         let mut chunks = Vec::with_capacity(num_chunks);
+        let mut packed_total = 0usize;
+        let mut unpacked_total = 0usize;
         for _ in 0..num_chunks {
             let mut chunk = [0u8; 24];
             reader.read_exact(&mut chunk)?;
@@ -610,6 +617,19 @@ fn read_dx10_records(reader: &mut BufReader<File>, count: usize) -> io::Result<V
             // #586 — cap DX10 chunk sizes at record-read time.
             checked_chunk_size(packed_size, "BA2 DX10 chunk packed_size")?;
             checked_chunk_size(unpacked_size, "BA2 DX10 chunk unpacked_size")?;
+            // #2356 — cap the running sum across this record's chunk
+            // list; a per-chunk cap alone lets up to 255 near-1 GiB
+            // chunks through per texture.
+            packed_total = checked_chunk_total(
+                packed_total,
+                packed_size as usize,
+                "BA2 DX10 record packed_size",
+            )?;
+            unpacked_total = checked_chunk_total(
+                unpacked_total,
+                unpacked_size as usize,
+                "BA2 DX10 record unpacked_size",
+            )?;
             let start_mip = u16::from_le_bytes(chunk[16..18].try_into().unwrap());
             let end_mip = u16::from_le_bytes(chunk[18..20].try_into().unwrap());
             let padding = u32::from_le_bytes(chunk[20..24].try_into().unwrap());

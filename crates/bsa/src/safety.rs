@@ -88,6 +88,40 @@ pub fn checked_chunk_size_usize(size: usize, label: &str) -> io::Result<usize> {
     Ok(size)
 }
 
+/// Upper bound on the summed byte total across every chunk of a single
+/// multi-chunk record (e.g. one BA2 DX10 texture's per-mip chunk list).
+/// Each chunk's own size is already capped at [`MAX_CHUNK_BYTES`], but a
+/// DX10 record's `num_chunks` is a `u8` (up to 255 chunks), and nothing
+/// capped the *sum* — a corrupted/hostile archive can declare up to 255
+/// near-`MAX_CHUNK_BYTES` chunks per texture, driving up to ~255x the
+/// single-chunk cap in eager allocation attempts before a single pixel
+/// byte is read. Real vanilla DX10 textures (BC7 8K cubemaps with a
+/// full mip chain included) stay well under 2 GiB fully decompressed
+/// across every mip and cube face combined; this leaves generous
+/// headroom for legitimate content while bounding the amplification
+/// factor a per-chunk cap alone can't catch. See #2356 (SF-BA2-01).
+pub const MAX_RECORD_TOTAL_BYTES: usize = 2 * 1024 * 1024 * 1024;
+
+/// Validate a running sum of chunk byte sizes within a single record
+/// against [`MAX_RECORD_TOTAL_BYTES`]. Each individual `added` size must
+/// already have passed [`checked_chunk_size`] / [`checked_chunk_size_usize`];
+/// this closes the aggregate-across-chunks gap those per-chunk checks
+/// can't see. See #2356 (SF-BA2-01).
+pub fn checked_chunk_total(running_total: usize, added: usize, label: &str) -> io::Result<usize> {
+    let total = running_total.saturating_add(added);
+    if total > MAX_RECORD_TOTAL_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{label} cumulative size {total} across the record's chunk \
+                 list exceeds safety cap {MAX_RECORD_TOTAL_BYTES} \
+                 — archive is corrupt or hostile"
+            ),
+        ));
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +180,69 @@ mod tests {
     fn chunk_size_usize_matches_u32_semantics() {
         assert_eq!(checked_chunk_size_usize(1024, "packed_size").unwrap(), 1024);
         assert!(checked_chunk_size_usize(MAX_CHUNK_BYTES + 1, "packed_size").is_err());
+    }
+
+    // #2356 (SF-BA2-01) — a single record's chunk sizes each pass
+    // `checked_chunk_size` individually, but nothing capped the sum
+    // across the chunk list. `num_chunks` is a u8 (up to 255), so a
+    // hostile archive could declare 255 near-`MAX_CHUNK_BYTES` chunks
+    // per texture record, driving up to ~255x the single-chunk cap in
+    // allocation attempts before a single pixel byte is read.
+
+    #[test]
+    fn chunk_total_accepts_vanilla_multi_mip_texture() {
+        // A real multi-mip DX10 texture: several chunks summing well
+        // under the cap must accumulate cleanly.
+        let mut total = 0usize;
+        for _ in 0..12 {
+            total = checked_chunk_total(total, 8 * 1024 * 1024, "unpacked_size").unwrap();
+        }
+        assert_eq!(total, 12 * 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn chunk_total_rejects_255_near_cap_chunks() {
+        // The exact attack shape from #2356: 255 chunks (the u8 max),
+        // each individually valid under MAX_CHUNK_BYTES, must still be
+        // rejected once their sum crosses MAX_RECORD_TOTAL_BYTES —
+        // the per-chunk cap alone can't see this.
+        let per_chunk = MAX_CHUNK_BYTES; // each chunk passes checked_chunk_size on its own
+        let mut total = 0usize;
+        let mut rejected = false;
+        for _ in 0..255u32 {
+            match checked_chunk_total(total, per_chunk, "unpacked_size") {
+                Ok(t) => total = t,
+                Err(err) => {
+                    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+                    rejected = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            rejected,
+            "255 near-1 GiB chunks must trip the aggregate cap before all are accepted"
+        );
+    }
+
+    #[test]
+    fn chunk_total_accepts_exactly_the_cap_boundary() {
+        assert_eq!(
+            checked_chunk_total(0, MAX_RECORD_TOTAL_BYTES, "unpacked_size").unwrap(),
+            MAX_RECORD_TOTAL_BYTES
+        );
+    }
+
+    #[test]
+    fn chunk_total_rejects_cap_plus_one() {
+        let err = checked_chunk_total(0, MAX_RECORD_TOTAL_BYTES + 1, "unpacked_size").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn chunk_total_never_overflows_on_saturating_add() {
+        // Two near-usize::MAX additions must saturate, not panic/wrap.
+        let err = checked_chunk_total(usize::MAX - 10, 100, "unpacked_size").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 }
