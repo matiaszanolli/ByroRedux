@@ -44,9 +44,30 @@ const SHARED_LIGHT_ANIMATION_MASK: u32 =
 /// decodes `Flicker`/`Pulse`. Keeping this conversion at the game boundary
 /// prevents rendering-only flags from becoming continuous whole-scene
 /// light animation.
+///
+/// #2251 (REN-D22-02) — `GameKind::Fallout76` verified directly against
+/// FO76Edit's `wbDefinitionsFO76.pas`: `0x08`/`0x80` (Flicker/Pulse) match
+/// Skyrim exactly, and `0x40`/`0x100` are unnamed ("Unknown 6"/"Unknown 8")
+/// there too — the identical gap Fallout 4 has, so it shares Fallout 4's
+/// arm rather than the Skyrim-shared default.
+///
+/// `GameKind::Starfield` is its own arm, not folded into the shared
+/// default, because there is no positive evidence to fold it into either
+/// side: SF1Edit's live LIGH definition (`wbDefinitionsSF1.pas`) replaced
+/// the Skyrim/FO4/FO76 `DATA` subrecord with a restructured 76-byte
+/// `DAT2` whose only named fields are a handful of floats — the bytes a
+/// Flags field would occupy are an undifferentiated `wbUnknown` block, and
+/// the `Flicker`/`Pulse`/shadow flag list that would apply to a `DATA`-style
+/// layout survives only as commented-out reference dead code, never live.
+/// Trusting Skyrim's bit meanings for whatever bytes our own `DAT2` reader
+/// (`esm/cell/support.rs`, #1567) currently surfaces as `flags` is a
+/// bigger, unverifiable claim than deciding "no animation" — `0` is not a
+/// gap gate copied by omission here; it's the deliberate, only-defensible
+/// value pending real evidence.
 pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32) -> u32 {
     let source_animation_mask = match game {
-        GameKind::Fallout4 => LIGHT_FLAG_FLICKER | LIGHT_FLAG_PULSE,
+        GameKind::Fallout4 | GameKind::Fallout76 => LIGHT_FLAG_FLICKER | LIGHT_FLAG_PULSE,
+        GameKind::Starfield => 0,
         _ => SHARED_LIGHT_ANIMATION_MASK,
     };
     source_flags & source_animation_mask
@@ -57,19 +78,30 @@ pub(crate) fn canonical_light_animation_flags(game: GameKind, source_flags: u32)
 /// above.
 ///
 /// `LIGHT_FLAG_SHADOW_MASK` (`0x400`/`0x800`/`0x1000`) is directly verified
-/// against TES5's LIGH layout (`light.rs`'s doc comment), and the `0x400`
-/// bit specifically against F4Edit's Fallout 4 definitions too (see this
-/// module's `canonical_light_animation_flags` doc comment — both agree
-/// `0x400` = Shadow Spotlight). No divergence has been identified yet for
-/// `0x800`/`0x1000` on Fallout 4, or for any bit here on Oblivion / FO3 /
-/// FNV / FO76 / Starfield's own LIGH DATA layouts — those stay on the
-/// shared mask rather than silently decoding zero, matching
-/// `canonical_light_animation_flags`'s own default-to-shared-mask
-/// treatment of every game it hasn't specifically gated. A verified
-/// per-game divergence gets its own `match` arm here, exactly like
-/// `GameKind::Fallout4` does above.
-pub(crate) fn canonical_light_shadow_flags(_game: GameKind, source_flags: u32) -> u32 {
-    source_flags & LIGHT_FLAG_SHADOW_MASK
+/// against TES5's LIGH layout (`light.rs`'s doc comment), and against
+/// FO76Edit's `wbDefinitionsFO76.pas` too (#2251) — both name all three
+/// bits identically to Skyrim at the same positions, high confidence. No
+/// divergence has been identified for Oblivion / FO3 / FNV's own LIGH
+/// layouts either, so those stay on the shared mask rather than silently
+/// decoding zero, matching `canonical_light_animation_flags`'s own
+/// default-to-shared-mask treatment of every game it hasn't specifically
+/// gated. A verified per-game divergence gets its own `match` arm here,
+/// exactly like `GameKind::Fallout4` does above.
+///
+/// `GameKind::Starfield` is excluded from that default for the same
+/// reason `canonical_light_animation_flags` excludes it (#2251): SF1Edit's
+/// live LIGH definition has no named Flags field at all in the
+/// restructured `DAT2` subrecord (the byte range a `DATA`-style layout's
+/// flags would occupy is an undifferentiated `wbUnknown` block there), so
+/// there is no positive evidence to decode any bit meaning from whatever
+/// our `DAT2` reader currently surfaces as `flags` — including shadow
+/// bits. `0`, not a guess at alternate bit positions.
+pub(crate) fn canonical_light_shadow_flags(game: GameKind, source_flags: u32) -> u32 {
+    let source_shadow_mask = match game {
+        GameKind::Starfield => 0,
+        _ => LIGHT_FLAG_SHADOW_MASK,
+    };
+    source_flags & source_shadow_mask
 }
 
 /// Damping multiplier applied to the raw `intensity_amplitude`
@@ -315,6 +347,27 @@ mod tests {
         );
     }
 
+    /// Regression for #2251 (REN-D22-02): Fallout 76 verified directly
+    /// against FO76Edit's `wbDefinitionsFO76.pas` — `0x40`/`0x100` are
+    /// unnamed there too (the identical gap FO4 has), so FO76 shares
+    /// FO4's arm rather than the Skyrim-shared default.
+    #[test]
+    fn fallout76_matches_fallout4_slow_variant_gap() {
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Fallout76, LIGHT_FLAG_PULSE_SLOW),
+            0,
+        );
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Fallout76, LIGHT_FLAG_FLICKER_SLOW),
+            0,
+        );
+        let source = LIGHT_FLAG_FLICKER | LIGHT_FLAG_PULSE | LIGHT_FLAG_PULSE_SLOW;
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Fallout76, source),
+            LIGHT_FLAG_FLICKER | LIGHT_FLAG_PULSE,
+        );
+    }
+
     /// Regression for #2250 (REN-D22-01): `canonical_light_shadow_flags`
     /// must mask down to only the three verified shadow-projection bits —
     /// unrelated LIGH flags (Dynamic, Portal-strict, CanCarry, etc.) must
@@ -362,7 +415,6 @@ mod tests {
             GameKind::Skyrim,
             GameKind::Fallout4,
             GameKind::Fallout76,
-            GameKind::Starfield,
         ] {
             assert_eq!(
                 canonical_light_shadow_flags(game, LIGHT_FLAG_SHADOW_MASK),
@@ -370,5 +422,31 @@ mod tests {
                 "{game:?} must decode the full shadow mask until a verified divergence is found"
             );
         }
+    }
+
+    /// #2251 — Starfield's restructured `DAT2` LIGH subrecord has no
+    /// verified Flags field at all (SF1Edit's live definition leaves
+    /// those bytes an undifferentiated `wbUnknown` block), so neither
+    /// animation nor shadow bits can be trusted to mean what they mean on
+    /// Skyrim/FO4/FO76 — both canonicalization functions must decode
+    /// exactly zero for Starfield regardless of the raw input.
+    #[test]
+    fn starfield_has_no_verified_flags_field_for_either_canonicalization() {
+        use byroredux_core::ecs::LIGHT_FLAG_SHADOW_MASK;
+        let all_bits_set = LIGHT_FLAG_FLICKER
+            | LIGHT_FLAG_FLICKER_SLOW
+            | LIGHT_FLAG_PULSE
+            | LIGHT_FLAG_PULSE_SLOW
+            | LIGHT_FLAG_SHADOW_MASK;
+        assert_eq!(
+            canonical_light_animation_flags(GameKind::Starfield, all_bits_set),
+            0,
+            "Starfield has no verified animation-flag layout"
+        );
+        assert_eq!(
+            canonical_light_shadow_flags(GameKind::Starfield, all_bits_set),
+            0,
+            "Starfield has no verified shadow-flag layout"
+        );
     }
 }
