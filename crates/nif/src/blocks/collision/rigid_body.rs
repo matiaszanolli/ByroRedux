@@ -17,6 +17,10 @@ pub struct BhkRigidBody {
     // bhkWorldObject
     pub shape_ref: BlockRef,
     pub havok_filter: u32,
+    /// `true` only for the `bhkRigidBodyT` block type. The T variant activates
+    /// the CInfo translation/rotation; plain `bhkRigidBody` stores those bytes
+    /// but the engine must treat them as identity (#2316).
+    pub is_t: bool,
     // Physics CInfo
     pub translation: [f32; 4],
     pub rotation: [f32; 4],
@@ -198,6 +202,7 @@ impl BhkRigidBody {
         Ok(Self {
             shape_ref,
             havok_filter,
+            is_t: false,
             translation,
             rotation,
             linear_velocity,
@@ -268,6 +273,7 @@ impl BhkRigidBody {
         Ok(Self {
             shape_ref,
             havok_filter,
+            is_t: false,
             translation,
             rotation,
             linear_velocity,

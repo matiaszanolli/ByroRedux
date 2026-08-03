@@ -326,6 +326,7 @@ mod ragdoll_extract_tests {
         Box::new(BhkRigidBody {
             shape_ref: BlockRef(shape_ref as u32),
             havok_filter: 0,
+            is_t: false,
             translation: [0.0; 4],
             rotation: [0.0, 0.0, 0.0, 1.0],
             linear_velocity: [0.0; 4],
@@ -450,10 +451,11 @@ mod ragdoll_extract_tests {
 
     /// A `rigid_body` with a caller-set translation, so the body-extraction
     /// finite guard can be exercised through `extract_ragdoll`.
-    fn rigid_body_at(shape_ref: usize, translation: [f32; 4]) -> Box<dyn NiObject> {
+    fn rigid_body_at(shape_ref: usize, translation: [f32; 4], is_t: bool) -> Box<dyn NiObject> {
         Box::new(BhkRigidBody {
             shape_ref: BlockRef(shape_ref as u32),
             havok_filter: 0,
+            is_t,
             translation,
             rotation: [0.0, 0.0, 0.0, 1.0],
             linear_velocity: [0.0; 4],
@@ -520,7 +522,7 @@ mod ragdoll_extract_tests {
         scene.blocks.push(coll_obj(2)); // [1]
         scene
             .blocks
-            .push(rigid_body_at(3, [f32::NAN, 0.0, 0.0, 0.0])); // [2]
+            .push(rigid_body_at(3, [f32::NAN, 0.0, 0.0, 0.0], false)); // [2]
         scene.blocks.push(sphere(1.0)); // [3]
         scene.blocks.push(bone("Bip01 Spine", 5)); // [4]
         scene.blocks.push(coll_obj(6)); // [5]
@@ -697,6 +699,7 @@ mod ragdoll_extract_tests {
         scene.blocks.push(Box::new(BhkRigidBody {
             shape_ref: BlockRef(2),
             havok_filter: 0,
+            is_t: false,
             translation: [0.0; 4],
             rotation: [0.0, 0.0, 0.0, 1.0],
             linear_velocity: [0.0; 4],
@@ -741,6 +744,7 @@ mod ragdoll_extract_tests {
         scene.blocks.push(Box::new(BhkRigidBody {
             shape_ref: BlockRef(2),
             havok_filter: 0,
+            is_t: false,
             translation: [0.0; 4],
             rotation: [0.0, 0.0, 0.0, 1.0],
             linear_velocity: [0.0; 4],
@@ -771,5 +775,49 @@ mod ragdoll_extract_tests {
             MotionType::Dynamic,
             "real authored mass must keep the body Dynamic — only mass=0 is reclassified"
         );
+    }
+
+    #[test]
+    fn non_t_body_ignores_non_identity_cinfo_transform() {
+        let mut scene = NifScene {
+            havok_scale: 1.0,
+            ..NifScene::default()
+        };
+        scene.blocks.push(coll_obj(1));
+        scene
+            .blocks
+            .push(rigid_body_at(2, [10.0, 20.0, 30.0, 0.0], false));
+        scene.blocks.push(sphere(1.0));
+
+        let (shape, _) = extract_collision(&scene, BlockRef(0))
+            .expect("classic non-T rigid-body chain must resolve");
+        assert!(
+            matches!(shape, CollisionShape::Ball { .. }),
+            "plain bhkRigidBody must ignore its stored CInfo transform"
+        );
+    }
+
+    #[test]
+    fn t_body_applies_non_identity_cinfo_transform() {
+        let mut scene = NifScene {
+            havok_scale: 1.0,
+            ..NifScene::default()
+        };
+        scene.blocks.push(coll_obj(1));
+        scene
+            .blocks
+            .push(rigid_body_at(2, [10.0, 20.0, 30.0, 0.0], true));
+        scene.blocks.push(sphere(1.0));
+
+        let (shape, _) = extract_collision(&scene, BlockRef(0))
+            .expect("classic T rigid-body chain must resolve");
+        let CollisionShape::Compound { children } = shape else {
+            panic!("bhkRigidBodyT must apply its active CInfo transform");
+        };
+        assert_eq!(children.len(), 1);
+        assert!(matches!(
+            children[0].2.as_ref(),
+            CollisionShape::Ball { .. }
+        ));
     }
 }

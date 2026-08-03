@@ -179,7 +179,7 @@ fn pp_lighting_propagates_texture_clamp_mode_and_env_map_scale() {
         shader: BSShaderPropertyData {
             shade_flags: 0,
             shader_type: 7, // Parallax_Occlusion
-            shader_flags_1: 0,
+            shader_flags_1: crate::shader_flags::fo3nv_f1::ENVIRONMENT_MAPPING,
             shader_flags_2: 0,
             env_map_scale: 2.5,
         },
@@ -210,6 +210,22 @@ fn pp_lighting_propagates_texture_clamp_mode_and_env_map_scale() {
         "PPLighting env_map_scale must mirror to MaterialInfo \
          (#773 / FO3-4-02), got {}",
         info.env_map_scale
+    );
+}
+
+#[test]
+fn pp_lighting_without_environment_mapping_flag_ignores_default_scale() {
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(fo3_pp_lighting_with_texture_set(1))];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_eq!(
+        info.env_map_scale, 0.0,
+        "FO3/FNV's default env_map_scale is unauthored unless an environment-mapping flag is set"
     );
 }
 

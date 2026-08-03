@@ -60,7 +60,7 @@ fn water_shader_with_env_scale(env_map_scale: f32) -> WaterShaderProperty {
         shader: BSShaderPropertyData {
             shade_flags: 0,
             shader_type: 0,
-            shader_flags_1: 0,
+            shader_flags_1: crate::shader_flags::fo3nv_f1::ENVIRONMENT_MAPPING,
             shader_flags_2: 0,
             env_map_scale,
         },
@@ -105,7 +105,7 @@ fn bs_shader_property_base_only_routes_env_map_scale() {
     let shader_data = BSShaderPropertyData {
         shade_flags: 0,
         shader_type: 0,
-        shader_flags_1: 0,
+        shader_flags_1: crate::shader_flags::fo3nv_f1::ENVIRONMENT_MAPPING,
         shader_flags_2: 0,
         env_map_scale: 0.42,
     };
@@ -141,7 +141,7 @@ fn bs_shader_property_base_only_consumer_is_type_name_agnostic() {
     let shader_data = BSShaderPropertyData {
         shade_flags: 0,
         shader_type: 0,
-        shader_flags_1: 0,
+        shader_flags_1: crate::shader_flags::fo3nv_f1::ENVIRONMENT_MAPPING,
         shader_flags_2: 0,
         env_map_scale: 0.7,
     };

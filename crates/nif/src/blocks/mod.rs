@@ -1144,7 +1144,12 @@ fn parse_block_inner(
         // FO3 + FNV skeletons. nif.xml line 3927 — NiTimeController base
         // + trailing `Keys: uint`. 1,427 vanilla blocks pre-#551. See #551.
         "bhkBlendController" => Ok(Box::new(BhkBlendController::parse(stream)?)),
-        "bhkRigidBody" | "bhkRigidBodyT" => Ok(Box::new(BhkRigidBody::parse(stream)?)),
+        "bhkRigidBody" => Ok(Box::new(BhkRigidBody::parse(stream)?)),
+        "bhkRigidBodyT" => {
+            let mut body = BhkRigidBody::parse(stream)?;
+            body.is_t = true;
+            Ok(Box::new(body))
+        }
         "bhkSimpleShapePhantom" => Ok(Box::new(BhkSimpleShapePhantom::parse(stream)?)),
         "bhkMoppBvTreeShape" => Ok(Box::new(BhkMoppBvTreeShape::parse(stream)?)),
         "bhkBoxShape" => Ok(Box::new(BhkBoxShape::parse(stream)?)),

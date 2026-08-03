@@ -263,9 +263,10 @@ fn extract_from_classic(
         return None;
     };
 
-    // Apply rigid body center-of-mass offset and orientation to the shape.
-    // Static architecture typically has zero offset; dynamic objects (crates,
-    // bottles, ragdoll bones) have non-trivial transforms.
+    // Only bhkRigidBodyT activates the CInfo offset/orientation. Plain
+    // bhkRigidBody carries the same wire fields, but Gamebryo treats them as
+    // identity even when stale/non-zero bytes survive in vanilla content
+    // (#2316). Applying those bytes displaced FO3 architecture colliders.
     let body_translation = havok_to_engine(
         body.translation[0],
         body.translation[1],
@@ -273,8 +274,9 @@ fn extract_from_classic(
     ) * scale;
     let body_rotation = havok_quat_to_engine(body.rotation);
 
-    let has_offset = body_translation.length_squared() > 1e-6
-        || (body_rotation - Quat::IDENTITY).length_squared() > 1e-6;
+    let has_offset = body.is_t
+        && (body_translation.length_squared() > 1e-6
+            || (body_rotation - Quat::IDENTITY).length_squared() > 1e-6);
     if has_offset {
         shape = CollisionShape::Compound {
             children: vec![(body_translation, body_rotation, Box::new(shape))],

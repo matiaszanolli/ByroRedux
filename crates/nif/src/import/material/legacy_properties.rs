@@ -9,6 +9,19 @@
 
 use super::*;
 
+fn legacy_env_map_scale(shader_flags_1: u32, env_map_scale: f32) -> f32 {
+    use crate::shader_flags::fo3nv_f1::{
+        ENVIRONMENT_MAPPING, EYE_ENVIRONMENT_MAPPING, WINDOW_ENVIRONMENT_MAPPING,
+    };
+
+    let authored_mask = ENVIRONMENT_MAPPING | EYE_ENVIRONMENT_MAPPING | WINDOW_ENVIRONMENT_MAPPING;
+    if shader_flags_1 & authored_mask != 0 {
+        env_map_scale
+    } else {
+        0.0
+    }
+}
+
 /// FO3/FNV/Oblivion: single pass over shape + inherited properties.
 /// Shape properties first so they take priority (#208). Empty for
 /// BsTriShape (Skyrim+ binds via shader_property_ref only).
@@ -312,7 +325,7 @@ fn apply_pp_lighting_property(
         // `flags & 0xF` (#761) — only this PPLighting site was
         // missing. nif.xml enum range is 0..=3 → `as u8` is safe.
         info.texture_clamp_mode = shader.texture_clamp_mode as u8;
-        // #773 / FO3-4-02 — `env_map_scale` mirror. Pre-fix the
+        // #773 / FO3-4-02 — `env_map_scale` mirror. Pre-#2315 the
         // env-cube + env-mask textures arrived via
         // `texture_set[4]/[5]` (#452) but the scalar that
         // modulates them was dropped, so FO3/FNV glass / polished
@@ -322,8 +335,11 @@ fn apply_pp_lighting_property(
         // in `apply_bs_effect_shader` and the Skyrim+ EnvironmentMap variant via
         // `apply_shader_type_data`; only this site was missing.
         // Field path: `BSShaderPPLightingProperty.shader:
-        // BSShaderPropertyData → .env_map_scale`.
-        info.env_map_scale = shader.shader.env_map_scale;
+        // BSShaderPropertyData → .env_map_scale`. The scalar defaults
+        // to 1.0 on disk, so only forward it when an authored FO3/FNV
+        // environment-mapping flag activates the field (#2315).
+        info.env_map_scale =
+            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
         // FO3/FNV `BSShaderPPLightingProperty` has NO Double_Sided
         // bit on either flag pair — see the SF_DOUBLE_SIDED
         // explanatory block at the top of this file. Leave
@@ -384,7 +400,8 @@ fn apply_no_lighting_property(
         // `apply_pp_lighting_property` — PP and NoLighting rarely
         // coexist on a single mesh in vanilla content.
         info.texture_clamp_mode = shader.texture_clamp_mode as u8;
-        info.env_map_scale = shader.shader.env_map_scale;
+        info.env_map_scale =
+            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
         // FO3/FNV `BSShaderNoLightingProperty` is the original
         // engine's fullbright / unlit shader — the texture (× vertex
         // color) IS the final pixel: terminal screens, computer text,
@@ -443,23 +460,26 @@ fn apply_misc_shader_properties(
             info.texture_path = intern_texture_path(pool, &shader.file_name);
         }
         info.texture_clamp_mode = shader.texture_clamp_mode as u8;
-        info.env_map_scale = shader.shader.env_map_scale;
+        info.env_map_scale =
+            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
     }
     if let Some(shader) = scene.get_as::<SkyShaderProperty>(idx) {
         if info.texture_path.is_none() {
             info.texture_path = intern_texture_path(pool, &shader.file_name);
         }
         info.texture_clamp_mode = shader.texture_clamp_mode as u8;
-        info.env_map_scale = shader.shader.env_map_scale;
+        info.env_map_scale =
+            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
     }
     if let Some(shader) = scene.get_as::<TallGrassShaderProperty>(idx) {
         if info.texture_path.is_none() {
             info.texture_path = intern_texture_path(pool, &shader.file_name);
         }
-        info.env_map_scale = shader.shader.env_map_scale;
+        info.env_map_scale =
+            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
     }
-    // #1856 — `env_map_scale` is the *entire* payload here, not a
-    // partial wire-up: per nif.xml line 6322 the FO3/FNV
+    // #1856 — `env_map_scale` is the only value payload here: per
+    // nif.xml line 6322 the FO3/FNV
     // `WaterShaderProperty` inherits `BSShaderProperty` with no fields
     // of its own. The `water_shader_flags` word an audit might expect
     // to see set lives only on the Skyrim-era `BSWaterShaderProperty`
@@ -467,7 +487,8 @@ fn apply_misc_shader_properties(
     // forwarding this block's base `shader_flags_1/2` into it would mix
     // `BSShaderFlags` with `WaterShaderPropertyFlags`.
     if let Some(shader) = scene.get_as::<WaterShaderProperty>(idx) {
-        info.env_map_scale = shader.shader.env_map_scale;
+        info.env_map_scale =
+            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
     }
 }
 
@@ -488,7 +509,8 @@ fn apply_base_only_shader_property(scene: &NifScene, idx: usize, info: &mut Mate
     // are the most visible case — reflective hair never received
     // its authored env modulator pre-fix.
     if let Some(shader) = scene.get_as::<BSShaderPropertyBaseOnly>(idx) {
-        info.env_map_scale = shader.shader.env_map_scale;
+        info.env_map_scale =
+            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
     }
 }
 

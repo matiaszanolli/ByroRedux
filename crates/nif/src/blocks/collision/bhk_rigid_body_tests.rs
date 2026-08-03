@@ -127,6 +127,7 @@ fn bhk_rigid_body_skyrim_se_consumes_full_cinfo2010_body() {
         .as_any()
         .downcast_ref::<BhkRigidBody>()
         .expect("dispatch must yield BhkRigidBody, not NiUnknown");
+    assert!(!body.is_t, "plain bhkRigidBody must retain non-T semantics");
     // Spot-check a few fields that drift to garbage under the old
     // parser: translation[0] and deactivator_type both land in what
     // pre-fix would have been CInfo2010-prefix bytes.
@@ -154,6 +155,10 @@ fn bhk_rigid_body_t_skyrim_se_parses_identically() {
         .expect("bhkRigidBodyT must share the SE fix");
     assert_eq!(stream.position() as usize, bytes.len());
     let body = block.as_any().downcast_ref::<BhkRigidBody>().unwrap();
+    assert!(
+        body.is_t,
+        "bhkRigidBodyT must retain its active-transform tag"
+    );
     assert_eq!(body.mass, mass);
     assert_eq!(body.deactivator_type, 3);
 }

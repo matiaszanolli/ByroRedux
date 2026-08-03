@@ -31,6 +31,13 @@
 /// bit 12 which is `Unknown_3` on FO3/FNV and `Model_Space_Normals` on
 /// Skyrim. Do NOT re-use FO3/FNV bit 12 expecting Skyrim behavior.
 pub mod fo3nv_f1 {
+    /// Bit 7 — `Environment_Mapping`. The stored `env_map_scale` is authored
+    /// only when this or one of the two specialised environment-map bits is set.
+    pub const ENVIRONMENT_MAPPING: u32 = 0x0000_0080;
+    /// Bit 17 — `Eye_Environment_Mapping`.
+    pub const EYE_ENVIRONMENT_MAPPING: u32 = 0x0002_0000;
+    /// Bit 21 — `Window_Environment_Mapping`.
+    pub const WINDOW_ENVIRONMENT_MAPPING: u32 = 0x0020_0000;
     /// Bit 22 — `Own_Emit`. Surface provides its own emittance; renders
     /// additively (ONE/ONE blend) rather than alpha-over. Same bit as
     /// `skyrim_slsf1` and `fo4_slsf1` — cross-game constant.
