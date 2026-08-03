@@ -46,9 +46,13 @@ vec2 parallaxDisplaceUV(
         vec3 dPdy = dFdy(worldPos);
         vec2 dUVdx = dFdx(uv);
         vec2 dUVdy = dFdy(uv);
+        // #2245 (REN-D19-01) — matches `perturbNormal`'s Path-2 fix: this
+        // un-divided-numerator T already carries the UV-Jacobian
+        // determinant's sign, so `cross(frameN, T)` alone reconstructs the
+        // correctly-mirrored B. No further `sign(det)` multiply needed —
+        // see that function's doc comment for the full derivation.
         T = dPdx * dUVdy.y - dPdy * dUVdx.y;
-        float uvDet = dUVdx.x * dUVdy.y - dUVdx.y * dUVdy.x;
-        tangentSign = uvDet < 0.0 ? -1.0 : 1.0;
+        tangentSign = 1.0;
     }
 
     T -= dot(T, frameN) * frameN;
@@ -174,24 +178,23 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx, vec4 verte
     vec2 dUVdx = dFdx(uv);
     vec2 dUVdy = dFdy(uv);
 
-    // Solve the linear system for T and B.
+    // Solve the linear system for T (Lengyel's method, un-divided by the
+    // UV-Jacobian determinant). #2245 (REN-D19-01) — this numerator's own
+    // sign already carries the determinant's sign relative to `cross(N, T)`
+    // (T_raw = T_true * det, an exact identity of the linear solve), so
+    // `cross(N, T)` alone already reconstructs the correctly-mirrored B.
+    // #1104 (REN-D16-002) added an explicit `sign(det)` multiply here
+    // believing `cross(N, T)` always came out right-handed regardless of
+    // mirroring (true only for a T divided by det, i.e. NOT what's built
+    // below) — that second multiplication cancels the sign this T already
+    // carries, silently reintroducing the exact pre-#1104 mirrored-UV bug.
+    // Verified against two independent worked examples (axis-swap and
+    // single-axis-negate mirrors) before removing it. Path-1 (authored
+    // tangent) is unaffected — it carries handedness explicitly via
+    // `vertexTangent.w`, never through this derivative identity.
     vec3 T = normalize(dPdx * dUVdy.y - dPdy * dUVdx.y);
-    vec3 B = normalize(dPdy * dUVdx.x - dPdx * dUVdy.x);
-
-    // Ensure TBN is right-handed relative to N. The `cross(N, T)`
-    // reconstruction loses the sign of the UV-Jacobian determinant
-    // — i.e. on UV-mirrored shells (any symmetrical mesh half) the
-    // bitangent would always come out right-handed, flipping the
-    // tangent-space normal across the mirror seam. Multiply by the
-    // determinant sign so B follows the authored +V direction in
-    // both orientations. Path-1 (authored tangent) carries this sign
-    // explicitly via `vertexTangent.w`; this is the Path-2 analog.
-    // See #1104 (REN-D16-002). Critical for every Starfield mesh
-    // since SF BSGeometry tangents land empty until #1086 lands a
-    // tangent extractor, so every SF mesh reaches this fallback.
-    float screenSign = sign(dUVdx.x * dUVdy.y - dUVdx.y * dUVdy.x);
     T = normalize(T - dot(T, N) * N);
-    B = screenSign * cross(N, T);
+    vec3 B = cross(N, T);
 
     mat3 TBN = mat3(T, B, N);
     return normalize(TBN * tangentNormal);

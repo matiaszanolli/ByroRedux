@@ -823,4 +823,87 @@ mod tests {
             "the non-IOR glass base path must use the same view-facing macro normal"
         );
     }
+
+    /// Regression for #2245 (REN-D19-01): `material_sampling.glsl`'s
+    /// derivative-based fallback (`perturbNormal` Path 2, and
+    /// `parallaxDisplaceUV`'s matching branch) must not carry a
+    /// `sign(det)` correction on top of `cross(N, T)` — the un-divided
+    /// Lengyel numerator `T` already carries that sign (see the doc
+    /// comment on `perturbNormal`'s Path 2 for the derivation), so a
+    /// second multiply cancels it and silently reintroduces the exact
+    /// mirrored-UV bug #1104 shipped to fix. Source-text guard: this bug
+    /// class is invisible to `cargo test` otherwise (GLSL isn't compiled
+    /// or executed by the Rust test suite).
+    #[test]
+    fn material_sampling_derivative_fallback_does_not_double_flip_handedness() {
+        let src = include_str!("../shaders/include/material_sampling.glsl");
+        assert!(
+            !src.contains("screenSign") && !src.contains("uvDet"),
+            "material_sampling.glsl must not reintroduce a second sign(det) \
+             correction on the derivative-based T/B reconstruction (#2245)"
+        );
+        assert!(
+            src.contains("vec3 B = cross(N, T);"),
+            "perturbNormal's Path 2 must reconstruct B as a plain cross(N, T), \
+             matching what the already-signed T reconstructs correctly (#2245)"
+        );
+    }
+
+    /// Pin the underlying math itself (independent of GLSL, which the
+    /// Rust test suite never compiles or executes): for a UV-mirrored
+    /// fragment (Jacobian determinant < 0), `cross(N, T)` built from the
+    /// un-divided Lengyel numerator T must already equal the true
+    /// bitangent (`B_raw / det`) with no further sign correction. Two
+    /// independent mirror constructions (single-axis-negate, axis-swap)
+    /// both confirmed by hand before this fix landed.
+    #[test]
+    fn path2_cross_product_reconstructs_true_bitangent_under_uv_mirroring() {
+        use byroredux_core::math::Vec3;
+
+        struct Case {
+            d_pdx: Vec3,
+            d_pdy: Vec3,
+            n: Vec3,
+            d_uvdx: [f32; 2],
+            d_uvdy: [f32; 2],
+        }
+        let cases = [
+            Case {
+                // Single-axis-negate mirror: flip U's screen-space gradient only.
+                d_pdx: Vec3::new(1.0, 0.0, 0.0),
+                d_pdy: Vec3::new(0.0, 1.0, 0.0),
+                n: Vec3::new(0.0, 0.0, 1.0),
+                d_uvdx: [-1.0, 0.0],
+                d_uvdy: [0.0, 1.0],
+            },
+            Case {
+                // Axis-swap mirror: U and V screen-space gradients swapped.
+                d_pdx: Vec3::new(1.0, 0.0, 0.0),
+                d_pdy: Vec3::new(0.0, 1.0, 0.0),
+                n: Vec3::new(0.0, 0.0, 1.0),
+                d_uvdx: [0.0, 1.0],
+                d_uvdy: [1.0, 0.0],
+            },
+        ];
+
+        for case in cases {
+            let det = case.d_uvdx[0] * case.d_uvdy[1] - case.d_uvdx[1] * case.d_uvdy[0];
+            assert!(det < 0.0, "fixture must be a mirrored (det < 0) case");
+
+            let t_raw = case.d_pdx * case.d_uvdy[1] - case.d_pdy * case.d_uvdx[1];
+            let b_raw = case.d_pdy * case.d_uvdx[0] - case.d_pdx * case.d_uvdy[0];
+            let b_true = (b_raw / det).normalize();
+
+            // perturbNormal's Path 2, current (post-fix) formula.
+            let mut t = t_raw.normalize();
+            t = (t - case.n * t.dot(case.n)).normalize();
+            let b_reconstructed = case.n.cross(t);
+
+            assert!(
+                (b_reconstructed - b_true).length() < 1e-4,
+                "cross(N, T) must match the true bitangent under mirroring: \
+                 got {b_reconstructed:?}, want {b_true:?}"
+            );
+        }
+    }
 }
