@@ -61,507 +61,12 @@ impl AccelerationManager {
             "instance_map must be 1:1 with draw_commands (see #419)"
         );
 
-        // Build instance array. `instance_custom_index` comes from the shared
-        // `instance_map` so it matches the SSBO position exactly — the TLAS
-        // can still be sparse (missing BLAS drop instances, particle / UI
-        // draws with `in_tlas = false`), but the shader's
-        // `rayQueryGetIntersectionInstanceCustomIndexEXT` is guaranteed to
-        // land on the right SSBO entry. Pre-#516 `in_tlas` was also flipped
-        // off for out-of-frustum entities; now frustum culling only gates
-        // rasterization (`in_raster`) and off-screen occluders stay in
-        // the TLAS so on-screen fragments' shadow / reflection / GI rays
-        // hit them. See #419 + #516.
-        let mut instances = std::mem::take(&mut self.tlas_instances_scratch);
-        instances.clear();
-        instances.reserve(draw_commands.len());
-        // Diagnostic counter for the warn-rate-limited log below
-        // (#678 / AS-8-6). Counts ONLY draws that opted into TLAS
-        // inclusion but couldn't get an instance emitted — i.e.
-        // genuine RT-shadow regressions. Pre-fix this was derived
-        // from `draw_commands.len() - instances.len()`, which
-        // bundled in `!in_tlas` skips (particles, UI quad — by
-        // design rasterized but not in TLAS). A frame with 200
-        // particle draws would spam the warning every second
-        // suggesting an RT regression that didn't exist.
-        // #1228 — split the `missing_blas` count by cause so operators
-        // reading the rate-limited warn below can tell at a glance
-        // whether the warmup is benign (skinned-only — transient first-
-        // sight gaps that resolve when `build_skinned_blas_batched_on_cmd`
-        // runs) or load-bearing (`rigid` — an LRU eviction got something
-        // the draw still references; should be near-zero in steady
-        // state). Pre-fix a single `missing_blas` counter conflated the
-        // two causes plus the SSBO-skip case so triage required reading
-        // the sample strings instead of the summary line.
-        let mut missing_skinned_blas: usize = 0;
-        let mut missing_rigid_blas: usize = 0;
-        let mut missing_ssbo_instance: usize = 0;
-        // REN-D8-NEW-14 — capture the first few offenders so the
-        // warn-rate-limited log below identifies which meshes /
-        // entities are dropping out of the TLAS instead of just
-        // reporting a count. Pre-#926 the warn fired "N lack BLAS"
-        // with no hint of which N, so chasing an RT regression
-        // required adding ad-hoc logs every time. Bounded sample to
-        // keep the log line readable; the count above stays exact.
-        const MISSING_BLAS_SAMPLE_LIMIT: usize = 5;
-        // #1142 — amortise the scratch Vec via `mem::take` (same
-        // ping-pong as `tlas_instances_scratch`). On healthy steady-
-        // state frames the scratch comes back empty and we save one
-        // small Vec allocation per frame.
-        let mut missing_samples = std::mem::take(&mut self.tlas_missing_samples_scratch);
-        missing_samples.clear();
-        for (i, draw_cmd) in draw_commands.iter().enumerate() {
-            // Two-axis eligibility (#516 + #1024 / F-WAT-03):
-            //  - `in_tlas == false` skips particles / UI quads / other
-            //    rasterized-only draws.
-            //  - `is_water == true` skips water surfaces so water rays
-            //    don't hit the water plane itself. Sibling contract on
-            //    `DrawCommand::is_water` (see its doc-comment).
-            // See [`draw_command_eligible_for_tlas`] for the pinned
-            // predicate that the unit test pins this contract against.
-            if !draw_command_eligible_for_tlas(draw_cmd) {
-                continue;
-            }
-            // M29 Phase 2 — skinned draws (`bone_offset != 0`) reference
-            // a per-entity BLAS that's refit each frame against the
-            // SkinComputePipeline output buffer. Look up by entity_id
-            // first; rigid draws fall through to the per-mesh
-            // `blas_entries` table. The skinned-BLAS path keeps the
-            // same `last_used_frame` LRU bump as the static path so a
-            // skinned NPC dropped from the draw list ages out
-            // alongside its mesh.
-            let blas_address: vk::DeviceAddress = if draw_cmd.bone_offset != 0 {
-                let Some(entry) = self.skinned_blas.get_mut(&draw_cmd.entity_id) else {
-                    // Skinned entity hasn't had its BLAS built yet
-                    // (first sight is processed earlier in the same
-                    // draw_frame; this gate is defensive — if we get
-                    // here the entity will be invisible to RT this
-                    // frame, but raster's inline-skinning path still
-                    // renders it correctly).
-                    missing_skinned_blas += 1;
-                    if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
-                        missing_samples
-                            .push(format!("skinned entity {:?} (no BLAS)", draw_cmd.entity_id));
-                    }
-                    continue;
-                };
-                entry.last_used_frame = self.frame_counter;
-                entry.device_address
-            } else {
-                let mesh_handle = draw_cmd.mesh_handle as usize;
-                let Some(Some(blas)) = self.blas_entries.get_mut(mesh_handle) else {
-                    // #1793 / PERF-D3-NEW-02 — no recovery path: once a
-                    // rigid mesh's BLAS is evicted (budget pressure) it
-                    // stays missing forever. `build_blas_batched` is only
-                    // invoked from cell-load / scene-load sites, never
-                    // per-frame, so there's nothing here that can lazily
-                    // rebuild it (unlike the skinned first-sight path,
-                    // which has an on-cmd batched builder designed for
-                    // exactly this). Building that recovery path isn't a
-                    // small addition: `build_blas_batched` is a blocking
-                    // `submit_one_time` builder (cell-load API shape), not
-                    // an on-cmd recorder safe to call mid-`draw_frame` —
-                    // it would need a genuinely new on-cmd static-BLAS
-                    // build primitive, mirroring
-                    // `build_skinned_blas_batched_on_cmd`, not a queue
-                    // bolted onto the existing one. Deferred pending a
-                    // scene that actually exercises budget eviction
-                    // (unreachable on the 12 GB dev card with vanilla
-                    // content) to validate against — this mesh keeps
-                    // rasterizing but silently vanishes from shadows /
-                    // reflections / GI until its cell unloads and reloads.
-                    missing_rigid_blas += 1;
-                    if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
-                        missing_samples.push(format!(
-                            "rigid entity {:?} mesh_handle={} (no BLAS)",
-                            draw_cmd.entity_id, mesh_handle
-                        ));
-                    }
-                    continue;
-                };
-                blas.last_used_frame = self.frame_counter;
-                blas.device_address
-            };
-            // Skip commands that the SSBO builder also skipped. This
-            // keeps the two filters in lockstep even when `blas_entries`
-            // and `mesh_registry` diverge (e.g. a BLAS briefly survives
-            // its source mesh during eviction).
-            let Some(ssbo_idx) = instance_map.get(i).copied().flatten() else {
-                missing_ssbo_instance += 1;
-                if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
-                    missing_samples.push(format!(
-                        "mesh_handle={} (no SSBO instance — evicted?)",
-                        draw_cmd.mesh_handle
-                    ));
-                }
-                continue;
-            };
-
-            // TLAS-instance transform. Rigid draws use the entity's
-            // absolute model_matrix (mesh-local BLAS → world); skinned
-            // draws (`bone_offset != 0`) get IDENTITY because their BLAS
-            // is already absolute-world (the bone palette baked the
-            // placement in) — applying model_matrix again would
-            // double-transform the actor's RT presence. See
-            // `tlas_instance_transform` (#1487 / REN2-02) and
-            // `column_major_to_vk_transform` for the 3x4 row-major layout.
-            let transform = tlas_instance_transform(draw_cmd);
-
-            // SAFETY: AccelerationStructureReferenceKHR is a union — device_handle field
-            // is used because our BLAS is on-device (not host-built). The address was
-            // obtained from get_acceleration_structure_device_address after BLAS creation.
-            //
-            // Gate TRIANGLE_FACING_CULL_DISABLE on `draw_cmd.two_sided` so RT
-            // traversal matches what the rasterizer renders. Pre-#416 every
-            // instance disabled backface culling, so shadow / GI rays hit the
-            // interior backfaces of closed single-sided meshes (rooms,
-            // buildings) from outside — self-shadowing on far walls, ~2× ray
-            // cost on closed meshes. The `two_sided` bit already rides on
-            // `DrawCommand` (set from NiTriShape's NIF properties) and the
-            // rasterizer pipeline cache keys on it via `PipelineKey`; the RT
-            // path now honors the same bit.
-            let instance_flags = if draw_cmd.two_sided {
-                vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw()
-            } else {
-                0
-            };
-            // #957 / REN-D8-NEW-13 — `instance_custom_index` is a 24-bit
-            // field in the Vulkan AS-instance struct. `Packed24_8::new`
-            // silently truncates anything ≥ 2^24 = 16 777 216, which would
-            // re-route every RT hit's SSBO lookup to the wrong instance and
-            // silently corrupt material / transform reads.
-            //
-            // Unreachable today: `MAX_INSTANCES = 0x40000` (262 144,
-            // `scene_buffer/constants.rs`) is the upstream cap, enforced by
-            // the `RP-1` assert at `context/draw.rs::draw_frame`. That's a
-            // ~64× margin below the 24-bit ceiling. The invariant lives in
-            // a different file from the truncation site though, so a future
-            // `MAX_INSTANCES` bump past 2^24 (large open-world streaming
-            // ambitions, M40 Phase 2+) wouldn't catch this gap. Mirror the
-            // RP-1 assert here so the 24-bit invariant is documented and
-            // enforced at the truncation site itself.
-            debug_assert!(
-                ssbo_idx < (1u32 << 24),
-                "REN-D8-NEW-13: ssbo_idx {ssbo_idx} exceeds 24-bit \
-                 instance_custom_index ceiling (2^24 = 16 777 216). \
-                 Either MAX_INSTANCES was bumped past 2^24 without \
-                 partitioning the TLAS, or the build_instance_map \
-                 upstream cap drifted. See #957.",
-                ssbo_idx = ssbo_idx,
-            );
-            // Shadow-ray mask bucket (REN-D8-NEW-07 extension point,
-            // first consumer). Every EXISTING ray query still passes
-            // cullMask=0xFF, which matches every bucket below — no
-            // behavior change for RT reflections / GI / the existing
-            // shadow rays. Only the new interior-godray two-pass shadow
-            // ray in `volumetrics_inject.comp` narrows cullMask, querying
-            // `SHADOW_MASK_OPAQUE` alone first and, only if that misses,
-            // `SHADOW_MASK_GLASS` alone with a bounded tMax — the
-            // distinguishing signal between "a real window let light
-            // through" and "the ray escaped through a geometry gap with
-            // no glass in the way" (e.g. an interior cell with no
-            // ceiling mesh, common Bethesda authoring practice since
-            // players never see it from inside).
-            // Bucket select + 8-bit narrowing pulled into a pure helper so
-            // the assignment is unit-tested and the `as u8` sits behind the
-            // compile-time ceiling pin in `shader_constants_data.rs` (#1913).
-            let shadow_mask = shadow_mask_for_instance(
-                draw_cmd.material_kind,
-                draw_cmd.render_layer,
-                draw_cmd.alpha_blend,
-            );
-            instances.push(vk::AccelerationStructureInstanceKHR {
-                transform,
-                // #419 — SSBO-compacted index from the shared map, NOT
-                // the raw enumerate index. The 24-bit field holds the
-                // `instances[ssbo_idx]` position the shader reads via
-                // `rayQueryGetIntersectionInstanceCustomIndexEXT`.
-                instance_custom_index_and_mask: vk::Packed24_8::new(ssbo_idx, shadow_mask),
-                instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
-                    0,
-                    instance_flags as u8,
-                ),
-                acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                    device_handle: blas_address,
-                },
-            });
-        }
-
+        let instances = self.build_tlas_instances(draw_commands, instance_map, frame_index);
         let instance_count = instances.len() as u32;
-        let missing_blas_total = missing_skinned_blas + missing_rigid_blas + missing_ssbo_instance;
-        if missing_blas_total > 0 && frame_index == 0 {
-            // Log once per second (at 60fps, frame_index 0 fires 30×/s — good enough).
-            static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs());
-            let prev = LAST_LOG.load(std::sync::atomic::Ordering::Relaxed);
-            if now != prev {
-                LAST_LOG.store(now, std::sync::atomic::Ordering::Relaxed);
-                let sample = if missing_samples.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        " [first {} offender{}: {}{}]",
-                        missing_samples.len(),
-                        if missing_samples.len() == 1 { "" } else { "s" },
-                        missing_samples.join("; "),
-                        if missing_blas_total > missing_samples.len() {
-                            "; ..."
-                        } else {
-                            ""
-                        },
-                    )
-                };
-                // #1228 — break the count down so operators can tell
-                // benign warmup (skinned-only) from a persistent eviction
-                // bug (rigid > 0 in steady state) at a glance.
-                log::warn!(
-                    "TLAS: {} instances from {} draw commands ({} lack BLAS — skinned={}, rigid={}, ssbo_evicted={} — no RT shadows for those meshes){}",
-                    instance_count, draw_commands.len(), missing_blas_total,
-                    missing_skinned_blas, missing_rigid_blas, missing_ssbo_instance, sample
-                );
-            }
-        }
 
         // Even with 0 instances, we build a valid (empty) TLAS so the
         // descriptor set binding is always valid for the shader.
-
-        // Create/resize instance buffer if needed for this frame slot.
-        let need_new_tlas = self.tlas[frame_index].is_none()
-            || self.tlas[frame_index].as_ref().unwrap().max_instances < instance_count;
-
-        if need_new_tlas {
-            // Destroy old TLAS for this frame slot.
-            //
-            // INVARIANT: `draw_frame` calls `wait_for_fences` on both
-            // this slot's and the previous slot's `in_flight` fences
-            // BEFORE reaching this site, guaranteeing no command
-            // buffer still references the resources we are about to
-            // destroy.  The defensive `device_wait_idle` below is
-            // belt-and-suspenders for this site: in the normal
-            // draw_frame path the fence wait already makes it a no-op,
-            // but it prevents a silent use-after-destroy if a future
-            // refactor moves or splits the fence-wait pair.
-            // See REN-D2-NEW-04 (audit 2026-05-09), #1390.
-            if let Some(mut old) = self.tlas[frame_index].take() {
-                log::info!(
-                    "TLAS[{frame_index}] resize: {} → {} instances",
-                    old.max_instances,
-                    instance_count,
-                );
-                // Defensive idle — see invariant note above.
-                let _ = device.device_wait_idle();
-                self.accel_loader
-                    .destroy_acceleration_structure(old.accel, None);
-                old.buffer.destroy(device, allocator);
-                old.instance_buffer.destroy(device, allocator);
-                old.instance_buffer_device.destroy(device, allocator);
-            }
-
-            // Pre-size generously to avoid future resizes. 8192 covers
-            // interior cells (~200-800) and large exterior cells (~3000-5000).
-            // Growth: 2x current requirement, minimum 8192.
-            //
-            // The 2× + 8192-floor strategy intentionally over-allocates
-            // — a 200-instance interior gets 8192-slot backing
-            // (~512 KB BAR), a 3000-instance exterior gets 8192
-            // (still ~512 KB), and only past 4096 does the 2× term
-            // dominate. The trade-off: each TLAS resize destroys
-            // both the staging + device-local instance buffers and
-            // recreates them, including a fresh allocator slot lookup
-            // and host→device staging — collectively ~50 µs per
-            // resize. Over-allocating to amortise resizes away costs
-            // a fixed ~512 KB of BAR per TLAS slot in the typical
-            // case (~1.0 MB total across both FIF slots).
-            // See REN-D8-NEW-10 (audit 2026-05-09).
-            //
-            // REN-D2-NEW-02 (audit 2026-05-09) flagged the 8192 floor
-            // as wasting BAR on interior cells with < 100 instances.
-            // The waste is real (8192 slots × 64 B per instance × 2 FIF
-            // = ~1.0 MB across both slots, #1912 / REN-D1-02) but the
-            // floor stays for the cell-streaming case: M40
-            // exterior-tile loads frequently transition through low-
-            // instance frames between high-instance cell pairs, and
-            // a per-cell-tuned floor would resize every transition.
-            // The 8192 floor is the right knob for that pattern; the
-            // 1 MB BAR cost is a fraction of the per-FIF scene
-            // buffer total (~10-20 MB).
-            let padded_count =
-                ((instance_count as usize) * 2).max(MIN_TLAS_INSTANCE_RESERVE as usize);
-            let padded_size = (std::mem::size_of::<vk::AccelerationStructureInstanceKHR>()
-                * padded_count) as vk::DeviceSize;
-
-            // Host-visible staging buffer for CPU writes.
-            let mut instance_buffer = GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                padded_size,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-            )?;
-
-            // Device-local buffer for GPU reads during AS build. On discrete
-            // GPUs this avoids PCIe traversal (~10-30x faster). See #289.
-            let mut instance_buffer_device = GpuBuffer::create_device_local_uninit(
-                device,
-                allocator,
-                padded_size,
-                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                    | vk::BufferUsageFlags::TRANSFER_DST,
-            )?;
-
-            let instance_address = device.get_buffer_device_address(
-                &vk::BufferDeviceAddressInfo::default().buffer(instance_buffer_device.buffer),
-            );
-
-            // Query TLAS sizes.
-            //
-            // `GeometryFlagsKHR::OPAQUE` on `INSTANCES` is redundant with
-            // the `gl_RayFlagsOpaqueEXT` set at every `rayQueryInitialize`
-            // call site in triangle.frag — the ray-query flag forces
-            // opaque traversal regardless of geometry/instance flags. We
-            // keep the flag set anyway for stylistic parity with the BLAS
-            // build paths (which need it for the any-hit-elision path),
-            // and so a future change that drops `gl_RayFlagsOpaqueEXT`
-            // doesn't silently un-opaque the TLAS. REN-D8-NEW-01
-            // (audit `2026-05-09`).
-            let geometry = vk::AccelerationStructureGeometryKHR::default()
-                .geometry_type(vk::GeometryTypeKHR::INSTANCES)
-                .flags(vk::GeometryFlagsKHR::OPAQUE)
-                .geometry(vk::AccelerationStructureGeometryDataKHR {
-                    instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
-                        .array_of_pointers(false)
-                        .data(vk::DeviceOrHostAddressConstKHR {
-                            device_address: instance_address,
-                        }),
-                });
-
-            // Shared `UPDATABLE_AS_FLAGS` (PREFER_FAST_TRACE | ALLOW_UPDATE):
-            // REFIT (#247) handles most per-frame TLAS changes, so full
-            // rebuilds are rare and the trace-time wins from a higher-
-            // quality BVH pay off on every ray query (shadows, reflections,
-            // GI, caustics, window portal). The UPDATE counterpart below
-            // must read the same flag set per VUID-…-pInfos-03667; the
-            // shared constant enforces that. See #307 / #958 /
-            // REN-D8-NEW-14 + AUDIT_PERFORMANCE_2026-04-13b P1-09.
-            let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-                .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-                .flags(UPDATABLE_AS_FLAGS)
-                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-                .geometries(std::slice::from_ref(&geometry));
-
-            let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
-            self.accel_loader.get_acceleration_structure_build_sizes(
-                vk::AccelerationStructureBuildTypeKHR::DEVICE,
-                &build_info,
-                &[padded_count as u32],
-                &mut sizes,
-            );
-            // Scratch is sized for BUILD which is >= UPDATE per Vulkan
-            // spec, so the same buffer serves both modes.
-
-            // DEVICE_LOCAL: GPU-built, GPU-read during ray queries.
-            let mut tlas_buffer = GpuBuffer::create_device_local_uninit(
-                device,
-                allocator,
-                sizes.acceleration_structure_size,
-                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            )
-            .inspect_err(|_| {
-                instance_buffer.destroy(device, allocator);
-                instance_buffer_device.destroy(device, allocator);
-            })?;
-
-            let accel_info = vk::AccelerationStructureCreateInfoKHR::default()
-                .buffer(tlas_buffer.buffer)
-                .size(sizes.acceleration_structure_size)
-                .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL);
-
-            let accel = self
-                .accel_loader
-                .create_acceleration_structure(&accel_info, None)
-                .inspect_err(|_| {
-                    tlas_buffer.destroy(device, allocator);
-                    instance_buffer.destroy(device, allocator);
-                    instance_buffer_device.destroy(device, allocator);
-                })
-                .context("Failed to create TLAS")?;
-
-            // Record this build's scratch requirement on the slot
-            // (#682 / MEM-2-7). The fresh-create path is the ONLY site
-            // that re-runs `vkGetAccelerationStructureBuildSizesKHR`
-            // for TLAS — refit/update reuse the existing scratch on
-            // the spec guarantee `BUILD ≥ UPDATE`. So this is the
-            // canonical peak for the slot's lifetime, written
-            // unconditionally even if the existing scratch buffer is
-            // big enough to skip realloc below: a previous-slot's
-            // larger peak shouldn't permanently inflate a smaller
-            // current-slot's recorded peak.
-            self.tlas_scratch_peak_bytes[frame_index] = sizes.build_scratch_size;
-
-            // Grow-only per-frame scratch buffer (#424 SIBLING) — reuse
-            // the existing allocation when it still fits the new build.
-            // DEVICE_LOCAL: GPU-only scratch during TLAS build. The
-            // `scratch_data.device_address` alignment requirement is
-            // enforced at the call site below via `align_scratch_address`
-            // (#1386 / #659 / #260 R-05).
-            // Pad by `scratch_alignment_padding` so the device address can
-            // be rounded up to `scratch_align` at the build site below
-            // without the build overrunning the buffer (#1386). The refit
-            // (UPDATE) path reuses this buffer on the spec guarantee
-            // `BUILD scratch ≥ UPDATE scratch`, inheriting the headroom.
-            let scratch_size =
-                sizes.build_scratch_size + scratch_alignment_padding(self.scratch_align);
-            let needs_new_scratch = scratch_needs_growth(
-                self.scratch_buffers[frame_index].as_ref().map(|b| b.size),
-                scratch_size,
-            );
-            if needs_new_scratch {
-                if let Some(mut old_scratch) = self.scratch_buffers[frame_index].take() {
-                    old_scratch.destroy(device, allocator);
-                }
-                let scratch_result = GpuBuffer::create_device_local_uninit(
-                    device,
-                    allocator,
-                    scratch_size,
-                    vk::BufferUsageFlags::STORAGE_BUFFER
-                        | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                );
-                match scratch_result {
-                    Ok(scratch) => self.scratch_buffers[frame_index] = Some(scratch),
-                    Err(e) => {
-                        self.accel_loader
-                            .destroy_acceleration_structure(accel, None);
-                        tlas_buffer.destroy(device, allocator);
-                        instance_buffer.destroy(device, allocator);
-                        instance_buffer_device.destroy(device, allocator);
-                        return Err(e);
-                    }
-                }
-            }
-
-            self.tlas[frame_index] = Some(TlasState {
-                accel,
-                buffer: tlas_buffer,
-                instance_buffer,
-                instance_buffer_device,
-                max_instances: padded_count as u32,
-                last_blas_addresses: Vec::with_capacity(padded_count),
-                // A freshly-created TLAS has no source to refit from —
-                // the first frame after creation must do a full BUILD.
-                needs_full_rebuild: true,
-                // Sentinel that no real generation can match — forces
-                // the first build_tlas after (re)creation to take the
-                // gen-mismatch short-circuit, skipping the zip-compare
-                // since `last_blas_addresses` is empty anyway.
-                last_blas_map_gen: u64::MAX,
-                // 0 signals "no prior BUILD" — the first build_tlas call
-                // will always use BUILD mode (via needs_full_rebuild) and
-                // set this to instance_count. (#1083)
-                built_primitive_count: 0,
-            });
-        }
+        self.ensure_tlas_state(device, allocator, frame_index, instance_count)?;
 
         // Capture scratch_align before the mutable borrow on
         // `self.tlas[frame_index]` so the alignment assert further down
@@ -871,12 +376,564 @@ impl AccelerationManager {
             instance_count as usize,
             512,
         );
+
+        Ok(())
+    }
+
+    /// Assemble this frame's TLAS instance array from `draw_commands`
+    /// (#2259 / TD1-081, extracted from `build_tlas`). Filters ineligible
+    /// draws (`draw_command_eligible_for_tlas`), resolves each draw's
+    /// BLAS device address (skinned vs rigid, bumping LRU
+    /// `last_used_frame`), skips draws the SSBO builder also skipped, and
+    /// packs the SSBO-compacted `instance_custom_index` + shadow-ray mask
+    /// bucket per instance. Logs a once-per-second, rate-limited warning
+    /// (only on `frame_index == 0`, to avoid double-counting across
+    /// frames-in-flight) when draws are dropped for lacking a BLAS or SSBO
+    /// instance.
+    ///
+    /// `instance_map[i]` is `Some(ssbo_idx)` when `draw_commands[i]` is
+    /// present in the compacted SSBO produced by the draw-frame builder,
+    /// or `None` when the draw command was filtered out — see
+    /// `build_tlas`'s own doc comment for the full `instance_map`
+    /// contract (#419).
+    fn build_tlas_instances(
+        &mut self,
+        draw_commands: &[DrawCommand],
+        instance_map: &[Option<u32>],
+        frame_index: usize,
+    ) -> Vec<vk::AccelerationStructureInstanceKHR> {
+        // Build instance array. `instance_custom_index` comes from the shared
+        // `instance_map` so it matches the SSBO position exactly — the TLAS
+        // can still be sparse (missing BLAS drop instances, particle / UI
+        // draws with `in_tlas = false`), but the shader's
+        // `rayQueryGetIntersectionInstanceCustomIndexEXT` is guaranteed to
+        // land on the right SSBO entry. Pre-#516 `in_tlas` was also flipped
+        // off for out-of-frustum entities; now frustum culling only gates
+        // rasterization (`in_raster`) and off-screen occluders stay in
+        // the TLAS so on-screen fragments' shadow / reflection / GI rays
+        // hit them. See #419 + #516.
+        let mut instances = std::mem::take(&mut self.tlas_instances_scratch);
+        instances.clear();
+        instances.reserve(draw_commands.len());
+        // Diagnostic counter for the warn-rate-limited log below
+        // (#678 / AS-8-6). Counts ONLY draws that opted into TLAS
+        // inclusion but couldn't get an instance emitted — i.e.
+        // genuine RT-shadow regressions. Pre-fix this was derived
+        // from `draw_commands.len() - instances.len()`, which
+        // bundled in `!in_tlas` skips (particles, UI quad — by
+        // design rasterized but not in TLAS). A frame with 200
+        // particle draws would spam the warning every second
+        // suggesting an RT regression that didn't exist.
+        // #1228 — split the `missing_blas` count by cause so operators
+        // reading the rate-limited warn below can tell at a glance
+        // whether the warmup is benign (skinned-only — transient first-
+        // sight gaps that resolve when `build_skinned_blas_batched_on_cmd`
+        // runs) or load-bearing (`rigid` — an LRU eviction got something
+        // the draw still references; should be near-zero in steady
+        // state). Pre-fix a single `missing_blas` counter conflated the
+        // two causes plus the SSBO-skip case so triage required reading
+        // the sample strings instead of the summary line.
+        let mut missing_skinned_blas: usize = 0;
+        let mut missing_rigid_blas: usize = 0;
+        let mut missing_ssbo_instance: usize = 0;
+        // REN-D8-NEW-14 — capture the first few offenders so the
+        // warn-rate-limited log below identifies which meshes /
+        // entities are dropping out of the TLAS instead of just
+        // reporting a count. Pre-#926 the warn fired "N lack BLAS"
+        // with no hint of which N, so chasing an RT regression
+        // required adding ad-hoc logs every time. Bounded sample to
+        // keep the log line readable; the count above stays exact.
+        const MISSING_BLAS_SAMPLE_LIMIT: usize = 5;
+        // #1142 — amortise the scratch Vec via `mem::take` (same
+        // ping-pong as `tlas_instances_scratch`). On healthy steady-
+        // state frames the scratch comes back empty and we save one
+        // small Vec allocation per frame.
+        let mut missing_samples = std::mem::take(&mut self.tlas_missing_samples_scratch);
+        missing_samples.clear();
+        for (i, draw_cmd) in draw_commands.iter().enumerate() {
+            // Two-axis eligibility (#516 + #1024 / F-WAT-03):
+            //  - `in_tlas == false` skips particles / UI quads / other
+            //    rasterized-only draws.
+            //  - `is_water == true` skips water surfaces so water rays
+            //    don't hit the water plane itself. Sibling contract on
+            //    `DrawCommand::is_water` (see its doc-comment).
+            // See [`draw_command_eligible_for_tlas`] for the pinned
+            // predicate that the unit test pins this contract against.
+            if !draw_command_eligible_for_tlas(draw_cmd) {
+                continue;
+            }
+            // M29 Phase 2 — skinned draws (`bone_offset != 0`) reference
+            // a per-entity BLAS that's refit each frame against the
+            // SkinComputePipeline output buffer. Look up by entity_id
+            // first; rigid draws fall through to the per-mesh
+            // `blas_entries` table. The skinned-BLAS path keeps the
+            // same `last_used_frame` LRU bump as the static path so a
+            // skinned NPC dropped from the draw list ages out
+            // alongside its mesh.
+            let blas_address: vk::DeviceAddress = if draw_cmd.bone_offset != 0 {
+                let Some(entry) = self.skinned_blas.get_mut(&draw_cmd.entity_id) else {
+                    // Skinned entity hasn't had its BLAS built yet
+                    // (first sight is processed earlier in the same
+                    // draw_frame; this gate is defensive — if we get
+                    // here the entity will be invisible to RT this
+                    // frame, but raster's inline-skinning path still
+                    // renders it correctly).
+                    missing_skinned_blas += 1;
+                    if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
+                        missing_samples
+                            .push(format!("skinned entity {:?} (no BLAS)", draw_cmd.entity_id));
+                    }
+                    continue;
+                };
+                entry.last_used_frame = self.frame_counter;
+                entry.device_address
+            } else {
+                let mesh_handle = draw_cmd.mesh_handle as usize;
+                let Some(Some(blas)) = self.blas_entries.get_mut(mesh_handle) else {
+                    // #1793 / PERF-D3-NEW-02 — no recovery path: once a
+                    // rigid mesh's BLAS is evicted (budget pressure) it
+                    // stays missing forever. `build_blas_batched` is only
+                    // invoked from cell-load / scene-load sites, never
+                    // per-frame, so there's nothing here that can lazily
+                    // rebuild it (unlike the skinned first-sight path,
+                    // which has an on-cmd batched builder designed for
+                    // exactly this). Building that recovery path isn't a
+                    // small addition: `build_blas_batched` is a blocking
+                    // `submit_one_time` builder (cell-load API shape), not
+                    // an on-cmd recorder safe to call mid-`draw_frame` —
+                    // it would need a genuinely new on-cmd static-BLAS
+                    // build primitive, mirroring
+                    // `build_skinned_blas_batched_on_cmd`, not a queue
+                    // bolted onto the existing one. Deferred pending a
+                    // scene that actually exercises budget eviction
+                    // (unreachable on the 12 GB dev card with vanilla
+                    // content) to validate against — this mesh keeps
+                    // rasterizing but silently vanishes from shadows /
+                    // reflections / GI until its cell unloads and reloads.
+                    missing_rigid_blas += 1;
+                    if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
+                        missing_samples.push(format!(
+                            "rigid entity {:?} mesh_handle={} (no BLAS)",
+                            draw_cmd.entity_id, mesh_handle
+                        ));
+                    }
+                    continue;
+                };
+                blas.last_used_frame = self.frame_counter;
+                blas.device_address
+            };
+            // Skip commands that the SSBO builder also skipped. This
+            // keeps the two filters in lockstep even when `blas_entries`
+            // and `mesh_registry` diverge (e.g. a BLAS briefly survives
+            // its source mesh during eviction).
+            let Some(ssbo_idx) = instance_map.get(i).copied().flatten() else {
+                missing_ssbo_instance += 1;
+                if missing_samples.len() < MISSING_BLAS_SAMPLE_LIMIT {
+                    missing_samples.push(format!(
+                        "mesh_handle={} (no SSBO instance — evicted?)",
+                        draw_cmd.mesh_handle
+                    ));
+                }
+                continue;
+            };
+
+            // TLAS-instance transform. Rigid draws use the entity's
+            // absolute model_matrix (mesh-local BLAS → world); skinned
+            // draws (`bone_offset != 0`) get IDENTITY because their BLAS
+            // is already absolute-world (the bone palette baked the
+            // placement in) — applying model_matrix again would
+            // double-transform the actor's RT presence. See
+            // `tlas_instance_transform` (#1487 / REN2-02) and
+            // `column_major_to_vk_transform` for the 3x4 row-major layout.
+            let transform = tlas_instance_transform(draw_cmd);
+
+            // SAFETY: AccelerationStructureReferenceKHR is a union — device_handle field
+            // is used because our BLAS is on-device (not host-built). The address was
+            // obtained from get_acceleration_structure_device_address after BLAS creation.
+            //
+            // Gate TRIANGLE_FACING_CULL_DISABLE on `draw_cmd.two_sided` so RT
+            // traversal matches what the rasterizer renders. Pre-#416 every
+            // instance disabled backface culling, so shadow / GI rays hit the
+            // interior backfaces of closed single-sided meshes (rooms,
+            // buildings) from outside — self-shadowing on far walls, ~2× ray
+            // cost on closed meshes. The `two_sided` bit already rides on
+            // `DrawCommand` (set from NiTriShape's NIF properties) and the
+            // rasterizer pipeline cache keys on it via `PipelineKey`; the RT
+            // path now honors the same bit.
+            let instance_flags = if draw_cmd.two_sided {
+                vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw()
+            } else {
+                0
+            };
+            // #957 / REN-D8-NEW-13 — `instance_custom_index` is a 24-bit
+            // field in the Vulkan AS-instance struct. `Packed24_8::new`
+            // silently truncates anything ≥ 2^24 = 16 777 216, which would
+            // re-route every RT hit's SSBO lookup to the wrong instance and
+            // silently corrupt material / transform reads.
+            //
+            // Unreachable today: `MAX_INSTANCES = 0x40000` (262 144,
+            // `scene_buffer/constants.rs`) is the upstream cap, enforced by
+            // the `RP-1` assert at `context/draw.rs::draw_frame`. That's a
+            // ~64× margin below the 24-bit ceiling. The invariant lives in
+            // a different file from the truncation site though, so a future
+            // `MAX_INSTANCES` bump past 2^24 (large open-world streaming
+            // ambitions, M40 Phase 2+) wouldn't catch this gap. Mirror the
+            // RP-1 assert here so the 24-bit invariant is documented and
+            // enforced at the truncation site itself.
+            debug_assert!(
+                ssbo_idx < (1u32 << 24),
+                "REN-D8-NEW-13: ssbo_idx {ssbo_idx} exceeds 24-bit \
+                 instance_custom_index ceiling (2^24 = 16 777 216). \
+                 Either MAX_INSTANCES was bumped past 2^24 without \
+                 partitioning the TLAS, or the build_instance_map \
+                 upstream cap drifted. See #957.",
+                ssbo_idx = ssbo_idx,
+            );
+            // Shadow-ray mask bucket (REN-D8-NEW-07 extension point,
+            // first consumer). Every EXISTING ray query still passes
+            // cullMask=0xFF, which matches every bucket below — no
+            // behavior change for RT reflections / GI / the existing
+            // shadow rays. Only the new interior-godray two-pass shadow
+            // ray in `volumetrics_inject.comp` narrows cullMask, querying
+            // `SHADOW_MASK_OPAQUE` alone first and, only if that misses,
+            // `SHADOW_MASK_GLASS` alone with a bounded tMax — the
+            // distinguishing signal between "a real window let light
+            // through" and "the ray escaped through a geometry gap with
+            // no glass in the way" (e.g. an interior cell with no
+            // ceiling mesh, common Bethesda authoring practice since
+            // players never see it from inside).
+            // Bucket select + 8-bit narrowing pulled into a pure helper so
+            // the assignment is unit-tested and the `as u8` sits behind the
+            // compile-time ceiling pin in `shader_constants_data.rs` (#1913).
+            let shadow_mask = shadow_mask_for_instance(
+                draw_cmd.material_kind,
+                draw_cmd.render_layer,
+                draw_cmd.alpha_blend,
+            );
+            instances.push(vk::AccelerationStructureInstanceKHR {
+                transform,
+                // #419 — SSBO-compacted index from the shared map, NOT
+                // the raw enumerate index. The 24-bit field holds the
+                // `instances[ssbo_idx]` position the shader reads via
+                // `rayQueryGetIntersectionInstanceCustomIndexEXT`.
+                instance_custom_index_and_mask: vk::Packed24_8::new(ssbo_idx, shadow_mask),
+                instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
+                    0,
+                    instance_flags as u8,
+                ),
+                acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
+                    device_handle: blas_address,
+                },
+            });
+        }
+
+        let instance_count = instances.len() as u32;
+        let missing_blas_total = missing_skinned_blas + missing_rigid_blas + missing_ssbo_instance;
+        if missing_blas_total > 0 && frame_index == 0 {
+            // Log once per second (at 60fps, frame_index 0 fires 30×/s — good enough).
+            static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let prev = LAST_LOG.load(std::sync::atomic::Ordering::Relaxed);
+            if now != prev {
+                LAST_LOG.store(now, std::sync::atomic::Ordering::Relaxed);
+                let sample = if missing_samples.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " [first {} offender{}: {}{}]",
+                        missing_samples.len(),
+                        if missing_samples.len() == 1 { "" } else { "s" },
+                        missing_samples.join("; "),
+                        if missing_blas_total > missing_samples.len() {
+                            "; ..."
+                        } else {
+                            ""
+                        },
+                    )
+                };
+                // #1228 — break the count down so operators can tell
+                // benign warmup (skinned-only) from a persistent eviction
+                // bug (rigid > 0 in steady state) at a glance.
+                log::warn!(
+                    "TLAS: {} instances from {} draw commands ({} lack BLAS — skinned={}, rigid={}, ssbo_evicted={} — no RT shadows for those meshes){}",
+                    instance_count, draw_commands.len(), missing_blas_total,
+                    missing_skinned_blas, missing_rigid_blas, missing_ssbo_instance, sample
+                );
+            }
+        }
+
         // #1142 — restore the missing-samples scratch. Capacity is
         // bounded by MISSING_BLAS_SAMPLE_LIMIT = 5, so no shrink
         // is needed; the inner Strings are dropped by `clear()` on
         // the next frame's `mem::take`.
         self.tlas_missing_samples_scratch = missing_samples;
 
+        instances
+    }
+
+    /// Create or resize this frame slot's `TlasState` if needed (#2259 /
+    /// TD1-081, extracted from `build_tlas`).
+    ///
+    /// No-op when the existing TLAS for this slot already has enough
+    /// capacity (`max_instances >= instance_count`). Otherwise: destroys
+    /// the undersized/absent TLAS for this frame slot, allocates fresh
+    /// instance-staging + device-local buffers sized 2x the current
+    /// instance count (minimum `MIN_TLAS_INSTANCE_RESERVE`), queries the
+    /// AS build sizes, creates the acceleration structure + backing
+    /// buffer, and (re)creates the per-frame scratch buffer if it needs
+    /// to grow.
+    ///
+    /// # Safety
+    /// Caller must ensure `device`/`allocator` are valid and live, and
+    /// external synchronization rules for this frame slot's Vulkan
+    /// objects are upheld — same contract as `build_tlas` (the fence wait
+    /// covering this slot's previous use is the caller's responsibility,
+    /// per that function's doc comment).
+    unsafe fn ensure_tlas_state(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        frame_index: usize,
+        instance_count: u32,
+    ) -> Result<()> {
+        // Create/resize instance buffer if needed for this frame slot.
+        let need_new_tlas = self.tlas[frame_index].is_none()
+            || self.tlas[frame_index].as_ref().unwrap().max_instances < instance_count;
+
+        if need_new_tlas {
+            // Destroy old TLAS for this frame slot.
+            //
+            // INVARIANT: `draw_frame` calls `wait_for_fences` on both
+            // this slot's and the previous slot's `in_flight` fences
+            // BEFORE reaching this site, guaranteeing no command
+            // buffer still references the resources we are about to
+            // destroy.  The defensive `device_wait_idle` below is
+            // belt-and-suspenders for this site: in the normal
+            // draw_frame path the fence wait already makes it a no-op,
+            // but it prevents a silent use-after-destroy if a future
+            // refactor moves or splits the fence-wait pair.
+            // See REN-D2-NEW-04 (audit 2026-05-09), #1390.
+            if let Some(mut old) = self.tlas[frame_index].take() {
+                log::info!(
+                    "TLAS[{frame_index}] resize: {} → {} instances",
+                    old.max_instances,
+                    instance_count,
+                );
+                // Defensive idle — see invariant note above.
+                let _ = device.device_wait_idle();
+                self.accel_loader
+                    .destroy_acceleration_structure(old.accel, None);
+                old.buffer.destroy(device, allocator);
+                old.instance_buffer.destroy(device, allocator);
+                old.instance_buffer_device.destroy(device, allocator);
+            }
+
+            // Pre-size generously to avoid future resizes. 8192 covers
+            // interior cells (~200-800) and large exterior cells (~3000-5000).
+            // Growth: 2x current requirement, minimum 8192.
+            //
+            // The 2× + 8192-floor strategy intentionally over-allocates
+            // — a 200-instance interior gets 8192-slot backing
+            // (~512 KB BAR), a 3000-instance exterior gets 8192
+            // (still ~512 KB), and only past 4096 does the 2× term
+            // dominate. The trade-off: each TLAS resize destroys
+            // both the staging + device-local instance buffers and
+            // recreates them, including a fresh allocator slot lookup
+            // and host→device staging — collectively ~50 µs per
+            // resize. Over-allocating to amortise resizes away costs
+            // a fixed ~512 KB of BAR per TLAS slot in the typical
+            // case (~1.0 MB total across both FIF slots).
+            // See REN-D8-NEW-10 (audit 2026-05-09).
+            //
+            // REN-D2-NEW-02 (audit 2026-05-09) flagged the 8192 floor
+            // as wasting BAR on interior cells with < 100 instances.
+            // The waste is real (8192 slots × 64 B per instance × 2 FIF
+            // = ~1.0 MB across both slots, #1912 / REN-D1-02) but the
+            // floor stays for the cell-streaming case: M40
+            // exterior-tile loads frequently transition through low-
+            // instance frames between high-instance cell pairs, and
+            // a per-cell-tuned floor would resize every transition.
+            // The 8192 floor is the right knob for that pattern; the
+            // 1 MB BAR cost is a fraction of the per-FIF scene
+            // buffer total (~10-20 MB).
+            let padded_count =
+                ((instance_count as usize) * 2).max(MIN_TLAS_INSTANCE_RESERVE as usize);
+            let padded_size = (std::mem::size_of::<vk::AccelerationStructureInstanceKHR>()
+                * padded_count) as vk::DeviceSize;
+
+            // Host-visible staging buffer for CPU writes.
+            let mut instance_buffer = GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                padded_size,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+            )?;
+
+            // Device-local buffer for GPU reads during AS build. On discrete
+            // GPUs this avoids PCIe traversal (~10-30x faster). See #289.
+            let mut instance_buffer_device = GpuBuffer::create_device_local_uninit(
+                device,
+                allocator,
+                padded_size,
+                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                    | vk::BufferUsageFlags::TRANSFER_DST,
+            )?;
+
+            let instance_address = device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(instance_buffer_device.buffer),
+            );
+
+            // Query TLAS sizes.
+            //
+            // `GeometryFlagsKHR::OPAQUE` on `INSTANCES` is redundant with
+            // the `gl_RayFlagsOpaqueEXT` set at every `rayQueryInitialize`
+            // call site in triangle.frag — the ray-query flag forces
+            // opaque traversal regardless of geometry/instance flags. We
+            // keep the flag set anyway for stylistic parity with the BLAS
+            // build paths (which need it for the any-hit-elision path),
+            // and so a future change that drops `gl_RayFlagsOpaqueEXT`
+            // doesn't silently un-opaque the TLAS. REN-D8-NEW-01
+            // (audit `2026-05-09`).
+            let geometry = vk::AccelerationStructureGeometryKHR::default()
+                .geometry_type(vk::GeometryTypeKHR::INSTANCES)
+                .flags(vk::GeometryFlagsKHR::OPAQUE)
+                .geometry(vk::AccelerationStructureGeometryDataKHR {
+                    instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
+                        .array_of_pointers(false)
+                        .data(vk::DeviceOrHostAddressConstKHR {
+                            device_address: instance_address,
+                        }),
+                });
+
+            // Shared `UPDATABLE_AS_FLAGS` (PREFER_FAST_TRACE | ALLOW_UPDATE):
+            // REFIT (#247) handles most per-frame TLAS changes, so full
+            // rebuilds are rare and the trace-time wins from a higher-
+            // quality BVH pay off on every ray query (shadows, reflections,
+            // GI, caustics, window portal). The UPDATE counterpart below
+            // must read the same flag set per VUID-…-pInfos-03667; the
+            // shared constant enforces that. See #307 / #958 /
+            // REN-D8-NEW-14 + AUDIT_PERFORMANCE_2026-04-13b P1-09.
+            let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
+                .flags(UPDATABLE_AS_FLAGS)
+                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+                .geometries(std::slice::from_ref(&geometry));
+
+            let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
+            self.accel_loader.get_acceleration_structure_build_sizes(
+                vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                &build_info,
+                &[padded_count as u32],
+                &mut sizes,
+            );
+            // Scratch is sized for BUILD which is >= UPDATE per Vulkan
+            // spec, so the same buffer serves both modes.
+
+            // DEVICE_LOCAL: GPU-built, GPU-read during ray queries.
+            let mut tlas_buffer = GpuBuffer::create_device_local_uninit(
+                device,
+                allocator,
+                sizes.acceleration_structure_size,
+                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            )
+            .inspect_err(|_| {
+                instance_buffer.destroy(device, allocator);
+                instance_buffer_device.destroy(device, allocator);
+            })?;
+
+            let accel_info = vk::AccelerationStructureCreateInfoKHR::default()
+                .buffer(tlas_buffer.buffer)
+                .size(sizes.acceleration_structure_size)
+                .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL);
+
+            let accel = self
+                .accel_loader
+                .create_acceleration_structure(&accel_info, None)
+                .inspect_err(|_| {
+                    tlas_buffer.destroy(device, allocator);
+                    instance_buffer.destroy(device, allocator);
+                    instance_buffer_device.destroy(device, allocator);
+                })
+                .context("Failed to create TLAS")?;
+
+            // Record this build's scratch requirement on the slot
+            // (#682 / MEM-2-7). The fresh-create path is the ONLY site
+            // that re-runs `vkGetAccelerationStructureBuildSizesKHR`
+            // for TLAS — refit/update reuse the existing scratch on
+            // the spec guarantee `BUILD ≥ UPDATE`. So this is the
+            // canonical peak for the slot's lifetime, written
+            // unconditionally even if the existing scratch buffer is
+            // big enough to skip realloc below: a previous-slot's
+            // larger peak shouldn't permanently inflate a smaller
+            // current-slot's recorded peak.
+            self.tlas_scratch_peak_bytes[frame_index] = sizes.build_scratch_size;
+
+            // Grow-only per-frame scratch buffer (#424 SIBLING) — reuse
+            // the existing allocation when it still fits the new build.
+            // DEVICE_LOCAL: GPU-only scratch during TLAS build. The
+            // `scratch_data.device_address` alignment requirement is
+            // enforced at the call site below via `align_scratch_address`
+            // (#1386 / #659 / #260 R-05).
+            // Pad by `scratch_alignment_padding` so the device address can
+            // be rounded up to `scratch_align` at the build site below
+            // without the build overrunning the buffer (#1386). The refit
+            // (UPDATE) path reuses this buffer on the spec guarantee
+            // `BUILD scratch ≥ UPDATE scratch`, inheriting the headroom.
+            let scratch_size =
+                sizes.build_scratch_size + scratch_alignment_padding(self.scratch_align);
+            let needs_new_scratch = scratch_needs_growth(
+                self.scratch_buffers[frame_index].as_ref().map(|b| b.size),
+                scratch_size,
+            );
+            if needs_new_scratch {
+                if let Some(mut old_scratch) = self.scratch_buffers[frame_index].take() {
+                    old_scratch.destroy(device, allocator);
+                }
+                let scratch_result = GpuBuffer::create_device_local_uninit(
+                    device,
+                    allocator,
+                    scratch_size,
+                    vk::BufferUsageFlags::STORAGE_BUFFER
+                        | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                );
+                match scratch_result {
+                    Ok(scratch) => self.scratch_buffers[frame_index] = Some(scratch),
+                    Err(e) => {
+                        self.accel_loader
+                            .destroy_acceleration_structure(accel, None);
+                        tlas_buffer.destroy(device, allocator);
+                        instance_buffer.destroy(device, allocator);
+                        instance_buffer_device.destroy(device, allocator);
+                        return Err(e);
+                    }
+                }
+            }
+
+            self.tlas[frame_index] = Some(TlasState {
+                accel,
+                buffer: tlas_buffer,
+                instance_buffer,
+                instance_buffer_device,
+                max_instances: padded_count as u32,
+                last_blas_addresses: Vec::with_capacity(padded_count),
+                // A freshly-created TLAS has no source to refit from —
+                // the first frame after creation must do a full BUILD.
+                needs_full_rebuild: true,
+                // Sentinel that no real generation can match — forces
+                // the first build_tlas after (re)creation to take the
+                // gen-mismatch short-circuit, skipping the zip-compare
+                // since `last_blas_addresses` is empty anyway.
+                last_blas_map_gen: u64::MAX,
+                // 0 signals "no prior BUILD" — the first build_tlas call
+                // will always use BUILD mode (via needs_full_rebuild) and
+                // set this to instance_count. (#1083)
+                built_primitive_count: 0,
+            });
+        }
         Ok(())
     }
 
