@@ -101,9 +101,10 @@ confirm it holds).
 **Checklist**: `extract_bs_geometry` — Stage A inline geometry
 (`has_internal_geom_data()`) vs Stage B external `.mesh` companion.
 **#1292** — external `.mesh` resolved via the canonical `geometries\<X>.mesh`
-path; the importer must NOT prepend `meshes\` (regression-guarded by
-`normalize_mesh_path` tests in `asset_provider.rs` — confirm
-`head == "geometries\\"` is left untouched). Without this the Cydonia spawn rate
+path; the importer must NOT prepend `meshes\` (implemented in
+`byroredux/src/asset_provider/archive.rs`, regression-guarded by the
+`normalize_mesh_path` tests in `byroredux/src/asset_provider/tests.rs` —
+confirm the `geometries\` head is left untouched). Without this the Cydonia spawn rate
 collapses. **#1209** — iterate every LOD slot, not `meshes.first()` (a `None`
 short-circuit when LOD 0 was external despite later internal slots).
 **#1828/#1829 (`ba728882`)** — both the Stage A `find_map` and the Stage B
@@ -129,7 +130,7 @@ counts.
 **Checklist**: `ComponentDatabaseFile::parse` consumes `materials\materialsbeta.cdb`
 extracted from `Starfield - Materials.ba2` via `--materials-ba2`. **#762** —
 guard `index_chunks` against the chunk-index regression already referenced in
-`asset_provider.rs`. **DLC/Creation CDB discovery by scanning (#1571, `8c99c50d`)** —
+`byroredux/src/asset_provider/tests.rs`. **DLC/Creation CDB discovery by scanning (#1571, `8c99c50d`)** —
 `asset_provider/material.rs::discover_starfield_cdbs` scans each materials archive for
 **every** `materials\materialsbeta.cdb` AND DLC/Creation-namespaced
 `materials\creations\<plugin>\materialsbeta.cdb`, instead of extracting one
@@ -260,14 +261,15 @@ resolved Starfield meshes land with `Material.metalness` / `Material.roughness` 
 **plain resolved `f32`** (`material.rs`), set once — no `Option<f32>` per-draw
 `classify_pbr` plumbing (removed by the NIFAL refactor; `resolve_pbr` is the
 resolve-once fill). Confirm `Material::resolve_pbr` and the `EmissiveSource`
-discriminator (#1280, tagged in `crates/nif/src/import/material/walker.rs`) behave
+discriminator (#1280, tagged in `crates/nif/src/import/material/dedicated_shader.rs`
+and `legacy_properties.rs` since the #2059 `walker.rs` split) behave
 for SF content. NIFAL particle slice reaching SF NIFs: typed `NiPSysEmitter` /
 `NiPSysEmitterCtlr` (`crates/nif/src/blocks/particle.rs`) →
 `extract_emitter_params` / `extract_emitter_rate` (`crates/nif/src/import/walk/mod.rs`)
 → `apply_emitter_params` (`byroredux/src/systems/particle.rs`). NIFAL collision
 slice (Cydonia's synthesized + bhk colliders): `BhkMultiSphereShape` +
 `BhkConvexListShape` translate to `CollisionShape` in
-`crates/nif/src/import/collision/mod.rs`.
+`crates/nif/src/import/collision/shape.rs`.
 **Output**: `/tmp/audit/starfield/dim_8.md`
 
 ### Dimension 9: BGSM/BGEM External Material Flow

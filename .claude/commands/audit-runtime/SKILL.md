@@ -19,10 +19,12 @@ See `.claude/commands/_audit-common.md` for project layout, game-data paths,
 deduplication, severity, and the base finding format. This skill only adds the
 drive→capture→diff loop.
 
-## Invocation surface (verified against `byroredux/src/main.rs`)
+## Invocation surface (verified against `byroredux/src/boot.rs` + `byroredux/src/main.rs`)
 
 The engine resolves a whole game install from one `--game <key>` flag via the
-profile registry in `assets/debug_profiles.toml` (`expand_game_profile_args`).
+profile registry in `assets/debug_profiles.toml` (`expand_game_profile_args`,
+`byroredux/src/boot.rs` — CLI arg parsing/expansion split out of `main.rs`
+under #1858).
 That replaces the old hand-written `--esm`/`--bsa`/`--textures-bsa` table — you
 no longer spell out archives per game.
 

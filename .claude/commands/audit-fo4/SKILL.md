@@ -63,7 +63,7 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 
 ### Dimension 1: M49 Precombined Geometry — CSG + Decode + Spawn (highest FO4 risk)
 **Subagent**: `general-purpose`
-**Entry points**: `crates/bsa/src/csg.rs` (`CsgArchive::open`, `read_psg`), `crates/nif/src/import/precombine.rs` (`decode_shared_geom_object`, `psg_vertex_stride`, `PrecombineGeometry::into_imported_mesh`, `collect_precombine_geom_refs`, `PrecombineMaterial::apply`), `byroredux/src/cell_loader/precombined.rs` (`spawn_precombined_meshes`), `byroredux/src/cell_loader/load.rs` (the `pc_spawned` / `absorbed_refs` gate), `crates/plugin/src/esm/cell/wrld.rs` + `crates/plugin/src/esm/cell/mod.rs` (`precombined_mesh_hashes`). Spec: `docs/engine/fo4-csg-format.md`.
+**Entry points**: `crates/bsa/src/csg.rs` (`CsgArchive::open`, `read_psg`), `crates/nif/src/import/precombine.rs` (`decode_shared_geom_object`, `psg_vertex_stride`, `PrecombineGeometry::into_imported_mesh`, `collect_precombine_geom_refs`, `precombine_material_from_shape`), `byroredux/src/cell_loader/precombined.rs` (`spawn_precombined_meshes`), `byroredux/src/cell_loader/load.rs` (the `pc_spawned` / `absorbed_refs` gate), `crates/plugin/src/esm/cell/wrld.rs` + `crates/plugin/src/esm/cell/mod.rs` (`precombined_mesh_hashes`). Spec: `docs/engine/fo4-csg-format.md`.
 **Checklist**:
 - **Vertex stride** — `psg_vertex_stride(vertex_desc)` must match the `BSPackedGeomObject` packed layout; an off-by-N stride silently shifts every vertex. Cross-check against the spec doc.
 - **Y-up convert** — `into_imported_mesh` applies the Z-up→Y-up + per-instance transform. Confirm the instance transform composes (no double-apply with `cell_origin`).
@@ -94,7 +94,7 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 **Subagent**: `general-purpose`
 **Entry points**: `crates/bsa/src/ba2.rs`.
 **Checklist**:
-- **Exhaustive dispatch** (#811, `f480337`) — version handling is a `match` over the supported set; unknown majors (0, 4, 5, 6, 9, …) bail at `open()`. Any reintroduction of a cascading `if v == 1 { … } else if v == 7 { … }` chain with a silent v1 fallback is the regression. Mirrors the BSA allowlist now at `crates/bsa/src/archive/open.rs` (the old `archive.rs:165-173` comment in `ba2.rs` referencing the pre-split file is stale).
+- **Exhaustive dispatch** (#811, `f480337`) — version handling is a `match` over the supported set; unknown majors (0, 4, 5, 6, 9, …) bail at `open()`. Any reintroduction of a cascading `if v == 1 { … } else if v == 7 { … }` chain with a silent v1 fallback is the regression. Mirrors the BSA allowlist now at `crates/bsa/src/archive/open.rs` (the `ba2.rs` comment already points at the post-split `archive/open.rs`).
 - **GNRL** — extract a mesh and a script, byte-exact.
 - **DX10** — DDS header reconstruction from width/height/`dxgi_format`/mip count; DXT1/DXT5/BC5/BC7 encoding; mip chunk assembly (mip0 largest → mip_last); per-archive zlib-vs-uncompressed flag.
 - **Cross-version** — `BA2_V_FO4` (1) / `BA2_V_FO4_NEXT_GEN_TEX` (7) / `BA2_V_FO4_NEXT_GEN_MESH` (8) all force zlib; confirm the Next-Gen mesh/tex archives extract.
@@ -102,24 +102,24 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 
 ### Dimension 4: NIF BSVER 130 + Half-Float Vertices + FO4 Collision
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs`, `crates/nif/src/import/mesh/bs_tri_shape.rs`, `crates/nif/src/import/mesh/bs_geometry.rs`, `crates/nif/src/import/collision/mod.rs`.
+**Entry points**: `crates/nif/src/blocks/tri_shape/bs_tri_shape.rs`, `crates/nif/src/import/mesh/bs_tri_shape.rs`, `crates/nif/src/import/mesh/bs_geometry.rs`, `crates/nif/src/import/collision/shape.rs`.
 **Checklist**:
 - VF_FULL_PRECISION resolution (default-half unless set); half-float decode matches IEEE 754 binary16 incl. denormals/NaN.
 - BSSubIndexTriShape segment data walked (FO4 actors lean on it); skinned bone indices/weights honor packed layout.
 - DLC trailing fields on `BSLightingShaderProperty` in the `FALLOUT4..FO4_DLC_UPPER` band (subsurface/rimlight/backlight/fresnel/wetness). Next-Gen patch BSVER values still dispatch.
 - **#1242 constant rename** — the BSVER bound is `FO4_DLC_UPPER` (= 140), not the old misnamed `FO4_ENV_SCALE`. Any reference to the old name anywhere under `crates/nif/` or `crates/plugin/` is a regression target.
-- **FO4 collision (regression pin)** — `BhkMultiSphereShape` and `BhkConvexListShape` translate to `CollisionShape` in `collision.rs` (search the two `downcast_ref` arms) instead of falling through to the "unsupported" log + drop. Power-armor / settlement / destructible-debris collision depends on this; either arm reverting to a drop is a regression (NIFAL "parsed then dropped" leak class).
+- **FO4 collision (regression pin)** — `BhkMultiSphereShape` and `BhkConvexListShape` translate to `CollisionShape` in `crates/nif/src/import/collision/shape.rs` (search the two `downcast_ref` arms) instead of falling through to the "unsupported" log + drop. Power-armor / settlement / destructible-debris collision depends on this; either arm reverting to a drop is a regression (NIFAL "parsed then dropped" leak class).
 **Output**: `/tmp/audit/fo4/dim_4.md`
 
 ### Dimension 5: FO4 Shader Flags & BGSM PBR Routing (Disney path)
 **Subagent**: `renderer-specialist`
-**Entry points**: `crates/nif/src/blocks/shader.rs` (BSLightingShaderProperty), `crates/nif/src/import/material/` (`mod`, `walker`, `shader_data`), `crates/renderer/shaders/include/lighting.glsl` + `include/pbr.glsl` (Disney lobe gates).
+**Entry points**: `crates/nif/src/blocks/shader.rs` (BSLightingShaderProperty), `crates/nif/src/import/material/` (`mod`, `walker`, `dedicated_shader`, `shader_data`), `crates/renderer/shaders/include/lighting.glsl` + `include/pbr.glsl` (Disney lobe gates).
 **Checklist**:
 - **u32 flag pair** read as two separate fields (shader_flags_1 + shader_flags_2). FO4 flag bit positions differ from Skyrim — verify decal / alpha-test / skinned / glow / window / refraction / parallax / facegen bits read from the correct mask + bit.
-- **Render-affecting bits consumed, not just parsed (#1592, `f7fbbed5`)** — the walker (`crates/nif/src/import/material/walker.rs`) must OR Model_Space_Normals (F4SF1 bit 12) and Alpha_Test (F4SF2 bit 25) into `MaterialInfo`. Glow_Map (F4SF2 bit 6) is deliberately **not** gated here (#1733 doc-fix, corrected the #1592 comment) — glow sources unconditionally from the `BSShaderTextureSet` glow slot regardless of the flag bit; do not re-propose wiring it as a gap. Vanilla FO4 is BGSM-backed so this only bites inline/loose/modded NIFs, but a regression decodes an object-space normal map as tangent-space or renders an inline cutout opaque. Tests: `crates/nif/src/import/material/fo4_shader_flag_tests.rs`, `alpha_flag_tests.rs`.
+- **Render-affecting bits consumed, not just parsed (#1592, `f7fbbed5`)** — the dedicated-shader arm (`crates/nif/src/import/material/dedicated_shader.rs`, split out of `walker.rs` under #2059) must OR Model_Space_Normals (F4SF1 bit 12) and Alpha_Test (F4SF2 bit 25) into `MaterialInfo`, gated on `bsver >= FALLOUT4`. Glow_Map (F4SF2 bit 6) is deliberately **not** gated here (#1733 doc-fix, corrected the #1592 comment) — glow sources unconditionally from the `BSShaderTextureSet` glow slot regardless of the flag bit; do not re-propose wiring it as a gap. Vanilla FO4 is BGSM-backed so this only bites inline/loose/modded NIFs, but a regression decodes an object-space normal map as tangent-space or renders an inline cutout opaque. Tests: `crates/nif/src/import/material/fo4_shader_flag_tests.rs`, `alpha_flag_tests.rs`.
 - **BGSM Name stopcond** — when the material is external, the block parser returns before reading the inline Phong trailing fields (those belong to the BGSM). `ImportedMesh.material_path` flows to `Material.material_path` for diagnostics; `mesh.info <id>` surfaces it when texture_path is absent.
 - **BSShaderTextureSet slot routing** (#563) — SkinTint / HairTint `BSLightingShaderType` variants sample different slots than the default LSP path; verify the per-type slot map is in lockstep with what `triangle.frag` reads.
-- **PBR flag, not Lambert** — `crates/nif/src/import/material/walker.rs` routes BGSM-authored material through the PBR path; the FO4-specific regression is a BGSM material **falling back to Lambert** (opposite of the FNV/FO3 regression). #1241 surfaces smoothness/IOR/specular_strength into `MaterialInfo` so the Disney lobe has data.
+- **PBR flag, not Lambert** — `MaterialInfo::classify_legacy_pbr` / `into_imported_material` (`crates/nif/src/import/material/mod.rs`) seed the PBR overrides and `merge_external_material` flips `ImportedMaterial::is_pbr` for BGSM-authored material; the FO4-specific regression is a BGSM material **falling back to Lambert** (opposite of the FNV/FO3 regression). #1241 surfaces smoothness/IOR/specular_strength into `MaterialInfo` so the Disney lobe has data.
 - **#1244 `BSShaderPropertyBaseOnly` consumer** wired at import — bare-stub BSShaderProperty routes through MaterialInfo; verify FO4 fallback meshes aren't default-everything.
 - The per-game→canonical handoff is covered in depth by **Dimension 7**; cross-game canonical invariants live in `/audit-nifal`.
 **Output**: `/tmp/audit/fo4/dim_5.md`
@@ -129,7 +129,7 @@ Dimensions are ordered by FO4 risk: the precombine pipeline, BGSM material trans
 **Entry points**: `crates/plugin/src/esm/records/` (`scol.rs`, `movs.rs`, `pkin.rs`, `mswp.rs`; TXST lives in the misc set), `crates/plugin/src/esm/cell/` (`mod`, `walkers`, `support`, `wrld` + `cell/tests/`).
 **Checklist**:
 - SCOL — prefab of child-static placements w/ per-instance scale/rotation, parsed into an expandable structure. PKIN — packins (grouped bundles). MOVS — movable statics (parse-only; physics runtime not wired). TXST — texture sets referenced by NIF material paths.
-- **TXST DODT + DNAM** (#813 / #814) — decal-data sub-record + flags parsed via `DecalData`; pre-fix, 207/382 (DODT) + 382/382 (DNAM) vanilla TXSTs dropped authoring. Any TXST read path without `DecalData` is the regression. The TXST match arms live in `cell/walkers.rs`; an `unreachable_patterns` warning there suggests `b"TXST"` matches before the intended arm.
+- **TXST DODT + DNAM** (#813 / #814) — decal-data sub-record + flags parsed via `DecalData`; pre-fix, 207/382 (DODT) + 382/382 (DNAM) vanilla TXSTs dropped authoring. Any TXST read path without `DecalData` is the regression. The TXST group arm lives in `esm/records/mod.rs` and the DODT/DNAM decode in `esm/cell/support.rs`; an `unreachable_patterns` warning at either site suggests `b"TXST"` matches before the intended arm.
 - **Category index exposure** (#817) — the FO4-architecture maps must surface in `categories()`; a missing entry hides records from category iteration.
 - Re-run the real-data ESM parse harness (#819) before reporting any parse-rate finding.
 **Output**: `/tmp/audit/fo4/dim_6.md`

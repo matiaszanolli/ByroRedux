@@ -134,10 +134,11 @@ first, manager/ECS lifecycle and gameplay wiring last.
 - Source-position resolution: queue path takes `position: Vec3` directly; entity
   path reads `GlobalTransform.translation`. Verify the entity path does NOT fall
   back to interpolation-state `Transform` (must use post-propagation pose).
-- Volume→dB conversion (`20*log10(volume)`, clamped to -60 dB for ≤0) is
-  duplicated across `drain_pending_oneshots`, `dispatch_new_oneshots`, and
-  `play_music`. Flag drift between the three copies (a divergent clamp is a real
-  bug, not just dup).
+- Volume→dB conversion (`20*log10(volume)`, clamped to `SILENCE_DB` = -60 dB for
+  ≤0) is centralized in the `linear_volume_to_db` helper (AUD-2026-06-23-01 —
+  previously inlined verbatim at three play sites). `drain_pending_oneshots`,
+  `dispatch_new_oneshots`, and `play_music` all call the shared helper. Flag any
+  site that reintroduces an inlined divergent copy instead of calling it.
 **Output**: `/tmp/audit/audio/dim_1.md`
 
 ### Dimension 2: Listener Pose & Spatial Attenuation Correctness
@@ -307,7 +308,7 @@ creation), `set_reverb_send_db`, `reverb_send_db`, both `with_send` sites
   is boot-only — flag any call on cell transition / window resize (re-acquiring
   the OS audio device is expensive and may fail).
 - **`audio_system` stage**: registered `add_exclusive(Stage::Late,
-  byroredux_audio::audio_system)` in `byroredux/src/main.rs` (after transform
+  byroredux_audio::audio_system)` in `byroredux/src/boot.rs` (after transform
   propagation produces final poses). Running before propagation reads stale
   `GlobalTransform`. Verify the stage hasn't moved. `audio_system` body order is:
   `sync_listener_pose` → `drain_pending_oneshots` → `dispatch_new_oneshots` →
@@ -396,7 +397,7 @@ the ONLY `set_reverb_send_db` caller. Neither is covered by the crate dimensions
   `NEG_INFINITY → NEG_INFINITY` never re-touches the field); it no-ops safely when
   `CellLightingRes` is absent (boot pre-cell-load) AND when `AudioWorld` is absent
   (headless); and it is registered `add_exclusive(Stage::Late, ...)` in
-  `byroredux/src/main.rs` BEFORE `audio_system` in the same stage — so a track
+  `byroredux/src/boot.rs` BEFORE `audio_system` in the same stage — so a track
   built this tick picks up this tick's send level, not last tick's. Guards:
   `interior_cell_sets_subtle_reverb_send`,
   `interior_to_exterior_transition_resets_send_to_dry`,

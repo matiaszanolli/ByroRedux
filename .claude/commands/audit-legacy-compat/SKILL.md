@@ -97,15 +97,16 @@ is silently wrong for **every** game — `Material::metalness`/`roughness` are p
   path must NOT reappear (it survives only in the explanatory comments in
   `byroredux/src/render/static_meshes.rs`).
 - Glass / cloth / metal classified **once** at the boundary, alpha-aware
-  (`material_translate::classify_glass_into_material`, after `resolve_pbr` so forced glass
+  (`helpers::classify_glass_into_material`, called from `material_translate` after `resolve_pbr` so forced glass
   roughness wins) — never re-classified per draw.
 - **Emissive (regression guard, do not re-file)**: the three `EmissiveSource` variants
   (`Material` / `Lighting` / `Effect`, `material.rs::EmissiveSource`) were measured across
   Oblivion/FNV/Skyrim/FO4 to share a ~1.0 scale (`nifal.md` §4). No normalization is correct;
   an "unify emissive scale" finding has a false premise.
 - **`NiFogProperty` (regression guard)**: parsed but **intentionally not dispatched**
-  (`#1224` / D4-NEW-02; see the deliberate-skip comment near the end of
-  `crates/nif/src/import/material/walker.rs::extract_material_info`). Per-node fog has no
+  (`#1224` / D4-NEW-02; see the deliberate-skip comment at the end of
+  `crates/nif/src/import/material/legacy_properties.rs::apply_legacy_property_chain`,
+  split out of `walker.rs::extract_material_info_from_refs` by `#2059`). Per-node fog has no
   `Material` landing site; the renderer's fog path reads cell-scope `CellLighting` only.
   Observed corpus is 1 vanilla FO3 block. Do **not** re-file.
 
@@ -121,7 +122,7 @@ The classic-chain slice landed 2026-06-14. Reference: `docs/engine/physal.md` (�
   `parse_oblivion` / `parse_fo3` arms) read only the **common subset** (era-only fields like
   FO3+ motors / `Perp Axis In B1` are decoded-or-zeroed, never reaching canonical). Byte
   advancement is asserted per era in `crates/nif/src/blocks/collision/bhk_constraint_tests.rs`.
-- **Extract is already game-agnostic**: `crates/nif/src/import/collision/mod.rs::extract_ragdoll`
+- **Extract is already game-agnostic**: `crates/nif/src/import/collision/ragdoll.rs::extract_ragdoll`
   switches on `BhkConstraintData`, never on game; emits `ImportedRagdoll` in Y-up,
   `havok_scale`-applied units. A `game ==` branch creeping in here is a finding.
 - **One translate, one build**: `byroredux/src/ragdoll.rs::template_from_imported` (bone-name
@@ -169,12 +170,17 @@ table, §5 LOD, §7 rollout status).
   spawned as `IsLodTerrain`, live-verified on Tamriel). Distant **terrain** now prefers the
   prebaked `.btr` mesh on Skyrim+/FO4 (M35, #1685 — `byroredux/src/cell_loader/terrain_lod_btr.rs::spawn_btr_block`,
   dispatched from `cell_loader/terrain_lod.rs`), falling back to heightmap synthesis for older
-  games and missing `.btr` blocks. The Oblivion/FO3/FNV `DistantLOD\*.lod` → `_far.nif`
+  games and missing `.btr` blocks. The **Oblivion-only** `DistantLOD\*.lod` → `_far.nif`
   placement scheme is now consumed via `PlacementLodProvider`
   (`byroredux/src/cell_loader/placement_lod.rs`, #1726) — do not re-flag it as
-  unimplemented; `docs/engine/exal.md` §5 is the coverage source of truth for
-  what (if anything) remains open here (e.g. WRLD NAM3/NAM4 LOD-water + OFST
-  table, a separate open item).
+  unimplemented. It is gated to `GameKind::Oblivion` (`placement_lod_supported`)
+  because FO3/FNV ship **zero** `distantlod\*.lod` files in any vanilla archive
+  (FO3-D4-01 / #2086) — "FO3/FNV distant-object LOD is missing" is a real gap but
+  not a `PlacementLodProvider` gap. `docs/engine/exal.md` §5 is the coverage
+  source of truth for what remains open here. WRLD `NAM3`/`NAM4` LOD-water +
+  `OFST` are now **parsed** (#1849, onto `WorldspaceRecord::lod_water_form` /
+  `lod_water_height` / `cell_offsets`) but not yet consumed — a consumer gap,
+  not a parse gap.
   Per `exal.md` §5.4: runtime LOD is asset-driven — neither NIF LOD nodes nor STAT `MNAM`
   unblock it. The **VWD / "Has Distant LOD" record-header flag** is now parsed and exposed
   (`RecordHeader::is_visible_when_distant()`, #1731) but has zero consumers — wiring it

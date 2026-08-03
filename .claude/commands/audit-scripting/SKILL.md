@@ -48,8 +48,10 @@ those here.
   `crates/scripting/src/fragment.rs`, `crates/scripting/src/recurring_update.rs`,
   `crates/scripting/src/registry.rs`, `crates/scripting/src/lib.rs`. Recognizer
   chain: `crates/scripting/src/translate/` (`mod`, `source`, `archetype`, `compose`,
-  `effects`, `tables`, `recognizers/{mod, quest_stage_gate, rumble}`). Reference
-  scripts: `crates/scripting/src/papyrus_demo/`.
+  `effects`, `tables`, `recognizers/{mod, quest_stage_gate, rumble,
+  two_state_activator}` — `two_state_activator` landed after this file's last
+  refresh; it recognizes `default2StateActivator` the same per-script way
+  `rumble` does). Reference scripts: `crates/scripting/src/papyrus_demo/`.
 
 **Engine-side wiring** (Dimension 7 — outside the crates):
 - `byroredux/src/cell_loader/references/attach.rs` (split out of `mod.rs`,
@@ -58,7 +60,8 @@ those here.
   `byroredux_scripting::translate_pex`; the `trigger_volume_from_primitive`
   builder spawns invisible `TriggerVolume` REFRs from `XPRM` primitives.
 - `crates/plugin/src/esm/records/index.rs` — `base_record_script_instance`
-  accessor (VMAD retained on ACTI/CONT/NPC/CREA base records).
+  accessor (VMAD retained on ACTI/CONT/NPC/CREA base records, plus the item
+  family per #2189 — see Dim 7).
 - `crates/plugin/src/esm/records/script_instance.rs` — `ScriptInstanceData` /
   `ScriptInstance` (decoded VMAD).
 - `byroredux/src/asset_provider/script.rs` — `build_script_provider` parses the
@@ -89,8 +92,13 @@ those here.
 of this skill) to reflect the shipped `.pex` recognizer slice; only line ~175
 ("What Doesn't Work Yet") still lists the *full* transpiler as deferred, which
 remains accurate (the recognizer chain is a targeted slice, not a general
-transpiler). Do not re-flag line 139 as stale — verify it still reads correctly
-before reporting any doc-rot here.
+transpiler). Do not re-flag that "shipped recognizer slice" framing on line 139
+as stale. **Do** flag its embedded phase-order parenthetical, though —
+`"CFG→lift→control-flow→lower→short-circuit"` (booleans LAST) contradicts the
+actual pipeline (Dim 3: the short-circuit boolean pass runs BEFORE control-flow
+reconstruction, confirmed in `decompile_body`/`lower.rs`) — that parenthetical
+was apparently never updated when the phase order was pinned down, independent
+of the "shipped slice" fix around it.
 
 **Corpus / fidelity instruments (point findings here, do not re-derive)**:
 - `crates/pex/examples/pex_corpus_smoke.rs` — runs `byroredux_pex::parse` +
@@ -246,15 +254,21 @@ lifecycle, and the engine wiring.
   var-arg opcodes (`callmethod`/`callparent`/`callstatic`/`lock_guards`/
   `unlock_guards`/`try_lock_guards`) and the high-arity ones
   (`array_findstruct` = 5, `array_getallmatchingstructs` = 6).
-- **`BadVarArgCount`**: a negative or non-integer var-arg count is rejected; the
-  count is `n as usize` with `Vec::with_capacity(n as usize)`. Confirm a hostile
-  but in-`i32`-range huge `n` (e.g. `i32::MAX`) can't pre-allocate gigabytes
-  before `take` fails — `with_capacity(2^31)` is a reachable DoS even though the
-  reads will EOF. (Same hazard on every `with_capacity(count)` fed by an
-  attacker-controlled `u16`/`u32`: `read_string_table`, `read_objects`,
-  `read_instructions`, `read_typed_names`, `read_struct_infos`. The `u16` ones cap
-  at 65535 = benign; the `u32` user-flags / var-arg / object-size are the ones to
-  scrutinize.)
+- **`BadVarArgCount`**: a negative or non-integer var-arg count is rejected.
+  The var-arg element count `n` (`Value::Integer`, attacker-controlled up to
+  `i32::MAX`) does **not** feed a `Vec::with_capacity(n)` — `read_instructions`
+  grows the `var_args` vec geometrically via a plain `Vec::new()` + per-element
+  `push` loop instead (#1710/SCR-D1-01), specifically because a
+  `with_capacity(n)` there would pre-allocate tens of GB before the first
+  out-of-range element read could hit `take`'s EOF guard. Verify this is still
+  true — a "cleanup" that reintroduces `Vec::with_capacity(n as usize)` here
+  reopens #1710. Regression guard: `hostile_vararg_count_errors_instead_of_ooming`
+  (`crates/pex/src/reader.rs`). Every OTHER `with_capacity(count)` in the reader
+  (`read_string_table`, `read_objects`, `read_instructions`'s own
+  instruction-count vec, `read_typed_names`, `read_struct_infos`, …) is fed by a
+  `u16` count capped at 65535 — benign. The `u32` `user_flags` / object-size
+  fields are plain data (bitflags / a size hint), never used as a `Vec`
+  capacity — not a hazard.
 - **`string_index` range check**: a `u16` index is `.get(idx).cloned()` →
   `BadStringIndex` on miss. Verify NO field reads a raw `u16` and indexes
   `self.strings[idx]` directly (panic on OOB).
@@ -312,12 +326,20 @@ lifecycle, and the engine wiring.
   `forward_jmpf_builds_an_if_diamond` + `backward_jmpt_builds_a_loop_edge` tests
   pin it; verify the `(on_true, on_false)` tuple in `build_cfg` matches.
 - **Copy-propagation soundness (`rebuild_expression`)**: a non-final
-  (temp-producing) node is folded into the *single* following statement that
-  consumes its result via `count_constant_id`; **0 → skip, 1 → inline (and restart
-  at `i=0`), >1 → `ExpressionRebuildFailed`**. This is the AST-correctness core.
-  Verify: (a) the count is over the *immediately next* statement only
-  (`scope[i+1]`) — Champollion's single-consumer model; folding into a
-  non-adjacent consumer would reorder side effects; (b) `is_final` / `is_temp_var`
+  (temp-producing) node is folded into the *single* following live statement
+  that consumes its result via `count_constant_id`; **0 → advance, 1 → inline
+  and resume at the live predecessor of the fold target, >1 →
+  `ExpressionRebuildFailed`**. This is the AST-correctness core. Post-#2024
+  the pass runs over an explicit doubly-linked live-index chain, NOT a
+  restart-at-`i=0` rescan of the whole `Vec` — the old restart-at-0 behavior
+  (Champollion's `it = scope->begin()`) was itself the O(n²) bug #2024 fixed
+  (confirmed by a 20k/40k/80k-fold-pair benchmark); a "cleanup" that
+  reintroduces it, or reintroduces `Vec::remove`'s O(n) shift, reopens #2024.
+  Regression guard: `rebuild_expression_is_linear_up_to_the_wire_format_ceiling`
+  (`crates/pex/src/decompile/lift.rs`). Verify: (a) the count is over the
+  *immediately next live* statement only (the `next[i]` link — Champollion's
+  single-consumer model); folding into a non-adjacent consumer would reorder
+  side effects; (b) `is_final` / `is_temp_var`
   asymmetry is intact (`is_final` treats any `::temp` prefix as non-final incl.
   `_var`-suffixed; `is_temp_var` excludes `_var`) — the file documents this as a
   deliberate Champollion port, so a "cleanup" that unifies them is a regression;
@@ -333,9 +355,13 @@ lifecycle, and the engine wiring.
   type-narrowing cast into an identity copy (recognizer reads the wrong type).
 - **`CallStatic`/`CallMethod`/`CallParent` operand order**: result, object, method
   name are pulled from specific arg indices (`id(2)`/`val(1)`/`id(0)` for
-  CallMethod; `val(0)`/`id(1)`/`id(2)` for CallStatic). A swapped index mis-names
-  the called function — fatal for a recognizer that keys on the method name
-  (`SetStage`, `GetStageDone`). Cross-check against the UESP opcode operand order.
+  CallMethod; `id(2)`/`val(0)`/`id(1)` for CallStatic — result/object/method in
+  that order, matching the CallMethod convention; note the actual `Node::call_method`
+  call site writes them `val(0), id(1)` positionally, i.e. object-then-method, so
+  don't misread the source's left-to-right argument order as the result/object/
+  method order this bullet uses). A swapped index mis-names the called function —
+  fatal for a recognizer that keys on the method name (`SetStage`, `GetStageDone`).
+  Cross-check against the UESP opcode operand order.
 - **`id_of` on a literal**: operands that must be identifiers (`id(n)`) error with
   `ExpectedIdentifier` on a literal. Verify the lift never `unwrap()`s
   `as_identifier()` outside a checked branch (the Cast arm does
@@ -381,13 +407,18 @@ lifecycle, and the engine wiring.
   `before_exit` returns the block containing `exit-1` (the degenerate `exit == 0`
   returns `END` → `fail()`).
 - **The deliberate skip in `control_flow.rs`**: when `last` is *itself*
-  conditional, the block is "left unmerged, advance by one" — this is the `||`
-  short-circuit case the boolean pre-pass is supposed to have already collapsed.
-  Confirm that with the boolean pass running first this branch is unreachable for
-  well-formed input; if a script reaches it (boolean pass declined to collapse),
-  the CF pass **silently drops a guard** — that's a wrong-AST hazard (a guarded
-  effect becomes unguarded). Assess whether such a script errors, declines, or
-  silently mis-decompiles.
+  conditional, the block hits the `||` short-circuit case the boolean pre-pass
+  is supposed to have already collapsed. This branch **fails closed**
+  (`ControlFlowFailed`, SCR-D3-01/#1732) rather than silently advancing past
+  the block and dropping its lifted statements — the pre-#1732 "advance by
+  one, drop the guard" behavior this bullet used to describe was itself the
+  wrong-AST hazard #1732 fixed. `decompile_script`'s `Err` then makes
+  `translate_pex` degrade to a clean `None` decline (§Dim 5), so a script that
+  reaches this branch declines rather than mis-decompiling. Verify the
+  fail-closed `Err` is still there (a "fix" that resumes silently dropping the
+  block reopens #1732) and that well-formed input never reaches this branch
+  because the boolean pass ran first. Regression guard:
+  `conditional_predecessor_fails_closed` (`crates/pex/src/decompile/control_flow.rs`).
 - **Boolean collapse soundness (`boolean.rs`)**: `&&` = true edge falls through
   (`block.on_true() == block.end + 1`), `||` = false edge falls through. The
   operand block must *recompute the same condition variable* (`take_operand`
@@ -482,9 +513,11 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
   `stmt_depth_cap_rejects_pathological_nested_while`,
   `stmt_depth_cap_accepts_legitimate_nesting`,
   `stmt_depth_resets_between_top_level_calls`). Untrusted-Input: Yes.
-- **Operator precedence + associativity (`ast.rs` `BinaryOp::precedence`)**:
-  Or=1, And=2, comparisons=3, Add/Sub/StrCat=4, Mul/Div/Mod=5; unary=6, cast=7,
-  postfix=8. Left-associativity hinges on the Pratt loop's `op_prec <= min_bp →
+- **Operator precedence + associativity**: `ast.rs`'s `BinaryOp::precedence`
+  gives Or=1, And=2, comparisons=3, Add/Sub/StrCat=4, Mul/Div/Mod=5; `ast.rs`'s
+  separate `UnaryOp::precedence` gives unary=6; cast=7/postfix=8 are the
+  `PREC_CAST`/`PREC_POSTFIX` consts in `parser/expr.rs`, not `ast.rs`. Left-
+  associativity hinges on the Pratt loop's `op_prec <= min_bp →
   break` (the `<=`, not `<`). Verify `a - b - c` → `(a-b)-c`
   (`test_left_associativity`) and `a + b * c` → `a + (b*c)`. Note: Papyrus's
   *runtime CTDA* OR-precedence quirk (Bethesda's inverted AND/OR) is a *condition
@@ -537,7 +570,10 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
 `crates/scripting/src/translate/tables.rs` (`CanonicalEvent::from_papyrus`);
 `crates/scripting/src/translate/recognizers/quest_stage_gate.rs` (`recognize`,
 `extract_stage_gate`, `classify_if_condition`);
-`crates/scripting/src/translate/recognizers/rumble.rs` (`recognize`).
+`crates/scripting/src/translate/recognizers/rumble.rs` (`recognize`);
+`crates/scripting/src/translate/recognizers/two_state_activator.rs` (`recognize`
+— per-script, matches `default2StateActivator`, added after this file's last
+refresh; not otherwise covered by this dimension's checklist below).
 **Checklist**:
 - **The invariant**: a recognizer MUST return `None` (decline) on ANY unmodeled
   condition atom, effect statement, or unbindable hole — never emit a component
@@ -545,11 +581,12 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
   corrupts game logic (quest advances on the wrong predicate) with no fallback.
   This is the scripting analogue of NIFAL's no-fabrication rule.
 - **Chain ordering (`mod.rs` `RECOGNIZERS`)**: per-script recognizers FIRST
-  (`rumble`), generic families SECOND (`quest_stage_gate`), so a bespoke script
-  isn't swallowed by a family match. `translate_script` is
-  `RECOGNIZERS.iter().find_map(...)` — first match wins, all-`None` → silent miss.
-  Verify the order matches the design (per-script before generic) and that adding
-  a future generic recognizer can't shadow `rumble`.
+  (`two_state_activator`, then `rumble`), generic families SECOND
+  (`quest_stage_gate`), so a bespoke script isn't swallowed by a family match.
+  `translate_script` is `RECOGNIZERS.iter().find_map(...)` — first match wins,
+  all-`None` → silent miss. Verify the order matches the design (per-script
+  before generic) and that adding a future generic recognizer can't shadow
+  either per-script recognizer.
 - **Guard decline enforcement (`compose.rs` + `quest_stage_gate.rs`)**: the
   load-bearing decline is `classify_guard_atom(atom, player_param)?` inside the
   per-atom loop in `classify_if_condition` — the `?` propagates `None` the instant
@@ -559,12 +596,27 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
   left as one atom no primitive matches, forcing a decline. This is intentional
   conservatism (the file documents it). Confirm an `If a || b` condition declines
   rather than lowering only the `a` half.
-- **Effect decline enforcement (`effects.rs::lower_fragment`)**: a flat-sequence
-  model — `Stmt::ExprStmt(e) → classify_effect(&e.node, &env)?` and
-  `_ => return None` for ANY control flow / valued return / var-decl. An
-  assignment binds a quest-ref local (`quest_expr_ref(...)?`) or declines. Verify
-  no statement type is silently accepted-as-noop except the explicit
-  `Stmt::Return(None)`.
+- **Effect decline enforcement (`effects.rs::lower_fragment`)**: mostly a
+  flat-sequence model — `Stmt::ExprStmt(e) → classify_effect(&e.node, &scope)?`;
+  `Stmt::VarDecl`/`Stmt::Assign` bind a local via `bind_local` (quest / object /
+  player / side-effect-free-plain, or decline — the "ANY var-decl declines"
+  framing this bullet used to state is no longer accurate, since a local that
+  `bind_local` can classify is recorded, not declined); `Stmt::Return(None)` is
+  the explicit no-op terminator; and — the one narrowed exception to "ANY
+  control flow declines" — `Stmt::While` is accepted **only** through
+  `lower_3d_loaded_wait` (MQ101 cart-cinematic work, post-2026-07-21), which
+  requires the condition to be an OR-tree of `!<actor>.Is3DLoaded()` leaves and
+  the loop body to be exactly one positive `Utility.Wait(..)` call; any other
+  `While`/`If`/valued-`Return` still hits `_ => return None`. Verify the
+  `lower_3d_loaded_wait`/`collect_not_3d_loaded_actors` shape check is still
+  exactly that narrow (an OR-of-NOT-Is3DLoaded, single positive `Wait` body)
+  and hasn't silently widened to accept other loop shapes — that would be a
+  decline-invariant regression. `effects.rs` has grown substantially since this
+  dimension was last refreshed (many more `Effect`/`EFFECT_PRIMITIVES` variants
+  beyond `AddItem`/`MoveTo` — scene/player-control/vehicle/cinematic effects for
+  the MQ101 cart sequence); this checklist does not enumerate them individually,
+  so treat the decline invariant above as the load-bearing thing to re-verify
+  rather than assuming the older, smaller primitive table.
 - **Hole binding**: `QuestRef::{OwningQuest, SelfRef, Property(name)}` must FULLY
   resolve. `OwningQuest` needs `ctx.owning_quest` (decline if `None` —
   `declines_when_owning_quest_unavailable`); `Property(name)` needs the VMAD
@@ -635,7 +687,7 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
   `stage_done_primitive_binds_holes`, `player_gate_primitive_matches_both_orders`
   (`crates/scripting/src/translate/compose.rs`); `declines_on_unmodeled_effect`,
   `declines_on_control_flow`, `empty_fragment_is_understood_as_noop`
-  (`crates/scripting/src/translate/effects.rs`); the 14 `quest_stage_gate.rs`
+  (`crates/scripting/src/translate/effects.rs`); the 20 `quest_stage_gate.rs`
   tests incl. `declines_unmodeled_condition_term`, `declines_handler_without_set_stage`,
   `declines_when_quest_property_unbound`, `declines_unconditional_with_extra_statements`
   (`crates/scripting/src/translate/recognizers/quest_stage_gate.rs`);
@@ -668,22 +720,28 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
   lock**, then Phase-2 acquire a *different* `query_mut` to insert markers. Verify
   the explicit `drop()` precedes the second acquisition in every one — holding two
   component-mut locks at once forces the TypeId-sorted-acquisition contract and is
-  a deadlock vector. `quest_fragment_dispatch_system` holds three *resource* locks
-  (`QuestStageFragments` read + `QuestStageState` mut + `QuestObjectiveState` mut)
-  across its whole dispatch loop.
+  a deadlock vector. `quest_fragment_dispatch_system` clones `QuestStageFragments`
+  (`world.resource::<QuestStageFragments>().clone()`) *before* taking the mutable
+  resources — the source's own comment says this is deliberate, "to avoid a
+  read→write nested resource-lock order" — so only two *resource* locks
+  (`QuestStageState` mut + `QuestObjectiveState` mut, via `resource_2_mut`) are
+  held across the dispatch loop, not three. Verify the clone-before-lock
+  ordering is still there; reintroducing a live `QuestStageFragments` read guard
+  held alongside the two mutable ones would reopen the read→write nesting the
+  comment says was deliberately avoided.
 - **NEW nested-lock surface (2026-07-21, `AddItem`/`MoveTo`) — verify, don't
   assume**: `apply_effect` now ALSO takes `world: &World` and, for the two
   object-targeting variants, acquires a *component* lock
   (`world.query_mut::<Inventory>()` for `AddItem`; `world.get::<GlobalTransform>()`
-  then `world.query_mut::<Transform>()` for `MoveTo`) **while the three resource
+  then `world.query_mut::<Transform>()` for `MoveTo`) **while the two resource
   locks above are still held** (they're bound in the outer scope for the whole
   `while let Some((quest, stage)) = queue.pop()` loop). This is a real change
   to the lock-nesting shape this dimension previously described as
   "resource-locks-only, no component lock held across them" — that framing is
   now stale. Investigate rather than assume safe: (a) does any *other* code
   path acquire `Inventory`/`Transform` first and then try to acquire
-  `QuestStageFragments`/`QuestStageState`/`QuestObjectiveState` — the reverse
-  order — on a path the scheduler could run concurrently with this one; (b)
+  `QuestStageState`/`QuestObjectiveState` — the reverse order — on a path the
+  scheduler could run concurrently with this one; (b)
   does the engine's scheduler ever run `quest_fragment_dispatch_system`
   concurrently with anything else that touches these same resources/components
   (check `sys.accesses` / the scheduler's declared-access report for this
@@ -693,7 +751,9 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
 - **Marker single-frame semantics**: all transient markers
   (`ActivateEvent`, `HitEvent`, `TimerExpired`, `AnimationTextKeyEvents`,
   `OnUpdateEvent`, `OnTriggerEnterEvent`, `OnCellLoadEvent`, `OnEquipEvent`,
-  `QuestStageAdvanced`, and the rumble/camera/UI command markers) MUST be drained
+  `QuestStageAdvancedBatch` — the actual drained `Component`; the bare
+  `QuestStageAdvanced` struct it wraps carries no `Component` impl and is never
+  inserted directly — and the rumble/camera/UI command markers) MUST be drained
   by `event_cleanup_system` exactly once per frame. Verify `event_cleanup_system`
   drains EVERY marker type the runtime emits (cross-check the
   `cleanup.rs` drain list against every `world.insert` of a marker across the
@@ -725,10 +785,15 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
   fails) on an unresolvable target rather than defaulting to subject.
 - **Edge-triggered trigger detection (`trigger.rs`)**: `trigger_detection_system`
   fires `OnTriggerEnterEvent` ONLY on the outside→inside transition
-  (`inside && !occupant_inside`), updates `occupant_inside` each frame, fires
-  again on re-entry. The event lands on the **volume entity** with the triggerer
-  in the marker field. Verify the seed contract (a player loaded already inside a
-  volume must NOT spuriously fire on frame 1 — `occupant_inside` seeded true) and
+  (`inside && !was_inside`), updates `occupant_inside` each frame, fires
+  again on re-entry. `occupant_inside` is `Option<bool>`, not a bare `bool` —
+  `None` means "never checked" and the seed contract is enforced by *skipping*
+  the enter check entirely on that first tick (SCR-D6-NEW-02/#1817), not by
+  seeding a synthetic `Some(true)`/"was inside" default: a fresh volume writes
+  `Some(inside)` without ever comparing against the `None`. The event lands on
+  the **volume entity** with the triggerer in the marker field. Verify the seed
+  contract (a player loaded already inside a volume must NOT spuriously fire on
+  frame 1 — the `None` branch never pushes to `entered`) and
   the `contains` math: Sphere = `(p-center).length_squared() <= r*r` with
   `half_extents.x` as radius; Box (OBB) = `rotation.inverse() * (p-center)` then
   per-axis `local.abs() <= half_extents`. Guards: `edge_triggered_not_level_triggered`,
@@ -777,21 +842,27 @@ dimensions covers it.
   branch is a `continue`/`return false`, not an `unwrap`/`expect`. Untrusted-Input:
   Yes (the `.pex` bytes come from a possibly-modded archive).
 - **VMAD retention + accessor (`index.rs::base_record_script_instance`)**: checks
-  ACTI/CONT/NPC/CREA base records in order, returns the first
-  `script_instance.as_ref()`. Verify the record types covered match the
-  VMAD-bearing set (a scripted base type not in the chain → its scripts never
-  attach). Confirm the accessor is keyed by `base_form_id` (the REFR's base, not
-  the REFR's own form id) and that a REFR's *own* VMAD (Skyrim+ supports per-REFR
-  scripts) is also resolved — flag if only base-record VMAD is consulted (per-REFR
-  override scripts would be dropped).
-- **`.pex` resolution (`asset_provider.rs`)**: `extract_pex` normalizes a VMAD
-  script name → `scripts\<name>.pex` (backslash, lowercase, `scripts\` prefix).
-  `--scripts-bsa` is **repeatable**, first-archive-hit-wins (mod layering). Verify
-  the path normalization matches the on-disk archive convention (a wrong prefix /
-  separator → every `.pex` miss → zero scripts attach silently) and that the
-  repeatable-flag layering order is mod-over-vanilla (later `--scripts-bsa`
-  archives should override earlier — confirm the iteration order vs. the
-  first-hit-wins semantics actually achieve that).
+  ACTI/CONT/NPC/CREA base records in order, then (#2189) the item family —
+  WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE, via `self.items.get(base_form_id)
+  .and_then(|r| r.common.script_instance.as_ref())` — returning the first hit.
+  Verify the record types covered match the VMAD-bearing set (a scripted base
+  type not in the chain → its scripts never attach) — the item family was
+  absent until `CommonItemFields` gained a decoded `script_instance` (#2189;
+  before that every scripted item silently declined to attach). Confirm the
+  accessor is keyed by `base_form_id` (the REFR's base, not the REFR's own form
+  id) and that a REFR's *own* VMAD (Skyrim+ supports per-REFR scripts) is also
+  resolved — flag if only base-record VMAD is consulted (per-REFR override
+  scripts would be dropped). Guard: `base_record_script_instance_resolves_an_item_records_vmad`.
+- **`.pex` resolution (`asset_provider/script.rs`)**: `extract_pex` normalizes a
+  VMAD script name → `scripts\<name>.pex` (backslash, lowercase, `scripts\`
+  prefix). `--scripts-bsa` is **repeatable, first-listed-archive-hit-wins**
+  (searched in flag order, first hit returned) — this is the documented
+  *inverse* of typical mod-manager load order (there, later = higher
+  priority): list override/mod archives *before* the vanilla one on the
+  command line (#1743/SCR-D7-03). Verify the path normalization matches the
+  on-disk archive convention (a wrong prefix/separator → every `.pex` miss →
+  zero scripts attach silently) and that the iteration order actually
+  implements first-listed-wins, not the reverse.
 - **XPRM → `TriggerVolume` half-extent convention** (`trigger_volume_from_primitive`):
   XPRM `bounds` are Bethesda **z-up HALF-extents** (CK Primitive convention,
   consistent with `bhkBoxShape` half-extents) — the code must NOT divide by 2.

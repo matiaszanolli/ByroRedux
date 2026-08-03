@@ -55,9 +55,10 @@ the crate; the crate audit is incomplete without it):
   `snapshot_cell_context`, `snapshot_player_pose`.
 
 **Cross-cut ground truth — read before auditing the relevant dimension**:
-- `byroredux/src/main.rs` — registry/state install at boot (~line 1014), the
-  per-frame ordering of `capture_player_pose` THEN `step_save_loads` (~line 2300),
-  and `step_save_loads` body (~line 1345).
+- `byroredux/src/boot.rs` — registry/state install at boot (~line 1137);
+  `byroredux/src/main.rs` — the per-frame ordering of `capture_player_pose` THEN
+  `step_save_loads` (~line 1401); `byroredux/src/app_step.rs` — `step_save_loads`
+  body (~line 291).
 - `byroredux/src/cell_loader/transition.rs` — `CurrentCellContext` (the saved
   cell identity), `reposition_camera` (FlyCam restore target).
 - `crates/core/src/ecs/world.rs` — `insert_batch` (the `entity < next_entity`
@@ -79,7 +80,7 @@ the crate; the crate audit is incomplete without it):
   load path uses `apply_deltas` overlay, NOT `restore_world` — two divergent
   restore code paths.
 
-**Doc-rot check**: `docs/feature-matrix.md:169` already carries an explicit
+**Doc-rot check**: `docs/feature-matrix.md:189` already carries an explicit
 `TD3-002` comment noting Save/load (M45/M45.1) shipped 2026-06-21 — the
 "unstarted" row is gone. Do not re-flag this as doc-rot; confirm it still reads
 correctly before reporting anything here.
@@ -254,11 +255,13 @@ closures, `schema_fingerprint`, `form_id_column`, `FnvHasher`.
 - **Ring never clobbers the last good save.** `SaveRing::advance` is round-robin
   over `0..size` (size floored to ≥1); `SaveCommand` with no arg calls
   `ring.advance()`. Verify a quicksave spreads across slots so the previous good
-  save survives (the explicit design goal vs. Bethesda's "F5 ate my save"). Note:
-  the cursor is IN-MEMORY only (`SaveRing` is not persisted) — on restart the ring
-  resets to slot 0 and the FIRST quicksave of a session overwrites slot 0
-  regardless of which slot is newest on disk. Flag the session-reset-clobber as
-  MEDIUM (data-loss class = irrecoverable-write of slot 0's prior contents).
+  save survives (the explicit design goal vs. Bethesda's "F5 ate my save").
+  Regression guard (SAVE-D3-02): the cursor itself is in-memory only (`SaveRing`
+  is not persisted), so `SaveState::new` builds it via `SaveRing::resume`, which
+  scans on-disk slot mtimes (`cursor_after_newest`) and starts one past the
+  newest — not via a bare `SaveRing::new`, which would restart at slot 0 every
+  launch and let the first quicksave of a new session clobber whichever slot is
+  newest on disk. Verify `SaveState::new` still calls `resume`, not `new`.
 - **Header gate ordering in `decode`.** Must be: length ≥ `HEADER_LEN` →
   `Truncated`; magic → `BadMagic`; major mismatch → `UnsupportedVersion`;
   schema_fpr mismatch → `SchemaMismatch`; then `payload_len` bounds
@@ -448,10 +451,13 @@ exact flow, verified against the tree 2026-07-15).
   the reloaded cell. A missing momentum-clear = player launches/falls on every
   load (MEDIUM, gameplay correctness).
 - **Pose capture/restore mode mismatch.** `PlayerPose.character_mode` records the
-  SAVE-time mode; restore branches on `pose.character_mode && character_now`.
-  Verify a mode change between save and load (saved in Character, loaded in FlyCam
-  or vice versa) is handled (falls through to the camera-reposition branch) and
-  never writes a body Transform when no body is live.
+  SAVE-time mode; restore branches on `character_now` alone (#2018, `SAVE-D6-03`)
+  — a live Character-mode session always relocates the body, converting the saved
+  *camera* position to a body position via eye-height when the pose was captured
+  in FlyCam mode. Verify a mode change saved-FlyCam/loaded-Character still
+  relocates the body correctly, that saved-Character/loaded-FlyCam falls through
+  to the camera-reposition branch, and that a body Transform is never written
+  when no body is live.
 - **Schema/cell-context guards.** `LoadCommand` refuses a save with no
   `CurrentCellContext` ("loose/exterior save — live load needs an interior cell").
   Verify exterior/loose saves are rejected at queue time, not silently half-applied

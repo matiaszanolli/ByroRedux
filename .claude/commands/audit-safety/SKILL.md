@@ -15,18 +15,21 @@ Vulkan spec violation = **HIGH** · `unsafe` without a safety comment = **MEDIUM
 
 ## Scale of the surface
 
-`unsafe` is concentrated, not scattered: ~600+ occurrences live in
+`unsafe` is concentrated, not scattered: ~760 occurrences live in
 `crates/renderer/src` (ash FFI + gpu-allocator), then a long tail —
-~11 in `crates/nif`, ~6 in `crates/core`, and one each in `byroredux`,
-`crates/plugin`, `crates/facegen`, `crates/cxx-bridge`, and `crates/pex`
-(the M47.2 decompiler — its single `unsafe` is a guarded `transmute` in
-`opcode.rs`, see Dimension 2). `crates/save` (M45) has no `unsafe`. Counts
-drift — recount with `grep -ro unsafe crates/<c>/src | wc -l` rather than
-trusting these figures. Renderer carries roughly one `SAFETY` comment per
-two `unsafe` tokens; the gap is where the unsafe-without-comment (MEDIUM)
-findings live. Budget your time accordingly — do not audit the nif/core/pex
-tail at the expense of the renderer FFI mass. The Dimension-4 sweep greps
-**all** of `crates/` so pex/save are covered automatically.
+~11 each in `crates/nif` and `crates/fsr3-sys` (the vendored FSR 3.1 FFI,
+Dimension 1), ~6 in `crates/core`, 2 in `byroredux`, and one each in
+`crates/plugin`, `crates/facegen`, `crates/cxx-bridge`, `crates/ui`, and
+`crates/pex` (the M47.2 decompiler — its single `unsafe` is a guarded
+`transmute` in `opcode.rs`, see Dimension 2). `crates/save` (M45) and
+`crates/hkx` (M47.2, a deliberately safe packfile reader) have no `unsafe`.
+Counts drift — recount with `grep -ro unsafe crates/<c>/src | wc -l` rather
+than trusting these figures. Renderer carries roughly nine `SAFETY` comments
+per ten `unsafe` tokens; the residual gap is where the unsafe-without-comment
+(MEDIUM) findings live. Budget your time accordingly — do not audit the
+nif/core/pex tail at the expense of the renderer FFI mass. The Dimension-4
+sweep greps **all** of `crates/` so pex / save / fsr3-sys / hkx are covered
+automatically.
 
 Dimensions below are ordered by safety blast radius: FFI lifetime, then
 memory-corruption/UB, then per-frame leaks, then unsafe-block discipline, then
@@ -141,7 +144,7 @@ Vulkan-spec compliance, then the narrower regression-guard surfaces.
   (`_audit-severity` Special Rules). A commented block whose invariant is FALSE is
   the higher-severity finding.
 - Heaviest in `crates/renderer/src/vulkan/` ash FFI — the SAFETY/unsafe count gap
-  (~310 vs ~612) is the haystack. Spot-check the ash dispatch wrappers, the
+  (~676 vs ~761) is the haystack. Spot-check the ash dispatch wrappers, the
   gpu-allocator `Arc<Mutex<…>>` interactions, and any `from_raw_parts` / `cast` on
   mapped memory.
 - Report unsafe blocks lacking comments as a batched MEDIUM finding (list the
@@ -174,9 +177,11 @@ Vulkan-spec compliance, then the narrower regression-guard surfaces.
   mip / FIF slot. A missed slot is an UNDEFINED-read validation error. CLEAR-before-
   COMPUTE invariant (caustic R32_UINT `imageAtomicAdd`, volumetric inject) — a
   missing clear is persistent cross-frame ghost accumulation. Verify the
-  volumetrics caller honors the dispatch gate: dispatch is dead while
-  `VOLUMETRIC_OUTPUT_CONSUMED == false` (`crates/renderer/src/vulkan/volumetrics.rs`);
-  callers MUST gate `vol.dispatch()` on that const.
+  volumetrics caller honors the dispatch gate: `VOLUMETRIC_OUTPUT_CONSUMED`
+  (`crates/renderer/src/vulkan/volumetrics.rs`) is now `true`, so the pass is live —
+  dispatch is dead only while it reads `false`. Callers MUST gate `vol.dispatch()` on
+  that const either way (`context/post_passes.rs`); read the const rather than
+  assuming a state.
 - SPIR-V reflection (`crates/renderer/src/vulkan/reflect.rs`): the Rust descriptor
   layout must match shader-declared bindings — this is the one binding-drift check
   that IS visible to `cargo test` (scene_descriptor_reflection_tests). Prefer it
@@ -200,7 +205,7 @@ Vulkan-spec compliance, then the narrower regression-guard surfaces.
   This includes the newest scalars: the BGSM translucency suite
   (`translucency_subsurface_r/g/b`, `…_transmissive_scale`, `…_turbulence`) and the
   Disney lobe (`ior`, `subsurface`, `sheen`, `sheen_tint`, `anisotropic`).
-- Pad fields explicitly zeroed (the byte-`Hash`/`Eq` dedup hashes the raw 300 B; an
+- Pad fields explicitly zeroed (the byte-`Hash`/`Eq` dedup hashes the raw 348 B; an
   uninit hole poisons dedup). New scalars must be zeroed in `GpuMaterial::default()`
   so default materials still dedup to slot 0.
 - **Intern cap (#797).** `MaterialTable::intern` caps at `MAX_MATERIALS = 16384`
@@ -253,9 +258,11 @@ Vulkan-spec compliance, then the narrower regression-guard surfaces.
   rule out `NiBSplineCompTransformInterpolator` by game era.
 - Starfield content is WALKABLE (Cydonia) — SF cells reach the spawn/animation path;
   don't short-circuit spawn-safety reasoning with "no SF content exercises this."
-- `MAX_TOTAL_BONES` overflow guard at the bone-palette emit site
-  (`byroredux/src/render/skinned.rs`, `Once`-gated warn) must fire — silent
-  truncation past cap was the M29 regression. Guard tests:
+- `MAX_TOTAL_BONES` overflow guard must fire — silent truncation past cap was the
+  M29 regression. The slot-exhaustion warn lives on `SkinSlotPool`
+  (`crates/core/src/ecs/resources/skin_slot_pool.rs`), one-shot via the
+  `overflow_warned` flag with `overflow_attempt_count` carrying total demand; excess
+  skinned entities fall back to bind pose rather than over-indexing. Guard tests:
   `byroredux/src/render/bone_palette_overflow_tests.rs`.
 
 ### 9. NIFAL Boundary — NaN/Inf on the GPU (UB facet only)
@@ -285,15 +292,25 @@ safety facet — NaN/inf scalars reaching the GPU, unbounded allocation.*
 
 ### 10. debug-ui (egui overlay) Teardown & Shared-Allocator Safety
 
-- `crates/debug-ui/src/lib.rs` `DebugUiState` holds an `ash::Device`, a
-  `vk::RenderPass`, and the renderer's shared `Arc<Mutex<gpu_allocator …>>`; it lives
-  as an ECS resource (`impl Resource for DebugUiState`) and is owned by the main loop.
-- It wraps `egui-ash-renderer`, which owns its own descriptor pool + per-texture
-  images. Those MUST be freed before the engine destroys the `ash::Device` — same
-  class as Dimension 3's allocator-before-device rule. Verify `DebugUiState` teardown
-  runs ahead of `VulkanContext`'s device-destroy.
+- `crates/debug-ui/src/lib.rs` `DebugUiState` is the CPU half only — egui context,
+  `egui_winit` state, last `FullOutput`, panel state. It holds no Vulkan handle. It
+  lives as an ECS resource (`impl Resource for DebugUiState`) and is owned by the
+  main loop.
+- The Vulkan half is `EguiPass` (`crates/renderer/src/vulkan/egui_pass.rs`, held as
+  `VulkanContext::egui_pass: Option<EguiPass>`). It takes an `ash::Device` + the
+  shared `Arc<Mutex<gpu_allocator::vulkan::Allocator>>` and wraps `egui-ash-renderer`,
+  which owns its own descriptor pool + per-texture images, plus `EguiPass`'s own
+  `vk::RenderPass` + per-swapchain-image framebuffers. Those MUST be freed before the
+  engine destroys the `ash::Device` — same class as Dimension 3's
+  allocator-before-device rule. Verify the `Option<EguiPass>` teardown runs ahead of
+  `VulkanContext`'s device-destroy.
+- Texture free is deferred one frame (`pending_free`), leaning on `draw_frame`'s fence
+  wait — verify the defer survives; freeing on the arriving frame is a use-after-free.
 - The allocator mutex is SHARED with the render thread — verify it is held for
-  minimum duration during egui texture upload; a long hold stalls rendering.
+  minimum duration during egui texture upload; a long hold stalls rendering. The
+  graphics queue is likewise passed as a `Mutex` (`EguiDispatchCtx::queue`) so the
+  lock scopes to the `set_textures` submit only (CONC-D1-01 / #1713) — a widened
+  hold regresses that.
 
 ## Procedure
 

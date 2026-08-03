@@ -118,11 +118,11 @@ for the severity scale (including the NIFAL canonical-translation rows).
 
 ### Dimension 5: FO3 Collision Import (Havok → CollisionShape)
 **Subagent**: `legacy-specialist`
-**Entry points**: `crates/nif/src/import/collision/mod.rs` (`extract_collision`, `examine_collision_kind`, `resolve_shape`, `CollisionAuthoring`)
+**Entry points**: `crates/nif/src/import/collision/mod.rs` (`extract_collision`, `examine_collision_kind`, `CollisionAuthoring`), `crates/nif/src/import/collision/shape.rs` (`resolve_shape`)
 **Checklist**:
 - FO3 Havok content is no longer merely skipped via `block_size` — `extract_collision` walks `bhk*CollisionObject` → `BhkRigidBody` → shape into `CollisionShape` + `RigidBodyData`. `examine_collision_kind` must classify FO3 chains as `CollisionAuthoring::Classic` (BSVER 34, legacy side), not `NewPhysicsStub` / `Phantom` / `Unrecognised` — a misclassified discriminator silently drops the rigid body.
 - **#1277 / `9c6096aa`**: `BhkMultiSphereShape` (→ sphere path) and `BhkConvexListShape` (→ `CollisionShape::Compound`, mirroring `BhkListShape`) now translate — they were dropped before. FO3 uses these in static/clutter collision; confirm FO3 meshes carrying them yield a non-`None` `extract_collision`, not a discarded shape.
-- **bhk motion_type via the canonical Havok enum (#1652, `dc33ec7d`)**: `collision.rs::havok_motion_type` maps the raw `hkMotionType` byte per the full nif.xml enum (1–5/8 → Dynamic, 6 KEYFRAMED → Keyframed, 7 FIXED → Static, 9 CHARACTER → CharacterKinematic, 0/other → Static). The pre-fix `4 => Keyframed` / `_ => Static` collapse mis-typed BOX_INERTIA (4) clutter (crates/ammo boxes/debris) as kinematic-frozen instead of falling — shared with FNV/Oblivion, so confirm FO3 dynamic clutter still simulates.
+- **bhk motion_type via the canonical Havok enum (#1652, `dc33ec7d`)**: `collision/mod.rs::havok_motion_type` maps the raw `hkMotionType` byte per the full nif.xml enum (1–5/8 → Dynamic, 6 KEYFRAMED → Keyframed, 7 FIXED → Static, 9 CHARACTER → CharacterKinematic, 0/other → Static). The pre-fix `4 => Keyframed` / `_ => Static` collapse mis-typed BOX_INERTIA (4) clutter (crates/ammo boxes/debris) as kinematic-frozen instead of falling — shared with FNV/Oblivion, so confirm FO3 dynamic clutter still simulates.
 - Cross-check the Dim 2 "skips via block_size" note — that is now only true for shape kinds WITHOUT a translator. See also `/audit-nifal` (collision is part of the canonical tier) and `/audit-nif` for raw block decode.
 **Output**: `/tmp/audit/fo3/dim_5.md`
 

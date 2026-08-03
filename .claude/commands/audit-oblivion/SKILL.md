@@ -42,8 +42,8 @@ as of 2026-06-13; Oblivion-Meshes went from 56 truncated → 6 (further reduced 
 | NIF format        | v20.0.0.5 retail + v10.x NetImmerse tail (both sizeless)            |
 | BSA format        | v103 — opens AND extracts cleanly across all vanilla archives (regression guard, #699) |
 | ESM parser        | **Live** — `crates/plugin/src/esm/` with `parse_esm_cells` walker + ~25 record types, several with Oblivion-specific decode branches. NOT a stub (the per-game *legacy/tes4.rs* stub was removed under #390). |
-| Parse rate        | See ROADMAP.md Oblivion compat-matrix row (drifts after each sweep; do NOT hardcode a number here). Post-v10.x-family + `#1543`/`#1544`: 6 residual NetImmerse truncations (checked-in `oblivion_truncations.tsv` baseline, `#1611`) + 1 corrupt-by-design hard-fail (`#698` closed). |
-| Cell loading      | Interior renders end-to-end (Anvil Heinrich Oaken Halls). Exterior blocked on TES4 worldspace + LAND wiring (same shape FO3 was — *not* BSA v103) |
+| Parse rate        | See ROADMAP.md Oblivion compat-matrix row (drifts after each sweep; do NOT hardcode a number here). Post-v10.x-family + `#1543`/`#1544`: 6 residual NetImmerse truncations (checked-in `oblivion_truncations.tsv` baseline, `#1611`) and **0 hard failures** — the corrupt-by-design `marker_radius.nif` now truncates instead of hard-Err'ing and is one of those 6 (`#698` closed). |
+| Cell loading      | Interior renders end-to-end (Anvil Heinrich Oaken Halls). Exterior parse + load ✓ — TES4 worldspace + LAND wiring is implemented and game-agnostic (#1556); only an on-device exterior render bench is pending (same shape FO3 was — *not* BSA v103) |
 | Reference data    | `/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data/`           |
 
 ### Known Quirks (do NOT re-derive — verify still hold)
@@ -126,14 +126,14 @@ Dimensions are ordered by Oblivion-specific risk: NIF version handling first
   NiKeyframeController, NiSequenceStreamHelper, NiBillboardNode + NiNode
   subclasses, NiLight hierarchy, NiUVController, NiCamera, NiTextureEffect, the
   legacy particle stack, the BSShader*Property aliases.
-- **Collision import** (`crates/nif/src/import/collision/mod.rs`): `BhkMultiSphereShape`
+- **Collision import** (`crates/nif/src/import/collision/mod.rs` + `crates/nif/src/import/collision/shape.rs`): `BhkMultiSphereShape`
   and `BhkConvexListShape` translate into `CollisionShape` (the former to
   `Ball`/`Compound`, the latter to `ConvexHull`/`Compound`) via
   `resolve_shape_inner` in the `extract_collision` chain — they must not fall
   out silently. Verify against the `BhkMultiSphereShape` / `BhkConvexListShape`
   downcast arms.
 - **bhk motion_type via the canonical Havok enum (#1652, `dc33ec7d`)**:
-  `collision.rs::havok_motion_type` maps the raw `hkMotionType` byte per the full
+  `collision/mod.rs::havok_motion_type` maps the raw `hkMotionType` byte per the full
   nif.xml enum (1–5/8 → Dynamic, 6 KEYFRAMED → Keyframed, 7 FIXED → Static, 9
   CHARACTER → CharacterKinematic, 0/other → Static); the pre-fix
   `4 => Keyframed` / `_ => Static` collapse froze BOX_INERTIA (4) clutter.
@@ -176,12 +176,12 @@ exist".
   WLST in `crates/plugin/src/esm/records/climate.rs`.
 - **16-byte ACBS guard (#1650, `3d5d0d68`)**: Oblivion `NPC_`/`CREA` ship a
   **16-byte** ACBS (flags u32 @0, level i16 @10) — distinct from the ≥24-byte
-  FNV/FO3/Skyrim layout, so `parse_npc` (`actor.rs`) needs a `GameKind::Oblivion`
+  FNV/FO3/Skyrim layout, so `parse_npc` (`actor/mod.rs`) needs a `GameKind::Oblivion`
   arm gated on `len >= 16` *before* the FNV arm. Pre-fix the ≥24 arm never fired
   on Oblivion: `record.level` defaulted to 1 (high-level NPCs resolved
   lowest-tier inventory) and `acbs_flags` defaulted to 0 (every actor read Male
   via `Gender::from_acbs_flags`). Tests: `oblivion_16byte_acbs_parses_level_and_gender`
-  + `fnv_ignores_16byte_acbs` in `actor.rs`/`tests.rs`. Per-game layout must stay
+  + `fnv_ignores_16byte_acbs` in `crates/plugin/src/esm/records/actor/tests.rs`. Per-game layout must stay
   gated at the parser→record boundary, never re-derived at spawn/equip time.
 - The two ignored Oblivion real-data parity tests
   (`clas_oblivion_knight_against_vanilla`, `race_oblivion_data_and_subs_against_vanilla`)
@@ -265,8 +265,9 @@ Oblivion-specific slice.
 - Run `recovery_trace` to enumerate the residual truncated files (6 NetImmerse
   v10.x markers — `marker_arrow`/`divine`/`map`/`radius`/`temple`/`travel` —
   per the checked-in `oblivion_truncations.tsv` baseline, `#1611`, post-`#1543`/
-  `#1544`). Confirm they're the expected NetImmerse tail and the single
-  corrupt-by-design hard-fail, not new drift.
+  `#1544`). Confirm they're the expected NetImmerse tail — including the
+  corrupt-by-design `marker_radius.nif`, which truncates rather than
+  hard-failing since `#698` — and not new drift.
 - Cross-check the block-type histogram for any new types appearing since the last
   sweep.
 - Pick 3 representative interior meshes (Anvil Heinrich Oaken Halls chandelier, a
@@ -278,10 +279,12 @@ Oblivion-specific slice.
 **Subagent**: `general-purpose`
 **Entry points**: `ROADMAP.md` (Known Issues + compat matrix), `docs/feature-matrix.md`, `byroredux/src/cell_loader/`, `docs/audits/`
 **Checklist**:
-- The real exterior blocker is **TES4 worldspace + LAND wiring** (same shape FO3
-  was pre-cell-loader) — *not* BSA v103 decompression, which has worked
+- The exterior wiring (TES4 worldspace + LAND) is **implemented and
+  game-agnostic** — parse + load ✓ since #1556; the remaining step is an
+  on-device exterior render bench, not wiring (same shape FO3 was
+  pre-bench). It is *not* BSA v103 decompression either, which has worked
   end-to-end since 2026-04-17 (#699). Do not regenerate the dead "v103 is
-  broken" framing.
+  broken" framing, and do not re-file the wiring as missing.
 - Does the `--bsa` CLI path open + list + extract Oblivion archives end-to-end?
 - Are there Oblivion-specific record types the cell loader
   (`byroredux/src/cell_loader/`) needs beyond the FNV-aligned set to place
@@ -307,9 +310,11 @@ Oblivion-specific slice.
      priority order. Cite ROADMAP/feature-matrix numbers, not this skill.
    - **Dimension Findings** — Grouped by severity per dimension.
    - **Blocker Chain** — Sequential list to reach "exterior cell renders".
-     Interiors already work end-to-end (Anvil Heinrich Oaken Halls). Real chain:
-     TES4 worldspace + LAND wiring → CELL exterior REFR placement → exterior
-     bench. Do NOT regenerate the stale BSA-v103 framing.
+     Interiors already work end-to-end (Anvil Heinrich Oaken Halls). TES4
+     worldspace + LAND wiring is already implemented and game-agnostic
+     (#1556), so the remaining chain is: on-device exterior render bench →
+     any placement/LOD gaps it surfaces. Do NOT regenerate the stale
+     BSA-v103 framing, nor the stale "wiring missing" framing.
    - **Regression Guard List** — Previously-fixed items this audit verified still
      hold: the v10.x stride-drift family (#1506/#1507/#1508/#1509),
      `NiTexturingProperty` u32 count, BSStreamHeader dual-band (#170),

@@ -28,7 +28,8 @@ A wrong lock order is a HIGH (per `_audit-severity`: "ECS deadlock potential").
 - **Same-thread reentrancy**: `lock_tracker` (`lock_tracker.rs`) panics with a
   clear message when a thread takes `write` on a type it already holds (read or
   write), or `read` while holding `write`. The thread-local check runs in BOTH
-  debug and release; the global lock-order graph (ABBA, #313) is debug-only.
+  debug and release; the global lock-order graph (ABBA, #313) is debug-only AND
+  opt-in via `BYRO_LOCK_ORDER_CHECK=1`.
   Verify every `query` / `query_mut` / `resource` / `resource_mut` site in
   `world.rs` arms a `TrackedRead` / `TrackedWrite` scope, defuses it only AFTER
   the real lock is acquired, and that the wrapper's `Drop` untracks.
@@ -43,8 +44,9 @@ A wrong lock order is a HIGH (per `_audit-severity`: "ECS deadlock potential").
   message. A silent self-deadlock is the regression.
 - **ABBA across rayon workers**: the global graph generalizes the pair guarantee
   to any N-lock hold pattern across the parallel scheduler. Two single-type
-  queries acquired in opposite orders on two workers must trip the graph, not
-  deadlock. Pin: this is the only protection for ad-hoc N>2 lock holds.
+  queries acquired in opposite orders on two workers must trip the graph (when
+  run under `BYRO_LOCK_ORDER_CHECK=1`), not deadlock. Pin: this is the only
+  protection for ad-hoc N>2 lock holds.
 - **Poison-on-panic resolution**: every lock acquisition resolves
   `PoisonError` through `storage_lock_poisoned::<T>()` /
   `storage_lock_poisoned_erased()` / `resource_lock_poisoned::<R>()`
@@ -141,16 +143,17 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   declaration is `Some(Access)` or `None` (undeclared). Three states: declared-
   empty ("touches no ECS state"), declared-with-claims, or undeclared (`None`).
   The default for both `System::access()` and the per-entry override is `None`.
-- **M27 Phase 1+2** (`a9810d40`): the 12 parallel-stage systems on the engine
-  binary declare reads/writes via `Scheduler::add_to_with_access` at the
-  registration site in `byroredux/src/main.rs` (closures can't impl
-  `System::access`). Any parallel system registered via plain `add_to` (no
-  declared access) is a regression.
-- **M27 Phase 3** (`05fe2bac`): 4 runtime-mutually-exclusive systems were
-  re-staged as **exclusive** to remove structurally-impossible conflicts — most
-  notably `player_controller_system` (Stage::Early) declares the *union* of
-  `fly_camera` + `character_controller` accesses because it branches on
-  `PlayerMode` per frame. `sys.accesses` reports **0 unknown / 0 conflicts**.
+- **M27 Phase 1+2** (`a9810d40`): every parallel-stage system on the engine
+  binary declares reads/writes via `Scheduler::add_to_with_access` at the
+  registration site in `byroredux/src/boot.rs` (`build_scheduler`; 10 such
+  calls today — closures can't impl `System::access`). Any parallel system
+  registered via plain `add_to` (no declared access) is a regression.
+- **M27 Phase 3** (`05fe2bac`): 4 analyzer-visible conflicts were resolved two
+  ways — one dispatcher merge plus two exclusive re-stages. `player_controller_system`
+  (Stage::Early) stays **parallel** and declares the *union* of `fly_camera` +
+  `character_controller` accesses because it branches on `PlayerMode` per frame;
+  `audio_system` (Late) and `spin_system` (Update) were the two moved to
+  **exclusive**. `sys.accesses` reports **0 unknown / 0 conflicts**.
 - **`AccessConflict` lives in `access.rs`** (re-exported via `ecs::mod`) and has
   EXACTLY three variants: `None`, `Unknown { left_undeclared, right_undeclared }`,
   `Conflict { pairs }`. There is **no** `Parallel` variant (the #1521 wording
@@ -176,16 +179,19 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
   `Early..=Late` exactly once. Reordering / merging / inserting a stage without
   updating this test is the regression pattern. (Correct chain:
   `Early → Update → PostUpdate → Physics → Late`.)
-- **Regression guard**: `byroredux/src/main.rs` runs
-  `debug_assert_eq!(scheduler.access_report().undeclared_parallel_count(), 0)`
+- **Regression guard**: `byroredux/src/boot.rs` (`install_runtime_registries`)
+  runs `debug_assert_eq!(scheduler.access_report().undeclared_parallel_count(), 0)`
   after building the schedule (#1394) — this is the boot guard, NOT a log line.
+  #1602 added two sibling asserts on the same snapshot: `known_conflict_count()`
+  and `unknown_pair_count()` must also be 0 (the old undeclared-only guard let a
+  declared WriteWrite conflict through — #1601).
   Operators inspect contention at runtime via the `sys.accesses` console command
   (reads the `SchedulerAccessReport` resource). A non-zero
   `undeclared_parallel_count` / `known_conflict_count` is an audit finding.
 
 ### 6. Unsafe Code Review
 
-- The only `unsafe` in the ECS core is the three cached-pointer derefs in
+- The only `unsafe` in the ECS core is the four cached-pointer derefs in
   `query.rs` (`QueryRead::storage`, `QueryWrite::storage`/`storage_mut`,
   `ComponentRef::Deref`) — all #1367. Each MUST have a SAFETY comment tying
   validity to the live guard. Verify no new unsafe block lacks one (MEDIUM min
@@ -236,8 +242,9 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
     call sites. `PatrolState` reuses `WanderPhase` directly (not a second enum).
     `travel_system::resolve_destination` (`pub(crate)`, generic over primitive
     fields) is the second instance of this pattern — `escort_system`'s lead
-    phase and `guard_system`'s `NearReference` resolution both call into
-    Travel's logic (Guard only for the FormID-resolve half; its no-target
+    phase calls straight into it. `guard_system::resolve_anchor` does NOT:
+    it reaches the same `NearReference` FormID resolution through the shared
+    `resolve_entity_by_global_form_id` primitive, because its no-target
     fallback is deliberately the actor's own position, NOT Travel's
     hash-picked point — reusing Travel's fallback here was tried and reverted
     because it trivially satisfies Guard's own leash check on the first tick).
@@ -354,8 +361,8 @@ upstream boundary.
 
 ## Process
 
-1. Read each file in `crates/core/src/ecs/` (paginate the >1500-line ones:
-   `resources.rs`, `world_tests.rs`, `scheduler.rs`).
+1. Read each file in `crates/core/src/ecs/` (paginate the >1000-line ones:
+   `world_tests.rs`, `scheduler.rs`, `resources/mod.rs`).
 2. Run `cargo test -p byroredux-core` and `cargo test -p byroredux` — verify the
    scheduler/storage/query suites are green (test counts live in ROADMAP, not
    here; do not pin a number).

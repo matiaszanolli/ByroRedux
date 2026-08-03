@@ -75,8 +75,14 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    Orientation only (will drift — re-run, never quote): the marker total runs ~20,
    `unimplemented!/todo!()` is currently **0** (the engine prefers explicit
    fallbacks over panics — a fresh `todo!()` is therefore notable), `#[ignore]`
-   runs in the low-hundreds (mostly Vulkan/smoke gating, not debt), and the
-   >2000-LOC set is ~7 files (Dim 1).
+   runs in the mid-hundreds (mostly Vulkan/smoke gating, not debt), and the
+   >2000-LOC set is currently 5 files (Dim 1) — `context/draw.rs`,
+   `context/mod.rs`, `volumetrics.rs`, `crates/nif/src/import/tests.rs`,
+   `vulkan/material.rs`. Note #2258/#2259 (2026-08-03, `record_post_passes` /
+   `build_tlas` decomposition) extracted helpers *within* `post_passes.rs` /
+   `tlas.rs`, which stayed well under 2000 LOC before and after — file-level
+   crossings and function-level splits are independent signals; don't assume
+   one moves the other.
 
 ## Phase 2: Dimension Agents
 

@@ -39,9 +39,11 @@ an entry point.)
 **Cross-cuts** (the wiring that actually invokes the crate):
 - `byroredux/src/cell_loader/references/mod.rs` — the production route. An
   `is_spt` extension check (`model_path … eq_ignore_ascii_case("spt")`)
-  dispatches to `parse_and_import_spt`, which looks up the matching TREE
-  record from `record_index.trees` and threads its metadata into
-  `SptImportParams`. `refr.rs` does **not** carry a `.spt` route.
+  dispatches to `parse_and_import_spt` (implemented in the sibling
+  `byroredux/src/cell_loader/references/import.rs`), which looks up the matching
+  TREE record from `record_index.trees` and threads its metadata into
+  `SptImportParams`. `byroredux/src/cell_loader/refr.rs` does **not** carry a
+  `.spt` route.
 - `byroredux/src/scene/nif_loader.rs` — the `--tree` / loose-file
   direct-visualiser route (`parse_import_and_merge`, `is_spt` branch).
   This is a **parallel** path: it calls `import_spt_scene` with
@@ -188,7 +190,8 @@ dictionary desyncs every subsequent read.
 
 ### Dimension 3: TREE → Billboard Wiring
 **Entry points**: `byroredux/src/cell_loader/references/mod.rs`
-(`is_spt` dispatch, `parse_and_import_spt`),
+(`is_spt` dispatch) + `byroredux/src/cell_loader/references/import.rs`
+(`parse_and_import_spt`),
 `byroredux/src/cell_loader/spawn.rs` (`placement_root_billboard` →
 `Billboard::new`), `crates/plugin/src/esm/records/tree.rs` (`parse_tree`,
 `TreeRecord`, `has_speedtree_binary`).
@@ -255,7 +258,7 @@ desync trigger, so spot-check rather than skip.
 `crates/spt/docs/format-notes.md`, recon examples (`spt_tagmap`,
 `spt_transitions`).
 **Checklist**:
-- `dispatch_tag` currently maps ~90 tag values across the payload kinds.
+- `dispatch_tag` currently maps ~120 tag values across the payload kinds.
   This is conservative-by-design: any tag not in the table → `Unknown` →
   walker stops cleanly. The old "~14 tags / 40-tag aspirational target"
   framing is stale — do **not** report dictionary size as a gap.
