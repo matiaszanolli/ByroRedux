@@ -864,3 +864,5 @@ mod sort_key_tests;
 mod static_mesh_fx_skip_tests;
 #[cfg(test)]
 mod variant_pack_gating_tests;
+#[cfg(test)]
+mod water_wave_params_tests;

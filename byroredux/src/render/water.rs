@@ -100,11 +100,11 @@ pub(super) fn reemit_water_planes(
                 mat.uv_scale_a,
                 mat.uv_scale_b,
                 mat.shoreline_width,
-                0.0, // reserved (reflectivity moved to tint_reflect.w in #1069)
+                mat.wave_amplitude, // #2240 — WATR-authored, consumed by water.frag
             ],
             misc: [
                 mat.fresnel_f0,
-                0.0,
+                mat.wave_frequency, // #2240 — WATR-authored, consumed by water.frag
                 WaterPush::pack_normal_index(mat.normal_map_index),
                 0.0,
             ],

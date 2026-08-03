@@ -78,10 +78,12 @@ pub struct WaterPush {
     /// xy = scroll_a, zw = scroll_b (wu/s).
     pub scroll: [f32; 4],
     /// x = uv_scale_a, y = uv_scale_b, z = shoreline_width,
-    /// w = reserved (was reflectivity pre-#1069; moved to `tint_reflect.w`).
+    /// w = wave_amplitude (WATR `DATA` wave_amplitude, `#2240` — was
+    /// reserved; reflectivity moved to `tint_reflect.w` in #1069).
     pub tune: [f32; 4],
-    /// x = fresnel_f0, y = reserved, z = normal_map_index bit-cast
-    /// to f32 (shader does `floatBitsToUint`), w = reserved.
+    /// x = fresnel_f0, y = wave_frequency (WATR `DATA` wave_frequency,
+    /// Hz, `#2240` — was reserved), z = normal_map_index bit-cast to
+    /// f32 (shader does `floatBitsToUint`), w = reserved.
     pub misc: [f32; 4],
     /// xyz = reflection_tint (WATR `reflection_color`; tints the
     /// geometry-hit colour in `traceWaterRay`). w = reflectivity

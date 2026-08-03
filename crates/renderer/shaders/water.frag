@@ -68,9 +68,11 @@ layout(push_constant) uniform WaterPush {
     vec4 deep;
     // xy = scroll_a (world units/s), zw = scroll_b
     vec4 scroll;
-    // x = uv_scale_a, y = uv_scale_b, z = shoreline_width, w = reserved
+    // x = uv_scale_a, y = uv_scale_b, z = shoreline_width,
+    // w = wave_amplitude (WATR DATA wave_amplitude — #2240)
     vec4 tune;
-    // x = fresnel_f0, y = (unused/reserved), z = normal_map_index (uintBitsToFloat — sample with floatBitsToUint), w = (reserved)
+    // x = fresnel_f0, y = wave_frequency (WATR DATA wave_frequency, Hz — #2240),
+    // z = normal_map_index (uintBitsToFloat — sample with floatBitsToUint), w = (reserved)
     vec4 misc;
     // rgb = reflection_tint (WATR DATA reflection_color — tints geometry-hit
     // colour in traceWaterRay; #1069 / F-WAT-09). a = reflectivity (0..1,
@@ -165,7 +167,14 @@ float valueNoise(vec2 p) {
 // procedural noise gradient so the water still has wave motion — this
 // path runs for default-water cells that never had an XCWT.
 
-vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, vec2 scroll, float scale, float time) {
+// `ampScale`/`freqScale` are the WATR-authored `wave_amplitude`/
+// `wave_frequency` (#2240), normalised against the engine sentinel
+// defaults (`WaterMaterial::default()`: 0.05 / 0.6 Hz — see
+// `crates/core/src/ecs/components/water.rs`) so a plane with no
+// authored WATR (or one that round-trips the sentinel) reproduces
+// the pre-#2240 hardcoded chop exactly; other authored values scale
+// the perturbation strength / chop density proportionally.
+vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, vec2 scroll, float scale, float time, float ampScale, float freqScale) {
     if (normalMapIndex == 0xFFFFFFFFu) {
         // Procedural fallback — animated 2-octave value noise gradient.
         // Cheap, doesn't pretend to be real waves but reads as moving
@@ -199,19 +208,22 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
         // `(±0.12, ±0.12, 1)` worst case → world tilt < 10°, well
         // under the 23° threshold where crest foam starts firing.
         vec2 uv = (uvBase - originOffset) * scale + scroll * time;
-        float h0 = valueNoise(uv * 4.0);
-        float h1 = valueNoise(uv * 9.0 + 17.0);
+        float h0 = valueNoise(uv * 4.0 * freqScale);
+        float h1 = valueNoise(uv * 9.0 * freqScale + 17.0);
         float h  = h0 * 0.65 + h1 * 0.35;
         const float eps = 1.0;
-        float hx = valueNoise(uv * 4.0 + vec2(eps, 0.0)) * 0.65
-                 + valueNoise(uv * 9.0 + vec2(eps, 0.0) + 17.0) * 0.35;
-        float hy = valueNoise(uv * 4.0 + vec2(0.0, eps)) * 0.65
-                 + valueNoise(uv * 9.0 + vec2(0.0, eps) + 17.0) * 0.35;
-        return normalize(vec3((h - hx) * 0.12, (h - hy) * 0.12, 1.0));
+        float hx = valueNoise(uv * 4.0 * freqScale + vec2(eps, 0.0)) * 0.65
+                 + valueNoise(uv * 9.0 * freqScale + vec2(eps, 0.0) + 17.0) * 0.35;
+        float hy = valueNoise(uv * 4.0 * freqScale + vec2(0.0, eps)) * 0.65
+                 + valueNoise(uv * 9.0 * freqScale + vec2(0.0, eps) + 17.0) * 0.35;
+        return normalize(vec3((h - hx) * 0.12 * ampScale, (h - hy) * 0.12 * ampScale, 1.0));
     }
-    vec2 uv = uvBase * scale + scroll * time;
+    vec2 uv = uvBase * scale * freqScale + scroll * time;
     vec3 n = texture(textures[nonuniformEXT(normalMapIndex)], uv).xyz;
-    return normalize(n * 2.0 - 1.0);
+    n = normalize(n * 2.0 - 1.0);
+    // Scale the tangent-space tilt by the authored amplitude, keep the
+    // sign of the up component, renormalise (mirrors the procedural path).
+    return normalize(vec3(n.xy * ampScale, n.z));
 }
 
 // ── RT reflection / refraction ────────────────────────────────────────
@@ -396,6 +408,11 @@ void main() {
     float foamStrength = push.timing.z;
     float ior  = push.timing.w;
     uint  normalMapIndex = floatBitsToUint(push.misc.z);
+    // #2240 — WATR-authored wave_amplitude/wave_frequency, normalised
+    // against the WaterMaterial sentinel default (see
+    // `sampleScrollingNormal`'s doc comment above).
+    float ampScale  = push.tune.w / 0.05;
+    float freqScale = push.misc.y / 0.6;
 
     vec3 Nsurface = normalize(vWorldNormal);
     vec3 T = normalize(vWorldTangent);
@@ -436,8 +453,8 @@ void main() {
     // case). For River/Rapids/Waterfall, layer A's scroll vector is
     // baked from `flow` on the CPU side, so we don't have to branch
     // here. Push constants carry the final scroll vectors.
-    vec3 nA = sampleScrollingNormal(normalMapIndex, uvWorld, uvOrigin, push.scroll.xy, push.tune.x, time);
-    vec3 nB = sampleScrollingNormal(normalMapIndex, uvWorld, uvOrigin, push.scroll.zw, push.tune.y, time);
+    vec3 nA = sampleScrollingNormal(normalMapIndex, uvWorld, uvOrigin, push.scroll.xy, push.tune.x, time, ampScale, freqScale);
+    vec3 nB = sampleScrollingNormal(normalMapIndex, uvWorld, uvOrigin, push.scroll.zw, push.tune.y, time, ampScale, freqScale);
 
     // Rapids adds a third high-frequency layer scrolled by the flow
     // — gives that chaotic whitewater chop pattern.
@@ -449,7 +466,9 @@ void main() {
             uvOrigin,
             push.flow.xy * push.flow.w * 2.0,
             push.tune.x * 2.5,
-            time
+            time,
+            ampScale,
+            freqScale
         );
         nMix = normalize(nA + nB + nC * 0.7);
     } else {
