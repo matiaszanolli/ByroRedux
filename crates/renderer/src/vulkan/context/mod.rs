@@ -3248,10 +3248,103 @@ impl VulkanContext {
     /// binary's main loop right before invoking `draw_frame`. No-op
     /// when [`Self::egui_pass`] hasn't been initialised — the
     /// overlay is opt-in.
+    ///
+    /// #2247 (REN-D20-01) — if a previous frame's output is still
+    /// pending (an earlier `draw_frame` returned early, or otherwise
+    /// skipped the egui block, before consuming it), merge into it via
+    /// `FullOutput::append` instead of overwriting. `append` accumulates
+    /// `textures_delta` (so a skipped frame's texture uploads/frees still
+    /// reach the GPU) while keeping only the newest `shapes`/
+    /// `pixels_per_point` — the same semantics egui's own multi-frame
+    /// integrations use.
     pub fn submit_egui_frame(&mut self, ctx: egui::Context, output: egui::FullOutput) {
         if self.egui_pass.is_some() {
-            self.egui_pending_output = Some((ctx, output));
+            self.egui_pending_output = Some(merge_egui_pending_output(
+                self.egui_pending_output.take(),
+                ctx,
+                output,
+            ));
         }
+    }
+}
+
+/// Pure merge logic behind [`VulkanContext::submit_egui_frame`], split out
+/// so it's unit-testable without a live Vulkan device. See that method's
+/// doc comment / #2247 for the rationale.
+fn merge_egui_pending_output(
+    pending: Option<(egui::Context, egui::FullOutput)>,
+    ctx: egui::Context,
+    output: egui::FullOutput,
+) -> (egui::Context, egui::FullOutput) {
+    match pending {
+        Some((_, mut older)) => {
+            older.append(output);
+            (ctx, older)
+        }
+        None => (ctx, output),
+    }
+}
+
+#[cfg(test)]
+mod egui_pending_output_tests {
+    use super::*;
+    use egui::epaint::ImageDelta;
+    use egui::{Color32, ColorImage, TextureId, TextureOptions};
+
+    fn full_output_with_delta(set_id: u64, free_id: u64) -> egui::FullOutput {
+        let mut output = egui::FullOutput::default();
+        output.textures_delta.set.push((
+            TextureId::Managed(set_id),
+            ImageDelta::full(
+                ColorImage::new([1, 1], vec![Color32::WHITE]),
+                TextureOptions::default(),
+            ),
+        ));
+        output.textures_delta.free.push(TextureId::Managed(free_id));
+        output
+    }
+
+    /// Regression for #2247 (REN-D20-01): a skipped frame's pending
+    /// `textures_delta` must survive into whichever `submit_egui_frame`
+    /// call actually gets consumed next, instead of being silently
+    /// dropped by a plain overwrite.
+    #[test]
+    fn pending_output_accumulates_textures_delta_instead_of_overwriting() {
+        let frame_a = full_output_with_delta(1, 10);
+        let frame_b = full_output_with_delta(2, 20);
+
+        let (_, merged) = merge_egui_pending_output(
+            Some((egui::Context::default(), frame_a)),
+            egui::Context::default(),
+            frame_b,
+        );
+
+        assert_eq!(
+            merged
+                .textures_delta
+                .set
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            vec![TextureId::Managed(1), TextureId::Managed(2)],
+            "both frames' texture uploads must survive the merge, oldest first"
+        );
+        assert_eq!(
+            merged.textures_delta.free,
+            vec![TextureId::Managed(10), TextureId::Managed(20)],
+            "both frames' texture frees must survive the merge"
+        );
+    }
+
+    /// No pending output (the common case — every frame is consumed
+    /// before the next is submitted) must pass the new output through
+    /// unchanged, not silently wrap or duplicate it.
+    #[test]
+    fn no_pending_output_passes_through_unchanged() {
+        let frame = full_output_with_delta(1, 10);
+        let (_, merged) = merge_egui_pending_output(None, egui::Context::default(), frame);
+        assert_eq!(merged.textures_delta.set.len(), 1);
+        assert_eq!(merged.textures_delta.free, vec![TextureId::Managed(10)]);
     }
 }
 
