@@ -417,50 +417,65 @@ fn grade_factor(mult: &[ImadScalarKey], add: &[ImadScalarKey], time: f32, streng
     (1.0 + (authored - 1.0) * strength).max(0.0)
 }
 
-fn sample_scalar(keys: &[ImadScalarKey], time: f32, default: f32) -> f32 {
+/// Shared keyed-linear-interpolation control flow behind `sample_scalar` /
+/// `sample_color` (#2260 / TD2-101): before the first key holds the first
+/// key's value; scans `keys.windows(2)` for the bracketing pair and
+/// clamp-lerps between them by fractional distance (degenerate
+/// zero-width pairs snap to the right key); after the last key holds the
+/// last key's value. `time_of`/`value_of` extract the two fields a key
+/// type carries; `lerp` interpolates the value type — the only thing that
+/// actually differs between a scalar and an RGBA channel.
+fn sample_keyed<T, V: Copy>(
+    keys: &[T],
+    time: f32,
+    default: V,
+    time_of: impl Fn(&T) -> f32,
+    value_of: impl Fn(&T) -> V,
+    lerp: impl Fn(V, V, f32) -> V,
+) -> V {
     let Some(first) = keys.first() else {
         return default;
     };
-    if time <= first.time {
-        return first.value;
+    if time <= time_of(first) {
+        return value_of(first);
     }
     for pair in keys.windows(2) {
         let [left, right] = pair else { unreachable!() };
-        if time <= right.time {
-            let width = right.time - left.time;
+        let right_time = time_of(right);
+        if time <= right_time {
+            let left_time = time_of(left);
+            let width = right_time - left_time;
             let alpha = if width.abs() <= f32::EPSILON {
                 1.0
             } else {
-                ((time - left.time) / width).clamp(0.0, 1.0)
+                ((time - left_time) / width).clamp(0.0, 1.0)
             };
-            return left.value + (right.value - left.value) * alpha;
+            return lerp(value_of(left), value_of(right), alpha);
         }
     }
-    keys.last().map_or(default, |key| key.value)
+    keys.last().map_or(default, |key| value_of(key))
+}
+
+fn sample_scalar(keys: &[ImadScalarKey], time: f32, default: f32) -> f32 {
+    sample_keyed(
+        keys,
+        time,
+        default,
+        |k| k.time,
+        |k| k.value,
+        |left, right, alpha| left + (right - left) * alpha,
+    )
 }
 
 fn sample_color(keys: &[ImadColorKey], time: f32, default: [f32; 4]) -> [f32; 4] {
-    let Some(first) = keys.first() else {
-        return default;
-    };
-    if time <= first.time {
-        return first.color;
-    }
-    for pair in keys.windows(2) {
-        let [left, right] = pair else { unreachable!() };
-        if time <= right.time {
-            let width = right.time - left.time;
-            let alpha = if width.abs() <= f32::EPSILON {
-                1.0
-            } else {
-                ((time - left.time) / width).clamp(0.0, 1.0)
-            };
-            return std::array::from_fn(|i| {
-                left.color[i] + (right.color[i] - left.color[i]) * alpha
-            });
-        }
-    }
-    keys.last().map_or(default, |key| key.color)
+    sample_keyed(
+        keys,
+        time,
+        default,
+        |k| k.time,
+        |k| k.color,
+        |left, right, alpha| std::array::from_fn(|i| left[i] + (right[i] - left[i]) * alpha),
+    )
 }
 
 fn composite_color(target: &mut [f32; 4], source: [f32; 4], strength: f32) {
@@ -659,6 +674,112 @@ mod tests {
                 .resource::<CinematicPresentationState>()
                 .image_space_modifier_frame,
             ImageSpaceModifierFrame::default()
+        );
+    }
+
+    /// Regression for #2260 (TD2-101): pin `sample_scalar`'s keyed-lerp
+    /// contract directly now that it's a thin wrapper over the shared
+    /// `sample_keyed` helper — before-first-key, exact hit, interpolated
+    /// midpoint, after-last-key, degenerate zero-width pair, and the
+    /// empty-keys default all in one place so a future edit to the shared
+    /// helper can't silently change one value type's behavior without
+    /// this catching it.
+    #[test]
+    fn sample_scalar_covers_the_full_keyed_lerp_contract() {
+        assert_eq!(sample_scalar(&[], 5.0, 9.0), 9.0, "empty keys use default");
+
+        let keys = [
+            ImadScalarKey {
+                time: 1.0,
+                value: 10.0,
+            },
+            ImadScalarKey {
+                time: 3.0,
+                value: 30.0,
+            },
+            ImadScalarKey {
+                time: 5.0,
+                value: 50.0,
+            },
+        ];
+        assert_eq!(
+            sample_scalar(&keys, 0.0, 0.0),
+            10.0,
+            "before the first key holds the first key's value"
+        );
+        assert_eq!(sample_scalar(&keys, 1.0, 0.0), 10.0, "exact first-key hit");
+        assert_eq!(
+            sample_scalar(&keys, 2.0, 0.0),
+            20.0,
+            "interpolated midpoint between key 0 and key 1"
+        );
+        assert_eq!(
+            sample_scalar(&keys, 6.0, 0.0),
+            50.0,
+            "after the last key holds the last key's value"
+        );
+
+        // A repeated timestamp (zero-width pair) at the query time is
+        // caught by the earlier "before/at first key" and "at this pair's
+        // right edge" checks before the `width.abs() <= EPSILON` guard
+        // itself can be reached — querying exactly at the shared time
+        // must still resolve to a single, well-defined value rather than
+        // panicking or dividing by zero.
+        let repeated_time = [
+            ImadScalarKey {
+                time: 2.0,
+                value: 20.0,
+            },
+            ImadScalarKey {
+                time: 2.0,
+                value: 25.0,
+            },
+            ImadScalarKey {
+                time: 5.0,
+                value: 50.0,
+            },
+        ];
+        assert_eq!(
+            sample_scalar(&repeated_time, 2.0, 0.0),
+            20.0,
+            "querying exactly at a repeated timestamp resolves to the first matching key"
+        );
+    }
+
+    /// Same contract, per-channel, for the color sampler — the only
+    /// difference between it and `sample_scalar` should be the value type.
+    #[test]
+    fn sample_color_covers_the_full_keyed_lerp_contract() {
+        assert_eq!(
+            sample_color(&[], 5.0, [9.0; 4]),
+            [9.0; 4],
+            "empty keys use default"
+        );
+
+        let keys = [
+            ImadColorKey {
+                time: 1.0,
+                color: [0.0, 0.0, 0.0, 0.0],
+            },
+            ImadColorKey {
+                time: 2.0,
+                color: [1.0, 1.0, 1.0, 1.0],
+            },
+        ];
+        assert_eq!(
+            sample_color(&keys, 0.0, [0.0; 4]),
+            [0.0, 0.0, 0.0, 0.0],
+            "before the first key holds the first key's value"
+        );
+        assert_eq!(
+            sample_color(&keys, 1.5, [0.0; 4]),
+            [0.5, 0.5, 0.5, 0.5],
+            "interpolated midpoint, per channel"
+        );
+        assert_eq!(
+            sample_color(&keys, 5.0, [0.0; 4]),
+            [1.0, 1.0, 1.0, 1.0],
+            "after the last key holds the last key's value"
         );
     }
 }
