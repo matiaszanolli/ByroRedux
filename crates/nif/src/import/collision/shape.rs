@@ -431,10 +431,50 @@ fn resolve_packed_mesh(
     let indices: Vec<[u32; 3]> = data
         .triangles
         .iter()
-        .map(|t| [t.v0 as u32, t.v1 as u32, t.v2 as u32])
+        .map(|t| packed_triangle_winding(data, t))
         .collect();
 
     finish_trimesh(vertices, indices)
+}
+
+/// #2193 (`OBL-2026-07-25-01`) — Oblivion `TriangleData` (`nif.xml`,
+/// `until="20.0.0.5"`) carries an authored `Normal` alongside the
+/// `[v0, v1, v2]` winding, independent of index order. Every downstream
+/// consumer (Parry3D's `TriMesh`, and this crate's own winding-pin tests)
+/// derives the collision normal purely from winding —
+/// `cross(v1-v0, v2-v0)` — and this resolver never checked that against
+/// the authored one. A prior investigation (`a4c11bfb`) ruled out the
+/// de-stripper and the Z-up→Y-up coordinate swap as the source of the
+/// inverted resting-contact normal reported at
+/// `ICMarketDistrictTheGildedCarafe` (dot-up ≈ -0.99); trusting raw
+/// winding when it disagrees with Bethesda's own authored normal is the
+/// remaining, previously-unchecked candidate. Correct the triangle's
+/// winding (swap v1/v2) whenever the two disagree, so the imported
+/// triangle's derived normal matches the authored one instead of whatever
+/// the raw index order happens to produce. FO3+ has no equivalent field
+/// (nif.xml folds a differently-encoded normal into `Welding Info`
+/// instead) and is left untouched — `t.normal` is `None` there.
+fn packed_triangle_winding(data: &HkPackedNiTriStripsData, t: &PackedTriangle) -> [u32; 3] {
+    let natural = [t.v0 as u32, t.v1 as u32, t.v2 as u32];
+    let Some(normal) = t.normal else {
+        return natural;
+    };
+    let Some(&a) = data.vertices.get(t.v0 as usize) else {
+        return natural;
+    };
+    let Some(&b) = data.vertices.get(t.v1 as usize) else {
+        return natural;
+    };
+    let Some(&c) = data.vertices.get(t.v2 as usize) else {
+        return natural;
+    };
+    let geometric =
+        (Vec3::from_array(b) - Vec3::from_array(a)).cross(Vec3::from_array(c) - Vec3::from_array(a));
+    if geometric.dot(Vec3::from_array(normal)) < 0.0 {
+        [t.v0 as u32, t.v2 as u32, t.v1 as u32]
+    } else {
+        natural
+    }
 }
 
 /// Convert bhkCompressedMeshShapeData into a TriMesh.
@@ -1460,6 +1500,94 @@ mod cycle_tests {
                 );
             }
             other => panic!("expected TriMesh (identity fallback), got {other:?}"),
+        }
+    }
+
+    /// #2193 (`OBL-2026-07-25-01`) — a packed triangle whose raw `[v0,v1,v2]`
+    /// winding disagrees with its authored Oblivion `Normal` must have its
+    /// winding corrected so the imported collision triangle's derived
+    /// normal (Parry's contact-normal convention, same as `tri_normal`)
+    /// matches Bethesda's authored intent.
+    ///
+    /// Raw Havok-space vertices v0=(0,0,0), v1=(1,0,0), v2=(0,1,0): the
+    /// natural order (0,1,2) has geometric normal +Z. This triangle is
+    /// stored as (0,2,1) instead — the "wrong winding in the file" case —
+    /// with an authored Normal of +Z (a real up-facing floor). Pre-fix the
+    /// resolver trusted the stored order and emitted a triangle whose
+    /// derived normal disagreed with the authored one; post-fix it must
+    /// swap to (0,1,2) and read up (+Y) in engine space, exactly the
+    /// `is_grounded` observable this issue tracks.
+    #[test]
+    fn packed_mesh_corrects_winding_against_authored_normal_disagreement() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkPackedNiTriStripsShape {
+            sub_shapes: Vec::new(),
+            data_ref: BlockRef(1u32),
+            scale: [1.0, 1.0, 1.0, 0.0],
+        }));
+        scene.blocks.push(Box::new(HkPackedNiTriStripsData {
+            triangles: vec![PackedTriangle {
+                v0: 0,
+                v1: 2,
+                v2: 1,
+                welding_info: 0,
+                normal: Some([0.0, 0.0, 1.0]),
+            }],
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        }));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::TriMesh { vertices, indices }) => {
+                assert_eq!(
+                    indices,
+                    vec![[0, 1, 2]],
+                    "winding must be corrected to match the authored normal"
+                );
+                let n = tri_normal(&vertices, indices[0]);
+                assert!(
+                    n.y > 0.99,
+                    "corrected triangle must read up (+Y) in engine space, got {n:?}"
+                );
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
+        }
+    }
+
+    /// #2193 — the counterpart to the disagreement test above: a packed
+    /// triangle whose raw winding already agrees with its authored Normal
+    /// must be left untouched. This is the "can't quietly become a blanket
+    /// winding flip" guard — the fix must only act where a disagreement is
+    /// actually present.
+    #[test]
+    fn packed_mesh_leaves_agreeing_winding_untouched() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(Box::new(BhkPackedNiTriStripsShape {
+            sub_shapes: Vec::new(),
+            data_ref: BlockRef(1u32),
+            scale: [1.0, 1.0, 1.0, 0.0],
+        }));
+        scene.blocks.push(Box::new(HkPackedNiTriStripsData {
+            triangles: vec![PackedTriangle {
+                v0: 0,
+                v1: 1,
+                v2: 2,
+                welding_info: 0,
+                normal: Some([0.0, 0.0, 1.0]),
+            }],
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        }));
+        let mut visited = HashSet::new();
+        match resolve_shape(&scene, BlockRef(0u32), &mut visited) {
+            Some(CollisionShape::TriMesh { indices, .. }) => {
+                assert_eq!(
+                    indices,
+                    vec![[0, 1, 2]],
+                    "already-agreeing winding must not be touched"
+                );
+            }
+            other => panic!("expected TriMesh, got {other:?}"),
         }
     }
 
