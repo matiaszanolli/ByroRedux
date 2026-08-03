@@ -14,6 +14,29 @@ use super::{SkyParams, VulkanContext};
 use anyhow::Result;
 use ash::vk;
 
+/// Inputs for [`VulkanContext::record_volumetrics_pass`] (#2258 / TD1-080).
+/// A named-field struct rather than positional arguments — this pass has
+/// the largest parameter surface of the extracted post-passes, and several
+/// fields share a type (`f32`, `[f32; 3]`) that a positional call could
+/// silently transpose.
+struct VolumetricsPassInputs<'a> {
+    camera_pos: [f32; 3],
+    render_origin: byroredux_core::math::Vec3,
+    prev_view_proj: &'a [f32; 16],
+    inv_vp_arr: [[f32; 4]; 4],
+    previous_camera_pos: [f32; 3],
+    frame_counter: u32,
+    volumetric_time_seconds: f32,
+    sky_params: &'a SkyParams,
+    fog_color: [f32; 3],
+    fog_far: f32,
+    fog_extinction_per_meter: f32,
+    fog_single_scatter_albedo: f32,
+    fog_coverage: f32,
+    fog_height_reference: f32,
+    fog_volumes: &'a [super::super::volumetrics::GpuFogVolume],
+}
+
 impl VulkanContext {
     /// Copy the live depth buffer into the sampleable depth-history image
     /// for next frame's soft-particle fade. Called once per frame right
@@ -129,10 +152,18 @@ impl VulkanContext {
     /// Record the post-geometry passes: water-caustic barrier, SVGF
     /// denoise, caustic splat, volumetrics, TAA, SSAO, bloom, scene
     /// composition, reconstruction, and presentation, in that fixed order.
-    /// `draw_frame` (#1748 / TD1-001) to shrink that function; recording
-    /// order and the per-pass permanent-failure latches are preserved
-    /// exactly. Call after the main render pass ends and before
-    /// `end_command_buffer`.
+    /// Extracted from `draw_frame` (#1748 / TD1-001) to shrink that
+    /// function; recording order and the per-pass permanent-failure
+    /// latches are preserved exactly. Call after the main render pass
+    /// ends and before `end_command_buffer`.
+    ///
+    /// #2258 (TD1-080) split the single 556-LOC body into one
+    /// `record_<pass>_pass` helper per self-contained pass, called here in
+    /// the same fixed sequence — a call-order-preserving decomposition
+    /// only, no barrier or pass reordering. Each helper carries its own
+    /// `unsafe` scope and `# Safety` doc comment instead of one covering
+    /// the whole function, since that's the granularity the underlying
+    /// `*.dispatch()` / `*.record()` calls are actually unsafe at.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_post_passes(
         &mut self,
@@ -160,35 +191,71 @@ impl VulkanContext {
         underwater: [f32; 4],
         image_space_modifier: ImageSpaceModifierView,
     ) -> Result<()> {
-        // SAFETY: `cmd` is in the recording state — opened by
-        // `begin_command_buffer` in `draw_frame` and not yet closed — and
-        // this chain runs once per frame between the main render pass end
-        // and `end_command_buffer`. Each `*.dispatch` / `cmd_*` records
-        // into `cmd` in the documented order; the per-pass failure latches
-        // (`svgf_failed` / `taa_failed` / `caustic_failed`) keep a failed
-        // pass from re-recording. This is the same single `unsafe` scope
-        // `draw_frame` wrapped this chain in before it was extracted (#1748).
+        self.record_svgf_pass(cmd, frame);
+        self.record_caustic_splat_pass(cmd, frame, camera_static);
+        self.record_volumetrics_pass(
+            cmd,
+            frame,
+            VolumetricsPassInputs {
+                camera_pos,
+                render_origin,
+                prev_view_proj,
+                inv_vp_arr,
+                previous_camera_pos,
+                frame_counter,
+                volumetric_time_seconds,
+                sky_params,
+                fog_color,
+                fog_far,
+                fog_extinction_per_meter,
+                fog_single_scatter_albedo,
+                fog_coverage,
+                fog_height_reference,
+                fog_volumes,
+            },
+        );
+        self.record_taa_pass(cmd, frame);
+        self.record_ssao_pass(cmd, frame, vp, inv_vp_arr, camera_pos, render_origin);
+        self.record_bloom_pass(cmd, frame);
+        self.record_composite_pass(cmd, frame);
+        self.record_upscale_pass(cmd, frame, fsr_frame);
+        self.record_presentation_pass(cmd, frame, img, underwater, image_space_modifier);
+        Ok(())
+    }
+
+    /// Water-caustic barrier + SVGF temporal accumulation (#2258 /
+    /// TD1-080, extracted from `record_post_passes`). The water barrier
+    /// is a two-line prerequisite for the SVGF dispatch immediately
+    /// following it, not a self-contained pass of its own, so it's
+    /// bundled here rather than split out separately.
+    ///
+    /// SVGF reprojects previous frame's accumulated indirect, blends with
+    /// raw 1-SPP indirect at α=0.2. Reads G-buffer raw_indirect/motion/
+    /// mesh_id (now in SHADER_READ_ONLY_OPTIMAL via render pass
+    /// final_layout) + history from previous frame's SVGF output slot,
+    /// writes this frame's accumulated indirect + moments. Composite
+    /// samples the output later in the sequence.
+    ///
+    /// SVGF permanent-failure latch: after the first dispatch error, skip
+    /// all further attempts and leave the warn-log behind (escalated to
+    /// `error!` so the once-per-session signal stands out). Composite's
+    /// `indirectTex` descriptor keeps pointing at the stale denoised
+    /// image until the next `recreate_swapchain` resets the latch.
+    /// Rebinding to the raw-indirect G-buffer view would give a live
+    /// (noisy) picture but requires composite-side plumbing deferred
+    /// until a real lost-device repro. See #479.
+    ///
+    /// # Safety
+    /// `cmd` is in the recording state — opened by `begin_command_buffer`
+    /// in `draw_frame` and not yet closed — and this runs once per frame
+    /// between the main render pass end and `end_command_buffer`, at the
+    /// fixed position `record_post_passes` calls it from.
+    fn record_svgf_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
         unsafe {
             if let Some(ref wca) = self.water_caustic_accum {
                 wca.barrier_post_render_pass(&self.device, cmd, frame);
             }
 
-            // SVGF temporal accumulation (Phase 3): reprojects previous
-            // frame's accumulated indirect, blends with raw 1-SPP indirect
-            // at α=0.2. Reads G-buffer raw_indirect/motion/mesh_id (now in
-            // SHADER_READ_ONLY_OPTIMAL via render pass final_layout) +
-            // history from previous frame's SVGF output slot, writes this
-            // frame's accumulated indirect + moments. Composite samples
-            // the output below.
-            // SVGF permanent-failure latch: after the first dispatch
-            // error, skip all further attempts and leave the warn-log
-            // behind (escalated to `error!` so the once-per-session
-            // signal stands out). Composite's `indirectTex` descriptor
-            // keeps pointing at the stale denoised image until the
-            // next `recreate_swapchain` resets the latch. Rebinding to
-            // the raw-indirect G-buffer view would give a live (noisy)
-            // picture but requires composite-side plumbing deferred
-            // until a real lost-device repro. See #479.
             if !self.svgf_failed {
                 // Captured before the &mut self.svgf borrow: the à-trous
                 // pass reads DBG_DISABLE_ATROUS out of the same render-debug
@@ -215,16 +282,33 @@ impl VulkanContext {
                     }
                 }
             }
+        }
+    }
 
-            // Caustic scatter (#321): per-refractive-pixel refracted-light
-            // splat. Runs after SVGF (reads the same G-buffer slots that
-            // are now in SHADER_READ_ONLY_OPTIMAL) and before composite
-            // (which samples the caustic accumulator). Writes binding 5
-            // of the composite descriptor set.
-            // Caustic permanent-failure latch — same shape as SVGF.
-            // Composite's `causticTex` sampler keeps reading the
-            // accumulator's last valid contents, so at worst one
-            // stale caustic frame hangs around until resize. See #479.
+    /// Caustic scatter (#321): per-refractive-pixel refracted-light splat
+    /// (#2258 / TD1-080, extracted from `record_post_passes`). Runs after
+    /// SVGF (reads the same G-buffer slots that are now in
+    /// SHADER_READ_ONLY_OPTIMAL) and before composite (which samples the
+    /// caustic accumulator). Writes binding 5 of the composite descriptor
+    /// set.
+    ///
+    /// Caustic permanent-failure latch — same shape as SVGF. Composite's
+    /// `causticTex` sampler keeps reading the accumulator's last valid
+    /// contents, so at worst one stale caustic frame hangs around until
+    /// resize. See #479.
+    ///
+    /// # Safety
+    /// `cmd` is in the recording state — opened by `begin_command_buffer`
+    /// in `draw_frame` and not yet closed — and this runs once per frame
+    /// between the main render pass end and `end_command_buffer`, at the
+    /// fixed position `record_post_passes` calls it from.
+    fn record_caustic_splat_pass(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        camera_static: bool,
+    ) {
+        unsafe {
             if !self.caustic_failed {
                 if let Some(ref mut caustic) = self.caustic {
                     // Bind this frame's TLAS before dispatch — the AccelerationManager
@@ -259,50 +343,78 @@ impl VulkanContext {
                     }
                 }
             }
+        }
+    }
 
-            // Volumetric lighting (M55 Phase 2c — sun-only injection
-            // with HG phase + RT shadow visibility). Runs before TAA /
-            // SSAO / composite so the fragment shader can sample the
-            // integrated volume.
-            //
-            // ── Composite-output gate (#928, flipped live by 977eb95a) ──
-            // `VOLUMETRIC_OUTPUT_CONSUMED` (volumetrics.rs) is now `true`:
-            // the per-froxel single-shadow-ray banding that justified the
-            // original `* 0.0` discard (diagnosed 2026-05-09 against
-            // Prospector cups and lanterns) was addressed, and
-            // `composite.frag` (`combined = combined * vol.a + vol.rgb`)
-            // consumes the integrated volume every frame. The inject +
-            // integrate dispatch is live GPU cost, not dead weight — do
-            // NOT "optimize" it away as unused work. See #928 / 977eb95a.
-            //
-            // Gated on TLAS being available, mirroring caustic
-            // (caustic.rs:627 / draw.rs:1648). When no TLAS exists
-            // (RT unsupported, scene not yet built, accel_manager
-            // absent) we skip BOTH the descriptor write and the
-            // dispatch — composite reads the prior frame's integrated
-            // volume, which retains its last valid contents (or the
-            // post-`initialize_layouts` zero-init on the very first
-            // frame).
-            //
-            // Sun direction + radiance are plumbed from
-            // `SkyParams::sun_direction` / `sun_color` / `sun_intensity`
-            // (#1022 / REN-D18-008). Below-horizon (`sun_intensity <= 0`)
-            // still zeros `sun_color` regardless of interior/exterior — no
-            // sun, no godrays, trivially correct either way.
-            //
-            // Interior vs exterior no longer zeroes sun/scattering outright
-            // (pre-fix behavior — see git blame for the old gate). That
-            // approach was too blunt: it also blocked real sun-through-
-            // window godrays the moment #928 flips
-            // VOLUMETRIC_OUTPUT_CONSUMED on. Instead the inject shader
-            // itself distinguishes "real window" from "geometry gap" via
-            // `render_origin.w` (is_exterior) — see the two-pass shadow-ray
-            // note on `VolumetricsParams::render_origin` in `volumetrics.rs`
-            // and the interior-godray investigation: a `--cell`-loaded
-            // interior has no complete ceiling mesh (never seen from
-            // inside, so Bethesda authoring omits it), so a naive single
-            // opaque-mask shadow ray escaping upward would register as
-            // "lit" everywhere, not just through real windows.
+    /// Volumetric lighting (M55 Phase 2c — sun-only injection with HG
+    /// phase + RT shadow visibility) (#2258 / TD1-080, extracted from
+    /// `record_post_passes`). Runs before TAA / SSAO / composite so the
+    /// fragment shader can sample the integrated volume.
+    ///
+    /// ── Composite-output gate (#928, flipped live by 977eb95a) ──
+    /// `VOLUMETRIC_OUTPUT_CONSUMED` (volumetrics.rs) is now `true`: the
+    /// per-froxel single-shadow-ray banding that justified the original
+    /// `* 0.0` discard (diagnosed 2026-05-09 against Prospector cups and
+    /// lanterns) was addressed, and `composite.frag` (`combined = combined
+    /// * vol.a + vol.rgb`) consumes the integrated volume every frame. The
+    /// inject + integrate dispatch is live GPU cost, not dead weight — do
+    /// NOT "optimize" it away as unused work. See #928 / 977eb95a.
+    ///
+    /// Gated on TLAS being available, mirroring caustic (caustic.rs:627 /
+    /// draw.rs:1648). When no TLAS exists (RT unsupported, scene not yet
+    /// built, accel_manager absent) we skip BOTH the descriptor write and
+    /// the dispatch — composite reads the prior frame's integrated
+    /// volume, which retains its last valid contents (or the
+    /// post-`initialize_layouts` zero-init on the very first frame).
+    ///
+    /// Sun direction + radiance are plumbed from `SkyParams::sun_direction`
+    /// / `sun_color` / `sun_intensity` (#1022 / REN-D18-008). Below-horizon
+    /// (`sun_intensity <= 0`) still zeros `sun_color` regardless of
+    /// interior/exterior — no sun, no godrays, trivially correct either
+    /// way.
+    ///
+    /// Interior vs exterior no longer zeroes sun/scattering outright
+    /// (pre-fix behavior — see git blame for the old gate). That approach
+    /// was too blunt: it also blocked real sun-through-window godrays the
+    /// moment #928 flips VOLUMETRIC_OUTPUT_CONSUMED on. Instead the inject
+    /// shader itself distinguishes "real window" from "geometry gap" via
+    /// `render_origin.w` (is_exterior) — see the two-pass shadow-ray note
+    /// on `VolumetricsParams::render_origin` in `volumetrics.rs` and the
+    /// interior-godray investigation: a `--cell`-loaded interior has no
+    /// complete ceiling mesh (never seen from inside, so Bethesda
+    /// authoring omits it), so a naive single opaque-mask shadow ray
+    /// escaping upward would register as "lit" everywhere, not just
+    /// through real windows.
+    ///
+    /// # Safety
+    /// `cmd` is in the recording state — opened by `begin_command_buffer`
+    /// in `draw_frame` and not yet closed — and this runs once per frame
+    /// between the main render pass end and `end_command_buffer`, at the
+    /// fixed position `record_post_passes` calls it from.
+    fn record_volumetrics_pass(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        inputs: VolumetricsPassInputs<'_>,
+    ) {
+        let VolumetricsPassInputs {
+            camera_pos,
+            render_origin,
+            prev_view_proj,
+            inv_vp_arr,
+            previous_camera_pos,
+            frame_counter,
+            volumetric_time_seconds,
+            sky_params,
+            fog_color,
+            fog_far,
+            fog_extinction_per_meter,
+            fog_single_scatter_albedo,
+            fog_coverage,
+            fog_height_reference,
+            fog_volumes,
+        } = inputs;
+        unsafe {
             if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
                 if let Some(ref mut vol) = self.volumetrics {
                     let scatter_coef = fog_extinction_per_meter.max(0.0)
@@ -483,18 +595,29 @@ impl VulkanContext {
                     }
                 }
             }
+        }
+    }
 
-            // TAA resolve: reprojects previous frame's history via motion
-            // vectors, neighborhood-clamps in YCoCg, and writes the anti-
-            // aliased HDR result for composite to sample. Runs after SVGF
-            // (which denoises the indirect term) and before SSAO/composite.
-            // TAA permanent-failure recovery: on the first dispatch
-            // error the composite's binding 0 (which currently points
-            // at TAA's output) gets rebound to the raw HDR render-pass
-            // attachments so the screen keeps updating — without the
-            // fallback the last TAA-written HDR frame would freeze on
-            // screen for the rest of the session with only a `warn!`
-            // log hinting at the cause. See #479.
+    /// TAA resolve (#2258 / TD1-080, extracted from `record_post_passes`):
+    /// reprojects previous frame's history via motion vectors,
+    /// neighborhood-clamps in YCoCg, and writes the anti-aliased HDR
+    /// result for composite to sample. Runs after SVGF (which denoises
+    /// the indirect term) and before SSAO/composite.
+    ///
+    /// TAA permanent-failure recovery: on the first dispatch error the
+    /// composite's binding 0 (which currently points at TAA's output)
+    /// gets rebound to the raw HDR render-pass attachments so the screen
+    /// keeps updating — without the fallback the last TAA-written HDR
+    /// frame would freeze on screen for the rest of the session with only
+    /// a `warn!` log hinting at the cause. See #479.
+    ///
+    /// # Safety
+    /// `cmd` is in the recording state — opened by `begin_command_buffer`
+    /// in `draw_frame` and not yet closed — and this runs once per frame
+    /// between the main render pass end and `end_command_buffer`, at the
+    /// fixed position `record_post_passes` calls it from.
+    fn record_taa_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        unsafe {
             if !self.taa_failed {
                 if let Some(ref mut taa) = self.taa {
                     // #1194 — bracket the TAA compute dispatch.
@@ -515,10 +638,29 @@ impl VulkanContext {
                     }
                 }
             }
+        }
+    }
 
-            // SSAO compute pass: reads depth buffer (now in READ_ONLY layout
-            // after render pass), writes AO texture for this frame's fragment
-            // shader. Runs before composite so AO is current-frame (no lag).
+    /// SSAO compute pass (#2258 / TD1-080, extracted from
+    /// `record_post_passes`): reads depth buffer (now in READ_ONLY layout
+    /// after render pass), writes AO texture for this frame's fragment
+    /// shader. Runs before composite so AO is current-frame (no lag).
+    ///
+    /// # Safety
+    /// `cmd` is in the recording state — opened by `begin_command_buffer`
+    /// in `draw_frame` and not yet closed — and this runs once per frame
+    /// between the main render pass end and `end_command_buffer`, at the
+    /// fixed position `record_post_passes` calls it from.
+    fn record_ssao_pass(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        vp: &[f32; 16],
+        inv_vp_arr: [[f32; 4]; 4],
+        camera_pos: [f32; 3],
+        render_origin: byroredux_core::math::Vec3,
+    ) {
+        unsafe {
             if let Some(ref mut ssao) = self.ssao {
                 let vp_arr = [
                     [vp[0], vp[1], vp[2], vp[3]],
@@ -548,36 +690,44 @@ impl VulkanContext {
                     log::warn!("SSAO dispatch failed: {e}");
                 }
             }
+        }
+    }
 
-            // Bloom pyramid (M58). Reads the raw pre-TAA HDR attachment
-            // (`composite.hdr_image_views[frame]` — the main render pass'
-            // HDR target, NOT TAA's output) and writes a multi-scale
-            // blurred bright-content texture. Composite adds bloom to
-            // `combined` before the ACES tone-map. The render pass's
-            // final_layout already moved HDR to SHADER_READ_ONLY_OPTIMAL,
-            // so the input is sample-ready.
-            //
-            // Why pre-TAA: TAA's resolved output is consumed by composite
-            // separately (`composite.rebind_hdr_views` rewires the
-            // descriptor at `context/mod.rs:1715-1717`, but the
-            // `hdr_image_views` field still references the raw attachment
-            // — only the descriptor was swapped). Bloom intentionally
-            // shares the raw view because the blur pyramid smears out
-            // sub-pixel jitter, making the bloom haloes spatially stable
-            // anyway. Final image = ACES(TAA-stable base + spatial bloom).
-            // #1166: the previous comment claimed bloom was post-TAA;
-            // that was wrong. #1107 / REN-D19-002 is the original
-            // rewire-composite-to-TAA work this commit references.
-            //
-            // The `if let Some(...)` guard below is dead at runtime
-            // (#1276): `VulkanContext::new` at `context/mod.rs:1958-1967`
-            // hard-fails with `anyhow::anyhow!(...)` if bloom init
-            // returns `None` (policy from #1081 — no fallback binding
-            // for bloomTex when bloom is absent), so the engine never
-            // reaches `draw_frame` with `self.bloom == None`. The
-            // `Option` wrapper is kept because the resize-recreate
-            // path benefits from it as a temporary, but the runtime
-            // `None` branch is unreachable.
+    /// Bloom pyramid (M58) (#2258 / TD1-080, extracted from
+    /// `record_post_passes`). Reads the raw pre-TAA HDR attachment
+    /// (`composite.hdr_image_views[frame]` — the main render pass' HDR
+    /// target, NOT TAA's output) and writes a multi-scale blurred
+    /// bright-content texture. Composite adds bloom to `combined` before
+    /// the ACES tone-map. The render pass's final_layout already moved
+    /// HDR to SHADER_READ_ONLY_OPTIMAL, so the input is sample-ready.
+    ///
+    /// Why pre-TAA: TAA's resolved output is consumed by composite
+    /// separately (`composite.rebind_hdr_views` rewires the descriptor at
+    /// `context/mod.rs:1715-1717`, but the `hdr_image_views` field still
+    /// references the raw attachment — only the descriptor was swapped).
+    /// Bloom intentionally shares the raw view because the blur pyramid
+    /// smears out sub-pixel jitter, making the bloom haloes spatially
+    /// stable anyway. Final image = ACES(TAA-stable base + spatial
+    /// bloom). #1166: the previous comment claimed bloom was post-TAA;
+    /// that was wrong. #1107 / REN-D19-002 is the original
+    /// rewire-composite-to-TAA work this commit references.
+    ///
+    /// The `if let Some(...)` guard below is dead at runtime (#1276):
+    /// `VulkanContext::new` at `context/mod.rs:1958-1967` hard-fails with
+    /// `anyhow::anyhow!(...)` if bloom init returns `None` (policy from
+    /// #1081 — no fallback binding for bloomTex when bloom is absent), so
+    /// the engine never reaches `draw_frame` with `self.bloom == None`.
+    /// The `Option` wrapper is kept because the resize-recreate path
+    /// benefits from it as a temporary, but the runtime `None` branch is
+    /// unreachable.
+    ///
+    /// # Safety
+    /// `cmd` is in the recording state — opened by `begin_command_buffer`
+    /// in `draw_frame` and not yet closed — and this runs once per frame
+    /// between the main render pass end and `end_command_buffer`, at the
+    /// fixed position `record_post_passes` calls it from.
+    fn record_bloom_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        unsafe {
             if let Some(ref mut bloom) = self.bloom {
                 if let Some(ref composite) = self.composite {
                     let hdr_view = composite.hdr_image_views[frame];
@@ -593,19 +743,29 @@ impl VulkanContext {
                     }
                 }
             }
+        }
+    }
 
-            // Composite UBO host-write + barrier moved to the pre-render-
-            // pass bulk barrier site (#909 / REN-D1-NEW-03). The dedicated
-            // late HOST→FRAGMENT barrier was correct but isolated 750
-            // lines from the bulk barrier; folded into it now so all
-            // host writes consumed by the render pass / composite pass
-            // share one execution dependency.
-
-            // Compose the complete render-resolution linear-HDR scene. The
-            // upscale boundary and display mapping are explicit later passes.
-            // The main render pass's outgoing subpass dependency handles
-            // the layout transitions of all input attachments to
-            // SHADER_READ_ONLY_OPTIMAL.
+    /// Compose the complete render-resolution linear-HDR scene (#2258 /
+    /// TD1-080, extracted from `record_post_passes`). The upscale
+    /// boundary and display mapping are explicit later passes. The main
+    /// render pass's outgoing subpass dependency handles the layout
+    /// transitions of all input attachments to SHADER_READ_ONLY_OPTIMAL.
+    ///
+    /// Composite UBO host-write + barrier moved to the pre-render-pass
+    /// bulk barrier site (#909 / REN-D1-NEW-03). The dedicated late
+    /// HOST→FRAGMENT barrier was correct but isolated 750 lines from the
+    /// bulk barrier; folded into it now so all host writes consumed by
+    /// the render pass / composite pass share one execution dependency —
+    /// that's why no barrier code appears in this function.
+    ///
+    /// # Safety
+    /// `cmd` is in the recording state — opened by `begin_command_buffer`
+    /// in `draw_frame` and not yet closed — and this runs once per frame
+    /// between the main render pass end and `end_command_buffer`, at the
+    /// fixed position `record_post_passes` calls it from.
+    fn record_composite_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        unsafe {
             if let Some(ref composite) = self.composite {
                 let bindless_set = self.texture_registry.descriptor_set(frame);
                 if let Some(ref mut timers) = self.gpu_timers {
@@ -616,7 +776,24 @@ impl VulkanContext {
                     timers.cmd_composite_end(&self.device, cmd, frame);
                 }
             }
+        }
+    }
 
+    /// FSR upscale / reconstruction (#2258 / TD1-080, extracted from
+    /// `record_post_passes`).
+    ///
+    /// # Safety
+    /// `cmd` is in the recording state — opened by `begin_command_buffer`
+    /// in `draw_frame` and not yet closed — and this runs once per frame
+    /// between the main render pass end and `end_command_buffer`, at the
+    /// fixed position `record_post_passes` calls it from.
+    fn record_upscale_pass(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        fsr_frame: Option<FsrFrameParameters>,
+    ) {
+        unsafe {
             let scene_color = self
                 .composite
                 .as_ref()
@@ -665,7 +842,26 @@ impl VulkanContext {
             if let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_upscale_end(&self.device, cmd, frame);
             }
+        }
+    }
 
+    /// Final presentation pass (#2258 / TD1-080, extracted from
+    /// `record_post_passes`).
+    ///
+    /// # Safety
+    /// `cmd` is in the recording state — opened by `begin_command_buffer`
+    /// in `draw_frame` and not yet closed — and this runs once per frame
+    /// between the main render pass end and `end_command_buffer`, at the
+    /// fixed position `record_post_passes` calls it from.
+    fn record_presentation_pass(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        img: usize,
+        underwater: [f32; 4],
+        image_space_modifier: ImageSpaceModifierView,
+    ) {
+        unsafe {
             let exposure = self
                 .exposure
                 .as_ref()
@@ -693,6 +889,5 @@ impl VulkanContext {
                 timers.cmd_presentation_end(&self.device, cmd, frame);
             }
         }
-        Ok(())
     }
 }
