@@ -292,6 +292,7 @@ fn apply_bs_lighting_shader(
         info.emissive_mult = shader.emissive_multiple;
         info.emissive_source = byroredux_core::ecs::components::material::EmissiveSource::Lighting;
         info.specular_color = shader.specular_color;
+        info.specular_authored = true;
         info.specular_strength = shader.specular_strength;
         info.glossiness = shader.glossiness;
         info.uv_offset = shader.uv_offset;

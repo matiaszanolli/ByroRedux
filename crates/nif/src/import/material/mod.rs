@@ -591,6 +591,16 @@ pub(super) struct MaterialInfo {
     pub alpha: f32,
     pub env_map_scale: f32,
     pub has_material_data: bool,
+    /// True only at the two sites that actually assign `specular_color`
+    /// from authored data — `NiMaterialProperty` and
+    /// `BSLightingShaderProperty`. `has_material_data` is a broader
+    /// "some property claimed this material" flag also set by the
+    /// `BSEffectShaderProperty`/`BSSkyShaderProperty`/`BSWaterShaderProperty`
+    /// arms, none of which touch `specular_color` — using it as the
+    /// classifier's authorship signal read those arms' unauthored
+    /// `[1.0, 1.0, 1.0]` struct default as an authored white specular
+    /// tint. See #2352 (SF-D8-01) / #1873.
+    pub specular_authored: bool,
     /// Set by any property that contributes a UV transform — the
     /// Skyrim+ shader paths copy `uv_offset` / `uv_scale` directly off
     /// `BSLightingShaderProperty` / `BSEffectShaderProperty`, while the
@@ -1015,6 +1025,7 @@ impl Default for MaterialInfo {
             alpha: 1.0,
             env_map_scale: 0.0,
             has_material_data: false,
+            specular_authored: false,
             has_uv_transform: false,
             z_test: true,
             z_write: true,
@@ -1156,12 +1167,15 @@ impl MaterialInfo {
                 env_map_scale: self.env_map_scale,
                 has_normal_map: self.normal_map.is_some(),
                 specular_color: self.specular_color,
-                // `has_material_data` is set true only by the
+                // `specular_authored` is set true only by the
                 // NiMaterialProperty / BSLightingShaderProperty walker
                 // arms, the only ones that populate `specular_color` —
                 // exactly the "was specular actually authored" signal
-                // the classifier needs. See REN-2026-07-04-M01 / #1873.
-                specular_authored: self.has_material_data,
+                // the classifier needs. See REN-2026-07-04-M01 / #1873
+                // and #2352 (SF-D8-01) — `has_material_data` is a
+                // broader flag also set by arms that never touch
+                // `specular_color`, so it can't be reused here.
+                specular_authored: self.specular_authored,
                 has_gloss_map: self.gloss_map.is_some(),
             },
         )

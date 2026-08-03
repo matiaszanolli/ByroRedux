@@ -111,10 +111,49 @@ fn classifier_genuinely_authored_white_specular_stays_metallic() {
     info.env_map_scale = 1.0;
     info.specular_color = [1.0, 1.0, 1.0];
     info.has_material_data = true;
+    info.specular_authored = true;
 
     let pbr = info.classify_legacy_pbr(&pool);
     assert!(
         pbr.metalness > 0.0,
         "authored white specular must still lift metalness"
+    );
+}
+
+// #2352 (SF-D8-01) — `apply_bs_effect_shader`/`apply_bs_sky_shader`/
+// `apply_bs_water_shader` all set `has_material_data = true` without ever
+// touching `specular_color`, which stays at its unauthored `[1.0; 3]`
+// struct default. Pre-fix, `specular_authored` was wired straight to
+// `has_material_data`, so these three arms fed the classifier the same
+// "authored white specular" signal as a genuine NiMaterialProperty/
+// BSLightingShaderProperty bind — fabricating chrome-tier metalness/
+// roughness on every effect-shader/sky/water surface with
+// `env_map_scale > 0.3`. This is exactly the #1873 chrome-flyer bug,
+// reached through a different set of walker arms.
+#[test]
+fn classifier_effect_shader_arm_shape_does_not_chrome() {
+    let pool = StringPool::new();
+    let mut info = MaterialInfo::default();
+    // Mirrors what apply_bs_effect_shader/apply_bs_sky_shader/
+    // apply_bs_water_shader actually leave behind: has_material_data set,
+    // specular_color untouched (still the struct default), and
+    // specular_authored correctly NOT set (the fix under test).
+    info.env_map_scale = 1.0;
+    info.has_material_data = true;
+    assert_eq!(info.specular_color, [1.0, 1.0, 1.0]);
+    assert!(
+        !info.specular_authored,
+        "has_material_data alone must not imply specular authorship"
+    );
+
+    let pbr = info.classify_legacy_pbr(&pool);
+    assert_eq!(
+        pbr.metalness, 0.0,
+        "unauthored specular_color must not be read as chrome on the \
+         effect/sky/water arm shape"
+    );
+    assert!(
+        pbr.roughness >= 0.6,
+        "must stay above the RT reflection gate"
     );
 }

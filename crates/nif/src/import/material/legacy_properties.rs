@@ -96,6 +96,7 @@ fn apply_material_property(scene: &NifScene, idx: usize, info: &mut MaterialInfo
             // per-material modulator on the cell ambient term.
             info.ambient_color = [mat.ambient.r, mat.ambient.g, mat.ambient.b];
             info.specular_color = [mat.specular.r, mat.specular.g, mat.specular.b];
+            info.specular_authored = true;
             info.emissive_color = [mat.emissive.r, mat.emissive.g, mat.emissive.b];
             info.glossiness = mat.shininess;
             info.alpha = mat.alpha;
