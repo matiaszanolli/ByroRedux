@@ -1,5 +1,5 @@
-//! Synthetic header round-trip: smallest valid CDB is 16-byte header
-//! + STRT + TYPE (with type_count=0). Confirms the parser at least
+//! Synthetic header round-trip: smallest valid CDB is a 16-byte header
+//! followed by STRT + TYPE (with type_count=0). Confirms the parser at least
 //! gets through the front-matter cleanly.
 
 use byroredux_sfmaterial::{ChunkType, ComponentDatabaseFile};

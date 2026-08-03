@@ -148,7 +148,7 @@ fn static_sound_data_constructs_from_decoded_frames() {
         settings: StaticSoundSettings::default(),
         slice: None,
     };
-    assert!(sound.frames.len() > 0);
+    assert!(!sound.frames.is_empty());
     assert_eq!(sound.sample_rate, sample_rate);
 
     // Wrap in an Arc so the AudioEmitter can hold it. This pins
@@ -513,7 +513,7 @@ fn play_music_drives_streaming_playback_on_real_ogg() {
     if !dir.is_dir() {
         return;
     }
-    let bsa = match BsaArchive::open(&dir.join("Fallout - Sound.bsa")) {
+    let bsa = match BsaArchive::open(dir.join("Fallout - Sound.bsa")) {
         Ok(b) => b,
         Err(_) => return,
     };
@@ -574,7 +574,7 @@ fn looping_emitter_survives_natural_duration_and_stops_on_emitter_remove() {
     if !dir.is_dir() {
         return;
     }
-    let bsa = match BsaArchive::open(&dir.join("Fallout - Sound.bsa")) {
+    let bsa = match BsaArchive::open(dir.join("Fallout - Sound.bsa")) {
         Ok(b) => b,
         Err(_) => return,
     };
@@ -685,7 +685,7 @@ fn non_looping_emitter_stops_on_emitter_remove_regression_858() {
     if !dir.is_dir() {
         return;
     }
-    let bsa = match BsaArchive::open(&dir.join("Fallout - Sound.bsa")) {
+    let bsa = match BsaArchive::open(dir.join("Fallout - Sound.bsa")) {
         Ok(b) => b,
         Err(_) => return,
     };
@@ -901,7 +901,7 @@ fn play_oneshot_queue_drives_real_playback() {
         eprintln!("skipping: FNV data dir {:?} not found", dir);
         return;
     }
-    let bsa = match BsaArchive::open(&dir.join("Fallout - Sound.bsa")) {
+    let bsa = match BsaArchive::open(dir.join("Fallout - Sound.bsa")) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("skipping: open FNV Sound.bsa: {e}");
@@ -997,7 +997,7 @@ fn audio_system_full_lifecycle_on_real_fnv_sound() {
         eprintln!("skipping: FNV data dir {:?} not found", dir);
         return;
     }
-    let bsa = match BsaArchive::open(&dir.join("Fallout - Sound.bsa")) {
+    let bsa = match BsaArchive::open(dir.join("Fallout - Sound.bsa")) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("skipping: open FNV Sound.bsa: {e}");

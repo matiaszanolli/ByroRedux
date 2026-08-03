@@ -1044,13 +1044,12 @@ mod tests {
 
         // The narrowing is the whole point: it must stay strictly smaller
         // than the input vertex, or the #2170 saving has silently regressed.
-        assert!(
-            SKIN_OUTPUT_STRIDE_BYTES < crate::shader_constants::VERTEX_STRIDE_BYTES,
-            "output stride ({SKIN_OUTPUT_STRIDE_BYTES} B) must stay below the \
-             {} B input Vertex — reverting to the full layout re-introduces the \
-             8.7x over-allocation #2170 removed",
-            crate::shader_constants::VERTEX_STRIDE_BYTES,
-        );
+        const {
+            assert!(
+                SKIN_OUTPUT_STRIDE_BYTES < crate::shader_constants::VERTEX_STRIDE_BYTES,
+                "position-only skin output must remain narrower than the input Vertex (#2170)",
+            );
+        }
     }
 
     /// #2170 — both AS-build call sites must stride by the narrowed

@@ -644,7 +644,7 @@ fn main() {
 
     // ── View 1: which events the corpus actually handles ──
     let mut ev: Vec<(&String, usize)> = sv.event_freq.iter().map(|(k, &c)| (k, c)).collect();
-    ev.sort_by(|a, b| b.1.cmp(&a.1));
+    ev.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     println!("\n==== event-handler frequency (scripts defining each) ====");
     let mut line = String::new();
     for (name, c) in ev.iter().take(40) {

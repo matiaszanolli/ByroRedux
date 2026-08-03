@@ -57,9 +57,7 @@ const DISPATCH_HANDLED_FOURCCS: &[&[u8; 4]] = &[
 ];
 
 fn is_dispatch_handled(fourcc: &[u8; 4]) -> bool {
-    DISPATCH_HANDLED_FOURCCS
-        .iter()
-        .any(|&handled| handled == fourcc)
+    DISPATCH_HANDLED_FOURCCS.contains(&fourcc)
 }
 
 #[derive(Default, Debug)]
@@ -273,11 +271,11 @@ fn main() -> anyhow::Result<()> {
     eprintln!();
     eprintln!("  Per-FourCC top-level GRUPs (sorted by byte size):");
     eprintln!(
-        "    {:>4} {:>8} {:>12} {:>12} {:>9} {}",
-        "type", "grups", "bytes", "imm-rec", "handled?", "fourcc"
+        "    {:>4} {:>8} {:>12} {:>12} {:>9} fourcc",
+        "type", "grups", "bytes", "imm-rec", "handled?"
     );
     let mut by_size: Vec<(&[u8; 4], &GrupStats)> = report.by_fourcc.iter().collect();
-    by_size.sort_by(|a, b| b.1.bytes_total.cmp(&a.1.bytes_total));
+    by_size.sort_by_key(|entry| std::cmp::Reverse(entry.1.bytes_total));
     let mut handled_bytes: u64 = 0;
     let mut unhandled_bytes: u64 = 0;
     let mut handled_grups: u64 = 0;

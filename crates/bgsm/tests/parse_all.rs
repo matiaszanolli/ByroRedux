@@ -111,7 +111,7 @@ impl VariantStats {
         // Sort buckets by count descending so the worst regression
         // surfaces first in the diff.
         let mut buckets: Vec<(&String, &(usize, Vec<String>))> = self.buckets.iter().collect();
-        buckets.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        buckets.sort_by_key(|bucket| std::cmp::Reverse(bucket.1 .0));
         for (msg, (count, examples)) in buckets.iter().take(10) {
             eprintln!("  [{count:>4}] {}", msg);
             for p in examples.iter().take(5) {
@@ -182,10 +182,10 @@ fn walk_variant(archive: &Ba2Archive, expect: Variant) -> VariantStats {
         if !lower.ends_with(suffix) {
             continue;
         }
-        let bytes = match archive.extract(&path) {
+        let bytes = match archive.extract(path) {
             Ok(b) => b,
             Err(e) => {
-                stats.record_err(&path, &format!("extract: {e}"));
+                stats.record_err(path, &format!("extract: {e}"));
                 continue;
             }
         };
@@ -198,7 +198,7 @@ fn walk_variant(archive: &Ba2Archive, expect: Variant) -> VariantStats {
                     MaterialFile::Bgem(_) => "BGEM",
                 };
                 stats.record_err(
-                    &path,
+                    path,
                     &format!(
                         "variant mismatch: file extension implies {} but parser returned {}",
                         expect.label(),
@@ -206,7 +206,7 @@ fn walk_variant(archive: &Ba2Archive, expect: Variant) -> VariantStats {
                     ),
                 );
             }
-            Err(e) => stats.record_err(&path, &format!("parse: {e}")),
+            Err(e) => stats.record_err(path, &format!("parse: {e}")),
         }
     }
     stats

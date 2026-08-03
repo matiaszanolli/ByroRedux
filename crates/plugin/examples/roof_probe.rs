@@ -7,6 +7,9 @@
 
 use std::collections::HashMap;
 
+type RoofRecord = (i32, i32, u32, u32, [f32; 3], String, bool);
+type ElevationRecord = (i32, i32, u32, u32, f32, String, bool);
+
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let esm = args
@@ -37,9 +40,9 @@ fn main() -> anyhow::Result<()> {
         grids.sort_by_key(|(gx, gy)| (*gy, *gx));
 
         // Roof-mesh REFRs across the whole window, sorted by Z.
-        let mut roofs: Vec<(i32, i32, u32, u32, [f32; 3], String, bool)> = Vec::new();
+        let mut roofs: Vec<RoofRecord> = Vec::new();
         // Global top-Z (any mesh) across the window.
-        let mut all_z: Vec<(i32, i32, u32, u32, f32, String, bool)> = Vec::new();
+        let mut all_z: Vec<ElevationRecord> = Vec::new();
 
         for g in &grids {
             let cell = &cells[*g];

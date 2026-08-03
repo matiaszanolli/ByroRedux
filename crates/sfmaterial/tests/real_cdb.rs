@@ -45,9 +45,9 @@ fn parse_vanilla_materialsbeta_cdb() {
     );
 
     // Floor asserts — these should hold for any non-empty CDB.
-    assert!(cdb.classes.len() > 0, "vanilla CDB must declare classes");
+    assert!(!cdb.classes.is_empty(), "vanilla CDB must declare classes");
     assert!(
-        cdb.instances.len() > 0,
+        !cdb.instances.is_empty(),
         "vanilla CDB must contain instances"
     );
 

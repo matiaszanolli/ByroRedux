@@ -101,8 +101,8 @@ fn main() -> anyhow::Result<()> {
     let mean_pos = {
         let mut acc = [0.0f32; 3];
         for r in &cell.references {
-            for i in 0..3 {
-                acc[i] += r.position[i];
+            for (sum, coordinate) in acc.iter_mut().zip(r.position) {
+                *sum += coordinate;
             }
         }
         [acc[0] / n as f32, acc[1] / n as f32, acc[2] / n as f32]
@@ -175,8 +175,8 @@ fn main() -> anyhow::Result<()> {
         SCALE_EPSILON,
     );
     println!(
-        "{:>10} {:>10} {:>8} {:>8}  {}",
-        "form_id", "base", "scale", "Δ", "base_mesh"
+        "{:>10} {:>10} {:>8} {:>8}  base_mesh",
+        "form_id", "base", "scale", "Δ"
     );
     for (idx, dev) in scale_outliers.iter().take(top_n) {
         let r = &cell.references[*idx];
@@ -210,8 +210,8 @@ fn main() -> anyhow::Result<()> {
         rot_outliers.len().min(top_n),
     );
     println!(
-        "{:>10} {:>10} {:>9} {:>9} {:>9} {:>8}  {}",
-        "form_id", "base", "rx_deg", "ry_deg", "rz_deg", "score°", "base_mesh"
+        "{:>10} {:>10} {:>9} {:>9} {:>9} {:>8}  base_mesh",
+        "form_id", "base", "rx_deg", "ry_deg", "rz_deg", "score°"
     );
     for (idx, score) in rot_outliers.iter().take(top_n) {
         let r = &cell.references[*idx];
@@ -255,8 +255,8 @@ fn main() -> anyhow::Result<()> {
         POSITION_SIGMA_CUTOFF,
     );
     println!(
-        "{:>10} {:>10} {:>10} {:>10} {:>10} {:>7}  {}",
-        "form_id", "base", "x", "y", "z", "σ", "base_mesh"
+        "{:>10} {:>10} {:>10} {:>10} {:>10} {:>7}  base_mesh",
+        "form_id", "base", "x", "y", "z", "σ"
     );
     for (idx, sigma) in pos_outliers.iter().take(top_n) {
         let r = &cell.references[*idx];
