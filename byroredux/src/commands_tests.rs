@@ -427,6 +427,31 @@ fn mat_set_mutates_scalar_and_vec3() {
     assert_eq!(world.get::<Material>(e).unwrap().material_kind, 100);
 }
 
+/// Regression for #2249 (REN-D21-03): `ior` (and its `distortion_strength`
+/// alias) must be reachable via `mat.set` — `MATERIAL_KIND_FIRE_REFRACTION`
+/// overloads this field as its authored distortion strength, and before
+/// this fix `mat.set` had no way to reach it at all, so every
+/// fire-refraction gap had to be found by static code reading instead of
+/// the Cornell harness.
+#[test]
+fn mat_set_reaches_ior_field() {
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    let e = world.spawn();
+    world.insert(e, Material::default());
+    let cmd = MatSetCommand;
+
+    let out = cmd
+        .execute(&world, &format!("{e} ior 0.6"))
+        .lines
+        .join("\n");
+    assert!(out.contains("ior = 0.6000"), "got: {out}");
+    assert_eq!(world.get::<Material>(e).unwrap().ior, 0.6);
+
+    cmd.execute(&world, &format!("{e} distortion_strength 0.9"));
+    assert_eq!(world.get::<Material>(e).unwrap().ior, 0.9);
+}
+
 /// `mat.set` rejects unknown fields, wrong value arity, and missing
 /// entities without mutating anything.
 #[test]

@@ -606,7 +606,7 @@ impl ConsoleCommand for MatSetCommand {
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         const USAGE: &str = "usage: mat.set <entity_id> <field> <value...>\n  \
             fields: metalness|roughness|alpha|glossiness|emissive_mult|specular_strength|\
-            env_map_scale (1 value), color|diffuse_color|emissive_color|specular_color \
+            env_map_scale|ior (1 value), color|diffuse_color|emissive_color|specular_color \
             (3 values), material_kind (1 int)";
         let mut parts = args.split_whitespace();
         let Some(id_str) = parts.next() else {
@@ -648,6 +648,13 @@ impl ConsoleCommand for MatSetCommand {
             "emissive_mult" | "emult" => set_scalar(&mut m.emissive_mult, &vals),
             "specular_strength" | "spec" => set_scalar(&mut m.specular_strength, &vals),
             "env_map_scale" | "env" => set_scalar(&mut m.env_map_scale, &vals),
+            // #2249 (REN-D21-03) — `MATERIAL_KIND_FIRE_REFRACTION` overloads
+            // `ior` as its authored distortion strength (see REN-D6-01 /
+            // `triangle.frag`'s fire-refraction branch); without this arm
+            // the Cornell harness had no way to reach the field live, so
+            // every fire-refraction gap this session had to be found by
+            // static code reading instead of the harness.
+            "ior" | "distortion_strength" => set_scalar(&mut m.ior, &vals),
             "color" | "diffuse_color" | "diffuse" => set_vec3(&mut m.diffuse_color, &vals),
             "emissive_color" => set_vec3(&mut m.emissive_color, &vals),
             "specular_color" => set_vec3(&mut m.specular_color, &vals),

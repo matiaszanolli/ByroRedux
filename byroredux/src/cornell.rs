@@ -44,14 +44,18 @@
 //! `mat.set <id> color r g b` tweak fully recolors a probe.
 
 use byroredux_core::ecs::{
-    GlobalTransform, LightSource, Material, MeshHandle, TextureHandle, Transform, World,
+    FogBounds, FogShape, FogSource, FogVolume, GlobalTransform, LightSource, Material, MeshHandle,
+    TextureHandle, Transform, World,
 };
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
 use byroredux_renderer::vulkan::GpuUploadCtx;
-use byroredux_renderer::{box_vertices_colored, uv_sphere, VulkanContext, MATERIAL_KIND_GLASS};
+use byroredux_renderer::{
+    box_vertices_colored, uv_sphere, VulkanContext, MATERIAL_KIND_FIRE_REFRACTION,
+    MATERIAL_KIND_GLASS,
+};
 
-use crate::components::CellLightingRes;
+use crate::components::{CellLightingRes, MaterialTextureHandles};
 use crate::env_translate::{procedural_fallback_cell_lighting, procedural_fallback_sky};
 
 /// Classic Cornell wall albedos (linear). Gamebryo colors are raw
@@ -163,6 +167,27 @@ pub(crate) fn setup_cornell_scene(
             name,
         );
     }
+
+    // ── Local fog volume probe ──────────────────────────────────────
+    // #2248 (REN-D21-01) — unlike the global `CellLightingRes::fog_medium`
+    // ramp below (deliberately pushed out of range to match a real
+    // no-authored-fog interior cell, #1942's sibling trap for the sun
+    // path), a local `FogVolume` is an explicitly-placed authored effect
+    // — a designer-placed smoke/mist pocket, independent of whether the
+    // cell has ambient atmospheric fog at all. Spawned in both variants:
+    // local fog isn't sun-driven, so it belongs outside the `!sun` gate.
+    // Extinction is authored directly in "per meter" terms and converted
+    // to per-world-unit by the same `WORLD_UNITS_PER_METER` divide the
+    // real import path uses (`render/fog_volumes.rs`), so a value that
+    // reads as "thick smoke" at Bethesda scale also reads as thick smoke
+    // here — the box's few-world-unit span is what makes it visible in a
+    // handful of units instead of dozens of metres.
+    spawn_fog_volume(
+        world,
+        Vec3::new(-1.6, 1.6, -0.4),
+        Vec3::new(1.3, 1.3, 1.3),
+        "fog_volume_probe",
+    );
 
     // ── Local lights (interior variant only) ────────────────────────
     // In sun mode every one of these is skipped: a bisection harness for
@@ -309,6 +334,37 @@ pub(crate) fn setup_cornell_scene(
         "glass_cube",
     );
 
+    // ── Fire-refraction probe ────────────────────────────────────────
+    // #2249 (REN-D21-03) — `MATERIAL_KIND_FIRE_REFRACTION` had no Cornell
+    // coverage: `mat.set` couldn't reach `ior` (the field's distortion-
+    // strength overload — now fixed in `commands/scene.rs`) and no probe
+    // carried a normal map, so `tangentWarp = N - macroN * dot(N, macroN)`
+    // was structurally zero even at max authored strength. This probe
+    // exercises both halves together.
+    let fire_normal_map = synthesize_wavy_normal_map(builder.ctx);
+    let fire_cube = builder.box_mesh([0.6, 0.9, 0.6]);
+    let fire_entity = spawn_object(
+        world,
+        fire_cube,
+        neutral,
+        Vec3::new(2.6, 0.9, 0.6),
+        Quat::from_rotation_y(-0.4),
+        fire_refraction(0.6),
+        "fire_refraction_probe",
+    );
+    world.insert(
+        fire_entity,
+        MaterialTextureHandles {
+            textures: byroredux_nif::import::MaterialTextureSet {
+                normal: fire_normal_map,
+                ..Default::default()
+            },
+            normal_has_alpha: false,
+            parallax_height_scale: 0.04,
+            parallax_max_passes: 4.0,
+        },
+    );
+
     // ── Emissive probe ──────────────────────────────────────────────
     let emit_cube = builder.box_mesh([0.35, 0.35, 0.35]);
     spawn_object(
@@ -437,6 +493,68 @@ fn emissive(color: [f32; 3], mult: f32) -> Material {
     }
 }
 
+/// `MATERIAL_KIND_FIRE_REFRACTION` probe (#2249 / REN-D21-03). This kind
+/// overloads `Material::ior` as the authored distortion strength — see
+/// `triangle.frag`'s fire-refraction branch, `clamp(mat.ior, 0.0, 1.0)` —
+/// not a real refractive index. The caller must also attach a
+/// `MaterialTextureHandles` with a non-zero `textures.normal`
+/// ([`synthesize_wavy_normal_map`]): without one, `N == macroN` at every
+/// fragment and `tangentWarp = N - macroN * dot(N, macroN)` is
+/// structurally zero regardless of this value.
+fn fire_refraction(distortion_strength: f32) -> Material {
+    Material {
+        diffuse_color: [1.0, 1.0, 1.0],
+        material_kind: MATERIAL_KIND_FIRE_REFRACTION,
+        ior: distortion_strength,
+        ..Default::default()
+    }
+}
+
+/// Synthesize a small tangent-space normal map with a spatially-varying
+/// wave pattern (#2249 / REN-D21-03). Cornell has no on-disk textures, so
+/// without this the fire-refraction probe's normal map slot stays at the
+/// bindless-0 "absent" sentinel and its distortion path is a structural
+/// no-op (see [`fire_refraction`]). Flat/neutral (`(0,0,1)` everywhere)
+/// would compile and shade but still leave `tangentWarp` zero since
+/// `N == macroN`; the wave pattern guarantees genuine per-fragment
+/// disagreement between the two.
+fn synthesize_wavy_normal_map(ctx: &mut VulkanContext) -> u32 {
+    const SIZE: u32 = 16;
+    let pixels = wavy_normal_map_pixels(SIZE);
+    let alloc = ctx.allocator.as_ref().unwrap();
+    let upload_ctx = GpuUploadCtx {
+        device: &ctx.device,
+        allocator: alloc,
+        queue: &ctx.graphics_queue,
+        command_pool: ctx.transfer_pool,
+    };
+    ctx.texture_registry
+        .register_rgba(upload_ctx, SIZE, SIZE, &pixels)
+        .expect("Cornell normal-map synth upload failed")
+}
+
+/// Pixel data for [`synthesize_wavy_normal_map`], split out so the pattern
+/// itself is testable without a Vulkan device. RGBA8, tangent-space
+/// encoding (`channel = component * 0.5 + 0.5`), a sine wave over both
+/// axes so no two rows/columns share the same normal.
+fn wavy_normal_map_pixels(size: u32) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let u = x as f32 / size as f32;
+            let v = y as f32 / size as f32;
+            let nx = (u * std::f32::consts::TAU * 3.0).sin() * 0.6;
+            let ny = (v * std::f32::consts::TAU * 3.0).sin() * 0.6;
+            let nz = (1.0 - nx * nx - ny * ny).max(0.0).sqrt();
+            pixels.push(((nx * 0.5 + 0.5) * 255.0) as u8);
+            pixels.push(((ny * 0.5 + 0.5) * 255.0) as u8);
+            pixels.push(((nz * 0.5 + 0.5) * 255.0) as u8);
+            pixels.push(255u8);
+        }
+    }
+    pixels
+}
+
 /// Spawn a renderable probe carrying `Transform`, `GlobalTransform`,
 /// `MeshHandle`, `Material`, and `Name`. `GlobalTransform` is seeded to
 /// match `Transform` so the first rendered frame is correct before
@@ -449,7 +567,7 @@ fn spawn_object(
     rot: Quat,
     material: Material,
     name: &str,
-) {
+) -> byroredux_core::ecs::EntityId {
     let e = world.spawn();
     world.insert(e, Transform::new(pos, rot, 1.0));
     world.insert(e, GlobalTransform::new(pos, rot, 1.0));
@@ -457,6 +575,7 @@ fn spawn_object(
     world.insert(e, tex);
     world.insert(e, material);
     name_entity(world, e, name);
+    e
 }
 
 /// Spawn a named point [`LightSource`] at `pos`. `radius` is the
@@ -472,10 +591,43 @@ fn spawn_point_light(world: &mut World, pos: Vec3, radius: f32, color: [f32; 3],
             radius,
             color,
             flags: byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+            // #2250 — Cornell probes aren't ESM/LIGH-derived; author the
+            // canonical field `render/lights.rs` actually reads directly,
+            // matching `flags` above.
+            shadow_flags: byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
             ..Default::default()
         },
     );
     name_entity(world, light, name);
+}
+
+/// Spawn a named local [`FogVolume`] probe, centered on the entity's own
+/// `GlobalTransform` (`FogBounds::center` left at the origin). `pos` and
+/// `half_extents` are world units, same convention as every mesh probe in
+/// this file. `extinction_per_meter` / `single_scatter_albedo` are
+/// authored exactly like a real content producer would — the collection
+/// path (`render/fog_volumes.rs`) applies the same `WORLD_UNITS_PER_METER`
+/// conversion either way, so there's no Cornell-specific scaling here.
+fn spawn_fog_volume(world: &mut World, pos: Vec3, half_extents: Vec3, name: &str) {
+    let e = world.spawn();
+    world.insert(e, Transform::new(pos, Quat::IDENTITY, 1.0));
+    world.insert(e, GlobalTransform::new(pos, Quat::IDENTITY, 1.0));
+    world.insert(
+        e,
+        FogVolume {
+            bounds: Some(FogBounds {
+                center: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                half_extents,
+                shape: FogShape::Box,
+            }),
+            extinction_per_meter: 40.0,
+            single_scatter_albedo: [0.92, 0.92, 0.97],
+            edge_softness: 0.35,
+            source: FogSource::AuthoredMesh,
+        },
+    );
+    name_entity(world, e, name);
 }
 
 fn name_entity(world: &mut World, entity: byroredux_core::ecs::EntityId, name: &str) {
@@ -635,5 +787,91 @@ mod tests {
             "SkyParamsRes and CellLightingRes must carry the same direction"
         );
         assert!(sky.sun_intensity > 0.0);
+    }
+
+    /// Regression for #2248 (REN-D21-01): `--cornell` must carry a local
+    /// `FogVolume` probe that produces genuinely measurable optical depth
+    /// at the box's own world-unit scale, not the near-zero the global
+    /// fog ramp rounds to over the box's few-unit span (`fog.rs`'s
+    /// `fit_legacy_fog_extinction(100_000.0, 1_000_000.0, ...)` is fit for
+    /// Bethesda-cell distances, not a ~4-8-unit room).
+    #[test]
+    fn fog_volume_probe_is_renderable_and_visible_at_cornell_scale() {
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        spawn_fog_volume(
+            &mut world,
+            Vec3::new(-1.6, 1.6, -0.4),
+            Vec3::new(1.3, 1.3, 1.3),
+            "fog_volume_probe",
+        );
+
+        let volumes = world.query::<FogVolume>().expect("FogVolume storage");
+        let transforms = world
+            .query::<GlobalTransform>()
+            .expect("GlobalTransform storage");
+        let (entity, volume) = volumes
+            .iter()
+            .next()
+            .expect("spawn_fog_volume must insert exactly one FogVolume");
+        assert!(
+            transforms.get(entity).is_some(),
+            "a FogVolume needs a GlobalTransform for the collection query in render/fog_volumes.rs"
+        );
+        assert!(
+            volume.is_renderable(),
+            "probe must satisfy FogVolume::is_renderable (bounds set, finite positive extinction)"
+        );
+
+        // Mirror the CPU→GPU conversion in `render/fog_volumes.rs`
+        // (`extinction_per_meter / WORLD_UNITS_PER_METER`) to check the
+        // resulting per-world-unit density actually produces visible
+        // attenuation across the volume's own extent, instead of the ~0
+        // the Bethesda-cell-scale global ramp rounds to here.
+        let bounds = volume.bounds.expect("checked by is_renderable above");
+        let sigma_t_per_world_unit =
+            volume.extinction_per_meter / crate::fog::WORLD_UNITS_PER_METER;
+        let path_length = 2.0 * bounds.half_extents.min_element();
+        let optical_depth = sigma_t_per_world_unit * path_length;
+        assert!(
+            optical_depth > 0.5,
+            "optical depth {optical_depth} across the probe must be clearly visible \
+             (>0.5), not rounding to ~0 like the global fog ramp does at this scale"
+        );
+    }
+
+    /// Regression for #2249 (REN-D21-03): the Cornell fire-refraction
+    /// probe's normal map must actually vary spatially. A flat/neutral
+    /// normal map would still compile and shade, but `N == macroN` at
+    /// every fragment makes `tangentWarp = N - macroN * dot(N, macroN)`
+    /// structurally zero regardless of authored distortion strength — the
+    /// same silent no-op the missing `mat.set ior` case left uncaught.
+    #[test]
+    fn wavy_normal_map_pixels_vary_and_stay_opaque() {
+        let pixels = wavy_normal_map_pixels(16);
+        assert_eq!(pixels.len(), 16 * 16 * 4);
+
+        let first_rgb = [pixels[0], pixels[1], pixels[2]];
+        let varies = pixels
+            .chunks_exact(4)
+            .any(|p| [p[0], p[1], p[2]] != first_rgb);
+        assert!(
+            varies,
+            "normal map must vary spatially, not be uniformly flat/neutral"
+        );
+        assert!(
+            pixels.chunks_exact(4).all(|p| p[3] == 255),
+            "normal map must be fully opaque"
+        );
+    }
+
+    /// The fire-refraction probe's `Material` must carry the material
+    /// kind + a non-zero authored distortion strength (`ior`) — the
+    /// half of #2249 that doesn't need a normal map to check.
+    #[test]
+    fn fire_refraction_material_carries_kind_and_distortion_strength() {
+        let material = fire_refraction(0.6);
+        assert_eq!(material.material_kind, MATERIAL_KIND_FIRE_REFRACTION);
+        assert_eq!(material.ior, 0.6);
     }
 }
