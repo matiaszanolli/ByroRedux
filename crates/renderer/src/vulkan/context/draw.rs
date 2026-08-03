@@ -505,6 +505,262 @@ fn build_fsr_frame_parameters(
     }))
 }
 
+/// Inputs for [`build_composite_params`] (#2255 / TD1-NEW-02). A named-field
+/// struct rather than positional arguments deliberately — this bundle is
+/// mostly same-typed `f32`s (`fog_near`/`fog_far`/`fog_clip`/`fog_power`/
+/// `fog_extinction_per_meter`/`fog_single_scatter_albedo`/
+/// `fog_height_reference`), and a positional call site could silently
+/// transpose two of them without a type error.
+struct CompositeParamsInputs<'a> {
+    fog_color: [f32; 3],
+    fog_near: f32,
+    fog_far: f32,
+    fog_extinction_per_meter: f32,
+    fog_single_scatter_albedo: f32,
+    fog_clip: f32,
+    fog_power: f32,
+    fog_height_reference: f32,
+    sky_params: &'a SkyParams,
+    exposure_value: f32,
+    frame_counter: u32,
+    volume_far_distance: f32,
+    camera_pos: [f32; 3],
+    render_origin: byroredux_core::math::Vec3,
+    inv_vp_arr: [[f32; 4]; 4],
+    underwater: [f32; 4],
+}
+
+/// Assemble this frame's `CompositeParams` (#2255 / TD1-NEW-02, extracted
+/// from `draw_frame` alongside `build_fsr_frame_parameters` — same
+/// rationale: pure data assembly with no borrow-checker reason to stay
+/// inline). The caller still owns the `composite.upload_params` call and
+/// its error handling; only the field-by-field construction moved here.
+fn build_composite_params(
+    inputs: CompositeParamsInputs<'_>,
+) -> super::super::composite::CompositeParams {
+    let CompositeParamsInputs {
+        fog_color,
+        fog_near,
+        fog_far,
+        fog_extinction_per_meter,
+        fog_single_scatter_albedo,
+        fog_clip,
+        fog_power,
+        fog_height_reference,
+        sky_params,
+        exposure_value,
+        frame_counter,
+        volume_far_distance,
+        camera_pos,
+        render_origin,
+        inv_vp_arr,
+        underwater,
+    } = inputs;
+    super::super::composite::CompositeParams {
+        fog_color: [
+            fog_color[0],
+            fog_color[1],
+            fog_color[2],
+            if fog_extinction_per_meter > 0.0 {
+                1.0
+            } else {
+                0.0
+            },
+        ],
+        // Preserve the legacy curve inputs for diagnostics and an
+        // explicit compatibility path. Runtime composition evaluates
+        // only the engine-native physical medium.
+        fog_params: [fog_near, fog_far, fog_clip, fog_power],
+        depth_params: [
+            if sky_params.is_exterior { 1.0 } else { 0.0 },
+            // Exposure — sourced from the shared exposure producer so
+            // composite and the future FSR dispatch consume one value
+            // (default Bethesda-era HDR target; promote to WTHR field
+            // #743). Falls back to the const when the 1x1 resource
+            // failed to allocate.
+            exposure_value,
+            // #1013 — host-side mirror of the volumetric-output
+            // gate. Composite reads this slot to decide whether
+            // to consume `vol.a` (transmittance) and `vol.rgb`
+            // (in-scattering). Pinned to the host const so a
+            // future flip of `VOLUMETRIC_OUTPUT_CONSUMED` is a
+            // single-line change.
+            if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
+                1.0
+            } else {
+                0.0
+            },
+            (frame_counter & 0x00ff_ffff) as f32,
+        ],
+        volume_params: [
+            volume_far_distance,
+            super::super::volumetrics::LINEAR_DEPTH,
+            super::super::volumetrics::LINEAR_SLICE_FRACTION,
+            1.0 / 1024.0,
+        ],
+        height_fog_params: [
+            fog_extinction_per_meter.max(0.0) / super::super::volumetrics::WORLD_UNITS_PER_METER,
+            super::super::volumetrics::DEFAULT_SCALE_HEIGHT_METERS
+                * super::super::volumetrics::WORLD_UNITS_PER_METER,
+            fog_single_scatter_albedo.clamp(0.0, 1.0),
+            if sky_params.is_exterior && fog_extinction_per_meter > 0.0 {
+                1.0
+            } else {
+                0.0
+            },
+        ],
+        sky_zenith: [
+            sky_params.zenith_color[0],
+            sky_params.zenith_color[1],
+            sky_params.zenith_color[2],
+            sky_params.sun_size,
+        ],
+        sky_horizon: [
+            sky_params.horizon_color[0],
+            sky_params.horizon_color[1],
+            sky_params.horizon_color[2],
+            0.0,
+        ],
+        // #541 — WTHR `SKY_LOWER` group. Pre-fix the
+        // shader faked this as `sky_horizon * 0.3`,
+        // dropping the authored colour entirely.
+        sky_lower: [
+            sky_params.lower_color[0],
+            sky_params.lower_color[1],
+            sky_params.lower_color[2],
+            0.0,
+        ],
+        sun_dir: [
+            sky_params.sun_direction[0],
+            sky_params.sun_direction[1],
+            sky_params.sun_direction[2],
+            sky_params.sun_intensity,
+        ],
+        sun_color: [
+            sky_params.sun_color[0],
+            sky_params.sun_color[1],
+            sky_params.sun_color[2],
+            // #478 — pack the CLMT FNAM sun sprite handle
+            // into the previously-unused w slot via
+            // `from_bits`. The shader reinterprets with
+            // `floatBitsToUint`; `0` keeps the procedural
+            // disc (pre-fix behaviour).
+            f32::from_bits(sky_params.sun_texture_index),
+        ],
+        cloud_params: [
+            sky_params.cloud_scroll[0],
+            sky_params.cloud_scroll[1],
+            sky_params.cloud_tile_scale,
+            f32::from_bits(sky_params.cloud_texture_index),
+        ],
+        cloud_params_1: [
+            sky_params.cloud_scroll_1[0],
+            sky_params.cloud_scroll_1[1],
+            sky_params.cloud_tile_scale_1,
+            f32::from_bits(sky_params.cloud_texture_index_1),
+        ],
+        cloud_params_2: [
+            sky_params.cloud_scroll_2[0],
+            sky_params.cloud_scroll_2[1],
+            sky_params.cloud_tile_scale_2,
+            f32::from_bits(sky_params.cloud_texture_index_2),
+        ],
+        cloud_params_3: [
+            sky_params.cloud_scroll_3[0],
+            sky_params.cloud_scroll_3[1],
+            sky_params.cloud_tile_scale_3,
+            f32::from_bits(sky_params.cloud_texture_index_3),
+        ],
+        // #428 — composite-pass fog needs the camera origin to
+        // compute per-pixel world-space distance from a depth
+        // sample.
+        // #markarth-precision — `inv_view_proj` is the camera-RELATIVE
+        // inverse, so composite reconstructs world in relative space.
+        // It uses that as `length(worldPos - camera_pos)` (fog
+        // distance) + view directions (`screen_to_world_dir` subtracts
+        // `camera_pos` from the unprojected far point, #1490), all
+        // origin-invariant differences, so supply the camera position
+        // in the SAME relative space.
+        //
+        // REN-D16-01 / #2225 — `w` (previously unused padding) now
+        // carries the height-fog reference altitude in the same
+        // render-origin-relative space, consumed by
+        // `heightFogOpticalDepth`'s `baseHeight` parameter instead of
+        // `camera_pos.y` (which made beyond-grid fog follow the
+        // camera's own eye height vertically instead of the ground).
+        camera_pos: [
+            camera_pos[0] - render_origin.x,
+            camera_pos[1] - render_origin.y,
+            camera_pos[2] - render_origin.z,
+            fog_height_reference - render_origin.y,
+        ],
+        inv_view_proj: inv_vp_arr,
+        underwater,
+    }
+}
+
+#[cfg(test)]
+mod composite_params_tests {
+    use super::{build_composite_params, CompositeParamsInputs, SkyParams};
+
+    /// Regression for #2255 (TD1-NEW-02): pin `build_composite_params`'
+    /// field mapping now that it's a standalone, directly-testable
+    /// function (extracted from `draw_frame`). Distinct values per input
+    /// so a transposed pair of same-typed fields (the exact risk a
+    /// positional-argument version of this function would have carried)
+    /// shows up as a wrong value at a specific index, not a silently
+    /// passing test.
+    #[test]
+    fn maps_fog_sky_and_camera_fields_without_transposition() {
+        let sky_params = SkyParams {
+            zenith_color: [0.1, 0.2, 0.3],
+            horizon_color: [0.4, 0.5, 0.6],
+            is_exterior: true,
+            sun_size: 0.9998,
+            ..SkyParams::default()
+        };
+        let params = build_composite_params(CompositeParamsInputs {
+            fog_color: [0.7, 0.8, 0.9],
+            fog_near: 100.0,
+            fog_far: 900.0,
+            fog_extinction_per_meter: 0.05,
+            fog_single_scatter_albedo: 0.6,
+            fog_clip: 111.0,
+            fog_power: 222.0,
+            fog_height_reference: 50.0,
+            sky_params: &sky_params,
+            exposure_value: 1.5,
+            frame_counter: 42,
+            volume_far_distance: 4096.0,
+            camera_pos: [10.0, 20.0, 30.0],
+            render_origin: byroredux_core::math::Vec3::new(1.0, 2.0, 3.0),
+            inv_vp_arr: [[0.0; 4]; 4],
+            underwater: [0.1, 0.2, 0.3, 0.4],
+        });
+
+        // `fog_params` carries near/far/clip/power in that exact order —
+        // the four fields most at risk of a positional transposition.
+        assert_eq!(params.fog_params, [100.0, 900.0, 111.0, 222.0]);
+        // fog_color.w is the extinction-enabled flag, not extinction itself.
+        assert_eq!(params.fog_color, [0.7, 0.8, 0.9, 1.0]);
+        assert_eq!(params.depth_params[0], 1.0, "is_exterior must map through");
+        assert_eq!(
+            params.depth_params[1], 1.5,
+            "exposure_value must map through"
+        );
+        assert_eq!(params.volume_params[0], 4096.0);
+        assert_eq!(params.sky_zenith, [0.1, 0.2, 0.3, 0.9998]);
+        assert_eq!(params.sky_horizon[..3], [0.4, 0.5, 0.6]);
+        // Camera position and height-fog reference must both be
+        // render-origin-relative (#markarth-precision / #2225).
+        assert_eq!(
+            params.camera_pos,
+            [10.0 - 1.0, 20.0 - 2.0, 30.0 - 3.0, 50.0 - 2.0]
+        );
+        assert_eq!(params.underwater, [0.1, 0.2, 0.3, 0.4]);
+    }
+}
+
 #[cfg(test)]
 mod fsr_frame_parameter_tests {
     use super::{build_fsr_frame_parameters, fsr_gated_dof, DofView};
@@ -2501,154 +2757,32 @@ impl VulkanContext {
         // doesn't care when the consumer runs as long as it's been
         // emitted before the consumer.
         if let Some(ref mut composite) = self.composite {
-            let composite_params = super::super::composite::CompositeParams {
-                fog_color: [
-                    fog_color[0],
-                    fog_color[1],
-                    fog_color[2],
-                    if fog_extinction_per_meter > 0.0 {
-                        1.0
-                    } else {
-                        0.0
-                    },
-                ],
-                // Preserve the legacy curve inputs for diagnostics and an
-                // explicit compatibility path. Runtime composition evaluates
-                // only the engine-native physical medium.
-                fog_params: [fog_near, fog_far, fog_clip, fog_power],
-                depth_params: [
-                    if sky_params.is_exterior { 1.0 } else { 0.0 },
-                    // Exposure — sourced from the shared exposure producer so
-                    // composite and the future FSR dispatch consume one value
-                    // (default Bethesda-era HDR target; promote to WTHR field
-                    // #743). Falls back to the const when the 1x1 resource
-                    // failed to allocate.
-                    self.exposure
-                        .as_ref()
-                        .map_or(super::super::exposure::DEFAULT_EXPOSURE, |e| e.value()),
-                    // #1013 — host-side mirror of the volumetric-output
-                    // gate. Composite reads this slot to decide whether
-                    // to consume `vol.a` (transmittance) and `vol.rgb`
-                    // (in-scattering). Pinned to the host const so a
-                    // future flip of `VOLUMETRIC_OUTPUT_CONSUMED` is a
-                    // single-line change.
-                    if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
-                        1.0
-                    } else {
-                        0.0
-                    },
-                    (self.frame_counter & 0x00ff_ffff) as f32,
-                ],
-                volume_params: [
-                    self.volumetrics
-                        .as_ref()
-                        .map_or(super::super::volumetrics::DEFAULT_VOLUME_FAR, |volume| {
-                            volume.far_distance_world()
-                        }),
-                    super::super::volumetrics::LINEAR_DEPTH,
-                    super::super::volumetrics::LINEAR_SLICE_FRACTION,
-                    1.0 / 1024.0,
-                ],
-                height_fog_params: [
-                    fog_extinction_per_meter.max(0.0)
-                        / super::super::volumetrics::WORLD_UNITS_PER_METER,
-                    super::super::volumetrics::DEFAULT_SCALE_HEIGHT_METERS
-                        * super::super::volumetrics::WORLD_UNITS_PER_METER,
-                    fog_single_scatter_albedo.clamp(0.0, 1.0),
-                    if sky_params.is_exterior && fog_extinction_per_meter > 0.0 {
-                        1.0
-                    } else {
-                        0.0
-                    },
-                ],
-                sky_zenith: [
-                    sky_params.zenith_color[0],
-                    sky_params.zenith_color[1],
-                    sky_params.zenith_color[2],
-                    sky_params.sun_size,
-                ],
-                sky_horizon: [
-                    sky_params.horizon_color[0],
-                    sky_params.horizon_color[1],
-                    sky_params.horizon_color[2],
-                    0.0,
-                ],
-                // #541 — WTHR `SKY_LOWER` group. Pre-fix the
-                // shader faked this as `sky_horizon * 0.3`,
-                // dropping the authored colour entirely.
-                sky_lower: [
-                    sky_params.lower_color[0],
-                    sky_params.lower_color[1],
-                    sky_params.lower_color[2],
-                    0.0,
-                ],
-                sun_dir: [
-                    sky_params.sun_direction[0],
-                    sky_params.sun_direction[1],
-                    sky_params.sun_direction[2],
-                    sky_params.sun_intensity,
-                ],
-                sun_color: [
-                    sky_params.sun_color[0],
-                    sky_params.sun_color[1],
-                    sky_params.sun_color[2],
-                    // #478 — pack the CLMT FNAM sun sprite handle
-                    // into the previously-unused w slot via
-                    // `from_bits`. The shader reinterprets with
-                    // `floatBitsToUint`; `0` keeps the procedural
-                    // disc (pre-fix behaviour).
-                    f32::from_bits(sky_params.sun_texture_index),
-                ],
-                cloud_params: [
-                    sky_params.cloud_scroll[0],
-                    sky_params.cloud_scroll[1],
-                    sky_params.cloud_tile_scale,
-                    f32::from_bits(sky_params.cloud_texture_index),
-                ],
-                cloud_params_1: [
-                    sky_params.cloud_scroll_1[0],
-                    sky_params.cloud_scroll_1[1],
-                    sky_params.cloud_tile_scale_1,
-                    f32::from_bits(sky_params.cloud_texture_index_1),
-                ],
-                cloud_params_2: [
-                    sky_params.cloud_scroll_2[0],
-                    sky_params.cloud_scroll_2[1],
-                    sky_params.cloud_tile_scale_2,
-                    f32::from_bits(sky_params.cloud_texture_index_2),
-                ],
-                cloud_params_3: [
-                    sky_params.cloud_scroll_3[0],
-                    sky_params.cloud_scroll_3[1],
-                    sky_params.cloud_tile_scale_3,
-                    f32::from_bits(sky_params.cloud_texture_index_3),
-                ],
-                // #428 — composite-pass fog needs the camera origin to
-                // compute per-pixel world-space distance from a depth
-                // sample.
-                // #markarth-precision — `inv_view_proj` is the camera-RELATIVE
-                // inverse, so composite reconstructs world in relative space.
-                // It uses that as `length(worldPos - camera_pos)` (fog
-                // distance) + view directions (`screen_to_world_dir` subtracts
-                // `camera_pos` from the unprojected far point, #1490), all
-                // origin-invariant differences, so supply the camera position
-                // in the SAME relative space.
-                //
-                // REN-D16-01 / #2225 — `w` (previously unused padding) now
-                // carries the height-fog reference altitude in the same
-                // render-origin-relative space, consumed by
-                // `heightFogOpticalDepth`'s `baseHeight` parameter instead of
-                // `camera_pos.y` (which made beyond-grid fog follow the
-                // camera's own eye height vertically instead of the ground).
-                camera_pos: [
-                    camera_pos[0] - render_origin.x,
-                    camera_pos[1] - render_origin.y,
-                    camera_pos[2] - render_origin.z,
-                    fog_height_reference - render_origin.y,
-                ],
-                inv_view_proj: inv_vp_arr,
+            let composite_params = build_composite_params(CompositeParamsInputs {
+                fog_color,
+                fog_near,
+                fog_far,
+                fog_extinction_per_meter,
+                fog_single_scatter_albedo,
+                fog_clip,
+                fog_power,
+                fog_height_reference,
+                sky_params,
+                exposure_value: self
+                    .exposure
+                    .as_ref()
+                    .map_or(super::super::exposure::DEFAULT_EXPOSURE, |e| e.value()),
+                frame_counter: self.frame_counter,
+                volume_far_distance: self
+                    .volumetrics
+                    .as_ref()
+                    .map_or(super::super::volumetrics::DEFAULT_VOLUME_FAR, |volume| {
+                        volume.far_distance_world()
+                    }),
+                camera_pos,
+                render_origin,
+                inv_vp_arr,
                 underwater,
-            };
+            });
             if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
                 log::warn!("composite upload_params failed: {e}");
             }
