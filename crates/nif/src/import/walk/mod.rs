@@ -881,6 +881,13 @@ pub(super) struct FlatWalkCtx<'a> {
     pub collisions: Option<&'a mut Vec<ImportedCollision>>,
     pub pool: &'a mut StringPool,
     pub resolver: Option<&'a dyn MeshResolver>,
+    /// #2206 / NIFAL-D4-02 — nearest-ancestor `NiBillboardNode` mode on
+    /// the current path from the walk root, or `None` if no ancestor
+    /// (including the current node) is a billboard node. Set on every
+    /// leaf mesh pushed to `out` while this is `Some`. `Copy`, so callers
+    /// save/restore it around a recursive descent exactly like
+    /// `inherited_props`'s push/truncate, just without the `Vec`.
+    pub inherited_billboard: Option<u16>,
 }
 
 /// Recursively walk the scene graph, accumulating world-space transforms (flat, no hierarchy).
@@ -979,12 +986,25 @@ pub(super) fn walk_node_flat(
 
         let prev_len = ctx.inherited_props.len();
         ctx.inherited_props.extend_from_slice(&node.av.properties);
+        // #2206 / NIFAL-D4-02 — `as_ni_node` unwraps `NiBillboardNode` to
+        // its plain `NiNode` base, so `block` (the untyped original) is
+        // the only way left to tell this node was a billboard.
+        // `extract_billboard_mode` already does this downcast for the
+        // hierarchical walker; reuse it here so both walkers agree on
+        // the pre/post-10.1.0.0 mode normalization. Save/restore around
+        // the recursion the same way `inherited_props` does, so a
+        // billboard subtree's mode doesn't leak to its siblings.
+        let prev_billboard = ctx.inherited_billboard;
+        if let Some(mode) = extract_billboard_mode(block, node.av.flags) {
+            ctx.inherited_billboard = Some(mode);
+        }
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
                 walk_node_flat(ctx, idx, &world_transform, depth + 1);
             }
         }
         ctx.inherited_props.truncate(prev_len);
+        ctx.inherited_billboard = prev_billboard;
         return;
     }
 
@@ -1044,13 +1064,14 @@ pub(super) fn walk_node_flat(
             shape.av.collision_ref,
             &world_transform,
         );
-        if let Some(mesh) = extract_mesh(
+        if let Some(mut mesh) = extract_mesh(
             scene,
             shape,
             &world_transform,
             ctx.inherited_props,
             ctx.pool,
         ) {
+            mesh.billboard_mode = ctx.inherited_billboard;
             ctx.out.push(mesh);
         }
     }
@@ -1081,7 +1102,8 @@ pub(super) fn walk_node_flat(
             shape.av.collision_ref,
             &world_transform,
         );
-        if let Some(mesh) = extract_bs_tri_shape(scene, shape, &world_transform, ctx.pool) {
+        if let Some(mut mesh) = extract_bs_tri_shape(scene, shape, &world_transform, ctx.pool) {
+            mesh.billboard_mode = ctx.inherited_billboard;
             ctx.out.push(mesh);
         }
     }
@@ -1103,13 +1125,14 @@ pub(super) fn walk_node_flat(
             shape.av.collision_ref,
             &world_transform,
         );
-        if let Some(mesh) = extract_mesh(
+        if let Some(mut mesh) = extract_mesh(
             scene,
             shape,
             &world_transform,
             ctx.inherited_props,
             ctx.pool,
         ) {
+            mesh.billboard_mode = ctx.inherited_billboard;
             ctx.out.push(mesh);
         }
     }
@@ -1128,8 +1151,10 @@ pub(super) fn walk_node_flat(
             shape.av.collision_ref,
             &world_transform,
         );
-        if let Some(mesh) = extract_bs_geometry(scene, shape, &world_transform, ctx.pool, resolver)
+        if let Some(mut mesh) =
+            extract_bs_geometry(scene, shape, &world_transform, ctx.pool, resolver)
         {
+            mesh.billboard_mode = ctx.inherited_billboard;
             ctx.out.push(mesh);
         }
     }

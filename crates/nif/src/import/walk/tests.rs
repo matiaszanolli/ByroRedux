@@ -634,6 +634,7 @@ mod recursion_depth_tests {
             collisions: None,
             pool: &mut pool,
             resolver: None,
+            inherited_billboard: None,
         };
         walk_node_flat(&mut ctx, 0, &NiTransform::default(), 0);
         // Nothing to assert on the mesh side (chain has no geometry);

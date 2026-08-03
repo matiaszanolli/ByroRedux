@@ -269,6 +269,7 @@ pub fn extract_bs_geometry(
         flags: shape.av.flags,
         bs_lod_cutoffs: None,
         bs_sub_index: None,
+        billboard_mode: None,
     })
 }
 

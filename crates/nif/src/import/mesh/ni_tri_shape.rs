@@ -204,6 +204,7 @@ pub fn extract_mesh(
         flags: shape.av.flags,
         bs_lod_cutoffs: None,
         bs_sub_index: None,
+        billboard_mode: None,
     })
 }
 

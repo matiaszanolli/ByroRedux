@@ -416,6 +416,7 @@ fn import_nif_impl(
         collisions: None,
         pool,
         resolver,
+        inherited_billboard: None,
     };
     walk::walk_node_flat(&mut flat_ctx, root_idx, &NiTransform::default(), 0);
     meshes
@@ -561,6 +562,7 @@ fn import_nif_with_collision_impl(
         collisions: Some(&mut collisions),
         pool,
         resolver,
+        inherited_billboard: None,
     };
     walk::walk_node_flat(&mut flat_ctx, root_idx, &NiTransform::default(), 0);
     (meshes, collisions)

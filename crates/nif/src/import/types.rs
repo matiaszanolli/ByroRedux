@@ -653,6 +653,16 @@ pub struct ImportedMesh {
     /// (deferred) has nothing to consume. `None` on every non-SubIndex
     /// BSTriShape and every NiTriShape / BSGeometry.
     pub bs_sub_index: Option<BsSubIndexTriShapeData>,
+    /// #2206 / NIFAL-D4-02 — nearest-ancestor `NiBillboardNode` mode, set
+    /// by `walk_node_flat` when this mesh sits anywhere beneath one.
+    /// `ImportedNode::billboard_mode` (above) carries the same data on the
+    /// hierarchical (loose-NIF) walk, which spawns one entity per NIF node
+    /// and can attach `Billboard` directly on the billboard node's own
+    /// entity; the flat (cell-loader) walk spawns one entity per *mesh*
+    /// with no node entities at all, so the mode has to ride along on the
+    /// mesh instead. `None` for the vast majority of meshes (no billboard
+    /// ancestor).
+    pub billboard_mode: Option<u16>,
 }
 
 impl ImportedMesh {
@@ -707,6 +717,7 @@ impl ImportedMesh {
             flags: 0,
             bs_lod_cutoffs: None,
             bs_sub_index: None,
+            billboard_mode: None,
         }
     }
 }

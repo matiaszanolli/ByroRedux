@@ -8,8 +8,8 @@
 
 use byroredux_core::ecs::components::FormIdComponent;
 use byroredux_core::ecs::{
-    BSXFlags, Billboard, GlobalTransform, LightSource, LocalBound, MeshHandle, SceneFlags,
-    TextureHandle, Transform, World, WorldBound,
+    BSXFlags, Billboard, BillboardMode, GlobalTransform, LightSource, LocalBound, MeshHandle,
+    SceneFlags, TextureHandle, Transform, World, WorldBound,
 };
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
@@ -1251,6 +1251,14 @@ fn spawn_mesh_instance(
     // for downstream consumers.
     if mesh.flags != 0 {
         world.insert(entity, SceneFlags::from_nif(mesh.flags));
+    }
+    // #2206 / NIFAL-D4-02 — per-mesh parity with the loose-NIF loader
+    // (`scene/nif_loader.rs`'s `node.billboard_mode` attach). The flat
+    // cell-loader walk spawns one entity per mesh with no node entities
+    // at all, so the nearest-ancestor `NiBillboardNode` mode set by
+    // `walk_node_flat` rides on the mesh itself instead of a node.
+    if let Some(raw) = mesh.billboard_mode {
+        world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
     }
     // Parent/Children edge → embedded animation clip's subtree
     // walk discovers this mesh through `placement_root`.

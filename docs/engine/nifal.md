@@ -118,6 +118,22 @@ paths handle nodes structurally differently (the loose-NIF loader spawns the ful
 NiNode hierarchy as entities; the cell loader uses a flattened placement-root), so
 there is no single `translate_node` boundary to collapse them into.
 
+Was **half-stale 2026-05-28 → 2026-08-03** (NIFAL-D4-02 / #2206) for
+`billboard_mode` specifically: that claim held for the loose-NIF path
+(`ImportedNode::billboard_mode` → `Billboard`, `scene/nif_loader.rs`) but not the
+cell-loader path — `walk_node_flat` never produces `ImportedNode`s at all (it's a
+flat mesh list, not a hierarchy), so `CachedNifImport::placement_root_billboard`
+sat hardcoded `None` and no cell-loaded `NiBillboardNode` (213–1,527 vanilla
+instances per game archive) ever rotated to face the camera. Four prior audit
+sweeps restated the PASS from this doc's prose instead of the code. Fixed by
+propagating the nearest-ancestor billboard mode onto `ImportedMesh` itself in
+`walk_node_flat` (the flat walk's per-mesh sibling of `ImportedNode::
+billboard_mode`) and attaching `Billboard` per mesh entity in
+`byroredux/src/cell_loader/spawn.rs`, reusing the #1235 `flags`-parity pattern.
+The `.spt` SpeedTree placeholder path (#994) is unaffected — it never goes
+through `walk_node_flat` and keeps using `placement_root_billboard` on its own
+single-node scene.
+
 Four fields are **raw-tier-parked with translation formally deferred** — verified
 (2026-05-28) to have *zero* engine consumers. They are NOT leaks: they sit on the
 raw `ImportedNode` (which the tier model permits to carry per-game data) and have
