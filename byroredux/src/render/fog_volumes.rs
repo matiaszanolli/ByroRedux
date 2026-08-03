@@ -82,6 +82,25 @@ fn gpu_volume_from_ecs(volume: FogVolume, transform: GlobalTransform) -> Option<
     if !center.is_finite() {
         return None;
     }
+    // #2235 (REN-D10-01) — fog volumes are a new absolute-world-space GPU
+    // consumer: `GpuFogVolume::center_shape` is authored/uploaded/sampled in
+    // absolute coordinates (`volumetrics_inject.comp` subtracts it directly
+    // from the absolute `world_pos`, unlike the render-origin-relative
+    // raster path). It therefore inherits the same RT absolute-space f32
+    // precision ceiling every other absolute-space consumer is guarded
+    // against — see `RT_ABSOLUTE_PRECISION_CEILING` / #1495 and
+    // docs/engine/shader-pipeline.md "Coordinate Spaces & Precision" ("Any
+    // future absolute-space shader consumer inherits this same ceiling").
+    // Never fires on vanilla content; catches a fog volume authored (or a
+    // render_origin rebase bug) far enough from the origin to silently
+    // degrade into visible jitter/banding.
+    debug_assert!(
+        center.abs().max_element() < crate::cell_loader::references::RT_ABSOLUTE_PRECISION_CEILING,
+        "fog volume center {center:?} reaches the RT absolute-space f32 \
+         precision ceiling ({:.0} u): see #1495 / #2235 / \
+         docs/engine/shader-pipeline.md.",
+        crate::cell_loader::references::RT_ABSOLUTE_PRECISION_CEILING,
+    );
 
     let shape = match bounds.shape {
         FogShape::Sphere => 0.0,
@@ -144,5 +163,37 @@ mod tests {
             source: FogSource::Xcll,
         };
         assert!(gpu_volume_from_ecs(volume, GlobalTransform::IDENTITY).is_none());
+    }
+
+    /// Regression for #2235 (REN-D10-01): a fog volume authored (or
+    /// rebased) far enough from the origin to reach the RT absolute-space
+    /// f32 precision ceiling must fail loud in debug builds, matching every
+    /// other absolute-space consumer guarded by
+    /// `RT_ABSOLUTE_PRECISION_CEILING` (#1495).
+    #[test]
+    #[cfg(debug_assertions)]
+    fn center_beyond_rt_precision_ceiling_asserts() {
+        let volume = FogVolume {
+            bounds: Some(FogBounds {
+                center: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                half_extents: Vec3::splat(3.0),
+                shape: FogShape::Sphere,
+            }),
+            extinction_per_meter: 0.5,
+            single_scatter_albedo: [0.9; 3],
+            edge_softness: 0.4,
+            source: FogSource::ParticleEmitter,
+        };
+        let far_translation =
+            Vec3::splat(crate::cell_loader::references::RT_ABSOLUTE_PRECISION_CEILING * 2.0);
+        let transform = GlobalTransform::new(far_translation, Quat::IDENTITY, 1.0);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            gpu_volume_from_ecs(volume, transform)
+        }));
+        assert!(
+            result.is_err(),
+            "fog volume beyond the RT absolute-space precision ceiling must debug_assert"
+        );
     }
 }

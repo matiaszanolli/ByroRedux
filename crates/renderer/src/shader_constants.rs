@@ -99,6 +99,11 @@ mod tests {
             ("CLUSTER_SLICES_Z", format!("#define CLUSTER_SLICES_Z {CLUSTER_SLICES_Z}u")),
             ("MAX_LIGHTS_PER_CLUSTER", format!("#define MAX_LIGHTS_PER_CLUSTER {MAX_LIGHTS_PER_CLUSTER}u")),
             ("VERTEX_STRIDE_FLOATS", format!("#define VERTEX_STRIDE_FLOATS {VERTEX_STRIDE_FLOATS}u")),
+            // #2234 (REN-D9-01) — was emitted by build.rs but missing from
+            // this pin-list, unlike its VERTEX_STRIDE_FLOATS/MAX_BONES_PER_MESH/
+            // SKIN_WORKGROUP_SIZE siblings that bake into the same skin
+            // compute shader's committed `.spv`.
+            ("SKIN_OUTPUT_STRIDE_FLOATS", format!("#define SKIN_OUTPUT_STRIDE_FLOATS {SKIN_OUTPUT_STRIDE_FLOATS}u")),
             ("MAX_BONES_PER_MESH", format!("#define MAX_BONES_PER_MESH {MAX_BONES_PER_MESH}u")),
             // No `u` suffix — used in a `layout(local_size_x = …)` qualifier (#1758).
             ("SKIN_WORKGROUP_SIZE", format!("#define SKIN_WORKGROUP_SIZE {SKIN_WORKGROUP_SIZE}")),

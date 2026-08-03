@@ -281,6 +281,37 @@ fn fire_refraction_composes_between_opaque_and_effect_draws() {
     );
 }
 
+/// Regression for #2237 (REN-D12-02): the fire-refraction composition-phase
+/// override is scoped to `MATERIAL_KIND_EFFECT_SHADER` (its flame cards)
+/// only. An unrelated alpha-blended transparent sharing screen space with a
+/// fire-refraction proxy (e.g. a glass pane) must still sort by normal
+/// back-to-front depth against the proxy, not be globally forced after it.
+#[test]
+fn fire_refraction_sorts_by_depth_against_unrelated_glass() {
+    use byroredux_renderer::{MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS};
+
+    let mut fire_refraction = cmd(true, false, true);
+    fire_refraction.material_kind = MATERIAL_KIND_FIRE_REFRACTION;
+    fire_refraction.dst_blend = 7;
+    fire_refraction.sort_depth = 100; // nearer
+    fire_refraction.entity_id = 1;
+
+    let mut glass_behind = cmd(true, false, true);
+    glass_behind.material_kind = MATERIAL_KIND_GLASS;
+    glass_behind.dst_blend = 7;
+    glass_behind.sort_depth = 900; // farther — must draw first
+    glass_behind.entity_id = 2;
+
+    let mut cmds = vec![fire_refraction, glass_behind];
+    cmds.sort_by_key(draw_sort_key);
+
+    assert_eq!(
+        cmds.iter().map(|c| c.entity_id).collect::<Vec<_>>(),
+        vec![2, 1],
+        "farther glass draws before the nearer fire-refraction proxy, by depth"
+    );
+}
+
 /// Regression for #1649: additive (Gamebryo `dst_blend == ONE == 0`) is
 /// order-independent, so same-mesh additive draws (e.g. an emitter's
 /// particle billboards) must sort *contiguously by mesh* — not depth-

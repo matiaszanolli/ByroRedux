@@ -106,7 +106,7 @@ impl ReferenceLoadJob {
 /// ≈ ±233 k), so a cell past it is a future mega-worldspace that would
 /// silently degrade RT. See docs/engine/shader-pipeline.md "Coordinate
 /// Spaces & Precision".
-const RT_ABSOLUTE_PRECISION_CEILING: f32 = 1_048_576.0; // 2^20
+pub(crate) const RT_ABSOLUTE_PRECISION_CEILING: f32 = 1_048_576.0; // 2^20
 
 /// Returns the cell's largest absolute world-coordinate magnitude when
 /// it reaches [`RT_ABSOLUTE_PRECISION_CEILING`], else `None`. `None` for

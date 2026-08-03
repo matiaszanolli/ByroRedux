@@ -68,7 +68,7 @@ mod object_lod;
 mod partial;
 mod placement_lod;
 pub(crate) mod precombined;
-mod references;
+pub(crate) mod references;
 mod refr;
 mod spawn;
 mod terrain;

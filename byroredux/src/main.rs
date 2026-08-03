@@ -14,7 +14,7 @@ mod app_step;
 mod asset_provider;
 mod bench_camera;
 mod boot;
-mod cell_loader;
+pub(crate) mod cell_loader;
 mod cli_args;
 mod commands;
 mod components;

@@ -903,6 +903,16 @@ void main() {
         // Directional warp remains linear/authored-strength; strength² only
         // suppresses exposure disagreement at the proxy mesh boundary.
         float proxyCoverage = distortionStrength * distortionStrength;
+        // The normal attachment is written with blending disabled (unlike
+        // outAlbedo/outRawIndirect, which fade to zero via their own
+        // coverage-blend state), so there is no fixed-function way to fade
+        // this proxy's macro normal toward the receiver's. Below a visible
+        // threshold, discard instead: it leaves every G-buffer attachment
+        // (including the opaque receiver's real normal) untouched rather
+        // than replacing it with the proxy's approximate one — REN-D11-02.
+        if (proxyCoverage < 0.01) {
+            discard;
+        }
         outColor = vec4(distortedScene.rgb, proxyCoverage);
         outNormal = octEncode(macroN);
         // The blended pipeline uses auxiliary-output alpha as coverage.

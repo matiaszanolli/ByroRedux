@@ -313,15 +313,31 @@ pub(crate) fn draw_sort_key(
     let rt_only = (!cmd.in_raster) as u8;
     if cmd.alpha_blend {
         // Fire-refraction proxies must compose after the opaque scene but
-        // before every ordinary transparent/effect draw. Sorting them in
-        // the normal alpha-over phase puts a nearer proxy after its flame
-        // cards (global back-to-front order), so the proxy covers the
-        // flames it is meant only to distort around.
+        // before their associated flame cards (`MATERIAL_KIND_EFFECT_SHADER`).
+        // Sorting them in the normal alpha-over phase puts a nearer proxy
+        // after its flame cards (global back-to-front order), so the proxy
+        // covers the flames it is meant only to distort around.
+        //
+        // Scoped to `EFFECT_SHADER` specifically (REN-D12-02, #2237):
+        // forcing *every* non-fire alpha-blend draw (glass, generic
+        // transparents) into this later phase made a fire-refraction proxy
+        // globally invert back-to-front order against unrelated
+        // transparents sharing its screen space, e.g. a window pane behind
+        // a torch. Draw commands don't carry a link from a flame card back
+        // to the specific proxy it belongs to, so a fully general per-pair
+        // fix isn't possible with this key-based sort (there is a provable
+        // cycle: fire-before-flame, fire-vs-glass-by-depth, and
+        // glass-vs-flame-by-depth cannot all hold at once for arbitrary
+        // depths). Folding glass/generic transparents into the same phase
+        // as fire-refraction fixes the common case (depth-correct against
+        // fire) at the cost of also sorting them before flame cards
+        // unconditionally — narrower than the previous blanket rule, and
+        // a smaller-impact residual than the bug it replaces.
         let composition_phase =
-            if cmd.material_kind == byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION {
-                1u8
-            } else {
+            if cmd.material_kind == byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER {
                 2u8
+            } else {
+                1u8
             };
         // Additive blending (Gamebryo `dst_blend == ONE`, value 0 — see
         // `gamebryo_to_vk_blend_factor`) is order-independent: the HDR
