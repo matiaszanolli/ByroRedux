@@ -611,3 +611,26 @@ fn apply_vertex_color_property(scene: &NifScene, idx: usize, info: &mut Material
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shader_flags::fo3nv_f1::{
+        ENVIRONMENT_MAPPING, EYE_ENVIRONMENT_MAPPING, WINDOW_ENVIRONMENT_MAPPING,
+    };
+
+    /// #2315 — the on-disk scalar defaults to 1.0 even when no environment
+    /// mapping was authored. Every legacy shader branch shares this gate, so
+    /// pin both the inactive default and all three authoring variants here.
+    #[test]
+    fn legacy_environment_map_scale_requires_an_authored_mapping_flag() {
+        assert_eq!(legacy_env_map_scale(0, 0.85), 0.0);
+        for flag in [
+            ENVIRONMENT_MAPPING,
+            EYE_ENVIRONMENT_MAPPING,
+            WINDOW_ENVIRONMENT_MAPPING,
+        ] {
+            assert_eq!(legacy_env_map_scale(flag, 0.85), 0.85);
+        }
+    }
+}

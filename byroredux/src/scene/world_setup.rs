@@ -508,18 +508,36 @@ pub(crate) fn stream_initial_radius(
     cy: i32,
     mode: ExteriorBootstrapMode,
 ) -> Vec3 {
-    if state.persistent_root.is_none() {
+    if state.persistent_root.is_none() && state.persistent_apply.is_none() {
         let wctx = state.wctx.clone();
-        let tex_provider = state.tex_provider.clone();
-        state.persistent_root = crate::cell_loader::load_worldspace_persistent_cell(
+        if let Some(job) = crate::cell_loader::begin_worldspace_persistent_cell(
             wctx.as_ref(),
             (cx, cy),
             state.radius_load,
             world,
-            ctx,
-            tex_provider.as_ref(),
-            Some(&mut state.mat_provider),
-        );
+        ) {
+            state.persistent_root = Some(job.cell_root());
+            state.persistent_apply = Some(job);
+        }
+    }
+    if mode == ExteriorBootstrapMode::FullRadius {
+        if let Some(job) = state.persistent_apply.take() {
+            let wctx = state.wctx.clone();
+            let mut budget = crate::cell_loader::FrameTimeBudget::unlimited();
+            match job.advance(
+                wctx.as_ref(),
+                world,
+                ctx,
+                state.tex_provider.as_ref(),
+                Some(&mut state.mat_provider),
+                &mut budget,
+            ) {
+                crate::cell_loader::PersistentCellApplyProgress::Complete => {}
+                crate::cell_loader::PersistentCellApplyProgress::Pending(_) => {
+                    unreachable!("an unlimited persistent-CELL budget cannot yield")
+                }
+            }
+        }
     }
 
     let deltas = streaming::compute_streaming_deltas(

@@ -14,8 +14,7 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 use super::load::{register_cell_root, stamp_cell_root_range};
 use super::load_order::parse_record_indexes_in_load_order;
 use super::references::{
-    flush_pending_cell_textures, load_references, load_references_budgeted, ReferenceLoadJob,
-    ReferenceLoadProgress,
+    flush_pending_cell_textures, load_references_budgeted, ReferenceLoadJob, ReferenceLoadProgress,
 };
 use super::{terrain, water, FrameTimeBudget};
 
@@ -72,22 +71,197 @@ pub struct OneCellLoadInfo {
     pub center: Vec3,
 }
 
-/// Spawn the active worldspace's persistent CELL once, outside the
+/// Resumable main-thread apply for the active worldspace's persistent CELL.
+pub(crate) struct PersistentCellApplyJob {
+    cell_root: EntityId,
+    cell_form_id: u32,
+    authored_ref_count: usize,
+    first_entity: EntityId,
+    local_refs: Vec<byroredux_plugin::esm::cell::PlacedRef>,
+    remote_actor_refs: Vec<byroredux_plugin::esm::cell::PlacedRef>,
+    references: Option<Box<ReferenceLoadJob>>,
+    reference_entity_count: Option<usize>,
+    logical_stub_refs: Vec<byroredux_plugin::esm::cell::PlacedRef>,
+    next_logical_stub: usize,
+    local_actor_3d: usize,
+    local_actor_count: usize,
+}
+
+pub(crate) enum PersistentCellApplyProgress {
+    Pending(PersistentCellApplyJob),
+    Complete,
+}
+
+impl PersistentCellApplyJob {
+    pub(crate) fn cell_root(&self) -> EntityId {
+        self.cell_root
+    }
+
+    pub(crate) fn advance(
+        mut self,
+        wctx: &ExteriorWorldContext,
+        world: &mut World,
+        ctx: &mut VulkanContext,
+        tex_provider: &TextureProvider,
+        mat_provider: Option<&mut MaterialProvider>,
+        budget: &mut FrameTimeBudget,
+    ) -> PersistentCellApplyProgress {
+        if self.reference_entity_count.is_none() {
+            let result = load_references_budgeted(
+                &self.local_refs,
+                &wctx.record_index.cells,
+                &wctx.record_index,
+                &wctx.record_index.npcs,
+                &wctx.record_index.races,
+                wctx.record_index.game,
+                world,
+                ctx,
+                tex_provider,
+                mat_provider,
+                &format!("{} persistent", wctx.worldspace_key),
+                wctx.load_order.as_ref(),
+                &std::collections::HashSet::new(),
+                self.references.take(),
+                budget,
+            );
+            match result {
+                ReferenceLoadProgress::Pending(references) => {
+                    self.references = Some(references);
+                    stamp_cell_root_range(
+                        world,
+                        self.cell_root,
+                        self.first_entity,
+                        world.next_entity_id(),
+                    );
+                    flush_pending_cell_textures(ctx);
+                    return PersistentCellApplyProgress::Pending(self);
+                }
+                ReferenceLoadProgress::Complete(result) => {
+                    self.reference_entity_count = Some(result.entity_count);
+                    self.prepare_logical_actor_stubs(wctx, world);
+                }
+            }
+        }
+
+        while self.next_logical_stub < self.logical_stub_refs.len() {
+            if budget.should_yield() {
+                stamp_cell_root_range(
+                    world,
+                    self.cell_root,
+                    self.first_entity,
+                    world.next_entity_id(),
+                );
+                flush_pending_cell_textures(ctx);
+                return PersistentCellApplyProgress::Pending(self);
+            }
+            let placed = &self.logical_stub_refs[self.next_logical_stub];
+            let entity = world.spawn();
+            let plugin_name =
+                super::load_order::plugin_for_form_id(placed.form_id, &wctx.load_order)
+                    .unwrap_or("Engine.esm");
+            let form_id = world
+                .resource_mut::<byroredux_core::form_id::FormIdPool>()
+                .intern(byroredux_core::form_id::FormIdPair {
+                    plugin: byroredux_core::form_id::PluginId::from_filename(plugin_name),
+                    local: byroredux_core::form_id::LocalFormId(placed.form_id),
+                });
+            world.insert(
+                entity,
+                byroredux_core::ecs::components::FormIdComponent(form_id),
+            );
+            world.insert(
+                entity,
+                byroredux_scripting::SceneAliasCandidate {
+                    reference_form_id: placed.form_id,
+                    base_form_id: placed.base_form_id,
+                    location_ref_types: placed.location_ref_types.clone(),
+                },
+            );
+            self.next_logical_stub += 1;
+            budget.complete_unit();
+        }
+
+        if !self.logical_stub_refs.is_empty() {
+            byroredux_scripting::mark_scene_actor_bindings_dirty(world);
+        }
+        stamp_cell_root_range(
+            world,
+            self.cell_root,
+            self.first_entity,
+            world.next_entity_id(),
+        );
+        flush_pending_cell_textures(ctx);
+        log::info!(target: "engine::scene_persistent",
+            "Worldspace '{}' persistent CELL {:08X}: {} local refs -> {} entities; {}/{} local actors have 3D, {} logical-only actor identities ({} authored refs total)",
+            wctx.worldspace_key,
+            self.cell_form_id,
+            self.local_refs.len(),
+            self.reference_entity_count.unwrap_or(0),
+            self.local_actor_3d,
+            self.local_actor_count,
+            self.logical_stub_refs.len(),
+            self.authored_ref_count,
+        );
+        PersistentCellApplyProgress::Complete
+    }
+
+    fn prepare_logical_actor_stubs(&mut self, wctx: &ExteriorWorldContext, world: &World) {
+        let live_actor_candidates: std::collections::HashMap<u32, (EntityId, bool)> = world
+            .query::<byroredux_scripting::SceneAliasCandidate>()
+            .map(|query| {
+                query
+                    .iter()
+                    .map(|(entity, candidate)| {
+                        (
+                            candidate.reference_form_id,
+                            (
+                                entity,
+                                world.has::<byroredux_core::ecs::GlobalTransform>(entity),
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let local_actor_refs: Vec<_> = self
+            .local_refs
+            .iter()
+            .filter(|placed| wctx.record_index.npcs.contains_key(&placed.base_form_id))
+            .collect();
+        self.local_actor_count = local_actor_refs.len();
+        self.local_actor_3d = local_actor_refs
+            .iter()
+            .filter(|placed| {
+                live_actor_candidates
+                    .get(&placed.form_id)
+                    .is_some_and(|(_, loaded_3d)| *loaded_3d)
+            })
+            .count();
+        self.logical_stub_refs.append(&mut self.remote_actor_refs);
+        self.logical_stub_refs.extend(
+            local_actor_refs
+                .into_iter()
+                .filter(|placed| !live_actor_candidates.contains_key(&placed.form_id))
+                .cloned(),
+        );
+    }
+}
+
+/// Begin spawning the active worldspace's persistent CELL once, outside the
 /// coordinate-streamed tile set.
 ///
 /// Bethesda stores globally persistent exterior actors here (Skyrim's
 /// Hadvar/Ralof ACHRs are the MQ101-critical examples). Giving the CELL its
 /// own root keeps those entities alive across ordinary tile unloads while
-/// still making the whole set reclaimable on a worldspace transition.
-pub fn load_worldspace_persistent_cell(
+/// still making the whole set reclaimable on a worldspace transition. The
+/// returned job shares the steady-state reference budget so large persistent
+/// cells cannot monopolize the startup frame (#2275).
+pub(crate) fn begin_worldspace_persistent_cell(
     wctx: &ExteriorWorldContext,
     center_grid: (i32, i32),
     full_3d_radius: i32,
     world: &mut World,
-    ctx: &mut VulkanContext,
-    tex_provider: &TextureProvider,
-    mat_provider: Option<&mut MaterialProvider>,
-) -> Option<EntityId> {
+) -> Option<PersistentCellApplyJob> {
     super::load::ensure_globals_resource(world, &wctx.record_index.globals);
     let index = &wctx.record_index.cells;
     let cell = index
@@ -100,7 +274,7 @@ pub fn load_worldspace_persistent_cell(
         if persistent_position_is_local(placed.position, center_grid, full_3d_radius) {
             local_refs.push(placed.clone());
         } else if wctx.record_index.npcs.contains_key(&placed.base_form_id) {
-            remote_actor_refs.push(placed);
+            remote_actor_refs.push(placed.clone());
         }
     }
 
@@ -108,103 +282,20 @@ pub fn load_worldspace_persistent_cell(
     register_cell_root(world, cell_root);
     world.insert(cell_root, CellFormId(cell.form_id));
     let first_entity = world.next_entity_id();
-    let result = load_references(
-        &local_refs,
-        index,
-        &wctx.record_index,
-        &wctx.record_index.npcs,
-        &wctx.record_index.races,
-        wctx.record_index.game,
-        world,
-        ctx,
-        tex_provider,
-        mat_provider,
-        &format!("{} persistent", wctx.worldspace_key),
-        wctx.load_order.as_ref(),
-        &std::collections::HashSet::new(),
-    );
-    let live_actor_candidates: std::collections::HashMap<u32, (EntityId, bool)> = world
-        .query::<byroredux_scripting::SceneAliasCandidate>()
-        .map(|query| {
-            query
-                .iter()
-                .map(|(entity, candidate)| {
-                    (
-                        candidate.reference_form_id,
-                        (
-                            entity,
-                            world.has::<byroredux_core::ecs::GlobalTransform>(entity),
-                        ),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let local_actor_refs: Vec<_> = local_refs
-        .iter()
-        .filter(|placed| wctx.record_index.npcs.contains_key(&placed.base_form_id))
-        .collect();
-    let local_actor_3d = local_actor_refs
-        .iter()
-        .filter(|placed| {
-            live_actor_candidates
-                .get(&placed.form_id)
-                .is_some_and(|(_, loaded_3d)| *loaded_3d)
-        })
-        .count();
-    let mut logical_stub_refs = remote_actor_refs;
-    logical_stub_refs.extend(
-        local_actor_refs
-            .iter()
-            .copied()
-            .filter(|placed| !live_actor_candidates.contains_key(&placed.form_id)),
-    );
-    // Persistent actors outside the active 3D radius retain their logical
-    // reference/base identity for quest-alias resolution, but deliberately
-    // carry no Transform/GlobalTransform or render hierarchy. `HasLoaded3D`
-    // therefore remains false until a future persistent-3D streamer promotes
-    // them. Local actors were fully spawned above and must not get duplicate
-    // logical stubs.
-    for placed in &logical_stub_refs {
-        let entity = world.spawn();
-        let plugin_name = super::load_order::plugin_for_form_id(placed.form_id, &wctx.load_order)
-            .unwrap_or("Engine.esm");
-        let form_id = world
-            .resource_mut::<byroredux_core::form_id::FormIdPool>()
-            .intern(byroredux_core::form_id::FormIdPair {
-                plugin: byroredux_core::form_id::PluginId::from_filename(plugin_name),
-                local: byroredux_core::form_id::LocalFormId(placed.form_id),
-            });
-        world.insert(
-            entity,
-            byroredux_core::ecs::components::FormIdComponent(form_id),
-        );
-        world.insert(
-            entity,
-            byroredux_scripting::SceneAliasCandidate {
-                reference_form_id: placed.form_id,
-                base_form_id: placed.base_form_id,
-                location_ref_types: placed.location_ref_types.clone(),
-            },
-        );
-    }
-    if !logical_stub_refs.is_empty() {
-        byroredux_scripting::mark_scene_actor_bindings_dirty(world);
-    }
-    stamp_cell_root_range(world, cell_root, first_entity, world.next_entity_id());
-    flush_pending_cell_textures(ctx);
-    log::info!(target: "engine::scene_persistent",
-        "Worldspace '{}' persistent CELL {:08X}: {} local refs -> {} entities; {}/{} local actors have 3D, {} logical-only actor identities ({} authored refs total)",
-        wctx.worldspace_key,
-        cell.form_id,
-        local_refs.len(),
-        result.entity_count,
-        local_actor_3d,
-        local_actor_refs.len(),
-        logical_stub_refs.len(),
-        cell.references.len(),
-    );
-    Some(cell_root)
+    Some(PersistentCellApplyJob {
+        cell_root,
+        cell_form_id: cell.form_id,
+        authored_ref_count: cell.references.len(),
+        first_entity,
+        local_refs,
+        remote_actor_refs,
+        references: None,
+        reference_entity_count: None,
+        logical_stub_refs: Vec::new(),
+        next_logical_stub: 0,
+        local_actor_3d: 0,
+        local_actor_count: 0,
+    })
 }
 
 fn persistent_position_is_local(

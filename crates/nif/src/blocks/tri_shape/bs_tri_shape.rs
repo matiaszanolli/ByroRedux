@@ -57,8 +57,11 @@ pub enum BsTriShapeKind {
     SubIndex(Box<BsSubIndexTriShapeData>),
     /// `BSDynamicTriShape` — Skyrim facegen head meshes. The trailing
     /// `Vector4` array carries the CPU-morph-updated vertex positions
-    /// that overwrite the base `vertices`. See #341.
-    Dynamic,
+    /// that overwrite the base `vertices`. Its W lanes are authored
+    /// bitangent-X values and must remain parallel to those positions so
+    /// the external-position SSE reconstruction path can restore tangent
+    /// space. See #341 / #2318.
+    Dynamic { bitangent_x: Vec<f32> },
 }
 
 /// BSTriShape — Skyrim SE+ geometry with embedded vertex data.
@@ -129,7 +132,7 @@ impl NiObject for BsTriShape {
             BsTriShapeKind::LOD { .. } => "BSLODTriShape",
             BsTriShapeKind::MeshLOD => "BSMeshLODTriShape",
             BsTriShapeKind::SubIndex(_) => "BSSubIndexTriShape",
-            BsTriShapeKind::Dynamic => "BSDynamicTriShape",
+            BsTriShapeKind::Dynamic { .. } => "BSDynamicTriShape",
         }
     }
     fn as_any(&self) -> &dyn Any {
@@ -516,15 +519,18 @@ impl BsTriShape {
         let mut shape = Self::parse(stream)?;
         let dynamic_data_size = stream.read_u32_le()?;
         let dynamic_count = (dynamic_data_size / 16) as usize;
+        let mut dynamic_bitangent_x = Vec::new();
         if dynamic_count > 0 {
             // #388: bound the file-driven count through allocate_vec.
             let mut dynamic_vertices: Vec<NiPoint3> = stream.allocate_vec(dynamic_count as u32)?;
+            dynamic_bitangent_x = stream.allocate_vec(dynamic_count as u32)?;
             for _ in 0..dynamic_count {
                 let x = stream.read_f32_le()?;
                 let y = stream.read_f32_le()?;
                 let z = stream.read_f32_le()?;
-                let _w = stream.read_f32_le()?; // bitangent-x or unused
+                let w = stream.read_f32_le()?;
                 dynamic_vertices.push(NiPoint3 { x, y, z });
+                dynamic_bitangent_x.push(w);
             }
             if !dynamic_vertices.is_empty() {
                 shape.vertices = dynamic_vertices;
@@ -542,7 +548,9 @@ impl BsTriShape {
                 shape.vertex_desc |= (VF_FULL_PRECISION as u64) << 44;
             }
         }
-        shape.kind = BsTriShapeKind::Dynamic;
+        shape.kind = BsTriShapeKind::Dynamic {
+            bitangent_x: dynamic_bitangent_x,
+        };
         // #571 / SK-D1-02: surface the silent-import path. Empirical
         // measurement (#946 / SK-D5-NEW-08): every single
         // BSDynamicTriShape in `Skyrim - Meshes0.bsa` (21 140 / 21 140)

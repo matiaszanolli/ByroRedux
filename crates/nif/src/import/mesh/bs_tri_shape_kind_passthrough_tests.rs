@@ -202,7 +202,9 @@ fn lod_kind_drops_subindex_payload() {
 
 #[test]
 fn dynamic_kind_drops_both() {
-    let mesh = import(&renderable_shape_with_kind(BsTriShapeKind::Dynamic));
+    let mesh = import(&renderable_shape_with_kind(BsTriShapeKind::Dynamic {
+        bitangent_x: Vec::new(),
+    }));
     assert!(mesh.bs_lod_cutoffs.is_none());
     assert!(mesh.bs_sub_index.is_none());
 }

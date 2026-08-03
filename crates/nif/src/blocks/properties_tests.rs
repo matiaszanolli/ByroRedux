@@ -30,6 +30,12 @@ fn write_color(buf: &mut Vec<u8>, r: f32, g: f32, b: f32) {
     buf.extend_from_slice(&b.to_le_bytes());
 }
 
+fn assert_uniform_color(color: &NiColor, expected: f32) {
+    assert!((color.r - expected).abs() < 1e-6);
+    assert!((color.g - expected).abs() < 1e-6);
+    assert!((color.b - expected).abs() < 1e-6);
+}
+
 fn build_material_oblivion() -> Vec<u8> {
     let mut data = Vec::new();
     data.extend_from_slice(&0i32.to_le_bytes());
@@ -79,8 +85,8 @@ fn parse_material_fnv_skips_ambient_diffuse() {
     let expected_len = data.len();
     let mut stream = NifStream::new(&data, &header);
     let mat = NiMaterialProperty::parse(&mut stream).unwrap();
-    assert!((mat.ambient.r - 0.5).abs() < 1e-6);
-    assert!((mat.diffuse.r - 0.5).abs() < 1e-6);
+    assert_uniform_color(&mat.ambient, 1.0);
+    assert_uniform_color(&mat.diffuse, 1.0);
     assert!((mat.specular.r - 0.5).abs() < 1e-6);
     assert!((mat.emissive.r - 0.1).abs() < 1e-6);
     assert!((mat.shininess - 10.0).abs() < 1e-6);
@@ -95,8 +101,8 @@ fn parse_material_fo3_also_skips_ambient_diffuse() {
     let data = build_material_fnv();
     let mut stream = NifStream::new(&data, &header);
     let mat = NiMaterialProperty::parse(&mut stream).unwrap();
-    assert!((mat.ambient.r - 0.5).abs() < 1e-6);
-    assert!((mat.diffuse.r - 0.5).abs() < 1e-6);
+    assert_uniform_color(&mat.ambient, 1.0);
+    assert_uniform_color(&mat.diffuse, 1.0);
     assert!((mat.emissive_mult - 2.5).abs() < 1e-6);
 }
 

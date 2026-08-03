@@ -45,18 +45,18 @@ impl NiMaterialProperty {
 
         let ambient = if bethesda_compact {
             NiColor {
-                r: 0.5,
-                g: 0.5,
-                b: 0.5,
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
             }
         } else {
             stream.read_ni_color()?
         };
         let diffuse = if bethesda_compact {
             NiColor {
-                r: 0.5,
-                g: 0.5,
-                b: 0.5,
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
             }
         } else {
             stream.read_ni_color()?

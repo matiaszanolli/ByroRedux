@@ -103,12 +103,14 @@ pub(crate) use refr::{
 pub use euler::set_refr_rotation_mode_diag;
 pub(crate) use euler::{euler_zup_to_quat_yup, euler_zup_to_quat_yup_refr};
 
+pub(crate) use exterior::{
+    begin_worldspace_persistent_cell, ExteriorCellApplyJob, ExteriorCellApplyProgress,
+    PersistentCellApplyJob, PersistentCellApplyProgress,
+};
 #[allow(unused_imports)]
 pub use exterior::{
-    build_exterior_world_context, load_one_exterior_cell, load_worldspace_persistent_cell,
-    ExteriorWorldContext, OneCellLoadInfo,
+    build_exterior_world_context, load_one_exterior_cell, ExteriorWorldContext, OneCellLoadInfo,
 };
-pub(crate) use exterior::{ExteriorCellApplyJob, ExteriorCellApplyProgress};
 pub(crate) use load::apply_interior_cell_lighting;
 #[allow(unused_imports)]
 pub(crate) use load::resolve_cell_lighting;

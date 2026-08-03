@@ -168,7 +168,7 @@ pub enum ConditionValue {
 /// the CTDA itself is not a persistent string identifier. Keeping a compact
 /// hash here preserves [`Condition`]'s cheap `Copy` representation while
 /// allowing the runtime to address Papyrus variables by their authored name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ConditionStringId(pub u64);
 
 impl ConditionStringId {

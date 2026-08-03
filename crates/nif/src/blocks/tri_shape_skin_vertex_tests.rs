@@ -121,7 +121,7 @@ fn bs_dynamic_tri_shape_with_zero_data_size_imports_dynamic_vertices() {
     // Per nif.xml the dynamic-vertex count is `dynamic_data_size / 16`
     // — independent of the base BSTriShape `num_vertices` — so we
     // don't need to patch that field here.
-    let dyn_verts: [[f32; 4]; 2] = [[1.0, 2.0, 3.0, 0.0], [4.0, 5.0, 6.0, 0.0]];
+    let dyn_verts: [[f32; 4]; 2] = [[1.0, 2.0, 3.0, 0.25], [4.0, 5.0, 6.0, -0.75]];
     bytes.extend_from_slice(&32u32.to_le_bytes()); // dynamic_data_size
     for v in &dyn_verts {
         for f in v {
@@ -149,6 +149,10 @@ fn bs_dynamic_tri_shape_with_zero_data_size_imports_dynamic_vertices() {
     );
     assert!((shape.vertices[0].x - 1.0).abs() < 1e-6);
     assert!((shape.vertices[1].x - 4.0).abs() < 1e-6);
+    let BsTriShapeKind::Dynamic { bitangent_x } = &shape.kind else {
+        panic!("BSDynamicTriShape kind payload was not retained");
+    };
+    assert_eq!(bitangent_x, &[0.25, -0.75]);
 }
 
 /// Regression: #157 — BSDynamicTriShape must dispatch to the Dynamic
@@ -869,7 +873,12 @@ fn bs_tri_shape_variants_stamp_their_kind() {
         let block =
             parse_block("BSDynamicTriShape", &mut stream, Some(bytes.len() as u32)).unwrap();
         let shape = block.as_any().downcast_ref::<BsTriShape>().unwrap();
-        assert_eq!(shape.kind, BsTriShapeKind::Dynamic);
+        assert_eq!(
+            shape.kind,
+            BsTriShapeKind::Dynamic {
+                bitangent_x: Vec::new()
+            }
+        );
         assert_eq!(block.block_type_name(), "BSDynamicTriShape");
     }
 }

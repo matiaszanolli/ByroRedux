@@ -701,10 +701,12 @@ fn motion_type_arg(value: &Expr, target: &ObjectRef, scope: &Scope) -> Option<Mo
     }
     if let Expr::IntLit(raw) = value {
         return match *raw {
-            1 => Some(MotionType::Dynamic),
-            4 => Some(MotionType::Keyframed),
-            5 => Some(MotionType::Static),
-            7 => Some(MotionType::CharacterKinematic),
+            // Canonical hkpMotion::MotionType table. Keep this in lockstep
+            // with the NIF collision importer (#1652 / #2286).
+            1..=5 | 8 => Some(MotionType::Dynamic),
+            6 => Some(MotionType::Keyframed),
+            7 => Some(MotionType::Static),
+            9 => Some(MotionType::CharacterKinematic),
             _ => None,
         };
     }
@@ -1423,6 +1425,36 @@ mod tests {
                 Effect::SetSittingRotation { degrees: -55.0 },
             ])
         );
+    }
+
+    /// #2286 — vanilla PEX commonly folds AutoReadOnly Motion_* constants
+    /// into raw integer literals. Pin the canonical Havok values through the
+    /// complete parser-to-lowering path rather than only testing named fields.
+    #[test]
+    fn lowers_literal_havok_motion_types() {
+        for (raw, expected) in [
+            (4, MotionType::Dynamic),
+            (5, MotionType::Dynamic),
+            (6, MotionType::Keyframed),
+            (7, MotionType::Static),
+            (9, MotionType::CharacterKinematic),
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\n\
+                 Function Fragment_177()\n\
+                 Cart.SetMotionType({raw}, true)\n\
+                 EndFunction\n"
+            ));
+            assert_eq!(
+                lower_fragment(&body),
+                Some(vec![Effect::SetMotionType {
+                    target: ObjectRef::Property("Cart".into()),
+                    motion_type: expected,
+                    allow_activate: true,
+                }]),
+                "literal hkpMotion value {raw} must use the canonical mapping",
+            );
+        }
     }
 
     #[test]

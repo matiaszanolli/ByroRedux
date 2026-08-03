@@ -148,6 +148,119 @@ fn empty_inline_bs_tri_shape_with_populated_skin_partition_reconstructs() {
     assert_eq!(mesh.indices, vec![0, 1, 2]);
 }
 
+/// Regression for #2318: Skyrim facegen BSDynamicTriShape keeps its
+/// positions (including the W/bitangent-X lane) in a trailing Vector4
+/// array, while the linked skin-partition buffer carries the remaining
+/// attributes and no VF_VERTEX slot. The importer must combine both
+/// sources and recover the partition triangles.
+#[test]
+fn dynamic_external_positions_reconstruct_without_vf_vertex() {
+    let positions = vec![
+        NiPoint3 {
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+        },
+        NiPoint3 {
+            x: 4.0,
+            y: 5.0,
+            z: 6.0,
+        },
+        NiPoint3 {
+            x: 7.0,
+            y: 8.0,
+            z: 9.0,
+        },
+    ];
+
+    // UV (4 bytes) + normal/bitangent-Y (4) + tangent/bitangent-Z (4).
+    // Crucially, VF_VERTEX (0x001) is clear and the stride is 12 bytes.
+    let vertex_attrs = 0x002u64 | 0x008 | 0x010;
+    let vertex_desc = (vertex_attrs << 44) | 0x3;
+    let mut raw_bytes = Vec::new();
+    for _ in 0..positions.len() {
+        raw_bytes.extend_from_slice(&[0, 0, 0, 0]); // UV = (0, 0)
+        raw_bytes.extend_from_slice(&[128, 128, 255, 128]);
+        raw_bytes.extend_from_slice(&[128, 255, 128, 128]);
+    }
+
+    let shape = BsTriShape {
+        av: NiAVObjectData {
+            net: empty_net(),
+            flags: 0,
+            transform: crate::types::NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        center: NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        radius: 0.0,
+        skin_ref: BlockRef(1),
+        shader_property_ref: BlockRef::NULL,
+        alpha_property_ref: BlockRef::NULL,
+        vertex_desc,
+        num_triangles: 0,
+        num_vertices: positions.len() as u16,
+        vertices: positions,
+        uvs: Vec::new(),
+        normals: Vec::new(),
+        vertex_colors: Vec::new(),
+        triangles: Vec::new(),
+        bone_weights: Vec::new(),
+        bone_indices: Vec::new(),
+        tangents: Vec::new(),
+        kind: BsTriShapeKind::Dynamic {
+            bitangent_x: vec![1.0; 3],
+        },
+        data_size: 0,
+    };
+    let skin_instance = NiSkinInstance {
+        data_ref: BlockRef::NULL,
+        skin_partition_ref: BlockRef(2),
+        skeleton_root_ref: BlockRef::NULL,
+        bone_refs: Vec::new(),
+    };
+    let skin_partition = NiSkinPartition {
+        partitions: vec![SkinPartitionEntry {
+            num_vertices: 3,
+            num_triangles: 1,
+            bones: Vec::new(),
+            num_weights_per_vertex: 0,
+            vertex_map: vec![0, 1, 2],
+            vertex_weights: Vec::new(),
+            triangles: vec![[0, 1, 2]],
+            bone_indices: Vec::new(),
+        }],
+        global_vertex_data: Some(SseSkinGlobalBuffer {
+            vertex_desc,
+            vertex_size: 12,
+            raw_bytes,
+        }),
+    };
+
+    let mut scene = NifScene::default();
+    scene.blocks.push(Box::new(shape));
+    scene.blocks.push(Box::new(skin_instance));
+    scene.blocks.push(Box::new(skin_partition));
+
+    let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
+    let mesh = extract_bs_tri_shape(
+        &scene,
+        shape_ref,
+        &crate::types::NiTransform::default(),
+        &mut byroredux_core::string::StringPool::new(),
+    )
+    .expect("dynamic positions plus partition attributes must reconstruct");
+
+    assert_eq!(mesh.positions[0], [1.0, 3.0, -2.0]);
+    assert_eq!(mesh.positions[2], [7.0, 9.0, -8.0]);
+    assert_eq!(mesh.indices, vec![0, 1, 2]);
+    assert_eq!(mesh.tangents.len(), 3, "dynamic W lanes restore tangent X");
+}
+
 /// vertex_map remap is the partition-local → global translation
 /// the SSE skin format depends on. Build a partition whose
 /// `vertex_map = [2, 0, 1]` and triangle `[0, 1, 2]` — the

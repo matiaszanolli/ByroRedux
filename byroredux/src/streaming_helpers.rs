@@ -308,6 +308,26 @@ pub(crate) fn advance_streaming_apply(
     state: &mut streaming::WorldStreamingState,
     budget: &mut FrameTimeBudget,
 ) -> bool {
+    if let Some(job) = state.persistent_apply.take() {
+        let wctx = state.wctx.clone();
+        match job.advance(
+            wctx.as_ref(),
+            world,
+            ctx,
+            state.tex_provider.as_ref(),
+            Some(&mut state.mat_provider),
+            budget,
+        ) {
+            cell_loader::PersistentCellApplyProgress::Pending(job) => {
+                state.persistent_apply = Some(job);
+                return budget.completed_units() > 0;
+            }
+            cell_loader::PersistentCellApplyProgress::Complete => {
+                ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+            }
+        }
+    }
+
     loop {
         if budget.should_yield() {
             return budget.completed_units() > 0;

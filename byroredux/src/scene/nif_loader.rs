@@ -411,6 +411,9 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     let mut node_entities: Vec<EntityId> = Vec::with_capacity(imported.nodes.len());
     let mut node_by_name: std::collections::HashMap<std::sync::Arc<str>, EntityId> =
         std::collections::HashMap::with_capacity(imported.nodes.len());
+    let mut node_rest_poses: Vec<GlobalTransform> = Vec::with_capacity(imported.nodes.len());
+    let mut rest_pose_by_name: std::collections::HashMap<std::sync::Arc<str>, GlobalTransform> =
+        std::collections::HashMap::with_capacity(imported.nodes.len());
     for node in &imported.nodes {
         let quat = Quat::from_xyzw(
             node.rotation[0],
@@ -423,6 +426,16 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             node.translation[1],
             node.translation[2],
         );
+        let local_rest = GlobalTransform {
+            translation,
+            rotation: quat,
+            scale: node.scale,
+        };
+        let rest_pose = node
+            .parent_node
+            .and_then(|parent| node_rest_poses.get(parent))
+            .map(|parent| GlobalTransform::compose(parent, translation, quat, node.scale))
+            .unwrap_or(local_rest);
 
         let entity = world.spawn();
         world.insert(entity, Transform::new(translation, quat, node.scale));
@@ -434,6 +447,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             drop(pool);
             world.insert(entity, Name(sym));
             node_by_name.entry(name.clone()).or_insert(entity);
+            rest_pose_by_name.entry(name.clone()).or_insert(rest_pose);
         }
 
         // Attach collision data if present.
@@ -469,6 +483,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         }
 
         node_entities.push(entity);
+        node_rest_poses.push(rest_pose);
     }
 
     // Phase 2: Set up Parent/Children relationships for nodes.
@@ -1075,7 +1090,9 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         // builds the live Rapier multibody from it. Self-gating: facegen /
         // armor / clutter loads have `ragdoll: None`, so nothing attaches.
         if let Some(ragdoll) = imported.ragdoll.as_ref() {
-            if let Some(template) = crate::ragdoll::template_from_imported(ragdoll, &node_by_name) {
+            if let Some(template) =
+                crate::ragdoll::template_from_imported(ragdoll, &node_by_name, &rest_pose_by_name)
+            {
                 let bodies = template.bodies.len();
                 world.insert(root_entity, template);
                 log::info!(

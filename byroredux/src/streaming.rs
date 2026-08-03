@@ -208,6 +208,9 @@ pub struct WorldStreamingState {
     /// this is not keyed by a grid coordinate and never participates in
     /// radius eviction; it is reclaimed only when the worldspace drains.
     pub persistent_root: Option<EntityId>,
+    /// Resumable persistent-CELL spawn. It shares the main-thread apply
+    /// deadline with ordinary exterior tiles and is cleared on completion.
+    pub(crate) persistent_apply: Option<crate::cell_loader::PersistentCellApplyJob>,
     /// Distant-terrain LOD blocks, keyed by block-coord (#1373). Streamed
     /// each cell-boundary crossing alongside the full-detail cells: blocks
     /// entering the LOD radius spawn, blocks leaving unload, and boundary
@@ -310,6 +313,7 @@ impl WorldStreamingState {
             mat_provider,
             loaded: HashMap::new(),
             persistent_root: None,
+            persistent_apply: None,
             lod_blocks: HashMap::new(),
             lod_missing_blocks: HashMap::new(),
             object_lod_blocks: HashMap::new(),

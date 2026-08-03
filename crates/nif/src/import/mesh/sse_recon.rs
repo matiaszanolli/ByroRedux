@@ -6,8 +6,9 @@
 use crate::blocks::skin::{
     BsDismemberSkinInstance, NiSkinInstance, NiSkinPartition, SseSkinGlobalBuffer,
 };
-use crate::blocks::tri_shape::BsTriShape;
+use crate::blocks::tri_shape::{BsTriShape, BsTriShapeKind};
 use crate::scene::NifScene;
+use crate::types::NiPoint3;
 
 use super::*;
 
@@ -86,7 +87,18 @@ pub fn try_reconstruct_sse_geometry(
     // parser at `tri_shape.rs`, but reconstructing the skin palette
     // from the partition's own bone_indices/vertex_weights is a
     // follow-up — see commit message.
-    let decoded = decode_sse_packed_buffer(buffer)?;
+    let external_positions = (!shape.vertices.is_empty()).then_some(shape.vertices.as_slice());
+    let external_bitangent_x = match &shape.kind {
+        BsTriShapeKind::Dynamic { bitangent_x } if !bitangent_x.is_empty() => {
+            Some(bitangent_x.as_slice())
+        }
+        _ => None,
+    };
+    let decoded = decode_sse_packed_buffer_with_external_positions(
+        buffer,
+        external_positions,
+        external_bitangent_x,
+    )?;
 
     // Concatenate partition triangles, remapping each partition-local
     // index through the partition's vertex_map.
@@ -178,10 +190,10 @@ pub struct DecodedPackedBuffer {
 /// half-float, normals are 3 × normbyte + 1 byte bitangent_y, colors
 /// are 4 × u8. Tangent / skin / eye data slots are skipped per the
 /// `vertex_attrs` mask. Returns `None` when the buffer is malformed
-/// (size mismatch, vertex_size == 0, or VF_VERTEX clear).
+/// (size mismatch, vertex_size == 0, or no packed/external positions).
 ///
-/// **SSE-only contract (#888).** The position read at the head of
-/// each vertex hard-codes the 16-byte layout `3 × f32 +
+/// **SSE-only contract (#888).** A packed position at the head of
+/// each vertex uses the 16-byte layout `3 × f32 +
 /// (Bitangent X / Unused W)` per nif.xml `BSVertexDataSSE`. This
 /// is sound today: `try_reconstruct_sse_geometry` is gated on
 /// bsver in `[100, 130)` (Skyrim SE) where `BSVertexDataSSE` is
@@ -195,15 +207,34 @@ pub struct DecodedPackedBuffer {
 ///    locked to the SSE band so this decoder never sees FO4 input.
 ///
 /// Without either, FO4 meshes that ship without `VF_FULL_PRECISION`
-/// (the common case) would silently mis-decode every vertex.
+/// (the common case) would silently mis-decode every packed position.
 pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPackedBuffer> {
+    decode_sse_packed_buffer_with_external_positions(buffer, None, None)
+}
+
+/// Decode an SSE partition buffer whose positions may live in a linked
+/// `BSDynamicTriShape` Vector4 array rather than in the packed buffer.
+/// External positions and W/bitangent-X lanes, when supplied, override the
+/// corresponding packed lanes while the packed cursor still consumes any
+/// authored `VF_VERTEX` slot.
+fn decode_sse_packed_buffer_with_external_positions(
+    buffer: &SseSkinGlobalBuffer,
+    external_positions: Option<&[NiPoint3]>,
+    external_bitangent_x: Option<&[f32]>,
+) -> Option<DecodedPackedBuffer> {
     let vertex_size = buffer.vertex_size as usize;
     if vertex_size == 0 || !buffer.raw_bytes.len().is_multiple_of(vertex_size) {
         return None;
     }
     let num_vertices = buffer.raw_bytes.len() / vertex_size;
     let vertex_attrs = ((buffer.vertex_desc >> 44) & 0xFFF) as u16;
-    if vertex_attrs & VF_VERTEX == 0 {
+    let has_packed_positions = vertex_attrs & VF_VERTEX != 0;
+    if !has_packed_positions && external_positions.is_none() {
+        return None;
+    }
+    if external_positions.is_some_and(|positions| positions.len() != num_vertices)
+        || external_bitangent_x.is_some_and(|values| values.len() != num_vertices)
+    {
         return None;
     }
 
@@ -262,22 +293,30 @@ pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedP
         let mut bitangent_z: Option<f32> = None;
         let mut normal_zup: Option<[f32; 3]> = None;
 
-        // Position: 3 × f32 + trailing 4-byte slot — 16 bytes total.
-        // SSE always uses full-precision per inline-decoder's
-        // `bsver < 130 || VF_FULL_PRECISION` rule. Trailing slot per
-        // nif.xml `BSVertexDataSSE`: `Bitangent X` (f32) when
-        // VF_TANGENTS is set, else `Unused W` (uint, discarded). Same
-        // 4 bytes either way so the +16 advance is unconditional.
-        let x = read_f32_le(bytes, off)?;
-        let y = read_f32_le(bytes, off + 4)?;
-        let z = read_f32_le(bytes, off + 8)?;
-        // Z-up → Y-up: (x, z, -y). Routed through the canonical helper
-        // so the flip stays confined to the coord module (#1753).
-        positions.push(byroredux_core::math::coord::zup_to_yup_pos([x, y, z]));
-        if has_tangents {
-            bitangent_x = Some(read_f32_le(bytes, off + 12)?);
+        // Position: 3 × f32 + trailing 4-byte slot when VF_VERTEX is
+        // authored. BSDynamicTriShape may instead keep positions and the
+        // W/bitangent-X lane in its trailing Vector4 array (#2318).
+        let mut packed_position = None;
+        if has_packed_positions {
+            let x = read_f32_le(bytes, off)?;
+            let y = read_f32_le(bytes, off + 4)?;
+            let z = read_f32_le(bytes, off + 8)?;
+            packed_position = Some([x, y, z]);
+            if has_tangents {
+                bitangent_x = Some(read_f32_le(bytes, off + 12)?);
+            }
+            off += 16;
         }
-        off += 16;
+        let position = external_positions
+            .map(|values| {
+                let value = values[i];
+                [value.x, value.y, value.z]
+            })
+            .or(packed_position)?;
+        positions.push(byroredux_core::math::coord::zup_to_yup_pos(position));
+        if let Some(values) = external_bitangent_x {
+            bitangent_x = Some(values[i]);
+        }
 
         // UV: 2 × f16.
         if vertex_attrs & VF_UVS != 0 {

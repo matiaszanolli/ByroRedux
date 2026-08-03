@@ -968,9 +968,11 @@ pub struct ImportedRagdollBody {
     pub restitution: f32,
     /// Collider shape in body-local space (Y-up, havok-scaled).
     pub shape: CollisionShape,
-    /// Rigid-body origin offset relative to the host bone (Y-up, scaled).
+    /// Rigid-body origin in skeleton-root/rest space (Y-up, scaled).
+    /// The engine resolves this against the host bone's rest transform once
+    /// when building its runtime ragdoll template (#2336).
     pub translation: Vec3,
-    /// Rigid-body orientation relative to the host bone (Y-up).
+    /// Rigid-body orientation in skeleton-root/rest space (Y-up).
     pub rotation: Quat,
 }
 

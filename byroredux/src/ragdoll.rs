@@ -81,6 +81,7 @@ impl Component for RagdollActive {
 pub fn template_from_imported(
     imported: &ImportedRagdoll,
     skel_map: &HashMap<Arc<str>, EntityId>,
+    rest_pose_by_name: &HashMap<Arc<str>, GlobalTransform>,
 ) -> Option<RagdollTemplate> {
     let mut bodies = Vec::with_capacity(imported.bodies.len());
     let mut old_to_new: Vec<Option<usize>> = vec![None; imported.bodies.len()];
@@ -89,16 +90,40 @@ pub fn template_from_imported(
     // skeleton, renamed bone, importer canonicalisation mismatch) leaves a
     // breadcrumb instead of silently degrading/vanishing.
     let mut dropped_bones: Vec<&Arc<str>> = Vec::new();
+    let mut dropped_rest_poses: Vec<&Arc<str>> = Vec::new();
     for (i, b) in imported.bodies.iter().enumerate() {
         let Some(&bone) = skel_map.get(&b.bone_name) else {
             dropped_bones.push(&b.bone_name);
             continue;
         };
+        let Some(rest) = rest_pose_by_name.get(&b.bone_name) else {
+            dropped_rest_poses.push(&b.bone_name);
+            continue;
+        };
+        if !rest.translation.is_finite()
+            || !rest.rotation.is_finite()
+            || !rest.scale.is_finite()
+            || rest.scale.abs() <= f32::EPSILON
+        {
+            dropped_rest_poses.push(&b.bone_name);
+            continue;
+        }
+
+        // Bethesda's ragdoll CInfo pose is authored in skeleton-root/rest
+        // space, not relative to the NiNode that owns the collision object.
+        // Convert it exactly once at the NIF→ECS boundary. Activation can
+        // then compose the resulting body-local offset with the bone's live
+        // animated GlobalTransform without double-applying the rest pose
+        // (#2336).
+        let inverse_bone_rotation = rest.rotation.inverse();
+        let local_translation =
+            inverse_bone_rotation * (b.translation - rest.translation) / rest.scale;
+        let local_rotation = inverse_bone_rotation * b.rotation;
         old_to_new[i] = Some(bodies.len());
         bodies.push(RagdollTemplateBody {
             bone,
-            local_translation: b.translation,
-            local_rotation: b.rotation,
+            local_translation,
+            local_rotation,
             shape: b.shape.clone(),
             mass: b.mass,
             linear_damping: b.linear_damping,
@@ -113,6 +138,14 @@ pub fn template_from_imported(
              in skeleton: {:?}",
             dropped_bones.len(),
             dropped_bones,
+        );
+    }
+    if !dropped_rest_poses.is_empty() {
+        log::warn!(
+            "template_from_imported: {} ragdoll body/bodies dropped — missing or invalid \
+             skeleton rest pose for bone name(s): {:?}",
+            dropped_rest_poses.len(),
+            dropped_rest_poses,
         );
     }
     if bodies.len() < 2 {
@@ -1142,6 +1175,15 @@ mod tests {
         }
     }
 
+    fn identity_rest_poses(
+        skel_map: &HashMap<Arc<str>, EntityId>,
+    ) -> HashMap<Arc<str>, GlobalTransform> {
+        skel_map
+            .keys()
+            .map(|name| (name.clone(), GlobalTransform::IDENTITY))
+            .collect()
+    }
+
     /// Baseline: every bone resolves — all bodies and constraints survive.
     #[test]
     fn all_bones_resolve_yields_full_template() {
@@ -1156,7 +1198,9 @@ mod tests {
             bodies: vec![body("Spine"), body("Head")],
             constraints: vec![hinge_constraint(0, 1)],
         };
-        let template = template_from_imported(&imported, &skel_map).expect("both bones resolve");
+        let rest_poses = identity_rest_poses(&skel_map);
+        let template =
+            template_from_imported(&imported, &skel_map, &rest_poses).expect("both bones resolve");
         assert_eq!(template.bodies.len(), 2);
         assert_eq!(template.constraints.len(), 1);
         assert_eq!(template.bodies[0].bone, spine);
@@ -1186,7 +1230,8 @@ mod tests {
                 hinge_constraint(0, 2),
             ],
         };
-        let template = template_from_imported(&imported, &skel_map)
+        let rest_poses = identity_rest_poses(&skel_map);
+        let template = template_from_imported(&imported, &skel_map, &rest_poses)
             .expect("2 of 3 bones resolve, 1 of 2 constraints survives");
         assert_eq!(template.bodies.len(), 2, "LFoot body must be dropped");
         assert_eq!(
@@ -1213,7 +1258,8 @@ mod tests {
             bodies: vec![body("Spine"), body("Unknown1"), body("Unknown2")],
             constraints: vec![hinge_constraint(0, 1)],
         };
-        assert!(template_from_imported(&imported, &skel_map).is_none());
+        let rest_poses = identity_rest_poses(&skel_map);
+        assert!(template_from_imported(&imported, &skel_map, &rest_poses).is_none());
     }
 
     /// 2+ bodies survive but every constraint referenced a dropped body —
@@ -1232,6 +1278,57 @@ mod tests {
             // The only constraint links Spine (0) to the dropped LFoot (2).
             constraints: vec![hinge_constraint(0, 2)],
         };
-        assert!(template_from_imported(&imported, &skel_map).is_none());
+        let rest_poses = identity_rest_poses(&skel_map);
+        assert!(template_from_imported(&imported, &skel_map, &rest_poses).is_none());
+    }
+
+    /// Regression for #2336: imported Havok body poses are skeleton-root
+    /// rest poses. Converting them to bone-local offsets prevents activation
+    /// from composing the bone rest transform a second time.
+    #[test]
+    fn imported_root_space_body_pose_converts_to_bone_local_once() {
+        let mut world = World::new();
+        let spine = world.spawn();
+        let head = world.spawn();
+        let spine_name = Arc::<str>::from("Spine");
+        let head_name = Arc::<str>::from("Head");
+        let skel_map = HashMap::from([(spine_name.clone(), spine), (head_name.clone(), head)]);
+
+        let spine_rest = GlobalTransform {
+            translation: Vec3::new(100.0, 0.0, 0.0),
+            rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            scale: 2.0,
+        };
+        let head_rest = GlobalTransform {
+            translation: Vec3::new(100.0, 30.0, 0.0),
+            rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            scale: 2.0,
+        };
+        let rest_poses = HashMap::from([(spine_name, spine_rest), (head_name, head_rest)]);
+
+        let mut spine_body = body("Spine");
+        // local (5, 0, 0), rotated/scaled through spine_rest => root (100, 10, 0)
+        spine_body.translation = Vec3::new(100.0, 10.0, 0.0);
+        spine_body.rotation =
+            spine_rest.rotation * Quat::from_rotation_z(std::f32::consts::FRAC_PI_6);
+        let mut head_body = body("Head");
+        head_body.translation = Vec3::new(100.0, 34.0, 0.0);
+        head_body.rotation = head_rest.rotation;
+        let imported = ImportedRagdoll {
+            bodies: vec![spine_body, head_body],
+            constraints: vec![hinge_constraint(0, 1)],
+        };
+
+        let template = template_from_imported(&imported, &skel_map, &rest_poses)
+            .expect("both root-space bodies resolve");
+        assert!((template.bodies[0].local_translation - Vec3::new(5.0, 0.0, 0.0)).length() < 1e-4);
+        assert!(
+            template.bodies[0]
+                .local_rotation
+                .dot(Quat::from_rotation_z(std::f32::consts::FRAC_PI_6))
+                .abs()
+                > 1.0 - 1e-4
+        );
+        assert!((template.bodies[1].local_translation - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-4);
     }
 }

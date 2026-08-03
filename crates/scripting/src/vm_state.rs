@@ -19,6 +19,7 @@ const IS_ANIMATING_VARIABLE: &str = "::isAnimating_var";
 
 /// Numeric Papyrus instance variables addressable by CTDA string parameter.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScriptVariables {
     values: HashMap<ConditionStringId, f32>,
 }
@@ -47,6 +48,7 @@ impl ScriptVariables {
 
 /// Runtime state extracted from the `default2StateActivator` Papyrus class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct TwoStateActivator {
     pub is_open: bool,
     pub is_animating: bool,

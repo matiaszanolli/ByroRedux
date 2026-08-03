@@ -87,6 +87,10 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "LightSource",
     "LightFlicker",
     "ScriptTimer",
+    // #2291 — default2StateActivator's live state and CTDA-visible numeric
+    // VM variables contain only bools and stable u64 string hashes.
+    "TwoStateActivator",
+    "ScriptVariables",
     // #1834 — runtime-mutated by the `setav`/`modav` console commands
     // (`commands/actor_value.rs`). Delta-safe: the map is keyed by
     // global-space AVIF FormID (u32, stable across reload) with four `f32`
@@ -194,7 +198,7 @@ pub fn build_save_registry() -> SaveRegistry {
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
     use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
-    use byroredux_scripting::ScriptTimer;
+    use byroredux_scripting::{ScriptTimer, ScriptVariables, TwoStateActivator};
 
     use crate::cell_loader::CurrentCellContext;
 
@@ -210,6 +214,11 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_component::<AnimationPlayer>("AnimationPlayer")
         .register_component::<AnimationStack>("AnimationStack")
         .register_component::<ScriptTimer>("ScriptTimer")
+        // #2291 — levers, switches, and puzzle doors recognized as
+        // default2StateActivator mutate both the state machine and its
+        // CTDA-visible VM variables at runtime. Both are delta-safe.
+        .register_component::<TwoStateActivator>("TwoStateActivator")
+        .register_component::<ScriptVariables>("ScriptVariables")
         // #1834 — layered actor values (SPECIAL / skills / resistances /
         // resources / derived). Stamped at NPC spawn from class auto-calc and
         // mutated live by `setav`/`modav`; pre-fix a save/load silently
@@ -889,6 +898,10 @@ mod tests {
             "LightSource",
             "LightFlicker",
             "ScriptTimer",
+            // #2291 — bool-only activator state plus ScriptVariables' stable
+            // ConditionStringId(u64) → f32 map. No session-local identity.
+            "TwoStateActivator",
+            "ScriptVariables",
             // #1834 — ActorValues: HashMap<u32 AVIF-FormID, [f32; 4] layers>.
             // Keys are global-space FormIDs (stable across reload); values are
             // plain f32s. No FixedString / EntityId / session handle → delta-safe.
@@ -1122,6 +1135,64 @@ mod tests {
         // restore_world preserves entity ids verbatim, so the furniture
         // reference survives even though it wasn't a MUTABLE_DELTA_COLUMN.
         assert_eq!(restored_seated.furniture, furniture);
+    }
+
+    /// #2291 — recognized default2StateActivator instances carry live state
+    /// in two components. Dropping either one reverts the object's behavior
+    /// or makes GetVMScriptVariable observe stale values after reload.
+    #[test]
+    fn two_state_activator_and_script_variables_survive_save_load_round_trip() {
+        use byroredux_scripting::{ScriptVariables, TwoStateActivator};
+
+        let reg = build_save_registry();
+        let mut src = World::new();
+        src.insert_resource(StringPool::new());
+        src.insert_resource(FormIdPool::new());
+
+        let activator = src.spawn();
+        src.insert(
+            activator,
+            TwoStateActivator {
+                is_open: true,
+                is_animating: false,
+                do_once: true,
+                activated_once: true,
+            },
+        );
+        let mut variables = ScriptVariables::default();
+        variables.set_by_name("::isOpen_var", 1.0);
+        variables.set_by_name("::isAnimating_var", 0.0);
+        src.insert(activator, variables);
+
+        let snapshot = save_world(&src, &reg).unwrap();
+        let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+        let mut dst = World::new();
+        dst.insert_resource(FormIdPool::new());
+        restore_world(&mut dst, &reg, &decoded).unwrap();
+
+        let restored = dst
+            .get::<TwoStateActivator>(activator)
+            .expect("TwoStateActivator must round-trip");
+        assert_eq!(
+            *restored,
+            TwoStateActivator {
+                is_open: true,
+                is_animating: false,
+                do_once: true,
+                activated_once: true,
+            }
+        );
+
+        let restored_variables = dst
+            .get::<ScriptVariables>(activator)
+            .expect("ScriptVariables must round-trip");
+        assert_eq!(restored_variables.get_by_name("::isOpen_var"), Some(1.0));
+        assert_eq!(
+            restored_variables.get_by_name("::isAnimating_var"),
+            Some(0.0)
+        );
     }
 
     /// #1835 — every gameplay-state component `spawn_npc_entity` stamps on an
@@ -1706,6 +1777,8 @@ mod tests {
         "../crates/core/src/animation/stack.rs",          // AnimationStack, AnimationLayer
         "../crates/core/src/ecs/resources/mod.rs",        // ItemInstancePool, ItemInstance
         "../crates/scripting/src/timer.rs",               // ScriptTimer
+        "../crates/scripting/src/vm_state.rs",            // TwoStateActivator, ScriptVariables
+        "../crates/plugin/src/esm/records/condition.rs", // ConditionStringId nested in ScriptVariables
         "../crates/scripting/src/quest_stages.rs", // QuestStageState, QuestObjectiveState + nested types
         "src/cell_loader/transition.rs",           // CurrentCellContext
         "src/save_io.rs",                          // PlayerPose

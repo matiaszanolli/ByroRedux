@@ -23,7 +23,7 @@ pub fn extract_bs_tri_shape(
     // `NiSkinPartition` as a global packed-vertex buffer plus
     // per-partition `vertex_map` arrays. Reconstruct here before the
     // early-return so every NPC body and creature renders. See #559.
-    let reconstructed = if shape.vertices.is_empty() && shape.triangles.is_empty() {
+    let reconstructed = if shape.triangles.is_empty() {
         try_reconstruct_sse_geometry(scene, shape)
     } else {
         None
