@@ -199,7 +199,7 @@ fn fo76_header() -> NifHeader {
 
 /// Build a minimal valid FO76 BSTriShape body with a non-zero
 /// `Bound Min Max` payload. Reads `num_triangles` as u32 (BSVER
-/// >= 130) and omits `particle_data_size` (BS_SSE only). Used by
+/// at least 130) and omits `particle_data_size` (BS_SSE only). Used by
 /// the S1-01 / #342 regression test.
 fn minimal_fo76_bs_tri_shape_bytes() -> Vec<u8> {
     let mut d = Vec::new();
@@ -392,7 +392,7 @@ fn minimal_fo3_ni_tri_shape_bytes() -> Vec<u8> {
 
 /// Regression: #146 — BSSegmentedTriShape must dispatch to the
 /// segmented parser and consume its trailing `num_segments` (u32)
-/// + 9-byte segment records. Previously aliased to plain NiTriShape,
+/// and 9-byte segment records. Previously aliased to plain NiTriShape,
 /// dropping segment metadata and causing block-loop realignment
 /// warnings on every FO3/FNV/SkyrimLE body-part mesh.
 #[test]

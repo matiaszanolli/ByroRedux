@@ -140,7 +140,7 @@ fn fallout4_20byte_acbs_parses_gender_level_and_template_flags() {
 
 /// Regression for #1273 — `SCRI` attached-script FormID on NPC_
 /// and CREA records was silently dropped. 24 % of FO3 named NPCs
-/// + 27 % of FO3 creatures author SCRI; FNV similar. The audit
+/// and 27 % of FO3 creatures author SCRI; FNV similar. The audit
 /// fixture mirrors the Three Dog (`MQGalaxyNewsRadio` broadcast
 /// trigger) shape — a thin NPC record where the only meaningful
 /// payload is the attached script.

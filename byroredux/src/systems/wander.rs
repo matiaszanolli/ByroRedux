@@ -364,7 +364,7 @@ mod tests {
         for pick in 0..10 {
             let d = pick_pause_duration(0xABCD_EF01, pick);
             assert!(
-                d >= WANDER_PAUSE_MIN && d < WANDER_PAUSE_MAX,
+                (WANDER_PAUSE_MIN..WANDER_PAUSE_MAX).contains(&d),
                 "pause {d} outside [{WANDER_PAUSE_MIN},{WANDER_PAUSE_MAX})"
             );
         }

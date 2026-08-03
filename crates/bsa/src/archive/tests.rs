@@ -980,8 +980,8 @@ fn synthetic_v105_per_file_compression_toggle_xors_archive_flag() {
 }
 
 /// Verify the v105 24-byte folder record reaches the right
-/// stream position. The parser computes `expected = stored_offset
-/// - total_file_name_length` and warns in debug builds when the
+/// stream position. The parser computes `expected` by subtracting
+/// `total_file_name_length` from `stored_offset` and warns in debug builds when the
 /// reader's actual position differs. A round-trip extraction
 /// proves the offset math is correct (a wrong offset would make
 /// the folder name block read as garbage, the file record hash

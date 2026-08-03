@@ -61,10 +61,7 @@ pub(crate) mod test_support {
     /// Resolve a `FixedString` path back to a `&str` using the supplied
     /// pool. Returns `None` when the handle is `None` or the lookup
     /// misses (which would indicate the wrong pool was used).
-    pub(crate) fn resolve_path<'a>(
-        pool: &'a StringPool,
-        sym: Option<FixedString>,
-    ) -> Option<&'a str> {
+    pub(crate) fn resolve_path(pool: &StringPool, sym: Option<FixedString>) -> Option<&str> {
         sym.and_then(|s| pool.resolve(s))
     }
 }

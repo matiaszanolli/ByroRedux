@@ -193,7 +193,7 @@ fn main() {
         .iter()
         .map(|(t, c)| (t.to_string(), **c, *st.type_files.get(*t).unwrap_or(&0)))
         .collect();
-    u.sort_by(|a, b| b.1.cmp(&a.1));
+    u.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     for (t, c, f) in &u {
         println!("  inst={:>8}  files={:>6}  {}", c, f, t);
     }

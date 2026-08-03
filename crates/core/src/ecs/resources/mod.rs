@@ -1020,7 +1020,7 @@ mod tests {
             elem_size_bytes: 16,
         });
         assert_eq!(tlm.total_bytes(), 10 * 4 + 5 * 16);
-        assert_eq!(tlm.total_wasted(), (10 - 1) * 4 + 0);
+        assert_eq!(tlm.total_wasted(), ((10 - 1) * 4));
     }
 
     /// Test fixture — fresh idle bridge.

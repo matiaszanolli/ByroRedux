@@ -257,6 +257,6 @@ mod tests {
         let mid = 0.0;
         assert!(!resolve_head_submerged(false, Some(mid))); // dry stays dry
         assert!(resolve_head_submerged(true, Some(mid))); // wet stays wet
-        assert!(EPS > 0.0);
+        assert!(std::hint::black_box(EPS) > 0.0);
     }
 }

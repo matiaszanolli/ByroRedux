@@ -474,7 +474,7 @@ mod tests {
 
         // Bulk.
         let mut bulk = PackedStorage::<Transform>::default();
-        bulk.insert_bulk(input.into_iter());
+        bulk.insert_bulk(input);
 
         // Both must iterate in the same sorted order with the same
         // data. `iter` yields (id, &T); compare id + x (the only

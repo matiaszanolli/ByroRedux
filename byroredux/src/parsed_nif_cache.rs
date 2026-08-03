@@ -225,7 +225,7 @@ mod tests {
         assert_eq!(cache.failed_count(), 1);
 
         let removed = cache.remove("a.nif").expect("present");
-        assert!(matches!(removed, Some(_)));
+        assert!(removed.is_some());
         assert_eq!(cache.parsed_count(), 0);
         assert_eq!(cache.failed_count(), 1);
 

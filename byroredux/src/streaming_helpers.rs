@@ -222,118 +222,6 @@ pub fn drain_streaming_state(
     state.shutdown(std::time::Duration::from_secs(1));
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn lod(entity: u32, mesh: u32) -> LodBlock {
-        LodBlock {
-            entity, // EntityId == u32
-            mesh_handle: mesh,
-            texture_handle: 0,
-            hole_mask: 0,
-        }
-    }
-
-    /// #1536 / #1726 — the worldspace drain must reclaim ALL THREE LOD rings.
-    /// The pure collector empties every map and returns every resident block
-    /// so the caller's reclaim loop sees them (pre-fix the maps were never
-    /// touched, leaking the whole ring on every exterior→interior transition).
-    #[test]
-    fn drain_collects_and_empties_all_lod_rings() {
-        let mut terrain: HashMap<(i32, i32), LodBlock> = HashMap::new();
-        terrain.insert((0, 0), lod(1, 10));
-        terrain.insert((1, 0), lod(2, 11));
-        let mut objects: HashMap<(i32, i32), ObjectLodBlock> = HashMap::new();
-        objects.insert(
-            (0, 0),
-            ObjectLodBlock {
-                entities: vec![3],
-                mesh_handles: vec![12, 13],
-                texture_handle: 0,
-            },
-        );
-        let mut placements: HashMap<(i32, i32), PlacementLodBlock> = HashMap::new();
-        placements.insert(
-            (2, 0),
-            PlacementLodBlock {
-                entities: vec![4, 5],
-                mesh_handles: vec![14],
-                texture_handles: vec![20],
-            },
-        );
-
-        let (terrain_out, object_out, placement_out) =
-            drain_lod_reclaim_targets(&mut terrain, &mut objects, &mut placements);
-
-        assert_eq!(terrain_out.len(), 2, "both terrain LOD blocks collected");
-        assert_eq!(object_out.len(), 1, "the object LOD quad collected");
-        assert_eq!(placement_out.len(), 1, "the placement LOD cell collected");
-        assert!(
-            terrain.is_empty(),
-            "terrain ring drained — no leak left behind"
-        );
-        assert!(
-            objects.is_empty(),
-            "object ring drained — no leak left behind"
-        );
-        assert!(
-            placements.is_empty(),
-            "placement ring drained — no leak left behind"
-        );
-        // Mesh handles that the reclaim loop will `drop_mesh` are preserved.
-        let mut meshes: Vec<u32> = terrain_out.iter().map(|b| b.mesh_handle).collect();
-        meshes.extend(
-            object_out
-                .iter()
-                .flat_map(|b| b.mesh_handles.iter().copied()),
-        );
-        meshes.extend(
-            placement_out
-                .iter()
-                .flat_map(|b| b.mesh_handles.iter().copied()),
-        );
-        meshes.sort_unstable();
-        assert_eq!(meshes, vec![10, 11, 12, 13, 14]);
-    }
-
-    #[test]
-    fn deferred_lod_uses_only_idle_main_thread_frames() {
-        const CAP: usize = 2;
-        assert_eq!(
-            lod_reconcile_budget_for_frame(true, 0, false, CAP),
-            Some(CAP),
-            "an idle frame advances the ring"
-        );
-        assert_eq!(
-            lod_reconcile_budget_for_frame(true, 1, false, CAP),
-            None,
-            "full-detail cell apply owns a normal frame"
-        );
-        assert_eq!(
-            lod_reconcile_budget_for_frame(true, 1, true, CAP),
-            Some(0),
-            "a crossing still performs immediate reclaim with no new work"
-        );
-        assert_eq!(
-            lod_reconcile_budget_for_frame(false, 0, true, CAP),
-            None,
-            "a settled ring does no steady-state work"
-        );
-    }
-
-    /// Empty rings drain to empty vecs — the common interior→interior or
-    /// no-LOD-resident transition is a clean no-op.
-    #[test]
-    fn drain_of_empty_rings_is_noop() {
-        let mut terrain: HashMap<(i32, i32), LodBlock> = HashMap::new();
-        let mut objects: HashMap<(i32, i32), ObjectLodBlock> = HashMap::new();
-        let mut placements: HashMap<(i32, i32), PlacementLodBlock> = HashMap::new();
-        let (t, o, p) = drain_lod_reclaim_targets(&mut terrain, &mut objects, &mut placements);
-        assert!(t.is_empty() && o.is_empty() && p.is_empty());
-    }
-}
-
 /// Result of applying one worker payload through the canonical exterior
 /// main-thread boundary.
 pub enum StreamingPayloadOutcome {
@@ -631,4 +519,116 @@ pub fn consume_streaming_payload(
         }
     };
     StreamingPayloadOutcome::Applied { coord, center }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lod(entity: u32, mesh: u32) -> LodBlock {
+        LodBlock {
+            entity, // EntityId == u32
+            mesh_handle: mesh,
+            texture_handle: 0,
+            hole_mask: 0,
+        }
+    }
+
+    /// #1536 / #1726 — the worldspace drain must reclaim ALL THREE LOD rings.
+    /// The pure collector empties every map and returns every resident block
+    /// so the caller's reclaim loop sees them (pre-fix the maps were never
+    /// touched, leaking the whole ring on every exterior→interior transition).
+    #[test]
+    fn drain_collects_and_empties_all_lod_rings() {
+        let mut terrain: HashMap<(i32, i32), LodBlock> = HashMap::new();
+        terrain.insert((0, 0), lod(1, 10));
+        terrain.insert((1, 0), lod(2, 11));
+        let mut objects: HashMap<(i32, i32), ObjectLodBlock> = HashMap::new();
+        objects.insert(
+            (0, 0),
+            ObjectLodBlock {
+                entities: vec![3],
+                mesh_handles: vec![12, 13],
+                texture_handle: 0,
+            },
+        );
+        let mut placements: HashMap<(i32, i32), PlacementLodBlock> = HashMap::new();
+        placements.insert(
+            (2, 0),
+            PlacementLodBlock {
+                entities: vec![4, 5],
+                mesh_handles: vec![14],
+                texture_handles: vec![20],
+            },
+        );
+
+        let (terrain_out, object_out, placement_out) =
+            drain_lod_reclaim_targets(&mut terrain, &mut objects, &mut placements);
+
+        assert_eq!(terrain_out.len(), 2, "both terrain LOD blocks collected");
+        assert_eq!(object_out.len(), 1, "the object LOD quad collected");
+        assert_eq!(placement_out.len(), 1, "the placement LOD cell collected");
+        assert!(
+            terrain.is_empty(),
+            "terrain ring drained — no leak left behind"
+        );
+        assert!(
+            objects.is_empty(),
+            "object ring drained — no leak left behind"
+        );
+        assert!(
+            placements.is_empty(),
+            "placement ring drained — no leak left behind"
+        );
+        // Mesh handles that the reclaim loop will `drop_mesh` are preserved.
+        let mut meshes: Vec<u32> = terrain_out.iter().map(|b| b.mesh_handle).collect();
+        meshes.extend(
+            object_out
+                .iter()
+                .flat_map(|b| b.mesh_handles.iter().copied()),
+        );
+        meshes.extend(
+            placement_out
+                .iter()
+                .flat_map(|b| b.mesh_handles.iter().copied()),
+        );
+        meshes.sort_unstable();
+        assert_eq!(meshes, vec![10, 11, 12, 13, 14]);
+    }
+
+    #[test]
+    fn deferred_lod_uses_only_idle_main_thread_frames() {
+        const CAP: usize = 2;
+        assert_eq!(
+            lod_reconcile_budget_for_frame(true, 0, false, CAP),
+            Some(CAP),
+            "an idle frame advances the ring"
+        );
+        assert_eq!(
+            lod_reconcile_budget_for_frame(true, 1, false, CAP),
+            None,
+            "full-detail cell apply owns a normal frame"
+        );
+        assert_eq!(
+            lod_reconcile_budget_for_frame(true, 1, true, CAP),
+            Some(0),
+            "a crossing still performs immediate reclaim with no new work"
+        );
+        assert_eq!(
+            lod_reconcile_budget_for_frame(false, 0, true, CAP),
+            None,
+            "a settled ring does no steady-state work"
+        );
+    }
+
+    /// Empty rings drain to empty vecs — the common interior→interior or
+    /// no-LOD-resident transition is a clean no-op.
+    #[test]
+    fn drain_of_empty_rings_is_noop() {
+        let mut terrain: HashMap<(i32, i32), LodBlock> = HashMap::new();
+        let mut objects: HashMap<(i32, i32), ObjectLodBlock> = HashMap::new();
+        let mut placements: HashMap<(i32, i32), PlacementLodBlock> = HashMap::new();
+        let (t, o, p) = drain_lod_reclaim_targets(&mut terrain, &mut objects, &mut placements);
+        assert!(t.is_empty() && o.is_empty() && p.is_empty());
+    }
 }

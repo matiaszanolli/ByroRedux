@@ -762,10 +762,12 @@ mod tests {
     /// to the procedural default, all of which the shader-side fix
     /// (render-origin-relative hashing) now assumes is the COMMON case,
     /// not an edge case:
-    ///   1. no XCWT on the cell at all (`xcwt_form = None`)
-    ///   2. XCWT present but the form doesn't resolve in `waters`
-    ///   3. XCWT resolves but the WATR's `texture_path` is empty (e.g. a
-    ///      lava pool — mirrors the `LavaPool01` fixture used above)
+    ///
+    /// 1. no XCWT on the cell at all (`xcwt_form = None`)
+    /// 2. XCWT present but the form doesn't resolve in `waters`
+    /// 3. XCWT resolves but the WATR's `texture_path` is empty (e.g. a
+    ///    lava pool — mirrors the `LavaPool01` fixture used above)
+    ///
     /// A fourth case with a populated `texture_path` proves the positive
     /// side: normal_path IS produced when the format actually authors one.
     #[test]
@@ -926,14 +928,16 @@ mod tests {
 
     #[test]
     fn translate_weather_copies_fog_wind_and_falls_back_tod_without_climate() {
-        let mut w = WeatherRecord::default();
-        w.fog_day_near = 100.0;
-        w.fog_day_far = 200.0;
-        w.fog_night_near = 300.0;
-        w.fog_night_far = 400.0;
-        w.fog_day_max = 0.9;
-        w.fog_night_max = 0.4;
-        w.wind_speed = 7;
+        let mut w = WeatherRecord {
+            fog_day_near: 100.0,
+            fog_day_far: 200.0,
+            fog_night_near: 300.0,
+            fog_night_far: 400.0,
+            fog_day_max: 0.9,
+            fog_night_max: 0.4,
+            wind_speed: 7,
+            ..Default::default()
+        };
         w.sky_colors[SKY_UPPER][TOD_DAY] = SkyColor {
             r: 255,
             g: 0,

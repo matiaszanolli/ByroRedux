@@ -102,12 +102,17 @@ fn weather_system_preserves_procedural_colors() {
     // procedural `LOWER` constant (`HORIZON * 0.3`) at every TOD
     // slot, so the lerp identity preserves it.
     let expected_lower = [0.55_f32 * 0.3, 0.5_f32 * 0.3, 0.42_f32 * 0.3];
-    for axis in 0..3 {
+    for (axis, (&actual, &expected)) in sky
+        .lower_color
+        .iter()
+        .zip(expected_lower.iter())
+        .enumerate()
+    {
         assert!(
-            (sky.lower_color[axis] - expected_lower[axis]).abs() < 1e-6,
+            (actual - expected).abs() < 1e-6,
             "lower_color[{axis}] = {} != {}",
-            sky.lower_color[axis],
-            expected_lower[axis]
+            actual,
+            expected
         );
     }
     let cell = world.try_resource::<CellLightingRes>().unwrap();

@@ -19,6 +19,7 @@ use crate::types::NiPoint3;
 ///   - `∂P/∂U = (1, 0, 0)` in Z-up → `(1, 0, 0)` in Y-up
 ///     (the X axis is unchanged by the Z-up → Y-up swap)
 ///   - `∂P/∂V = (0, 1, 0)` in Z-up → `(0, 0, -1)` in Y-up
+///
 /// The vertex normal is the +Z axis (Z-up) → +Y axis (Y-up).
 ///
 /// This is a 1-triangle fixture chosen so the `tangent_yup`

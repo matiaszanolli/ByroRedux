@@ -214,14 +214,17 @@ fn batched_commit_matches_per_iteration_semantics() {
     ];
     for path in refs {
         let key = path.to_string();
-        if pending_new.contains_key(&key) {
-            this_call_hits += 1;
-        } else if reg.core.cache.contains_key(&key) {
-            this_call_hits += 1;
-        } else {
-            // Simulate a successful parse.
-            pending_new.insert(key, Some(dummy_cached()));
-            this_call_misses += 1;
+        match pending_new.entry(key) {
+            std::collections::hash_map::Entry::Occupied(_) => this_call_hits += 1,
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                if reg.core.cache.contains_key(entry.key()) {
+                    this_call_hits += 1;
+                } else {
+                    // Simulate a successful parse.
+                    entry.insert(Some(dummy_cached()));
+                    this_call_misses += 1;
+                }
+            }
         }
     }
 

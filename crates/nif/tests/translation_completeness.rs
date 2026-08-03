@@ -338,7 +338,8 @@ fn cross_game_translation_completeness() {
     // Thresholds are tracked in each closure; drift beyond them signals a
     // translation regression.
     eprintln!("\n=== PER-GAME FILL-RATE FLOORS (#1320) ===");
-    let mut fill_assertions: Vec<(&str, Box<dyn Fn(&MaterialStats, &str)>)> = vec![
+    type FillRateAssertion = (&'static str, Box<dyn Fn(&MaterialStats, &str)>);
+    let mut fill_assertions: Vec<FillRateAssertion> = vec![
         (
             "Oblivion",
             Box::new(|s, label| {

@@ -498,7 +498,7 @@ fn build_oblivion_nif_with_unknowns(
 
     // Block data: each block is `payload_size` bytes of 0xAB.
     for _ in 0..num_unknown {
-        buf.extend(std::iter::repeat(0xABu8).take(payload_size));
+        buf.extend(std::iter::repeat_n(0xABu8, payload_size));
     }
 
     buf
@@ -819,7 +819,7 @@ fn build_drifted_nif(inflate_by: u32) -> Vec<u8> {
     // Block data + tail padding so `stream.set_position(start_pos +
     // declared)` lands within the buffer.
     buf.extend_from_slice(&block);
-    buf.extend(std::iter::repeat(0u8).take(inflate_by as usize));
+    buf.extend(std::iter::repeat_n(0u8, inflate_by as usize));
 
     buf
 }

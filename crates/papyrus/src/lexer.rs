@@ -263,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // The lexer must preserve the literal `3.14`.
     fn test_lex_float_literals() {
         let (tokens, errors) = lex("3.14 .5 42.");
         assert!(errors.is_empty());

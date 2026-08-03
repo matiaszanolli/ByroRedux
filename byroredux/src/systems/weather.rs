@@ -662,9 +662,6 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     }
 }
 
-/// Regression tests for #463 — climate-driven TOD breakpoints on
-/// `WeatherDataRes.tod_hours` flow through `build_tod_keys` so the
-/// time-of-day interpolator runs on the right schedule per worldspace.
 #[cfg(test)]
 mod cloud_scroll_rate_tests {
     //! Regression tests for #1033 / REN-D15-NEW-12. Pre-fix the
@@ -737,6 +734,10 @@ mod cloud_scroll_rate_tests {
 
 #[cfg(test)]
 mod tod_keys_tests {
+    //! Regression tests for #463 — climate-driven TOD breakpoints on
+    //! `WeatherDataRes.tod_hours` flow through `build_tod_keys` so the
+    //! time-of-day interpolator runs on the right schedule per worldspace.
+
     use super::*;
     use byroredux_plugin::esm::records::weather::*;
 
@@ -871,8 +872,9 @@ mod tod_keys_tests {
     ///
     /// Post-fix: fog uses the same `(slot_a, slot_b, t)` tuple and the
     /// `tod_slot_night_factor` helper. At hour 5.7 the lerp from
-    /// SUNRISE (0.5) toward DAY (0.0) at `t = (5.7 - 5.333) / (10.0
-    /// - 5.333) ≈ 0.0786` produces `night_factor ≈ 0.461` —
+    /// SUNRISE (0.5) toward DAY (0.0) at
+    /// `t = (5.7 - 5.333) / (10.0 - 5.333) ≈ 0.0786` produces
+    /// `night_factor ≈ 0.461` —
     /// half-transitioned, matching the SUNRISE-class palette.
     #[test]
     fn fo3_wasteland_sunrise_fog_lockstep_with_palette() {
@@ -1220,13 +1222,9 @@ mod interior_gate_tests {
         // (0.65, 0.7, 0.8) — the symptom from #782.
         let bright_sky_blue = [0.65_f32, 0.7, 0.8];
         let mut sky_colors = [[[0.0_f32; 3]; 6]; 10];
-        for slot in 0..6 {
-            sky_colors[byroredux_plugin::esm::records::weather::SKY_FOG][slot] = bright_sky_blue;
-            sky_colors[byroredux_plugin::esm::records::weather::SKY_AMBIENT][slot] =
-                [0.5, 0.5, 0.5];
-            sky_colors[byroredux_plugin::esm::records::weather::SKY_SUNLIGHT][slot] =
-                [1.0, 1.0, 1.0];
-        }
+        sky_colors[byroredux_plugin::esm::records::weather::SKY_FOG].fill(bright_sky_blue);
+        sky_colors[byroredux_plugin::esm::records::weather::SKY_AMBIENT].fill([0.5, 0.5, 0.5]);
+        sky_colors[byroredux_plugin::esm::records::weather::SKY_SUNLIGHT].fill([1.0, 1.0, 1.0]);
         world.insert_resource(WeatherDataRes {
             sky_colors,
             fog: [100.0, 60000.0, 200.0, 30000.0],

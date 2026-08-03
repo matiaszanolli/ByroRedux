@@ -94,6 +94,7 @@ fn cmd(alpha_blend: bool, is_decal: bool, two_sided: bool) -> DrawCommand {
 ///   1. alpha_blend   (opaque before transparent)
 ///   2. is_decal
 ///   3. two_sided
+///
 /// #renderlayer — slot 1 of the sort tuple was widened from
 /// `is_decal as u8 ∈ {0,1}` to `render_layer as u8 ∈ {0..3}`.
 /// Verify that consecutive same-layer draws cluster correctly so
@@ -129,7 +130,7 @@ fn sort_key_clusters_by_render_layer_within_alpha_blend() {
 #[test]
 fn sort_key_clusters_by_alpha_decal_twosided() {
     // Construct every 2³ combination in scrambled order.
-    let mut cmds = vec![
+    let mut cmds = [
         cmd(true, true, true),
         cmd(false, false, false),
         cmd(true, false, true),
@@ -167,7 +168,7 @@ fn opaque_within_cluster_sorts_front_to_back() {
     near.sort_depth = 100;
     let mut far = cmd(false, false, false);
     far.sort_depth = 900;
-    let mut cmds = vec![far, near];
+    let mut cmds = [far, near];
     cmds.sort_by_key(draw_sort_key);
     assert_eq!(cmds[0].sort_depth, 100);
     assert_eq!(cmds[1].sort_depth, 900);
@@ -181,7 +182,7 @@ fn transparent_within_cluster_sorts_back_to_front() {
     near.sort_depth = 100;
     let mut far = cmd(true, false, false);
     far.sort_depth = 900;
-    let mut cmds = vec![near, far];
+    let mut cmds = [near, far];
     cmds.sort_by_key(draw_sort_key);
     assert_eq!(cmds[0].sort_depth, 900);
     assert_eq!(cmds[1].sort_depth, 100);
@@ -206,7 +207,7 @@ fn alpha_over_sorts_back_to_front_across_render_layers() {
     far_puddle.sort_depth = 900;
     far_puddle.entity_id = 2;
 
-    let mut cmds = vec![near_glass, far_puddle];
+    let mut cmds = [near_glass, far_puddle];
     cmds.sort_by_key(draw_sort_key);
 
     assert_eq!(cmds[0].entity_id, 2, "far alpha-over surface draws first");
@@ -230,7 +231,7 @@ fn transparent_clusters_by_blend_factors() {
     alpha_far.src_blend = 6;
     alpha_far.dst_blend = 7;
     alpha_far.sort_depth = 500;
-    let mut cmds = vec![alpha_near, additive_far, alpha_far];
+    let mut cmds = [alpha_near, additive_far, alpha_far];
     cmds.sort_by_key(draw_sort_key);
     // Additive (dst=0) sorts before alpha (dst=7) by u32 order.
     // Both alpha draws land together, sorted back-to-front within.
@@ -271,7 +272,7 @@ fn fire_refraction_composes_between_opaque_and_effect_draws() {
     alpha_over_flame.sort_depth = 900;
     alpha_over_flame.entity_id = 4;
 
-    let mut cmds = vec![alpha_over_flame, additive_flame, fire_refraction, opaque];
+    let mut cmds = [alpha_over_flame, additive_flame, fire_refraction, opaque];
     cmds.sort_by_key(draw_sort_key);
 
     assert_eq!(
@@ -302,7 +303,7 @@ fn fire_refraction_sorts_by_depth_against_unrelated_glass() {
     glass_behind.sort_depth = 900; // farther — must draw first
     glass_behind.entity_id = 2;
 
-    let mut cmds = vec![fire_refraction, glass_behind];
+    let mut cmds = [fire_refraction, glass_behind];
     cmds.sort_by_key(draw_sort_key);
 
     assert_eq!(
@@ -564,7 +565,7 @@ fn in_raster_draws_sort_strictly_before_rt_only() {
     in_raster_transparent.mesh_handle = u32::MAX;
     in_raster_transparent.entity_id = u32::MAX;
 
-    let mut cmds = vec![rt_only_opaque, in_raster_transparent];
+    let mut cmds = [rt_only_opaque, in_raster_transparent];
     cmds.sort_by_key(draw_sort_key);
 
     assert!(
@@ -586,7 +587,7 @@ fn opaque_before_transparent_within_in_raster_band() {
     let mut transparent = cmd(true, false, false);
     transparent.in_raster = true;
 
-    let mut cmds = vec![transparent, opaque];
+    let mut cmds = [transparent, opaque];
     cmds.sort_by_key(draw_sort_key);
     assert!(
         !cmds[0].alpha_blend,
@@ -607,7 +608,7 @@ fn opaque_before_transparent_within_rt_only_band() {
     let mut transparent = cmd(true, false, false);
     transparent.in_raster = false;
 
-    let mut cmds = vec![transparent, opaque];
+    let mut cmds = [transparent, opaque];
     cmds.sort_by_key(draw_sort_key);
     assert!(!cmds[0].alpha_blend);
     assert!(cmds[1].alpha_blend);
@@ -638,7 +639,7 @@ fn mixed_in_raster_and_rt_only_partition_is_stable() {
     d.entity_id = 4;
 
     // Insertion order intentionally interleaves bands.
-    let mut cmds = vec![a, b, c, d];
+    let mut cmds = [a, b, c, d];
     cmds.sort_by_key(draw_sort_key);
 
     // Expected order: in_raster=true (a, d), then in_raster=false (c, b).

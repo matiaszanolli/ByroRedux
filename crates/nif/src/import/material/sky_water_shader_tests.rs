@@ -104,7 +104,7 @@ fn bs_sky_shader_property_routes_source_texture_to_material_info() {
 
     let tex = info.texture_path.and_then(|s| pool.resolve(s));
     assert_eq!(
-        tex.as_deref(),
+        tex,
         Some("sky\\sky_clouds.dds"),
         "pre-#977: BSSkyShaderProperty.source_texture was parsed but the \
          importer had no consumer — every Skyrim sky-dome rendered as the \

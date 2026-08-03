@@ -351,9 +351,7 @@ mod tests {
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 
     fn spawn_entity_at(world: &mut World, form_id_raw: u32, pos: Vec3) -> EntityId {
-        let mut pool = world
-            .remove_resource::<FormIdPool>()
-            .unwrap_or_else(FormIdPool::new);
+        let mut pool = world.remove_resource::<FormIdPool>().unwrap_or_default();
         let fid = pool.intern(FormIdPair {
             plugin: PluginId::from_filename("FalloutNV.esm"),
             local: LocalFormId(form_id_raw),

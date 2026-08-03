@@ -433,6 +433,7 @@ pub(crate) fn particle_system(world: &World, dt: f32) {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)] // Fixtures emphasize the one field under test.
 mod tests {
     //! Regression tests for `particle_system` — issue #401.
     use super::*;

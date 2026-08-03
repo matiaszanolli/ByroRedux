@@ -6,7 +6,7 @@ fn main() {
     let target = args[2].to_ascii_lowercase();
     for f in archive.list_files() {
         if f.to_ascii_lowercase() == target {
-            let data = archive.extract(&f).unwrap();
+            let data = archive.extract(f).unwrap();
             fs::write(&args[3], &data).unwrap();
             println!("wrote {} bytes", data.len());
             return;

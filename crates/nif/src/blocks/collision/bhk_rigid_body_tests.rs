@@ -184,7 +184,6 @@ fn bhk_rigid_body_t_skyrim_se_parses_identically() {
 /// was structurally invisible to vanilla content — this test exists
 /// to pin the doctrine boundary at the value nif.xml actually
 /// specifies.
-
 fn skyrim_header_at_bsver(bsver: u32) -> NifHeader {
     NifHeader {
         version: NifVersion::V20_2_0_7,

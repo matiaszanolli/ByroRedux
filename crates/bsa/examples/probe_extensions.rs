@@ -18,7 +18,7 @@ fn main() {
     for (e, c) in &ext_count {
         println!("  .{e}: {c}");
     }
-    for (e, _) in &ext_count {
+    for e in ext_count.keys() {
         let samples: Vec<_> = files
             .iter()
             .filter(|f| f.to_ascii_lowercase().ends_with(e.as_str()))

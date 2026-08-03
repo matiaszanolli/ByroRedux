@@ -429,6 +429,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // The parser input and expected AST value are `3.14`.
     fn test_float_literal() {
         let e = parse_expr_str("3.14").unwrap();
         assert_float(&e.node, 3.14);

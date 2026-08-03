@@ -986,9 +986,9 @@ fn insert_batch_empty_iterator_is_noop() {
     // the contract: empty storage is fine, query returns an empty
     // iterator (not None — because storage exists but has no rows).
     let q = world.query::<Health>();
-    match q {
-        Some(q) => assert_eq!(q.iter().count(), 0),
-        None => {} // also acceptable if future change makes it lazy
+    // `None` is also acceptable if a future change makes storage lazy.
+    if let Some(q) = q {
+        assert_eq!(q.iter().count(), 0);
     }
 }
 

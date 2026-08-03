@@ -385,12 +385,12 @@ mod tests {
         let subs = vec![
             sub(b"EDID", b"RecipeStimpak\0"),
             sub(b"CNAM", &0x0014_4F10_u32.to_le_bytes()),
-            sub(b"BNAM", &0x000A_6_001_u32.to_le_bytes()),
+            sub(b"BNAM", &0x000A_6001_u32.to_le_bytes()),
         ];
         let c = parse_cobj(0x0014_F800, &subs);
         assert_eq!(c.editor_id, "RecipeStimpak");
         assert_eq!(c.created_form, 0x0014_4F10);
-        assert_eq!(c.workbench_form, 0x000A_6_001);
+        assert_eq!(c.workbench_form, 0x000A_6001);
     }
     #[test]
     fn parse_minimal_record_picks_edid_full() {

@@ -55,9 +55,9 @@ const FO3_TOTAL_FLOOR: usize = 30_000;
 /// FO4: 70,000 records floor — observed 2026-05-04 on vanilla
 /// Fallout4.esm: 76,468 (with #817 categories landed: cells 964 +
 /// statics 31,989 + scols 2,617 + packins 872 + material_swaps 2,537 +
-/// texture_sets 379 + items 4,076 + NPCs 3,015 + game_settings 2,039
-/// + globals 1,346 + LVLI 2,098 + factions 699 + weathers 71 + many
-/// smaller categories). Floor at 70 K absorbs DLC/patch drift without
+/// texture_sets 379 + items 4,076 + NPCs 3,015 + game_settings 2,039,
+/// along with globals 1,346 + LVLI 2,098 + factions 699 + weathers 71
+/// and many smaller categories). Floor at 70 K absorbs DLC/patch drift without
 /// masking a category-wipe regression.
 const FO4_TOTAL_FLOOR: usize = 70_000;
 

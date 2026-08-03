@@ -316,12 +316,12 @@ fn oblivion_legacy_particle_system_controller_roundtrip() {
     // Controller body scalar soup — mostly zeros, non-zero marker
     // values to verify specific field offsets.
     for v in [
-        50.0f32, // speed
-        5.0,     // speed_variation
-        0.0,     // declination
-        0.5,     // declination_variation
-        0.0,     // planar_angle
-        6.28,    // planar_angle_variation
+        50.0f32,               // speed
+        5.0,                   // speed_variation
+        0.0,                   // declination
+        0.5,                   // declination_variation
+        0.0,                   // planar_angle
+        std::f32::consts::TAU, // planar_angle_variation
     ] {
         bytes.extend_from_slice(&v.to_le_bytes());
     }

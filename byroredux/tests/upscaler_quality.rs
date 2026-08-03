@@ -149,7 +149,7 @@ fn fsr_presets_track_the_native_reference_on_every_camera_path() {
     }
 
     println!("\nFSR quality matrix — reference: TAA at native resolution, {FRAMES} frames/capture");
-    println!("{:<9} {:<13} {}", "path", "preset", "metrics");
+    println!("{:<9} {:<13} metrics", "path", "preset");
     for (path, preset, metrics) in &rows {
         println!("{path:<9} {preset:<13} {metrics}");
     }
@@ -207,7 +207,7 @@ fn fsr_presets_on_game_content_report_only() {
         "
 FSR quality matrix — {game}/{cell}, reference: TAA at native, {FRAMES} frames"
     );
-    println!("{:<9} {:<13} {}", "path", "preset", "metrics");
+    println!("{:<9} {:<13} metrics", "path", "preset");
     for path in PATHS {
         let reference_png = workdir.join(format!("{path}_reference_taa.png"));
         capture_scene(&reference_png, &scene, path, "taa", None);

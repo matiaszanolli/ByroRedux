@@ -672,15 +672,11 @@ fn parse_ni_texturing_property_oblivion_skips_normal_parallax_slots() {
                                                  // Slots 0-5: each is a `has = 0` bool (no body). Slots 6-7
                                                  // do NOT exist on this version — pre-fix the parser would
                                                  // also try to read those, eating 2 bytes from below.
-    for _ in 0..6 {
-        data.push(0); // has = false
-    }
-    // Pre-v20.2.0.5: decals start at slot 6. With texture_count=8,
-    // num_decals = 8-6 = 2 decal slots, each a `has = 0` bool
-    // (no body since has=false).
-    for _ in 0..2 {
-        data.push(0); // decal has = false
-    }
+    data.extend_from_slice(&[0; 6]); // has = false
+                                     // Pre-v20.2.0.5: decals start at slot 6. With texture_count=8,
+                                     // num_decals = 8-6 = 2 decal slots, each a `has = 0` bool
+                                     // (no body since has=false).
+    data.extend_from_slice(&[0; 2]); // decal has = false
 
     // Trailer: shader textures count = 0 (since v10.0.1.0+).
     data.extend_from_slice(&0u32.to_le_bytes());
@@ -732,10 +728,8 @@ fn num_decals_boundary_v20_2_0_5_count_8_yields_zero() {
                                                  // Slots 0..=7: base/dark/detail/gloss/glow/bump/normal/parallax.
                                                  // All `has = 0` — the parser's fixed-slot loop consumes every
                                                  // one so slot accounting lines up. No decals at count=8.
-    for _ in 0..8 {
-        data.push(0); // has = 0
-    }
-    // Shader textures trailer.
+    data.extend_from_slice(&[0; 8]); // has = 0
+                                     // Shader textures trailer.
     data.extend_from_slice(&0u32.to_le_bytes());
 
     let expected_len = data.len();
@@ -763,9 +757,7 @@ fn num_decals_boundary_v20_2_0_5_count_9_yields_one() {
     data.extend_from_slice(&0u16.to_le_bytes()); // flags
     data.extend_from_slice(&9u32.to_le_bytes()); // texture_count = 9
                                                  // Slots 0..=7 empty + 1 populated decal.
-    for _ in 0..8 {
-        data.push(0);
-    }
+    data.extend_from_slice(&[0; 8]);
     // Decal 0 — v20.2.0.7 uses the modern TexDesc (v >= 20.1.0.3):
     //   has(bool) + source_ref(i32) + flags(u16) + has_transform(bool).
     data.push(1);
@@ -802,9 +794,7 @@ fn num_decals_boundary_pre_v20_2_0_5_count_6_yields_zero() {
                                                     // No flags field on v20.0.0.5 (10.0.1.3..20.1.0.1 gap).
     data.extend_from_slice(&0u32.to_le_bytes()); // apply_mode
     data.extend_from_slice(&6u32.to_le_bytes()); // texture_count = 6
-    for _ in 0..6 {
-        data.push(0); // each slot `has = 0`
-    }
+    data.extend_from_slice(&[0; 6]); // each slot `has = 0`
     data.extend_from_slice(&0u32.to_le_bytes()); // shader textures trailer
 
     let expected_len = data.len();
@@ -831,11 +821,9 @@ fn num_decals_boundary_pre_v20_2_0_5_count_7_yields_one() {
     data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
     data.extend_from_slice(&0u32.to_le_bytes()); // apply_mode
     data.extend_from_slice(&7u32.to_le_bytes()); // texture_count = 7
-    for _ in 0..6 {
-        data.push(0); // slots 0..=5 empty
-    }
-    // Decal 0 — v20.0.0.5 is below 20.1.0.3, so TexDesc ELSE branch:
-    //   has(bool) + source_ref + 3×u32 (clamp/filter/uv_set) + has_transform
+    data.extend_from_slice(&[0; 6]); // slots 0..=5 empty
+                                     // Decal 0 — v20.0.0.5 is below 20.1.0.3, so TexDesc ELSE branch:
+                                     //   has(bool) + source_ref + 3×u32 (clamp/filter/uv_set) + has_transform
     data.push(1);
     data.extend_from_slice(&99i32.to_le_bytes()); // source_ref = 99
     data.extend_from_slice(&0u32.to_le_bytes()); // clamp
@@ -873,9 +861,7 @@ fn num_decals_above_fixed_maximum_is_parse_error() {
     data.extend_from_slice(&13u32.to_le_bytes()); // texture_count = 13 -> num_decals = 5
                                                   // Slots 0..=7 (base/dark/detail/gloss/glow/bump/normal/parallax), all
                                                   // empty — must be fully consumed before the decal-count check runs.
-    for _ in 0..8 {
-        data.push(0); // has = 0
-    }
+    data.extend_from_slice(&[0; 8]); // has = 0
 
     let mut stream = NifStream::new(&data, &header);
     let err = NiTexturingProperty::parse(&mut stream)

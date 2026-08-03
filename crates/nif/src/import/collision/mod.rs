@@ -481,10 +481,11 @@ pub(super) fn decompose_havok_matrix(m: &[[f32; 4]; 4], scale: f32) -> (Vec3, Qu
     (translation, rotation)
 }
 
-/// Structural guard: every `bhk*Shape` block the parser dispatches must have a
-/// resolve arm in [`resolve_shape_inner`].
 #[cfg(test)]
 mod dispatch_coverage_tests {
+    //! Structural guard: every `bhk*Shape` block the parser dispatches must
+    //! have a resolve arm in [`resolve_shape_inner`].
+    //!
     //! Regression for #1360 / #1361 (and the #1329 migration that left
     //! `BhkConvexSweepShape` + `BhkMeshShape` parse-dispatched but unresolved).
     //!
@@ -524,8 +525,8 @@ mod dispatch_coverage_tests {
             if !is_shape_arm {
                 continue;
             }
-            for probe in i..=(i + 2).min(lines.len() - 1) {
-                if let Some(ident) = constructed_shape(lines[probe]) {
+            for candidate in &lines[i..=(i + 2).min(lines.len() - 1)] {
+                if let Some(ident) = constructed_shape(candidate) {
                     out.insert(ident);
                     break;
                 }
@@ -688,9 +689,10 @@ mod dispatch_tests {
     }
 
     fn empty_scene() -> NifScene {
-        let mut scene = NifScene::default();
-        scene.havok_scale = 1.0;
-        scene
+        NifScene {
+            havok_scale: 1.0,
+            ..NifScene::default()
+        }
     }
 
     fn np_collision(data_ref: BlockRef) -> Box<dyn NiObject> {

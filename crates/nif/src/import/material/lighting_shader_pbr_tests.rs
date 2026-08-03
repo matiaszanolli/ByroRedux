@@ -42,6 +42,7 @@ fn empty_net() -> NiObjectNETData {
 /// block was parsed for — gating happens parser-side at
 /// `crates/nif/src/blocks/shader.rs:679-695`; once the struct exists
 /// the walker just copies fields.
+#[allow(clippy::too_many_arguments)] // Mirrors the eight independent shader scalars.
 fn bslsp_with_pbr_scalars(
     refraction: f32,
     le1: f32,

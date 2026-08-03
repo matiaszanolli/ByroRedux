@@ -102,6 +102,7 @@ fn assert_structural(game: Game, ragdoll: &ImportedRagdoll) {
 ///   - a future parser improvement that surfaces MORE joints (e.g. rebuilding
 ///     the breakable-wrapped inner joint per #1850) does NOT false-fail, which
 ///     a brittle `==` pin would.
+///
 /// A floor with slack *below* the measured value (e.g. `>= 16`) would let a
 /// single-joint drop pass, defeating the purpose — so the floor sits exactly
 /// at the measured count.

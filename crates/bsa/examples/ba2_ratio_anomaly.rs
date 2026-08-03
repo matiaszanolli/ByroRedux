@@ -120,7 +120,7 @@ fn print_summary(summary: &Summary) {
 
     println!();
     println!("─── Per-archive ──────────────────────────────────────────────");
-    println!("  {:>6} {:>10}  {}", "anomal", "scanned", "archive");
+    println!("  {:>6} {:>10}  archive", "anomal", "scanned");
     for (archive, (total, anomalies)) in &summary.per_archive {
         println!("  {:>6} {:>10}  {}", anomalies, total, archive);
     }
@@ -128,11 +128,11 @@ fn print_summary(summary: &Summary) {
     println!();
     println!("─── Per-extension ────────────────────────────────────────────");
     println!(
-        "  {:>6} {:>10} {:>10} {:>8}  {}",
-        "count", "Σpacked", "Σunpkd", "max %", "ext"
+        "  {:>6} {:>10} {:>10} {:>8}  ext",
+        "count", "Σpacked", "Σunpkd", "max %"
     );
     let mut by_ext: Vec<(&String, &ExtensionStats)> = summary.per_extension.iter().collect();
-    by_ext.sort_by(|a, b| b.1.count.cmp(&a.1.count));
+    by_ext.sort_by_key(|entry| std::cmp::Reverse(entry.1.count));
     for (ext, stats) in &by_ext {
         println!(
             "  {:>6} {:>10} {:>10} {:>8.1}  .{}",

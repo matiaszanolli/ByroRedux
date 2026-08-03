@@ -186,27 +186,27 @@ mod tests {
     /// skills, with deterministic FormIDs (0x100 + slot).
     fn fnv_index_with_class(class_form_id: u32, base: [u8; 7]) -> EsmIndex {
         let mut index = EsmIndex::default();
-        let mut fid = 0x100u32;
-        for name in SPECIAL.iter().chain(
-            [
-                "Barter",
-                "EnergyWeapons",
-                "Explosives",
-                "Guns",
-                "Lockpick",
-                "Medicine",
-                "MeleeWeapons",
-                "Repair",
-                "Science",
-                "Sneak",
-                "Speech",
-                "Survival",
-                "Unarmed",
-            ]
-            .iter(),
+        for (fid, name) in (0x100u32..).zip(
+            SPECIAL.iter().chain(
+                [
+                    "Barter",
+                    "EnergyWeapons",
+                    "Explosives",
+                    "Guns",
+                    "Lockpick",
+                    "Medicine",
+                    "MeleeWeapons",
+                    "Repair",
+                    "Science",
+                    "Sneak",
+                    "Speech",
+                    "Survival",
+                    "Unarmed",
+                ]
+                .iter(),
+            ),
         ) {
             index.actor_values.insert(fid, avif(fid, name));
-            fid += 1;
         }
         index.classes.insert(
             class_form_id,

@@ -1145,6 +1145,7 @@ mod tests {
     ///      texture as single-mip regardless of the field value when
     ///      the flag is cleared — the `.max(1)` clamp keeps the field
     ///      and the flag self-consistent).
+    ///
     /// The `warn!` at record-read time is orthogonal to this header
     /// shape and is exercised indirectly via runtime log capture — not
     /// tested here because setting up `log` in a unit test drags in a

@@ -61,7 +61,7 @@ fn release_drains_pool_slots_for_victim_inventories() {
 }
 
 /// Stack-only inventories (`instance: None`, the common case for stimpaks
-/// + ammo) must not touch the pool — release is a no-op when no stack
+/// and ammo) must not touch the pool — release is a no-op when no stack
 /// carries an allocated instance.
 #[test]
 fn release_skips_stack_only_inventories() {

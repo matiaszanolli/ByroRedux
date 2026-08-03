@@ -405,7 +405,7 @@ mod tests {
         data[44..48].copy_from_slice(&[13, 13, 11, 0]); // deep
         data[48..52].copy_from_slice(&[41, 48, 46, 0]); // reflection
 
-        let w = parse_watr(0x00100000, &vec![sub(b"DATA", &data)]);
+        let w = parse_watr(0x00100000, &[sub(b"DATA", &data)]);
         assert!((w.params.shallow_color[0] - 36.0 / 255.0).abs() < 1e-6);
         assert!((w.params.shallow_color[1] - 47.0 / 255.0).abs() < 1e-6);
         assert!((w.params.deep_color[2] - 11.0 / 255.0).abs() < 1e-6);

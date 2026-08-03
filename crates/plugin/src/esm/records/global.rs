@@ -152,7 +152,7 @@ mod tests {
     fn glob_long_value() {
         let subs = vec![
             sub(b"EDID", b"GameDay\0"),
-            sub(b"FNAM", &[b'l']),
+            sub(b"FNAM", b"l"),
             sub(b"FLTV", &7i32.to_le_bytes()),
         ];
         let g = parse_glob(0x10, &subs);
@@ -164,7 +164,7 @@ mod tests {
     fn glob_float_value() {
         let subs = vec![
             sub(b"EDID", b"GameYear\0"),
-            sub(b"FNAM", &[b'f']),
+            sub(b"FNAM", b"f"),
             sub(b"FLTV", &2281.5f32.to_le_bytes()),
         ];
         let g = parse_glob(0x11, &subs);

@@ -1089,7 +1089,7 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&0x0000_0001u32.to_le_bytes()); // effect_flags
         data.extend_from_slice(&10.0f32.to_le_bytes()); // base_cost
-        data.extend_from_slice(&0x0001_AB_CDu32.to_le_bytes()); // associated_item
+        data.extend_from_slice(&0x0001_ABCD_u32.to_le_bytes()); // associated_item
         data.extend_from_slice(&2i32.to_le_bytes()); // magic_school
         data.extend_from_slice(&5i32.to_le_bytes()); // resistance_av
         data.extend_from_slice(&0u16.to_le_bytes()); // counter_count
@@ -1108,7 +1108,7 @@ mod tests {
         let m = parse_mgef(0x5555, &subs);
         assert_eq!(m.effect_flags, 0x0000_0001);
         assert_eq!(m.base_cost, 10.0);
-        assert_eq!(m.associated_item, 0x0001_AB_CD);
+        assert_eq!(m.associated_item, 0x0001_ABCD);
         assert_eq!(m.magic_school, 2);
         assert_eq!(m.resistance_av, 5);
         assert_eq!(m.light_form_id, 0x1111);
@@ -1312,7 +1312,7 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&0x0000_0003u32.to_le_bytes()); // effect_flags
         data.extend_from_slice(&15.5f32.to_le_bytes()); // base_cost
-        data.extend_from_slice(&0x0002_34_56u32.to_le_bytes()); // associated_item
+        data.extend_from_slice(&0x0002_3456_u32.to_le_bytes()); // associated_item
         data.extend_from_slice(&3i32.to_le_bytes()); // magic_school
         data.extend_from_slice(&7i32.to_le_bytes()); // resistance_av
         data.extend_from_slice(&5u16.to_le_bytes()); // counter_effect_count
@@ -1329,7 +1329,7 @@ mod tests {
         let header = read_sub::<MagicEffectHeader>(&sub).expect("read schema");
         assert_eq!(header.effect_flags, 0x0000_0003);
         assert_eq!(header.base_cost, 15.5);
-        assert_eq!(header.associated_item, 0x0002_34_56);
+        assert_eq!(header.associated_item, 0x0002_3456);
         assert_eq!(header.magic_school, 3);
         assert_eq!(header.resistance_av, 7);
         assert_eq!(header.light_form_id, 0x3333);

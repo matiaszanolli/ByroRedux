@@ -6,6 +6,13 @@
 use super::super::super::reader::EsmReader;
 use super::super::*;
 
+pub(super) type SyntheticWrldParse = (
+    HashMap<String, super::super::WorldspaceRecord>,
+    HashMap<String, u32>,
+    HashMap<String, HashMap<(i32, i32), CellData>>,
+    HashMap<String, CellData>,
+);
+
 /// Append one sub-record (4-CC + u16 length + payload) to a buffer.
 pub(super) fn put_sub(buf: &mut Vec<u8>, ty: &[u8; 4], payload: &[u8]) {
     buf.extend_from_slice(ty);
@@ -49,14 +56,7 @@ pub(super) fn build_wrld_group(records: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// Drive `parse_wrld_group` over a synthetic GRUP-WRLD buffer.
-pub(super) fn parse_synthetic_wrld(
-    buf: &[u8],
-) -> (
-    HashMap<String, super::super::WorldspaceRecord>,
-    HashMap<String, u32>,
-    HashMap<String, HashMap<(i32, i32), CellData>>,
-    HashMap<String, CellData>,
-) {
+pub(super) fn parse_synthetic_wrld(buf: &[u8]) -> SyntheticWrldParse {
     let mut reader = EsmReader::new(buf);
     let gh = reader.read_group_header().expect("WRLD group header");
     let end = reader.group_content_end(&gh);

@@ -99,6 +99,7 @@ fn conductor_tint_is_mult_free() {
 /// `GpuMaterial.diffuse_*`. The mult-free blend of two `[0,1]` inputs is
 /// already in range, and the `[0,1]` clamp guards a >1 diffuse input.
 #[test]
+#[allow(clippy::approx_constant)] // 0.318 is authored specular data, not 1/pi.
 fn conductor_tint_clamps_to_unit_range() {
     // Both inputs in range → result in range (no overshoot).
     let in_range = conductor_diffuse_tint([1.0, 1.0, 1.0], [1.0, 0.467, 0.318]);

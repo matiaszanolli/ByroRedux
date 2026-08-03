@@ -437,6 +437,7 @@ mod tests {
     ///      inserted afterwards.
     ///   3. Several bones spawned as a deep chain *before* the skel_root
     ///      → placement_root edge is set, so add_child runs after.
+    ///
     /// If propagation works under this exact ordering, the runtime bug
     /// isn't in the topology — it's in the GPU palette upload or the
     /// dispatch order against the scheduler.

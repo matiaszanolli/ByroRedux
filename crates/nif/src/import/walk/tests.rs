@@ -663,6 +663,7 @@ mod recursion_depth_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)] // The fixture starts from identity then authors one offset.
 mod particle_local_transform_tests {
     //! Regression for #1333: both particle-emitter walkers must compose
     //! the `NiParticleSystem`'s own local TRS (from its `NiAVObjectData`

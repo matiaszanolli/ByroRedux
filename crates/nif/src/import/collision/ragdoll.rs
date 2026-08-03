@@ -275,6 +275,7 @@ fn limited_hinge_joint(h: &LimitedHingeCInfo, scale: f32) -> Option<ImportedJoin
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)] // Synthetic scenes are assembled block-by-block.
 mod ragdoll_extract_tests {
     //! CI-runnable coverage for [`extract_ragdoll`] (M41.x Phase 2). The
     //! real-data path (18-body FNV skeleton) is `crates/nif/tests/

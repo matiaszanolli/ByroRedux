@@ -289,7 +289,7 @@ mod tests {
         };
         let p2a = ScolPlacement {
             pos: [-1.0, -2.0, -3.0],
-            rot: [3.14, 0.0, 0.0],
+            rot: [std::f32::consts::PI, 0.0, 0.0],
             scale: 2.0,
         };
         let subs = vec![

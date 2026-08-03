@@ -1080,7 +1080,7 @@ mod tests {
             f32::MIN_POSITIVE,
             f32::INFINITY,
             -0.0,
-            3.1415927,
+            std::f32::consts::PI,
         ];
         let f32_data: Vec<u8> = floats.iter().flat_map(|v| v.to_le_bytes()).collect();
         let mut s_bulk = NifStream::new(&f32_data, &header);

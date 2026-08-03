@@ -33,8 +33,8 @@ fn main() {
     let mut count = 0;
     for f in arch.list_files() {
         if f.to_ascii_lowercase().ends_with(".pex") {
-            let data = arch.extract(&f).expect("extract");
-            let stem = f.rsplit(|c| c == '\\' || c == '/').next().unwrap();
+            let data = arch.extract(f).expect("extract");
+            let stem = f.rsplit(['\\', '/']).next().unwrap();
             fs::write(out_dir.join(stem), &data).expect("write");
             count += 1;
         }

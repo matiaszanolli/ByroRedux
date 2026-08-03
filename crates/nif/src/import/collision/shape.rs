@@ -468,8 +468,8 @@ fn packed_triangle_winding(data: &HkPackedNiTriStripsData, t: &PackedTriangle) -
     let Some(&c) = data.vertices.get(t.v2 as usize) else {
         return natural;
     };
-    let geometric =
-        (Vec3::from_array(b) - Vec3::from_array(a)).cross(Vec3::from_array(c) - Vec3::from_array(a));
+    let geometric = (Vec3::from_array(b) - Vec3::from_array(a))
+        .cross(Vec3::from_array(c) - Vec3::from_array(a));
     if geometric.dot(Vec3::from_array(normal)) < 0.0 {
         [t.v0 as u32, t.v2 as u32, t.v1 as u32]
     } else {
@@ -605,6 +605,7 @@ fn finish_trimesh(vertices: Vec<Vec3>, mut indices: Vec<[u32; 3]>) -> Option<Col
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)] // Cycle fixtures are assembled block-by-block.
 mod cycle_tests {
     //! Regression for #1269 / SAFE-DIM3-NEW-01: `resolve_shape` must
     //! detect a `BhkListShape` whose `sub_shape_refs` cycle and return

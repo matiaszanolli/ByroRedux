@@ -8,7 +8,7 @@ fn main() {
     let archive = BsaArchive::open(bsa).unwrap();
     for f in archive.list_files() {
         if f.to_ascii_lowercase() == target {
-            let data = archive.extract(&f).unwrap();
+            let data = archive.extract(f).unwrap();
             fs::write(out, &data).unwrap();
             println!("wrote {} bytes to {}", data.len(), out);
             return;

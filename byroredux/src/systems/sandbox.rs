@@ -310,8 +310,8 @@ mod tests {
     use super::*;
 
     /// Regression for #2033 / PERF-D1-2026-07-16-01. Unlike the other six
-    /// M42 systems, no existing test builds the full `World` (`Furniture`
-    /// + sit markers + `SandboxSitClip` resource + `SeatReservations`)
+    /// M42 systems, no existing test builds the full `World` (`Furniture`,
+    /// sit markers, `SandboxSitClip` resource, and `SeatReservations`)
     /// `sandbox_seat_system_inner` needs to reach its scratch-populating
     /// path, so a behavioral capacity/len test isn't practical to add
     /// here without inventing that whole fixture from nothing. Pin the

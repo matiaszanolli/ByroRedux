@@ -175,7 +175,7 @@ fn bhk_convex_list_shape_consumes_variable_body() {
 /// Regression for #557 — `bhkBreakableConstraint` with a Hinge
 /// inner (type=1, 80 B payload). Oblivion-sized so no block_sizes
 /// recovery is needed. Total = 16 (outer CInfo) + 4 (wrapped type)
-/// + 16 (inner CInfo) + 80 (Hinge payload) + 4 (threshold) + 1
+/// plus 16 (inner CInfo) + 80 (Hinge payload) + 4 (threshold) + 1
 /// (remove_when_broken) = 121 bytes.
 #[test]
 fn bhk_breakable_constraint_hinge_inner_consumes_121_bytes() {

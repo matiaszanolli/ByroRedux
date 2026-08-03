@@ -17,7 +17,7 @@ use byroredux_plugin::esm::records::{MaterialSwapEntry, MaterialSwapRecord};
 /// Resolve a path handle through the `StringPool`. The pool lowercases
 /// on intern (Gamebryo `GlobalStringTable` semantic) so test assertions
 /// compare against the canonical lowercase form. See #609.
-fn resolved<'a>(pool: &'a StringPool, sym: Option<FixedString>) -> Option<&'a str> {
+fn resolved(pool: &StringPool, sym: Option<FixedString>) -> Option<&str> {
     sym.and_then(|s| pool.resolve(s))
 }
 

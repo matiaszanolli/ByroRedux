@@ -1139,7 +1139,7 @@ mod tests {
         //    data=extended_size bytes (zeros).
         sub_data.extend_from_slice(b"OFST");
         sub_data.extend_from_slice(&0u16.to_le_bytes()); // ignored
-        sub_data.extend(std::iter::repeat(0u8).take(extended_size as usize));
+        sub_data.extend(std::iter::repeat_n(0u8, extended_size as usize));
 
         // 4. Normal CNAM sub-record after the oversized one — verifies stream
         //    position is correct so this can be read cleanly.
@@ -1153,7 +1153,7 @@ mod tests {
         record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes()); // data_size
         record.extend_from_slice(&0u32.to_le_bytes()); // flags
         record.extend_from_slice(&1u32.to_le_bytes()); // form_id
-        record.extend(std::iter::repeat(0u8).take(8)); // 8-byte Tes5Plus trailer
+        record.extend(std::iter::repeat_n(0u8, 8)); // 8-byte Tes5Plus trailer
         record.extend_from_slice(&sub_data);
 
         let mut reader = EsmReader::with_variant(&record, EsmVariant::Tes5Plus);

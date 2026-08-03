@@ -979,6 +979,7 @@ fn bs_value_node_value_and_flags_are_surfaced_on_imported_node() {
 
 /// Regression for #625 / SK-D4-03: BSOrderedNode `alpha_sort_bound`
 /// + `is_static_bound` survive the walker unwrap. Renderer-side
+///
 /// consumption (a `RenderOrderHint` component on each child + a
 /// sort-key tweak in `build_render_data`) is deferred per the
 /// no-speculative-Vulkan-fixes policy — this test pins the data-

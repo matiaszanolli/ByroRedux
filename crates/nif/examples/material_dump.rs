@@ -21,7 +21,7 @@ fn main() {
 
     println!("# {} (BSVER {})  — {} meshes", path, bsver, imported.len());
     println!(
-        "{:<22} {:>5} {:>5} {:>5} {:>5} {:>5} {:>5} {:>6} {:>6} {:>5} {:>5} {:>5}  {}",
+        "{:<22} {:>5} {:>5} {:>5} {:>5} {:>5} {:>5} {:>6} {:>6} {:>5} {:>5} {:>5}  tex/mat path",
         "mesh",
         "kind",
         "metO",
@@ -34,7 +34,6 @@ fn main() {
         "emSrc",
         "alpha",
         "decal",
-        "tex/mat path",
     );
     for m in &imported {
         let name = m

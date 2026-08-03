@@ -353,7 +353,7 @@ mod tests {
         data.extend_from_slice(&10u32.to_le_bytes()); // data_size (claimed)
         data.extend_from_slice(&0x0001u32.to_le_bytes()); // id
         data.extend_from_slice(&0u32.to_le_bytes()); // offset
-        data.extend_from_slice(&[b'H', b'i']); // only 2 bytes of blob (need 10)
+        data.extend_from_slice(b"Hi"); // only 2 bytes of blob (need 10)
         assert!(StringsTable::parse(&data, false).is_err());
     }
 

@@ -193,7 +193,7 @@ fn water_shader_property_routes_to_dedicated_parser() {
 }
 
 /// Regression: #474 — `TallGrassShaderProperty` inherits `BSShaderProperty`
-/// + adds `File Name: SizedString` per nif.xml line 6354. Previously
+/// and adds `File Name: SizedString` per nif.xml line 6354. Previously
 /// aliased to `BSShaderPPLightingProperty::parse`, dropping the
 /// filename on the floor.
 #[test]

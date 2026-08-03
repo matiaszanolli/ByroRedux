@@ -231,14 +231,12 @@ mod tests {
     #[test]
     fn max_bones_per_mesh_covers_fo76_vanilla_ceiling() {
         const FO76_VANILLA_MAX: usize = 133;
-        assert!(
-            MAX_BONES_PER_MESH >= FO76_VANILLA_MAX,
-            "MAX_BONES_PER_MESH={} would drop FO76 prewardress / radtoad / \
-             deathclawoutfit into bind pose (vanilla survey max={}). See \
-             #1135 / r6_bone_count_survey for the per-game breakdown.",
-            MAX_BONES_PER_MESH,
-            FO76_VANILLA_MAX,
-        );
+        const {
+            assert!(
+                MAX_BONES_PER_MESH >= FO76_VANILLA_MAX,
+                "MAX_BONES_PER_MESH would regress FO76 vanilla skinning (#1135)",
+            );
+        }
     }
 
     #[test]

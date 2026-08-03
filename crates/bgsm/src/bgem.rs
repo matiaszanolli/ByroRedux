@@ -204,9 +204,7 @@ pub(crate) mod tests {
 
         // v < 10 → no env_mapping section here.
         // 6 flag bools: blood, effect_lighting, falloff, falloff_color, grayscale_to_palette_alpha, soft
-        for _ in 0..6 {
-            buf.push(0);
-        }
+        buf.extend_from_slice(&[0; 6]);
 
         // base_color (3×f32) + base_color_scale
         buf.extend_from_slice(&1.0f32.to_le_bytes());
@@ -256,9 +254,7 @@ pub(crate) mod tests {
         append_string(&mut bytes, "");
         append_string(&mut bytes, "");
 
-        for _ in 0..6 {
-            bytes.push(0);
-        }
+        bytes.extend_from_slice(&[0; 6]);
         bytes.extend_from_slice(&0.5f32.to_le_bytes());
         bytes.extend_from_slice(&0.8f32.to_le_bytes());
         bytes.extend_from_slice(&1.0f32.to_le_bytes());

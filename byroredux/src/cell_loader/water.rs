@@ -321,8 +321,8 @@ mod tests {
     ///
     /// The Vulkan half of spawn/unload can't run in a unit test (no
     /// headless `VulkanContext`), so we assert the reachability invariant
-    /// directly: a water entity built like `spawn_water_plane` (MeshHandle
-    /// + WaterPlane + NormalMapHandle) is found by both the mesh-drop and
+    /// directly: a water entity built like `spawn_water_plane` (MeshHandle,
+    /// WaterPlane, and NormalMapHandle) is found by both the mesh-drop and
     /// the texture-drop queries the walk fans out to.
     #[test]
     fn water_normal_map_handle_reachable_by_unload_walk_query() {

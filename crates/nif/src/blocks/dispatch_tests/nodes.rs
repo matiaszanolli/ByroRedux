@@ -92,7 +92,7 @@ fn fo76_header_with_name(name: &str) -> NifHeader {
 }
 
 /// Build the BSMultiBoundNode wire body (NiNode body + multi_bound_ref
-/// + culling_mode for bsver >= crate::version::bsver::SKYRIM_LE). Returns the byte vector ready to
+/// plus culling_mode for bsver at least crate::version::bsver::SKYRIM_LE). Returns the byte vector ready to
 /// concatenate inside a BSDistantObjectInstancedNode payload.
 fn build_bs_multi_bound_node_body() -> Vec<u8> {
     let mut b = Vec::new();
@@ -677,7 +677,7 @@ fn bs_tree_node_dispatches_with_both_bone_lists() {
 
 /// Regression: #148 — BSMultiBoundNode must dispatch to its own
 /// parser and read the trailing `multi_bound_ref` (BlockRef, always)
-/// + `culling_mode` (u32, Skyrim+ only). Previously aliased to plain
+/// plus `culling_mode` (u32, Skyrim+ only). Previously aliased to plain
 /// NiNode so the multi-bound linkage was silently dropped.
 #[test]
 fn bs_multi_bound_node_dispatches_with_multi_bound_ref() {
@@ -701,8 +701,8 @@ fn bs_multi_bound_node_dispatches_with_multi_bound_ref() {
 }
 
 /// O5-3 / #688: a v10.0.1.0 NiNode with the leading `groupID` u32
-/// must parse all of NiObjectNET (name + extra_data + controller)
-/// + NiAVObject (flags + transform + properties + collision) +
+/// must parse all of NiObjectNET (name + extra_data + controller),
+/// NiAVObject (flags + transform + properties + collision), and
 /// NiNode (children + effects). Pre-fix the parser swallowed the
 /// 4-byte groupID as the start of `Name.length`, then drifted by
 /// 4 bytes through every downstream field — eventually failing

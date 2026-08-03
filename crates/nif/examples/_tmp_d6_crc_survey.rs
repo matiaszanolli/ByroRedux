@@ -64,8 +64,8 @@ fn main() {
     let mut hist_esp: BTreeMap<u32, usize> = BTreeMap::new();
     let mut lsp_arrays: BTreeMap<String, usize> = BTreeMap::new();
     let mut esp_arrays: BTreeMap<String, usize> = BTreeMap::new();
-    let mut lsp_numsf: BTreeMap<(usize,usize), usize> = BTreeMap::new();
-    let mut esp_numsf: BTreeMap<(usize,usize), usize> = BTreeMap::new();
+    let mut lsp_numsf: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    let mut esp_numsf: BTreeMap<(usize, usize), usize> = BTreeMap::new();
     let mut lsp_tail: BTreeMap<usize, usize> = BTreeMap::new();
     let mut esp_tail: BTreeMap<usize, usize> = BTreeMap::new();
     let mut n_lsp_full = 0usize;
@@ -77,8 +77,12 @@ fn main() {
         if i > 0 && i % 5000 == 0 {
             eprintln!("  {}/{}", i, nifs.len());
         }
-        let Ok(bytes) = archive.extract(f) else { continue };
-        let Ok(scene) = parse_nif(&bytes) else { continue };
+        let Ok(bytes) = archive.extract(f) else {
+            continue;
+        };
+        let Ok(scene) = parse_nif(&bytes) else {
+            continue;
+        };
         for b in &scene.blocks {
             if let Some(p) = b.as_any().downcast_ref::<BSLightingShaderProperty>() {
                 if p.material_reference {
@@ -89,8 +93,12 @@ fn main() {
                 if !p.sf1_crcs.is_empty() || !p.sf2_crcs.is_empty() {
                     lsp_with_crcs += 1;
                 }
-                *lsp_numsf.entry((p.sf1_crcs.len(), p.sf2_crcs.len())).or_insert(0) += 1;
-                *lsp_arrays.entry(format!("{:?}|{:?}", p.sf1_crcs, p.sf2_crcs)).or_insert(0usize) += 1;
+                *lsp_numsf
+                    .entry((p.sf1_crcs.len(), p.sf2_crcs.len()))
+                    .or_insert(0) += 1;
+                *lsp_arrays
+                    .entry(format!("{:?}|{:?}", p.sf1_crcs, p.sf2_crcs))
+                    .or_insert(0usize) += 1;
                 *lsp_tail.entry(p.starfield_tail.len()).or_insert(0) += 1;
                 for c in p.sf1_crcs.iter().chain(p.sf2_crcs.iter()) {
                     *hist.entry(*c).or_insert(0) += 1;
@@ -101,8 +109,12 @@ fn main() {
                     continue;
                 }
                 n_esp_full += 1;
-                *esp_numsf.entry((p.sf1_crcs.len(), p.sf2_crcs.len())).or_insert(0) += 1;
-                *esp_arrays.entry(format!("{:?}|{:?}", p.sf1_crcs, p.sf2_crcs)).or_insert(0usize) += 1;
+                *esp_numsf
+                    .entry((p.sf1_crcs.len(), p.sf2_crcs.len()))
+                    .or_insert(0) += 1;
+                *esp_arrays
+                    .entry(format!("{:?}|{:?}", p.sf1_crcs, p.sf2_crcs))
+                    .or_insert(0usize) += 1;
                 *esp_tail.entry(p.starfield_tail.len()).or_insert(0) += 1;
                 for c in p.sf1_crcs.iter().chain(p.sf2_crcs.iter()) {
                     *hist_esp.entry(*c).or_insert(0) += 1;
@@ -110,21 +122,32 @@ fn main() {
             }
         }
     }
-    let mut la: Vec<_> = lsp_arrays.into_iter().collect(); la.sort_by(|a,b| b.1.cmp(&a.1));
+    let mut la: Vec<_> = lsp_arrays.into_iter().collect();
+    la.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     println!("--- LSP distinct (sf1|sf2) arrays, top 20 ---");
-    for (a,n) in la.iter().take(20) { println!("  {:>7}  {}", n, a); }
-    let mut ea: Vec<_> = esp_arrays.into_iter().collect(); ea.sort_by(|a,b| b.1.cmp(&a.1));
+    for (a, n) in la.iter().take(20) {
+        println!("  {:>7}  {}", n, a);
+    }
+    let mut ea: Vec<_> = esp_arrays.into_iter().collect();
+    ea.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     println!("--- ESP distinct (sf1|sf2) arrays, top 20 ---");
-    for (a,n) in ea.iter().take(20) { println!("  {:>7}  {}", n, a); }
+    for (a, n) in ea.iter().take(20) {
+        println!("  {:>7}  {}", n, a);
+    }
     println!("LSP (num_sf1,num_sf2) hist: {:?}", lsp_numsf);
     println!("ESP (num_sf1,num_sf2) hist: {:?}", esp_numsf);
     println!("LSP tail-len hist: {:?}", lsp_tail);
     println!("ESP tail-len hist: {:?}", esp_tail);
     println!("--- ESP-only CRC histogram ---");
     let mut ve: Vec<_> = hist_esp.clone().into_iter().collect();
-    ve.sort_by(|a, b| b.1.cmp(&a.1));
+    ve.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     for (c, n) in &ve {
-        println!("  {:>9}  {:>10}  {}", n, c, k.get(c).copied().unwrap_or("<UNKNOWN>"));
+        println!(
+            "  {:>9}  {:>10}  {}",
+            n,
+            c,
+            k.get(c).copied().unwrap_or("<UNKNOWN>")
+        );
     }
     println!("--- LSP-only CRC histogram ---");
     println!(
@@ -136,7 +159,7 @@ fn main() {
         n_esp_full, n_esp_stub
     );
     let mut v: Vec<_> = hist.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     let mut unknown_total = 0usize;
     let mut known_total = 0usize;
     println!("--- CRC histogram ({} distinct) ---", v.len());

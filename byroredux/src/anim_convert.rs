@@ -593,7 +593,7 @@ mod sink_attachment_tests {
         attach_animation_sinks(&mut world, &[], &floats, &[], root);
 
         assert!(
-            world.query::<AnimatedAlpha>().is_none_or(|q| q.len() == 0),
+            world.query::<AnimatedAlpha>().is_none_or(|q| q.is_empty()),
             "a channel whose name resolves to no entity in the subtree \
              must not attach a sink anywhere"
         );

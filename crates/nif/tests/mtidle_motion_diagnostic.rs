@@ -67,10 +67,7 @@ fn sample_rotation(keys: &[RotationKey], time: f32) -> Option<[f32; 4]> {
         if time >= w[0].time && time <= w[1].time {
             let span = (w[1].time - w[0].time).max(f32::EPSILON);
             let t = (time - w[0].time) / span;
-            let mut out = [0.0; 4];
-            for i in 0..4 {
-                out[i] = (1.0 - t) * w[0].value[i] + t * w[1].value[i];
-            }
+            let out = std::array::from_fn(|i| (1.0 - t) * w[0].value[i] + t * w[1].value[i]);
             return Some(out);
         }
     }
@@ -94,10 +91,7 @@ fn sample_translation(keys: &[TranslationKey], time: f32) -> Option<[f32; 3]> {
         if time >= w[0].time && time <= w[1].time {
             let span = (w[1].time - w[0].time).max(f32::EPSILON);
             let t = (time - w[0].time) / span;
-            let mut out = [0.0; 3];
-            for i in 0..3 {
-                out[i] = (1.0 - t) * w[0].value[i] + t * w[1].value[i];
-            }
+            let out = std::array::from_fn(|i| (1.0 - t) * w[0].value[i] + t * w[1].value[i]);
             return Some(out);
         }
     }

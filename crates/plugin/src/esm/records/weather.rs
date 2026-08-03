@@ -799,7 +799,7 @@ mod tests {
     fn parse_wthr_basic() {
         let mut nam0_data = vec![0u8; 240];
         // Set sky_upper/day slot (group 0, slot 1) to (100, 150, 200, 255).
-        let offset = (0 * SKY_TIME_SLOTS + TOD_DAY) * 4;
+        let offset = TOD_DAY * 4;
         nam0_data[offset] = 100;
         nam0_data[offset + 1] = 150;
         nam0_data[offset + 2] = 200;
@@ -1340,7 +1340,7 @@ mod tests {
         // ignored — the real Skyrim NAM0 stride differs and feeding
         // these bytes through the FNV path would produce garbage.
         let mut nam0_data = vec![0u8; 240];
-        let off = (0 * SKY_TIME_SLOTS + TOD_DAY) * 4;
+        let off = TOD_DAY * 4;
         nam0_data[off] = 200;
         nam0_data[off + 1] = 100;
         nam0_data[off + 2] = 50;
@@ -1383,7 +1383,7 @@ mod tests {
     #[test]
     fn parse_wthr_fnv_schema_still_parses_under_fnv_kind() {
         let mut nam0_data = vec![0u8; 240];
-        let off = (0 * SKY_TIME_SLOTS + TOD_DAY) * 4;
+        let off = TOD_DAY * 4;
         nam0_data[off] = 200;
         nam0_data[off + 1] = 100;
         nam0_data[off + 2] = 50;

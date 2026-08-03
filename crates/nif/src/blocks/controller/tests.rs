@@ -369,8 +369,8 @@ fn parse_multi_target_transform_controller() {
     // num_extra_targets: 4
     data.extend_from_slice(&4u16.to_le_bytes());
     // 4 target refs
-    for i in 0..4 {
-        data.extend_from_slice(&(i as i32).to_le_bytes());
+    for i in 0i32..4 {
+        data.extend_from_slice(&i.to_le_bytes());
     }
     assert_eq!(data.len(), 44);
 

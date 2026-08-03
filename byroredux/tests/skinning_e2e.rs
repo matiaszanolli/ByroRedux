@@ -113,7 +113,7 @@ fn load_fixture(env_var: &str, default: &str, bsa_name: &str, nif_path: &str) ->
     for mesh in imported.meshes.iter() {
         if let Some(skin) = mesh.skin.as_ref() {
             let pos = mesh.positions.len();
-            if best.map_or(true, |(_, p)| pos > p) {
+            if best.is_none_or(|(_, p)| pos > p) {
                 best = Some((skin, pos));
             }
         }
@@ -353,7 +353,7 @@ fn oblivion_vertex_world_check() {
     let Some(data_dir) = data_dir("BYROREDUX_OBLIVION_DATA", OBLIVION_DEFAULT_DATA) else {
         return;
     };
-    let bsa = byroredux_bsa::BsaArchive::open(&data_dir.join(OBLIVION_MESH_BSA)).unwrap();
+    let bsa = byroredux_bsa::BsaArchive::open(data_dir.join(OBLIVION_MESH_BSA)).unwrap();
     let bytes = bsa
         .extract("meshes\\characters\\_male\\upperbody.nif")
         .unwrap();
@@ -623,11 +623,10 @@ fn fnv_skinning_invariant_check() {
     use byroredux_nif::blocks::tri_shape::NiTriShape;
     use byroredux_nif::types::BlockRef;
 
-    let bytes =
-        byroredux_bsa::BsaArchive::open(&PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA))
-            .unwrap()
-            .extract(FNV_FIXTURE_NIF)
-            .unwrap();
+    let bytes = byroredux_bsa::BsaArchive::open(PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA))
+        .unwrap()
+        .extract(FNV_FIXTURE_NIF)
+        .unwrap();
     let scene = byroredux_nif::parse_nif(&bytes).unwrap();
 
     fn nitransform_to_mat4(t: &byroredux_nif::types::NiTransform) -> Mat4 {
@@ -795,11 +794,10 @@ fn fnv_dump_global_skin_transform() {
     // import currently drops it.
     use byroredux_nif::blocks::skin::NiSkinData;
     use byroredux_nif::blocks::tri_shape::NiTriShape;
-    let bytes =
-        byroredux_bsa::BsaArchive::open(&PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA))
-            .unwrap()
-            .extract(FNV_FIXTURE_NIF)
-            .unwrap();
+    let bytes = byroredux_bsa::BsaArchive::open(PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA))
+        .unwrap()
+        .extract(FNV_FIXTURE_NIF)
+        .unwrap();
     let scene = byroredux_nif::parse_nif(&bytes).unwrap();
     for i in 0..scene.blocks.len() {
         let Some(shape) = scene.get_as::<NiTriShape>(i) else {
@@ -848,11 +846,10 @@ fn fnv_vertex_skin_dump_arms1() {
     // agree across NIFs and the math should work, yet rendering
     // produces a long-ribbon vertex artifact — the disagreement has
     // to be in vertex-bone-index assignment.
-    let bytes =
-        byroredux_bsa::BsaArchive::open(&PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA))
-            .unwrap()
-            .extract(FNV_FIXTURE_NIF)
-            .unwrap();
+    let bytes = byroredux_bsa::BsaArchive::open(PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA))
+        .unwrap()
+        .extract(FNV_FIXTURE_NIF)
+        .unwrap();
     let scene = byroredux_nif::parse_nif(&bytes).unwrap();
     let mut pool = byroredux_core::string::StringPool::new();
     let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
@@ -930,11 +927,10 @@ fn fnv_vertex_skin_coverage_full() {
     ) else {
         return;
     };
-    let bytes =
-        byroredux_bsa::BsaArchive::open(&PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA))
-            .unwrap()
-            .extract(FNV_FIXTURE_NIF)
-            .unwrap();
+    let bytes = byroredux_bsa::BsaArchive::open(PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA))
+        .unwrap()
+        .extract(FNV_FIXTURE_NIF)
+        .unwrap();
     let scene = byroredux_nif::parse_nif(&bytes).unwrap();
     let mut pool = byroredux_core::string::StringPool::new();
     let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);

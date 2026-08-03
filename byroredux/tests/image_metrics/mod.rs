@@ -234,9 +234,9 @@ mod tests {
     /// these tests pass vacuously.
     fn checkerboard(width: u32, height: u32, scale: u32) -> RgbImage {
         RgbImage::from_fn(width, height, |x, y| {
-            let on = ((x / scale) + (y / scale)) % 2 == 0;
+            let on = ((x / scale) + (y / scale)).is_multiple_of(2);
             let v = if on { 200 } else { 40 };
-            Rgb([v, v.saturating_sub(10), v.saturating_add(10).min(255)])
+            Rgb([v, v.saturating_sub(10), v.saturating_add(10)])
         })
     }
 

@@ -1066,14 +1066,17 @@ mod float_channel_dispatch_tests {
         let channels = vec![
             (name, const_channel(FloatTarget::UvScaleU, 2.0)),
             (name, const_channel(FloatTarget::UvScaleV, 0.5)),
-            (name, const_channel(FloatTarget::UvRotation, 1.5708)),
+            (
+                name,
+                const_channel(FloatTarget::UvRotation, std::f32::consts::FRAC_PI_2),
+            ),
         ];
         apply_float_channels(&world, &channels, 0.0, &resolve_to(entity));
         let q = world.query::<AnimatedUvTransform>().unwrap();
         let t = q.get(entity).unwrap();
         assert_eq!(t.scale.x, 2.0);
         assert_eq!(t.scale.y, 0.5);
-        assert!((t.rotation - 1.5708).abs() < 1e-4);
+        assert!((t.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
         // Offset stays at identity even though scale/rotation wrote.
         assert_eq!(t.offset.x, 0.0);
         assert_eq!(t.offset.y, 0.0);

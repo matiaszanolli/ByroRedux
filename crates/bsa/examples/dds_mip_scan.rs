@@ -36,7 +36,7 @@ fn main() {
         if !lc.ends_with(".dds") || !lc.contains(&needle) {
             continue;
         }
-        let Ok(data) = archive.extract(&f) else {
+        let Ok(data) = archive.extract(f) else {
             eprintln!("  ! extract failed: {}", f);
             continue;
         };

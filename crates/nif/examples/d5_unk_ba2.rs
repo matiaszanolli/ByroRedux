@@ -64,7 +64,7 @@ fn main() {
         }
     }
     let mut v: Vec<_> = unk.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     println!(
         "─── NiUnknown type_name histogram ({}) ───",
         path.file_name().unwrap().to_string_lossy()

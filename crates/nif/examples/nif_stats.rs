@@ -359,7 +359,7 @@ impl Stats {
             if !partial.is_empty() {
                 println!();
                 println!("─── Types with partial unknown (regression signals) ───────────");
-                println!("  {:>8} {:>8}  {}", "parsed", "unknown", "type");
+                println!("  {:>8} {:>8}  type", "parsed", "unknown");
                 for (name, counts) in &partial {
                     println!("  {:>8} {:>8}  {}", counts.parsed, counts.unknown, name);
                 }
@@ -378,7 +378,7 @@ impl Stats {
             if !pure_unknown.is_empty() {
                 println!();
                 println!("─── Unparsed types (no dispatch entry) ────────────────────────");
-                println!("  {:>8}  {}", "unknown", "type");
+                println!("  {:>8}  type", "unknown");
                 let limit = if show_all { pure_unknown.len() } else { 20 };
                 for (name, counts) in pure_unknown.iter().take(limit) {
                     println!("  {:>8}  {}", counts.unknown, name);
@@ -403,7 +403,7 @@ impl Stats {
                 };
                 println!();
                 println!("{}", header);
-                println!("  {:>8} {:>8}  {}", "parsed", "unknown", "type");
+                println!("  {:>8} {:>8}  type", "parsed", "unknown");
                 let limit = if show_all { filtered.len() } else { 20 };
                 for (name, counts) in filtered.iter().take(limit) {
                     println!("  {:>8} {:>8}  {}", counts.parsed, counts.unknown, name);
@@ -446,7 +446,7 @@ impl Stats {
             println!();
             println!("─── Failure groups ────────────────────────────────────────────");
             let mut groups: Vec<(&String, &Vec<String>)> = self.failure_groups.iter().collect();
-            groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+            groups.sort_by_key(|group| std::cmp::Reverse(group.1.len()));
             for (msg, paths) in groups {
                 println!("  ({} files) {}", paths.len(), msg);
                 for p in paths.iter().take(3) {

@@ -653,10 +653,11 @@ fn pdcl_group_consciously_skipped_and_counted() {
 /// the catch-all skip.
 #[test]
 fn crea_group_dispatches_to_creatures_map() {
-    let mut subs: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
-    subs.push((b"EDID", b"Radroach\0".to_vec()));
-    subs.push((b"FULL", b"Radroach\0".to_vec()));
-    subs.push((b"MODL", b"Creatures\\Radroach.nif\0".to_vec()));
+    let subs: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", b"Radroach\0".to_vec()),
+        (b"FULL", b"Radroach\0".to_vec()),
+        (b"MODL", b"Creatures\\Radroach.nif\0".to_vec()),
+    ];
     let record = build_record(b"CREA", 0xBEEF_0001, &subs);
     let group = wrap_group(b"CREA", &record);
 
@@ -1184,9 +1185,10 @@ fn oblivion_mgef_populates_magic_effects_by_code() {
 /// resolve to the wrong MGEF if the consumer queries it.
 #[test]
 fn non_oblivion_mgef_leaves_magic_effects_by_code_empty() {
-    let mut subs: Vec<(&[u8; 4], Vec<u8>)> = Vec::new();
-    subs.push((b"EDID", b"RadiationPoisoning\0".to_vec()));
-    subs.push((b"DATA", 0x0000_0009u32.to_le_bytes().to_vec()));
+    let subs: Vec<(&[u8; 4], Vec<u8>)> = vec![
+        (b"EDID", b"RadiationPoisoning\0".to_vec()),
+        (b"DATA", 0x0000_0009u32.to_le_bytes().to_vec()),
+    ];
     let mgef = build_record(b"MGEF", 0x0000_00A7, &subs);
     let mgef_group = wrap_group(b"MGEF", &mgef);
 

@@ -601,6 +601,7 @@ mod tests {
     ///      thread-local set forever.
     ///   2. Nested / overlapping parses on the same thread clobbered
     ///      the outer parse's flag.
+    ///
     /// The `LocalizedPluginGuard` restores the previous value on drop
     /// (including unwind), closing both holes.
     #[test]

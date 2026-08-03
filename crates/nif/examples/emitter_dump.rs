@@ -21,8 +21,8 @@ fn main() {
 
     println!("# {} (BSVER {})", path, bsver);
     println!(
-        "{:>5} {:>6} {:>5} {:>6} {:>5} {:>6}  {:<22}  {}",
-        "speed", "spdVar", "decl", "declVar", "life", "lifeVar", "initColor(rgba)", "host/type",
+        "{:>5} {:>6} {:>5} {:>6} {:>5} {:>6}  {:<22}  host/type",
+        "speed", "spdVar", "decl", "declVar", "life", "lifeVar", "initColor(rgba)",
     );
     let mut any = false;
     for e in &imported.particle_emitters {

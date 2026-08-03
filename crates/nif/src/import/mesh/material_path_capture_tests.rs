@@ -169,10 +169,10 @@ fn import(
 /// Resolve a path handle through the engine `StringPool`. The pool
 /// lowercases on intern (Gamebryo `GlobalStringTable` semantic); test
 /// assertions therefore compare against the canonical lowercase form.
-fn resolved_path<'a>(
-    pool: &'a byroredux_core::string::StringPool,
+fn resolved_path(
+    pool: &byroredux_core::string::StringPool,
     sym: Option<byroredux_core::string::FixedString>,
-) -> Option<&'a str> {
+) -> Option<&str> {
     sym.and_then(|s| pool.resolve(s))
 }
 

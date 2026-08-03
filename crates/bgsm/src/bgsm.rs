@@ -408,9 +408,7 @@ pub(crate) mod tests {
         buf.push(0);
 
         // 5 receive/hide/cast/dissolve/assume
-        for _ in 0..5 {
-            buf.push(0);
-        }
+        buf.extend_from_slice(&[0; 5]);
         buf.push(0); // glowmap
                      // v < 7 → env_mapping_window + eye
         buf.push(0);
@@ -422,9 +420,7 @@ pub(crate) mod tests {
         buf.extend_from_slice(&0.5f32.to_le_bytes()); // b
 
         // tree, facegen, skin_tint, tessellate
-        for _ in 0..4 {
-            buf.push(0);
-        }
+        buf.extend_from_slice(&[0; 4]);
 
         // v < 3 → 5 tessellation floats
         for _ in 0..5 {
@@ -504,9 +500,7 @@ pub(crate) mod tests {
         bytes.push(0);
         bytes.push(0); // back_lighting
 
-        for _ in 0..5 {
-            bytes.push(0);
-        }
+        bytes.extend_from_slice(&[0; 5]);
         bytes.push(0); // glowmap
         bytes.push(0);
         bytes.push(0);
@@ -516,9 +510,7 @@ pub(crate) mod tests {
         bytes.extend_from_slice(&0.5f32.to_le_bytes());
         bytes.extend_from_slice(&0.5f32.to_le_bytes());
 
-        for _ in 0..4 {
-            bytes.push(0);
-        }
+        bytes.extend_from_slice(&[0; 4]);
         for _ in 0..5 {
             bytes.extend_from_slice(&0.0f32.to_le_bytes());
         }

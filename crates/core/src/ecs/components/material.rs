@@ -1037,12 +1037,14 @@ mod tests {
     /// never reach mirror tier.
     #[test]
     fn classify_pbr_env_map_scale_floor_is_polished_plastic_not_chrome() {
-        let mut m = Material::default();
-        m.glossiness = 50.0;
+        let mut m = Material {
+            glossiness: 50.0,
+            env_map_scale: 2.5,
+            ..Material::default()
+        };
         // Painted plastic wall panel: low specular (dielectric).
         // 2.5 = previously-clamped "power-armor tier" on the non-
         // keyword arm. Now plateaus at polished-plastic territory.
-        m.env_map_scale = 2.5;
         let p = classify_with_spec(&m, "textures/interior/wallpanel01.dds", [0.2; 3]);
         assert!(
             p.roughness >= 0.35,
@@ -1061,11 +1063,13 @@ mod tests {
 
     #[test]
     fn classify_pbr_env_map_scale_does_not_imply_metalness() {
-        let mut m = Material::default();
-        m.glossiness = 50.0;
-        m.env_map_scale = 0.5; // cushion-with-sheen tier — low specular, dielectric
-                               // Vinyl/cloth hospital bed: env_map_scale alone does NOT mean metallic.
-                               // Metalness comes from specular_color luminance; cloth/vinyl has grey/dark specular.
+        let mut m = Material {
+            glossiness: 50.0,
+            env_map_scale: 0.5, // cushion-with-sheen tier — low specular, dielectric
+            ..Material::default()
+        };
+        // Vinyl/cloth hospital bed: env_map_scale alone does NOT mean metallic.
+        // Metalness comes from specular_color luminance; cloth/vinyl has grey/dark specular.
         let p = classify_with_spec(&m, "textures/clutter/medical/hospitalbed01.dds", [0.2; 3]);
         assert_eq!(
             p.metalness, 0.0,
@@ -1260,9 +1264,11 @@ mod tests {
 
     #[test]
     fn classify_pbr_falls_back_to_glossiness() {
-        let mut m = Material::default();
-        m.glossiness = 20.0; // matte
-        m.env_map_scale = 0.0; // disable env-map branch so glossiness wins
+        let m = Material {
+            glossiness: 20.0,   // matte
+            env_map_scale: 0.0, // disable env-map branch so glossiness wins
+            ..Material::default()
+        };
         let p = classify(&m, "textures/unknown/thing.dds");
         assert_eq!(p.metalness, 0.0);
         assert!(p.roughness > 0.5);
@@ -1334,12 +1340,14 @@ mod tests {
 
     #[test]
     fn resolve_pbr_populates_from_keyword_path() {
-        let mut m = Material::default();
-        m.texture_path = Some(r"Textures\Weapons\Iron\IronSword.dds".to_string());
         // Seed the sentinel exactly as `translate_material` does for
         // legacy inline-shader content (no BGSM override).
-        m.metalness = f32::NAN;
-        m.roughness = f32::NAN;
+        let mut m = Material {
+            texture_path: Some(r"Textures\Weapons\Iron\IronSword.dds".to_string()),
+            metalness: f32::NAN,
+            roughness: f32::NAN,
+            ..Material::default()
+        };
 
         m.resolve_pbr();
         assert!(m.metalness > 0.8, "metal keyword routes to conductor");
@@ -1350,10 +1358,12 @@ mod tests {
 
     #[test]
     fn resolve_pbr_is_idempotent() {
-        let mut m = Material::default();
-        m.texture_path = Some("textures/clutter/barrel/barrel01.dds".to_string());
-        m.metalness = f32::NAN;
-        m.roughness = f32::NAN;
+        let mut m = Material {
+            texture_path: Some("textures/clutter/barrel/barrel01.dds".to_string()),
+            metalness: f32::NAN,
+            roughness: f32::NAN,
+            ..Material::default()
+        };
         m.resolve_pbr();
         let first_metal = m.metalness;
         let first_rough = m.roughness;
@@ -1368,10 +1378,12 @@ mod tests {
     fn resolve_pbr_preserves_upstream_translator_values() {
         // BGSM merge layer ran first and wrote authoritative scalars
         // (finite, in-range); the keyword classifier must NOT overwrite.
-        let mut m = Material::default();
-        m.texture_path = Some(r"Textures\Weapons\Iron\IronSword.dds".to_string());
-        m.metalness = 0.42;
-        m.roughness = 0.13;
+        let mut m = Material {
+            texture_path: Some(r"Textures\Weapons\Iron\IronSword.dds".to_string()),
+            metalness: 0.42,
+            roughness: 0.13,
+            ..Material::default()
+        };
 
         m.resolve_pbr();
         assert_eq!(m.metalness, 0.42);
@@ -1383,10 +1395,12 @@ mod tests {
         // Half-populated: one authored, the other a NaN sentinel. The
         // keyword fallback fills the gap without touching the populated
         // slot.
-        let mut m = Material::default();
-        m.texture_path = Some(r"Textures\Weapons\Iron\IronSword.dds".to_string());
-        m.metalness = 0.42;
-        m.roughness = f32::NAN;
+        let mut m = Material {
+            texture_path: Some(r"Textures\Weapons\Iron\IronSword.dds".to_string()),
+            metalness: 0.42,
+            roughness: f32::NAN,
+            ..Material::default()
+        };
 
         m.resolve_pbr();
         assert_eq!(m.metalness, 0.42);
@@ -1397,9 +1411,11 @@ mod tests {
     fn resolve_pbr_clamps_authored_out_of_range() {
         // Authored BGSM values outside the renderer ranges are clamped
         // (replicating the pre-canonical render-time `classify_pbr`).
-        let mut m = Material::default();
-        m.metalness = 1.7;
-        m.roughness = 0.0;
+        let mut m = Material {
+            metalness: 1.7,
+            roughness: 0.0,
+            ..Material::default()
+        };
         m.resolve_pbr();
         assert_eq!(m.metalness, 1.0);
         assert_eq!(m.roughness, 0.04);

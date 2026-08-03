@@ -63,6 +63,7 @@ fn build_txst_record_raw(form_id: u32, subs: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
 }
 
 /// Build a 36-byte DODT payload from named field values.
+#[allow(clippy::too_many_arguments)] // Mirrors the ten serialized DODT fields in wire order.
 fn dodt_payload(
     min_w: f32,
     max_w: f32,
@@ -192,7 +193,7 @@ fn parse_txst_extracts_mnam_material_path() {
     // when TX00 is present — MNAM-only records don't enter it, and
     // downstream consumers should resolve the BGSM path instead.
     assert!(
-        diffuse_only.get(&0xF047).is_none(),
+        !diffuse_only.contains_key(&0xF047),
         "MNAM-only TXST must not populate the diffuse-only legacy map"
     );
     // No direct-slot paths populated.
@@ -434,11 +435,11 @@ fn parse_txst_dodt_only_record_is_preserved() {
     parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
 
     assert!(
-        sets.get(&0xD0D7_0017).is_some(),
+        sets.contains_key(&0xD0D7_0017),
         "DODT-only TXST must survive the default-set rejection gate"
     );
     assert!(
-        diffuse_only.get(&0xD0D7_0017).is_none(),
+        !diffuse_only.contains_key(&0xD0D7_0017),
         "DODT-only TXST must not enter the diffuse-only legacy map"
     );
 }

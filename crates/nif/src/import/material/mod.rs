@@ -1337,6 +1337,7 @@ mod alpha_flag_tests;
 /// `byroredux-core::ecs::components::material::tests`; this sibling
 /// pins the MaterialInfo → classifier adapter.
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)] // Tests model staged legacy material translation.
 mod legacy_pbr_translation_tests;
 
 /// Regression tests for issue #345 — `BSEffectShaderProperty` rich
@@ -1363,11 +1364,13 @@ mod emissive_source_tests;
 /// MultiLayerParallax, SparkleSnow, EyeEnvmap, None) were dropped. Each
 /// test exercises one arm of `apply_shader_type_data`.
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)] // Tests seed one discriminator before dispatch.
 mod shader_type_data_tests;
 
 /// Regression tests for issue #214 — NiTexturingProperty secondary slots
 /// and NiVertexColorProperty mode extraction.
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)] // Fixture fields mirror independent texture slots.
 mod secondary_slot_tests;
 
 /// Regression tests for #452 — `BSShaderTextureSet` slots 3/4/5 must

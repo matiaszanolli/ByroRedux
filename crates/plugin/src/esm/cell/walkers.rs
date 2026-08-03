@@ -96,185 +96,6 @@ fn xcll_canonical_sizes(game: GameKind) -> &'static [usize] {
     }
 }
 
-#[cfg(test)]
-mod xcll_gate_tests {
-    //! Pin the (game, canonical-XCLL-size) map and the sanity-warn helper.
-    //! The warn itself is invisible to assertions (would need log capture)
-    //! but the canonical-size lookup is the source-of-truth the warn keys
-    //! on, so pinning it catches any drift in either direction.
-    use super::*;
-
-    #[test]
-    fn oblivion_xcll_sizes_pinned() {
-        assert_eq!(xcll_canonical_sizes(GameKind::Oblivion), &[28, 32, 36]);
-    }
-
-    #[test]
-    fn fo3_fnv_xcll_sizes_pinned() {
-        // FO3 ships 36 (no Fog Power); FNV ships 40 (with it) — both under
-        // `Fallout3NV`, so both sizes are canonical (D3-FO3-01). FO4/FO76 used
-        // to be bucketed here too, but they are Creation-Engine descendants
-        // with a 92-byte+ body (split out below — see the render-bug
-        // investigation for HalluciGen01). Starfield left in #1291 (108-byte).
-        assert_eq!(xcll_canonical_sizes(GameKind::Fallout3NV), &[28, 36, 40]);
-    }
-
-    /// FO4 ships the Skyrim 92-byte body + an optional height-fog tail.
-    /// Sizes byte-verified by histogram over every CELL in Fallout4.esm:
-    /// 92 → 579, 128 → 10, 136 → 606, and ZERO 40-byte. Pre-fix FO4 was
-    /// bucketed with FNV's 40-byte tail and tripped the sanity-warn on every
-    /// vanilla interior (e.g. HalluciGen01's 136-byte XCLL).
-    #[test]
-    fn fo4_xcll_sizes_pinned() {
-        assert_eq!(
-            xcll_canonical_sizes(GameKind::Fallout4),
-            &[28, 92, 128, 136]
-        );
-        // The FNV 40-byte tail is NOT a vanilla FO4 shape.
-        assert!(!xcll_canonical_sizes(GameKind::Fallout4).contains(&40));
-    }
-
-    /// FO76 likewise — histogram over SeventySix.esm: 136 → 885, 160 → 1767,
-    /// ZERO 40-byte.
-    #[test]
-    fn fo76_xcll_sizes_pinned() {
-        assert_eq!(xcll_canonical_sizes(GameKind::Fallout76), &[28, 136, 160]);
-        assert!(!xcll_canonical_sizes(GameKind::Fallout76).contains(&40));
-    }
-
-    #[test]
-    fn skyrim_xcll_sizes_pinned() {
-        assert_eq!(xcll_canonical_sizes(GameKind::Skyrim), &[28, 92]);
-    }
-
-    /// #1291 — Starfield authors a 108-byte XCLL on every vanilla
-    /// interior cell (empirically verified across 14 808 cells in
-    /// Starfield.esm + ShatteredSpace.esm + BlueprintShips-Starfield.esm
-    /// — all exactly 108 bytes, no other variants). Pre-#1291 this
-    /// was bucketed with the FNV-era 40-byte tail, which tripped the
-    /// sanity-warn 11 985× on a vanilla Starfield.esm parse and
-    /// (more importantly) misled future SF cell-layout debugging by
-    /// suggesting the SF authoring shape matched FO4.
-    ///
-    /// #1293 corrected the original assumption here: Starfield's XCLL
-    /// does NOT decode "through 92 bytes" as Skyrim — it shares only
-    /// bytes 0-39 and then diverges into a volumetric height-fog model
-    /// (no ambient cube). The `b"XCLL"` arm now has a dedicated
-    /// `game == Starfield && len >= 108` branch (#1579) decoding the full SF
-    /// layout (xEdit SF1, byte-verified against Starfield.esm); see
-    /// `parse_cell_starfield_xcll_decodes_volumetric_height_fog_tail`.
-    /// Adding 108 to the canonical set keeps the sanity-warn quiet.
-    #[test]
-    fn starfield_xcll_sizes_pinned() {
-        assert_eq!(
-            xcll_canonical_sizes(GameKind::Starfield),
-            &[28, 108],
-            "Starfield's vanilla XCLL is 108 bytes (Skyrim+ 92-byte \
-             body + 16-byte SF tail). See #1291.",
-        );
-    }
-
-    /// Counterpart to `fnv_xcll_at_88_bytes_is_non_canonical`: a
-    /// Starfield cell with a 40-byte XCLL (the FNV-era authoring) is
-    /// non-canonical and must trip the warn. Cross-game plugin
-    /// stacks that inject a FO4 cell into a SF master with FNV-era
-    /// XCLL authoring would surface here.
-    #[test]
-    fn starfield_xcll_at_40_bytes_is_non_canonical() {
-        let canonical = xcll_canonical_sizes(GameKind::Starfield);
-        assert!(
-            !canonical.contains(&40),
-            "Starfield canonical sizes {canonical:?} must NOT include 40 — \
-             the FNV-era 40-byte tail is a cross-game injection signal, \
-             not a vanilla SF shape",
-        );
-    }
-
-    /// And the inverse: a FNV/FO4/FO76 cell with a 108-byte XCLL
-    /// (Starfield authoring injected into a non-SF master) must
-    /// trip the warn. Mirror of `starfield_xcll_at_40_bytes_is_non_canonical`.
-    #[test]
-    fn fallout_xcll_at_108_bytes_is_non_canonical() {
-        for game in [
-            GameKind::Fallout3NV,
-            GameKind::Fallout4,
-            GameKind::Fallout76,
-            GameKind::Skyrim,
-        ] {
-            let canonical = xcll_canonical_sizes(game);
-            assert!(
-                !canonical.contains(&108),
-                "{game:?} canonical sizes {canonical:?} must NOT include 108 — \
-                 the 108-byte XCLL is Starfield-only authoring; finding \
-                 one in a non-SF master is a cross-game injection signal",
-            );
-        }
-    }
-
-    /// The classic failure class from the survey: a FNV cell with an
-    /// 88-byte XCLL. Pre-#1277-Task4 this silently parsed as
-    /// "Oblivion + partial FNV tail" (length-only dispatch fires the
-    /// ≥40 branch since 88 ≥ 40 but skips the ≥92 branch). The warn
-    /// helper detects this — 88 isn't in {28, 40} for Fallout3NV.
-    #[test]
-    fn fnv_xcll_at_88_bytes_is_non_canonical() {
-        let canonical = xcll_canonical_sizes(GameKind::Fallout3NV);
-        assert!(
-            !canonical.contains(&88),
-            "FNV canonical sizes {canonical:?} must NOT include 88 — \
-             else the survey's 'silently parses as Oblivion + partial FNV' \
-             regression wouldn't surface a warn",
-        );
-    }
-
-    /// Inverse: an Oblivion cell with a 40-byte XCLL (someone using the
-    /// FNV tail by accident). Pre-task this parsed the FNV tail fields
-    /// into Oblivion data. The warn helper detects this — 40 isn't in
-    /// the Oblivion canonical set.
-    #[test]
-    fn oblivion_xcll_at_40_bytes_is_non_canonical() {
-        let canonical = xcll_canonical_sizes(GameKind::Oblivion);
-        assert!(
-            !canonical.contains(&40),
-            "Oblivion canonical sizes {canonical:?} must NOT include 40 — \
-             else an Oblivion plugin with an accidentally-FNV-shaped \
-             XCLL would silently consume the FNV tail",
-        );
-    }
-
-    /// Inverse: a Skyrim cell with a 40-byte XCLL (someone using the FNV
-    /// tail). 40 isn't in Skyrim's set, so warn fires.
-    #[test]
-    fn skyrim_xcll_at_40_bytes_is_non_canonical() {
-        let canonical = xcll_canonical_sizes(GameKind::Skyrim);
-        assert!(
-            !canonical.contains(&40),
-            "Skyrim canonical sizes {canonical:?} must NOT include 40",
-        );
-    }
-
-    /// #1579 — the SF XCLL dispatch gate must be `>= 108`, not `== 108`, so a
-    /// future-DLC SF cell with trailing pad still takes the SF arm instead of
-    /// falling through to the Skyrim `>= 92` ambient-cube path. Mirrors the
-    /// in-decoder predicate (`game == Starfield && len >= 108`).
-    #[test]
-    fn starfield_xcll_above_108_still_takes_sf_arm() {
-        let takes_sf_arm = |game: GameKind, len: usize| game == GameKind::Starfield && len >= 108;
-        assert!(
-            takes_sf_arm(GameKind::Starfield, 108),
-            "vanilla 108 still SF"
-        );
-        assert!(
-            takes_sf_arm(GameKind::Starfield, 112),
-            "112-byte SF cell must stay SF, not fall to the Skyrim arm",
-        );
-        assert!(
-            !takes_sf_arm(GameKind::Skyrim, 112),
-            "a non-SF 112-byte XCLL must NOT take the SF arm",
-        );
-    }
-}
-
 /// Walk the CELL group hierarchy to find interior cells and their placed references.
 ///
 /// `game` is the HEDR-derived [`GameKind`] of the plugin; the XCLL parser
@@ -1203,4 +1024,183 @@ pub(crate) fn parse_land_record(
         vertex_colors,
         quadrants,
     })
+}
+
+#[cfg(test)]
+mod xcll_gate_tests {
+    //! Pin the (game, canonical-XCLL-size) map and the sanity-warn helper.
+    //! The warn itself is invisible to assertions (would need log capture)
+    //! but the canonical-size lookup is the source-of-truth the warn keys
+    //! on, so pinning it catches any drift in either direction.
+    use super::*;
+
+    #[test]
+    fn oblivion_xcll_sizes_pinned() {
+        assert_eq!(xcll_canonical_sizes(GameKind::Oblivion), &[28, 32, 36]);
+    }
+
+    #[test]
+    fn fo3_fnv_xcll_sizes_pinned() {
+        // FO3 ships 36 (no Fog Power); FNV ships 40 (with it) — both under
+        // `Fallout3NV`, so both sizes are canonical (D3-FO3-01). FO4/FO76 used
+        // to be bucketed here too, but they are Creation-Engine descendants
+        // with a 92-byte+ body (split out below — see the render-bug
+        // investigation for HalluciGen01). Starfield left in #1291 (108-byte).
+        assert_eq!(xcll_canonical_sizes(GameKind::Fallout3NV), &[28, 36, 40]);
+    }
+
+    /// FO4 ships the Skyrim 92-byte body + an optional height-fog tail.
+    /// Sizes byte-verified by histogram over every CELL in Fallout4.esm:
+    /// 92 → 579, 128 → 10, 136 → 606, and ZERO 40-byte. Pre-fix FO4 was
+    /// bucketed with FNV's 40-byte tail and tripped the sanity-warn on every
+    /// vanilla interior (e.g. HalluciGen01's 136-byte XCLL).
+    #[test]
+    fn fo4_xcll_sizes_pinned() {
+        assert_eq!(
+            xcll_canonical_sizes(GameKind::Fallout4),
+            &[28, 92, 128, 136]
+        );
+        // The FNV 40-byte tail is NOT a vanilla FO4 shape.
+        assert!(!xcll_canonical_sizes(GameKind::Fallout4).contains(&40));
+    }
+
+    /// FO76 likewise — histogram over SeventySix.esm: 136 → 885, 160 → 1767,
+    /// ZERO 40-byte.
+    #[test]
+    fn fo76_xcll_sizes_pinned() {
+        assert_eq!(xcll_canonical_sizes(GameKind::Fallout76), &[28, 136, 160]);
+        assert!(!xcll_canonical_sizes(GameKind::Fallout76).contains(&40));
+    }
+
+    #[test]
+    fn skyrim_xcll_sizes_pinned() {
+        assert_eq!(xcll_canonical_sizes(GameKind::Skyrim), &[28, 92]);
+    }
+
+    /// #1291 — Starfield authors a 108-byte XCLL on every vanilla
+    /// interior cell (empirically verified across 14 808 cells in
+    /// Starfield.esm + ShatteredSpace.esm + BlueprintShips-Starfield.esm
+    /// — all exactly 108 bytes, no other variants). Pre-#1291 this
+    /// was bucketed with the FNV-era 40-byte tail, which tripped the
+    /// sanity-warn 11 985× on a vanilla Starfield.esm parse and
+    /// (more importantly) misled future SF cell-layout debugging by
+    /// suggesting the SF authoring shape matched FO4.
+    ///
+    /// #1293 corrected the original assumption here: Starfield's XCLL
+    /// does NOT decode "through 92 bytes" as Skyrim — it shares only
+    /// bytes 0-39 and then diverges into a volumetric height-fog model
+    /// (no ambient cube). The `b"XCLL"` arm now has a dedicated
+    /// `game == Starfield && len >= 108` branch (#1579) decoding the full SF
+    /// layout (xEdit SF1, byte-verified against Starfield.esm); see
+    /// `parse_cell_starfield_xcll_decodes_volumetric_height_fog_tail`.
+    /// Adding 108 to the canonical set keeps the sanity-warn quiet.
+    #[test]
+    fn starfield_xcll_sizes_pinned() {
+        assert_eq!(
+            xcll_canonical_sizes(GameKind::Starfield),
+            &[28, 108],
+            "Starfield's vanilla XCLL is 108 bytes (Skyrim+ 92-byte \
+             body + 16-byte SF tail). See #1291.",
+        );
+    }
+
+    /// Counterpart to `fnv_xcll_at_88_bytes_is_non_canonical`: a
+    /// Starfield cell with a 40-byte XCLL (the FNV-era authoring) is
+    /// non-canonical and must trip the warn. Cross-game plugin
+    /// stacks that inject a FO4 cell into a SF master with FNV-era
+    /// XCLL authoring would surface here.
+    #[test]
+    fn starfield_xcll_at_40_bytes_is_non_canonical() {
+        let canonical = xcll_canonical_sizes(GameKind::Starfield);
+        assert!(
+            !canonical.contains(&40),
+            "Starfield canonical sizes {canonical:?} must NOT include 40 — \
+             the FNV-era 40-byte tail is a cross-game injection signal, \
+             not a vanilla SF shape",
+        );
+    }
+
+    /// And the inverse: a FNV/FO4/FO76 cell with a 108-byte XCLL
+    /// (Starfield authoring injected into a non-SF master) must
+    /// trip the warn. Mirror of `starfield_xcll_at_40_bytes_is_non_canonical`.
+    #[test]
+    fn fallout_xcll_at_108_bytes_is_non_canonical() {
+        for game in [
+            GameKind::Fallout3NV,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Skyrim,
+        ] {
+            let canonical = xcll_canonical_sizes(game);
+            assert!(
+                !canonical.contains(&108),
+                "{game:?} canonical sizes {canonical:?} must NOT include 108 — \
+                 the 108-byte XCLL is Starfield-only authoring; finding \
+                 one in a non-SF master is a cross-game injection signal",
+            );
+        }
+    }
+
+    /// The classic failure class from the survey: a FNV cell with an
+    /// 88-byte XCLL. Pre-#1277-Task4 this silently parsed as
+    /// "Oblivion + partial FNV tail" (length-only dispatch fires the
+    /// ≥40 branch since 88 ≥ 40 but skips the ≥92 branch). The warn
+    /// helper detects this — 88 isn't in {28, 40} for Fallout3NV.
+    #[test]
+    fn fnv_xcll_at_88_bytes_is_non_canonical() {
+        let canonical = xcll_canonical_sizes(GameKind::Fallout3NV);
+        assert!(
+            !canonical.contains(&88),
+            "FNV canonical sizes {canonical:?} must NOT include 88 — \
+             else the survey's 'silently parses as Oblivion + partial FNV' \
+             regression wouldn't surface a warn",
+        );
+    }
+
+    /// Inverse: an Oblivion cell with a 40-byte XCLL (someone using the
+    /// FNV tail by accident). Pre-task this parsed the FNV tail fields
+    /// into Oblivion data. The warn helper detects this — 40 isn't in
+    /// the Oblivion canonical set.
+    #[test]
+    fn oblivion_xcll_at_40_bytes_is_non_canonical() {
+        let canonical = xcll_canonical_sizes(GameKind::Oblivion);
+        assert!(
+            !canonical.contains(&40),
+            "Oblivion canonical sizes {canonical:?} must NOT include 40 — \
+             else an Oblivion plugin with an accidentally-FNV-shaped \
+             XCLL would silently consume the FNV tail",
+        );
+    }
+
+    /// Inverse: a Skyrim cell with a 40-byte XCLL (someone using the FNV
+    /// tail). 40 isn't in Skyrim's set, so warn fires.
+    #[test]
+    fn skyrim_xcll_at_40_bytes_is_non_canonical() {
+        let canonical = xcll_canonical_sizes(GameKind::Skyrim);
+        assert!(
+            !canonical.contains(&40),
+            "Skyrim canonical sizes {canonical:?} must NOT include 40",
+        );
+    }
+
+    /// #1579 — the SF XCLL dispatch gate must be `>= 108`, not `== 108`, so a
+    /// future-DLC SF cell with trailing pad still takes the SF arm instead of
+    /// falling through to the Skyrim `>= 92` ambient-cube path. Mirrors the
+    /// in-decoder predicate (`game == Starfield && len >= 108`).
+    #[test]
+    fn starfield_xcll_above_108_still_takes_sf_arm() {
+        let takes_sf_arm = |game: GameKind, len: usize| game == GameKind::Starfield && len >= 108;
+        assert!(
+            takes_sf_arm(GameKind::Starfield, 108),
+            "vanilla 108 still SF"
+        );
+        assert!(
+            takes_sf_arm(GameKind::Starfield, 112),
+            "112-byte SF cell must stay SF, not fall to the Skyrim arm",
+        );
+        assert!(
+            !takes_sf_arm(GameKind::Skyrim, 112),
+            "a non-SF 112-byte XCLL must NOT take the SF arm",
+        );
+    }
 }
