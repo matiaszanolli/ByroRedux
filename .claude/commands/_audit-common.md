@@ -24,6 +24,7 @@ FaceGen (M41):   crates/facegen/src/                  (.tri/.egt morph + texture
 Physics (M28):   crates/physics/src/                  (Rapier3D bridge)
 Papyrus (M30):   crates/papyrus/src/                  (.psc lexer + Pratt parser → AST: token, lexer, ast, span, error, parser/{mod, expr})
 Pex (M47.2):     crates/pex/src/                      (compiled-Papyrus .pex → AST decompiler, Champollion port: opcode, reader, model, decompile/{mod, cfg, lift, control_flow, lower, boolean, node, event_names}. 5-phase: CFG → node-lift+copy-prop → control-flow recon → AST lower+fidelity gate → short-circuit booleans)
+Hkx (M47.2):     crates/hkx/src/                      (byroredux-hkx: minimal safe Havok 2010 packfile reader for the MQ101 cinematic slice — packfile.rs, animation.rs (decode_skeleton/decode_spline_animation, hkaSkeleton + static/dynamic hkaSplineCompressedAnimation transform tracks, no behavior-graph execution))
 Scripting (M12/M47): crates/scripting/src/            (ECS-native scripting runtime: events, timer, cleanup, condition (M47.1 cond eval), trigger (M47.2 TriggerVolume detection), quest_stages, fragment, recurring_update, registry; translate/ holds the AST→ECS recognizer chain {mod, source, archetype, compose, effects, tables, recognizers/{mod, quest_stage_gate, rumble}}; papyrus_demo/ holds hand-verified reference scripts)
 Save (M45):      crates/save/src/                     (full-ECS-snapshot save/load: snapshot, registry, disk, validate, driver; M45.1 live load-apply = reload cell + FormId-keyed deltas + player-pose restore)
 Audio (M44):     crates/audio/src/lib.rs + tests.rs   (byroredux-audio: kira backend, AudioWorld resource, AudioListener/AudioEmitter/OneShotSound components, audio_system, SoundCache, streaming music, global reverb send)
@@ -117,17 +118,20 @@ Prefer them over re-deriving facts from source during an audit.
 | `docs/engine/fsr3-upscaler-integration-plan.md` | FSR 3.1 integration plan, all 7 phases + the SSIM quality matrix. Paired with `docs/engine/fsr3-troubleshooting.md`. **No owner audit skill** — see `/audit-renderer` Dimension 22. |
 | `docs/contributing.md` | Prerequisites, build, test tiers (unit/integration/Vulkan/smoke), shader recompile, game data paths, CI jobs |
 
-Crate count: 22 under `crates/` — audio, bgsm, bsa, core, cxx-bridge,
-debug-protocol, debug-server, debug-ui, facegen, fsr3-sys, nif, papyrus, pex,
-physics, platform, plugin, renderer, save, scripting, sfmaterial, spt, ui. Use
-this as a coverage sanity check: an audit that never touches a relevant crate
-here is incomplete. (`pex` + `save` are added in Sessions 50–51 for the M45
-save/load and M47.2 compiled-Papyrus arcs — owned by `/audit-save` and
+Crate count: 23 under `crates/` — audio, bgsm, bsa, core, cxx-bridge,
+debug-protocol, debug-server, debug-ui, facegen, fsr3-sys, hkx, nif, papyrus,
+pex, physics, platform, plugin, renderer, save, scripting, sfmaterial, spt, ui.
+Use this as a coverage sanity check: an audit that never touches a relevant
+crate here is incomplete. (`pex` + `save` are added in Sessions 50–51 for the
+M45 save/load and M47.2 compiled-Papyrus arcs — owned by `/audit-save` and
 `/audit-scripting` respectively. `fsr3-sys`, added 2026-07-22, is the FSR 3.1
 FFI crossing — a real live FFI boundary, unlike `cxx-bridge`'s placeholder;
 audit its `unsafe fn` `# Safety` contracts the way Dimension 1 of
-`/audit-safety` used to reserve for a hypothetical live cxx-bridge. It has no
-dedicated owner audit skill yet, unlike `pex`/`save`.)
+`/audit-safety` used to reserve for a hypothetical live cxx-bridge. `hkx`,
+added for the Session 62 M47.2 MQ101 cinematic slice, is a minimal safe Havok
+2010 packfile reader (`hkaSkeleton` + `hkaSplineCompressedAnimation` decode,
+no behavior-graph execution). Neither `fsr3-sys` nor `hkx` has a dedicated
+owner audit skill yet, unlike `pex`/`save`.)
 
 ### Un-owned subsystems (coverage gaps — read before claiming a sweep is complete)
 

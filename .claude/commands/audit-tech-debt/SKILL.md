@@ -18,10 +18,11 @@ purpose. Re-run the recipe; report what it surfaces today.
 
 **Architecture**: Orchestrator. Each dimension runs as a Task agent (max 3 concurrent).
 
-See `.claude/commands/_audit-common.md` for project layout, the 22-crate roster,
+See `.claude/commands/_audit-common.md` for project layout, the 23-crate roster,
 methodology, deduplication, context rules, severity, and finding format. Do not
 duplicate any of that here. The newest crates — `crates/pex/` (M47.2 compiled-
-Papyrus `.pex` decompiler), `crates/save/` (M45 full-ECS snapshot save/load), and
+Papyrus `.pex` decompiler), `crates/save/` (M45 full-ECS snapshot save/load),
+`crates/hkx/` (M47.2 Havok packfile reader for the MQ101 cinematic slice), and
 the expanded `crates/scripting/` (M47.1/M47.2 recognizer chain) — are young code
 that has not yet seen a debt sweep; the dimensions below should reach them.
 
