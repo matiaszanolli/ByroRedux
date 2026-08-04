@@ -2212,8 +2212,6 @@ void main() {
                 ? sampleDalcCube(R) * (1.0 / PI)
                 : sceneFlags.yzw;
         }
-        float reflClarity = 1.0 - roughness;
-
         vec3 envColor;
         if (rtEnabled && rtLOD < RT_LOD_REFLECT) {
             // Deterministic rough reflection: a single SHARP ray, GGX-lobe
@@ -2228,8 +2226,13 @@ void main() {
                                 roughness * 8.0, fragInstanceIndex);
             // Fade the RT-ray contribution to the ambient approximation across
             // the last octave of the reach so ray and fallback are continuous.
+            // Roughness is already represented by the hit-texture mip bias and
+            // by the single energy attenuation below. Multiplying the ray mix
+            // by `(1 - roughness)` here as well suppressed recognizable scene
+            // detail twice: a common rough-metal value of 0.55 retained only
+            // 0.45 * 0.45 = 20% before Fresnel and tone mapping.
             float rayFade = 1.0 - smoothstep(RT_LOD_REFLECT - 1.0, RT_LOD_REFLECT, rtLOD);
-            envColor = mix(ambientFallback, reflResult.rgb, reflClarity * rayFade);
+            envColor = mix(ambientFallback, reflResult.rgb, rayFade);
         } else {
             // Past the ray reach (far/grazing): cheap ambient-colour specular,
             // no ray — keeps the env-specular continuous, never zero.

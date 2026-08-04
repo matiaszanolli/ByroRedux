@@ -803,6 +803,21 @@ mod tests {
         );
     }
 
+    /// Rough reflection detail is already blurred by the hit mip and its
+    /// energy is attenuated once when added to `Lo`. Applying the same
+    /// `(1 - roughness)` factor to the ray/fallback mix suppresses authored
+    /// rough-metal scene detail a second time.
+    #[test]
+    fn triangle_frag_rough_reflection_detail_is_not_double_attenuated() {
+        let src = include_str!("../shaders/triangle.frag");
+
+        assert!(
+            src.contains("envColor = mix(ambientFallback, reflResult.rgb, rayFade);")
+                && !src.contains("reflClarity * rayFade"),
+            "rough reflection must use distance/LOD fade only; roughness is handled by mip blur and the final energy attenuation"
+        );
+    }
+
     /// Thin glass must be a surface-wide behavior decision. A regression to
     /// the per-fragment IOR budget gate recreates the close-range checkerboard
     /// when a large dome consumes the remaining budget non-uniformly.
