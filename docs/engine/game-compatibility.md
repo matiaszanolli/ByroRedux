@@ -271,11 +271,13 @@ cargo run -- --esm Starfield.esm \
   the marker-name filter at render time anyway.
 - **Cell loading**: interior cells render (Anvil Heinrich Oaken Halls). The
   cell walker handles Oblivion XCLL (the `[28, 32, 36]` canonical-size set).
-  **Exterior** is blocked on TES4 worldspace + LAND wiring — the same shape
-  FO3's exterior was before it landed, *not* an archive or parser gap. This
-  is covered by the M40 world-streaming track; no separate tracker.
-- **Status**: parser + archive complete, interior renders, exterior gated
-  on worldspace wiring.
+  Exterior WRLD/CELL/LAND parsing, loading, terrain, and streaming are wired;
+  Tamriel grid `(0,0)` radius 1 has an on-device record of 4,886 entities at
+  150.6 FPS on the RTX 4070 Ti. The remaining work is cross-game readiness,
+  collision/LOD continuity, and repeatable smoke coverage under
+  [#2377](https://github.com/matiaszanolli/ByroRedux/issues/2377), not archive
+  or parser bring-up.
+- **Status**: parser + archive complete; interiors and exteriors render.
 
 #### Fallout 76
 
@@ -360,14 +362,14 @@ game, translate at the parser→`Material` boundary instead.
 
 ## Known gaps and follow-ups
 
-### Cell loaders for Oblivion exterior / FO76
+### Exterior readiness / FO76 cell loading
 
 The cell walker lives in
 [`crates/plugin/src/esm/cell/`](../../crates/plugin/src/esm/cell)
 (`walkers.rs` carries the CELL/REFR walk; `wrld.rs` the exterior WRLD
 walk; `helpers.rs` / `support.rs` the per-feature decoders). It handles
-FNV / FO3 / Skyrim SE / FO4 / Starfield today; Oblivion interior renders
-and Oblivion exterior is gated on the TES4 worldspace + LAND wiring (M40).
+FNV / FO3 / Skyrim SE / FO4 / Starfield and Oblivion today. Exterior runtime
+completion is tracked under [#2377](https://github.com/matiaszanolli/ByroRedux/issues/2377).
 FO76 has no cell loader yet (no ESM stub). The records-side parser
 (`records/`) is game-agnostic — it reads by sub-record code, migrated to a
 sequential `SubReader` cursor across all 169 field-read sites (R2 Phase B).

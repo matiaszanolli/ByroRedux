@@ -52,6 +52,21 @@ matches the audit-severity model: hard fails point at engine
 regressions; soft warnings point at environment / archive-coverage
 drift that doesn't indicate a code bug.
 
+For `m-exteriors.sh`, the entity/draw floors are calibrated below the
+2026-08-04 five-game radius-1 baseline. PNG health additionally requires RGB
+mean `(0.01, 0.98)` and standard deviation `> 0.005`.
+
+| Profile | Grid / WRLD | Hard floor entities / draws | Observed entities / draws | Image mean / stddev |
+|---------|-------------|------------------------------|---------------------------|---------------------|
+| FNV | `0,0` / `WastelandNV` | 2500 / 700 | 4367 / 1229 | 0.2587 / 0.0160 |
+| FO3 | `-1,-7` / `MegatonWorld` | 2000 / 700 | 3201 / 1093 | 0.2725 / 0.0547 |
+| Oblivion | `0,0` / `Tamriel` | 3500 / 1300 | 5709 / 2355 | 0.3658 / 0.1364 |
+| Skyrim SE | `2,-4` / `Tamriel` | 3500 / 500 | 6160 / 947 | 0.2625 / 0.0250 |
+| FO4 | `0,0` / `Commonwealth` | 30000 / 12000 | 57102 / 22706 | 0.3267 / 0.1737 |
+
+Texture misses and failed NIF cache entries remain soft, but their exact lists
+are retained in each profile's `debug.log` for classification.
+
 For `m41-equip.sh`:
 
 | Check | Class | Threshold (FO4 / Skyrim) | Source |

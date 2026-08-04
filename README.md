@@ -126,8 +126,10 @@ jump, walk/fly toggle on `F`. NPC spawning (M41) shipped Phase 1
 Phase 2 close-out (`Inventory` / `EquipmentSlots` ECS + ARMO/ARMA/LVLI
 dispatch + worn-mesh resolver). FO4 humanoid armor meshes pending a
 Havok `.hkx` skeleton stub (M41.x); the ECS equip state is observable
-today via `inspect <ref>` in `byro-dbg`. Oblivion exterior gated on
-TES4 worldspace + LAND wiring. See **[ROADMAP.md](ROADMAP.md)** for the
+today via `inspect <ref>` in `byro-dbg`. Oblivion exterior WRLD/CELL/LAND
+wiring and rendering are live; the cross-game readiness/streaming workstream
+is tracked under [exterior epic #2377](https://github.com/matiaszanolli/ByroRedux/issues/2377).
+See **[ROADMAP.md](ROADMAP.md)** for the
 authoritative capability matrix, active milestones, and architecture
 decisions. Session narratives live in **[HISTORY.md](HISTORY.md)**.
 

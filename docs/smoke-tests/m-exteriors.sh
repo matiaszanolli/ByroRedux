@@ -232,7 +232,7 @@ fnv_run () {
     local meshes="$FNV_DATA/Fallout - Meshes.bsa"
     local textures="$FNV_DATA/Fallout - Textures.bsa"
     profile_ready fnv "$esm" "$meshes" "$textures" || return 0
-    run_profile fnv "$FNV_DATA" WastelandNV 0,0 250 100 \
+    run_profile fnv "$FNV_DATA" WastelandNV 0,0 2500 700 \
         --esm "$esm" --grid 0,0 --radius 1 --wrld WastelandNV \
         --bsa "$meshes" --textures-bsa "$textures"
 }
@@ -254,7 +254,7 @@ oblivion_run () {
     local meshes="$OBLIVION_DATA/Oblivion - Meshes.bsa"
     local textures="$OBLIVION_DATA/Oblivion - Textures - Compressed.bsa"
     profile_ready oblivion "$esm" "$meshes" "$textures" || return 0
-    run_profile oblivion "$OBLIVION_DATA" Tamriel 0,0 2500 500 \
+    run_profile oblivion "$OBLIVION_DATA" Tamriel 0,0 3500 1300 \
         --esm "$esm" --grid 0,0 --radius 1 --wrld Tamriel \
         --bsa "$meshes" --textures-bsa "$textures"
 }
@@ -278,7 +278,7 @@ skyrim_run () {
     for archive in "$SKYRIM_DATA"/Skyrim\ -\ Textures{0..8}.bsa; do
         args+=(--textures-bsa "$archive")
     done
-    run_profile skyrim "$SKYRIM_DATA" Tamriel 2,-4 500 150 "${args[@]}"
+    run_profile skyrim "$SKYRIM_DATA" Tamriel 2,-4 3500 500 "${args[@]}"
 }
 
 fo4_run () {
@@ -304,7 +304,7 @@ fo4_run () {
     done
     args+=(--textures-bsa "$FO4_DATA/Fallout4 - TexturesPatch.ba2")
     args+=(--materials-ba2 "$FO4_DATA/Fallout4 - Materials.ba2")
-    run_profile fo4 "$FO4_DATA" Commonwealth 0,0 500 100 "${args[@]}"
+    run_profile fo4 "$FO4_DATA" Commonwealth 0,0 30000 12000 "${args[@]}"
 }
 
 total_rc=0

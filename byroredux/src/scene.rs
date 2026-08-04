@@ -77,6 +77,28 @@ pub(crate) fn cornell_sun_mode(args: &[String]) -> Option<bool> {
     }
 }
 
+fn select_initial_player_mode(
+    want_fly: bool,
+    want_player: bool,
+    cornell: bool,
+    has_content: bool,
+    foreground_ready_for_character: bool,
+) -> crate::systems::PlayerMode {
+    if want_fly {
+        crate::systems::PlayerMode::FlyCam
+    } else if want_player {
+        crate::systems::PlayerMode::Character
+    } else if cornell {
+        // The Cornell box has no colliders; a character capsule would fall
+        // through the floor. Fly-cam unless explicitly overridden.
+        crate::systems::PlayerMode::FlyCam
+    } else if has_content && foreground_ready_for_character {
+        crate::systems::PlayerMode::Character
+    } else {
+        crate::systems::PlayerMode::FlyCam
+    }
+}
+
 /// Pick the first door whose placement belongs to the collision-ready
 /// foreground exterior cell. Interior loads pass `None` and preserve the
 /// historical "first door in the cell" behaviour.
@@ -641,19 +663,13 @@ pub(crate) fn setup_scene(
     //   no content                  → FlyCam (default)
     let want_fly = args.iter().any(|a| a == "--fly");
     let want_player = args.iter().any(|a| a == "--player");
-    let player_mode = if want_fly {
-        crate::systems::PlayerMode::FlyCam
-    } else if want_player {
-        crate::systems::PlayerMode::Character
-    } else if cornell {
-        // The Cornell box has no colliders; a character capsule would
-        // fall through the floor. Fly-cam unless explicitly overridden.
-        crate::systems::PlayerMode::FlyCam
-    } else if has_nif_content && foreground_ready_for_character {
-        crate::systems::PlayerMode::Character
-    } else {
-        crate::systems::PlayerMode::FlyCam
-    };
+    let player_mode = select_initial_player_mode(
+        want_fly,
+        want_player,
+        cornell,
+        has_nif_content,
+        foreground_ready_for_character,
+    );
     world.insert_resource(player_mode);
     if player_mode == crate::systems::PlayerMode::FlyCam {
         if has_nif_content && !foreground_ready_for_character && !want_fly {

@@ -28,16 +28,19 @@ Live validation on 2026-08-04 exposed the difference between "wired" and
   `tex.missing` reported no missing textures, and the previously recorded
   exterior white-out did not reproduce.
 - The same worldspace at its nominal `(0,0)` CELL is a valid but empty dummy:
-  8 entities, no terrain/static colliders, and an indefinitely falling
-  character. The loader currently treats this as a successful foreground
-  handoff with a zero center.
+  8 entities and no terrain/static colliders. Before the first tranche, the
+  loader treated this as a successful foreground handoff with a zero center
+  and spawned a character that fell indefinitely. It now reports the authored
+  content signals plus five deterministic alternatives and defaults to FlyCam;
+  explicit `--player` remains an operator override.
 - The populated run still had 19 failed NIF paths, primarily ambient FX and
   furniture markers. These are not core terrain failures, but they need a
   classified allowlist or real consumers so regressions do not hide inside an
   unbounded warning bucket.
-- There is no repeatable exterior smoke matrix or boundary-crossing latency
-  benchmark in the live issue backlog. Existing exterior coverage is split
-  among audits, one SpeedTree smoke, and prose claims.
+- The first repeatable exterior smoke matrix now lives at
+  `docs/smoke-tests/m-exteriors.sh`; a boundary-crossing latency benchmark is
+  still missing. Earlier exterior coverage was split among audits, one
+  SpeedTree smoke, and prose claims.
 
 ## Definition of done
 
@@ -74,6 +77,18 @@ The identifiers below are stable plan IDs. GitHub issue numbers are added as
 the work is filed; a single implementation may close more than one plan ID
 when the acceptance gates are inseparable.
 
+GitHub tracking is grouped by dependency-sized deliverable under
+[#2377](https://github.com/matiaszanolli/ByroRedux/issues/2377): EX-01/05
+[#2368](https://github.com/matiaszanolli/ByroRedux/issues/2368), EX-02/04
+[#2375](https://github.com/matiaszanolli/ByroRedux/issues/2375), EX-06/07
+[#2376](https://github.com/matiaszanolli/ByroRedux/issues/2376), EX-08
+[#2374](https://github.com/matiaszanolli/ByroRedux/issues/2374), EX-09/17
+[#2370](https://github.com/matiaszanolli/ByroRedux/issues/2370), EX-10/11
+[#2371](https://github.com/matiaszanolli/ByroRedux/issues/2371), EX-12/13
+[#2373](https://github.com/matiaszanolli/ByroRedux/issues/2373), EX-14/15
+[#2369](https://github.com/matiaszanolli/ByroRedux/issues/2369), and EX-16
+[#2372](https://github.com/matiaszanolli/ByroRedux/issues/2372).
+
 | ID | Pri | Work item | Acceptance gate | Depends on |
 |---|---:|---|---|---|
 | EX-01 | P0 | Exterior smoke matrix and artifact bundle | One command runs each installed profile, captures a PNG plus bench/debug telemetry, self-skips absent data, and hard-fails empty/blank/non-exterior scenes | — |
@@ -98,16 +113,24 @@ when the acceptance gates are inseparable.
 
 ### Tranche A — make failures reproducible
 
-1. Land `docs/smoke-tests/m-exteriors.sh` for the five primary profiles.
-2. Capture bench, screenshot, lighting, texture, mesh-cache, camera, and
+1. [x] Add `docs/smoke-tests/m-exteriors.sh` for the five primary profiles.
+2. [x] Capture bench, screenshot, lighting, texture, mesh-cache, camera, and
    renderer-scratch telemetry in one artifact directory.
-3. Add center-cell viability diagnostics and lock the empty Megaton dummy CELL
-   into a regression test.
-4. Replace the stale FO3 white-out prose with the automated non-finite/image
+3. [x] Add typed center-cell viability diagnostics, deterministic suggestions,
+   safe FlyCam fallback, and missing/empty/content-backed regression tests.
+4. [x] Replace the stale FO3 white-out prose with the automated image-health
    gate; keep the old capture as historical evidence, not a live claim.
+5. [x] Calibrate all five live profiles and tighten their entity/draw floors
+   against the 2026-08-04 radius-1 baseline.
+6. [ ] Add the pre-tonemap non-finite pixel counter; PNG statistics cannot
+   observe an HDR NaN directly.
 
-Exit: EX-01 and the diagnostic half of EX-02/EX-05 are closed. Every later
-change has a repeatable before/after check.
+Current state: all five profiles pass. FNV 4,367/1,229, FO3 3,201/1,093,
+Oblivion 5,709/2,355, Skyrim 6,160/947, and FO4 57,102/22,706
+(entities/draws); every PNG passed image health. FNV/FO3/Oblivion/Skyrim had
+zero missing textures, while FO4 reported one. EX-01 is implemented; EX-05
+remains open for the renderer-side non-finite counter, and the diagnostic/safe-
+fallback half of EX-02 is implemented.
 
 ### Tranche B — make entry and traversal safe
 

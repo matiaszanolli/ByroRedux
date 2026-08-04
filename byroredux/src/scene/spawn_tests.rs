@@ -1,4 +1,5 @@
-use super::{capsule_center_y_on_surface, select_door_spawn_position};
+use super::{capsule_center_y_on_surface, select_door_spawn_position, select_initial_player_mode};
+use crate::systems::PlayerMode;
 use byroredux_core::math::Vec3;
 
 #[test]
@@ -53,4 +54,36 @@ fn capsule_spawn_height_includes_radius() {
     let with_radius = capsule_center_y_on_surface(10.0, 46.0, 18.0, 4.0);
 
     assert_eq!(with_radius - without_radius, 18.0);
+}
+
+#[test]
+fn empty_exterior_defaults_to_flycam_even_when_peripheral_content_loaded() {
+    assert_eq!(
+        select_initial_player_mode(false, false, false, true, false),
+        PlayerMode::FlyCam,
+    );
+}
+
+#[test]
+fn explicit_player_overrides_empty_exterior_guard() {
+    assert_eq!(
+        select_initial_player_mode(false, true, false, true, false),
+        PlayerMode::Character,
+    );
+}
+
+#[test]
+fn explicit_fly_still_wins_over_explicit_player() {
+    assert_eq!(
+        select_initial_player_mode(true, true, false, true, true),
+        PlayerMode::FlyCam,
+    );
+}
+
+#[test]
+fn content_backed_foreground_defaults_to_character() {
+    assert_eq!(
+        select_initial_player_mode(false, false, false, true, true),
+        PlayerMode::Character,
+    );
 }
