@@ -967,6 +967,49 @@ fn parse_blend_transform_interpolator_legacy_10_1_0_106() {
     assert_eq!(block.base.items[1].interpolator_ref.index(), Some(8));
 }
 
+/// #2344 / NIF-OBL-D1-01 — the `Single Interpolator` + `Single Time`
+/// payload starts at 10.1.0.108, while the legacy integer-priority layout
+/// continues through 10.1.0.109. The payload's version gate therefore spans
+/// two layout branches. Pre-fix both revisions stopped eight bytes early.
+fn assert_legacy_blend_single_payload_consumed(version: NifVersion) {
+    let mut header = make_header_fnv();
+    header.version = version;
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&0u16.to_le_bytes()); // Array Size
+    data.extend_from_slice(&0u16.to_le_bytes()); // Array Grow By
+    data.push(0); // Manager Controlled
+    data.extend_from_slice(&0.25f32.to_le_bytes()); // Weight Threshold
+    data.push(0); // Only Use Highest Weight
+    data.extend_from_slice(&1u16.to_le_bytes()); // Interp Count
+    data.extend_from_slice(&0u16.to_le_bytes()); // Single Index
+    data.extend_from_slice(&7i32.to_le_bytes()); // Single Interpolator
+    data.extend_from_slice(&2.5f32.to_le_bytes()); // Single Time
+    data.extend_from_slice(&12i32.to_le_bytes()); // High Priority
+    data.extend_from_slice(&11i32.to_le_bytes()); // Next High Priority
+
+    assert_eq!(data.len(), 30);
+    let mut stream = NifStream::new(&data, &header);
+    let blend = NiBlendInterpolator::parse(&mut stream).unwrap();
+    assert_eq!(
+        stream.position(),
+        30,
+        "{version:?} must consume the payload"
+    );
+    assert_eq!(blend.interp_count, 1);
+    assert_eq!(blend.single_index, 0);
+}
+
+#[test]
+fn parse_legacy_blend_single_payload_10_1_0_108() {
+    assert_legacy_blend_single_payload_consumed(NifVersion::V10_1_0_108);
+}
+
+#[test]
+fn parse_legacy_blend_single_payload_10_1_0_109() {
+    assert_legacy_blend_single_payload_consumed(NifVersion::V10_1_0_109);
+}
+
 /// #1885 / NIF-D6-001 — `NiBlendInterpolator::parse_legacy` must route its
 /// file-driven `array_size` through the `allocate_vec` byte-budget guard, not
 /// a raw `Vec::with_capacity`. A drifted/corrupt count that exceeds the bytes

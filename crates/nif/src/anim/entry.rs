@@ -556,6 +556,17 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
     // constant visibility value that still needs a non-zero duration to
     // avoid a mod-by-zero in the stack sampler).
     let mut max_time = 0.0_f32;
+    for ch in clip.channels.values() {
+        if let Some(k) = ch.translation_keys.last() {
+            max_time = max_time.max(k.time);
+        }
+        if let Some(k) = ch.rotation_keys.last() {
+            max_time = max_time.max(k.time);
+        }
+        if let Some(k) = ch.scale_keys.last() {
+            max_time = max_time.max(k.time);
+        }
+    }
     for (_, ch) in &clip.float_channels {
         if let Some(k) = ch.keys.last() {
             max_time = max_time.max(k.time);

@@ -668,7 +668,7 @@ fn import_embedded_animations_captures_inline_transform_controller() {
     use std::sync::Arc;
 
     // Scene layout:
-    //   [0] NiTransformData (two linear translation keys over 1 s)
+    //   [0] NiTransformData (two linear translation keys over 4 s)
     //   [1] NiTransformInterpolator → data=[0]
     //   [2] NiSingleInterpController → interp=[1]  (the parsed form of
     //       NiTransformController / NiKeyframeController — RTTI erased)
@@ -688,7 +688,7 @@ fn import_embedded_animations_captures_inline_transform_controller() {
                     tbc: None,
                 },
                 Vec3Key {
-                    time: 1.0,
+                    time: 4.0,
                     value: [0.0, 0.0, 10.0],
                     tangent_forward: [0.0; 3],
                     tangent_backward: [0.0; 3],
@@ -712,7 +712,7 @@ fn import_embedded_animations_captures_inline_transform_controller() {
             frequency: 1.0,
             phase: 0.0,
             start_time: 0.0,
-            stop_time: 1.0,
+            stop_time: 4.0,
             target_ref: BlockRef::NULL,
         },
         interpolator_ref: BlockRef(1),
@@ -760,7 +760,7 @@ fn import_embedded_animations_captures_inline_transform_controller() {
         "both authored translation keys must survive import"
     );
     assert!(
-        (clip.duration - 1.0).abs() < 1e-6,
-        "duration follows the last key time"
+        (clip.duration - 4.0).abs() < 1e-6,
+        "duration follows the last transform key time"
     );
 }

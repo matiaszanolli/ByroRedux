@@ -859,7 +859,9 @@ impl NiBlendInterpolator {
     ///     items{ref,weight,normW,**Priority int**,ease = 20 B} +
     ///     `Manager Controlled`(bool) + `Weight Threshold`(f32) +
     ///     `Only Use Highest Weight`(bool) + `Interp Count`(u16) +
-    ///     `Single Index`(u16) + `High Priority`(int) + `Next High Priority`(int).
+    ///     `Single Index`(u16) + optional `Single Interpolator`(Ref) +
+    ///     `Single Time`(f32) at 10.1.0.108..=109 + `High Priority`(int) +
+    ///     `Next High Priority`(int).
     ///   * `10.1.0.110 ..= 10.1.0.111`: `Array Size`(byte) +
     ///     items{ref,weight,normW,**Priority byte**,ease = 17 B} +
     ///     `Manager Controlled`(bool) + `Weight Threshold`(f32) +
@@ -941,8 +943,9 @@ impl NiBlendInterpolator {
     /// Legacy (`<= 10.1.0.111`) layout. `int_priority` selects the
     /// `<= 10.1.0.109` band (u16 array size + grow-by, int item priority,
     /// u16 counts, int high-priorities) vs the `10.1.0.110..=111` band
-    /// (byte array size, byte item priority, byte counts + single
-    /// interpolator/time + sbyte high-priorities).
+    /// (byte array size, byte item priority, byte counts + sbyte
+    /// high-priorities). The single interpolator/time pair has its own
+    /// 10.1.0.108..=111 version gate spanning both bands.
     fn parse_legacy(stream: &mut NifStream, int_priority: bool) -> io::Result<Self> {
         let array_size = if int_priority {
             let n = stream.read_u16_le()?;
@@ -985,18 +988,27 @@ impl NiBlendInterpolator {
         let weight_threshold = stream.read_f32_le()?;
         let _only_use_highest_weight = stream.read_byte_bool()?;
 
-        let (interp_count, single_index);
+        let (interp_count, single_index) = if int_priority {
+            (stream.read_u16_le()? as u8, stream.read_u16_le()? as u8)
+        } else {
+            (stream.read_u8()?, stream.read_u8()?)
+        };
+
+        // nif.xml gates this pair independently of the surrounding field
+        // widths: it starts at 10.1.0.108, two revisions before the
+        // byte-priority layout begins, and remains through 10.1.0.111.
+        let version = stream.version();
+        if version >= crate::version::NifVersion::V10_1_0_108
+            && version <= crate::version::NifVersion::V10_1_0_111
+        {
+            let _single_interpolator = stream.read_block_ref()?;
+            let _single_time = stream.read_f32_le()?;
+        }
+
         if int_priority {
-            interp_count = stream.read_u16_le()? as u8;
-            single_index = stream.read_u16_le()? as u8;
             let _high_priority = stream.read_i32_le()?;
             let _next_high_priority = stream.read_i32_le()?;
         } else {
-            interp_count = stream.read_u8()?;
-            single_index = stream.read_u8()?;
-            // Single Interpolator (Ref) + Single Time (f32): since 10.1.0.108.
-            let _single_interpolator = stream.read_block_ref()?;
-            let _single_time = stream.read_f32_le()?;
             let _high_priority = stream.read_u8()? as i8;
             let _next_high_priority = stream.read_u8()? as i8;
         }
