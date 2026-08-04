@@ -158,7 +158,10 @@ vec3 shadowableLightRadiance(
             albedo, roughness, mat.subsurface, mat.sheen, mat.sheenTint,
             NdotL, NdotV, HdotL
         );
-        diffuseBrdf = (dd.diffuse * PI + dd.sheen) * (1.0 - metalness);
+        // This path keeps the legacy non-/PI Lambert convention below.
+        // Rescale the complete Disney lobe together so sheen retains the
+        // same weight relative to diffuse as the /PI direct-sun path.
+        diffuseBrdf = (dd.diffuse + dd.sheen) * PI * (1.0 - metalness);
     } else {
         diffuseBrdf = kD * albedo;
     }
@@ -233,7 +236,9 @@ vec3 pathEnvironmentRadiance(vec3 direction) {
         return mix(sceneFlags.yzw, skyTint.xyz, skyWeight);
     }
     if (dalcFlags.x > 0.5) {
-        return sampleDalcCube(rayDir);
+        // DALC stores directional irradiance; an escaping path needs
+        // environment radiance before multiplying by its throughput.
+        return sampleDalcCube(rayDir) * (1.0 / PI);
     }
     return sceneFlags.yzw * 0.5;
 }

@@ -1118,6 +1118,46 @@ fn bounded_path_uses_ggx_bsdf_transport_and_directional_environment() {
     );
 }
 
+/// #2243 — Disney diffuse is /PI while sheen is not. The clustered-light
+/// path deliberately uses the legacy non-/PI Lambert convention, so it must
+/// rescale the complete Disney lobe. Scaling diffuse alone makes sheen PI
+/// times weaker relative to diffuse than in the direct-sun path.
+#[test]
+fn disney_sheen_keeps_its_relative_weight_across_direct_light_paths() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+
+    assert!(
+        lighting.contains("diffuseBrdf = (dd.diffuse + dd.sheen) * PI * (1.0 - metalness);"),
+        "clustered lighting must rescale diffuse and sheen together"
+    );
+    assert!(
+        frag.contains("diffuseBrdf = (dd.diffuse + dd.sheen) * (1.0 - metalness);"),
+        "direct-sun lighting must retain the normalized Disney lobe"
+    );
+    assert!(
+        !lighting.contains("dd.diffuse * PI + dd.sheen"),
+        "scaling only Disney diffuse changes sheen's relative weight by PI"
+    );
+}
+
+/// #2244 — `sampleDalcCube` returns authored directional irradiance. A
+/// bounded path that escapes the TLAS consumes environment radiance, so the
+/// DALC branch needs the Lambertian irradiance-to-radiance conversion.
+#[test]
+fn bounded_path_converts_dalc_irradiance_to_environment_radiance() {
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+
+    assert!(
+        lighting.contains("return sampleDalcCube(rayDir) * (1.0 / PI);"),
+        "bounded path DALC escape must convert irradiance to radiance"
+    );
+    assert!(
+        !lighting.contains("return sampleDalcCube(rayDir);"),
+        "raw DALC irradiance must not feed the path radiance term"
+    );
+}
+
 /// Ambient-cube interpolation must conserve irradiance for unit normals.
 ///
 /// Linear `abs(N)` weights sum to as much as sqrt(3), which made diagonal
