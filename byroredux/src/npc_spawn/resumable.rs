@@ -1128,8 +1128,14 @@ fn parent_part(world: &mut World, placement_root: EntityId, part_root: EntityId)
     add_child(world, placement_root, part_root);
     // A yielded actor can render for several frames before finalization.
     // Keep each newly attached mesh on the actor layer immediately rather
-    // than exposing an Architecture-layer transient.
-    tag_descendants_as_actor(world, placement_root);
+    // than exposing an Architecture-layer transient. Tag from `part_root`,
+    // not `placement_root` (#2276 / PERF-D7-02): every previously attached
+    // part was already tagged by its own `parent_part` call, so re-walking
+    // the whole growing subtree from the actor root on each of the ~11-16
+    // attaches per NPC just re-tags entities that are already correct.
+    // `part_root`'s own subtree (just loaded this tick, never tagged) is
+    // the only part that's actually new.
+    tag_descendants_as_actor(world, part_root);
 }
 
 #[cfg(test)]
@@ -1173,5 +1179,55 @@ mod tests {
         assert_ne!(RuntimePhase::Head, RuntimePhase::Hair);
         assert_ne!(RuntimePhase::Eye(0), RuntimePhase::Eye(1));
         assert_ne!(RuntimePhase::Armor(0), RuntimePhase::Armor(1));
+    }
+
+    /// Regression for #2276 (PERF-D7-02): `parent_part` used to re-walk
+    /// the whole `placement_root` subtree on every attach, so a bug
+    /// anywhere else that left an already-attached sibling untagged
+    /// would get silently "fixed" by the next unrelated attach — masking
+    /// the real bug and doing wasted, ever-growing work per call. It must
+    /// now scope the walk to `part_root`, touching only the subtree that
+    /// was just attached.
+    #[test]
+    fn parent_part_only_tags_the_newly_attached_subtree() {
+        use byroredux_core::ecs::components::RenderLayer;
+        use byroredux_core::ecs::MeshHandle;
+
+        let mut world = World::new();
+        let placement_root = world.spawn();
+
+        // A sibling already hanging off `placement_root` that was never
+        // tagged. Pre-fix, `parent_part`'s full-tree walk from
+        // `placement_root` would tag this as a side effect of attaching
+        // the unrelated part below.
+        let stale_sibling = world.spawn();
+        world.insert(stale_sibling, MeshHandle(1));
+        add_child(&mut world, placement_root, stale_sibling);
+
+        // The part being attached this call, with its own descendant.
+        let part_root = world.spawn();
+        let part_child = world.spawn();
+        world.insert(part_root, MeshHandle(2));
+        world.insert(part_child, MeshHandle(3));
+        add_child(&mut world, part_root, part_child);
+
+        parent_part(&mut world, placement_root, part_root);
+
+        let layer_q = world.query::<RenderLayer>().unwrap();
+        assert_eq!(
+            layer_q.get(part_root).copied(),
+            Some(RenderLayer::Actor),
+            "the newly attached part root must be tagged"
+        );
+        assert_eq!(
+            layer_q.get(part_child).copied(),
+            Some(RenderLayer::Actor),
+            "the newly attached part's own descendants must be tagged"
+        );
+        assert!(
+            layer_q.get(stale_sibling).is_none(),
+            "parent_part must scope tagging to the newly attached subtree, \
+             not re-walk placement_root's whole tree (#2276)"
+        );
     }
 }
