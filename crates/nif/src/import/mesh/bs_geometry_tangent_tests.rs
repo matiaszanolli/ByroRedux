@@ -12,7 +12,7 @@ use crate::blocks::bs_geometry::{
     BSGeometry, BSGeometryMesh, BSGeometryMeshData, BSGeometryMeshKind,
 };
 use crate::scene::NifScene;
-use crate::types::{BlockRef, NiMatrix3, NiPoint3, NiTransform};
+use crate::types::{clamp_sign, BlockRef, NiMatrix3, NiPoint3, NiTransform};
 use byroredux_core::string::StringPool;
 use std::sync::Arc;
 
@@ -68,7 +68,7 @@ fn tangent_extraction_count_and_values() {
         .iter()
         .map(|&raw| {
             let xyzw = unpack_udec3_xyzw(raw);
-            let bitangent_sign = if xyzw[3] < 0.0 { -1.0 } else { 1.0 };
+            let bitangent_sign = clamp_sign(xyzw[3]);
             [xyzw[0], xyzw[1], xyzw[2], bitangent_sign]
         })
         .collect();
@@ -102,7 +102,7 @@ fn tangent_extraction_normalizes_off_nominal_sign_to_exact_plus_or_minus_one() {
             xyzw[3]
         );
         // Mirrors the (post-fix) extraction map in extract_bs_geometry.
-        let bitangent_sign = if xyzw[3] < 0.0 { -1.0 } else { 1.0 };
+        let bitangent_sign = clamp_sign(xyzw[3]);
         assert_eq!(
             bitangent_sign, expected_sign,
             "off-nominal packed sign {} must clamp to exactly {}",

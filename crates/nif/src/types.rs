@@ -158,7 +158,20 @@ pub(crate) fn bitangent_sign(n: [f32; 3], t: [f32; 3], b: [f32; 3]) -> f32 {
         n[0] * t[1] - n[1] * t[0],
     ];
     let dot = b[0] * cross_nt[0] + b[1] * cross_nt[1] + b[2] * cross_nt[2];
-    if dot < 0.0 {
+    clamp_sign(dot)
+}
+
+/// Clamp a signed value to exactly `±1.0` — the sign convention shared by
+/// [`bitangent_sign`] above and the BSGeometry packed-tangent decode
+/// (`import::mesh::bs_geometry`, #2246), which independently reproduced
+/// the same ternary before this helper existed (#2313 / TD2-115).
+///
+/// **Not equivalent to [`f32::signum`]**: IEEE 754 defines `-0.0 < 0.0` as
+/// `false`, so `clamp_sign(-0.0) == 1.0`, whereas `(-0.0_f32).signum() ==
+/// -1.0`. Do not replace this with `signum()` — every call site's prior
+/// behavior (verified by test) depends on the `-0.0 → 1.0` mapping.
+pub(crate) fn clamp_sign(x: f32) -> f32 {
+    if x < 0.0 {
         -1.0
     } else {
         1.0
@@ -252,5 +265,38 @@ mod tests {
         let zup = bitangent_sign([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
         let yup = bitangent_sign([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
         assert_eq!(zup, yup);
+    }
+
+    // #2313 / TD2-115 — pins `clamp_sign`'s behavior against every call
+    // site it now backs (`bitangent_sign` above, the BSGeometry packed-
+    // tangent decode, and the two test-file "simulation" sites), so the
+    // shared helper can't silently drift from what all four previously
+    // agreed on.
+    #[test]
+    fn clamp_sign_positive_is_one() {
+        assert_eq!(clamp_sign(0.5), 1.0);
+        assert_eq!(clamp_sign(f32::INFINITY), 1.0);
+    }
+
+    #[test]
+    fn clamp_sign_negative_is_minus_one() {
+        assert_eq!(clamp_sign(-0.5), -1.0);
+        assert_eq!(clamp_sign(f32::NEG_INFINITY), -1.0);
+    }
+
+    #[test]
+    fn clamp_sign_zero_is_one() {
+        assert_eq!(clamp_sign(0.0), 1.0);
+    }
+
+    /// `-0.0 < 0.0` is `false` under IEEE 754, so `clamp_sign` maps `-0.0`
+    /// to `1.0` — the opposite of `f32::signum()`, which maps `-0.0` to
+    /// `-1.0`. Every existing call site depends on this mapping (none of
+    /// them derive a signed zero that's meant to mean "negative"), so a
+    /// future `signum()` substitution would silently flip that case.
+    #[test]
+    fn clamp_sign_negative_zero_is_one_not_signum_convention() {
+        assert_eq!(clamp_sign(-0.0), 1.0);
+        assert_ne!(clamp_sign(-0.0), (-0.0_f32).signum());
     }
 }

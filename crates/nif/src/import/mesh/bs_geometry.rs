@@ -6,7 +6,7 @@
 use crate::blocks::bs_geometry::unpack_udec3_xyzw;
 use crate::blocks::bs_geometry::BSGeometry;
 use crate::scene::NifScene;
-use crate::types::{NiPoint3, NiTransform};
+use crate::types::{clamp_sign, NiPoint3, NiTransform};
 
 use super::super::coord::{zup_matrix_to_yup_quat, zup_point_to_yup};
 use super::super::{ImportedMesh, MeshResolver};
@@ -183,13 +183,14 @@ pub fn extract_bs_geometry(
                 // -1/3 or +1/3, not just ±1, unlike every other game's
                 // import path (`bitangent_sign()` in `types.rs`, used by
                 // `tangent.rs` / `sse_recon.rs`), which always derives an
-                // exact ±1.0. Normalize here so no downstream consumer of
+                // exact ±1.0. Normalize here (via the shared `clamp_sign`,
+                // #2313 / TD2-115) so no downstream consumer of
                 // `vertexTangent.w` needs its own defensive re-clamp —
                 // `material_sampling.glsl`'s `perturbNormal` already does
                 // one (`vertexTangent.w < 0.0 ? -1.0 : 1.0`), but that
                 // shouldn't be the only thing standing between an
                 // off-nominal packed value and a wrong tangent frame.
-                let bitangent_sign = if xyzw[3] < 0.0 { -1.0 } else { 1.0 };
+                let bitangent_sign = clamp_sign(xyzw[3]);
                 [xyzw[0], xyzw[1], xyzw[2], bitangent_sign]
             })
             .collect()
