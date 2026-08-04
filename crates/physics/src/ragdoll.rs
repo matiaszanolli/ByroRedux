@@ -205,11 +205,40 @@ pub fn build_ragdoll(pw: &mut PhysicsWorld, spec: &RagdollSpec, cfg: &ContactCon
     //    multibody from BFS order; the root is the multibody base).
     let mut joints = Vec::with_capacity(oriented.len());
     for edge in &oriented {
+        let parent_seed = iso_from_trs(
+            spec.bodies[edge.parent].translation,
+            spec.bodies[edge.parent].rotation,
+        );
+        let child_seed = iso_from_trs(
+            spec.bodies[edge.child].translation,
+            spec.bodies[edge.child].rotation,
+        );
         let joint = build_joint(&spec.constraints[edge.constraint].joint, edge.flip);
         if let Some(jh) =
             pw.multibody_joints
                 .insert(handles[edge.parent], handles[edge.child], joint, true)
         {
+            if let Some((multibody, link_id)) = pw.multibody_joints.get_mut(jh) {
+                // #2338 — suppress contacts only between links of this one
+                // articulation. World geometry and other actors remain in
+                // different multibodies, so their contacts are unaffected.
+                multibody.set_self_contacts_enabled(false);
+
+                if let Some(link) = multibody.link_mut(link_id) {
+                    // #2337 — multibody forward kinematics owns every
+                    // non-root pose. Seed its reduced coordinates from the
+                    // animated body poses before the first physics step can
+                    // replace them with the joint's zero/rest coordinates.
+                    seed_joint_from_body_poses(&mut link.joint, parent_seed, child_seed);
+                } else {
+                    log::warn!(
+                        "ragdoll: inserted multibody joint {}→{} has no child link — \
+                         animated seed pose could not be retained",
+                        edge.parent,
+                        edge.child,
+                    );
+                }
+            }
             joints.push(jh);
         } else {
             log::warn!(
@@ -361,6 +390,37 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
     }
 }
 
+/// Initialise a child link's reduced coordinates from the world-space body
+/// poses captured at ragdoll activation.
+///
+/// Rapier stores non-root multibody poses in the joint, not in the attached
+/// rigid body's Cartesian `position`. The joint transform is
+/// `frame1 * joint_rotation * inverse(frame2)`, so isolate the authored
+/// relative rotation in joint space and apply it to the zeroed coordinates.
+/// All ragdoll linear DOFs are locked; the authored pivots determine the
+/// compatible child translation once forward kinematics runs.
+fn seed_joint_from_body_poses(
+    joint: &mut MultibodyJoint,
+    parent_pose: Isometry<Real>,
+    child_pose: Isometry<Real>,
+) {
+    let parent_to_child = parent_pose.inverse() * child_pose;
+    let joint_rotation = joint.data.local_frame1.rotation.inverse()
+        * parent_to_child.rotation
+        * joint.data.local_frame2.rotation;
+    let angular_displacement = joint_rotation.scaled_axis();
+
+    match joint.ndofs() {
+        // Limited hinge: only local angular X is free.
+        1 => joint.apply_displacement(&[angular_displacement.x]),
+        // Ragdoll: local angular X/Y/Z are all free.
+        3 => joint.apply_displacement(angular_displacement.as_slice()),
+        ndofs => log::warn!(
+            "ragdoll: cannot seed unsupported {ndofs}-DOF multibody joint from animated pose"
+        ),
+    }
+}
+
 /// Build a rotation whose local X = `primary`, local Y = `secondary`
 /// orthogonalised against X, local Z = X×Y. Falls back to identity-ish
 /// bases for degenerate (zero / parallel) inputs so a corrupt joint can't
@@ -509,6 +569,104 @@ mod tests {
         assert!(
             end_dist < init_dist * 1.5 + 20.0,
             "chain separated (joints not holding): {init_dist} → {end_dist}"
+        );
+    }
+
+    /// #2337 — Rapier's first forward-kinematics pass must start from the
+    /// animated child pose, not reset every non-root link to zero joint
+    /// coordinates (the authored rest pose).
+    #[test]
+    fn first_step_preserves_seeded_child_pose() {
+        let mut pw = PhysicsWorld::new();
+        pw.gravity = Vector::zeros();
+
+        let root = ball_body(1, 0.0, 1000.0);
+        let mut child = ball_body(2, 25.0, 1025.0);
+        child.rotation = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let expected_translation = child.translation;
+        let expected_rotation = child.rotation;
+        let spec = RagdollSpec {
+            bodies: vec![root, child],
+            constraints: vec![loose_ragdoll(0, 1)],
+        };
+
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+        let child_handle = rag.bodies[1].1;
+        pw.step(PHYSICS_DT);
+
+        let (actual_translation, actual_rotation) = body_pose(&pw, child_handle).unwrap();
+        assert!(
+            (actual_translation - expected_translation).length() < 1e-3,
+            "first step replaced the seeded child translation: \
+             {expected_translation:?} → {actual_translation:?}"
+        );
+        assert!(
+            actual_rotation.dot(expected_rotation).abs() > 1.0 - 1e-4,
+            "first step replaced the seeded child rotation: \
+             {expected_rotation:?} → {actual_rotation:?}"
+        );
+    }
+
+    /// #2338 — overlapping links in one ragdoll must not generate contact
+    /// impulses against each other, while the same links still collide with
+    /// ordinary world geometry.
+    #[test]
+    fn ragdoll_self_contacts_are_disabled_but_world_contacts_remain() {
+        let mut pw = PhysicsWorld::new();
+        pw.gravity = Vector::zeros();
+
+        let mut root = ball_body(1, 0.0, 1000.0);
+        root.shape = CollisionShape::Ball { radius: 30.0 };
+        let mut child = ball_body(2, 50.0, 1000.0);
+        child.shape = CollisionShape::Ball { radius: 30.0 };
+        let spec = RagdollSpec {
+            bodies: vec![root, child],
+            constraints: vec![loose_ragdoll(0, 1)],
+        };
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT);
+
+        let (multibody, _) = pw.multibody_joints.get(rag.joints[0]).unwrap();
+        assert!(
+            !multibody.self_contacts_enabled(),
+            "ragdoll multibody must reject all same-articulation contacts"
+        );
+
+        let root_handle = rag.bodies[0].1;
+        let child_handle = rag.bodies[1].1;
+        let root_collider = pw.bodies[root_handle].colliders()[0];
+        let child_collider = pw.bodies[child_handle].colliders()[0];
+
+        // A fixed floor overlaps the root sphere by one unit. This contact
+        // must remain active: disabling self-contact is per multibody, not a
+        // broad collision-group mask on every ragdoll collider.
+        let floor_body = pw.bodies.insert(
+            RigidBodyBuilder::fixed()
+                .translation(vector![0.0, 970.0, 0.0])
+                .build(),
+        );
+        let floor_collider = pw.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(100.0, 1.0, 100.0).build(),
+            floor_body,
+            &mut pw.bodies,
+        );
+        pw.wake();
+        pw.step(PHYSICS_DT);
+
+        let self_contact_active = pw
+            .narrow_phase
+            .contact_pair(root_collider, child_collider)
+            .is_some_and(|pair| pair.has_any_active_contact);
+        assert!(
+            !self_contact_active,
+            "overlapping links in one ragdoll generated an active self-contact"
+        );
+        let world_contact_active = pw
+            .narrow_phase
+            .contact_pair(root_collider, floor_collider)
+            .is_some_and(|pair| pair.has_any_active_contact);
+        assert!(
+            world_contact_active,
+            "self-contact suppression must not disable ragdoll/world contacts"
         );
     }
 
