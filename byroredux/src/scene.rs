@@ -207,6 +207,11 @@ pub(crate) fn setup_scene(
     let args: Vec<String> = crate::cli_args::effective_args();
     let mut cam_center = Vec3::ZERO;
     let mut has_nif_content = false;
+    // Exterior CELL presence is not sufficient for Character mode: Bethesda
+    // masters contain valid empty/dummy tiles (for example MegatonWorld 0,0).
+    // Keep the normal default for every other scene kind and lower it only
+    // when the selected exterior foreground has no authored content source.
+    let mut foreground_ready_for_character = true;
     let mut nif_root: Option<EntityId> = None;
 
     // Pending-cell-transition slot — pre-inserted so `&World`-only
@@ -371,6 +376,8 @@ pub(crate) fn setup_scene(
                 wrld_name.as_deref(),
             ) {
                 Ok(wctx) => {
+                    let foreground_readiness = wctx.foreground_readiness((cx, cy), 5);
+                    foreground_ready_for_character = foreground_readiness.is_content_backed();
                     has_nif_content = true;
                     crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
                     crate::asset_provider::populate_havok_idle_runtime(
@@ -642,16 +649,23 @@ pub(crate) fn setup_scene(
         // The Cornell box has no colliders; a character capsule would
         // fall through the floor. Fly-cam unless explicitly overridden.
         crate::systems::PlayerMode::FlyCam
-    } else if has_nif_content {
+    } else if has_nif_content && foreground_ready_for_character {
         crate::systems::PlayerMode::Character
     } else {
         crate::systems::PlayerMode::FlyCam
     };
     world.insert_resource(player_mode);
     if player_mode == crate::systems::PlayerMode::FlyCam {
-        log::info!(
-            "Player rig: FlyCam (use `--player` to force Character mode without cell content)"
-        );
+        if has_nif_content && !foreground_ready_for_character && !want_fly {
+            log::warn!(
+                "Player rig: FlyCam because the requested exterior foreground is empty or missing \
+                 (use `--player` to override at your own risk)"
+            );
+        } else {
+            log::info!(
+                "Player rig: FlyCam (use `--player` to force Character mode without cell content)"
+            );
+        }
     } else {
         log::info!("Player rig: Character (M28.5 kinematic capsule + gravity)");
     }

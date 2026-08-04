@@ -7,7 +7,7 @@ use byroredux_core::ecs::World;
 use byroredux_core::math::coord::{cell_grid_to_world_yup, EXTERIOR_CELL_UNITS};
 use byroredux_core::math::Vec3;
 use byroredux_renderer::VulkanContext;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 
@@ -59,6 +59,66 @@ pub struct ExteriorWorldContext {
     /// Worldspace-default water TYPE form (NAM2 → WATR), used for the
     /// water plane's appearance when a cell inherits the default height.
     pub default_water_type_form: Option<u32>,
+}
+
+/// Authored content signals for one exterior CELL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExteriorCellContent {
+    pub coord: (i32, i32),
+    pub has_landscape: bool,
+    pub authored_reference_count: usize,
+    pub precombined_mesh_count: usize,
+}
+
+impl ExteriorCellContent {
+    /// Whether the CELL has enough authored content to be a meaningful
+    /// foreground. This is a pre-load readiness gate, not a collision claim:
+    /// EX-04 separately verifies that one of these sources produces walkable
+    /// ground after import.
+    pub fn is_content_backed(&self) -> bool {
+        self.has_landscape || self.authored_reference_count > 0 || self.precombined_mesh_count > 0
+    }
+}
+
+/// Deterministic pre-load diagnosis for an explicitly requested exterior
+/// foreground CELL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExteriorForegroundReadiness {
+    pub requested_coord: (i32, i32),
+    pub requested: Option<ExteriorCellContent>,
+    pub nearest_viable: Vec<ExteriorCellContent>,
+}
+
+impl ExteriorForegroundReadiness {
+    pub fn is_content_backed(&self) -> bool {
+        self.requested
+            .as_ref()
+            .is_some_and(ExteriorCellContent::is_content_backed)
+    }
+}
+
+impl ExteriorWorldContext {
+    /// Inspect the requested tile without loading it. Suggestions are sorted
+    /// by Chebyshev distance, then Manhattan distance and grid coordinate, so
+    /// diagnostics never depend on `HashMap` iteration order.
+    pub fn foreground_readiness(
+        &self,
+        coord: (i32, i32),
+        suggestion_limit: usize,
+    ) -> ExteriorForegroundReadiness {
+        let cells = self
+            .record_index
+            .cells
+            .exterior_cells
+            .get(&self.worldspace_key);
+        summarize_foreground_cells(cells, coord, suggestion_limit, |cell| {
+            (
+                cell.landscape.is_some(),
+                cell.references.len(),
+                cell.precombined_mesh_hashes.len(),
+            )
+        })
+    }
 }
 
 /// Per-cell load result emitted by [`load_one_exterior_cell`]. Each
@@ -366,6 +426,103 @@ impl ExteriorCellApplyJob {
 /// default through the Gamebryo/Creation-era defaults.
 const PREFERRED_WORLDSPACES: [&str; 4] = ["wastelandnv", "wasteland", "tamriel", "skyrim"];
 
+fn summarize_foreground_cells<T>(
+    cells: Option<&HashMap<(i32, i32), T>>,
+    requested_coord: (i32, i32),
+    suggestion_limit: usize,
+    classify: impl Fn(&T) -> (bool, usize, usize),
+) -> ExteriorForegroundReadiness {
+    let content = |coord, cell: &T| {
+        let (has_landscape, authored_reference_count, precombined_mesh_count) = classify(cell);
+        ExteriorCellContent {
+            coord,
+            has_landscape,
+            authored_reference_count,
+            precombined_mesh_count,
+        }
+    };
+    let requested = cells
+        .and_then(|cells| cells.get(&requested_coord))
+        .map(|cell| content(requested_coord, cell));
+
+    let mut nearest_viable = Vec::new();
+    if requested
+        .as_ref()
+        .is_none_or(|requested| !requested.is_content_backed())
+    {
+        if let Some(cells) = cells {
+            nearest_viable.extend(cells.iter().filter_map(|(&coord, cell)| {
+                let content = content(coord, cell);
+                content.is_content_backed().then_some(content)
+            }));
+            nearest_viable.sort_unstable_by_key(|cell| {
+                let dx = cell.coord.0.abs_diff(requested_coord.0);
+                let dy = cell.coord.1.abs_diff(requested_coord.1);
+                (dx.max(dy), u64::from(dx) + u64::from(dy), cell.coord)
+            });
+            nearest_viable.truncate(suggestion_limit);
+        }
+    }
+
+    ExteriorForegroundReadiness {
+        requested_coord,
+        requested,
+        nearest_viable,
+    }
+}
+
+fn log_foreground_readiness(worldspace: &str, readiness: &ExteriorForegroundReadiness) {
+    if let Some(content) = readiness
+        .requested
+        .as_ref()
+        .filter(|content| content.is_content_backed())
+    {
+        log::info!(
+            "Exterior foreground '{}' ({},{}): LAND={}, {} references, {} precombined meshes",
+            worldspace,
+            content.coord.0,
+            content.coord.1,
+            content.has_landscape,
+            content.authored_reference_count,
+            content.precombined_mesh_count,
+        );
+        return;
+    }
+
+    let reason = match readiness.requested.as_ref() {
+        Some(_) => "CELL exists but has no LAND, references, or precombined meshes",
+        None => "CELL is missing",
+    };
+    let suggestions = readiness
+        .nearest_viable
+        .iter()
+        .map(|cell| {
+            format!(
+                "({},{})[LAND={}, refs={}, precombines={}]",
+                cell.coord.0,
+                cell.coord.1,
+                cell.has_landscape,
+                cell.authored_reference_count,
+                cell.precombined_mesh_count,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    log::warn!(
+        "Exterior foreground '{}' ({}, {}) is not content-backed: {}; nearest viable cells: {}. \
+         Character mode will fall back to FlyCam unless --player explicitly overrides it",
+        worldspace,
+        readiness.requested_coord.0,
+        readiness.requested_coord.1,
+        reason,
+        if suggestions.is_empty() {
+            "none".to_string()
+        } else {
+            suggestions
+        },
+    );
+}
+
 fn select_worldspace_key<T>(
     exterior_cells: &std::collections::HashMap<String, std::collections::HashMap<(i32, i32), T>>,
     center_x: i32,
@@ -451,7 +608,7 @@ fn select_worldspace_key<T>(
 
 #[cfg(test)]
 mod worldspace_selection_tests {
-    use super::{select_worldspace_key, PREFERRED_WORLDSPACES};
+    use super::{select_worldspace_key, summarize_foreground_cells, PREFERRED_WORLDSPACES};
     use std::collections::HashMap;
 
     fn cells(coords: &[(i32, i32)]) -> HashMap<(i32, i32), ()> {
@@ -506,6 +663,48 @@ mod worldspace_selection_tests {
             select_worldspace_key(&worldspaces, 0, 0, 0, None).as_deref(),
             Some("largeworld")
         );
+    }
+
+    #[test]
+    fn empty_foreground_reports_nearest_viable_cells_deterministically() {
+        let cells = HashMap::from([
+            ((0, 0), (false, 0, 0)),
+            ((3, 0), (true, 0, 0)),
+            ((0, 2), (false, 4, 0)),
+            ((-2, 0), (false, 0, 1)),
+            ((1, 1), (false, 0, 0)),
+        ]);
+        let readiness = summarize_foreground_cells(Some(&cells), (0, 0), 3, |signals| *signals);
+
+        assert!(!readiness.is_content_backed());
+        assert_eq!(
+            readiness
+                .nearest_viable
+                .iter()
+                .map(|cell| cell.coord)
+                .collect::<Vec<_>>(),
+            vec![(-2, 0), (0, 2), (3, 0)]
+        );
+    }
+
+    #[test]
+    fn land_references_and_precombines_each_make_foreground_content_backed() {
+        for signals in [(true, 0, 0), (false, 1, 0), (false, 0, 1)] {
+            let cells = HashMap::from([((4, -7), signals)]);
+            let readiness =
+                summarize_foreground_cells(Some(&cells), (4, -7), 5, |signals| *signals);
+            assert!(readiness.is_content_backed());
+            assert!(readiness.nearest_viable.is_empty());
+        }
+    }
+
+    #[test]
+    fn missing_foreground_is_distinct_from_empty_foreground() {
+        let cells = HashMap::from([((1, 0), (true, 0, 0))]);
+        let readiness = summarize_foreground_cells(Some(&cells), (0, 0), 5, |signals| *signals);
+
+        assert!(readiness.requested.is_none());
+        assert_eq!(readiness.nearest_viable[0].coord, (1, 0));
     }
 }
 
@@ -568,6 +767,19 @@ pub fn build_exterior_world_context(
         center_y,
         radius,
     );
+    let foreground_readiness = summarize_foreground_cells(
+        index.exterior_cells.get(&worldspace_key),
+        (center_x, center_y),
+        5,
+        |cell| {
+            (
+                cell.landscape.is_some(),
+                cell.references.len(),
+                cell.precombined_mesh_hashes.len(),
+            )
+        },
+    );
+    log_foreground_readiness(&worldspace_key, &foreground_readiness);
 
     // Resolve weather + climate: WRLD → CLMT → WTHR. Climate carries
     // per-worldspace TNAM sunrise/sunset hours so the TOD interpolator

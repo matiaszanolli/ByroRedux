@@ -956,7 +956,10 @@ mod tests {
         assert_eq!(instantaneous.skin_dispatch_ms, 0.0);
 
         // Same `_ms` reading, opposite `_active` — the ambiguity is gone.
-        assert_ne!(inactive.skin_dispatch_active, instantaneous.skin_dispatch_active);
+        assert_ne!(
+            inactive.skin_dispatch_active,
+            instantaneous.skin_dispatch_active
+        );
     }
 
     /// A bracket with a non-zero tick delta reports both `_active` and

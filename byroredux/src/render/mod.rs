@@ -104,7 +104,10 @@ mod fog_height_reference_tests {
             (reference - 116.0).abs() < 0.1,
             "expected the floor's top surface (~116.0), got {reference}"
         );
-        assert_ne!(reference, cam_pos.y, "must not fall back to camera Y when a floor exists");
+        assert_ne!(
+            reference, cam_pos.y,
+            "must not fall back to camera Y when a floor exists"
+        );
     }
 }
 

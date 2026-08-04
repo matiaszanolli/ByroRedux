@@ -17,7 +17,9 @@ fn main() {
     let mut hist: BTreeMap<String, usize> = BTreeMap::new();
     for p in &files {
         let Ok(bytes) = a.extract(p) else { continue };
-        let Ok(scene) = parse_nif(&bytes) else { continue };
+        let Ok(scene) = parse_nif(&bytes) else {
+            continue;
+        };
         for b in &scene.blocks {
             let n = b.block_type_name();
             if n.contains("BSpline") || n.contains("Interpolator") {
