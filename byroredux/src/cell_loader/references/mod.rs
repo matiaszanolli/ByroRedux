@@ -22,7 +22,9 @@ use crate::npc_spawn::{NpcSpawnJob, NpcSpawnProgress};
 use super::euler::euler_zup_to_quat_yup_refr;
 use super::load_order::{self, plugin_for_form_id};
 use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
-use super::refr::{build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements};
+use super::refr::{
+    build_refr_texture_overlay, expand_pkin_placements, expand_scol_placements, RefrTextureOverlay,
+};
 use super::spawn::{light_radius_or_default, spawn_placed_instances};
 use super::FrameTimeBudget;
 
@@ -59,6 +61,13 @@ pub(super) struct ReferenceLoadJob {
     next_ref: usize,
     /// Next synthetic child inside the current SCOL/PKIN-expanded REFR.
     next_synth: usize,
+    /// Cached SCOL/PKIN child-placement expansion + shared texture overlay
+    /// for the REFR currently at `next_ref`. `None` until first computed
+    /// for this REFR, and cleared again once `next_ref` advances. A budget
+    /// yield partway through a REFR's `synth_refs` resumes from this cache
+    /// instead of re-walking `scol.parts`/`.placements` and recomposing
+    /// every child transform from scratch (#2277 / PERF-D7-03).
+    current_ref_synth: Option<(Vec<(u32, Vec3, Quat, f32)>, Option<RefrTextureOverlay>)>,
     /// Sub-REFR continuation for an actor whose NIF bundle spans frames.
     active_npc: Option<NpcSpawnJob>,
     cache_hits_at_entry: u64,
@@ -310,6 +319,7 @@ pub(super) fn load_references_budgeted(
         Box::new(ReferenceLoadJob {
             next_ref: 0,
             next_synth: 0,
+            current_ref_synth: None,
             active_npc: None,
             cache_hits_at_entry,
             cache_misses_at_entry,
@@ -396,41 +406,56 @@ pub(super) fn load_references_budgeted(
             job.door_pos = Some(outer_pos);
         }
 
-        // Build per-REFR texture overlay once. Shared across every
-        // synthetic SCOL child — FO4 REFRs that overlay textures at the
-        // SCOL level apply the same swap to every child placement.
-        // #584.
-        let refr_overlay = {
-            let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
-            build_refr_texture_overlay(placed_ref, index, mat_provider.as_deref_mut(), &mut pool)
-        };
+        // #2277 / PERF-D7-03 — a budget yield partway through a large
+        // SCOL/PKIN's `synth_refs` stashes the already-expanded list (and
+        // its shared overlay) on `job.current_ref_synth`; reuse it here
+        // instead of re-expanding from scratch on the resumed tick.
+        let (synth_refs, refr_overlay) = match job.current_ref_synth.take() {
+            Some(cached) => cached,
+            None => {
+                // Build per-REFR texture overlay once. Shared across every
+                // synthetic SCOL child — FO4 REFRs that overlay textures at
+                // the SCOL level apply the same swap to every child
+                // placement. #584.
+                let refr_overlay = {
+                    let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+                    build_refr_texture_overlay(
+                        placed_ref,
+                        index,
+                        mat_provider.as_deref_mut(),
+                        &mut pool,
+                    )
+                };
 
-        // Compose REFR expansion from composite-record helpers:
-        //   1. PKIN (#589) — Pack-In bundle fans out to one synth per
-        //      `CNAM` content at the outer transform.
-        //   2. SCOL (#585) — Static Collection fans out to one synth
-        //      per `ONAM/DATA` placement when no cached `CM*.NIF`.
-        //   3. Default — single synth at the outer transform.
-        //
-        // First expander that fires wins; `expand_scol_placements`
-        // already returns the single-entry default when the base form
-        // isn't a SCOL, so the chain closes cleanly.
-        let synth_refs = expand_pkin_placements(
-            placed_ref.base_form_id,
-            outer_pos,
-            outer_rot,
-            outer_scale,
-            index,
-        )
-        .unwrap_or_else(|| {
-            expand_scol_placements(
-                placed_ref.base_form_id,
-                outer_pos,
-                outer_rot,
-                outer_scale,
-                index,
-            )
-        });
+                // Compose REFR expansion from composite-record helpers:
+                //   1. PKIN (#589) — Pack-In bundle fans out to one synth per
+                //      `CNAM` content at the outer transform.
+                //   2. SCOL (#585) — Static Collection fans out to one synth
+                //      per `ONAM/DATA` placement when no cached `CM*.NIF`.
+                //   3. Default — single synth at the outer transform.
+                //
+                // First expander that fires wins; `expand_scol_placements`
+                // already returns the single-entry default when the base
+                // form isn't a SCOL, so the chain closes cleanly.
+                let synth_refs = expand_pkin_placements(
+                    placed_ref.base_form_id,
+                    outer_pos,
+                    outer_rot,
+                    outer_scale,
+                    index,
+                )
+                .unwrap_or_else(|| {
+                    expand_scol_placements(
+                        placed_ref.base_form_id,
+                        outer_pos,
+                        outer_rot,
+                        outer_scale,
+                        index,
+                    )
+                });
+                (synth_refs, refr_overlay)
+            }
+        };
 
         // #2026 / SCR-D7-NEW2-01 — the outer REFR's own VMAD
         // (`placed_ref.script_instance`) is a property of that single
@@ -444,15 +469,13 @@ pub(super) fn load_references_budgeted(
         // attachment is behavioral, not visual, so it goes to a single
         // child instead of being broadcast to all of them.
         let synth_count = synth_refs.len();
-        for (synth_idx, (child_form_id, ref_pos, ref_rot, ref_scale)) in
-            synth_refs.into_iter().enumerate()
-        {
-            if synth_idx < job.next_synth {
-                continue;
-            }
+        let mut synth_idx = job.next_synth;
+        while synth_idx < synth_count {
             if budget.should_yield() {
+                job.current_ref_synth = Some((synth_refs, refr_overlay));
                 return ReferenceLoadProgress::Pending(job);
             }
+            let (child_form_id, ref_pos, ref_rot, ref_scale) = synth_refs[synth_idx];
 
             // EXAL sub-REFR continuation: an actor is a bundle of top-level
             // NIFs, not one indivisible placement.  Keep its skeleton map and
@@ -486,6 +509,7 @@ pub(super) fn load_references_budgeted(
                 let Some(active_npc) = job.active_npc.as_mut() else {
                     job.next_synth = synth_idx + 1;
                     budget.complete_unit();
+                    synth_idx += 1;
                     continue;
                 };
                 match active_npc.advance(
@@ -498,6 +522,7 @@ pub(super) fn load_references_budgeted(
                     budget,
                 ) {
                     NpcSpawnProgress::Pending => {
+                        job.current_ref_synth = Some((synth_refs, refr_overlay));
                         return ReferenceLoadProgress::Pending(job);
                     }
                     NpcSpawnProgress::Complete(result) => {
@@ -535,6 +560,7 @@ pub(super) fn load_references_budgeted(
                         job.next_synth = synth_idx + 1;
                     }
                 }
+                synth_idx += 1;
                 continue;
             }
 
@@ -558,9 +584,11 @@ pub(super) fn load_references_budgeted(
             );
             job.next_synth = synth_idx + 1;
             budget.complete_unit();
+            synth_idx += 1;
         }
         job.next_ref += 1;
         job.next_synth = 0;
+        job.current_ref_synth = None;
         if synth_count == 0 {
             budget.complete_unit();
         }
@@ -1810,6 +1838,46 @@ mod tests {
             "the accumulated NPC-spawn wall time must be surfaced in the \
              end-of-cell summary log, or the cost stays invisible (the exact \
              gap #1798 reports)"
+        );
+    }
+
+    /// Regression for #2277 (PERF-D7-03): a budget yield partway through a
+    /// SCOL/PKIN's `synth_refs` must resume from `job.current_ref_synth`
+    /// instead of re-walking `expand_pkin_placements`/`expand_scol_placements`
+    /// (and rebuilding the shared texture overlay) from scratch. Exercising
+    /// this end-to-end needs a real `VulkanContext`, out of unit-test scope
+    /// here (same constraint as `npc_spawn_jobs_are_resumable_and_wall_clock_timed`
+    /// above), so this pins the structural invariant via source inspection.
+    #[test]
+    fn scol_expansion_is_cached_across_a_budget_yield() {
+        let full_src = include_str!("mod.rs");
+        let src = &full_src[..full_src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("references.rs must have a #[cfg(test)] mod tests block")];
+
+        assert!(
+            src.contains(
+                "current_ref_synth: Option<(Vec<(u32, Vec3, Quat, f32)>, Option<RefrTextureOverlay>)>"
+            ),
+            "ReferenceLoadJob must cache the expanded synth_refs + overlay across yields"
+        );
+        assert_eq!(
+            src.matches("job.current_ref_synth = Some((synth_refs, refr_overlay));")
+                .count(),
+            2,
+            "both yield points (a plain budget yield and NpcSpawnProgress::Pending) \
+             must stash the in-progress expansion, or resuming after either one \
+             recomputes it"
+        );
+        assert!(
+            src.contains("match job.current_ref_synth.take() {"),
+            "the cache must be consumed at REFR entry instead of unconditionally \
+             calling expand_pkin_placements/expand_scol_placements"
+        );
+        assert!(
+            src.contains("job.current_ref_synth = None;"),
+            "the cache must be cleared once a REFR's synth list is fully \
+             processed, or a later REFR could read stale data"
         );
     }
 }
