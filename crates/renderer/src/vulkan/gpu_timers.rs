@@ -64,9 +64,12 @@
 //! never written, and `read_and_reset` builds a fresh
 //! `GpuTimerSnapshot::default()` each call, only filling in fields
 //! whose `active_bits` bit was set — so an inactive bracket reads back
-//! `0.0`, not the prior frame's value. There is currently no
-//! per-bracket "ran this frame" flag exposed to consumers; `0.0` is
-//! ambiguous between "inactive" and "genuinely instantaneous."
+//! `0.0`, not the prior frame's value. Each `_ms` field has a
+//! companion `_active` bool (#2278 / PERF-D9-01) so a consumer can
+//! tell "didn't run this frame" (`_active == false`, `_ms == 0.0`)
+//! apart from "ran and genuinely took ~0 ms" (`_active == true`,
+//! `_ms == 0.0`) instead of both reading back an indistinguishable
+//! `0.0`.
 //!
 //! ## When the driver lacks timestamp support
 //!
@@ -177,6 +180,30 @@ pub struct GpuTimerSnapshot {
     /// Netting it out is what separates "render work recovered" from "frame
     /// time recovered" in the benchmark report.
     pub presentation_ms: f32,
+
+    // ── Per-bracket "ran this frame" flags (#2278 / PERF-D9-01) ───────
+    //
+    // One bool per `_ms` field above, in the same order. `false` means
+    // the bracket's timestamps were never written this snapshot cycle —
+    // its `_ms` field is `0.0` because the pass didn't run, not because
+    // it measured zero. Grouped here rather than interleaved with the
+    // `_ms` fields so the two field lists are easy to diff/scan in
+    // lockstep; `snapshot_from_bits` below is the single place that
+    // fills both.
+    pub skin_dispatch_active: bool,
+    pub skin_blas_refit_active: bool,
+    pub taa_active: bool,
+    pub main_render_active: bool,
+    pub tlas_build_active: bool,
+    pub cluster_cull_active: bool,
+    pub svgf_active: bool,
+    pub composite_active: bool,
+    pub ssao_active: bool,
+    pub bloom_active: bool,
+    pub caustic_splat_active: bool,
+    pub volumetrics_active: bool,
+    pub upscale_active: bool,
+    pub presentation_active: bool,
 }
 
 /// Per-frame-in-flight TIMESTAMP query pools.
@@ -212,6 +239,82 @@ const BIT_CAUSTIC_SPLAT: u16 = 0x0400;
 const BIT_VOLUMETRICS: u16 = 0x0800;
 const BIT_UPSCALE: u16 = 0x1000;
 const BIT_PRESENTATION: u16 = 0x2000;
+
+/// Build a [`GpuTimerSnapshot`] from a raw batched TIMESTAMP read.
+/// Pulled out of [`GpuPerFrameTimers::read_and_reset`] as a pure
+/// function (no `&self`/device access) so the bit-gating logic —
+/// the part #2278 / PERF-D9-01 is actually about — is unit-testable
+/// without a real `ash::Device`.
+fn snapshot_from_bits(
+    bits: u16,
+    ticks: &[u64; QUERIES_PER_FRAME as usize],
+    ticks_to_ms: f32,
+) -> GpuTimerSnapshot {
+    let bracket_ms = |start: u32| -> f32 {
+        let s = ticks[start as usize];
+        let e = ticks[start as usize + 1];
+        e.saturating_sub(s) as f32 * ticks_to_ms
+    };
+
+    let mut snap = GpuTimerSnapshot::default();
+    snap.skin_dispatch_active = bits & BIT_SKIN_DISPATCH != 0;
+    if snap.skin_dispatch_active {
+        snap.skin_dispatch_ms = bracket_ms(Q_SKIN_DISPATCH_START);
+    }
+    snap.skin_blas_refit_active = bits & BIT_BLAS_REFIT != 0;
+    if snap.skin_blas_refit_active {
+        snap.skin_blas_refit_ms = bracket_ms(Q_BLAS_REFIT_START);
+    }
+    snap.taa_active = bits & BIT_TAA != 0;
+    if snap.taa_active {
+        snap.taa_ms = bracket_ms(Q_TAA_START);
+    }
+    snap.main_render_active = bits & BIT_MAIN_RENDER != 0;
+    if snap.main_render_active {
+        snap.main_render_ms = bracket_ms(Q_MAIN_RENDER_START);
+    }
+    snap.tlas_build_active = bits & BIT_TLAS_BUILD != 0;
+    if snap.tlas_build_active {
+        snap.tlas_build_ms = bracket_ms(Q_TLAS_BUILD_START);
+    }
+    snap.cluster_cull_active = bits & BIT_CLUSTER_CULL != 0;
+    if snap.cluster_cull_active {
+        snap.cluster_cull_ms = bracket_ms(Q_CLUSTER_CULL_START);
+    }
+    snap.svgf_active = bits & BIT_SVGF != 0;
+    if snap.svgf_active {
+        snap.svgf_ms = bracket_ms(Q_SVGF_START);
+    }
+    snap.composite_active = bits & BIT_COMPOSITE != 0;
+    if snap.composite_active {
+        snap.composite_ms = bracket_ms(Q_COMPOSITE_START);
+    }
+    snap.ssao_active = bits & BIT_SSAO != 0;
+    if snap.ssao_active {
+        snap.ssao_ms = bracket_ms(Q_SSAO_START);
+    }
+    snap.bloom_active = bits & BIT_BLOOM != 0;
+    if snap.bloom_active {
+        snap.bloom_ms = bracket_ms(Q_BLOOM_START);
+    }
+    snap.caustic_splat_active = bits & BIT_CAUSTIC_SPLAT != 0;
+    if snap.caustic_splat_active {
+        snap.caustic_splat_ms = bracket_ms(Q_CAUSTIC_SPLAT_START);
+    }
+    snap.volumetrics_active = bits & BIT_VOLUMETRICS != 0;
+    if snap.volumetrics_active {
+        snap.volumetrics_ms = bracket_ms(Q_VOLUMETRICS_START);
+    }
+    snap.upscale_active = bits & BIT_UPSCALE != 0;
+    if snap.upscale_active {
+        snap.upscale_ms = bracket_ms(Q_UPSCALE_START);
+    }
+    snap.presentation_active = bits & BIT_PRESENTATION != 0;
+    if snap.presentation_active {
+        snap.presentation_ms = bracket_ms(Q_PRESENTATION_START);
+    }
+    snap
+}
 
 impl GpuPerFrameTimers {
     /// Create one TIMESTAMP query pool per frame-in-flight slot.
@@ -310,56 +413,7 @@ impl GpuPerFrameTimers {
             }
         }
 
-        let bracket_ms = |start: u32| -> f32 {
-            let s = ticks[start as usize];
-            let e = ticks[start as usize + 1];
-            e.saturating_sub(s) as f32 * self.ticks_to_ms
-        };
-
-        let mut snap = GpuTimerSnapshot::default();
-        if bits & BIT_SKIN_DISPATCH != 0 {
-            snap.skin_dispatch_ms = bracket_ms(Q_SKIN_DISPATCH_START);
-        }
-        if bits & BIT_BLAS_REFIT != 0 {
-            snap.skin_blas_refit_ms = bracket_ms(Q_BLAS_REFIT_START);
-        }
-        if bits & BIT_TAA != 0 {
-            snap.taa_ms = bracket_ms(Q_TAA_START);
-        }
-        if bits & BIT_MAIN_RENDER != 0 {
-            snap.main_render_ms = bracket_ms(Q_MAIN_RENDER_START);
-        }
-        if bits & BIT_TLAS_BUILD != 0 {
-            snap.tlas_build_ms = bracket_ms(Q_TLAS_BUILD_START);
-        }
-        if bits & BIT_CLUSTER_CULL != 0 {
-            snap.cluster_cull_ms = bracket_ms(Q_CLUSTER_CULL_START);
-        }
-        if bits & BIT_SVGF != 0 {
-            snap.svgf_ms = bracket_ms(Q_SVGF_START);
-        }
-        if bits & BIT_COMPOSITE != 0 {
-            snap.composite_ms = bracket_ms(Q_COMPOSITE_START);
-        }
-        if bits & BIT_SSAO != 0 {
-            snap.ssao_ms = bracket_ms(Q_SSAO_START);
-        }
-        if bits & BIT_BLOOM != 0 {
-            snap.bloom_ms = bracket_ms(Q_BLOOM_START);
-        }
-        if bits & BIT_CAUSTIC_SPLAT != 0 {
-            snap.caustic_splat_ms = bracket_ms(Q_CAUSTIC_SPLAT_START);
-        }
-        if bits & BIT_VOLUMETRICS != 0 {
-            snap.volumetrics_ms = bracket_ms(Q_VOLUMETRICS_START);
-        }
-        if bits & BIT_UPSCALE != 0 {
-            snap.upscale_ms = bracket_ms(Q_UPSCALE_START);
-        }
-        if bits & BIT_PRESENTATION != 0 {
-            snap.presentation_ms = bracket_ms(Q_PRESENTATION_START);
-        }
-        self.last_snapshot = snap;
+        self.last_snapshot = snapshot_from_bits(bits, &ticks, self.ticks_to_ms);
 
         // Reset the slot for the upcoming frame's writes.
         // SAFETY: the fence preceding `read_and_reset` guarantees all GPU work for
@@ -874,5 +928,70 @@ impl GpuPerFrameTimers {
                 *pool = vk::QueryPool::null();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression for #2278 (PERF-D9-01): an inactive bracket and a
+    /// bracket that genuinely measured ~0 ms must both read `_ms ==
+    /// 0.0`, but their `_active` flag must differ — that's the whole
+    /// point of the fix. Pre-fix there was no `_active` field at all,
+    /// so the two cases were indistinguishable.
+    #[test]
+    fn inactive_and_instantaneous_brackets_both_read_zero_ms_but_differ_in_active() {
+        let ticks = [0u64; QUERIES_PER_FRAME as usize];
+
+        // No bits set — nothing ran this frame.
+        let inactive = snapshot_from_bits(0, &ticks, 1.0);
+        assert!(!inactive.skin_dispatch_active);
+        assert_eq!(inactive.skin_dispatch_ms, 0.0);
+
+        // BIT_SKIN_DISPATCH set, but start == end tick (genuinely
+        // instantaneous, or a driver that resolves same-tick work).
+        let instantaneous = snapshot_from_bits(BIT_SKIN_DISPATCH, &ticks, 1.0);
+        assert!(instantaneous.skin_dispatch_active);
+        assert_eq!(instantaneous.skin_dispatch_ms, 0.0);
+
+        // Same `_ms` reading, opposite `_active` — the ambiguity is gone.
+        assert_ne!(inactive.skin_dispatch_active, instantaneous.skin_dispatch_active);
+    }
+
+    /// A bracket with a non-zero tick delta reports both `_active` and
+    /// the correct millisecond conversion.
+    #[test]
+    fn active_bracket_reports_measured_duration() {
+        let mut ticks = [0u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_MAIN_RENDER_START as usize] = 1_000;
+        ticks[Q_MAIN_RENDER_START as usize + 1] = 3_000;
+
+        let snap = snapshot_from_bits(BIT_MAIN_RENDER, &ticks, 0.5);
+        assert!(snap.main_render_active);
+        assert_eq!(snap.main_render_ms, (3_000u64 - 1_000) as f32 * 0.5);
+    }
+
+    /// Every bracket's bit is independent — setting one must not mark
+    /// any other bracket active, or a frame that only ran (say) TAA
+    /// would misreport skin/BLAS/etc. as having run too.
+    #[test]
+    fn only_the_set_bit_is_reported_active() {
+        let ticks = [0u64; QUERIES_PER_FRAME as usize];
+        let snap = snapshot_from_bits(BIT_TAA, &ticks, 1.0);
+        assert!(snap.taa_active);
+        assert!(!snap.skin_dispatch_active);
+        assert!(!snap.skin_blas_refit_active);
+        assert!(!snap.main_render_active);
+        assert!(!snap.tlas_build_active);
+        assert!(!snap.cluster_cull_active);
+        assert!(!snap.svgf_active);
+        assert!(!snap.composite_active);
+        assert!(!snap.ssao_active);
+        assert!(!snap.bloom_active);
+        assert!(!snap.caustic_splat_active);
+        assert!(!snap.volumetrics_active);
+        assert!(!snap.upscale_active);
+        assert!(!snap.presentation_active);
     }
 }
