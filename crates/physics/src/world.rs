@@ -586,7 +586,7 @@ impl PhysicsWorld {
     ///
     /// Returns the world-space Y of the surface a capsule of this size would
     /// rest on (equivalent contract to `cast_ray_down`: the caller still adds
-    /// `half_height + offset` to place the capsule centre above it).
+    /// `half_height + radius + offset` to place the capsule centre above it).
     ///
     /// Same **caller must have called [`update_query_pipeline`]** and
     /// fixed-bodies-only caveats as `cast_ray_down`.
@@ -597,6 +597,49 @@ impl PhysicsWorld {
         capsule_radius: f32,
         max_distance: f32,
     ) -> Option<f32> {
+        self.cast_capsule_down_surface_and_normal(
+            origin,
+            capsule_half_height,
+            capsule_radius,
+            max_distance,
+        )
+        .map(|(surface_y, _)| surface_y)
+    }
+
+    /// Capsule floor probe that rejects walls and other non-walkable hits.
+    ///
+    /// A vertical capsule sweep can hit nearby door frames or shell walls
+    /// before its bottom reaches the floor. Those hits have a near-horizontal
+    /// normal and must not be used as a character spawn surface (#2193).
+    /// Normal orientation is deliberately ignored: legacy Havok architecture
+    /// can be consistently inward-wound, but its geometric slope is still a
+    /// valid basis for deciding whether a surface is walkable.
+    pub fn cast_capsule_down_onto_walkable_surface(
+        &self,
+        origin: byroredux_core::math::Vec3,
+        capsule_half_height: f32,
+        capsule_radius: f32,
+        max_distance: f32,
+        min_walkable_normal_y: f32,
+    ) -> Option<f32> {
+        self.cast_capsule_down_surface_and_normal(
+            origin,
+            capsule_half_height,
+            capsule_radius,
+            max_distance,
+        )
+        .and_then(|(surface_y, normal_y)| {
+            (normal_y.abs() >= min_walkable_normal_y.clamp(0.0, 1.0)).then_some(surface_y)
+        })
+    }
+
+    fn cast_capsule_down_surface_and_normal(
+        &self,
+        origin: byroredux_core::math::Vec3,
+        capsule_half_height: f32,
+        capsule_radius: f32,
+        max_distance: f32,
+    ) -> Option<(f32, f32)> {
         use rapier3d::parry::query::ShapeCastOptions;
         use rapier3d::prelude::*;
         let shape = SharedShape::capsule_y(capsule_half_height.max(1e-3), capsule_radius.max(1e-3));
@@ -618,7 +661,10 @@ impl PhysicsWorld {
                 filter,
             )
             .map(|(_handle, hit)| {
-                origin.y - hit.time_of_impact - capsule_half_height - capsule_radius
+                (
+                    origin.y - hit.time_of_impact - capsule_half_height - capsule_radius,
+                    hit.normal1.y,
+                )
             })
     }
 
@@ -854,6 +900,63 @@ mod tests {
         let h = w.bodies.insert(body);
         w.colliders
             .insert_with_parent(ColliderBuilder::new(shape).build(), h, &mut w.bodies);
+    }
+
+    #[test]
+    fn walkable_capsule_probe_accepts_floor() {
+        let mut w = PhysicsWorld::new();
+        insert_slab(&mut w, Vec3::ZERO, false);
+        w.update_query_pipeline();
+
+        let hit = w.cast_capsule_down_onto_walkable_surface(
+            Vec3::new(0.0, 100.0, 0.0),
+            10.0,
+            5.0,
+            200.0,
+            50.0_f32.to_radians().cos(),
+        );
+
+        assert_eq!(hit, Some(1.0));
+    }
+
+    #[test]
+    fn walkable_capsule_probe_rejects_door_frame_wall() {
+        let mut w = PhysicsWorld::new();
+        let wall = single_shape(&CollisionShape::TriMesh {
+            vertices: vec![
+                Vec3::new(20.0, 100.0, -50.0),
+                Vec3::new(20.0, 100.0, 50.0),
+                Vec3::new(0.0, -100.0, 50.0),
+                Vec3::new(0.0, -100.0, -50.0),
+            ],
+            indices: vec![[0, 1, 2], [0, 2, 3]],
+        });
+        let body = RigidBodyBuilder::fixed()
+            // This steep panel crosses the capsule column as Y decreases, so
+            // the downward cast meets its wall-like face before any floor.
+            .position(iso_from_trs(Vec3::ZERO, Quat::IDENTITY))
+            .build();
+        let handle = w.bodies.insert(body);
+        w.colliders
+            .insert_with_parent(ColliderBuilder::new(wall).build(), handle, &mut w.bodies);
+        w.update_query_pipeline();
+
+        assert!(
+            w.cast_capsule_down(Vec3::new(0.0, 150.0, 0.0), 10.0, 5.0, 300.0)
+                .is_some(),
+            "the unfiltered capsule sweep must observe the wall contact"
+        );
+        assert_eq!(
+            w.cast_capsule_down_onto_walkable_surface(
+                Vec3::new(0.0, 150.0, 0.0),
+                10.0,
+                5.0,
+                300.0,
+                50.0_f32.to_radians().cos(),
+            ),
+            None,
+            "a horizontal door-frame contact is not a spawn floor"
+        );
     }
 
     /// #2202 — the census must see a Dynamic-family floor. This is the

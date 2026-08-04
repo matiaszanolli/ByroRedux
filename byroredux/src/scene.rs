@@ -98,6 +98,33 @@ fn select_door_spawn_position(
     })
 }
 
+/// Convert a floor-surface Y into the Y of a vertical capsule's centre.
+///
+/// Rapier's `capsule_y(half_height, radius)` extends by both the cylindrical
+/// half-height and the hemispherical radius below its centre. Omitting the
+/// radius starts the character embedded in the floor, where wall/edge contacts
+/// can leave the controller blocked but permanently ungrounded (#2193).
+fn capsule_center_y_on_surface(
+    surface_y: f32,
+    half_height: f32,
+    radius: f32,
+    kcc_offset_bu: f32,
+) -> f32 {
+    surface_y + half_height + radius + kcc_offset_bu
+}
+
+fn character_spawn_center_y(
+    world: &World,
+    surface_y: f32,
+    cc: byroredux_physics::CharacterController,
+) -> f32 {
+    let kcc_offset_bu = world
+        .try_resource::<byroredux_physics::ContactConfig>()
+        .map(|config| config.kcc_offset_bu)
+        .unwrap_or(byroredux_physics::ContactConfig::DEFAULT.kcc_offset_bu);
+    capsule_center_y_on_surface(surface_y, cc.half_height, cc.radius, kcc_offset_bu)
+}
+
 /// Ground the character beneath the camera/terrain-center spawn column.
 ///
 /// This is both the normal no-door path and the safety net for a door whose
@@ -119,15 +146,16 @@ fn spawn_on_camera_ground(
             let max_distance = aabb_height + 100.0;
             match pw.cast_ray_down(ray_origin, max_distance) {
                 Some(hit_y) => {
+                    let spawn_y = character_spawn_center_y(world, hit_y, cc);
                     log::info!(
                         "M28.5 spawn ray-cast: hit floor at y={:.1} under \
                          ({:.1}, {:.1}); placing capsule at y={:.1} ({reason})",
                         hit_y,
                         cam_pos.x,
                         cam_pos.z,
-                        hit_y + cc.half_height + 4.0,
+                        spawn_y,
                     );
-                    Vec3::new(cam_pos.x, hit_y + cc.half_height + 4.0, cam_pos.z)
+                    Vec3::new(cam_pos.x, spawn_y, cam_pos.z)
                 }
                 None => {
                     log::warn!(
@@ -765,14 +793,16 @@ pub(crate) fn setup_scene(
             // correctly reports nothing nearby, rather than a false hit
             // far above).
             const FLOOR_PROBE_RANGE_BU: f32 = 150.0;
+            let min_walkable_normal_y = cc.max_slope_climb_deg.to_radians().cos();
             let near_door_floor_y = {
                 let pw = world.resource::<byroredux_physics::PhysicsWorld>();
                 let probe_origin = Vec3::new(nudged_x, door_pos.y + 50.0, nudged_z);
-                pw.cast_capsule_down(
+                pw.cast_capsule_down_onto_walkable_surface(
                     probe_origin,
                     cc.half_height,
                     cc.radius,
                     FLOOR_PROBE_RANGE_BU,
+                    min_walkable_normal_y,
                 )
             };
             // Second rung — the nudge itself can be the problem. It moves
@@ -787,11 +817,12 @@ pub(crate) fn setup_scene(
             let door_xz_floor_y = near_door_floor_y.or_else(|| {
                 let pw = world.resource::<byroredux_physics::PhysicsWorld>();
                 let probe_origin = Vec3::new(door_pos.x, door_pos.y + 50.0, door_pos.z);
-                pw.cast_capsule_down(
+                pw.cast_capsule_down_onto_walkable_surface(
                     probe_origin,
                     cc.half_height,
                     cc.radius,
                     FLOOR_PROBE_RANGE_BU,
+                    min_walkable_normal_y,
                 )
             });
 
@@ -816,7 +847,13 @@ pub(crate) fn setup_scene(
                     let pw = world.resource::<byroredux_physics::PhysicsWorld>();
                     let probe_origin = Vec3::new(nudged_x, max[1] + 50.0, nudged_z);
                     let max_distance = (max[1] - min[1]).max(1.0) + 100.0;
-                    pw.cast_capsule_down(probe_origin, cc.half_height, cc.radius, max_distance)
+                    pw.cast_capsule_down_onto_walkable_surface(
+                        probe_origin,
+                        cc.half_height,
+                        cc.radius,
+                        max_distance,
+                        min_walkable_normal_y,
+                    )
                 })
             });
             let floor_y = wide_floor_y;
@@ -833,7 +870,7 @@ pub(crate) fn setup_scene(
             } else {
                 "none"
             };
-            let spawn_y = floor_y.unwrap_or(door_pos.y) + cc.half_height + 4.0;
+            let spawn_y = character_spawn_center_y(world, floor_y.unwrap_or(door_pos.y), cc);
             // Rung 2 resolves the threshold's own floor, so the capsule must
             // stand on the threshold rather than at the nudged XZ it just
             // rejected as floor-less.

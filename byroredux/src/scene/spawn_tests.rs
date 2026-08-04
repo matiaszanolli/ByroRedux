@@ -1,4 +1,4 @@
-use super::select_door_spawn_position;
+use super::{capsule_center_y_on_surface, select_door_spawn_position};
 use byroredux_core::math::Vec3;
 
 #[test]
@@ -38,4 +38,19 @@ fn interior_spawn_preserves_first_door_behavior() {
         select_door_spawn_position([first, second], None),
         Some(first)
     );
+}
+
+#[test]
+fn capsule_spawn_clears_surface_by_full_shape_and_kcc_offset() {
+    // Oblivion's default body is capsule_y(46, 18) with a 4 BU KCC offset.
+    // Its centre must therefore be 68 BU above the probed floor, not 50 BU.
+    assert_eq!(capsule_center_y_on_surface(350.8, 46.0, 18.0, 4.0), 418.8,);
+}
+
+#[test]
+fn capsule_spawn_height_includes_radius() {
+    let without_radius = capsule_center_y_on_surface(10.0, 46.0, 0.0, 4.0);
+    let with_radius = capsule_center_y_on_surface(10.0, 46.0, 18.0, 4.0);
+
+    assert_eq!(with_radius - without_radius, 18.0);
 }
