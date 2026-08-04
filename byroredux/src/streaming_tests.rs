@@ -9,10 +9,11 @@
 use super::{
     classify_payload, compute_streaming_deltas, join_with_timeout, pre_parse_cell_panic_safe,
     stale_pending_coords, world_pos_to_grid, JoinTimeout, LoadCellPayload, LoadedCell,
-    PayloadDecision, StreamingDeltas,
+    PayloadDecision, StreamingDeltas, StreamingTelemetry, StreamingWorkerTimings,
 };
 use byroredux_core::ecs::storage::EntityId;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 fn loaded_set(coords: &[(i32, i32)]) -> HashMap<(i32, i32), LoadedCell> {
     coords
@@ -207,6 +208,68 @@ fn world_pos_to_grid_floor_semantics() {
     assert_eq!(world_pos_to_grid(-0.01, 0.0), (-1, 0));
 }
 
+// ── Boundary benchmark telemetry (#2376 / EX-06) ───────────────
+
+#[test]
+fn streaming_telemetry_records_independent_ready_deadlines() {
+    let start = Instant::now();
+    let mut telemetry = StreamingTelemetry::default();
+    telemetry.begin_boundary((8, -3), start);
+    telemetry.observe_pending(7);
+    telemetry.record_queued_cells(7);
+    telemetry.record_dispatch_slice(Duration::from_millis(2));
+    telemetry.record_unload_slice(Duration::from_millis(1), 3);
+    telemetry.record_worker(StreamingWorkerTimings {
+        queue_wait: Duration::from_millis(6),
+        worker: Duration::from_millis(8),
+    });
+    telemetry.record_apply_slice(Duration::from_millis(3), true);
+    telemetry.record_apply_slice(Duration::from_millis(99), false);
+    telemetry.record_lod_slice(Duration::from_millis(4), 2);
+    telemetry.record_lod_slice(Duration::from_millis(99), 0);
+
+    let full = telemetry
+        .settle_full_detail(start + Duration::from_millis(12))
+        .expect("full-detail sample");
+    let lod = telemetry
+        .settle_lod(start + Duration::from_millis(30))
+        .expect("LOD sample");
+
+    assert_eq!(full, ((8, -3), Duration::from_millis(12)));
+    assert_eq!(lod, ((8, -3), Duration::from_millis(30)));
+    assert_eq!(telemetry.boundary_crossings, 1);
+    assert_eq!(telemetry.full_detail.samples, 1);
+    assert_eq!(telemetry.lod.samples, 1);
+    assert_eq!(telemetry.apply_slices.samples, 1);
+    assert_eq!(telemetry.lod_slices.samples, 1);
+    assert_eq!(telemetry.worker_parse.samples, 1);
+    assert_eq!(telemetry.queued_cells, 7);
+    assert_eq!(telemetry.unloaded_cells, 3);
+    assert_eq!(telemetry.peak_pending, 7);
+    assert!(telemetry
+        .bench_line()
+        .contains("unsettled_full=0 unsettled_lod=0"));
+}
+
+#[test]
+fn streaming_telemetry_surfaces_superseded_boundaries() {
+    let start = Instant::now();
+    let mut telemetry = StreamingTelemetry::default();
+    telemetry.begin_boundary((1, 0), start);
+    telemetry
+        .settle_full_detail(start + Duration::from_millis(5))
+        .expect("first full-detail sample");
+
+    telemetry.begin_boundary((2, 0), start + Duration::from_millis(10));
+
+    assert_eq!(telemetry.boundary_crossings, 2);
+    assert_eq!(telemetry.superseded_full_detail, 0);
+    assert_eq!(telemetry.superseded_lod, 1);
+    assert!(telemetry
+        .bench_line()
+        .contains("unsettled_full=1 unsettled_lod=1"));
+}
+
 // ── Payload generation-counter gate (M40 Phase 1b) ──────────────
 
 #[test]
@@ -323,6 +386,7 @@ fn worker_panic_safe_passes_through_normal_payload() {
         gx: 1,
         gy: 2,
         generation: 5,
+        timings: Default::default(),
         parsed: parsed_in,
     });
     assert_eq!(payload.gx, 1);

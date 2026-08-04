@@ -10,7 +10,7 @@ use crate::streaming_helpers::{
     SVGF_TAA_STREAMING_RECOVERY_FRAMES,
 };
 use crate::App;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use winit::event_loop::ActiveEventLoop;
 
 /// SVGF/upscaler recovery window after a `--bench-camera cut`. Matches the
@@ -58,8 +58,12 @@ impl App {
         let state = self.streaming.as_mut().unwrap();
         let grid_changed = state.last_player_grid != Some(player_grid);
         if grid_changed {
+            let dispatch_started = Instant::now();
             state.last_player_grid = Some(player_grid);
             state.lod_reconcile_pending = true;
+            state
+                .telemetry
+                .begin_boundary(player_grid, dispatch_started);
             log::info!(
                 "Player crossed cell boundary → grid ({},{}) (world {:.0},{:.0},{:.0})",
                 player_grid.0,
@@ -78,7 +82,9 @@ impl App {
 
             // Unload first to free GPU resources before kicking new loads —
             // cuts peak VRAM at the boundary crossing.
+            let unload_started = Instant::now();
             let mut unloaded_any = false;
+            let mut unloaded_count = 0usize;
             for coord in deltas.to_unload {
                 if let Some(slot) = state.loaded.remove(&coord) {
                     cell_loader::unload_cell(&mut self.world, ctx, slot.cell_root);
@@ -89,8 +95,12 @@ impl App {
                         slot.cell_root
                     );
                     unloaded_any = true;
+                    unloaded_count += 1;
                 }
             }
+            state
+                .telemetry
+                .record_unload_slice(unload_started.elapsed(), unloaded_count);
             // #2113 / D7-01 — a cell can have an in-flight worker request
             // (tracked only in `pending`, not yet in `loaded`) that the
             // `to_unload` diff above never sees. Drop any such request whose
@@ -118,7 +128,12 @@ impl App {
                 .world
                 .resource::<cell_loader::NifImportRegistry>()
                 .snapshot_keys();
-            state.queue_loads(deltas.to_load, cached_keys);
+            let queued = state.queue_loads(deltas.to_load, cached_keys);
+            state.telemetry.record_queued_cells(queued);
+            state.telemetry.observe_pending(state.pending.len());
+            state
+                .telemetry
+                .record_dispatch_slice(dispatch_started.elapsed());
         }
 
         // ── 2. Advance one resumable full-detail transaction ───────
@@ -128,8 +143,26 @@ impl App {
         // ran first, so removing a stale `pending` generation above cancels
         // and reclaims a partial cell before it can consume another slice.
         let mut apply_budget = cell_loader::FrameTimeBudget::new(Self::STREAMING_APPLY_BUDGET);
+        let apply_started = Instant::now();
         let full_detail_worked =
             advance_streaming_apply(&mut self.world, ctx, state, &mut apply_budget);
+        state
+            .telemetry
+            .record_apply_slice(apply_started.elapsed(), full_detail_worked);
+        state.telemetry.observe_pending(state.pending.len());
+        if state.pending.is_empty()
+            && state.active_apply.is_none()
+            && state.persistent_apply.is_none()
+        {
+            if let Some((grid, elapsed)) = state.telemetry.settle_full_detail(Instant::now()) {
+                log::info!(
+                    "Exterior full detail settled around ({}, {}) in {:.2} ms",
+                    grid.0,
+                    grid.1,
+                    elapsed.as_secs_f64() * 1000.0,
+                );
+            }
+        }
 
         // ── 3. Progress the three distant-LOD rings ─────────────────
         //
@@ -145,7 +178,11 @@ impl App {
         ) else {
             return;
         };
+        let lod_started = Instant::now();
         let progress = reconcile_lod_rings(&mut self.world, ctx, state, player_grid, lod_budget);
+        state
+            .telemetry
+            .record_lod_slice(lod_started.elapsed(), progress.attempted);
         if progress.complete {
             state.lod_reconcile_pending = false;
             log::info!(
@@ -154,6 +191,14 @@ impl App {
                 player_grid.1,
                 progress.attempted,
             );
+            if let Some((grid, elapsed)) = state.telemetry.settle_lod(Instant::now()) {
+                log::info!(
+                    "Exterior LOD settled around ({}, {}) in {:.2} ms",
+                    grid.0,
+                    grid.1,
+                    elapsed.as_secs_f64() * 1000.0,
+                );
+            }
         }
     }
 

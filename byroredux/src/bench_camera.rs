@@ -20,6 +20,7 @@
 //! is the same reasoning behind `BYROREDUX_FIXED_DT`, one level up: freeze
 //! everything that is not the variable under test.
 
+use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::math::Vec3;
 use std::str::FromStr;
 
@@ -55,6 +56,11 @@ pub enum BenchCameraPath {
     /// frame edges continuously disocclude, which is the case a reactive mask
     /// cannot help with and only depth-based disocclusion detection covers.
     Dolly,
+    /// Travel east through three complete exterior cells. Unlike the visual-
+    /// quality paths above, this is an engine-streaming workload: the fixed
+    /// world-axis displacement guarantees three boundary crossings no matter
+    /// where inside the starting cell the authored camera happens to be.
+    GridCross,
     /// Hold, then teleport once near the end of the run. Nothing about the
     /// new view is predictable from the old history, so this measures how
     /// fast reconstruction recovers from a discontinuity — and whether the
@@ -90,6 +96,15 @@ impl BenchCameraPath {
     /// closes over the run. Stops well short of the target so the camera
     /// cannot pass through the geometry it is looking at.
     const DOLLY_CLOSE_FRACTION: f32 = 0.35;
+
+    /// Three complete cells guarantees three boundary transitions from any
+    /// finite starting X coordinate while leaving enough frames between them
+    /// for the async worker and resumable main-thread apply to settle.
+    const GRID_CROSS_DISTANCE_BU: f32 = 3.0 * EXTERIOR_CELL_UNITS;
+    /// Reserve the final 30% of the run as a settle window after crossing the
+    /// third boundary. Without a tail, the final load would begin on the exit
+    /// frame and every correct implementation would report it unfinished.
+    const GRID_CROSS_MOVE_FRACTION: f32 = 0.70;
 
     /// Pose for `frame` of a `total_frames`-long run, starting from the
     /// scene's authored `origin` / `forward`.
@@ -139,6 +154,13 @@ impl BenchCameraPath {
                     forward,
                 }
             }
+            Self::GridCross => {
+                let travel_progress = (progress / Self::GRID_CROSS_MOVE_FRACTION).min(1.0);
+                CameraPose {
+                    position: origin + Vec3::X * (Self::GRID_CROSS_DISTANCE_BU * travel_progress),
+                    forward,
+                }
+            }
             Self::Cut => {
                 if progress < Self::CUT_AT {
                     CameraPose {
@@ -179,7 +201,14 @@ impl BenchCameraPath {
     /// Every path, in the order they are documented. Drives the CLI's
     /// error message and the harness matrix, so both stay complete by
     /// construction rather than by remembering to update a second list.
-    pub const ALL: [Self; 5] = [Self::Static, Self::Pan, Self::Orbit, Self::Dolly, Self::Cut];
+    pub const ALL: [Self; 6] = [
+        Self::Static,
+        Self::Pan,
+        Self::Orbit,
+        Self::Dolly,
+        Self::GridCross,
+        Self::Cut,
+    ];
 }
 
 impl std::fmt::Display for BenchCameraPath {
@@ -189,6 +218,7 @@ impl std::fmt::Display for BenchCameraPath {
             Self::Pan => "pan",
             Self::Orbit => "orbit",
             Self::Dolly => "dolly",
+            Self::GridCross => "grid-cross",
             Self::Cut => "cut",
         })
     }
@@ -203,6 +233,7 @@ impl FromStr for BenchCameraPath {
             "pan" => Ok(Self::Pan),
             "orbit" => Ok(Self::Orbit),
             "dolly" => Ok(Self::Dolly),
+            "grid-cross" => Ok(Self::GridCross),
             "cut" => Ok(Self::Cut),
             other => {
                 // Derive the expected list from `ALL` so a new variant cannot
@@ -350,6 +381,32 @@ mod tests {
             travelled < radius,
             "dolly overshot the subject: travelled {travelled} of {radius}"
         );
+    }
+
+    /// The streaming path is world-grid-relative, not view-relative: it must
+    /// cross exactly three eastward cell boundaries even when the camera is
+    /// looking elsewhere.
+    #[test]
+    fn grid_cross_traverses_three_complete_exterior_cells() {
+        let origin = Vec3::new(EXTERIOR_CELL_UNITS * 0.37, 42.0, -500.0);
+        let start = BenchCameraPath::GridCross.pose(0, FRAMES, origin, Vec3::X);
+        let end = BenchCameraPath::GridCross.pose(FRAMES - 1, FRAMES, origin, Vec3::X);
+        let settle = BenchCameraPath::GridCross.pose(
+            (FRAMES as f32 * BenchCameraPath::GRID_CROSS_MOVE_FRACTION).ceil() as u32,
+            FRAMES,
+            origin,
+            Vec3::X,
+        );
+        assert_eq!(start.position, origin);
+        assert_eq!(end.position.y, origin.y);
+        assert_eq!(end.position.z, origin.z);
+        assert!((end.position.x - origin.x - 3.0 * EXTERIOR_CELL_UNITS).abs() < 1e-3);
+        assert_eq!(settle.position, end.position);
+        assert_eq!(end.forward, Vec3::X);
+
+        let start_grid_x = (start.position.x / EXTERIOR_CELL_UNITS).floor() as i32;
+        let end_grid_x = (end.position.x / EXTERIOR_CELL_UNITS).floor() as i32;
+        assert_eq!(end_grid_x - start_grid_x, 3);
     }
 
     /// The cut holds one pose, then jumps once to the orbit endpoint — and

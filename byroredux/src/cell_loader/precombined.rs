@@ -42,6 +42,7 @@ use std::sync::Arc;
 
 use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
 use super::spawn::spawn_placed_instances;
+use super::FrameTimeBudget;
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 
 /// Resolve the effective absorbed-REFR set for a cell load's per-REFR pass.
@@ -68,6 +69,95 @@ pub(crate) fn absorbed_refs_or_empty(
         EMPTY_ABSORBED.get_or_init(std::collections::HashSet::new)
     }
 }
+
+/// Resumable cursor over one cell's precombined hashes.
+///
+/// A hash is the smallest safe apply unit: its imported meshes share one cache
+/// entry and one placement root, so yielding inside it would leave partially
+/// committed geometry. Keeping the CSG handle and ownership resolution on the
+/// cursor avoids reopening the large shared-geometry archive on every frame.
+pub(super) struct PrecombinedSpawnJob {
+    form_id: u32,
+    total_hashes: usize,
+    next_hash: usize,
+    spawned: usize,
+    misses: usize,
+    owning_path: String,
+    owning_subdir: Option<String>,
+    csg_initialized: bool,
+    csg: Option<Arc<CsgArchive>>,
+}
+
+pub(super) enum PrecombinedSpawnProgress {
+    Pending(PrecombinedSpawnJob),
+    Complete { spawned: usize, misses: usize },
+}
+
+impl PrecombinedSpawnJob {
+    pub(super) fn new(
+        cell: &CellData,
+        plugin_path: &str,
+        load_order_paths: &[&str],
+    ) -> Option<Self> {
+        if cell.precombined_mesh_hashes.is_empty() {
+            return None;
+        }
+        let (owning_path, owning_subdir) =
+            resolve_precombine_owner(cell.form_id, load_order_paths, plugin_path);
+        Some(Self {
+            form_id: cell.form_id,
+            total_hashes: cell.precombined_mesh_hashes.len(),
+            next_hash: 0,
+            spawned: 0,
+            misses: 0,
+            owning_path: owning_path.to_owned(),
+            owning_subdir,
+            csg_initialized: false,
+            csg: None,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn advance(
+        mut self,
+        cell: &CellData,
+        cell_origin: Vec3,
+        world: &mut World,
+        ctx: &mut VulkanContext,
+        tex_provider: &TextureProvider,
+        mut mat_provider: Option<&mut MaterialProvider>,
+        budget: &mut FrameTimeBudget,
+    ) -> PrecombinedSpawnProgress {
+        debug_assert_eq!(cell.form_id, self.form_id);
+        debug_assert_eq!(cell.precombined_mesh_hashes.len(), self.total_hashes);
+
+        // Opening the CSG can itself cross a deadline on a cold session. Count
+        // it as a cooperative unit, then yield before decoding the first hash
+        // when the frame budget has expired.
+        if !self.csg_initialized {
+            self.csg = match mat_provider.as_deref_mut() {
+                Some(mp) => mp.geometry_csg(&self.owning_path),
+                None => open_geometry_csg(&self.owning_path).map(Arc::new),
+            };
+            self.csg_initialized = true;
+            budget.complete_unit();
+        }
+
+        // Precombined NIFs are baked in cell-local coords; `cell_origin`
+        // shifts them into world space (zero for interior, cell-grid-derived
+        // for exterior). No rotation / scale — the bake is axis-aligned and
+        // at unit scale by construction.
+        let pos = cell_origin;
+        let rot = Quat::IDENTITY;
+        let scale = 1.0;
+
+        while self.next_hash < self.total_hashes {
+            if budget.should_yield() {
+                return PrecombinedSpawnProgress::Pending(self);
+            }
+            let hash = cell.precombined_mesh_hashes[self.next_hash];
+            let path =
+                precombine_oc_nif_path(self.form_id, hash, self.owning_subdir.as_deref());
 
 /// Spawn the precombined `_oc.nif` files referenced by `cell.precombined_mesh_hashes`.
 ///

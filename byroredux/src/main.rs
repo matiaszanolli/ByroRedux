@@ -70,6 +70,34 @@ fn main() -> Result<()> {
     boot::run()
 }
 
+/// Nearest-rank frame-time distribution for deterministic bench output.
+/// Sorting happens once at bench exit; the hot path only appends one `f64`
+/// per rendered frame.
+fn bench_frame_distribution(samples_ms: &[f64]) -> [f64; 3] {
+    if samples_ms.is_empty() {
+        return [0.0; 3];
+    }
+    let mut sorted = samples_ms.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let percentile = |fraction: f64| {
+        let rank = (fraction * sorted.len() as f64).ceil() as usize;
+        sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+    };
+    [percentile(0.50), percentile(0.95), sorted[sorted.len() - 1]]
+}
+
+#[cfg(test)]
+mod bench_frame_distribution_tests {
+    use super::bench_frame_distribution;
+
+    #[test]
+    fn nearest_rank_reports_median_tail_and_worst_frame() {
+        let samples: Vec<f64> = (1..=20).rev().map(f64::from).collect();
+        assert_eq!(bench_frame_distribution(&samples), [10.0, 19.0, 20.0]);
+        assert_eq!(bench_frame_distribution(&[]), [0.0; 3]);
+    }
+}
+
 /// Derive `(deep_color.xyz, depth_below_surface)` from the active
 /// camera's [`SubmersionState`]. Returns `[0, 0, 0, 0]` when the
 /// camera is above water or no submersion data is available — the
@@ -173,6 +201,10 @@ struct App {
     bench_render_ns: u64,
     /// Per-phase draw_frame breakdown accumulated over the bench window.
     bench_frame_timings: byroredux_renderer::FrameTimings,
+    /// Whole `about_to_wait` CPU wall samples, one per rendered bench frame.
+    /// Retained only for the explicit finite bench window so p50/p95/max can
+    /// expose boundary stutter that an average FPS line hides.
+    bench_cpu_frame_ms: Vec<f64>,
     /// When set, request a screenshot on the bench-exit frame and
     /// write the PNG to this path before quitting. Requires
     /// `bench_frames_target` to be set (otherwise there is no
@@ -363,6 +395,7 @@ impl App {
             bench_ui_ns: 0,
             bench_render_ns: 0,
             bench_frame_timings: byroredux_renderer::FrameTimings::default(),
+            bench_cpu_frame_ms: Vec::new(),
             screenshot_path: None,
             camera_pos_override: None,
             camera_forward_override: None,
@@ -571,7 +604,11 @@ impl App {
                 cap = byroredux_renderer::MAX_MATERIALS,
             );
 
-            if ctx.mesh_registry.is_geometry_dirty() {
+            let defer_geometry_rebuild = self
+                .streaming
+                .as_ref()
+                .is_some_and(streaming::WorldStreamingState::geometry_batch_in_progress);
+            if ctx.mesh_registry.is_geometry_dirty() && !defer_geometry_rebuild {
                 if let Err(e) = ctx.mesh_registry.rebuild_geometry_ssbo(
                     &ctx.device,
                     ctx.allocator.as_ref().unwrap(),
@@ -581,6 +618,21 @@ impl App {
                 ) {
                     log::warn!("Failed to rebuild geometry SSBO: {e}");
                 }
+            }
+            if ctx.mesh_registry.is_geometry_dirty() {
+                // Cell/LOD application appends CPU-side global geometry a few
+                // meshes at a time. Until the coherent batched rebuild lands,
+                // keep those tail ranges out of raster and TLAS; otherwise the
+                // old bound SSBO is indexed past its end. Existing resident
+                // meshes keep rendering while the transaction progresses.
+                for command in &mut self.draw_commands {
+                    if !ctx.mesh_registry.is_geometry_resident(command.mesh_handle) {
+                        command.in_raster = false;
+                        command.in_tlas = false;
+                    }
+                }
+                self.water_commands
+                    .retain(|command| ctx.mesh_registry.is_geometry_resident(command.mesh_handle));
             }
 
             ctx.build_global_blas_for_draws(&self.draw_commands);
@@ -1440,6 +1492,13 @@ impl ApplicationHandler for App {
         if self.window.is_some() && self.renderer.is_some() {
             self.render_one_frame(event_loop);
         }
+        if let Some(target) = self.bench_frames_target {
+            let samples = self.bench_cpu_frame_ms.len() as u32;
+            if samples < target && samples < self.bench_frames_count {
+                self.bench_cpu_frame_ms
+                    .push(atw_pre_t0.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
 
         // --bench-frames: once we've rendered the target number of
         // frames, emit a single machine-readable summary line and exit.
@@ -1461,6 +1520,8 @@ impl ApplicationHandler for App {
                         .unwrap_or(1.0);
                     let wall_fps = self.bench_frames_count as f64 / elapsed_secs;
                     let wall_ms = elapsed_secs * 1000.0 / self.bench_frames_count as f64;
+                    let [frame_p50_ms, frame_p95_ms, frame_max_ms] =
+                        bench_frame_distribution(&self.bench_cpu_frame_ms);
                     let n = self.bench_frames_count as f64;
                     let ticks_per_frame = self.bench_systems_ticks as f64 / n;
                     let systems_ms = if self.bench_systems_ticks > 0 {
@@ -1521,6 +1582,7 @@ impl ApplicationHandler for App {
                         .unwrap_or([0.0; 12]);
                     println!(
                         "bench: frames={} wall_fps={:.1} wall_ms={:.2} \
+                         frame_p50_ms={:.2} frame_p95_ms={:.2} frame_max_ms={:.2} \
                          brd_ms={:.2} ui_ms={:.2} draw_ms={:.2} \
                          [fence={:.2} tlas={:.2} ssbo={:.2} cmd={:.2} submit={:.2}] \
                          [gpu_skin_disp={:.3} gpu_blas_refit={:.3} gpu_taa={:.3} \
@@ -1533,6 +1595,9 @@ impl ApplicationHandler for App {
                         self.bench_frames_count,
                         wall_fps,
                         wall_ms,
+                        frame_p50_ms,
+                        frame_p95_ms,
+                        frame_max_ms,
                         brd_ms,
                         ui_ms,
                         draw_ms,
@@ -1570,6 +1635,9 @@ impl ApplicationHandler for App {
                         stats.indirect_call_count,
                     );
                     drop(stats);
+                    if let Some(streaming) = self.streaming.as_ref() {
+                        println!("{}", streaming.telemetry.bench_line());
+                    }
 
                     // --screenshot: queue a capture request and defer
                     // the event-loop exit until the PNG lands (or the

@@ -33,6 +33,14 @@ pub const VERTEX_POOL_HARD_CAP: usize = 16_000_000;
 pub const INDEX_POOL_SOFT_CAP: usize = 16_000_000;
 pub const INDEX_POOL_HARD_CAP: usize = 64_000_000;
 
+/// Large global-geometry rebuilds cannot safely keep two prior SSBO
+/// generations alive while allocating the replacement on mid-range GPUs.
+/// Above 256 MiB, prefer a one-time device-idle reclamation over a recoverable
+/// allocation failure escalating into `VK_ERROR_DEVICE_LOST` (FO4 boundary
+/// traversal, #2374). EX-07 tracks replacing this safety path with a
+/// capacity-managed append/update buffer that remains fully asynchronous.
+pub const GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES: u64 = 256 * 1024 * 1024;
+
 static VERTEX_POOL_SOFT_WARNED: Once = Once::new();
 static INDEX_POOL_SOFT_WARNED: Once = Once::new();
 
@@ -75,6 +83,13 @@ pub(crate) fn check_pool_growth(
     }
     let crossed_soft = current_len <= soft_cap && new_len > soft_cap;
     Ok(crossed_soft)
+}
+
+pub(crate) fn geometry_rebuild_needs_idle(
+    projected_bytes: u64,
+    has_existing_buffers: bool,
+) -> bool {
+    has_existing_buffers && projected_bytes >= GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES
 }
 
 /// Cache key for the refcounted scene-mesh dedup layer (#879). The
@@ -160,6 +175,10 @@ pub struct MeshRegistry {
     /// Number of vertices in the SSBO at last build. Used to detect
     /// whether a rebuild is needed vs. the current pending state.
     ssbo_vertex_count: usize,
+    /// Index-side companion to `ssbo_vertex_count`, used to keep newly
+    /// appended meshes out of draws while a streaming transaction batches
+    /// one coherent global-geometry rebuild.
+    ssbo_index_count: usize,
     /// Old per-mesh GPU buffers awaiting deferred destruction. Each
     /// entry is a `(vertex, index)` pair (both `Option` because some
     /// drop paths take only one buffer at a time). The countdown is
@@ -226,6 +245,7 @@ impl MeshRegistry {
             global_index_buffer: None,
             geometry_dirty: false,
             ssbo_vertex_count: 0,
+            ssbo_index_count: 0,
             deferred_destroy: DeferredDestroyQueue::new(),
             mesh_cache: HashMap::new(),
             mesh_ref_counts: Vec::new(),
@@ -775,6 +795,7 @@ impl MeshRegistry {
         // Track the built size so we can detect when new data arrives.
         // pending data is kept alive for potential rebuilds (#258).
         self.ssbo_vertex_count = self.pending_vertices.len();
+        self.ssbo_index_count = self.pending_indices.len();
         self.geometry_dirty = false;
 
         Ok(())
@@ -800,6 +821,14 @@ impl MeshRegistry {
         // appends (no drops) skip this pass.
         self.compact_pending_geometry();
 
+        let projected_bytes = (self.pending_vertices.len() * std::mem::size_of::<Vertex>()
+            + self.pending_indices.len() * std::mem::size_of::<u32>())
+            as u64;
+        let has_existing_buffers =
+            self.global_vertex_buffer.is_some() || self.global_index_buffer.is_some();
+        let reclaim_before_rebuild =
+            geometry_rebuild_needs_idle(projected_bytes, has_existing_buffers);
+
         // Defer destruction of old SSBOs instead of stalling with
         // device_wait_idle. The old buffers survive for MAX_FRAMES_IN_FLIGHT
         // frames, guaranteeing no in-flight command buffer references them
@@ -819,11 +848,33 @@ impl MeshRegistry {
         // bindings were "updated in the same frame this is called" — they
         // were not, which caused a device-loss on cell-stream growth (the
         // WATAL §0 hunt).
-        let old_vb = self.global_vertex_buffer.take();
-        let old_ib = self.global_index_buffer.take();
-        if old_vb.is_some() || old_ib.is_some() {
-            self.deferred_destroy
-                .push((old_vb, old_ib), DEFAULT_COUNTDOWN);
+        if reclaim_before_rebuild {
+            log::warn!(
+                "Large geometry SSBO rebuild ({:.1} MiB): idling once to reclaim prior \
+                 generations before allocating the replacement (#2374)",
+                projected_bytes as f64 / (1024.0 * 1024.0),
+            );
+            // SAFETY: this is the explicit synchronization boundary for the
+            // low-headroom fallback. Once it returns, no submitted command
+            // buffer or descriptor use can reference the old global or
+            // deferred per-mesh buffers, so immediate destruction is legal.
+            if let Err(error) = unsafe { device.device_wait_idle() } {
+                bail!("device_wait_idle before large geometry rebuild: {error:?}");
+            }
+            self.drain_deferred_destroy(device, allocator);
+            if let Some(mut buffer) = self.global_vertex_buffer.take() {
+                buffer.destroy(device, allocator);
+            }
+            if let Some(mut buffer) = self.global_index_buffer.take() {
+                buffer.destroy(device, allocator);
+            }
+        } else {
+            let old_vb = self.global_vertex_buffer.take();
+            let old_ib = self.global_index_buffer.take();
+            if old_vb.is_some() || old_ib.is_some() {
+                self.deferred_destroy
+                    .push((old_vb, old_ib), DEFAULT_COUNTDOWN);
+            }
         }
 
         log::info!(
@@ -842,6 +893,27 @@ impl MeshRegistry {
     /// build. The frame loop should call `rebuild_geometry_ssbo` to update.
     pub fn is_geometry_dirty(&self) -> bool {
         self.geometry_dirty
+    }
+
+    /// Whether `handle`'s scene-geometry range exists in the currently bound
+    /// global SSBO generation. Streaming appends update the CPU pool and mesh
+    /// offsets immediately, but the renderer may deliberately batch the GPU
+    /// rebuild until the cell/LOD transaction settles. Commands for appended
+    /// ranges must remain out of raster/TLAS until then or they index past the
+    /// old buffer tail.
+    pub fn is_geometry_resident(&self, handle: u32) -> bool {
+        let Some(mesh) = self.get(handle) else {
+            return false;
+        };
+        if !mesh.is_scene_mesh {
+            return true;
+        }
+        if self.global_vertex_buffer.is_none() || self.global_index_buffer.is_none() {
+            return false;
+        }
+        let vertex_end = mesh.global_vertex_offset as usize + mesh.vertex_count as usize;
+        let index_end = mesh.global_index_offset as usize + mesh.index_count as usize;
+        vertex_end <= self.ssbo_vertex_count && index_end <= self.ssbo_index_count
     }
 
     pub fn get(&self, id: u32) -> Option<&GpuMesh> {
@@ -875,6 +947,8 @@ impl MeshRegistry {
         }
         self.global_vertex_buffer = None;
         self.global_index_buffer = None;
+        self.ssbo_vertex_count = 0;
+        self.ssbo_index_count = 0;
         // The shared mesh-cache map only holds handle indices; the
         // backing GPU buffers were already torn down by the per-slot
         // `mesh.destroy` loop above. Clear the map so a post-shutdown
@@ -1288,6 +1362,18 @@ mod pool_growth_cap_tests {
             "vertex cap should be larger memory budget than index cap (got {} vs {} bytes)",
             vertex_bytes,
             index_bytes,
+        );
+    }
+
+    #[test]
+    fn large_rebuilds_idle_only_when_replacing_existing_buffers() {
+        let threshold = GEOMETRY_REBUILD_IDLE_THRESHOLD_BYTES;
+        assert!(!geometry_rebuild_needs_idle(threshold - 1, true));
+        assert!(geometry_rebuild_needs_idle(threshold, true));
+        assert!(geometry_rebuild_needs_idle(threshold + 1, true));
+        assert!(
+            !geometry_rebuild_needs_idle(threshold * 2, false),
+            "initial build has no old generation to reclaim",
         );
     }
 }

@@ -338,6 +338,7 @@ pub(crate) fn advance_streaming_apply(
                 let Ok(payload) = state.payload_rx.try_recv() else {
                     return budget.completed_units() > 0;
                 };
+                state.telemetry.record_worker(payload.timings);
                 let coord = (payload.gx, payload.gy);
                 match streaming::classify_payload(&state.pending, coord, payload.generation) {
                     streaming::PayloadDecision::Apply => break payload,

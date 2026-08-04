@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Cross-game exterior readiness smoke matrix (EX-01 / EX-05).
+# Cross-game exterior readiness smoke matrix and traversal gate
+# (EX-01 / EX-05 / EX-06).
 #
 # Each installed profile loads a known populated exterior at radius 1, retains
 # a deterministic screenshot plus engine/debug telemetry, and applies hard
@@ -7,16 +8,18 @@
 # diagnostics. Missing game data self-skips; artifacts are intentionally kept.
 #
 # Usage:
-#   docs/smoke-tests/m-exteriors.sh [fnv|fo3|oblivion|skyrim|fo4|all]
+#   docs/smoke-tests/m-exteriors.sh [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary]
 #
 # Useful overrides:
 #   BYROREDUX_SMOKE_FRAMES=10
+#   BYROREDUX_BOUNDARY_FRAMES=900
 #   BYRO_DEBUG_PORT=9987
 #   BYROREDUX_EXTERIOR_ARTIFACT_DIR=/tmp/exterior-smoke
 
 set -euo pipefail
 
 GAME="${1:-all}"
+MODE="${2:-static}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENGINE_BIN="$REPO_ROOT/target/release/byroredux"
 DEBUG_BIN="$REPO_ROOT/target/release/byro-dbg"
@@ -28,14 +31,21 @@ SKYRIM_DATA="${BYROREDUX_SKYRIM_DATA:-/mnt/data/SteamLibrary/steamapps/common/Sk
 FO4_DATA="${BYROREDUX_FO4_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data}"
 
 PORT="${BYRO_DEBUG_PORT:-9876}"
-BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}"
+case "$MODE" in
+    static)   BENCH_FRAMES="${BYROREDUX_SMOKE_FRAMES:-30}" ;;
+    boundary) BENCH_FRAMES="${BYROREDUX_BOUNDARY_FRAMES:-900}" ;;
+    *)
+        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary]"
+        exit 2
+        ;;
+esac
 TIMEOUT_SECONDS="${BYROREDUX_SMOKE_TIMEOUT:-240}"
 ARTIFACT_DIR="${BYROREDUX_EXTERIOR_ARTIFACT_DIR:-$(mktemp -d /tmp/byro-exterior-smoke.XXXXXX)}"
 SUMMARY="$ARTIFACT_DIR/summary.tsv"
 ACTIVE_PID=""
 
 mkdir -p "$ARTIFACT_DIR"
-printf 'profile\tresult\tentities\tdraws\timage_mean\timage_stddev\tmissing_textures\tfailed_nifs\n' > "$SUMMARY"
+printf 'profile\tresult\tentities\tdraws\timage_mean\timage_stddev\tmissing_textures\tfailed_nifs\tcrossings\tfull_samples\tfull_max_ms\tfull_superseded\tlod_samples\tlod_max_ms\tlod_superseded\tframe_p50_ms\tframe_p95_ms\tframe_max_ms\n' > "$SUMMARY"
 
 cleanup_active () {
     if [[ -n "$ACTIVE_PID" ]] && kill -0 "$ACTIVE_PID" 2>/dev/null; then
@@ -69,7 +79,7 @@ profile_ready () {
     done
     if (( missing != 0 )); then
         echo "exterior-smoke[$label]: SKIP - required game data is not installed"
-        printf '%s\tSKIP\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+        printf '%s\tSKIP\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
         return 1
     fi
     return 0
@@ -111,10 +121,13 @@ run_profile () {
     local debug_log="$profile_dir/debug.log"
     local screenshot="$profile_dir/frame.png"
     local command_file="$profile_dir/command.txt"
+    local bench_args=(--bench-frames "$BENCH_FRAMES" --bench-hold --screenshot "$screenshot" --upscaler taa)
+    if [[ "$MODE" == boundary ]]; then
+        bench_args+=(--bench-camera grid-cross --fly)
+    fi
     mkdir -p "$profile_dir"
 
-    printf '%q ' "$ENGINE_BIN" "$@" --bench-frames "$BENCH_FRAMES" \
-        --bench-hold --screenshot "$screenshot" --upscaler taa > "$command_file"
+    printf '%q ' "$ENGINE_BIN" "$@" "${bench_args[@]}" > "$command_file"
     printf '\n' >> "$command_file"
 
     echo "exterior-smoke[$label]: launching $worldspace $grid (artifacts: $profile_dir)"
@@ -122,11 +135,7 @@ run_profile () {
         cd "$data_dir"
         env BYRO_DEBUG_PORT="$PORT" \
             RUST_LOG="${BYROREDUX_EXTERIOR_RUST_LOG:-info}" \
-            "$ENGINE_BIN" "$@" \
-            --bench-frames "$BENCH_FRAMES" \
-            --bench-hold \
-            --screenshot "$screenshot" \
-            --upscaler taa
+            "$ENGINE_BIN" "$@" "${bench_args[@]}"
     ) > "$stdout_log" 2> "$stderr_log" &
     ACTIVE_PID=$!
 
@@ -137,13 +146,13 @@ run_profile () {
             tail -40 "$stderr_log" || true
             wait "$ACTIVE_PID" 2>/dev/null || true
             ACTIVE_PID=""
-            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
             return 1
         fi
         if (( $(date +%s) > deadline )); then
             echo "exterior-smoke[$label]: HARD FAIL - timed out after ${TIMEOUT_SECONDS}s"
             cleanup_active
-            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
+            printf '%s\tFAIL\t0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n' "$label" >> "$SUMMARY"
             return 1
         fi
         sleep 0.5
@@ -162,8 +171,9 @@ EOF
 
     cleanup_active
 
-    local bench_line entities draws missing_textures failed_nifs
+    local bench_line streaming_line entities draws missing_textures failed_nifs
     bench_line="$(grep '^bench:' "$stdout_log" | tail -1 || true)"
+    streaming_line="$(grep '^streaming:' "$stdout_log" | tail -1 || true)"
     entities="$(grep -oE 'entities=[0-9]+' <<< "$bench_line" | head -1 | cut -d= -f2 || true)"
     draws="$(grep -oE 'draws=[0-9]+' <<< "$bench_line" | head -1 | cut -d= -f2 || true)"
     missing_textures="$(grep -oE '[0-9]+ unique missing textures' "$debug_log" | head -1 | grep -oE '^[0-9]+' || true)"
@@ -175,6 +185,22 @@ EOF
     fi
     : "${missing_textures:=unknown}"
     : "${failed_nifs:=unknown}"
+
+    local crossings full_samples full_max_ms full_superseded
+    local lod_samples lod_max_ms lod_superseded frame_p50_ms frame_p95_ms frame_max_ms
+    crossings="$(grep -oE 'crossings=[0-9]+' <<< "$streaming_line" | cut -d= -f2 || true)"
+    full_samples="$(grep -oE 'full_samples=[0-9]+' <<< "$streaming_line" | cut -d= -f2 || true)"
+    full_max_ms="$(grep -oE 'full_max_ms=[0-9]+([.][0-9]+)?' <<< "$streaming_line" | cut -d= -f2 || true)"
+    full_superseded="$(grep -oE 'full_superseded=[0-9]+' <<< "$streaming_line" | cut -d= -f2 || true)"
+    lod_samples="$(grep -oE 'lod_samples=[0-9]+' <<< "$streaming_line" | cut -d= -f2 || true)"
+    lod_max_ms="$(grep -oE 'lod_max_ms=[0-9]+([.][0-9]+)?' <<< "$streaming_line" | cut -d= -f2 || true)"
+    lod_superseded="$(grep -oE 'lod_superseded=[0-9]+' <<< "$streaming_line" | cut -d= -f2 || true)"
+    frame_p50_ms="$(grep -oE 'frame_p50_ms=[0-9]+([.][0-9]+)?' <<< "$bench_line" | cut -d= -f2 || true)"
+    frame_p95_ms="$(grep -oE 'frame_p95_ms=[0-9]+([.][0-9]+)?' <<< "$bench_line" | cut -d= -f2 || true)"
+    frame_max_ms="$(grep -oE 'frame_max_ms=[0-9]+([.][0-9]+)?' <<< "$bench_line" | cut -d= -f2 || true)"
+    : "${crossings:=-}" "${full_samples:=-}" "${full_max_ms:=-}" "${full_superseded:=-}"
+    : "${lod_samples:=-}" "${lod_max_ms:=-}" "${lod_superseded:=-}"
+    : "${frame_p50_ms:=-}" "${frame_p95_ms:=-}" "${frame_max_ms:=-}"
     IMAGE_MEAN="-"
     IMAGE_STDDEV="-"
 
@@ -182,8 +208,11 @@ EOF
     if [[ -z "$bench_line" ]]; then
         echo "exterior-smoke[$label]: HARD FAIL - bench summary missing"
         hard_fail=1
-    elif (( entities < entity_floor || draws < draw_floor )); then
+    elif [[ "$MODE" == static ]] && (( entities < entity_floor || draws < draw_floor )); then
         echo "exterior-smoke[$label]: HARD FAIL - scene population entities=$entities/$entity_floor draws=$draws/$draw_floor"
+        hard_fail=1
+    elif [[ "$MODE" == boundary ]] && (( entities < 10 || draws < 1 )); then
+        echo "exterior-smoke[$label]: HARD FAIL - traversal endpoint has no renderable exterior (entities=$entities draws=$draws)"
         hard_fail=1
     else
         echo "exterior-smoke[$label]: PASS population entities=$entities draws=$draws"
@@ -210,6 +239,32 @@ EOF
         hard_fail=1
     fi
 
+    if [[ "$MODE" == boundary ]]; then
+        local unsettled_full unsettled_lod
+        unsettled_full="$(grep -oE 'unsettled_full=[01]' <<< "$streaming_line" | cut -d= -f2 || true)"
+        unsettled_lod="$(grep -oE 'unsettled_lod=[01]' <<< "$streaming_line" | cut -d= -f2 || true)"
+        if [[ -z "$streaming_line" ]]; then
+            echo "exterior-smoke[$label]: HARD FAIL - streaming summary missing"
+            hard_fail=1
+        elif [[ ! "$crossings" =~ ^[0-9]+$ || ! "$full_samples" =~ ^[0-9]+$ \
+                || ! "$full_superseded" =~ ^[0-9]+$ || ! "$lod_samples" =~ ^[0-9]+$ \
+                || ! "$lod_superseded" =~ ^[0-9]+$ || ! "$unsettled_full" =~ ^[01]$ \
+                || ! "$unsettled_lod" =~ ^[01]$ ]]; then
+            echo "exterior-smoke[$label]: HARD FAIL - incomplete streaming summary"
+            hard_fail=1
+        elif (( crossings < 3 )); then
+            echo "exterior-smoke[$label]: HARD FAIL - grid-cross reported only $crossings/3 boundaries"
+            hard_fail=1
+        elif (( full_samples != crossings || lod_samples != crossings \
+                || full_superseded != 0 || lod_superseded != 0 \
+                || unsettled_full != 0 || unsettled_lod != 0 )); then
+            echo "exterior-smoke[$label]: HARD FAIL - streaming did not settle each crossing: $streaming_line"
+            hard_fail=1
+        else
+            echo "exterior-smoke[$label]: PASS traversal: $streaming_line"
+        fi
+    fi
+
     if [[ "$missing_textures" != "unknown" && "$missing_textures" != "0" ]]; then
         echo "exterior-smoke[$label]: WARN - $missing_textures unique missing textures"
     fi
@@ -221,9 +276,12 @@ EOF
     if (( hard_fail != 0 )); then
         result=FAIL
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$label" "$result" "$entities" "$draws" "$IMAGE_MEAN" \
-        "$IMAGE_STDDEV" "$missing_textures" "$failed_nifs" >> "$SUMMARY"
+        "$IMAGE_STDDEV" "$missing_textures" "$failed_nifs" "$crossings" \
+        "$full_samples" "$full_max_ms" "$full_superseded" "$lod_samples" \
+        "$lod_max_ms" "$lod_superseded" "$frame_p50_ms" "$frame_p95_ms" \
+        "$frame_max_ms" >> "$SUMMARY"
     return "$hard_fail"
 }
 
@@ -326,7 +384,7 @@ case "$GAME" in
         run_selected fo4_run
         ;;
     *)
-        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all]"
+        echo "Usage: $0 [fnv|fo3|oblivion|skyrim|fo4|all] [static|boundary]"
         exit 2
         ;;
 esac

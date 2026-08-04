@@ -27,6 +27,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::cell_loader::ExteriorWorldContext;
@@ -40,6 +41,232 @@ use crate::cell_loader::ExteriorWorldContext;
 #[derive(Debug, Clone, Copy)]
 pub struct LoadedCell {
     pub cell_root: EntityId,
+}
+
+/// Bounded latency aggregate used by [`StreamingTelemetry`]. Keeping only a
+/// count, total, and maximum makes long play sessions constant-memory while
+/// still exposing the deadline signals the boundary benchmark needs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamingLatencySummary {
+    pub samples: u64,
+    pub total: Duration,
+    pub max: Duration,
+}
+
+impl StreamingLatencySummary {
+    fn record(&mut self, elapsed: Duration) {
+        self.samples = self.samples.saturating_add(1);
+        self.total = self.total.saturating_add(elapsed);
+        self.max = self.max.max(elapsed);
+    }
+
+    pub fn average_ms(self) -> f64 {
+        if self.samples == 0 {
+            0.0
+        } else {
+            self.total.as_secs_f64() * 1000.0 / self.samples as f64
+        }
+    }
+
+    pub fn max_ms(self) -> f64 {
+        self.max.as_secs_f64() * 1000.0
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ActiveBoundaryTelemetry {
+    grid: (i32, i32),
+    started_at: Instant,
+    full_detail_settled: bool,
+    lod_settled: bool,
+}
+
+/// Runtime evidence for exterior streaming deadlines.
+///
+/// One sample begins on every real grid transition (the initial bootstrap
+/// seeds `last_player_grid`, so it is not counted). Full-detail and distant
+/// LOD completion are timed independently. If another boundary arrives first,
+/// the unfinished phase is counted as superseded rather than silently folded
+/// into the newer sample. All aggregates are bounded for normal gameplay.
+#[derive(Debug, Clone, Default)]
+pub struct StreamingTelemetry {
+    pub boundary_crossings: u64,
+    pub full_detail: StreamingLatencySummary,
+    pub lod: StreamingLatencySummary,
+    pub dispatch_slices: StreamingLatencySummary,
+    pub unload_slices: StreamingLatencySummary,
+    pub worker_queue: StreamingLatencySummary,
+    pub worker_parse: StreamingLatencySummary,
+    pub apply_slices: StreamingLatencySummary,
+    pub lod_slices: StreamingLatencySummary,
+    pub superseded_full_detail: u64,
+    pub superseded_lod: u64,
+    pub queued_cells: u64,
+    pub unloaded_cells: u64,
+    pub worker_payloads: u64,
+    pub peak_pending: usize,
+    active: Option<ActiveBoundaryTelemetry>,
+}
+
+impl StreamingTelemetry {
+    pub(crate) fn begin_boundary(&mut self, grid: (i32, i32), now: Instant) {
+        if let Some(previous) = self.active {
+            if !previous.full_detail_settled {
+                self.superseded_full_detail = self.superseded_full_detail.saturating_add(1);
+            }
+            if !previous.lod_settled {
+                self.superseded_lod = self.superseded_lod.saturating_add(1);
+            }
+        }
+        self.boundary_crossings = self.boundary_crossings.saturating_add(1);
+        self.active = Some(ActiveBoundaryTelemetry {
+            grid,
+            started_at: now,
+            full_detail_settled: false,
+            lod_settled: false,
+        });
+    }
+
+    pub(crate) fn observe_pending(&mut self, pending: usize) {
+        if self.active.is_none() {
+            return;
+        }
+        self.peak_pending = self.peak_pending.max(pending);
+    }
+
+    pub(crate) fn record_apply_slice(&mut self, elapsed: Duration, worked: bool) {
+        if self.active.is_some() && worked {
+            self.apply_slices.record(elapsed);
+        }
+    }
+
+    pub(crate) fn record_dispatch_slice(&mut self, elapsed: Duration) {
+        self.dispatch_slices.record(elapsed);
+    }
+
+    pub(crate) fn record_queued_cells(&mut self, queued: usize) {
+        if self.active.is_some() {
+            self.queued_cells = self.queued_cells.saturating_add(queued as u64);
+        }
+    }
+
+    pub(crate) fn record_unload_slice(&mut self, elapsed: Duration, unloaded: usize) {
+        if self.active.is_some() && unloaded > 0 {
+            self.unload_slices.record(elapsed);
+            self.unloaded_cells = self.unloaded_cells.saturating_add(unloaded as u64);
+        }
+    }
+
+    pub(crate) fn record_worker(&mut self, timings: StreamingWorkerTimings) {
+        if self.active.is_some() {
+            self.worker_payloads = self.worker_payloads.saturating_add(1);
+            self.worker_queue.record(timings.queue_wait);
+            self.worker_parse.record(timings.worker);
+        }
+    }
+
+    pub(crate) fn record_lod_slice(&mut self, elapsed: Duration, attempts: usize) {
+        if self.active.is_some() && attempts > 0 {
+            self.lod_slices.record(elapsed);
+        }
+    }
+
+    pub(crate) fn settle_full_detail(&mut self, now: Instant) -> Option<((i32, i32), Duration)> {
+        let (grid, elapsed) = {
+            let active = self.active.as_mut()?;
+            if active.full_detail_settled {
+                return None;
+            }
+            active.full_detail_settled = true;
+            (
+                active.grid,
+                now.saturating_duration_since(active.started_at),
+            )
+        };
+        self.full_detail.record(elapsed);
+        self.clear_completed_boundary();
+        Some((grid, elapsed))
+    }
+
+    pub(crate) fn settle_lod(&mut self, now: Instant) -> Option<((i32, i32), Duration)> {
+        let (grid, elapsed) = {
+            let active = self.active.as_mut()?;
+            if active.lod_settled {
+                return None;
+            }
+            active.lod_settled = true;
+            (
+                active.grid,
+                now.saturating_duration_since(active.started_at),
+            )
+        };
+        self.lod.record(elapsed);
+        self.clear_completed_boundary();
+        Some((grid, elapsed))
+    }
+
+    fn clear_completed_boundary(&mut self) {
+        if self
+            .active
+            .is_some_and(|sample| sample.full_detail_settled && sample.lod_settled)
+        {
+            self.active = None;
+        }
+    }
+
+    pub fn bench_line(&self) -> String {
+        let unsettled_full = self
+            .active
+            .is_some_and(|sample| !sample.full_detail_settled);
+        let unsettled_lod = self.active.is_some_and(|sample| !sample.lod_settled);
+        format!(
+            "streaming: crossings={} full_samples={} full_avg_ms={:.2} full_max_ms={:.2} \
+             full_superseded={} lod_samples={} lod_avg_ms={:.2} lod_max_ms={:.2} \
+             lod_superseded={} queued={} unloaded={} worker_payloads={} \
+             dispatch_avg_ms={:.2} dispatch_max_ms={:.2} unload_max_ms={:.2} \
+             worker_queue_avg_ms={:.2} worker_queue_max_ms={:.2} \
+             worker_avg_ms={:.2} worker_max_ms={:.2} \
+             apply_samples={} apply_avg_ms={:.2} apply_max_ms={:.2} \
+             lod_slice_avg_ms={:.2} lod_slice_max_ms={:.2} peak_pending={} \
+             unsettled_full={} unsettled_lod={}",
+            self.boundary_crossings,
+            self.full_detail.samples,
+            self.full_detail.average_ms(),
+            self.full_detail.max_ms(),
+            self.superseded_full_detail,
+            self.lod.samples,
+            self.lod.average_ms(),
+            self.lod.max_ms(),
+            self.superseded_lod,
+            self.queued_cells,
+            self.unloaded_cells,
+            self.worker_payloads,
+            self.dispatch_slices.average_ms(),
+            self.dispatch_slices.max_ms(),
+            self.unload_slices.max_ms(),
+            self.worker_queue.average_ms(),
+            self.worker_queue.max_ms(),
+            self.worker_parse.average_ms(),
+            self.worker_parse.max_ms(),
+            self.apply_slices.samples,
+            self.apply_slices.average_ms(),
+            self.apply_slices.max_ms(),
+            self.lod_slices.average_ms(),
+            self.lod_slices.max_ms(),
+            self.peak_pending,
+            u8::from(unsettled_full),
+            u8::from(unsettled_lod),
+        )
+    }
+}
+
+/// Queue and worker-service time carried across the worker channel with each
+/// payload. Durations avoid comparing wall clocks and remain valid if worker
+/// execution moves to a pool later.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamingWorkerTimings {
+    pub queue_wait: Duration,
+    pub worker: Duration,
 }
 
 /// One distant-terrain LOD block tracked by [`WorldStreamingState`]
@@ -76,6 +303,9 @@ pub struct LoadCellRequest {
     /// stale payloads — the player may have moved out of range and back
     /// while the worker was busy.
     pub generation: u64,
+    /// Monotonic enqueue stamp used to separate worker queueing from actual
+    /// extract/parse service time in the boundary benchmark.
+    pub queued_at: Instant,
     pub wctx: Arc<ExteriorWorldContext>,
     pub tex_provider: Arc<TextureProvider>,
     /// Snapshot of `NifImportRegistry`'s cached keys at request-build
@@ -99,6 +329,7 @@ pub struct LoadCellPayload {
     pub gx: i32,
     pub gy: i32,
     pub generation: u64,
+    pub timings: StreamingWorkerTimings,
     /// `Some(scene)` = parsed cleanly. `None` = extraction or parse
     /// failed; the entry is still emitted so the cache records the
     /// negative result and a future placement of the same model
@@ -262,6 +493,9 @@ pub struct WorldStreamingState {
     /// work. Foreground-first bootstrap and cell-boundary movement set this;
     /// idle frames clear it progressively through the shared LOD budget.
     pub lod_reconcile_pending: bool,
+    /// Boundary-to-ready and apply-slice aggregates. Read by the benchmark
+    /// summary; otherwise passive, bounded runtime diagnostics.
+    pub telemetry: StreamingTelemetry,
     /// Worker thread handle. Held so the thread isn't detached. On
     /// graceful shutdown [`WorldStreamingState::shutdown`] drops
     /// `request_tx` (so the worker's recv loop exits) and joins this
@@ -288,6 +522,18 @@ pub struct WorldStreamingState {
 }
 
 impl WorldStreamingState {
+    /// New scene geometry is appended throughout a resumable cell/LOD load.
+    /// Rebuilding the whole global SSBO after every atomic REFR would turn a
+    /// large FO4 crossing into dozens of 600–900 MiB copies. The frame driver
+    /// defers that rebuild while this returns true and masks appended ranges
+    /// from raster/TLAS through `MeshRegistry::is_geometry_resident`.
+    pub fn geometry_batch_in_progress(&self) -> bool {
+        !self.pending.is_empty()
+            || self.active_apply.is_some()
+            || self.persistent_apply.is_some()
+            || self.lod_reconcile_pending
+    }
+
     /// Construct from an already-resolved [`ExteriorWorldContext`] and
     /// the long-lived providers. Spawns the cell-pre-parse worker
     /// thread; first request can be sent immediately.
@@ -324,6 +570,7 @@ impl WorldStreamingState {
             radius_unload: radius_load + 1,
             last_player_grid: None,
             lod_reconcile_pending: false,
+            telemetry: StreamingTelemetry::default(),
             worker: Some(worker),
             request_tx: Some(request_tx),
             payload_rx,
@@ -369,6 +616,7 @@ impl WorldStreamingState {
                 gx,
                 gy,
                 generation,
+                queued_at: Instant::now(),
                 wctx: self.wctx.clone(),
                 tex_provider: self.tex_provider.clone(),
                 cached_keys: cached_keys.clone(),
@@ -522,13 +770,19 @@ fn cell_pre_parse_worker(
             gx,
             gy,
             generation,
+            queued_at,
             wctx,
             tex_provider,
             cached_keys,
         } = req;
-        let payload = pre_parse_cell_panic_safe(gx, gy, generation, || {
+        let worker_started = Instant::now();
+        let mut payload = pre_parse_cell_panic_safe(gx, gy, generation, || {
             pre_parse_cell(gx, gy, generation, &wctx, &tex_provider, &cached_keys)
         });
+        payload.timings = StreamingWorkerTimings {
+            queue_wait: worker_started.saturating_duration_since(queued_at),
+            worker: worker_started.elapsed(),
+        };
         if payload_tx.send(payload).is_err() {
             // Receiver dropped — main thread is shutting down; exit cleanly.
             break;
@@ -559,6 +813,7 @@ where
             gx,
             gy,
             generation,
+            timings: StreamingWorkerTimings::default(),
             parsed: HashMap::new(),
         }
     })
@@ -656,6 +911,7 @@ fn pre_parse_cell(
                 gx,
                 gy,
                 generation,
+                timings: StreamingWorkerTimings::default(),
                 parsed,
             }
         }
@@ -665,6 +921,7 @@ fn pre_parse_cell(
             gx,
             gy,
             generation,
+            timings: StreamingWorkerTimings::default(),
             parsed,
         };
     };
@@ -768,6 +1025,7 @@ fn pre_parse_cell(
         gx,
         gy,
         generation,
+        timings: StreamingWorkerTimings::default(),
         parsed,
     }
 }
