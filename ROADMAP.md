@@ -14,10 +14,12 @@ commit.
 
 **Last verified**: 2026-08-01 (Session 62 closeout — tests 4186, +221 (incl.
 4 stale test assertions this close fixed); src/ LOC +~23 051; +1 workspace
-member `crates/hkx`; **bench-of-record now 59 commits stale** (record at
-`3a02b02d`, 2026-07-26) — past the 30-commit gate, flagged as R6a-stale-18
-and not yet re-run given this session's volumetric-fog/GI/water/shadow
-renderer work).
+member `crates/hkx`; bench-of-record was 59 commits stale at close, flagged
+as R6a-stale-18 and not yet re-run given that session's volumetric-fog/GI/
+water/shadow renderer work — **since re-run 2026-08-04, see the R6a-stale-18
+refresh below**: bench-of-record is now HEAD `28155b79`, 0 commits stale,
+and the refresh surfaced a real FO4-specific frame-time regression
+(`#2367`) alongside a large, still-unexplained Prospector improvement).
 
 **Current state in one paragraph.** The FSR 3.1 integration plan is complete
 through phase 7: FSR 3.1.4 Quality is the engine default, all four presets
@@ -68,7 +70,70 @@ Prospector confirms #2084's live-sample finding: the fence-recovery gap the R6a-
 
 **Repro-command CWD note:** bare `--bsa` / `--textures-bsa` / `--materials-ba2` names resolve against CWD, not the `--esm` folder. Run each bench with CWD set to that game's `Data/` directory. Run from elsewhere → archives silently fail → scene loads near-empty (Prospector: 36 entities / 3 meshes / spurious ~1792 FPS).
 
-### Bench-of-record (LIVE) — R6a-stale-17 refresh (2026-07-26, HEAD `3a02b02d`)
+### Bench-of-record (LIVE) — R6a-stale-18 refresh (2026-08-04, HEAD `28155b79`)
+
+Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
+1280×720 output, per-scene CWD set to that game's `Data/`. 75 runs, zero
+failures. Repro: `scripts/fsr-bench-matrix.sh 3 300`.
+
+| Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
+|---|---:|---:|---:|---:|
+| Prospector (3626 ent) | **136.4 FPS / 7.33 ms** | 265.9 FPS / 3.76 ms | +3.57 ms (+49%) | 381.4 / 2.62 (+64%) |
+| Whiterun BanneredMare (5150 ent) | **65.1 FPS / 15.37 ms** | 136.6 FPS / 7.32 ms | +8.05 ms (+52%) | 211.5 / 4.73 (+69%) |
+| MedTek Research 01 (31400 ent) | **18.7 FPS / 53.58 ms** | 37.4 FPS / 26.73 ms | +26.85 ms (+50%) | 56.8 / 17.61 (+67%) |
+| FO4 Dugout Inn (6978 ent) | 24.5 FPS / 40.79 ms | 48.5 FPS / 20.63 ms | +20.16 ms (+49%) | 76.1 / 13.14 (+68%) |
+| Cornell (27 ent, redistributable control) | 301.3 FPS / 3.32 ms | 459.3 FPS / 2.18 ms | +1.14 ms (+34%) | 595.5 / 1.68 (+49%) |
+
+**`native-aa` is a net loss on every scene**, consistent with every prior
+refresh: it reconstructs at full output resolution, so its upscale dispatch
+costs more than the upscaling presets while saving no render-resolution
+work.
+
+**A same-session same-machine control rebuild of the prior record
+(`3a02b02d`) is what makes this refresh trustworthy rather than noise —
+see `#2367`.** A bare comparison against the R6a-stale-17 table below would
+show wild, hard-to-interpret swings (Prospector TAA nearly doubling,
+MedTek/Dugout dropping ~20-25%, Whiterun dropping ~33%). Rebuilding
+`3a02b02d` in a worktree and benching it under identical conditions this
+session, exactly as the R6a-stale-17 refresh's own methodology note
+prescribes, separated real signal from two confounds — machine load and
+Whiterun's entity-count growth:
+
+| Scene | Entities (ctrl→HEAD) | TAA frame ms (ctrl→HEAD) | Verdict |
+|---|---|---|---|
+| Prospector (FNV) | 3626→3626 (flat) | 14.69→7.33 | **Real ~2x improvement — unexplained, see `#2367`** |
+| Cornell (synthetic control) | 25→27 (flat) | 2.76→3.32 | Real but mild slowdown (~20%) |
+| Whiterun (Skyrim SE) | 3406→5150 (+51%) | 9.99→15.37 | Confounded by entity growth — not conclusive on its own |
+| MedTek Research 01 (FO4) | 31495→31400 (flat) | 40.17→53.58 | **Real ~33% regression, flat content — see `#2367`** |
+| Dugout Inn (FO4) | 6978→6978 (flat) | 30.44→40.79 | **Real ~34% regression, flat content — see `#2367`** |
+
+The control run reproduces the original R6a-stale-17 figures closely
+(Prospector 65.3→68.1 FPS, Dugout 31.9→32.9 FPS — within normal
+same-machine noise), which is what makes the HEAD deltas above
+trustworthy rather than contention artifacts. **Filed as `#2367`** — both
+real regressions are Fallout 4 content (MedTek, Dugout); the dramatically
+improved scene is FNV (Prospector); the pattern suggests something
+FO4-specific rather than a universal regression, but that is an
+observation, not yet a root cause. Bisecting `3a02b02d..28155b79` is the
+next step and was explicitly not attempted in this refresh (75 + 75 runs
+already spent on the full matrix + control).
+
+**Whiterun's entity count grew 3406→5150 (+51%) since the last refresh**
+for reasons not yet understood — tracked under `#2367`'s completeness
+checks rather than assumed benign.
+
+FSR is the engine default at Quality (FSR plan phase 7). The `TAA (native)`
+column stays the reference for historical comparison and remains reachable
+via `--upscaler taa` / `r.upscaler taa`.
+
+**Staleness (2026-08-04):** bench-of-record is HEAD `28155b79`, 0 commits
+stale.
+
+### Superseded — R6a-stale-17 refresh (2026-07-26, HEAD `3a02b02d`)
+
+Superseded by the R6a-stale-18 refresh above; retained for the control-run
+comparison in `#2367` and because the phase-7-matrix section below still
+cites it.
 
 Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
 1280×720 output, per-scene CWD set to that game's `Data/`. 75 runs, zero
@@ -845,7 +910,7 @@ live ECS inspection (`find`, `entities(Component)`, screenshot).
 - [x] **R6a-stale-15** (filed 2026-06-03): **Closed 2026-07-18 at HEAD `8a668eff`** (#2084). Fresh 300-frame × 3-run bench across all three scenes — see the Bench-of-record table above for full numbers/interpretation. (a) Fence recovery confirmed: Prospector fence 11.12→5.06 ms (−54.5%), FPS 76.2→145.1 (+90.4%); MedTek fence 9.03→7.08 ms (−21.6%), FPS 65.2→74.4 (+14.1%) despite entity count growing 47% (ghost-entity, non-draw). Residual gap to the pre-collider Prospector target (161.4 FPS / 2.62 ms) narrowed from ~4× to ~2× fence, not yet closed. (b) `IsCollisionOnly=0` live verification via `entities` command **not re-checked this pass** — #2084's ask was the bench refresh + doc sync, not a fresh correctness sweep of the #1531/#1726 fix; still believed correct (untouched since closing R6a-stale-14-collider-partial) but worth a `byro-dbg entities` spot-check next time either scene is loaded interactively. Whiterun (control) showed an unexplained mild regression (362.8→335.0 FPS) at flat entity count, attributed to shared-desktop GPU contention during this run rather than a code regression — flagged for a re-check on an idle machine, not a new tracked issue.
 - [x] **R6a-stale-16** — **CLOSED 2026-07-24** by the FSR phase-7 bench matrix at HEAD `e153b50c` (see the refresh table above). The re-run did what a stale-bench tracker exists to do: it surfaced **PERF-REGRESSION-6c56e311**, a ~2.2× frame-time regression that had been live and unmeasured since 2026-07-19. Original entry follows. Threshold tripped 2026-07-20 at Session 58 close (HEAD `86035f51`, 38 commits past `8a668eff` — both threshold limbs exceeded: >30 commits *and* real shader/hot-path changes landed). Notable post-bench commits since `8a668eff`: `Vertex` struct color `vec3`→`vec4` layout change (26 floats / 104 B, `cd2b5fe4`) plus the matching `skin_vertices.comp` / `triangle.vert`/`.frag` updates, ReSTIR `Reservoir` repack + TAA surface-validated history (octahedral normals, bounded accumulation, `e5d02f83`), glass alpha-blending + `GLASS_RAY_BUDGET` increase (`a09d2b76`), volumetric in-scattering + water RT precision pass (`6c56e311`), decal `IsDecalMesh` alpha blending (`388b9969`). All three benches (Prospector/Whiterun/MedTek) touch the fragment shader and/or vertex layout this cycle. Re-run deferred — next tracker. **Update (2026-07-23, Session 60 close):** now 74 commits past `8a668eff`. Session 60 added the FSR SDK/extent/temporal-contract plumbing, an output-resolution presentation pass, and a directional-light/shadow-contract refactor (`8961fbdd`) that touches the exterior direct-light path. FSR itself is off by default, but the shadow-contract change warrants the re-run being done before the next perf-sensitive decision.
 - [x] **R6a-stale-17** — **CLOSED 2026-07-26 at HEAD `3a02b02d`**, same day it was filed. Full 75-run matrix + a same-machine control rebuild of `e153b50c`; numbers and interpretation in the Bench-of-record section above. **Outcome: HEAD is flat** — the 28 intervening commits are within ±4.4% on every scene/config pair, most within ±1.5%. The refresh's value was entirely in what the control ruled out: the raw HEAD numbers looked like a broad regression (Cornell −10.9%, Prospector −4.7%, Prospector Quality −8.0%) *and* one implausible win (MedTek TAA +52%), and neither was code. Rebuilding `e153b50c` and benching it under the same load reproduced the same shortfalls (Cornell −11.9%, Prospector −5.8% against the phase-7 figures at the phase-7 commit), pinning them on this desktop's 3–43% background GPU load; and it re-measured MedTek TAA at 22.3 FPS against the 15.2 the phase-7 table published, so the "+52% win" was a bad recorded baseline rather than an improvement. Original entry follows. Filed at 28 commits — *under* the 30-commit limb, but the change-content limb was met: particle indirect grouping restored (#2165), skinned-vertex output narrowed 104 B → 12 B per vertex (#2170), per-frame scratch amortised (#2172/#2174), and the `camera_cut` false-positive fix (#2159). **The stated expectation that #2159 would raise the FSR column did not hold** (+0.7% Prospector Quality, −0.6% Cornell) — see the prediction note in the bench section; a `--bench-camera` motion path, not a static bench, is what would measure that fix.
-- [ ] **R6a-stale-18** (filed 2026-08-01 at Session 62 close, HEAD `7e068c7d`, 59 commits past the `3a02b02d` record — over the 30-commit gate). Session 62 landed a large renderer feature push touching the fragment shader's fog/lighting paths directly: procedural volumetric fog with temporal reprojection (`5d362541`), clustered local fog volumes composited into the same froxel grid (`733dff8f`), a fog-chromaticity extension to the bounded path-traced GI ray (`f8efde63`), POM (`9ade7506`), structural light-visibility/shadow-mask flags (`0888c5f9`/`28c43975`/`3b922734`), material texture handling + cubemap support (`80682517`/`bca0f127`), water reflection ray fixes (`ae3fa9c7`/`5d8bb982`), and a new fire-refraction material kind (`24e5cb6a`). Any of these could move the frame budget; PERF-REGRESSION-6c56e311 (Session 60/61) was exactly this failure mode — a real cost hiding for ~80 commits until a refresh caught it. Not re-run this session: a 75-run FSR matrix needs real game data + sustained GPU access and this close was already large. Re-run before trusting the R6a-stale-17 numbers for anything beyond directional comparison.
+- [x] **R6a-stale-18** — **CLOSED 2026-08-04 at HEAD `28155b79`** (filed 2026-08-01 at Session 62 close, HEAD `7e068c7d`, 59 commits past the `3a02b02d` record — over the 30-commit gate). Session 62 landed a large renderer feature push touching the fragment shader's fog/lighting paths directly: procedural volumetric fog with temporal reprojection (`5d362541`), clustered local fog volumes composited into the same froxel grid (`733dff8f`), a fog-chromaticity extension to the bounded path-traced GI ray (`f8efde63`), POM (`9ade7506`), structural light-visibility/shadow-mask flags (`0888c5f9`/`28c43975`/`3b922734`), material texture handling + cubemap support (`80682517`/`bca0f127`), water reflection ray fixes (`ae3fa9c7`/`5d8bb982`), and a new fire-refraction material kind (`24e5cb6a`). This tracker's own prediction held: the refresh caught exactly the failure mode PERF-REGRESSION-6c56e311 demonstrated — a real cost hiding until measured. Full 75-run matrix + a same-machine control rebuild of `3a02b02d`; numbers and interpretation in the Bench-of-record section above. **Outcome: two real regressions, one large unexplained win, one confound.** MedTek and Dugout (both FO4, flat entity count) are genuinely ~33-34% slower; Prospector (FNV, flat entity count) is genuinely ~2x faster; Whiterun's apparent −33% is confounded by its entity count growing +51% since the last refresh, for reasons not yet understood. None of this was attributable to machine noise — the control run reproduced the `3a02b02d` record closely. **Filed as `#2367`** for bisection; not root-caused in this refresh.
 - [x] **REND-#1447** HIGH (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-02** (`e6df0f5b`) — SPIR-V recompiled after DoF CameraUBO extension.
 - [x] **REND-#1448** LOW (filed 2026-06-02, `AUDIT_RENDERER_2026-06-02`): **Closed 2026-06-02** (`f8e5daad`) — screenshot extent captured at record time, survives same-frame resize.
 - [x] **BUILD-SFMATERIAL** (2026-06-03): **Closed 2026-06-03.** `ee727346` removed `pub use chunk::ChunkType` and broke `crate::StringTable` / `crate::ChunkType` in internal modules + integration test. Fixed: `ChunkType` re-exported from `lib.rs`; internal `reader.rs` and `error.rs` use module-local paths.
