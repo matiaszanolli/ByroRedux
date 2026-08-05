@@ -204,8 +204,8 @@ pub fn build_save_registry() -> SaveRegistry {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
     use byroredux_core::ecs::components::{
         ActorValues, Children, EquipmentSlots, EscortState, Escorted, FollowState, GuardState,
-        Inventory, LightFlicker, LightSource, Name, Parent, PatrolState, RigidBodyData, Seated,
-        Transform, TravelState, Traveled, WanderState,
+        Inventory, LightFlicker, LightSource, Material, Name, Parent, PatrolState, RigidBodyData,
+        Seated, Transform, TravelState, Traveled, WanderState,
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
     use byroredux_scripting::papyrus_demo::RumbleOnActivate;
@@ -269,6 +269,21 @@ pub fn build_save_registry() -> SaveRegistry {
         // motion-type change (e.g. making a prop dynamic for a scripted
         // sequence) silently reverted to the ESM-derived default on reload.
         .register_component::<RigidBodyData>("RigidBodyData")
+        // #2378 / SAVE-D1-13 — the `mat.set` debug console command
+        // live-mutates a Material's PBR scalars/colors/material_kind at
+        // runtime, the same class of gap #1834 fixed for `ActorValues`
+        // (also debug-command-mutated via `setav`/`modav`). Every field
+        // is a plain scalar / `Option<String>` / nested plain-data struct
+        // (no FixedString / EntityId), delta-safe for the full round-trip
+        // registry. Deliberately NOT added to `MUTABLE_DELTA_COLUMNS`
+        // below: unlike a per-actor state machine, Material sits on
+        // nearly every rendered entity in a cell, so a live-load overlay
+        // would replace every mesh's freshly-NIF-imported material with
+        // whatever was captured at save time — a far bigger blast radius
+        // than the narrow "one debug-edited entity" case this fixes.
+        // `mat.set` edits still survive a full save/load (the primary
+        // ask), just not the fast live-reload-and-overlay path.
+        .register_component::<Material>("Material")
         // #2382 / SAVE-D1-17 — `defaultRumbleOnActivate`'s live
         // Active/Busy/Inactive state machine + wait countdown. Flat enum
         // + f32/bool fields, delta-safe. Pre-fix a mid-wait or
@@ -1397,6 +1412,53 @@ mod tests {
         );
     }
 
+    /// Regression: #2378 (SAVE-D1-13) — a live `mat.set`-edited `Material`
+    /// must survive a save/load round trip. Pre-fix, `Material` was absent
+    /// from `build_save_registry`, so a debug-console material edit
+    /// silently reverted to whatever the NIF importer produced on reload.
+    #[test]
+    fn material_survives_save_load_round_trip() {
+        use byroredux_core::ecs::components::material::Material;
+
+        let reg = build_save_registry();
+        let mut src = World::new();
+        src.insert_resource(StringPool::new());
+        src.insert_resource(FormIdPool::new());
+
+        let mesh = src.spawn();
+        src.insert(
+            mesh,
+            Material {
+                metalness: 0.9,
+                roughness: 0.15,
+                alpha: 0.5,
+                material_kind: 100, // MATERIAL_KIND_GLASS
+                diffuse_color: [0.2, 0.4, 0.6],
+                texture_path: Some("textures/edited_by_mat_set.dds".to_owned()),
+                ..Material::default()
+            },
+        );
+
+        let snapshot = save_world(&src, &reg).unwrap();
+        let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+        let mut dst = World::new();
+        dst.insert_resource(FormIdPool::new());
+        restore_world(&mut dst, &reg, &decoded).unwrap();
+
+        let restored = dst.get::<Material>(mesh).expect("Material must round-trip");
+        assert_eq!(restored.metalness, 0.9);
+        assert_eq!(restored.roughness, 0.15);
+        assert_eq!(restored.alpha, 0.5);
+        assert_eq!(restored.material_kind, 100);
+        assert_eq!(restored.diffuse_color, [0.2, 0.4, 0.6]);
+        assert_eq!(
+            restored.texture_path.as_deref(),
+            Some("textures/edited_by_mat_set.dds")
+        );
+    }
+
     /// #1835 — every gameplay-state component `spawn_npc_entity` stamps on an
     /// NPC placement root must be a deliberate save decision: registered in
     /// [`build_save_registry`] (persisted + restored) XOR listed as
@@ -1570,7 +1632,8 @@ mod tests {
             ("GlobalTransform", "recomputed every frame from saved Transform + Parent by transform_propagation_system; its own doc says \"never written by user code\""),
             ("GuardBehavior", "write-once AI-package config at NPC spawn; mutable companion GuardState is already registered"),
             ("LocalBound", "write-once at NIF import/mesh spawn, read-only thereafter to derive WorldBound"),
-            ("Material", "KNOWN GAP — mat.set console command live-mutates it at runtime; tracked in #2378, not yet registered"),
+            // Material: FIXED — registered (#2378 / SAVE-D1-13), no longer
+            // allowlisted here.
             ("MeshHandle", "GPU MeshRegistry index, explicitly named in this file's own exclusion doc, rebuilt from the mesh path every reload"),
             ("ParticleEmitter", "per-particle simulation state (positions/velocities/ages) is purely cosmetic VFX with no gameplay/script hooks; re-seeds from static rate/shape config within under a second of reload"),
             ("PatrolBehavior", "write-once AI-package config at NPC spawn; mutable companion PatrolState is already registered"),
