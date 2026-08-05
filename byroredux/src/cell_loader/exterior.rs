@@ -395,15 +395,16 @@ mod persistent_grid_tests {
 
 /// Resumable main-thread application of one exterior cell.
 ///
-/// Terrain, water, and FO4 precombined geometry are installed during
-/// construction as one guaranteed-progress unit. The remaining placed REFRs
-/// advance cooperatively through [`ReferenceLoadJob`].
+/// Terrain and water are installed during construction as one
+/// guaranteed-progress unit. FO4 precombined hashes and the remaining placed
+/// REFRs then advance cooperatively under the shared frame deadline.
 pub(crate) struct ExteriorCellApplyJob {
     gx: i32,
     gy: i32,
     cell_root: EntityId,
     terrain_center: Option<Vec3>,
-    precombined_spawned: usize,
+    precombined: Option<super::precombined::PrecombinedSpawnJob>,
+    precombined_spawned: Option<usize>,
     references: Option<Box<ReferenceLoadJob>>,
 }
 
@@ -923,7 +924,7 @@ impl ExteriorCellApplyJob {
         world: &mut World,
         ctx: &mut VulkanContext,
         tex_provider: &TextureProvider,
-        mat_provider: Option<&mut MaterialProvider>,
+        _mat_provider: Option<&mut MaterialProvider>,
         terrain_blas_accumulator: Option<&mut Vec<(u32, u32, u32)>>,
         budget: &mut FrameTimeBudget,
     ) -> anyhow::Result<Option<Self>> {
@@ -1036,35 +1037,23 @@ impl ExteriorCellApplyJob {
             );
         }
 
-        // FO4+ PreCombined Mesh spawn (#1221 / D3-NEW-02). Mirrors the
-        // interior loader's Phase-3a. `cell.precombined_mesh_hashes` and
-        // `cell.absorbed_refs` are populated post-#1220 by the exterior
-        // walker in `wrld.rs`. M49 complete: CSG geometry is resolved and
-        // spawned; the absorption gate honors the XPRI list, suppressing
-        // per-REFR rendering of baked architecture on Commonwealth tiles.
-        //
-        // `cell_grid_to_world_yup(gx, gy)` is the per-tile world-space
-        // origin (Y-up); the bake's cell-local coords are translated by
-        // this offset. Without it every tile's bake would stack at the
-        // world origin (#1222).
-        let cell_origin = cell_grid_to_world_yup(gx, gy);
-        let (pc_spawned, _pc_misses) = super::precombined::spawn_precombined_meshes(
+        // FO4+ precombined geometry is intentionally not spawned here. A
+        // Commonwealth cell commonly carries 50–65 hashes; applying them as
+        // one unit produced multi-second frames and let later boundary loads
+        // supersede the active cell. Keep the ownership resolution on a
+        // resumable cursor and advance one-or-more hashes per frame in
+        // `advance` (#2376 / EX-07).
+        let load_order_paths = wctx
+            .plugin_paths
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let precombined = super::precombined::PrecombinedSpawnJob::new(
             cell,
-            cell_origin,
-            world,
-            ctx,
-            tex_provider,
-            mat_provider,
-            // M49 — active plugin (Data dir + CSG fallback); the owning plugin
-            // per cell form-id selects the actual `<Plugin> - Geometry.csg` and
-            // the `_oc.nif` path. #1590.
             &wctx.plugin_path,
-            &wctx
-                .plugin_paths
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
+            &load_order_paths,
         );
+        let precombined_spawned = precombined.is_none().then_some(0);
 
         // Mid-cell terrain ground point — only meaningful for the
         // initial-load camera-positioning path used by the bulk loader.
@@ -1084,7 +1073,8 @@ impl ExteriorCellApplyJob {
             gy,
             cell_root,
             terrain_center,
-            precombined_spawned: pc_spawned,
+            precombined,
+            precombined_spawned,
             references: None,
         }))
     }
@@ -1097,7 +1087,7 @@ impl ExteriorCellApplyJob {
         world: &mut World,
         ctx: &mut VulkanContext,
         tex_provider: &TextureProvider,
-        mat_provider: Option<&mut MaterialProvider>,
+        mut mat_provider: Option<&mut MaterialProvider>,
         budget: &mut FrameTimeBudget,
     ) -> ExteriorCellApplyProgress {
         let index = &wctx.record_index.cells;
@@ -1106,9 +1096,51 @@ impl ExteriorCellApplyJob {
             .get(&wctx.worldspace_key)
             .and_then(|cells| cells.get(&(self.gx, self.gy)))
             .expect("exterior cell existed when its apply job began");
+        if self.precombined_spawned.is_none() {
+            let job = self
+                .precombined
+                .take()
+                .expect("unfinished precombined apply retained its cursor");
+            let first_entity = world.next_entity_id();
+            match job.advance(
+                cell,
+                cell_grid_to_world_yup(self.gx, self.gy),
+                world,
+                ctx,
+                tex_provider,
+                mat_provider.as_deref_mut(),
+                budget,
+            ) {
+                super::precombined::PrecombinedSpawnProgress::Pending(job) => {
+                    self.precombined = Some(job);
+                    stamp_cell_root_range(
+                        world,
+                        self.cell_root,
+                        first_entity,
+                        world.next_entity_id(),
+                    );
+                    flush_pending_cell_textures(ctx);
+                    return ExteriorCellApplyProgress::Pending(self);
+                }
+                super::precombined::PrecombinedSpawnProgress::Complete { spawned, .. } => {
+                    self.precombined_spawned = Some(spawned);
+                    stamp_cell_root_range(
+                        world,
+                        self.cell_root,
+                        first_entity,
+                        world.next_entity_id(),
+                    );
+                }
+            }
+            if budget.should_yield() {
+                flush_pending_cell_textures(ctx);
+                return ExteriorCellApplyProgress::Pending(self);
+            }
+        }
         let absorbed = super::precombined::absorbed_refs_or_empty(
             &cell.absorbed_refs,
-            self.precombined_spawned,
+            self.precombined_spawned
+                .expect("precombined apply completed before reference loading"),
         );
         let label = format!("exterior({},{})", self.gx, self.gy);
         let first_entity = world.next_entity_id();

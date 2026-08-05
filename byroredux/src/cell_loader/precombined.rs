@@ -28,9 +28,8 @@
 //!   Currently no occlusion-volume or CPU coarse-cull system exists.
 
 use byroredux_bsa::CsgArchive;
-use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::World;
-use byroredux_core::math::{Quat, Vec3};
+use byroredux_core::math::Vec3;
 use byroredux_core::string::StringPool;
 use byroredux_nif::import::precombine::{decode_shared_geom_object, psg_vertex_stride};
 use byroredux_nif::import::{ImportedMesh, MeshResolver};
@@ -41,7 +40,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
-use super::spawn::spawn_placed_instances;
+use super::spawn::{PrecombinedPlacementSpawnJob, PrecombinedPlacementSpawnProgress};
 use super::FrameTimeBudget;
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 
@@ -72,10 +71,10 @@ pub(crate) fn absorbed_refs_or_empty(
 
 /// Resumable cursor over one cell's precombined hashes.
 ///
-/// A hash is the smallest safe apply unit: its imported meshes share one cache
-/// entry and one placement root, so yielding inside it would leave partially
-/// committed geometry. Keeping the CSG handle and ownership resolution on the
-/// cursor avoids reopening the large shared-geometry archive on every frame.
+/// Parse/CSG decode advances per hash, while a nested placement cursor yields
+/// between imported meshes and bounded BLAS batches. Keeping the CSG handle
+/// and ownership resolution here avoids reopening the large shared-geometry
+/// archive on every frame.
 pub(super) struct PrecombinedSpawnJob {
     form_id: u32,
     total_hashes: usize,
@@ -86,6 +85,7 @@ pub(super) struct PrecombinedSpawnJob {
     owning_subdir: Option<String>,
     csg_initialized: bool,
     csg: Option<Arc<CsgArchive>>,
+    active_spawn: Option<PrecombinedPlacementSpawnJob>,
 }
 
 pub(super) enum PrecombinedSpawnProgress {
@@ -114,6 +114,7 @@ impl PrecombinedSpawnJob {
             owning_subdir,
             csg_initialized: false,
             csg: None,
+            active_spawn: None,
         })
     }
 
@@ -143,37 +144,231 @@ impl PrecombinedSpawnJob {
             budget.complete_unit();
         }
 
-        // Precombined NIFs are baked in cell-local coords; `cell_origin`
-        // shifts them into world space (zero for interior, cell-grid-derived
-        // for exterior). No rotation / scale — the bake is axis-aligned and
-        // at unit scale by construction.
-        let pos = cell_origin;
-        let rot = Quat::IDENTITY;
-        let scale = 1.0;
-
         while self.next_hash < self.total_hashes {
+            if let Some(spawn) = self.active_spawn.take() {
+                match spawn.advance(world, ctx, tex_provider, budget) {
+                    PrecombinedPlacementSpawnProgress::Pending(spawn) => {
+                        self.active_spawn = Some(spawn);
+                        return PrecombinedSpawnProgress::Pending(self);
+                    }
+                    PrecombinedPlacementSpawnProgress::Complete { spawned } => {
+                        self.spawned += spawned;
+                        self.next_hash += 1;
+                    }
+                }
+                if budget.should_yield() {
+                    return PrecombinedSpawnProgress::Pending(self);
+                }
+                continue;
+            }
             if budget.should_yield() {
                 return PrecombinedSpawnProgress::Pending(self);
             }
             let hash = cell.precombined_mesh_hashes[self.next_hash];
-            let path =
-                precombine_oc_nif_path(self.form_id, hash, self.owning_subdir.as_deref());
+            let path = precombine_oc_nif_path(self.form_id, hash, self.owning_subdir.as_deref());
 
-/// Spawn the precombined `_oc.nif` files referenced by `cell.precombined_mesh_hashes`.
+            // Check the process-lifetime cache first; precombined NIFs are
+            // typically unique-per-cell so the hit-rate is near zero on
+            // cold loads but we still want the path through the LRU so
+            // the `_oc.nif` survives a brief un/reload (e.g. interior →
+            // re-enter same cell).
+            let cached: Option<Arc<CachedNifImport>> = {
+                let reg = world.resource::<NifImportRegistry>();
+                reg.get(&path).and_then(|opt| opt.clone())
+            };
+
+            let cached = if let Some(c) = cached {
+                // #1217 / D2 FIND-3 — cache-hit on a zero-mesh entry surfaces
+                // post-mortem visibility for the CSG-deferred fallback. The
+                // first cache MISS fires the zero-contribution warn in
+                // `parse_and_import_nif` (#1215); subsequent cells re-using
+                // the same `_oc.nif` path hit this branch and skip the
+                // warn site. Without this debug line an operator only
+                // sees the first occurrence per process.
+                if c.meshes.is_empty() && c.collisions.is_empty() && c.lights.is_empty() {
+                    log::debug!(
+                        "PreCombined cache hit on zero-mesh entry: '{}' \
+                     (cell {:08X}) — CSG-deferred fallback",
+                        path,
+                        self.form_id,
+                    );
+                }
+                c
+            } else {
+                // Cache miss — extract + parse + import + commit. Use the
+                // same `parse_and_import_nif` path that loose REFR meshes
+                // use (BGSM merge + collision extraction + animation
+                // capture) so precombines benefit from the same texture /
+                // material plumbing.
+                let bytes = match tex_provider.extract_mesh(&path) {
+                    Some(b) => b,
+                    None => {
+                        if self.misses < 3 {
+                            // Surface the first 3 misses at WARN so an
+                            // operator can verify the path shape. Default
+                            // log level may suppress debug!. The bulk
+                            // miss count is logged at the end of this fn.
+                            log::warn!(
+                                "PreCombined miss: '{}' not found in mesh archives \
+                             (cell {:08X}, hash {:08x})",
+                                path,
+                                self.form_id,
+                                hash,
+                            );
+                        }
+                        self.misses += 1;
+                        self.next_hash += 1;
+                        budget.complete_unit();
+                        continue;
+                    }
+                };
+                // M49 — shared-variant precombines store their geometry in the
+                // companion `.csg`, which the standard walk-based import skips
+                // (it produces zero meshes). When the CSG resolved, decode the
+                // packed-combined objects directly into spawnable meshes. Falls
+                // through to the standard import path when the CSG is absent or
+                // the `_oc.nif` carries no shared geometry (baked variant /
+                // non-precombine content).
+                let csg_parsed: Option<Arc<CachedNifImport>> =
+                    self.csg
+                        .as_ref()
+                        .and_then(|csg| match byroredux_nif::parse_nif(&bytes) {
+                            Ok(scene) => {
+                                let meshes = {
+                                    let mut pool = world.resource_mut::<StringPool>();
+                                    let mut meshes =
+                                        build_precombine_meshes(&scene, csg, &mut pool);
+                                    // Apply BGSM material flags (two_sided / decal /
+                                    // alpha_test) to the CSG-decoded meshes. FO4
+                                    // authors these in the `.bgsm`, not the NIF, so
+                                    // `precombine_material_from_shape` (NIF-only)
+                                    // can't see them. The REFR and fallback
+                                    // (`parse_and_import_nif`) paths run this merge; the
+                                    // shared-precombine CSG path did not — leaving
+                                    // precombine foliage/decals with no alpha-test
+                                    // (opaque-black cards clipping through walls) and no
+                                    // two-sided / decal routing. `merge_external_material`
+                                    // no-ops for meshes without a `material_path`.
+                                    //
+                                    // BUT do NOT take the BGSM alpha-BLEND on this path.
+                                    // FO4 authors the "Standard" blend mode (function=1,
+                                    // src=6, dst=7) identically on transparent lab glass
+                                    // AND opaque metal architecture (institutemetal01a,
+                                    // flatmetalpanelsdetails01); `merge_external_material`
+                                    // turns any function>0 into `has_alpha`, so applying
+                                    // it here made the whole precombined Institute shell
+                                    // alpha-blend against its diffuse alpha (specular
+                                    // data on lit metal, not opacity) → see-through walls
+                                    // (#1619 follow-up; the efd3c41b regression). Keep
+                                    // the merge's other flags but restore the pre-merge
+                                    // (NIF-shape) alpha-blend state so opaque precombine
+                                    // architecture stays opaque.
+                                    if let Some(provider) = mat_provider.as_deref_mut() {
+                                        for mesh in &mut meshes {
+                                            let blend = (
+                                                mesh.material.has_alpha,
+                                                mesh.material.src_blend_mode,
+                                                mesh.material.dst_blend_mode,
+                                            );
+                                            crate::asset_provider::merge_external_material(
+                                                &mut mesh.material,
+                                                provider,
+                                                &mut pool,
+                                            );
+                                            (
+                                                mesh.material.has_alpha,
+                                                mesh.material.src_blend_mode,
+                                                mesh.material.dst_blend_mode,
+                                            ) = blend;
+                                        }
+                                    }
+                                    meshes
+                                };
+                                (!meshes.is_empty()).then(|| Arc::new(geometry_only_cached(meshes)))
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "PreCombined CSG parse failed: '{path}' (cell {:08X}): {e}",
+                                    self.form_id
+                                );
+                                None
+                            }
+                        });
+                let parsed = match csg_parsed {
+                    Some(c) => Some(c),
+                    None => {
+                        let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+                        super::references::parse_and_import_nif_pub(
+                            &bytes,
+                            &path,
+                            mat_provider.as_deref_mut(),
+                            &mut pool,
+                            Some(tex_provider as &dyn MeshResolver),
+                        )
+                    }
+                };
+                // Commit to registry so a re-load of this cell hits the cache.
+                {
+                    let mut reg = world.resource_mut::<NifImportRegistry>();
+                    let _freed = reg.insert(path.clone(), parsed.clone());
+                }
+                match parsed {
+                    Some(c) => c,
+                    None => {
+                        log::warn!(
+                            "PreCombined parse failed: '{}' (cell {:08X})",
+                            path,
+                            self.form_id,
+                        );
+                        self.misses += 1;
+                        self.next_hash += 1;
+                        budget.complete_unit();
+                        continue;
+                    }
+                }
+            };
+
+            // Parsing/CSG decode is one cooperative unit. Mesh upload and BLAS
+            // work continue through a second-level cursor so a hash containing
+            // dozens of meshes cannot monopolize one frame.
+            self.active_spawn = Some(PrecombinedPlacementSpawnJob::new(
+                world,
+                ctx,
+                tex_provider,
+                cached,
+                path,
+                cell_origin,
+            ));
+            budget.complete_unit();
+        }
+
+        if self.misses > 0 {
+            log::info!(
+                "  PreCombined: {} hashes — {} entities spawned, {} misses (#1188)",
+                self.total_hashes,
+                self.spawned,
+                self.misses,
+            );
+        } else {
+            log::info!(
+                "  PreCombined: {} hashes — {} entities spawned (#1188)",
+                self.total_hashes,
+                self.spawned,
+            );
+        }
+
+        PrecombinedSpawnProgress::Complete {
+            spawned: self.spawned,
+            misses: self.misses,
+        }
+    }
+}
+
+/// Spawn all precombined `_oc.nif` files without a frame deadline.
 ///
-/// `cell_origin` is the world-space position the bake should land at:
-/// - **Interior cells** (called from `load.rs`): pass `Vec3::ZERO` — the
-///   interior cell IS the world origin, so the bake's cell-local coords
-///   already are world coords (#1222 / D3-NEW-03).
-/// - **Exterior cells** (called from `exterior.rs`, #1221 / D3-NEW-02):
-///   pass `cell_grid_to_world_yup(gx, gy)` so the bake lands at the
-///   correct Commonwealth tile position. Without this offset every
-///   exterior precombine would stack at the world origin.
-///
-/// Returns `(spawned_entities, skipped_misses)` — the second number
-/// counts hashes whose `_oc.nif` file failed to extract from the
-/// asset chain (missing texture archive, mod-content cell that
-/// references stripped precombines, etc.).
+/// Interior and initial bulk loads retain their synchronous behaviour; the
+/// exterior streaming path owns a [`PrecombinedSpawnJob`] directly and yields
+/// between hashes, imported meshes, and bounded BLAS batches.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_precombined_meshes(
     cell: &CellData,
@@ -182,264 +377,33 @@ pub(super) fn spawn_precombined_meshes(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     mut mat_provider: Option<&mut MaterialProvider>,
-    // Path to the *active* plugin (the last `--esm`, e.g.
-    // `…/Data/Fallout4.esm`). Provides the Data directory and the fallback
-    // CSG when a cell's owner can't be resolved from `load_order_paths`.
     plugin_path: &str,
-    // Correctly-cased plugin paths in load order (masters first, active
-    // plugin last), aligned with the global form-id mod-index byte. Used to
-    // resolve the cell's *owning* plugin so its companion
-    // `<Plugin> - Geometry.csg` is opened — not the last-loaded plugin's,
-    // which holds the wrong blob for master-owned cells (#1590). Single-
-    // plugin loads pass a one-element slice → identical to the old behaviour.
     load_order_paths: &[&str],
 ) -> (usize, usize) {
-    if cell.precombined_mesh_hashes.is_empty() {
+    let Some(mut job) = PrecombinedSpawnJob::new(cell, plugin_path, load_order_paths) else {
         return (0, 0);
-    }
-
-    // Resolve the shared-geometry CSG. #1585 / F6 — route through the
-    // `MaterialProvider` cache so the ~240 MB blob is opened (and its chunk
-    // table parsed) once per session instead of once per cell, preserving the
-    // warm zlib `ChunkCache` across adjacent tiles. When no provider is
-    // present (paths that pass `None`) fall back to an uncached open so CSG
-    // resolution still works. `None` keeps the pre-M49 REFR fallback.
-    // #1590 — both the CSG and the `_oc.nif` path follow the plugin that
-    // OWNS the cell (its remapped form-id mod-index byte → load order), not
-    // the last-loaded `--esm`. For the dominant single-plugin / DLC-as-active
-    // case these coincide; they diverge when a master owns the cell (e.g. a
-    // Commonwealth tile loaded with a DLC active), where the old assumption
-    // read the wrong blob and built a path with the wrong mod byte + no DLC
-    // subdir.
-    let (owning_path, owning_subdir) =
-        resolve_precombine_owner(cell.form_id, load_order_paths, plugin_path);
-    let csg: Option<Arc<CsgArchive>> = match mat_provider.as_deref_mut() {
-        Some(mp) => mp.geometry_csg(owning_path),
-        None => open_geometry_csg(owning_path).map(Arc::new),
     };
-
-    // Precombined NIFs are baked in cell-local coords; `cell_origin`
-    // shifts them into world space (zero for interior, cell-grid-
-    // derived for exterior). No rotation / scale — the bake is
-    // axis-aligned and at unit scale by construction.
-    let pos = cell_origin;
-    let rot = Quat::IDENTITY;
-    let scale = 1.0;
-
-    let mut spawned = 0usize;
-    let mut misses = 0usize;
-
-    for hash in &cell.precombined_mesh_hashes {
-        let path = precombine_oc_nif_path(cell.form_id, *hash, owning_subdir.as_deref());
-
-        // Check the process-lifetime cache first; precombined NIFs are
-        // typically unique-per-cell so the hit-rate is near zero on
-        // cold loads but we still want the path through the LRU so
-        // the `_oc.nif` survives a brief un/reload (e.g. interior →
-        // re-enter same cell).
-        let cached: Option<Arc<CachedNifImport>> = {
-            let reg = world.resource::<NifImportRegistry>();
-            reg.get(&path).and_then(|opt| opt.clone())
-        };
-
-        let cached = if let Some(c) = cached {
-            // #1217 / D2 FIND-3 — cache-hit on a zero-mesh entry surfaces
-            // post-mortem visibility for the CSG-deferred fallback. The
-            // first cache MISS fires the zero-contribution warn in
-            // `parse_and_import_nif` (#1215); subsequent cells re-using
-            // the same `_oc.nif` path hit this branch and skip the
-            // warn site. Without this debug line an operator only
-            // sees the first occurrence per process.
-            if c.meshes.is_empty() && c.collisions.is_empty() && c.lights.is_empty() {
-                log::debug!(
-                    "PreCombined cache hit on zero-mesh entry: '{}' \
-                     (cell {:08X}) — CSG-deferred fallback",
-                    path,
-                    cell.form_id,
-                );
-            }
-            c
-        } else {
-            // Cache miss — extract + parse + import + commit. Use the
-            // same `parse_and_import_nif` path that loose REFR meshes
-            // use (BGSM merge + collision extraction + animation
-            // capture) so precombines benefit from the same texture /
-            // material plumbing.
-            let bytes = match tex_provider.extract_mesh(&path) {
-                Some(b) => b,
-                None => {
-                    if misses < 3 {
-                        // Surface the first 3 misses at WARN so an
-                        // operator can verify the path shape. Default
-                        // log level may suppress debug!. The bulk
-                        // miss count is logged at the end of this fn.
-                        log::warn!(
-                            "PreCombined miss: '{}' not found in mesh archives \
-                             (cell {:08X}, hash {:08x})",
-                            path,
-                            cell.form_id,
-                            hash,
-                        );
-                    }
-                    misses += 1;
-                    continue;
-                }
-            };
-            // M49 — shared-variant precombines store their geometry in the
-            // companion `.csg`, which the standard walk-based import skips
-            // (it produces zero meshes). When the CSG resolved, decode the
-            // packed-combined objects directly into spawnable meshes. Falls
-            // through to the standard import path when the CSG is absent or
-            // the `_oc.nif` carries no shared geometry (baked variant /
-            // non-precombine content).
-            let csg_parsed: Option<Arc<CachedNifImport>> =
-                csg.as_ref()
-                    .and_then(|csg| match byroredux_nif::parse_nif(&bytes) {
-                        Ok(scene) => {
-                            let meshes = {
-                                let mut pool = world.resource_mut::<StringPool>();
-                                let mut meshes = build_precombine_meshes(&scene, csg, &mut pool);
-                                // Apply BGSM material flags (two_sided / decal /
-                                // alpha_test) to the CSG-decoded meshes. FO4
-                                // authors these in the `.bgsm`, not the NIF, so
-                                // `precombine_material_from_shape` (NIF-only)
-                                // can't see them. The REFR and fallback
-                                // (`parse_and_import_nif`) paths run this merge; the
-                                // shared-precombine CSG path did not — leaving
-                                // precombine foliage/decals with no alpha-test
-                                // (opaque-black cards clipping through walls) and no
-                                // two-sided / decal routing. `merge_external_material`
-                                // no-ops for meshes without a `material_path`.
-                                //
-                                // BUT do NOT take the BGSM alpha-BLEND on this path.
-                                // FO4 authors the "Standard" blend mode (function=1,
-                                // src=6, dst=7) identically on transparent lab glass
-                                // AND opaque metal architecture (institutemetal01a,
-                                // flatmetalpanelsdetails01); `merge_external_material`
-                                // turns any function>0 into `has_alpha`, so applying
-                                // it here made the whole precombined Institute shell
-                                // alpha-blend against its diffuse alpha (specular
-                                // data on lit metal, not opacity) → see-through walls
-                                // (#1619 follow-up; the efd3c41b regression). Keep
-                                // the merge's other flags but restore the pre-merge
-                                // (NIF-shape) alpha-blend state so opaque precombine
-                                // architecture stays opaque.
-                                if let Some(provider) = mat_provider.as_deref_mut() {
-                                    for mesh in &mut meshes {
-                                        let blend = (
-                                            mesh.material.has_alpha,
-                                            mesh.material.src_blend_mode,
-                                            mesh.material.dst_blend_mode,
-                                        );
-                                        crate::asset_provider::merge_external_material(
-                                            &mut mesh.material,
-                                            provider,
-                                            &mut pool,
-                                        );
-                                        (
-                                            mesh.material.has_alpha,
-                                            mesh.material.src_blend_mode,
-                                            mesh.material.dst_blend_mode,
-                                        ) = blend;
-                                    }
-                                }
-                                meshes
-                            };
-                            (!meshes.is_empty()).then(|| Arc::new(geometry_only_cached(meshes)))
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "PreCombined CSG parse failed: '{path}' (cell {:08X}): {e}",
-                                cell.form_id
-                            );
-                            None
-                        }
-                    });
-            let parsed = match csg_parsed {
-                Some(c) => Some(c),
-                None => {
-                    let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
-                    super::references::parse_and_import_nif_pub(
-                        &bytes,
-                        &path,
-                        mat_provider.as_deref_mut(),
-                        &mut pool,
-                        Some(tex_provider as &dyn MeshResolver),
-                    )
-                }
-            };
-            // Commit to registry so a re-load of this cell hits the cache.
-            {
-                let mut reg = world.resource_mut::<NifImportRegistry>();
-                let _freed = reg.insert(path.clone(), parsed.clone());
-            }
-            match parsed {
-                Some(c) => c,
-                None => {
-                    log::warn!(
-                        "PreCombined parse failed: '{}' (cell {:08X})",
-                        path,
-                        cell.form_id,
-                    );
-                    misses += 1;
-                    continue;
-                }
-            }
-        };
-
-        // Spawn one entity per precombined NIF at the cell origin.
-        // No REFR overlay (precombines bake textures into the geometry
-        // already), no embedded clip handle (precombines are static),
-        // no light data (precombines exclude lights — those stay as
-        // individual REFRs outside the absorption set).
-        // M47.0 Phase 3b — discard the placement_root return.
-        // Precombined bake artifacts have no per-REFR script binding
-        // (they're geometry merges, not source REFRs); script attach
-        // runs only on the references.rs call site.
-        let (_placement_root, count) = spawn_placed_instances(
+    let mut budget = FrameTimeBudget::unlimited();
+    loop {
+        match job.advance(
+            cell,
+            cell_origin,
             world,
             ctx,
-            &cached,
             tex_provider,
-            pos,
-            rot,
-            scale,
-            /* light_data = */ None,
-            /* light_animation_flags = */ 0,
-            /* light_shadow_flags = */ 0,
-            /* refr_overlay = */ None,
-            /* clip_handle = */ None,
-            RenderLayer::Architecture,
-            /* mesh_cache_key = */ Some(&path),
-            // Precombined entities are bake artifacts, not placed REFRs
-            // — no placement form-id. #1212.
-            /* placement_form_id_pair = */
-            None,
-            // Precombines absorb static architecture / clutter; doors
-            // are excluded from the absorption set by Bethesda's bake
-            // pipeline, so this path never carries XTEL.
-            /* teleport = */
-            None,
-        );
-        spawned += count;
+            mat_provider.as_deref_mut(),
+            &mut budget,
+        ) {
+            PrecombinedSpawnProgress::Complete { spawned, misses } => {
+                return (spawned, misses);
+            }
+            PrecombinedSpawnProgress::Pending(next) => {
+                // Only finite exterior budgets apply the BLAS mesh-count cap;
+                // this branch remains defensive for future cursor phases.
+                job = next;
+            }
+        }
     }
-
-    if misses > 0 {
-        log::info!(
-            "  PreCombined: {} hashes — {} entities spawned, {} misses (#1188)",
-            cell.precombined_mesh_hashes.len(),
-            spawned,
-            misses,
-        );
-    } else {
-        log::info!(
-            "  PreCombined: {} hashes — {} entities spawned (#1188)",
-            cell.precombined_mesh_hashes.len(),
-            spawned,
-        );
-    }
-
-    (spawned, misses)
 }
 
 /// On-disk archive path for a cell's precombined `_oc.nif`.

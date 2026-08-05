@@ -37,10 +37,11 @@ Live validation on 2026-08-04 exposed the difference between "wired" and
   furniture markers. These are not core terrain failures, but they need a
   classified allowlist or real consumers so regressions do not hide inside an
   unbounded warning bucket.
-- The first repeatable exterior smoke matrix now lives at
-  `docs/smoke-tests/m-exteriors.sh`; a boundary-crossing latency benchmark is
-  still missing. Earlier exterior coverage was split among audits, one
-  SpeedTree smoke, and prose claims.
+- The repeatable exterior smoke matrix and its deterministic three-boundary
+  `grid-cross` mode live at `docs/smoke-tests/m-exteriors.sh`. The traversal
+  records queue/worker/apply/unload/LOD latency plus whole-frame p50/p95/max,
+  and hard-fails superseded or unsettled boundaries. Earlier exterior coverage
+  was split among audits, one SpeedTree smoke, and prose claims.
 
 ## Definition of done
 
@@ -132,15 +133,40 @@ zero missing textures, while FO4 reported one. EX-01 is implemented; EX-05
 remains open for the renderer-side non-finite counter, and the diagnostic/safe-
 fallback half of EX-02 is implemented.
 
+The first live boundary matrix on 2026-08-04 established the EX-06 baseline:
+
+- FNV settled all three crossings (full-detail max 1.17 s, LOD max 1.21 s,
+  apply max 26.5 ms, frame max 76.9 ms).
+- FO3 settled all three (47.2 ms / 6.1 ms full-detail/LOD maxima). Its final
+  view is intentionally sparse; boundary mode therefore gates renderability,
+  not the starting cell's static population floor.
+- Oblivion settled all three (908 ms / 1.50 s, apply max 24.0 ms, frame max
+  72.3 ms).
+- Skyrim settled all three, but exposed an 8.10 s full-detail / 8.14 s LOD
+  tail and 340 ms worst frame.
+- FO4 initially exhausted device-local memory and lost the Vulkan device while
+  repeatedly rebuilding a 600+ MiB global geometry SSBO. Capacity-aware
+  rebuild batching plus an explicit large-buffer idle fallback removed the
+  device loss and reduced roughly one hundred rebuilds to one per settled
+  transaction. Making precombined spawning resumable per hash then reduced the
+  worst apply slice from 2.55 s to 293 ms. The 900-frame gate remains red:
+  first-crossing full-detail/LOD settle is 7.23/7.25 s, unload reaches 745 ms,
+  frame max is 816 ms, the second crossing is superseded, and the final
+  crossing is unsettled. This is the measured EX-07/EX-08 P0, not a smoke
+  threshold to waive.
+
 ### Tranche B — make entry and traversal safe
 
-1. Define a foreground-ready result carrying center source, terrain/reference
+1. [ ] Define a foreground-ready result carrying center source, terrain/reference
    availability, spawn candidate, and ground-probe status instead of returning
    bare `Vec3::ZERO` on ambiguity.
-2. Add a deterministic two-boundary camera/player path and streaming telemetry.
-3. Bring remaining atomic apply and LOD work under the shared wall-clock
+2. [x] Add a deterministic three-boundary camera path and bounded streaming /
+   whole-frame telemetry (EX-06).
+3. [ ] Bring remaining atomic apply, unload, global-geometry, and LOD work under the shared wall-clock
    deadline.
-4. Run cancellation/ownership soak loops and repair leaked owners.
+   Precombined cells now yield between hashes; the next split is inside a
+   single hash's decode/upload/BLAS work, followed by resumable cell teardown.
+4. [ ] Run cancellation/ownership soak loops and repair leaked owners.
 
 Exit: EX-02, EX-04, EX-06, EX-07, and EX-08 are closed.
 

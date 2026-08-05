@@ -36,7 +36,7 @@ Inventory` returned nothing.
 
 | Script | Milestone | Verifies |
 |--------|-----------|----------|
-| [`m-exteriors.sh`](m-exteriors.sh) | Exterior readiness EX-01 / EX-05 | Cross-game matrix for FNV WastelandNV, FO3 MegatonWorld, Oblivion/Skyrim Tamriel, and FO4 Commonwealth. Each installed profile must populate a known exterior, report exterior lighting, emit a healthy non-blank PNG, and avoid panic/Vulkan-validation signatures. Bench, debug, image, and command artifacts are retained for comparison. |
+| [`m-exteriors.sh`](m-exteriors.sh) | Exterior readiness EX-01 / EX-05 / EX-06 / EX-07 | Cross-game matrix for FNV WastelandNV, FO3 MegatonWorld, Oblivion/Skyrim Tamriel, and FO4 Commonwealth. `static` mode gates populated exterior captures; `boundary` mode drives the deterministic three-cell `grid-cross` path and additionally requires every full-detail and LOD handoff to settle without supersession. Bench, streaming, debug, image, and command artifacts are retained for comparison. |
 | `cargo run --release -p byroredux-scripting --example mq101_conformance` | MQ101 intro vertical-slice preflight | Production ESM/BSA/PEX paths recover the `MQ101` quest plus its typed `SCEN` timelines, aliases, phases, dialogue/package/timer actions, stage/scene-fragment bindings, attached properties, critical intro scripts, cart HKX files, and localized FUZ dialogue. Hard checks verify every scene actor, phase range, DIAL/PACK reference, SCEN-bound PEX asset, and construction of the live `SceneRegistry`/`ScenePlayer` shape. Also reports the exact share of bound quest fragments the current effect lowerer understands. This does not need Vulkan; it proves data ingress and orchestration-plan construction, not actor-alias spawning or dialogue/package execution. Pass a data-directory argument or set `BYROREDUX_SKYRIM_DATA` to override the default install path. |
 | [`r6a_stale_15_bench.sh`](r6a_stale_15_bench.sh) | R6a-stale-15 bench-of-record refresh | Canonical three-cell benchmark suite: Prospector Saloon (FNV synthesized collision), Whiterun (Skyrim control), MedTek (FO4 precombined). Collects FPS / wall_ms / fence_ms / brd_ms / entities / draws / IsCollisionOnly counts. Formats output for ROADMAP.md copy-paste. Enforces CWD rule (run from each game's `Data/` directory). |
 | [`m41-equip.sh`](m41-equip.sh) | M41 Phase 2 close-out | Skyrim+ / FO4 NPCs spawn with their default outfit (LVLI dispatch via OTFT walks resolves to base ARMO refs; `Inventory` + `EquipmentSlots` are populated; armor meshes load without `tex.missing` overflow). |
@@ -55,6 +55,22 @@ drift that doesn't indicate a code bug.
 For `m-exteriors.sh`, the entity/draw floors are calibrated below the
 2026-08-04 five-game radius-1 baseline. PNG health additionally requires RGB
 mean `(0.01, 0.98)` and standard deviation `> 0.005`.
+
+Run the two modes explicitly:
+
+```bash
+docs/smoke-tests/m-exteriors.sh all static
+docs/smoke-tests/m-exteriors.sh all boundary
+```
+
+Boundary mode defaults to 900 frames, crosses three complete exterior cells,
+and emits bounded telemetry for dispatch, unload, worker queue/parse, apply,
+LOD, and frame p50/p95/max. A profile fails if it reports fewer than three
+crossings, a superseded deadline, or an unsettled full-detail/LOD handoff. The
+gate is intentionally performance-sensitive: the 2026-08-04 FO4 run remains
+red after its device-loss fix because its 7.25 s handoff cannot keep up with
+the scripted traversal; see the EX-07 baseline in
+`docs/engine/exterior-readiness-plan.md`.
 
 | Profile | Grid / WRLD | Hard floor entities / draws | Observed entities / draws | Image mean / stddev |
 |---------|-------------|------------------------------|---------------------------|---------------------|
@@ -94,7 +110,8 @@ falls back to the canonical Steam install paths:
 | `BYROREDUX_SKYRIM_DATA`     | `/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data`                    |
 | `BYROREDUX_FO4_DATA`        | `/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data`                                 |
 | `BYRO_DEBUG_PORT`           | `9876`                                                                                   |
-| `BYROREDUX_SMOKE_FRAMES`    | `30` (bench frames before the hold kicks in — used by `m41-equip.sh` / `m47-triggers.sh`)  |
+| `BYROREDUX_SMOKE_FRAMES`    | `30` (static exterior and other smoke bench frames before hold)                           |
+| `BYROREDUX_BOUNDARY_FRAMES` | `900` (`m-exteriors.sh ... boundary` traversal and settle window)                         |
 | `BYROREDUX_SMOKE_TIMEOUT`   | `240` seconds per profile (used by `m-exteriors.sh`)                                     |
 | `BYROREDUX_EXTERIOR_ARTIFACT_DIR` | Fresh `/tmp/byro-exterior-smoke.*` directory retained after the run               |
 | `BYROREDUX_TRIGGER_CELL`    | `WhiterunBanneredMare` (cell `m47-triggers.sh` loads; override with a quest dungeon for trigger-volume coverage) |

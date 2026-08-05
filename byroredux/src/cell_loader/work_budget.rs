@@ -46,6 +46,10 @@ impl FrameTimeBudget {
     pub(crate) fn completed_units(&self) -> usize {
         self.completed_units
     }
+
+    pub(crate) fn is_unlimited(&self) -> bool {
+        self.deadline.is_none()
+    }
 }
 
 #[cfg(test)]
@@ -70,6 +74,7 @@ mod tests {
             assert!(!budget.should_yield());
             budget.complete_unit();
         }
+        assert!(budget.is_unlimited());
         assert_eq!(budget.completed_units(), 10_000);
     }
 }
