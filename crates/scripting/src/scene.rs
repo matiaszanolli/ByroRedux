@@ -140,6 +140,20 @@ pub struct ActiveSceneAction {
 }
 
 /// Persistent playback state for one scene definition.
+///
+/// # Save registry — deliberately NOT registered (#2294 / SAVE-D1-11)
+///
+/// Structurally similar to `AnimationPlayer`/`AnimationStack`, which were
+/// deliberately excluded from `byroredux::save_io::build_save_registry`
+/// (#1696) because the reloaded cell's systems reconstruct equivalent state
+/// from scratch. The same call is believed to apply here: `current_phase`/
+/// `active_actions`/`completed_actions` are re-derived from the persisted
+/// `QuestStageState` (which IS saved) via the normal `SceneStartRequest`
+/// flow when the driving quest stage re-fires on reload, rather than proven
+/// byte-for-byte here — flagged by #2294 as a documented, not merely
+/// omitted, decision. If a live path is ever found where a reload does NOT
+/// re-derive this state, register `ScenePlayer` instead of leaving this
+/// comment stale.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScenePlayer {
     pub scene_form_id: u32,

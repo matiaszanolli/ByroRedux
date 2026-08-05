@@ -111,6 +111,9 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "GuardState",
     "PatrolState",
     "Escorted",
+    // #2292 / SAVE-D1-09 — `ActorControlState { restrained: bool }`. Single
+    // bool, no session-local identity.
+    "ActorControlState",
 ];
 
 /// The player's standing position + look direction at save time, so a
@@ -198,7 +201,9 @@ pub fn build_save_registry() -> SaveRegistry {
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
     use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
-    use byroredux_scripting::{ScriptTimer, ScriptVariables, TwoStateActivator};
+    use byroredux_scripting::{
+        ActorControlState, PlayerControlState, ScriptTimer, ScriptVariables, TwoStateActivator,
+    };
 
     use crate::cell_loader::CurrentCellContext;
 
@@ -244,6 +249,10 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_component::<GuardState>("GuardState")
         .register_component::<PatrolState>("PatrolState")
         .register_component::<Seated>("Seated")
+        // #2292 / SAVE-D1-09 — `Actor.SetRestrained` per-actor lock. Plain
+        // bool, delta-safe. Pre-fix a save taken while an NPC was restrained
+        // silently freed it on reload.
+        .register_component::<ActorControlState>("ActorControlState")
         .register_form_id_component("FormIdComponent")
         .register_resource::<ItemInstancePool>("ItemInstancePool")
         // M45.1 — the cell identity + plugin set the save was taken in,
@@ -259,7 +268,12 @@ pub fn build_save_registry() -> SaveRegistry {
         // (quest_advance, dlc2_ttr4a, mg07_door). Pre-fix it silently reverted
         // to default on every save/load.
         .register_resource::<QuestStageState>("QuestStageState")
-        .register_resource::<QuestObjectiveState>("QuestObjectiveState");
+        .register_resource::<QuestObjectiveState>("QuestObjectiveState")
+        // #2292 / SAVE-D1-09 — `Game.EnablePlayerControls`/
+        // `DisablePlayerControls` lock state. Plain bool/i32 fields,
+        // delta-safe. Pre-fix a save taken mid-scripted-sequence (controls
+        // locked) silently reset to all-enabled on reload.
+        .register_resource::<PlayerControlState>("PlayerControlState");
     r
 }
 
@@ -917,6 +931,9 @@ mod tests {
             "GuardState",
             "PatrolState",
             "Escorted",
+            // #2292 — ActorControlState: a single bool (`restrained`). No
+            // FixedString / EntityId / session handle → delta-safe.
+            "ActorControlState",
         ];
         assert_eq!(
             MUTABLE_DELTA_COLUMNS, AUDITED,
@@ -1193,6 +1210,65 @@ mod tests {
             restored_variables.get_by_name("::isAnimating_var"),
             Some(0.0)
         );
+    }
+
+    /// Regression: #2292 (SAVE-D1-09) — `Game.DisablePlayerControls`/
+    /// `Actor.SetRestrained` lock state must survive a save/load round
+    /// trip. Pre-fix, neither `PlayerControlState` (a `Resource`) nor
+    /// `ActorControlState` (a per-actor component) was in
+    /// `build_save_registry`, so a save taken mid-scripted-sequence
+    /// silently reset both to their all-enabled / unrestrained defaults
+    /// on reload.
+    #[test]
+    fn player_and_actor_control_state_survive_save_load_round_trip() {
+        use byroredux_scripting::{ActorControlState, PlayerControlState};
+
+        let reg = build_save_registry();
+        let mut src = World::new();
+        src.insert_resource(StringPool::new());
+        src.insert_resource(FormIdPool::new());
+        src.insert_resource(PlayerControlState {
+            movement_enabled: false,
+            fighting_enabled: false,
+            camera_switching_enabled: true,
+            looking_enabled: true,
+            sneaking_enabled: false,
+            menu_enabled: true,
+            activation_enabled: false,
+            journal_tabs_enabled: true,
+            disabled_pov_type: 1,
+            ai_driven: true,
+            hud_cart_mode: true,
+        });
+
+        let npc = src.spawn();
+        src.insert(npc, ActorControlState { restrained: true });
+
+        let snapshot = save_world(&src, &reg).unwrap();
+        let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+        let mut dst = World::new();
+        dst.insert_resource(FormIdPool::new());
+        restore_world(&mut dst, &reg, &decoded).unwrap();
+
+        let restored_controls = dst
+            .try_resource::<PlayerControlState>()
+            .expect("PlayerControlState must round-trip");
+        assert!(!restored_controls.movement_enabled);
+        assert!(!restored_controls.fighting_enabled);
+        assert!(restored_controls.camera_switching_enabled);
+        assert!(!restored_controls.sneaking_enabled);
+        assert!(!restored_controls.activation_enabled);
+        assert_eq!(restored_controls.disabled_pov_type, 1);
+        assert!(restored_controls.ai_driven);
+        assert!(restored_controls.hud_cart_mode);
+        drop(restored_controls);
+
+        let restored_actor = dst
+            .get::<ActorControlState>(npc)
+            .expect("ActorControlState must round-trip");
+        assert!(restored_actor.restrained);
     }
 
     /// #1835 — every gameplay-state component `spawn_npc_entity` stamps on an

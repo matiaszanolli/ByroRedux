@@ -98,6 +98,15 @@ struct PlayerAnimationEventRegistration {
 
 /// Per-actor cinematic state written by `PlayIdle`, `SetVehicle`, and the
 /// MQ101 `ExitCart` helper.
+///
+/// # Save registry — deliberately NOT registered (#2294 / SAVE-D1-11 SIBLING)
+///
+/// Same undocumented-omission pattern flagged for `ScenePlayer` et al.,
+/// scoped to the MQ101 demo slice. `vehicle: Option<EntityId>` is also a
+/// session-local reference (the `#1696` hazard that excluded
+/// `AnimationPlayer.root_entity`), so this would need the FollowState/
+/// EscortState treatment (full `register_component`, no `MUTABLE_DELTA_COLUMNS`
+/// entry) rather than the simple case, if ever registered.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ActorCinematicState {
     /// Live vehicle entity, or `None` after detaching/exiting.
@@ -142,6 +151,12 @@ impl Component for ActorCinematicState {
 /// The app-side cinematic system preserves the captured cart pose relative to
 /// the horse, forming the first half of MQ101's movement chain:
 /// package-driven horse -> tethered cart -> `SetVehicle` riders.
+///
+/// # Save registry — deliberately NOT registered (#2294 / SAVE-D1-11 SIBLING)
+///
+/// Same rationale as [`ActorCinematicState`]'s doc comment — MQ101
+/// demo-scoped, and `horse: EntityId` carries the same session-local-
+/// reference hazard.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HorseTetherState {
     pub horse: EntityId,
@@ -166,6 +181,12 @@ impl Component for MotionTypeChangeRequest {
 
 /// Engine-wide cinematic presentation state controlled by Skyrim globals and
 /// MQ101's animation-event helper functions.
+///
+/// # Save registry — deliberately NOT registered (#2294 / SAVE-D1-11 SIBLING)
+///
+/// Same undocumented-omission pattern flagged for `ScenePlayer` et al.,
+/// scoped to the MQ101 demo slice — see [`ActorCinematicState`]'s doc
+/// comment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CinematicPresentationState {
     pub sitting_rotation_degrees: f32,

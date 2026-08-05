@@ -141,6 +141,16 @@ pub struct ActiveScenePackageAction {
     pub command: ScenePackageCommand,
 }
 
+/// Persistent per-actor active-package-action state for one scene.
+///
+/// # Save registry — deliberately NOT registered (#2294 / SAVE-D1-11)
+///
+/// Same rationale as [`crate::scene::ScenePlayer`]'s doc comment: an active
+/// `MoveTo`/`TimedInteraction`/`AwaitExternal` action is believed to be
+/// re-derived (the driving `SCEN` restarts and re-evaluates its package
+/// stack) when the owning quest stage re-fires on reload, rather than
+/// proven here. See that comment for the full reasoning and the #1696
+/// precedent this mirrors.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ScenePackagePlayback {
     pub active_actions: Vec<ActiveScenePackageAction>,

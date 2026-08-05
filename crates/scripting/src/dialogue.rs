@@ -83,6 +83,13 @@ pub struct ActiveDialogueLine {
 /// Persistent active subtitle lines on a scene-player entity.
 ///
 /// A vector is required because authored SCEN actions may overlap.
+///
+/// # Save registry — deliberately NOT registered (#2294 / SAVE-D1-11)
+///
+/// Same rationale as [`crate::scene::ScenePlayer`]'s doc comment: mid-line
+/// subtitle progress is believed to be re-derived when the driving scene
+/// action restarts on reload (via `QuestStageState`), rather than proven
+/// here. See that comment for the full reasoning and the #1696 precedent.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DialoguePlayback {
     pub active_lines: Vec<ActiveDialogueLine>,

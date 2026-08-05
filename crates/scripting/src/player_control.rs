@@ -43,6 +43,7 @@ impl PlayerControlSelection {
 
 /// Engine-facing state of every player input domain plus cinematic modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlayerControlState {
     pub movement_enabled: bool,
     pub fighting_enabled: bool,
@@ -109,6 +110,7 @@ impl PlayerControlState {
 
 /// Per-actor state written by `Actor.SetRestrained`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorControlState {
     pub restrained: bool,
 }

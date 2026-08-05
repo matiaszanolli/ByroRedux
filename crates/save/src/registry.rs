@@ -304,6 +304,15 @@ impl SaveRegistry {
         self.components.iter().map(|e| e.name)
     }
 
+    /// Names of every registered resource column, in registration order.
+    /// Sibling of [`Self::component_names`] — #2295 / SAVE-D1-12's
+    /// registry-completeness guard needs both to cross-check registration
+    /// against every `impl Component for` / `impl Resource for` in the
+    /// source tree.
+    pub fn resource_names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.resources.iter().map(|e| e.name)
+    }
+
     pub(crate) fn resource_entries(
         &self,
     ) -> impl Iterator<Item = (&'static str, &SaveFn, &LoadFn)> {
