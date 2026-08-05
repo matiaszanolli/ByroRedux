@@ -124,8 +124,22 @@ enum FragmentResumeCondition {
     Actors3DLoaded {
         actors: Vec<ActorRef>,
         poll_seconds: f32,
+        /// Total seconds this entry has spent re-polling with the actors
+        /// still unresolved. #2288 (SCR-D6-NEW5-02) — capped by
+        /// [`MAX_ACTORS_3D_LOADED_WAIT_SECONDS`] so a permanently-unloadable
+        /// alias target (or a quest that was reset out from under the
+        /// suspended tail) doesn't retry forever with no eviction path,
+        /// unlike `quest_fragment_dispatch_system`'s bounded `MAX_CASCADE`.
+        elapsed_seconds: f32,
     },
 }
+
+/// Maximum total time (across every re-poll) a suspended
+/// `WaitForActors3DLoaded` continuation is allowed to wait before the
+/// tail is declined outright. #2288 (SCR-D6-NEW5-02) — real content polls
+/// on the order of tenths of a second, so 30s is generous headroom while
+/// still guaranteeing every entry eventually leaves the queue.
+const MAX_ACTORS_3D_LOADED_WAIT_SECONDS: f32 = 30.0;
 
 /// Runtime queue for latent time waits and bounded-work `Is3DLoaded` polling
 /// continuations.
@@ -771,6 +785,7 @@ pub fn apply_effects(
                 FragmentResumeCondition::Actors3DLoaded {
                     actors: actors.clone(),
                     poll_seconds: *poll_seconds,
+                    elapsed_seconds: 0.0,
                 },
             )),
             Effect::WaitForActors3DLoaded { .. } => None,
@@ -823,15 +838,32 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
             still_pending.push(pending);
             continue;
         }
-        match &pending.resume_when {
+        match &mut pending.resume_when {
             FragmentResumeCondition::DelayElapsed => ready.push(pending),
             FragmentResumeCondition::Actors3DLoaded {
                 actors,
                 poll_seconds,
+                elapsed_seconds,
             } => {
                 if actors_3d_loaded(pending.vmad.as_ref(), world, pending.context, actors) {
                     ready.push(pending);
                 } else {
+                    *elapsed_seconds += *poll_seconds;
+                    // #2288 (SCR-D6-NEW5-02) — give up once the total wait
+                    // exceeds the cap instead of re-arming forever. Matches
+                    // the crate's "skip, never guess" contract: the tail is
+                    // declined outright (dropped, not pushed to either
+                    // queue), the same choice `MAX_CASCADE` makes for a
+                    // runaway `SetStage` cascade in the same file.
+                    if *elapsed_seconds > MAX_ACTORS_3D_LOADED_WAIT_SECONDS {
+                        log::warn!(
+                            "fragment continuation dropped: WaitForActors3DLoaded exceeded \
+                             {MAX_ACTORS_3D_LOADED_WAIT_SECONDS}s with actors still unresolved \
+                             (context quest {:?})",
+                            pending.context
+                        );
+                        continue;
+                    }
                     pending.remaining_seconds = *poll_seconds;
                     still_pending.push(pending);
                 }

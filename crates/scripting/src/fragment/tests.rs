@@ -1311,6 +1311,57 @@ fn actor_3d_load_gate_polls_without_blocking_then_resumes() {
     assert!(world.resource::<crate::PlayerControlState>().hud_cart_mode);
 }
 
+/// Regression: #2288 (SCR-D6-NEW5-02) — a `WaitForActors3DLoaded`
+/// continuation whose actors never resolve (e.g. a permanently-unloadable
+/// alias target, or a quest reset out from under the suspended tail) must
+/// eventually be dropped instead of re-arming forever. Sibling of
+/// `actor_3d_load_gate_polls_without_blocking_then_resumes`, but the
+/// actor's `Transform` is never inserted.
+#[test]
+fn actor_3d_load_gate_gives_up_after_max_wait_and_declines_tail() {
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::ecs::components::Transform;
+
+    let mut world = fixture();
+    world.register::<Transform>();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert(
+            Q,
+            10,
+            vec![
+                Effect::WaitForActors3DLoaded {
+                    actors: vec![ActorRef::Player],
+                    poll_seconds: 10.0,
+                },
+                Effect::SetHudCartMode { cart_mode: true },
+            ],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<FragmentExecutionQueue>().len(), 1);
+
+    // The player entity never receives a Transform, so actors_3d_loaded
+    // never resolves. Each 10s tick burns one poll_seconds interval;
+    // after MAX_ACTORS_3D_LOADED_WAIT_SECONDS worth of retries the entry
+    // must be dropped rather than retained for the rest of the process.
+    let ticks = (MAX_ACTORS_3D_LOADED_WAIT_SECONDS / 10.0).ceil() as u32 + 1;
+    for _ in 0..ticks {
+        fragment_continuation_system(&world, 10.0);
+    }
+
+    assert!(
+        world.resource::<FragmentExecutionQueue>().is_empty(),
+        "WaitForActors3DLoaded must give up once the wait cap is exceeded, not retry forever"
+    );
+    // The declined tail's SetHudCartMode must never fire — this is a
+    // give-up, not a resume.
+    assert!(!world.resource::<crate::PlayerControlState>().hud_cart_mode);
+}
+
 #[test]
 fn dispatch_tethers_cart_and_equips_carried_armor() {
     use crate::translate::effects::ActorRef;
