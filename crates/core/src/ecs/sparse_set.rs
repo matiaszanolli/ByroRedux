@@ -169,6 +169,13 @@ impl<T: Component<Storage = Self>> DynStorage for SparseSetStorage<T> {
         <Self as ComponentStorage<T>>::remove(self, entity);
     }
 
+    fn remove_entities_erased(&mut self, entities: &[EntityId]) {
+        debug_assert!(entities.windows(2).all(|pair| pair[0] < pair[1]));
+        for &entity in entities {
+            <Self as ComponentStorage<T>>::remove(self, entity);
+        }
+    }
+
     fn clear_erased(&mut self) {
         self.sparse.clear();
         self.dense.clear();

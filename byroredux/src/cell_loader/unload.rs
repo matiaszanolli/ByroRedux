@@ -242,9 +242,7 @@ fn unload_cell_inner(
     // Remove every surviving component row for the victim entities.
     let victim_count = victims.len();
     let phase_started = Instant::now();
-    for eid in victims {
-        world.despawn(eid);
-    }
+    world.despawn_batch(victims);
     if victim_count > 0 {
         // Quest-alias bindings may point at actor candidates owned by this
         // cell. Rebuild lazily on the next scene tick so stale EntityIds

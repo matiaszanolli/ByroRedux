@@ -79,6 +79,18 @@ pub trait DynStorage: Send + Sync + 'static {
     /// No-op if the entity has no component here.
     fn remove_entity_erased(&mut self, entity: EntityId);
 
+    /// Remove a sorted, deduplicated batch of entities from this storage.
+    ///
+    /// The default preserves the single-remove behavior. Storage backends may
+    /// override this when they can compact once instead of repeating an
+    /// expensive structural mutation for every entity.
+    fn remove_entities_erased(&mut self, entities: &[EntityId]) {
+        debug_assert!(entities.windows(2).all(|pair| pair[0] < pair[1]));
+        for &entity in entities {
+            self.remove_entity_erased(entity);
+        }
+    }
+
     /// Drop every component in this storage, leaving it empty but
     /// reusable. Used by [`World::clear_entities`](super::world::World::clear_entities)
     /// when a save load replaces the entire entity population — far

@@ -77,6 +77,53 @@ fn despawn_nonexistent_entity_is_noop() {
 }
 
 #[test]
+fn despawn_batch_removes_sparse_and_packed_rows_once() {
+    let mut world = World::new();
+    let entities = (0..6).map(|_| world.spawn()).collect::<Vec<_>>();
+    for (index, &entity) in entities.iter().enumerate() {
+        world.insert(entity, Health(index as f32));
+        world.insert(
+            entity,
+            Position {
+                x: index as f32,
+                y: -(index as f32),
+            },
+        );
+        if index % 2 == 0 {
+            world.insert(entity, Velocity { dx: 1.0, dy: 2.0 });
+        }
+    }
+    let next_before = world.next_entity_id();
+
+    // Unsorted input, a duplicate, and an invalid ID exercise the public
+    // normalization contract before each storage receives the batch.
+    world.despawn_batch(vec![
+        entities[4],
+        entities[1],
+        entities[4],
+        next_before + 100,
+    ]);
+
+    for &removed in &[entities[1], entities[4]] {
+        assert!(world.get::<Health>(removed).is_none());
+        assert!(world.get::<Position>(removed).is_none());
+        assert!(world.get::<Velocity>(removed).is_none());
+    }
+    for &survivor in &[entities[0], entities[2], entities[3], entities[5]] {
+        assert!(world.get::<Health>(survivor).is_some());
+        assert!(world.get::<Position>(survivor).is_some());
+    }
+    assert_eq!(world.count::<Health>(), 4);
+    assert_eq!(world.count::<Position>(), 4);
+    assert_eq!(world.count::<Velocity>(), 2);
+    assert_eq!(
+        world.spawn(),
+        next_before,
+        "batch despawn must not reuse IDs"
+    );
+}
+
+#[test]
 fn despawn_empty_storages_is_noop() {
     let mut world = World::new();
     world.register::<Health>();

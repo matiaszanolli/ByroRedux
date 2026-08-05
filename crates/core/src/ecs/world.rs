@@ -135,6 +135,32 @@ impl World {
         }
     }
 
+    /// Despawn many entities while acquiring and compacting each component
+    /// storage only once.
+    ///
+    /// The victim vector is consumed so sorting/deduplication does not require
+    /// another large allocation at cell-unload scale. This preserves
+    /// [`despawn`](Self::despawn)'s no-op behavior for invalid or already-dead
+    /// IDs and does not reclaim entity IDs.
+    pub fn despawn_batch(&mut self, mut entities: Vec<EntityId>) {
+        if entities.is_empty() {
+            return;
+        }
+        entities.retain(|&entity| entity < self.next_entity);
+        entities.sort_unstable();
+        entities.dedup();
+        if entities.is_empty() {
+            return;
+        }
+
+        for (type_id, lock) in self.storages.iter_mut() {
+            let type_name = self.type_names.get(type_id).copied().unwrap_or("<unknown>");
+            lock.get_mut()
+                .unwrap_or_else(|_| storage_lock_poisoned_erased(type_name))
+                .remove_entities_erased(&entities);
+        }
+    }
+
     /// Attach a component to an entity. Overwrites if already present.
     /// Creates the storage for this component type if it doesn't exist yet.
     ///

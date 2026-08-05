@@ -253,6 +253,40 @@ impl<T: Component<Storage = Self>> DynStorage for PackedStorage<T> {
         <Self as ComponentStorage<T>>::remove(self, entity);
     }
 
+    fn remove_entities_erased(&mut self, victims: &[EntityId]) {
+        debug_assert!(victims.windows(2).all(|pair| pair[0] < pair[1]));
+        if victims.is_empty() || self.entities.is_empty() {
+            return;
+        }
+
+        // Both inputs are sorted, so compact the storage in one merge pass.
+        // Repeating `remove` would shift the Vec tail once per victim and is
+        // quadratic for exterior-cell teardown (tens of thousands of rows).
+        let old_entities = std::mem::take(&mut self.entities);
+        let old_data = std::mem::take(&mut self.data);
+        let mut retained_entities = Vec::with_capacity(old_entities.len());
+        let mut retained_data = Vec::with_capacity(old_data.len());
+        let mut victim_idx = 0usize;
+
+        for (entity, component) in old_entities.into_iter().zip(old_data) {
+            while victim_idx < victims.len() && victims[victim_idx] < entity {
+                victim_idx += 1;
+            }
+            if victim_idx < victims.len() && victims[victim_idx] == entity {
+                if T::TRACK_CHANGES {
+                    self.dirty.push(entity);
+                }
+                victim_idx += 1;
+                continue;
+            }
+            retained_entities.push(entity);
+            retained_data.push(component);
+        }
+
+        self.entities = retained_entities;
+        self.data = retained_data;
+    }
+
     fn clear_erased(&mut self) {
         self.entities.clear();
         self.data.clear();
