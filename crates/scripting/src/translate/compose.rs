@@ -34,6 +34,7 @@ use byroredux_papyrus::ast::{BinaryOp, CallArg, Expr, UnaryOp};
 /// How a quest-stage call names its quest receiver — the one hole a
 /// stage primitive can't resolve from the AST alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum QuestRef {
     /// `Self.GetOwningQuest()` — the quest owning this alias. Resolved
     /// from the attach context's `owning_quest`.
@@ -60,6 +61,7 @@ pub enum QuestRef {
 /// being acted on. Every object reference is therefore VMAD-or-decline —
 /// see [`super::effects`]'s resolution helpers.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum ObjectRef {
     /// A property (`ObjectReference`/`Actor`/`Form`-typed) bound via
     /// VMAD by name.

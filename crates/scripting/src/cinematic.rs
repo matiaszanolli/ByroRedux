@@ -19,6 +19,7 @@ use crate::quest_stages::{QuestFormId, QuestStageAdvanced, QuestStageState};
 
 /// Animation event awaited by an MQ101 cinematic helper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum CinematicAnimationEvent {
     PlayImod,
     IdleFurnitureExit,

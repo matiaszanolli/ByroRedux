@@ -14,6 +14,7 @@ use byroredux_core::ecs::world::World;
 /// `DisablePlayerControls`. A selected domain is assigned the call's enabled
 /// value; an unselected domain is left untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct PlayerControlSelection {
     pub movement: bool,
     pub fighting: bool,

@@ -110,6 +110,7 @@ impl QuestStageFragments {
 /// continuation resolves properties exactly as the original dispatch did,
 /// even if the installed fragment table changes before the wait expires.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 struct PendingFragmentExecution {
     context: QuestFormId,
     vmad: Option<ScriptInstanceData>,
@@ -119,6 +120,7 @@ struct PendingFragmentExecution {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 enum FragmentResumeCondition {
     DelayElapsed,
     Actors3DLoaded {
@@ -143,7 +145,14 @@ const MAX_ACTORS_3D_LOADED_WAIT_SECONDS: f32 = 30.0;
 
 /// Runtime queue for latent time waits and bounded-work `Is3DLoaded` polling
 /// continuations.
+///
+/// #2381 (SAVE-D1-16) — registered in
+/// `byroredux::save_io::build_save_registry`. A suspended tail's remaining
+/// effects and resume condition exist only here; a save taken mid-
+/// `Utility.Wait`/`WaitForActors3DLoaded` previously dropped the pending
+/// continuation silently on load.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct FragmentExecutionQueue {
     pending: Vec<PendingFragmentExecution>,
 }

@@ -54,7 +54,7 @@
 /// An authored Papyrus property value attached to a script instance.
 /// Only the scalar + array core types are decoded; `Object` carries the
 /// raw plugin-local FormID (the consumer applies any FormID remap).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PropertyValue {
     /// Type 1 — a form reference. `alias` is the quest-alias index when
     /// the property is alias-bound (`-1` = none).
@@ -76,7 +76,7 @@ pub enum PropertyValue {
 }
 
 /// One authored property: name + value.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ScriptProperty {
     pub name: String,
     /// VMAD per-property status byte (version >= 4); `1` = edited, the
@@ -86,7 +86,7 @@ pub struct ScriptProperty {
 }
 
 /// One attached Papyrus script + its authored properties.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ScriptInstance {
     pub name: String,
     pub status: u8,
@@ -128,7 +128,14 @@ impl ScriptInstance {
 }
 
 /// All script instances attached to a record/reference via its VMAD.
-#[derive(Debug, Clone, Default, PartialEq)]
+///
+/// #2381 (SAVE-D1-16) — `Serialize`/`Deserialize` added (alongside the
+/// same on `ScriptInstance`/`ScriptProperty`/`PropertyValue`) so a VMAD
+/// snapshot can ride inside `byroredux_scripting::FragmentExecutionQueue`'s
+/// suspended continuations when that resource is saved. Every field here
+/// is plain data (`String`/`i16`/`u32`/`u8`/`bool`/`Vec`) — no `EntityId`,
+/// no engine-side handle — so this is a safe, purely-additive derive.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ScriptInstanceData {
     pub version: i16,
     pub object_format: i16,

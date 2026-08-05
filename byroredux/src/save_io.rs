@@ -211,7 +211,8 @@ pub fn build_save_registry() -> SaveRegistry {
     use byroredux_scripting::papyrus_demo::RumbleOnActivate;
     use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
     use byroredux_scripting::{
-        ActorControlState, PlayerControlState, ScriptTimer, ScriptVariables, TwoStateActivator,
+        ActorControlState, FragmentExecutionQueue, PlayerControlState, ScriptTimer,
+        ScriptVariables, TwoStateActivator,
     };
 
     use crate::cell_loader::CurrentCellContext;
@@ -310,7 +311,16 @@ pub fn build_save_registry() -> SaveRegistry {
         // `DisablePlayerControls` lock state. Plain bool/i32 fields,
         // delta-safe. Pre-fix a save taken mid-scripted-sequence (controls
         // locked) silently reset to all-enabled on reload.
-        .register_resource::<PlayerControlState>("PlayerControlState");
+        .register_resource::<PlayerControlState>("PlayerControlState")
+        // #2381 / SAVE-D1-16 — suspended `Utility.Wait`/
+        // `WaitForActors3DLoaded` fragment continuations. Every nested
+        // type (`Effect`/`ActorRef`/`ObjectRef`/`QuestRef`/
+        // `ScriptInstanceData` and friends) audited field-by-field for
+        // FixedString/EntityId hazards — none found, all plain data
+        // (FormIDs as u32, property names as owned String). Pre-fix a
+        // save taken mid-`Utility.Wait` silently dropped the queued
+        // effect chain the wait was gating.
+        .register_resource::<FragmentExecutionQueue>("FragmentExecutionQueue");
     r
 }
 
@@ -1459,6 +1469,89 @@ mod tests {
         );
     }
 
+    /// Regression: #2381 (SAVE-D1-16) — a fragment suspended mid-
+    /// `Utility.Wait` must survive a save/load round trip and still fire
+    /// its queued tail afterward. Pre-fix, `FragmentExecutionQueue` was
+    /// absent from `build_save_registry`, so a save taken mid-wait
+    /// silently dropped the pending `SetHudCartMode` the wait was gating.
+    #[test]
+    fn fragment_execution_queue_survives_save_load_round_trip_and_resumes() {
+        use byroredux_scripting::papyrus_demo::PlayerEntity;
+        use byroredux_scripting::quest_stages::{QuestStageAdvancedBatch, QuestStageState};
+        use byroredux_scripting::translate::effects::Effect;
+        use byroredux_scripting::{
+            fragment_continuation_system, quest_fragment_dispatch_system, FragmentExecutionQueue,
+            PlayerControlState, QuestFormId, QuestStageFragments,
+        };
+
+        const Q: QuestFormId = QuestFormId(0x0001_2345);
+
+        let reg = build_save_registry();
+        let mut src = World::new();
+        src.insert_resource(StringPool::new());
+        src.insert_resource(FormIdPool::new());
+        byroredux_scripting::register(&mut src);
+        let player = src.spawn();
+        src.insert_resource(PlayerEntity(player));
+        src.insert_resource(QuestStageState::default());
+
+        {
+            let mut frags = src.resource_mut::<QuestStageFragments>();
+            frags.insert(
+                Q,
+                10,
+                vec![
+                    Effect::Wait { seconds: 5.0 },
+                    Effect::SetHudCartMode { cart_mode: true },
+                ],
+            );
+        }
+        src.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        {
+            let mut q = src.query_mut::<QuestStageAdvancedBatch>().unwrap();
+            q.insert(
+                player,
+                QuestStageAdvancedBatch(vec![
+                    byroredux_scripting::quest_stages::QuestStageAdvanced {
+                        quest: Q,
+                        previous_stage: 0,
+                        new_stage: 10,
+                    },
+                ]),
+            );
+        }
+        quest_fragment_dispatch_system(&src);
+        assert_eq!(
+            src.resource::<FragmentExecutionQueue>().len(),
+            1,
+            "Utility.Wait must suspend into FragmentExecutionQueue"
+        );
+        assert!(!src.resource::<PlayerControlState>().hud_cart_mode);
+
+        let snapshot = save_world(&src, &reg).unwrap();
+        let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+        let mut dst = World::new();
+        dst.insert_resource(FormIdPool::new());
+        restore_world(&mut dst, &reg, &decoded).unwrap();
+
+        assert_eq!(
+            dst.resource::<FragmentExecutionQueue>().len(),
+            1,
+            "FragmentExecutionQueue must round-trip"
+        );
+
+        // Resuming after the restored wait still fires the queued tail —
+        // proof the round-trip preserved real, resumable effect data, not
+        // just an opaque blob.
+        fragment_continuation_system(&dst, 5.0);
+        assert!(
+            dst.resource::<PlayerControlState>().hud_cart_mode,
+            "the queued SetHudCartMode effect must still fire after restore"
+        );
+    }
+
     /// #1835 — every gameplay-state component `spawn_npc_entity` stamps on an
     /// NPC placement root must be a deliberate save decision: registered in
     /// [`build_save_registry`] (persisted + restored) XOR listed as
@@ -1669,7 +1762,8 @@ mod tests {
             ("Dlc2Ttr4aPlayerScript", "forward-latent — no live production spawn site exists outside tests/examples"),
             ("EquipItemCatalog", "populated once at cell/plugin load, only ever read afterward"),
             ("EvaluatePackageRequest", "one-shot ingress marker, drained every tick by scene_package_system"),
-            ("FragmentExecutionQueue", "KNOWN GAP — live queue of suspended Utility.Wait/WaitForActors3DLoaded continuations with no reload re-derivation; tracked in #2381"),
+            // FragmentExecutionQueue: FIXED — registered (#2381 /
+            // SAVE-D1-16), no longer allowlisted here.
             ("Globals", "the runtime mutator (Globals::set) is explicitly documented as dormant — no production SetGlobalValue writer exists yet; re-evaluate when it lands"),
             ("HitEvent", "one-shot event marker drained every frame by event_cleanup_system"),
             ("HorseTetherState", "KNOWN GAP — live-written by Effect::TetherToHorse with no reload re-derivation; tracked in #2380"),

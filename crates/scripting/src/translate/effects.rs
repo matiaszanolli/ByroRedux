@@ -53,6 +53,7 @@ use crate::translate::compose::{
 /// [`QuestStageState`]: crate::quest_stages::QuestStageState
 /// [`QuestObjectiveState`]: crate::quest_stages::QuestObjectiveState
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum Effect {
     /// `<quest>.SetStage(stage)`.
     SetStage { quest: QuestRef, stage: u16 },
@@ -179,6 +180,7 @@ pub enum Effect {
 /// object/alias. Keeping the player explicit avoids inventing a VMAD property
 /// for `Game.GetPlayer()`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum ActorRef {
     Player,
     Object(ObjectRef),
