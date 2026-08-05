@@ -74,6 +74,15 @@ Stale notes in `material-abstraction.md` corrected: the render-side glass heuris
 (its §2 "Leak A" / §4 step-3 "still pending (b)") was already deleted, and the
 `Option`-override framing of "Leak B" is now closed.
 
+Residual gap (#2284 / MAT-D1-NEW-04, fixed 2026-08-05): six
+`BSLightingShaderProperty` shading scalars (`lighting_effect_1/2`,
+`subsurface_rolloff`, `rimlight_power`, `backlight_power`, `fresnel_power`) now
+land on the canonical `Material` — captured, not yet shaded, matching the
+existing `grayscale_to_palette_scale` precedent (no `GpuMaterial` field, no
+`triangle.frag` consumer yet). The boundary itself is still the single
+translation site; the remaining work is a GPU-side follow-up, not a boundary
+leak.
+
 ### Geometry / transform — **converged (reference template)**
 
 Z-up → Y-up conversion (`crates/nif/src/import/coord.rs`), tangent extraction +

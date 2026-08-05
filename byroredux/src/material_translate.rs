@@ -164,6 +164,15 @@ pub(crate) fn translate_material(
         translucency_subsurface_color: source.translucency_subsurface_color,
         translucency_transmissive_scale: source.translucency_transmissive_scale,
         translucency_turbulence: source.translucency_turbulence,
+        // #2284 (MAT-D1-NEW-04) — Skyrim+/FO4 BSLightingShaderProperty
+        // shading scalars. Captured, not yet shaded (no GpuMaterial /
+        // triangle.frag consumer) — see the field docs on `Material`.
+        lighting_effect_1: source.lighting_effect_1,
+        lighting_effect_2: source.lighting_effect_2,
+        subsurface_rolloff: source.subsurface_rolloff,
+        rimlight_power: source.rimlight_power,
+        backlight_power: source.backlight_power,
+        fresnel_power: source.fresnel_power,
         // #890 Stage 2c — BSEffectShaderProperty greyscale LUT path;
         // resolved to a bindless handle at draw-build time.
         greyscale_texture: textures.greyscale_lut,
@@ -445,5 +454,37 @@ mod tests {
             normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 65.0, 1.0, PASS.3, PASS.4, true);
         assert_eq!(first, second);
         assert!((first.unwrap() - 0.35).abs() < 1e-5, "{first:?}");
+    }
+
+    /// Regression: #2284 (MAT-D1-NEW-04) — the 6 `BSLightingShaderProperty`
+    /// shading scalars (`lighting_effect_1/2`, `subsurface_rolloff`,
+    /// `rimlight_power`, `backlight_power`, `fresnel_power`) must survive
+    /// the NIFAL parser→`Material` boundary. Pre-fix they were captured on
+    /// `ImportedMaterial` at import time but `translate_material` had no
+    /// `Material` field to copy them into, so they silently dead-ended
+    /// here regardless of what the source NIF authored.
+    #[test]
+    fn translate_material_copies_bslsp_shading_scalars() {
+        let source = ImportedMaterial {
+            lighting_effect_1: 0.25,
+            lighting_effect_2: 0.40,
+            subsurface_rolloff: 0.35,
+            rimlight_power: 2.50,
+            backlight_power: 1.75,
+            fresnel_power: 3.5,
+            ..ImportedMaterial::default()
+        };
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet::default(),
+            material_path: None,
+        };
+        let material = translate_material(&source, None, paths, 0);
+
+        assert_eq!(material.lighting_effect_1, 0.25);
+        assert_eq!(material.lighting_effect_2, 0.40);
+        assert_eq!(material.subsurface_rolloff, 0.35);
+        assert_eq!(material.rimlight_power, 2.50);
+        assert_eq!(material.backlight_power, 1.75);
+        assert_eq!(material.fresnel_power, 3.5);
     }
 }

@@ -222,6 +222,42 @@ pub struct Material {
     pub translucency_subsurface_color: [f32; 3],
     pub translucency_transmissive_scale: f32,
     pub translucency_turbulence: f32,
+    /// `BSLightingShaderProperty.lighting_effect_1` — Skyrim subsurface
+    /// scattering scalar (BSVER < FO4, gated by `SLSF2_Soft_Lighting`).
+    /// `BSLightingShaderProperty.lighting_effect_2` — Skyrim backlight
+    /// scalar (BSVER < FO4, gated by `SLSF2_Back_Lighting`).
+    /// `BSLightingShaderProperty.subsurface_rolloff` /
+    /// `.rimlight_power` / `.backlight_power` — the FO4/FO76/Starfield
+    /// (BSVER 130+) per-material SSS-rolloff / rim-light / backlight
+    /// exponents. `.fresnel_power` — the FO4+ per-material Schlick
+    /// exponent for the Fresnel rim term.
+    ///
+    /// #2284 (MAT-D1-NEW-04) — captured at the NIF importer boundary
+    /// since `#1241` (`ImportedMaterial::{lighting_effect_1,2,
+    /// subsurface_rolloff, rimlight_power, backlight_power,
+    /// fresnel_power}`) but dead-ended there with zero consumers: no
+    /// field existed here, so `translate_material` had nothing to copy
+    /// into. Skin/hair/cloth materials authoring non-default rim-
+    /// lighting, backlight, subsurface-rolloff, or Fresnel-exponent
+    /// values rendered with the engine's fixed Disney BSDF response
+    /// instead of the author's tuned curve.
+    ///
+    /// Landed here (captured, not yet shaded) rather than also wiring a
+    /// `GpuMaterial`/`triangle.frag` consumer in the same change —
+    /// matching the existing `grayscale_to_palette_scale` precedent
+    /// (see that field's doc + `triangle.frag`'s "not yet plumbed to
+    /// GpuMaterial" comment) — so the canonical `Material` no longer
+    /// silently drops authored data while the GPU-side shading
+    /// consumer lands as separate, independently-reviewable follow-up
+    /// work. Defaults mirror `ImportedMaterial`'s own parser-stub
+    /// defaults (`fresnel_power` 5.0 = standard Schlick exponent; the
+    /// rest 0.0 = no contribution).
+    pub lighting_effect_1: f32,
+    pub lighting_effect_2: f32,
+    pub subsurface_rolloff: f32,
+    pub rimlight_power: f32,
+    pub backlight_power: f32,
+    pub fresnel_power: f32,
     /// `BSEffectShaderProperty.greyscale_texture` path (Skyrim+) — the
     /// 1D-as-2D colour palette LUT indexed by the source texture's
     /// luminance when `EFFECT_PALETTE_COLOR` / `EFFECT_PALETTE_ALPHA`
@@ -350,6 +386,15 @@ impl Default for Material {
             translucency_subsurface_color: [0.0; 3],
             translucency_transmissive_scale: 0.0,
             translucency_turbulence: 0.0,
+            // #2284 (MAT-D1-NEW-04) — mirror ImportedMaterial's own
+            // parser-stub defaults; fresnel_power's 5.0 is the standard
+            // Schlick exponent, the rest are "no contribution".
+            lighting_effect_1: 0.0,
+            lighting_effect_2: 0.0,
+            subsurface_rolloff: 0.0,
+            rimlight_power: 0.0,
+            backlight_power: 0.0,
+            fresnel_power: 5.0,
             greyscale_texture: None,
             // Canonical PBR defaults — match the renderer's no-Material
             // fallback (`static_meshes.rs`): dielectric, mid roughness.
