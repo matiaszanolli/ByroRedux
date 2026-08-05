@@ -11,6 +11,7 @@ use super::{
     stale_pending_coords, world_pos_to_grid, JoinTimeout, LoadCellPayload, LoadedCell,
     PayloadDecision, StreamingDeltas, StreamingTelemetry, StreamingWorkerTimings,
 };
+use crate::cell_loader::UnloadPhaseTimings;
 use byroredux_core::ecs::storage::EntityId;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -221,6 +222,14 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
     telemetry.record_queued_cells(7);
     telemetry.record_dispatch_slice(Duration::from_millis(2));
     telemetry.record_unload_slice(Duration::from_millis(1), 3);
+    telemetry.record_unload_phases(UnloadPhaseTimings {
+        ownership_index: Duration::from_millis(1),
+        handle_collection: Duration::from_millis(2),
+        gpu_release: Duration::from_millis(3),
+        owned_state_release: Duration::from_millis(4),
+        despawn: Duration::from_millis(5),
+        finalization: Duration::from_millis(6),
+    });
     telemetry.record_worker(StreamingWorkerTimings {
         queue_wait: Duration::from_millis(6),
         worker: Duration::from_millis(8),
@@ -246,12 +255,17 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
     assert_eq!(telemetry.apply_slices.samples, 1);
     assert_eq!(telemetry.lod_slices.samples, 1);
     assert_eq!(telemetry.worker_parse.samples, 1);
+    assert_eq!(telemetry.unload_despawn.max, Duration::from_millis(5));
+    assert_eq!(telemetry.unload_finalization.max, Duration::from_millis(6));
     assert_eq!(telemetry.queued_cells, 7);
     assert_eq!(telemetry.unloaded_cells, 3);
     assert_eq!(telemetry.peak_pending, 7);
     assert!(telemetry
         .bench_line()
         .contains("unsettled_full=0 unsettled_lod=0"));
+    assert!(telemetry
+        .bench_line()
+        .contains("unload_despawn_max_ms=5.00 unload_finalize_max_ms=6.00"));
 }
 
 #[test]

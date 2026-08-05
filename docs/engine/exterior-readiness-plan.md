@@ -149,11 +149,23 @@ The first live boundary matrix on 2026-08-04 established the EX-06 baseline:
   rebuild batching plus an explicit large-buffer idle fallback removed the
   device loss and reduced roughly one hundred rebuilds to one per settled
   transaction. Making precombined spawning resumable per hash then reduced the
-  worst apply slice from 2.55 s to 293 ms. The 900-frame gate remains red:
-  first-crossing full-detail/LOD settle is 7.23/7.25 s, unload reaches 745 ms,
-  frame max is 816 ms, the second crossing is superseded, and the final
-  crossing is unsettled. This is the measured EX-07/EX-08 P0, not a smoke
-  threshold to waive.
+  worst apply slice from 2.55 s to roughly 300 ms. `grid-cross` now pauses its
+  logical movement clock while a boundary is active, so renderer FPS cannot
+  shorten the wall-clock handoff window and supersede the benchmark's own
+  work. The resulting FO4 correctness gate passes all three independent
+  crossings with no device loss, supersession, or unsettled work. It also
+  exposes the remaining performance debt: full-detail/LOD max 18.71/18.73 s,
+  unload 848 ms, apply 315 ms, and frame max 860 ms. A mesh-level precombine
+  experiment reduced apply max to 145 ms but raised first settlement to 32.73
+  s through many tiny BLAS submissions; it was removed rather than trading a
+  smaller frame spike for 4.5x worse handoff throughput. A follow-up now
+  batches the usual three-cell boundary eviction so global ECS compaction and
+  BLAS scratch shrinking run once after all cell-local teardown. Its 900-frame
+  validation again settled 3/3 crossings and reduced unload/dispatch/frame
+  maxima from 848/850/860 ms to 826/827/836 ms. Apply max was 329 ms and
+  full-detail/LOD max varied to 19.24/19.26 s, confirming that the remaining
+  P0 is cell-local teardown plus single-hash apply/BLAS throughput rather than
+  repeated global finalization.
 
 ### Tranche B — make entry and traversal safe
 
@@ -164,8 +176,10 @@ The first live boundary matrix on 2026-08-04 established the EX-06 baseline:
    whole-frame telemetry (EX-06).
 3. [ ] Bring remaining atomic apply, unload, global-geometry, and LOD work under the shared wall-clock
    deadline.
-   Precombined cells now yield between hashes; the next split is inside a
-   single hash's decode/upload/BLAS work, followed by resumable cell teardown.
+   Precombined cells now yield between hashes. The next slice must move/defer
+   single-hash decode/upload/BLAS work without fragmenting it into tiny GPU
+   submissions. Global unload finalization is batched once per boundary;
+   cell-local teardown must become resumable without violating owner cleanup.
 4. [ ] Run cancellation/ownership soak loops and repair leaked owners.
 
 Exit: EX-02, EX-04, EX-06, EX-07, and EX-08 are closed.

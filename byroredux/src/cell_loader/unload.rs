@@ -6,8 +6,40 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{MeshHandle, TextureHandle, World};
 use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use crate::components::{CellRootIndex, MaterialTextureHandles, NormalMapHandle, TerrainTileSlot};
+
+/// Bounded phase timings for one logical cell-unload batch.
+///
+/// Exterior streaming records these in its existing constant-memory latency
+/// summaries. Keeping the phases here makes the ownership/GPU boundary
+/// explicit and lets the live benchmark identify the next resumable unit
+/// without changing teardown order merely to profile it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UnloadPhaseTimings {
+    pub ownership_index: Duration,
+    pub handle_collection: Duration,
+    pub gpu_release: Duration,
+    pub owned_state_release: Duration,
+    pub despawn: Duration,
+    pub finalization: Duration,
+}
+
+impl UnloadPhaseTimings {
+    fn absorb(&mut self, other: Self) {
+        self.ownership_index = self.ownership_index.saturating_add(other.ownership_index);
+        self.handle_collection = self
+            .handle_collection
+            .saturating_add(other.handle_collection);
+        self.gpu_release = self.gpu_release.saturating_add(other.gpu_release);
+        self.owned_state_release = self
+            .owned_state_release
+            .saturating_add(other.owned_state_release);
+        self.despawn = self.despawn.saturating_add(other.despawn);
+        self.finalization = self.finalization.saturating_add(other.finalization);
+    }
+}
 
 /// Tear down a cell: despawn every entity owned by `cell_root` and
 /// release the mesh/BLAS/texture GPU resources they referenced.
@@ -27,6 +59,39 @@ use crate::components::{CellRootIndex, MaterialTextureHandles, NormalMapHandle, 
 /// clutter textures to the checkerboard.
 #[tracing::instrument(name = "unload_cell", skip_all, fields(cell_root = ?cell_root))]
 pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: EntityId) {
+    let _ = unload_cell_inner(world, ctx, cell_root);
+    let _ = finish_unload_batch(world, ctx);
+}
+
+/// Tear down several cells as one boundary batch.
+///
+/// Per-cell ownership release remains identical to [`unload_cell`], while the
+/// global sparse-storage compaction and BLAS scratch shrink run once after the
+/// final victim set. Exterior hysteresis normally evicts three cells at once;
+/// repeating those global passes per cell only multiplies the boundary hitch.
+#[tracing::instrument(name = "unload_cells", skip_all, fields(cell_count = cell_roots.len()))]
+pub fn unload_cells(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    cell_roots: &[EntityId],
+) -> UnloadPhaseTimings {
+    let mut timings = UnloadPhaseTimings::default();
+    for &cell_root in cell_roots {
+        timings.absorb(unload_cell_inner(world, ctx, cell_root));
+    }
+    if !cell_roots.is_empty() {
+        timings.finalization = finish_unload_batch(world, ctx);
+    }
+    timings
+}
+
+fn unload_cell_inner(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    cell_root: EntityId,
+) -> UnloadPhaseTimings {
+    let mut timings = UnloadPhaseTimings::default();
+    let phase_started = Instant::now();
     // Drain victims from the `CellRootIndex` inverted map (#791). Pre-#791
     // this filtered the entire `CellRoot` SparseSet to find victims of a
     // single cell, scaling O(total resident entities); the index makes
@@ -37,6 +102,7 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         .try_resource_mut::<CellRootIndex>()
         .and_then(|mut idx| idx.map.remove(&cell_root))
         .unwrap_or_default();
+    timings.ownership_index = phase_started.elapsed();
 
     // Collect every GPU handle the victims hold (mesh / texture /
     // terrain-tile slot) in one fan-out walk, then release them below.
@@ -45,8 +111,10 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     // is unit-testable without a `VulkanContext` (#1341). Mirrors the
     // `release_victim_item_instances` (#896) extraction.
     let fallback_tex = ctx.texture_registry.fallback();
+    let phase_started = Instant::now();
     let (mesh_drops, mut texture_drops, terrain_tile_slots) =
         collect_victim_gpu_handles(world, &victims, fallback_tex);
+    timings.handle_collection = phase_started.elapsed();
 
     // `SkyParamsRes` / `CellLightingRes` / `WeatherDataRes` /
     // `WeatherTransitionRes` and the bindless texture handles on
@@ -74,6 +142,7 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     // and add them to `texture_drops` so the GPU release loop below
     // hands them off to `texture_registry.drop_texture`. Without this,
     // a 7×7 WastelandNV reload leaks ~150 texture refcounts (#627).
+    let phase_started = Instant::now();
     for &slot in &terrain_tile_slots {
         if let Some(tile) = ctx.free_terrain_tile(slot) {
             for idx in tile.texture_indices() {
@@ -115,29 +184,6 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         for &mh in &freed_meshes {
             accel.drop_blas(mh);
         }
-        // #495 — the shared BLAS build scratch buffer is grow-only
-        // across the process lifetime; a single peek at an 80–200 MB
-        // scratch mesh (FO4 LOD terrain, Skyrim draugr skeletons,
-        // Starfield `Saturn.nif`) permanently pins that much
-        // DEVICE_LOCAL VRAM. Shrink to the new post-drop peak here.
-        // SAFETY: `device`/`allocator` are the same ones that
-        // allocated the current scratch buffer — the only precondition
-        // `shrink_blas_scratch_to_fit` has left. Retiring the *old*
-        // scratch buffer no longer requires "no BLAS build in flight":
-        // this call site runs from `step_streaming` (`about_to_wait`),
-        // where a just-submitted frame's skinned-BLAS refit/first-
-        // sight build can still be executing on the GPU against the
-        // old scratch address. That race is now closed by routing the
-        // retired buffer through `pending_destroy_scratch`
-        // (deferred, `MAX_FRAMES_IN_FLIGHT` countdown) instead of an
-        // immediate free. See #1782 / CONC-D1-01. Skip when the
-        // allocator hasn't been initialised yet (headless / pre-init
-        // test paths).
-        if let Some(allocator) = ctx.allocator.as_ref() {
-            unsafe {
-                accel.shrink_blas_scratch_to_fit(&ctx.device, allocator);
-            }
-        }
     }
     // One drop per holder. The handles in `freed_meshes` will hit
     // refcount 0 on their final drop and queue their VkBuffers for
@@ -166,6 +212,7 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     for &th in &texture_drops {
         ctx.texture_registry.drop_texture(&ctx.device, th);
     }
+    timings.gpu_release = phase_started.elapsed();
 
     // #896 DROP — release per-ItemStack `ItemInstancePool` slots so
     // they return to the free-list ahead of the entity despawn. The
@@ -177,6 +224,7 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     // wiring the pool's `instances` Vec grows monotonically across
     // cell crossings, defeating the bounded-arena guarantee that's
     // the whole point of the M45 save-shape design.
+    let phase_started = Instant::now();
     release_victim_item_instances(world, &victims);
 
     // #1520 DROP — remove each victim's Rapier body + colliders from the
@@ -189,9 +237,11 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
     // resets the PhysicsWorld. Skipped silently when the resource isn't
     // registered (loose-NIF demo / test fixtures that opt out of physics).
     release_victim_rapier_bodies(world, &victims);
+    timings.owned_state_release = phase_started.elapsed();
 
     // Remove every surviving component row for the victim entities.
     let victim_count = victims.len();
+    let phase_started = Instant::now();
     for eid in victims {
         world.despawn(eid);
     }
@@ -201,19 +251,7 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         // cannot survive an interior transition or exterior stream-out.
         byroredux_scripting::mark_scene_actor_bindings_dirty(world);
     }
-
-    // #2148 / ECS-2507-02 — hand back the sparse-index memory those despawns
-    // just orphaned. `SparseSetStorage::sparse` is indexed by raw `EntityId`
-    // and IDs are never reclaimed (#372), so its length tracks the global
-    // high-water mark, not the live count: without this, an exterior-streaming
-    // session that cycles cells at ever-higher IDs keeps a 4-byte slot per
-    // entity ever spawned, in every sparse storage that entity touched.
-    //
-    // A cell unload is the right and only place for it. The scan is O(trailing
-    // empty slots) but `shrink_to_fit` reallocates, so this must not run per
-    // frame — and it is only productive right after a bulk despawn, since a
-    // mid-session shrink is undone by the next insert above the new length.
-    world.shrink_storages();
+    timings.despawn = phase_started.elapsed();
 
     log::info!(
         "Cell unload: {} entities, {} mesh refs ({} freed), {} texture refs released (cell_root {})",
@@ -223,6 +261,27 @@ pub fn unload_cell(world: &mut World, ctx: &mut VulkanContext, cell_root: Entity
         texture_drops.len(),
         cell_root,
     );
+    timings
+}
+
+fn finish_unload_batch(world: &mut World, ctx: &mut VulkanContext) -> Duration {
+    let started = Instant::now();
+    // #2148 / ECS-2507-02 — hand back sparse-index tails after every victim
+    // set in this logical boundary has been despawned. Running this after each
+    // of the usual three exterior cells repeats the backwards scan and may
+    // reallocate a storage that the next cell immediately mutates again.
+    world.shrink_storages();
+
+    // #495 — shrink the shared BLAS scratch buffer against the final post-drop
+    // peak once per logical unload. Retiring the old scratch allocation is
+    // deferred for frames-in-flight by AccelerationManager (#1782), so this is
+    // safe from the about_to_wait streaming path.
+    if let (Some(accel), Some(allocator)) = (ctx.accel_manager.as_mut(), ctx.allocator.as_ref()) {
+        unsafe {
+            accel.shrink_blas_scratch_to_fit(&ctx.device, allocator);
+        }
+    }
+    started.elapsed()
 }
 
 /// Collect every GPU handle the cell's `victims` hold so [`unload_cell`]

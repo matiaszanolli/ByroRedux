@@ -30,7 +30,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::asset_provider::{MaterialProvider, TextureProvider};
-use crate::cell_loader::ExteriorWorldContext;
+use crate::cell_loader::{ExteriorWorldContext, UnloadPhaseTimings};
 
 /// One loaded cell tracked by [`WorldStreamingState`]. The
 /// `cell_root` is the `EntityId` returned by
@@ -95,6 +95,12 @@ pub struct StreamingTelemetry {
     pub lod: StreamingLatencySummary,
     pub dispatch_slices: StreamingLatencySummary,
     pub unload_slices: StreamingLatencySummary,
+    pub unload_ownership_index: StreamingLatencySummary,
+    pub unload_handle_collection: StreamingLatencySummary,
+    pub unload_gpu_release: StreamingLatencySummary,
+    pub unload_owned_state_release: StreamingLatencySummary,
+    pub unload_despawn: StreamingLatencySummary,
+    pub unload_finalization: StreamingLatencySummary,
     pub worker_queue: StreamingLatencySummary,
     pub worker_parse: StreamingLatencySummary,
     pub apply_slices: StreamingLatencySummary,
@@ -159,6 +165,20 @@ impl StreamingTelemetry {
             self.unload_slices.record(elapsed);
             self.unloaded_cells = self.unloaded_cells.saturating_add(unloaded as u64);
         }
+    }
+
+    pub(crate) fn record_unload_phases(&mut self, timings: UnloadPhaseTimings) {
+        if self.active.is_none() {
+            return;
+        }
+        self.unload_ownership_index.record(timings.ownership_index);
+        self.unload_handle_collection
+            .record(timings.handle_collection);
+        self.unload_gpu_release.record(timings.gpu_release);
+        self.unload_owned_state_release
+            .record(timings.owned_state_release);
+        self.unload_despawn.record(timings.despawn);
+        self.unload_finalization.record(timings.finalization);
     }
 
     pub(crate) fn record_worker(&mut self, timings: StreamingWorkerTimings) {
@@ -228,6 +248,9 @@ impl StreamingTelemetry {
              full_superseded={} lod_samples={} lod_avg_ms={:.2} lod_max_ms={:.2} \
              lod_superseded={} queued={} unloaded={} worker_payloads={} \
              dispatch_avg_ms={:.2} dispatch_max_ms={:.2} unload_max_ms={:.2} \
+             unload_index_max_ms={:.2} unload_collect_max_ms={:.2} \
+             unload_gpu_max_ms={:.2} unload_owned_max_ms={:.2} \
+             unload_despawn_max_ms={:.2} unload_finalize_max_ms={:.2} \
              worker_queue_avg_ms={:.2} worker_queue_max_ms={:.2} \
              worker_avg_ms={:.2} worker_max_ms={:.2} \
              apply_samples={} apply_avg_ms={:.2} apply_max_ms={:.2} \
@@ -248,6 +271,12 @@ impl StreamingTelemetry {
             self.dispatch_slices.average_ms(),
             self.dispatch_slices.max_ms(),
             self.unload_slices.max_ms(),
+            self.unload_ownership_index.max_ms(),
+            self.unload_handle_collection.max_ms(),
+            self.unload_gpu_release.max_ms(),
+            self.unload_owned_state_release.max_ms(),
+            self.unload_despawn.max_ms(),
+            self.unload_finalization.max_ms(),
             self.worker_queue.average_ms(),
             self.worker_queue.max_ms(),
             self.worker_parse.average_ms(),

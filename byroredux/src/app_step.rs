@@ -83,24 +83,34 @@ impl App {
             // Unload first to free GPU resources before kicking new loads —
             // cuts peak VRAM at the boundary crossing.
             let unload_started = Instant::now();
-            let mut unloaded_any = false;
-            let mut unloaded_count = 0usize;
-            for coord in deltas.to_unload {
-                if let Some(slot) = state.loaded.remove(&coord) {
-                    cell_loader::unload_cell(&mut self.world, ctx, slot.cell_root);
-                    log::info!(
-                        "Unloaded cell ({},{}) (root {})",
-                        coord.0,
-                        coord.1,
-                        slot.cell_root
-                    );
-                    unloaded_any = true;
-                    unloaded_count += 1;
+            let unloads = deltas
+                .to_unload
+                .into_iter()
+                .filter_map(|coord| {
+                    state
+                        .loaded
+                        .remove(&coord)
+                        .map(|slot| (coord, slot.cell_root))
+                })
+                .collect::<Vec<_>>();
+            let unloaded_count = unloads.len();
+            let unloaded_any = !unloads.is_empty();
+            let unload_timings = if unloaded_any {
+                let roots = unloads.iter().map(|(_, root)| *root).collect::<Vec<_>>();
+                let timings = cell_loader::unload_cells(&mut self.world, ctx, &roots);
+                for (coord, root) in unloads {
+                    log::info!("Unloaded cell ({},{}) (root {})", coord.0, coord.1, root);
                 }
-            }
+                Some(timings)
+            } else {
+                None
+            };
             state
                 .telemetry
                 .record_unload_slice(unload_started.elapsed(), unloaded_count);
+            if let Some(timings) = unload_timings {
+                state.telemetry.record_unload_phases(timings);
+            }
             // #2113 / D7-01 — a cell can have an in-flight worker request
             // (tracked only in `pending`, not yet in `loaded`) that the
             // `to_unload` diff above never sees. Drop any such request whose

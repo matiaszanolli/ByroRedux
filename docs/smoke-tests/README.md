@@ -63,14 +63,16 @@ docs/smoke-tests/m-exteriors.sh all static
 docs/smoke-tests/m-exteriors.sh all boundary
 ```
 
-Boundary mode defaults to 900 frames, crosses three complete exterior cells,
-and emits bounded telemetry for dispatch, unload, worker queue/parse, apply,
-LOD, and frame p50/p95/max. A profile fails if it reports fewer than three
-crossings, a superseded deadline, or an unsettled full-detail/LOD handoff. The
-gate is intentionally performance-sensitive: the 2026-08-04 FO4 run remains
-red after its device-loss fix because its 7.25 s handoff cannot keep up with
-the scripted traversal; see the EX-07 baseline in
-`docs/engine/exterior-readiness-plan.md`.
+Boundary mode defaults to 900 logical movement/capture frames and crosses three
+complete exterior cells. The path pauses at each boundary until both
+full-detail and LOD work settle, so a faster renderer cannot accidentally give
+streaming less wall time; inserted hold frames are included in the reported
+frame distribution and total bench frame count. The run emits bounded
+telemetry for dispatch, unload, worker queue/parse, apply, LOD, and frame
+p50/p95/max. A profile fails if it reports fewer than three crossings, a
+superseded deadline, or an unsettled handoff. The smoke timeout remains the
+hard deadlock/runaway bound; measured latency and frame tails are tracked as
+EX-07 performance evidence rather than hidden by looser traversal pacing.
 
 | Profile | Grid / WRLD | Hard floor entities / draws | Observed entities / draws | Image mean / stddev |
 |---------|-------------|------------------------------|---------------------------|---------------------|
@@ -111,7 +113,7 @@ falls back to the canonical Steam install paths:
 | `BYROREDUX_FO4_DATA`        | `/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data`                                 |
 | `BYRO_DEBUG_PORT`           | `9876`                                                                                   |
 | `BYROREDUX_SMOKE_FRAMES`    | `30` (static exterior and other smoke bench frames before hold)                           |
-| `BYROREDUX_BOUNDARY_FRAMES` | `900` (`m-exteriors.sh ... boundary` traversal and settle window)                         |
+| `BYROREDUX_BOUNDARY_FRAMES` | `900` (logical movement/capture frames; boundary settle holds are inserted)               |
 | `BYROREDUX_SMOKE_TIMEOUT`   | `240` seconds per profile (used by `m-exteriors.sh`)                                     |
 | `BYROREDUX_EXTERIOR_ARTIFACT_DIR` | Fresh `/tmp/byro-exterior-smoke.*` directory retained after the run               |
 | `BYROREDUX_TRIGGER_CELL`    | `WhiterunBanneredMare` (cell `m47-triggers.sh` loads; override with a quest dungeon for trigger-volume coverage) |

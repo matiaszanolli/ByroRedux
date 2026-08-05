@@ -124,7 +124,7 @@ pub(crate) use placement_lod::{
     stream_placement_lod_blocks, unload_placement_lod_block, PlacementLodBlock,
 };
 pub(crate) use terrain_lod::{stream_lod_blocks, unload_lod_block};
-pub use unload::unload_cell;
+pub use unload::{unload_cell, unload_cells, UnloadPhaseTimings};
 pub(crate) use work_budget::FrameTimeBudget;
 
 // Test-only re-exports so the `use super::*;` patterns inside the
