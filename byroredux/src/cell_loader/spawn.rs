@@ -17,7 +17,6 @@ use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::VulkanContext;
-use std::sync::Arc;
 
 use crate::asset_provider::{
     derive_normal_map_path, resolve_material_texture_handles_with_clamp, resolve_texture,
@@ -31,7 +30,6 @@ use crate::components::{
 use super::nif_import_registry::CachedNifImport;
 use super::references::attach_light_flicker_if_needed;
 use super::refr::RefrTextureOverlay;
-use super::FrameTimeBudget;
 
 /// `true` when an `ImportedLight` has a non-trivial diffuse colour
 /// contribution and therefore would actually spawn a `LightSource`
@@ -415,143 +413,6 @@ pub(super) fn spawn_placed_instances(
     // only the count; callers that don't need the placement_root
     // (precombined.rs bake artifacts) `_`-discard the first element.
     (placement_root, count)
-}
-
-/// Maximum number of fresh ray-tracing meshes submitted in one resumable
-/// precombine BLAS build. A hash can contain dozens of imported meshes; the
-/// ordinary placement path deliberately batches all of them, but exterior
-/// streaming needs a bounded submission unit.
-const PRECOMBINED_BLAS_BATCH_MESHES: usize = 8;
-
-/// Resumable placement of one precombined hash's imported meshes.
-///
-/// The placement root and non-mesh satellites are committed once at creation.
-/// Each advance then applies individual meshes until the frame deadline or the
-/// BLAS batch cap is reached. Exterior cancellation remains safe because the
-/// caller stamps every entity range to its cell root after each advance.
-pub(super) struct PrecombinedPlacementSpawnJob {
-    cached: Arc<CachedNifImport>,
-    path: String,
-    position: Vec3,
-    placement_root: byroredux_core::ecs::EntityId,
-    resolved_paths: Vec<ResolvedMeshPaths>,
-    next_mesh: usize,
-    spawned: usize,
-}
-
-pub(super) enum PrecombinedPlacementSpawnProgress {
-    Pending(PrecombinedPlacementSpawnJob),
-    Complete { spawned: usize },
-}
-
-impl PrecombinedPlacementSpawnJob {
-    pub(super) fn new(
-        world: &mut World,
-        ctx: &mut VulkanContext,
-        tex_provider: &TextureProvider,
-        cached: Arc<CachedNifImport>,
-        path: String,
-        position: Vec3,
-    ) -> Self {
-        let (placement_root, placement_fid) =
-            spawn_placement_root(world, &cached, position, Quat::IDENTITY, 1.0, None, None);
-        spawn_nif_lights(world, &cached.lights, position, Quat::IDENTITY, 1.0, None);
-        spawn_particle_emitters(
-            world,
-            ctx,
-            tex_provider,
-            &cached,
-            position,
-            Quat::IDENTITY,
-            1.0,
-        );
-        spawn_collision_shapes(
-            world,
-            &cached.collisions,
-            position,
-            Quat::IDENTITY,
-            1.0,
-            placement_fid,
-            byroredux_core::ecs::components::RenderLayer::Architecture,
-        );
-        let resolved_paths = resolve_mesh_paths(world, &cached.meshes, None);
-        Self {
-            cached,
-            path,
-            position,
-            placement_root,
-            resolved_paths,
-            next_mesh: 0,
-            spawned: 0,
-        }
-    }
-
-    pub(super) fn advance(
-        mut self,
-        world: &mut World,
-        ctx: &mut VulkanContext,
-        tex_provider: &TextureProvider,
-        budget: &mut FrameTimeBudget,
-    ) -> PrecombinedPlacementSpawnProgress {
-        let mut blas_specs = Vec::new();
-        while self.next_mesh < self.cached.meshes.len()
-            && (budget.is_unlimited() || blas_specs.len() < PRECOMBINED_BLAS_BATCH_MESHES)
-        {
-            if budget.should_yield() {
-                break;
-            }
-            let mesh_index = self.next_mesh;
-            let pc = PlacementCtx {
-                tex_provider,
-                ref_pos: self.position,
-                ref_rot: Quat::IDENTITY,
-                ref_scale: 1.0,
-                base_layer: byroredux_core::ecs::components::RenderLayer::Architecture,
-                mesh_cache_key: Some(&self.path),
-                refr_overlay: None,
-                light_data: None,
-                light_animation_flags: 0,
-                light_shadow_flags: 0,
-                placement_root: self.placement_root,
-                collisions_empty: self.cached.collisions.is_empty(),
-                spawned_nif_lights: count_spawnable_nif_lights(&self.cached.lights),
-            };
-            let mesh = &self.cached.meshes[mesh_index];
-            if spawn_fog_mesh_instance(world, &pc, mesh, &self.resolved_paths[mesh_index])
-                || spawn_mesh_instance(
-                    world,
-                    ctx,
-                    &pc,
-                    &self.cached,
-                    mesh,
-                    &self.resolved_paths[mesh_index],
-                    mesh_index,
-                    self.spawned,
-                    &mut blas_specs,
-                )
-            {
-                self.spawned += 1;
-            }
-            self.next_mesh += 1;
-            budget.complete_unit();
-        }
-
-        if !blas_specs.is_empty() {
-            let built = ctx.build_blas_batched(&blas_specs);
-            log::info!(
-                "PreCombined BLAS slice: {built}/{} meshes",
-                blas_specs.len()
-            );
-        }
-
-        if self.next_mesh < self.cached.meshes.len() {
-            PrecombinedPlacementSpawnProgress::Pending(self)
-        } else {
-            PrecombinedPlacementSpawnProgress::Complete {
-                spawned: self.spawned,
-            }
-        }
-    }
 }
 
 /// Spawn the per-REFR placement root entity and stamp every

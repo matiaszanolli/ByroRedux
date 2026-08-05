@@ -220,9 +220,11 @@ impl App {
     ///
     /// Runs before the scheduler so the pose the systems observe — and the
     /// one `build_render_data` turns into this frame's view matrix — is the
-    /// pose for this frame index. Indexing on `bench_frames_count` rather
-    /// than elapsed time is what makes a capture at frame N comparable across
-    /// upscaler presets running at different frame rates.
+    /// pose for this frame index. Normal paths use `bench_frames_count` so a
+    /// capture at frame N is comparable across upscaler presets. `grid-cross`
+    /// uses a logical path frame that pauses while the current full-detail +
+    /// LOD handoff is active; otherwise a faster renderer gives streaming less
+    /// wall time and makes the benchmark supersede its own transaction.
     ///
     /// A path that teleports also signals the camera cut explicitly. The
     /// renderer's automatic detection would catch this one (the jump is far
@@ -268,7 +270,13 @@ impl App {
             }
         };
 
-        let frame = self.bench_frames_count;
+        let is_grid_cross = path == crate::bench_camera::BenchCameraPath::GridCross;
+        let frame = if is_grid_cross {
+            self.bench_camera_path_frame
+                .min(total_frames.saturating_sub(1))
+        } else {
+            self.bench_frames_count
+        };
         let pose = path.pose(frame, total_frames, origin.position, origin.forward);
         let rotation = byroredux_core::math::Quat::from_rotation_arc(
             -byroredux_core::math::Vec3::Z,
@@ -285,6 +293,18 @@ impl App {
             if let Some(ctx) = self.renderer.as_mut() {
                 ctx.signal_temporal_discontinuity(BENCH_CUT_RECOVERY_FRAMES);
             }
+        }
+
+        if is_grid_cross {
+            let boundary_in_progress = self
+                .streaming
+                .as_ref()
+                .is_some_and(|state| state.telemetry.boundary_in_progress());
+            self.bench_camera_path_frame = crate::bench_camera::advance_grid_cross_frame(
+                self.bench_camera_path_frame,
+                total_frames,
+                boundary_in_progress,
+            );
         }
     }
 

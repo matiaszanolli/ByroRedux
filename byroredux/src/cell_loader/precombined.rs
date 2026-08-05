@@ -28,8 +28,9 @@
 //!   Currently no occlusion-volume or CPU coarse-cull system exists.
 
 use byroredux_bsa::CsgArchive;
+use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::World;
-use byroredux_core::math::Vec3;
+use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::StringPool;
 use byroredux_nif::import::precombine::{decode_shared_geom_object, psg_vertex_stride};
 use byroredux_nif::import::{ImportedMesh, MeshResolver};
@@ -40,7 +41,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
-use super::spawn::{PrecombinedPlacementSpawnJob, PrecombinedPlacementSpawnProgress};
+use super::spawn::spawn_placed_instances;
 use super::FrameTimeBudget;
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 
@@ -71,10 +72,9 @@ pub(crate) fn absorbed_refs_or_empty(
 
 /// Resumable cursor over one cell's precombined hashes.
 ///
-/// Parse/CSG decode advances per hash, while a nested placement cursor yields
-/// between imported meshes and bounded BLAS batches. Keeping the CSG handle
-/// and ownership resolution here avoids reopening the large shared-geometry
-/// archive on every frame.
+/// Each hash is one atomic parse/decode/upload/BLAS unit. Keeping the CSG
+/// handle and ownership resolution here avoids reopening the large shared-
+/// geometry archive on every frame; the outer cursor yields between hashes.
 pub(super) struct PrecombinedSpawnJob {
     form_id: u32,
     total_hashes: usize,
@@ -85,7 +85,6 @@ pub(super) struct PrecombinedSpawnJob {
     owning_subdir: Option<String>,
     csg_initialized: bool,
     csg: Option<Arc<CsgArchive>>,
-    active_spawn: Option<PrecombinedPlacementSpawnJob>,
 }
 
 pub(super) enum PrecombinedSpawnProgress {
@@ -114,7 +113,6 @@ impl PrecombinedSpawnJob {
             owning_subdir,
             csg_initialized: false,
             csg: None,
-            active_spawn: None,
         })
     }
 
@@ -145,22 +143,6 @@ impl PrecombinedSpawnJob {
         }
 
         while self.next_hash < self.total_hashes {
-            if let Some(spawn) = self.active_spawn.take() {
-                match spawn.advance(world, ctx, tex_provider, budget) {
-                    PrecombinedPlacementSpawnProgress::Pending(spawn) => {
-                        self.active_spawn = Some(spawn);
-                        return PrecombinedSpawnProgress::Pending(self);
-                    }
-                    PrecombinedPlacementSpawnProgress::Complete { spawned } => {
-                        self.spawned += spawned;
-                        self.next_hash += 1;
-                    }
-                }
-                if budget.should_yield() {
-                    return PrecombinedSpawnProgress::Pending(self);
-                }
-                continue;
-            }
             if budget.should_yield() {
                 return PrecombinedSpawnProgress::Pending(self);
             }
@@ -328,17 +310,26 @@ impl PrecombinedSpawnJob {
                 }
             };
 
-            // Parsing/CSG decode is one cooperative unit. Mesh upload and BLAS
-            // work continue through a second-level cursor so a hash containing
-            // dozens of meshes cannot monopolize one frame.
-            self.active_spawn = Some(PrecombinedPlacementSpawnJob::new(
+            let (_placement_root, count) = spawn_placed_instances(
                 world,
                 ctx,
+                &cached,
                 tex_provider,
-                cached,
-                path,
                 cell_origin,
-            ));
+                Quat::IDENTITY,
+                1.0,
+                None,
+                0,
+                0,
+                None,
+                None,
+                RenderLayer::Architecture,
+                Some(&path),
+                None,
+                None,
+            );
+            self.spawned += count;
+            self.next_hash += 1;
             budget.complete_unit();
         }
 

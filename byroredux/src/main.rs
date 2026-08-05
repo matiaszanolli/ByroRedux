@@ -184,6 +184,11 @@ struct App {
     /// frame rather than read from the CLI, so a path composes with whatever
     /// the scene (or `--camera-pos`) authored.
     bench_camera_origin: Option<crate::bench_camera::CameraPose>,
+    /// Logical path frame for `grid-cross`. Unlike rendered-frame count this
+    /// pauses while a boundary transaction is active, making each measured
+    /// handoff independent of GPU frame rate and preventing the benchmark
+    /// itself from superseding correct-but-slower streaming work.
+    bench_camera_path_frame: u32,
     /// Wall-clock start of the bench window (set on first bench frame).
     /// Used to compute real elapsed time independent of the rolling stats
     /// window, which measures per-AboutToWait dt and can miss CPU phases.
@@ -388,6 +393,7 @@ impl App {
             bench_frames_count: 0,
             bench_camera: None,
             bench_camera_origin: None,
+            bench_camera_path_frame: 0,
             bench_start: None,
             bench_systems_ns: 0,
             bench_systems_ticks: 0,
@@ -1492,9 +1498,9 @@ impl ApplicationHandler for App {
         if self.window.is_some() && self.renderer.is_some() {
             self.render_one_frame(event_loop);
         }
-        if let Some(target) = self.bench_frames_target {
+        if self.bench_frames_target.is_some() {
             let samples = self.bench_cpu_frame_ms.len() as u32;
-            if samples < target && samples < self.bench_frames_count {
+            if samples < self.bench_frames_count {
                 self.bench_cpu_frame_ms
                     .push(atw_pre_t0.elapsed().as_secs_f64() * 1000.0);
             }
@@ -1512,7 +1518,21 @@ impl ApplicationHandler for App {
                 // closed; without the `bench_summary_printed` flag the
                 // summary would dump per-tick and the screenshot path
                 // would re-fire forever.
-                if self.bench_frames_count >= target && !self.bench_summary_printed {
+                let path_complete =
+                    if self.bench_camera == Some(crate::bench_camera::BenchCameraPath::GridCross) {
+                        let boundary_in_progress = self
+                            .streaming
+                            .as_ref()
+                            .is_some_and(|state| state.telemetry.boundary_in_progress());
+                        crate::bench_camera::grid_cross_complete(
+                            self.bench_camera_path_frame,
+                            target,
+                            boundary_in_progress,
+                        )
+                    } else {
+                        self.bench_frames_count >= target
+                    };
+                if path_complete && !self.bench_summary_printed {
                     let stats = self.world.resource::<DebugStats>();
                     let elapsed_secs = self
                         .bench_start

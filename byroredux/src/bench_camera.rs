@@ -211,6 +211,26 @@ impl BenchCameraPath {
     ];
 }
 
+pub(crate) fn advance_grid_cross_frame(
+    frame: u32,
+    total_frames: u32,
+    boundary_in_progress: bool,
+) -> u32 {
+    if boundary_in_progress {
+        frame.min(total_frames)
+    } else {
+        frame.saturating_add(1).min(total_frames)
+    }
+}
+
+pub(crate) fn grid_cross_complete(
+    frame: u32,
+    total_frames: u32,
+    boundary_in_progress: bool,
+) -> bool {
+    frame >= total_frames && !boundary_in_progress
+}
+
 impl std::fmt::Display for BenchCameraPath {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
@@ -407,6 +427,15 @@ mod tests {
         let start_grid_x = (start.position.x / EXTERIOR_CELL_UNITS).floor() as i32;
         let end_grid_x = (end.position.x / EXTERIOR_CELL_UNITS).floor() as i32;
         assert_eq!(end_grid_x - start_grid_x, 3);
+    }
+
+    #[test]
+    fn grid_cross_logical_frame_pauses_until_boundary_settles() {
+        assert_eq!(advance_grid_cross_frame(40, 100, true), 40);
+        assert_eq!(advance_grid_cross_frame(40, 100, false), 41);
+        assert_eq!(advance_grid_cross_frame(100, 100, false), 100);
+        assert!(!grid_cross_complete(100, 100, true));
+        assert!(grid_cross_complete(100, 100, false));
     }
 
     /// The cut holds one pose, then jumps once to the orbit endpoint — and

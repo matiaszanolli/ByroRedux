@@ -214,7 +214,9 @@ fn world_pos_to_grid_floor_semantics() {
 fn streaming_telemetry_records_independent_ready_deadlines() {
     let start = Instant::now();
     let mut telemetry = StreamingTelemetry::default();
+    assert!(!telemetry.boundary_in_progress());
     telemetry.begin_boundary((8, -3), start);
+    assert!(telemetry.boundary_in_progress());
     telemetry.observe_pending(7);
     telemetry.record_queued_cells(7);
     telemetry.record_dispatch_slice(Duration::from_millis(2));
@@ -234,6 +236,7 @@ fn streaming_telemetry_records_independent_ready_deadlines() {
     let lod = telemetry
         .settle_lod(start + Duration::from_millis(30))
         .expect("LOD sample");
+    assert!(!telemetry.boundary_in_progress());
 
     assert_eq!(full, ((8, -3), Duration::from_millis(12)));
     assert_eq!(lod, ((8, -3), Duration::from_millis(30)));

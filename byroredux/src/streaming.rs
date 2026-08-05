@@ -109,6 +109,10 @@ pub struct StreamingTelemetry {
 }
 
 impl StreamingTelemetry {
+    pub(crate) fn boundary_in_progress(&self) -> bool {
+        self.active.is_some()
+    }
+
     pub(crate) fn begin_boundary(&mut self, grid: (i32, i32), now: Instant) {
         if let Some(previous) = self.active {
             if !previous.full_detail_settled {
