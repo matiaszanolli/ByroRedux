@@ -428,6 +428,28 @@ fn bs_segmented_tri_shape_dispatches_and_consumes_segment_table() {
     );
 }
 
+/// Regression: #2329 (FO3-D2-03) — a corrupt/huge `num_segments` must
+/// be rejected by `check_alloc` up front, not walked byte-by-byte to
+/// EOF. Mirrors `parse_mesh_emitter`'s bound (#388 / #407 / #383):
+/// declares far more 9-byte segment records than the remaining stream
+/// could possibly hold.
+#[test]
+fn bs_segmented_tri_shape_rejects_corrupt_num_segments() {
+    let header = fo3_header();
+    let mut bytes = minimal_fo3_ni_tri_shape_bytes();
+    // Declare an absurd segment count with no backing data — should
+    // fail fast via check_alloc's remaining-stream check rather than
+    // reading past EOF one record at a time.
+    bytes.extend_from_slice(&u32::MAX.to_le_bytes());
+
+    let mut stream = crate::stream::NifStream::new(&bytes, &header);
+    let result = parse_block("BSSegmentedTriShape", &mut stream, Some(bytes.len() as u32));
+    assert!(
+        result.is_err(),
+        "corrupt num_segments must be rejected, not silently walked to EOF"
+    );
+}
+
 /// Regression: #147 — BSMeshLODTriShape shares BSLODTriShape's
 /// 3-u32 LOD-size trailing layout. Previously dispatched to the
 /// plain BSTriShape arm, leaving 12 bytes unread and spamming the

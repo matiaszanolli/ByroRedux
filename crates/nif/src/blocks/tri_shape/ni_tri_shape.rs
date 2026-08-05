@@ -183,6 +183,12 @@ impl NiTriShape {
     pub fn parse_segmented(stream: &mut NifStream) -> io::Result<Self> {
         let shape = Self::parse(stream)?;
         let num_segments = stream.read_u32_le()?;
+        // #2329 / FO3-D2-03 — bound the segment-table loop against the
+        // remaining stream before walking it, same defense as
+        // `parse_mesh_emitter` (#388 / #407 / #383). A corrupt/huge
+        // `num_segments` would otherwise walk to EOF one 9-byte record
+        // at a time instead of failing fast with a clear error.
+        stream.check_alloc((num_segments as usize).saturating_mul(9))?;
         for _ in 0..num_segments {
             let _flags = stream.read_u8()?;
             let _index = stream.read_u32_le()?;
