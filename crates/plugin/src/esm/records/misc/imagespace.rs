@@ -8,20 +8,24 @@
 use super::super::common::read_zstring;
 use crate::esm::reader::SubRecord;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImadScalarKey {
     pub time: f32,
     pub value: f32,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImadColorKey {
     pub time: f32,
     pub color: [f32; 4],
 }
 
 /// Animated image-space channels consumed by the final presentation pass.
-#[derive(Debug, Clone, PartialEq)]
+/// #2380 (SAVE-D1-15) — `Serialize`/`Deserialize` added so this record can
+/// ride inside `CinematicPresentationState.image_space_modifier_catalog`
+/// when that resource is saved. Plain data (`String`/`u32`/`f32`/`Vec`) —
+/// no `EntityId`, no engine-side handle.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImadRecord {
     pub form_id: u32,
     pub editor_id: String,

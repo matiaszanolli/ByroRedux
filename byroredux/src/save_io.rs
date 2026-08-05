@@ -211,8 +211,8 @@ pub fn build_save_registry() -> SaveRegistry {
     use byroredux_scripting::papyrus_demo::RumbleOnActivate;
     use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
     use byroredux_scripting::{
-        ActorControlState, FragmentExecutionQueue, PlayerControlState, ScriptTimer,
-        ScriptVariables, TwoStateActivator,
+        ActorCinematicState, ActorControlState, CinematicPresentationState, FragmentExecutionQueue,
+        HorseTetherState, PlayerControlState, ScriptTimer, ScriptVariables, TwoStateActivator,
     };
 
     use crate::cell_loader::CurrentCellContext;
@@ -259,6 +259,17 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_component::<GuardState>("GuardState")
         .register_component::<PatrolState>("PatrolState")
         .register_component::<Seated>("Seated")
+        // #2380 / SAVE-D1-15 — MQ101 cinematic fragment-effect state. Both
+        // carry `EntityId` fields (`vehicle`/`horse`), the same
+        // session-local-reference hazard as `FollowState`/`EscortState`
+        // above — full `register_component` only, never
+        // `MUTABLE_DELTA_COLUMNS`. Live-mutated by Papyrus PlayIdle/
+        // SetVehicle/TetherToHorse fragment effects with no reload
+        // re-derivation (quest_fragment_dispatch_system is edge-triggered
+        // and doesn't replay on load, disproving #2294's assumption for
+        // these two).
+        .register_component::<ActorCinematicState>("ActorCinematicState")
+        .register_component::<HorseTetherState>("HorseTetherState")
         // #2292 / SAVE-D1-09 — `Actor.SetRestrained` per-actor lock. Plain
         // bool, delta-safe. Pre-fix a save taken while an NPC was restrained
         // silently freed it on reload.
@@ -320,7 +331,13 @@ pub fn build_save_registry() -> SaveRegistry {
         // (FormIDs as u32, property names as owned String). Pre-fix a
         // save taken mid-`Utility.Wait` silently dropped the queued
         // effect chain the wait was gating.
-        .register_resource::<FragmentExecutionQueue>("FragmentExecutionQueue");
+        .register_resource::<FragmentExecutionQueue>("FragmentExecutionQueue")
+        // #2380 / SAVE-D1-15 — MQ101 cinematic presentation state
+        // (sitting rotation, animation-event registrations, active IMAD
+        // applications). No `EntityId`/`FixedString` anywhere.
+        // `image_space_modifier_catalog` is static ESM data that rides
+        // along redundantly (see the type's own doc comment).
+        .register_resource::<CinematicPresentationState>("CinematicPresentationState");
     r
 }
 
@@ -1552,6 +1569,87 @@ mod tests {
         );
     }
 
+    /// Regression: #2380 (SAVE-D1-15) — the MQ101 cinematic fragment-effect
+    /// state must survive a save/load round trip. Pre-fix,
+    /// `ActorCinematicState`/`HorseTetherState`/`CinematicPresentationState`
+    /// were absent from `build_save_registry`, so a save taken mid-cinematic
+    /// (riding a tethered cart, mid-`PlayIdle`, non-default sitting rotation)
+    /// silently reverted to default state on reload.
+    #[test]
+    fn cinematic_trio_survives_save_load_round_trip() {
+        use byroredux_scripting::{
+            ActorCinematicState, CinematicPresentationState, HorseTetherState,
+        };
+
+        let reg = build_save_registry();
+        let mut src = World::new();
+        src.insert_resource(StringPool::new());
+        src.insert_resource(FormIdPool::new());
+
+        let vehicle = src.spawn();
+        let actor = src.spawn();
+        src.insert(
+            actor,
+            ActorCinematicState {
+                vehicle: Some(vehicle),
+                vehicle_local_translation: Some(Vec3::new(1.0, 2.0, 3.0)),
+                requested_idle_form_id: Some(0xDEAD_BEEF),
+                idle_request_serial: 7,
+                ..Default::default()
+            },
+        );
+
+        let horse = src.spawn();
+        let cart = src.spawn();
+        src.insert(
+            cart,
+            HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::new(4.0, 5.0, 6.0),
+                horse_local_rotation: byroredux_core::math::Quat::IDENTITY,
+            },
+        );
+
+        let mut presentation = CinematicPresentationState::default();
+        presentation.sitting_rotation_degrees = 42.0;
+        src.insert_resource(presentation);
+
+        let snapshot = save_world(&src, &reg).unwrap();
+        let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+        let mut dst = World::new();
+        dst.insert_resource(FormIdPool::new());
+        restore_world(&mut dst, &reg, &decoded).unwrap();
+
+        let restored_actor = dst
+            .get::<ActorCinematicState>(actor)
+            .expect("ActorCinematicState must round-trip");
+        // restore_world preserves entity ids verbatim, so the EntityId
+        // reference resolves to the same numeric id it had at save time.
+        assert_eq!(restored_actor.vehicle, Some(vehicle));
+        assert_eq!(
+            restored_actor.vehicle_local_translation,
+            Some(Vec3::new(1.0, 2.0, 3.0))
+        );
+        assert_eq!(restored_actor.requested_idle_form_id, Some(0xDEAD_BEEF));
+        assert_eq!(restored_actor.idle_request_serial, 7);
+
+        let restored_tether = dst
+            .get::<HorseTetherState>(cart)
+            .expect("HorseTetherState must round-trip");
+        assert_eq!(restored_tether.horse, horse);
+        assert_eq!(
+            restored_tether.horse_local_translation,
+            Vec3::new(4.0, 5.0, 6.0)
+        );
+
+        let restored_presentation = dst
+            .try_resource::<CinematicPresentationState>()
+            .expect("CinematicPresentationState must round-trip");
+        assert_eq!(restored_presentation.sitting_rotation_degrees, 42.0);
+    }
+
     /// #1835 — every gameplay-state component `spawn_npc_entity` stamps on an
     /// NPC placement root must be a deliberate save decision: registered in
     /// [`build_save_registry`] (persisted + restored) XOR listed as
@@ -1749,11 +1847,13 @@ mod tests {
             ("WorldBound", "per-frame bound recomputed from saved LocalBound + GlobalTransform, same exclusion class as GlobalTransform"),
             // ── crates/scripting/src/ ────────────────────────────────────
             ("ActivateEvent", "one-shot event marker drained every frame by event_cleanup_system"),
-            ("ActorCinematicState", "KNOWN GAP — live-mutated by Papyrus PlayIdle/SetVehicle/ExitCart fragment effects with no reload re-derivation; tracked in #2380"),
+            // ActorCinematicState: FIXED — registered (#2380 / SAVE-D1-15),
+            // no longer allowlisted here.
             ("ActorStats", "forward-latent — no live production insert site exists outside tests"),
             ("AnimationTextKeyEvents", "one-shot event marker drained every frame by event_cleanup_system"),
             ("CameraShakeCommand", "one-shot command marker drained every frame by event_cleanup_system"),
-            ("CinematicPresentationState", "KNOWN GAP — live-mutated by Effect::SetSittingRotation and animation-event callbacks with no reload re-derivation; tracked in #2380"),
+            // CinematicPresentationState: FIXED — registered (#2380 /
+            // SAVE-D1-15), no longer allowlisted here.
             ("ControllerRumbleCommand", "one-shot command marker drained every frame by event_cleanup_system"),
             ("DialogueLineCompletionBatch", "one-shot presentation-ingress batch, snapshotted+drained every tick"),
             ("DialoguePlayback", "documented #1696-style rationale on the type itself (#2294)"),
@@ -1766,7 +1866,8 @@ mod tests {
             // SAVE-D1-16), no longer allowlisted here.
             ("Globals", "the runtime mutator (Globals::set) is explicitly documented as dormant — no production SetGlobalValue writer exists yet; re-evaluate when it lands"),
             ("HitEvent", "one-shot event marker drained every frame by event_cleanup_system"),
-            ("HorseTetherState", "KNOWN GAP — live-written by Effect::TetherToHorse with no reload re-derivation; tracked in #2380"),
+            // HorseTetherState: FIXED — registered (#2380 / SAVE-D1-15), no
+            // longer allowlisted here.
             ("KeystoneInventory", "forward-latent — its only mutator only fires for MG07LabyrinthianDoor entities, which have no live production spawn site"),
             ("MG07LabyrinthianDoor", "forward-latent — no live production spawn site exists outside tests, despite its systems being scheduler-wired"),
             ("MotionTypeChangeRequest", "one-shot request, applied and drained same-tick by its own consumer system"),

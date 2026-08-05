@@ -39,6 +39,7 @@ impl CinematicAnimationEvent {
 /// One vanilla `ImageSpaceModifier.Apply(strength)` invocation delivered by
 /// an animation callback.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ImageSpaceModifierApplication {
     pub form_id: u32,
     pub strength: f32,
@@ -47,6 +48,7 @@ pub struct ImageSpaceModifierApplication {
 /// Fully sampled image-space state for the current frame. Identity values
 /// make the renderer path a no-op outside authored cinematic effects.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ImageSpaceModifierFrame {
     pub blur_radius_pixels: f32,
     pub double_vision_strength: f32,
@@ -86,12 +88,14 @@ impl Default for ImageSpaceModifierFrame {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 struct ActiveImageSpaceModifier {
     application: ImageSpaceModifierApplication,
     elapsed_seconds: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 struct PlayerAnimationEventRegistration {
     quest: QuestFormId,
     image_space_modifiers: Vec<ImageSpaceModifierApplication>,
@@ -100,15 +104,19 @@ struct PlayerAnimationEventRegistration {
 /// Per-actor cinematic state written by `PlayIdle`, `SetVehicle`, and the
 /// MQ101 `ExitCart` helper.
 ///
-/// # Save registry — deliberately NOT registered (#2294 / SAVE-D1-11 SIBLING)
+/// # Save registry (#2380 / SAVE-D1-15)
 ///
-/// Same undocumented-omission pattern flagged for `ScenePlayer` et al.,
-/// scoped to the MQ101 demo slice. `vehicle: Option<EntityId>` is also a
-/// session-local reference (the `#1696` hazard that excluded
-/// `AnimationPlayer.root_entity`), so this would need the FollowState/
-/// EscortState treatment (full `register_component`, no `MUTABLE_DELTA_COLUMNS`
-/// entry) rather than the simple case, if ever registered.
+/// The #2294 "believed self-correcting on reload" assumption did NOT hold:
+/// `quest_fragment_dispatch_system` is edge-triggered off an acknowledged
+/// event journal, so the `SetStage` transition that drove this state never
+/// replays on reload, unlike `ScenePlayer`'s `SceneStartRequest` mechanism.
+/// Registered via full `register_component` (restore_world preserves
+/// entity ids verbatim) but deliberately NOT in `MUTABLE_DELTA_COLUMNS`:
+/// `vehicle: Option<EntityId>` is a session-local reference (the `#1696`
+/// hazard that excluded `AnimationPlayer.root_entity`), the same
+/// FollowState/EscortState treatment.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorCinematicState {
     /// Live vehicle entity, or `None` after detaching/exiting.
     pub vehicle: Option<EntityId>,
@@ -153,12 +161,13 @@ impl Component for ActorCinematicState {
 /// the horse, forming the first half of MQ101's movement chain:
 /// package-driven horse -> tethered cart -> `SetVehicle` riders.
 ///
-/// # Save registry — deliberately NOT registered (#2294 / SAVE-D1-11 SIBLING)
+/// # Save registry (#2380 / SAVE-D1-15)
 ///
-/// Same rationale as [`ActorCinematicState`]'s doc comment — MQ101
-/// demo-scoped, and `horse: EntityId` carries the same session-local-
-/// reference hazard.
+/// Same rationale as [`ActorCinematicState`]'s doc comment: registered via
+/// full `register_component`, not `MUTABLE_DELTA_COLUMNS` — `horse:
+/// EntityId` carries the same session-local-reference hazard.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct HorseTetherState {
     pub horse: EntityId,
     pub horse_local_translation: Vec3,
@@ -183,12 +192,18 @@ impl Component for MotionTypeChangeRequest {
 /// Engine-wide cinematic presentation state controlled by Skyrim globals and
 /// MQ101's animation-event helper functions.
 ///
-/// # Save registry — deliberately NOT registered (#2294 / SAVE-D1-11 SIBLING)
+/// # Save registry (#2380 / SAVE-D1-15)
 ///
-/// Same undocumented-omission pattern flagged for `ScenePlayer` et al.,
-/// scoped to the MQ101 demo slice — see [`ActorCinematicState`]'s doc
-/// comment.
+/// Registered as a resource — no `EntityId`/`FixedString` anywhere in this
+/// struct, unlike its `ActorCinematicState`/`HorseTetherState` siblings.
+/// `image_space_modifier_catalog` is static ESM-derived reference data
+/// (populated once by [`install_image_space_modifiers`], no runtime
+/// mutator) that rides along redundantly — harmless, and simpler than
+/// skip-and-repopulate given a full round-trip's
+/// `restore_world`/`restore_resources` path never re-runs cell/plugin
+/// load to refill it.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct CinematicPresentationState {
     pub sitting_rotation_degrees: f32,
     pub last_player_animation_event: Option<CinematicAnimationEvent>,
