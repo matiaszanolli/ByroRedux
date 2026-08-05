@@ -504,6 +504,21 @@ pub(super) struct MaterialInfo {
     /// so a flags=0 shape property correctly closes the gate. See
     /// NIF-D4-NEW-05 (audit 2026-05-12).
     pub alpha_property_consumed: bool,
+    /// True once a legacy FO3/FNV/Oblivion shader property has written
+    /// `texture_clamp_mode` for this mesh via
+    /// `apply_legacy_property_chain`'s direct-then-inherited walk.
+    /// Mirrors `alpha_property_consumed`'s rationale (#2328 /
+    /// FO3-D1-06): `apply_legacy_property_chain` iterates the shape's
+    /// own properties before the parent NiNode's inherited ones so the
+    /// shape's authored value takes priority (#208), but the
+    /// `texture_clamp_mode` writers used a bare `=` with no consumption
+    /// gate — an inherited parent property silently overwrote the
+    /// shape's own value, the opposite of the documented precedence.
+    pub texture_clamp_mode_consumed: bool,
+    /// True once a legacy FO3/FNV/Oblivion shader property has written
+    /// `env_map_scale` for this mesh. Same rationale and fix as
+    /// [`Self::texture_clamp_mode_consumed`] (#2328 / FO3-D1-06).
+    pub env_map_scale_consumed: bool,
     pub two_sided: bool,
     pub is_decal: bool,
     /// Object/model-space normal map (vs the default tangent-space). Set
@@ -992,6 +1007,8 @@ impl Default for MaterialInfo {
             alpha_threshold: 0.0,
             alpha_test_func: 6, // GREATEREQUAL — Gamebryo default
             alpha_property_consumed: false,
+            texture_clamp_mode_consumed: false,
+            env_map_scale_consumed: false,
             two_sided: false,
             is_decal: false,
             model_space_normals: false,
@@ -1457,6 +1474,11 @@ mod lighting_shader_pbr_tests;
 /// the FO3/FNV sibling of `lighting_shader_pbr_tests`'s Skyrim+ case.
 #[cfg(test)]
 mod fo3nv_fire_refraction_tests;
+
+/// Regression tests for #2328 (FO3-D1-06) — inherited-property
+/// precedence inversion on `texture_clamp_mode`/`env_map_scale`.
+#[cfg(test)]
+mod legacy_property_precedence_tests;
 
 #[cfg(test)]
 mod intern_texture_path_tests {

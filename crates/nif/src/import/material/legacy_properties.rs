@@ -324,7 +324,18 @@ fn apply_pp_lighting_property(
         // the NiTexturingProperty path mirrored the per-slot
         // `flags & 0xF` (#761) — only this PPLighting site was
         // missing. nif.xml enum range is 0..=3 → `as u8` is safe.
-        info.texture_clamp_mode = shader.texture_clamp_mode as u8;
+        //
+        // #2328 / FO3-D1-06 — gate on `texture_clamp_mode_consumed`,
+        // not a bare `=`. `apply_legacy_property_chain` walks the
+        // shape's own properties before the parent NiNode's inherited
+        // ones so the shape's authored value takes priority (#208); an
+        // unconditional write here let an inherited parent property
+        // silently overwrite a value the shape's own direct property
+        // already set on an earlier chain iteration.
+        if !info.texture_clamp_mode_consumed {
+            info.texture_clamp_mode = shader.texture_clamp_mode as u8;
+            info.texture_clamp_mode_consumed = true;
+        }
         // #773 / FO3-4-02 — `env_map_scale` mirror. Pre-#2315 the
         // env-cube + env-mask textures arrived via
         // `texture_set[4]/[5]` (#452) but the scalar that
@@ -338,8 +349,14 @@ fn apply_pp_lighting_property(
         // BSShaderPropertyData → .env_map_scale`. The scalar defaults
         // to 1.0 on disk, so only forward it when an authored FO3/FNV
         // environment-mapping flag activates the field (#2315).
-        info.env_map_scale =
-            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+        //
+        // #2328 / FO3-D1-06 — same `_consumed` gate as `texture_clamp_mode`
+        // above; see that comment for the precedence-inversion rationale.
+        if !info.env_map_scale_consumed {
+            info.env_map_scale =
+                legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+            info.env_map_scale_consumed = true;
+        }
         // FO3/FNV `BSShaderPPLightingProperty` has NO Double_Sided
         // bit on either flag pair — see the SF_DOUBLE_SIDED
         // explanatory block at the top of this file. Leave
@@ -422,13 +439,22 @@ fn apply_no_lighting_property(
         // both fields fell off the import path here too. CLAMP-on-
         // edge HUD scope crosshairs / VATS overlays / blood
         // splats authoring `texture_clamp_mode != 3` (WRAP)
-        // silently fell back to default. Last-writer-wins matches
-        // the established precedence for `info.is_decal` in
-        // `apply_pp_lighting_property` — PP and NoLighting rarely
-        // coexist on a single mesh in vanilla content.
-        info.texture_clamp_mode = shader.texture_clamp_mode as u8;
-        info.env_map_scale =
-            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+        // silently fell back to default.
+        //
+        // #2328 / FO3-D1-06 — gate on the `_consumed` flags (see
+        // `apply_pp_lighting_property`'s comment for the rationale):
+        // the shape's own direct property wins over an inherited
+        // parent's, matching the documented precedence (#208) instead
+        // of last-writer-wins.
+        if !info.texture_clamp_mode_consumed {
+            info.texture_clamp_mode = shader.texture_clamp_mode as u8;
+            info.texture_clamp_mode_consumed = true;
+        }
+        if !info.env_map_scale_consumed {
+            info.env_map_scale =
+                legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+            info.env_map_scale_consumed = true;
+        }
         // FO3/FNV `BSShaderNoLightingProperty` is the original
         // engine's fullbright / unlit shader — the texture (× vertex
         // color) IS the final pixel: terminal screens, computer text,
@@ -482,28 +508,48 @@ fn apply_misc_shader_properties(
     // through the same field. `WaterShaderProperty` has no `file_name`
     // (the water texture lives outside the property), so only the
     // env_map_scale rides through.
+    // #2328 / FO3-D1-06 — every `texture_clamp_mode`/`env_map_scale`
+    // write below is gated on the `_consumed` flags so a shape's own
+    // direct property (checked first by `apply_legacy_property_chain`)
+    // takes priority over an inherited parent NiNode's, matching the
+    // documented precedence (#208) instead of last-writer-wins.
     if let Some(shader) = scene.get_as::<TileShaderProperty>(idx) {
         if info.texture_path.is_none() {
             info.texture_path = intern_texture_path(pool, &shader.file_name);
         }
-        info.texture_clamp_mode = shader.texture_clamp_mode as u8;
-        info.env_map_scale =
-            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+        if !info.texture_clamp_mode_consumed {
+            info.texture_clamp_mode = shader.texture_clamp_mode as u8;
+            info.texture_clamp_mode_consumed = true;
+        }
+        if !info.env_map_scale_consumed {
+            info.env_map_scale =
+                legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+            info.env_map_scale_consumed = true;
+        }
     }
     if let Some(shader) = scene.get_as::<SkyShaderProperty>(idx) {
         if info.texture_path.is_none() {
             info.texture_path = intern_texture_path(pool, &shader.file_name);
         }
-        info.texture_clamp_mode = shader.texture_clamp_mode as u8;
-        info.env_map_scale =
-            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+        if !info.texture_clamp_mode_consumed {
+            info.texture_clamp_mode = shader.texture_clamp_mode as u8;
+            info.texture_clamp_mode_consumed = true;
+        }
+        if !info.env_map_scale_consumed {
+            info.env_map_scale =
+                legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+            info.env_map_scale_consumed = true;
+        }
     }
     if let Some(shader) = scene.get_as::<TallGrassShaderProperty>(idx) {
         if info.texture_path.is_none() {
             info.texture_path = intern_texture_path(pool, &shader.file_name);
         }
-        info.env_map_scale =
-            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+        if !info.env_map_scale_consumed {
+            info.env_map_scale =
+                legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+            info.env_map_scale_consumed = true;
+        }
     }
     // #1856 — `env_map_scale` is the only value payload here: per
     // nif.xml line 6322 the FO3/FNV
@@ -514,8 +560,11 @@ fn apply_misc_shader_properties(
     // forwarding this block's base `shader_flags_1/2` into it would mix
     // `BSShaderFlags` with `WaterShaderPropertyFlags`.
     if let Some(shader) = scene.get_as::<WaterShaderProperty>(idx) {
-        info.env_map_scale =
-            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+        if !info.env_map_scale_consumed {
+            info.env_map_scale =
+                legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+            info.env_map_scale_consumed = true;
+        }
     }
 }
 
@@ -536,8 +585,13 @@ fn apply_base_only_shader_property(scene: &NifScene, idx: usize, info: &mut Mate
     // are the most visible case — reflective hair never received
     // its authored env modulator pre-fix.
     if let Some(shader) = scene.get_as::<BSShaderPropertyBaseOnly>(idx) {
-        info.env_map_scale =
-            legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+        // #2328 / FO3-D1-06 — same `_consumed` gate as the sibling
+        // shader-property branches; see `apply_pp_lighting_property`.
+        if !info.env_map_scale_consumed {
+            info.env_map_scale =
+                legacy_env_map_scale(shader.shader.shader_flags_1, shader.shader.env_map_scale);
+            info.env_map_scale_consumed = true;
+        }
     }
 }
 
