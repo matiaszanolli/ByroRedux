@@ -118,6 +118,10 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // + 5 plain f32s (mass/friction/restitution/linear_damping/
     // angular_damping). No FixedString / EntityId / session handle.
     "RigidBodyData",
+    // #2382 / SAVE-D1-17 — `RumbleOnActivate`: f32/bool property fields +
+    // `RumbleState` enum (`Busy` carries one f32). No FixedString /
+    // EntityId / session handle.
+    "RumbleOnActivate",
 ];
 
 /// The player's standing position + look direction at save time, so a
@@ -204,6 +208,7 @@ pub fn build_save_registry() -> SaveRegistry {
         Transform, TravelState, Traveled, WanderState,
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
+    use byroredux_scripting::papyrus_demo::RumbleOnActivate;
     use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
     use byroredux_scripting::{
         ActorControlState, PlayerControlState, ScriptTimer, ScriptVariables, TwoStateActivator,
@@ -264,6 +269,12 @@ pub fn build_save_registry() -> SaveRegistry {
         // motion-type change (e.g. making a prop dynamic for a scripted
         // sequence) silently reverted to the ESM-derived default on reload.
         .register_component::<RigidBodyData>("RigidBodyData")
+        // #2382 / SAVE-D1-17 — `defaultRumbleOnActivate`'s live
+        // Active/Busy/Inactive state machine + wait countdown. Flat enum
+        // + f32/bool fields, delta-safe. Pre-fix a mid-wait or
+        // already-one-shot-fired lever silently reset to `Active` on
+        // reload, letting a spent trap/lever re-fire.
+        .register_component::<RumbleOnActivate>("RumbleOnActivate")
         .register_form_id_component("FormIdComponent")
         .register_resource::<ItemInstancePool>("ItemInstancePool")
         // M45.1 — the cell identity + plugin set the save was taken in,
@@ -948,6 +959,10 @@ mod tests {
             // #2379 — RigidBodyData: MotionType enum (no payload) + 5 plain
             // f32s. No FixedString / EntityId / session handle → delta-safe.
             "RigidBodyData",
+            // #2382 — RumbleOnActivate: f32/bool property fields +
+            // RumbleState enum (Busy carries one f32). No FixedString /
+            // EntityId / session handle → delta-safe.
+            "RumbleOnActivate",
         ];
         assert_eq!(
             MUTABLE_DELTA_COLUMNS, AUDITED,
@@ -1331,6 +1346,57 @@ mod tests {
         assert_eq!(restored.angular_damping, 0.05);
     }
 
+    /// Regression: #2382 (SAVE-D1-17) — a `defaultRumbleOnActivate` lever
+    /// mid-wait (or already one-shot-fired) must survive a save/load round
+    /// trip instead of silently resetting to `Active`.
+    #[test]
+    fn rumble_on_activate_survives_save_load_round_trip() {
+        use byroredux_scripting::papyrus_demo::{RumbleOnActivate, RumbleState};
+
+        let reg = build_save_registry();
+        let mut src = World::new();
+        src.insert_resource(StringPool::new());
+        src.insert_resource(FormIdPool::new());
+
+        let lever = src.spawn();
+        src.insert(
+            lever,
+            RumbleOnActivate {
+                camera_intensity: 0.5,
+                duration: 1.5,
+                repeatable: false,
+                shake_left: 0.75,
+                shake_right: 0.75,
+                state: RumbleState::Busy {
+                    wait_remaining_secs: 0.9,
+                },
+            },
+        );
+
+        let snapshot = save_world(&src, &reg).unwrap();
+        let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+        let mut dst = World::new();
+        dst.insert_resource(FormIdPool::new());
+        restore_world(&mut dst, &reg, &decoded).unwrap();
+
+        let restored = dst
+            .get::<RumbleOnActivate>(lever)
+            .expect("RumbleOnActivate must round-trip");
+        assert_eq!(restored.camera_intensity, 0.5);
+        assert_eq!(restored.duration, 1.5);
+        assert!(!restored.repeatable);
+        assert_eq!(restored.shake_left, 0.75);
+        assert_eq!(restored.shake_right, 0.75);
+        assert_eq!(
+            restored.state,
+            RumbleState::Busy {
+                wait_remaining_secs: 0.9
+            }
+        );
+    }
+
     /// #1835 — every gameplay-state component `spawn_npc_entity` stamps on an
     /// NPC placement root must be a deliberate save decision: registered in
     /// [`build_save_registry`] (persisted + restored) XOR listed as
@@ -1557,7 +1623,8 @@ mod tests {
             ("QuestStageAdvancedBatch", "one-shot batch drained every frame by event_cleanup_system"),
             ("QuestStageFragments", "populated once at cell load from decoded VMAD/PEX, only ever read afterward"),
             ("RecurringUpdate", "forward-latent — its only writer is unreachable in production today (no live Dlc2Ttr4aPlayerScript spawn site); re-evaluate the moment a real RegisterForUpdate recognizer lands"),
-            ("RumbleOnActivate", "KNOWN GAP — live Active/Busy/Inactive state machine mutated at runtime with no reload re-derivation; tracked in #2382"),
+            // RumbleOnActivate: FIXED — registered (#2382 / SAVE-D1-17), no
+            // longer allowlisted here.
             ("SceneActionCompletionBatch", "one-shot batch drained every tick by scene_playback_system"),
             ("SceneActorBindings", "fully computed/cached resource, rebuilt from scratch off static registries whenever marked dirty"),
             ("SceneAliasCandidate", "write-once at REFR-spawn time from static reference/base-record identity, re-derived identically every reload"),

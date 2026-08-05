@@ -85,7 +85,13 @@ impl byroredux_core::ecs::resource::Resource for PlayerEntity {}
 /// Component is the entire script. There is no separate "script
 /// instance" object: the component IS the instance. Property values
 /// + `state` = total observable script state.
+///
+/// #2382 (SAVE-D1-17) — a live Active/Busy/Inactive state machine
+/// mutated at runtime by `rumble_on_activate_system`/`rumble_tick_system`;
+/// registered in `byroredux::save_io::build_save_registry` so a mid-wait
+/// or already-fired lever doesn't silently reset to `Active` on reload.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct RumbleOnActivate {
     /// Papyrus `Float Property cameraIntensity = 0.25 Auto`.
     pub camera_intensity: f32,
@@ -137,6 +143,7 @@ impl Component for RumbleOnActivate {
 /// stack-suspended `Utility.wait()` frame with plain data — no VM,
 /// no fiber, no async runtime, no per-script heap.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum RumbleState {
     /// Ready to fire. Matches Papyrus's `Auto State active`.
     Active,
