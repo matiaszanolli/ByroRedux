@@ -154,6 +154,16 @@ pub struct ActiveSceneAction {
 /// omitted, decision. If a live path is ever found where a reload does NOT
 /// re-derive this state, register `ScenePlayer` instead of leaving this
 /// comment stale.
+///
+/// **Caveat (#2380 / SAVE-D1-15)**: the #2295 registry-completeness sweep
+/// found sibling fragment-driven state (`ActorCinematicState` et al.) whose
+/// superficially-similar "reload re-derives it" assumption did NOT hold —
+/// `quest_fragment_dispatch_system` is edge-triggered off an acknowledged
+/// event journal, so a `SetStage` transition never replays on reload. This
+/// type's `SceneStartRequest`-driven mechanism is structurally different
+/// (scene entities are (re)created from live `SceneEvent`s, not a one-shot
+/// edge-triggered dispatch), so the distinction is believed to still hold,
+/// but has not been independently re-verified since that finding.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScenePlayer {
     pub scene_form_id: u32,
