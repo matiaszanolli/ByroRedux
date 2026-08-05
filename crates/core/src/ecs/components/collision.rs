@@ -64,6 +64,7 @@ impl Component for CollisionShape {
 /// transform-derived pose onto a character body each frame — only
 /// `Keyframed` bodies (doors, platforms, scripted props) take that path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub enum MotionType {
     /// Fixed in place, infinite mass (walls, floors, static architecture).
     Static,
@@ -87,7 +88,15 @@ pub enum MotionType {
 /// - `Static` → `RigidBodyBuilder::fixed()`
 /// - `Keyframed` → `RigidBodyBuilder::kinematic_position_based()`
 /// - `Dynamic` → `RigidBodyBuilder::dynamic()`
+///
+/// #2379 (SAVE-D1-14) — `motion_type` is mutated at runtime by Papyrus
+/// `.SetMotionType()` (`scripted_motion_type_system`), not just seeded
+/// once from static bhkRigidBody data as this doc previously implied.
+/// Registered in `byroredux::save_io::build_save_registry` (and
+/// `MUTABLE_DELTA_COLUMNS`) so a scripted motion-type change survives a
+/// save/load instead of reverting to the ESM-derived default.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct RigidBodyData {
     pub motion_type: MotionType,
     pub mass: f32,

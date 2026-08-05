@@ -114,6 +114,10 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // #2292 / SAVE-D1-09 — `ActorControlState { restrained: bool }`. Single
     // bool, no session-local identity.
     "ActorControlState",
+    // #2379 / SAVE-D1-14 — `RigidBodyData`: `MotionType` enum (no payload)
+    // + 5 plain f32s (mass/friction/restitution/linear_damping/
+    // angular_damping). No FixedString / EntityId / session handle.
+    "RigidBodyData",
 ];
 
 /// The player's standing position + look direction at save time, so a
@@ -196,8 +200,8 @@ pub fn build_save_registry() -> SaveRegistry {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
     use byroredux_core::ecs::components::{
         ActorValues, Children, EquipmentSlots, EscortState, Escorted, FollowState, GuardState,
-        Inventory, LightFlicker, LightSource, Name, Parent, PatrolState, Seated, Transform,
-        TravelState, Traveled, WanderState,
+        Inventory, LightFlicker, LightSource, Name, Parent, PatrolState, RigidBodyData, Seated,
+        Transform, TravelState, Traveled, WanderState,
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
     use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
@@ -253,6 +257,13 @@ pub fn build_save_registry() -> SaveRegistry {
         // bool, delta-safe. Pre-fix a save taken while an NPC was restrained
         // silently freed it on reload.
         .register_component::<ActorControlState>("ActorControlState")
+        // #2379 / SAVE-D1-14 — `motion_type` (+ mass/friction/restitution/
+        // damping) is mutated at runtime by Papyrus `.SetMotionType()`
+        // (`scripted_motion_type_system`), not just static bhkRigidBody
+        // import data. Flat enum + f32s, delta-safe. Pre-fix a scripted
+        // motion-type change (e.g. making a prop dynamic for a scripted
+        // sequence) silently reverted to the ESM-derived default on reload.
+        .register_component::<RigidBodyData>("RigidBodyData")
         .register_form_id_component("FormIdComponent")
         .register_resource::<ItemInstancePool>("ItemInstancePool")
         // M45.1 — the cell identity + plugin set the save was taken in,
@@ -934,6 +945,9 @@ mod tests {
             // #2292 — ActorControlState: a single bool (`restrained`). No
             // FixedString / EntityId / session handle → delta-safe.
             "ActorControlState",
+            // #2379 — RigidBodyData: MotionType enum (no payload) + 5 plain
+            // f32s. No FixedString / EntityId / session handle → delta-safe.
+            "RigidBodyData",
         ];
         assert_eq!(
             MUTABLE_DELTA_COLUMNS, AUDITED,
@@ -1271,6 +1285,52 @@ mod tests {
         assert!(restored_actor.restrained);
     }
 
+    /// Regression: #2379 (SAVE-D1-14) — a scripted `.SetMotionType()` call
+    /// must survive a save/load round trip. Pre-fix, `RigidBodyData` was
+    /// absent from `build_save_registry`, so a scripted motion-type change
+    /// (e.g. making a normally-static prop dynamic for a scripted sequence)
+    /// silently reverted to the ESM-derived default on reload.
+    #[test]
+    fn rigid_body_data_survives_save_load_round_trip() {
+        use byroredux_core::ecs::components::{MotionType, RigidBodyData};
+
+        let reg = build_save_registry();
+        let mut src = World::new();
+        src.insert_resource(StringPool::new());
+        src.insert_resource(FormIdPool::new());
+
+        let prop = src.spawn();
+        src.insert(
+            prop,
+            RigidBodyData {
+                motion_type: MotionType::Dynamic,
+                mass: 12.5,
+                friction: 0.4,
+                restitution: 0.2,
+                linear_damping: 0.1,
+                angular_damping: 0.05,
+            },
+        );
+
+        let snapshot = save_world(&src, &reg).unwrap();
+        let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+        let mut dst = World::new();
+        dst.insert_resource(FormIdPool::new());
+        restore_world(&mut dst, &reg, &decoded).unwrap();
+
+        let restored = dst
+            .get::<RigidBodyData>(prop)
+            .expect("RigidBodyData must round-trip");
+        assert_eq!(restored.motion_type, MotionType::Dynamic);
+        assert_eq!(restored.mass, 12.5);
+        assert_eq!(restored.friction, 0.4);
+        assert_eq!(restored.restitution, 0.2);
+        assert_eq!(restored.linear_damping, 0.1);
+        assert_eq!(restored.angular_damping, 0.05);
+    }
+
     /// #1835 — every gameplay-state component `spawn_npc_entity` stamps on an
     /// NPC placement root must be a deliberate save decision: registered in
     /// [`build_save_registry`] (persisted + restored) XOR listed as
@@ -1451,7 +1511,8 @@ mod tests {
             ("PerkList", "zero production write sites exist anywhere (only #[cfg(test)]); do not confuse with the unrelated, already-tracked Perks character component"),
             ("PhysicsSourceForm", "write-once at bhk-shape spawn; its own doc says \"read only by diagnostics\", never mutated"),
             ("RenderLayer", "every insert site is one-shot at cell-load/NPC-spawn via pure classifier functions, no runtime mutator"),
-            ("RigidBodyData", "KNOWN GAP — scripted_motion_type_system mutates .motion_type via Papyrus SetMotionType at runtime; tracked in #2379, not yet registered"),
+            // RigidBodyData: FIXED — registered (#2379 / SAVE-D1-14), no
+            // longer allowlisted here.
             ("SandboxBehavior", "write-once AI-package config at NPC spawn, only ever read by sandbox_seat_system"),
             ("SceneFlags", "write-once at NIF import/cell spawn; its one mutator method (set_culled) is unused in production"),
             ("SkinnedMesh", "GPU skeleton-binding handle, same exclusion class as MeshHandle, rebuilt from skeleton resolution every import"),
