@@ -165,7 +165,34 @@ The first live boundary matrix on 2026-08-04 established the EX-06 baseline:
   maxima from 848/850/860 ms to 826/827/836 ms. Apply max was 329 ms and
   full-detail/LOD max varied to 19.24/19.26 s, confirming that the remaining
   P0 is cell-local teardown plus single-hash apply/BLAS throughput rather than
-  repeated global finalization.
+  repeated global finalization. Phase telemetry then attributed 758 ms (91%)
+  of the 837 ms unload to repeated `World::despawn` calls. A storage-oriented
+  `despawn_batch` now sorts the victim set once, acquires each storage once,
+  uses sparse-set O(1) removal, and linearly compacts packed storage once. The
+  next live gate kept population/draw counts and 3/3 settlement intact while
+  reducing unload to 101 ms, dispatch to 102 ms, and ECS despawn to 13 ms
+  (58x lower); frame max fell to 548 ms. The remaining measured unload split
+  is GPU release 83 ms, owned state/physics 5 ms, handle collection below 1
+  ms, and finalization below 1 ms. Single-hash apply still reaches 316 ms and
+  full-detail/LOD settlement 19.06/19.08 s. Per-hash phase timing rules out
+  CSG/archive preparation (21 ms max) and the batched BLAS submission (20–24
+  ms in boundary cells): CPU entity creation plus texture/mesh upload is the
+  dominant 273–385 ms atomic span. A follow-up cursor accumulated all BLAS
+  specs and still submitted exactly once per hash, but yielding CPU work per
+  mesh serialized thousands of units behind render frames: the first two
+  crossings regressed to 50.27 s and 105.66 s, then the run hit the 300 s hard
+  timeout before the third settled. That cursor was removed. The next design
+  must preserve CPU wall throughput as well as GPU batch throughput—most
+  likely worker-side preparation or calibrated upload batches—not merely
+  produce smaller individual frames. Cell-local GPU release had the same
+  repeated-cache-scan shape as ECS teardown: every freed mesh retained over
+  the full mesh cache, and every freed texture retained over the full path
+  cache. Holder-counted batch APIs now perform those purges once while keeping
+  per-handle descriptor fallback and deferred destruction. The next live gate
+  reduced GPU release from 81 ms to 23 ms, total unload from 99 ms to 40 ms,
+  and dispatch from 100 ms to 41 ms with unchanged population, draws, 3/3
+  settlement, and device stability. Apply max was 291 ms and frame max 551 ms;
+  the latter is now outside unload and remains tied to global geometry work.
 
 ### Tranche B — make entry and traversal safe
 
@@ -177,9 +204,12 @@ The first live boundary matrix on 2026-08-04 established the EX-06 baseline:
 3. [ ] Bring remaining atomic apply, unload, global-geometry, and LOD work under the shared wall-clock
    deadline.
    Precombined cells now yield between hashes. The next slice must move/defer
-   single-hash decode/upload/BLAS work without fragmenting it into tiny GPU
-   submissions. Global unload finalization is batched once per boundary;
-   cell-local teardown must become resumable without violating owner cleanup.
+   single-hash CPU preparation/upload without serializing every mesh behind a
+   rendered frame; BLAS is already one measured 20–24 ms batch per hash.
+   Global unload finalization, ECS row removal, and mesh/texture cache purges
+   are batched. The measured unload tail is now 40 ms total / 23 ms GPU;
+   global-geometry rebuild and single-hash upload are the next frame-tail
+   targets.
 4. [ ] Run cancellation/ownership soak loops and repair leaked owners.
 
 Exit: EX-02, EX-04, EX-06, EX-07, and EX-08 are closed.

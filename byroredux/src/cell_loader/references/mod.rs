@@ -1359,7 +1359,7 @@ fn spawn_synth_child(
             local: LocalFormId(placed_ref.form_id),
         }
     };
-    let (placement_root, count) = spawn_placed_instances(
+    let (placement_root, count, _timings) = spawn_placed_instances(
         world,
         ctx,
         &cached,

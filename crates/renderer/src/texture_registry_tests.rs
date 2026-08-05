@@ -382,6 +382,32 @@ fn release_ref_decrements_without_freeing_until_zero() {
 }
 
 #[test]
+fn release_refs_batch_preserves_holder_counts_and_purges_only_freed_paths() {
+    let mut reg = make_registry_with_entry("chair.dds", 1);
+    reg.textures.push(TextureEntry {
+        texture: None,
+        pending_destroy: VecDeque::new(),
+        ref_count: 2,
+    });
+    reg.path_map.insert(clamp_keyed_path("table.dds", 3), 2);
+    reg.textures.push(TextureEntry {
+        texture: None,
+        pending_destroy: VecDeque::new(),
+        ref_count: 1,
+    });
+    reg.path_map.insert(clamp_keyed_path("lamp.dds", 3), 3);
+
+    let freed = reg.release_refs_batch(&[2, 1, 2]);
+    assert_eq!(freed, vec![1, 2]);
+    assert_eq!(reg.textures[1].ref_count, 0);
+    assert_eq!(reg.textures[2].ref_count, 0);
+    assert_eq!(reg.textures[3].ref_count, 1);
+    assert!(!reg.path_map.contains_key("textures/chair.dds|3"));
+    assert!(!reg.path_map.contains_key("textures/table.dds|3"));
+    assert!(reg.path_map.contains_key("textures/lamp.dds|3"));
+}
+
+#[test]
 fn release_ref_on_zero_refcount_warns_and_bails() {
     // Double-free guard: returns false without underflowing.
     let mut reg = make_registry_with_entry("chair.dds", 0);

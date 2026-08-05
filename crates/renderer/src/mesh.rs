@@ -8,7 +8,7 @@ use crate::vulkan::GpuUploadCtx;
 use anyhow::{bail, Result};
 use ash::vk;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Once;
 
 /// Defence-in-depth cap on the global vertex pool size. The pool grows
@@ -637,6 +637,34 @@ impl MeshRegistry {
     /// Re-using a handle would re-enter the same `GpuInstance.mesh_id`
     /// for a different mesh and produce silent data corruption.
     pub fn drop_mesh(&mut self, handle: u32) -> bool {
+        if !self.release_mesh_ref(handle) {
+            return false;
+        }
+        self.mesh_cache.retain(|_, &mut h| h != handle);
+        true
+    }
+
+    /// Drop a holder-counted mesh batch and purge freed cache entries once.
+    ///
+    /// `handles` deliberately retains duplicates: every placement contributes
+    /// one refcount decrement. Exterior unloads release thousands of unique
+    /// meshes; scanning the entire cache after every last release made that
+    /// path O(freed × cached). This keeps the same per-handle lifetime rules
+    /// and performs one O(cached) purge after all decrements.
+    pub fn drop_meshes(&mut self, handles: &[u32]) -> usize {
+        let mut freed = HashSet::new();
+        for &handle in handles {
+            if self.release_mesh_ref(handle) {
+                freed.insert(handle);
+            }
+        }
+        if !freed.is_empty() {
+            self.mesh_cache.retain(|_, h| !freed.contains(h));
+        }
+        freed.len()
+    }
+
+    fn release_mesh_ref(&mut self, handle: u32) -> bool {
         let idx = handle as usize;
         let rc = match self.mesh_ref_counts.get_mut(idx) {
             Some(rc) => rc,
@@ -671,13 +699,6 @@ impl MeshRegistry {
         if was_scene_mesh {
             self.geometry_dirty = true;
         }
-
-        // Purge any cache entries pointing at this freed handle so a
-        // subsequent `acquire_cached` for the same path doesn't return
-        // a dangling slot. Linear scan is fine: cell unloads are rare
-        // relative to per-frame draws. Mirrors
-        // `TextureRegistry::release_ref`'s `path_map.retain`.
-        self.mesh_cache.retain(|_, &mut h| h != handle);
 
         true
     }
@@ -1614,6 +1635,22 @@ mod refcount_tests {
         assert!(reg.drop_mesh(handle), "last drop must free");
         assert_eq!(reg.refcount(handle), None);
         assert_eq!(reg.acquire_cached("chair.nif", 0), None);
+    }
+
+    #[test]
+    fn batch_drop_preserves_holder_counts_and_purges_cache_once() {
+        let mut reg = MeshRegistry::new();
+        let chair = install_synthetic_slot(&mut reg, "chair.nif", 0, 1);
+        let table = install_synthetic_slot(&mut reg, "table.nif", 0, 2);
+        let survivor = install_synthetic_slot(&mut reg, "lamp.nif", 0, 1);
+
+        assert_eq!(reg.drop_meshes(&[table, chair, table]), 2);
+        assert_eq!(reg.refcount(chair), None);
+        assert_eq!(reg.refcount(table), None);
+        assert_eq!(reg.refcount(survivor), Some(1));
+        assert_eq!(reg.acquire_cached("chair.nif", 0), None);
+        assert_eq!(reg.acquire_cached("table.nif", 0), None);
+        assert_eq!(reg.acquire_cached("lamp.nif", 0), Some(survivor));
     }
 
     /// Multi-mesh NIF (`(path, sub_mesh_index)` pairs): two distinct

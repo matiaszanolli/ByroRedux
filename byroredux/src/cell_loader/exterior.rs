@@ -408,6 +408,10 @@ pub(crate) struct ExteriorCellApplyJob {
     references: Option<Box<ReferenceLoadJob>>,
 }
 
+// Boxing `Pending` would allocate on every cooperative frame slice. The
+// in-flight job is intentionally the large variant; it owns resumable cursors
+// and bounded timing state across yields.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ExteriorCellApplyProgress {
     Pending(ExteriorCellApplyJob),
     Complete(OneCellLoadInfo),

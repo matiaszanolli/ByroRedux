@@ -39,6 +39,7 @@ use byroredux_plugin::esm::cell::CellData;
 use byroredux_renderer::vulkan::context::VulkanContext;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
 use super::spawn::spawn_placed_instances;
@@ -85,6 +86,14 @@ pub(super) struct PrecombinedSpawnJob {
     owning_subdir: Option<String>,
     csg_initialized: bool,
     csg: Option<Arc<CsgArchive>>,
+    csg_open: Duration,
+    timed_hashes: usize,
+    max_prepare: Duration,
+    max_spawn: Duration,
+    max_spawn_cpu: Duration,
+    max_blas: Duration,
+    max_total: Duration,
+    max_total_hash: u32,
 }
 
 pub(super) enum PrecombinedSpawnProgress {
@@ -113,6 +122,14 @@ impl PrecombinedSpawnJob {
             owning_subdir,
             csg_initialized: false,
             csg: None,
+            csg_open: Duration::ZERO,
+            timed_hashes: 0,
+            max_prepare: Duration::ZERO,
+            max_spawn: Duration::ZERO,
+            max_spawn_cpu: Duration::ZERO,
+            max_blas: Duration::ZERO,
+            max_total: Duration::ZERO,
+            max_total_hash: 0,
         })
     }
 
@@ -134,10 +151,12 @@ impl PrecombinedSpawnJob {
         // it as a cooperative unit, then yield before decoding the first hash
         // when the frame budget has expired.
         if !self.csg_initialized {
+            let csg_started = Instant::now();
             self.csg = match mat_provider.as_deref_mut() {
                 Some(mp) => mp.geometry_csg(&self.owning_path),
                 None => open_geometry_csg(&self.owning_path).map(Arc::new),
             };
+            self.csg_open = csg_started.elapsed();
             self.csg_initialized = true;
             budget.complete_unit();
         }
@@ -148,6 +167,7 @@ impl PrecombinedSpawnJob {
             }
             let hash = cell.precombined_mesh_hashes[self.next_hash];
             let path = precombine_oc_nif_path(self.form_id, hash, self.owning_subdir.as_deref());
+            let hash_started = Instant::now();
 
             // Check the process-lifetime cache first; precombined NIFs are
             // typically unique-per-cell so the hit-rate is near zero on
@@ -309,8 +329,10 @@ impl PrecombinedSpawnJob {
                     }
                 }
             };
+            let prepare_elapsed = hash_started.elapsed();
 
-            let (_placement_root, count) = spawn_placed_instances(
+            let spawn_started = Instant::now();
+            let (_placement_root, count, spawn_timings) = spawn_placed_instances(
                 world,
                 ctx,
                 &cached,
@@ -328,6 +350,17 @@ impl PrecombinedSpawnJob {
                 None,
                 None,
             );
+            let spawn_elapsed = spawn_started.elapsed();
+            let total_elapsed = hash_started.elapsed();
+            self.timed_hashes += 1;
+            self.max_prepare = self.max_prepare.max(prepare_elapsed);
+            self.max_spawn = self.max_spawn.max(spawn_elapsed);
+            self.max_spawn_cpu = self.max_spawn_cpu.max(spawn_timings.cpu_upload);
+            self.max_blas = self.max_blas.max(spawn_timings.blas);
+            if total_elapsed > self.max_total {
+                self.max_total = total_elapsed;
+                self.max_total_hash = hash;
+            }
             self.spawned += count;
             self.next_hash += 1;
             budget.complete_unit();
@@ -347,6 +380,20 @@ impl PrecombinedSpawnJob {
                 self.spawned,
             );
         }
+        log::info!(
+            "precombine_timing: cell={:08X} timed_hashes={} csg_open_ms={:.2} hash_max_ms={:.2} \
+             hash={:08x} prepare_max_ms={:.2} spawn_total_max_ms={:.2} \
+             spawn_cpu_max_ms={:.2} blas_max_ms={:.2}",
+            self.form_id,
+            self.timed_hashes,
+            self.csg_open.as_secs_f64() * 1000.0,
+            self.max_total.as_secs_f64() * 1000.0,
+            self.max_total_hash,
+            self.max_prepare.as_secs_f64() * 1000.0,
+            self.max_spawn.as_secs_f64() * 1000.0,
+            self.max_spawn_cpu.as_secs_f64() * 1000.0,
+            self.max_blas.as_secs_f64() * 1000.0,
+        );
 
         PrecombinedSpawnProgress::Complete {
             spawned: self.spawned,

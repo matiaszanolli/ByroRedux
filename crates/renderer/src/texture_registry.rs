@@ -22,7 +22,7 @@ use crate::vulkan::texture::{Texture, TextureViewKind};
 use crate::vulkan::GpuUploadCtx;
 use anyhow::{Context, Result};
 use ash::vk;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Gamebryo `TexClampMode` address pairs in their on-disk enum order.
 const SAMPLER_ADDRESS_MODES: [(vk::SamplerAddressMode, vk::SamplerAddressMode); 4] = [
@@ -1172,9 +1172,23 @@ impl TextureRegistry {
         if !self.release_ref(handle) {
             return;
         }
-        // Last ref released — perform the GPU-side drop. `release_ref`
-        // already purged `path_map` so subsequent `load_dds` for the
-        // same path creates a fresh entry.
+        self.drop_released_texture(device, handle);
+    }
+
+    /// Drop a holder-counted texture batch and purge dead path mappings once.
+    ///
+    /// Duplicates are significant because every material holder contributes a
+    /// refcount decrement. Descriptor fallback writes remain per freed handle;
+    /// only the O(path-cache) purge is coalesced.
+    pub fn drop_textures(&mut self, device: &ash::Device, handles: &[TextureHandle]) -> usize {
+        let freed = self.release_refs_batch(handles);
+        for &handle in &freed {
+            self.drop_released_texture(device, handle);
+        }
+        freed.len()
+    }
+
+    fn drop_released_texture(&mut self, device: &ash::Device, handle: TextureHandle) {
         let Some(entry) = self.textures.get_mut(handle as usize) else {
             return;
         };
@@ -1219,6 +1233,28 @@ impl TextureRegistry {
     /// the Vulkan-free half lives here so tests can exercise refcount
     /// invariants without a real device. See #524.
     fn release_ref(&mut self, handle: TextureHandle) -> bool {
+        if !self.decrement_ref(handle) {
+            return false;
+        }
+        self.path_map.retain(|_, &mut h| h != handle);
+        true
+    }
+
+    fn release_refs_batch(&mut self, handles: &[TextureHandle]) -> Vec<TextureHandle> {
+        let mut freed = Vec::new();
+        for &handle in handles {
+            if self.decrement_ref(handle) {
+                freed.push(handle);
+            }
+        }
+        if !freed.is_empty() {
+            let freed_set = freed.iter().copied().collect::<HashSet<_>>();
+            self.path_map.retain(|_, h| !freed_set.contains(&*h));
+        }
+        freed
+    }
+
+    fn decrement_ref(&mut self, handle: TextureHandle) -> bool {
         let Some(entry) = self.textures.get_mut(handle as usize) else {
             return false;
         };
@@ -1233,10 +1269,6 @@ impl TextureRegistry {
         if entry.ref_count > 0 {
             return false;
         }
-        // Purge path_map so a subsequent `load_dds` of the same path
-        // creates a fresh texture. Linear scan is fine: drops happen
-        // on cell unload, not per-frame.
-        self.path_map.retain(|_, &mut h| h != handle);
         true
     }
 

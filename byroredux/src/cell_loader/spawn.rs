@@ -17,6 +17,7 @@ use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::vulkan::GpuUploadCtx;
 use byroredux_renderer::VulkanContext;
+use std::time::{Duration, Instant};
 
 use crate::asset_provider::{
     derive_normal_map_path, resolve_material_texture_handles_with_clamp, resolve_texture,
@@ -30,6 +31,12 @@ use crate::components::{
 use super::nif_import_registry::CachedNifImport;
 use super::references::attach_light_flicker_if_needed;
 use super::refr::RefrTextureOverlay;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct PlacementSpawnTimings {
+    pub cpu_upload: Duration,
+    pub blas: Duration,
+}
 
 /// `true` when an `ImportedLight` has a non-trivial diffuse colour
 /// contribution and therefore would actually spawn a `LightSource`
@@ -256,7 +263,8 @@ pub(super) fn spawn_placed_instances(
     // activate system) reads to drive cell-swap orchestration. `None` on
     // every non-door REFR + on the precombined / loose-NIF spawn paths.
     teleport: Option<esm::cell::TeleportDest>,
-) -> (byroredux_core::ecs::EntityId, usize) {
+) -> (byroredux_core::ecs::EntityId, usize, PlacementSpawnTimings) {
+    let total_started = Instant::now();
     let imported = &cached.meshes;
     let collisions = &cached.collisions;
     let nif_lights = &cached.lights;
@@ -356,10 +364,12 @@ pub(super) fn spawn_placed_instances(
     }
 
     // Batched BLAS build: single GPU submission for all meshes in this cell.
+    let blas_started = Instant::now();
     if !blas_specs.is_empty() {
         let built = ctx.build_blas_batched(&blas_specs);
         log::info!("Cell BLAS batch: {built}/{} meshes", blas_specs.len());
     }
+    let blas_elapsed = blas_started.elapsed();
 
     // #544 — bind the embedded animation clip to this REFR. Mirrors
     // the loose-NIF path in `scene.rs::load_nif_bytes`. The clip
@@ -410,9 +420,18 @@ pub(super) fn spawn_placed_instances(
     // entity count so the caller (cell_loader/references.rs) can
     // attach script-state components keyed on the REFR's base
     // record `script_form_id`. Pre-Phase-3b the function returned
-    // only the count; callers that don't need the placement_root
-    // (precombined.rs bake artifacts) `_`-discard the first element.
-    (placement_root, count)
+    // only the count. Precombined streaming also consumes the bounded
+    // CPU-upload / batched-BLAS timing split to identify atomic hash tails;
+    // ordinary REFR callers discard it.
+    let total_elapsed = total_started.elapsed();
+    (
+        placement_root,
+        count,
+        PlacementSpawnTimings {
+            cpu_upload: total_elapsed.saturating_sub(blas_elapsed),
+            blas: blas_elapsed,
+        },
+    )
 }
 
 /// Spawn the per-REFR placement root entity and stamp every

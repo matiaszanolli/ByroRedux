@@ -52,7 +52,7 @@ impl UnloadPhaseTimings {
 ///
 /// Texture handles are refcounted (#524): each `resolve_texture` acquisition
 /// bumps the `TextureEntry.ref_count` inside the registry, and this
-/// function calls `drop_texture` once per entity-held handle. Shared
+/// function batch-drops one reference per entity-held handle. Shared
 /// textures across still-resident cells survive an unload because the
 /// remaining holders keep the refcount positive. M40 doorwalking needs
 /// this — without it, cell A's unload would flip cell B's shared
@@ -185,13 +185,11 @@ fn unload_cell_inner(
             accel.drop_blas(mh);
         }
     }
-    // One drop per holder. The handles in `freed_meshes` will hit
-    // refcount 0 on their final drop and queue their VkBuffers for
-    // deferred destruction; cross-cell shared handles stay live with
-    // a positive refcount.
-    for &mh in &mesh_drops {
-        ctx.mesh_registry.drop_mesh(mh);
-    }
+    // One drop per holder. Batch release keeps duplicate handles (one
+    // decrement per placement) but purges the path cache once after every
+    // zero-ref slot is known, avoiding O(freed × cache) unload work.
+    let freed_mesh_count = ctx.mesh_registry.drop_meshes(&mesh_drops);
+    debug_assert_eq!(freed_mesh_count, freed_meshes.len());
 
     // #1003 / #1004 — skin slot + failed-slot cache cleanup on cell
     // unload. Pre-fix the per-frame eviction pass at the top of
@@ -209,9 +207,11 @@ fn unload_cell_inner(
         &mut ctx.pending_skin_unload_victims,
         &mut ctx.failed_skin_slots,
     );
-    for &th in &texture_drops {
-        ctx.texture_registry.drop_texture(&ctx.device, th);
-    }
+    // Same cache-shape fix for textures. Descriptor fallback writes still run
+    // once per texture that actually reaches zero; holder refcounts and
+    // deferred GPU destruction are unchanged.
+    ctx.texture_registry
+        .drop_textures(&ctx.device, &texture_drops);
     timings.gpu_release = phase_started.elapsed();
 
     // #896 DROP — release per-ItemStack `ItemInstancePool` slots so
