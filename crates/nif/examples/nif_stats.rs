@@ -31,14 +31,41 @@
 //!                     the long tail without flooding the summary.
 //!
 //! Per-block-type histogram (R3 — `parsed` vs `unknown`):
-//!   Each block in the scene is attributed to its **header-advertised**
-//!   type name, not its parsed Rust type. When dispatch succeeds, that
-//!   block contributes to `parsed`. When it falls into the `NiUnknown`
+//!   #2323 (FO3-D2-02) — the two branches key on DIFFERENT names, they
+//!   do NOT share one "header-advertised type" key as an earlier version
+//!   of this doc claimed. A block that falls into the `NiUnknown`
 //!   recovery path (under-consumed parser via `block_size` seek, runtime
-//!   size cache, `oblivion_skip_sizes` hint, or dispatch-table miss),
-//!   it contributes to `unknown`. A type with `parsed=N>0, unknown=M>0`
-//!   is the regression signal R3 cares about: dispatch can parse this
-//!   type, but at least one instance in the corpus failed.
+//!   size cache, `oblivion_skip_sizes` hint, or dispatch-table miss)
+//!   contributes to `unknown[<header-advertised type name>]` — the name
+//!   preserved on the `NiUnknown` placeholder. A block that dispatches
+//!   to a real parser contributes to `parsed[block.block_type_name()]`
+//!   — the **parsed Rust struct's** name, a fixed per-type string set at
+//!   the `impl_ni_object!` invocation site, NOT the on-disk header string.
+//!
+//!   For most types these coincide, so a regressed parser that starts
+//!   under-consuming shows as `parsed: N->N-k` on the type's key while a
+//!   new `unknown[type]` key appears. But several parsers register a
+//!   shared *alias* struct name: ~28 `NiPSys*Modifier` header types all
+//!   report `block_type_name() == "NiPSysBlock"` (and 5 emitter types
+//!   report `"NiPSysEmitter"`), so their `parsed` counts AGGREGATE into
+//!   one bucket that never appears in any NIF header table — same
+//!   collapse `BSSegmentedTriShape`/`NiTriStrips` → `NiTriShape`,
+//!   `BSFadeNode` → `NiNode`, and `Lighting30ShaderProperty` →
+//!   `BSShaderPPLightingProperty` hit. The regression is still CAUGHT —
+//!   a regressed member lands in a distinct `unknown[<header name>]` key
+//!   — but a composition shift *within* a collapsed family (one member's
+//!   dispatch arm silently reroutes to another's) can leave the
+//!   aggregate `parsed` count byte-identical, hiding a "parses
+//!   differently" regression rather than a "stops parsing" one. Per-type
+//!   resolution on the `parsed` side is deferred: `NifScene` does not
+//!   carry per-block header-advertised type names today. See the
+//!   identical, previously-correct writeup on
+//!   `tests/common::PerBlockHistogram` (#1883 / NIF-D3-001), which this
+//!   tool's histogram mirrors byte-for-byte.
+//!
+//!   A type with `parsed=N>0, unknown=M>0` is the regression signal R3
+//!   cares about: dispatch can parse this type, but at least one
+//!   instance in the corpus failed.
 //!
 //! Exit code is non-zero when the clean-parse rate drops below the default
 //! gate ([`DEFAULT_MIN_SUCCESS_RATE`], currently 1.0). Not every vanilla
@@ -161,7 +188,9 @@ impl Stats {
         }
     }
 
-    /// Walk a parsed scene and accumulate per-header-type counts. A
+    /// Walk a parsed scene and accumulate per-block-type counts, keyed
+    /// as described in the module doc (#2323 — the two branches use
+    /// DIFFERENT keys, not one shared "header-advertised type"). A
     /// block that downcasts to `NiUnknown` contributes to `unknown[its
     /// preserved type_name]`; otherwise it contributes to
     /// `parsed[block_type_name()]`. Centralised here so success and
