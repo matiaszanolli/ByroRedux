@@ -31,6 +31,15 @@ use crate::scene::{
 const MOVE_SPEED_UNITS_PER_SECOND: f32 = 140.0;
 const DEFAULT_ARRIVAL_RADIUS: f32 = 40.0;
 const INTERACTION_FALLBACK_SECONDS: f32 = 0.75;
+/// #2287 (SCR-D6-NEW5-01) — maximum time a `MoveTo` action tolerates being
+/// unable to resolve the acting actor's live `Transform` before giving up
+/// and reporting itself complete. Without this bound, an actor despawned
+/// mid-travel (e.g. exterior cell-streaming unloading its cell while the
+/// player is elsewhere) leaves the action permanently stuck: `tick_command`
+/// returns `false` forever, so a scene phase whose only exit gate is
+/// `ending_actions_complete` never advances. Mirrors the sibling
+/// `TimedInteraction` leaf's `INTERACTION_FALLBACK_SECONDS` bound.
+const MOVE_STALL_TIMEOUT_SECONDS: f32 = 5.0;
 
 /// Parsed PACK definitions keyed in global load-order FormID space.
 #[derive(Debug, Clone, Default)]
@@ -92,6 +101,9 @@ pub enum ScenePackageCommand {
         procedure_type: String,
         destination: Vec3,
         arrival_radius: f32,
+        /// Seconds this action has spent unable to resolve the actor's
+        /// live `Transform`. See [`MOVE_STALL_TIMEOUT_SECONDS`].
+        stall_seconds: f32,
     },
     TimedInteraction {
         procedure_type: String,
@@ -473,6 +485,7 @@ fn resolve_command(
                 procedure_type,
                 destination,
                 arrival_radius: radius.max(DEFAULT_ARRIVAL_RADIUS),
+                stall_seconds: 0.0,
             };
         }
         return ScenePackageCommand::AwaitExternal { procedure_type };
@@ -492,6 +505,33 @@ fn resolve_command(
         };
     }
     ScenePackageCommand::AwaitExternal { procedure_type }
+}
+
+/// #2287 (SCR-D6-NEW5-01) — bump a `MoveTo` action's stall counter and
+/// report whether it has exceeded [`MOVE_STALL_TIMEOUT_SECONDS`]. Shared by
+/// both of `tick_command`'s `MoveTo` early-return paths (no `Transform`
+/// storage registered at all vs. the specific actor entity missing one —
+/// both mean "can't resolve the actor's position right now", most often
+/// because the entity was despawned mid-travel). Returning `true` reports
+/// the action complete so the caller removes it and the scene phase can
+/// still advance, instead of retrying forever.
+fn move_stalled_past_timeout(
+    stall_seconds: &mut f32,
+    dt: f32,
+    action_index: u32,
+    actor: EntityId,
+) -> bool {
+    *stall_seconds += dt.max(0.0);
+    if *stall_seconds > MOVE_STALL_TIMEOUT_SECONDS {
+        log::warn!(
+            "scene package MoveTo action {action_index} for actor {actor:?} gave up after \
+             {MOVE_STALL_TIMEOUT_SECONDS}s unable to resolve a live Transform \
+             (likely despawned mid-travel)"
+        );
+        true
+    } else {
+        false
+    }
 }
 
 fn tick_command(world: &World, action: &mut ActiveScenePackageAction, dt: f32) -> bool {
@@ -523,14 +563,26 @@ fn tick_command(world: &World, action: &mut ActiveScenePackageAction, dt: f32) -
         ScenePackageCommand::MoveTo {
             destination,
             arrival_radius,
+            stall_seconds,
             ..
         } => {
             let Some(mut transforms) = world.query_mut::<Transform>() else {
-                return false;
+                return move_stalled_past_timeout(
+                    stall_seconds,
+                    dt,
+                    action.action_index,
+                    action.actor,
+                );
             };
             let Some(transform) = transforms.get_mut(action.actor) else {
-                return false;
+                return move_stalled_past_timeout(
+                    stall_seconds,
+                    dt,
+                    action.action_index,
+                    action.actor,
+                );
             };
+            *stall_seconds = 0.0;
             let target = Vec3::new(destination.x, transform.translation.y, destination.z);
             let delta = target - transform.translation;
             let distance = delta.length();
@@ -828,6 +880,63 @@ mod tests {
             .get::<SceneActionCompletionBatch>(scene)
             .is_some_and(|batch| batch.0.contains(&7)));
         assert_eq!(world.get::<Transform>(actor).unwrap().translation.x, 100.0);
+    }
+
+    /// Regression: #2287 (SCR-D6-NEW5-01) — an actor despawned mid-travel
+    /// (e.g. exterior cell-streaming unloading its cell) must not stall the
+    /// `MoveTo` action forever. `MOVE_STALL_TIMEOUT_SECONDS` worth of ticks
+    /// with the actor's `Transform` unresolvable must still resolve the
+    /// action as complete so the scene phase can advance.
+    #[test]
+    fn move_to_gives_up_after_actor_despawns_mid_travel() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        world.register::<Transform>();
+        let scene = world.spawn();
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::ZERO));
+        world.insert(scene, ScenePlayer::new(0x100));
+        let (package, template) = package_and_template();
+        install_package_records(&mut world, [package, template]);
+        install_package_target_positions(&mut world, [(0x600, Vec3::new(100.0, 0.0, 0.0))]);
+        world.insert(
+            scene,
+            SceneEventBatch(vec![SceneEvent::ActionStarted {
+                action_index: 7,
+                action_type: SceneActionType::Package,
+                actor_alias: 1,
+                actor_entity: Some(actor),
+                topic_form_id: None,
+                packages: vec![0x400],
+            }]),
+        );
+
+        scene_package_system(&world, 0.0);
+        {
+            let playback = world.get::<ScenePackagePlayback>(scene).unwrap();
+            assert_eq!(playback.active_actions.len(), 1);
+        }
+
+        // Despawn the actor mid-travel — the action's Transform lookup
+        // misses every tick from here on, exactly like a cell-streaming
+        // unload. MOVE_STALL_TIMEOUT_SECONDS worth of dt must still give
+        // up rather than retrying forever.
+        world.despawn(actor);
+        for _ in 0..6 {
+            scene_package_system(&world, 1.0);
+        }
+
+        assert!(
+            world
+                .get::<ScenePackagePlayback>(scene)
+                .unwrap()
+                .active_actions
+                .is_empty(),
+            "MoveTo action must give up once the actor is unresolvable past the stall timeout"
+        );
+        assert!(world
+            .get::<SceneActionCompletionBatch>(scene)
+            .is_some_and(|batch| batch.0.contains(&7)));
     }
 
     #[test]
