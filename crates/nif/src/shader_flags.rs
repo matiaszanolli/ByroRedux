@@ -42,6 +42,17 @@ pub mod fo3nv_f1 {
     /// additively (ONE/ONE blend) rather than alpha-over. Same bit as
     /// `skyrim_slsf1` and `fo4_slsf1` — cross-game constant.
     pub const OWN_EMIT: u32 = 0x0040_0000;
+    /// Bit 15 — `Refraction`. Same bit + semantic as `skyrim_slsf1::REFRACTION`
+    /// per nif.xml `BSShaderFlags` (bit 15, "switches on refraction power").
+    /// See #2321.
+    pub const REFRACTION: u32 = 0x0000_8000;
+    /// Bit 16 — `Fire_Refraction`. Same bit + semantic as
+    /// `skyrim_slsf1::FIRE_REFRACTION` per nif.xml `BSShaderFlags` (bit 16,
+    /// "switches on refraction power/period"). Paired with `REFRACTION`
+    /// this is the fire/heat-haze proxy discriminator on FO3/FNV
+    /// `BSShaderPPLightingProperty`, mirroring the Skyrim+ path in
+    /// `apply_shader_type_data`. See #2321.
+    pub const FIRE_REFRACTION: u32 = 0x0001_0000;
     /// Bit 26 — `Decal`. Render on top of coplanar surfaces.
     pub const DECAL: u32 = 0x0400_0000;
     /// Bit 27 — `Dynamic_Decal`. Runtime-spawned decal (blood splat).
@@ -421,6 +432,19 @@ mod tests {
         assert_eq!(fo4_slsf1::FIRE_REFRACTION, skyrim_slsf1::FIRE_REFRACTION);
         assert_eq!(skyrim_slsf1::REFRACTION, 1u32 << 15);
         assert_eq!(skyrim_slsf1::FIRE_REFRACTION, 1u32 << 16);
+    }
+
+    /// #2321 — FO3/FNV `BSShaderFlags` bits 15/16 (Refraction /
+    /// Fire_Refraction) share both bit position and semantic with
+    /// Skyrim/FO4 SLSF1 per nif.xml `BSShaderFlags`. Pin the agreement
+    /// so `apply_pp_lighting_property` can reuse the same
+    /// material_kind=103 promotion the Skyrim+ path already applies.
+    #[test]
+    fn fo3nv_shares_fire_refraction_bits_with_skyrim() {
+        assert_eq!(fo3nv_f1::REFRACTION, skyrim_slsf1::REFRACTION);
+        assert_eq!(fo3nv_f1::FIRE_REFRACTION, skyrim_slsf1::FIRE_REFRACTION);
+        assert_eq!(fo3nv_f1::REFRACTION, 1u32 << 15);
+        assert_eq!(fo3nv_f1::FIRE_REFRACTION, 1u32 << 16);
     }
 
     /// #712 — pin the `BSShaderCRC32` constants against the literal

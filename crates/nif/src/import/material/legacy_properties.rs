@@ -349,6 +349,33 @@ fn apply_pp_lighting_property(
         if is_decal_from_legacy_shader_flags(shader.shader_flags_1(), shader.shader_flags_2()) {
             info.is_decal = true;
         }
+        // #2321 — mirror `refraction_strength`/promote fire-refraction
+        // heat-haze, matching the Skyrim+ `BSLightingShaderProperty`
+        // path in `dedicated_shader.rs::apply_shader_type_data`. FO3/FNV
+        // decodes `refraction_strength`/`refraction_fire_period` at
+        // `blocks/shader.rs:83` (bsver > FO3_REFRACTION) but neither
+        // value was ever forwarded into `MaterialInfo` — the only
+        // writer of `info.refraction_strength` was the Skyrim path,
+        // and the only site promoting `material_kind = 103`
+        // (`MATERIAL_KIND_FIRE_REFRACTION`) tested Skyrim-only SLSF1
+        // bits with no FO3/FNV equivalent declared. `fo3nv_f1::REFRACTION`
+        // / `FIRE_REFRACTION` (bits 15/16) share both position and
+        // semantic with `skyrim_slsf1` per nif.xml — see
+        // `shader_flags.rs`'s `fo3nv_shares_fire_refraction_bits_with_skyrim`.
+        info.refraction_strength = shader.refraction_strength;
+        let fire_refraction_flags = crate::shader_flags::fo3nv_f1::REFRACTION
+            | crate::shader_flags::fo3nv_f1::FIRE_REFRACTION;
+        if shader.shader_flags_1() & fire_refraction_flags == fire_refraction_flags {
+            info.material_kind = 103;
+            // Screen-composition proxy, not opaque geometry — same
+            // synthesized alpha-over state as the Skyrim+ path so the
+            // renderer's dedicated fire-refraction ordering phase picks
+            // it up without requiring an authored NiAlphaProperty.
+            info.alpha_blend = true;
+            info.src_blend_mode = 6; // SRC_ALPHA
+            info.dst_blend_mode = 7; // INV_SRC_ALPHA
+            info.z_write = false;
+        }
     }
 }
 

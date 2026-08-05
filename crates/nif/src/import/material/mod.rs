@@ -1452,6 +1452,12 @@ mod water_shader_legacy_tests;
 #[cfg(test)]
 mod lighting_shader_pbr_tests;
 
+/// Regression tests for #2321 (FO3-D1-05/D2-01) — FO3/FNV
+/// `BSShaderPPLightingProperty` fire-refraction heat-haze mirroring,
+/// the FO3/FNV sibling of `lighting_shader_pbr_tests`'s Skyrim+ case.
+#[cfg(test)]
+mod fo3nv_fire_refraction_tests;
+
 #[cfg(test)]
 mod intern_texture_path_tests {
     use super::intern_texture_path;
