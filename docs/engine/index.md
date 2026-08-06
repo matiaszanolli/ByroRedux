@@ -34,7 +34,7 @@ a working checkout and want to understand or change engine internals.
 | [CHARAL — Character Abstraction Layer](charal.md) | core, plugin, byroredux | Per-game character **ruleset** (attributes/skills/perks/leveling) → one canonical character state (`ActorValues` + `CharacterLevel` + `Perks` + `Background`); 3 families (Fallout SPECIAL+XP, TES skills→level, Starfield mix); translates *rules*, not just data |
 | [Archives (BSA + BA2 + CSG)](archives.md) | bsa | BSA v103/104/105, BA2 v1/2/3/7/8 GNRL + DX10, FO4 `.csg` precombined geometry |
 | [Plugin Loading](plugin-loading.md) | plugin, core | `PluginManifest`, `DataStore`, `DependencyResolver`, Form ID system, ESM parser, conflict resolution |
-| [Sandboxed Linked Mods](sandboxed-linked-mods.md) | plugin, scripting, core, save, ui (planned) | Requirements for capability-sandboxed executable mods, typed engine/mod links, C++ portability, ECS barriers, persistence, and high-count profiles |
+| [Sandboxed Linked Mods](sandboxed-linked-mods.md) | mod-runtime; plugin, scripting, core, save, ui (planned links) | Implemented isolated Component Model host foundation plus requirements for typed engine/mod links, C++ portability, ECS barriers, persistence, and high-count profiles |
 | [ESM Records](esm-records.md) | plugin | Cell loading, items, NPCs, factions, leveled lists |
 | [Asset Pipeline](asset-pipeline.md) | byroredux, nif, bsa | TextureProvider, mesh cache, NIF→ECS import, BGSM/BGEM material merge |
 | [Animation](animation.md) | core, nif | Keyframe pipeline, controllers, blending stack, GPU skinning |
@@ -86,6 +86,7 @@ a working checkout and want to understand or change engine internals.
 | ESM cell index | `byroredux_plugin::esm::cell::parse_esm_cells` |
 | ESM record index | `byroredux_plugin::esm::records::parse_esm` |
 | Plugin manifests | `byroredux_plugin::PluginManifest` |
+| Sandboxed mod runtime | `byroredux_mod_runtime::{SandboxRuntime, SandboxConfig, Principal, CapabilitySet}` |
 | Physics world | `byroredux_physics::PhysicsWorld` |
 | Physics sync system | `byroredux_physics::physics_sync_system` |
 | Window creation | `byroredux_platform::window::create_window` |

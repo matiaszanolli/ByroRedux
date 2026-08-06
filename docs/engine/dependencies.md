@@ -32,6 +32,9 @@ internal graph are not repeated).
 | nalgebra           | 0.33     | nif, physics                                  | SVD for degenerate NIF rotation repair; ABI match for rapier3d |
 | **Physics**        |          |                                               |                                                               |
 | rapier3d           | 0.22 (`simd-stable`) | physics                            | Rigid-body / collision sim (kinematic character controller, M28.5) |
+| **Sandboxed mods** |          |                                               |                                                               |
+| wasmtime           | 47.0.3 (minimal Component Model + Cranelift features) | mod-runtime | Isolated WebAssembly Component compilation, linking, resource limits, and fuel interruption |
+| wat                | 1        | mod-runtime (dev)                             | Assemble readable Component Model test fixtures               |
 | **Audio**          |          |                                               |                                                               |
 | kira               | 0.10     | audio                                         | 3D spatial audio — SpatialScene, reverb, streaming (M44)      |
 | **Parallelism**    |          |                                               |                                                               |
@@ -76,7 +79,7 @@ internal graph are not repeated).
 | env_logger         | 0.11     | byroredux, examples, integration tests         | Stderr log output                                            |
 | **Errors**         |          |                                               |                                                               |
 | anyhow             | 1        | plugin, platform, renderer, ui, debug-ui, byroredux | Context-rich error handling                            |
-| thiserror          | 2        | core, renderer, bsa, bgsm, sfmaterial, nif, spt, facegen, papyrus | Error type derives                            |
+| thiserror          | 2        | core, renderer, bsa, bgsm, sfmaterial, nif, spt, facegen, papyrus, mod-runtime | Error type derives               |
 
 ### Per-crate (non-workspace) dependencies
 
@@ -127,6 +130,7 @@ dependency is only ever consumed by that one crate:
 | byroredux-papyrus        | (none — leaf)                                                           |
 | byroredux-cxx-bridge     | (none — leaf)                                                           |
 | byroredux-debug-protocol | (none — leaf)                                                           |
+| byroredux-mod-runtime    | (none — leaf; Wasmtime host boundary only)                              |
 | byroredux-platform       | byroredux-core                                                          |
 | byroredux-nif            | byroredux-core                                                          |
 | byroredux-spt            | byroredux-core, byroredux-nif                                           |

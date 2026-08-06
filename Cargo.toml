@@ -11,6 +11,7 @@ members = [
     "crates/fsr3-sys",
     "crates/platform",
     "crates/scripting",
+    "crates/mod-runtime",
     "crates/cxx-bridge",
     "crates/bsa",
     "crates/bgsm",
@@ -43,6 +44,7 @@ byroredux-fsr3-sys = { path = "crates/fsr3-sys" }
 byroredux-platform = { path = "crates/platform" }
 byroredux-plugin = { path = "crates/plugin" }
 byroredux-scripting = { path = "crates/scripting" }
+byroredux-mod-runtime = { path = "crates/mod-runtime" }
 byroredux-nif = { path = "crates/nif" }
 byroredux-hkx = { path = "crates/hkx" }
 byroredux-spt = { path = "crates/spt" }
@@ -98,6 +100,11 @@ tracing-tracy = { version = "0.11", default-features = false, features = ["enabl
 # Error handling
 anyhow = "1"
 thiserror = "2"
+
+# Sandboxed executable mods. Keep the feature surface deliberately narrow:
+# component execution with Cranelift, but no ambient WASI host implementation.
+wasmtime = { version = "47.0.3", default-features = false, features = ["anyhow", "component-model", "cranelift", "runtime", "std"] }
+wat = "1"
 
 # String interning
 string-interner = "0.17"

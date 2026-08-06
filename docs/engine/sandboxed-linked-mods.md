@@ -1,6 +1,6 @@
 # Sandboxed Linked Mods — Requirements and Architecture
 
-**Status:** Draft requirements document
+**Status:** Requirements baseline; Phase 1 runtime foundation implemented
 
 **Scope:** Executable community mods linked to ByroRedux and to each other
 without sharing native address space
@@ -171,8 +171,33 @@ This design extends existing registry-oriented patterns rather than exposing
   one operation. It identifies the seam between artifacts and attachments.
 
 No WebAssembly runtime dependency exists in the workspace at the time of this
-draft. Adding one is an implementation milestone, not an undocumented
-assumption.
+draft. The first implementation now lives in
+[`crates/mod-runtime`](../../crates/mod-runtime/) and uses Wasmtime behind the
+engine-owned `SandboxRuntime` abstraction.
+
+### 6.1 Implemented foundation (2026-08-05)
+
+The first vertical slice implements the narrow `byro:mod-host@0.1.0` WIT
+world in [`host.wit`](../../crates/mod-runtime/wit/host.wit):
+
+- one separately compiled and instantiated WebAssembly Component per
+  principal/store;
+- stable validated principal and capability identifiers;
+- explicit, capability-gated, principal-attributed logging;
+- read-only principal ID and effective-capability discovery;
+- component byte, per-memory, memory-count, table, instance, stack, fuel, and
+  retained-log ceilings;
+- `ready -> active -> stopped` lifecycle transitions and fault quarantine;
+- no linked WASI implementation or ambient operating-system imports;
+- a headless test harness covering allowed and denied calls, instance fault
+  isolation, fuel exhaustion, memory rejection, log bounds, and absent WASI.
+
+This is an execution foundation, not yet a complete mod loader. Package
+manifests, immutable artifact loading, profile resolution, compilation cache,
+ECS query/command barriers, linked mod services, persistence, C/C++ examples,
+and high-count scheduling remain in the later phases below. In particular,
+the current `StoreLimits` memory ceiling applies to each linear memory; the
+separate memory-count ceiling also bounds how many a component may create.
 
 ## 7. Architectural boundaries
 

@@ -1,0 +1,28 @@
+package byro:mod-host@0.1.0;
+
+/// Attributed, bounded diagnostics emitted by an executable mod.
+interface logging {
+    enum level {
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    log: func(level: level, message: string);
+}
+
+/// Read-only facts about the current sandbox principal.
+interface context {
+    principal-id: func() -> string;
+    has-capability: func(capability: string) -> bool;
+}
+
+/// Minimal lifecycle contract for the first executable-mod runtime slice.
+world extension {
+    import logging;
+    import context;
+
+    export initialize: func();
+    export shutdown: func();
+}
