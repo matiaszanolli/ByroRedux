@@ -34,6 +34,7 @@ a working checkout and want to understand or change engine internals.
 | [CHARAL — Character Abstraction Layer](charal.md) | core, plugin, byroredux | Per-game character **ruleset** (attributes/skills/perks/leveling) → one canonical character state (`ActorValues` + `CharacterLevel` + `Perks` + `Background`); 3 families (Fallout SPECIAL+XP, TES skills→level, Starfield mix); translates *rules*, not just data |
 | [Archives (BSA + BA2 + CSG)](archives.md) | bsa | BSA v103/104/105, BA2 v1/2/3/7/8 GNRL + DX10, FO4 `.csg` precombined geometry |
 | [Plugin Loading](plugin-loading.md) | plugin, core | `PluginManifest`, `DataStore`, `DependencyResolver`, Form ID system, ESM parser, conflict resolution |
+| [Sandboxed Linked Mods](sandboxed-linked-mods.md) | plugin, scripting, core, save, ui (planned) | Requirements for capability-sandboxed executable mods, typed engine/mod links, C++ portability, ECS barriers, persistence, and high-count profiles |
 | [ESM Records](esm-records.md) | plugin | Cell loading, items, NPCs, factions, leveled lists |
 | [Asset Pipeline](asset-pipeline.md) | byroredux, nif, bsa | TextureProvider, mesh cache, NIF→ECS import, BGSM/BGEM material merge |
 | [Animation](animation.md) | core, nif | Keyframe pipeline, controllers, blending stack, GPU skinning |
