@@ -595,13 +595,30 @@ pub(super) fn compute_blas_budget(
 /// ever carries both (see #2227). A ray query that wants to treat glass as an
 /// occluder too must pass `SHADOW_MASK_OPAQUE | SHADOW_MASK_GLASS`, not
 /// `OPAQUE` alone.
+///
+/// #2238 — a real two-layer-refractive `MultiLayerParallax` surface (kind
+/// 11, non-zero `multi_layer_refraction_scale`) is also a caustic-refraction
+/// SOURCE per the CPU gate (`draw::is_refractive_glass`, shared by
+/// `is_caustic_source` and `needs_two_sided_blend_split`), so it needs the
+/// same `SHADOW_MASK_GLASS` bucket as literal glass. Left in the OPAQUE
+/// else-branch, an MLP refractor is shadow-masked as opaque while still
+/// depositing its own caustic — the shadow ray traceShadowTransmittance
+/// issues against its own instance for that caustic never treats it as
+/// non-occluding, so the surface can self-illuminate its own back face.
 #[inline]
 pub(super) fn shadow_mask_for_instance(
     material_kind: u32,
     render_layer: byroredux_core::ecs::components::RenderLayer,
     alpha_blend: bool,
+    multi_layer_refraction_scale: f32,
 ) -> u8 {
-    if material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_GLASS {
+    // Keep in lockstep with `context::draw::is_refractive_glass` — both
+    // answer "is this the same authored refractive-glass-family surface".
+    const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11;
+    let is_refractive_glass = material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_GLASS
+        || (material_kind == MATERIAL_KIND_MULTI_LAYER_PARALLAX
+            && multi_layer_refraction_scale > 0.0);
+    if is_refractive_glass {
         crate::shader_constants::SHADOW_MASK_GLASS as u8
     } else {
         let mut mask = crate::shader_constants::SHADOW_MASK_OPAQUE;

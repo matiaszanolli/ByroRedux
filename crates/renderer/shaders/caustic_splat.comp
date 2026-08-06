@@ -465,6 +465,11 @@ void main() {
         // (decayFactor == 0, no EMA) so the single-frame caustic doesn't wobble.
         const float CAUSTIC_TEMPORAL_JITTER_PX = 8.0;
         vec2 landPx = (ndc.xy * 0.5 + 0.5) * causticScreen.xy;
+        // Frame counter (GpuCamera.position.w, "for temporal jitter seed").
+        // Hoisted out of the `decayFactor > 0.0` block below so #2239's
+        // stochastic-rounding dither (deposit loop, further down) can reuse
+        // it too without a second uniform read.
+        uint fcu = uint(cameraPos.w);
         if (pc.decayFactor > 0.0) {
             // PER-DEPOSIT jitter (PCG hash of source pixel + frame). The old
             // `fract(fc * R2)` term depended ONLY on the frame, so it was
@@ -477,7 +482,6 @@ void main() {
             // gaps IN PLACE instead of sliding the whole pattern. Same fix
             // family as the GI/shadow IGN→hash decorrelation. Only runs
             // parked (decayFactor > 0); under motion the deposit is unjittered.
-            uint fcu = uint(cameraPos.w);
             uvec2 v = uvec2(pixel) ^ uvec2(fcu * 0x9E3779B9u, fcu * 0x85EBCA6Bu);
             v = v * 1664525u + 1013904223u;
             v.x += v.y * 1664525u; v.y += v.x * 1664525u;
@@ -542,7 +546,39 @@ void main() {
                 ivec2 q = hitPixel + ivec2(kx, ky);
                 if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, size))) continue;
                 float w = kGauss5[(ky + 2) * 5 + (kx + 2)]; // #1582 — precomputed
-                uint fv = uint(clamp(contrib * w * scale, 0.0, clamp_max));
+                float depositF = clamp(contrib * w * scale, 0.0, clamp_max);
+                uint fv = uint(depositF);
+                // #2239 — under the parked-camera EMA (decayFactor > 0), a
+                // dim caustic's `depositF` can sit below one fixed-point ULP
+                // EVERY frame (weak light × long travel × low albedo ×
+                // `emaWeight = 1 - decayFactor`, further diluted by this
+                // tap's Gaussian weight). The plain `uint()` floor above
+                // then deposits exactly 0 forever while the decay pass
+                // (`imageStore(..., v * decayFactor)` above) keeps shrinking
+                // the pool every frame — the running average dies to zero
+                // instead of converging to its true (dim but nonzero)
+                // steady state. Stochastic-round the truncated fraction
+                // instead of always flooring it: hash-derive a per-(texel,
+                // tap, frame) threshold and round up when the fraction
+                // exceeds it, so a chronically sub-ULP contribution still
+                // lands 1 ULP roughly every `1/depositF` frames instead of
+                // never — the Bernoulli trials converge in EXPECTATION to
+                // the exact fractional deposit. Motion frames
+                // (decayFactor == 0) keep the plain floor: there's no
+                // history to refresh, so dropping one dim single-frame
+                // sample is the correct (negligible, non-chronic) result.
+                if (pc.decayFactor > 0.0) {
+                    float fracPart = depositF - float(fv);
+                    uvec2 dv = uvec2(q) ^ uvec2(kx + 2, ky + 2)
+                        ^ uvec2(fcu * 0xC2B2AE35u, fcu * 0x27D4EB2Fu);
+                    dv = dv * 1664525u + 1013904223u;
+                    dv.x += dv.y * 1664525u; dv.y += dv.x * 1664525u;
+                    dv.x ^= dv.x >> 16u;     dv.y ^= dv.y >> 16u;
+                    float ditherThreshold = float(dv.x) * (1.0 / 4294967296.0);
+                    if (fracPart > ditherThreshold) {
+                        fv += 1u;
+                    }
+                }
                 if (fv != 0u) imageAtomicAdd(causticAccum, q, fv);
             }
         }

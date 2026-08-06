@@ -23,6 +23,17 @@ pub const DEFAULT_DIELECTRIC_IOR: f32 = 1.5;
 pub struct SurfaceBehavior {
     pub roughness: f32,
     pub metalness: f32,
+    /// Refractive index for this behavior's glass/dielectric surface
+    /// (~1.0-2.5). Uploaded verbatim into `GpuMaterial.ior`.
+    ///
+    /// #2232 — `GpuMaterial.ior` is discriminated by `materialKind` and also
+    /// carries a THIRD, incompatible-range meaning for
+    /// `MATERIAL_KIND_FIRE_REFRACTION` (a 0-1 heat-haze distortion scalar,
+    /// not a refractive index — see `bindings.glsl`'s `GpuMaterial::ior` doc
+    /// and `triangle.frag`'s fire-refraction branch). `SurfaceBehavior` is
+    /// never used to construct fire-refraction materials, but readers of
+    /// the shared `GpuMaterial.ior` slot should not assume this field's
+    /// physical-IOR contract applies to every `materialKind`.
     pub ior: f32,
 }
 

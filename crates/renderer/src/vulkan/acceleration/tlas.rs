@@ -609,6 +609,7 @@ impl AccelerationManager {
                 draw_cmd.material_kind,
                 draw_cmd.render_layer,
                 draw_cmd.alpha_blend,
+                draw_cmd.multi_layer_refraction_scale,
             );
             instances.push(vk::AccelerationStructureInstanceKHR {
                 transform,

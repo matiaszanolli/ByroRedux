@@ -133,6 +133,17 @@ struct GpuMaterial {
     // `F0 = ((1-η)/(1+η))²` at every dielectric / glass site. Default
     // 1.5 reproduces the pre-#1248 hardcoded `vec3(0.04)` behaviour
     // for legacy NIF content with no authored IOR. Offset 280.
+    //
+    // #2232 — this field is discriminated by `materialKind` and carries
+    // THREE distinct, incompatible-range meanings:
+    //   - ordinary dielectric materials: physical refractive index (~1.0-2.5)
+    //     as described above.
+    //   - `MATERIAL_KIND_GLASS`: canonical glass IOR, 1.45
+    //     (`GLASS_SURFACE_BEHAVIOR` in `crates/core/.../material.rs`).
+    //   - `MATERIAL_KIND_FIRE_REFRACTION`: NOT a refractive index. Authored
+    //     `refraction_strength`, a 0-1 heat-haze distortion scalar consumed
+    //     via `clamp(mat.ior, 0.0, 1.0)` in `triangle.frag`'s fire-refraction
+    //     branch. Do not "fix" values outside ~1.0-2.5 for this kind.
     float ior;
     // #1249 — Disney diffuse lobe (offsets 284-292). subsurface
     // weights the Hanrahan-Krueger fake-SSS approximation against the

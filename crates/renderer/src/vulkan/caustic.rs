@@ -1052,4 +1052,34 @@ mod tests {
             );
         }
     }
+
+    /// #2239 — under the parked-camera EMA (`pc.decayFactor > 0`), a dim
+    /// caustic's per-tap deposit can round below one fixed-point ULP EVERY
+    /// frame; the plain `uint()` floor then deposits exactly 0 forever while
+    /// the decay pass keeps shrinking the pool, so the running average dies
+    /// to zero instead of converging to its true steady state. Pin that the
+    /// fixed-point deposit is stochastically rounded (not unconditionally
+    /// floored) so a regression silently re-drops sub-ULP contributions.
+    #[test]
+    fn parked_camera_caustic_deposit_is_stochastically_rounded() {
+        let shader = include_str!("../../shaders/caustic_splat.comp");
+        for contract in [
+            "float depositF = clamp(contrib * w * scale, 0.0, clamp_max);",
+            "uint fv = uint(depositF);",
+            "if (pc.decayFactor > 0.0) {",
+            "float fracPart = depositF - float(fv);",
+            "if (fracPart > ditherThreshold) {",
+        ] {
+            assert!(
+                shader.contains(contract),
+                "caustic deposit lost the sub-ULP stochastic-rounding contract: {contract}"
+            );
+        }
+        // The old unconditional-floor deposit must not reappear.
+        assert!(
+            !shader.contains("uint fv = uint(clamp(contrib * w * scale, 0.0, clamp_max));"),
+            "caustic deposit regressed to an unconditional floor — dim parked-camera \
+             caustics will decay to zero (#2239)"
+        );
+    }
 }

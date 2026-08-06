@@ -1505,15 +1505,44 @@ fn shadow_mask_bucket_selection_is_pinned() {
 
     // Glass → glass bucket regardless of layer.
     assert_eq!(
-        shadow_mask_for_instance(MATERIAL_KIND_GLASS, RenderLayer::Architecture, true),
+        shadow_mask_for_instance(MATERIAL_KIND_GLASS, RenderLayer::Architecture, true, 0.0),
         SHADOW_MASK_GLASS as u8,
         "glass material must select the glass shadow bucket",
+    );
+
+    // #2238 — a real two-layer-refractive MultiLayerParallax surface (kind
+    // 11, non-zero refraction scale) is a caustic source per the CPU gate
+    // (`draw::is_refractive_glass`) and must land in the same glass bucket,
+    // not opaque — else it self-shadows its own caustic.
+    const MATERIAL_KIND_MULTI_LAYER_PARALLAX: u32 = 11;
+    assert_eq!(
+        shadow_mask_for_instance(
+            MATERIAL_KIND_MULTI_LAYER_PARALLAX,
+            RenderLayer::Architecture,
+            false,
+            0.3,
+        ),
+        SHADOW_MASK_GLASS as u8,
+        "refractive MultiLayerParallax must select the glass shadow bucket",
+    );
+
+    // A MultiLayerParallax draw with a zero (unauthored) refraction scale is
+    // not a real refractor and stays in the ordinary opaque bucket, matching
+    // `is_refractive_glass`'s rejection of the same case.
+    assert_eq!(
+        shadow_mask_for_instance(
+            MATERIAL_KIND_MULTI_LAYER_PARALLAX,
+            RenderLayer::Architecture,
+            false,
+            0.0,
+        ),
+        (SHADOW_MASK_OPAQUE | SHADOW_MASK_STRUCTURE) as u8,
     );
 
     // Solid architecture participates in both the complete opaque set and
     // structure-only visibility.
     assert_eq!(
-        shadow_mask_for_instance(0, RenderLayer::Architecture, false),
+        shadow_mask_for_instance(0, RenderLayer::Architecture, false, 0.0),
         (SHADOW_MASK_OPAQUE | SHADOW_MASK_STRUCTURE) as u8,
     );
 
@@ -1521,25 +1550,30 @@ fn shadow_mask_bucket_selection_is_pinned() {
     // shadows but are absent from structure-only visibility.
     for layer in [RenderLayer::Clutter, RenderLayer::Actor, RenderLayer::Decal] {
         assert_eq!(
-            shadow_mask_for_instance(0, layer, false),
+            shadow_mask_for_instance(0, layer, false, 0.0),
             SHADOW_MASK_OPAQUE as u8,
         );
     }
 
     // Alpha/effect proxy geometry must not become a structural wall.
     assert_eq!(
-        shadow_mask_for_instance(0, RenderLayer::Architecture, true),
+        shadow_mask_for_instance(0, RenderLayer::Architecture, true, 0.0),
         SHADOW_MASK_OPAQUE as u8,
     );
     for kind in [MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION] {
         assert_eq!(
-            shadow_mask_for_instance(kind, RenderLayer::Architecture, false),
+            shadow_mask_for_instance(kind, RenderLayer::Architecture, false, 0.0),
             SHADOW_MASK_OPAQUE as u8,
             "effect proxy kind {kind} must not select the structure bucket",
         );
     }
     assert_eq!(
-        shadow_mask_for_instance(MATERIAL_KIND_NO_LIGHTING, RenderLayer::Architecture, false,),
+        shadow_mask_for_instance(
+            MATERIAL_KIND_NO_LIGHTING,
+            RenderLayer::Architecture,
+            false,
+            0.0,
+        ),
         (SHADOW_MASK_OPAQUE | SHADOW_MASK_STRUCTURE) as u8,
     );
 

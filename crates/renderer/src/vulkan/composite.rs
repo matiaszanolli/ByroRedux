@@ -1714,7 +1714,12 @@ mod composite_params_layout_tests {
         assert!(shader.contains("float depth = texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r;"));
         assert!(shader.contains("bool has_surface = depth < 1.0;"));
         assert!(shader.contains("bool is_sky = !has_surface"));
-        assert!(shader.contains("if (has_surface) {"));
+        // #2233 — the volumetric/height-fog block used to be gated on
+        // `has_surface` alone (sky pixels never got fog, REN-D16-02). It now
+        // also runs for `is_sky` so fog extends to the horizon instead of
+        // stopping dead at the geometry silhouette; the exact-clear-depth
+        // classification this test pins is otherwise unchanged.
+        assert!(shader.contains("if (has_surface || is_sky) {"));
         assert!(
             !shader.contains("depth >= 0.9999") && !shader.contains("depth < 0.9999"),
             "composite depth classification must reserve only the exact clear value for background"

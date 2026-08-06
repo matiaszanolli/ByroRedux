@@ -394,25 +394,19 @@ void main() {
     bool has_surface = depth < 1.0;
     bool is_sky = !has_surface && (params.depth_params.x > 0.5);
 
+    // REN-D8-02 / REN-D16-02 — bloom and the volumetric/height-fog term
+    // used to be folded into `combined` only inside the (former) geometry
+    // branch below, so a plain `if (is_sky) { ...; return; }` skipped both
+    // for sky pixels: no bloom on bright sun/sky highlights, and fog that
+    // stopped dead at the horizon/geometry silhouette instead of extending
+    // into the sky. `combined` is now built by either branch and both
+    // terms are applied once, after, to whichever value each branch
+    // produced.
+    vec3 combined;
     if (is_sky) {
         // Sky pixel: reconstruct view direction and compute sky color.
         vec3 dir = screen_to_world_dir(fragUV);
-        vec3 sky = compute_sky(dir);
-        sky += vec3(preResolveDither());
-
-        // Pass `direct4.a` through (mirroring the geometry branch at
-        // line 279) so the alpha-blend marker bit `DEN-6 / #676`
-        // preserves through TAA stays consistent across both sky and
-        // geometry pixels. Sky pixels by construction don't have a
-        // glass surface in front of them today, so today's
-        // `direct4.a` on a sky-branch fragment is zero — but a future
-        // decal pass / transparent UI / lens-flare feature that asks
-        // "is this swapchain pixel sky?" via swapchain alpha would
-        // see an asymmetric "1.0 = sky, anything else = geometry"
-        // contract that's harder to reason about than the symmetric
-        // "alpha is the marker bit, branch on it the same way."
-        // DEN-11.
-        outColor = vec4(sky, direct4.a);
+        combined = compute_sky(dir);
     } else {
         // Geometry pixel: combine direct + (indirect × albedo) and tone map.
         // The shader wrote lighting-only indirect (no local albedo) so
@@ -463,107 +457,130 @@ void main() {
         causticLum = min(causticLum, CAUSTIC_FIREFLY_MAX);
         vec3 caustic = albedo * causticLum;
 
-        vec3 combined = direct + indirect * albedo + caustic;
-        float fogTransmittance = 1.0;
-
-        // M55 Phase 3 — volumetric modulation via single sampler3D tap.
-        // The volumetric pipeline pre-integrates `(∫inscatter, T_cum)`
-        // along the view ray per froxel column in a compute pass; here
-        // we just look up the value at the fragment's depth slice and
-        // modulate `combined`. Done in HDR-linear (pre-ACES) per
-        // Frostbite §5.3 so the tone-mapper sees the inscattered
-        // radiance and the scene together.
-        //
-        // The volumetric volume is screen-space in XY and hybrid linear /
-        // exponential in Z. One sampler3D tap retrieves the pre-integrated
-        // result through the fragment.
-        if (has_surface) {
-            vec2 ndc_xy = fragUV * 2.0 - 1.0;
-            vec4 clip = vec4(ndc_xy, depth, 1.0);
-            vec4 world = params.inv_view_proj * clip;
-            vec3 worldPos = world.xyz / max(abs(world.w), 1.0e-6);
-            float worldDist = length(worldPos - params.camera_pos.xyz);
-            float gridFar = params.volume_params.x;
-            float slice = hybridSliceCoordinate(min(worldDist, gridFar));
-            vec4 vol = texture(volumetricFroxel, vec3(fragUV, slice));
-            // vol.rgb = ∫inscatter accumulated 0..slice (HDR-linear)
-            // vol.a   = cumulative transmittance through 0..slice
-            //
-            // M55 Phase 2c volumetric contribution was gated off
-            // 2026-05-09 (per-froxel single-shadow-ray produced
-            // ~8px-wide vertical banding on Prospector Saloon lantern
-            // content) and re-enabled once M-LIGHT v2 (the 3x3 spatial
-            // blur in `volumetrics_integrate.comp`) resolved it — see
-            // `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED`.
-            //
-            // `params.depth_params.z` mirrors that host-side const, so
-            // it's always 1.0 here; `vol.a` genuinely carries cumulative
-            // transmittance and `vol.rgb` in-scattered radiance. Frostbite
-            // §5.3 standard form: attenuate FIRST (energy lost to
-            // absorption between camera and fragment), then ADD inscatter
-            // (radiance that arrived via in-scattering, NOT itself
-            // attenuated by `T_cum` — the integrate pass already weighted
-            // each slab's contribution by its own running transmittance).
-            combined = combined * vol.a + vol.rgb;
-            fogTransmittance *= vol.a;
-
-            // Beyond-grid aerial perspective. Start at the grid boundary so
-            // this composes after the froxel integral without double-counting.
-            // The exact horizontal branch lives in heightFogOpticalDepth.
-            if (worldDist > gridFar && params.height_fog_params.w > 0.5) {
-                vec3 rayDir = (worldPos - params.camera_pos.xyz)
-                    / max(worldDist, 1.0e-6);
-                vec3 segmentOrigin = params.camera_pos.xyz + rayDir * gridFar;
-                // REN-D16-01 / #2225 — baseHeight anchors to the ground/floor
-                // near the camera (params.camera_pos.w), not the camera's own
-                // eye height, so fog thins with real altitude instead of
-                // following the player vertically.
-                float tau = heightFogOpticalDepth(
-                    params.height_fog_params.x,
-                    segmentOrigin.y,
-                    rayDir.y,
-                    worldDist - gridFar,
-                    params.camera_pos.w,
-                    params.height_fog_params.y
-                );
-                float transmittance = exp(-min(tau, 80.0));
-                vec3 aerial = params.fog_color.rgb
-                    * params.height_fog_params.z
-                    * (1.0 - transmittance);
-                combined = combined * transmittance + aerial;
-                fogTransmittance *= transmittance;
-            }
-        }
-
-        // M58 — bloom add. Sampled with bilinear from mip 0 of the
-        // bloom up-pyramid (half-screen resolution; hardware filter
-        // upscales to full screen for free). Added in HDR-linear
-        // (pre-ACES) so the tone-mapper compresses scene + bloom
-        // together — bright surfaces' glow doesn't clip independently
-        // of the surface. `fragUV` in [0,1]² works directly against
-        // the half-res bloom view.
-        vec3 bloom = texture(bloomTex, fragUV).rgb;
-        combined += bloom * BLOOM_INTENSITY;
-        combined += vec3(preResolveDither());
-        float fogOpacity = clamp(1.0 - fogTransmittance, 0.0, 1.0);
-        // Fog has no coherent surface motion. Route its coverage through the
-        // transparency/composition mask and conservatively flag dense fog as
-        // reactive so FSR does not lock onto the geometry behind it.
-        outTransparency = fogOpacity;
-        outReactive = smoothstep(0.35, 0.8, fogOpacity) * 0.9;
-
-        // Aerial-perspective fog fallback (Markarth probe 2026-05-10)
-        // stood in for the volumetric froxel pipeline while M-LIGHT v2
-        // was gated off. `VOLUMETRIC_OUTPUT_CONSUMED` (volumetrics.rs)
-        // flipped to `true` once M-LIGHT v2 landed — `depth_params.z` is
-        // now permanently pinned to 1.0 (draw.rs), so this fallback's
-        // `depth_params.z < 0.5` guard can never pass. Removed per the
-        // lockstep note this branch used to carry (#1926 / REN-D8-01);
-        // the volumetric path (`vol.a` / `vol.rgb` above) plus the analytic
-        // beyond-grid continuation are the sole fog sources now.
-        // `fog_color` tints that continuation; `fog_params` remains reserved
-        // for an explicit legacy-compatibility mode.
-
-        outColor = vec4(combined, direct4.a);
+        combined = direct + indirect * albedo + caustic;
     }
+
+    float fogTransmittance = 1.0;
+
+    // M55 Phase 3 — volumetric modulation via single sampler3D tap.
+    // The volumetric pipeline pre-integrates `(∫inscatter, T_cum)`
+    // along the view ray per froxel column in a compute pass; here
+    // we just look up the value at the fragment's depth slice and
+    // modulate `combined`. Done in HDR-linear (pre-ACES) per
+    // Frostbite §5.3 so the tone-mapper sees the inscattered
+    // radiance and the scene together.
+    //
+    // The volumetric volume is screen-space in XY and hybrid linear /
+    // exponential in Z. One sampler3D tap retrieves the pre-integrated
+    // result through the fragment.
+    //
+    // REN-D8-02 / REN-D16-02 — gated on `has_surface || is_sky`, not
+    // `has_surface` alone. `depth == 1.0` still reconstructs a valid
+    // far-plane `worldPos` through the same `inv_view_proj` math
+    // `screen_to_world_dir` uses for sky rays, so the froxel tap and the
+    // analytic beyond-grid continuation both resolve correctly for sky
+    // pixels too. The one case still excluded — no surface AND not sky
+    // (an interior cell's unmodelled void, `depth_params.x <= 0.5`) —
+    // has no meaningful world position to integrate fog along.
+    if (has_surface || is_sky) {
+        vec2 ndc_xy = fragUV * 2.0 - 1.0;
+        vec4 clip = vec4(ndc_xy, depth, 1.0);
+        vec4 world = params.inv_view_proj * clip;
+        vec3 worldPos = world.xyz / max(abs(world.w), 1.0e-6);
+        float worldDist = length(worldPos - params.camera_pos.xyz);
+        float gridFar = params.volume_params.x;
+        float slice = hybridSliceCoordinate(min(worldDist, gridFar));
+        vec4 vol = texture(volumetricFroxel, vec3(fragUV, slice));
+        // vol.rgb = ∫inscatter accumulated 0..slice (HDR-linear)
+        // vol.a   = cumulative transmittance through 0..slice
+        //
+        // M55 Phase 2c volumetric contribution was gated off
+        // 2026-05-09 (per-froxel single-shadow-ray produced
+        // ~8px-wide vertical banding on Prospector Saloon lantern
+        // content) and re-enabled once M-LIGHT v2 (the 3x3 spatial
+        // blur in `volumetrics_integrate.comp`) resolved it — see
+        // `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED`.
+        //
+        // `params.depth_params.z` mirrors that host-side const, so
+        // it's always 1.0 here; `vol.a` genuinely carries cumulative
+        // transmittance and `vol.rgb` in-scattered radiance. Frostbite
+        // §5.3 standard form: attenuate FIRST (energy lost to
+        // absorption between camera and fragment), then ADD inscatter
+        // (radiance that arrived via in-scattering, NOT itself
+        // attenuated by `T_cum` — the integrate pass already weighted
+        // each slab's contribution by its own running transmittance).
+        combined = combined * vol.a + vol.rgb;
+        fogTransmittance *= vol.a;
+
+        // Beyond-grid aerial perspective. Start at the grid boundary so
+        // this composes after the froxel integral without double-counting.
+        // The exact horizontal branch lives in heightFogOpticalDepth.
+        if (worldDist > gridFar && params.height_fog_params.w > 0.5) {
+            vec3 rayDir = (worldPos - params.camera_pos.xyz)
+                / max(worldDist, 1.0e-6);
+            vec3 segmentOrigin = params.camera_pos.xyz + rayDir * gridFar;
+            // REN-D16-01 / #2225 — baseHeight anchors to the ground/floor
+            // near the camera (params.camera_pos.w), not the camera's own
+            // eye height, so fog thins with real altitude instead of
+            // following the player vertically.
+            float tau = heightFogOpticalDepth(
+                params.height_fog_params.x,
+                segmentOrigin.y,
+                rayDir.y,
+                worldDist - gridFar,
+                params.camera_pos.w,
+                params.height_fog_params.y
+            );
+            float transmittance = exp(-min(tau, 80.0));
+            vec3 aerial = params.fog_color.rgb
+                * params.height_fog_params.z
+                * (1.0 - transmittance);
+            combined = combined * transmittance + aerial;
+            fogTransmittance *= transmittance;
+        }
+    }
+
+    // M58 — bloom add. Sampled with bilinear from mip 0 of the
+    // bloom up-pyramid (half-screen resolution; hardware filter
+    // upscales to full screen for free). Added in HDR-linear
+    // (pre-ACES) so the tone-mapper compresses scene + bloom
+    // together — bright surfaces' glow doesn't clip independently
+    // of the surface. `fragUV` in [0,1]² works directly against
+    // the half-res bloom view.
+    //
+    // REN-D8-02 — unconditional (previously geometry-branch-only, so sky
+    // pixels — e.g. a bright sun disc — never bloomed).
+    vec3 bloom = texture(bloomTex, fragUV).rgb;
+    combined += bloom * BLOOM_INTENSITY;
+    combined += vec3(preResolveDither());
+    float fogOpacity = clamp(1.0 - fogTransmittance, 0.0, 1.0);
+    // Fog has no coherent surface motion. Route its coverage through the
+    // transparency/composition mask and conservatively flag dense fog as
+    // reactive so FSR does not lock onto the geometry behind it.
+    outTransparency = fogOpacity;
+    outReactive = smoothstep(0.35, 0.8, fogOpacity) * 0.9;
+
+    // Aerial-perspective fog fallback (Markarth probe 2026-05-10)
+    // stood in for the volumetric froxel pipeline while M-LIGHT v2
+    // was gated off. `VOLUMETRIC_OUTPUT_CONSUMED` (volumetrics.rs)
+    // flipped to `true` once M-LIGHT v2 landed — `depth_params.z` is
+    // now permanently pinned to 1.0 (draw.rs), so this fallback's
+    // `depth_params.z < 0.5` guard can never pass. Removed per the
+    // lockstep note this branch used to carry (#1926 / REN-D8-01);
+    // the volumetric path (`vol.a` / `vol.rgb` above) plus the analytic
+    // beyond-grid continuation are the sole fog sources now.
+    // `fog_color` tints that continuation; `fog_params` remains reserved
+    // for an explicit legacy-compatibility mode.
+
+    // Pass `direct4.a` through (mirroring the pre-fix geometry branch) so
+    // the alpha-blend marker bit `DEN-6 / #676` preserves through TAA
+    // consistently across both sky and geometry pixels. Sky pixels by
+    // construction don't have a glass surface in front of them today, so
+    // today's `direct4.a` on a sky pixel is zero — but a future decal
+    // pass / transparent UI / lens-flare feature that asks "is this
+    // swapchain pixel sky?" via swapchain alpha would see an asymmetric
+    // "1.0 = sky, anything else = geometry" contract that's harder to
+    // reason about than the symmetric "alpha is the marker bit, branch on
+    // it the same way." DEN-11.
+    outColor = vec4(combined, direct4.a);
 }
