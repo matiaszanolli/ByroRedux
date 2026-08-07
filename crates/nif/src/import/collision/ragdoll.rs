@@ -30,6 +30,19 @@ use super::{finite, finite_vec, havok_quat_to_engine, havok_to_engine};
 /// scaled, reusing the same helpers as [`extract_from_classic`].
 pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
     let scale = scene.havok_scale;
+    // `import_nif_scene` probes every NIF, including ordinary architecture
+    // with one or more rigid bodies. Rejection diagnostics are useful only
+    // when the file actually authored an articulation edge; otherwise an
+    // unhosted/static body is normal content and warning about it would flood
+    // cell-load logs. Breakable constraints are included so their existing
+    // unsupported-edge diagnostic still fires.
+    let has_constraint_authoring = scene.blocks.iter().any(|block| {
+        block.as_any().is::<BhkConstraint>()
+            || block.as_any().is::<BhkBreakableConstraint>()
+    });
+    if !has_constraint_authoring {
+        return None;
+    }
     let body_to_bone = build_body_to_bone(scene);
 
     // Collect skeletal rigid bodies in block order; map block idx → array idx

@@ -38,8 +38,7 @@ pub(crate) struct CachedNifImport {
     /// An empty `collisions` vector plus `new_physics > 0` means FO4+ packed
     /// Havok was authored and the spawn path should use its compatibility
     /// proxy rather than treating the asset as intentionally non-colliding.
-    pub(super) collision_authoring:
-        byroredux_nif::import::collision::CollisionAuthoringSummary,
+    pub(super) collision_authoring: byroredux_nif::import::collision::CollisionAuthoringSummary,
     pub(super) lights: Vec<byroredux_nif::import::ImportedLight>,
     /// Particle emitters detected in the NIF scene graph
     /// (`NiParticleSystem` and friends). Carries NIF-local position +

@@ -608,6 +608,8 @@ pub(super) fn load_references_budgeted(
         scripts_recognized,
         trigger_volumes,
         containers_attached,
+        packed_collision_fallbacks,
+        unresolved_packed_collision,
         this_call_hits,
         this_call_misses,
         pending_new,
@@ -738,6 +740,13 @@ pub(super) fn load_references_budgeted(
         log::info!(
             "  {} containers attached an Inventory component",
             containers_attached
+        );
+    }
+    if packed_collision_fallbacks > 0 || unresolved_packed_collision > 0 {
+        log::info!(
+            "  Packed collision compatibility: {} placements approximated, {} unresolved",
+            packed_collision_fallbacks,
+            unresolved_packed_collision,
         );
     }
     if npc_spawned > 0 {
@@ -966,6 +975,10 @@ struct RefLoadAccum {
     trigger_volumes: u32,
     /// #1359 — CONT REFRs that received an `Inventory` component.
     containers_attached: u32,
+    /// FO4+/FO76/Starfield packed-Havok compatibility coverage, counted per
+    /// placement and emitted once in the cell summary.
+    packed_collision_fallbacks: u32,
+    unresolved_packed_collision: u32,
     /// #523 per-call NIF-cache hit/miss tallies, merged after the loop.
     this_call_hits: u64,
     this_call_misses: u64,
@@ -992,6 +1005,8 @@ impl RefLoadAccum {
             scripts_recognized: 0,
             trigger_volumes: 0,
             containers_attached: 0,
+            packed_collision_fallbacks: 0,
+            unresolved_packed_collision: 0,
             this_call_hits: 0,
             this_call_misses: 0,
             pending_new: HashMap::new(),
@@ -1507,7 +1522,7 @@ fn spawn_synth_child(
             local: LocalFormId(placed_ref.form_id),
         }
     };
-    let (placement_root, count, _timings) = spawn_placed_instances(
+    let (placement_root, count, spawn_stats) = spawn_placed_instances(
         world,
         ctx,
         &cached,
@@ -1532,6 +1547,8 @@ fn spawn_synth_child(
         is_primary_synth.then_some(placed_ref.teleport).flatten(),
     );
     accum.entity_count += count;
+    accum.packed_collision_fallbacks += spawn_stats.packed_collision_fallbacks;
+    accum.unresolved_packed_collision += spawn_stats.unresolved_packed_collision;
     if is_primary_synth {
         stamp_quest_reference(world, placement_root, placed_ref, load_order);
     }

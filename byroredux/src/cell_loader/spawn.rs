@@ -127,18 +127,21 @@ fn synthesize_packed_havok_proxy(
     if !ref_scale.is_finite() {
         return None;
     }
-    let geometry = meshes.iter().filter_map(|mesh| {
-        (!mesh.material.is_decal
-            && !mesh.material.alpha_test
-            && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
-            && !mesh.positions.is_empty())
-        .then(|| ProxyMeshGeometry {
+    let geometry = meshes
+        .iter()
+        .filter(|mesh| {
+            !mesh.material.is_decal
+                && !mesh.material.alpha_test
+                && mesh.material.material_kind
+                    != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+                && !mesh.positions.is_empty()
+        })
+        .map(|mesh| ProxyMeshGeometry {
             positions: &mesh.positions,
             translation: Vec3::from_array(mesh.translation),
             rotation: Quat::from_array(mesh.rotation),
             scale: mesh.scale,
-        })
-    });
+        });
     let (min, max) = transformed_mesh_aabb(geometry)?;
     let center = (min + max) * 0.5;
     // Thin render cards still need a non-zero physical thickness. Half a
@@ -1749,8 +1752,9 @@ fn spawn_mesh_instance(
 #[cfg(test)]
 mod synthesize_trimesh_tests {
     use super::{
-        missing_collision_fallback, spawn_trimesh_collider_ghost, synthesize_static_trimesh,
-        transformed_mesh_aabb, MissingCollisionFallback, ProxyMeshGeometry,
+        missing_collision_fallback, spawn_packed_havok_proxy, spawn_trimesh_collider_ghost,
+        synthesize_packed_havok_proxy, synthesize_static_trimesh, transformed_mesh_aabb,
+        MissingCollisionFallback, ProxyMeshGeometry,
     };
     use byroredux_core::{
         ecs::{
@@ -1929,5 +1933,86 @@ mod synthesize_trimesh_tests {
 
         assert_eq!(min, Vec3::new(-1.0, -2.0, -3.0));
         assert_eq!(max, Vec3::new(11.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn packed_proxy_bakes_outer_scale_into_cuboid_extent() {
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            vec![[-1.0, -2.0, -3.0], [1.0, 2.0, 3.0]],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        mesh.translation = [4.0, 5.0, 6.0];
+
+        let (center, shape) = synthesize_packed_havok_proxy(&[mesh], 2.0)
+            .expect("finite render geometry must produce a packed-Havok proxy");
+        assert_eq!(center, Vec3::new(4.0, 5.0, 6.0));
+        match shape {
+            CollisionShape::Cuboid { half_extents } => {
+                assert_eq!(half_extents, Vec3::new(2.0, 4.0, 6.0));
+            }
+            other => panic!("expected Cuboid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn packed_proxy_is_keyframed_and_parented_to_visual_placement() {
+        use crate::cell_loader::nif_import_registry::CachedNifImport;
+        use byroredux_core::ecs::{GlobalTransform, Parent, Transform};
+
+        let mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            vec![[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let cached = CachedNifImport {
+            meshes: vec![mesh],
+            collisions: Vec::new(),
+            collision_authoring: CollisionAuthoringSummary {
+                new_physics: 1,
+                ..Default::default()
+            },
+            lights: Vec::new(),
+            particle_emitters: Vec::new(),
+            embedded_clip: None,
+            placement_root_billboard: None,
+            bsx_flags: 0,
+            root_flags: 0,
+            flame_attach_offset: None,
+            attach_points: None,
+            child_attach_connections: None,
+            furniture: None,
+        };
+        let mut world = World::new();
+        let root = world.spawn();
+        world.insert(root, Transform::default());
+        world.insert(root, GlobalTransform::default());
+
+        assert!(spawn_packed_havok_proxy(
+            &mut world,
+            &cached,
+            root,
+            Vec3::new(10.0, 20.0, 30.0),
+            Quat::IDENTITY,
+            1.0,
+            None,
+            RenderLayer::Clutter,
+        ));
+
+        let bodies = world
+            .query::<RigidBodyData>()
+            .expect("proxy must carry a rigid body");
+        let (proxy, body) = bodies.iter().next().expect("one proxy body");
+        assert_eq!(body.motion_type, MotionType::Keyframed);
+        let parents = world.query::<Parent>().expect("proxy must be parented");
+        assert_eq!(parents.get(proxy).map(|p| p.0), Some(root));
+        let meshes = world.query::<MeshHandle>();
+        assert!(meshes.as_ref().is_none_or(|q| !q.contains(proxy)));
     }
 }

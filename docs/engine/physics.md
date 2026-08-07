@@ -12,11 +12,11 @@ Source: [`crates/physics/src/`](../../crates/physics/src/)
 > History note: this doc opened as the M28 Phase 1 ("make the parsed
 > collision data live") writeup. The simulation has since grown a
 > kinematic character controller (M28.5), a one-collider-per-part spawn
-> path (#373), a render-geometry trimesh fallback for FO4+/Starfield
-> architecture, and a `ContactConfig` resource that unifies the contact
-> tunables. Sections below are reconciled against the tree as of Session
-> 42 / 2026-05-28; the milestone-by-milestone narrative is kept and
-> date-stamped where it matters.
+> path (#373), render-geometry compatibility proxies for opaque
+> FO4+/FO76/Starfield packed Havok, and a `ContactConfig` resource that
+> unifies the contact tunables. Sections below are reconciled against the
+> tree as of 2026-08-07; the milestone-by-milestone narrative is kept where
+> it still explains a design decision.
 
 ## At a glance
 
@@ -27,7 +27,8 @@ Source: [`crates/physics/src/`](../../crates/physics/src/)
 | Gravity             | −686.7 BU/s² (≈ −9.81 m/s² scaled to Bethesda units, 1 m ≈ 70 BU) |
 | Units               | Bethesda units throughout — Rapier never sees metres |
 | Character           | M28.5 kinematic capsule controller — gravity + collide-and-slide + jump |
-| Tests               | 21 in `crates/physics` + 8 in the controller (`byroredux/src/systems/character.rs`) |
+| Compatibility       | Classic `bhk` shapes decode directly; opaque packed Havok gets layer-aware render-geometry proxies with per-cell coverage telemetry |
+| Tests               | Unit coverage spans the physics crate, character controller, NIF collision translation, and cell-loader fallback policy |
 
 ## Data pipeline
 
@@ -39,10 +40,13 @@ NIF (.nif)
       └─ bhk*CollisionObject → bhkRigidBody → bhkShape chain
          └─ import/collision/mod.rs::extract_collision  crates/nif/src/import/collision/mod.rs
             └─ (CollisionShape, RigidBodyData)       physics-agnostic ECS components
+         └─ summarize_collision_authoring()          classic / packed / phantom census
+            └─ CachedNifImport                       survives the parse/import boundary
                └─ cell_loader / scene spawns          byroredux/src/cell_loader/spawn.rs
                   - Transform + GlobalTransform
                   - CollisionShape
                   - RigidBodyData
+                  - layer-aware compatibility proxy when packed data is opaque
                      └─ physics_sync_system registers in Rapier
                         - RigidBodyHandle + ColliderHandle(s) → RapierHandles
 ```
@@ -51,7 +55,7 @@ No parser or importer changes were needed for M28 Phase 1 — the
 collision data was already sitting on entities since N23.6, it just
 wasn't being read by anything. The physics system is the thing that
 makes it live. (FO4 / FO76 / Starfield are the exception — see
-[Synthesized static-trimesh fallback](#synthesized-static-trimesh-fallback)
+[Packed-Havok geometry fallbacks](#packed-havok-geometry-fallbacks)
 below.)
 
 ## Crate layout
@@ -320,13 +324,17 @@ subclass, which is effectively the per-game boundary:
 | Block | Game line | Extractable today |
 |---|---|---|
 | `BhkCollisionObject` → `BhkRigidBody` | Universal (dominant pre-FO4) | **yes** (`extract_from_classic`) |
-| `BhkNPCollisionObject` | FO4 / FO76 / Starfield ("Niagara Physics") | **no** — Havok-serialised blob; surfaced as `CollisionAuthoring::NewPhysicsStub`, render-geometry trimesh fallback fires instead |
-| `BhkPCollisionObject` | Skyrim+ trigger volumes / phantoms | **no** — `CollisionAuthoring::Phantom`; needs a dedicated `TriggerVolume` ECS path |
+| `BhkNPCollisionObject` | FO4 / FO76 / Starfield ("Niagara Physics") | Blob is opaque; surfaced as `CollisionAuthoring::NewPhysicsStub` and approximated at spawn |
+| `BhkPCollisionObject` | Skyrim+ trigger volumes / phantoms | Parsed and classified as `CollisionAuthoring::Phantom`; needs a dedicated runtime sensor path |
+| `bhkSPCollisionObject` | FO3 DLC specialised phantom wrapper | Parsed through the phantom wrapper layout (not misclassified as a classic rigid body) |
 
-`examine_collision_kind` returns the `CollisionAuthoring` discriminator
-(`None` / `Classic` / `NewPhysicsStub` / `Phantom` / `Unrecognised`)
-without attempting extraction, so telemetry and fallbacks can tell "FO4
-NP collision authored but undecodable" from "no collision authored".
+`examine_collision_kind` returns the per-reference `CollisionAuthoring`
+discriminator (`None` / `Classic` / `NewPhysicsStub` / `Phantom` /
+`Unrecognised`). `summarize_collision_authoring` reuses the same classifier
+to retain a scene-level `CollisionAuthoringSummary` in `CachedNifImport`.
+That summary is the production signal the spawn policy consumes, so an empty
+decoded-collision array no longer conflates "intentionally no collision" with
+"packed collision exists but is undecodable".
 
 The classic path's `resolve_shape` handles every parsed `bhk*Shape`
 variant and maps each to a `CollisionShape`. The **NIFAL collision audit
@@ -360,7 +368,7 @@ happens in the physics crate.
 > "remove" a 7.0 Havok scale — it *applies* `havok_scale` (7.0 or
 > 69.99125 depending on game) to convert Havok metres to Bethesda units.
 
-## Synthesized static-trimesh fallback
+## Packed-Havok geometry fallbacks
 
 FO4 / FO76 / Starfield moved static-architecture collision into the
 Havok content-system blob (`bhkNPCollisionObject` → `bhkPhysicsSystem`),
@@ -368,32 +376,31 @@ which `extract_collision` does not deserialize yet (a multi-day project).
 Without any static collider the M28.5 character controller has nothing
 to ground against and the player falls through the floor.
 
-`cell_loader/spawn.rs::synthesize_static_trimesh` builds a static
-`CollisionShape::TriMesh` + `RigidBodyData::STATIC` from the render
-mesh's geometry, baking the composed `ref_scale × mesh.scale` into the
-vertices (the physics sync places bodies by translation + rotation only;
-bhk shapes already bake their scale at extract time, so loose render
-verts must be pre-scaled to match). The render mesh is a coarse but
-serviceable stand-in for the authored hull on structural architecture.
+The spawn policy now has two deliberately different approximations:
 
-The fallback is gated tightly so it never turns clutter, decals, or
-skinned actors into expensive trimesh colliders. It fires only when:
+- **Architecture:** `synthesize_static_trimesh` builds one precise static
+  `CollisionShape::TriMesh` per eligible rigid render submesh. It bakes
+  `ref_scale × mesh.scale` into vertices because physics consumes position
+  and rotation, not `GlobalTransform::scale`. This path remains available for
+  collision-less architecture even when the NIF does not contain a packed
+  object, preserving the terrain/legacy fallback behavior.
+- **Clutter and actors with confirmed packed authoring:** all eligible render
+  geometry is unioned after mesh-local translation/rotation/scale, producing
+  one conservative placement-local AABB. The resulting cuboid is
+  `Keyframed`, parented to the visual placement root, and carries no
+  `MeshHandle`; it follows scripted placement motion without entering the
+  renderer or pretending the unknown packed body has a trustworthy mass.
 
-- `collisions.is_empty()` — the NIF authored no bhk shape (so FNV / FO3 /
-  Skyrim aren't double-covered),
-- the REFR's **`base_layer`** is `RenderLayer::Architecture` — and note
-  this is the *pre-escalation* record-type classification, **not** the
-  post-escalation render layer (#1294: the small-STAT → Clutter render
-  z-bias escalation is a rendering optimization that was stripping
-  colliders off Starfield's per-LOD per-material sub-decomposed walls,
-  each sub-mesh < 50 units but composing into 1000-unit architecture),
-- `mesh.skin.is_none()` — never synthesize for animated bodies,
-- `!mesh.is_decal && !mesh.alpha_test` — skip overlay planes,
-- there's at least one triangle of geometry.
+Both paths require `collisions.is_empty()`, so decoded classic collision always
+wins. Decals, alpha-tested cards, fire-refraction geometry, non-finite data,
+and empty geometry cannot seed a packed proxy. Crucially, Clutter/Actor proxy
+selection additionally requires `CollisionAuthoringSummary.new_physics > 0`;
+we do not manufacture collision for content that authored none.
 
-This (plus the #1294 gate fix) is what makes the M28.5 character walk on
-Starfield's Cydonia and other FO4+ cells rather than free-falling from
-frame 0.
+`PlacementSpawnTimings` reports a per-placement packed fallback/unresolved
+pair. The reference loader aggregates it and emits one cell summary:
+`Packed collision compatibility: N placements approximated, M unresolved`.
+This makes approximation coverage visible without a per-object log storm.
 
 ## Gravity and units
 
@@ -416,11 +423,14 @@ These are intentionally deferred:
   spring) stay parse-only; active (motorised) ragdolls and joint-limit fidelity
   are PHYSAL follow-ups.
 - **FO4+ Havok content-system blob** — `bhkNPCollisionObject`'s
-  serialised physics system isn't decoded; the render-geometry trimesh
-  fallback above stands in for static architecture.
+  serialised physics system isn't decoded. Geometry proxies above provide
+  collision presence and placement tracking, but not authored mass, motion
+  type, constraints, material filters, or ragdolls.
 - **Trigger volumes / phantoms** — `bhkPCollisionObject` wrapping a
-  `bhkPhantom` needs a dedicated `TriggerVolume` ECS path rather than a
-  rigid body.
+  `bhkPhantom` (including FO3 DLC `bhkSPCollisionObject`) is classified
+  correctly but still needs a dedicated runtime sensor path rather than a
+  solid rigid body. ESM XPRM trigger volumes already use the scripting
+  trigger system; this gap is specifically NIF-authored phantoms.
 - **Collision events into scripting** — `ActivateEvent` / `HitEvent`
   plumbing from physics contacts stays deferred.
 - **Havok MOPP BVtree consumption** — Rapier builds its own BVH over

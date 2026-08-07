@@ -201,17 +201,26 @@ M28 path ([`physics.md`](physics.md)). PHYSAL does not re-abstract it; it reuses
 canonical shapes. If a future slice needs a single dynamic-rigid-body spec, it joins
 PHYSAL under the same source/sink boundaries.
 
+As of 2026-08-07, the NIF source boundary also retains a
+`CollisionAuthoringSummary`. FO4+/FO76/Starfield packed authoring selects a
+single placement-following AABB proxy for clutter/actors, while architecture
+keeps its precise per-mesh static-triangle fallback. This is an explicit
+compatibility approximation at the NIFAL→runtime boundary, not a second
+physics abstraction or a claim that the packed body was decoded.
+
 ### Phantoms / trigger volumes — **parked (needs a `TriggerVolume` ECS path)**
 
 `BhkPCollisionObject` phantoms are parsed but want a trigger-volume consumer, not a
-rigid body — deferred, mirroring the NIFAL collision note.
+rigid body — deferred, mirroring the NIFAL collision note. FO3 DLC
+`bhkSPCollisionObject` now dispatches through the same phantom wrapper instead
+of being misclassified as classic rigid-body authoring.
 
 ### FO4+ packed Havok — **blocked (blob decoder)**
 
 `BhkNPCollisionObject → BhkSystemBinary` holds the whole physics system
 (bodies + constraints) as a serialised Havok binary. Decoding it is a separate
-multi-day project; until then FO4/FO76/Starfield ragdolls don't thread (static
-collision already falls back to a synthesised trimesh — see
+multi-day project; until then FO4/FO76/Starfield ragdolls don't thread (runtime
+collision uses the layer-aware geometry approximations described in
 [`physics.md`](physics.md)). Documented limitation, **not** a silent leak.
 
 ### Active (motorised) ragdoll — **data captured, simulation deferred**
