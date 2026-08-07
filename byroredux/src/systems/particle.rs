@@ -67,6 +67,9 @@ pub fn apply_emitter_overlays(
     emitter_params: &Option<byroredux_nif::import::ImportedEmitterParams>,
     emitter_rate: Option<f32>,
     force_fields: &[byroredux_nif::import::ImportedParticleForceField],
+    texture_path: &Option<String>,
+    src_blend: Option<u8>,
+    dst_blend: Option<u8>,
 ) {
     if let Some(curve) = color_curve {
         preset.start_color = curve.start;
@@ -79,6 +82,20 @@ pub fn apply_emitter_overlays(
         preset.rate = rate;
     }
     preset.force_fields = convert_force_fields_zup_to_yup(force_fields);
+    // #2300 — texture_path/src_blend/dst_blend overrides were copy-pasted
+    // outside this boundary at both load sites (loose-NIF `nif_loader.rs`
+    // and cell-loaded `cell_loader/spawn.rs`); folded in here so the single
+    // declared overlay boundary covers every authored `NiPSysEmitter`
+    // override, not just color/params/rate/force-fields.
+    if let Some(path) = texture_path {
+        preset.texture_path = Some(path.clone());
+    }
+    if let Some(src) = src_blend {
+        preset.src_blend = src;
+    }
+    if let Some(dst) = dst_blend {
+        preset.dst_blend = dst;
+    }
 }
 
 /// Convert a list of imported NIF force fields (Z-up local space) to
@@ -525,6 +542,9 @@ mod tests {
             &Some(authored),
             Some(42.0),
             &fields,
+            &Some("textures/fx/embers.dds".to_string()),
+            Some(5),
+            Some(6),
         );
 
         // Colour curve overrides start/end (and beats the white default).
@@ -538,6 +558,15 @@ mod tests {
         assert_eq!(preset.rate, 42.0);
         // Force fields converted Z-up→Y-up and carried through.
         assert_eq!(preset.force_fields.len(), 1);
+        // #2300 — texture_path/src_blend/dst_blend overrides now fold in
+        // through this same boundary instead of being duplicated at each
+        // load site.
+        assert_eq!(
+            preset.texture_path.as_deref(),
+            Some("textures/fx/embers.dds")
+        );
+        assert_eq!(preset.src_blend, 5);
+        assert_eq!(preset.dst_blend, 6);
     }
 
     /// #1513: `None`/empty inputs leave the preset untouched — the overlay
@@ -546,7 +575,7 @@ mod tests {
     fn apply_emitter_overlays_none_inputs_keep_preset_defaults() {
         let preset_ref = ParticleEmitter::torch_flame();
         let mut preset = ParticleEmitter::torch_flame();
-        apply_emitter_overlays(&mut preset, &None, &None, None, &[]);
+        apply_emitter_overlays(&mut preset, &None, &None, None, &[], &None, None, None);
         assert_eq!(preset.start_color, preset_ref.start_color);
         assert_eq!(preset.speed, preset_ref.speed);
         assert_eq!(preset.rate, preset_ref.rate);

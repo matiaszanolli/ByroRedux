@@ -654,26 +654,20 @@ fn spawn_particle_emitters(
         let mut preset = crate::fog::particle_preset(&host, em.texture_path.as_deref());
         // NIFAL particles slice (#1513) — overlay every authored emitter
         // override (colour curve #707, NiPSysEmitter base params, birth
-        // rate, force fields #984) onto the heuristic preset through the
-        // single shared boundary. Parallel to the loose-NIF site in
-        // scene/nif_loader.rs — both call the same helper so the two load
-        // paths can't diverge.
+        // rate, force fields #984, texture/blend #2300) onto the heuristic
+        // preset through the single shared boundary. Parallel to the
+        // loose-NIF site in scene/nif_loader.rs — both call the same helper
+        // so the two load paths can't diverge.
         crate::systems::apply_emitter_overlays(
             &mut preset,
             &em.color_curve,
             &em.emitter_params,
             em.emitter_rate,
             &em.force_fields,
+            &em.texture_path,
+            em.src_blend,
+            em.dst_blend,
         );
-        if let Some(path) = &em.texture_path {
-            preset.texture_path = Some(path.clone());
-        }
-        if let Some(src) = em.src_blend {
-            preset.src_blend = src;
-        }
-        if let Some(dst) = em.dst_blend {
-            preset.dst_blend = dst;
-        }
 
         // Alpha-over fog/smoke is participating media, not transparent
         // geometry. Replace the billboard system at the translation

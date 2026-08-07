@@ -522,25 +522,20 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         let mut preset = crate::fog::particle_preset(&host_name, emitter.texture_path.as_deref());
         // NIFAL particles slice (#1513) — overlay every authored emitter
         // override (colour curve #707, NiPSysEmitter base params, birth
-        // rate NiPSysEmitterCtlr, force fields #984) onto the heuristic
-        // preset through the single shared boundary. The cell-loader spawn
-        // path calls the same helper, so the two load paths can't diverge.
+        // rate NiPSysEmitterCtlr, force fields #984, texture/blend #2300)
+        // onto the heuristic preset through the single shared boundary. The
+        // cell-loader spawn path calls the same helper, so the two load
+        // paths can't diverge.
         crate::systems::apply_emitter_overlays(
             &mut preset,
             &emitter.color_curve,
             &emitter.emitter_params,
             emitter.emitter_rate,
             &emitter.force_fields,
+            &emitter.texture_path,
+            emitter.src_blend,
+            emitter.dst_blend,
         );
-        if let Some(path) = &emitter.texture_path {
-            preset.texture_path = Some(path.clone());
-        }
-        if let Some(src) = emitter.src_blend {
-            preset.src_blend = src;
-        }
-        if let Some(dst) = emitter.dst_blend {
-            preset.dst_blend = dst;
-        }
 
         let fog_volume = crate::fog::fog_volume_from_particle(&host_name, &preset);
         let texture_handle = if fog_volume.is_none() {

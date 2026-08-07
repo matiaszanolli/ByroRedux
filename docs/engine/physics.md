@@ -37,7 +37,7 @@ Physics is additive on top of everything the importer already does:
 NIF (.nif)
   └─ parse_nif()                              crates/nif/src/
       └─ bhk*CollisionObject → bhkRigidBody → bhkShape chain
-         └─ import/collision.rs::extract_collision  crates/nif/src/import/collision.rs
+         └─ import/collision/mod.rs::extract_collision  crates/nif/src/import/collision/mod.rs
             └─ (CollisionShape, RigidBodyData)       physics-agnostic ECS components
                └─ cell_loader / scene spawns          byroredux/src/cell_loader/spawn.rs
                   - Transform + GlobalTransform
@@ -312,7 +312,7 @@ applied at collider creation.
 
 ## NIF collision extraction
 
-`crates/nif/src/import/collision.rs` walks the bhk shape tree and
+`crates/nif/src/import/collision/mod.rs` walks the bhk shape tree and
 produces the physics-agnostic `(CollisionShape, RigidBodyData)`.
 `extract_collision` dispatches on the concrete `bhk*CollisionObject`
 subclass, which is effectively the per-game boundary:

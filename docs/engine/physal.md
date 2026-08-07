@@ -74,7 +74,7 @@ The payoff of the sink boundary is concrete: the canonical `RagdollSpec` /
 
 | Tier | What it is | Where it lives | Rule |
 |---|---|---|---|
-| **Raw / `Imported*`** | A faithful decode of the Havok articulation — the constraint graph, per-body mass/damping/shape, joint geometry — converted to engine units (Y-up, `havok_scale`). May carry era-specific quirks. **Allowed to be messy.** | `crates/nif/src/blocks/collision/` (wire) + `crates/nif/src/import/collision.rs` (`ImportedRagdoll`) | Decode only; never the engine's source of truth. |
+| **Raw / `Imported*`** | A faithful decode of the Havok articulation — the constraint graph, per-body mass/damping/shape, joint geometry — converted to engine units (Y-up, `havok_scale`). May carry era-specific quirks. **Allowed to be messy.** | `crates/nif/src/blocks/collision/` (wire) + `crates/nif/src/import/collision/ragdoll.rs` (`ImportedRagdoll`) | Decode only; never the engine's source of truth. |
 | **`translate()` boundary** | Resolves `ImportedRagdoll` against the live skeleton (bone names → `EntityId`) into the canonical ECS blueprint, then seeds a world-space build spec from the bones' current poses at activation. Exactly **one** site per concern. | `byroredux/src/ragdoll.rs` (`template_from_imported`, `activate_ragdoll`) | One producer; no duplicate construction. |
 | **Canonical** | The game- and solver-agnostic spec the engine reasons about. `RagdollSpec`/`RagdollJointSpec` (build input) + the `Ragdoll` / `RagdollTemplate` ECS components (runtime state + dormant blueprint). | `crates/physics/src/ragdoll.rs` + `byroredux/src/ragdoll.rs` | The single source of truth. |
 | **Solver build** | Lowers the canonical spec onto Rapier: dynamic bodies, colliders (mass split), constraint graph oriented into a kinematic tree, one multibody joint per edge. | `crates/physics/src/ragdoll.rs::build_ragdoll` | One solver boundary; the only place solver types appear. |
@@ -97,7 +97,7 @@ instant of activation).
 
 PHYSAL **consumes** NIFAL's canonical collision output: ragdoll body geometry is
 NIFAL's `CollisionShape` (the `bhk*Shape` → `CollisionShape` resolution in
-`import/collision.rs::resolve_shape`, NIFAL's "collision" category). PHYSAL does
+`import/collision/shape.rs::resolve_shape`, NIFAL's "collision" category). PHYSAL does
 not re-decode shapes — it reuses the canonical ones and adds the *articulation*
 (graph + joints + simulation) NIFAL stops short of. Clean dependency, zero
 duplication.
@@ -129,7 +129,7 @@ branches) cross-checked against the sibling `BhkBreakableConstraint` byte tables
 the same file. Every decoder asserts exact stream advancement (byte-level tests in
 `blocks/collision/bhk_constraint_tests.rs`).
 
-### Extract — articulation graph (`crates/nif/src/import/collision.rs`)
+### Extract — articulation graph (`crates/nif/src/import/collision/ragdoll.rs`)
 
 `extract_ragdoll` is **already game-agnostic**: it walks `BhkRigidBody` blocks,
 maps each to its host bone (`NiNode.collision_ref → BhkCollisionObject.body_ref →

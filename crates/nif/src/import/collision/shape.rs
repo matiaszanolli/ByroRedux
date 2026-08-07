@@ -551,16 +551,14 @@ fn resolve_compressed_mesh(
                     .saturating_add(strip_len as usize)
                     .min(chunk.indices.len());
                 let strip = &chunk.indices[idx_offset..end];
-                for j in 2..strip.len() {
-                    let (a, b, c) = if j % 2 == 0 {
-                        (strip[j - 2], strip[j - 1], strip[j])
-                    } else {
-                        // Same odd-triangle convention as
-                        // `NiTriStripsData::to_triangles`: swap the last two.
-                        (strip[j - 2], strip[j], strip[j - 1])
-                    };
-                    all_indices.push([a as u32 + base, b as u32 + base, c as u32 + base]);
-                }
+                // #2298 — winding + degenerate-skip logic lives once in
+                // `crate::blocks::strip::destrip`, the same call
+                // `NiTriStripsData::to_triangles` and `NiSkinPartition`'s
+                // destrip make.
+                all_indices.extend(
+                    crate::blocks::strip::destrip(strip)
+                        .map(|[a, b, c]| [a as u32 + base, b as u32 + base, c as u32 + base]),
+                );
                 idx_offset = end;
             }
 

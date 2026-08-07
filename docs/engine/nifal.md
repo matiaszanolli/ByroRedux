@@ -208,7 +208,7 @@ multi-emitter NIFs. Tooling: `crates/nif/examples/emitter_dump.rs`
 ### Collision — **audited (2026-05-28; remediation 2026-07-30)**
 
 Havok → engine transform + `havok_scale` are applied uniformly in
-`import/collision.rs::resolve_shape`, and the bhk* shapes map to `CollisionShape` /
+`import/collision/shape.rs::resolve_shape`, and the bhk* shapes map to `CollisionShape` /
 `RigidBodyData`. The audit diffed every parsed `bhk*Shape` struct against the
 translated set and found **two leaks** (parsed for byte-correctness, then dropped at
 the "unsupported shape" fallback → the authored collision silently vanished):
@@ -222,7 +222,7 @@ All 13 parsed `bhk*Shape` variants now translate. Remaining collision *non*-leak
 documented limitations, not gaps: `BhkNPCollisionObject` (FO4+ Havok-serialised
 blob — decoder is a separate project; cell loader falls back to synthesized static
 trimesh) and `BhkPCollisionObject` phantoms (need a `TriggerVolume` ECS path, not a
-rigid body) — see the table at the top of `import/collision.rs`.
+rigid body) — see the table at the top of `import/collision/mod.rs`.
 
 The 2026-07-30 playable-cell remediation corrected four canonical-boundary bugs
 found by the later real-data audit: compressed-mesh chunk indices are direct
@@ -354,7 +354,8 @@ the record that each gap is known and bounded, with its unblocking consumer:
 | `bs_lod_cutoffs` | `BSLODTriShape` | raw-parked on `ImportedMesh` — **this is the content-bearing in-cell LOD** (Skyrim ~43 meshes; mesh-level LOD0/1/2 triangle-count cutoffs). Foundation already present; only the runtime draw-count switch is deferred | in-cell LOD draw-count consumer (draw fewer indices by camera distance) |
 | `lod_group` | `NiLODNode` → `NiRangeLODData` | **foundation done (2026-06-02):** `NiRangeLODData` now parsed (+ dispatcher + test) and surfaced as `ImportedNode.lod_group` (center + per-level near/far, Y-up). Import still walks child 0 only. BUT `NiLODNode` is **content-absent** in shipped archives (0 across Oblivion/FNV/Skyrim/FO4 — measured) — this is forward-compat (mods / other titles), not a shipped-content gap | per-frame distance-switch system (deferred — load-bearing walker change for perf-only gain, see below) |
 | `bs_sub_index` | `BSSubIndexTriShape` | raw-parked | dismemberment / locational-damage system |
-| furniture / inv markers | `BSFurnitureMarker` / `BSInvMarker` | parsed, not walked into `Imported*` | AI sit/lean/sleep packages; inventory-icon system |
+| furniture marker | `BSFurnitureMarker` | **consumed** since #2010 / M41.5 Phase B — walked into `ImportedFurnitureMarker` (`extract_furniture_markers`), lifted to the `Furniture`/`FurnitureMarker` ECS components (`furniture_component`, `cell_loader/references/attach.rs`), and read by the sandbox sit/lean/sleep system (`byroredux/src/systems/sandbox.rs`) | (consumed — no longer blocked) |
+| inv marker | `BSInvMarker` | parsed, not walked into `Imported*` | inventory-icon system |
 | `NiSwitchNode` identity | `NiSwitchNode` | walked via **active-index** (furniture states, sheaths, destruction); the type discriminator is not surfaced. Content-present (Skyrim ~165, FO4 ~51) | geometry state-switching driver (gameplay) |
 | `bs_bound` | `BSBound` extra-data | consumed on the **loose-NIF** path only (`nif_loader.rs`), not the cell path | a cell-path bound consumer (low value — the cell path already derives `WorldBound` from geometry) |
 

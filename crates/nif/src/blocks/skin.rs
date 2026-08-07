@@ -302,20 +302,13 @@ impl NiSkinPartition {
                     // list. LE / converted skinned meshes author strips, not
                     // indexed tris; pre-fix these were skipped, leaving
                     // `triangles` empty so the SSE reconstructor dropped the
-                    // whole body. Same OpenGL/Vulkan CCW winding +
-                    // degenerate-skip convention as `NiTriStripsData::to_triangles`.
+                    // whole body. #2298 — winding + degenerate-skip logic
+                    // lives once in `crate::blocks::strip::destrip`, the
+                    // same call `NiTriStripsData::to_triangles` and
+                    // `resolve_compressed_mesh`'s chunk-strip walk make.
                     for &len in &strip_lengths {
                         let strip = stream.read_u16_array(len as usize)?;
-                        for i in 2..strip.len() {
-                            let (a, b, c) = if i % 2 == 0 {
-                                (strip[i - 2], strip[i - 1], strip[i])
-                            } else {
-                                (strip[i - 2], strip[i], strip[i - 1])
-                            };
-                            if a != b && b != c && a != c {
-                                triangles.push([a, b, c]);
-                            }
-                        }
+                        triangles.extend(crate::blocks::strip::destrip(&strip));
                     }
                 } else {
                     // Single bulk read into `Vec<[u16; 3]>`; replaces the

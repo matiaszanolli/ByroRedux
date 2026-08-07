@@ -599,22 +599,13 @@ impl NiTriStripsData {
     /// Handles winding order alternation and skips degenerate triangles
     /// (used for strip stitching).
     pub fn to_triangles(&self) -> Vec<[u16; 3]> {
+        // #2298 — winding + degenerate-skip logic lives once in
+        // `crate::blocks::strip::destrip`; see its doc comment for the
+        // convention. `NiSkinPartition` and `resolve_compressed_mesh`'s
+        // chunk-strip walk share this same call.
         let mut triangles = Vec::with_capacity(self.num_triangles as usize);
         for strip in &self.strips {
-            for i in 2..strip.len() {
-                // OpenGL/Vulkan strip convention (CCW front face):
-                // Even triangles: standard order. Odd: swap last two to maintain CCW.
-                // D3D convention swaps first two on odd — produces CW instead.
-                let (a, b, c) = if i % 2 == 0 {
-                    (strip[i - 2], strip[i - 1], strip[i])
-                } else {
-                    (strip[i - 2], strip[i], strip[i - 1])
-                };
-                // Skip degenerate triangles (strip stitching)
-                if a != b && b != c && a != c {
-                    triangles.push([a, b, c]);
-                }
-            }
+            triangles.extend(crate::blocks::strip::destrip(strip));
         }
         triangles
     }

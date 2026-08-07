@@ -19,6 +19,7 @@ pub mod particle;
 pub mod properties;
 pub mod shader;
 pub mod skin;
+pub mod strip;
 pub mod texture;
 pub mod traits;
 pub mod tri_shape;
