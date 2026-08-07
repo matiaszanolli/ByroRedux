@@ -138,6 +138,34 @@ fn bhk_p_collision_object_consumes_full_10_bytes() {
     assert_eq!(pco.block_type_name(), "bhkPCollisionObject");
 }
 
+/// FO3 DLC's specialised phantom wrapper has the same 10-byte body as
+/// `bhkPCollisionObject`. It must retain phantom classification at dispatch;
+/// the old shared `BhkCollisionObject` arm incorrectly advertised it as a
+/// classic rigid-body wrapper (#2332).
+#[test]
+fn bhk_sp_collision_object_dispatches_as_phantom_wrapper() {
+    let header = oblivion_header();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&9i32.to_le_bytes());
+    bytes.extend_from_slice(&0x0081u16.to_le_bytes());
+    bytes.extend_from_slice(&3i32.to_le_bytes());
+    let mut stream = NifStream::new(&bytes, &header);
+    let block = parse_block(
+        "bhkSPCollisionObject",
+        &mut stream,
+        Some(bytes.len() as u32),
+    )
+    .expect("bhkSPCollisionObject must parse");
+    let pco = block
+        .as_any()
+        .downcast_ref::<crate::blocks::collision::BhkPCollisionObject>()
+        .expect("specialised phantom must not dispatch as BhkCollisionObject");
+    assert_eq!(pco.target_ref.index(), Some(9));
+    assert_eq!(pco.flags, 0x0081);
+    assert_eq!(pco.body_ref.index(), Some(3));
+    assert_eq!(stream.position() as usize, bytes.len());
+}
+
 /// Regression for #557 — `bhkConvexListShape` (FO3 only) with a
 /// two-sub-shape body. Total size = 37 + 4*N = 45 bytes for N=2.
 #[test]

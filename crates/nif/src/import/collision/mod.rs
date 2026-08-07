@@ -8,7 +8,7 @@
 //! | Block | Game line | Body kind | Extractable today |
 //! |---|---|---|---|
 //! | `BhkCollisionObject`   | Universal (dominant pre-FO4)             | `BhkRigidBody` → shape tree | **yes** |
-//! | `BhkNPCollisionObject` | FO4 / FO76 / Starfield ("Niagara Physics") | `BhkSystemBinary` (Havok-serialised blob) | **no** — blob decoder is a multi-day project; consumer falls back to `cell_loader/spawn.rs::synthesize_static_trimesh` for Architecture meshes (commit `15016ee0`) |
+//! | `BhkNPCollisionObject` | FO4 / FO76 / Starfield ("Niagara Physics") | `BhkSystemBinary` (Havok-serialised blob) | **approximated** — the blob remains opaque; the cell loader uses the scene authoring census to select a render-geometry proxy |
 //! | `BhkPCollisionObject`  | Skyrim+ trigger volumes / phantoms       | `bhkPhantom` subclass | **no** — phantoms aren't modeled as rigid bodies; need a `TriggerVolume` ECS path |
 //!
 //! Until the NP-blob decoder lands, the NP arm is a tracked stub: it confirms
@@ -61,6 +61,64 @@ pub enum CollisionAuthoring {
     Unrecognised,
 }
 
+/// Scene-level census of the collision-object subclasses parsed from a NIF.
+///
+/// The imported collision array deliberately contains only shapes we can
+/// decode. Consequently, an empty array cannot distinguish "nothing was
+/// authored" from "FO4+ packed Havok was authored but its binary payload is
+/// still opaque". Cell-loader cache entries retain this small summary so the
+/// spawn path can select a conservative compatibility proxy only for the
+/// latter case.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CollisionAuthoringSummary {
+    pub classic: u32,
+    pub new_physics: u32,
+    pub phantom: u32,
+}
+
+impl CollisionAuthoringSummary {
+    /// Whether the scene contains at least one FO4+/FO76/Starfield packed
+    /// collision object whose `BhkSystemBinary` payload is not decoded yet.
+    pub const fn needs_packed_havok_fallback(self) -> bool {
+        self.new_physics > 0
+    }
+
+    fn record(&mut self, kind: CollisionAuthoring) {
+        match kind {
+            CollisionAuthoring::Classic => self.classic += 1,
+            CollisionAuthoring::NewPhysicsStub => self.new_physics += 1,
+            CollisionAuthoring::Phantom => self.phantom += 1,
+            CollisionAuthoring::None | CollisionAuthoring::Unrecognised => {}
+        }
+    }
+}
+
+fn classify_collision_block(block: &dyn crate::blocks::NiObject) -> CollisionAuthoring {
+    if block.as_any().is::<BhkCollisionObject>() {
+        CollisionAuthoring::Classic
+    } else if block.as_any().is::<BhkNPCollisionObject>() {
+        CollisionAuthoring::NewPhysicsStub
+    } else if block.as_any().is::<BhkPCollisionObject>() {
+        CollisionAuthoring::Phantom
+    } else {
+        CollisionAuthoring::Unrecognised
+    }
+}
+
+/// Count every recognised collision-object block in a parsed scene.
+///
+/// This intentionally scans blocks rather than imported shapes: packed Havok
+/// and phantom wrappers are precisely the variants that disappear from the
+/// shape import result. Orphaned blocks are counted as authored data too; that
+/// is the safe bias for compatibility fallback and diagnostics.
+pub fn summarize_collision_authoring(scene: &NifScene) -> CollisionAuthoringSummary {
+    let mut summary = CollisionAuthoringSummary::default();
+    for block in &scene.blocks {
+        summary.record(classify_collision_block(block.as_ref()));
+    }
+    summary
+}
+
 /// Inspect what kind of collision authoring is present at `collision_ref`
 /// without attempting to extract it. Cheap; just downcasts the block.
 /// Lets the cell-loader trimesh fallback distinguish "FO4 NP — workaround
@@ -73,15 +131,7 @@ pub fn examine_collision_kind(scene: &NifScene, collision_ref: BlockRef) -> Coll
     let Some(block) = scene.get(idx) else {
         return CollisionAuthoring::None;
     };
-    if block.as_any().is::<BhkCollisionObject>() {
-        CollisionAuthoring::Classic
-    } else if block.as_any().is::<BhkNPCollisionObject>() {
-        CollisionAuthoring::NewPhysicsStub
-    } else if block.as_any().is::<BhkPCollisionObject>() {
-        CollisionAuthoring::Phantom
-    } else {
-        CollisionAuthoring::Unrecognised
-    }
+    classify_collision_block(block)
 }
 
 /// Extract collision data from a NiAVObject's collision_ref.
@@ -768,6 +818,25 @@ mod dispatch_tests {
             examine_collision_kind(&scene, BlockRef(3u32)),
             CollisionAuthoring::Unrecognised,
         );
+    }
+
+    #[test]
+    fn scene_summary_retains_opaque_and_phantom_authoring() {
+        let mut scene = empty_scene();
+        scene.blocks.push(classic_collision(BlockRef::NULL));
+        scene.blocks.push(np_collision(BlockRef::NULL));
+        scene.blocks.push(np_collision(BlockRef::NULL));
+        scene.blocks.push(phantom_collision(BlockRef::NULL));
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 0,
+            radius: 1.0,
+        }));
+
+        let summary = summarize_collision_authoring(&scene);
+        assert_eq!(summary.classic, 1);
+        assert_eq!(summary.new_physics, 2);
+        assert_eq!(summary.phantom, 1);
+        assert!(summary.needs_packed_havok_fallback());
     }
 
     #[test]

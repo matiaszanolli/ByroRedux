@@ -1139,9 +1139,14 @@ fn parse_block_inner(
         // direct block on Oblivion scenes. Reading even the 4-byte base
         // keeps the parse loop alive on Oblivion (no block_sizes). #125.
         "NiCollisionObject" => Ok(Box::new(NiCollisionObjectBase::parse(stream)?)),
-        "bhkCollisionObject" | "bhkSPCollisionObject" => {
+        "bhkCollisionObject" => {
             Ok(Box::new(BhkCollisionObject::parse(stream, false)?))
         }
+        // FO3 DLC authors this specialised phantom wrapper. Its wire layout
+        // is identical to bhkPCollisionObject; preserving the phantom type is
+        // essential because treating it as a classic rigid-body wrapper turns
+        // trigger volumes into solid-collision candidates (#2332).
+        "bhkSPCollisionObject" => Ok(Box::new(BhkPCollisionObject::parse(stream)?)),
         "bhkBlendCollisionObject" => Ok(Box::new(BhkCollisionObject::parse(stream, true)?)),
         // bhkBlendController: Havok ragdoll blend-weight controller on
         // FO3 + FNV skeletons. nif.xml line 3927 — NiTimeController base

@@ -22,6 +22,7 @@ fn cached_with_attach(
     CachedNifImport {
         meshes: Vec::new(),
         collisions: Vec::new(),
+        collision_authoring: Default::default(),
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,

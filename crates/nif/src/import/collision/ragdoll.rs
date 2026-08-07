@@ -44,10 +44,18 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
         // stray rigid body with no host bone can't be driven from / written
         // back to a bone transform.
         let Some(bone_name) = body_to_bone.get(&idx).cloned() else {
+            log::warn!(
+                "extract_ragdoll: dropping rigid body block {idx} — no named NiNode hosts it"
+            );
             continue;
         };
         let mut visited = HashSet::new();
         let Some(shape) = resolve_shape(scene, body.shape_ref, &mut visited) else {
+            log::warn!(
+                "extract_ragdoll: dropping rigid body block {idx} for bone '{bone_name}' — \
+                 shape ref {:?} did not resolve to a supported finite shape",
+                body.shape_ref,
+            );
             continue;
         };
         // #1534 — finite guards on the body CInfo, mirroring the shape path
@@ -59,6 +67,11 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
         // `bodies.len() < 2` guard below then drops the whole ragdoll if too
         // few survive, exactly like the shape-resolution failure path above.
         let Some(mass) = finite(body.mass) else {
+            log::warn!(
+                "extract_ragdoll: dropping rigid body block {idx} for bone '{bone_name}' — \
+                 non-finite mass {}",
+                body.mass,
+            );
             continue;
         };
         let Some(translation) = finite_vec(
@@ -68,10 +81,20 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
                 body.translation[2],
             ) * scale,
         ) else {
+            log::warn!(
+                "extract_ragdoll: dropping rigid body block {idx} for bone '{bone_name}' — \
+                 non-finite translation {:?}",
+                body.translation,
+            );
             continue;
         };
         let rotation = havok_quat_to_engine(body.rotation);
         if !rotation.is_finite() {
+            log::warn!(
+                "extract_ragdoll: dropping rigid body block {idx} for bone '{bone_name}' — \
+                 non-finite rotation {:?}",
+                body.rotation,
+            );
             continue;
         }
         block_to_body.insert(idx, bodies.len());
@@ -92,7 +115,7 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
     }
 
     let mut constraints = Vec::new();
-    for block in scene.blocks.iter() {
+    for (constraint_idx, block) in scene.blocks.iter().enumerate() {
         let Some(c) = block.as_any().downcast_ref::<BhkConstraint>() else {
             // #1850 — a `bhkBreakableConstraint` decodes into its OWN struct
             // (`BhkBreakableConstraint`), never a `BhkConstraint`, so it falls
@@ -131,9 +154,22 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
                 .index()
                 .and_then(|i| block_to_body.get(&i).copied()),
         ) else {
+            log::warn!(
+                "extract_ragdoll: dropping constraint block {constraint_idx} ({}) — \
+                 endpoints {:?} / {:?} do not both resolve to retained ragdoll bodies",
+                c.type_name,
+                c.entity_a,
+                c.entity_b,
+            );
             continue;
         };
         if body_a == body_b {
+            log::warn!(
+                "extract_ragdoll: dropping constraint block {constraint_idx} ({}) — \
+                 both endpoints resolve to bone '{}'",
+                c.type_name,
+                bodies[body_a].bone_name,
+            );
             continue; // a joint must link two distinct bodies
         }
         // A non-finite limit angle / pivot / axis (#1534) drops the joint —
@@ -165,7 +201,16 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
                 continue;
             }
         };
-        let Some(kind) = kind else { continue };
+        let Some(kind) = kind else {
+            log::warn!(
+                "extract_ragdoll: dropping constraint block {constraint_idx} ({}) linking \
+                 bones '{}' <-> '{}' — non-finite pivot, axis, or limit data",
+                c.type_name,
+                bodies[body_a].bone_name,
+                bodies[body_b].bone_name,
+            );
+            continue;
+        };
         constraints.push(ImportedRagdollConstraint {
             body_a,
             body_b,

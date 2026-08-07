@@ -621,6 +621,7 @@ fn geometry_only_cached(meshes: Vec<ImportedMesh>) -> CachedNifImport {
     CachedNifImport {
         meshes,
         collisions: Vec::new(),
+        collision_authoring: Default::default(),
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,

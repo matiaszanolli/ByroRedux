@@ -98,6 +98,9 @@ pub(crate) fn finish_partial_import(
         embedded_clip,
     } = partial;
 
+    let collision_authoring =
+        byroredux_nif::import::collision::summarize_collision_authoring(&scene);
+
     let (mut meshes, collisions) = {
         let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
         byroredux_nif::import::import_nif_with_collision_and_resolver(
@@ -136,6 +139,7 @@ pub(crate) fn finish_partial_import(
     let cached = Arc::new(CachedNifImport {
         meshes,
         collisions,
+        collision_authoring,
         lights,
         particle_emitters,
         embedded_clip,

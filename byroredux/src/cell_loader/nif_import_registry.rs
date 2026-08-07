@@ -34,6 +34,12 @@ use crate::parsed_nif_cache::ParsedNifCache;
 pub(crate) struct CachedNifImport {
     pub(super) meshes: Vec<byroredux_nif::import::ImportedMesh>,
     pub(super) collisions: Vec<byroredux_nif::import::ImportedCollision>,
+    /// Collision-object subclasses retained independently of decoded shapes.
+    /// An empty `collisions` vector plus `new_physics > 0` means FO4+ packed
+    /// Havok was authored and the spawn path should use its compatibility
+    /// proxy rather than treating the asset as intentionally non-colliding.
+    pub(super) collision_authoring:
+        byroredux_nif::import::collision::CollisionAuthoringSummary,
     pub(super) lights: Vec<byroredux_nif::import::ImportedLight>,
     /// Particle emitters detected in the NIF scene graph
     /// (`NiParticleSystem` and friends). Carries NIF-local position +

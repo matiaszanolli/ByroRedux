@@ -36,6 +36,165 @@ use super::refr::RefrTextureOverlay;
 pub(super) struct PlacementSpawnTimings {
     pub cpu_upload: Duration,
     pub blas: Duration,
+    /// This placement authored an opaque FO4+ packed-Havok object and
+    /// received a render-geometry compatibility collider.
+    pub packed_collision_fallbacks: u32,
+    /// This placement authored opaque packed collision but had no safe render
+    /// geometry from which to build a compatibility collider.
+    pub unresolved_packed_collision: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissingCollisionFallback {
+    None,
+    /// Precise per-submesh static triangles for structural content.
+    ArchitectureTriMesh,
+    /// One conservative placement-following cuboid for opaque packed Havok.
+    PackedAabbProxy,
+}
+
+fn missing_collision_fallback(
+    collisions_empty: bool,
+    authoring: byroredux_nif::import::collision::CollisionAuthoringSummary,
+    base_layer: byroredux_core::ecs::components::RenderLayer,
+) -> MissingCollisionFallback {
+    use byroredux_core::ecs::components::RenderLayer;
+
+    if !collisions_empty {
+        return MissingCollisionFallback::None;
+    }
+    if base_layer == RenderLayer::Architecture {
+        return MissingCollisionFallback::ArchitectureTriMesh;
+    }
+    if authoring.needs_packed_havok_fallback()
+        && matches!(base_layer, RenderLayer::Clutter | RenderLayer::Actor)
+    {
+        return MissingCollisionFallback::PackedAabbProxy;
+    }
+    MissingCollisionFallback::None
+}
+
+#[derive(Clone, Copy)]
+struct ProxyMeshGeometry<'a> {
+    positions: &'a [[f32; 3]],
+    translation: Vec3,
+    rotation: Quat,
+    scale: f32,
+}
+
+/// Union mesh geometry in placement-local space. Mesh-local TRS is applied,
+/// while the outer REFR transform is deliberately left for the proxy entity's
+/// parent relationship. Keeping the center unscaled lets transform propagation
+/// follow a moved/rotated placement; only the cuboid half-extents need the REFR
+/// scale baked because physics ignores `GlobalTransform::scale`.
+fn transformed_mesh_aabb<'a>(
+    meshes: impl IntoIterator<Item = ProxyMeshGeometry<'a>>,
+) -> Option<(Vec3, Vec3)> {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    let mut points = 0usize;
+    for mesh in meshes {
+        if !mesh.translation.is_finite()
+            || !mesh.rotation.is_finite()
+            || mesh.rotation.length_squared() <= f32::EPSILON
+            || !mesh.scale.is_finite()
+        {
+            continue;
+        }
+        let rotation = mesh.rotation.normalize();
+        for point in mesh.positions {
+            let point = Vec3::from_array(*point);
+            if !point.is_finite() {
+                continue;
+            }
+            let point = mesh.translation + rotation * (point * mesh.scale);
+            if point.is_finite() {
+                min = min.min(point);
+                max = max.max(point);
+                points += 1;
+            }
+        }
+    }
+    (points > 0).then_some((min, max))
+}
+
+fn synthesize_packed_havok_proxy(
+    meshes: &[byroredux_nif::import::ImportedMesh],
+    ref_scale: f32,
+) -> Option<(Vec3, byroredux_core::ecs::components::CollisionShape)> {
+    use byroredux_core::ecs::components::CollisionShape;
+
+    if !ref_scale.is_finite() {
+        return None;
+    }
+    let geometry = meshes.iter().filter_map(|mesh| {
+        (!mesh.material.is_decal
+            && !mesh.material.alpha_test
+            && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+            && !mesh.positions.is_empty())
+        .then(|| ProxyMeshGeometry {
+            positions: &mesh.positions,
+            translation: Vec3::from_array(mesh.translation),
+            rotation: Quat::from_array(mesh.rotation),
+            scale: mesh.scale,
+        })
+    });
+    let (min, max) = transformed_mesh_aabb(geometry)?;
+    let center = (min + max) * 0.5;
+    // Thin render cards still need a non-zero physical thickness. Half a
+    // Gamebryo unit is small relative to clutter and actor bounds, while
+    // avoiding a degenerate parry cuboid.
+    let half_extents = ((max - min) * 0.5 * ref_scale.abs()).max(Vec3::splat(0.5));
+    Some((center, CollisionShape::Cuboid { half_extents }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_packed_havok_proxy(
+    world: &mut World,
+    cached: &CachedNifImport,
+    placement_root: byroredux_core::ecs::EntityId,
+    ref_pos: Vec3,
+    ref_rot: Quat,
+    ref_scale: f32,
+    placement_fid: Option<byroredux_core::form_id::FormId>,
+    base_layer: byroredux_core::ecs::components::RenderLayer,
+) -> bool {
+    use byroredux_core::ecs::components::{MotionType, PhysicsSourceForm, RigidBodyData};
+    use byroredux_core::ecs::Parent;
+
+    let Some((local_center, shape)) = synthesize_packed_havok_proxy(&cached.meshes, ref_scale)
+    else {
+        return false;
+    };
+    let (world_center, world_rot, _) = GlobalTransform::compose_trs(
+        ref_pos,
+        ref_rot,
+        ref_scale,
+        local_center,
+        Quat::IDENTITY,
+        1.0,
+    );
+    let ghost = world.spawn();
+    world.insert(ghost, Transform::new(local_center, Quat::IDENTITY, 1.0));
+    world.insert(ghost, GlobalTransform::new(world_center, world_rot, 1.0));
+    world.insert(ghost, shape);
+    world.insert(
+        ghost,
+        RigidBodyData {
+            // The packed blob's mass and motion type are unknown. Kinematic is
+            // conservative and follows any script/animation that moves the
+            // placement root instead of drifting away from the visual model.
+            motion_type: MotionType::Keyframed,
+            ..RigidBodyData::STATIC
+        },
+    );
+    world.insert(ghost, Parent(placement_root));
+    crate::helpers::add_child(world, placement_root, ghost);
+    if let Some(fid) = placement_fid {
+        world.insert(ghost, PhysicsSourceForm(fid));
+    }
+    world.insert(ghost, base_layer);
+    true
 }
 
 /// `true` when an `ImportedLight` has a non-trivial diffuse colour
@@ -326,6 +485,24 @@ pub(super) fn spawn_placed_instances(
         base_layer,
     );
 
+    let collision_fallback = missing_collision_fallback(
+        collisions.is_empty(),
+        cached.collision_authoring,
+        base_layer,
+    );
+    let mut synthesized_collision_proxy = collision_fallback
+        == MissingCollisionFallback::PackedAabbProxy
+        && spawn_packed_havok_proxy(
+            world,
+            cached,
+            placement_root,
+            ref_pos,
+            ref_rot,
+            ref_scale,
+            placement_fid,
+            base_layer,
+        );
+
     let resolved_paths = resolve_mesh_paths(world, imported, refr_overlay);
     let mut blas_specs: Vec<(u32, u32, u32)> = Vec::new();
     let pc = PlacementCtx {
@@ -340,7 +517,7 @@ pub(super) fn spawn_placed_instances(
         light_animation_flags,
         light_shadow_flags,
         placement_root,
-        collisions_empty: collisions.is_empty(),
+        collision_fallback,
         spawned_nif_lights,
     };
     for (sub_mesh_index, mesh) in imported.iter().enumerate() {
@@ -358,6 +535,7 @@ pub(super) fn spawn_placed_instances(
             sub_mesh_index,
             count,
             &mut blas_specs,
+            &mut synthesized_collision_proxy,
         ) {
             count += 1;
         }
@@ -424,12 +602,20 @@ pub(super) fn spawn_placed_instances(
     // CPU-upload / batched-BLAS timing split to identify atomic hash tails;
     // ordinary REFR callers discard it.
     let total_elapsed = total_started.elapsed();
+    let packed_collision_authored =
+        collisions.is_empty() && cached.collision_authoring.needs_packed_havok_fallback();
     (
         placement_root,
         count,
         PlacementSpawnTimings {
             cpu_upload: total_elapsed.saturating_sub(blas_elapsed),
             blas: blas_elapsed,
+            packed_collision_fallbacks: u32::from(
+                packed_collision_authored && synthesized_collision_proxy,
+            ),
+            unresolved_packed_collision: u32::from(
+                packed_collision_authored && !synthesized_collision_proxy,
+            ),
         },
     )
 }
@@ -930,7 +1116,7 @@ struct PlacementCtx<'a> {
     light_animation_flags: u32,
     light_shadow_flags: u32,
     placement_root: byroredux_core::ecs::EntityId,
-    collisions_empty: bool,
+    collision_fallback: MissingCollisionFallback,
     spawned_nif_lights: usize,
 }
 
@@ -1023,6 +1209,7 @@ fn spawn_mesh_instance(
     sub_mesh_index: usize,
     count: usize,
     blas_specs: &mut Vec<(u32, u32, u32)>,
+    synthesized_collision_proxy: &mut bool,
 ) -> bool {
     use byroredux_core::ecs::{Name, Parent};
     use byroredux_renderer::Vertex;
@@ -1038,7 +1225,7 @@ fn spawn_mesh_instance(
         light_animation_flags,
         light_shadow_flags,
         placement_root,
-        collisions_empty,
+        collision_fallback,
         spawned_nif_lights,
     } = *pc;
     let num_verts = mesh.positions.len();
@@ -1487,8 +1674,7 @@ fn spawn_mesh_instance(
     // base) and small clutter (record-type-classified Clutter) both
     // skip the fallback as before; only the misclassified
     // sub-decomposed architecture changes behaviour.
-    if collisions_empty
-        && base_layer == byroredux_core::ecs::components::RenderLayer::Architecture
+    if collision_fallback == MissingCollisionFallback::ArchitectureTriMesh
         && mesh.skin.is_none()
         && !mesh.material.is_decal
         && !mesh.material.alpha_test
@@ -1500,7 +1686,7 @@ fn spawn_mesh_instance(
         // `spawn_trimesh_collider_ghost`. The render `entity` keeps its
         // MeshHandle and enters BLAS+TLAS normally (RT shadows/GI on
         // FO4/Starfield architecture); the ghost is physics-only.
-        spawn_trimesh_collider_ghost(
+        *synthesized_collision_proxy |= spawn_trimesh_collider_ghost(
             world,
             &mesh.positions,
             &mesh.indices,
@@ -1562,14 +1748,18 @@ fn spawn_mesh_instance(
 
 #[cfg(test)]
 mod synthesize_trimesh_tests {
-    use super::{spawn_trimesh_collider_ghost, synthesize_static_trimesh};
+    use super::{
+        missing_collision_fallback, spawn_trimesh_collider_ghost, synthesize_static_trimesh,
+        transformed_mesh_aabb, MissingCollisionFallback, ProxyMeshGeometry,
+    };
     use byroredux_core::{
         ecs::{
-            components::{CollisionShape, MeshHandle, MotionType, RigidBodyData},
+            components::{CollisionShape, MeshHandle, MotionType, RenderLayer, RigidBodyData},
             World,
         },
         math::{Quat, Vec3},
     };
+    use byroredux_nif::import::collision::CollisionAuthoringSummary;
 
     /// A single unit triangle synthesizes into a 1-triangle TriMesh
     /// with a Static body. Baseline that the geometry round-trips.
@@ -1677,5 +1867,67 @@ mod synthesize_trimesh_tests {
         // All-out-of-range → None.
         let all_bad = [9u32, 10, 11];
         assert!(synthesize_static_trimesh(&positions, &all_bad, 1.0).is_none());
+    }
+
+    #[test]
+    fn collision_authoring_selects_packed_proxy_only_for_safe_layers() {
+        let packed = CollisionAuthoringSummary {
+            new_physics: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            missing_collision_fallback(true, packed, RenderLayer::Clutter),
+            MissingCollisionFallback::PackedAabbProxy,
+        );
+        assert_eq!(
+            missing_collision_fallback(true, packed, RenderLayer::Actor),
+            MissingCollisionFallback::PackedAabbProxy,
+        );
+        assert_eq!(
+            missing_collision_fallback(true, packed, RenderLayer::Architecture),
+            MissingCollisionFallback::ArchitectureTriMesh,
+        );
+        assert_eq!(
+            missing_collision_fallback(true, packed, RenderLayer::Decal),
+            MissingCollisionFallback::None,
+        );
+        assert_eq!(
+            missing_collision_fallback(
+                true,
+                CollisionAuthoringSummary::default(),
+                RenderLayer::Clutter,
+            ),
+            MissingCollisionFallback::None,
+            "clutter with no authored packed collision must remain non-colliding",
+        );
+        assert_eq!(
+            missing_collision_fallback(false, packed, RenderLayer::Clutter),
+            MissingCollisionFallback::None,
+            "decoded collision always wins over a compatibility proxy",
+        );
+    }
+
+    #[test]
+    fn packed_proxy_aabb_unions_mesh_local_transforms() {
+        let a = [[-1.0, -2.0, -3.0], [1.0, 2.0, 3.0]];
+        let b = [[0.0, 0.0, 0.0], [2.0, 4.0, 6.0]];
+        let (min, max) = transformed_mesh_aabb([
+            ProxyMeshGeometry {
+                positions: &a,
+                translation: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+                scale: 1.0,
+            },
+            ProxyMeshGeometry {
+                positions: &b,
+                translation: Vec3::new(10.0, 0.0, 0.0),
+                rotation: Quat::IDENTITY,
+                scale: 0.5,
+            },
+        ])
+        .expect("finite mesh geometry must produce an AABB");
+
+        assert_eq!(min, Vec3::new(-1.0, -2.0, -3.0));
+        assert_eq!(max, Vec3::new(11.0, 2.0, 3.0));
     }
 }

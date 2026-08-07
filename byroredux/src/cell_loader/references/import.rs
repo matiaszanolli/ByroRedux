@@ -99,6 +99,8 @@ pub(super) fn parse_and_import_nif(
     // Root-node NiAVObject.flags — surfaced for the placement-root
     // SceneFlags row. See #1235 / LC-D1-NEW-01.
     let root_flags = byroredux_nif::import::extract_root_flags(&scene);
+    let collision_authoring =
+        byroredux_nif::import::collision::summarize_collision_authoring(&scene);
 
     let (mut meshes, collisions) =
         byroredux_nif::import::import_nif_with_collision_and_resolver(&scene, pool, mesh_resolver);
@@ -190,6 +192,7 @@ pub(super) fn parse_and_import_nif(
     Some(Arc::new(CachedNifImport {
         meshes,
         collisions,
+        collision_authoring,
         lights,
         particle_emitters,
         embedded_clip,
@@ -392,6 +395,7 @@ pub(super) fn parse_and_import_spt(
         // collision (tree-trunk collider) once the geometry tail is
         // decoded — follow-up sub-phase.
         collisions: Vec::new(),
+        collision_authoring: Default::default(),
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,
