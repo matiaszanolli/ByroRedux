@@ -55,9 +55,11 @@ pub enum BsTriShapeKind {
     /// data with SSF filename). Boxed because `BsSubIndexTriShapeData`
     /// is large and only one variant carries it. See #404.
     SubIndex(Box<BsSubIndexTriShapeData>),
-    /// `BSDynamicTriShape` — Skyrim facegen head meshes. The trailing
-    /// `Vector4` array carries the CPU-morph-updated vertex positions
-    /// that overwrite the base `vertices`. Its W lanes are authored
+    /// `BSDynamicTriShape` — Skyrim facegen head meshes. `VF_VERTEX` is
+    /// clear on every real block of this type (SK-D1-02 / #2322), so the
+    /// base parse produces no packed position field — the trailing
+    /// `Vector4` array is the sole, CPU-morph-updated source for
+    /// `vertices`, not an overwrite of anything. Its W lanes are authored
     /// bitangent-X values and must remain parallel to those positions so
     /// the external-position SSE reconstruction path can restore tangent
     /// space. See #341 / #2318.
@@ -511,10 +513,15 @@ impl BsTriShape {
     /// Vector4[dynamic_data_size / 16] vertices
     /// ```
     ///
-    /// When the dynamic-vertex array is present we overwrite the BSTriShape
-    /// positions with it — on facegen meshes the base-packed positions are
-    /// often zero placeholders, and the trailing float4 array carries the
-    /// actual head shape. See issues #157 and #341.
+    /// When the dynamic-vertex array is present it becomes `shape.vertices`
+    /// wholesale — not an "overwrite" of packed positions. SK-D1-02 / #2322
+    /// (measured against every real `BSDynamicTriShape` in `Skyrim -
+    /// Meshes0.bsa`, 21 140/21 140): `VF_VERTEX` is clear on this block
+    /// type, so the packed vertex buffer carries no position field at all
+    /// for `parse()` (above) to have populated in the first place —
+    /// `shape.vertices` arrives here empty, not "often zero placeholders".
+    /// The trailing float4 array is the *only* position source. See
+    /// issues #157 and #341.
     pub fn parse_dynamic(stream: &mut NifStream) -> io::Result<Self> {
         let mut shape = Self::parse(stream)?;
         let dynamic_data_size = stream.read_u32_le()?;
@@ -534,17 +541,22 @@ impl BsTriShape {
             }
             if !dynamic_vertices.is_empty() {
                 shape.vertices = dynamic_vertices;
-                // #621 / SK-D1-04: the dynamic Vector4 array is full-
-                // precision f32 — it overwrote the (typically packed
-                // half-precision on FO4+ facegen) positions. Update
-                // `vertex_desc` so downstream consumers reading
-                // `vertex_attrs & VF_FULL_PRECISION` see the post-
-                // overwrite reality. Latent today (no consumer cross-
-                // checks), but a future GPU-skinning path that re-
-                // uploads from the packed buffer needs this metadata
-                // to match. The bit lives in the high u16 of the u64
-                // vertex_desc per nif.xml `BSVertexDesc` (line 2092):
-                // `vertex_attrs` is bits 44..56.
+                // #621 / SK-D1-04, corrected by SK-D1-02 / #2322: the
+                // dynamic Vector4 array is the full-precision f32 source
+                // for `shape.vertices` — NOT an overwrite of a packed
+                // position field, which doesn't exist here (`VF_VERTEX`
+                // is clear on every real `BSDynamicTriShape`; see the
+                // doc comment above). `VF_FULL_PRECISION` is already set
+                // in every observed vanilla descriptor too, so this `|=`
+                // is a no-op on real content today — kept as defensive
+                // metadata-correctness for a hypothetical file where it
+                // isn't, so a downstream consumer reading
+                // `vertex_attrs & VF_FULL_PRECISION` always sees the
+                // correct precision for `shape.vertices` regardless of
+                // what the on-disk descriptor happened to author. The
+                // bit lives in the high u16 of the u64 vertex_desc per
+                // nif.xml `BSVertexDesc` (line 2092): `vertex_attrs` is
+                // bits 44..56.
                 shape.vertex_desc |= (VF_FULL_PRECISION as u64) << 44;
             }
         }

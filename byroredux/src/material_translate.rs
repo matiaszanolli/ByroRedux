@@ -31,6 +31,31 @@ use byroredux_nif::import::{ImportedMaterial, MaterialTextureSet};
 /// fire-refraction proxy instead stores the authored heat-haze distortion
 /// strength there; the material kind makes the two meanings unambiguous
 /// without adding another field to the hot 348-byte GPU material record.
+///
+/// **SKY-D7-02 / #2327 — the non-`FIRE_REFRACTION` discard below is
+/// deliberate, not an oversight.** `refraction_strength` (`BSLightingShaderProperty`'s
+/// SLSF1 `Refraction`-gated scalar, captured for every Skyrim+ material at
+/// `dedicated_shader.rs`'s `apply_bs_lighting_shader` — shared code, so
+/// this covers FO4/FO76/Starfield identically, not just Skyrim) is NOT a
+/// physical index of refraction: nif.xml's own field spec for "Refraction
+/// Strength" states verbatim "**Not based on physically accurate
+/// refractive index**" (range 0-1, "the amount of distortion"). Reusing
+/// its authored value as `ior` for an ordinary dielectric — a real 1.0+
+/// physical IOR the RT refraction path traces against — would be a
+/// category error, not a fix: a surface authored with e.g.
+/// `refraction_strength = 0.3` would get `ior = 0.3`, physically nonsense
+/// (below vacuum) and worse than the `DEFAULT_DIELECTRIC_IOR` fallback it
+/// would replace.
+///
+/// What IS a real, undone gap: ordinary Skyrim+ content that authors the
+/// standalone SLSF1 `Refraction` bit (normal-map-driven distortion,
+/// without `Fire_Refraction`) has zero engine consumer for that authored
+/// intent — building one would mean a new screen-space distortion shader
+/// path for non-fire refractive materials (own canonical field, own
+/// `MAT_FLAG_*` bit, new `triangle.frag` consumer), not a change to this
+/// function. Tracked as future work, not silently fixed here. See
+/// `docs/engine/nifal.md`'s Shader flags section for the canonical-tier
+/// framing.
 fn material_optical_scalar(material_kind: u32, refraction_strength: f32) -> f32 {
     if material_kind == byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION {
         if refraction_strength.is_finite() {
@@ -366,6 +391,36 @@ mod tests {
             material_optical_scalar(0, 0.1),
             byroredux_core::ecs::components::material::DEFAULT_DIELECTRIC_IOR
         );
+    }
+
+    /// SKY-D7-02 / #2327 — pins the discard as a deliberate invariant, not
+    /// a bug to "fix" by making it fall through. `refraction_strength` is
+    /// nif.xml's 0-1 "amount of distortion" scalar, explicitly NOT a
+    /// physical index of refraction; letting it leak into `ior` for any
+    /// non-fire-refraction `material_kind` would hand the RT dielectric
+    /// refraction path a physically-nonsense value (e.g. `ior = 0.1`, below
+    /// vacuum) instead of the correct dielectric default. Every ordinary
+    /// `material_kind` — including glass (100) and effect-shader (101),
+    /// which have their own separate optical handling downstream — must
+    /// see `DEFAULT_DIELECTRIC_IOR` here regardless of how strongly
+    /// `refraction_strength` is authored.
+    #[test]
+    fn non_fire_refraction_kinds_never_leak_refraction_strength_into_ior() {
+        let default_ior = byroredux_core::ecs::components::material::DEFAULT_DIELECTRIC_IOR;
+        for kind in [
+            0,                                             // ordinary lit material
+            byroredux_renderer::MATERIAL_KIND_GLASS,        // 100
+            byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER, // 101
+        ] {
+            for strength in [0.0, 0.3, 1.0] {
+                assert_eq!(
+                    material_optical_scalar(kind, strength),
+                    default_ior,
+                    "material_kind {kind} with refraction_strength {strength} must fall \
+                     back to DEFAULT_DIELECTRIC_IOR, not leak the distortion scalar into ior"
+                );
+            }
+        }
     }
 
     #[test]

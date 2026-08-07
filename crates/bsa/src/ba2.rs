@@ -490,7 +490,8 @@ fn read_general_records(reader: &mut BufReader<File>, count: usize) -> io::Resul
         let unpacked_size = u32::from_le_bytes(rec[28..32].try_into().unwrap());
         // #586 — reject obviously-hostile sizes at record-read time so
         // `extract` never has to trust them. Vanilla FO4 GNRL entries
-        // top out around 8 MB decompressed; 256 MB is a comfortable
+        // top out around 8 MB decompressed; `MAX_CHUNK_BYTES` (1 GB,
+        // widened by `4a2b8200` to fit FO76 content) is a comfortable
         // margin. Single check catches a `u32::MAX` entry that would
         // otherwise flow into `vec![0u8; n]` at extract time.
         checked_chunk_size(packed_size, "BA2 GNRL packed_size")?;

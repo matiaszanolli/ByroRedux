@@ -94,7 +94,8 @@ impl BsaArchive {
             file.read_exact(&mut size_buf)?;
             // Cap the decompression target buffer. BSA compressed files
             // top out at vanilla mesh LODs around ~30 MB uncompressed;
-            // 256 MB is a safe margin that still rejects `u32::MAX`.
+            // `MAX_CHUNK_BYTES` (1 GB, widened by `4a2b8200` to fit FO76
+            // content) is a safe margin that still rejects `u32::MAX`.
             // #586.
             let original_size =
                 checked_chunk_size(u32::from_le_bytes(size_buf), "BSA original_size")?;
@@ -114,8 +115,10 @@ impl BsaArchive {
                 )
             })?;
             // `data_size` itself came from `entry.size & 0x3FFFFFFF`
-            // (30-bit mask → max 1 GB) — the explicit cap brings it
-            // into line with the 256 MB ceiling used elsewhere. #586.
+            // (30-bit mask → max 1 GB) — the explicit `checked_chunk_size_usize`
+            // call still matters as defense-in-depth (it's the same
+            // `MAX_CHUNK_BYTES` ceiling used elsewhere, not merely a
+            // restatement of the mask). #586.
             let compressed_len = checked_chunk_size_usize(compressed_len, "BSA compressed_len")?;
             let mut compressed = vec![0u8; compressed_len];
             file.read_exact(&mut compressed)?;
@@ -163,8 +166,10 @@ impl BsaArchive {
             Ok(decompressed)
         } else {
             // Uncompressed path: cap `data_size` too. The 30-bit mask
-            // on `entry.size` already bounds this at 1 GB, but 256 MB
-            // aligns the uncompressed and compressed paths. #586.
+            // on `entry.size` already bounds this at 1 GB, but the
+            // explicit `MAX_CHUNK_BYTES` (1 GB) call aligns the
+            // uncompressed and compressed paths through the same named
+            // constant rather than relying on the mask alone. #586.
             let data_size = checked_chunk_size_usize(data_size, "BSA data_size")?;
             let mut data = vec![0u8; data_size];
             file.read_exact(&mut data)?;

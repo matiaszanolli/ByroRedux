@@ -294,6 +294,24 @@ EFFECT_* flags); the one *deferred* item is the `base_color_scale`
 diffuse-tint-vs-emissive render path (§4) — tagged via `EmissiveSource::Effect`, not
 dropped.
 
+SLSF1 `Refraction` (bit 15, shared position/semantic across `fo3nv_f1` /
+`skyrim_slsf1` / `fo4_slsf1`) is a partial exception, documented rather than
+fixed (SKY-D7-02 / #2327): `refraction_strength`, the scalar it gates, is
+captured into `ImportedMaterial` for every Skyrim+ material
+(`dedicated_shader.rs::apply_bs_lighting_shader` — shared code across
+Skyrim/FO4/FO76/Starfield, not per-game) but only reaches the canonical
+`Material.ior` field when paired with `Fire_Refraction` too
+(`material_translate.rs::material_optical_scalar`, `material_kind ==
+MATERIAL_KIND_FIRE_REFRACTION`). This is deliberate, not a translation
+leak: nif.xml's own spec for "Refraction Strength" states it is "**not
+based on physically accurate refractive index**" (0-1 distortion amount),
+so it cannot correctly ride `ior` — a real 1.0+ physical index the RT
+refraction path traces against — for an ordinary dielectric. `Refraction`
+authored *without* `Fire_Refraction` (ordinary refractive glass/ice/crystal)
+therefore has no engine consumer for its authored distortion intent today;
+that gap needs its own canonical field + shader consumer to close, not a
+reuse of `ior`.
+
 `ImportedMesh` now owns one source-agnostic `ImportedMaterial` payload. The
 NiTriShape, BSTriShape, and BSGeometry extractors all delegate
 `MaterialInfo` → `ImportedMaterial` construction to the same boundary instead of

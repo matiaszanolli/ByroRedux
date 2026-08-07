@@ -1128,16 +1128,22 @@ fn fo4_bs_tri_shape_with_zero_data_size_and_nonzero_counts_parses_clean() {
 
 // ── #621 / SK-D1-LOW — BsTriShape parser hardening ──────────────────────
 
-/// SK-D1-04 regression. `parse_dynamic` overwrites the BSTriShape
-/// positions with the trailing Vector4 array — an authoritatively
-/// full-precision f32 source — but pre-fix it left `vertex_desc`
-/// untouched. Downstream consumers reading
-/// `vertex_attrs & VF_FULL_PRECISION` thought positions were still
-/// half-precision, despite the override. Latent today (no consumer
-/// cross-checks); a future GPU-skinning path that re-uploads from the
-/// packed buffer would read stale half-precision metadata.
+/// SK-D1-04 regression, corrected by SK-D1-02 / #2322. `parse_dynamic`
+/// makes the trailing Vector4 array — an authoritatively full-precision
+/// f32 source — `shape.vertices` wholesale; it is not an "overwrite" of
+/// a packed position field, because `BSDynamicTriShape` ships with
+/// `VF_VERTEX` clear on every real block (no packed position field
+/// exists to overwrite in the first place). Pre-#621-fix `vertex_desc`
+/// was left untouched, so a downstream consumer reading
+/// `vertex_attrs & VF_FULL_PRECISION` would have seen a clear bit
+/// despite `shape.vertices` genuinely being full-precision. Latent
+/// today (no consumer cross-checks, and every real descriptor already
+/// has the bit set — this fixture's synthetic all-zero `vertex_desc` is
+/// the only way to observe the flip); a future GPU-skinning path that
+/// re-uploads from the packed buffer would otherwise read incorrect
+/// precision metadata for `shape.vertices`.
 ///
-/// Pin the post-overwrite invariant: `vertex_attrs` must include
+/// Pin the post-parse invariant: `vertex_attrs` must include
 /// `VF_FULL_PRECISION` (bit 10 of the high u16) after `parse_dynamic`
 /// successfully copies a non-empty dynamic-vertex array.
 #[test]
@@ -1158,9 +1164,10 @@ fn bs_dynamic_tri_shape_sets_full_precision_flag_after_position_overwrite() {
         .downcast_ref::<BsTriShape>()
         .expect("BSDynamicTriShape did not downcast to BsTriShape");
 
-    // Sanity: the dynamic Vector4 actually overwrote the (empty)
-    // packed positions — that's the precondition for the descriptor
-    // patch to fire.
+    // Sanity: the dynamic Vector4 array populated `shape.vertices` (empty
+    // before this, since this fixture's `vertex_desc` has `VF_VERTEX`
+    // clear like every real `BSDynamicTriShape`) — that's the
+    // precondition for the descriptor patch to fire.
     assert_eq!(shape.vertices.len(), 1);
     assert!((shape.vertices[0].x - 3.5).abs() < 1e-6);
 
