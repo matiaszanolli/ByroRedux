@@ -48,7 +48,7 @@ closed by #699.)
 | **Depth of field** | ~ TAA-accumulated | Aperture disk jitter via TAA history; no explicit CoC pass |
 | **Disney BSDF** | ✓ FO4/Starfield/BGSM | `MAT_FLAG_PBR_BSDF`; subsurface/sheen/anisotropic |
 | **Glass RT refraction** | ✓ All games | `MATERIAL_KIND_GLASS` triggers RT refraction ray budget |
-| **Fire refraction** | ~ Partial | `MATERIAL_KIND_FIRE_REFRACTION` (103, Session 62) — normal-driven heat-haze distortion proxy; known consistency gaps in shadow masking, G-buffer overwrite, and composition sort order (#2236, #2237) |
+| **Fire refraction** | ~ Partial | `MATERIAL_KIND_FIRE_REFRACTION` (103, Session 62) — normal-driven heat-haze distortion proxy; the three consistency gaps found this audit cycle (shadow masking #2224, G-buffer normal overwrite #2236, composition sort order #2237) are all fixed |
 | **Terrain LOD (M35)** | ~ Partial | `.btr` (Skyrim+/FO4) + `.bto` + `_far.nif` (Oblivion/FO3/FNV) shipped; distance-based multi-band selection + `.btr` normal maps deferred |
 
 ### FO4 Precombined Geometry (M49 — closed 2026-06-02)

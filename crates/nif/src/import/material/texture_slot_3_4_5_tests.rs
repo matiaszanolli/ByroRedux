@@ -50,14 +50,17 @@ fn empty_net() -> NiObjectNETData {
     }
 }
 
-fn fo3_pp_lighting_with_texture_set(tex_set_idx: u32) -> BSShaderPPLightingProperty {
+fn fo3_pp_lighting_with_texture_set(
+    tex_set_idx: u32,
+    shader_flags_1: u32,
+) -> BSShaderPPLightingProperty {
     use crate::blocks::base::BSShaderPropertyData;
     BSShaderPPLightingProperty {
         net: empty_net(),
         shader: BSShaderPropertyData {
             shade_flags: 0,
             shader_type: 7, // Parallax_Occlusion
-            shader_flags_1: 0,
+            shader_flags_1,
             shader_flags_2: 0,
             env_map_scale: 0.5,
         },
@@ -66,7 +69,10 @@ fn fo3_pp_lighting_with_texture_set(tex_set_idx: u32) -> BSShaderPPLightingPrope
         refraction_strength: 0.0,
         refraction_fire_period: 0,
         parallax_max_passes: 4.0,
-        parallax_scale: 0.04,
+        // nif.xml's own on-disk default (range 0.0-10.0) — NOT the
+        // engine `heightScale` range. FO3-D1-02 / #2317: the importer
+        // converts this via `fo3_parallax_scale_to_height_scale`.
+        parallax_scale: 1.0,
         emissive_color: [0.0, 0.0, 0.0, 1.0],
     }
 }
@@ -99,6 +105,11 @@ fn pp_lighting_populates_parallax_env_env_mask_from_slots_3_4_5() {
     //   [0] NiNode (root)  — not used by extract_material_info
     //   [1] BSShaderPPLightingProperty referencing block 2
     //   [2] BSShaderTextureSet with 6 populated slots
+    //
+    // FO3-D1-02 / #2317: parallax now also requires an authored flag
+    // (bit 11 `Parallax_Shader_Index_15` here) — texture-slot-3 presence
+    // alone no longer suffices. See `pp_lighting_requires_parallax_flag_*`
+    // below for the flag-gating regression coverage.
     let tex_set = BSShaderTextureSet {
         textures: vec![
             "textures\\wall_d.dds".to_string(),
@@ -121,7 +132,10 @@ fn pp_lighting_populates_parallax_env_env_mask_from_slots_3_4_5() {
             children: Vec::new(),
             effects: Vec::new(),
         }),
-        Box::new(fo3_pp_lighting_with_texture_set(2)),
+        Box::new(fo3_pp_lighting_with_texture_set(
+            2,
+            crate::shader_flags::fo3nv_f1::PARALLAX,
+        )),
         Box::new(tex_set),
     ];
     let scene = NifScene {
@@ -137,6 +151,10 @@ fn pp_lighting_populates_parallax_env_env_mask_from_slots_3_4_5() {
     assert_path(&pool, info.env_map, "textures\\wall_e.dds");
     assert_path(&pool, info.env_mask, "textures\\wall_em.dds");
     // Scalars ride through from BSShaderPPLightingProperty.
+    // `parallax_height_scale`: fixture's raw nif.xml-range `parallax_scale`
+    // (1.0) converts to the engine's `heightScale` contract via the 0.04
+    // factor — 1.0 * 0.04 = 0.04, both pinning the conversion and matching
+    // the "unauthored" engine default (FO3-D1-02 / #2317).
     assert_eq!(info.parallax_max_passes, Some(4.0));
     assert_eq!(info.parallax_height_scale, Some(0.04));
 }
@@ -215,7 +233,7 @@ fn pp_lighting_propagates_texture_clamp_mode_and_env_map_scale() {
 
 #[test]
 fn pp_lighting_without_environment_mapping_flag_ignores_default_scale() {
-    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(fo3_pp_lighting_with_texture_set(1))];
+    let blocks: Vec<Box<dyn NiObject>> = vec![Box::new(fo3_pp_lighting_with_texture_set(1, 0))];
     let scene = NifScene {
         blocks,
         ..NifScene::default()
@@ -233,7 +251,8 @@ fn pp_lighting_without_environment_mapping_flag_ignores_default_scale() {
 fn pp_lighting_with_only_3_slots_leaves_parallax_and_env_none() {
     // Old-style texture set with just base/normal/glow — parallax
     // slots stay None so downstream consumers (FO3-REN-M2) skip
-    // the parallax branch cleanly.
+    // the parallax branch cleanly. Flag authored (PARALLAX) but no
+    // slot-3 texture exists: still None either way (FO3-D1-02 / #2317).
     let tex_set = BSShaderTextureSet {
         textures: vec![
             "textures\\wall_d.dds".to_string(),
@@ -242,7 +261,10 @@ fn pp_lighting_with_only_3_slots_leaves_parallax_and_env_none() {
         ],
     };
     let blocks: Vec<Box<dyn NiObject>> = vec![
-        Box::new(fo3_pp_lighting_with_texture_set(1)),
+        Box::new(fo3_pp_lighting_with_texture_set(
+            1,
+            crate::shader_flags::fo3nv_f1::PARALLAX,
+        )),
         Box::new(tex_set),
     ];
     let scene = NifScene {
@@ -254,6 +276,89 @@ fn pp_lighting_with_only_3_slots_leaves_parallax_and_env_none() {
     assert!(info.parallax_map.is_none());
     assert!(info.env_map.is_none());
     assert!(info.env_mask.is_none());
+}
+
+/// FO3-D1-02 / #2317 — a bound slot-3 texture alone must NOT enable POM.
+/// Pre-fix, `apply_pp_lighting_property` bound `parallax_map` (and its
+/// scalar pair) purely from `BSShaderTextureSet` slot-3 presence, with no
+/// check on the authored `Parallax_Shader_Index_15`/`Parallax_Occulsion`
+/// flag bits — every FO3/FNV `BSShaderTextureSet` has a slot 3 whether or
+/// not the material actually authors parallax.
+#[test]
+fn pp_lighting_without_parallax_flag_leaves_parallax_map_none_despite_bound_texture() {
+    let tex_set = BSShaderTextureSet {
+        textures: vec![
+            "textures\\wall_d.dds".to_string(),
+            "textures\\wall_n.dds".to_string(),
+            "textures\\wall_g.dds".to_string(),
+            "textures\\wall_p.dds".to_string(),
+        ],
+    };
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(fo3_pp_lighting_with_texture_set(1, 0)),
+        Box::new(tex_set),
+    ];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
+    let (info, _pool) = extract_with_pool(&scene, &shape, &[]);
+    assert!(
+        info.parallax_map.is_none(),
+        "an unauthored (no PARALLAX/PARALLAX_OCCLUSION flag) texture-slot-3 \
+         path must not enable POM, even though the texture is bound"
+    );
+    assert!(info.parallax_max_passes.is_none());
+    assert!(info.parallax_height_scale.is_none());
+}
+
+/// FO3-D1-02 / #2317 — either authored flag bit (`Parallax_Shader_Index_15`
+/// bit 11, `Parallax_Occulsion` bit 28) independently enables POM, and the
+/// raw nif.xml-range `parallax_scale` converts to the engine's
+/// `heightScale` contract (0.02–0.08 typical) rather than passing through
+/// unconverted. FO3's bsver<=24 fallback value (1.0, `blocks/shader.rs`)
+/// would otherwise be a ~25× overshoot on that contract.
+#[test]
+fn pp_lighting_either_parallax_flag_enables_pom_with_converted_height_scale() {
+    for flag in [
+        crate::shader_flags::fo3nv_f1::PARALLAX,
+        crate::shader_flags::fo3nv_f1::PARALLAX_OCCLUSION,
+    ] {
+        let tex_set = BSShaderTextureSet {
+            textures: vec![
+                "textures\\wall_d.dds".to_string(),
+                "textures\\wall_n.dds".to_string(),
+                "textures\\wall_g.dds".to_string(),
+                "textures\\wall_p.dds".to_string(),
+            ],
+        };
+        let blocks: Vec<Box<dyn NiObject>> = vec![
+            Box::new(fo3_pp_lighting_with_texture_set(1, flag)),
+            Box::new(tex_set),
+        ];
+        let scene = NifScene {
+            blocks,
+            ..NifScene::default()
+        };
+        let shape = make_tri_shape_with_props(vec![BlockRef(0)]);
+        let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+        assert_path(&pool, info.parallax_map, "textures\\wall_p.dds");
+        let height_scale = info
+            .parallax_height_scale
+            .expect("authored POM must set a height scale");
+        assert!(
+            (0.02..=0.08).contains(&height_scale),
+            "flag {flag:#x}: height scale {height_scale} outside the shader's \
+             documented 0.02-0.08 contract range (material_sampling.glsl)"
+        );
+        assert!(
+            (height_scale - 0.04).abs() < 1e-6,
+            "flag {flag:#x}: fixture's raw parallax_scale=1.0 (nif.xml \
+             default) must convert to exactly the engine's 0.04 default, \
+             got {height_scale}"
+        );
+    }
 }
 
 #[test]

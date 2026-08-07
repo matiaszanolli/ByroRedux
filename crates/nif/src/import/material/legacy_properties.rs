@@ -22,6 +22,37 @@ fn legacy_env_map_scale(shader_flags_1: u32, env_map_scale: f32) -> f32 {
     }
 }
 
+/// Whether a FO3/FNV `BSShaderPPLightingProperty` actually authors POM,
+/// per nif.xml's FO3 `BSShaderFlags` bits 11 (`Parallax_Shader_Index_15`)
+/// and 28 (`Parallax_Occulsion`) — texture-slot-3 presence alone is not
+/// authoring: the slot exists in every `BSShaderTextureSet`, bound or not.
+/// FO3-D1-02 / #2317.
+fn fo3_parallax_authored(shader_flags_1: u32) -> bool {
+    use crate::shader_flags::fo3nv_f1::{PARALLAX, PARALLAX_OCCLUSION};
+    shader_flags_1 & (PARALLAX | PARALLAX_OCCLUSION) != 0
+}
+
+/// Convert a raw FO3/FNV `BSShaderPPLightingProperty.parallax_scale` value
+/// (nif.xml `Parallax Scale`, authoring range 0.0–10.0, schema default 1.0)
+/// to the engine's `heightScale` shader contract (Bethesda brickwork range
+/// 0.02–0.08, "Gamebryo runtime default" 0.04 per
+/// `material_sampling.glsl`'s own doc comment). FO3-D1-02 / #2317.
+///
+/// The 0.04 factor is not a fresh guess: it's the ratio that makes an
+/// unauthored `parallax_scale` (the bsver<=24 no-field fallback of 1.0, or
+/// an authored-but-untouched 1.0) land on exactly the same 0.04 the engine
+/// already treats as "no authoring" everywhere else — `GpuMaterial`'s own
+/// default and the sibling `NiTexturingProperty`-only branch above
+/// (`legacy_properties.rs`'s texture-slot-7 parallax path) both hard-code
+/// 0.04 for the same "authored a parallax texture, no explicit scale"
+/// case. Left un-converted, the bsver<=24 fallback alone was a ~25×
+/// overshoot (1.0 vs the shader's 0.02–0.08 contract), producing texture
+/// swimming at grazing angles.
+fn fo3_parallax_scale_to_height_scale(raw_parallax_scale: f32) -> f32 {
+    const NIF_TO_ENGINE_HEIGHT_SCALE: f32 = 0.04;
+    raw_parallax_scale * NIF_TO_ENGINE_HEIGHT_SCALE
+}
+
 /// FO3/FNV/Oblivion: single pass over shape + inherited properties.
 /// Shape properties first so they take priority (#208). Empty for
 /// BsTriShape (Skyrim+ binds via shader_property_ref only).
@@ -257,6 +288,9 @@ fn apply_pp_lighting_property(
     info: &mut MaterialInfo,
 ) {
     if let Some(shader) = scene.get_as::<BSShaderPPLightingProperty>(idx) {
+        // FO3-D1-02 / #2317 — computed once, shared by the slot-3 texture
+        // bind below and the scalar-write gate further down.
+        let parallax_authored = fo3_parallax_authored(shader.shader_flags_1());
         if let Some(ts_idx) = shader.texture_set_ref.index() {
             if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                 if info.texture_path.is_none() {
@@ -279,7 +313,14 @@ fn apply_pp_lighting_property(
                 // Parallax / height map is textures[3] (FO3/FNV
                 // Parallax_Shader_Index_15 / Parallax_Occlusion).
                 // See #452.
-                if info.parallax_map.is_none() {
+                //
+                // FO3-D1-02 / #2317 — gated on `parallax_authored` (bits
+                // 11/28 above), not on slot-3 presence alone. The slot
+                // exists in every `BSShaderTextureSet`, authored or not;
+                // pre-fix, any mesh whose atlas happened to carry a slot-3
+                // path ran the shader's POM branch regardless of whether
+                // the material actually authored parallax.
+                if parallax_authored && info.parallax_map.is_none() {
                     if let Some(px) = tex_set.textures.get(3) {
                         info.parallax_map = intern_texture_path(pool, px);
                     }
@@ -303,16 +344,29 @@ fn apply_pp_lighting_property(
         }
         // `BSShaderPPLightingProperty.parallax_max_passes` /
         // `parallax_scale` (parsed since BSVER >= 24 per
-        // `blocks/shader.rs:70`) flow straight through. Only
-        // overwrite when the material hasn't already bound them
+        // `blocks/shader.rs:70`) flow through, converted (`parallax_scale`
+        // → engine `heightScale`) and gated on authored POM — FO3-D1-02 /
+        // #2317. Pre-fix these were written unconditionally: any mesh
+        // with a bound texture-slot-3 path got them regardless of
+        // `parallax_authored`, and `parallax_scale` was forwarded
+        // un-converted (a ~25× overshoot on the shader's 0.02–0.08
+        // contract for the common bsver<=24 fallback value of 1.0 — see
+        // `fo3_parallax_scale_to_height_scale`). Gating on
+        // `info.parallax_map.is_some()` too (not just `parallax_authored`)
+        // mirrors the sibling `NiTexturingProperty`-only branch above,
+        // which never sets a scale/passes pair without a bound texture.
+        // Only overwrite when the material hasn't already bound them
         // from a Skyrim+ BSLightingShaderProperty ParallaxOcc
         // variant — the shader-type capture path in
         // `apply_shader_type_data` keeps those values. #452.
-        if info.parallax_max_passes.is_none() {
-            info.parallax_max_passes = Some(shader.parallax_max_passes);
-        }
-        if info.parallax_height_scale.is_none() {
-            info.parallax_height_scale = Some(shader.parallax_scale);
+        if parallax_authored && info.parallax_map.is_some() {
+            if info.parallax_max_passes.is_none() {
+                info.parallax_max_passes = Some(shader.parallax_max_passes);
+            }
+            if info.parallax_height_scale.is_none() {
+                info.parallax_height_scale =
+                    Some(fo3_parallax_scale_to_height_scale(shader.parallax_scale));
+            }
         }
         // #773 / FO3-4-01 — `texture_clamp_mode` mirror. Pre-fix
         // the FO3/FNV PPLighting branch dropped this u32 enum
@@ -713,5 +767,27 @@ mod tests {
         ] {
             assert_eq!(legacy_env_map_scale(flag, 0.85), 0.85);
         }
+    }
+
+    /// FO3-D1-02 / #2317 — either flag bit independently authors POM;
+    /// unrelated bits (and zero) must not.
+    #[test]
+    fn fo3_parallax_authored_requires_one_of_the_two_flag_bits() {
+        use crate::shader_flags::fo3nv_f1::{PARALLAX, PARALLAX_OCCLUSION};
+        assert!(!fo3_parallax_authored(0));
+        assert!(!fo3_parallax_authored(ENVIRONMENT_MAPPING));
+        assert!(fo3_parallax_authored(PARALLAX));
+        assert!(fo3_parallax_authored(PARALLAX_OCCLUSION));
+        assert!(fo3_parallax_authored(PARALLAX | PARALLAX_OCCLUSION));
+    }
+
+    /// FO3-D1-02 / #2317 — the nif.xml on-disk default (1.0) must convert
+    /// to exactly the engine's own "unauthored" default (0.04), and the
+    /// conversion must be linear (proportionate), not clamped/rounded.
+    #[test]
+    fn fo3_parallax_scale_conversion_matches_engine_default_at_nif_default() {
+        assert_eq!(fo3_parallax_scale_to_height_scale(1.0), 0.04);
+        assert_eq!(fo3_parallax_scale_to_height_scale(2.0), 0.08);
+        assert_eq!(fo3_parallax_scale_to_height_scale(0.5), 0.02);
     }
 }

@@ -354,12 +354,45 @@ pipeline. Defined in
 | 1 | 17 | `STORAGE_BUFFER` | ReSTIR reservoir buffer (previous frame) | triangle (Session-49 ReSTIR) |
 | 2 | 0 | `STORAGE_IMAGE` (`R32_UINT`) | Water caustic accumulator | water.frag (atomic add) |
 
-Volumetrics (`volumetrics_inject.comp`/`volumetrics_integrate.comp`) uses its
-own private `set = 0` layout (froxel image, `VolumetricsParams`/`IntegrationParams`
-UBO, TLAS) — it does not bind any Set-1 resource above.
+Volumetrics uses its own private `set = 0` layout, split across two shaders
+that do NOT share one binding scheme — neither binds any Set-1 resource
+above.
 
-Per-pass private sets (SVGF, TAA, bloom, composite, SSAO, volumetrics,
-egui) hold their own input/output images and are not shared.
+`volumetrics_inject.comp` (12 bindings, widened by #2228/#2231's fog-volume
+work — verify against the source before relying on this table for a new
+binding):
+
+| Binding | Type | Resource |
+|---|---|---|
+| 0 | `STORAGE_IMAGE` (`rgba16f`, write-only) | Froxel grid (injection output) |
+| 1 | `UNIFORM_BUFFER` | `VolumetricsParams` |
+| 2 | `ACCELERATION_STRUCTURE` | TLAS (shadow-visibility rays into the froxel grid) |
+| 3 | `STORAGE_BUFFER` | Light buffer (`u32 count` + `GpuLight[]`) |
+| 4 | `STORAGE_BUFFER` | Cluster grid (`ClusterEntry[]`) |
+| 5 | `STORAGE_BUFFER` | Cluster light index list |
+| 6 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | Previous frame's froxel grid (temporal reprojection) |
+| 7 | `STORAGE_BUFFER` | `GpuFogVolume[]` — authored local fog volumes (#2228/#2231) |
+| 8 | `STORAGE_BUFFER` | Fog-volume cluster grid (`FogClusterEntry[]`) |
+| 9 | `STORAGE_BUFFER` | Fog-volume cluster index list |
+| 10 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | Base density noise |
+| 11 | `COMBINED_IMAGE_SAMPLER` (`sampler3D`) | Detail density noise |
+
+`volumetrics_integrate.comp` (3 bindings — a separate, much smaller
+descriptor set on the same `set = 0` index; do not conflate with the table
+above):
+
+| Binding | Type | Resource |
+|---|---|---|
+| 0 | `STORAGE_IMAGE` (`rgba16f`, read-only) | Froxel grid (injection input) |
+| 1 | `STORAGE_IMAGE` (`rgba16f`, write-only) | Integrated froxel grid (output) |
+| 2 | `UNIFORM_BUFFER` | `IntegrationParams` |
+
+Per-pass private sets (SVGF, TAA, bloom, composite, SSAO, egui) hold their
+own input/output images and are not enumerated here — they're simple enough
+(one or two bindless-indexed images per pass) that the source is the
+lower-maintenance reference; the volumetrics table above exists specifically
+because the fog-volume additions made "froxel image + one UBO" stale enough
+to mislead (#2314 / TD3-206).
 
 ---
 

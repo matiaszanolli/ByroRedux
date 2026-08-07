@@ -53,6 +53,16 @@ pub mod fo3nv_f1 {
     /// `BSShaderPPLightingProperty`, mirroring the Skyrim+ path in
     /// `apply_shader_type_data`. See #2321.
     pub const FIRE_REFRACTION: u32 = 0x0001_0000;
+    /// Bit 11 — `Parallax_Shader_Index_15`. Authors POM (texture slot 3,
+    /// `Parallax_Occulsion` below) on this material. nif.xml names it
+    /// "Parallax" and notes it selects shader index 15. See #2317.
+    pub const PARALLAX: u32 = 0x0000_0800;
+    /// Bit 28 — `Parallax_Occulsion` (nif.xml's own spelling). Gates
+    /// parallax-occlusion mapping alongside [`PARALLAX`]; both are read at
+    /// the FO3/FNV `BSShaderPPLightingProperty` import boundary before
+    /// binding `parallax_map`/`parallax_max_passes`/`parallax_height_scale`.
+    /// See #2317.
+    pub const PARALLAX_OCCLUSION: u32 = 0x1000_0000;
     /// Bit 26 — `Decal`. Render on top of coplanar surfaces.
     pub const DECAL: u32 = 0x0400_0000;
     /// Bit 27 — `Dynamic_Decal`. Runtime-spawned decal (blood splat).
