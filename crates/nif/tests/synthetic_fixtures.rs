@@ -430,8 +430,15 @@ fn build_morrowind_nif() -> Vec<u8> {
     // Properties list
     w32(&mut nif, 0); // num_properties
 
-    // Bounding volume (replaces collision_ref in pre-Gamebryo)
-    w8(&mut nif, 0); // has_bounding_volume = false
+    // Bounding volume (replaces collision_ref in pre-Gamebryo).
+    // #1843 (NIF-D1-01) — nif.xml: `bool` is 32-bit up to and including
+    // 4.0.0.2, 8-bit from 4.1.0.1 on. This fixture targets v4.0.0.2
+    // exactly, so `has_bounding_volume` is a 4-byte field on the real
+    // wire, not 1 — pre-fix this fixture wrote 1 byte, which was
+    // self-consistent with the (then-buggy) fixed-width `read_byte_bool`
+    // the parser used to call and so stayed green while masking the bug
+    // against real Morrowind content.
+    w32(&mut nif, 0); // has_bounding_volume = false
 
     // NiNode-specific: children + effects
     w32(&mut nif, 0); // num_children

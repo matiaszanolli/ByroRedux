@@ -874,3 +874,90 @@ fn num_decals_above_fixed_maximum_is_parse_error() {
         .expect_err("texture_count implying >4 decal slots must be rejected");
     assert_eq!(err.kind(), io::ErrorKind::InvalidData);
 }
+
+/// Regression for #1843 (NIF-D1-01) — `read_tex_desc`'s leading `has`
+/// bool (nif.xml `NiTexturingProperty.Has Base Texture` etc., no
+/// `since=` gate) is the version-dependent `bool` basic type: 32-bit at
+/// v4.0.0.2 (Morrowind-era NetImmerse, pre-4.1.0.1), not the fixed 1 byte
+/// the parser used to read unconditionally. `NiTexturingProperty` predates
+/// Gamebryo, so `base_texture` is reachable in this band on real content.
+#[test]
+fn parse_ni_texturing_property_at_v4_0_0_2_reads_32_bit_has_base_texture() {
+    let header = NifHeader {
+        version: NifVersion::V4_0_0_2,
+        little_endian: true,
+        user_version: 0,
+        user_version_2: 0,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    };
+    let mut data = Vec::new();
+    // NiObjectNETData, pre-string-table (v < 20.1.0.1) inline path:
+    // name = u32 len-prefixed string (empty), single extra_data ref
+    // (v < 10.0.1.0), controller_ref.
+    data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline (len = 0)
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // extra_data_ref = NULL
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = NULL
+                                                      // NiProperty.Flags: `until=10.0.1.2` — present at v4.0.0.2.
+    data.extend_from_slice(&0u16.to_le_bytes()); // flags = 0
+                                                  // Apply Mode: `since=3.3.0.13, until=20.1.0.1` — present at v4.0.0.2.
+    data.extend_from_slice(&1u32.to_le_bytes()); // apply_mode = 1 (APPLY_MODULATE)
+    data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
+                                                  // `Has Base Texture` — the version-dependent bool, 32-bit here.
+    data.extend_from_slice(&0u32.to_le_bytes()); // base_texture has = false (32-bit)
+                                                  // No shader-textures trailer: `since=10.0.1.0`, absent at v4.0.0.2.
+
+    let expected_len = data.len();
+    let mut stream = NifStream::new(&data, &header);
+    let prop = NiTexturingProperty::parse(&mut stream)
+        .expect("v4.0.0.2 NiTexturingProperty must parse with 32-bit has_base_texture");
+    assert_eq!(
+        stream.position() as usize,
+        expected_len,
+        "at v4.0.0.2, Has Base Texture must be read as 32-bit; a fixed \
+         1-byte read would leave 3 bytes unconsumed and misalign every \
+         downstream block"
+    );
+    assert!(prop.base_texture.is_none());
+}
+
+/// The mirror failure mode: the OLD (pre-fix) fixed-1-byte layout is 3
+/// bytes shorter than the wire-correct 32-bit layout. Feeding it to the
+/// current (fixed) parser at v4.0.0.2 must fail with an EOF-class error.
+#[test]
+fn parse_ni_texturing_property_at_v4_0_0_2_rejects_8_bit_bool_layout() {
+    let header = NifHeader {
+        version: NifVersion::V4_0_0_2,
+        little_endian: true,
+        user_version: 0,
+        user_version_2: 0,
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        strings: Vec::new(),
+        max_string_length: 0,
+        num_groups: 0,
+    };
+    let mut data = Vec::new();
+    data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // extra_data_ref
+    data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
+    data.extend_from_slice(&0u16.to_le_bytes()); // flags
+    data.extend_from_slice(&1u32.to_le_bytes()); // apply_mode
+    data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
+    data.push(0); // base_texture has (WRONG WIDTH — pre-fix 1-byte layout)
+
+    let mut stream = NifStream::new(&data, &header);
+    assert!(
+        NiTexturingProperty::parse(&mut stream).is_err(),
+        "an 8-bit-bool-layout buffer (3 bytes shorter than the wire-correct \
+         32-bit layout) must fail to parse at v4.0.0.2 — if it succeeds, the \
+         parser silently regressed back to a fixed-width bool read"
+    );
+}

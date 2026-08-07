@@ -399,7 +399,16 @@ impl NiTexturingProperty {
     }
 
     fn read_tex_desc(stream: &mut NifStream) -> io::Result<Option<TexDesc>> {
-        let has = stream.read_byte_bool()?;
+        // #1843 (NIF-D1-01) — nif.xml `NiTexturingProperty`'s `Has Base/
+        // Dark/Detail/Gloss/Glow/Bump Texture` fields are all `type="bool"`
+        // with no `since=` gate, and this function's leading bool is one
+        // of them (called unconditionally for `base_texture`, and by
+        // `texture_count` — not by file version — for the other legacy
+        // slots and the decal loop). `NiTexturingProperty` itself predates
+        // Gamebryo, so this is reachable in the pre-4.1.0.1 32-bit-bool
+        // band; `read_bool()` is version-aware, unlike the fixed 1-byte
+        // `read_byte_bool()` this used to call.
+        let has = stream.read_bool()?;
         if !has {
             return Ok(None);
         }

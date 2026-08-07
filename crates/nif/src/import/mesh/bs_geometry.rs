@@ -250,6 +250,13 @@ pub fn extract_bs_geometry(
     // hanging off `skin_instance_ref`. Per-vertex bone indices + weights
     // are intentionally left empty here — the BSGeometry parser doesn't
     // surface them yet (separate work).
+    //
+    // #1827 (FO4-D4-02) — confirmed gap, zero FO4 impact (BSVER 172
+    // Starfield only, not BSVER 130 FO4): Starfield skinned meshes render
+    // in bind pose today. Tracked as a separate Starfield-skinning
+    // milestone (decode the packed BSGeometry per-vertex bone
+    // index/weight channel analogous to the FO4 `BsTriShape` path), not a
+    // small fix — see the issue for the suggested approach.
     let skin = extract_skin_bs_geometry(scene, shape);
 
     let t = &world_transform.translation;

@@ -22,7 +22,9 @@ use std::sync::Arc;
 use byroredux_core::ecs::components::{CollisionShape, RigidBodyData};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
-use byroredux_core::ecs::{Children, EntityId, GlobalTransform, Parent, Transform, World};
+use byroredux_core::ecs::{
+    Children, EntityId, GlobalTransform, LocalBound, Parent, Transform, World, WorldBound,
+};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_nif::import::{ImportedJointKind, ImportedRagdoll};
 use byroredux_physics::ragdoll::body_pose;
@@ -398,6 +400,20 @@ pub fn activate_ragdoll(world: &World, actor: EntityId) -> Result<usize, String>
 /// (FNV-D7-01 / #1979). This is the "option 1" fix from the issue: a subtree
 /// re-derivation in the same `Stage::Late` write, self-contained and with no
 /// dependency on gating the (still-running) animation system.
+///
+/// #1981 (FNV-D7-02) — a final pass expands the actor's skinned-mesh
+/// `WorldBound`(s) to enclose the live simulated body positions. The mesh
+/// entity's own `GlobalTransform` never moves during ragdoll (only its
+/// *bones* do — the mesh is deformed by the GPU bone palette, not by
+/// re-placing the mesh entity), so `make_world_bound_propagation_system`'s
+/// `LocalBound × GlobalTransform` leaf bound stays anchored at the
+/// bind-pose extent every frame, regardless of how far the simulated
+/// bodies travel. A ragdoll that crumples in place stays within that
+/// radius (benign); one that slides/falls away from spawn can be
+/// frustum-culled or carry a stale TLAS-instance bound while still
+/// on-screen. See `WorldBound::merge`'s "smallest enclosing sphere"
+/// construction — merging with an already-enclosed point is a no-op, so
+/// this needs no separate "did it leave the bind-pose radius" branch.
 pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
     let Some(rq) = world.query::<Ragdoll>() else {
         return;
@@ -421,8 +437,23 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
     let Some(pw) = world.try_resource::<PhysicsWorld>() else {
         return;
     };
+    // #1981 — LocalBound (read) grouped with the other read-only hierarchy
+    // queries above; WorldBound (write) grouped with GlobalTransform (write)
+    // below, matching this function's existing "reads first, writes last"
+    // discipline. Both are `Option` (not `let Some(..) else return`): a
+    // world that hasn't registered bounds at all (most of this file's own
+    // unit tests) must still get the bone writeback + #1979 descendant
+    // re-derivation; the mesh-bound expansion pass below is skipped instead.
+    let local_bound_q = world.query::<LocalBound>();
+    let mut world_bound_q = world.query_mut::<WorldBound>();
     let mut body_bones: HashSet<EntityId> = HashSet::new();
     let mut queue: VecDeque<EntityId> = VecDeque::new();
+    // #1981 scratch, reused across actors: live simulated body positions
+    // this frame, and the BFS queue for finding LocalBound-bearing mesh
+    // entities under the actor's subtree (independent of `queue` above,
+    // which the #1979 pass is still using when this runs).
+    let mut live_body_positions: Vec<Vec3> = Vec::new();
+    let mut mesh_walk_queue: VecDeque<EntityId> = VecDeque::new();
     for (actor, ragdoll) in rq.iter() {
         // The seed (activate_ragdoll) composed the body world pose as
         // body = bone ∘ body-local: `body_t = bone_t + bone_r * (local_t *
@@ -433,6 +464,7 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
         let Some(template) = tq.get(actor) else {
             continue;
         };
+        live_body_positions.clear();
         for ((bone, handle, seed_scale), tb) in ragdoll.bodies.iter().zip(template.bodies.iter()) {
             let Some((t, r)) = body_pose(&pw, *handle) else {
                 continue;
@@ -446,6 +478,10 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
             if !t.is_finite() || !r.is_finite() {
                 continue;
             }
+            // #1981 — collected regardless of whether the bone resolves
+            // below (a stale/removed bone entity shouldn't hide a live
+            // simulated body from the mesh-bound expansion pass).
+            live_body_positions.push(t);
             if let Some(gt) = gtq.get_mut(*bone) {
                 // bone_rotation = body_rotation * local_rotation⁻¹
                 let bone_rotation = r * tb.local_rotation.inverse();
@@ -460,6 +496,55 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
                 // bone by `local_translation * Δscale`.
                 gt.rotation = bone_rotation;
                 gt.translation = t - bone_rotation * (tb.local_translation * *seed_scale);
+            }
+        }
+
+        // ── #1981 — expand skinned-mesh WorldBound(s) to enclose the ragdoll ──
+        //
+        // Walk `actor`'s subtree (BFS via Children only — independent of the
+        // #1979 pass below, so it still runs even on a world with no
+        // `Parent` storage) for entities carrying a `LocalBound`: the leaf
+        // mesh entities `make_world_bound_propagation_system` derives a
+        // `WorldBound` for (#1213), and the ones left stale because the
+        // mesh entity's own `GlobalTransform` never moves during ragdoll.
+        // For each, merge in a sphere per live body position using the
+        // mesh's own bind-pose `LocalBound.radius` as a conservative
+        // per-body margin — generous rather than tight, since the mesh has
+        // no per-bone extent data to draw a tighter bound from and the
+        // failure mode this fixes is under-coverage (culling / TLAS pop),
+        // not over-coverage. A body still within the existing bound is a
+        // no-op: `WorldBound::merge` returns the unchanged bound when one
+        // sphere already contains the other.
+        if !live_body_positions.is_empty() {
+            if let (Some(lb_q), Some(wb_q), Some(cq)) = (
+                local_bound_q.as_ref(),
+                world_bound_q.as_mut(),
+                children_q.as_ref(),
+            ) {
+                mesh_walk_queue.clear();
+                if let Some(children) = cq.get(actor) {
+                    mesh_walk_queue.extend(children.0.iter().copied());
+                }
+                while let Some(entity) = mesh_walk_queue.pop_front() {
+                    if let Some(children) = cq.get(entity) {
+                        mesh_walk_queue.extend(children.0.iter().copied());
+                    }
+                    let Some(local) = lb_q.get(entity) else {
+                        continue;
+                    };
+                    let Some(current) = wb_q.get(entity).copied() else {
+                        continue;
+                    };
+                    let mut merged = current;
+                    for &pos in &live_body_positions {
+                        merged = merged.merge(&WorldBound::new(pos, local.radius));
+                    }
+                    if merged.center != current.center || merged.radius != current.radius {
+                        if let Some(wb) = wb_q.get_mut(entity) {
+                            *wb = merged;
+                        }
+                    }
+                }
             }
         }
 
@@ -630,6 +715,141 @@ mod tests {
             end.y < init_y - 1.0,
             "writeback should move the bone down under gravity: {init_y} → {}",
             end.y
+        );
+    }
+
+    /// Regression for #1981 (FNV-D7-02) — a ragdoll body that falls far
+    /// from its bind-pose position must expand the skinned-mesh
+    /// `WorldBound` (a sibling `Children` of the actor, carrying
+    /// `LocalBound`) to keep enclosing it, instead of leaving that bound
+    /// anchored at the stale bind-pose sphere the mesh entity's own
+    /// (unmoving) `GlobalTransform` would otherwise imply forever.
+    #[test]
+    fn falling_ragdoll_expands_skinned_mesh_world_bound() {
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<RagdollTemplate>();
+        world.register::<RagdollActive>();
+        world.register::<Ragdoll>();
+        world.register::<Children>();
+        world.register::<LocalBound>();
+        world.register::<WorldBound>();
+        world.insert_resource(PhysicsWorld::new());
+
+        let actor = world.spawn();
+        let mut bones = Vec::new();
+        for i in 0..3 {
+            let e = world.spawn();
+            world.insert(
+                e,
+                GlobalTransform {
+                    translation: Vec3::new(i as f32 * 50.0, 1000.0, 0.0),
+                    rotation: Quat::IDENTITY,
+                    scale: 1.0,
+                },
+            );
+            bones.push(e);
+        }
+
+        // The skinned mesh: a child of `actor`, anchored at the bind-pose
+        // origin with a small LocalBound — never moved by writeback
+        // (mirrors real content: the mesh entity's own GlobalTransform
+        // stays put; only its bones move).
+        let mesh = world.spawn();
+        world.insert(
+            mesh,
+            GlobalTransform {
+                translation: Vec3::new(25.0, 1000.0, 0.0),
+                rotation: Quat::IDENTITY,
+                scale: 1.0,
+            },
+        );
+        world.insert(mesh, LocalBound::new(Vec3::ZERO, 10.0));
+        let bind_pose_bound = WorldBound::new(Vec3::new(25.0, 1000.0, 0.0), 10.0);
+        world.insert(mesh, bind_pose_bound);
+        world.insert(actor, Children(vec![mesh]));
+
+        let joint = |_a: usize, _b: usize| RagdollJointSpec::Ragdoll {
+            twist_a: Vec3::X,
+            plane_a: Vec3::Y,
+            pivot_a: Vec3::new(25.0, 0.0, 0.0),
+            twist_b: Vec3::X,
+            plane_b: Vec3::Y,
+            pivot_b: Vec3::new(-25.0, 0.0, 0.0),
+            cone_max: std::f32::consts::PI,
+            twist_min: -std::f32::consts::PI,
+            twist_max: std::f32::consts::PI,
+        };
+        let template = RagdollTemplate {
+            bodies: bones
+                .iter()
+                .map(|&bone| RagdollTemplateBody {
+                    bone,
+                    local_translation: Vec3::ZERO,
+                    local_rotation: Quat::IDENTITY,
+                    shape: CollisionShape::Ball { radius: 5.0 },
+                    mass: 4.0,
+                    linear_damping: 0.05,
+                    angular_damping: 0.05,
+                    friction: 0.5,
+                    restitution: 0.0,
+                })
+                .collect(),
+            constraints: vec![
+                RagdollTemplateConstraint {
+                    body_a: 0,
+                    body_b: 1,
+                    joint: joint(0, 1),
+                },
+                RagdollTemplateConstraint {
+                    body_a: 1,
+                    body_b: 2,
+                    joint: joint(1, 2),
+                },
+            ],
+        };
+        world.insert(actor, template);
+
+        activate_ragdoll(&world, actor).expect("activation should succeed");
+
+        // Fall under gravity, same as `activate_then_writeback_moves_bones`,
+        // long enough to travel well past the 10-unit bind-pose radius.
+        for _ in 0..120 {
+            {
+                let mut pw = world.resource_mut::<PhysicsWorld>();
+                pw.step(PHYSICS_DT);
+            }
+            ragdoll_writeback_system(&world, PHYSICS_DT);
+        }
+
+        let far_bone = bones[2];
+        let final_pos = world
+            .query::<GlobalTransform>()
+            .unwrap()
+            .get(far_bone)
+            .unwrap()
+            .translation;
+        assert!(
+            (final_pos - bind_pose_bound.center).length() > bind_pose_bound.radius,
+            "test setup must actually exercise the fix: the bone should have \
+             fallen outside the bind-pose bound, got {final_pos:?}"
+        );
+
+        let final_bound = *world.query::<WorldBound>().unwrap().get(mesh).unwrap();
+        assert!(
+            final_bound.radius > bind_pose_bound.radius,
+            "mesh WorldBound must have grown past the stale bind-pose radius \
+             ({}), got {}",
+            bind_pose_bound.radius,
+            final_bound.radius
+        );
+        assert!(
+            final_bound.contains_point(final_pos),
+            "mesh WorldBound must enclose the fallen bone's live position \
+             {final_pos:?}, got center={:?} radius={}",
+            final_bound.center,
+            final_bound.radius
         );
     }
 

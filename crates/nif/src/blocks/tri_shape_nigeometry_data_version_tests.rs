@@ -393,3 +393,70 @@ fn nigeometry_data_reads_material_crc_on_hybrid_unknown_bsver_over_34() {
          a revert to the game-variant helper would leave it unread"
     );
 }
+
+/// Regression for #1843 (NIF-D1-01) — at v4.0.0.2 (Morrowind-era
+/// NetImmerse, pre-4.1.0.1), nif.xml's `bool` basic type is 32-bit, not
+/// 8-bit. `has_vertices` / `has_normals` / `has_vertex_colors` / `has_uv`
+/// are all the version-dependent `bool` type with no `since=` gate (or,
+/// for `has_uv`, gated to a band that is always pre-4.1.0.1 when reached),
+/// so at this version each is a 4-byte field on the wire. Pre-fix the
+/// parser read a fixed 1 byte for each — a real v4.0.0.2 file would
+/// under-read by 3 bytes × 4 fields = 12 bytes, and this band carries no
+/// `block_sizes` table to recover from the drift.
+#[test]
+fn nigeometry_data_at_v4_0_0_2_reads_32_bit_bools() {
+    let header = header_at(NifVersion::V4_0_0_2);
+    let mut data = Vec::new();
+    // No group_id (since 10.1.0.114), no keep/compress (since 10.1.0.0).
+    data.extend_from_slice(&0u16.to_le_bytes()); // num_vertices = 0
+    data.extend_from_slice(&0u32.to_le_bytes()); // has_vertices = false (32-bit)
+                                                  // No data_flags (since 10.0.1.0).
+    data.extend_from_slice(&0u32.to_le_bytes()); // has_normals = false (32-bit)
+    for _ in 0..4 {
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // bounding sphere
+    }
+    data.extend_from_slice(&0u32.to_le_bytes()); // has_vertex_colors = false (32-bit)
+    data.extend_from_slice(&0u16.to_le_bytes()); // num_uv_sets (pre-Gamebryo u16 field)
+    data.extend_from_slice(&0u32.to_le_bytes()); // has_uv = false (32-bit, until 4.0.0.2)
+                                                  // No consistency_flags (since 10.0.1.0), no
+                                                  // additional_data_ref (since 20.0.0.4).
+
+    let mut stream = crate::stream::NifStream::new(&data, &header);
+    let _ = parse_geometry_data_base(&mut stream)
+        .expect("NiGeometryData base should parse at v4.0.0.2");
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "at v4.0.0.2 every has_* bool must be read as 32-bit; a fixed \
+         1-byte read would leave 12 bytes unconsumed and misalign every \
+         downstream block"
+    );
+}
+
+/// The mirror failure mode: the OLD (pre-fix) fixed-1-byte layout is 12
+/// bytes shorter than the wire-correct 32-bit-bool layout. Feeding it to
+/// the current (fixed) parser at v4.0.0.2 must fail with an EOF-class
+/// error — proves the parser genuinely demands 32-bit bools now, not that
+/// it happens to tolerate either width silently.
+#[test]
+fn nigeometry_data_at_v4_0_0_2_rejects_8_bit_bool_layout() {
+    let header = header_at(NifVersion::V4_0_0_2);
+    let mut data = Vec::new();
+    data.extend_from_slice(&0u16.to_le_bytes()); // num_vertices = 0
+    data.push(0u8); // has_vertices (WRONG WIDTH — pre-fix 1-byte layout)
+    data.push(0u8); // has_normals (WRONG WIDTH)
+    for _ in 0..4 {
+        data.extend_from_slice(&0.0f32.to_le_bytes());
+    }
+    data.push(0u8); // has_vertex_colors (WRONG WIDTH)
+    data.extend_from_slice(&0u16.to_le_bytes()); // num_uv_sets
+    data.push(0u8); // has_uv (WRONG WIDTH)
+
+    let mut stream = crate::stream::NifStream::new(&data, &header);
+    assert!(
+        parse_geometry_data_base(&mut stream).is_err(),
+        "an 8-bit-bool-layout buffer (12 bytes shorter than the wire-correct \
+         32-bit layout) must fail to parse at v4.0.0.2 — if it succeeds, the \
+         parser silently regressed back to fixed-width bool reads"
+    );
+}

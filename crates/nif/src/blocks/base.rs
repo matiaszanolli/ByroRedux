@@ -276,7 +276,13 @@ impl BSShaderPropertyData {
 /// Read and discard a NiBoundingVolume (pre-Gamebryo NiAVObject).
 /// The bounding volume replaces the collision_ref in NIF v < 10.0.1.0.
 fn skip_bounding_volume(stream: &mut NifStream) -> io::Result<()> {
-    let has_bv = stream.read_u8()? != 0;
+    // #1843 (NIF-D1-01) — nif.xml: `<field name="Has Bounding Volume"
+    // type="bool" since="3.0" until="4.2.2.0" />`. The caller reaches this
+    // function for every `stream.version() <= V4_2_2_0`, a range that
+    // spans BOTH the pre-4.1.0.1 32-bit-bool band (Morrowind, v<=4.0.0.2)
+    // and the 8-bit-bool band (4.0.0.3..=4.2.2.0). A fixed 1-byte read is
+    // only correct for the latter half; `read_bool()` is version-aware.
+    let has_bv = stream.read_bool()?;
     if has_bv {
         read_and_skip_bounding_volume(stream)?;
     }

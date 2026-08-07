@@ -334,6 +334,33 @@ fn parse_material_color_controller_32_bytes() {
     assert_eq!(ctrl.target_color, 1);
 }
 
+/// Regression for #2067 (TD2-108) — `NiTextureTransformController` had no
+/// direct byte-fixture parse test (only indirect coverage via the
+/// higher-level `anim::tests::channel` embedded-animation import test);
+/// added alongside the swap from a reimplemented prologue to
+/// `NiSingleInterpController::parse`. Byte budget: base 26 +
+/// interpolator_ref 4 + shader_map 1 + texture_slot 4 + operation 4 = 39.
+#[test]
+fn parse_ni_texture_transform_controller_39_bytes() {
+    let header = make_header_fnv();
+    let mut data = Vec::new();
+    write_time_controller_base(&mut data);
+    data.extend_from_slice(&5i32.to_le_bytes()); // interpolator_ref
+    data.push(1); // shader_map = true
+    data.extend_from_slice(&2u32.to_le_bytes()); // texture_slot
+    data.extend_from_slice(&4u32.to_le_bytes()); // operation
+    assert_eq!(data.len(), 39);
+
+    let mut stream = NifStream::new(&data, &header);
+    let ctrl = NiTextureTransformController::parse(&mut stream)
+        .expect("NiTextureTransformController must parse at FNV bsver");
+    assert_eq!(stream.position(), 39);
+    assert_eq!(ctrl.interpolator_ref.index(), Some(5));
+    assert!(ctrl.shader_map);
+    assert_eq!(ctrl.texture_slot, 2);
+    assert_eq!(ctrl.operation, 4);
+}
+
 /// #1543 — `NiMaterialColorController` is an `NiInterpController` descendant
 /// (NiPoint3InterpController → NiSingleInterpController → NiInterpController),
 /// so on the 10.1.0.104–108 band it must consume the 1-byte

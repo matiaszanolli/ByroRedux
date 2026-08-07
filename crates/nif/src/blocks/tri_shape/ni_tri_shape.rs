@@ -330,7 +330,14 @@ fn parse_geometry_data_base_inner(
         let _compress_flags = stream.read_u8()?;
     }
 
-    let has_vertices = stream.read_byte_bool()?;
+    // #1843 (NIF-D1-01) — nif.xml: `<field name="Has Vertices" type="bool"
+    // default="true" />`, no `since=` gate — reachable at every version
+    // this function parses, including the pre-4.1.0.1 32-bit-bool band.
+    // `read_bool()` is version-aware; the fixed 1-byte `read_byte_bool()`
+    // this used to call under-reads by 3 bytes on real Morrowind-era
+    // (v<=4.0.0.2) content, cascading unrecoverably (no `block_sizes`
+    // table in that band).
+    let has_vertices = stream.read_bool()?;
     let vertices = if has_vertices {
         stream.read_ni_point3_array(array_count)?
     } else {
@@ -355,7 +362,9 @@ fn parse_geometry_data_base_inner(
         0
     };
 
-    let has_normals = stream.read_byte_bool()?;
+    // #1843 (NIF-D1-01) — nif.xml `Has Normals: bool`, no `since=` gate;
+    // same version-aware-read requirement as `has_vertices` above.
+    let has_normals = stream.read_bool()?;
     let normals = if has_normals {
         stream.read_ni_point3_array(array_count)?
     } else {
@@ -385,7 +394,9 @@ fn parse_geometry_data_base_inner(
     let radius = stream.read_f32_le()?;
 
     // Vertex colors
-    let has_vertex_colors = stream.read_byte_bool()?;
+    // #1843 (NIF-D1-01) — nif.xml `Has Vertex Colors: bool`, no `since=`
+    // gate; same version-aware-read requirement as `has_vertices` above.
+    let has_vertex_colors = stream.read_bool()?;
     let vertex_colors = if has_vertex_colors {
         stream.read_ni_color4_array(array_count)?
     } else {
@@ -429,8 +440,16 @@ fn parse_geometry_data_base_inner(
     // bool IS still read; from v4.0.0.3 onward UV presence is derived from
     // `num_uv_sets`: in the pre-Gamebryo branch this came from the inline
     // u16 at line 701-702, otherwise from `data_flags & 0x3F`. See #325.
+    //
+    // #1843 (NIF-D1-01) — this branch is reached ONLY for
+    // `version() <= V4_0_0_2`, which is always strictly below the
+    // 4.1.0.1 bool-width cutover, so `read_bool()` here always takes its
+    // 32-bit path — but calling it (rather than the fixed-width
+    // `read_byte_bool()` this used to call) makes that correct by
+    // construction instead of by the two version checks happening to
+    // agree, and stays correct if this branch's gate ever moves.
     let has_uv = if stream.version() <= NifVersion::V4_0_0_2 {
-        stream.read_byte_bool()?
+        stream.read_bool()?
     } else {
         num_uv_sets > 0
     };

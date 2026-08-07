@@ -54,13 +54,13 @@ pub struct NiLightColorController {
 
 impl NiLightColorController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let base = parse_interp_controller_base(stream)?;
-        // NiSingleInterpController: interpolator_ref (since 10.1.0.104).
-        let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
-            stream.read_block_ref()?
-        } else {
-            BlockRef::NULL
-        };
+        // #2067 (TD2-108) — NiInterpController base + the version-gated
+        // interpolator_ref (since 10.1.0.104) prologue, via the shared
+        // wrapper instead of reimplementing it inline.
+        let NiSingleInterpController {
+            base,
+            interpolator_ref,
+        } = NiSingleInterpController::parse(stream)?;
         // NiPoint3InterpController contributes no fields; NiLightColorController
         // adds `Target Color: LightColor` (u16, `since="10.1.0.0"` inclusive
         // per the version.rs doctrine). FO3+ all satisfy the gate; pre-Gamebryo
@@ -178,12 +178,11 @@ pub struct NiMaterialColorController {
 
 impl NiMaterialColorController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let base = parse_interp_controller_base(stream)?;
-        let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
-            stream.read_block_ref()?
-        } else {
-            BlockRef::NULL
-        };
+        // #2067 (TD2-108) — shared prologue wrapper; see NiLightColorController above.
+        let NiSingleInterpController {
+            base,
+            interpolator_ref,
+        } = NiSingleInterpController::parse(stream)?;
         // MaterialColor enum (ushort `since="10.1.0.0"` inclusive per the
         // version.rs doctrine). Pre-Gamebryo NetImmerse uses the
         // NiTimeController base `flags` bits for slot selection.
@@ -211,12 +210,11 @@ pub struct NiTextureTransformController {
 
 impl NiTextureTransformController {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
-        let base = parse_interp_controller_base(stream)?;
-        let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
-            stream.read_block_ref()?
-        } else {
-            BlockRef::NULL
-        };
+        // #2067 (TD2-108) — shared prologue wrapper; see NiLightColorController above.
+        let NiSingleInterpController {
+            base,
+            interpolator_ref,
+        } = NiSingleInterpController::parse(stream)?;
         let shader_map = stream.read_byte_bool()?;
         let texture_slot = stream.read_u32_le()?;
         let operation = stream.read_u32_le()?;

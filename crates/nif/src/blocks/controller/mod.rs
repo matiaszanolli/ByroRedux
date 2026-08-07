@@ -593,13 +593,13 @@ impl NiFloatExtraDataController {
         // NiExtraDataController inherits NiSingleInterpController →
         // NiInterpController, so it carries the Manager Controlled bool on
         // the 10.1.0.104–108 band. Route through the shared base. (#1543)
-        let base = parse_interp_controller_base(stream)?;
-        // NiSingleInterpController.interpolator_ref (since 10.1.0.104).
-        let interpolator_ref = if stream.version() >= NifVersion::V10_1_0_104 {
-            stream.read_block_ref()?
-        } else {
-            BlockRef::NULL
-        };
+        //
+        // #2067 (TD2-108) — base + interpolator_ref via the shared wrapper
+        // instead of reimplementing the prologue inline.
+        let NiSingleInterpController {
+            base,
+            interpolator_ref,
+        } = NiSingleInterpController::parse(stream)?;
         // NiExtraDataController.extra_data_name (since 10.2.0.0).
         let extra_data_name = if stream.version() >= NifVersion::V10_2_0_0 {
             stream.read_string()?

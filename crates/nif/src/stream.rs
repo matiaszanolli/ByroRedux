@@ -200,9 +200,24 @@ impl<'a> NifStream<'a> {
         }
     }
 
-    /// Read a 1-byte boolean (`bool` type in niftools, NOT `NiBool`).
-    /// NiGeometryData and related blocks use 1-byte bools for
-    /// has_vertices, has_normals, has_colors, etc. in all versions.
+    /// Read a genuinely fixed-width 1-byte boolean — nif.xml's `type="byte"`
+    /// fields used as flags (e.g. `NiTextureEffect.Enable Plane`, whose own
+    /// nif.xml doc says "Always 8-bit"), NOT the version-dependent
+    /// `<basic name="bool">` type.
+    ///
+    /// #1843 (NIF-D1-01) — this doc comment previously claimed
+    /// "NiGeometryData and related blocks use 1-byte bools for
+    /// has_vertices, has_normals, has_colors, etc. in all versions", which
+    /// contradicts nif.xml: those specific fields (`Has Vertices`, `Has
+    /// Normals`, `Has Vertex Colors`, `Has UV`, `Has Bounding Volume`, and
+    /// `NiTexturingProperty`'s `Has *Texture` fields) are ALL the
+    /// version-dependent `bool` basic type — 32-bit up to and including
+    /// 4.0.0.2, 8-bit from 4.1.0.1 on — and must go through [`Self::
+    /// read_bool`] instead. Every game Redux ships against today
+    /// (Morrowind's oldest live band is Oblivion's v10.0.1.0+) sits
+    /// entirely in the 8-bit era, so `read_bool()` and `read_byte_bool()`
+    /// happen to agree there; the distinction only matters for genuine
+    /// pre-4.1.0.1 NetImmerse content (Morrowind, v<=4.0.0.2).
     pub fn read_byte_bool(&mut self) -> io::Result<bool> {
         Ok(self.read_u8()? != 0)
     }
