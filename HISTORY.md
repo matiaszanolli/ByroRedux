@@ -24,6 +24,99 @@ Commits hold that record.
 
 ---
 
+## Session 63 — Renderer audit bug-bash, exterior streaming resumability, save/load registry completeness, sandboxed mod runtime, and a 36-issue NIFAL dedup/doc sweep  (2026-08-01 → 2026-08-07, `b00a8902..03be068d`, 95 commits)
+
+A long, multi-threaded session with no single planned arc: a 2026-08-02
+renderer audit drove the largest chunk of work, exterior streaming picked
+up a resumability + telemetry pass aimed at Session 62's flagged
+large-cell frame-time spikes, save/load extended its component-registry
+completeness sweep, a new sandboxed mod-runtime crate landed, and the
+standing NIF/NIFAL audit cadence closed roughly 60 more issues — the last
+36 via nine back-to-back four-issue `/fix-issue` batches at session end.
+`/session-close` caught one stale audit-skill path
+(`audit-tech-debt/SKILL.md`'s `import/tests.rs` mention, stale since
+#2311's split) and fixed it as part of this close.
+
+- **Renderer correctness bug-bash (fog/shadow/RT, ~20 issues).** Water
+  caustics refract through the wave-perturbed normal (#2223); fire-refraction
+  proxies no longer occlude shadow rays (#2224); skinned RT hit normals
+  reconstruct from deformed geometry, not rest-pose (#2219); NIF light
+  kind/direction/cone finally wires through to `GpuLight` (#2205);
+  height-fog anchors to ground height instead of camera eye height (#2225);
+  a stale exterior `SkyParamsRes` no longer leaks into interiors (#2226);
+  fog-volume cluster constants moved onto `shader_constants_data.rs`
+  (#2229) with boot density-noise cached (#2231) and a GLSL/Rust lockstep
+  test added (#2228); shadow-projection flags route through a per-game
+  canonicalization boundary (#2250); Starfield's packed bitangent sign
+  normalizes to exactly ±1 (#2246); the Cornell RT harness gained real
+  fog/fire-refraction coverage (#2248/#2249); and the dims-9-12
+  renderer-audit batch (#2234–#2237) closed that sweep's remainder.
+- **Renderer/GPU tech-debt splits.** `CompositeParams` assembly,
+  `sample_scalar`/`sample_color` keyed-lerp, `record_post_passes`, and
+  `build_tlas` each extracted into focused helpers (#2255/#2260/#2258/#2259);
+  `crates/hkx` added to the audit crate roster (#2261).
+- **NIF/material audit fixes.** Oblivion packed-mesh winding now respects
+  the authored triangle normal (#2193); FO3/FNV fire-refraction mirrors
+  into canonical `MaterialInfo` (#2321); six `BSLightingShaderProperty`
+  scalars landed on canonical `Material` (#2284); `BSSegmentedTriShape`'s
+  segment loop is now `check_alloc`-bounded (#2329); `has_material_data`
+  is no longer misread as specular authorship (#2352); BA2 DX10 chunk
+  sizes are capped (#2356); plus doc/gating fixes for `nif_stats`
+  histograms (#2323), legacy texture-clamp consumption (#2328), and a
+  four-issue bundle on `material.ior`/sky bloom/MLP shadow mask/caustic
+  dither (#2232/#2233/#2238/#2239).
+- **Scripting/AI fixes.** `MoveTo` gives up cleanly on an unresolvable
+  actor (#2287); `WaitForActors3DLoaded` retries are wait-time-capped
+  (#2288); interior spawns ground on walkable surfaces; ragdoll activation
+  stabilized; NPC `parent_part` tagging scopes only the newly attached
+  subtree (#2276).
+- **Save/load registry completeness (M45 hardening, 8 commits).**
+  `TwoStateActivator`, `ScriptVariables`, `ActorControlState`/
+  `PlayerControlState`, `RigidBodyData` (#2379), `RumbleOnActivate`
+  (#2382), `Material` (#2378), `FragmentExecutionQueue` (#2381), and the
+  MQ101 fragment-effect trio (#2380) registered with `SaveRegistry`, plus
+  a completeness guard past NPC-spawn-stamped state (#2295). M45 was
+  already feature-complete (Session 45/46); this closes gaps the
+  registry-completeness check surfaced.
+- **Exterior streaming: resumability + perf + telemetry (8 commits).**
+  Readiness checks/logging, boundary-crossing telemetry, resumable
+  (cooperative-yield) cell loading + precombined-mesh spawning, unload
+  phase timings, and batched despawn/registry-teardown — aimed at the
+  large-cell frame-time spikes Session 62 flagged as open.
+- **New feature: sandboxed mod runtime.** A draft requirements doc for
+  sandboxed linked mods preceded `crates/mod-runtime` (`9f619355`), a new
+  workspace member.
+- **Roadmap planning: M61 wet-surface system.** Added as a new Tier-8
+  milestone (surfaced while fixing #2240), extended same-session with
+  procedural snow and Fallout radstorm accumulation variants — the
+  radstorm trigger signal is flagged as an open research question, not
+  guessed. Planning only, no implementation.
+- **NIFAL/NIF-parser audit sweep — 36 issues via nine `/fix-issue`
+  batches (2026-08-06/07).** Stale doc citations after module splits
+  (collision resolver paths, GpuInstance/GpuMaterial byte sizes, a false
+  BSDynamicTriShape rationale); dedup fixes (strip-to-triangle destrip
+  unified across 3 sites — #2298; particle emitter override-folding
+  unified into its declared boundary — #2300; `clamp_sign`/keyed-lerp/
+  animation-discriminator duplication removed); and two real correctness
+  fixes — **#2283**, a regression of closed #1207 where
+  `BsTriShapeKind::MeshLOD`'s parsed LOD cutoffs were discarded on every
+  real parse (fixed at the source, tests rewritten to drive the real
+  dispatcher instead of unreachable hand-built fixtures), and **#2285**,
+  hardening `finish_trimesh`'s collision bounds-check so a corrupt NIF can
+  no longer splice two unrelated geometry buffers via a cross-buffer index
+  that only resolves after a later buffer merges in.
+
+Net: tests 4186 → **4372** (+186, 132 ignored unchanged), full workspace
+green, zero warnings; Rust total LOC ~340 505 → **~353 415** (+12 910);
+workspace members 26 → **27** (+`crates/mod-runtime`); ~97 issues
+referenced, most closed. Bench-of-record refreshed once mid-session
+(R6a-stale-18 closed 2026-08-04 at `28155b79`) but drifted **37 commits**
+stale by session end — flagged as R6a-stale-19 rather than re-run now,
+since none of the post-refresh commits touch a renderer hot path; re-run
+at the next renderer-touching session.
+
+---
+
 ## Session 62 — Volumetric fog/GI, MQ101 cinematic vertical slice (SCEN/PACK-scene + Havok HKX), streaming resumability, ten-issue bug-bash  (2026-07-26 → 2026-08-01, `5f0220eb..7e068c7d`, 61 commits)
 
 Four large threads ran in parallel rather than one planned arc. The renderer
