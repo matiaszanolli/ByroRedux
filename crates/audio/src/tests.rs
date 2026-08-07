@@ -1176,3 +1176,26 @@ fn reversed_attenuation_normalizes_instead_of_panicking() {
     };
     assert_eq!(ok.distance_range(), 0.5..=12.0);
 }
+
+/// AUD-2026-08-07-D5-01 — the reverb-send gate that both
+/// `drain_pending_oneshots` and `dispatch_new_oneshots` now share via
+/// `apply_reverb_send` must key off `SILENCE_DB`, not a re-typed
+/// literal. Pins the boundary at exactly `SILENCE_DB` (exclusive) and
+/// the two documented callers' sentinel/typical values.
+#[test]
+fn reverb_send_gate_matches_silence_db_boundary() {
+    // Below or exactly at the floor: gate stays closed.
+    assert!(!reverb_send_gate_open(SILENCE_DB));
+    assert!(!reverb_send_gate_open(SILENCE_DB - 0.01));
+    // f32::NEG_INFINITY is the documented "reverb off" construction
+    // default (`AudioWorld::new`) — must never open the gate.
+    assert!(!reverb_send_gate_open(f32::NEG_INFINITY));
+    // NaN must not slip through via a `>` comparison quirk.
+    assert!(!reverb_send_gate_open(f32::NAN));
+
+    // Above the floor: gate opens. -12.0 dB is the interior send level
+    // `reverb_zone_system` applies (byroredux/src/systems/audio.rs).
+    assert!(reverb_send_gate_open(SILENCE_DB + 0.01));
+    assert!(reverb_send_gate_open(-12.0));
+    assert!(reverb_send_gate_open(0.0));
+}

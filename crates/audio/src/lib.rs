@@ -149,6 +149,33 @@ fn linear_volume_to_db(volume: f32) -> f32 {
     }
 }
 
+/// Route a fraction of `builder`'s signal to the global reverb send if
+/// one exists and the level isn't muted (below [`SILENCE_DB`]).
+/// `with_send` takes a Decibels-convertible f32; the f32 is treated as
+/// raw dB, so `f32::NEG_INFINITY` is a clean "no reverb" sentinel.
+/// AUD-2026-08-07-D5-01 — was inlined verbatim at two dispatch sites,
+/// each re-expressing the `SILENCE_DB` threshold as a bare literal.
+fn apply_reverb_send(
+    mut builder: SpatialTrackBuilder,
+    reverb_send: Option<&SendTrackHandle>,
+    reverb_send_db: f32,
+) -> SpatialTrackBuilder {
+    if let Some(reverb) = reverb_send {
+        if reverb_send_gate_open(reverb_send_db) {
+            builder = builder.with_send(reverb.id(), reverb_send_db);
+        }
+    }
+    builder
+}
+
+/// The audible-threshold half of [`apply_reverb_send`]'s gate, split out
+/// so it's unit-testable independent of kira's `SpatialTrackBuilder`
+/// (whose internal `sends` map isn't introspectable outside the kira
+/// crate). Mirrors [`linear_volume_to_db`]'s [`SILENCE_DB`] floor.
+fn reverb_send_gate_open(reverb_send_db: f32) -> bool {
+    reverb_send_db.is_finite() && reverb_send_db > SILENCE_DB
+}
+
 // Re-export the kira types downstream crates need so they can hold
 // `Arc<StaticSoundData>` (in `Resource`s, components, etc.) without
 // pulling kira as a direct dependency. The audio crate is the canon
@@ -795,18 +822,15 @@ fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
         );
     }
     for p in pending {
-        let mut track_builder =
+        let track_builder =
             SpatialTrackBuilder::new().distances(p.attenuation.distance_range());
         // Phase 6: route a fraction of this track's signal to the
-        // global reverb send if one exists and the level isn't
-        // muted. with_send takes a Decibels-convertible f32; the
-        // f32 is treated as raw dB, so f32::NEG_INFINITY is a clean
-        // "no reverb" sentinel.
-        if let Some(reverb) = audio_world.reverb_send.as_ref() {
-            if audio_world.reverb_send_db.is_finite() && audio_world.reverb_send_db > -60.0 {
-                track_builder = track_builder.with_send(reverb.id(), audio_world.reverb_send_db);
-            }
-        }
+        // global reverb send, if one exists and the level isn't muted.
+        let track_builder = apply_reverb_send(
+            track_builder,
+            audio_world.reverb_send.as_ref(),
+            audio_world.reverb_send_db,
+        );
         let mut track = match mgr.add_spatial_sub_track(listener_id, p.position, track_builder) {
             Ok(t) => t,
             Err(e) => {
@@ -913,18 +937,15 @@ fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld) {
         // exclusive `..` range we use elsewhere doesn't impl
         // `Into<SpatialTrackDistances>`. The values are min..=max
         // game-units, falloff between is linear (kira default).
-        let mut track_builder =
+        let track_builder =
             SpatialTrackBuilder::new().distances(p.attenuation.distance_range());
         // Phase 6: route a fraction of this track's signal to the
-        // global reverb send if one exists and the level isn't
-        // muted. with_send takes a Decibels-convertible f32; the
-        // f32 is treated as raw dB, so f32::NEG_INFINITY is a clean
-        // "no reverb" sentinel.
-        if let Some(reverb) = audio_world.reverb_send.as_ref() {
-            if audio_world.reverb_send_db.is_finite() && audio_world.reverb_send_db > -60.0 {
-                track_builder = track_builder.with_send(reverb.id(), audio_world.reverb_send_db);
-            }
-        }
+        // global reverb send, if one exists and the level isn't muted.
+        let track_builder = apply_reverb_send(
+            track_builder,
+            audio_world.reverb_send.as_ref(),
+            audio_world.reverb_send_db,
+        );
         let mut track = match mgr.add_spatial_sub_track(listener_id, p.position, track_builder) {
             Ok(t) => t,
             Err(e) => {
