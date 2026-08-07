@@ -764,3 +764,40 @@ fn import_embedded_animations_captures_inline_transform_controller() {
         "duration follows the last transform key time"
     );
 }
+
+/// #2304 / NIFAL-D7-03 — `float_target_from_operation` is the single
+/// source of truth for `NiTextureTransformController.operation` ->
+/// `FloatTarget`, shared by the KF (`extract_texture_transform_channel`)
+/// and embedded (`entry.rs`) controller-import arms. Pin every discriminant
+/// (including the out-of-range fallback) so the two arms can't silently
+/// diverge if a new operation value is ever added to only one of them.
+#[test]
+fn float_target_from_operation_covers_every_discriminant() {
+    assert_eq!(float_target_from_operation(0), FloatTarget::UvOffsetU);
+    assert_eq!(float_target_from_operation(1), FloatTarget::UvOffsetV);
+    assert_eq!(float_target_from_operation(2), FloatTarget::UvScaleU);
+    assert_eq!(float_target_from_operation(3), FloatTarget::UvScaleV);
+    assert_eq!(float_target_from_operation(4), FloatTarget::UvRotation);
+    assert_eq!(
+        float_target_from_operation(5),
+        FloatTarget::UvOffsetU,
+        "unrecognized operation values fall back to UvOffsetU"
+    );
+}
+
+/// #2304 / NIFAL-D7-03 — `color_target_from_target_color` is the single
+/// source of truth for `NiMaterialColorController.target_color` ->
+/// `ColorTarget`, shared by the KF (`extract_color_channel`) and embedded
+/// (`entry.rs`) controller-import arms.
+#[test]
+fn color_target_from_target_color_covers_every_discriminant() {
+    assert_eq!(color_target_from_target_color(0), ColorTarget::Diffuse);
+    assert_eq!(color_target_from_target_color(1), ColorTarget::Ambient);
+    assert_eq!(color_target_from_target_color(2), ColorTarget::Specular);
+    assert_eq!(color_target_from_target_color(3), ColorTarget::Emissive);
+    assert_eq!(
+        color_target_from_target_color(4),
+        ColorTarget::Diffuse,
+        "unrecognized target_color values fall back to Diffuse"
+    );
+}

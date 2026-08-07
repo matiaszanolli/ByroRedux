@@ -276,6 +276,21 @@ pub fn sample_color_keys_bspline_point3(
     keys
 }
 
+/// Map `NiMaterialColorController.target_color` (0=diffuse, 1=ambient,
+/// 2=specular, 3=emissive) to the corresponding [`ColorTarget`]. Shared by
+/// the KF arm ([`extract_color_channel`]) and the embedded-controller arm
+/// (`entry.rs`'s `NiMaterialColorController` case) so a future new
+/// `ColorTarget` variant can't silently diverge between the two import
+/// paths (#2304 / NIFAL-D7-03).
+pub fn color_target_from_target_color(target_color: u16) -> ColorTarget {
+    match target_color {
+        1 => ColorTarget::Ambient,
+        2 => ColorTarget::Specular,
+        3 => ColorTarget::Emissive,
+        _ => ColorTarget::Diffuse,
+    }
+}
+
 /// Extract a color channel from a material-color controller interpolator
 /// chain. Used by `NiMaterialColorController`. Accepts both color-
 /// interpolator shapes via [`resolve_color_keys`].
@@ -285,20 +300,13 @@ pub fn extract_color_channel(scene: &NifScene, cb: &ControlledBlock) -> Option<C
         return None;
     }
 
-    // Determine which material color slot from the controller.
-    // NiMaterialColorController.target_color:
-    // 0=diffuse, 1=ambient, 2=specular, 3=emissive. Default to Diffuse
-    // when the controller isn't resolvable (most common target anyway).
+    // Default to Diffuse when the controller isn't resolvable (most common
+    // target anyway).
     let target = cb
         .controller_ref
         .index()
         .and_then(|idx| scene.get_as::<crate::blocks::controller::NiMaterialColorController>(idx))
-        .map(|ctrl| match ctrl.target_color {
-            1 => ColorTarget::Ambient,
-            2 => ColorTarget::Specular,
-            3 => ColorTarget::Emissive,
-            _ => ColorTarget::Diffuse,
-        })
+        .map(|ctrl| color_target_from_target_color(ctrl.target_color))
         .unwrap_or(ColorTarget::Diffuse);
 
     Some(ColorChannel { target, keys })
@@ -366,6 +374,23 @@ pub fn extract_bool_channel_at(scene: &NifScene, mut interp_idx: usize) -> Optio
     })
 }
 
+/// Map `NiTextureTransformController.operation` to the corresponding
+/// [`FloatTarget`]. Shared by the KF arm
+/// ([`extract_texture_transform_channel`]) and the embedded-controller arm
+/// (`entry.rs`'s `NiTextureTransformController` case) so a future new
+/// `FloatTarget` variant can't silently diverge between the two import
+/// paths (#2304 / NIFAL-D7-03).
+pub fn float_target_from_operation(operation: u32) -> FloatTarget {
+    match operation {
+        0 => FloatTarget::UvOffsetU,
+        1 => FloatTarget::UvOffsetV,
+        2 => FloatTarget::UvScaleU,
+        3 => FloatTarget::UvScaleV,
+        4 => FloatTarget::UvRotation,
+        _ => FloatTarget::UvOffsetU,
+    }
+}
+
 /// Extract a texture transform float channel.
 /// Maps NiTextureTransformController.operation to the appropriate FloatTarget.
 pub fn extract_texture_transform_channel(
@@ -379,14 +404,7 @@ pub fn extract_texture_transform_channel(
         .and_then(|idx| {
             scene.get_as::<crate::blocks::controller::NiTextureTransformController>(idx)
         })
-        .map(|ctrl| match ctrl.operation {
-            0 => FloatTarget::UvOffsetU,
-            1 => FloatTarget::UvOffsetV,
-            2 => FloatTarget::UvScaleU,
-            3 => FloatTarget::UvScaleV,
-            4 => FloatTarget::UvRotation,
-            _ => FloatTarget::UvOffsetU,
-        })
+        .map(|ctrl| float_target_from_operation(ctrl.operation))
         .unwrap_or(FloatTarget::UvOffsetU);
 
     extract_float_channel(scene, cb, target)

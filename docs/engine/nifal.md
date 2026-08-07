@@ -253,16 +253,37 @@ controllers set `text_keys: Vec::new()` by design (mesh-local controllers carry 
 event keys). Intentionally parked (captured, no renderer consumer yet, *not*
 leaks): per-light **ambient** colour channels and **morph-weight** channels.
 
+`anim_convert::convert_nif_clip` is the single NIF→core boundary, but not the
+only production boundary for the canonical `AnimationClip`: Skyrim's cart/
+furniture idles ship as Havok 2010 packfiles (`.hkx`), not NIF, so
+`byroredux/src/asset_provider/animation.rs::convert_hkx_clip` is a second,
+declared boundary — same source-agnostic `AnimationClip` target, no parallel
+struct (#2305 / NIFAL-D7-NEW-01). It reads `HkxSkeleton`/`HkxAnimation` (the
+`hkx` crate's parse of the packfile) and builds `TransformChannel`s directly,
+same Z-up→Y-up conversion as the NIF path. One deliberate, documented
+exception to no-fabrication: `behavior_completion_events` synthesizes two
+text-key events — `ExitCartEnd` and `IdleFurnitureExit` — appended at
+`animation.duration` for any idle whose event name matches the
+`idlecart*exit` pattern, when neither is already present in the authored
+annotations. Those completions live in Skyrim's behavior graph, not in the
+per-clip `.hkx` data the parser reads, so `convert_hkx_clip` fabricates the
+two the ECS scripting layer needs to detect cart/furniture-exit completion
+without a full behavior-graph interpreter.
+
 ### Shader flags / texture sets / effect shaders — **converged (surveyed 2026-06-02)**
 
 The "GameVariant trait" the early docs called aspirational is realised *as the
 correct shape*, not as a trait: per-game flag vocabularies live as namespaced
 constants in one file (`shader_flags.rs` — `fo3nv_f1`, `skyrim_slsf1`, `fo4_slsf1`,
 + FO76/Starfield CRC32 arrays), dispatched by **block type** (the wire format
-already discriminates the game), with the `ShaderFlags<'a>` typed view + compile-time
-equivalence asserts (bits 26/27) guarding the bit-meaning collisions (e.g. bit 21
-flags2 = Alpha_Decal/Cloud_LOD/Anisotropic across three games). Decal / two-sided
-are read once per property type into `MaterialInfo`; the renderer reads
+already discriminates the game), with `#[test]`-gated runtime equivalence asserts
+(bits 26/27, e.g. `fo3nv_and_skyrim_decal_bits_agree`) guarding the bit-meaning
+collisions (e.g. bit 21 flags2 = Alpha_Decal/Cloud_LOD/Anisotropic across three
+games). The `ShaderFlags<'a>` typed view that used to wrap these constants was
+deleted as transitively dead (#1897); production import reads the constants
+directly via `is_decal_from_legacy_shader_flags` / `is_decal_from_modern_shader_flags`
+/ `is_two_sided_from_modern_shader_flags` (`crates/nif/src/import/material/mod.rs`).
+Decal / two-sided are read once per property type into `MaterialInfo`; the renderer reads
 `material.is_decal` / `two_sided` with no per-game branch (verified: `triangle.frag`
 has zero `if game ==`). Texture-slot→role mapping (`BSShaderTextureSet`) is one
 decision tree keyed on `shader_type` (block structure, not a game check). All 9

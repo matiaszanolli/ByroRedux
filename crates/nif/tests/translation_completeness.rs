@@ -403,38 +403,92 @@ fn cross_game_translation_completeness() {
     // native metadata; newer games (FO4+) have higher due to BGSM support.
     // Thresholds are tracked in each closure; drift beyond them signals a
     // translation regression.
-    eprintln!("\n=== PER-GAME FILL-RATE FLOORS (#1320) ===");
+    //
+    // Re-measured 2026-08-06 (#2307 / NIFAL-D9-03) against the #2213
+    // stratified sampler (round-robin across content-class buckets instead
+    // of a flat alphabetical prefix) — every floor below that predates
+    // 7dacef90 was measured on the OLD confounded sample (Skyrim/Oblivion
+    // 100% from a single content bucket) and has been re-derived here.
+    // Floors keep a margin below the re-measured value (roughly 10-15pp,
+    // more where a metric is inherently low/noisy) rather than pinning to
+    // it exactly, so ordinary content-mix drift doesn't make the gate
+    // flaky; that's intentionally less than a byte-exact pin.
+    //
+    // `metO`/`rghO` (metalness/roughness override) are a special case: the
+    // sole production `ImportedMaterial` constructor
+    // (`crates/nif/src/import/material/mod.rs`) sets both unconditionally
+    // to `Some(..)` from `legacy_pbr`, so they are exactly 100% by
+    // construction on every game, not a per-game content characteristic —
+    // asserted `>= 99.9` (not exactly `100.0`) only to avoid pinning to
+    // float-percentage rounding.
+    eprintln!("\n=== PER-GAME FILL-RATE FLOORS (#1320 / #2307) ===");
     type FillRateAssertion = (&'static str, Box<dyn Fn(&MaterialStats, &str)>);
     let mut fill_assertions: Vec<FillRateAssertion> = vec![
         (
             "Oblivion",
             Box::new(|s, label| {
                 // Oblivion has no native BGSM; minimal metadata in NIF properties.
+                // Measured 2026-08-06 (stratified): tex 91.7%, tan 84.2%.
                 assert!(
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 60.0,
-                    "[{label}] texture_path fill < 60% (got {:.1}%)",
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 80.0,
+                    "[{label}] texture_path fill < 80% (got {:.1}%)",
                     MaterialStats::pct(s.with_texture_path, s.imported_meshes)
                 );
                 assert!(
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 40.0,
-                    "[{label}] tangents fill < 40% (got {:.1}%)",
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 70.0,
+                    "[{label}] tangents fill < 70% (got {:.1}%)",
                     MaterialStats::pct(s.with_tangents, s.imported_meshes)
                 );
+                assert!(
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
+                );
+                // No normal_map floor: measured 0.0% across the stratified
+                // (multi-content-class) sample, not just the pre-#2213
+                // architecture-only one. `apply_texturing_property`
+                // (legacy_properties.rs) does extract Oblivion's
+                // `bump_texture` fallback when authored — this corpus (and,
+                // per #2213's own investigation, Oblivion content
+                // generally) essentially never authors it. Asserting `>=
+                // 0.0` here would guard nothing; a positive floor would be
+                // wrong.
             }),
         ),
         (
             "FO3",
             Box::new(|s, label| {
                 // FO3 similar to Oblivion; improved with some material metadata.
+                // Measured 2026-08-06 (stratified): tex 92.6%, tan 99.1%, nrm 79.2%.
                 assert!(
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 65.0,
-                    "[{label}] texture_path fill < 65% (got {:.1}%)",
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 80.0,
+                    "[{label}] texture_path fill < 80% (got {:.1}%)",
                     MaterialStats::pct(s.with_texture_path, s.imported_meshes)
                 );
                 assert!(
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 45.0,
-                    "[{label}] tangents fill < 45% (got {:.1}%)",
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 85.0,
+                    "[{label}] tangents fill < 85% (got {:.1}%)",
                     MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_normal_map, s.imported_meshes) >= 55.0,
+                    "[{label}] normal_map fill < 55% (got {:.1}%)",
+                    MaterialStats::pct(s.with_normal_map, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
                 );
             }),
         ),
@@ -445,23 +499,39 @@ fn cross_game_translation_completeness() {
                 // `material_kind` (only the Skyrim+ BSLightingShaderProperty arm
                 // does — see import/material/walker.rs). So FNV only classifies
                 // its engine-synthesized effect/nolighting meshes. Measured
-                // 2026-06-13: texture_path 95.1%, material_kind 8.1%, tangents
-                // 97.3% (#1512 recalibration — the old 35% material_kind floor
-                // was an era-assumption never achievable on this corpus).
+                // 2026-08-06 (stratified): texture_path 95.3%, material_kind
+                // 17.6%, tangents 99.3%, normal_map 78.9% (#1512 recalibration —
+                // the old 35% material_kind floor was an era-assumption never
+                // achievable on this corpus).
                 assert!(
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 70.0,
-                    "[{label}] texture_path fill < 70% (got {:.1}%)",
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 82.0,
+                    "[{label}] texture_path fill < 82% (got {:.1}%)",
                     MaterialStats::pct(s.with_texture_path, s.imported_meshes)
                 );
                 assert!(
-                    MaterialStats::pct(s.with_material_kind, s.imported_meshes) >= 5.0,
-                    "[{label}] material_kind fill < 5% (got {:.1}%)",
+                    MaterialStats::pct(s.with_material_kind, s.imported_meshes) >= 10.0,
+                    "[{label}] material_kind fill < 10% (got {:.1}%)",
                     MaterialStats::pct(s.with_material_kind, s.imported_meshes)
                 );
                 assert!(
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 50.0,
-                    "[{label}] tangents fill < 50% (got {:.1}%)",
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 85.0,
+                    "[{label}] tangents fill < 85% (got {:.1}%)",
                     MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_normal_map, s.imported_meshes) >= 55.0,
+                    "[{label}] normal_map fill < 55% (got {:.1}%)",
+                    MaterialStats::pct(s.with_normal_map, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
                 );
             }),
         ),
@@ -471,13 +541,16 @@ fn cross_game_translation_completeness() {
                 // SkyrimSE materials are INLINE BSLightingShaderProperty, not
                 // external BGSM (BGSM is FO4+) — so `material_path` is ~0% and the
                 // identity slot is `material_kind` (set from shader_type on the
-                // BSLightingShaderProperty arm). Measured 2026-06-13: texture_path
-                // 100%, material_kind 60.8%, tangents 100% (#1512 — the old
-                // material_path>=35% floor mis-described Skyrim as "native BGSM"
-                // and could never pass on vanilla inline-material content).
+                // BSLightingShaderProperty arm). Measured 2026-08-06 (stratified):
+                // texture_path 93.8%, material_kind 35.5%, tangents 94.8%,
+                // normal_map 76.1%. material_kind's old 60.8% figure (#1512) was
+                // measured on the pre-#2213 confounded sample (100% from
+                // `meshes\actors\`); the stratified, cross-content-class number
+                // is lower — the floor already sits within 1pp of it, so it's
+                // left as-is rather than tightened further.
                 assert!(
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
-                    "[{label}] texture_path fill < 75% (got {:.1}%)",
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 82.0,
+                    "[{label}] texture_path fill < 82% (got {:.1}%)",
                     MaterialStats::pct(s.with_texture_path, s.imported_meshes)
                 );
                 assert!(
@@ -486,30 +559,62 @@ fn cross_game_translation_completeness() {
                     MaterialStats::pct(s.with_material_kind, s.imported_meshes)
                 );
                 assert!(
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 60.0,
-                    "[{label}] tangents fill < 60% (got {:.1}%)",
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 80.0,
+                    "[{label}] tangents fill < 80% (got {:.1}%)",
                     MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_normal_map, s.imported_meshes) >= 50.0,
+                    "[{label}] normal_map fill < 50% (got {:.1}%)",
+                    MaterialStats::pct(s.with_normal_map, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
                 );
             }),
         ),
         (
             "FO4",
             Box::new(|s, label| {
-                // FO4 has full BGSM + modern material system.
+                // FO4 has full BGSM + modern material system. Measured
+                // 2026-08-06 (stratified): tex 92.7%, mat_path 57.9%, tan 96.3%,
+                // nrm 82.9%.
                 assert!(
-                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 75.0,
-                    "[{label}] texture_path fill < 75% (got {:.1}%)",
+                    MaterialStats::pct(s.with_texture_path, s.imported_meshes) >= 82.0,
+                    "[{label}] texture_path fill < 82% (got {:.1}%)",
                     MaterialStats::pct(s.with_texture_path, s.imported_meshes)
                 );
                 assert!(
-                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 40.0,
-                    "[{label}] material_path fill < 40% (got {:.1}%)",
+                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 48.0,
+                    "[{label}] material_path fill < 48% (got {:.1}%)",
                     MaterialStats::pct(s.with_material_path, s.imported_meshes)
                 );
                 assert!(
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 65.0,
-                    "[{label}] tangents fill < 65% (got {:.1}%)",
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 84.0,
+                    "[{label}] tangents fill < 84% (got {:.1}%)",
                     MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_normal_map, s.imported_meshes) >= 55.0,
+                    "[{label}] normal_map fill < 55% (got {:.1}%)",
+                    MaterialStats::pct(s.with_normal_map, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
                 );
             }),
         ),
@@ -517,20 +622,42 @@ fn cross_game_translation_completeness() {
             "FO76",
             Box::new(|s, label| {
                 // FO76 fully migrated texture references into BGSM — inline
-                // texture_path is nearly empty (~10%); the material identity lives
-                // in material_path. Measured 2026-06-13: texture_path 9.6%,
-                // material_path 90.4%, tangents 100% (#1512 — the old
-                // texture_path>=75% floor assumed FO4-style inline paths, which
-                // FO76 dropped; assert the slot that actually carries the data).
+                // texture_path is nearly empty; the material identity lives in
+                // material_path. Measured 2026-08-06 (stratified): texture_path
+                // 12.6%, material_path 81.3%, tangents 96.6%, normal_map 9.9%
+                // (#1512 — the old texture_path>=75% floor assumed FO4-style
+                // inline paths, which FO76 dropped; assert the slot that
+                // actually carries the data). normal_map's floor stays low and
+                // proportionate to its measured value rather than matching the
+                // other games' ~55% — FO76's own texture identity has mostly
+                // moved to material_path/BGSM by the same shift, so the raw
+                // `Imported*` tier's inline normal_map slot is a minority case
+                // here, not a translation gap (see #2214 — this harness measures
+                // the pre-BGSM-merge tier).
                 assert!(
-                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 75.0,
-                    "[{label}] material_path fill < 75% (got {:.1}%)",
+                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 78.0,
+                    "[{label}] material_path fill < 78% (got {:.1}%)",
                     MaterialStats::pct(s.with_material_path, s.imported_meshes)
                 );
                 assert!(
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 65.0,
-                    "[{label}] tangents fill < 65% (got {:.1}%)",
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 84.0,
+                    "[{label}] tangents fill < 84% (got {:.1}%)",
                     MaterialStats::pct(s.with_tangents, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_normal_map, s.imported_meshes) >= 3.0,
+                    "[{label}] normal_map fill < 3% (got {:.1}%)",
+                    MaterialStats::pct(s.with_normal_map, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
                 );
             }),
         ),
@@ -538,21 +665,37 @@ fn cross_game_translation_completeness() {
             "Starfield",
             Box::new(|s, label| {
                 // Starfield BSGeometry carries NO inline texture path at all —
-                // material lives entirely in material_path (CDB-resolved). Measured
-                // 2026-06-13: texture_path 0.0%, material_path 100%, tangents 100%
-                // (#1512 — the old texture_path>=75% floor was canonically
-                // impossible for BSGeometry; assert material_path + tangents, the
-                // slots that prove the external-.mesh resolver path is intact).
+                // material lives entirely in material_path (CDB-resolved, and
+                // even then only the reference string: this harness measures the
+                // raw `Imported*` tier, before the CDB/BGSM merge — #2214).
+                // Measured 2026-08-06 (stratified): texture_path 0.0%,
+                // material_path 94.9%, tangents 100.0%, normal_map 0.0% (#1512 —
+                // the old texture_path>=75% floor was canonically impossible for
+                // BSGeometry; assert material_path + tangents, the slots that
+                // prove the external-.mesh resolver path is intact).
                 assert!(
-                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 75.0,
-                    "[{label}] material_path fill < 75% (got {:.1}%)",
+                    MaterialStats::pct(s.with_material_path, s.imported_meshes) >= 85.0,
+                    "[{label}] material_path fill < 85% (got {:.1}%)",
                     MaterialStats::pct(s.with_material_path, s.imported_meshes)
                 );
                 assert!(
-                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 65.0,
-                    "[{label}] tangents fill < 65% (got {:.1}%)",
+                    MaterialStats::pct(s.with_tangents, s.imported_meshes) >= 88.0,
+                    "[{label}] tangents fill < 88% (got {:.1}%)",
                     MaterialStats::pct(s.with_tangents, s.imported_meshes)
                 );
+                assert!(
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] metalness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_metalness_override, s.imported_meshes)
+                );
+                assert!(
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes) >= 99.9,
+                    "[{label}] roughness_override fill < 100% (got {:.1}%)",
+                    MaterialStats::pct(s.with_roughness_override, s.imported_meshes)
+                );
+                // No normal_map floor: BSGeometry resolves textures entirely
+                // through the CDB material file, which this raw-tier harness
+                // never merges in (#2214) — 0.0% here is structural, not a gap.
             }),
         ),
     ];

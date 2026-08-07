@@ -355,14 +355,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                 }
                 "NiTextureTransformController" => {
                     if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
-                        let target = match c.operation {
-                            0 => FloatTarget::UvOffsetU,
-                            1 => FloatTarget::UvOffsetV,
-                            2 => FloatTarget::UvScaleU,
-                            3 => FloatTarget::UvScaleV,
-                            4 => FloatTarget::UvRotation,
-                            _ => FloatTarget::UvOffsetU,
-                        };
+                        let target = float_target_from_operation(c.operation);
                         if let Some(idx) = c.interpolator_ref.index() {
                             if let Some(ch) = extract_float_channel_at(scene, idx, target) {
                                 clip.float_channels.push((Arc::clone(&node_name), ch));
@@ -375,12 +368,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                         if let Some(idx) = c.interpolator_ref.index() {
                             let keys = resolve_color_keys_at(scene, idx);
                             if !keys.is_empty() {
-                                let target = match c.target_color {
-                                    1 => ColorTarget::Ambient,
-                                    2 => ColorTarget::Specular,
-                                    3 => ColorTarget::Emissive,
-                                    _ => ColorTarget::Diffuse,
-                                };
+                                let target = color_target_from_target_color(c.target_color);
                                 clip.color_channels
                                     .push((Arc::clone(&node_name), ColorChannel { target, keys }));
                             }
