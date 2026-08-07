@@ -1619,6 +1619,57 @@ fn bgsm_merge_forwards_scalars_child_first() {
     assert!(!is_decal);
 }
 
+/// Regression for #2212 (NIFAL-D8-01): the synthesized NIF F4SF2 bit-25
+/// alpha-test threshold (128/255, #1985) must NOT outrank an authored BGSM
+/// `alpha_test_ref`. Pre-fix, `material.alpha_test` (already `true` from the
+/// NIF flag, set before the BGSM merge loop runs) gated the threshold
+/// write — so a BGSM authoring a non-128 `alpha_test_ref` never landed.
+///
+/// Mirrors the prod `merge_external_material` alpha-test body (minus the
+/// archive-read step), same convention as
+/// `bgsm_merge_forwards_scalars_child_first` above.
+#[test]
+fn bgsm_alpha_test_threshold_wins_over_nif_presynthesized_default() {
+    use byroredux_bgsm::template::ResolvedMaterial;
+    use byroredux_bgsm::{BaseMaterial, BgsmFile};
+
+    let bgsm = BgsmFile {
+        base: BaseMaterial {
+            alpha_test: true,
+            alpha_test_ref: 200, // non-128; must win over the NIF-synthesized default
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let resolved = ResolvedMaterial {
+        file: bgsm,
+        parent: None,
+    };
+
+    // `material.alpha_test` starts `true` with the #1985-synthesized 128/255
+    // threshold, simulating the NIF F4SF2 bit-25 path having already run.
+    let mut alpha_test = true;
+    let mut alpha_threshold = 128.0 / 255.0;
+    let mut set_alpha_test = false;
+    for step in resolved.walk() {
+        let bgsm = &step.file;
+        if bgsm.base.alpha_test {
+            alpha_test = true;
+            if !set_alpha_test {
+                alpha_threshold = f32::from(bgsm.base.alpha_test_ref) / 255.0;
+                set_alpha_test = true;
+            }
+        }
+    }
+
+    assert!(alpha_test);
+    assert!(
+        (alpha_threshold - 200.0 / 255.0).abs() < f32::EPSILON,
+        "authored BGSM alpha_test_ref (200) must win over the NIF-synthesized \
+         default (128), got threshold {alpha_threshold}"
+    );
+}
+
 /// `detect_kind` returns `Bgem` for a buffer with BGEM magic even
 /// when the caller intended BGSM dispatch. This is the unit
 /// foundation for the wrong-extension footgun guard (#758): a forged

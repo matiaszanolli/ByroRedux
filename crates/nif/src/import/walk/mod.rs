@@ -1679,9 +1679,25 @@ fn attenuation_radius(k_const: f32, k_lin: f32, k_quad: f32) -> f32 {
     if k_lin > 1e-6 {
         return ((target - k_const) / k_lin).max(0.0);
     }
-    // No attenuation → effectively infinite. Clamp to a sane default so
-    // the renderer doesn't get a garbage value.
-    2048.0
+    // #2210 (NIFAL-D3-02) — no attenuation → effectively infinite. This is
+    // the OPERATIVE case, not a rare fallback: FNV/FO3 spawnable point
+    // lights ship a zero-only attenuation triple (radius control is
+    // deferred to the ESM LIGH record instead — see
+    // `cell_loader/spawn.rs::spawn_nif_lights`'s ESM-radius preference),
+    // so this branch is what 82/82 measured FNV lights actually hit.
+    //
+    // Pre-fix this returned a bare, uncited `2048.0`. `EXTERIOR_CELL_UNITS`
+    // is a genuine citation instead of a nicer-looking guess: it's the
+    // spec-defined Bethesda exterior cell size (4096 units on a side,
+    // every Gamebryo/Creation title Oblivion→Starfield — see its own doc
+    // comment) and `cell_loader/spawn.rs::light_radius_or_default` already
+    // uses it as the sibling "we don't know this light's true radius, make
+    // it at least visible across a cell" fallback for the exact same
+    // semantic gap. Reusing it here (rather than an unrelated magic
+    // number) keeps both "no radius info" fallbacks in this engine
+    // grounded in the same cited constant instead of two independent
+    // guesses that happen to differ.
+    byroredux_core::math::coord::EXTERIOR_CELL_UNITS
 }
 
 /// Extract a NiBillboardNode mode from a block, if any.

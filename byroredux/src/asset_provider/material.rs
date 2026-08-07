@@ -747,6 +747,15 @@ pub(crate) fn merge_external_material(
     let mut set_blend = false;
     let mut set_fresnel = false;
     let mut set_palette_scale = false;
+    // #2212 (NIFAL-D8-01) — chain-local, unlike `material.alpha_test`
+    // itself. The NIF F4SF2 bit-25 path (`dedicated_shader.rs`) can
+    // pre-set `material.alpha_test = true` before this loop ever runs, so
+    // gating the threshold payload on `!material.alpha_test` (as the code
+    // used to) let that lower-priority NIF-synthesized default block the
+    // authored BGSM `alpha_test_ref` from ever landing. Track "has a BGSM
+    // in THIS chain already set the threshold" separately from the
+    // OR'd boolean, matching every other payload-carrying field above.
+    let mut set_alpha_test = false;
 
     // Determine dispatch kind from magic (authoritative) with extension as
     // fallback. Warn once per path when they disagree — e.g. a mod shipping a
@@ -1068,9 +1077,19 @@ pub(crate) fn merge_external_material(
                 material.is_decal = true;
                 touched = true;
             }
-            if bgsm.base.alpha_test && !material.alpha_test {
+            // #2212 (NIFAL-D8-01) — the boolean itself stays a pure OR
+            // across the chain (matches the `two_sided` / `decal` siblings
+            // above and the doc comment's stated policy), but the
+            // threshold payload uses the chain-local `set_alpha_test`
+            // sentinel, not `material.alpha_test`'s value, so a NIF
+            // F4SF2-bit-25-synthesized default (pre-set before this loop
+            // runs) can never outrank the authored BGSM `alpha_test_ref`.
+            if bgsm.base.alpha_test {
                 material.alpha_test = true;
-                material.alpha_threshold = f32::from(bgsm.base.alpha_test_ref) / 255.0;
+                if !set_alpha_test {
+                    material.alpha_threshold = f32::from(bgsm.base.alpha_test_ref) / 255.0;
+                    set_alpha_test = true;
+                }
                 touched = true;
             }
             // BGSM alpha-blend forwarding. FO4+ moved per-material blend

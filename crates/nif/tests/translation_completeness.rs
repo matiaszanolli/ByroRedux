@@ -46,6 +46,7 @@ use byroredux_core::string::StringPool;
 use byroredux_nif::import::{import_nif_with_resolver, ImportedMesh, MeshResolver};
 use byroredux_nif::parse_nif;
 use common::{open_ba2_by_name, open_mesh_archive, Game, MeshArchive};
+use std::collections::{BTreeMap, VecDeque};
 
 /// Every game the cross-game completeness signal walks. Kept in lock-step
 /// with [`Game::ALL`] by `harness_enumerates_every_supported_game` so the
@@ -215,26 +216,91 @@ impl MaterialStats {
     }
 }
 
-/// Walk the first `SAMPLE_LIMIT` NIFs in `archive`, parse + import each,
-/// aggregate `MaterialStats`. Skips files that fail to extract or parse
-/// (those are surfaced separately by parse_real_nifs.rs).
+/// The stratification bucket for one NIF path: the top-level *content*
+/// directory under the shared `meshes\` archive root (e.g. `actors`,
+/// `architecture`, `clutter`), or the path's own first component when it
+/// isn't rooted under `meshes\` at all. Case-folded and separator-agnostic
+/// (`\` and `/` both appear across BSA/BA2 archives depending on
+/// game/tooling). `meshes\` itself is never a useful bucket key — nearly
+/// every sampled path shares it — so it's stripped before bucketing.
+///
+/// #2213 (NIFAL-D9-01) — this is the key stratified sampling buckets on.
+fn stratification_bucket(path: &str) -> String {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let mut parts = normalized.split('/').filter(|s| !s.is_empty());
+    let first = parts.next().unwrap_or_default();
+    if first == "meshes" {
+        parts.next().unwrap_or(first).to_string()
+    } else {
+        first.to_string()
+    }
+}
+
+/// Round-robin `limit` files out of `files` across [`stratification_bucket`]
+/// groups instead of taking a flat prefix.
+///
+/// #2213 (NIFAL-D9-01) — `files.sort(); files.truncate(limit)` alone
+/// collapses the entire sample onto whatever directory sorts first
+/// alphabetically (Skyrim: 100% from `meshes\actors\`; Oblivion: 100% from
+/// `meshes\architecture\`), confounding the cross-game comparison this
+/// harness exists to make with content-class differences instead. The sort
+/// itself is deliberate and stays (#1279 — without it, BA2 HashMap-iteration
+/// order makes consecutive runs sample different files); the defect was
+/// truncating a flat sorted list, not sorting it.
+///
+/// Fully deterministic: `BTreeMap` iterates buckets in sorted key order, and
+/// each bucket's `VecDeque` preserves the caller's (already-sorted) file
+/// order, so the same input always yields the same sample.
+fn stratified_sample(files: Vec<String>, limit: usize) -> Vec<String> {
+    if files.len() <= limit {
+        return files;
+    }
+    let mut buckets: BTreeMap<String, VecDeque<String>> = BTreeMap::new();
+    for f in files {
+        buckets
+            .entry(stratification_bucket(&f))
+            .or_default()
+            .push_back(f);
+    }
+    let mut sampled = Vec::with_capacity(limit);
+    loop {
+        let mut progressed = false;
+        for queue in buckets.values_mut() {
+            let Some(f) = queue.pop_front() else {
+                continue;
+            };
+            sampled.push(f);
+            progressed = true;
+            if sampled.len() == limit {
+                return sampled;
+            }
+        }
+        if !progressed {
+            return sampled;
+        }
+    }
+}
+
+/// Walk a stratified sample of up to `SAMPLE_LIMIT` NIFs in `archive`,
+/// parse + import each, aggregate `MaterialStats`. Skips files that fail to
+/// extract or parse (those are surfaced separately by parse_real_nifs.rs).
 ///
 /// `resolver` supplies external `.mesh` companion geometry (Starfield
 /// `BSGeometry`); pass `None` for games whose geometry is inline.
 fn collect_stats(archive: &MeshArchive, resolver: Option<&dyn MeshResolver>) -> MaterialStats {
     let mut stats = MaterialStats::default();
-    // Sort before sampling so the 200-NIF window is identical across
-    // runs. `list_files()` returns items in archive-internal order,
-    // which on BA2 happens to be HashMap-iteration order — without the
-    // sort, two consecutive runs sample different 200 NIFs and the
-    // fill-rate comparison becomes useless. Pinned by #1279 verification.
+    // Sort before sampling so the candidate list is identical across runs.
+    // `list_files()` returns items in archive-internal order, which on BA2
+    // happens to be HashMap-iteration order — without the sort, two
+    // consecutive runs would sample different files and the fill-rate
+    // comparison becomes useless. Pinned by #1279 verification.
     let mut files: Vec<String> = archive
         .list_files()
         .into_iter()
         .filter(|p| p.to_ascii_lowercase().ends_with(".nif"))
         .collect();
     files.sort();
-    files.truncate(SAMPLE_LIMIT);
+    let files = stratified_sample(files, SAMPLE_LIMIT);
 
     for path in &files {
         let Ok(bytes) = archive.extract(path) else {
@@ -522,4 +588,126 @@ fn harness_enumerates_every_supported_game() {
              translation-completeness regression signal would be blind to it (#1362)"
         );
     }
+}
+
+/// Regression for #2213 (NIFAL-D9-01): a flat `sort(); truncate(limit)`
+/// collapses the whole sample onto whichever top-level content directory
+/// sorts first. Three directories, none of which sort first alphabetically
+/// relative to each other in a way that would let a flat truncate cover all
+/// three within a small limit, must each contribute at least one file.
+#[test]
+fn stratified_sample_spans_multiple_top_level_directories() {
+    let files: Vec<String> = [
+        "meshes\\actors\\deathclaw\\deathclaw.nif",
+        "meshes\\actors\\dog\\dog.nif",
+        "meshes\\architecture\\prospectorsaloon\\door01.nif",
+        "meshes\\architecture\\prospectorsaloon\\wall01.nif",
+        "meshes\\clutter\\bottle01.nif",
+        "meshes\\clutter\\can01.nif",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+
+    let sampled = stratified_sample(files, 3);
+    assert_eq!(sampled.len(), 3);
+
+    let buckets: std::collections::BTreeSet<String> = sampled
+        .iter()
+        .map(|p| stratification_bucket(p))
+        .collect();
+    assert_eq!(
+        buckets,
+        std::collections::BTreeSet::from([
+            "actors".to_string(),
+            "architecture".to_string(),
+            "clutter".to_string(),
+        ]),
+        "a 3-file sample over 3 directories must draw one from each, not \
+         collapse onto the alphabetically-first directory"
+    );
+}
+
+/// The pre-fix behaviour this issue reports: a flat sorted truncate over
+/// the same corpus would have picked all 3 files from `actors` (the
+/// alphabetically-first directory) and none from `architecture`/`clutter`.
+/// Documents the exact confound the stratified sampler fixes.
+#[test]
+fn flat_truncate_would_have_collapsed_to_one_directory() {
+    let mut files: Vec<String> = [
+        "meshes\\actors\\deathclaw\\deathclaw.nif",
+        "meshes\\actors\\dog\\dog.nif",
+        "meshes\\actors\\radscorpion\\radscorpion.nif",
+        "meshes\\architecture\\prospectorsaloon\\door01.nif",
+        "meshes\\clutter\\bottle01.nif",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    files.sort();
+    files.truncate(3);
+
+    let buckets: std::collections::BTreeSet<String> = files
+        .iter()
+        .map(|p| stratification_bucket(p))
+        .collect();
+    assert_eq!(
+        buckets,
+        std::collections::BTreeSet::from(["actors".to_string()]),
+        "a flat sort+truncate is expected to collapse onto one directory — \
+         this is the confound #2213's stratified_sample fixes"
+    );
+}
+
+/// Determinism: the same input must always yield the same sample (matches
+/// the #1279 guarantee the pre-existing flat sort already provided).
+#[test]
+fn stratified_sample_is_deterministic() {
+    let mut files: Vec<String> = [
+        "meshes\\actors\\deathclaw\\deathclaw.nif",
+        "meshes\\actors\\dog\\dog.nif",
+        "meshes\\architecture\\prospectorsaloon\\door01.nif",
+        "meshes\\clutter\\bottle01.nif",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    files.sort();
+
+    let a = stratified_sample(files.clone(), 3);
+    let b = stratified_sample(files, 3);
+    assert_eq!(a, b);
+}
+
+/// A sample under the limit passes through unchanged (no spurious
+/// reordering when stratification isn't even needed).
+#[test]
+fn stratified_sample_under_limit_returns_all_files_unchanged() {
+    let files: Vec<String> = [
+        "meshes\\actors\\deathclaw\\deathclaw.nif",
+        "meshes\\clutter\\bottle01.nif",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+
+    let sampled = stratified_sample(files.clone(), 200);
+    assert_eq!(sampled, files);
+}
+
+/// `meshes\` itself must never be the bucket key — nearly every path shares
+/// it, so bucketing on it would defeat stratification entirely.
+#[test]
+fn stratification_bucket_strips_shared_meshes_root() {
+    assert_eq!(
+        stratification_bucket("meshes\\actors\\dog\\dog.nif"),
+        "actors"
+    );
+    assert_eq!(
+        stratification_bucket("meshes/architecture/door01.nif"),
+        "architecture"
+    );
+    // A path not rooted under `meshes\` falls back to its own first
+    // component instead of being merged into an unrelated bucket.
+    assert_eq!(stratification_bucket("textures\\actors\\dog.dds"), "textures");
 }

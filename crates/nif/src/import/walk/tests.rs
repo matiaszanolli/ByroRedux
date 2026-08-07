@@ -1022,3 +1022,44 @@ mod emitter_param_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod attenuation_radius_tests {
+    //! #2210 (NIFAL-D3-02) — the no-attenuation fallback must resolve to
+    //! `EXTERIOR_CELL_UNITS`, a cited Bethesda spec constant, not a bare
+    //! uncited literal. This is also the OPERATIVE case on real content:
+    //! FNV/FO3 ship a zero-only attenuation triple on 82/82 measured
+    //! spawnable point lights (range control deferred to the ESM LIGH
+    //! record instead), so this is the value that matters, not an edge case.
+    use super::super::*;
+
+    #[test]
+    fn no_attenuation_falls_back_to_cited_exterior_cell_units() {
+        assert_eq!(
+            attenuation_radius(0.0, 0.0, 0.0),
+            byroredux_core::math::coord::EXTERIOR_CELL_UNITS,
+            "the no-attenuation fallback must be the cited EXTERIOR_CELL_UNITS \
+             constant, not an independent uncited magic number"
+        );
+    }
+
+    #[test]
+    fn quadratic_coefficient_solves_analytically_instead_of_falling_back() {
+        // 1/(0 + 0·d + 1·d²) = 1/256 ⇒ d² = 256 ⇒ d = 16.
+        let radius = attenuation_radius(0.0, 0.0, 1.0);
+        assert!(
+            (radius - 16.0).abs() < 1e-3,
+            "quadratic attenuation must be solved analytically, got {radius}"
+        );
+    }
+
+    #[test]
+    fn linear_coefficient_solves_analytically_instead_of_falling_back() {
+        // 1/(0 + 1.0·d + 0) = 1/256 ⇒ d = 256.
+        let radius = attenuation_radius(0.0, 1.0, 0.0);
+        assert!(
+            (radius - 256.0).abs() < 1e-3,
+            "linear attenuation must be solved analytically, got {radius}"
+        );
+    }
+}

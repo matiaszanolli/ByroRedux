@@ -488,3 +488,256 @@ mod tests {
         assert_eq!(material.fresnel_power, 3.5);
     }
 }
+
+/// #2214 (NIFAL-D9-02) — canonical-tier completeness harness.
+///
+/// `crates/nif/tests/translation_completeness.rs` walks real per-game
+/// corpora but only ever constructs `ImportedMesh`/`ImportedMaterial` (the
+/// RAW, pre-boundary tier) — `translate_material`, the actual NIFAL
+/// parser→canonical boundary this whole abstraction layer exists to
+/// enforce, lives in `byroredux` and is never called from `crates/nif` at
+/// all. That's a crate-graph constraint, not an oversight: `crates/nif`
+/// sits below `byroredux` in the dependency graph, so a raw-tier harness
+/// there physically cannot reach up to call this crate's function. A
+/// translation regression here — a `Material` field silently stopping
+/// receiving its `ImportedMaterial` source value — would sail through the
+/// raw-tier harness untouched (it never inspects `Material` at all) and
+/// through every other test in this file (each pins one specific field or
+/// finding, not the boundary as a whole).
+///
+/// This harness is that missing canonical-tier check, kept in the same
+/// crate specifically because that is the only place `translate_material`
+/// (`pub(crate)`) is callable at all — `byroredux` has no `[lib]` target,
+/// so an external `byroredux/tests/*.rs` integration test cannot see it
+/// either (confirmed: every existing file under `byroredux/tests/` only
+/// imports OTHER workspace crates, e.g. `byroredux_nif`/`byroredux_core`,
+/// never `byroredux` itself).
+///
+/// Scope: material only, matching the boundary that actually exists today
+/// (per `docs/engine/nifal.md`'s rollout order — collision/animation have
+/// no `translate_*` boundary yet to test). Extend this module alongside
+/// each new canonical boundary as NIFAL's rollout reaches it.
+///
+/// Every assertion reads `Material` (canonical), never `ImportedMaterial`
+/// fill rates — the #2214 complaint about the raw-tier harness.
+#[cfg(test)]
+mod canonical_completeness_harness {
+    use super::*;
+    use byroredux_core::ecs::components::material::EmissiveSource;
+    use byroredux_nif::import::{BsEffectShaderData, MaterialTextureSet, NoLightingFalloff};
+
+    /// One `ImportedMaterial` with every field the translation boundary
+    /// copies set to a distinctive, non-default value, so a dropped
+    /// field is a wrong-value assertion failure, not a false-pass against
+    /// an already-zero default. Deliberately NOT glass/decal/effect-carrier
+    /// (`material_kind = 0`, `metalness_override = Some(0.42)` which is
+    /// `>= 0.3`) so `classify_glass_into_material` is a no-op and every
+    /// field below survives `translate_material` untouched — this harness
+    /// tests the copy boundary, not the glass/PBR classifiers (those have
+    /// their own dedicated tests elsewhere in this file and in
+    /// `crates/core`).
+    fn kitchen_sink_source() -> ImportedMaterial {
+        ImportedMaterial {
+            emissive_color: [0.11, 0.22, 0.33],
+            emissive_mult: 1.5,
+            emissive_source: EmissiveSource::Lighting,
+            specular_color: [0.44, 0.55, 0.66],
+            specular_strength: 2.5,
+            diffuse_color: [0.77, 0.88, 0.99],
+            ambient_color: [0.12, 0.34, 0.56],
+            glossiness: 62.0,
+            uv_offset: [0.1, 0.2],
+            uv_scale: [1.3, 1.4],
+            mat_alpha: 0.65,
+            env_map_scale: 0.2, // < 0.3 so it can't itself gate anything below
+            vertex_color_mode: 1,
+            alpha_test: true,
+            alpha_threshold: 0.72,
+            alpha_test_func: 4,
+            material_kind: 0,
+            wireframe: true,
+            flat_shading: true,
+            z_test: false,
+            z_write: false,
+            z_function: 2,
+            metalness_override: Some(0.42), // >= 0.3: keeps classify_glass_into_material a no-op
+            roughness_override: Some(0.58), // in-range: resolve_pbr's clamp is a no-op
+            translucency_subsurface_color: [0.21, 0.22, 0.23],
+            translucency_transmissive_scale: 0.31,
+            translucency_turbulence: 0.41,
+            lighting_effect_1: 0.51,
+            lighting_effect_2: 0.61,
+            subsurface_rolloff: 0.71,
+            rimlight_power: 0.81,
+            backlight_power: 0.91,
+            fresnel_power: 4.5,
+            no_lighting_falloff: Some(NoLightingFalloff {
+                start_angle: 0.1,
+                stop_angle: 0.9,
+                start_opacity: 0.2,
+                stop_opacity: 0.8,
+            }),
+            shader_type_fields: byroredux_core::ecs::components::material::ShaderTypeFields {
+                eye_cubemap_scale: Some(1.23),
+                ..Default::default()
+            },
+            ..ImportedMaterial::default()
+        }
+    }
+
+    fn kitchen_sink_paths() -> ResolvedPaths {
+        ResolvedPaths {
+            textures: MaterialTextureSet {
+                base_color: Some("Textures/Test/diffuse.dds".to_string()),
+                normal: Some("Textures/Test/normal.dds".to_string()),
+                emissive: Some("Textures/Test/glow.dds".to_string()),
+                detail: Some("Textures/Test/detail.dds".to_string()),
+                smooth_spec: Some("Textures/Test/gloss.dds".to_string()),
+                dark: Some("Textures/Test/dark.dds".to_string()),
+                greyscale_lut: Some("Textures/Test/lut.dds".to_string()),
+                ..MaterialTextureSet::default()
+            },
+            material_path: Some("Materials/Test/test.bgsm".to_string()),
+        }
+    }
+
+    /// The core regression: every canonical-tier field the boundary is
+    /// documented to copy must carry its source value through unchanged.
+    /// Deliberately reverting any single `source.X` → `material.X` line in
+    /// `translate_material` fails exactly the corresponding assertion
+    /// below — this is the "fails on a deliberately reintroduced boundary
+    /// drop" contract #2214 asked for.
+    #[test]
+    fn translate_material_copies_every_canonical_field() {
+        let source = kitchen_sink_source();
+        let material = translate_material(&source, Some("TestMesh"), kitchen_sink_paths(), 0);
+
+        assert_eq!(material.emissive_color, [0.11, 0.22, 0.33]);
+        assert_eq!(material.emissive_mult, 1.5);
+        assert_eq!(material.emissive_source, EmissiveSource::Lighting);
+        assert_eq!(material.specular_color, [0.44, 0.55, 0.66]);
+        assert_eq!(material.specular_strength, 2.5);
+        assert_eq!(material.diffuse_color, [0.77, 0.88, 0.99]);
+        assert_eq!(material.ambient_color, [0.12, 0.34, 0.56]);
+        assert_eq!(material.glossiness, 62.0);
+        assert_eq!(material.uv_offset, [0.1, 0.2]);
+        assert_eq!(material.uv_scale, [1.3, 1.4]);
+        assert_eq!(material.alpha, 0.65, "Material::alpha ← source.mat_alpha");
+        assert_eq!(material.env_map_scale, 0.2);
+        assert_eq!(material.vertex_color_mode, 1);
+        assert!(material.alpha_test);
+        assert_eq!(material.alpha_threshold, 0.72);
+        assert_eq!(material.alpha_test_func, 4);
+        assert_eq!(material.material_kind, 0);
+        assert!(material.wireframe);
+        assert!(material.flat_shading);
+        assert!(!material.z_test);
+        assert!(!material.z_write);
+        assert_eq!(material.z_function, 2);
+        assert_eq!(material.metalness, 0.42);
+        assert_eq!(material.roughness, 0.58);
+        assert_eq!(
+            material.translucency_subsurface_color,
+            [0.21, 0.22, 0.23]
+        );
+        assert_eq!(material.translucency_transmissive_scale, 0.31);
+        assert_eq!(material.translucency_turbulence, 0.41);
+        assert_eq!(material.lighting_effect_1, 0.51);
+        assert_eq!(material.lighting_effect_2, 0.61);
+        assert_eq!(material.subsurface_rolloff, 0.71);
+        assert_eq!(material.rimlight_power, 0.81);
+        assert_eq!(material.backlight_power, 0.91);
+        assert_eq!(material.fresnel_power, 4.5);
+
+        // Texture handles.
+        assert_eq!(
+            material.texture_path.as_deref(),
+            Some("Textures/Test/diffuse.dds")
+        );
+        assert_eq!(
+            material.normal_map.as_deref(),
+            Some("Textures/Test/normal.dds")
+        );
+        assert_eq!(material.glow_map.as_deref(), Some("Textures/Test/glow.dds"));
+        assert_eq!(
+            material.detail_map.as_deref(),
+            Some("Textures/Test/detail.dds")
+        );
+        assert_eq!(material.gloss_map.as_deref(), Some("Textures/Test/gloss.dds"));
+        assert_eq!(material.dark_map.as_deref(), Some("Textures/Test/dark.dds"));
+        assert_eq!(
+            material.greyscale_texture.as_deref(),
+            Some("Textures/Test/lut.dds")
+        );
+        assert_eq!(
+            material.material_path.as_deref(),
+            Some("Materials/Test/test.bgsm")
+        );
+
+        // Falloff cone — `no_lighting_falloff` fallback arm (no
+        // `effect_shader` on this fixture, so `.or_else` must be reached).
+        let falloff = material
+            .effect_falloff
+            .expect("no_lighting_falloff must translate to Some(EffectFalloff)");
+        assert_eq!(falloff.start_angle, 0.1);
+        assert_eq!(falloff.stop_angle, 0.9);
+        assert_eq!(falloff.start_opacity, 0.2);
+        assert_eq!(falloff.stop_opacity, 0.8);
+
+        // Non-empty ShaderTypeFields must survive as `Some(Box<..>)`, not
+        // silently dropped to `None`.
+        let stf = material
+            .shader_type_fields
+            .expect("non-empty ShaderTypeFields must translate to Some");
+        assert_eq!(stf.eye_cubemap_scale, Some(1.23));
+    }
+
+    /// A `BsEffectShaderData` falloff must win over `no_lighting_falloff`
+    /// when both are present — pins the `.or_else` precedence order in
+    /// `translate_material` (`effect_shader` first) rather than just its
+    /// presence.
+    #[test]
+    fn effect_shader_falloff_takes_precedence_over_no_lighting_falloff() {
+        let source = ImportedMaterial {
+            effect_shader: Some(BsEffectShaderData {
+                falloff_start_angle: 0.15,
+                falloff_stop_angle: 0.85,
+                falloff_start_opacity: 0.25,
+                falloff_stop_opacity: 0.75,
+                soft_falloff_depth: 0.05,
+                ..Default::default()
+            }),
+            no_lighting_falloff: Some(NoLightingFalloff {
+                start_angle: 0.0,
+                stop_angle: 1.0,
+                start_opacity: 0.0,
+                stop_opacity: 1.0,
+            }),
+            ..ImportedMaterial::default()
+        };
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet::default(),
+            material_path: None,
+        };
+        let material = translate_material(&source, None, paths, 0);
+
+        let falloff = material.effect_falloff.expect("must translate to Some");
+        assert_eq!(falloff.start_angle, 0.15, "effect_shader falloff must win");
+        assert_eq!(falloff.soft_falloff_depth, 0.05);
+    }
+
+    /// An empty `ShaderTypeFields` (the common case — no shader variant
+    /// authored an additional payload) must translate to `None`, not
+    /// `Some(Box::new(Default))`, so downstream `Option` checks stay a
+    /// cheap `is_some()` rather than needing to inspect contents.
+    #[test]
+    fn empty_shader_type_fields_translates_to_none() {
+        let source = ImportedMaterial::default();
+        let paths = ResolvedPaths {
+            textures: MaterialTextureSet::default(),
+            material_path: None,
+        };
+        let material = translate_material(&source, None, paths, 0);
+        assert!(material.shader_type_fields.is_none());
+    }
+}
