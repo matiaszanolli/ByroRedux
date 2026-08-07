@@ -116,6 +116,17 @@ correctly before reporting anything here.
    ring, validation gate, off-frame load). For each claim, the matching dimension
    must verify the CODE delivers it — a docstring promise the code doesn't keep is
    itself a finding.
+6. Run the registry-completeness guard before Dimension 1 starts: `cargo test -p
+   byroredux every_component_or_resource_impl_is_saved_or_explicitly_allowlisted`
+   (SAVE-D1-12, #2295, `byroredux/src/save_io.rs`). It source-scans every `impl
+   Component for` / `impl Resource for` line under
+   `crates/core/src/ecs/components/`, `crates/scripting/src/`, and
+   `crates/physics/src/` and asserts each type is registered in
+   `build_save_registry` XOR listed in the test's own `NOT_SAVED_BY_DESIGN`
+   allowlist with a one-line reason. A green run IS the completeness ledger —
+   Dimension 1 should consume its `NOT_SAVED_BY_DESIGN` list rather than
+   re-deriving completeness from scratch, spot-checking a sample of reasons for
+   staleness (the guard enforces a reason exists, not that it's still true).
 
 ## Phase 2: Launch Dimension Agents
 
@@ -133,12 +144,21 @@ gone. Data-Loss Class = silent-drop.
 - **The registry IS the completeness contract.** Enumerate every component/resource
   in `build_save_registry` and cross-check against the full game-state component
   set (inventory, equipment, lights, animation, scripting, form id, plus the
-  `ItemInstancePool` / `CurrentCellContext` / `PlayerPose` resources). For EACH
-  persistent component type in the codebase that carries player-mutable state,
-  confirm it is either registered OR documented as reconstruct-on-load (derived
-  data: `GlobalTransform`, `WorldBound`; GPU handles: `MeshHandle`,
-  `TextureHandle`, `SkinnedMesh`; transient event markers). An unregistered
-  *mutable* component = HIGH silent-drop finding.
+  `ItemInstancePool` / `CurrentCellContext` / `PlayerPose` / `GameTimeRes` /
+  `QuestAliasInjectionState` resources — the M34 day/night clock and the QUST
+  alias inventory-grant ledger, both registered 2026-08-07). For EACH persistent
+  component type in the codebase that carries player-mutable state, confirm it
+  is either registered OR documented as reconstruct-on-load (derived data:
+  `GlobalTransform`, `WorldBound`; GPU handles: `MeshHandle`, `TextureHandle`,
+  `SkinnedMesh`; transient event markers). An unregistered *mutable* component =
+  HIGH silent-drop finding. Don't re-derive this list by hand — run the
+  SAVE-D1-12 guard (Phase 1 step 6) and start from its `NOT_SAVED_BY_DESIGN`
+  allowlist. Building that allowlist on 2026-08-05 surfaced 7 genuine gaps, all
+  now fixed and registered: `RigidBodyData` (#2379), `RumbleOnActivate`
+  (#2382), `Material` (#2378), `FragmentExecutionQueue` (#2381), and the MQ101
+  cinematic trio `ActorCinematicState`/`HorseTetherState`/
+  `CinematicPresentationState` (#2380). Verify none of the seven regressed back
+  out of `build_save_registry`.
 - **Two lists, one truth (drift hazard).** `MUTABLE_DELTA_COLUMNS` in
   `byroredux/src/save_io.rs` is a SEPARATE hardcoded `&[&str]` from the
   `register_component` calls in `build_save_registry`. The live load only overlays
@@ -150,7 +170,13 @@ gone. Data-Loss Class = silent-drop.
   `Parent`, `Children`, the form-id key). Flag any registered-but-not-overlaid
   mutable column as HIGH (silent-drop on load). Guard: `delta_columns_carry_only_session_stable_fields`
   (#1720, `47dad578`) tripwires any future addition to `MUTABLE_DELTA_COLUMNS`
-  against embedding a `FixedString`/`EntityId`/session-local handle.
+  against embedding a `FixedString`/`EntityId`/session-local handle. `Material`
+  (#2378) and the `ActorCinematicState`/`HorseTetherState` pair (#2380) are
+  current, deliberate instances of this exact pattern — registered but NOT in
+  `MUTABLE_DELTA_COLUMNS` (blast-radius and `EntityId`-hazard reasons
+  respectively, documented at each `register_component` call site in
+  `byroredux/src/save_io.rs`). Verify they stay documented as intentional
+  rather than silently drifting into the HIGH bucket above.
 - **Determinism.** `Snapshot.components` / `.resources` are `BTreeMap` (sorted
   keys) and `save_world` skips empty columns / null resources. Confirm the CRC is
   reproducible at equal state: column ROW order comes from `World::query` iteration
@@ -482,7 +508,10 @@ exact flow, verified against the tree 2026-07-15).
    - **Completeness Ledger** — the two parallel lists (`build_save_registry`
      registrations × `MUTABLE_DELTA_COLUMNS`), marking each registered column
      SAVED-only vs SAVED+OVERLAID vs structural-identity, to expose any
-     save-but-never-replay drift.
+     save-but-never-replay drift. Cross-check the registered side against the
+     SAVE-D1-12 guard's `NOT_SAVED_BY_DESIGN` allowlist (Phase 1 step 6)
+     instead of re-deriving it — anything in neither list is the guard's job
+     to catch, not this report's.
    - **Findings** — grouped by severity (CRITICAL first), deduplicated.
    - **Regression Guards Discovered** — the existing tests
      (`crates/save/tests/round_trip.rs`, the `save_io.rs` test module, the

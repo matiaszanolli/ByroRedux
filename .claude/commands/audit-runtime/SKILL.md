@@ -179,16 +179,25 @@ cannot diff its own baseline:
 | `skin_pool_overflow_attempts` | `.engine.log` last `skin=L/M+S` (`S`) | `== 0` (exact) |
 | `bench_fps_p50` | `bench:` `wall_fps` | **advisory** — report Δ, never gating (see note) |
 | `bench_fps_avg` | `bench:` `wall_fps` | **advisory** — report Δ, never gating (see note) |
+| `bench_frame_p50_ms` | `bench:` `frame_p50_ms` | **advisory** — report Δ, never gating (see note) |
+| `bench_frame_p95_ms` | `bench:` `frame_p95_ms` | **advisory** — report Δ, never gating (see note) |
+| `bench_frame_max_ms` | `bench:` `frame_max_ms` | **advisory** — report Δ, never gating (see note) |
 | `bench_draws_cmds` | `bench:` `draws=N/Mb/Kc` (`N`) | ≤ baseline ×1.1 |
 | `bench_draws_batches` | `bench:` `draws=N/Mb/Kc` (`M`) | ≤ baseline ×1.1 |
 | `bench_draws_gpu_calls` | `bench:` `draws=N/Mb/Kc` (`K`) | ≤ baseline ×1.1 |
 
 Quirks of these scalars (don't fabricate around them):
 
-- The engine emits ONE `wall_fps`, not a percentile distribution. The baseline's
-  `bench_fps_p50` and `bench_fps_avg` both map from that one value (re-run and
-  average if you want a true mean). Do not invent a percentile the engine never
-  computes.
+- `wall_fps` itself is still ONE aggregate value (total frames / total elapsed
+  seconds) — `bench_fps_p50` and `bench_fps_avg` both map from that same
+  number (re-run and average if you want a true cross-run mean). But a real
+  per-frame CPU distribution now exists alongside it: `bench_frame_distribution`
+  (`byroredux/src/main.rs`) nearest-rank-percentiles the per-frame
+  `bench_cpu_frame_ms` samples (one push per rendered frame, `about_to_wait`
+  wall-clock) into `frame_p50_ms`/`frame_p95_ms`/`frame_max_ms` on the same
+  `bench:` line, unconditionally — not gated behind `--bench-camera` or
+  streaming mode. Use those three for tail-latency Δs; don't fall back to
+  guessing a distribution from `wall_fps` alone.
 - `draws=N/Mb/Kc` is the #1258 three-way split: `N` input DrawCommands / `M`
   post-merge batches / `K` actual GPU calls. The pre-#1258 single draw count is
   gone.
@@ -197,17 +206,21 @@ Quirks of these scalars (don't fabricate around them):
   a per-point-light tally, so `light_count_directional` is effectively a
   constant 1 and there is no `light_count_point`.
 
-> **`bench_fps_*` is advisory, not gating (RT-2, #1701).** The engine's single
-> `wall_fps` is a headless wall-clock measurement under `xvfb-run`, where
-> Xvfb scheduling jitter dominates — especially on small, fast cells (Oblivion
-> `ICMarketDistrictTheGildedCarafe`: 701 entities, ~4 GPU calls, ~400 fps). Two
-> independent sweeps flagged a phantom fps "regression" there with every
-> structural metric unchanged: RT-2 (06-14) recommended demoting it, and the
-> 06-23 sweep (#1701, 411.8→352.3, −14.4 %) is the second data point. Report
-> the Δ for visibility, but **never raise a `bench_fps_*` move as a REGRESSION
+> **`bench_fps_*` / `bench_frame_*_ms` is advisory, not gating (RT-2, #1701).**
+> `wall_fps` and the per-frame `frame_p50_ms`/`frame_p95_ms`/`frame_max_ms`
+> distribution are both headless wall-clock measurements under `xvfb-run`,
+> where Xvfb scheduling jitter dominates — especially on small, fast cells
+> (Oblivion `ICMarketDistrictTheGildedCarafe`: 701 entities, ~4 GPU calls,
+> ~400 fps). Two independent sweeps flagged a phantom fps "regression" there
+> with every structural metric unchanged: RT-2 (06-14) recommended demoting
+> it, and the 06-23 sweep (#1701, 411.8→352.3, −14.4 %) is the second data
+> point — that predates the frame-distribution fields, but the same headless
+> jitter source applies to them equally. Report the Δ for visibility, but
+> **never raise a `bench_fps_*` or `bench_frame_*_ms` move as a REGRESSION
 > finding** — only the structural metrics (textures, mesh-cache, skin pool,
 > entities, draw split) gate. For a real fps investigation, re-run 3× and
-> average (the engine emits one value, not a distribution).
+> average `wall_fps`, or cross-check against the single-run `frame_p95_ms` /
+> `frame_max_ms` tail for a cheaper (if noisier) same-run signal.
 
 > **`entities_total` is a ±2 % tolerance metric, not exact (RT-3, #1705).**
 > It counts *all* ECS entities, including non-rendering bodies — collision-only

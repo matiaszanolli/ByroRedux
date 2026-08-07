@@ -46,7 +46,15 @@ those here.
   `crates/scripting/src/cleanup.rs`, `crates/scripting/src/condition.rs`,
   `crates/scripting/src/trigger.rs`, `crates/scripting/src/quest_stages.rs`,
   `crates/scripting/src/fragment.rs`, `crates/scripting/src/recurring_update.rs`,
-  `crates/scripting/src/registry.rs`, `crates/scripting/src/lib.rs`. Recognizer
+  `crates/scripting/src/registry.rs`, `crates/scripting/src/scene.rs` (added
+  to this inventory 2026-08-07 — SCEN-record playback runtime that has grown
+  into the M47.3 quest-alias substrate: `SceneRegistry`/`ScenePlayer` own
+  scene action sequencing, `SceneActorBindings` is the live
+  `(QuestFormId, AliasId) -> EntityId` alias-fill table `fragment.rs`'s
+  `resolve_object` and `condition.rs`'s `RunOn::QuestAlias` both resolve
+  through, and `apply_alias_injections`/`QuestAliasInjectionState` apply
+  alias-injected factions/inventory onto `FactionRanks`/`Inventory` — see
+  Dim 5/6), `crates/scripting/src/lib.rs`. Recognizer
   chain: `crates/scripting/src/translate/` (`mod`, `source`, `archetype`, `compose`,
   `effects`, `tables`, `recognizers/{mod, quest_stage_gate, rumble,
   two_state_activator}` — `two_state_activator` landed after this file's last
@@ -81,9 +89,19 @@ those here.
   targeting effects and the real-corpus ~0%-yield finding — read before
   flagging anything about those two effects.
 - `docs/engine/m47-3-quest-alias-design.md` — QUST alias (`ALST`/`ALLS`)
-  decode + the future alias-fill runtime. Out of this skill's crate scope,
-  but explains the *current* alias-bound `Property`-resolution decline (see
-  Future-phase gaps) — read before flagging that decline as a bug.
+  decode + the alias-fill/injection runtime, **Phases 0–3 shipped
+  2026-08-07** (commit `a844c26b`). The decode itself
+  (`crates/plugin/src/esm/records/misc/quest.rs`) stays out of this skill's
+  crate scope (a future ESM/quest-focused audit owns it), but the *consumer*
+  runtime — `SceneActorBindings`, alias resolution, alias-injected
+  factions/inventory — now lives in `crates/scripting/src/scene.rs`, which
+  IS in scope (see the crate-scope entry above and Dim 5/6). Read this doc's
+  "Remaining subsystem boundary" section before auditing: it names exactly
+  which fill types / injected-data families are still bounded follow-ups
+  (Created Object spawn, Story Manager event fills, true `LCTN`, reference
+  collections, unloaded-world search, and the packages/spells/keywords
+  overlay families) — flag those as real gaps if a finding assumes they
+  already work, but don't re-file their absence as a new discovery.
 - The crate module docstrings: `crates/pex/src/lib.rs`,
   `crates/pex/src/decompile/mod.rs`, `crates/scripting/src/translate/mod.rs`,
   `crates/scripting/src/fragment.rs`.
@@ -144,30 +162,65 @@ of the "shipped slice" fix around it.
   hand is a real regression; declining with no VMAD registered (no
   `--scripts-bsa`, or the quest's VMAD carried no scripts section) is correct.
 - **Object-targeting fragment effects (`AddItem`/`MoveTo`, 2026-07-21)** — see
-  Dim 5/6 for the mechanism. Real, tested, dispatch-wired — but *live-corpus
-  measured at ~0% real yield* today (`fragment_coverage` found zero hits in
-  both `Skyrim - Misc.bsa` and `Fallout4 - Misc.ba2`): real content
-  overwhelmingly binds the object receiver via an alias accessor
-  (`ObjectReference k = SomeAlias.GetActorRef()`) rather than a bare
-  `ObjectReference Property`, and `bind_local` already declines that whole
-  fragment regardless (a side-effecting call, #1907's discipline) — not a
-  bug in the new effects, a real dormant-until-alias-resolution state.
-  Documented in `docs/engine/m47-2-recognizer-scaling.md` §"Shipped
-  (2026-07-21)". Do not flag the low yield as a defect; do flag it if the
-  *mechanism itself* (lowering or dispatch-time resolution) regresses.
-- **QUST alias decode (M47.3 Phase 0, 2026-07-21, `crates/plugin`)** —
-  `QustRecord.aliases: Vec<QuestAlias>` (`ALST`/`ALLS`/fill-types/`FNAM`/
-  injected data/`ALFI` "Force Into Alias") is now decoded, live-verified
+  Dim 5/6 for the mechanism. Real, tested, dispatch-wired. The original
+  *live-corpus measured at ~0% real yield* finding (`fragment_coverage`
+  found zero hits in both `Skyrim - Misc.bsa` and `Fallout4 - Misc.ba2`,
+  documented in `docs/engine/m47-2-recognizer-scaling.md` §"Shipped
+  (2026-07-21)") predates the M47.3 alias-fill runtime landing
+  (`a844c26b`, 2026-08-07) and is now **stale, not re-verified** — treat it
+  as an open question, not a settled 0%. What changed: an object receiver
+  bound to a bare, alias-bound `ObjectReference Property` now resolves live
+  through `SceneActorBindings` (Dim 5's `ObjectRef` hole-binding bullet)
+  instead of declining, so some of the previously-dormant fragments may now
+  dispatch. What did NOT change: `receiver_object` still declines a
+  *local-variable* receiver copy (`ObjectReference k =
+  SomeAlias.GetActorRef()`) via `bind_local`'s existing discipline (#1907) —
+  that specific decline (method-call-derived locals) is unaffected by the
+  alias runtime and remains correct. `docs/engine/m47-3-quest-alias-design.md`'s
+  own Phase 2 checklist still marks "live-corpus re-measurement of
+  `fragment_coverage`'s `AddItem`/`MoveTo` yield shows a real (non-zero) hit
+  rate" **unchecked** — a fresh `fragment_coverage` run belongs in this
+  audit's findings if not already re-run; do not assume the yield is either
+  still 0% or now non-zero without re-running the harness.
+- **QUST alias decode + fill-and-apply runtime (M47.3, Phases 0–3 shipped
+  2026-08-07, `a844c26b`)** — `QustRecord.aliases: Vec<QuestAlias>`
+  (`ALST`/`ALLS`/fill-types/`FNAM`/injected data/`ALFI` "Force Into Alias")
+  decodes in `crates/plugin/src/esm/records/misc/quest.rs`, live-verified
   against `Skyrim.esm`/`Fallout4.esm` (`crates/plugin/examples/
-  qust_alias_survey.rs` + `qust_alias_rawdump.rs`). This is **pure parser
-  data with zero fill-and-apply runtime** — out of this skill's crate scope
-  (`crates/plugin`, not `pex`/`papyrus`/`scripting`), but directly explains
-  why `QuestRef::Property`/`ObjectRef::Property` still decline on an
-  *alias-bound* VMAD entry (`alias != -1` in `PropertyValue::Object`) even
-  after the VMAD-wiring fix above — that's M47.3 Phase 2, not built. See
-  `docs/engine/m47-3-quest-alias-design.md`. Do not flag the alias-bound
-  decline as a bug, and do not expand this skill's dimensions to cover
-  `quest.rs`'s alias parser — it belongs to a future ESM/quest-focused audit.
+  qust_alias_survey.rs` + `qust_alias_rawdump.rs`). That parser stays out of
+  this skill's crate scope (`crates/plugin`, not `pex`/`papyrus`/
+  `scripting`) — don't expand this skill's dimensions to cover `quest.rs`
+  itself, it belongs to a future ESM/quest-focused audit. **The
+  fill-and-apply runtime this bullet used to describe as unbuilt is now
+  live and IS in scope**, in `crates/scripting/src/scene.rs`:
+  `SceneActorBindings` fills Forced Reference / Unique Actor / loaded Find
+  Matching / Location Alias Reference / External Alias / Force-Into-Alias
+  aliases from loaded candidates, and `apply_alias_injections` applies
+  alias-injected factions onto `FactionRanks` and inventory onto
+  `Inventory` (permanent-grant ledger in `QuestAliasInjectionState`,
+  persisted across save/load — see Dim 6). `QuestRef::Property` still
+  declines on an alias-bound entry — quests themselves aren't alias-fillable,
+  so that's still correct, not a regression
+  (`dispatch_skips_property_targeted_effect_when_the_property_is_alias_bound`).
+  `ObjectRef::Property` (`fragment.rs::resolve_object`, Dim 5) and
+  `RunOn::QuestAlias` (`condition.rs`, Dim 6) now resolve an alias-bound
+  entry (`alias >= 0`) through `SceneActorBindings::resolve` instead of
+  declining — verified live by
+  `dispatch_activate_then_set_open_updates_mq101_style_gate`
+  (`crates/scripting/src/fragment/tests.rs`). **Do not re-flag the
+  alias-bound `ObjectRef::Property`/`RunOn::QuestAlias` decline as still
+  correct-because-unbuilt** — that framing is stale. Real, bounded gaps that
+  DO remain (per `docs/engine/m47-3-quest-alias-design.md`'s "Remaining
+  subsystem boundary" and the commit message): Created Object alias fill
+  (needs a base-record spawn pipeline), From-Event alias fill (needs Story
+  Manager event payloads), Forced Location / true `LCTN` alias traversal,
+  reference-collection aliases, unloaded-world Find-Matching search (Story
+  Manager), and the injected packages/spells/keywords/names/voice-types/
+  combat-override overlay families, which stay parsed-and-exposed as
+  `QuestAliasInjectedOverlays`/`QuestAliasRuntimeOverlays` rather than
+  applied to any consumer component. Flag a finding that assumes one of
+  those already works; don't flag their absence as a new discovery — it's
+  documented, not silent.
 
 ## Parameters (from $ARGUMENTS)
 
@@ -565,8 +618,16 @@ attrs, the `Ident` regex); `crates/papyrus/src/lexer.rs` (`preprocess`,
 `ObjectRef`, `prim_player_gate`, `prim_stage_done`);
 `crates/scripting/src/translate/effects.rs`
 (`lower_fragment`, `classify_effect`, `EffectPrimitive`, `EFFECT_PRIMITIVES`,
-`Effect` incl. the `AddItem`/`MoveTo` object-targeting variants (2026-07-21),
-`receiver_object`, `prim_add_item`, `prim_move_to`);
+`Effect` incl. the `AddItem`/`MoveTo` object-targeting variants (2026-07-21)
+and the `StartQuest`/`StopQuest`/`CompleteQuest`/`ResetQuest`/
+`SetQuestActive`/`FailAllObjectives` quest-lifecycle variants (2026-08-07,
+`a844c26b`) — the latter also widened `SetObjectiveDisplayed`/
+`SetObjectiveCompleted`/`SetObjectiveFailed`'s `objective` field from `u16`
+to `i32` (`prim_set_objective_*`; confirm the widen is a genuine bug fix —
+Bethesda objective indices are a signed 32-bit field on the wire — and not a
+silent range-check loosening), `receiver_object`, `prim_add_item`,
+`prim_move_to`, `prim_start_quest`, `prim_stop_quest`, `prim_complete_quest`,
+`prim_reset_quest`, `prim_set_quest_active`, `prim_fail_all_objectives`);
 `crates/scripting/src/translate/tables.rs` (`CanonicalEvent::from_papyrus`);
 `crates/scripting/src/translate/recognizers/quest_stage_gate.rs` (`recognize`,
 `extract_stage_gate`, `classify_if_condition`);
@@ -635,16 +696,29 @@ refresh; not otherwise covered by this dimension's checklist below).
   copy (`ObjectReference k = SomeProperty; k.AddItem(...)`) — this increment
   deliberately doesn't trace a local back to the property it aliases, so a
   local receiver must decline via `scope.quest_locals`/`scope.decl_locals`,
-  not silently resolve. At *dispatch* time (`fragment.rs`),
-  `resolve_property_form_id` must decline (not guess) when the VMAD
-  `PropertyValue::Object`'s `alias != -1` — an alias-bound property needs
-  the (unbuilt) quest-alias-fill subsystem, and resolving it from the raw
-  `form_id` next to a live alias index would risk a wrong-object
-  application. Then `resolve_object` composes that with
-  `resolve_entity_by_global_form_id` (the same M42.5–8/M47.1 resolver) —
-  verify no path bypasses either hop. Guards: `add_item_declines_on_local_receiver`,
-  `declines_on_unmodeled_effect`, `dispatch_add_item_via_registered_vmad`,
-  `dispatch_move_to_via_registered_vmad` (`crates/scripting/src/fragment/tests.rs`).
+  not silently resolve. At *dispatch* time, `fragment.rs::resolve_object`
+  (M47.3 Phase 2, updated 2026-08-07) branches on the VMAD
+  `PropertyValue::Object`: `alias == -1` still resolves via
+  `resolve_entity_by_global_form_id` (the same M42.5–8/M47.1 resolver,
+  unchanged); `alias >= 0` now resolves through
+  `world.try_resource::<crate::scene::SceneActorBindings>().resolve(context, alias)`
+  instead of declining — the "needs the (unbuilt) quest-alias-fill
+  subsystem" framing this bullet used to carry is **stale**, that subsystem
+  (`crates/scripting/src/scene.rs`) is built and wired. Verify (a) no path
+  still trusts the raw `form_id` sitting beside a live `alias >= 0` index —
+  the historical wrong-object-application hazard this decline guarded
+  against, now avoided by resolving through the binding table instead; (b)
+  a not-yet-loaded/not-yet-filled alias still declines cleanly
+  (`SceneActorBindings::resolve` returns `None`, never fabricates an
+  entity); (c) `resolve_property_form_id` — a *different*, narrower
+  function `fragment.rs` uses for `QuestRef::Property`/scene/idle property
+  lookups elsewhere — is unaffected: it has no alias branch at all and
+  correctly keeps requiring an exact form-id match, since quests and those
+  other lookups are never alias-fillable (don't conflate the two functions).
+  Guards: `add_item_declines_on_local_receiver`, `declines_on_unmodeled_effect`,
+  `dispatch_add_item_via_registered_vmad`, `dispatch_move_to_via_registered_vmad`,
+  `dispatch_activate_then_set_open_updates_mq101_style_gate` (alias-bound
+  `ObjectRef::Property` resolving live) (`crates/scripting/src/fragment/tests.rs`).
 - **`AddItem`/`MoveTo` conservative-shape declines**: `AddItem`'s optional
   3rd arg (`abSilent`) is accepted only as a literal (`bool_arg`'s `None` on
   a present-but-non-literal value must decline the whole primitive, mirroring
@@ -828,7 +902,10 @@ re-exports them and keeps their call sites); `crates/plugin/src/esm/records/inde
 (`ScriptInstanceData`, `ScriptInstance`); `byroredux/src/asset_provider/script.rs`
 (`build_script_provider`, `extract_pex`, the `--scripts-bsa` parse);
 `crates/scripting/src/papyrus_demo/quest_advance.rs` (`quest_advance_system`,
-`QuestAdvanceOnActivate`).
+`QuestAdvanceOnActivate`); `byroredux/src/cell_loader/references/mod.rs`
+(`stamp_quest_reference`, `spawn_logical_quest_reference`,
+`attach_quest_reference_script` — added 2026-08-07, `a844c26b`, "integrate
+canonical reference identities through cell loading").
 **Why this dimension**: the decompiler + recognizer chain (Dims 1–5) are the
 *producer* of canonical components; the cell-loader attach path is the only live
 *driver* that feeds them real VMAD + `.pex` from game data. None of the crate
@@ -892,6 +969,25 @@ dimensions covers it.
   `trigger_enter_respects_player_only_gate`,
   `activate_and_trigger_in_same_frame_both_advance`
   (`crates/scripting/src/papyrus_demo/quest_advance/tests.rs`).
+- **Canonical reference identity stamping (`stamp_quest_reference`,
+  2026-08-07)**: every synthetic REFR-load path (NPC actor, invisible
+  trigger volume, missing-mesh/logical, and static-mesh) now calls
+  `stamp_quest_reference` — a `FormIdComponent` + `SceneAliasCandidate`
+  (Dim 5/6's alias-fill input, `crates/scripting/src/scene.rs`) stamp,
+  followed by `mark_scene_actor_bindings_dirty` — widened from the
+  NPC-only stamping this dimension previously covered. Verify the
+  `is_primary_synth`/`synth_idx == 0` gate is applied at every call site: a
+  SCOL/PKIN-expanded placement fans one authored REFR into N synthetic
+  children, and only the first (`synth_idx == 0`) may carry the REFR's own
+  canonical identity — stamping it on every fanned-out sibling would
+  register N `SceneAliasCandidate`s for one authored alias-fillable
+  reference (a many-candidates-for-one-alias correctness bug, not a
+  decompiler-domain issue but a real hazard for `SceneActorBindings`'s
+  fill logic in Dim 5/6). Confirm `spawn_logical_quest_reference` (the
+  no-mesh/stat-miss fallback path) still spawns a `Transform`/
+  `GlobalTransform`-bearing entity even with no renderable mesh, so a
+  quest-alias-only REFR (e.g. an unmeshed quest marker) isn't silently
+  dropped from alias-fill candidacy just because it has nothing to render.
 - **The `M47.2 scripts:` cell-load summary**: the smoke gate
   `docs/smoke-tests/m47-triggers.sh` keys on the `N REFRs recognized, M trigger
   volumes spawned` line. Verify the counters are wired (recognized++ on a
@@ -908,10 +1004,19 @@ dimensions covers it.
      recognizer chain + dynamic attach path + XPRM trigger volumes + the
      fragment-lowerer wired-and-live-verified dispatch + the QUST VMAD
      property-table fix + the `AddItem`/`MoveTo` object-targeting effects, all
-     2026-07-21) vs. deferred (Obscript/SCTX Phase 5; the M47.1 condition
-     resolvers' live-cell re-verification; M47.3 quest-alias-fill — the
-     `Property`-resolution decline on an alias-bound VMAD entry). Findings
-     count by severity. **Untrusted-input
+     2026-07-21; plus M47.3 quest-alias-fill Phases 0–3 — `SceneActorBindings`
+     alias resolution, alias-injected faction/inventory application, the
+     permanent inventory-grant save ledger, and alias-bound
+     `ObjectRef::Property`/`RunOn::QuestAlias` resolution — and the
+     quest-lifecycle effects (`Start`/`Stop`/`CompleteQuest`/`Reset`/
+     `SetActive`/`FailAllObjectives`), all 2026-08-07) vs. deferred
+     (Obscript/SCTX Phase 5; the M47.1 condition resolvers' live-cell
+     re-verification; M47.3 Phase 4+ — Created Object alias spawn, Story
+     Manager event fills, true `LCTN` alias traversal, reference-collection
+     aliases, unloaded-world Find-Matching search, and the injected
+     packages/spells/keywords overlay families staying parsed-not-applied;
+     the `AddItem`/`MoveTo` real-corpus yield re-measurement post-alias-runtime).
+     Findings count by severity. **Untrusted-input
      robustness verdict** (can a hostile/corrupt `.pex` or `.psc` panic, OOB, or
      OOM the cell loader — MUST be NO). **The 99.996% decompile-rate claim
      verdict** (is the corpus-smoke harness measuring what it claims). **The
