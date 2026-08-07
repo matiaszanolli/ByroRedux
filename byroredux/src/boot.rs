@@ -663,6 +663,13 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // Start Game Enabled quests here so Begin On Quest Start scenes observe
     // the same-frame transition.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::quest_startup_system);
+    // Quest aliases are a general QUST facility, not a SCEN implementation
+    // detail. Refresh after startup/cell candidate changes even when the load
+    // order contains no scene records; the dirty fast path is allocation-free.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::quest_alias_refresh_system,
+    );
     // SCEN playback must observe the original quest-start batch before the
     // fragment dispatcher can replace the shared sink with chained SetStage
     // advances. Phase conditions affected by those fragments are retried on
@@ -688,6 +695,12 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // `QuestStageAdvanced` markers, before end-of-frame cleanup drains
     // them (populated live from parsed QUST VMAD fragments, #1739 / `8a70b81a`).
     scheduler.add_exclusive(Stage::Update, quest_fragment_dispatch);
+    // QSDT Complete/Fail Quest flags and NAM0 successor quests apply after
+    // the stage's own fragment has observed the transition.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::quest_terminal_stage_system,
+    );
     // Latent Utility.Wait tails resume after their authored delay. Running
     // immediately after fresh fragment dispatch lets one timing path serve
     // both newly-suspended and already-pending continuations.

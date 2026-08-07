@@ -435,24 +435,63 @@ pub fn apply_effect(
         }
         Effect::StartScene { scene } | Effect::StopScene { scene } => {
             let scene_form_id = resolve_property_form_id(vmad, scene.property_name())?;
-            let Some(scene_entity) = world
+            let scene_entity = world
                 .try_resource::<crate::scene::SceneRegistry>()
-                .and_then(|registry| registry.scene_entity(scene_form_id))
-            else {
+                .and_then(|registry| registry.scene_entity(scene_form_id));
+            if let Some(scene_entity) = scene_entity {
+                if matches!(effect, Effect::StartScene { .. }) {
+                    if let Some(mut requests) = world.query_mut::<crate::scene::SceneStartRequest>()
+                    {
+                        requests.insert(scene_entity, crate::scene::SceneStartRequest);
+                    }
+                } else if let Some(mut requests) =
+                    world.query_mut::<crate::scene::SceneStopRequest>()
+                {
+                    requests.insert(scene_entity, crate::scene::SceneStopRequest);
+                }
+                return None;
+            }
+
+            // `Start`/`Stop` are shared by Scene and Quest in Papyrus, while
+            // the decompiled AST does not retain a property's declared type.
+            // Resolve the FormID against installed definitions at dispatch.
+            let quest = QuestFormId(scene_form_id);
+            let definitions = world.try_resource::<crate::QuestDefinitionRegistry>()?;
+            if !definitions.contains(quest) {
                 log::debug!(
-                    "fragment scene effect skipped: '{}' resolved to SCEN {scene_form_id:08X}, but it is not installed",
+                    "fragment Start/Stop skipped: '{}' resolved to unknown form {scene_form_id:08X}",
                     scene.property_name()
                 );
                 return None;
-            };
-            if matches!(effect, Effect::StartScene { .. }) {
-                if let Some(mut requests) = world.query_mut::<crate::scene::SceneStartRequest>() {
-                    requests.insert(scene_entity, crate::scene::SceneStartRequest);
-                }
-            } else if let Some(mut requests) = world.query_mut::<crate::scene::SceneStopRequest>() {
-                requests.insert(scene_entity, crate::scene::SceneStopRequest);
             }
-            None
+            let start_up_stage = definitions.start_up_stage(quest);
+            let shut_down_stage = definitions.shut_down_stage(quest);
+            drop(definitions);
+            if matches!(effect, Effect::StartScene { .. }) {
+                let event = stages.start_quest(quest, start_up_stage);
+                if event.is_some() {
+                    crate::scene::mark_scene_actor_bindings_dirty(world);
+                }
+                event
+            } else {
+                let event = stages
+                    .is_running(quest)
+                    .then(|| {
+                        shut_down_stage.map(|stage| {
+                            let previous_stage = stages.set_stage(quest, stage);
+                            QuestStageAdvanced {
+                                quest,
+                                previous_stage,
+                                new_stage: stage,
+                            }
+                        })
+                    })
+                    .flatten();
+                if stages.stop(quest) {
+                    crate::scene::mark_scene_actor_bindings_dirty(world);
+                }
+                event
+            }
         }
         Effect::Activate { target, activator } => {
             let target_entity = resolve_object(vmad, world, context, target)?;
@@ -690,7 +729,7 @@ pub fn apply_effect(
             None
         }
         Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } => None,
-        _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives),
+        _ => apply_quest_scoped_effect(effect, context, vmad, world, stages, objectives),
     }
 }
 
@@ -701,18 +740,82 @@ fn apply_quest_scoped_effect(
     effect: &Effect,
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
+    world: &World,
     stages: &mut QuestStageState,
     objectives: &mut QuestObjectiveState,
 ) -> Option<QuestStageAdvanced> {
     match effect {
         Effect::SetStage { quest, stage } => {
             let quest = resolve_quest_logged(quest, context, vmad)?;
+            let allow_repeated = world
+                .try_resource::<crate::QuestDefinitionRegistry>()
+                .is_some_and(|definitions| definitions.allows_repeated_stages(quest));
+            if !allow_repeated && stages.get_stage_done(quest, *stage) {
+                return None;
+            }
+            let was_started = stages.is_started(quest);
             let previous_stage = stages.set_stage(quest, *stage);
+            if !was_started {
+                crate::scene::mark_scene_actor_bindings_dirty(world);
+            }
             Some(QuestStageAdvanced {
                 quest,
                 previous_stage,
                 new_stage: *stage,
             })
+        }
+        Effect::StartQuest { quest } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
+            let start_up_stage = world
+                .try_resource::<crate::QuestDefinitionRegistry>()
+                .and_then(|definitions| definitions.start_up_stage(quest));
+            let event = stages.start_quest(quest, start_up_stage);
+            if event.is_some() {
+                crate::scene::mark_scene_actor_bindings_dirty(world);
+            }
+            event
+        }
+        Effect::StopQuest { quest } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
+            let shut_down_stage = world
+                .try_resource::<crate::QuestDefinitionRegistry>()
+                .and_then(|definitions| definitions.shut_down_stage(quest));
+            let event = stages
+                .is_running(quest)
+                .then(|| {
+                    shut_down_stage.map(|stage| {
+                        let previous_stage = stages.set_stage(quest, stage);
+                        QuestStageAdvanced {
+                            quest,
+                            previous_stage,
+                            new_stage: stage,
+                        }
+                    })
+                })
+                .flatten();
+            if stages.stop(quest) {
+                crate::scene::mark_scene_actor_bindings_dirty(world);
+            }
+            event
+        }
+        Effect::CompleteQuest { quest } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
+            if stages.complete(quest) {
+                crate::scene::mark_scene_actor_bindings_dirty(world);
+            }
+            None
+        }
+        Effect::ResetQuest { quest } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
+            stages.reset(quest);
+            objectives.reset(quest);
+            crate::scene::mark_scene_actor_bindings_dirty(world);
+            None
+        }
+        Effect::SetQuestActive { quest, active } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
+            stages.set_active(quest, *active);
+            None
         }
         Effect::SetObjectiveDisplayed {
             quest,
@@ -743,7 +846,28 @@ fn apply_quest_scoped_effect(
         }
         Effect::CompleteAllObjectives { quest } => {
             let quest = resolve_quest_logged(quest, context, vmad)?;
-            objectives.complete_all(quest);
+            let authored = world
+                .try_resource::<crate::QuestDefinitionRegistry>()
+                .map(|definitions| definitions.objectives(quest).to_vec())
+                .unwrap_or_default();
+            if authored.is_empty() {
+                objectives.complete_all(quest);
+            } else {
+                objectives.complete_all_authored(quest, authored);
+            }
+            None
+        }
+        Effect::FailAllObjectives { quest } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
+            let authored = world
+                .try_resource::<crate::QuestDefinitionRegistry>()
+                .map(|definitions| definitions.objectives(quest).to_vec())
+                .unwrap_or_default();
+            if authored.is_empty() {
+                objectives.fail_all(quest);
+            } else {
+                objectives.fail_all_authored(quest, authored);
+            }
             None
         }
         Effect::AddItem { .. }

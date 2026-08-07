@@ -605,6 +605,7 @@ mod tests {
             SceneAliasCandidate {
                 reference_form_id: 0xB00,
                 base_form_id: matching_base,
+                linked_refs: Vec::new(),
                 location_ref_types: Vec::new(),
             },
         );

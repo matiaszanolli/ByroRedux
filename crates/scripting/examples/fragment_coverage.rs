@@ -57,10 +57,16 @@ impl Archive {
 fn effect_kind(e: &Effect) -> &'static str {
     match e {
         Effect::SetStage { .. } => "SetStage",
+        Effect::StartQuest { .. } => "StartQuest",
+        Effect::StopQuest { .. } => "StopQuest",
+        Effect::CompleteQuest { .. } => "CompleteQuest",
+        Effect::ResetQuest { .. } => "ResetQuest",
+        Effect::SetQuestActive { .. } => "SetQuestActive",
         Effect::SetObjectiveDisplayed { .. } => "SetObjectiveDisplayed",
         Effect::SetObjectiveCompleted { .. } => "SetObjectiveCompleted",
         Effect::SetObjectiveFailed { .. } => "SetObjectiveFailed",
         Effect::CompleteAllObjectives { .. } => "CompleteAllObjectives",
+        Effect::FailAllObjectives { .. } => "FailAllObjectives",
         Effect::AddItem { .. } => "AddItem",
         Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",

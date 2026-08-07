@@ -71,8 +71,13 @@ pub use pack::{
     PackSchedule, PackTarget, PackTargetKind, PackTopicData,
 };
 pub use quest::{
-    parse_qust, AliasFillType, AliasFlags, AliasInjectedData, QuestAlias, QuestObjective,
-    QuestStage, QustRecord, ALIAS_FLAG_ALLOW_REUSE, QUEST_FLAG_START_GAME_ENABLED,
+    parse_qust, AliasFillType, AliasFlags, AliasInjectedData, AliasLinkedAlias, QuestAlias,
+    QuestObjective, QuestObjectiveTarget, QuestObjectiveTargetKind, QuestStage, QuestStageLogEntry,
+    QustRecord, ALIAS_FLAG_ALLOW_DEAD, ALIAS_FLAG_ALLOW_RESERVED, ALIAS_FLAG_ALLOW_REUSE,
+    ALIAS_FLAG_CLOSEST, ALIAS_FLAG_RESERVES, QUEST_FLAG_ACTIVE, QUEST_FLAG_ALLOW_REPEATED_STAGES,
+    QUEST_FLAG_COMPLETED, QUEST_FLAG_FAILED, QUEST_FLAG_START_GAME_ENABLED,
+    QUEST_LOG_FLAG_COMPLETE_QUEST, QUEST_LOG_FLAG_FAIL_QUEST, QUEST_STAGE_FLAG_SHUT_DOWN,
+    QUEST_STAGE_FLAG_START_UP,
 };
 pub use scene::{
     parse_scen, ScenRecord, SceneAction, SceneActionType, SceneActor, ScenePhase,

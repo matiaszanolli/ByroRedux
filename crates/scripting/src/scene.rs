@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use byroredux_core::ecs::components::{Dead, FactionRanks, GlobalTransform, Inventory, ItemStack};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
@@ -16,7 +17,8 @@ use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::script_instance::{SceneFragmentEvent, SceneScriptFragment};
 use byroredux_plugin::esm::records::{
     AliasFillType, QuestAlias, QustRecord, ScenRecord, SceneAction, SceneActionType,
-    ALIAS_FLAG_ALLOW_REUSE, SCENE_BEGIN_ON_QUEST_START,
+    ALIAS_FLAG_ALLOW_DEAD, ALIAS_FLAG_ALLOW_RESERVED, ALIAS_FLAG_ALLOW_REUSE, ALIAS_FLAG_CLOSEST,
+    ALIAS_FLAG_RESERVES, SCENE_BEGIN_ON_QUEST_START,
 };
 
 use crate::condition::{evaluate, ConditionContext};
@@ -68,12 +70,11 @@ impl SceneRegistry {
     }
 }
 
-/// Runtime resolution of `(owning quest, alias id)` to an actor entity.
+/// Runtime resolution of `(owning quest, alias id)` to a live reference.
 ///
-/// Scene playback does not require a binding to advance: an unresolved actor
-/// is carried as `None` in [`SceneEvent::ActionStarted`].  This lets the scene
-/// layer ship independently of the quest-alias spawner while preserving the
-/// exact alias needed when that integration lands.
+/// The historical name is retained because SCEN actor slots were the first
+/// consumer. The table is now the canonical quest-alias surface used by
+/// conditions, fragment object resolution, packages, dialogue, and scenes.
 #[derive(Debug, Clone, Default)]
 pub struct SceneActorBindings {
     actors: HashMap<(QuestFormId, i32), EntityId>,
@@ -96,14 +97,63 @@ impl SceneActorBindings {
     }
 }
 
+/// Raw, source-attributed alias overlays attached to a filled reference.
+///
+/// Consumers that understand package/spell/keyword/display-name semantics can
+/// read this component without reparsing QUST. Factions and inventory are also
+/// materialised into their canonical ECS components by the alias refresher.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QuestAliasInjectedOverlays(
+    pub HashMap<(QuestFormId, i32), byroredux_plugin::esm::records::AliasInjectedData>,
+);
+
+impl Component for QuestAliasInjectedOverlays {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Full authored alias overlays for consumers of flags/fill metadata that do
+/// not yet have dedicated ECS components (essential/protected/quest-object,
+/// package overrides, voice/name data, and FO4 extensions).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QuestAliasRuntimeOverlays(pub HashMap<(QuestFormId, i32), QuestAlias>);
+
+impl Component for QuestAliasRuntimeOverlays {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Bookkeeping for QUST alias injections.
+///
+/// Faction overlays are reconstructed from the immutable alias definitions on
+/// load. Permanent CNTO grants are retained so the first post-load alias
+/// refresh cannot grant the same authored inventory entry a second time.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct QuestAliasInjectionState {
+    /// Memberships owned by alias injection. `original_rank` preserves a
+    /// base membership when the last alias source releases its overlay.
+    #[cfg_attr(feature = "save", serde(skip, default))]
+    factions: HashMap<(EntityId, u32), InjectedFactionMembership>,
+    /// CNTO grants are permanent, but must still be idempotent across dirty
+    /// refreshes. Refilling the alias onto another entity grants it there too.
+    inventory_grants: HashSet<(QuestFormId, i32, EntityId, u32, u32)>,
+}
+
+impl Resource for QuestAliasInjectionState {}
+
+#[derive(Debug, Clone, Default)]
+struct InjectedFactionMembership {
+    original_rank: Option<i8>,
+}
+
 /// Identity carried by a spawned reference that may fill a quest alias.
 /// `reference_form_id` is the ACHR/REFR identity, `base_form_id` is its NPC_
-/// (or other base record), and `location_ref_types` are the placement's XLRT
-/// LCRT tags.
+/// (or other base record), `linked_refs` are its XLKR keyword/target pairs,
+/// and `location_ref_types` are the placement's XLRT LCRT tags.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SceneAliasCandidate {
     pub reference_form_id: u32,
     pub base_form_id: u32,
+    pub linked_refs: Vec<(u32, u32)>,
     pub location_ref_types: Vec<u32>,
 }
 
@@ -283,8 +333,12 @@ impl Component for SceneFragmentInvocationBatch {
 /// Register scene components/resources without replacing an already-populated
 /// registry. Called by the scripting subsystem's top-level `register` hook.
 pub fn register(world: &mut World) {
+    world.register::<FactionRanks>();
+    world.register::<Inventory>();
     world.register::<ScenePlayer>();
     world.register::<SceneAliasCandidate>();
+    world.register::<QuestAliasInjectedOverlays>();
+    world.register::<QuestAliasRuntimeOverlays>();
     world.register::<SceneStartRequest>();
     world.register::<SceneStopRequest>();
     world.register::<SceneActionCompletionBatch>();
@@ -298,6 +352,9 @@ pub fn register(world: &mut World) {
     }
     if world.try_resource::<SceneQuestAliasRegistry>().is_none() {
         world.insert_resource(SceneQuestAliasRegistry::default());
+    }
+    if world.try_resource::<QuestAliasInjectionState>().is_none() {
+        world.insert_resource(QuestAliasInjectionState::default());
     }
 }
 
@@ -373,14 +430,158 @@ fn candidate_matches_fill(fill: &AliasFillType, candidate: &SceneAliasCandidate)
     match fill {
         AliasFillType::ForcedReference(reference) => candidate.reference_form_id == *reference,
         AliasFillType::UniqueActor(base) => candidate.base_form_id == *base,
-        AliasFillType::LocationAliasReference { lcrt, .. } => {
-            candidate.location_ref_types.contains(lcrt)
-        }
+        AliasFillType::LocationAliasReference {
+            ref_type: Some(ref_type),
+            ..
+        } => candidate.location_ref_types.contains(ref_type),
+        AliasFillType::LocationAliasReference { ref_type: None, .. }
+        | AliasFillType::NearAlias { .. } => false,
         AliasFillType::ForcedLocation(_)
         | AliasFillType::CreatedObject { .. }
         | AliasFillType::ExternalAlias { .. }
         | AliasFillType::FromEvent { .. } => false,
     }
+}
+
+fn apply_alias_injections(
+    world: &World,
+    quests: &[(QuestFormId, Vec<QuestAlias>)],
+    resolved: &HashMap<(QuestFormId, i32), EntityId>,
+) {
+    let mut desired_factions: HashMap<(EntityId, u32), HashSet<(QuestFormId, i32)>> =
+        HashMap::new();
+    let mut desired_overlays: HashMap<
+        EntityId,
+        HashMap<(QuestFormId, i32), byroredux_plugin::esm::records::AliasInjectedData>,
+    > = HashMap::new();
+    let mut desired_runtime_overlays: HashMap<EntityId, HashMap<(QuestFormId, i32), QuestAlias>> =
+        HashMap::new();
+    let mut desired_inventory = Vec::new();
+
+    for (quest, aliases) in quests {
+        for alias in aliases {
+            let source = (*quest, alias.alias_id);
+            let Some(&entity) = resolved.get(&source) else {
+                continue;
+            };
+            desired_runtime_overlays
+                .entry(entity)
+                .or_default()
+                .insert(source, alias.clone());
+            if alias.injected != Default::default() {
+                desired_overlays
+                    .entry(entity)
+                    .or_default()
+                    .insert(source, alias.injected.clone());
+            }
+            for &faction in &alias.injected.factions {
+                desired_factions
+                    .entry((entity, faction))
+                    .or_default()
+                    .insert(source);
+            }
+            for &(item, count) in &alias.injected.inventory {
+                if count > 0 {
+                    desired_inventory.push((source.0, source.1, entity, item, count));
+                }
+            }
+        }
+    }
+
+    let previous_factions = world
+        .resource::<QuestAliasInjectionState>()
+        .factions
+        .clone();
+    let mut next_factions = HashMap::new();
+    {
+        let mut ranks = world
+            .query_mut::<FactionRanks>()
+            .expect("FactionRanks storage registered");
+
+        for (&key @ (entity, faction), prior) in &previous_factions {
+            if desired_factions.contains_key(&key) {
+                continue;
+            }
+            if prior.original_rank.is_none() {
+                if let Some(current) = ranks.get_mut(entity) {
+                    current.0.retain(|(form_id, _)| *form_id != faction);
+                }
+            }
+        }
+
+        for (key @ (entity, faction), _sources) in desired_factions {
+            let original_rank = if let Some(prior) = previous_factions.get(&key) {
+                prior.original_rank
+            } else if let Some(current) = ranks.get_mut(entity) {
+                let original = current.rank(faction);
+                if original.is_none() {
+                    current.0.push((faction, 0));
+                }
+                original
+            } else {
+                ranks.insert(entity, FactionRanks::from_pairs([(faction, 0)]));
+                None
+            };
+            next_factions.insert(key, InjectedFactionMembership { original_rank });
+        }
+    }
+
+    {
+        let mut overlays = world
+            .query_mut::<QuestAliasRuntimeOverlays>()
+            .expect("QuestAliasRuntimeOverlays storage registered");
+        let old_entities: Vec<EntityId> = overlays.iter().map(|(entity, _)| entity).collect();
+        for entity in old_entities {
+            if !desired_runtime_overlays.contains_key(&entity) {
+                overlays.remove(entity);
+            }
+        }
+        for (entity, aliases) in desired_runtime_overlays {
+            overlays.insert(entity, QuestAliasRuntimeOverlays(aliases));
+        }
+    }
+
+    let previous_grants = world
+        .resource::<QuestAliasInjectionState>()
+        .inventory_grants
+        .clone();
+    let mut next_grants = previous_grants;
+    {
+        let mut inventories = world
+            .query_mut::<Inventory>()
+            .expect("Inventory storage registered");
+        for (quest, alias, entity, item, count) in desired_inventory {
+            if !next_grants.insert((quest, alias, entity, item, count)) {
+                continue;
+            }
+            if let Some(inventory) = inventories.get_mut(entity) {
+                inventory.push(ItemStack::new(item, count));
+            } else {
+                let mut inventory = Inventory::new();
+                inventory.push(ItemStack::new(item, count));
+                inventories.insert(entity, inventory);
+            }
+        }
+    }
+
+    {
+        let mut overlays = world
+            .query_mut::<QuestAliasInjectedOverlays>()
+            .expect("QuestAliasInjectedOverlays storage registered");
+        let old_entities: Vec<EntityId> = overlays.iter().map(|(entity, _)| entity).collect();
+        for entity in old_entities {
+            if !desired_overlays.contains_key(&entity) {
+                overlays.remove(entity);
+            }
+        }
+        for (entity, injected) in desired_overlays {
+            overlays.insert(entity, QuestAliasInjectedOverlays(injected));
+        }
+    }
+
+    let mut state = world.resource_mut::<QuestAliasInjectionState>();
+    state.factions = next_factions;
+    state.inventory_grants = next_grants;
 }
 
 /// Rebuild quest-alias → entity bindings from currently loaded candidates.
@@ -417,9 +618,16 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
         .collect();
     quests.sort_by_key(|(quest, _)| quest.0);
     let registered_quests: HashSet<QuestFormId> = quests.iter().map(|(quest, _)| *quest).collect();
+    // Alias values exist only for running quest instances. Unit-test/tool
+    // worlds that intentionally omit the lifecycle store retain the old
+    // data-only behavior; the live engine always installs QuestStageState.
+    if let Some(stages) = world.try_resource::<QuestStageState>() {
+        quests.retain(|(quest, _)| stages.is_running(*quest));
+    }
     let mut resolved = world.resource::<SceneActorBindings>().actors.clone();
     resolved.retain(|(quest, _), _| !registered_quests.contains(quest));
     let mut external_aliases = Vec::new();
+    let mut reserved = HashSet::new();
 
     for (quest, aliases) in &quests {
         let mut used = HashSet::new();
@@ -434,16 +642,42 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
             }
 
             let allow_reuse = alias.flags.has(ALIAS_FLAG_ALLOW_REUSE);
-            let chosen = candidates.iter().find_map(|(entity, candidate)| {
+            let allow_reserved = alias.flags.has(ALIAS_FLAG_ALLOW_RESERVED);
+            let eligible = |(entity, candidate): &(EntityId, SceneAliasCandidate)| {
+                if !alias.flags.has(ALIAS_FLAG_ALLOW_DEAD) && world.has::<Dead>(*entity) {
+                    return None;
+                }
                 if !allow_reuse && used.contains(entity) {
                     return None;
                 }
-                let fill_matches = alias
-                    .fill_type
-                    .as_ref()
-                    .map_or(!alias.match_conditions.is_empty(), |fill| {
-                        candidate_matches_fill(fill, candidate)
-                    });
+                if !allow_reserved && reserved.contains(entity) {
+                    return None;
+                }
+                let fill_matches = match alias.fill_type.as_ref() {
+                    Some(AliasFillType::NearAlias {
+                        alias_id,
+                        relation: 0 | 1,
+                    }) => resolved
+                        .get(&(*quest, *alias_id))
+                        .and_then(|source| {
+                            candidates
+                                .iter()
+                                .find(|(entity, _)| entity == source)
+                                .map(|(_, source)| source)
+                        })
+                        .is_some_and(|source| {
+                            source
+                                .linked_refs
+                                .iter()
+                                .any(|(_, target)| *target == candidate.reference_form_id)
+                                || candidate
+                                    .linked_refs
+                                    .iter()
+                                    .any(|(_, target)| *target == source.reference_form_id)
+                        }),
+                    Some(fill) => candidate_matches_fill(fill, candidate),
+                    None => !alias.match_conditions.is_empty(),
+                };
                 if !fill_matches
                     || !evaluate(
                         &alias.match_conditions,
@@ -454,11 +688,42 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                     return None;
                 }
                 Some(*entity)
-            });
+            };
+            let anchor = alias
+                .closest_to_alias
+                .and_then(|anchor_alias| resolved.get(&(*quest, anchor_alias)).copied())
+                .or_else(|| {
+                    alias
+                        .flags
+                        .has(ALIAS_FLAG_CLOSEST)
+                        .then(|| world.try_resource::<PlayerEntity>().map(|player| player.0))
+                        .flatten()
+                })
+                .and_then(|entity| {
+                    world
+                        .get::<GlobalTransform>(entity)
+                        .map(|gt| gt.translation)
+                });
+            let chosen = if let Some(anchor) = anchor {
+                candidates
+                    .iter()
+                    .filter_map(|candidate| {
+                        let entity = eligible(candidate)?;
+                        let position = world.get::<GlobalTransform>(entity)?.translation;
+                        Some((entity, position.distance_squared(anchor)))
+                    })
+                    .min_by(|left, right| left.1.total_cmp(&right.1))
+                    .map(|(entity, _)| entity)
+            } else {
+                candidates.iter().find_map(eligible)
+            };
             if let Some(entity) = chosen {
                 resolved.insert((*quest, alias.alias_id), entity);
                 if !allow_reuse {
                     used.insert(entity);
+                }
+                if alias.flags.has(ALIAS_FLAG_RESERVES) {
+                    reserved.insert(entity);
                 }
                 if let Some(target_alias) = alias.force_into_alias {
                     resolved.insert((*quest, target_alias), entity);
@@ -488,6 +753,8 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
         }
     }
 
+    apply_alias_injections(world, &quests, &resolved);
+
     let count = resolved
         .keys()
         .filter(|(quest, _)| registered_quests.contains(quest))
@@ -496,6 +763,11 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
     bindings.actors = resolved;
     bindings.dirty = false;
     count
+}
+
+/// Scheduler-shaped quest alias refresh independent of SCEN playback.
+pub fn quest_alias_refresh_system(world: &World, _dt: f32) {
+    refresh_scene_actor_bindings(world);
 }
 
 fn snapshot_entities<T: Component>(world: &World) -> HashSet<EntityId> {
@@ -966,6 +1238,7 @@ mod tests {
                 SceneAliasCandidate {
                     reference_form_id: 0xA1,
                     base_form_id: 0xB1,
+                    linked_refs: Vec::new(),
                     location_ref_types: Vec::new(),
                 },
             ),
@@ -974,6 +1247,7 @@ mod tests {
                 SceneAliasCandidate {
                     reference_form_id: 0xA2,
                     base_form_id: 0xB2,
+                    linked_refs: Vec::new(),
                     location_ref_types: Vec::new(),
                 },
             ),
@@ -982,6 +1256,7 @@ mod tests {
                 SceneAliasCandidate {
                     reference_form_id: 0xA3,
                     base_form_id: 0xB3,
+                    linked_refs: Vec::new(),
                     location_ref_types: vec![0xC1],
                 },
             ),
@@ -990,6 +1265,7 @@ mod tests {
                 SceneAliasCandidate {
                     reference_form_id: 0xA4,
                     base_form_id: 0xB3,
+                    linked_refs: Vec::new(),
                     location_ref_types: vec![0xC1],
                 },
             ),
@@ -1018,8 +1294,9 @@ mod tests {
                         alias_id: 3,
                         name: "SoldierA".to_owned(),
                         fill_type: Some(AliasFillType::LocationAliasReference {
-                            lcrt: 0xC1,
-                            alfa: 0,
+                            alias_id: 0,
+                            keyword: None,
+                            ref_type: Some(0xC1),
                         }),
                         ..Default::default()
                     },
@@ -1027,8 +1304,9 @@ mod tests {
                         alias_id: 4,
                         name: "SoldierB".to_owned(),
                         fill_type: Some(AliasFillType::LocationAliasReference {
-                            lcrt: 0xC1,
-                            alfa: 0,
+                            alias_id: 0,
+                            keyword: None,
+                            ref_type: Some(0xC1),
                         }),
                         ..Default::default()
                     },
@@ -1045,6 +1323,398 @@ mod tests {
         assert_eq!(bindings.resolve(QuestFormId(QUEST), 3), Some(soldier_a));
         assert_eq!(bindings.resolve(QuestFormId(QUEST), 4), Some(soldier_b));
         assert_eq!(refresh_scene_actor_bindings(&world), 0, "clean fast path");
+    }
+
+    #[test]
+    fn quest_alias_reservations_block_later_quests_unless_allowed() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            SceneAliasCandidate {
+                reference_form_id: 0xA1,
+                base_form_id: 0xB1,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        install_scene_quest_aliases(
+            &mut world,
+            [
+                QustRecord {
+                    form_id: 0x100,
+                    aliases: vec![QuestAlias {
+                        alias_id: 1,
+                        fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                        flags: byroredux_plugin::esm::records::AliasFlags(ALIAS_FLAG_RESERVES),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                QustRecord {
+                    form_id: 0x200,
+                    aliases: vec![QuestAlias {
+                        alias_id: 1,
+                        fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                QustRecord {
+                    form_id: 0x300,
+                    aliases: vec![QuestAlias {
+                        alias_id: 1,
+                        fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                        flags: byroredux_plugin::esm::records::AliasFlags(
+                            ALIAS_FLAG_ALLOW_RESERVED,
+                        ),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+        );
+
+        refresh_scene_actor_bindings(&world);
+        let bindings = world.resource::<SceneActorBindings>();
+        assert_eq!(bindings.resolve(QuestFormId(0x100), 1), Some(actor));
+        assert_eq!(bindings.resolve(QuestFormId(0x200), 1), None);
+        assert_eq!(bindings.resolve(QuestFormId(0x300), 1), Some(actor));
+    }
+
+    #[test]
+    fn quest_alias_closest_to_alias_selects_by_world_distance() {
+        use byroredux_core::math::{Quat, Vec3};
+
+        let mut world = World::new();
+        crate::register(&mut world);
+        world.register::<GlobalTransform>();
+        let anchor = world.spawn();
+        let far = world.spawn();
+        let near = world.spawn();
+        for (entity, reference, base, x) in [
+            (anchor, 0xA0, 0xB0, 0.0),
+            (far, 0xA1, 0xB1, 20.0),
+            (near, 0xA2, 0xB1, 2.0),
+        ] {
+            world.insert(
+                entity,
+                SceneAliasCandidate {
+                    reference_form_id: reference,
+                    base_form_id: base,
+                    linked_refs: Vec::new(),
+                    location_ref_types: Vec::new(),
+                },
+            );
+            world.insert(
+                entity,
+                GlobalTransform::new(Vec3::new(x, 0.0, 0.0), Quat::IDENTITY, 1.0),
+            );
+        }
+        install_scene_quest_aliases(
+            &mut world,
+            [QustRecord {
+                form_id: QUEST,
+                aliases: vec![
+                    QuestAlias {
+                        alias_id: 0,
+                        fill_type: Some(AliasFillType::ForcedReference(0xA0)),
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 1,
+                        fill_type: Some(AliasFillType::UniqueActor(0xB1)),
+                        closest_to_alias: Some(0),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+        );
+
+        refresh_scene_actor_bindings(&world);
+        assert_eq!(
+            world
+                .resource::<SceneActorBindings>()
+                .resolve(QuestFormId(QUEST), 1),
+            Some(near)
+        );
+    }
+
+    #[test]
+    fn quest_alias_near_alias_resolves_linked_ref_child() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let source = world.spawn();
+        let child = world.spawn();
+        let unrelated = world.spawn();
+        for (entity, candidate) in [
+            (
+                source,
+                SceneAliasCandidate {
+                    reference_form_id: 0xA0,
+                    base_form_id: 0xB0,
+                    linked_refs: vec![(0, 0xA1)],
+                    location_ref_types: Vec::new(),
+                },
+            ),
+            (
+                child,
+                SceneAliasCandidate {
+                    reference_form_id: 0xA1,
+                    base_form_id: 0xB1,
+                    linked_refs: Vec::new(),
+                    location_ref_types: Vec::new(),
+                },
+            ),
+            (
+                unrelated,
+                SceneAliasCandidate {
+                    reference_form_id: 0xA2,
+                    base_form_id: 0xB1,
+                    linked_refs: Vec::new(),
+                    location_ref_types: Vec::new(),
+                },
+            ),
+        ] {
+            world.insert(entity, candidate);
+        }
+        install_scene_quest_aliases(
+            &mut world,
+            [QustRecord {
+                form_id: QUEST,
+                aliases: vec![
+                    QuestAlias {
+                        alias_id: 0,
+                        fill_type: Some(AliasFillType::ForcedReference(0xA0)),
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 1,
+                        fill_type: Some(AliasFillType::NearAlias {
+                            alias_id: 0,
+                            relation: 0,
+                        }),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+        );
+
+        refresh_scene_actor_bindings(&world);
+        assert_eq!(
+            world
+                .resource::<SceneActorBindings>()
+                .resolve(QuestFormId(QUEST), 1),
+            Some(child)
+        );
+    }
+
+    #[test]
+    fn quest_aliases_exclude_dead_actors_unless_allowed() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        world.register::<Dead>();
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            SceneAliasCandidate {
+                reference_form_id: 0xA1,
+                base_form_id: 0xB1,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        world.insert(actor, Dead);
+        install_scene_quest_aliases(
+            &mut world,
+            [
+                QustRecord {
+                    form_id: 0x100,
+                    aliases: vec![QuestAlias {
+                        alias_id: 1,
+                        fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                QustRecord {
+                    form_id: 0x200,
+                    aliases: vec![QuestAlias {
+                        alias_id: 1,
+                        fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                        flags: byroredux_plugin::esm::records::AliasFlags(ALIAS_FLAG_ALLOW_DEAD),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+        );
+
+        refresh_scene_actor_bindings(&world);
+        let bindings = world.resource::<SceneActorBindings>();
+        assert_eq!(bindings.resolve(QuestFormId(0x100), 1), None);
+        assert_eq!(bindings.resolve(QuestFormId(0x200), 1), Some(actor));
+    }
+
+    #[test]
+    fn quest_alias_injections_are_idempotent_and_clear_transient_factions() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            SceneAliasCandidate {
+                reference_form_id: 0xA1,
+                base_form_id: 0xB1,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        world.insert(actor, FactionRanks::from_pairs([(0xF1, 3)]));
+        let injected_alias = QuestAlias {
+            alias_id: 1,
+            fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+            injected: byroredux_plugin::esm::records::AliasInjectedData {
+                factions: vec![0xF1, 0xF2],
+                inventory: vec![(0xC1, 2), (0xC2, 1)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        install_scene_quest_aliases(
+            &mut world,
+            [QustRecord {
+                form_id: QUEST,
+                aliases: vec![injected_alias],
+                ..Default::default()
+            }],
+        );
+
+        refresh_scene_actor_bindings(&world);
+        assert_eq!(
+            world.get::<FactionRanks>(actor).unwrap().rank(0xF1),
+            Some(3)
+        );
+        assert_eq!(
+            world.get::<FactionRanks>(actor).unwrap().rank(0xF2),
+            Some(0)
+        );
+        assert_eq!(world.get::<Inventory>(actor).unwrap().items.len(), 2);
+        assert_eq!(
+            world
+                .get::<QuestAliasInjectedOverlays>(actor)
+                .unwrap()
+                .0
+                .len(),
+            1
+        );
+        assert_eq!(
+            world
+                .get::<QuestAliasRuntimeOverlays>(actor)
+                .unwrap()
+                .0
+                .len(),
+            1
+        );
+
+        mark_scene_actor_bindings_dirty(&world);
+        refresh_scene_actor_bindings(&world);
+        assert_eq!(
+            world.get::<Inventory>(actor).unwrap().items.len(),
+            2,
+            "permanent CNTO grants must not duplicate on a dirty refresh"
+        );
+
+        install_scene_quest_aliases(
+            &mut world,
+            [QustRecord {
+                form_id: QUEST,
+                aliases: vec![QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        );
+        refresh_scene_actor_bindings(&world);
+        assert_eq!(
+            world.get::<FactionRanks>(actor).unwrap().rank(0xF1),
+            Some(3)
+        );
+        assert_eq!(world.get::<FactionRanks>(actor).unwrap().rank(0xF2), None);
+        assert!(world.get::<QuestAliasInjectedOverlays>(actor).is_none());
+        assert!(world.get::<QuestAliasRuntimeOverlays>(actor).is_some());
+        assert_eq!(
+            world.get::<Inventory>(actor).unwrap().items.len(),
+            2,
+            "CNTO grants are permanent when an alias clears"
+        );
+    }
+
+    #[test]
+    fn quest_aliases_fill_only_while_the_quest_is_running() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        world.insert_resource(QuestStageState::default());
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            SceneAliasCandidate {
+                reference_form_id: 0xA1,
+                base_form_id: 0xB1,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        install_scene_quest_aliases(
+            &mut world,
+            [QustRecord {
+                form_id: QUEST,
+                aliases: vec![QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        );
+
+        assert_eq!(refresh_scene_actor_bindings(&world), 0);
+        assert_eq!(
+            world
+                .resource::<SceneActorBindings>()
+                .resolve(QuestFormId(QUEST), 1),
+            None
+        );
+
+        world
+            .resource_mut::<QuestStageState>()
+            .start_quest(QuestFormId(QUEST), None);
+        mark_scene_actor_bindings_dirty(&world);
+        assert_eq!(refresh_scene_actor_bindings(&world), 1);
+        assert_eq!(
+            world
+                .resource::<SceneActorBindings>()
+                .resolve(QuestFormId(QUEST), 1),
+            Some(actor)
+        );
+
+        world
+            .resource_mut::<QuestStageState>()
+            .stop(QuestFormId(QUEST));
+        mark_scene_actor_bindings_dirty(&world);
+        assert_eq!(refresh_scene_actor_bindings(&world), 0);
+        assert_eq!(
+            world
+                .resource::<SceneActorBindings>()
+                .resolve(QuestFormId(QUEST), 1),
+            None
+        );
+        assert!(world.get::<QuestAliasRuntimeOverlays>(actor).is_none());
     }
 
     fn fragment(event: SceneFragmentEvent, name: &str) -> SceneScriptFragment {

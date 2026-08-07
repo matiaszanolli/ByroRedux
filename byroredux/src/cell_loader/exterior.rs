@@ -234,6 +234,11 @@ impl PersistentCellApplyJob {
                 byroredux_scripting::SceneAliasCandidate {
                     reference_form_id: placed.form_id,
                     base_form_id: placed.base_form_id,
+                    linked_refs: placed
+                        .linked_refs
+                        .iter()
+                        .map(|link| (link.keyword, link.target))
+                        .collect(),
                     location_ref_types: placed.location_ref_types.clone(),
                 },
             );

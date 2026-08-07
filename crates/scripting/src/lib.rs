@@ -63,18 +63,20 @@ pub use package::{
 };
 pub use player_control::{ActorControlState, PlayerControlSelection, PlayerControlState};
 pub use quest_stages::{
-    install_engine_start_quest, install_start_game_quests, quest_startup_system, QuestEventRead,
-    QuestEventSubscriberId, QuestFormId, SequencedQuestStageAdvanced, StartGameQuestRegistry,
-    QUEST_EVENT_RETENTION,
+    install_engine_start_quest, install_start_game_quests, quest_startup_system,
+    quest_terminal_stage_system, resolve_quest_objective_targets, resolve_quest_targets,
+    QuestDefinitionRegistry, QuestEventRead, QuestEventSubscriberId, QuestFormId, QuestStatus,
+    SequencedQuestStageAdvanced, StartGameQuestRegistry, QUEST_EVENT_RETENTION,
 };
 pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, RecurringUpdate};
 pub use registry::{ScriptRegistry, ScriptSpawnFn};
 pub use scene::{
     install_scene_quest_aliases, install_scene_records, mark_scene_actor_bindings_dirty,
-    refresh_scene_actor_bindings, scene_playback_system, ActiveSceneAction,
-    SceneActionCompletionBatch, SceneActorBindings, SceneAliasCandidate, SceneEvent,
-    SceneEventBatch, SceneFragmentInvocation, SceneFragmentInvocationBatch, ScenePlaybackState,
-    ScenePlayer, SceneRegistry, SceneStartRequest, SceneStopRequest,
+    quest_alias_refresh_system, refresh_scene_actor_bindings, scene_playback_system,
+    ActiveSceneAction, QuestAliasInjectedOverlays, QuestAliasInjectionState,
+    QuestAliasRuntimeOverlays, SceneActionCompletionBatch, SceneActorBindings, SceneAliasCandidate,
+    SceneEvent, SceneEventBatch, SceneFragmentInvocation, SceneFragmentInvocationBatch,
+    ScenePlaybackState, ScenePlayer, SceneRegistry, SceneStartRequest, SceneStopRequest,
 };
 pub use timer::{timer_tick_system, ScriptTimer};
 pub use translate::{

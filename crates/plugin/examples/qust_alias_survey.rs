@@ -52,6 +52,7 @@ fn main() -> anyhow::Result<()> {
                 Some(AliasFillType::ExternalAlias { .. }) => "ExternalAlias",
                 Some(AliasFillType::LocationAliasReference { .. }) => "LocationAliasReference",
                 Some(AliasFillType::FromEvent { .. }) => "FromEvent",
+                Some(AliasFillType::NearAlias { .. }) => "NearAlias",
             };
             *fill_type_hist.entry(kind).or_default() += 1;
 

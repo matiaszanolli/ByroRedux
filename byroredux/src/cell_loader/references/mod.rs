@@ -532,22 +532,9 @@ pub(super) fn load_references_budgeted(
                             // than routing through `spawn_placed_instances`, so
                             // stamp the canonical ACHR identity and the three
                             // fields Skyrim quest-alias resolution consumes.
-                            let plugin_name = plugin_for_form_id(placed_ref.form_id, load_order)
-                                .unwrap_or("Engine.esm");
-                            let placement = world.resource_mut::<FormIdPool>().intern(FormIdPair {
-                                plugin: PluginId::from_filename(plugin_name),
-                                local: LocalFormId(placed_ref.form_id),
-                            });
-                            world.insert(root, FormIdComponent(placement));
-                            world.insert(
-                                root,
-                                byroredux_scripting::SceneAliasCandidate {
-                                    reference_form_id: placed_ref.form_id,
-                                    base_form_id: child_form_id,
-                                    location_ref_types: placed_ref.location_ref_types.clone(),
-                                },
-                            );
-                            byroredux_scripting::mark_scene_actor_bindings_dirty(world);
+                            if synth_idx == 0 {
+                                stamp_quest_reference(world, root, placed_ref, load_order);
+                            }
                             job.accum.npc_spawned += 1;
                             if job.accum.npc_spawned_sample.len() < 8
                                 && !job.accum.npc_spawned_sample.contains(&child_form_id)
@@ -581,6 +568,7 @@ pub(super) fn load_references_budgeted(
                 ref_rot,
                 ref_scale,
                 refr_script_instance,
+                synth_idx == 0,
             );
             job.next_synth = synth_idx + 1;
             budget.complete_unit();
@@ -1025,6 +1013,68 @@ struct CellLoadCtx<'a> {
     load_order: &'a [String],
 }
 
+fn stamp_quest_reference(
+    world: &mut World,
+    entity: EntityId,
+    placed_ref: &esm::cell::PlacedRef,
+    load_order: &[String],
+) {
+    let plugin_name = plugin_for_form_id(placed_ref.form_id, load_order).unwrap_or("Engine.esm");
+    let placement = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+        plugin: PluginId::from_filename(plugin_name),
+        local: LocalFormId(placed_ref.form_id),
+    });
+    world.insert(entity, FormIdComponent(placement));
+    world.insert(
+        entity,
+        byroredux_scripting::SceneAliasCandidate {
+            reference_form_id: placed_ref.form_id,
+            base_form_id: placed_ref.base_form_id,
+            linked_refs: placed_ref
+                .linked_refs
+                .iter()
+                .map(|link| (link.keyword, link.target))
+                .collect(),
+            location_ref_types: placed_ref.location_ref_types.clone(),
+        },
+    );
+    byroredux_scripting::mark_scene_actor_bindings_dirty(world);
+}
+
+fn spawn_logical_quest_reference(
+    world: &mut World,
+    placed_ref: &esm::cell::PlacedRef,
+    load_order: &[String],
+    position: Vec3,
+    rotation: Quat,
+    scale: f32,
+) -> EntityId {
+    let entity = world.spawn();
+    world.insert(entity, Transform::new(position, rotation, scale));
+    world.insert(entity, GlobalTransform::new(position, rotation, scale));
+    stamp_quest_reference(world, entity, placed_ref, load_order);
+    entity
+}
+
+fn attach_quest_reference_script(
+    world: &mut World,
+    entity: EntityId,
+    base_form_id: u32,
+    record_index: &byroredux_plugin::esm::records::EsmIndex,
+    refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
+    accum: &mut RefLoadAccum,
+) {
+    if attach_script_for_refr(
+        world,
+        entity,
+        base_form_id,
+        record_index,
+        refr_script_instance,
+    ) {
+        accum.scripts_recognized += 1;
+    }
+}
+
 /// Dispatch one synthetic child placement (SCOL/PKIN-expanded or the lone
 /// default) by record kind — NPC actor, invisible trigger volume, light-only
 /// LIGH, marker/FX skip, or the main static-mesh spawn — accumulating its
@@ -1044,6 +1094,7 @@ fn spawn_synth_child(
     ref_rot: Quat,
     ref_scale: f32,
     refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
+    is_primary_synth: bool,
 ) {
     let &CellLoadCtx {
         index,
@@ -1086,6 +1137,9 @@ fn spawn_synth_child(
                 world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, volume);
+                if is_primary_synth {
+                    stamp_quest_reference(world, entity, placed_ref, load_order);
+                }
                 if attach_script_for_refr(
                     world,
                     entity,
@@ -1120,6 +1174,22 @@ fn spawn_synth_child(
                 accum.stat_miss_sample.push(child_form_id);
             }
             log::debug!("REFR base {:08X} not in statics table", child_form_id);
+            if is_primary_synth {
+                let entity = spawn_logical_quest_reference(
+                    world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
+                );
+                attach_quest_reference_script(
+                    world,
+                    entity,
+                    child_form_id,
+                    record_index,
+                    refr_script_instance,
+                    accum,
+                );
+                accum.entity_count += 1;
+                accum.bounds_min = accum.bounds_min.min(ref_pos);
+                accum.bounds_max = accum.bounds_max.max(ref_pos);
+            }
             return;
         }
     };
@@ -1147,6 +1217,30 @@ fn spawn_synth_child(
             );
             let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
             attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
+            if is_primary_synth {
+                stamp_quest_reference(world, entity, placed_ref, load_order);
+                attach_quest_reference_script(
+                    world,
+                    entity,
+                    child_form_id,
+                    record_index,
+                    refr_script_instance,
+                    accum,
+                );
+            }
+            accum.entity_count += 1;
+        } else if is_primary_synth {
+            let entity = spawn_logical_quest_reference(
+                world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
+            );
+            attach_quest_reference_script(
+                world,
+                entity,
+                child_form_id,
+                record_index,
+                refr_script_instance,
+                accum,
+            );
             accum.entity_count += 1;
         }
         return;
@@ -1174,6 +1268,20 @@ fn spawn_synth_child(
         || filename.starts_with("roommarker")
         || filename.starts_with("vatsmarker")
     {
+        if is_primary_synth {
+            let entity = spawn_logical_quest_reference(
+                world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
+            );
+            attach_quest_reference_script(
+                world,
+                entity,
+                child_form_id,
+                record_index,
+                refr_script_instance,
+                accum,
+            );
+            accum.entity_count += 1;
+        }
         return;
     }
 
@@ -1195,6 +1303,30 @@ fn spawn_synth_child(
             );
             let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
             attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
+            if is_primary_synth {
+                stamp_quest_reference(world, entity, placed_ref, load_order);
+                attach_quest_reference_script(
+                    world,
+                    entity,
+                    child_form_id,
+                    record_index,
+                    refr_script_instance,
+                    accum,
+                );
+            }
+            accum.entity_count += 1;
+        } else if is_primary_synth {
+            let entity = spawn_logical_quest_reference(
+                world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
+            );
+            attach_quest_reference_script(
+                world,
+                entity,
+                child_form_id,
+                record_index,
+                refr_script_instance,
+                accum,
+            );
             accum.entity_count += 1;
         }
         return;
@@ -1323,7 +1455,23 @@ fn spawn_synth_child(
             }
         }
     };
-    let Some(cached) = cached else { return };
+    let Some(cached) = cached else {
+        if is_primary_synth {
+            let entity = spawn_logical_quest_reference(
+                world, placed_ref, load_order, ref_pos, ref_rot, ref_scale,
+            );
+            attach_quest_reference_script(
+                world,
+                entity,
+                child_form_id,
+                record_index,
+                refr_script_instance,
+                accum,
+            );
+            accum.entity_count += 1;
+        }
+        return;
+    };
 
     // #544 — embedded animation-clip handle for this REFR's
     // model. Three-tier lookup mirrors the cache:
@@ -1380,10 +1528,13 @@ fn spawn_synth_child(
         clip_handle,
         stat.record_type.render_layer(),
         Some(cache_key.as_str()),
-        Some(placement_pair),
-        placed_ref.teleport,
+        is_primary_synth.then_some(placement_pair),
+        is_primary_synth.then_some(placed_ref.teleport).flatten(),
     );
     accum.entity_count += count;
+    if is_primary_synth {
+        stamp_quest_reference(world, placement_root, placed_ref, load_order);
+    }
 
     // #1889 / EXAL §5.2 — materialise the base record's
     // Visible-When-Distant flag onto the placement root.

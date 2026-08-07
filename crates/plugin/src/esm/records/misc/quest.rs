@@ -12,6 +12,14 @@ use crate::esm::sub_reader::SubReader;
 /// `QUST.DATA` / `QUST.DNAM` bit 0: activate the quest during game bootstrap
 /// instead of waiting for Story Manager or an explicit Papyrus `Start()` call.
 pub const QUEST_FLAG_START_GAME_ENABLED: u16 = 0x0001;
+pub const QUEST_FLAG_COMPLETED: u16 = 0x0002;
+pub const QUEST_FLAG_ALLOW_REPEATED_STAGES: u16 = 0x0008;
+pub const QUEST_FLAG_FAILED: u16 = 0x0040;
+pub const QUEST_FLAG_ACTIVE: u16 = 0x0800;
+pub const QUEST_STAGE_FLAG_START_UP: u8 = 0x02;
+pub const QUEST_STAGE_FLAG_SHUT_DOWN: u8 = 0x04;
+pub const QUEST_LOG_FLAG_COMPLETE_QUEST: u8 = 0x01;
+pub const QUEST_LOG_FLAG_FAIL_QUEST: u8 = 0x02;
 
 /// One stage of a quest, defined by an `INDX` / `QSDT` sub-record
 /// pair. Stage data carried inside the block (CNAM log text, SCHR
@@ -25,14 +33,16 @@ pub const QUEST_FLAG_START_GAME_ENABLED: u16 = 0x0001;
 /// (M47.2 consumer).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct QuestStage {
-    /// Stage index from INDX (u16). Skyrim's u32 form is truncated
-    /// to u16 here — vanilla Skyrim stage indices stay well inside
-    /// u16 range; if a mod ever ships a larger index this widens.
+    /// Stage index from INDX. All supported layouts store this as u16.
     pub index: u16,
     /// Version-specific stage flags. FO3/FNV store them in `QSDT`; Skyrim+
     /// stores them in `INDX` byte 2 (`0x02` = Start Up Stage, `0x04` = Shut
     /// Down Stage, `0x08` = Keep Instance Data From Here On).
     pub flags: u8,
+    /// Individual QSDT log entries. A stage may carry multiple conditional
+    /// entries with distinct terminal flags; preserving them prevents a
+    /// conditional Complete/Fail pair from being flattened incorrectly.
+    pub log_entries: Vec<QuestStageLogEntry>,
     /// `CNAM` log entry text shown in the Pip-Boy / quest journal
     /// when this stage is reached. Empty when the stage carries no
     /// log entry (silent stages that only fire scripts).
@@ -48,33 +58,61 @@ pub struct QuestStage {
     pub conditions: ConditionList,
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QuestStageLogEntry {
+    /// QSDT flags (`Complete Quest`, `Fail Quest`).
+    pub flags: u8,
+    pub text: String,
+    /// FO4 `NAM2` authoring note.
+    pub note: String,
+    pub has_script: bool,
+    pub conditions: ConditionList,
+    pub next_quest: Option<u32>,
+}
+
 /// One objective of a quest, defined by a `QOBJ` block. Objectives
 /// surface in the Pip-Boy / quest journal; their targets drive the
 /// map marker / compass indicator.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct QuestObjective {
-    /// Objective index from QOBJ (u16). Quest stages reference
-    /// objectives by this index when they enable/disable markers.
-    pub index: u16,
+    /// Objective index from QOBJ: signed 32-bit on FO3/FNV and u16 on
+    /// Skyrim+/FO4. The common i32 representation retains both layouts and
+    /// matches Papyrus's `int` API without narrowing legacy mod-authored IDs.
+    pub index: i32,
     /// Objective text (`NNAM` on Skyrim+, `CNAM` on FO3/FNV). Empty
     /// when the objective ships no display text — rare but
     /// permissible per the on-disk schema.
     pub text: String,
-    /// `QSTA` target form-IDs (REFR / ACHR / objects the player
-    /// should head toward). Multiple QSTA blocks → multiple targets.
-    /// Stored as raw u32 form IDs; the consumer resolves to entities
-    /// via the global form-ID map at quest-system runtime.
+    /// FNAM objective flags (`ORed With Previous`, and FO4's tracking bit).
+    pub flags: u32,
+    /// Canonical target records. FO3/FNV store placed-reference FormIDs;
+    /// Skyrim+ stores quest alias IDs in the same leading four bytes.
+    pub targets: Vec<QuestObjectiveTarget>,
+    /// Compatibility projection of pre-Skyrim reference targets.
     pub target_refs: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestObjectiveTarget {
+    pub target: QuestObjectiveTargetKind,
+    pub flags: u32,
+    /// FO4 form version 82+ optional target keyword.
+    pub keyword: Option<u32>,
+    pub conditions: ConditionList,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuestObjectiveTargetKind {
+    Reference(u32),
+    Alias(i32),
 }
 
 /// One quest alias, defined by an `ALST` (Reference alias) or `ALLS`
 /// (Location alias) block. Aliases are Radiant Story's targeting
 /// mechanism — a quest names a *role* ("QuestGiver", "Location") rather
 /// than a specific reference, and this is filled in at runtime per
-/// [`AliasFillType`]. Parser-side only: this is pure data, decoded and
-/// cross-validated against the field table in
-/// [`docs/engine/m47-3-quest-alias-design.md`]; the fill-and-apply
-/// runtime is that milestone's later phases.
+/// [`AliasFillType`]. This parser remains pure data; the live fill/apply
+/// consumer is `byroredux_scripting::scene::refresh_scene_actor_bindings`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct QuestAlias {
     /// `ALST`/`ALLS` payload — the numerical id Papyrus/VMAD reference
@@ -87,6 +125,10 @@ pub struct QuestAlias {
     /// (Reference). Most fill-type fields are exclusive to one kind
     /// (documented per-variant on [`AliasFillType`]).
     pub is_location: bool,
+    /// FO4 `ALCS` reference-collection alias.
+    pub is_collection: bool,
+    /// FO4 `ALMI` collection fill limit.
+    pub max_initial_fill_count: Option<u8>,
     /// `ALID` — the alias name (e.g. `"Location"`, `"QuestGiver"`),
     /// substituted into dynamically-generated journal/dialogue text.
     pub name: String,
@@ -116,6 +158,8 @@ pub struct QuestAlias {
     /// runtime must cross-reference every alias's `force_into_alias`
     /// against sibling aliases' `alias_id` within the same `QustRecord`.
     pub force_into_alias: Option<i32>,
+    /// `ALCC` — choose the candidate closest to this already-filled alias.
+    pub closest_to_alias: Option<i32>,
     /// `CTDA` conditions attached to this alias. The "Match Conditions"
     /// fill type's predicate list (reusing M47.1's `ConditionList`
     /// verbatim) — also legal alongside another fill type per the
@@ -140,19 +184,26 @@ pub enum AliasFillType {
     /// `ALUA` (Reference alias only) — an `NPC_`'s existing unique
     /// `ACHR` instance (not a spawn).
     UniqueActor(u32),
-    /// `ALCO` (Reference alias only) — instantiate a new reference to
-    /// this base record. `alca`/`alcl` are the companion `ALCA`/`ALCL`
-    /// fields, whose meaning the source itself doesn't know ("Unknown.
-    /// Associated with ALCO") — carried raw rather than interpreted.
-    CreatedObject { base: u32, alca: i32, alcl: i32 },
+    /// `ALCO` + `ALCA` + `ALCL` — instantiate a reference at/in another
+    /// alias using the authored encounter level.
+    CreatedObject {
+        base: u32,
+        target_alias: i16,
+        create_mode: u16,
+        level: u32,
+    },
     /// `ALEQ` + `ALEA` — copy the value from another quest's alias
     /// (`quest`'s alias `alias_id`).
     ExternalAlias { quest: u32, alias_id: i32 },
-    /// `ALRT` (Reference alias only) — an `LCRT` lookup against the
-    /// quest's location. `alfa` (`ALFA`) is unconfirmed by the source
-    /// ("may be a formid, but with first byte(s) co-opted as a flag?")
-    /// — carried raw rather than interpreted.
-    LocationAliasReference { lcrt: u32, alfa: i32 },
+    /// `ALFA` + optional `KNAM`/`ALRT` — resolve relative to another alias,
+    /// optionally constrained by linked-reference keyword/reference type.
+    LocationAliasReference {
+        alias_id: i32,
+        keyword: Option<u32>,
+        ref_type: Option<u32>,
+    },
+    /// `ALNA` + `ALNT` — find a linked reference near another alias.
+    NearAlias { alias_id: i32, relation: u32 },
     /// `ALFE` + `ALFD` — filled from a Story Manager event.
     FromEvent { event_type: [u8; 4], data: i32 },
 }
@@ -164,10 +215,9 @@ pub enum AliasFillType {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AliasFlags(pub u32);
 
-// The full bit catalog ships now even though it has no *production*
-// consumer yet — the M47.3 alias-fill runtime (reservation tracking,
-// essential/protected, allow-dead/disabled/destroyed relaxations, …) is
-// a later phase. Every constant is exercised by an `AliasFlags::has`
+// The full bit catalog stays parser-owned. The M47.3 runtime consumes the
+// reservation/reuse/dead subset and exposes remaining authored metadata for
+// later gameplay components. Every constant is exercised by an `AliasFlags::has`
 // assertion in the test module below (dead-code analysis just doesn't
 // credit test-only usage for the non-test build), so all are
 // `dead_code`-allowed here rather than left to warn.
@@ -196,6 +246,8 @@ pub const ALIAS_FLAG_ALLOW_RESERVED: u32 = 0x0000_0200;
 #[allow(dead_code)]
 pub const ALIAS_FLAG_PROTECTED: u32 = 0x0000_0400;
 #[allow(dead_code)]
+pub const ALIAS_FLAG_FORCED_BY_ALIASES: u32 = 0x0000_0800;
+#[allow(dead_code)]
 pub const ALIAS_FLAG_ALLOW_DESTROYED: u32 = 0x0000_1000;
 /// "Find Matching Reference" sub-option; requires [`ALIAS_FLAG_IN_LOADED_AREA`].
 #[allow(dead_code)]
@@ -207,6 +259,22 @@ pub const ALIAS_FLAG_INITIALLY_DISABLED: u32 = 0x0000_8000;
 /// `ALLS` only.
 #[allow(dead_code)]
 pub const ALIAS_FLAG_ALLOW_CLEARED: u32 = 0x0001_0000;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_CLEAR_NAMES_WHEN_REMOVED: u32 = 0x0002_0000;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_ACTORS_ONLY: u32 = 0x0004_0000;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_CREATE_TEMPORARY: u32 = 0x0008_0000;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_EXTERNAL_LINKED: u32 = 0x0010_0000;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_NO_PICKPOCKET: u32 = 0x0020_0000;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_APPLY_TO_NON_ALIASED_REFS: u32 = 0x0040_0000;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_COMPANION: u32 = 0x0080_0000;
+#[allow(dead_code)]
+pub const ALIAS_FLAG_OPTIONAL_ALL_SCENES: u32 = 0x0100_0000;
 
 impl AliasFlags {
     pub fn has(self, bit: u32) -> bool {
@@ -223,8 +291,20 @@ pub struct AliasInjectedData {
     pub display_name: Option<u32>,
     /// `VTCK` → `NPC_`/`FLST`, additional valid voice types for export.
     pub voice_type: Option<u32>,
+    /// FO4 `ALFV` → forced `VTYP`.
+    pub forced_voice: Option<u32>,
+    /// FO4 `ALDI` → death-item leveled list.
+    pub death_item: Option<u32>,
+    /// `SPOR` → spectator override package list.
+    pub spectator_override: Option<u32>,
+    /// `OCOR` → observe-dead-body override package list.
+    pub observe_dead_body_override: Option<u32>,
+    /// `GWOR` → guard-warn override package list.
+    pub guard_warn_override: Option<u32>,
     /// `ECOR` → `FLST`, combat override package list.
     pub combat_override: Option<u32>,
+    /// FO4 `ALLA` keyword/alias relationships.
+    pub linked_aliases: Vec<AliasLinkedAlias>,
     /// `ALFC` → `FACT`, added on fill, removed on clear.
     pub factions: Vec<u32>,
     /// `ALPC` → `PACK`, stacked on top of the target's base packages.
@@ -240,6 +320,12 @@ pub struct AliasInjectedData {
     pub inventory: Vec<(u32, u32)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AliasLinkedAlias {
+    pub keyword: Option<u32>,
+    pub alias_id: i32,
+}
+
 /// `QUST` quest record. Lifecycle container for the Story Manager and
 /// Radiant Story systems. Stages, objectives, and aliases are decoded;
 /// CTDA conditions are already handled by M47.1's `ConditionList` at the
@@ -249,6 +335,8 @@ pub struct QustRecord {
     pub form_id: u32,
     pub editor_id: String,
     pub full_name: String,
+    /// True when the Skyrim+/FO4 `DNAM` general layout was observed.
+    pub skyrim_plus: bool,
     /// Optional FO3/FNV quest script reference (pre-Papyrus bytecode).
     pub script_ref: u32,
     /// Quest flags from DATA byte 0 (`Start Game Enabled`, `Allow
@@ -256,19 +344,48 @@ pub struct QustRecord {
     pub quest_flags: u16,
     /// Priority from DATA byte 1. Higher = displayed first in pip-boy.
     pub priority: u8,
+    /// DNAM byte 3. Skyrim calls this the QUST form version; FO4 leaves it
+    /// unused. Preserved without guessing the game-specific interpretation.
+    pub general_version: u8,
+    /// DNAM bytes 4..8. FO4 interprets these as the Story Manager delay
+    /// (`f32`); Skyrim labels them unknown. Raw preservation keeps the parser
+    /// lossless across both layouts.
+    pub general_aux: [u8; 4],
+    /// DNAM quest type. Skyrim stores a u32; FO4 stores a u8 followed by three
+    /// unused zero bytes, so the common little-endian u32 decode is lossless.
+    pub quest_type: u32,
+    /// Skyrim+/FO4 Story Manager event (`ENAM`).
+    pub event: Option<[u8; 4]>,
+    /// FO4 owning location (`LNAM`) and completion-XP global (`XNAM`).
+    pub location: Option<u32>,
+    pub completion_xp: Option<u32>,
+    pub text_display_globals: Vec<u32>,
+    pub object_window_filter: String,
+    pub dialogue_conditions: ConditionList,
+    pub secondary_conditions: ConditionList,
     /// All defined stages, in authoring order (which is also INDX
     /// order on every vanilla master sampled). Most quests ship 5-20
     /// stages; the longest vanilla FNV quest (Heartache by the
     /// Number) has 60+.
     pub stages: Vec<QuestStage>,
-    /// `INDX` of the stage flagged Start Up Stage (legacy QSDT bit 0;
-    /// Skyrim+ INDX flag `0x02`). The Story Manager advances the quest to
+    /// `INDX` of the Skyrim+ stage carrying `INDX` flag `0x02`. The Story
+    /// Manager advances the quest to
     /// this index on activation; `None` when no stage has the bit set.
     pub start_up_stage: Option<u16>,
+    /// `INDX` of the Skyrim+ stage carrying `INDX` flag `0x04`. Papyrus
+    /// `Quest.Stop()` advances through this stage so its QUST fragment and
+    /// log-entry side effects run before the quest becomes inactive.
+    pub shut_down_stage: Option<u16>,
     /// All defined objectives, in authoring order. Objectives are
     /// usually a strict subset of stages (one objective per major
     /// player-visible step).
     pub objectives: Vec<QuestObjective>,
+    /// Legacy/Skyrim quest-level reference targets authored after aliases.
+    pub targets: Vec<QuestObjectiveTarget>,
+    pub next_alias_id: Option<u32>,
+    pub description: String,
+    pub quest_group: Option<u32>,
+    pub swf_file: String,
     /// Stage→`Fragment_N` bindings from the QUST `VMAD` fragment section
     /// (Skyrim+). Each entry names the compiled quest script + the
     /// fragment function the runtime runs when the quest reaches that
@@ -285,8 +402,8 @@ pub struct QustRecord {
     /// resolves through at dispatch time.
     pub script_instance: Option<ScriptInstanceData>,
     /// All defined aliases (`ALST`/`ALLS` blocks), in authoring order.
-    /// M47.3 Phase 0 substrate — pure data, no fill-and-apply runtime
-    /// yet. See [`QuestAlias`].
+    /// Consumed by the scripting alias-fill/injection runtime. See
+    /// [`QuestAlias`].
     pub aliases: Vec<QuestAlias>,
 }
 
@@ -297,14 +414,9 @@ pub struct QustRecord {
 /// block, and any of the three closes whatever was open before.
 enum QustBlock {
     None,
-    Stage {
-        stage: QuestStage,
-        /// Skyrim+ puts stage flags in `INDX`; its `QSDT` is per-log-entry
-        /// completion/failure state and must not overwrite them.
-        flags_from_index: bool,
-    },
+    Stage(QuestStage),
     Objective(QuestObjective),
-    Alias(QuestAlias),
+    Alias(Box<QuestAlias>),
 }
 
 pub fn parse_qust(
@@ -317,24 +429,33 @@ pub fn parse_qust(
         ..Default::default()
     };
     let mut block = QustBlock::None;
+    let mut skyrim_plus = false;
+    let mut secondary_conditions = false;
+
+    fn remap_form_id(raw: u32, remap: &Option<crate::esm::reader::FormIdRemap>) -> u32 {
+        if raw == 0 {
+            0
+        } else {
+            remap.as_ref().map_or(raw, |mapping| mapping.remap(raw))
+        }
+    }
 
     // Close whichever block is currently open and push it onto the
     // record. Called when a new block-opener appears or when the walk
     // finishes.
     fn flush_block(out: &mut QustRecord, block: QustBlock) {
         match block {
-            QustBlock::Stage {
-                stage,
-                flags_from_index,
-            } => {
-                let start_up_mask = if flags_from_index { 0x02 } else { 0x01 };
-                if stage.flags & start_up_mask != 0 && out.start_up_stage.is_none() {
+            QustBlock::Stage(stage) => {
+                if stage.flags & QUEST_STAGE_FLAG_START_UP != 0 && out.start_up_stage.is_none() {
                     out.start_up_stage = Some(stage.index);
+                }
+                if stage.flags & QUEST_STAGE_FLAG_SHUT_DOWN != 0 && out.shut_down_stage.is_none() {
+                    out.shut_down_stage = Some(stage.index);
                 }
                 out.stages.push(stage);
             }
             QustBlock::Objective(obj) => out.objectives.push(obj),
-            QustBlock::Alias(alias) => out.aliases.push(alias),
+            QustBlock::Alias(alias) => out.aliases.push(*alias),
             QustBlock::None => {}
         }
     }
@@ -344,7 +465,7 @@ pub fn parse_qust(
             b"EDID" => out.editor_id = read_zstring(&sub.data),
             b"FULL" => out.full_name = read_lstring_or_zstring(&sub.data),
             b"SCRI" if sub.data.len() >= 4 => {
-                out.script_ref = SubReader::new(&sub.data).u32_or_default();
+                out.script_ref = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             b"DATA" if sub.data.len() >= 2 => {
                 out.quest_flags = u16::from(sub.data[0]);
@@ -353,9 +474,42 @@ pub fn parse_qust(
             // Skyrim+ widened flags to u16 and moved the quest header to
             // DNAM: flags, priority, form version, four unknown bytes, type.
             b"DNAM" if sub.data.len() >= 3 => {
+                skyrim_plus = true;
+                out.skyrim_plus = true;
                 out.quest_flags = u16::from_le_bytes([sub.data[0], sub.data[1]]);
                 out.priority = sub.data[2];
+                out.general_version = sub.data.get(3).copied().unwrap_or_default();
+                if sub.data.len() >= 8 {
+                    out.general_aux.copy_from_slice(&sub.data[4..8]);
+                }
+                if sub.data.len() >= 9 {
+                    let mut raw = [0; 4];
+                    let available = (sub.data.len() - 8).min(4);
+                    raw[..available].copy_from_slice(&sub.data[8..8 + available]);
+                    out.quest_type = u32::from_le_bytes(raw);
+                }
             }
+            b"ENAM" if sub.data.len() >= 4 => {
+                let mut event = [0; 4];
+                event.copy_from_slice(&sub.data[..4]);
+                out.event = Some(event);
+            }
+            b"LNAM" if sub.data.len() >= 4 => {
+                let form_id = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
+                out.location = (form_id != 0).then_some(form_id);
+            }
+            b"XNAM" if sub.data.len() >= 4 => {
+                let form_id = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
+                out.completion_xp = (form_id != 0).then_some(form_id);
+            }
+            b"QTGL" if sub.data.len() >= 4 => {
+                let form_id = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
+                if form_id != 0 {
+                    out.text_display_globals.push(form_id);
+                }
+            }
+            b"FLTR" => out.object_window_filter = read_zstring(&sub.data),
+            b"NEXT" => secondary_conditions = true,
             // Skyrim+ Papyrus attachment. Two independent decodes of the
             // same bytes: the trailing fragment section (stage→
             // `Fragment_N`, the M47.2 fragment-dispatch input) and the
@@ -367,31 +521,25 @@ pub fn parse_qust(
                 out.script_instance = Some(ScriptInstanceData::parse(&sub.data));
             }
             // INDX opens a stage block. Anything still open (a prior
-            // stage or objective) is flushed first. Skyrim widened
-            // INDX to u32; we truncate to u16 (vanilla content stays
-            // well within u16 range — flag if a mod ever exceeds).
+            // stage or objective) is flushed first. Skyrim+ stores the
+            // u16 index followed by the stage flags and an unused byte.
             b"INDX" if sub.data.len() >= 2 => {
                 let prev = std::mem::replace(&mut block, QustBlock::None);
                 flush_block(&mut out, prev);
                 let mut r = SubReader::new(&sub.data);
                 let index = r.u16_or_default();
-                let flags_from_index = sub.data.len() >= 3;
-                block = QustBlock::Stage {
-                    stage: QuestStage {
-                        index,
-                        flags: sub.data.get(2).copied().unwrap_or_default(),
-                        ..Default::default()
-                    },
-                    flags_from_index,
-                };
+                block = QustBlock::Stage(QuestStage {
+                    index,
+                    flags: sub.data.get(2).copied().unwrap_or_default(),
+                    ..Default::default()
+                });
             }
             b"QSDT" if !sub.data.is_empty() => {
-                if let QustBlock::Stage {
-                    stage,
-                    flags_from_index: false,
-                } = &mut block
-                {
-                    stage.flags = sub.data[0];
+                if let QustBlock::Stage(stage) = &mut block {
+                    stage.log_entries.push(QuestStageLogEntry {
+                        flags: sub.data[0],
+                        ..Default::default()
+                    });
                 }
             }
             // QOBJ opens an objective block. Same flush rule as INDX.
@@ -399,7 +547,11 @@ pub fn parse_qust(
                 let prev = std::mem::replace(&mut block, QustBlock::None);
                 flush_block(&mut out, prev);
                 let mut r = SubReader::new(&sub.data);
-                let index = r.u16_or_default();
+                let index = if skyrim_plus || sub.data.len() == 2 {
+                    i32::from(r.u16_or_default())
+                } else {
+                    r.i32_or_default()
+                };
                 block = QustBlock::Objective(QuestObjective {
                     index,
                     ..Default::default()
@@ -410,8 +562,11 @@ pub fn parse_qust(
             // FNV authoring path; Skyrim+ moves objective text onto
             // NNAM). Dispatch on the open block.
             b"CNAM" => match &mut block {
-                QustBlock::Stage { stage, .. } => {
+                QustBlock::Stage(stage) => {
                     stage.log_text = read_lstring_or_zstring(&sub.data);
+                    if let Some(log) = stage.log_entries.last_mut() {
+                        log.text = stage.log_text.clone();
+                    }
                 }
                 QustBlock::Objective(obj) => {
                     obj.text = read_lstring_or_zstring(&sub.data);
@@ -421,24 +576,59 @@ pub fn parse_qust(
             // NNAM is Skyrim+ objective text. FO3/FNV objectives use
             // CNAM (handled above); both arms are defensive — an
             // older parser sniffing NNAM on FO3 just no-ops.
-            b"NNAM" => {
-                if let QustBlock::Objective(obj) = &mut block {
+            b"NNAM" => match &mut block {
+                QustBlock::Objective(obj) => {
                     obj.text = read_lstring_or_zstring(&sub.data);
                 }
-            }
-            // QSTA target reference inside an objective block. Pre-
-            // Skyrim QSTA is 8 bytes (form-id u32 + flags u32);
-            // Skyrim+ keeps the same prefix shape and extends the
-            // tail. We only read the leading form-id — the trailing
-            // flags / alias-ref are deferred until the consumer
-            // needs them.
+                QustBlock::None => out.description = read_lstring_or_zstring(&sub.data),
+                QustBlock::Stage(_) | QustBlock::Alias(_) => {}
+            },
+            // QSTA is a placed-reference FormID on FO3/FNV and an alias ID on
+            // Skyrim+. Both carry flags in bytes 4..8; FO4 may append a KYWD.
             b"QSTA" if sub.data.len() >= 4 => {
-                if let QustBlock::Objective(obj) = &mut block {
-                    let mut r = SubReader::new(&sub.data);
-                    let target = r.u32_or_default();
-                    if target != 0 {
-                        obj.target_refs.push(target);
+                let mut r = SubReader::new(&sub.data);
+                let raw_target = r.u32_or_default();
+                let flags = if r.remaining() >= 4 {
+                    r.u32_or_default()
+                } else {
+                    0
+                };
+                let keyword = (r.remaining() >= 4)
+                    .then(|| remap_form_id(r.u32_or_default(), remap))
+                    .filter(|keyword| *keyword != 0);
+                match &mut block {
+                    QustBlock::Objective(obj) if skyrim_plus => {
+                        obj.targets.push(QuestObjectiveTarget {
+                            target: QuestObjectiveTargetKind::Alias(raw_target as i32),
+                            flags,
+                            keyword,
+                            conditions: Vec::new(),
+                        });
                     }
+                    QustBlock::Objective(obj) if raw_target != 0 => {
+                        let target = remap_form_id(raw_target, remap);
+                        obj.target_refs.push(target);
+                        obj.targets.push(QuestObjectiveTarget {
+                            target: QuestObjectiveTargetKind::Reference(target),
+                            flags,
+                            keyword,
+                            conditions: Vec::new(),
+                        });
+                    }
+                    QustBlock::None if raw_target != 0 => {
+                        out.targets.push(QuestObjectiveTarget {
+                            target: QuestObjectiveTargetKind::Reference(remap_form_id(
+                                raw_target, remap,
+                            )),
+                            flags,
+                            keyword,
+                            conditions: Vec::new(),
+                        });
+                    }
+                    QustBlock::Stage(_)
+                    | QustBlock::Alias(_)
+                    | QustBlock::Objective(_)
+                    | QustBlock::None => {}
                 }
             }
             // SCHR / SCDA inside a stage block mean the stage has an
@@ -446,8 +636,27 @@ pub fn parse_qust(
             // The bytecode itself isn't decoded here — flagged for
             // M47.2's consumer.
             b"SCHR" | b"SCDA" => {
-                if let QustBlock::Stage { stage, .. } = &mut block {
+                if let QustBlock::Stage(stage) = &mut block {
                     stage.has_script = true;
+                    if let Some(log) = stage.log_entries.last_mut() {
+                        log.has_script = true;
+                    }
+                }
+            }
+            b"NAM2" => {
+                if let QustBlock::Stage(stage) = &mut block {
+                    if let Some(log) = stage.log_entries.last_mut() {
+                        log.note = read_zstring(&sub.data);
+                    }
+                }
+            }
+            b"NAM0" if sub.data.len() >= 4 => {
+                if let QustBlock::Stage(stage) = &mut block {
+                    if let Some(log) = stage.log_entries.last_mut() {
+                        let quest =
+                            remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
+                        log.next_quest = (quest != 0).then_some(quest);
+                    }
                 }
             }
             // CTDA also appears inside an alias block ("Match
@@ -456,9 +665,27 @@ pub fn parse_qust(
             // another fill type). Stage and Alias are the two block
             // kinds that currently collect conditions here.
             b"CTDA" | b"CIS1" | b"CIS2" => match &mut block {
-                QustBlock::Stage { stage, .. } => push_ctda(sub, remap, &mut stage.conditions),
+                QustBlock::Stage(stage) => {
+                    push_ctda(sub, remap, &mut stage.conditions);
+                    if let Some(log) = stage.log_entries.last_mut() {
+                        push_ctda(sub, remap, &mut log.conditions);
+                    }
+                }
                 QustBlock::Alias(alias) => push_ctda(sub, remap, &mut alias.match_conditions),
-                QustBlock::Objective(_) | QustBlock::None => {}
+                QustBlock::Objective(objective) => {
+                    if let Some(target) = objective.targets.last_mut() {
+                        push_ctda(sub, remap, &mut target.conditions);
+                    }
+                }
+                QustBlock::None => {
+                    if let Some(target) = out.targets.last_mut() {
+                        push_ctda(sub, remap, &mut target.conditions);
+                    } else if secondary_conditions {
+                        push_ctda(sub, remap, &mut out.secondary_conditions);
+                    } else {
+                        push_ctda(sub, remap, &mut out.dialogue_conditions);
+                    }
+                }
             },
             // ALST/ALLS opens an alias block — a Reference alias or a
             // Location alias respectively. Same flush rule as INDX/QOBJ.
@@ -466,21 +693,42 @@ pub fn parse_qust(
                 let prev = std::mem::replace(&mut block, QustBlock::None);
                 flush_block(&mut out, prev);
                 let alias_id = SubReader::new(&sub.data).i32_or_default();
-                block = QustBlock::Alias(QuestAlias {
+                block = QustBlock::Alias(Box::new(QuestAlias {
                     alias_id,
                     is_location: false,
                     ..Default::default()
-                });
+                }));
             }
             b"ALLS" if sub.data.len() >= 4 => {
                 let prev = std::mem::replace(&mut block, QustBlock::None);
                 flush_block(&mut out, prev);
                 let alias_id = SubReader::new(&sub.data).i32_or_default();
-                block = QustBlock::Alias(QuestAlias {
+                block = QustBlock::Alias(Box::new(QuestAlias {
                     alias_id,
                     is_location: true,
                     ..Default::default()
-                });
+                }));
+            }
+            b"ALCS" if sub.data.len() >= 4 => {
+                let prev = std::mem::replace(&mut block, QustBlock::None);
+                flush_block(&mut out, prev);
+                let alias_id = SubReader::new(&sub.data).i32_or_default();
+                block = QustBlock::Alias(Box::new(QuestAlias {
+                    alias_id,
+                    is_collection: true,
+                    ..Default::default()
+                }));
+            }
+            b"ALMI" if !sub.data.is_empty() => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.max_initial_fill_count = Some(sub.data[0]);
+                }
+                // FO4 collection aliases are exactly ALCS + ALMI and do not
+                // carry the ALED terminator used by reference/location
+                // aliases. Close now so the following quest NNAM description
+                // is not misclassified as alias-local data.
+                let prev = std::mem::replace(&mut block, QustBlock::None);
+                flush_block(&mut out, prev);
             }
             // ALED is the explicit "end of this alias" terminator (the
             // source: "always the final field in a set of ALID
@@ -498,35 +746,36 @@ pub fn parse_qust(
             // ── Fill-type fields (mutually exclusive on disk) ──
             b"ALFR" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    let fid = SubReader::new(&sub.data).u32_or_default();
+                    let fid = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
                     alias.fill_type = Some(AliasFillType::ForcedReference(fid));
                 }
             }
             b"ALFL" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    let fid = SubReader::new(&sub.data).u32_or_default();
+                    let fid = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
                     alias.fill_type = Some(AliasFillType::ForcedLocation(fid));
                 }
             }
             b"ALUA" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    let fid = SubReader::new(&sub.data).u32_or_default();
+                    let fid = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
                     alias.fill_type = Some(AliasFillType::UniqueActor(fid));
                 }
             }
             b"ALCO" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    let fid = SubReader::new(&sub.data).u32_or_default();
+                    let fid = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
                     alias.fill_type = Some(AliasFillType::CreatedObject {
                         base: fid,
-                        alca: 0,
-                        alcl: 0,
+                        target_alias: 0,
+                        create_mode: 0,
+                        level: 0,
                     });
                 }
             }
             b"ALEQ" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    let fid = SubReader::new(&sub.data).u32_or_default();
+                    let fid = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
                     alias.fill_type = Some(AliasFillType::ExternalAlias {
                         quest: fid,
                         alias_id: 0,
@@ -535,9 +784,19 @@ pub fn parse_qust(
             }
             b"ALRT" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    let fid = SubReader::new(&sub.data).u32_or_default();
-                    alias.fill_type =
-                        Some(AliasFillType::LocationAliasReference { lcrt: fid, alfa: 0 });
+                    let fid = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
+                    match &mut alias.fill_type {
+                        Some(AliasFillType::LocationAliasReference { ref_type, .. }) => {
+                            *ref_type = (fid != 0).then_some(fid);
+                        }
+                        _ => {
+                            alias.fill_type = Some(AliasFillType::LocationAliasReference {
+                                alias_id: 0,
+                                keyword: None,
+                                ref_type: (fid != 0).then_some(fid),
+                            });
+                        }
+                    }
                 }
             }
             b"ALFE" if sub.data.len() >= 4 => {
@@ -557,15 +816,22 @@ pub fn parse_qust(
             // alone). ──
             b"ALCA" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    if let Some(AliasFillType::CreatedObject { alca, .. }) = &mut alias.fill_type {
-                        *alca = SubReader::new(&sub.data).i32_or_default();
+                    if let Some(AliasFillType::CreatedObject {
+                        target_alias,
+                        create_mode,
+                        ..
+                    }) = &mut alias.fill_type
+                    {
+                        let mut r = SubReader::new(&sub.data);
+                        *target_alias = r.i16_or_default();
+                        *create_mode = r.u16_or_default();
                     }
                 }
             }
             b"ALCL" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    if let Some(AliasFillType::CreatedObject { alcl, .. }) = &mut alias.fill_type {
-                        *alcl = SubReader::new(&sub.data).i32_or_default();
+                    if let Some(AliasFillType::CreatedObject { level, .. }) = &mut alias.fill_type {
+                        *level = SubReader::new(&sub.data).u32_or_default();
                     }
                 }
             }
@@ -580,10 +846,43 @@ pub fn parse_qust(
             }
             b"ALFA" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    if let Some(AliasFillType::LocationAliasReference { alfa, .. }) =
+                    let alias_id = SubReader::new(&sub.data).i32_or_default();
+                    match &mut alias.fill_type {
+                        Some(AliasFillType::LocationAliasReference {
+                            alias_id: current, ..
+                        }) => *current = alias_id,
+                        _ => {
+                            alias.fill_type = Some(AliasFillType::LocationAliasReference {
+                                alias_id,
+                                keyword: None,
+                                ref_type: None,
+                            });
+                        }
+                    }
+                }
+            }
+            b"KNAM" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    let form_id = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
+                    if let Some(AliasFillType::LocationAliasReference { keyword, .. }) =
                         &mut alias.fill_type
                     {
-                        *alfa = SubReader::new(&sub.data).i32_or_default();
+                        *keyword = (form_id != 0).then_some(form_id);
+                    }
+                }
+            }
+            b"ALNA" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.fill_type = Some(AliasFillType::NearAlias {
+                        alias_id: SubReader::new(&sub.data).i32_or_default(),
+                        relation: 0,
+                    });
+                }
+            }
+            b"ALNT" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    if let Some(AliasFillType::NearAlias { relation, .. }) = &mut alias.fill_type {
+                        *relation = SubReader::new(&sub.data).u32_or_default();
                     }
                 }
             }
@@ -605,52 +904,108 @@ pub fn parse_qust(
                     alias.force_into_alias = Some(SubReader::new(&sub.data).i32_or_default());
                 }
             }
-            // ── FNAM flags + injected data. FNAM also appears at QOBJ
-            // level (a different meaning, "ORed With Previous") — not
-            // yet decoded there, so only the Alias arm fires today. ──
-            b"FNAM" if sub.data.len() >= 4 => {
+            b"ALCC" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    alias.flags = AliasFlags(SubReader::new(&sub.data).u32_or_default());
+                    alias.closest_to_alias = Some(SubReader::new(&sub.data).i32_or_default());
                 }
             }
+            // ── FNAM flags + injected data. FNAM also appears at QOBJ
+            // level with the distinct objective-flag catalog. ──
+            b"FNAM" if sub.data.len() >= 4 => match &mut block {
+                QustBlock::Alias(alias) => {
+                    alias.flags = AliasFlags(SubReader::new(&sub.data).u32_or_default());
+                }
+                QustBlock::Objective(objective) => {
+                    objective.flags = SubReader::new(&sub.data).u32_or_default();
+                }
+                QustBlock::Stage(_) | QustBlock::None => {}
+            },
             b"ALDN" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    alias.injected.display_name = Some(SubReader::new(&sub.data).u32_or_default());
+                    alias.injected.display_name = Some(remap_form_id(
+                        SubReader::new(&sub.data).u32_or_default(),
+                        remap,
+                    ));
                 }
             }
             b"VTCK" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    alias.injected.voice_type = Some(SubReader::new(&sub.data).u32_or_default());
+                    alias.injected.voice_type = Some(remap_form_id(
+                        SubReader::new(&sub.data).u32_or_default(),
+                        remap,
+                    ));
+                }
+            }
+            b"ALFV" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.injected.forced_voice = Some(remap_form_id(
+                        SubReader::new(&sub.data).u32_or_default(),
+                        remap,
+                    ));
+                }
+            }
+            b"ALDI" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.injected.death_item = Some(remap_form_id(
+                        SubReader::new(&sub.data).u32_or_default(),
+                        remap,
+                    ));
+                }
+            }
+            b"SPOR" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.injected.spectator_override = Some(remap_form_id(
+                        SubReader::new(&sub.data).u32_or_default(),
+                        remap,
+                    ));
+                }
+            }
+            b"OCOR" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.injected.observe_dead_body_override = Some(remap_form_id(
+                        SubReader::new(&sub.data).u32_or_default(),
+                        remap,
+                    ));
+                }
+            }
+            b"GWOR" if sub.data.len() >= 4 => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    alias.injected.guard_warn_override = Some(remap_form_id(
+                        SubReader::new(&sub.data).u32_or_default(),
+                        remap,
+                    ));
                 }
             }
             b"ECOR" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    alias.injected.combat_override =
-                        Some(SubReader::new(&sub.data).u32_or_default());
+                    alias.injected.combat_override = Some(remap_form_id(
+                        SubReader::new(&sub.data).u32_or_default(),
+                        remap,
+                    ));
                 }
             }
             b"ALFC" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    alias
-                        .injected
-                        .factions
-                        .push(SubReader::new(&sub.data).u32_or_default());
+                    alias.injected.factions.push(remap_form_id(
+                        SubReader::new(&sub.data).u32_or_default(),
+                        remap,
+                    ));
                 }
             }
             b"ALPC" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    alias
-                        .injected
-                        .packages
-                        .push(SubReader::new(&sub.data).u32_or_default());
+                    alias.injected.packages.push(remap_form_id(
+                        SubReader::new(&sub.data).u32_or_default(),
+                        remap,
+                    ));
                 }
             }
             b"ALSP" if sub.data.len() >= 4 => {
                 if let QustBlock::Alias(alias) = &mut block {
-                    alias
-                        .injected
-                        .spells
-                        .push(SubReader::new(&sub.data).u32_or_default());
+                    alias.injected.spells.push(remap_form_id(
+                        SubReader::new(&sub.data).u32_or_default(),
+                        remap,
+                    ));
                 }
             }
             // KWDA holds `KSIZ` concatenated keyword FormIds in one
@@ -662,7 +1017,23 @@ pub fn parse_qust(
                 if let QustBlock::Alias(alias) = &mut block {
                     let mut r = SubReader::new(&sub.data);
                     while r.remaining() >= 4 {
-                        alias.injected.keywords.push(r.u32_or_default());
+                        alias
+                            .injected
+                            .keywords
+                            .push(remap_form_id(r.u32_or_default(), remap));
+                    }
+                }
+            }
+            b"ALLA" => {
+                if let QustBlock::Alias(alias) = &mut block {
+                    let mut r = SubReader::new(&sub.data);
+                    while r.remaining() >= 8 {
+                        let keyword = remap_form_id(r.u32_or_default(), remap);
+                        let alias_id = r.i32_or_default();
+                        alias.injected.linked_aliases.push(AliasLinkedAlias {
+                            keyword: (keyword != 0).then_some(keyword),
+                            alias_id,
+                        });
                     }
                 }
             }
@@ -672,11 +1043,19 @@ pub fn parse_qust(
             b"CNTO" if sub.data.len() >= 8 => {
                 if let QustBlock::Alias(alias) = &mut block {
                     let mut r = SubReader::new(&sub.data);
-                    let item = r.u32_or_default();
+                    let item = remap_form_id(r.u32_or_default(), remap);
                     let count = r.u32_or_default();
                     alias.injected.inventory.push((item, count));
                 }
             }
+            b"ANAM" if sub.data.len() >= 4 => {
+                out.next_alias_id = Some(SubReader::new(&sub.data).u32_or_default());
+            }
+            b"GNAM" if sub.data.len() >= 4 => {
+                let form_id = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
+                out.quest_group = (form_id != 0).then_some(form_id);
+            }
+            b"SNAM" => out.swf_file = read_zstring(&sub.data),
             _ => {}
         }
     }
@@ -728,14 +1107,21 @@ mod tests {
             // it must not make the terminal stage the startup stage.
             sub(b"INDX", &[0x84, 0x03, 0x00, 0x00]),
             sub(b"QSDT", &[0x01]),
+            // Stage 1000 is the authored shutdown stage.
+            sub(b"INDX", &[0xE8, 0x03, 0x04, 0x00]),
+            sub(b"QSDT", &[0x00]),
         ];
 
         let quest = parse_qust(0x0003_372B, &subs, &None);
         assert_eq!(quest.quest_flags, 0x0101);
         assert_eq!(quest.priority, 80);
+        assert_eq!(quest.quest_type, 1);
         assert_eq!(quest.start_up_stage, Some(0));
+        assert_eq!(quest.shut_down_stage, Some(1000));
         assert_eq!(quest.stages[0].flags, 0x02);
         assert_eq!(quest.stages[1].flags, 0x00);
+        assert_eq!(quest.stages[1].log_entries[0].flags, 0x01);
+        assert_eq!(quest.stages[2].flags, 0x04);
     }
 
     #[test]
@@ -775,9 +1161,8 @@ mod tests {
 
     #[test]
     fn parse_qust_decodes_two_stages_and_one_objective() {
-        // Synthetic FNV-style quest: two stages (10 and 20) where stage
-        // 10 is the start-up stage carrying log text, plus one objective
-        // (1) with two QSTA targets. Mimics the on-disk INDX/QSDT/CNAM
+        // Synthetic FNV-style quest: two stages (10 and 20), plus one
+        // objective (1) with two QSTA targets. Mimics INDX/QSDT/CNAM
         // ... QOBJ/NNAM/QSTA grammar.
         let start_log = b"Begin investigation.\0".to_vec();
         let mid_log = b"Reach the vault.\0".to_vec();
@@ -787,7 +1172,7 @@ mod tests {
             sub(b"EDID", b"DLC02\0"),
             sub(b"FULL", b"Honest Hearts\0"),
             sub(b"DATA", &[0x05, 30]), // quest_flags + priority
-            // Stage 10 — start-up (QSDT bit 0) + log text + advance script.
+            // Stage 10 — Complete Quest log entry + log text + script.
             sub(b"INDX", &10u16.to_le_bytes()),
             sub(b"QSDT", &[0x01]),
             sub(b"CNAM", &start_log),
@@ -797,7 +1182,7 @@ mod tests {
             sub(b"QSDT", &[0x00]),
             sub(b"CNAM", &mid_log),
             // Objective 1 — text via CNAM (FO3/FNV path) + two targets.
-            sub(b"QOBJ", &1u16.to_le_bytes()),
+            sub(b"QOBJ", &70_000i32.to_le_bytes()),
             sub(b"CNAM", &obj_text),
             sub(b"QSTA", &0x0010_F001u32.to_le_bytes()),
             sub(b"QSTA", &0x0010_F002u32.to_le_bytes()),
@@ -812,7 +1197,8 @@ mod tests {
         // Stages.
         assert_eq!(q.stages.len(), 2, "two INDX blocks expected");
         assert_eq!(q.stages[0].index, 10);
-        assert_eq!(q.stages[0].flags, 0x01);
+        assert_eq!(q.stages[0].flags, 0x00);
+        assert_eq!(q.stages[0].log_entries[0].flags, 0x01);
         assert_eq!(q.stages[0].log_text, "Begin investigation.");
         assert!(q.stages[0].has_script);
         assert_eq!(q.stages[1].index, 20);
@@ -820,13 +1206,13 @@ mod tests {
         assert_eq!(q.stages[1].log_text, "Reach the vault.");
         assert!(!q.stages[1].has_script);
 
-        // First stage with QSDT bit 0 is the Start Up Stage.
-        assert_eq!(q.start_up_stage, Some(10));
+        // FO3/FNV QSDT bit 0 is Complete Quest, not Start Up Stage.
+        assert_eq!(q.start_up_stage, None);
 
         // Objectives.
         assert_eq!(q.objectives.len(), 1);
         let obj = &q.objectives[0];
-        assert_eq!(obj.index, 1);
+        assert_eq!(obj.index, 70_000);
         assert_eq!(obj.text, "Find the dam.");
         assert_eq!(obj.target_refs, vec![0x0010_F001, 0x0010_F002]);
     }
@@ -839,15 +1225,22 @@ mod tests {
         // as the block's open marker (QOBJ) precedes the text.
         let subs = vec![
             sub(b"EDID", b"MQ302\0"),
+            sub(b"DNAM", &[0, 0, 50]),
             sub(b"QOBJ", &10u16.to_le_bytes()),
             sub(b"NNAM", b"Find the Elder Scroll.\0"),
-            sub(b"QSTA", &0x0001_AAAAu32.to_le_bytes()),
+            sub(b"QSTA", &[7i32.to_le_bytes(), 1u32.to_le_bytes()].concat()),
         ];
         let q = parse_qust(0xEAEAu32, &subs, &None);
         assert_eq!(q.objectives.len(), 1);
         assert_eq!(q.objectives[0].index, 10);
         assert_eq!(q.objectives[0].text, "Find the Elder Scroll.");
-        assert_eq!(q.objectives[0].target_refs, vec![0x0001_AAAA]);
+        assert!(q.objectives[0].target_refs.is_empty());
+        assert_eq!(q.objectives[0].targets.len(), 1);
+        assert_eq!(
+            q.objectives[0].targets[0].target,
+            QuestObjectiveTargetKind::Alias(7)
+        );
+        assert_eq!(q.objectives[0].targets[0].flags, 1);
     }
 
     #[test]
@@ -866,7 +1259,7 @@ mod tests {
         // QSTA with form_id 0 is the "no target" sentinel — the
         // objective opens but the empty target shouldn't push.
         let subs = vec![
-            sub(b"QOBJ", &5u16.to_le_bytes()),
+            sub(b"QOBJ", &5i32.to_le_bytes()),
             sub(b"QSTA", &0u32.to_le_bytes()),
             sub(b"QSTA", &0x0010_F001u32.to_le_bytes()),
         ];
@@ -900,6 +1293,64 @@ mod tests {
         assert_eq!(q.stages.len(), 1);
         assert_eq!(q.stages[0].conditions.len(), 1);
         assert_eq!(q.stages[0].conditions[0].function_index, 9);
+        assert_eq!(q.stages[0].log_entries[0].conditions.len(), 1);
+    }
+
+    #[test]
+    fn parse_qust_preserves_each_stage_log_entry() {
+        let subs = vec![
+            sub(b"INDX", &[40, 0, QUEST_STAGE_FLAG_SHUT_DOWN, 0]),
+            sub(b"QSDT", &[QUEST_LOG_FLAG_COMPLETE_QUEST]),
+            sub(b"CNAM", b"Succeeded.\0"),
+            sub(b"CTDA", &minimal_ctda(10)),
+            sub(b"NAM0", &0x0000_1234u32.to_le_bytes()),
+            sub(b"QSDT", &[QUEST_LOG_FLAG_FAIL_QUEST]),
+            sub(b"CNAM", b"Failed.\0"),
+            sub(b"CTDA", &minimal_ctda(11)),
+        ];
+
+        let q = parse_qust(0xABCE, &subs, &None);
+        let stage = &q.stages[0];
+        assert_eq!(stage.flags, QUEST_STAGE_FLAG_SHUT_DOWN);
+        assert_eq!(stage.log_entries.len(), 2);
+        assert_eq!(stage.log_entries[0].flags, QUEST_LOG_FLAG_COMPLETE_QUEST);
+        assert_eq!(stage.log_entries[0].text, "Succeeded.");
+        assert_eq!(stage.log_entries[0].conditions[0].function_index, 10);
+        assert_eq!(stage.log_entries[0].next_quest, Some(0x0000_1234));
+        assert_eq!(stage.log_entries[1].flags, QUEST_LOG_FLAG_FAIL_QUEST);
+        assert_eq!(stage.log_entries[1].text, "Failed.");
+        assert_eq!(stage.log_entries[1].conditions[0].function_index, 11);
+        assert_eq!(stage.log_entries[1].next_quest, None);
+    }
+
+    #[test]
+    fn parse_qust_remaps_all_form_id_payloads() {
+        let remap = Some(crate::esm::reader::FormIdRemap::regular(5, vec![2]));
+        let subs = vec![
+            sub(b"SCRI", &0x0000_0001u32.to_le_bytes()),
+            sub(b"QOBJ", &1i32.to_le_bytes()),
+            sub(
+                b"QSTA",
+                &[0x0000_0002u32.to_le_bytes(), 0u32.to_le_bytes()].concat(),
+            ),
+            sub(b"ALST", &0i32.to_le_bytes()),
+            sub(b"ALFR", &0x0000_0003u32.to_le_bytes()),
+            sub(b"ALFC", &0x0000_0004u32.to_le_bytes()),
+            sub(
+                b"CNTO",
+                &[0x0000_0005u32.to_le_bytes(), 2u32.to_le_bytes()].concat(),
+            ),
+        ];
+
+        let q = parse_qust(0x0500_0010, &subs, &remap);
+        assert_eq!(q.script_ref, 0x0200_0001);
+        assert_eq!(q.objectives[0].target_refs, vec![0x0200_0002]);
+        assert_eq!(
+            q.aliases[0].fill_type,
+            Some(AliasFillType::ForcedReference(0x0200_0003))
+        );
+        assert_eq!(q.aliases[0].injected.factions, vec![0x0200_0004]);
+        assert_eq!(q.aliases[0].injected.inventory, vec![(0x0200_0005, 2)]);
     }
 
     /// Minimal 28-byte FO3/FNV-layout CTDA (see
@@ -967,7 +1418,10 @@ mod tests {
         let subs = vec![
             sub(b"ALST", &1i32.to_le_bytes()),
             sub(b"ALCO", &0x000B_0002u32.to_le_bytes()),
-            sub(b"ALCA", &11i32.to_le_bytes()),
+            sub(
+                b"ALCA",
+                &[11i16.to_le_bytes(), 0x8000u16.to_le_bytes()].concat(),
+            ),
             sub(b"ALCL", &22i32.to_le_bytes()),
         ];
         let q = parse_qust(0x2, &subs, &None);
@@ -975,8 +1429,9 @@ mod tests {
             q.aliases[0].fill_type,
             Some(AliasFillType::CreatedObject {
                 base: 0x000B_0002,
-                alca: 11,
-                alcl: 22,
+                target_alias: 11,
+                create_mode: 0x8000,
+                level: 22,
             })
         );
     }
@@ -1036,13 +1491,15 @@ mod tests {
             sub(b"ALST", &6i32.to_le_bytes()),
             sub(b"ALRT", &0x000E_0005u32.to_le_bytes()),
             sub(b"ALFA", &(-1i32).to_le_bytes()),
+            sub(b"KNAM", &0x000E_0006u32.to_le_bytes()),
         ];
         let q = parse_qust(0x6, &subs, &None);
         assert_eq!(
             q.aliases[0].fill_type,
             Some(AliasFillType::LocationAliasReference {
-                lcrt: 0x000E_0005,
-                alfa: -1,
+                alias_id: -1,
+                keyword: Some(0x000E_0006),
+                ref_type: Some(0x000E_0005),
             })
         );
     }
@@ -1160,7 +1617,16 @@ mod tests {
             sub(b"ALFR", &0x0002_0000u32.to_le_bytes()),
             sub(b"ALDN", &0x0000_AAAAu32.to_le_bytes()),
             sub(b"VTCK", &0x0000_BBBBu32.to_le_bytes()),
+            sub(b"ALFV", &0x0000_BBBCu32.to_le_bytes()),
+            sub(b"ALDI", &0x0000_BBBDu32.to_le_bytes()),
+            sub(b"SPOR", &0x0000_CCC9u32.to_le_bytes()),
+            sub(b"OCOR", &0x0000_CCCAu32.to_le_bytes()),
+            sub(b"GWOR", &0x0000_CCCBu32.to_le_bytes()),
             sub(b"ECOR", &0x0000_CCCCu32.to_le_bytes()),
+            sub(
+                b"ALLA",
+                &[0x0000_DDDDu32.to_le_bytes(), 12i32.to_le_bytes()].concat(),
+            ),
             sub(b"ALFC", &0x0000_1111u32.to_le_bytes()),
             sub(b"ALFC", &0x0000_2222u32.to_le_bytes()),
             sub(b"ALPC", &0x0000_3333u32.to_le_bytes()),
@@ -1178,7 +1644,19 @@ mod tests {
         let injected = &q.aliases[0].injected;
         assert_eq!(injected.display_name, Some(0x0000_AAAA));
         assert_eq!(injected.voice_type, Some(0x0000_BBBB));
+        assert_eq!(injected.forced_voice, Some(0x0000_BBBC));
+        assert_eq!(injected.death_item, Some(0x0000_BBBD));
+        assert_eq!(injected.spectator_override, Some(0x0000_CCC9));
+        assert_eq!(injected.observe_dead_body_override, Some(0x0000_CCCA));
+        assert_eq!(injected.guard_warn_override, Some(0x0000_CCCB));
         assert_eq!(injected.combat_override, Some(0x0000_CCCC));
+        assert_eq!(
+            injected.linked_aliases,
+            vec![AliasLinkedAlias {
+                keyword: Some(0x0000_DDDD),
+                alias_id: 12,
+            }]
+        );
         assert_eq!(injected.factions, vec![0x0000_1111, 0x0000_2222]);
         assert_eq!(injected.packages, vec![0x0000_3333]);
         assert_eq!(injected.spells, vec![0x0000_4444]);
@@ -1238,6 +1716,93 @@ mod tests {
     }
 
     #[test]
+    fn parse_qust_decodes_near_and_collection_alias_metadata() {
+        let subs = vec![
+            sub(b"ALST", &1i32.to_le_bytes()),
+            sub(b"ALNA", &7i32.to_le_bytes()),
+            sub(b"ALNT", &2u32.to_le_bytes()),
+            sub(b"ALCC", &8i32.to_le_bytes()),
+            sub(b"ALED", &[]),
+            sub(b"ALCS", &2i32.to_le_bytes()),
+            sub(b"ALMI", &[4]),
+            sub(b"NNAM", b"Collection quest description\0"),
+        ];
+        let q = parse_qust(0xC, &subs, &None);
+        assert_eq!(q.aliases.len(), 2);
+        assert_eq!(
+            q.aliases[0].fill_type,
+            Some(AliasFillType::NearAlias {
+                alias_id: 7,
+                relation: 2,
+            })
+        );
+        assert_eq!(q.aliases[0].closest_to_alias, Some(8));
+        assert!(q.aliases[1].is_collection);
+        assert_eq!(q.aliases[1].max_initial_fill_count, Some(4));
+        assert_eq!(q.description, "Collection quest description");
+    }
+
+    #[test]
+    fn parse_qust_decodes_general_metadata_and_condition_sections() {
+        let subs = vec![
+            sub(
+                b"DNAM",
+                &[
+                    QUEST_FLAG_START_GAME_ENABLED as u8,
+                    0,
+                    50,
+                    3,
+                    0,
+                    0,
+                    32,
+                    65,
+                    6,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            sub(b"ENAM", b"Kill"),
+            sub(b"LNAM", &0x0000_1000u32.to_le_bytes()),
+            sub(b"XNAM", &0x0000_2000u32.to_le_bytes()),
+            sub(b"QTGL", &0x0000_3000u32.to_le_bytes()),
+            sub(b"FLTR", b"Main Quest\0"),
+            sub(b"CTDA", &minimal_ctda(10)),
+            sub(b"NEXT", &[]),
+            sub(b"CTDA", &minimal_ctda(11)),
+            sub(b"ANAM", &9u32.to_le_bytes()),
+            sub(b"NNAM", b"Quest description\0"),
+            sub(b"GNAM", &0x0000_4000u32.to_le_bytes()),
+            sub(b"SNAM", b"Interface/Quest.swf\0"),
+            sub(
+                b"QSTA",
+                &[0x0000_5000u32.to_le_bytes(), 1u32.to_le_bytes()].concat(),
+            ),
+            sub(b"CTDA", &minimal_ctda(12)),
+        ];
+        let q = parse_qust(0xD, &subs, &None);
+        assert_eq!(q.event, Some(*b"Kill"));
+        assert_eq!(q.general_version, 3);
+        assert_eq!(f32::from_le_bytes(q.general_aux), 10.0);
+        assert_eq!(q.quest_type, 6);
+        assert_eq!(q.location, Some(0x0000_1000));
+        assert_eq!(q.completion_xp, Some(0x0000_2000));
+        assert_eq!(q.text_display_globals, [0x0000_3000]);
+        assert_eq!(q.object_window_filter, "Main Quest");
+        assert_eq!(q.dialogue_conditions[0].function_index, 10);
+        assert_eq!(q.secondary_conditions[0].function_index, 11);
+        assert_eq!(q.next_alias_id, Some(9));
+        assert_eq!(q.description, "Quest description");
+        assert_eq!(q.quest_group, Some(0x0000_4000));
+        assert_eq!(q.swf_file, "Interface/Quest.swf");
+        assert_eq!(
+            q.targets[0].target,
+            QuestObjectiveTargetKind::Reference(0x0000_5000)
+        );
+        assert_eq!(q.targets[0].conditions[0].function_index, 12);
+    }
+
+    #[test]
     fn alias_flags_has_recognizes_every_named_bit() {
         // Every `ALIAS_FLAG_*` constant, individually — guards against a
         // copy-paste bit-value typo in the catalog (each must be its own
@@ -1254,11 +1819,20 @@ mod tests {
             ALIAS_FLAG_STORES_TEXT,
             ALIAS_FLAG_ALLOW_RESERVED,
             ALIAS_FLAG_PROTECTED,
+            ALIAS_FLAG_FORCED_BY_ALIASES,
             ALIAS_FLAG_ALLOW_DESTROYED,
             ALIAS_FLAG_CLOSEST,
             ALIAS_FLAG_USES_STORED_TEXT,
             ALIAS_FLAG_INITIALLY_DISABLED,
             ALIAS_FLAG_ALLOW_CLEARED,
+            ALIAS_FLAG_CLEAR_NAMES_WHEN_REMOVED,
+            ALIAS_FLAG_ACTORS_ONLY,
+            ALIAS_FLAG_CREATE_TEMPORARY,
+            ALIAS_FLAG_EXTERNAL_LINKED,
+            ALIAS_FLAG_NO_PICKPOCKET,
+            ALIAS_FLAG_APPLY_TO_NON_ALIASED_REFS,
+            ALIAS_FLAG_COMPANION,
+            ALIAS_FLAG_OPTIONAL_ALL_SCENES,
         ];
         let combined = AliasFlags(ALL_FLAGS.iter().fold(0u32, |acc, &f| acc | f));
         for &flag in ALL_FLAGS {
@@ -1278,6 +1852,6 @@ mod tests {
             "duplicate flag value in the catalog"
         );
         // A bit outside the catalog is correctly absent.
-        assert!(!combined.has(0x0000_0800));
+        assert!(!combined.has(0x8000_0000));
     }
 }

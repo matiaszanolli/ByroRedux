@@ -57,27 +57,39 @@ use crate::translate::compose::{
 pub enum Effect {
     /// `<quest>.SetStage(stage)`.
     SetStage { quest: QuestRef, stage: u16 },
+    /// `<quest>.Start()`.
+    StartQuest { quest: QuestRef },
+    /// `<quest>.Stop()`.
+    StopQuest { quest: QuestRef },
+    /// `<quest>.CompleteQuest()`.
+    CompleteQuest { quest: QuestRef },
+    /// `<quest>.Reset()`.
+    ResetQuest { quest: QuestRef },
+    /// `<quest>.SetActive(active)`.
+    SetQuestActive { quest: QuestRef, active: bool },
     /// `<quest>.SetObjectiveDisplayed(objective, displayed)`. Papyrus's
     /// optional `abForce` 3rd arg doesn't affect the stored state.
     SetObjectiveDisplayed {
         quest: QuestRef,
-        objective: u16,
+        objective: i32,
         displayed: bool,
     },
     /// `<quest>.SetObjectiveCompleted(objective, completed)`.
     SetObjectiveCompleted {
         quest: QuestRef,
-        objective: u16,
+        objective: i32,
         completed: bool,
     },
     /// `<quest>.SetObjectiveFailed(objective, failed)`.
     SetObjectiveFailed {
         quest: QuestRef,
-        objective: u16,
+        objective: i32,
         failed: bool,
     },
     /// `<quest>.CompleteAllObjectives()`.
     CompleteAllObjectives { quest: QuestRef },
+    /// `<quest>.FailAllObjectives()`.
+    FailAllObjectives { quest: QuestRef },
     /// `<container>.AddItem(<item>, <count>)`. The optional 3rd
     /// (`abSilent`) argument is accepted (parsed, not applied — no pickup
     /// notification UI exists to suppress) but only as a literal; a
@@ -340,10 +352,16 @@ type EffectPrimitive = fn(&Expr, &Scope) -> Option<Effect>;
 /// The effect-primitive table. First match wins.
 const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_stage,
+    prim_start_quest,
+    prim_stop_quest,
+    prim_complete_quest,
+    prim_reset_quest,
+    prim_set_quest_active,
     prim_set_objective_displayed,
     prim_set_objective_completed,
     prim_set_objective_failed,
     prim_complete_all_objectives,
+    prim_fail_all_objectives,
     prim_add_item,
     prim_equip_item,
     prim_move_to,
@@ -439,9 +457,76 @@ fn prim_set_stage(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+fn explicit_quest_receiver(object: &Expr, scope: &Scope) -> Option<QuestRef> {
+    let quest = receiver_quest(object, scope)?;
+    match &quest {
+        QuestRef::SelfRef | QuestRef::OwningQuest => Some(quest),
+        QuestRef::Property(_) => {
+            let Expr::Ident(name) = object else {
+                return None;
+            };
+            scope
+                .quest_locals
+                .contains_key(&name.0.to_ascii_lowercase())
+                .then_some(quest)
+        }
+    }
+}
+
+fn prim_start_quest(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "Start")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::StartQuest {
+        quest: explicit_quest_receiver(object, scope)?,
+    })
+}
+
+fn prim_stop_quest(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "Stop")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::StopQuest {
+        quest: explicit_quest_receiver(object, scope)?,
+    })
+}
+
+fn prim_complete_quest(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "CompleteQuest")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::CompleteQuest {
+        quest: receiver_quest(object, scope)?,
+    })
+}
+
+fn prim_reset_quest(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "Reset")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::ResetQuest {
+        quest: receiver_quest(object, scope)?,
+    })
+}
+
+fn prim_set_quest_active(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetActive")?;
+    if args.len() > 1 {
+        return None;
+    }
+    Some(Effect::SetQuestActive {
+        quest: receiver_quest(object, scope)?,
+        active: bool_arg(args, 0)?.unwrap_or(true),
+    })
+}
+
 fn prim_set_objective_displayed(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetObjectiveDisplayed")?;
-    let objective = u16::try_from(int_arg(args, 0)?).ok()?;
+    let objective = i32::try_from(int_arg(args, 0)?).ok()?;
     // Optional 2nd arg `abDisplayed` defaults to true in Papyrus.
     let displayed = bool_arg(args, 1)?.unwrap_or(true);
     Some(Effect::SetObjectiveDisplayed {
@@ -453,7 +538,7 @@ fn prim_set_objective_displayed(e: &Expr, scope: &Scope) -> Option<Effect> {
 
 fn prim_set_objective_completed(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetObjectiveCompleted")?;
-    let objective = u16::try_from(int_arg(args, 0)?).ok()?;
+    let objective = i32::try_from(int_arg(args, 0)?).ok()?;
     let completed = bool_arg(args, 1)?.unwrap_or(true);
     Some(Effect::SetObjectiveCompleted {
         quest: receiver_quest(object, scope)?,
@@ -464,7 +549,7 @@ fn prim_set_objective_completed(e: &Expr, scope: &Scope) -> Option<Effect> {
 
 fn prim_set_objective_failed(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetObjectiveFailed")?;
-    let objective = u16::try_from(int_arg(args, 0)?).ok()?;
+    let objective = i32::try_from(int_arg(args, 0)?).ok()?;
     let failed = bool_arg(args, 1)?.unwrap_or(true);
     Some(Effect::SetObjectiveFailed {
         quest: receiver_quest(object, scope)?,
@@ -474,8 +559,21 @@ fn prim_set_objective_failed(e: &Expr, scope: &Scope) -> Option<Effect> {
 }
 
 fn prim_complete_all_objectives(e: &Expr, scope: &Scope) -> Option<Effect> {
-    let (object, _args) = method_call(e, "CompleteAllObjectives")?;
+    let (object, args) = method_call(e, "CompleteAllObjectives")?;
+    if !args.is_empty() {
+        return None;
+    }
     Some(Effect::CompleteAllObjectives {
+        quest: receiver_quest(object, scope)?,
+    })
+}
+
+fn prim_fail_all_objectives(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "FailAllObjectives")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::FailAllObjectives {
         quest: receiver_quest(object, scope)?,
     })
 }
@@ -1003,6 +1101,45 @@ mod tests {
                 quest: QuestRef::SelfRef,
                 stage: 20
             }])
+        );
+    }
+
+    #[test]
+    fn lowers_quest_lifecycle_and_bulk_objective_effects() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             Self.Start()\n\
+             Self.SetActive(true)\n\
+             Self.FailAllObjectives()\n\
+             Self.CompleteQuest()\n\
+             Self.Stop()\n\
+             Self.Reset()\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::StartQuest {
+                    quest: QuestRef::SelfRef,
+                },
+                Effect::SetQuestActive {
+                    quest: QuestRef::SelfRef,
+                    active: true,
+                },
+                Effect::FailAllObjectives {
+                    quest: QuestRef::SelfRef,
+                },
+                Effect::CompleteQuest {
+                    quest: QuestRef::SelfRef,
+                },
+                Effect::StopQuest {
+                    quest: QuestRef::SelfRef,
+                },
+                Effect::ResetQuest {
+                    quest: QuestRef::SelfRef,
+                },
+            ])
         );
     }
 

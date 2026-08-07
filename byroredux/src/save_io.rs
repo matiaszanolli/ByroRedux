@@ -212,7 +212,8 @@ pub fn build_save_registry() -> SaveRegistry {
     use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
     use byroredux_scripting::{
         ActorCinematicState, ActorControlState, CinematicPresentationState, FragmentExecutionQueue,
-        HorseTetherState, PlayerControlState, ScriptTimer, ScriptVariables, TwoStateActivator,
+        HorseTetherState, PlayerControlState, QuestAliasInjectionState, ScriptTimer,
+        ScriptVariables, TwoStateActivator,
     };
 
     use crate::cell_loader::CurrentCellContext;
@@ -318,6 +319,11 @@ pub fn build_save_registry() -> SaveRegistry {
         // to default on every save/load.
         .register_resource::<QuestStageState>("QuestStageState")
         .register_resource::<QuestObjectiveState>("QuestObjectiveState")
+        // QUST alias CNTO injections are permanent. Preserve their grant
+        // ledger so the derived alias refresh after load cannot duplicate
+        // already-saved inventory stacks. Faction bookkeeping inside this
+        // resource is serde-skipped and re-derived from static QUST data.
+        .register_resource::<QuestAliasInjectionState>("QuestAliasInjectionState")
         // #2292 / SAVE-D1-09 — `Game.EnablePlayerControls`/
         // `DisablePlayerControls` lock state. Plain bool/i32 fields,
         // delta-safe. Pre-fix a save taken mid-scripted-sequence (controls
@@ -1894,6 +1900,9 @@ mod tests {
             ("PackageRegistry", "populated once from parsed PACK records, only ever read afterward"),
             ("PackageTargetRegistry", "populated once from placed-REFR positions, only ever read afterward"),
             ("QuestAdvanceOnActivate", "write-once static config from decompiled-script data; only read to decide whether to write the already-saved QuestStageState"),
+            ("QuestAliasInjectedOverlays", "derived QUST alias injection metadata, rebuilt whenever SceneActorBindings is marked dirty"),
+            ("QuestAliasRuntimeOverlays", "derived full QUST alias metadata, rebuilt whenever SceneActorBindings is marked dirty"),
+            ("QuestDefinitionRegistry", "populated once from parsed QUST records, only ever read afterward"),
             ("QuestStageAdvancedBatch", "one-shot batch drained every frame by event_cleanup_system"),
             ("QuestStageFragments", "populated once at cell load from decoded VMAD/PEX, only ever read afterward"),
             ("RecurringUpdate", "forward-latent — its only writer is unreachable in production today (no live Dlc2Ttr4aPlayerScript spawn site); re-evaluate the moment a real RegisterForUpdate recognizer lands"),
@@ -2499,6 +2508,92 @@ mod tests {
         assert!(overlay_stages.get_stage_done(quest, 37));
     }
 
+    /// QUST alias CNTO entries are permanent grants. The alias resolver's
+    /// ledger must survive a resource restore or its first dirty refresh
+    /// would append the same authored item stack again.
+    #[test]
+    fn quest_alias_inventory_grant_ledger_survives_snapshot_round_trip() {
+        use byroredux_plugin::esm::records::{
+            AliasFillType, AliasInjectedData, QuestAlias, QustRecord,
+        };
+        use byroredux_scripting::{
+            install_scene_quest_aliases, refresh_scene_actor_bindings, SceneAliasCandidate,
+        };
+
+        let reg = build_save_registry();
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            SceneAliasCandidate {
+                reference_form_id: 0xA1,
+                base_form_id: 0xB1,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        let quest_record = QustRecord {
+            form_id: 0x100,
+            aliases: vec![QuestAlias {
+                alias_id: 1,
+                fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                injected: AliasInjectedData {
+                    inventory: vec![(0xC1, 2), (0xC2, 1)],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        install_scene_quest_aliases(&mut world, [quest_record.clone()]);
+        refresh_scene_actor_bindings(&world);
+
+        let snap = save_world(&world, &reg).unwrap();
+        let grants = snap.resources["QuestAliasInjectionState"]["inventory_grants"]
+            .as_array()
+            .expect("grant ledger serializes as a sequence");
+        assert_eq!(grants.len(), 2);
+
+        let bytes = encode(&snap, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+        let mut restored = World::new();
+        byroredux_scripting::register(&mut restored);
+        let restored_actor = restored.spawn();
+        assert_eq!(restored_actor, actor, "full reload preserves entity ids");
+        restored.insert(
+            restored_actor,
+            SceneAliasCandidate {
+                reference_form_id: 0xA1,
+                base_form_id: 0xB1,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        let mut inventory = byroredux_core::ecs::components::Inventory::new();
+        inventory.push(byroredux_core::ecs::components::ItemStack::new(0xC1, 2));
+        inventory.push(byroredux_core::ecs::components::ItemStack::new(0xC2, 1));
+        restored.insert(restored_actor, inventory);
+        byroredux_save::restore_resources(&mut restored, &reg, &decoded).unwrap();
+        install_scene_quest_aliases(&mut restored, [quest_record]);
+        refresh_scene_actor_bindings(&restored);
+        assert_eq!(
+            restored
+                .get::<byroredux_core::ecs::components::Inventory>(restored_actor)
+                .unwrap()
+                .items
+                .len(),
+            2,
+            "restored ledger prevents duplicate CNTO stacks on first refresh"
+        );
+        let restored_snap = save_world(&restored, &reg).unwrap();
+        let restored_grants = restored_snap.resources["QuestAliasInjectionState"]
+            ["inventory_grants"]
+            .as_array()
+            .expect("restored grant ledger remains serializable");
+        assert_eq!(restored_grants.len(), 2);
+    }
+
     /// Source files that define the save-participating types registered in
     /// [`build_save_registry`] — top-level columns AND the types nested
     /// inside them (an `Inventory`'s `ItemStack`, an `AnimationStack`'s
@@ -2524,6 +2619,7 @@ mod tests {
         "../crates/scripting/src/vm_state.rs",            // TwoStateActivator, ScriptVariables
         "../crates/plugin/src/esm/records/condition.rs", // ConditionStringId nested in ScriptVariables
         "../crates/scripting/src/quest_stages.rs", // QuestStageState, QuestObjectiveState + nested types
+        "../crates/scripting/src/scene.rs",        // QuestAliasInjectionState grant ledger
         "src/cell_loader/transition.rs",           // CurrentCellContext
         "src/save_io.rs",                          // PlayerPose
         "../crates/core/src/ecs/components/wander.rs", // WanderState (+ WanderBehavior, WanderPhase)

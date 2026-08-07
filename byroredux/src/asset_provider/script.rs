@@ -199,6 +199,11 @@ pub(crate) fn populate_scene_runtime(
     log::info!(
         "Installed {start_game_quests} Start Game Enabled and {engine_start_quests} engine-root quest definitions"
     );
+    let quest_aliases =
+        byroredux_scripting::install_scene_quest_aliases(world, index.quests.values().cloned());
+    if quest_aliases > 0 {
+        log::info!("Installed alias definitions for {quest_aliases} quests");
+    }
     if !index.scenes.is_empty() {
         // The current runtime consumes dialogue only through SCEN actions.
         // Keep the registry proportional to that live surface instead of
@@ -306,7 +311,6 @@ pub(crate) fn populate_scene_runtime(
         }
         let count =
             byroredux_scripting::install_scene_records(world, index.scenes.values().cloned());
-        byroredux_scripting::install_scene_quest_aliases(world, index.quests.values().cloned());
         log::info!("Installed {count} SCEN definitions into the ECS scene runtime");
     }
 }

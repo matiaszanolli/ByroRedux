@@ -85,6 +85,104 @@ fn apply_effects_writes_stage_and_objectives() {
 }
 
 #[test]
+fn apply_effects_runs_quest_lifecycle_and_resets_objectives() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    crate::install_start_game_quests(
+        &mut world,
+        [byroredux_plugin::esm::records::QustRecord {
+            form_id: Q.0,
+            start_up_stage: Some(5),
+            shut_down_stage: Some(90),
+            objectives: vec![
+                byroredux_plugin::esm::records::QuestObjective {
+                    index: 10,
+                    ..Default::default()
+                },
+                byroredux_plugin::esm::records::QuestObjective {
+                    index: 20,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+    );
+    let mut stages = QuestStageState::default();
+    let mut objectives = QuestObjectiveState::default();
+    let effects = vec![
+        Effect::StartQuest {
+            quest: QuestRef::SelfRef,
+        },
+        Effect::SetQuestActive {
+            quest: QuestRef::SelfRef,
+            active: true,
+        },
+        Effect::CompleteAllObjectives {
+            quest: QuestRef::SelfRef,
+        },
+        Effect::StopQuest {
+            quest: QuestRef::SelfRef,
+        },
+    ];
+    let advances = apply_effects(&effects, Q, None, &world, &mut stages, &mut objectives);
+    assert_eq!(advances.len(), 2);
+    assert_eq!(advances[0].new_stage, 5);
+    assert_eq!(advances[1].new_stage, 90);
+    assert_eq!(stages.get_stage(Q), 90);
+    assert!(stages.get_stage_done(Q, 90));
+    assert!(!stages.is_running(Q));
+    assert!(!stages.is_active(Q));
+    assert!(objectives.get(Q, 10).completed);
+    assert!(objectives.get(Q, 20).completed);
+
+    apply_effects(
+        &[Effect::ResetQuest {
+            quest: QuestRef::SelfRef,
+        }],
+        Q,
+        None,
+        &world,
+        &mut stages,
+        &mut objectives,
+    );
+    assert!(!stages.is_started(Q));
+    assert_eq!(objectives.get(Q, 10), Default::default());
+}
+
+#[test]
+fn set_stage_honors_the_authored_allow_repeated_stages_flag() {
+    use byroredux_plugin::esm::records::QUEST_FLAG_ALLOW_REPEATED_STAGES;
+
+    for (flags, expected_advances) in [(0, 0), (QUEST_FLAG_ALLOW_REPEATED_STAGES, 1)] {
+        let mut world = World::new();
+        crate::register(&mut world);
+        crate::install_start_game_quests(
+            &mut world,
+            [byroredux_plugin::esm::records::QustRecord {
+                form_id: Q.0,
+                quest_flags: flags,
+                ..Default::default()
+            }],
+        );
+        let mut stages = QuestStageState::default();
+        stages.set_stage(Q, 10);
+        let mut objectives = QuestObjectiveState::default();
+        let advances = apply_effects(
+            &[Effect::SetStage {
+                quest: QuestRef::SelfRef,
+                stage: 10,
+            }],
+            Q,
+            None,
+            &world,
+            &mut stages,
+            &mut objectives,
+        );
+        assert_eq!(advances.len(), expected_advances);
+    }
+}
+
+#[test]
 fn property_targeted_effect_skipped_without_vmad() {
     // A Quest Property reference can't resolve with no VMAD on hand — the
     // effect is skipped, never guessed against a wrong quest.

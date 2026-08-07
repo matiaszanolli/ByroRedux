@@ -92,10 +92,16 @@ impl Checks {
 fn effect_kind(effect: &Effect) -> &'static str {
     match effect {
         Effect::SetStage { .. } => "SetStage",
+        Effect::StartQuest { .. } => "StartQuest",
+        Effect::StopQuest { .. } => "StopQuest",
+        Effect::CompleteQuest { .. } => "CompleteQuest",
+        Effect::ResetQuest { .. } => "ResetQuest",
+        Effect::SetQuestActive { .. } => "SetQuestActive",
         Effect::SetObjectiveDisplayed { .. } => "SetObjectiveDisplayed",
         Effect::SetObjectiveCompleted { .. } => "SetObjectiveCompleted",
         Effect::SetObjectiveFailed { .. } => "SetObjectiveFailed",
         Effect::CompleteAllObjectives { .. } => "CompleteAllObjectives",
+        Effect::FailAllObjectives { .. } => "FailAllObjectives",
         Effect::AddItem { .. } => "AddItem",
         Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",
@@ -1015,6 +1021,11 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                     SceneAliasCandidate {
                         reference_form_id: placed.form_id,
                         base_form_id: placed.base_form_id,
+                        linked_refs: placed
+                            .linked_refs
+                            .iter()
+                            .map(|link| (link.keyword, link.target))
+                            .collect(),
                         location_ref_types: placed.location_ref_types.clone(),
                     },
                 );
@@ -1031,6 +1042,11 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                         SceneAliasCandidate {
                             reference_form_id: placed.form_id,
                             base_form_id: placed.base_form_id,
+                            linked_refs: placed
+                                .linked_refs
+                                .iter()
+                                .map(|link| (link.keyword, link.target))
+                                .collect(),
                             location_ref_types: placed.location_ref_types.clone(),
                         },
                     );
@@ -1047,6 +1063,11 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                     SceneAliasCandidate {
                         reference_form_id: placed.form_id,
                         base_form_id: placed.base_form_id,
+                        linked_refs: placed
+                            .linked_refs
+                            .iter()
+                            .map(|link| (link.keyword, link.target))
+                            .collect(),
                         location_ref_types: placed.location_ref_types.clone(),
                     },
                 );
