@@ -1,20 +1,28 @@
-# regenerated: 2026-06-19 (RT-4 / #1621) — captured post the efd3c41b
-# precombine alpha-blend wall fix, present_mode MAILBOX, frame ~240.
-# entities_total 9167 -> 11279 (+2112): intentional NON-rendering drift since
-# 2026-06-01 — collision-only entities now spawned (1c26bc25), ragdoll bodies
-# (2a14b2b7), material/PBR overhaul (83d6a155). Verified non-rendering: render
-# entities (MeshHandle) = 3800 = bench draws cmds, both UNCHANGED from baseline.
-# fps left at the conservative 50.0 floor (>=x0.9 perf gate; MAILBOX runs now
-# ~133). gpu_calls refreshed (view-dependent bench-frame count; was 7).
-entities_total	11279
+# regenerated: 2026-08-06 (RT-1/#2215 + RT-2/#2216 combined regen)
+# RT-1/#2215: bench_draws_gpu_calls 40 -> 42, bench_draws_batches 272 -> 753.
+# Same draw_sort_key depth-primary-for-alpha-over mechanism as the FNV regen
+# in this commit — see byroredux/src/render/mod.rs draw_sort_key and the
+# fnv-FreesideAtomicWrangler.tsv header for the full root-cause note.
+# bench_draws_cmds fell 3800 -> 3440 over the same window (unrelated,
+# pre-existing improvement) so the render-load contract still corroborates
+# "no more visible geometry drawn, just more/smaller batches".
+# RT-2/#2216: entities_total 11279 -> 12448 (+10.36%, matches the #2216
+# measurement exactly) and skin_pool_live 100 -> 124. Both re-verified
+# benign: bench_draws_cmds moved -9.5% (3800->3440) against the entity
+# rise — more non-rendering bodies, not more rendering — and
+# skin_pool_overflow_attempts stayed 0 / skin_pool_max stayed 1364, so
+# there's no pressure on the #1284 cap. skin_pool_live rise continues to
+# attribute to the ongoing skin-version-gate fix line (22798ecc and its
+# 2026-08 follow-ups — see HISTORY.md).
+entities_total	12448
 tex_missing_unique_paths	1
 mesh_cache_failed_count	0
 light_count_directional	1
-skin_pool_live	100
+skin_pool_live	124
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	50.0
-bench_fps_avg	50.0
-bench_draws_cmds	3800
-bench_draws_batches	272
-bench_draws_gpu_calls	40
+bench_fps_p50	68.3
+bench_fps_avg	68.3
+bench_draws_cmds	3440
+bench_draws_batches	753
+bench_draws_gpu_calls	42

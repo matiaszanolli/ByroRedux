@@ -547,6 +547,16 @@ impl ConsoleCommand for SaveCommand {
         "save [slot] — validate + snapshot the world to a slot (default: next ring slot)"
     }
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        // `registry` (SaveRegistry) stays held through `save_world`/`encode`
+        // below, alongside the ~26 component-storage + ~7 resource read
+        // locks `save_world`/`validate_world`/`validate_form_ids` take —
+        // the widest single-hold edge fan-out in the process. Safe today
+        // only because command dispatch (the sole caller of `execute`) runs
+        // on the exclusive `DebugDrainSystem` lane, so no parallel-lane
+        // system can ever form the other half of an ABBA cycle against it —
+        // same invariant as SCR-D6-NEW3-03 / #2126. Moving command dispatch
+        // off the exclusive lane, or adding a parallel system that also
+        // touches `SaveRegistry`, needs this re-derived. SAVE-D3-02 / #2154.
         let Some(registry) = world.try_resource::<SaveRegistry>() else {
             return CommandOutput::error("save registry not installed");
         };
@@ -598,6 +608,12 @@ impl ConsoleCommand for SaveCommand {
         if is_quicksave {
             state.ring.advance();
         }
+        // Nothing past this point needs mutable (or any) access to
+        // `SaveState` — only the directory, cheaply copied — so drop the
+        // guard now rather than holding it across `save_world`'s ~30-storage
+        // snapshot walk (SAVE-D3-02 / #2154).
+        let dir = state.dir.clone();
+        drop(state);
 
         let snapshot = match save_world(world, &registry) {
             Ok(s) => s,
@@ -607,7 +623,7 @@ impl ConsoleCommand for SaveCommand {
             Ok(b) => b,
             Err(e) => return CommandOutput::error(format!("encode failed: {e}")),
         };
-        match disk::write_slot(&state.dir, slot, &bytes) {
+        match disk::write_slot(&dir, slot, &bytes) {
             Ok(path) => CommandOutput::lines(vec![
                 format!("saved slot {slot} → {}", path.display()),
                 format!(

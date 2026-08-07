@@ -378,6 +378,31 @@ pub(crate) fn draw_sort_key(
             // Global depth dominates → back-to-front across render layers,
             // cull modes, blend factors and depth states. Those state axes
             // only break ties within one quantized depth bucket.
+            //
+            // RT-1 / #2215 — THIS is the real mechanism behind the
+            // fnv/oblivion/fo4 `bench_draws_gpu_calls`/`bench_draws_batches`
+            // rise that #2165/8e55a714 misattributed to
+            // `needs_two_sided_blend_split`. Depth-primary order means
+            // draws that would otherwise share `group_state` (same
+            // pipeline/layer/cull/depth) are no longer contiguous in the
+            // sorted array whenever a different-state alpha-over draw sits
+            // at an intervening depth — each interruption forces a new
+            // `DrawBatch` / indirect-merge boundary. Confirmed by direct
+            // experiment: forcing this branch back to state-primary order
+            // (matching the additive branch's shape) drops FNV
+            // `FreesideAtomicWrangler` from 25 to 8 GPU calls, matching the
+            // pre-883f57cd baseline almost exactly.
+            //
+            // This is NOT a bug to revert — it's the deliberate, correct
+            // cost of the #1804/#2237 fix for a real compositing artifact
+            // (a farther decal/puddle drawing after a nearer glass pane and
+            // showing through as a rectangular patch). Global back-to-front
+            // order for true alpha-over is required for correctness; a
+            // state-primary sort can only be correct when the interleaved
+            // draws never visually overlap on screen, which this key alone
+            // can't determine. Treat the current `bench_draws_*` baselines
+            // as the accepted cost, not a regression to chase again — see
+            // `.claude/audit-baselines/runtime/`.
             (
                 rt_only,
                 composition_phase,

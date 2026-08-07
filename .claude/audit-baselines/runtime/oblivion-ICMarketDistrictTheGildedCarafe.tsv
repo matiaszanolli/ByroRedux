@@ -1,4 +1,9 @@
-# regenerated: 2026-07-03 (BASELINE UPDATED — RT-1 / #1863, bench_draws_gpu_calls 3→4 stale-value housekeeping)
+# regenerated: 2026-08-06 (RT-1 / #2215 — bench_draws_batches 27 -> 47;
+# bench_draws_cmds and bench_draws_gpu_calls unchanged at 324/4). Same
+# draw_sort_key depth-primary-for-alpha-over mechanism as the FNV/FO4
+# regen in this commit — see byroredux/src/render/mod.rs draw_sort_key
+# and the fnv-FreesideAtomicWrangler.tsv header for the full root-cause
+# note. Accepted as the correct cost of the #1804/#2237 compositing fix.
 entities_total	701
 tex_missing_unique_paths	0
 mesh_cache_failed_count	0
@@ -6,8 +11,8 @@ light_count_directional	1
 skin_pool_live	3
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	323.4
-bench_fps_avg	323.4
+bench_fps_p50	613.2
+bench_fps_avg	613.2
 bench_draws_cmds	324
-bench_draws_batches	27
+bench_draws_batches	47
 bench_draws_gpu_calls	4

@@ -191,6 +191,15 @@ pub(crate) fn untrack_write(type_id: TypeId) {
 /// In release builds the module is compiled out — the hot-path check
 /// becomes a no-op and the thread-local same-thread tracker remains
 /// the only guard.
+///
+/// **Coverage is test-reachability-bounded, not exhaustive.** An edge
+/// only enters `GRAPH` when some enabled run actually acquires that
+/// pair of locks while both are held on a thread the run drives. A
+/// code path no enabled run exercises contributes zero edges — it is
+/// neither cleared as safe nor flagged as risky, it's just silent. A
+/// green `lock-order-check` / `vulkan-validation` job is evidence for
+/// the orderings those jobs actually drove, not a proof of absence
+/// for the rest of the call graph (see #2155/CONC-D4-NEW-03).
 #[cfg(debug_assertions)]
 mod global_order {
     use std::any::TypeId;

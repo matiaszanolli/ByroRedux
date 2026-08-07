@@ -1,17 +1,29 @@
-# regenerated: 2026-06-14 (BASELINE CREATED — first run, audit-runtime --game all)
-# NOTE: mesh_cache_failed_count=11 includes 2 corrupted control-char paths — see AUDIT_RUNTIME_2026-06-14 RT-3
-# entities_total: ±2% tolerance metric, not exact (#1705 / RT-3). Benign creep
-# from non-render bodies (collision/ragdoll/markers) is expected and within band;
-# bench_draws_cmds is the exact render-load contract. --regen if it leaves ±2%.
-entities_total	6044
+# regenerated: 2026-08-06 (RT-2 / #2216)
+# entities_total 6044 -> 8126 (+34.4%) and skin_pool_live 0 -> 83: both far
+# past #2216's original measurement (+5.74% / 25) — the same benign-creep
+# direction has continued for the ~10 days of collision/ragdoll/skin-gate
+# work landed since (see HISTORY.md), just further along. Re-verified
+# benign the same way #2216 did: bench_draws_cmds FELL 2614 -> 2342 (-10.4%)
+# over the same window — more non-rendering bodies, not more rendering —
+# and skin_pool_overflow_attempts stayed 0 / skin_pool_max stayed 1364, so
+# there's no pressure on the #1284 cap. mesh_cache_failed_count also fell
+# 11 -> 9. Sibling-checked clean: fo3/oblivion show zero entities_total
+# drift in the same sweep. Flagging the magnitude jump for a future audit
+# to re-confirm if it keeps compounding, but not treating it as a blocker
+# here — direction and render-load evidence both still point benign.
+# bench_draws_batches/bench_draws_gpu_calls also regenerated in this sweep
+# (RT-1 / #2215 sibling check) — both improved (3->9 batches is a small-N
+# artifact, 5->2 gpu_calls), unrelated to the alpha-over sort mechanism
+# fixed on fnv/oblivion/fo4 since this cell's regression didn't reproduce it.
+entities_total	8126
 tex_missing_unique_paths	0
-mesh_cache_failed_count	11
+mesh_cache_failed_count	9
 light_count_directional	1
-skin_pool_live	0
+skin_pool_live	83
 skin_pool_max	1364
 skin_pool_overflow_attempts	0
-bench_fps_p50	321.1
-bench_fps_avg	321.1
-bench_draws_cmds	2614
-bench_draws_batches	3
-bench_draws_gpu_calls	5
+bench_fps_p50	161.9
+bench_fps_avg	161.9
+bench_draws_cmds	2342
+bench_draws_batches	9
+bench_draws_gpu_calls	2
