@@ -271,6 +271,21 @@ visible-sun arc; `tod_slot_night_factor` lerps fog distance through the
 same slot pair so palette and fog stay in lockstep. This is the clock the
 DALC cube, sky params, and exterior directional all sample.
 
+`GameTimeRes` is the persistent gameplay clock: it tracks complete elapsed
+days plus a canonical `[0, 24)` hour and interprets `time_scale` as game
+seconds per real second (`30` means one game hour every two real minutes).
+Its mutation API carries arbitrary multi-day jumps, preserves the last rate
+across pause/resume, and rejects non-finite or negative inputs. The resource
+round-trips through M45 save/load; sky/fog/directional remain derived and are
+resampled by `weather_system` after restore.
+
+Live controls available through `byro-dbg` are `time.show`,
+`time.set <hour|HH:MM>`, `time.scale <factor>`, `time.pause`, `time.resume`, and
+`time.advance <hours>`. Setting or advancing time immediately invokes the
+canonical zero-delta weather sample, so the next inspection observes the new
+sun and palette without a second implementation of TOD math. The real-data
+gate is [`m34-day-night.sh`](../smoke-tests/m34-day-night.sh).
+
 ---
 
 ## Legacy: How Bethesda Uses CELL Lighting Data

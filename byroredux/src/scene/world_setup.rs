@@ -43,13 +43,22 @@ fn initial_game_time() -> GameTimeRes {
     {
         Some(hour) => {
             log::info!("BYRO_HOUR override: starting hour {hour:.2}, time frozen (time_scale=0)");
-            GameTimeRes {
-                hour,
-                time_scale: 0.0,
-            }
+            GameTimeRes::frozen_at(hour)
         }
         None => GameTimeRes::default(),
     }
+}
+
+pub(crate) fn ensure_game_time(world: &mut World) {
+    if world.try_resource::<GameTimeRes>().is_none() {
+        world.insert_resource(initial_game_time());
+    }
+}
+
+fn bootstrap_game_hour(world: &World) -> f32 {
+    world
+        .try_resource::<GameTimeRes>()
+        .map_or_else(|| initial_game_time().hour, |time| time.hour)
 }
 
 /// Cloud layer tile-scale baselines for a 512² authored sprite. Higher
@@ -242,7 +251,10 @@ pub(crate) fn apply_worldspace_weather(
     // sun-path is engine-defined (no authored latitude exists); see
     // docs/engine/exal.md §9.
     use crate::systems::weather::{compute_sun_arc, DEFAULT_TOD_HOURS};
-    let bootstrap_hour = initial_game_time().hour;
+    // The clock survives worldspace transitions. Seed the replacement sky
+    // from that live hour rather than flashing back to the process default
+    // until `weather_system` runs on the next frame.
+    let bootstrap_hour = bootstrap_game_hour(world);
     // #1339 / #1770 — capture the prior worldspace's sky-texture handles BEFORE
     // either branch re-acquires (the WTHR path bumps a refcount per cloud/sun
     // layer; the procedural fallback installs a texture-less sky). Released
@@ -348,7 +360,7 @@ pub(crate) fn apply_worldspace_weather(
             });
         } else {
             world.insert_resource(new_weather);
-            world.insert_resource(initial_game_time());
+            ensure_game_time(world);
         }
     } else {
         // Procedural fallback — warm Mojave desert sky. Same defaults
@@ -446,9 +458,7 @@ pub(crate) fn insert_procedural_fallback_resources(world: &mut World, sun_dir: [
         world.insert_resource(CloudSimState::default());
     }
     world.insert_resource(crate::env_translate::procedural_fallback_weather());
-    if world.try_resource::<GameTimeRes>().is_none() {
-        world.insert_resource(initial_game_time());
-    }
+    ensure_game_time(world);
 }
 
 /// How much of the initial exterior radius must be ready before control
@@ -738,10 +748,10 @@ mod tests {
     #[test]
     fn insert_procedural_fallback_resources_preserves_advanced_game_time() {
         let mut world = World::new();
-        world.insert_resource(GameTimeRes {
-            hour: 18.0,
-            time_scale: 30.0,
-        });
+        let mut expected = GameTimeRes::new(18.0, 90.0);
+        expected.advance_hours(24.0);
+        expected.pause();
+        world.insert_resource(expected);
 
         insert_procedural_fallback_resources(&mut world, [0.0, 1.0, 0.0]);
 
@@ -749,9 +759,16 @@ mod tests {
             .try_resource::<GameTimeRes>()
             .expect("insert_procedural_fallback_resources must leave a GameTimeRes installed");
         assert_eq!(
-            time.hour, 18.0,
+            *time, expected,
             "a later call must not reset an already-advanced game clock (REN-D18-01)"
         );
+    }
+
+    #[test]
+    fn bootstrap_hour_prefers_the_persistent_live_clock() {
+        let mut world = World::new();
+        world.insert_resource(GameTimeRes::new(21.75, 30.0));
+        assert_eq!(bootstrap_game_hour(&world), 21.75);
     }
 
     /// The very first call (no prior `GameTimeRes`) must still seed one —

@@ -323,10 +323,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         let Some(mut game_time) = world.try_resource_mut::<GameTimeRes>() else {
             return;
         };
-        game_time.hour += dt * game_time.time_scale / 3600.0;
-        if game_time.hour >= 24.0 {
-            game_time.hour -= 24.0;
-        }
+        game_time.tick(dt);
         game_time.hour
     };
 
@@ -1212,10 +1209,9 @@ mod interior_gate_tests {
             fresnel_power: None,
         });
 
-        world.insert_resource(GameTimeRes {
-            hour: 12.0,      // mid-day so the TOD slot is unambiguous
-            time_scale: 0.0, // freeze the clock so dt advances are no-ops
-        });
+        // Mid-day so the TOD slot is unambiguous; freeze the clock so dt
+        // advances are no-ops.
+        world.insert_resource(GameTimeRes::frozen_at(12.0));
 
         // Build a WTHR snapshot with sky-blue fog at every TOD slot so
         // any unconditional write would clobber the interior fog with
@@ -1355,10 +1351,7 @@ mod no_wthr_fallback_tests {
             specular_alpha: None,
             fresnel_power: None,
         });
-        world.insert_resource(GameTimeRes {
-            hour: 12.0,
-            time_scale: 0.0,
-        });
+        world.insert_resource(GameTimeRes::frozen_at(12.0));
         // NB: no WeatherDataRes — that's the case under test.
         world
     }

@@ -14,6 +14,8 @@
 //!   (`prid`, `cam.*`, `near`, `pick`)
 //! - [`quest`] — quest lifecycle, objectives, targets, and alias diagnostics
 //!   (`quest.show`, `quest.aliases`, `quest.start`, `quest.stop`, `quest.setstage`)
+//! - [`time`] — persistent day/night clock inspection and controls
+//!   (`time.show`, `time.set`, `time.scale`, `time.pause`, `time.resume`, `time.advance`)
 //! - [`scene`] — scene / lighting / material / script state
 //!   (`light.*`, `door.teleport`, `script.activate`, `mat.*`, `ragdoll`)
 
@@ -23,6 +25,7 @@ mod condition;
 mod quest;
 mod scene;
 mod shared;
+mod time;
 mod view;
 mod world_info;
 
@@ -32,6 +35,7 @@ use condition::*;
 use quest::*;
 use scene::*;
 use shared::*;
+use time::*;
 use view::*;
 use world_info::*;
 
@@ -46,6 +50,12 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(QuestStartCommand);
     registry.register(QuestStopCommand);
     registry.register(QuestSetStageCommand);
+    registry.register(TimeShowCommand);
+    registry.register(TimeSetCommand);
+    registry.register(TimeScaleCommand);
+    registry.register(TimePauseCommand);
+    registry.register(TimeResumeCommand);
+    registry.register(TimeAdvanceCommand);
     registry.register(StatsCommand);
     registry.register(EntitiesCommand);
     registry.register(SystemsCommand);

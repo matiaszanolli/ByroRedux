@@ -227,6 +227,10 @@ pub(crate) fn setup_scene(
 ) {
     // Load content from CLI: cell, loose NIF, or BSA NIF.
     let args: Vec<String> = crate::cli_args::effective_args();
+    // Game time is global gameplay state, not an exterior-render resource.
+    // Seed it for every scene kind so direct-to-interior sessions advance the
+    // same persistent clock before they ever visit a worldspace.
+    world_setup::ensure_game_time(world);
     let mut cam_center = Vec3::ZERO;
     let mut has_nif_content = false;
     // Exterior CELL presence is not sufficient for Character mode: Bethesda

@@ -184,10 +184,7 @@ fn light_dump_handles_missing_and_present_resources() {
         cloud_texture_index_3: 0,
         current_dalc_cube: None,
     });
-    world.insert_resource(GameTimeRes {
-        hour: 10.5,
-        time_scale: 30.0,
-    });
+    world.insert_resource(GameTimeRes::new(10.5, 30.0));
 
     let lines = cmd.execute(&world, "").lines;
     let joined = lines.join("\n");

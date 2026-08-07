@@ -1,5 +1,9 @@
 //! Application-specific marker components and resources.
 
+mod game_time;
+
+pub(crate) use game_time::GameTimeRes;
+
 use byroredux_audio::Sound;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Component, Resource, SparseSetStorage};
@@ -885,26 +889,6 @@ impl SkyParamsRes {
             self.cloud_texture_index_3,
             self.sun_texture_index,
         ]
-    }
-}
-
-/// Game time resource — tracks current hour of day (0.0–24.0).
-/// Advances each frame based on real elapsed time × time scale.
-pub(crate) struct GameTimeRes {
-    /// Current game hour (0.0 = midnight, 6.0 = 6am, 12.0 = noon, etc.)
-    pub(crate) hour: f32,
-    /// Game-time multiplier: how many game-hours per real-second.
-    /// Default 1.0 = 1 game-hour per real-minute (Bethesda default ~30:1).
-    pub(crate) time_scale: f32,
-}
-impl Resource for GameTimeRes {}
-
-impl Default for GameTimeRes {
-    fn default() -> Self {
-        Self {
-            hour: 10.0,       // late morning
-            time_scale: 30.0, // 30× = ~2 min per game hour (Bethesda default)
-        }
     }
 }
 

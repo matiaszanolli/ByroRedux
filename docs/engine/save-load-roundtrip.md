@@ -42,9 +42,10 @@ stable string name. `build_save_registry()` (`byroredux/src/save_io.rs:162`)
 is the binary-side population point: today 10+ components (`Transform`,
 `Name`, `Parent`, `Children`, `Inventory`, `EquipmentSlots`,
 `LightSource`, `LightFlicker`, `AnimationPlayer`, `AnimationStack`,
-`ScriptTimer`, `ActorValues`, `FormIdComponent`) and 4 resources
-(`ItemInstancePool`, `CurrentCellContext`, `PlayerPose`, quest stage
-state). `save_world` (`crates/save/src/driver.rs:28`) walks the
+`ScriptTimer`, `ActorValues`, `FormIdComponent`) and gameplay resources
+including `ItemInstancePool`, `CurrentCellContext`, `PlayerPose`, quest
+stage/objective state, and the persistent `GameTimeRes` day/night clock.
+`save_world` (`crates/save/src/driver.rs:28`) walks the
 registry's component/resource entries and a `StringPool` dump (symbol
 order) into a `Snapshot` (`crates/save/src/snapshot.rs:64`); rows are
 sorted by entity id first for a reproducible CRC.
@@ -126,8 +127,10 @@ step_save_loads → step_cell_transition`. Sequence:
    — not a load-specific variant. The cell comes back exactly as a fresh
    visit would: full GPU upload, physics bodies, everything.
 4. **Restore whole resources**: `restore_resources` (`save_io.rs:681`)
-   replaces resources like `ItemInstancePool` wholesale, first, so
-   instance ids referenced by the delta overlay below resolve correctly.
+   replaces resources like `ItemInstancePool` and `GameTimeRes` wholesale,
+   first, so instance ids resolve correctly and the next weather tick
+   re-derives sky, fog, sun, and exterior directional lighting from the saved
+   clock.
 5. **Reconcile entity identity**: `build_form_id_remap`
    (`crates/save/src/driver.rs:143`) matches each saved `FormIdPair`
    against the freshly-reloaded cell's live `FormIdComponent`s, building

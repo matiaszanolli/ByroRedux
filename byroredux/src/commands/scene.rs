@@ -160,13 +160,15 @@ impl ConsoleCommand for LightDumpCommand {
                     _ => hour_int - 12,
                 };
                 lines.push("GameTimeRes:".to_string());
+                lines.push(format!("  day           = {}", gt.day));
                 lines.push(format!(
                     "  hour          = {:.3} ({}:{:02} {})",
                     gt.hour, display_hour, minute_int, suffix
                 ));
                 lines.push(format!(
-                    "  time_scale    = {:.1}\u{00d7} real-time",
-                    gt.time_scale
+                    "  time_scale    = {:.1}\u{00d7} game-sec/real-sec ({})",
+                    gt.time_scale,
+                    if gt.is_paused() { "paused" } else { "running" }
                 ));
             }
             None => {

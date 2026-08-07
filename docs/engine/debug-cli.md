@@ -342,6 +342,13 @@ skin.dump <entity_id>       → full SkinnedMesh dump — per-bone bind / world 
                              palette matrices, identity-dropout flagging (#841)
 light.dump                  → list active LightSource entities + radius / color
 
+# Game clock / day-night cycle
+time.show                   → day, clock, climate phase, rate, and live sun
+time.set <hour|HH:MM>       → set time of day and resample weather immediately
+time.scale <factor>         → game seconds per real second (`0` pauses)
+time.pause / time.resume    → pause while retaining the last non-zero rate
+time.advance <hours>        → advance game hours with multi-day rollover
+
 # World streaming + scripting
 door.teleport <entity_id>   → inspect a door's XTEL destination (FormID,
                              Z-up position/rotation, resolved parent cell).

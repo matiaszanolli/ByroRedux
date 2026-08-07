@@ -217,6 +217,7 @@ pub fn build_save_registry() -> SaveRegistry {
     };
 
     use crate::cell_loader::CurrentCellContext;
+    use crate::components::GameTimeRes;
 
     let mut r = SaveRegistry::new();
     r.register_component::<Transform>("Transform")
@@ -311,6 +312,11 @@ pub fn build_save_registry() -> SaveRegistry {
         // M45.1 refinement — where the player was standing + looking, so
         // `load` restores the pose instead of the cell's default spawn.
         .register_resource::<PlayerPose>("PlayerPose")
+        // M34 day/night completion — the clock is mutable gameplay state:
+        // weather advances it every frame and `time.*` controls can change
+        // hour/rate/day. Restoring after the cell reload lets the next
+        // weather tick re-derive sky, fog, sun, and directional lighting.
+        .register_resource::<GameTimeRes>("GameTimeRes")
         // #1862 / SAVE-07 — quest stage/objective progress is live gameplay
         // state (Papyrus `SetStage`/`GetStage`/`GetStageDone` and
         // `SetObjectiveDisplayed`/`SetObjectiveCompleted`/`SetObjectiveFailed`),
@@ -2444,6 +2450,38 @@ mod tests {
         assert!((pose.yaw - 0.7).abs() < 1e-6);
     }
 
+    /// The day/night clock is persistent gameplay state, not a render-only
+    /// parameter. Exercise the same resource overlay used by a live `load`,
+    /// including the hidden rate retained while the clock is paused.
+    #[test]
+    fn game_time_survives_live_resource_restore() {
+        use crate::components::GameTimeRes;
+
+        let reg = build_save_registry();
+        let mut source = World::new();
+        source.insert_resource(StringPool::new());
+        source.insert_resource(FormIdPool::new());
+        let mut game_time = GameTimeRes::new(23.5, 120.0);
+        game_time.advance_hours(49.0);
+        game_time.pause();
+        source.insert_resource(game_time);
+
+        let snapshot = save_world(&source, &reg).unwrap();
+        let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+        let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+        let mut restored = World::new();
+        restored.insert_resource(GameTimeRes::default());
+        byroredux_save::restore_resources(&mut restored, &reg, &decoded).unwrap();
+
+        let mut time = restored.resource_mut::<GameTimeRes>();
+        assert_eq!(time.day, 3);
+        assert!((time.hour - 0.5).abs() < 1e-6);
+        assert!(time.is_paused());
+        time.resume();
+        assert_eq!(time.time_scale, 120.0);
+    }
+
     /// #1862 / SAVE-07 — `QuestStageState` and `QuestObjectiveState` are
     /// live gameplay state (Papyrus `SetStage`/`GetStageDone` and
     /// `SetObjectiveDisplayed`/`SetObjectiveCompleted`/`SetObjectiveFailed`),
@@ -2622,6 +2660,7 @@ mod tests {
         "../crates/scripting/src/scene.rs",        // QuestAliasInjectionState grant ledger
         "src/cell_loader/transition.rs",           // CurrentCellContext
         "src/save_io.rs",                          // PlayerPose
+        "src/components/game_time.rs",             // GameTimeRes
         "../crates/core/src/ecs/components/wander.rs", // WanderState (+ WanderBehavior, WanderPhase)
         "../crates/core/src/ecs/components/travel.rs", // TravelState, Traveled (+ TravelBehavior)
         "../crates/core/src/ecs/components/follow.rs", // FollowState (+ FollowBehavior)
