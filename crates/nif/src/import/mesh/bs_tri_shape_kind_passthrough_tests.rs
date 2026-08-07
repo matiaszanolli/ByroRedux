@@ -1,8 +1,17 @@
-//! Regression tests for #1207 (BSLODTriShape `bs_lod_cutoffs`) and
+//! Regression tests for #1207 (BSMeshLODTriShape `bs_lod_cutoffs`) and
 //! #1206 (BSSubIndexTriShape `bs_sub_index`) — the parser captured the
 //! `BsTriShapeKind` discriminator but `extract_bs_tri_shape` dropped it
 //! entirely. Both fields now ride through to `ImportedMesh` for the
 //! eventual M35 LOD selector + dismemberment system to consume.
+//!
+//! #2283 fixed a second-order regression: `BsTriShapeKind::MeshLOD` was
+//! a bare unit variant fed by an intermediate `LOD{..}` kind the
+//! dispatch arm immediately discarded, so these tests exercised a kind
+//! shape (`LOD{..}`) that no real parse could ever produce. `MeshLOD`
+//! carries the cutoffs directly now — see
+//! `bs_mesh_lod_tri_shape_dispatches_and_consumes_trailing_bytes` in
+//! `tri_shape_skin_vertex_tests.rs` for the byte-level test that drives
+//! the real block dispatcher end to end.
 
 use super::*;
 use crate::blocks::tri_shape::{
@@ -88,11 +97,16 @@ fn import(shape: &BsTriShape) -> ImportedMesh {
     .expect("renderable shape must produce ImportedMesh")
 }
 
-// ── #1207: BSLODTriShape cutoffs ────────────────────────────────
+// ── #1207 / #2283: BSMeshLODTriShape cutoffs ────────────────────
 
 #[test]
-fn lod_kind_surfaces_three_cutoffs() {
-    let shape = renderable_shape_with_kind(BsTriShapeKind::LOD {
+fn mesh_lod_kind_surfaces_three_cutoffs() {
+    // #2283 — `BsTriShapeKind::MeshLOD` now carries the cutoffs directly
+    // (this is what the real "BSMeshLODTriShape" dispatch arm produces —
+    // see `bs_mesh_lod_tri_shape_dispatches_and_consumes_trailing_bytes`
+    // in `tri_shape_skin_vertex_tests.rs` for the byte-level parse
+    // driving the actual block dispatcher).
+    let shape = renderable_shape_with_kind(BsTriShapeKind::MeshLOD {
         lod0: 1000,
         lod1: 500,
         lod2: 100,
@@ -101,28 +115,17 @@ fn lod_kind_surfaces_three_cutoffs() {
     assert_eq!(
         mesh.bs_lod_cutoffs,
         Some([1000, 500, 100]),
-        "BsTriShapeKind::LOD must surface the triple verbatim"
+        "BsTriShapeKind::MeshLOD must surface the triple verbatim"
     );
     assert!(
         mesh.bs_sub_index.is_none(),
-        "LOD variant must not synthesize a SubIndex payload"
+        "MeshLOD variant must not synthesize a SubIndex payload"
     );
 }
 
 #[test]
 fn plain_kind_drops_lod_cutoffs() {
     let mesh = import(&renderable_shape_with_kind(BsTriShapeKind::Plain));
-    assert_eq!(mesh.bs_lod_cutoffs, None);
-}
-
-#[test]
-fn mesh_lod_kind_drops_lod_cutoffs() {
-    // BSMeshLODTriShape (Skyrim SE DLC variant) shares the wire format
-    // with BSLODTriShape but the engine doesn't consult the cutoffs;
-    // the parser tracks the discriminator via `MeshLOD` and the import
-    // surface intentionally drops the triple. The current parser variant
-    // does not embed the trio in `MeshLOD` so the importer returns None.
-    let mesh = import(&renderable_shape_with_kind(BsTriShapeKind::MeshLOD));
     assert_eq!(mesh.bs_lod_cutoffs, None);
 }
 
@@ -191,8 +194,8 @@ fn plain_kind_drops_subindex_payload() {
 }
 
 #[test]
-fn lod_kind_drops_subindex_payload() {
-    let mesh = import(&renderable_shape_with_kind(BsTriShapeKind::LOD {
+fn mesh_lod_kind_drops_subindex_payload() {
+    let mesh = import(&renderable_shape_with_kind(BsTriShapeKind::MeshLOD {
         lod0: 0,
         lod1: 0,
         lod2: 0,

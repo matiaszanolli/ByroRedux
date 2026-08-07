@@ -529,13 +529,13 @@ impl NifVariant {
         match (user_version, user_version_2) {
             // user_version < 11: Oblivion exports on v20.2.0.7 (NifSkope, older tools)
             (uv, _) if uv < 11 => Self::Oblivion,
-            (11, uv2) if uv2 < 34 => Self::Fallout3,
-            (11, 34) => Self::FalloutNV,
-            (12, uv2) if uv2 <= 83 => Self::SkyrimLE,
-            (12, uv2) if uv2 <= 100 => Self::SkyrimSE,
+            (11, uv2) if uv2 < bsver::FO3_FNV => Self::Fallout3,
+            (11, bsver::FO3_FNV) => Self::FalloutNV,
+            (12, uv2) if uv2 <= bsver::SKYRIM_LE => Self::SkyrimLE,
+            (12, uv2) if uv2 <= bsver::SKYRIM_SE => Self::SkyrimSE,
             // 101-129: unknown gap, treat as SkyrimSE (closest known)
-            (12, uv2) if uv2 < 130 => Self::SkyrimSE,
-            (12, uv2) if uv2 < 155 => Self::Fallout4,
+            (12, uv2) if uv2 < bsver::FALLOUT4 => Self::SkyrimSE,
+            (12, uv2) if uv2 < bsver::FO76 => Self::Fallout4,
             // Fallout 76 retail ships BSVER 155–167. Starfield dev/retail
             // ships 168+. The 155..170 window below is the currently-
             // known FO76 range; 168/169 in the wild are reportedly early

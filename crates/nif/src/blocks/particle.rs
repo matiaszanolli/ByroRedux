@@ -1130,10 +1130,10 @@ pub fn parse_particle_system(
         let num_modifiers = stream.read_u32_le()?;
         // Bound the modifier-ref loop against the remaining stream so a
         // junk count from drifted bytes can't OOM the process or walk
-        // 12 KB into the next block. Each ref is 4 bytes on disk.
-        // See #388 / #407.
-        stream.check_alloc((num_modifiers as usize).saturating_mul(4))?;
-        modifier_refs.reserve_exact(num_modifiers as usize);
+        // 12 KB into the next block. See #388 / #407 / #831 (allocate_vec
+        // is the crate-standard bound-check + pre-allocate, matching
+        // `read_block_ref_list` and every other bulk-ref site).
+        modifier_refs = stream.allocate_vec(num_modifiers)?;
         for _ in 0..num_modifiers {
             modifier_refs.push(stream.read_block_ref()?);
         }

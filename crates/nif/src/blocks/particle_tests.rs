@@ -138,10 +138,14 @@ fn parse_particle_system_retains_local_transform() {
 }
 
 /// Regression: a junk `num_modifiers` (here `u32::MAX`) must be
-/// rejected by the in-stream `check_alloc` gate before the loop
+/// rejected by the in-stream bound-check gate before the loop
 /// can spin trying to read 16 GB of refs. Pre-#407 this would
 /// have consumed the rest of the stream + EOF'd; now it short-
-/// circuits with `InvalidData`.
+/// circuits with `InvalidData`. #2283 migrated this site from a
+/// hand-rolled `check_alloc` + `reserve_exact` to `allocate_vec`
+/// (the crate-standard bound-check), which phrases the same
+/// rejection as "only N bytes remain" rather than check_alloc's
+/// "bytes remaining".
 #[test]
 fn parse_particle_system_rejects_junk_num_modifiers() {
     let header = make_header_fo4();
@@ -158,8 +162,8 @@ fn parse_particle_system_rejects_junk_num_modifiers() {
     let msg = err.to_string();
     assert!(
         msg.contains("exceeds hard cap")
-            || msg.contains("only ") && msg.contains("bytes remaining"),
-        "expected check_alloc rejection, got: {msg}"
+            || msg.contains("only") && msg.contains("bytes remain"),
+        "expected bound-check rejection, got: {msg}"
     );
 }
 

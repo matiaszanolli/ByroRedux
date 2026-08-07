@@ -174,7 +174,11 @@ impl NiControllerSequence {
                 let _blend_index = stream.read_u16_le()?;
             }
             // Priority byte (BSVER > 0, i.e. any Bethesda game)
-            let priority = if bsver > 0 { stream.read_u8()? } else { 0 };
+            let priority = if bsver > crate::version::bsver::PRE_BETHESDA {
+                stream.read_u8()?
+            } else {
+                0
+            };
 
             if uses_string_palette {
                 // Oblivion-era: palette ref + 5 byte offsets.

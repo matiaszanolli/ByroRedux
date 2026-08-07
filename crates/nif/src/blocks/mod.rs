@@ -452,9 +452,11 @@ fn parse_block_inner(
         // 97-byte NiTriShape body + 12-byte LOD trailer correctly.
         // See issues #147, #157, #560, #838.
         "BSLODTriShape" => Ok(Box::new(tri_shape::NiLodTriShape::parse(stream)?)),
-        "BSMeshLODTriShape" => Ok(Box::new(
-            tri_shape::BsTriShape::parse_lod(stream)?.with_kind(tri_shape::BsTriShapeKind::MeshLOD),
-        )),
+        // #2283 — `parse_lod` sets `BsTriShapeKind::MeshLOD` directly now;
+        // a prior `with_kind(MeshLOD)` override here discarded the parsed
+        // cutoffs on every real parse (they were never a bare unit kind
+        // to begin with — see `BsTriShapeKind::MeshLOD` docs).
+        "BSMeshLODTriShape" => Ok(Box::new(tri_shape::BsTriShape::parse_lod(stream)?)),
         // BSSubIndexTriShape: ubiquitous in Skyrim SE DLC and all FO4 actor
         // meshes (clothing segmentation for dismemberment). #404 replaced
         // the previous `block_size`-driven skip with a structured decode

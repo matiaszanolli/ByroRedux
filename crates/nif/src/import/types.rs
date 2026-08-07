@@ -648,12 +648,18 @@ pub struct ImportedMesh {
     /// Raw `NiAVObject.flags` value (sibling of `ImportedNode.flags`).
     /// Consumers emit a `SceneFlags` component per shape entity. See #222.
     pub flags: u32,
-    /// FO4 `BSLODTriShape` distant-LOD triangle-count cutoffs `[lod0,
-    /// lod1, lod2]` — the three thresholds an eventual M35 LOD selector
-    /// will consult to choose which LOD level to draw at distance. Pre-#1207
-    /// the parser captured these via [`BsTriShapeKind::LOD`] but the importer
-    /// dropped them, leaving the future LOD path with no authored input.
-    /// `None` on every non-LOD BSTriShape (the vast majority of meshes).
+    /// Distant-LOD triangle-count cutoffs `[lod0, lod1, lod2]` — the three
+    /// thresholds an eventual M35 LOD selector will consult to choose
+    /// which LOD level to draw at distance. Populated from two distinct
+    /// wire types: `BSMeshLODTriShape` (FO4) via
+    /// [`BsTriShapeKind::MeshLOD`], and `BSLODTriShape` (Skyrim/SSE,
+    /// parsed as `NiLodTriShape`) via its own `lod{0,1,2}_size` fields
+    /// threaded through by the import walker. Pre-#1207 the parser
+    /// captured the FO4 triple but the importer dropped it; pre-#2283 the
+    /// FO4 triple was itself discarded before import ever saw it (an
+    /// intermediate kind immediately overwritten at dispatch) and the
+    /// Skyrim/SSE triple was never threaded through at all. `None` on
+    /// every non-LOD BSTriShape (the vast majority of meshes).
     pub bs_lod_cutoffs: Option<[u32; 3]>,
     /// `BSSubIndexTriShape` segmentation payload — segments table +
     /// optional FO4+ shared SSF metadata. Drives dismemberment /

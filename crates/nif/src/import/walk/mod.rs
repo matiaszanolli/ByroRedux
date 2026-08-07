@@ -495,6 +495,12 @@ pub(super) fn walk_node_hierarchical(
         if let Some(mesh) = extract_mesh_local(scene, shape, ctx.inherited_props, ctx.pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
+            // #2283 — `NiLodTriShape` carries its own LOD triangle-count
+            // cutoffs (a separate wire type from `BSMeshLODTriShape`'s
+            // `BsTriShapeKind::MeshLOD`); `extract_mesh_local` runs the
+            // classic-`NiTriShape` extractor and always hardcodes `None`,
+            // so thread them through here instead.
+            mesh.bs_lod_cutoffs = Some([lod.lod0_size, lod.lod1_size, lod.lod2_size]);
             ctx.out.meshes.push(mesh);
         }
     }
@@ -1133,6 +1139,8 @@ pub(super) fn walk_node_flat(
             ctx.pool,
         ) {
             mesh.billboard_mode = ctx.inherited_billboard;
+            // #2283 — see the mirrored hierarchical-walk arm above.
+            mesh.bs_lod_cutoffs = Some([lod.lod0_size, lod.lod1_size, lod.lod2_size]);
             ctx.out.push(mesh);
         }
     }

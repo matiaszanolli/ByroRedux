@@ -40,15 +40,20 @@ use super::NiTriShape;
 pub enum BsTriShapeKind {
     /// Plain `BSTriShape` — the baseline Skyrim SE+ geometry block.
     Plain,
-    /// `BSLODTriShape` — FO4 distant-LOD variant. Trailing three u32
-    /// triangle-count cutoffs drive which LOD level is selected at
-    /// render time for distant terrain / buildings.
-    LOD { lod0: u32, lod1: u32, lod2: u32 },
-    /// `BSMeshLODTriShape` — Skyrim SE DLC LOD variant. Same wire
-    /// format as `BSLODTriShape` (three trailing u32s), but the engine
-    /// doesn't consult them — the LOD selection is driven elsewhere.
-    /// Preserved as a distinct `kind` so importers can differentiate.
-    MeshLOD,
+    /// `BSMeshLODTriShape` (FO4) — a `BsTriShape` subclass with trailing
+    /// three u32 triangle-count cutoffs that drive which LOD level is
+    /// selected at render time for distant terrain / buildings.
+    ///
+    /// #2283 — this used to be a bare `MeshLOD` unit variant fed by an
+    /// intermediate `LOD{..}` kind that the sole dispatch call site
+    /// (`blocks/mod.rs`) immediately discarded via `with_kind(MeshLOD)`,
+    /// so the parsed cutoffs never survived to any real parse. Carries
+    /// them directly now. `BSLODTriShape` (Skyrim/SSE) is a *different*
+    /// wire type — it inherits `NiTriBasedGeom`, not `BSTriShape`, and
+    /// parses as [`super::NiLodTriShape`] instead, whose own
+    /// `lod{0,1,2}_size` fields feed `ImportedMesh::bs_lod_cutoffs`
+    /// directly from the import walker (not through this enum at all).
+    MeshLOD { lod0: u32, lod1: u32, lod2: u32 },
     /// `BSSubIndexTriShape` — ubiquitous in Skyrim SE DLC / FO4 actor
     /// meshes for dismemberment segmentation. Carries the parsed
     /// segmentation payload (segment table + optional shared sub-segment
@@ -131,8 +136,7 @@ impl NiObject for BsTriShape {
         // should match on `self.kind` instead.
         match self.kind {
             BsTriShapeKind::Plain => "BSTriShape",
-            BsTriShapeKind::LOD { .. } => "BSLODTriShape",
-            BsTriShapeKind::MeshLOD => "BSMeshLODTriShape",
+            BsTriShapeKind::MeshLOD { .. } => "BSMeshLODTriShape",
             BsTriShapeKind::SubIndex(_) => "BSSubIndexTriShape",
             BsTriShapeKind::Dynamic { .. } => "BSDynamicTriShape",
         }
@@ -585,8 +589,8 @@ impl BsTriShape {
         Ok(shape)
     }
 
-    /// Parse `BSLODTriShape` — a BSTriShape subclass used for FO4 distant
-    /// LOD geometry. Adds three trailing LOD triangle counts.
+    /// Parse `BSMeshLODTriShape` (FO4) — a BSTriShape subclass with three
+    /// trailing LOD triangle counts.
     ///
     /// Wire layout (niflib nif.xml):
     /// ```text
@@ -596,17 +600,19 @@ impl BsTriShape {
     /// uint lod_2_size
     /// ```
     ///
-    /// The sizes are preserved via [`BsTriShapeKind::LOD`] so the FO4
-    /// distant-LOD batch importer can pick the correct triangle cutoff.
-    /// The `BSMeshLODTriShape` dispatch arm calls this and then overwrites
-    /// the kind via [`Self::with_kind`] — Skyrim SE DLC doesn't consult
-    /// the cutoffs but we still want the wire-type discriminator. See #157, #560.
+    /// The sizes are preserved directly on [`BsTriShapeKind::MeshLOD`] so
+    /// the FO4 distant-LOD batch importer can pick the correct triangle
+    /// cutoff. #2283 — this is the sole call site of `parse_lod`
+    /// (`blocks/mod.rs`'s `"BSMeshLODTriShape"` arm); a prior version set
+    /// an intermediate `LOD` kind here that the dispatch arm immediately
+    /// discarded via `with_kind(MeshLOD)`, so the cutoffs never reached a
+    /// real parse. See #157, #560, #2283.
     pub fn parse_lod(stream: &mut NifStream) -> io::Result<Self> {
         let mut shape = Self::parse(stream)?;
         let lod0 = stream.read_u32_le()?;
         let lod1 = stream.read_u32_le()?;
         let lod2 = stream.read_u32_le()?;
-        shape.kind = BsTriShapeKind::LOD { lod0, lod1, lod2 };
+        shape.kind = BsTriShapeKind::MeshLOD { lod0, lod1, lod2 };
         Ok(shape)
     }
 

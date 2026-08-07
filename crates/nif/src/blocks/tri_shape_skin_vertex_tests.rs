@@ -466,9 +466,19 @@ fn bs_mesh_lod_tri_shape_dispatches_and_consumes_trailing_bytes() {
     let mut stream = crate::stream::NifStream::new(&bytes, &header);
     let block = parse_block("BSMeshLODTriShape", &mut stream, Some(bytes.len() as u32))
         .expect("BSMeshLODTriShape should dispatch through BsTriShape::parse_lod");
-    assert!(
-        block.as_any().downcast_ref::<BsTriShape>().is_some(),
-        "BSMeshLODTriShape did not downcast to BsTriShape"
+    let shape = block
+        .as_any()
+        .downcast_ref::<BsTriShape>()
+        .expect("BSMeshLODTriShape did not downcast to BsTriShape");
+    // #2283 — the parsed cutoffs must survive on `kind`, not be discarded
+    // by an intermediate variant the dispatch arm used to overwrite.
+    assert_eq!(
+        shape.kind,
+        BsTriShapeKind::MeshLOD {
+            lod0: 20,
+            lod1: 10,
+            lod2: 2
+        }
     );
     assert_eq!(
         stream.position() as usize,
@@ -861,7 +871,16 @@ fn bs_tri_shape_variants_stamp_their_kind() {
         let block =
             parse_block("BSMeshLODTriShape", &mut stream, Some(bytes.len() as u32)).unwrap();
         let shape = block.as_any().downcast_ref::<BsTriShape>().unwrap();
-        assert_eq!(shape.kind, BsTriShapeKind::MeshLOD);
+        // #2283 — MeshLOD now carries the parsed cutoffs directly instead
+        // of discarding them via an intermediate `LOD` kind.
+        assert_eq!(
+            shape.kind,
+            BsTriShapeKind::MeshLOD {
+                lod0: 10,
+                lod1: 5,
+                lod2: 1
+            }
+        );
         assert_eq!(block.block_type_name(), "BSMeshLODTriShape");
     }
 
@@ -1060,18 +1079,18 @@ fn fo4_precombined_lod_chunk_with_zero_data_size_parses_clean() {
     assert!(shape.triangles.is_empty());
     // Bounding sphere recovered for spatial dispatch.
     assert!((shape.radius - 884.64).abs() < 0.1);
-    // The 3-u32 LOD trailer is consumed by `parse_lod`. The
-    // `BSMeshLODTriShape` dispatch arm calls `with_kind(MeshLOD)` to
-    // overwrite the LOD-sizes-bearing `Kind::LOD` variant — Skyrim SE
-    // DLC's `BSMeshLODTriShape` doesn't consult the cutoffs, so they
-    // are intentionally discarded at the wire-type-discriminator level.
-    // See blocks/mod.rs `BSMeshLODTriShape` arm + the `kind` doc on
-    // `BsTriShape` (#157, #560). What matters here is that the trailer
-    // bytes were consumed (asserted by the position check below) and
-    // the kind ends up as `MeshLOD`.
-    assert!(
-        matches!(shape.kind, BsTriShapeKind::MeshLOD),
-        "expected MeshLOD kind, got {:?}",
+    // The 3-u32 LOD trailer is consumed by `parse_lod` and preserved
+    // directly on `BsTriShapeKind::MeshLOD` (#2283 — a prior
+    // `with_kind(MeshLOD)` override at the dispatch arm discarded them
+    // on every real parse instead).
+    assert_eq!(
+        shape.kind,
+        BsTriShapeKind::MeshLOD {
+            lod0: 9668,
+            lod1: 0,
+            lod2: 3920
+        },
+        "expected MeshLOD kind to carry the parsed cutoffs, got {:?}",
         shape.kind,
     );
     // Block consumed exactly — no `block_size`-driven realignment.

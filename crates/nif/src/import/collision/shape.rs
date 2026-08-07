@@ -394,13 +394,18 @@ fn resolve_tri_strips_data_refs(
         // change here), but nothing was pinning that, and a one-sided edit
         // to either copy would have silently inverted every Oblivion
         // collision normal relative to the mesh it was cloned from.
-        for tri in data.to_triangles() {
-            all_indices.push([
-                tri[0] as u32 + base_idx,
-                tri[1] as u32 + base_idx,
-                tri[2] as u32 + base_idx,
-            ]);
-        }
+        //
+        // #2285 — validate against THIS data_ref's own vertex count before
+        // offsetting, not the eventual cross-data_ref merged total (see
+        // `push_local_triangles`).
+        push_local_triangles(
+            base_idx,
+            data.vertices.len() as u32,
+            data.to_triangles()
+                .into_iter()
+                .map(|tri| [tri[0] as u32, tri[1] as u32, tri[2] as u32]),
+            &mut all_indices,
+        );
     }
 
     finish_trimesh(all_verts, all_indices)
@@ -494,13 +499,16 @@ fn resolve_compressed_mesh(
         for v in &data.big_verts {
             all_verts.push(havok_to_engine(v[0], v[1], v[2]) * scale);
         }
-        for tri in &data.big_tris {
-            all_indices.push([
-                tri.v1 as u32 + base,
-                tri.v2 as u32 + base,
-                tri.v3 as u32 + base,
-            ]);
-        }
+        // #2285 — validate against `big_verts`' own count, not the eventual
+        // merged total (see `push_local_triangles`).
+        push_local_triangles(
+            base,
+            data.big_verts.len() as u32,
+            data.big_tris
+                .iter()
+                .map(|tri| [tri.v1 as u32, tri.v2 as u32, tri.v3 as u32]),
+            &mut all_indices,
+        );
     }
 
     // 2. Chunks — quantized vertices + triangle strips.
@@ -527,17 +535,24 @@ fn resolve_compressed_mesh(
         // "Vertex indices as used by strips" contract says. Dividing them by
         // three again destroyed most Skyrim collision geometry
         // (NIFAL-D6-01 / #2203).
+        //
+        // #2285 — every push below validates against THIS chunk's own
+        // vertex count before offsetting, not the eventual cross-chunk
+        // merged total (see `push_local_triangles`).
+        let local_vertex_count = chunk.vertices.len() as u32;
         if chunk.strips.is_empty() {
             // Plain triangle list: every 3 indices = 1 triangle.
+            let mut plain = Vec::new();
             let mut i = 0;
             while i + 2 < chunk.indices.len() {
-                all_indices.push([
-                    chunk.indices[i] as u32 + base,
-                    chunk.indices[i + 1] as u32 + base,
-                    chunk.indices[i + 2] as u32 + base,
+                plain.push([
+                    chunk.indices[i] as u32,
+                    chunk.indices[i + 1] as u32,
+                    chunk.indices[i + 2] as u32,
                 ]);
                 i += 3;
             }
+            push_local_triangles(base, local_vertex_count, plain, &mut all_indices);
         } else {
             // Triangle strips occupy the prefix described by `strips`.
             // Any residual indices are a plain triangle list (nif.xml:
@@ -555,28 +570,59 @@ fn resolve_compressed_mesh(
                 // `crate::blocks::strip::destrip`, the same call
                 // `NiTriStripsData::to_triangles` and `NiSkinPartition`'s
                 // destrip make.
-                all_indices.extend(
+                push_local_triangles(
+                    base,
+                    local_vertex_count,
                     crate::blocks::strip::destrip(strip)
-                        .map(|[a, b, c]| [a as u32 + base, b as u32 + base, c as u32 + base]),
+                        .map(|[a, b, c]| [a as u32, b as u32, c as u32]),
+                    &mut all_indices,
                 );
                 idx_offset = end;
             }
 
             // NIFAL-D6-04 / #2208: 88% of Skyrim strip chunks carry this
             // trailing triangle-list block. The old loop abandoned it.
+            let mut trailing = Vec::new();
             let mut i = idx_offset;
             while i + 2 < chunk.indices.len() {
-                all_indices.push([
-                    chunk.indices[i] as u32 + base,
-                    chunk.indices[i + 1] as u32 + base,
-                    chunk.indices[i + 2] as u32 + base,
+                trailing.push([
+                    chunk.indices[i] as u32,
+                    chunk.indices[i + 1] as u32,
+                    chunk.indices[i + 2] as u32,
                 ]);
                 i += 3;
             }
+            push_local_triangles(base, local_vertex_count, trailing, &mut all_indices);
         }
     }
 
     finish_trimesh(all_verts, all_indices)
+}
+
+/// Validate a batch of triangle indices against the vertex count of the
+/// *local* sub-buffer they were decoded from — not the eventual merged
+/// total — then offset them into the shared `all_indices` space.
+///
+/// #2285 / NIFAL-D6-07 — `finish_trimesh`'s own bounds check only
+/// validates each index against the final merged vertex count. A
+/// corrupt/truncated NIF whose sub-buffer index exceeds its OWN vertex
+/// count, but is still less than the eventual merged total (because a
+/// later sub-buffer happened to push enough vertices to cover the gap),
+/// would pass that check unchanged and silently splice a triangle across
+/// two unrelated pieces of geometry instead of being dropped as corrupt.
+/// Validating here, before the offset is applied, makes `finish_trimesh`'s
+/// check a pure belt-and-suspenders pass rather than the only guard.
+fn push_local_triangles(
+    base: u32,
+    local_vertex_count: u32,
+    local_indices: impl IntoIterator<Item = [u32; 3]>,
+    all_indices: &mut Vec<[u32; 3]>,
+) {
+    for [a, b, c] in local_indices {
+        if a < local_vertex_count && b < local_vertex_count && c < local_vertex_count {
+            all_indices.push([a + base, b + base, c + base]);
+        }
+    }
 }
 
 /// Enforce the canonical `TriMesh` boundary shared by every NIF collision
@@ -874,6 +920,37 @@ mod cycle_tests {
         }
     }
 
+    /// #2285 / NIFAL-D6-07 — a corrupt chunk index that exceeds ITS OWN
+    /// chunk's vertex count, but is still less than the eventual merged
+    /// total (because a later chunk pushes enough vertices to cover the
+    /// gap), must be dropped as corrupt rather than silently splicing
+    /// into a different chunk's vertex data. Chunk 0 has only 3 local
+    /// vertices (valid indices 0..=2) but its triangle references local
+    /// index 5, which only becomes in-range once chunk 1's 4 vertices are
+    /// merged in (merged total = 7, and 5 < 7 would pass the old
+    /// merged-total-only guard). Chunk 1's own valid triangle must still
+    /// survive untouched.
+    #[test]
+    fn compressed_mesh_rejects_index_that_only_resolves_after_a_later_chunk_merges() {
+        let data = compressed_data(vec![
+            compressed_chunk(3, vec![0, 1, 5], Vec::new()),
+            compressed_chunk(4, vec![0, 1, 2], Vec::new()),
+        ]);
+        match resolve_compressed_mesh(&data, 1.0) {
+            Some(CollisionShape::TriMesh { vertices, indices }) => {
+                assert_eq!(vertices.len(), 7, "both chunks' vertices still merge");
+                assert_eq!(
+                    indices,
+                    vec![[3, 4, 5]],
+                    "chunk 0's out-of-range triangle must be dropped, not spliced \
+                     into chunk 1's vertex data; only chunk 1's own valid \
+                     (offset) triangle should survive"
+                );
+            }
+            other => panic!("expected chunk 1's triangle to survive, got {other:?}"),
+        }
+    }
+
     #[test]
     fn collision_trimesh_resolvers_drop_geometry_without_triangles() {
         let compressed = compressed_data(vec![compressed_chunk(3, vec![0, 0, 0], Vec::new())]);
@@ -916,6 +993,55 @@ mod cycle_tests {
             resolve_tri_strips_data_refs(&scene, &[BlockRef(0u32)], [1.0; 3]).is_none(),
             "vertex-only NiTriStrips geometry must enable the synth fallback"
         );
+    }
+
+    /// #2285 / NIFAL-D6-07 — sibling of
+    /// `compressed_mesh_rejects_index_that_only_resolves_after_a_later_chunk_merges`
+    /// for the other multi-buffer merge site. `data_ref` 0 has only 2
+    /// local vertices but its strip references local index 5, which only
+    /// becomes in-range once `data_ref` 1's 4 vertices are merged in
+    /// (merged total = 6, and 5 < 6 would pass the old merged-total-only
+    /// guard). `data_ref` 1's own valid strip triangles must still survive.
+    #[test]
+    fn tri_strips_rejects_index_that_only_resolves_after_a_later_data_ref_merges() {
+        fn pt(x: f32, y: f32, z: f32) -> NiPoint3 {
+            NiPoint3 { x, y, z }
+        }
+
+        let mut scene = NifScene::default();
+        scene.blocks.push(tri_strips_data(
+            vec![pt(0.0, 0.0, 0.0), pt(1.0, 0.0, 0.0)],
+            vec![0, 1, 5],
+        ));
+        scene.blocks.push(tri_strips_data(
+            vec![
+                pt(0.0, 0.0, 0.0),
+                pt(1.0, 0.0, 0.0),
+                pt(0.0, 1.0, 0.0),
+                pt(1.0, 1.0, 0.0),
+            ],
+            vec![0, 1, 2, 3],
+        ));
+
+        match resolve_tri_strips_data_refs(&scene, &[BlockRef(0u32), BlockRef(1u32)], [1.0; 3]) {
+            Some(CollisionShape::TriMesh { vertices, indices }) => {
+                assert_eq!(vertices.len(), 6, "both data_refs' vertices still merge");
+                assert_eq!(
+                    indices.len(),
+                    2,
+                    "data_ref 0's out-of-range triangle must be dropped, not spliced \
+                     into data_ref 1's vertex data; only data_ref 1's own two \
+                     (offset) strip triangles should survive, got {indices:?}"
+                );
+                for [a, b, c] in &indices {
+                    assert!(
+                        *a >= 2 && *b >= 2 && *c >= 2,
+                        "surviving triangles must be data_ref 1's offset ones, got {indices:?}"
+                    );
+                }
+            }
+            other => panic!("expected data_ref 1's triangles to survive, got {other:?}"),
+        }
     }
 
     #[test]

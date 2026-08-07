@@ -719,4 +719,14 @@ fn bs_lod_tri_shape_imports_geometry_not_dropped() {
     let m = &meshes[0];
     assert_eq!(m.name, Some(std::sync::Arc::from("LODTree")));
     assert_eq!(m.positions.len(), 3, "triangle mesh has 3 positions");
+    // #2283 — NiLodTriShape's own lod{0,1,2}_size fields must reach
+    // ImportedMesh.bs_lod_cutoffs; pre-fix the classic-NiTriShape
+    // extractor this walks through hardcoded `None`, so the #988 test
+    // above never actually pinned this despite constructing a fixture
+    // with non-zero LOD sizes.
+    assert_eq!(
+        m.bs_lod_cutoffs,
+        Some([100, 50, 25]),
+        "NiLodTriShape's lod0/1/2_size must thread through to bs_lod_cutoffs"
+    );
 }

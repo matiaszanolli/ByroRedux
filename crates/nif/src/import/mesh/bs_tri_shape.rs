@@ -202,7 +202,7 @@ pub fn extract_bs_tri_shape(
         local_bound_radius,
         flags: shape.av.flags,
         bs_lod_cutoffs: match &shape.kind {
-            BsTriShapeKind::LOD { lod0, lod1, lod2 } => Some([*lod0, *lod1, *lod2]),
+            BsTriShapeKind::MeshLOD { lod0, lod1, lod2 } => Some([*lod0, *lod1, *lod2]),
             _ => None,
         },
         bs_sub_index: match &shape.kind {
