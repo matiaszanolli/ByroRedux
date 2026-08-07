@@ -95,6 +95,39 @@ impl SceneActorBindings {
     pub fn resolve(&self, quest: QuestFormId, alias_id: i32) -> Option<EntityId> {
         self.actors.get(&(quest, alias_id)).copied()
     }
+
+    /// Whether cell/lifecycle changes have invalidated the cached table and
+    /// the scheduled alias refresh has not run yet.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+}
+
+/// Operator-facing explanation of one quest alias's current fill state.
+///
+/// The categories deliberately stop at the runtime's observable boundary:
+/// `NoEligibleLoadedCandidate` can include fill mismatch, CTDA rejection,
+/// reservation/reuse flags, or a dead actor. It never claims which predicate
+/// rejected a candidate without retaining a second copy of resolver state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuestAliasResolutionState {
+    Bound(EntityId),
+    QuestNotRunning,
+    LocationRuntimeUnavailable,
+    ReferenceCollectionRuntimeUnavailable,
+    CreatedObjectRuntimeUnavailable,
+    StoryManagerEventUnavailable,
+    ExternalSourceUnbound { quest: QuestFormId, alias_id: i32 },
+    DependencyAliasUnbound(i32),
+    ForceIntoSourcesUnbound(Vec<i32>),
+    NoEligibleLoadedCandidate,
+    NoFillMechanism,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestAliasDiagnostic {
+    pub alias: QuestAlias,
+    pub state: QuestAliasResolutionState,
 }
 
 /// Raw, source-attributed alias overlays attached to a filled reference.
@@ -424,6 +457,97 @@ pub fn mark_scene_actor_bindings_dirty(world: &World) {
     if let Some(mut bindings) = world.try_resource_mut::<SceneActorBindings>() {
         bindings.dirty = true;
     }
+}
+
+/// Snapshot authored aliases and explain their current live binding state.
+/// Returns `None` when the quest has no installed QUST alias definition;
+/// `Some([])` is a known quest with zero aliases.
+pub fn quest_alias_diagnostics(
+    world: &World,
+    quest: QuestFormId,
+) -> Option<Vec<QuestAliasDiagnostic>> {
+    let aliases = world
+        .try_resource::<SceneQuestAliasRegistry>()?
+        .aliases
+        .get(&quest)?
+        .clone();
+    let running = world
+        .try_resource::<QuestStageState>()
+        .is_none_or(|stages| stages.is_running(quest));
+    let bindings = world.try_resource::<SceneActorBindings>();
+
+    let mut force_sources: HashMap<i32, Vec<i32>> = HashMap::new();
+    for alias in &aliases {
+        if let Some(target) = alias.force_into_alias {
+            force_sources
+                .entry(target)
+                .or_default()
+                .push(alias.alias_id);
+        }
+    }
+
+    Some(
+        aliases
+            .iter()
+            .cloned()
+            .map(|alias| {
+                let bound = bindings
+                    .as_ref()
+                    .and_then(|bindings| bindings.resolve(quest, alias.alias_id));
+                let state = if !running {
+                    QuestAliasResolutionState::QuestNotRunning
+                } else if let Some(entity) = bound {
+                    QuestAliasResolutionState::Bound(entity)
+                } else if alias.is_collection {
+                    QuestAliasResolutionState::ReferenceCollectionRuntimeUnavailable
+                } else if alias.is_location
+                    || matches!(alias.fill_type, Some(AliasFillType::ForcedLocation(_)))
+                {
+                    QuestAliasResolutionState::LocationRuntimeUnavailable
+                } else if matches!(alias.fill_type, Some(AliasFillType::CreatedObject { .. })) {
+                    QuestAliasResolutionState::CreatedObjectRuntimeUnavailable
+                } else if matches!(alias.fill_type, Some(AliasFillType::FromEvent { .. })) {
+                    QuestAliasResolutionState::StoryManagerEventUnavailable
+                } else if let Some(AliasFillType::ExternalAlias {
+                    quest: source_quest,
+                    alias_id,
+                }) = alias.fill_type
+                {
+                    QuestAliasResolutionState::ExternalSourceUnbound {
+                        quest: QuestFormId(source_quest),
+                        alias_id,
+                    }
+                } else if let Some(anchor) = alias.closest_to_alias {
+                    if bindings
+                        .as_ref()
+                        .and_then(|bindings| bindings.resolve(quest, anchor))
+                        .is_none()
+                    {
+                        QuestAliasResolutionState::DependencyAliasUnbound(anchor)
+                    } else {
+                        QuestAliasResolutionState::NoEligibleLoadedCandidate
+                    }
+                } else if let Some(AliasFillType::NearAlias { alias_id, .. }) = alias.fill_type {
+                    if bindings
+                        .as_ref()
+                        .and_then(|bindings| bindings.resolve(quest, alias_id))
+                        .is_none()
+                    {
+                        QuestAliasResolutionState::DependencyAliasUnbound(alias_id)
+                    } else {
+                        QuestAliasResolutionState::NoEligibleLoadedCandidate
+                    }
+                } else if alias.fill_type.is_some() || !alias.match_conditions.is_empty() {
+                    QuestAliasResolutionState::NoEligibleLoadedCandidate
+                } else if let Some(sources) = force_sources.get(&alias.alias_id) {
+                    QuestAliasResolutionState::ForceIntoSourcesUnbound(sources.clone())
+                } else {
+                    QuestAliasResolutionState::NoFillMechanism
+                };
+                QuestAliasDiagnostic { alias, state }
+            })
+            .collect(),
+    )
 }
 
 fn candidate_matches_fill(fill: &AliasFillType, candidate: &SceneAliasCandidate) -> bool {
@@ -1223,6 +1347,132 @@ mod tests {
 
     const SCENE: u32 = 0x100;
     const QUEST: u32 = 0x200;
+
+    #[test]
+    fn quest_alias_diagnostics_classify_runtime_boundaries_and_dependencies() {
+        let mut world = World::new();
+        crate::register(&mut world);
+        world.insert_resource(QuestStageState::default());
+        world
+            .resource_mut::<QuestStageState>()
+            .start_quest(QuestFormId(QUEST), None);
+        install_scene_quest_aliases(
+            &mut world,
+            [QustRecord {
+                form_id: QUEST,
+                aliases: vec![
+                    QuestAlias {
+                        alias_id: 1,
+                        fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                        force_into_alias: Some(6),
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 2,
+                        fill_type: Some(AliasFillType::CreatedObject {
+                            base: 0xB1,
+                            target_alias: 1,
+                            create_mode: 0,
+                            level: 1,
+                        }),
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 3,
+                        fill_type: Some(AliasFillType::FromEvent {
+                            event_type: *b"ACTV",
+                            data: 0,
+                        }),
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 4,
+                        fill_type: Some(AliasFillType::ExternalAlias {
+                            quest: 0x300,
+                            alias_id: 9,
+                        }),
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 5,
+                        fill_type: Some(AliasFillType::NearAlias {
+                            alias_id: 1,
+                            relation: 0,
+                        }),
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 6,
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 7,
+                        is_location: true,
+                        ..Default::default()
+                    },
+                    QuestAlias {
+                        alias_id: 8,
+                        is_collection: true,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+        );
+        refresh_scene_actor_bindings(&world);
+
+        let diagnostics = quest_alias_diagnostics(&world, QuestFormId(QUEST)).unwrap();
+        let state = |alias_id| {
+            &diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.alias.alias_id == alias_id)
+                .unwrap()
+                .state
+        };
+        assert_eq!(
+            state(1),
+            &QuestAliasResolutionState::NoEligibleLoadedCandidate
+        );
+        assert_eq!(
+            state(2),
+            &QuestAliasResolutionState::CreatedObjectRuntimeUnavailable
+        );
+        assert_eq!(
+            state(3),
+            &QuestAliasResolutionState::StoryManagerEventUnavailable
+        );
+        assert_eq!(
+            state(4),
+            &QuestAliasResolutionState::ExternalSourceUnbound {
+                quest: QuestFormId(0x300),
+                alias_id: 9,
+            }
+        );
+        assert_eq!(
+            state(5),
+            &QuestAliasResolutionState::DependencyAliasUnbound(1)
+        );
+        assert_eq!(
+            state(6),
+            &QuestAliasResolutionState::ForceIntoSourcesUnbound(vec![1])
+        );
+        assert_eq!(
+            state(7),
+            &QuestAliasResolutionState::LocationRuntimeUnavailable
+        );
+        assert_eq!(
+            state(8),
+            &QuestAliasResolutionState::ReferenceCollectionRuntimeUnavailable
+        );
+
+        world
+            .resource_mut::<QuestStageState>()
+            .stop(QuestFormId(QUEST));
+        assert!(quest_alias_diagnostics(&world, QuestFormId(QUEST))
+            .unwrap()
+            .iter()
+            .all(|diagnostic| diagnostic.state == QuestAliasResolutionState::QuestNotRunning));
+    }
 
     #[test]
     fn quest_alias_refresh_resolves_direct_unique_and_distinct_xlrt_roles() {

@@ -329,6 +329,23 @@ search, reference collections, and components/consumers for the remaining
 overlay families. Their complete authored records remain available through
 `QuestAliasRuntimeOverlays` until those owning subsystems exist.
 
+### M43.1 — Runtime observability
+
+The in-engine command registry exposes the quest pipeline through the same
+TCP `Eval` path used by `byro-dbg`:
+
+- `quest.show <formid>` reports definition metadata, canonical lifecycle,
+  stage history, objectives, resolved targets, and alias coverage.
+- `quest.aliases <formid>` reports authored fill types, flags, injections,
+  bound entities/reference identities, pending refresh state, and bounded
+  unbound reasons. Read-only inspection never forces a refresh or grants
+  inventory as a side effect.
+- `quest.start`, `quest.stop`, and `quest.setstage` route through the same
+  `Effect`/`apply_effects` path as Papyrus fragments, then refresh derived
+  bindings so debug controls cannot drift from production semantics.
+- [`m43-quest-runtime.sh`](../smoke-tests/m43-quest-runtime.sh) drives those
+  commands against real Skyrim QUST data through the embedded debug server.
+
 ---
 
 ## Verification checklist for "M47.3 done" (per phase)
@@ -366,6 +383,10 @@ overlay families. Their complete authored records remain available through
       not removed on clear
 - [x] The permanent inventory-grant ledger survives save/load and prevents
       duplicate `CNTO` stacks on the first post-load alias refresh
+- [x] Quest lifecycle, objectives, targets, bindings, injections, and bounded
+      unbound reasons are observable through `byro-dbg`
+- [x] A repeatable real-data runtime smoke drives quest inspection and
+      lifecycle controls through the production TCP command path
 - [x] Remaining metadata is exposed as source-attributed overlays
 - [ ] Alias-injected inventory verified against a real vanilla quest
       end to end (unit coverage is complete; requires game data)

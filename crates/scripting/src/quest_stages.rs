@@ -323,6 +323,12 @@ impl QuestStageState {
         self.quests.iter().map(|(k, v)| (*k, v))
     }
 
+    /// Read one quest's complete tracked state. `None` is the canonical
+    /// not-started state and remains distinct from a running stage-zero quest.
+    pub fn state(&self, quest: QuestFormId) -> Option<&QuestStageData> {
+        self.quests.get(&quest)
+    }
+
     /// Create an independent event subscription beginning after all events
     /// currently committed. Satellite systems keep this ID and poll whenever
     /// their own scheduler runs; no 60 Hz coupling is required.
@@ -476,6 +482,20 @@ impl QuestObjectiveState {
             .and_then(|objs| objs.get(&objective))
             .copied()
             .unwrap_or_default()
+    }
+
+    /// Iterate every runtime objective touched for one quest. Authored but
+    /// untouched objectives are intentionally absent and should be joined with
+    /// [`QuestDefinitionRegistry::objectives`] by diagnostic/UI consumers.
+    pub fn iter_quest(
+        &self,
+        quest: QuestFormId,
+    ) -> impl Iterator<Item = (i32, ObjectiveStatus)> + '_ {
+        self.quests
+            .get(&quest)
+            .into_iter()
+            .flat_map(|objectives| objectives.iter())
+            .map(|(&index, &status)| (index, status))
     }
 }
 
@@ -664,9 +684,12 @@ impl Resource for QuestDefinitionRegistry {}
 
 #[derive(Debug, Clone, Default)]
 struct QuestDefinition {
+    editor_id: String,
+    full_name: String,
     flags: u16,
     start_up_stage: Option<u16>,
     shut_down_stage: Option<u16>,
+    stages: Vec<u16>,
     objectives: Vec<i32>,
     objective_records: HashMap<i32, QuestObjective>,
     stage_logs: HashMap<u16, Vec<QuestStageLogEntry>>,
@@ -682,6 +705,30 @@ impl QuestDefinitionRegistry {
         self.definitions
             .get(&quest)
             .and_then(|definition| definition.start_up_stage)
+    }
+
+    pub fn editor_id(&self, quest: QuestFormId) -> Option<&str> {
+        self.definitions
+            .get(&quest)
+            .map(|definition| definition.editor_id.as_str())
+    }
+
+    pub fn full_name(&self, quest: QuestFormId) -> Option<&str> {
+        self.definitions
+            .get(&quest)
+            .map(|definition| definition.full_name.as_str())
+    }
+
+    pub fn flags(&self, quest: QuestFormId) -> Option<u16> {
+        self.definitions
+            .get(&quest)
+            .map(|definition| definition.flags)
+    }
+
+    pub fn stages(&self, quest: QuestFormId) -> &[u16] {
+        self.definitions
+            .get(&quest)
+            .map_or(&[], |definition| definition.stages.as_slice())
     }
 
     pub fn shut_down_stage(&self, quest: QuestFormId) -> Option<u16> {
@@ -826,9 +873,12 @@ pub fn install_start_game_quests(
             (
                 QuestFormId(record.form_id),
                 QuestDefinition {
+                    editor_id: record.editor_id,
+                    full_name: record.full_name,
                     flags: record.quest_flags,
                     start_up_stage: record.start_up_stage,
                     shut_down_stage: record.shut_down_stage,
+                    stages: record.stages.iter().map(|stage| stage.index).collect(),
                     objectives: record
                         .objectives
                         .iter()
@@ -879,9 +929,12 @@ pub fn install_engine_start_quest(
         .definitions
         .entry(quest)
         .or_insert_with(|| QuestDefinition {
+            editor_id: String::new(),
+            full_name: String::new(),
             flags: 0,
             start_up_stage,
             shut_down_stage: None,
+            stages: start_up_stage.into_iter().collect(),
             objectives: Vec::new(),
             objective_records: HashMap::new(),
             stage_logs: HashMap::new(),

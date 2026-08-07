@@ -42,6 +42,7 @@ Inventory` returned nothing.
 | [`m41-equip.sh`](m41-equip.sh) | M41 Phase 2 close-out | Skyrim+ / FO4 NPCs spawn with their default outfit (LVLI dispatch via OTFT walks resolves to base ARMO refs; `Inventory` + `EquipmentSlots` are populated; armor meshes load without `tex.missing` overflow). |
 | [`m-trees.sh`](m-trees.sh) | SpeedTree Phase 1.7 close-out | Pre-Skyrim TREE REFRs round-trip through the SpeedTree pipeline: TREE record → `.spt` parser → SPT importer → cell loader extension switch → `Billboard` ECS entity. FNV / FO3 exterior cells must spawn ≥ 1 / ≥ 5 billboard placeholders respectively. |
 | [`m47-triggers.sh`](m47-triggers.sh) | M47.2 compiled-script + trigger close-out | A Skyrim cell loads with `--scripts-bsa "Skyrim - Misc.bsa"`; the engine decompiles each scripted REFR's VMAD-named `.pex` through the recognizer chain and spawns invisible trigger volumes from `XPRM` primitives. Hard gate: the cell loaded (entity floor + bench summary). Soft: the `M47.2 scripts: N REFRs recognized, M trigger volumes spawned` summary line (content / load-order dependent). Point `BYROREDUX_TRIGGER_CELL` at a quest dungeon for trigger-volume coverage. The runtime crossing (enter → quest advance) is unit-tested, not driven here. |
+| [`m43-quest-runtime.sh`](m43-quest-runtime.sh) | M43.1 quest observability | Loads a real Skyrim cell and drives `quest.show`, `quest.aliases`, `quest.start`, `quest.setstage`, and `quest.stop` through the embedded debug server. Hard gates cover production QUST installation, lifecycle transitions, alias diagnostics, final canonical state, and a populated-cell entity floor. Defaults to DA10 (`0x00022F08`, stage 37); override the quest/cell/stage for load-order-specific probes. |
 | `cargo test -p byroredux --test skinning_e2e -- --ignored` | M29 skinning close-out | FNV `NiSkinInstance` + SSE `BSSkinInstance` full import chain: bones populated, names round-trip `node_by_name`, partition-local → global bone-index remap correct, per-vertex `bone_indices`/`bone_weights` in bounds. Needs `BYROREDUX_FNV_DATA` + `BYROREDUX_SKYRIM_DATA`. |
 
 ### Assertion shape
@@ -117,4 +118,7 @@ falls back to the canonical Steam install paths:
 | `BYROREDUX_SMOKE_TIMEOUT`   | `240` seconds per profile (used by `m-exteriors.sh`)                                     |
 | `BYROREDUX_EXTERIOR_ARTIFACT_DIR` | Fresh `/tmp/byro-exterior-smoke.*` directory retained after the run               |
 | `BYROREDUX_TRIGGER_CELL`    | `WhiterunBanneredMare` (cell `m47-triggers.sh` loads; override with a quest dungeon for trigger-volume coverage) |
+| `BYROREDUX_QUEST_CELL`      | `WhiterunBanneredMare` (cell loaded by `m43-quest-runtime.sh`)                              |
+| `BYROREDUX_QUEST_FORM_ID`   | `0x00022F08` (DA10; quest exercised by the M43.1 runtime smoke)                            |
+| `BYROREDUX_QUEST_STAGE`     | `37` (stage assigned by the M43.1 runtime smoke)                                           |
 | `BYROREDUX_BENCH_FRAMES`    | `300` (bench frames — used by `r6a_stale_15_bench.sh`; override to e.g. `10` for validation) |

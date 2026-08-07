@@ -12,12 +12,15 @@
 //!   (`tex.*`, `mesh.*`, `skin.*`)
 //! - [`view`] — camera + selection / picking
 //!   (`prid`, `cam.*`, `near`, `pick`)
+//! - [`quest`] — quest lifecycle, objectives, targets, and alias diagnostics
+//!   (`quest.show`, `quest.aliases`, `quest.start`, `quest.stop`, `quest.setstage`)
 //! - [`scene`] — scene / lighting / material / script state
 //!   (`light.*`, `door.teleport`, `script.activate`, `mat.*`, `ragdoll`)
 
 mod actor_value;
 mod assets;
 mod condition;
+mod quest;
 mod scene;
 mod shared;
 mod view;
@@ -26,6 +29,7 @@ mod world_info;
 use actor_value::*;
 use assets::*;
 use condition::*;
+use quest::*;
 use scene::*;
 use shared::*;
 use view::*;
@@ -37,6 +41,11 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(CondCommand);
     registry.register(SetAvCommand);
     registry.register(ModAvCommand);
+    registry.register(QuestShowCommand);
+    registry.register(QuestAliasesCommand);
+    registry.register(QuestStartCommand);
+    registry.register(QuestStopCommand);
+    registry.register(QuestSetStageCommand);
     registry.register(StatsCommand);
     registry.register(EntitiesCommand);
     registry.register(SystemsCommand);

@@ -72,11 +72,12 @@ pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, Recurrin
 pub use registry::{ScriptRegistry, ScriptSpawnFn};
 pub use scene::{
     install_scene_quest_aliases, install_scene_records, mark_scene_actor_bindings_dirty,
-    quest_alias_refresh_system, refresh_scene_actor_bindings, scene_playback_system,
-    ActiveSceneAction, QuestAliasInjectedOverlays, QuestAliasInjectionState,
-    QuestAliasRuntimeOverlays, SceneActionCompletionBatch, SceneActorBindings, SceneAliasCandidate,
-    SceneEvent, SceneEventBatch, SceneFragmentInvocation, SceneFragmentInvocationBatch,
-    ScenePlaybackState, ScenePlayer, SceneRegistry, SceneStartRequest, SceneStopRequest,
+    quest_alias_diagnostics, quest_alias_refresh_system, refresh_scene_actor_bindings,
+    scene_playback_system, ActiveSceneAction, QuestAliasDiagnostic, QuestAliasInjectedOverlays,
+    QuestAliasInjectionState, QuestAliasResolutionState, QuestAliasRuntimeOverlays,
+    SceneActionCompletionBatch, SceneActorBindings, SceneAliasCandidate, SceneEvent,
+    SceneEventBatch, SceneFragmentInvocation, SceneFragmentInvocationBatch, ScenePlaybackState,
+    ScenePlayer, SceneRegistry, SceneStartRequest, SceneStopRequest,
 };
 pub use timer::{timer_tick_system, ScriptTimer};
 pub use translate::{
