@@ -255,7 +255,21 @@ pub(crate) fn pack_imported_material_flags(
     // remap targets alpha rather than luminance, matching how
     // `pack_effect_shader_flags` derives the two bits independently for
     // the inline-effect-shader path.
-    if material.textures.greyscale_lut.is_some() {
+    //
+    // #2108 (SF-D9-01) — gated on `bgsm_greyscale_lut_enabled`, the
+    // authored `grayscale_to_palette_color`/`_alpha` ENABLE bit
+    // (`asset_provider::merge_external_material`), NOT on
+    // `greyscale_lut.is_some()` alone. The slot is a legal,
+    // always-serialized field — a template-inherited or mis-authored
+    // BGSM/BGEM can fill it while leaving the remap disabled, and the
+    // inline NIF effect-shader path (`pack_effect_shader_flags` above)
+    // already gates on the real SLSF enable bit, not texture presence;
+    // this mirrors that. `is_some()` stays as a belt-and-braces guard —
+    // both merge arms only ever set `bgsm_greyscale_lut_enabled` at the
+    // same step they fill the texture, so it should never be `true` with
+    // an empty slot, but a remap with no LUT to sample would be a no-op
+    // at best and reads confusingly if it slipped through.
+    if material.textures.greyscale_lut.is_some() && material.bgsm_greyscale_lut_enabled {
         if material.bgsm_greyscale_lut_is_alpha {
             flags |= EFFECT_PALETTE_ALPHA;
         } else {
@@ -337,7 +351,8 @@ mod pack_imported_material_flags_tests {
     }
 
     /// #1353 / FO4-D8-07 — a BGSM that authored a greyscale-to-palette LUT
-    /// (`bgsm_greyscale_lut_path`, set by `merge_external_material`) must pack
+    /// AND enabled the remap (`bgsm_greyscale_lut_enabled`, forwarded from
+    /// `grayscale_to_palette_color` by `merge_external_material`) must pack
     /// `EFFECT_PALETTE_COLOR` (= SLSF1 Greyscale_To_PaletteColor) so the
     /// lit-path palette remap in triangle.frag fires. Absent the path, the
     /// bit must stay clear.
@@ -353,10 +368,38 @@ mod pack_imported_material_flags_tests {
         let mut material = empty_material();
         let mut pool = byroredux_core::string::StringPool::new();
         material.textures.greyscale_lut = Some(pool.intern("textures\\actors\\ghoul_palette.dds"));
+        material.bgsm_greyscale_lut_enabled = true;
         assert_eq!(
             pack_imported_material_flags(&material) & EFFECT_PALETTE_COLOR,
             EFFECT_PALETTE_COLOR,
-            "BGSM greyscale LUT path must pack EFFECT_PALETTE_COLOR (#1353)"
+            "BGSM greyscale LUT path + enable bit must pack EFFECT_PALETTE_COLOR (#1353)"
+        );
+    }
+
+    /// Regression for #2108 (SF-D9-01) — a filled-but-DISABLED greyscale
+    /// LUT slot (the enable bit off) must NOT pack the palette flag.
+    /// Pre-fix, `pack_imported_material_flags` gated purely on
+    /// `greyscale_lut.is_some()`; a template-inherited or mis-authored
+    /// BGSM/BGEM that fills the (always-serialized) slot without opting
+    /// into the remap got an unwanted palette-LUT remap anyway.
+    #[test]
+    fn greyscale_lut_present_but_disabled_does_not_set_palette_flags() {
+        use byroredux_renderer::vulkan::material::material_flag::EFFECT_PALETTE_ALPHA;
+
+        let mut material = empty_material();
+        let mut pool = byroredux_core::string::StringPool::new();
+        material.textures.greyscale_lut = Some(pool.intern("textures\\actors\\ghoul_palette.dds"));
+        material.bgsm_greyscale_lut_enabled = false; // the authored enable bit was off
+        let flags = pack_imported_material_flags(&material);
+        assert_eq!(
+            flags & EFFECT_PALETTE_COLOR,
+            0,
+            "disabled palette remap must not pack EFFECT_PALETTE_COLOR even with a filled LUT slot (#2108)"
+        );
+        assert_eq!(
+            flags & EFFECT_PALETTE_ALPHA,
+            0,
+            "disabled palette remap must not pack EFFECT_PALETTE_ALPHA either"
         );
     }
 
@@ -373,6 +416,7 @@ mod pack_imported_material_flags_tests {
         let mut pool = byroredux_core::string::StringPool::new();
         material.textures.greyscale_lut =
             Some(pool.intern("textures\\effects\\gradients\\fire.dds"));
+        material.bgsm_greyscale_lut_enabled = true;
         material.bgsm_greyscale_lut_is_alpha = true;
         let flags = pack_imported_material_flags(&material);
         assert_eq!(

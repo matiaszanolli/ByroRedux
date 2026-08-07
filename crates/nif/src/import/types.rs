@@ -488,6 +488,17 @@ pub struct ImportedMaterial {
     pub backlight_power: f32,
     pub grayscale_to_palette_scale: f32,
     pub bgsm_greyscale_lut_is_alpha: bool,
+    /// #2108 (SF-D9-01) — the authored BGSM/BGEM palette-remap ENABLE bit
+    /// (`grayscale_to_palette_color`, or BGEM's `grayscale_to_palette_alpha`
+    /// as an alternate enable), captured at the same merge step that fills
+    /// `textures.greyscale_lut`. The greyscale LUT slot is a legal,
+    /// always-serialized field — its mere presence does NOT mean the
+    /// material wants the palette remap; only this flag does. Gates
+    /// `EFFECT_PALETTE_COLOR`/`ALPHA` in `pack_imported_material_flags`,
+    /// mirroring how the inline NIF effect-shader path
+    /// (`pack_effect_shader_flags`) gates on the real SLSF enable bit
+    /// instead of texture presence.
+    pub bgsm_greyscale_lut_enabled: bool,
     pub fresnel_power: f32,
     pub uv_offset: [f32; 2],
     pub uv_scale: [f32; 2],
@@ -550,6 +561,7 @@ impl Default for ImportedMaterial {
             backlight_power: 0.0,
             grayscale_to_palette_scale: 1.0,
             bgsm_greyscale_lut_is_alpha: false,
+            bgsm_greyscale_lut_enabled: false,
             fresnel_power: 5.0,
             uv_offset: [0.0, 0.0],
             uv_scale: [1.0, 1.0],

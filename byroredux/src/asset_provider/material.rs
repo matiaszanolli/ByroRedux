@@ -913,6 +913,18 @@ pub(crate) fn merge_external_material(
             // match the texture fills above. Routed through the common
             // greyscale_lut role and flagged via EFFECT_PALETTE_COLOR in
             // `pack_imported_material_flags` so the lit-path remap samples it.
+            //
+            // #2108 (SF-D9-01) — the greyscale slot is a legal, always-
+            // serialized field; its presence alone does NOT mean the
+            // material wants the remap. Capture the authoritative
+            // `grayscale_to_palette_color` enable bit from THIS SAME BGSM
+            // (not `fill`'s generic helper, and not OR'd across the whole
+            // chain) at the exact step that supplies the texture — an
+            // ancestor's own enable bit is irrelevant once a closer BGSM
+            // already won the texture slot.
+            if material.textures.greyscale_lut.is_none() && !bgsm.greyscale_texture.is_empty() {
+                material.bgsm_greyscale_lut_enabled = bgsm.base.grayscale_to_palette_color;
+            }
             fill(
                 &mut material.textures.greyscale_lut,
                 &bgsm.greyscale_texture,
@@ -1164,6 +1176,14 @@ pub(crate) fn merge_external_material(
             // gates EFFECT_PALETTE_ALPHA or the default EFFECT_PALETTE_COLOR;
             // see `pack_imported_material_flags` in `cell_loader.rs`.
             material.bgsm_greyscale_lut_is_alpha = bgem.grayscale_to_palette_alpha;
+            // #2108 (SF-D9-01) — either enable bit (the shared
+            // `grayscale_to_palette_color`, or BGEM's alpha-variant
+            // `grayscale_to_palette_alpha`) turns the remap on; which of
+            // COLOR/ALPHA the packer sets is decided separately, above, by
+            // `bgsm_greyscale_lut_is_alpha`. The texture slot being filled
+            // is not itself an enable signal.
+            material.bgsm_greyscale_lut_enabled =
+                bgem.base.grayscale_to_palette_color || bgem.grayscale_to_palette_alpha;
             touched = true;
         }
         fill(
@@ -1248,6 +1268,18 @@ pub(crate) fn merge_external_material(
             // shared glass shader can choose a surface-consistent base path;
             // texture maps remain ordinary overlays either way.
             material.thin_glass = bgem_uses_thin_glass_behavior(&bgem);
+            // #2109 (SF-D9-02) — the v21+/v22 glass-overlay suite
+            // (`glass_fresnel_color`, `glass_refraction_scale_base`,
+            // `glass_blur_scale_base`, `glass_blur_scale_factor`,
+            // `glass_roughness_scratch`, `glass_dirt_overlay`) and
+            // `environment_mapping_mask_scale` all decode correctly on the
+            // BGEM parser side (`bgem.rs`) but have no `ImportedMesh` sink
+            // here — same deferred-consumer class as `emittance_color`
+            // above. Mod-added FO76/Starfield-era BGEM glass renders with
+            // engine-default refraction/tint instead of these authored
+            // values; low severity, since the renderer has no binding to
+            // consume them yet even if forwarded. Deferred renderer-
+            // binding follow-up, not a parser gap.
         }
         // Soft-particle depth fade + view-angle falloff cone. The NIF
         // `BSEffectShaderProperty` path fills `material.effect_shader` from the

@@ -1162,6 +1162,85 @@ fn bgem_effect_pbr_specular_promotes_imported_material_to_pbr() {
     );
 }
 
+/// Regression for #2108 (SF-D9-01), real merge path: a BGEM that fills the
+/// greyscale LUT slot WITHOUT authoring either enable bit
+/// (`grayscale_to_palette_color` / `grayscale_to_palette_alpha`) must leave
+/// `bgsm_greyscale_lut_enabled = false` — the slot is a legal,
+/// always-serialized field, not itself an enable signal. `cell_loader.rs`'s
+/// `pack_imported_material_flags` gates `EFFECT_PALETTE_COLOR`/`ALPHA` on
+/// this bit, not on the texture's presence.
+#[test]
+fn bgem_merge_leaves_palette_disabled_when_neither_enable_bit_is_authored() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/disabled_palette.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            grayscale_texture: "textures\\effects\\gradients\\fire.dds".into(),
+            grayscale_to_palette_alpha: false,
+            base: byroredux_bgsm::BaseMaterial {
+                grayscale_to_palette_color: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(
+        &mut mesh.material,
+        &mut provider,
+        &mut pool,
+    ));
+    assert!(
+        mesh.material.textures.greyscale_lut.is_some(),
+        "the LUT texture slot must still fill — this fix does not touch texture forwarding"
+    );
+    assert!(
+        !mesh.material.bgsm_greyscale_lut_enabled,
+        "neither grayscale_to_palette_color nor _alpha was authored — the \
+         remap must stay disabled despite the filled LUT slot (#2108)"
+    );
+}
+
+/// The `grayscale_to_palette_color` enable bit alone (no alpha variant)
+/// must forward to `bgsm_greyscale_lut_enabled = true` via the real merge
+/// path, matching `pack_imported_material_flags`'s color-default branch.
+#[test]
+fn bgem_merge_forwards_color_enable_bit_via_real_merge() {
+    let mut pool = byroredux_core::string::StringPool::new();
+    let path = "materials/tests/color_palette.bgem";
+    let mut provider = MaterialProvider::new();
+    provider.insert_bgem_for_test(
+        path,
+        BgemFile {
+            grayscale_texture: "textures\\effects\\gradients\\electricity.dds".into(),
+            grayscale_to_palette_alpha: false,
+            base: byroredux_bgsm::BaseMaterial {
+                grayscale_to_palette_color: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    let mut mesh = imported_mesh_with_material_path(&mut pool, path);
+
+    assert!(merge_external_material(
+        &mut mesh.material,
+        &mut provider,
+        &mut pool,
+    ));
+    assert!(
+        mesh.material.bgsm_greyscale_lut_enabled,
+        "grayscale_to_palette_color=true must forward to bgsm_greyscale_lut_enabled"
+    );
+    assert!(
+        !mesh.material.bgsm_greyscale_lut_is_alpha,
+        "color-only enable must not also select the alpha variant"
+    );
+}
+
 #[test]
 fn closed_bgem_glass_does_not_select_thin_surface_behavior() {
     let bgem = BgemFile {

@@ -1274,6 +1274,10 @@ impl MaterialInfo {
             backlight_power: self.backlight_power,
             grayscale_to_palette_scale: self.grayscale_to_palette_scale,
             bgsm_greyscale_lut_is_alpha: false,
+            // #2108 — no BGSM/BGEM has merged yet at this NIF-import stage
+            // (that happens later, in `asset_provider::merge_external_material`),
+            // so there is no palette-remap enable signal to forward here.
+            bgsm_greyscale_lut_enabled: false,
             fresnel_power: self.fresnel_power,
             uv_offset: self.uv_offset,
             uv_scale: self.uv_scale,

@@ -161,6 +161,13 @@ pub fn extract_bs_geometry(
         vec![[0.0, 1.0, 0.0]; positions.len()]
     };
 
+    // #2099 (SF2D2-02) — `mesh_data.uvs1` (the secondary UV channel;
+    // Starfield uses it for detail/decal and some shader-layering work)
+    // decodes correctly on the parser side but has no consumer here.
+    // `ImportedMesh`/`Vertex` have only one UV slot today, so there is
+    // nowhere to route it to — not actionable until the vertex format
+    // grows a second UV channel. Affected content renders with the
+    // primary UV set only (visual-only, no crash/corruption risk).
     let uvs = mesh_data.uvs0.clone();
 
     // Authored tangents from the UDEC3-packed `tangents_raw` channel.
@@ -254,6 +261,27 @@ pub fn extract_bs_geometry(
         let [cx, cy, cz] = shape.bounding_sphere.0;
         let r = shape.bounding_sphere.1;
         if r > 0.0 {
+            // #2098 (SF2D2-01) — the raw authored sphere is used verbatim
+            // here with no cross-check that it's expressed in the same
+            // units as the decoded vertices. If a future content source
+            // (or a parser regression) ever authors/decodes the two in
+            // divergent scales (e.g. a havok-scaled sphere against
+            // renderer-scaled vertices), the bound could be far too
+            // small — off-axis culling pop. Non-fatal, log-only, mirrors
+            // `bs_geometry_hint_mismatch`'s pattern.
+            if let Some(mismatch) =
+                bs_geometry_bounding_sphere_mismatch([cx, cy, cz], r, &positions)
+            {
+                log::debug!(
+                    "BSGeometry '{}' bounding-sphere/vertex-extent mismatch: \
+                     sphere_radius={} vertex_extent_radius={} — possible \
+                     unit-scale divergence between the authored sphere and \
+                     the decoded vertices",
+                    shape.av.net.name.as_deref().unwrap_or("<unnamed>"),
+                    mismatch.sphere_radius,
+                    mismatch.vertex_extent_radius,
+                );
+            }
             ([cx, cy, cz], r)
         } else {
             extract_local_bound(
@@ -336,5 +364,58 @@ pub(crate) fn bs_geometry_hint_mismatch(
         num_verts_resolved: resolved_verts,
         tri_size_hint,
         tri_size_resolved,
+    })
+}
+
+/// Reported when [`bs_geometry_bounding_sphere_mismatch`] finds the raw
+/// authored bounding-sphere radius far smaller than the decoded vertices'
+/// actual extent from that same center.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct BsGeometryBoundingSphereMismatch {
+    pub sphere_radius: f32,
+    pub vertex_extent_radius: f32,
+}
+
+/// #2098 (SF2D2-01) — cross-checks a BSGeometry block's raw authored
+/// `bounding_sphere` radius against the actual max distance-from-center of
+/// the decoded vertex positions. Mirrors [`bs_geometry_hint_mismatch`]'s
+/// pattern: informational only (a real unit-scale mismatch would still
+/// render, just with a wrong culling bound), `None` when they broadly
+/// agree.
+///
+/// Only flags the sphere being far too SMALL relative to the vertices —
+/// the failure mode that causes off-axis culling pop. A merely loose /
+/// conservative authored bound (sphere bigger than the tight vertex
+/// extent) is normal Bethesda authoring practice and intentionally not
+/// flagged. `MIN_RATIO` is generous (10%) so this only fires on a genuine
+/// scale divergence (the audit's ~70x hypothesis), not ordinary
+/// bounding-sphere slack.
+pub(crate) fn bs_geometry_bounding_sphere_mismatch(
+    center: [f32; 3],
+    sphere_radius: f32,
+    positions: &[[f32; 3]],
+) -> Option<BsGeometryBoundingSphereMismatch> {
+    if sphere_radius <= 0.0 || positions.is_empty() {
+        return None;
+    }
+    let vertex_extent_radius = positions
+        .iter()
+        .map(|p| {
+            let dx = p[0] - center[0];
+            let dy = p[1] - center[1];
+            let dz = p[2] - center[2];
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        })
+        .fold(0.0f32, f32::max);
+    if vertex_extent_radius <= 0.0 {
+        return None;
+    }
+    const MIN_RATIO: f32 = 0.1;
+    if sphere_radius >= vertex_extent_radius * MIN_RATIO {
+        return None;
+    }
+    Some(BsGeometryBoundingSphereMismatch {
+        sphere_radius,
+        vertex_extent_radius,
     })
 }
