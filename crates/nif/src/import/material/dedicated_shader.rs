@@ -378,6 +378,27 @@ fn apply_bs_effect_shader(
             info.material_path =
                 crate::import::mesh::material_path_from_name(shader.net.name.as_deref(), pool);
         }
+        // #2617 / SF-D8-2026-08-07-01 — mirrors the `apply_bs_lighting_shader`
+        // guard above (#2353): a material-reference stub's remaining fields
+        // are parser placeholders (`base_color=[1,1,1,1]`, `source_texture=
+        // ""`, `falloff_start_opacity=falloff_stop_opacity=0.0`, …), not
+        // NIF-authored data. Pre-fix, every externally-referenced Starfield
+        // BSEffectShaderProperty (the DOMINANT case there — Starfield FX
+        // materials are authored in materialsbeta.cdb and referenced by
+        // name) copied the placeholder falloff-opacity pair straight into
+        // `MaterialInfo`, and `triangle.frag`'s cone-fade math (which
+        // assumes the identity default `start_op = stop_op = 1.0`) instead
+        // saw `0.0` — with `start_angle == stop_angle` (also placeholder)
+        // zeroing the fade denominator too, `coneFade` stayed `0.0` and
+        // every such surface rendered fully, silently transparent. Keep
+        // the material_kind=101 tag (still true — this IS an effect
+        // shader) but drop the rest of the placeholder payload, exactly
+        // like the BSLSP guard does for its own `has_bs_lighting_shader`
+        // and downstream fields.
+        if shader.material_reference {
+            info.material_kind = 101;
+            return;
+        }
         if info.texture_path.is_none() {
             info.texture_path = intern_texture_path(pool, &shader.source_texture);
         }

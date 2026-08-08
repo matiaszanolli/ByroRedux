@@ -498,7 +498,25 @@ impl BSGeometryMeshData {
                     .map(|c| c.to_vec())
                     .collect()
             }
-            None => Vec::new(),
+            // #2620 / SF2D2-D2-02 — `weights_per_vert == 0` means "no
+            // per-vertex grouping is possible" (there is no skin data to
+            // return, hence `Vec::new()` below), but it does NOT mean
+            // "no bytes were written." `n_total_weights` is a flat
+            // BoneWeight count independent of the grouping divisor; if a
+            // `.mesh` body ever ships `weights_per_vert == 0` alongside
+            // `n_total_weights > 0`, that many 4-byte `BoneWeight`
+            // entries (2×u16 each) are still on disk. Pre-fix this arm
+            // read zero bytes and left the cursor sitting in the middle
+            // of that payload, so every subsequent field (`n_lods` /
+            // `n_meshlets` / `n_cull_data`) decoded from garbage. `skip`
+            // never allocates (just moves the cursor) and is itself
+            // bounds-checked against the backing data length, so a
+            // hostile `n_total_weights` fails gracefully here instead of
+            // corrupting the rest of the parse.
+            None => {
+                stream.skip(n_total_weights as u64 * 4)?;
+                Vec::new()
+            }
         };
 
         let n_lods = stream.read_u32_le()?;
@@ -775,5 +793,65 @@ mod tests {
         // it. `lods.len() == 0` is the observable proof the cursor
         // landed exactly where the old per-element loop left it.
         assert_eq!(data.lods.len(), 0);
+    }
+
+    /// Regression for #2620 / SF2D2-D2-02: `weights_per_vert == 0` with
+    /// `n_total_weights > 0` means "no per-vertex grouping is possible"
+    /// (`skin_weights` is correctly empty), NOT "no bytes were written."
+    /// Pre-fix, the `None` arm of `checked_div` read zero bytes and left
+    /// the cursor sitting in the middle of the still-on-disk `BoneWeight`
+    /// payload, so `n_lods` (and everything after it) decoded from
+    /// garbage. This fixture places a real, non-zero `n_lods` entry right
+    /// after 2 undrained `BoneWeight` entries (8 bytes) — a correct
+    /// reader must skip exactly those 8 bytes and land precisely on
+    /// `n_lods`.
+    #[test]
+    fn weights_per_vert_zero_with_nonzero_total_skips_payload_not_zero_bytes() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // version
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_tri_indices
+        bytes.extend_from_slice(&1.0f32.to_le_bytes()); // scale (positive)
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // weights_per_vert = 0
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_vertices
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_uv1
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_uv2
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_colors
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_normals
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_tangents
+
+        // n_total_weights > 0 but weights_per_vert == 0 → checked_div
+        // returns None. 2 BoneWeight entries (2×u16 each = 4 bytes) are
+        // still on disk and MUST be skipped, not left unread.
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // n_total_weights
+        for (bone_index, weight) in [(99u16, 999u16), (88, 888)] {
+            bytes.extend_from_slice(&bone_index.to_le_bytes());
+            bytes.extend_from_slice(&weight.to_le_bytes());
+        }
+
+        // One real LOD entry: 1 triangle (3 indices).
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // n_lods
+        bytes.extend_from_slice(&3u32.to_le_bytes()); // n_lod_tri_indices for LOD 0
+        for idx in [5u16, 6, 7] {
+            bytes.extend_from_slice(&idx.to_le_bytes());
+        }
+
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_meshlets
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // n_cull_data
+
+        let data = BSGeometryMeshData::parse_from_bytes(&bytes)
+            .expect("weights_per_vert=0 body with a real n_lods after it must parse");
+
+        assert!(
+            data.skin_weights.is_empty(),
+            "weights_per_vert=0 correctly yields no per-vertex weight grouping"
+        );
+        assert_eq!(
+            data.lods.len(),
+            1,
+            "the cursor must land exactly on n_lods after skipping the 8-byte \
+             BoneWeight payload — a wrong skip size would either misread n_lods \
+             as garbage (parse error / wrong count) or misalign every field after it"
+        );
+        assert_eq!(data.lods[0], vec![[5, 6, 7]]);
     }
 }
