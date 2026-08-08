@@ -628,6 +628,19 @@ pub(super) struct MaterialInfo {
     /// own, the two flags are orthogonal. See audit
     /// `AUDIT_NIF_2026-04-18.md` finding N06.
     pub has_uv_transform: bool,
+    /// Set only by `apply_bs_lighting_shader` — a `BSLightingShaderProperty`
+    /// (Skyrim+) was found for this material. `#1208`'s intent was to stop
+    /// an inherited `NiVertexColorProperty` from overwriting the Skyrim+
+    /// shader-driven `vertex_color_mode` default, but the original fix
+    /// gated on the broader `has_material_data` — which the ordinary
+    /// pre-Skyrim `NiMaterialProperty` arm ALSO sets. Since the property
+    /// chain walks in file order, a `NiMaterialProperty` visited before a
+    /// `NiVertexColorProperty` (the common Oblivion/FO3/FNV property order)
+    /// latched that gate shut too, dropping every legacy vertex-color
+    /// property regardless of direct-vs-inherited status. Same failure
+    /// shape as `has_uv_transform`'s own #435/N06 precedent above. See
+    /// #2457.
+    pub has_bs_lighting_shader: bool,
     /// Depth test enabled (from NiZBufferProperty). Default: true.
     pub z_test: bool,
     /// Depth write enabled (from NiZBufferProperty). Default: true.
@@ -1044,6 +1057,7 @@ impl Default for MaterialInfo {
             has_material_data: false,
             specular_authored: false,
             has_uv_transform: false,
+            has_bs_lighting_shader: false,
             z_test: true,
             z_write: true,
             z_function: 3, // LESSEQUAL — Gamebryo default

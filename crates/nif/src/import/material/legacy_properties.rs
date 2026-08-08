@@ -731,7 +731,7 @@ fn apply_vertex_color_property(scene: &NifScene, idx: usize, info: &mut Material
     // becomes effectively invisible — demote to `Ignore` so the
     // renderer skips the `texColor * fragColor` double-count.
     //
-    // #1208 — gate on `!info.has_material_data`. A Skyrim+ mesh
+    // #1208 — gate on `!info.has_bs_lighting_shader`. A Skyrim+ mesh
     // that authors both `BSLightingShaderProperty` (Skyrim+ shader
     // path; default AmbientDiffuse is the intended mode) AND a
     // legacy `NiVertexColorProperty` in the inherited NiNode
@@ -739,7 +739,19 @@ fn apply_vertex_color_property(scene: &NifScene, idx: usize, info: &mut Material
     // overwrite the Skyrim+ intent. Mirrors the
     // `if info.texture_path.is_none()` precedence pattern used by
     // every other secondary-source consumer in this loop.
-    if !info.has_material_data {
+    //
+    // #2457 — pre-fix this gated on the broader `has_material_data`,
+    // which the ordinary pre-Skyrim `NiMaterialProperty` arm ALSO
+    // sets. Since the property chain walks in file order, a
+    // `NiMaterialProperty` visited before this property (the common
+    // Oblivion/FO3/FNV property order) latched that gate shut too,
+    // dropping every legacy vertex-color property regardless of
+    // direct-vs-inherited status. Same failure shape #435/N06 already
+    // fixed for `has_uv_transform` — see that field's doc.
+    // `has_bs_lighting_shader` is set ONLY by the actual Skyrim+ arm
+    // #1208 meant to protect, so a `NiMaterialProperty` anywhere in
+    // the chain no longer suppresses this write.
+    if !info.has_bs_lighting_shader {
         if let Some(vcol) = scene.get_as::<NiVertexColorProperty>(idx) {
             info.vertex_color_mode =
                 VertexColorMode::from_property(vcol.vertex_mode, vcol.lighting_mode);

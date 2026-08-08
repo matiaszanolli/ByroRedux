@@ -38,6 +38,31 @@ impl SceneFlags {
     pub const DISPLAY_OBJECT: u32 = 0x0020;
 
     /// Disable sorting for this object (always render in submission order).
+    ///
+    /// #2459 / SUBSYS-04 — VERIFIED against the real Gamebryo 2.3 source
+    /// (`CoreLibs/NiMain/NiAVObject.h:219`, `NiAVObject.inl:329-340`
+    /// `Get/SetSortObject`, `NiAlphaAccumulator.cpp:49-54`
+    /// `RegisterObjectArray`). Confirmed semantics: an alpha-blended
+    /// `NiGeometry` normally joins `NiAlphaAccumulator`'s sort list and is
+    /// drawn back-to-front at `Sort()` time; when this bit is set,
+    /// `GetSortObject()` returns false and `RegisterObjectArray` instead
+    /// calls `RenderImmediate` on it right there in scene-graph traversal
+    /// order — it never enters the depth sort at all. Present only from
+    /// NIF v20.0.0.4 (Skyrim+); `NiAVObject::LoadBinary` explicitly clears
+    /// the bit for older files.
+    ///
+    /// **Not wired to [`super::super::draw_sort_key`] yet.** Attached at
+    /// both import paths (parsed into this component) but has zero
+    /// consumers downstream — no `SceneFlags` reference exists anywhere
+    /// under `byroredux/src/render/`, so no draw command even carries the
+    /// bit today. Deliberately left unwired rather than speculatively
+    /// patched: `draw_sort_key`'s alpha-over branch has documented,
+    /// hard-won reasons (RT-1 / #2215, #1804 / #2237) for keeping global
+    /// depth order primary, and carving out a file-order exception for
+    /// this bit without a corpus/RenderDoc pass to confirm real-content
+    /// incidence risks reintroducing the exact draw-order artifact that
+    /// depth-primary sorting was built to fix. See #2459 for the
+    /// completeness-check trail if this is revisited.
     pub const DISABLE_SORTING: u32 = 0x0040;
 
     /// Override selective transform updates.
