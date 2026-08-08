@@ -407,16 +407,26 @@ fn make_starfield_header(name: &str) -> NifHeader {
 /// Build a minimal **Starfield** (BSVER 172) `BSLightingShaderProperty`
 /// body — the FO76 shape MINUS every `#BS_F76#`-gated field. Per
 /// nif.xml `#BS_F76# = (BSVER == 155)` ("Fallout 76 stream 155 only"),
-/// Starfield omits the `BSShaderType155` field, the WetnessParams
-/// `unknown_2`, and the Luminance / Translucency / texture-array tail.
-/// Name index 0 is "" so the block takes the full-body path (a
-/// non-empty Starfield name is a content-hash material reference → stub).
+/// Starfield omits the WetnessParams `unknown_2` and the Luminance /
+/// Translucency / texture-array tail. Name index 0 is "" so the block
+/// takes the full-body path (a non-empty Starfield name is a
+/// content-hash material reference → stub).
+///
+/// #2616 / SF-D6-01 — Starfield DOES carry `shader_type` (it reuses the
+/// FO76 `BSShaderType155` enum, per `parse_fo76_plus`'s own doc), and
+/// does NOT carry `root_material_path`. Pre-fix this builder had that
+/// backwards (omitted `shader_type`, included `root_material`) — it
+/// matched the parser's then-bug rather than the real wire format, so
+/// bugs in both stayed invisible to each other. Corrected here; see
+/// `parse_bs_lighting_real_starfield_block_is_semantically_valid` for a
+/// byte-for-byte real-content fixture that doesn't share this class of
+/// risk at all.
 fn build_starfield_bs_lighting_minimal() -> Vec<u8> {
     let mut data = Vec::new();
     data.extend_from_slice(&0i32.to_le_bytes()); // name idx 0 ("")
     data.extend_from_slice(&0u32.to_le_bytes()); // extra_data count
     data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
-                                                    // NO BSShaderType155 (FO76 == 155 only)
+    data.extend_from_slice(&0u32.to_le_bytes()); // shader_type (BSShaderType155, reused from FO76)
     data.extend_from_slice(&0u32.to_le_bytes()); // num_sf1 (>= 132)
     data.extend_from_slice(&0u32.to_le_bytes()); // num_sf2 (>= 152)
     for v in [0.0f32, 0.0, 1.0, 1.0] {
@@ -427,7 +437,7 @@ fn build_starfield_bs_lighting_minimal() -> Vec<u8> {
         data.extend_from_slice(&v.to_le_bytes()); // emissive_color
     }
     data.extend_from_slice(&1.5f32.to_le_bytes()); // emissive_multiple
-    data.extend_from_slice(&(-1i32).to_le_bytes()); // root_material (>= 130)
+                                                    // NO root_material_path — Starfield doesn't carry it (#2616).
     data.extend_from_slice(&3u32.to_le_bytes()); // texture_clamp_mode
     data.extend_from_slice(&0.9f32.to_le_bytes()); // alpha
     data.extend_from_slice(&0.0f32.to_le_bytes()); // refraction_strength

@@ -176,7 +176,18 @@ impl<'a> Parser<'a> {
         }
         let chunk_count = (chunk_count_incl_beth - 1) as usize;
 
-        let mut chunks = VecDeque::with_capacity(chunk_count);
+        // #2614 / SF-D3-01 — `chunk_count` is an unvalidated on-disk u32
+        // (up to ~4 billion for a corrupt/truncated file); pre-reserving
+        // directly from it let `VecDeque::with_capacity` request ~103 GB
+        // and panic/abort *before* the per-chunk `ChunkOverflow` guard
+        // below ever runs, on the live cell-load path. Each chunk costs
+        // at least 8 bytes on disk (the `kind`/`size` header read every
+        // iteration), so cap the reservation at that lower bound — a
+        // hostile count still gets validated chunk-by-chunk into a
+        // proper `Err`, it just doesn't over-allocate first. Matches
+        // Gibbed's reference (`ComponentDatabaseFile.cs`), which has no
+        // pre-reserve at all.
+        let mut chunks = VecDeque::with_capacity(chunk_count.min(self.bytes.len() / 8));
         for index in 0..chunk_count {
             let raw = self.read_u32()?;
             let kind = ChunkType::from_raw(raw, index)?;
@@ -294,7 +305,12 @@ fn parse_class(state: &mut State, class_index: usize) -> Result<Class> {
         });
     }
 
-    let mut fields = Vec::with_capacity(field_count);
+    // #2614 / SF-D3-01 sibling — `field_count` is an unvalidated on-disk
+    // u16 read from `payload`; each field costs at least 12 bytes
+    // (name_off + type_ref + offset + size), so cap the reservation at
+    // that lower bound rather than trusting the count directly. See the
+    // `index_chunks` doc for the full rationale — same class of bug.
+    let mut fields = Vec::with_capacity(field_count.min(payload.len() / 12));
     for _ in 0..field_count {
         let name_off = cur.read_i32()?;
         let name = state.strings.get(name_off)?;
@@ -370,7 +386,13 @@ fn consume_list(state: &mut State, is_diff: bool) -> Result<Value> {
     let mut cur = Cursor::new(payload);
     let elem_ref = TypeReference::new(cur.read_i32()?);
     let count = cur.read_i32()? as usize;
-    let mut items = Vec::with_capacity(count);
+    // #2614 / SF-D3-01 sibling — `count` is unvalidated on-disk data and
+    // element size varies by `elem_ref`'s type, so (unlike the fixed-size
+    // chunk/field cases above) there's no cheap universal per-element
+    // minimum to bound against. Drop the pre-reserve entirely — matches
+    // Gibbed's reference, which has none — so a hostile count degrades to
+    // incremental `Vec` growth instead of an upfront over-allocation.
+    let mut items = Vec::new();
     for _ in 0..count {
         items.push(read_value(state, elem_ref, &mut cur, is_diff)?);
     }
@@ -387,7 +409,9 @@ fn consume_map(state: &mut State, is_diff: bool) -> Result<Value> {
     let key_ref = TypeReference::new(cur.read_i32()?);
     let val_ref = TypeReference::new(cur.read_i32()?);
     let count = cur.read_i32()? as usize;
-    let mut pairs = Vec::with_capacity(count);
+    // #2614 / SF-D3-01 sibling — same rationale as `consume_list`: no
+    // cheap universal per-pair minimum size, drop the pre-reserve.
+    let mut pairs = Vec::new();
     for _ in 0..count {
         let k = read_value(state, key_ref, &mut cur, is_diff)?;
         let v = read_value(state, val_ref, &mut cur, is_diff)?;
@@ -851,5 +875,64 @@ mod tests {
         let parsed = ComponentDatabaseFile::parse(&cdb).expect("valid-flag CDB parses");
         assert_eq!(parsed.classes.len(), 1);
         assert_eq!(parsed.classes[0].name, "TestClass");
+    }
+
+    /// Regression: #2614 / SF-D3-01 — a hostile on-disk `chunkCount`
+    /// (`0xFFFF_FFFF`, requesting ~103 GB of `VecDeque<Chunk>` capacity
+    /// pre-fix) must fail with a proper `Err` from `index_chunks`'s
+    /// bounds-checked reads, not panic/abort the process via
+    /// `with_capacity`. A well-formed header with no chunk data follows —
+    /// pre-fix this test never reached the assertion at all.
+    #[test]
+    fn hostile_chunk_count_errors_instead_of_aborting() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&SIGNATURE_BETH.to_le_bytes());
+        bytes.extend_from_slice(&HEADER_SIZE.to_le_bytes());
+        bytes.extend_from_slice(&FILE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // chunkCount incl. BETH
+
+        match ComponentDatabaseFile::parse(&bytes) {
+            Err(_) => {} // any Err is acceptable — the point is "not a panic/abort"
+            Ok(_) => panic!("a hostile chunk_count with no backing chunk data must not parse Ok"),
+        }
+    }
+
+    /// Sibling to the above for the CDB reflection-payload allocation
+    /// sites (`parse_class`'s `fields`, `consume_list`'s `items`,
+    /// `consume_map`'s `pairs`) — same unvalidated-on-disk-count shape.
+    /// A hostile `field_count` on an otherwise well-formed chunk table
+    /// must fail bounds-checked (`ClassTrailingBytes`/`UnexpectedEof`),
+    /// not over-allocate.
+    #[test]
+    fn hostile_class_field_count_errors_instead_of_aborting() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&SIGNATURE_BETH.to_le_bytes());
+        bytes.extend_from_slice(&HEADER_SIZE.to_le_bytes());
+        bytes.extend_from_slice(&FILE_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes()); // chunkCount incl. BETH
+
+        let strt: &[u8] = b"TestClass\0";
+        bytes.extend_from_slice(&(ChunkType::Strt as u32).to_le_bytes());
+        bytes.extend_from_slice(&(strt.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(strt);
+
+        bytes.extend_from_slice(&(ChunkType::Type as u32).to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // type_count
+
+        // CLAS with a hostile field_count but no field data behind it.
+        let mut clas = Vec::new();
+        clas.extend_from_slice(&0i32.to_le_bytes()); // name_offset
+        clas.extend_from_slice(&0u32.to_le_bytes()); // type_id
+        clas.extend_from_slice(&(ClassFlags::IS_STRUCT).to_le_bytes()); // flags
+        clas.extend_from_slice(&0xFFFFu16.to_le_bytes()); // field_count HOSTILE
+        bytes.extend_from_slice(&(ChunkType::Clas as u32).to_le_bytes());
+        bytes.extend_from_slice(&(clas.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&clas);
+
+        match ComponentDatabaseFile::parse(&bytes) {
+            Err(_) => {}
+            Ok(_) => panic!("a hostile field_count with no backing field data must not parse Ok"),
+        }
     }
 }

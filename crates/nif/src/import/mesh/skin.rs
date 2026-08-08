@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::blocks::bs_geometry::BSGeometry;
+use crate::blocks::bs_geometry::{BSGeometry, BSGeometryMeshData, BoneWeight};
 use crate::blocks::node::NiNode;
 use crate::blocks::skin::{
     BsDismemberSkinInstance, BsSkinBoneData, BsSkinInstance, NiSkinData, NiSkinInstance,
@@ -219,18 +219,71 @@ pub fn extract_skin_bs_tri_shape(scene: &NifScene, shape: &BsTriShape) -> Option
     None
 }
 
+/// Convert Starfield `BSGeometry`'s per-vertex `skin_weights` (already
+/// grouped by vertex — outer index is the vertex, inner list holds up to
+/// `weights_per_vert` [`BoneWeight`] entries) into the engine's fixed
+/// `[u16; 4]` bone-index / `[f32; 4]` weight per-vertex arrays. Mirrors
+/// `extract_skin_bs_tri_shape`'s FO4 `BsTriShape` contract: keeps the top
+/// 4 contributions by weight (zero-padding when fewer), decodes the u16
+/// NORM weight (`/ 65535.0`), and renormalizes via
+/// [`crate::blocks::tri_shape::renormalize_skin_weights`] so NORM
+/// quantization drift doesn't accumulate on the GPU skinning path.
+///
+/// Returns empty vecs — the engine's existing "no per-vertex skin data"
+/// sentinel (see `nif_loader.rs`'s `vertex_bone_indices.is_empty()`
+/// rigid-fallback gate) — when `skin_weights.len()` doesn't match
+/// `num_vertices`: a mismatch means the mesh-data table and the geometry
+/// it's paired with disagree on vertex count, and guessing which vertex
+/// maps to which weight row would silently mis-skin the mesh rather than
+/// fail safe. See #2613.
+fn convert_bs_geometry_skin_weights(
+    mesh_data: &BSGeometryMeshData,
+    num_vertices: usize,
+) -> (Vec<[u16; 4]>, Vec<[f32; 4]>) {
+    if mesh_data.weights_per_vert == 0
+        || mesh_data.skin_weights.is_empty()
+        || mesh_data.skin_weights.len() != num_vertices
+    {
+        return (Vec::new(), Vec::new());
+    }
+
+    let mut indices = Vec::with_capacity(num_vertices);
+    let mut weights = Vec::with_capacity(num_vertices);
+    for vertex_weights in &mesh_data.skin_weights {
+        let mut sorted: Vec<&BoneWeight> = vertex_weights.iter().collect();
+        // Descending by raw u16 weight — exact integer order, no NaN
+        // concerns from comparing the decoded f32.
+        sorted.sort_by(|a, b| b.weight.cmp(&a.weight));
+
+        let mut idx = [0u16; 4];
+        let mut w = [0.0f32; 4];
+        for (slot, bw) in sorted.into_iter().take(4).enumerate() {
+            idx[slot] = bw.bone_index;
+            w[slot] = bw.weight as f32 / 65535.0;
+        }
+        weights.push(crate::blocks::tri_shape::renormalize_skin_weights(w));
+        indices.push(idx);
+    }
+    (indices, weights)
+}
+
 /// Extract `ImportedSkin` for a Starfield `BSGeometry` via `skin_instance_ref`.
 /// Resolves the linked `BSSkin::Instance` + `BSSkin::BoneData` and builds the
-/// engine-side bone list with bind-inverse transforms. Per-vertex bone
-/// indices + weights are intentionally left empty here — the BSGeometry
-/// parser doesn't surface them yet (the segmented mesh-data table is
-/// separate work); when it does, this extractor's signature should grow
-/// a `num_vertices` parameter and the densify path matching
-/// `extract_skin_ni_tri_shape`'s `vertex_bone_*` plumbing. See #1203.
+/// engine-side bone list with bind-inverse transforms, then decodes
+/// `mesh_data.skin_weights` into per-vertex bone indices/weights via
+/// [`convert_bs_geometry_skin_weights`]. See #2613 — pre-fix these were
+/// hardcoded empty on the stale premise that the BSGeometry parser didn't
+/// surface per-vertex skin data yet; `skin_weights` has been fully decoded
+/// since #873, just never plumbed through here (#1827 closed on that same
+/// stale premise).
 ///
 /// Mirrors the FO4+ BSSkin path in `extract_skin_bs_tri_shape` — only
 /// the geometry container differs.
-pub fn extract_skin_bs_geometry(scene: &NifScene, shape: &BSGeometry) -> Option<ImportedSkin> {
+pub fn extract_skin_bs_geometry(
+    scene: &NifScene,
+    shape: &BSGeometry,
+    mesh_data: &BSGeometryMeshData,
+) -> Option<ImportedSkin> {
     let skin_idx = shape.skin_instance_ref.index()?;
 
     let inst = scene.get_as::<BsSkinInstance>(skin_idx)?;
@@ -255,13 +308,15 @@ pub fn extract_skin_bs_geometry(scene: &NifScene, shape: &BSGeometry) -> Option<
         });
     }
     let skeleton_root = resolve_node_name(scene, inst.skeleton_root_ref);
+    let (vertex_bone_indices, vertex_bone_weights) =
+        convert_bs_geometry_skin_weights(mesh_data, mesh_data.vertices.len());
     // BSSkin (FO4+/Skyrim SE/Starfield) doesn't carry a per-skin global
     // transform; identity matches the OpenMW FO4-mesh fallback.
     Some(ImportedSkin {
         bones,
         skeleton_root,
-        vertex_bone_indices: Vec::new(),
-        vertex_bone_weights: Vec::new(),
+        vertex_bone_indices,
+        vertex_bone_weights,
         global_skin_transform: [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],

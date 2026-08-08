@@ -249,7 +249,7 @@ impl BSGeometryMesh {
 /// the raw u32 UDEC3 values; the renderer can unpack via
 /// [`unpack_udec3_xyzw`] when consumed. Half-float UVs are unpacked
 /// to f32 immediately because there's no value in deferring.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct BSGeometryMeshData {
     /// Format version. nifly bails out early if `version > 2` so the
     /// rest of the body is opt-out for unrecognised stream versions.
