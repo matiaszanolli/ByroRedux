@@ -77,7 +77,7 @@ bhkBlendController	845	0
 bhkBoxShape	1161	0
 bhkBreakableConstraint	1	0
 bhkCapsuleShape	1060	0
-bhkCollisionObject	12981	0
+bhkCollisionObject	12942	0
 bhkConvexVerticesShape	2268	0
 bhkHingeConstraint	4	0
 bhkLimitedHingeConstraint	480	0
@@ -87,6 +87,7 @@ bhkMalleableConstraint	59	0
 bhkMoppBvTreeShape	7497	0
 bhkNiTriStripsShape	1	0
 bhkOrientHingedBodyAction	2	0
+bhkPCollisionObject	39	0
 bhkPackedNiTriStripsShape	7468	0
 bhkPrismaticConstraint	3	0
 bhkRagdollConstraint	573	0

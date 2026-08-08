@@ -917,8 +917,9 @@ pub(crate) fn build_scheduler() -> Scheduler {
     }
     // M42.7 — Guard locomotion. GATED OFF by default (opt in with
     // `BYRO_GUARD=1`), mirroring `BYRO_ESCORT`/`BYRO_FOLLOW`/`BYRO_TRAVEL`/
-    // `BYRO_WANDER` above. Reuses `travel_system`'s anchor-resolution logic
-    // but never reaches a terminal state — holds the anchor indefinitely,
+    // `BYRO_WANDER` above. Shares `travel_system`'s `NearReference`-resolve
+    // primitive (#2561) but diverges on fallback (home, not a random pick)
+    // and never reaches a terminal state — holds the anchor indefinitely,
     // returning if displaced beyond its radius — see `systems::guard`
     // module docs. Same exclusive PostUpdate lane, after transform
     // propagation; Sandbox/Wander/Travel/Follow/Escort/Guard never touch

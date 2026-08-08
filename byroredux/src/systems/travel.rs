@@ -68,16 +68,36 @@ use byroredux_scripting::condition::resolve_entity_by_global_form_id;
 /// authored radius" defaults for the same class of content.
 const TRAVEL_DEFAULT_RADIUS: f32 = 512.0;
 
+/// Resolve a `NearReference`-type PLDT FormID to the live target entity's
+/// current world position — `None` if there's no FormID, it doesn't
+/// resolve to a spawned entity (the common case; only ~12% of
+/// `NearReference` targets do, per the Sandbox 2026-07-14 investigation
+/// this module's doc cites), or the entity has no `GlobalTransform`.
+///
+/// The shared first half of [`resolve_destination`] below (Travel/Escort's
+/// random-pick fallback) and `guard_system::resolve_anchor` (Guard's
+/// fall-back-to-`home` — see that module's doc for why the two fallbacks
+/// differ on purpose). Pulled out so the two procedures can't drift on the
+/// actual resolve step while still applying their own fallback. `pub(crate)`
+/// for that second consumer. See #2561.
+pub(crate) fn resolve_near_reference_target(
+    world: &World,
+    target_form_id: Option<u32>,
+) -> Option<Vec3> {
+    let fid = target_form_id?;
+    let target_entity = resolve_entity_by_global_form_id(world, fid)?;
+    world
+        .get::<GlobalTransform>(target_entity)
+        .map(|gt| gt.translation)
+}
+
 /// Resolve (or pick) a `NearReference`-anchored destination once, on first
-/// sight: a `NearReference`-type FormID first (via
-/// `resolve_entity_by_global_form_id`), falling back to a hash-picked
-/// point within `radius` of `home` (via `pick_wander_target`) on any miss.
-/// Pulled out of `travel_system`'s Pass 1 loop body for readability, and
-/// generic over primitive fields (rather than `&TravelBehavior` directly)
-/// so `guard_system` (M42.7) can reuse it verbatim for anchor resolution —
-/// the two procedures need the exact same "resolve or pick once" logic,
-/// just applied to different terminal behavior after arrival. `pub(crate)`
-/// for that second consumer.
+/// sight: [`resolve_near_reference_target`] first, falling back to a
+/// hash-picked point within `radius` of `home` (via `pick_wander_target`)
+/// on any miss. Pulled out of `travel_system`'s Pass 1 loop body for
+/// readability, and generic over primitive fields (rather than
+/// `&TravelBehavior` directly) so `escort_system` can reuse it verbatim for
+/// its lead-phase destination. `pub(crate)` for that consumer.
 pub(crate) fn resolve_destination(
     world: &World,
     target_form_id: Option<u32>,
@@ -85,14 +105,8 @@ pub(crate) fn resolve_destination(
     form_id: u32,
     home: Vec3,
 ) -> Vec3 {
-    if let Some(fid) = target_form_id {
-        if let Some(target_entity) = resolve_entity_by_global_form_id(world, fid) {
-            if let Some(gt) = world.get::<GlobalTransform>(target_entity) {
-                return gt.translation;
-            }
-        }
-    }
-    pick_wander_target(home, radius, form_id, 0)
+    resolve_near_reference_target(world, target_form_id)
+        .unwrap_or_else(|| pick_wander_target(home, radius, form_id, 0))
 }
 
 /// One actor's staged move input, collected in Pass 1a — `current`
