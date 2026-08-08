@@ -2194,8 +2194,11 @@ void main() {
         // probe transition continuous. DALC values are diffuse irradiance,
         // however, not incident radiance: divide by PI before feeding the
         // specular path. Treating irradiance as radiance produced the clipped
-        // white "chrome" lobes on Mzulft's bronze machinery. Non-DALC games
-        // retain the legacy flat ambient path unchanged.
+        // white "chrome" lobes on Mzulft's bronze machinery. `sceneFlags.yzw`
+        // (the legacy flat/XCLL ambient non-DALC games fall back to) is the
+        // same authored irradiance and gets the same conversion (#2472) — a
+        // Skyrim DALC cell and an otherwise-identical FO3/FNV cell must not
+        // land ~π× apart in this specular fallback slot.
         vec3 ambientFallback;
         if (hasAuthoredCubemap) {
             // Renderer world space is Y-up; Bethesda cubemaps are authored in
@@ -2208,9 +2211,12 @@ void main() {
                 roughness * 8.0
             ).rgb;
         } else {
+            // #2472 — sceneFlags.yzw (XCLL ambient) is the same authored
+            // irradiance as sampleDalcCube; both feed the same specular
+            // IBL-fallback slot below and need the same conversion.
             ambientFallback = dalcFlags.x > 0.5
                 ? sampleDalcCube(R) * (1.0 / PI)
-                : sceneFlags.yzw;
+                : sceneFlags.yzw * (1.0 / PI);
         }
         vec3 envColor;
         if (rtEnabled && rtLOD < RT_LOD_REFLECT) {

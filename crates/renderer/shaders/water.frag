@@ -373,15 +373,24 @@ float foamShoreline(vec3 worldPos, vec3 surfaceNormal) {
     return 1.0 - smoothstep(0.0, push.tune.z, depthToGround);
 }
 
-float foamFlowStreaks(vec3 worldPos, float time) {
+float foamFlowStreaks(vec3 worldPos, vec3 originOffset, float time) {
     // Project worldPos onto the flow tangent + a perpendicular tangent
     // to get streak coords. Streaks scroll with the flow.
+    //
+    // PRECISION BOUND (#1502, rebased #1997 for `sampleScrollingNormal`,
+    // rebased here #2469): `worldPos` is absolute world-space
+    // (`vWorldPos`, passed in by every call site) and feeds `valueNoise`'s
+    // `hash21` lattice below, same as `sampleScrollingNormal`. Subtract
+    // the render origin before projecting so the hash input stays
+    // origin-relative instead of collapsing at Tamriel/Mojave-scale
+    // coordinates.
     vec3 flowDir = push.flow.xyz;
     float speed  = push.flow.w;
     // Build a perpendicular in the surface tangent plane.
     vec3 perp = normalize(cross(vWorldNormal, flowDir));
-    float u = dot(worldPos, flowDir) - speed * time;
-    float v = dot(worldPos, perp);
+    vec3 relPos = worldPos - originOffset;
+    float u = dot(relPos, flowDir) - speed * time;
+    float v = dot(relPos, perp);
     // High-frequency on the streak axis, lower on the perpendicular —
     // gives elongated whitewater streaks aligned to the current.
     float streak = valueNoise(vec2(u * 0.04, v * 0.18));
@@ -603,17 +612,17 @@ void main() {
         foamMask += foamShoreline(vWorldPos, Nsurface) * 1.0;
     }
     if (kind == WATER_RAPIDS) {
-        foamMask += foamFlowStreaks(vWorldPos, time) * 0.85;
+        foamMask += foamFlowStreaks(vWorldPos, renderOrigin.xyz, time) * 0.85;
         foamMask += foamCrest(Nperturbed, N) * 0.7;
     } else if (kind == WATER_RIVER) {
-        foamMask += foamFlowStreaks(vWorldPos, time) * 0.25;
+        foamMask += foamFlowStreaks(vWorldPos, renderOrigin.xyz, time) * 0.25;
     } else if (kind == WATER_WATERFALL) {
         // Sheet foam: more at the top and bottom of the falling
         // surface. We don't have a normalised sheet coordinate
         // without extra push-constant plumbing, so approximate with
         // a streak pattern at very high speed for that "fizzing
         // sheet" read.
-        foamMask += foamFlowStreaks(vWorldPos, time * 1.6) * 0.95;
+        foamMask += foamFlowStreaks(vWorldPos, renderOrigin.xyz, time * 1.6) * 0.95;
         foamMask += foamCrest(Nperturbed, N) * 0.45;
     }
     foamMask = clamp(foamMask * foamStrength, 0.0, 1.0);

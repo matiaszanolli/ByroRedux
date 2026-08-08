@@ -65,7 +65,11 @@ pub struct CompositeParams {
     pub height_fog_params: [f32; 4],
     /// xyz = zenith (top-of-sky) color in linear RGB, w = sun angular size (cos threshold).
     pub sky_zenith: [f32; 4],
-    /// xyz = horizon color in linear RGB, w = unused.
+    /// xyz = horizon color in linear RGB, w = froxel grid slice count
+    /// (#2470 — `volumetrics_integrate.comp`'s `extent().depth`, needed to
+    /// remap `hybridSliceCoordinate`'s normalized depth onto the
+    /// `sampler3D` texel-center grid before the `volumetricFroxel` tap;
+    /// see the shader-side comment for the back-face/texel-center gap).
     pub sky_horizon: [f32; 4],
     /// `xyz` = below-horizon ground colour from WTHR's `SKY_LOWER`
     /// group (real `Sky-Lower` per nif.xml NAM0 schema, slot 7

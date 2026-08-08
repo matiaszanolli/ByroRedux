@@ -1158,6 +1158,32 @@ fn bounded_path_converts_dalc_irradiance_to_environment_radiance() {
     );
 }
 
+/// #2472 — `sceneFlags.yzw` (XCLL cell ambient) is the DALC arm's sibling
+/// irradiance source in `pathEnvironmentRadiance` and must take the same
+/// `1.0 / PI` conversion in every arm — the sky-mix (exterior) arm, the
+/// interior non-DALC fallback arm here, and the reflection-miss sibling in
+/// `triangle.frag`. #2244 fixed only the DALC arm, leaving a Skyrim-vs-
+/// FO3/FNV ~π× ambient gap on the indirect path.
+#[test]
+fn bounded_path_converts_scene_flags_ambient_to_environment_radiance_in_every_arm() {
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+
+    assert!(
+        lighting.contains("mix(sceneFlags.yzw * (1.0 / PI), skyTint.xyz, skyWeight)"),
+        "exterior sky-mix arm must convert sceneFlags.yzw to radiance before mixing with skyTint"
+    );
+    assert!(
+        lighting.contains("return sceneFlags.yzw * (1.0 / PI) * 0.5;"),
+        "interior non-DALC fallback arm must convert sceneFlags.yzw to radiance"
+    );
+
+    let frag = include_str!("../../../shaders/triangle.frag");
+    assert!(
+        frag.contains("sceneFlags.yzw * (1.0 / PI);"),
+        "triangle.frag's reflection-miss ambientFallback must convert sceneFlags.yzw to radiance"
+    );
+}
+
 /// Ambient-cube interpolation must conserve irradiance for unit normals.
 ///
 /// Linear `abs(N)` weights sum to as much as sqrt(3), which made diagonal
