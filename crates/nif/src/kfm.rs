@@ -542,7 +542,9 @@ pub fn parse_kfm(bytes: &[u8]) -> io::Result<KfmFile> {
                 let _legacy_src_dur = r.read_f32_le()?;
                 num_chain -= 1;
             }
-            let mut chain = r.allocate_vec::<KfmChainEntry>(num_chain)?;
+            // #2523 — KfmChainEntry (u32 + f32) is a plain scalar pair,
+            // no heap indirection or padding: size_of matches on-disk exactly.
+            let mut chain = r.allocate_vec_sized::<KfmChainEntry>(num_chain)?;
             for _ in 0..num_chain {
                 let seq = r.read_u32_le()?;
                 let dur = r.read_f32_le()?;
@@ -576,7 +578,9 @@ pub fn parse_kfm(bytes: &[u8]) -> io::Result<KfmFile> {
         let group_id = r.read_u32_le()?;
         let name = r.read_cstring()?;
         let num_members = r.read_u32_le()?;
-        let mut members = r.allocate_vec::<KfmSequenceGroupMember>(num_members)?;
+        // #2523 — KfmSequenceGroupMember is six plain u32/i32/f32 fields,
+        // no heap indirection or padding: size_of matches on-disk exactly.
+        let mut members = r.allocate_vec_sized::<KfmSequenceGroupMember>(num_members)?;
         for _ in 0..num_members {
             let sequence_id = r.read_u32_le()?;
             let priority = r.read_i32_le()?;
@@ -683,6 +687,11 @@ impl<'a> KfmReader<'a> {
     /// (each element is at least one byte on disk), not
     /// `size_of::<T>()` — see the equivalent rationale on
     /// [`NifStream::allocate_vec`]. See #388.
+    ///
+    /// For a fixed-size `T` with no heap indirection, prefer
+    /// [`Self::allocate_vec_sized`] instead — this loose bound has the
+    /// same `size_of`-blind amplification gap #2523 / PERF-D8-NEW-01
+    /// closed on the `NifStream` twin.
     #[must_use = "allocate_vec returns a sized Vec; bind it (the KFM-local twin of NifStream::allocate_vec — see #831 / #1246)"]
     fn allocate_vec<T>(&self, count: u32) -> io::Result<Vec<T>> {
         let pos = self.cursor.position() as usize;
@@ -692,6 +701,48 @@ impl<'a> KfmReader<'a> {
                 io::ErrorKind::InvalidData,
                 format!(
                     "KFM claims {count} entries but only {remaining} bytes remain at position {pos}"
+                ),
+            ));
+        }
+        Ok(Vec::with_capacity(count as usize))
+    }
+
+    /// KFM-local twin of [`NifStream::allocate_vec_sized`] — bounds
+    /// `count * size_of::<T>()` against both the bytes remaining in the
+    /// KFM blob and [`crate::stream::MAX_SINGLE_ALLOC_BYTES`], for a
+    /// fixed-size `T` with no heap indirection (`KfmChainEntry`,
+    /// `KfmSequenceGroupMember`). See #2523 / PERF-D8-NEW-01.
+    #[must_use = "allocate_vec_sized returns a sized Vec; bind it"]
+    fn allocate_vec_sized<T>(&self, count: u32) -> io::Result<Vec<T>> {
+        let byte_count = (count as usize)
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "KFM claims {count} entries of {} bytes each — byte count overflow",
+                        std::mem::size_of::<T>(),
+                    ),
+                )
+            })?;
+        if byte_count > crate::stream::MAX_SINGLE_ALLOC_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "KFM requested {byte_count}-byte allocation, exceeds hard cap \
+                     ({})",
+                    crate::stream::MAX_SINGLE_ALLOC_BYTES
+                ),
+            ));
+        }
+        let pos = self.cursor.position() as usize;
+        let remaining = self.cursor.get_ref().len().saturating_sub(pos);
+        if byte_count > remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "KFM requested {byte_count}-byte read at position {pos}, \
+                     only {remaining} bytes remaining"
                 ),
             ));
         }

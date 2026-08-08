@@ -346,6 +346,12 @@ impl NiTransformData {
                 // handling here separately pre-trait. Counts go through
                 // `allocate_vec` (#408 / #764) so a corrupt 0xFFFFFFFF
                 // can't OOM before the inner reads fail.
+                // #2523 — QuatKey's true on-disk size varies by key_type
+                // (20 B Linear/Quadratic/Constant, 32 B Tbc) but
+                // size_of::<QuatKey>() (36 B) is a single fixed value —
+                // using it as a per-element bound over-rejects arrays of
+                // the (common) smaller variants, so this stays on the
+                // loose per-byte bound rather than allocate_vec_sized.
                 rotation_keys = stream.allocate_vec::<QuatKey>(num_rotation_keys)?;
                 for _ in 0..num_rotation_keys {
                     rotation_keys.push(QuatKey::parse_one(stream, rt)?);
@@ -912,7 +918,7 @@ impl NiBlendInterpolator {
             // #1885 sibling — same allocate_vec byte-budget guard as the
             // legacy path below; `items` is empty here (manager-controlled
             // blends carry no array), so reassigning the guarded Vec is exact.
-            items = stream.allocate_vec::<InterpBlendItem>(array_size as u32)?;
+            items = stream.allocate_vec_sized::<InterpBlendItem>(array_size as u32)?;
             for _ in 0..array_size {
                 let interpolator_ref = stream.read_block_ref()?;
                 let weight = stream.read_f32_le()?;
@@ -961,7 +967,7 @@ impl NiBlendInterpolator {
         // bytes actually remaining in the stream. `array_size` is u8/u16 here,
         // so the cap is modest, but this keeps the crate's one allocation
         // idiom consistent (mirrors `read_block_ref_list` / `parse_modern`).
-        let mut items = stream.allocate_vec::<InterpBlendItem>(array_size as u32)?;
+        let mut items = stream.allocate_vec_sized::<InterpBlendItem>(array_size as u32)?;
         for _ in 0..array_size {
             let interpolator_ref = stream.read_block_ref()?;
             let weight = stream.read_f32_le()?;

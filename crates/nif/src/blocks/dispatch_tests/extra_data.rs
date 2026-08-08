@@ -552,9 +552,17 @@ fn bs_position_data_dispatches_and_decodes_half_float_array() {
 }
 
 /// Companion: hostile `num_vertices = 0xFFFFFFFF` must error out via
-/// the `allocate_vec` budget guard, not OOM-allocate ~12 GB before
-/// the inner half-float reads fail. Per the issue's ALLOCATE_VEC
+/// the `allocate_vec_min_bytes` budget guard, not OOM-allocate ~12 GB
+/// before the inner half-float reads fail. Per the issue's ALLOCATE_VEC
 /// completeness check (#764 sweep).
+///
+/// #2523 / PERF-D8-NEW-01 — `vertex_data` moved from `allocate_vec` to
+/// the size-aware `allocate_vec_min_bytes` (2 true wire bytes/element,
+/// not `size_of::<f32>()`'s 4). `0xFFFFFFFF` elements at 2 B/elem
+/// (8,589,934,590 B) now trips `check_alloc`'s `MAX_SINGLE_ALLOC_BYTES`
+/// hard cap before the `remaining`-bytes comparison even runs — a
+/// strictly earlier and more precise rejection than the old
+/// remaining-bytes-only message this test used to assert on.
 #[test]
 fn bs_position_data_hostile_num_vertices_returns_err_not_panic() {
     let header = NifHeader {
@@ -583,8 +591,9 @@ fn bs_position_data_hostile_num_vertices_returns_err_not_panic() {
     );
     let msg = result.unwrap_err().to_string();
     assert!(
-        msg.contains("only") && msg.contains("bytes remain"),
-        "expected `allocate_vec` budget rejection, got: {msg}"
+        msg.contains("exceeds hard cap"),
+        "expected the MAX_SINGLE_ALLOC_BYTES hard-cap rejection from \
+         allocate_vec_min_bytes's check_alloc call, got: {msg}"
     );
 }
 

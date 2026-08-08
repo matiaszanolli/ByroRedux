@@ -375,7 +375,11 @@ impl BsPositionData {
         // #764 (the `allocate_vec` budget guard) and the issue's
         // explicit ALLOCATE_VEC completeness check.
         let num_vertices = stream.read_u32_le()?;
-        let mut vertex_data = stream.allocate_vec::<f32>(num_vertices)?;
+        // #2523 — on-disk elements are 2-byte half-floats, decoded to
+        // 4-byte f32 in memory; size_of::<f32>() would overstate the true
+        // minimum and false-positive-reject legitimate dense arrays, so
+        // this bounds on the real 2-byte-per-element wire size instead.
+        let mut vertex_data = stream.allocate_vec_min_bytes::<f32>(num_vertices, 2)?;
         for _ in 0..num_vertices {
             // Half Float (16-bit IEEE-754) — same encoding as the
             // FO4 / FO76 vertex-stream UV / position halfs decoded

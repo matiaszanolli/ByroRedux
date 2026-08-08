@@ -781,7 +781,7 @@ impl App {
                         fade_color: frame.fade_color,
                     }
                 });
-            match ctx.draw_frame(FrameInputs {
+            let draw_result = ctx.draw_frame(FrameInputs {
                 clear_color,
                 view_proj: &frame.view_proj,
                 draw_commands: &self.draw_commands,
@@ -811,37 +811,41 @@ impl App {
                 underwater: compute_underwater_params(&self.world),
                 image_space_modifier,
                 pose_dirty: self.skin_slot_pool.pose_dirty(),
-            }) {
+            });
+            // #1796 / D6-02 — `draw_frame`'s two early-return `Ok` guards
+            // (empty framebuffers, `ERROR_OUT_OF_DATE_KHR`) are
+            // indistinguishable from a frame that actually reached the skin
+            // dispatch section. The CPU-side pose hash commit already ran
+            // (in `build_render_data`, before `ctx.draw_frame` was called),
+            // so an early return here means that commit needs undoing or the
+            // next frame's dirty gate reads "clean" against a dispatch that
+            // never happened.
+            //
+            // #1791 / D6-01 — the same guards also precede the
+            // `bind_inverses` SSBO upload (draw.rs ~2654-2676), which sits
+            // strictly before the `record_skinned_blas_refit` call that
+            // flips `skin_dispatch_ran` true — so this flag is exactly the
+            // right signal for both bugs. `pending` was already irrevocably
+            // drained from the pool above (before this call), so an early
+            // return here means those first-sight `bind_inverses` were about
+            // to be lost for good: the slot stays resident in
+            // `entity_to_slot` (never re-queued by `allocate`), so the
+            // persistent SSBO region for it is never written, corrupting the
+            // entity's skinning palette for its remaining lifetime in the
+            // cell.
+            //
+            // #2522 / PERF-D6-NEW-01 — `draw_frame` can also return `Err`
+            // (fence wait, command-buffer reset/begin, FSR parameter build —
+            // all execute before `record_skinned_blas_refit`, i.e. while
+            // `skin_dispatch_ran` is still `false`), so this check must run
+            // unconditionally on the `Result`, not only inside the `Ok` arm.
+            if !ctx.skin_dispatch_ran {
+                self.skin_slot_pool.rollback_pending_pose_commits();
+                self.skin_slot_pool
+                    .requeue_pending(std::mem::take(&mut pending_for_requeue));
+            }
+            match draw_result {
                 Ok(needs_recreate) => {
-                    // #1796 / D6-02 — `draw_frame`'s two early-return guards
-                    // (empty framebuffers, `ERROR_OUT_OF_DATE_KHR`) return
-                    // through this same `Ok` arm, indistinguishable from a
-                    // frame that actually reached the skin dispatch section.
-                    // The CPU-side pose hash commit already ran (in
-                    // `build_render_data`, before `ctx.draw_frame` was
-                    // called), so an early return here means that commit
-                    // needs undoing or the next frame's dirty gate reads
-                    // "clean" against a dispatch that never happened.
-                    //
-                    // #1791 / D6-01 — the same two early-return guards also
-                    // precede the `bind_inverses` SSBO upload (draw.rs
-                    // ~2654-2676), which sits strictly before the
-                    // `record_skinned_blas_refit` call that flips
-                    // `skin_dispatch_ran` true — so this flag is exactly the
-                    // right signal for both bugs. `pending` was already
-                    // irrevocably drained from the pool above (before this
-                    // call), so an early return here means those first-sight
-                    // `bind_inverses` were about to be lost for good: the
-                    // slot stays resident in `entity_to_slot` (never
-                    // re-queued by `allocate`), so the persistent SSBO
-                    // region for it is never written, corrupting the
-                    // entity's skinning palette for its remaining lifetime
-                    // in the cell.
-                    if !ctx.skin_dispatch_ran {
-                        self.skin_slot_pool.rollback_pending_pose_commits();
-                        self.skin_slot_pool
-                            .requeue_pending(std::mem::take(&mut pending_for_requeue));
-                    }
                     let last_draw_stats = ctx.last_draw_call_stats;
                     world_resource_set::<DebugStats>(&self.world, |s| {
                         s.batch_count = last_draw_stats.batch_count;
@@ -1898,5 +1902,56 @@ fn apply_debug_ui_outputs(
         for line in response_lines {
             ui.push_console_line(line);
         }
+    }
+}
+
+/// Regression for #2522 / PERF-D6-NEW-01. `draw_frame` can return `Err`
+/// from at least four sites (fence wait, command-buffer reset/begin, FSR
+/// parameter build) that all execute before `record_skinned_blas_refit` —
+/// the call that flips `skin_dispatch_ran` true. The `skin_dispatch_ran`
+/// rollback check must therefore run unconditionally on the `Result`, not
+/// nested inside the `Ok` match arm, or an early `Err` silently loses the
+/// #1791/#1796 first-sight-upload/pose-hash rollback. A live `App`/
+/// `VulkanContext` test is impractical here for the same reason
+/// `skin_dispatch_ran_ordering_tests` in `draw.rs` gives (70+ Vulkan-loader
+/// fields, no safe defaults) — a static source assertion pins the ordering
+/// instead, mirroring that sibling test's technique on the caller side.
+#[cfg(test)]
+mod skin_dispatch_ran_rollback_scope_tests {
+    #[test]
+    fn rollback_check_runs_before_the_ok_err_match_not_inside_the_ok_arm() {
+        let src = include_str!("main.rs");
+
+        let draw_call_pos = src
+            .find("let draw_result = ctx.draw_frame(FrameInputs {")
+            .expect("render_one_frame must call draw_frame and capture its Result (#2522)");
+        let rollback_check_pos = src
+            .find("if !ctx.skin_dispatch_ran {")
+            .expect("render_one_frame must check skin_dispatch_ran for rollback (#1791/#1796)");
+        let match_pos = src
+            .find("match draw_result {")
+            .expect("render_one_frame must match on the captured draw_result (#2522)");
+        let ok_arm_pos = src
+            .find("Ok(needs_recreate) => {")
+            .expect("draw_result match must have an Ok(needs_recreate) arm");
+
+        assert!(
+            draw_call_pos < rollback_check_pos,
+            "the skin_dispatch_ran rollback check must come AFTER the \
+             draw_frame call, so it observes this frame's outcome. (#2522)"
+        );
+        assert!(
+            rollback_check_pos < match_pos,
+            "the skin_dispatch_ran rollback check must come BEFORE the \
+             match on draw_result — i.e. outside and above both arms — or \
+             the Err(e) arm would skip it entirely, silently losing the \
+             #1791/#1796 rollback on any of draw_frame's early-Err paths. \
+             (#2522)"
+        );
+        assert!(
+            match_pos < ok_arm_pos,
+            "sanity: the Ok(needs_recreate) arm must be part of the \
+             draw_result match this test is reasoning about."
+        );
     }
 }

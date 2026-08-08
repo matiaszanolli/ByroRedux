@@ -229,7 +229,12 @@ impl<'a> NifStream<'a> {
         Ok(buf)
     }
 
-    /// File-driven pre-allocation for `Vec<T>` of length `count`.
+    /// File-driven pre-allocation for `Vec<T>` of length `count`, for
+    /// element types whose true on-disk footprint can be **smaller**
+    /// than `size_of::<T>()` — anything carrying a heap pointer
+    /// (`String`, `Vec<U>`, `Option<Arc<str>>`, or a struct containing
+    /// one), where the serialized form is a short length-prefixed
+    /// encoding, not the in-memory fat-pointer/capacity representation.
     ///
     /// Bounds `count` against the bytes remaining in the stream — each
     /// on-disk element occupies at least one byte (even an `Option`
@@ -250,6 +255,13 @@ impl<'a> NifStream<'a> {
     /// See #388 / OBL-D5-C1 — every Oblivion content sweep used to
     /// abort the process on a crafted or drifted `NiTextKeyExtraData`.
     ///
+    /// For a fixed-size `T` with no heap indirection (any plain
+    /// scalar/array/tuple-of-scalars struct, where `size_of::<T>()`
+    /// *is* (or safely lower-bounds) the on-disk element size), prefer
+    /// [`Self::allocate_vec_sized`] instead — it closes the
+    /// amplification gap this loose bound leaves open. See #2523 /
+    /// PERF-D8-NEW-01.
+    ///
     /// `#[must_use]` because the helper exists to *replace* a downstream
     /// `Vec::with_capacity` — calling it just for its bound-check side
     /// effect allocates an empty Vec and immediately drops it. Use
@@ -267,6 +279,77 @@ impl<'a> NifStream<'a> {
                 ),
             ));
         }
+        Ok(Vec::with_capacity(count as usize))
+    }
+
+    /// File-driven pre-allocation for `Vec<T>` of length `count`, for
+    /// fixed-size element types with **no heap indirection** — plain
+    /// scalar/array/tuple-of-scalars structs (`BlockRef`, `BoneTransform`,
+    /// `QuatKey`, `[f32; 16]`, `(u64, u32)`, …) whose `size_of::<T>()` is
+    /// an honest on-disk element size, not just an in-memory fat-pointer
+    /// stand-in.
+    ///
+    /// Unlike [`Self::allocate_vec`] (which bounds `count` against
+    /// `remaining` as if every element cost 1 byte), this bounds
+    /// `count * size_of::<T>()` against both `remaining` **and** the
+    /// [`MAX_SINGLE_ALLOC_BYTES`] hard cap, via [`Self::check_alloc`] —
+    /// the same guard [`Self::read_pod_vec`] already applies. Closes the
+    /// amplification a corrupt count can otherwise pull off: for
+    /// `size_of::<T>() = k`, `allocate_vec` lets a count up to `remaining`
+    /// through, requesting up to `k ×` the bytes actually available.
+    ///
+    /// Do **not** use this for a `T` that carries a `String`, `Vec<U>`,
+    /// `Box<_>`, or `Arc<_>` field (directly or nested) — its true
+    /// on-disk size can legitimately be *smaller* than `size_of::<T>()`
+    /// (e.g. an empty `Vec` field costs a few header bytes on disk but
+    /// `size_of` counts the full 24-byte fat pointer). The same trap
+    /// applies to a `T` whose in-memory value is *decoded/widened* from a
+    /// narrower on-disk encoding (a half-float unpacked to `f32`: 4 bytes
+    /// in memory, 2 on disk) or whose Rust layout carries alignment
+    /// padding a tightly-packed disk format doesn't (`(u64, u32)`: 16
+    /// bytes in memory, 12 on disk) — `size_of::<T>()` overstates the
+    /// true on-disk element cost in both cases, and this bound would
+    /// reject those files as a false positive. Use [`Self::allocate_vec`]
+    /// (no bound tightening) or [`Self::allocate_vec_min_bytes`] (tightened
+    /// to a caller-supplied true minimum) for those instead. See #2523 /
+    /// PERF-D8-NEW-01, and #1885's disproof log
+    /// (`docs/audits/AUDIT_INCREMENTAL_2026-07-05.md`) for the
+    /// false-positive direction this split exists to avoid.
+    ///
+    /// `#[must_use]` for the same reason as [`Self::allocate_vec`].
+    #[must_use = "allocate_vec_sized returns a sized Vec; bind it or use check_alloc instead"]
+    pub fn allocate_vec_sized<T>(&self, count: u32) -> io::Result<Vec<T>> {
+        self.allocate_vec_min_bytes(count, std::mem::size_of::<T>())
+    }
+
+    /// Like [`Self::allocate_vec_sized`], but for a `T` whose true minimum
+    /// on-disk element size the caller knows precisely and which differs
+    /// from `size_of::<T>()` — a decoded/widened scalar (half-float →
+    /// `f32`) or a tuple/struct with Rust alignment padding a packed disk
+    /// format doesn't carry. Bounds `count * min_bytes_per_elem` against
+    /// both `remaining` and [`MAX_SINGLE_ALLOC_BYTES`] via
+    /// [`Self::check_alloc`] — the caller-supplied minimum must never
+    /// exceed the *actual* smallest legitimate on-disk encoding for one
+    /// element, or this rejects valid files. See #2523 / PERF-D8-NEW-01.
+    ///
+    /// `#[must_use]` for the same reason as [`Self::allocate_vec`].
+    #[must_use = "allocate_vec_min_bytes returns a sized Vec; bind it or use check_alloc instead"]
+    pub fn allocate_vec_min_bytes<T>(
+        &self,
+        count: u32,
+        min_bytes_per_elem: usize,
+    ) -> io::Result<Vec<T>> {
+        let byte_count = (count as usize)
+            .checked_mul(min_bytes_per_elem)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "NIF claims {count} elements of {min_bytes_per_elem} bytes each — byte count overflow"
+                    ),
+                )
+            })?;
+        self.check_alloc(byte_count)?;
         Ok(Vec::with_capacity(count as usize))
     }
 
@@ -772,6 +855,103 @@ mod tests {
         assert_eq!(stream.read_u32_le().unwrap(), 0x12345678);
         assert_eq!(stream.read_f32_le().unwrap(), 1.0);
         assert_eq!(stream.position(), data.len() as u64);
+    }
+
+    /// Regression for #2523 / PERF-D8-NEW-01. `allocate_vec::<T>` only
+    /// bounds `count` against `remaining` as if every element cost 1
+    /// byte — for `size_of::<T>() = k > 1`, a corrupt count up to
+    /// `remaining` requests `k ×` the bytes actually available.
+    /// `allocate_vec_sized` must reject the same corrupt count that
+    /// `allocate_vec` would have let through.
+    #[test]
+    fn allocate_vec_lets_a_size_amplifying_count_through() {
+        let header = test_header(NifVersion::V20_2_0_7);
+        // 8 bytes remaining; a corrupt count claiming 8 elements of
+        // `[f32; 16]` (64 B each) would allocate 512 B for 8 B of real
+        // data — still tiny in absolute terms, but the same *ratio* of
+        // amplification (64x) that scales to the ~19 GB worst case cited
+        // in the issue for a real-size corpus file.
+        let data: Vec<u8> = vec![0u8; 8];
+        let stream = NifStream::new(&data, &header);
+        let count = 8u32;
+        // The loose bound treats each element as 1 byte, so a count
+        // equal to `remaining` passes.
+        assert!(
+            stream.allocate_vec::<[f32; 16]>(count).is_ok(),
+            "sanity: allocate_vec's loose 1-byte-per-element bound must \
+             let this amplifying count through, or this test no longer \
+             demonstrates the gap allocate_vec_sized closes"
+        );
+    }
+
+    #[test]
+    fn allocate_vec_sized_rejects_the_same_count_allocate_vec_lets_through() {
+        let header = test_header(NifVersion::V20_2_0_7);
+        let data: Vec<u8> = vec![0u8; 8];
+        let stream = NifStream::new(&data, &header);
+        let count = 8u32; // 8 * size_of::<[f32; 16]>() == 512 > 8 remaining
+        let err = stream
+            .allocate_vec_sized::<[f32; 16]>(count)
+            .expect_err("allocate_vec_sized must reject a count whose byte \
+                          product exceeds the bytes actually remaining");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn allocate_vec_sized_accepts_a_legitimate_count() {
+        let header = test_header(NifVersion::V20_2_0_7);
+        // 64 bytes remaining, exactly one [f32; 16] element (64 B).
+        let data: Vec<u8> = vec![0u8; 64];
+        let stream = NifStream::new(&data, &header);
+        assert!(stream.allocate_vec_sized::<[f32; 16]>(1).is_ok());
+        // One byte short must be rejected.
+        let data_short: Vec<u8> = vec![0u8; 63];
+        let stream_short = NifStream::new(&data_short, &header);
+        assert!(stream_short.allocate_vec_sized::<[f32; 16]>(1).is_err());
+    }
+
+    /// A corrupt count that would amplify past `MAX_SINGLE_ALLOC_BYTES`
+    /// (256 MB) itself must be rejected even when the stream has enough
+    /// bytes remaining to pass the `remaining`-only half of the check —
+    /// mirrors the hard cap `read_pod_vec` already enforces via
+    /// `check_alloc`. Uses a synthetic in-memory buffer sized to satisfy
+    /// the `remaining` check alone, so only the `MAX_SINGLE_ALLOC_BYTES`
+    /// arm is under test.
+    #[test]
+    fn allocate_vec_sized_rejects_past_the_max_single_alloc_cap() {
+        let header = test_header(NifVersion::V20_2_0_7);
+        // size_of::<[f32; 16]>() == 64; MAX_SINGLE_ALLOC_BYTES / 64 + 1
+        // elements requests just over the 256 MB cap. Backing buffer only
+        // needs to be at least that many bytes for the `remaining` check
+        // to pass first, so the cap check is what actually fires.
+        let count = (MAX_SINGLE_ALLOC_BYTES / 64 + 1) as u32;
+        let data: Vec<u8> = vec![0u8; MAX_SINGLE_ALLOC_BYTES + 64];
+        let stream = NifStream::new(&data, &header);
+        let err = stream
+            .allocate_vec_sized::<[f32; 16]>(count)
+            .expect_err("allocate_vec_sized must reject a byte product past MAX_SINGLE_ALLOC_BYTES");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// Regression for #2523 / PERF-D8-NEW-01. `allocate_vec_min_bytes`
+    /// must bound on the caller-supplied minimum, not `size_of::<T>()` —
+    /// exercised with `(u64, u32)`, where `size_of` (16 B, alignment
+    /// padding) overstates the true 12-byte on-disk encoding.
+    #[test]
+    fn allocate_vec_min_bytes_uses_the_supplied_minimum_not_size_of() {
+        let header = test_header(NifVersion::V20_2_0_7);
+        assert_eq!(std::mem::size_of::<(u64, u32)>(), 16);
+        // 12 bytes remaining: exactly one legitimate (u64, u32) element
+        // at its true 12-byte on-disk size, but short of size_of's 16.
+        let data: Vec<u8> = vec![0u8; 12];
+        let stream = NifStream::new(&data, &header);
+        assert!(
+            stream.allocate_vec_min_bytes::<(u64, u32)>(1, 12).is_ok(),
+            "a legitimate count at the true 12-byte wire size must not be \
+             rejected just because size_of::<(u64, u32)>() is 16"
+        );
+        // Two elements (24 true bytes) must be rejected against 12 remaining.
+        assert!(stream.allocate_vec_min_bytes::<(u64, u32)>(2, 12).is_err());
     }
 
     #[test]

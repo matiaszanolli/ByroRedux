@@ -184,11 +184,16 @@ impl NiAdditionalGeometryData {
     fn parse_with_kind(stream: &mut NifStream, kind: NiAgdKind) -> io::Result<Self> {
         let num_vertices = stream.read_u16_le()?;
         let num_block_infos = stream.read_u32_le()?;
-        let mut block_infos = stream.allocate_vec::<NiAgdDataStream>(num_block_infos)?;
+        // #2523 — NiAgdDataStream is all scalar fields, no heap
+        // indirection; size_of (28 B) safely upper-bounds its 25-byte
+        // on-disk encoding.
+        let mut block_infos = stream.allocate_vec_sized::<NiAgdDataStream>(num_block_infos)?;
         for _ in 0..num_block_infos {
             block_infos.push(NiAgdDataStream::parse(stream)?);
         }
         let num_blocks = stream.read_u32_le()?;
+        // NiAgdDataBlock contains heap-indirect Vec<u32>/Vec<u8> fields —
+        // stays on the loose per-byte bound (#2523).
         let mut blocks = stream.allocate_vec::<Option<NiAgdDataBlock>>(num_blocks)?;
         let packed = matches!(kind, NiAgdKind::Packed);
         for _ in 0..num_blocks {

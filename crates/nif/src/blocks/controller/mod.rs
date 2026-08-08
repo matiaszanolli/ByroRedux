@@ -352,7 +352,8 @@ impl NiFlipController {
         // Nothing to read here.
         let texture_slot = stream.read_u32_le()?;
         let num_sources = stream.read_u32_le()?;
-        let mut sources = stream.allocate_vec::<BlockRef>(num_sources)?;
+        // #2523 — BlockRef is a plain u32 newtype, size_of-aware bound applies.
+        let mut sources = stream.allocate_vec_sized::<BlockRef>(num_sources)?;
         for _ in 0..num_sources {
             sources.push(stream.read_block_ref()?);
         }
@@ -447,10 +448,14 @@ impl NiBsBoneLodController {
         let lod = stream.read_u32_le()?;
         let num_lods = stream.read_u32_le()?;
         let _num_node_groups = stream.read_u32_le()?;
+        // NodeSet contains a heap-indirect Vec<BlockRef> field — stays on
+        // the loose per-byte bound (#2523: size_of::<NodeSet>() would
+        // undercount its true variable on-disk footprint).
         let mut node_groups = stream.allocate_vec::<NodeSet>(num_lods)?;
         for _ in 0..num_lods {
             let count = stream.read_u32_le()?;
-            let mut nodes = stream.allocate_vec::<BlockRef>(count)?;
+            // #2523 — BlockRef is a plain u32 newtype, size_of-aware bound applies.
+            let mut nodes = stream.allocate_vec_sized::<BlockRef>(count)?;
             for _ in 0..count {
                 nodes.push(stream.read_block_ref()?);
             }
@@ -468,10 +473,15 @@ impl NiBsBoneLodController {
             == crate::version::bsver::PRE_BETHESDA
         {
             let num_shape_groups = stream.read_u32_le()?;
+            // BoneLodSkinInfoSet contains a heap-indirect
+            // Vec<BoneLodSkinInfo> field — stays on the loose per-byte
+            // bound (#2523).
             let mut shape_groups_1 = stream.allocate_vec::<BoneLodSkinInfoSet>(num_shape_groups)?;
             for _ in 0..num_shape_groups {
                 let count = stream.read_u32_le()?;
-                let mut skin_infos = stream.allocate_vec::<BoneLodSkinInfo>(count)?;
+                // #2523 — BoneLodSkinInfo is two BlockRefs, no heap
+                // indirection, size_of-aware bound applies.
+                let mut skin_infos = stream.allocate_vec_sized::<BoneLodSkinInfo>(count)?;
                 for _ in 0..count {
                     let shape_ptr = stream.read_block_ref()?;
                     let skin_instance_ref = stream.read_block_ref()?;
@@ -483,7 +493,8 @@ impl NiBsBoneLodController {
                 shape_groups_1.push(BoneLodSkinInfoSet { skin_infos });
             }
             let num_shape_groups_2 = stream.read_u32_le()?;
-            let mut shape_groups_2 = stream.allocate_vec::<BlockRef>(num_shape_groups_2)?;
+            // #2523 — BlockRef is a plain u32 newtype, size_of-aware bound applies.
+            let mut shape_groups_2 = stream.allocate_vec_sized::<BlockRef>(num_shape_groups_2)?;
             for _ in 0..num_shape_groups_2 {
                 shape_groups_2.push(stream.read_block_ref()?);
             }

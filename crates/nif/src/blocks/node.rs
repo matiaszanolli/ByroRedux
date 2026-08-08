@@ -1055,6 +1055,10 @@ impl BsDistantObjectInstancedNode {
         let base = BsMultiBoundNode::parse(stream)?;
 
         let num_instances = stream.read_u32_le()?;
+        // BsDistantObjectInstance contains a heap-indirect
+        // Vec<(u64, u32)> field — stays on the loose per-byte bound
+        // (#2523: size_of::<BsDistantObjectInstance>() would undercount
+        // its true variable on-disk footprint).
         let mut instances: Vec<BsDistantObjectInstance> = stream.allocate_vec(num_instances)?;
         for _ in 0..num_instances {
             // BSResourceID — 12 B fixed (uint + 4-byte tag + uint).
@@ -1067,18 +1071,26 @@ impl BsDistantObjectInstancedNode {
             ];
             let resource_dir_hash = stream.read_u32_le()?;
 
-            // BSDistantObjectUnknown[] — each entry is u64 + u32.
+            // BSDistantObjectUnknown[] — each entry is u64 + u32 = 12 B
+            // on disk; size_of::<(u64,u32)>() is 16 B (alignment padding
+            // on the tuple), which would overstate the true minimum and
+            // false-positive-reject legitimate dense arrays — bound on
+            // the real 12-byte-per-element wire size instead (#2523).
             let num_unknown = stream.read_u32_le()?;
-            let mut unknown_data: Vec<(u64, u32)> = stream.allocate_vec(num_unknown)?;
+            let mut unknown_data: Vec<(u64, u32)> =
+                stream.allocate_vec_min_bytes(num_unknown, 12)?;
             for _ in 0..num_unknown {
                 let u1 = stream.read_u64_le()?;
                 let u2 = stream.read_u32_le()?;
                 unknown_data.push((u1, u2));
             }
 
-            // Matrix44[] — 16 f32 per transform.
+            // Matrix44[] — 16 f32 per transform, 64 B on disk, exact
+            // match for size_of::<[f32; 16]>() (#2523 — the worst-case
+            // amplification site this fix was written for: a corrupt
+            // num_transforms could otherwise request up to 19.2 GB).
             let num_transforms = stream.read_u32_le()?;
-            let mut transforms: Vec<[f32; 16]> = stream.allocate_vec(num_transforms)?;
+            let mut transforms: Vec<[f32; 16]> = stream.allocate_vec_sized(num_transforms)?;
             for _ in 0..num_transforms {
                 let mut m = [0.0f32; 16];
                 for cell in &mut m {

@@ -167,7 +167,8 @@ pub struct BhkConvexListShape {
 impl BhkConvexListShape {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let num_sub_shapes = stream.read_u32_le()?;
-        let mut sub_shapes = stream.allocate_vec::<BlockRef>(num_sub_shapes)?;
+        // #2523 — BlockRef is a plain u32 newtype, size_of-aware bound applies.
+        let mut sub_shapes = stream.allocate_vec_sized::<BlockRef>(num_sub_shapes)?;
         for _ in 0..num_sub_shapes {
             sub_shapes.push(stream.read_block_ref()?);
         }

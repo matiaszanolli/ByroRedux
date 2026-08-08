@@ -53,10 +53,11 @@ pub struct BonePose {
 impl BonePose {
     pub fn parse(stream: &mut NifStream) -> io::Result<Self> {
         let n = stream.read_u32_le()?;
-        // `allocate_vec` carries the bound + #[must_use] gate (#408 / #831
-        // architectural pin), replacing the prior `check_alloc + with_capacity`
-        // idiom that hardcoded the BoneTransform 40-byte element size.
-        let mut transforms = stream.allocate_vec::<BoneTransform>(n)?;
+        // `allocate_vec_sized` carries the size_of::<BoneTransform>()-aware
+        // bound + #[must_use] gate (#408 / #831 / #2523 — BoneTransform is
+        // a plain scalar-array struct, no heap indirection, so the tighter
+        // bound applies cleanly).
+        let mut transforms = stream.allocate_vec_sized::<BoneTransform>(n)?;
         for _ in 0..n {
             transforms.push(BoneTransform::parse(stream)?);
         }
@@ -125,9 +126,9 @@ impl BhkRagdollTemplate {
         // NiExtraData base — `Name` only, gated on stream version.
         let name = stream.read_extra_data_name()?;
         let num_bones = stream.read_u32_le()?;
-        // #408 / #831 — `allocate_vec` replaces the manual
-        // `check_alloc + with_capacity` pair (was hardcoding 4 B/elem).
-        let mut bones = stream.allocate_vec::<BlockRef>(num_bones)?;
+        // #408 / #831 / #2523 — `allocate_vec_sized` bounds on
+        // size_of::<BlockRef>() == 4 bytes/elem, the true on-disk size.
+        let mut bones = stream.allocate_vec_sized::<BlockRef>(num_bones)?;
         for _ in 0..num_bones {
             bones.push(stream.read_block_ref()?);
         }
