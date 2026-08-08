@@ -154,6 +154,7 @@ mod tests {
             furniture_markers: Vec::new(),
             embedded_clip: None,
             ragdoll: None,
+            lights: Vec::new(),
         })
     }
 

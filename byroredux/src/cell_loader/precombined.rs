@@ -310,9 +310,25 @@ impl PrecombinedSpawnJob {
                     }
                 };
                 // Commit to registry so a re-load of this cell hits the cache.
-                {
+                let freed = {
                     let mut reg = world.resource_mut::<NifImportRegistry>();
-                    let _freed = reg.insert(path.clone(), parsed.clone());
+                    reg.insert(path.clone(), parsed.clone())
+                };
+                // #2524 / PERF-D3-NEW-01 — release any LRU-evicted clip
+                // handles. This insert's own entry never owns a clip
+                // handle, but the 2048-cap sweep it can trigger may evict
+                // a DIFFERENT, animated cache entry registered via one of
+                // the other four `NifImportRegistry::insert` call sites —
+                // whichever victim the sweep picks, if it owned a clip
+                // handle, that handle must be released here or it leaks
+                // (the exact #863 bug class, reintroduced at this newer
+                // call site).
+                if !freed.is_empty() {
+                    let mut clip_reg =
+                        world.resource_mut::<byroredux_core::animation::AnimationClipRegistry>();
+                    for h in freed {
+                        clip_reg.release(h);
+                    }
                 }
                 match parsed {
                     Some(c) => c,

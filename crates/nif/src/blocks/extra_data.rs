@@ -369,24 +369,23 @@ impl BsPositionData {
         // FO76 = 20.2.0.7) sits well past the boundary, so name is
         // always present in shipped content. See #329.
         let name = stream.read_extra_data_name()?;
-        // Num Vertices: u32 — file-driven count, route through
-        // `allocate_vec` so a corrupt 0xFFFFFFFF can't OOM-allocate
-        // a 12 GB Vec before the inner half-float reads fail. See
-        // #764 (the `allocate_vec` budget guard) and the issue's
-        // explicit ALLOCATE_VEC completeness check.
+        // Num Vertices: u32 — file-driven count.
         let num_vertices = stream.read_u32_le()?;
-        // #2523 — on-disk elements are 2-byte half-floats, decoded to
-        // 4-byte f32 in memory; size_of::<f32>() would overstate the true
-        // minimum and false-positive-reject legitimate dense arrays, so
-        // this bounds on the real 2-byte-per-element wire size instead.
-        let mut vertex_data = stream.allocate_vec_min_bytes::<f32>(num_vertices, 2)?;
-        for _ in 0..num_vertices {
-            // Half Float (16-bit IEEE-754) — same encoding as the
-            // FO4 / FO76 vertex-stream UV / position halfs decoded
-            // by `tri_shape::half_to_f32`.
-            let h = stream.read_u16_le()?;
-            vertex_data.push(crate::blocks::tri_shape::half_to_f32(h));
-        }
+        // #2525 / PERF-D8-NEW-02 — bulk-read the raw u16 half-float
+        // stream in one call, then decode in a tight `.map()` loop,
+        // mirroring the idiom #1263 established at
+        // `bs_geometry.rs:434-444`. `read_u16_array` bottoms out in
+        // `read_pod_vec`, which bounds-checks the requested count
+        // against the real remaining stream bytes — at least as safe
+        // against a hostile `num_vertices` as the previous
+        // `allocate_vec_min_bytes::<f32>(num_vertices, 2)` heuristic
+        // (#2523), and no longer needed once the bulk read itself
+        // rejects an over-large count before any per-element work runs.
+        let vertex_data: Vec<f32> = stream
+            .read_u16_array(num_vertices as usize)?
+            .into_iter()
+            .map(crate::blocks::tri_shape::half_to_f32)
+            .collect();
         Ok(Self { name, vertex_data })
     }
 }

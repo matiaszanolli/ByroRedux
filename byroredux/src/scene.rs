@@ -1180,6 +1180,8 @@ mod climate_tod_hours_tests;
 #[cfg(test)]
 mod cloud_tile_scale_tests;
 #[cfg(test)]
+mod nif_loader_light_tests;
+#[cfg(test)]
 mod procedural_fallback_tests;
 #[cfg(test)]
 mod radius_parse_tests;

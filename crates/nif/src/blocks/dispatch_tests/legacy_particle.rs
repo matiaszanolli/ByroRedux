@@ -194,6 +194,85 @@ fn ni_auto_normal_particles_data_at_v4_0_0_2_skips_all_structurally_unreachable_
     assert!(m.rotation_axes.is_empty());
 }
 
+/// Regression for #2525 / PERF-D8-NEW-02: `Has Rotations`' single-point
+/// valid window is exactly `version == V10_0_1_0` (see the sibling
+/// `has_shader` tests above for why). This is the ONLY version at which
+/// `rotations` can ever decode a non-empty array through this parser —
+/// zero prior test coverage exercised the `has_rotations = true` path at
+/// all, let alone after #2525's conversion from a 4-`read_f32_le()`-
+/// calls-per-particle loop to a bulk `read_f32_array` + `chunks_exact(4)`
+/// + swizzle. Two distinguishable particles prove both the stream
+/// position AND the on-disk `w,x,y,z` → `[x,y,z,w]` reorder survived the
+/// conversion.
+#[test]
+fn ni_auto_normal_particles_data_at_v10_0_1_0_decodes_rotations() {
+    let header = header_at(NifVersion::V10_0_1_0);
+    let mut data = Vec::new();
+    data.extend_from_slice(&0u32.to_le_bytes()); // groupID (#688, has_object_group_id band)
+
+    // parse_geometry_data_base at exactly V10_0_1_0: no keep/compress
+    // flags (< V10_1_0_0), has_vertices=true with 2 real vertices (so
+    // num_vertices downstream is 2, not 0), data_flags=0 (no material
+    // CRC — bsver=0), no normals, zero bounding sphere, no vertex
+    // colors, num_uv_sets=0 from data_flags so no UV reads, consistency
+    // flags present (>= V10_0_1_0), no additional_data_ref (< V20_0_0_4).
+    data.extend_from_slice(&2u16.to_le_bytes()); // num_vertices_raw
+    data.push(1u8); // has_vertices = true
+    for v in [[0.0f32, 0.0, 0.0], [1.0, 1.0, 1.0]] {
+        for c in v {
+            data.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    data.extend_from_slice(&0u16.to_le_bytes()); // data_flags
+    data.push(0u8); // has_normals = false
+    for _ in 0..3 {
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // bounding sphere center
+    }
+    data.extend_from_slice(&0.0f32.to_le_bytes()); // bounding sphere radius
+    data.push(0u8); // has_vertex_colors = false
+    data.extend_from_slice(&0u16.to_le_bytes()); // consistency_flags (>= V10_0_1_0)
+
+    // NiParticlesData tail: num_active, has_sizes (false), has_rotations
+    // (true) + 2 quaternions in Gamebryo's on-disk w,x,y,z order.
+    data.extend_from_slice(&2u16.to_le_bytes()); // num_active
+    data.push(0u8); // has_sizes = false
+    data.push(1u8); // has_rotations = true
+    for wxyz in [[0.1f32, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]] {
+        for c in wxyz {
+            data.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+
+    let mut stream = NifStream::new(&data, &header);
+    let block = parse_block(
+        "NiAutoNormalParticlesData",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("must parse cleanly with has_rotations gated on at exactly V10_0_1_0");
+    assert_eq!(
+        stream.position() as usize,
+        data.len(),
+        "must consume exactly the fixture's bytes, including the bulk-read rotations array"
+    );
+    let m = block
+        .as_any()
+        .downcast_ref::<crate::blocks::legacy_particle::NiLegacyParticlesData>()
+        .unwrap();
+    assert_eq!(m.rotations.len(), 2);
+    // On-disk w,x,y,z (0.1,0.2,0.3,0.4) must decode to [x,y,z,w].
+    let r0 = m.rotations[0];
+    assert!((r0[0] - 0.2).abs() < 1e-6, "particle 0 x: {r0:?}");
+    assert!((r0[1] - 0.3).abs() < 1e-6, "particle 0 y: {r0:?}");
+    assert!((r0[2] - 0.4).abs() < 1e-6, "particle 0 z: {r0:?}");
+    assert!((r0[3] - 0.1).abs() < 1e-6, "particle 0 w: {r0:?}");
+    let r1 = m.rotations[1];
+    assert!((r1[0] - 0.6).abs() < 1e-6, "particle 1 x: {r1:?}");
+    assert!((r1[1] - 0.7).abs() < 1e-6, "particle 1 y: {r1:?}");
+    assert!((r1[2] - 0.8).abs() < 1e-6, "particle 1 z: {r1:?}");
+    assert!((r1[3] - 0.5).abs() < 1e-6, "particle 1 w: {r1:?}");
+}
+
 fn niparticlebomb_prefix_and_scalars() -> Vec<u8> {
     let mut d = Vec::new();
     d.extend_from_slice(&(-1i32).to_le_bytes()); // next_modifier

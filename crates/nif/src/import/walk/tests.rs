@@ -585,6 +585,7 @@ mod recursion_depth_tests {
             furniture_markers: Vec::new(),
             embedded_clip: None,
             ragdoll: None,
+            lights: Vec::new(),
         }
     }
 
@@ -771,6 +772,7 @@ mod particle_local_transform_tests {
             furniture_markers: Vec::new(),
             embedded_clip: None,
             ragdoll: None,
+            lights: Vec::new(),
         };
         let mut pool = StringPool::new();
         let mut props_stack: Vec<BlockRef> = Vec::new();

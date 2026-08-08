@@ -226,6 +226,20 @@ pub(super) fn parse_import_and_merge(
         &mut pool,
         Some(tex_provider),
     );
+    // #2530 / NIFAL-D3-NEW-01 — extract authored lights while `scene`
+    // (the raw parsed NifScene) is still in scope. `import_nif_scene_
+    // with_resolver` doesn't populate `ImportedScene::lights` itself
+    // (see that field's doc comment), and by the time this function
+    // returns, the raw `scene` this walk needs is gone — a caller that
+    // only retains the returned `ImportedScene` (this loader's
+    // `SceneImportCache`, unlike the cell loader's own `CachedNifImport`)
+    // has nowhere else to source them from on a cache hit. Pre-fix, the
+    // two other `import_nif_lights` call sites (`streaming.rs`,
+    // `cell_loader/references/import.rs`) meant every cell-loaded NIF's
+    // lights spawned correctly, but a loose-loaded NIF (`cargo run --
+    // <mesh>.nif`, and every skeleton/body/hand NPC-part load behind
+    // `load_nif_bytes_with_skeleton`'s cache) never got this call at all.
+    imported.lights = byroredux_nif::import::import_nif_lights(&scene);
     // FO4+ external material resolution (#493). NIF fields take
     // precedence; only empty slots fill in from the resolved
     // BGSM/BGEM chain. The merge interns through the same pool so
@@ -1125,6 +1139,24 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         }
     }
 
+    // #2530 / NIFAL-D3-NEW-01 — spawn a `LightSource` per authored NIF
+    // light. Mirrors `cell_loader/spawn.rs::spawn_nif_lights` exactly
+    // (same function, widened to `pub(crate)`) rather than re-deriving
+    // the sanitization logic a third time. No REFR wraps a loose-loaded
+    // NIF, so there's no `esm::cell::LightData` to prefer a radius from
+    // (`None`) and no outer placement transform to compose against
+    // (identity) — the light's own NIF-local position IS the final
+    // world position, exactly like the root node itself.
+    let light_count = imported.lights.len();
+    crate::cell_loader::spawn::spawn_nif_lights(
+        world,
+        &imported.lights,
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        1.0,
+        None,
+    );
+
     // #261 — mesh-embedded controller chains (water UV scroll, torch
     // flame visibility, lava emissive pulse). `import_nif_scene`
     // collected every NiObjectNET.controller_ref chain into a single
@@ -1181,10 +1213,11 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     }
 
     log::info!(
-        "Imported {} nodes + {} meshes from '{}'",
+        "Imported {} nodes + {} meshes + {} lights from '{}'",
         imported.nodes.len(),
         count,
+        light_count,
         label
     );
-    (count + imported.nodes.len(), root, node_by_name)
+    (count + imported.nodes.len() + light_count, root, node_by_name)
 }

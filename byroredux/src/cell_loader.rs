@@ -70,7 +70,7 @@ mod placement_lod;
 pub(crate) mod precombined;
 pub(crate) mod references;
 mod refr;
-mod spawn;
+pub(crate) mod spawn;
 mod terrain;
 mod terrain_lod;
 mod terrain_lod_btr;
@@ -134,7 +134,7 @@ pub(crate) use work_budget::FrameTimeBudget;
 pub(crate) use load::{register_cell_root, stamp_cell_root, stamp_cell_root_range};
 #[cfg(test)]
 pub(crate) use spawn::{
-    count_spawnable_nif_lights, is_spawnable_nif_light, light_radius_or_default,
+    count_spawnable_nif_lights, is_spawnable_nif_light, light_radius_or_default, spawn_nif_lights,
 };
 #[cfg(test)]
 pub(crate) use unload::collect_victim_gpu_handles;
@@ -475,6 +475,8 @@ mod nif_light_spawn_gate_tests;
 mod pkin_expansion_tests;
 #[cfg(test)]
 mod placement_root_subtree_tests;
+#[cfg(test)]
+mod precombined_clip_handle_tests;
 #[cfg(test)]
 mod rapier_release_tests;
 #[cfg(test)]
