@@ -1089,15 +1089,22 @@ impl BsDistantObjectInstancedNode {
             // match for size_of::<[f32; 16]>() (#2523 — the worst-case
             // amplification site this fix was written for: a corrupt
             // num_transforms could otherwise request up to 19.2 GB).
+            //
+            // #2525 / PERF-D8-NEW-02 — bulk-read the raw f32 stream in
+            // one call then reshape via `chunks_exact`, mirroring the
+            // idiom #1263 established at `bs_geometry.rs:434-444`,
+            // instead of 16 individual `read_f32_le()` calls per
+            // transform. `read_f32_array` bottoms out in `read_pod_vec`,
+            // whose `check_alloc` byte-count guard (`num_transforms *
+            // 16` f32s = the same 64 B/transform `allocate_vec_sized`
+            // used to bound) supersedes the old pre-check, so the #2523
+            // hostile-count protection is unchanged.
             let num_transforms = stream.read_u32_le()?;
-            let mut transforms: Vec<[f32; 16]> = stream.allocate_vec_sized(num_transforms)?;
-            for _ in 0..num_transforms {
-                let mut m = [0.0f32; 16];
-                for cell in &mut m {
-                    *cell = stream.read_f32_le()?;
-                }
-                transforms.push(m);
-            }
+            let transforms: Vec<[f32; 16]> = stream
+                .read_f32_array(num_transforms as usize * 16)?
+                .chunks_exact(16)
+                .map(|c| c.try_into().unwrap())
+                .collect();
 
             instances.push(BsDistantObjectInstance {
                 resource_file_hash,

@@ -127,10 +127,29 @@ fn synthesize_packed_havok_proxy(
     if !ref_scale.is_finite() {
         return None;
     }
-    let geometry = meshes
+
+    // #2531 / NIFAL-D6-NEW-01 — `mesh.positions` on a skinned mesh is
+    // bind-pose (rest-pose) local geometry, the exact array GPU skinning
+    // deforms at render time — NOT a runtime-posed shape. A T-pose
+    // skeleton's splayed limbs would union into a substantially
+    // oversized, permanently-wrong box (this proxy is `Keyframed` and
+    // parented to `placement_root`, never re-derived per-pose). Mirrors
+    // the Architecture-trimesh fallback's `mesh.skin.is_none()` gate —
+    // but unlike that per-submesh loop (where skipping one skinned
+    // submesh still leaves colliders from the rest), creature content is
+    // commonly skinned end-to-end, so an outright skip here would
+    // silently regress back to #2355's "no proxy at all" for exactly the
+    // population most likely to need one. Skinned submeshes instead
+    // contribute their own pose-independent local bounding sphere
+    // (already computed at import time from bind-pose extent, but
+    // consumed as a SPHERE rather than raw extremity positions, so
+    // rotation can't amplify it into something larger than the mesh
+    // actually occupies).
+    let rigid_geometry = meshes
         .iter()
         .filter(|mesh| {
-            !mesh.material.is_decal
+            mesh.skin.is_none()
+                && !mesh.material.is_decal
                 && !mesh.material.alpha_test
                 && mesh.material.material_kind
                     != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
@@ -142,7 +161,50 @@ fn synthesize_packed_havok_proxy(
             rotation: Quat::from_array(mesh.rotation),
             scale: mesh.scale,
         });
-    let (min, max) = transformed_mesh_aabb(geometry)?;
+
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    let mut any = false;
+    if let Some((rigid_min, rigid_max)) = transformed_mesh_aabb(rigid_geometry) {
+        min = min.min(rigid_min);
+        max = max.max(rigid_max);
+        any = true;
+    }
+
+    for mesh in meshes.iter().filter(|m| m.skin.is_some()) {
+        let translation = Vec3::from_array(mesh.translation);
+        let rotation = Quat::from_array(mesh.rotation);
+        if !translation.is_finite()
+            || !rotation.is_finite()
+            || rotation.length_squared() <= f32::EPSILON
+            || !mesh.scale.is_finite()
+        {
+            continue;
+        }
+        let local_center = Vec3::from_array(mesh.local_bound_center);
+        if !local_center.is_finite() || !mesh.local_bound_radius.is_finite() {
+            continue;
+        }
+        // A sphere's shape is rotation-invariant, so its world AABB
+        // contribution is exact (not an approximation the way unioning
+        // rotated cube corners would need multiple sample points to
+        // bound) — transform the center through the mesh's local TRS and
+        // scale the radius by the (uniform) mesh scale only.
+        let rotation = rotation.normalize();
+        let world_center = translation + rotation * (local_center * mesh.scale);
+        let world_radius = mesh.local_bound_radius * mesh.scale.abs();
+        if world_radius <= 0.0 {
+            continue;
+        }
+        let r = Vec3::splat(world_radius);
+        min = min.min(world_center - r);
+        max = max.max(world_center + r);
+        any = true;
+    }
+
+    if !any {
+        return None;
+    }
     let center = (min + max) * 0.5;
     // Thin render cards still need a non-zero physical thickness. Half a
     // Gamebryo unit is small relative to clutter and actor bounds, while
@@ -725,8 +787,13 @@ fn spawn_placement_root(
 
 /// Spawn a `LightSource` entity per authored NIF light with a
 /// non-trivial diffuse contribution. Split out of
-/// `spawn_placed_instances` (#2057).
-fn spawn_nif_lights(
+/// `spawn_placed_instances` (#2057). Widened to `pub(crate)` by #2530 /
+/// NIFAL-D3-NEW-01 so `scene::nif_loader::load_nif_bytes_with_skeleton`
+/// (the loose-NIF / NPC-part load path, which has no REFR and therefore
+/// no `esm::cell::LightData` — pass `None`) can spawn lights through the
+/// exact same construction + sanitization the cell loader uses, instead
+/// of re-deriving it a third time.
+pub(crate) fn spawn_nif_lights(
     world: &mut World,
     nif_lights: &[byroredux_nif::import::ImportedLight],
     ref_pos: Vec3,
@@ -1953,6 +2020,95 @@ mod synthesize_trimesh_tests {
         match shape {
             CollisionShape::Cuboid { half_extents } => {
                 assert_eq!(half_extents, Vec3::new(2.0, 4.0, 6.0));
+            }
+            other => panic!("expected Cuboid, got {other:?}"),
+        }
+    }
+
+    /// Regression for #2531 / NIFAL-D6-NEW-01: a skinned mesh's bind-pose
+    /// `positions` (splayed T-pose-wide) must NOT be unioned directly into
+    /// the proxy AABB — the mesh's own pose-independent `local_bound_*`
+    /// (deliberately tight here) must be used instead. Proves the fix by
+    /// using positions wide enough that, if they leaked through unfiltered,
+    /// the resulting cuboid would be far larger than the tight bound allows.
+    #[test]
+    fn packed_proxy_uses_local_bound_not_bind_pose_positions_for_skinned_mesh() {
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            // T-pose-wide bind-pose positions — splayed limbs, ±50 units.
+            vec![[-50.0, 0.0, 0.0], [50.0, 0.0, 0.0]],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        mesh.skin = Some(byroredux_nif::import::ImportedSkin::default());
+        // Tight, pose-independent local bound — what the fix must use instead.
+        mesh.local_bound_center = [0.0, 0.0, 0.0];
+        mesh.local_bound_radius = 2.0;
+
+        let (center, shape) = synthesize_packed_havok_proxy(&[mesh], 1.0)
+            .expect("a skinned-only mesh set must still produce a proxy (not #2355's regression)");
+        assert_eq!(center, Vec3::ZERO);
+        match shape {
+            CollisionShape::Cuboid { half_extents } => {
+                assert!(
+                    half_extents.x <= 2.0 && half_extents.y <= 2.0 && half_extents.z <= 2.0,
+                    "half_extents {half_extents:?} must come from the tight local_bound_radius \
+                     (2.0), not the ±50 bind-pose positions — a T-pose leaking through would \
+                     produce half_extents around 50.0"
+                );
+            }
+            other => panic!("expected Cuboid, got {other:?}"),
+        }
+    }
+
+    /// Companion: a rigid (non-skinned) mesh and a skinned mesh together
+    /// must union BOTH contributions — the rigid mesh's real positions and
+    /// the skinned mesh's local bound sphere — into one proxy, proving the
+    /// skin filter doesn't silently drop the rigid geometry it sits
+    /// alongside (e.g. a creature's non-skinned prop/weapon submesh).
+    #[test]
+    fn packed_proxy_unions_rigid_positions_and_skinned_local_bound() {
+        let rigid = byroredux_nif::import::ImportedMesh::from_geometry(
+            vec![[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut skinned = byroredux_nif::import::ImportedMesh::from_geometry(
+            vec![[-50.0, -50.0, -50.0], [50.0, 50.0, 50.0]],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        skinned.skin = Some(byroredux_nif::import::ImportedSkin::default());
+        skinned.translation = [10.0, 0.0, 0.0];
+        skinned.local_bound_center = [0.0, 0.0, 0.0];
+        skinned.local_bound_radius = 1.0;
+
+        let (_, shape) = synthesize_packed_havok_proxy(&[rigid, skinned], 1.0)
+            .expect("mixed rigid + skinned mesh set must produce a proxy");
+        match shape {
+            CollisionShape::Cuboid { half_extents } => {
+                // Rigid mesh spans x in [0, 1]; skinned sphere (radius 1,
+                // translated +10) spans x in [9, 11] — union half-extent
+                // on X must reach at least (11 - 0) / 2 = 5.5, and must NOT
+                // reach anywhere near the skinned mesh's raw ±50 extent
+                // (which would push it to ~30).
+                assert!(
+                    half_extents.x >= 5.0,
+                    "union must include both meshes' contributions: {half_extents:?}"
+                );
+                assert!(
+                    half_extents.x < 15.0,
+                    "the skinned mesh's raw ±50 bind-pose positions must not leak into \
+                     the union: {half_extents:?}"
+                );
             }
             other => panic!("expected Cuboid, got {other:?}"),
         }

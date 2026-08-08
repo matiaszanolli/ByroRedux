@@ -186,6 +186,8 @@ pub fn import_spt_scene(
         embedded_clip: None,
         // SpeedTree placeholder billboards carry no Havok ragdoll.
         ragdoll: None,
+        // SpeedTree placeholder billboards author no lights.
+        lights: Vec::new(),
     }
 }
 

@@ -676,17 +676,17 @@ impl NiLegacyParticlesData {
         } else {
             false
         };
-        let rotations = if has_rotations {
-            let mut v = stream.allocate_vec(num_vertices as u32)?;
-            for _ in 0..num_vertices {
-                // Gamebryo Quaternion serialization is w, x, y, z.
-                let w = stream.read_f32_le()?;
-                let x = stream.read_f32_le()?;
-                let y = stream.read_f32_le()?;
-                let z = stream.read_f32_le()?;
-                v.push([x, y, z, w]);
-            }
-            v
+        // #2525 / PERF-D8-NEW-02 — bulk-read the raw f32 stream in one
+        // call then swizzle w,x,y,z (Gamebryo's on-disk quaternion
+        // order) to [x,y,z,w] in the `.map()`, mirroring the idiom
+        // #1263 established at `bs_geometry.rs:434-444` instead of 4
+        // individual `read_f32_le()` calls per particle.
+        let rotations: Vec<[f32; 4]> = if has_rotations {
+            stream
+                .read_f32_array(num_vertices as usize * 4)?
+                .chunks_exact(4)
+                .map(|c| [c[1], c[2], c[3], c[0]])
+                .collect()
         } else {
             Vec::new()
         };

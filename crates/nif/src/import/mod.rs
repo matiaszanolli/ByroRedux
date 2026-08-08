@@ -141,6 +141,8 @@ fn import_nif_scene_impl(
         furniture_markers: extract_furniture_markers(scene),
         embedded_clip: crate::anim::import_embedded_animations(scene),
         ragdoll: collision::extract_ragdoll(scene),
+        // Not auto-populated here — see the field doc on `ImportedScene::lights`.
+        lights: Vec::new(),
     };
 
     // A truncated scene means at least one block was lost to a mid-parse

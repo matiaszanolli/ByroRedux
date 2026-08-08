@@ -970,6 +970,18 @@ pub struct ImportedScene {
     /// decodable). Consumed by the engine to build a Rapier multibody and
     /// drive Bethesda ragdolls on our own solver (M41.x).
     pub ragdoll: Option<ImportedRagdoll>,
+    /// Authored `NiPointLight` / `NiSpotLight` / `NiAmbientLight` /
+    /// `NiDirectionalLight` blocks, extracted via [`crate::import::import_nif_lights`].
+    /// Empty unless the caller explicitly populates it — `import_nif_scene*`
+    /// does NOT call `import_nif_lights` itself (each of this crate's three
+    /// existing consumers has its own reason to call it separately, at a
+    /// point where it still holds the raw `NifScene` borrow this field's
+    /// producer needs). This field exists so a caller that already computed
+    /// the lights at parse time (see `byroredux::scene::nif_loader::
+    /// parse_import_and_merge`) has somewhere to stash them for a caching
+    /// layer that only retains `ImportedScene`, not the raw scene. See
+    /// #2530 / NIFAL-D3-NEW-01.
+    pub lights: Vec<ImportedLight>,
 }
 
 /// A Havok ragdoll articulation, engine-native (Y-up, havok-scaled).

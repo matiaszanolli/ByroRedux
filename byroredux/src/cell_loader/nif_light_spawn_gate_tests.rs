@@ -28,6 +28,68 @@ fn light_with_color(rgb: [f32; 3]) -> ImportedLight {
     }
 }
 
+/// Regression for #2530 / NIFAL-D3-NEW-01: `spawn_nif_lights` (widened
+/// to `pub(crate)` so `scene::nif_loader::load_nif_bytes_with_skeleton`
+/// — the loose-NIF / NPC-part load path — can call the exact same
+/// construction the cell loader uses) must spawn a real `LightSource`
+/// entity for a spawnable authored light. `spawn_nif_lights` takes no
+/// `VulkanContext`, so this exercises the full parse-to-ECS contract
+/// without standing up a GPU device — the one piece of #2530's fix that
+/// `load_nif_bytes_with_skeleton` itself can't be unit-tested through
+/// (mesh GPU upload requires a real Vulkan device).
+#[test]
+fn spawn_nif_lights_attaches_light_source_for_spawnable_light() {
+    let mut world = World::new();
+    let lights = vec![ImportedLight {
+        translation: [10.0, 20.0, 30.0],
+        direction: [0.0, 0.0, -1.0],
+        color: [0.8, 0.2, 0.1],
+        radius: 512.0,
+        kind: LightKind::Point,
+        outer_angle: 0.0,
+        affected_node_names: Vec::new(),
+        name: None,
+    }];
+
+    // No REFR / ESM context (the loose-loader case): identity ref
+    // transform, no LightData to prefer a radius from.
+    spawn_nif_lights(&mut world, &lights, Vec3::ZERO, Quat::IDENTITY, 1.0, None);
+
+    let q = world.query::<LightSource>().expect("LightSource query");
+    let spawned: Vec<_> = q.iter().collect();
+    assert_eq!(
+        spawned.len(),
+        1,
+        "spawn_nif_lights must attach exactly one LightSource for the one spawnable light"
+    );
+    let (_, light_source) = spawned[0];
+    assert_eq!(light_source.color, [0.8, 0.2, 0.1]);
+    assert_eq!(light_source.radius, 512.0, "authored radius (no ESM override) must survive");
+}
+
+/// Companion: a NIF authoring only zero-colour placeholder lights must
+/// spawn NO `LightSource` entity through this path either — same
+/// `is_spawnable_nif_light` gate the cell loader's own light spawn
+/// already respects.
+#[test]
+fn spawn_nif_lights_skips_zero_color_placeholder() {
+    let mut world = World::new();
+    let lights = vec![light_with_color([0.0, 0.0, 0.0])];
+
+    spawn_nif_lights(&mut world, &lights, Vec3::ZERO, Quat::IDENTITY, 1.0, None);
+
+    // `query::<T>()` returns `None` when no entity has EVER had `T` — the
+    // expected outcome here, since nothing should spawn at all.
+    let count = world
+        .query::<LightSource>()
+        .map(|q| q.iter().count())
+        .unwrap_or(0);
+    assert_eq!(
+        count, 0,
+        "a zero-colour placeholder light must not spawn a LightSource"
+    );
+}
+
 /// Pure-zero RGB → not spawnable. The audit's exact case: an
 /// authored-off `NiPointLight` placeholder.
 #[test]
