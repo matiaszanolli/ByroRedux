@@ -1101,7 +1101,8 @@ impl BSLightingShaderProperty {
     ///   to zero (SF-D3-01).
     /// - CRC32 shader-flag arrays (`sf1_crcs/sf2_crcs`), `num_sf2`
     ///   gate is always true here (`>= 155 > 152`).
-    /// - `root_material_path` always read.
+    /// - `root_material_path` read for FO76 only (`bsver < STARFIELD`) —
+    ///   Starfield does not carry this field. See #2616.
     /// - `glossiness` scaled ×100 (FO76 follows FO4's smoothness convention).
     /// - No FO4 subsurface block (gated 130-139).
     /// - Wetness with BOTH `unknown_1` (BSVER >= 130, always true) and
@@ -1131,19 +1132,24 @@ impl BSLightingShaderProperty {
             }
         }
 
-        // #1510 / NIF-NEW-05 — the FO76 `BSShaderType155` field lives
-        // here for FO76 (bsver 152..171) but Starfield (bsver >= 172) does
-        // NOT carry it (its shader_type is implicitly 0, like the legacy
-        // pre-name slot). The #1279 `parse_fo76_plus` split read it
-        // unconditionally for all bsver >= 155, shifting every later field
-        // by 4 B and over-reading — which truncated all 1036 Starfield
-        // BSLightingShaderProperty full-body blocks to NiUnknown. The
-        // a9c7bc9e baseline (Starfield 0 unknown) gated it on `== 155`.
-        let shader_type = if bsver < crate::version::bsver::STARFIELD {
-            stream.read_u32_le()?
-        } else {
-            0
-        };
+        // #1510 / NIF-NEW-05 originally gated this `BSShaderType155`
+        // field off for Starfield (bsver >= 172), on the premise that
+        // Starfield doesn't carry it. #2616 / SF-D6-01 corrected that:
+        // Starfield DOES carry `shader_type` here (reusing the FO76
+        // enum, per this fn's own doc above) — it's `root_material_path`
+        // below that Starfield does NOT carry, and #1510 never touched
+        // that read. The two 4-byte errors exactly compensated (this
+        // field's absence for the `read_string()` misread 4 bytes later
+        // decoding as a valid string-table index, since `read_string`
+        // on modern NIF versions is itself just a 4-byte i32 index —
+        // see `NifStream::read_string`), so total block consumption
+        // stayed right and the misalignment survived #1510, #1606, and
+        // two prior Starfield audits undetected. Corpus-verified
+        // (LODMeshes/Meshes01/MeshesPatch, 2,538 inline-authored
+        // blocks): 0/2,538 valid under the pre-#2616 alignment (NaN
+        // emissive, unresolvable texture_set_ref, zero U-scale, 57%
+        // invalid CRC membership), 2,538/2,538 valid under this one.
+        let shader_type = stream.read_u32_le()?;
         let num_sf1 = stream.read_u32_le()? as usize;
         let num_sf2 = stream.read_u32_le()? as usize;
         let sf1_crcs = stream.read_u32_array(num_sf1)?;
@@ -1158,7 +1164,14 @@ impl BSLightingShaderProperty {
             stream.read_f32_le()?,
         ];
         let emissive_multiple = stream.read_f32_le()?;
-        let root_material_path = stream.read_string()?;
+        // #2616 / SF-D6-01 — the field this fn's pre-fix code read
+        // unconditionally, but Starfield does not carry. See the
+        // `shader_type` comment above for the full misalignment story.
+        let root_material_path = if bsver < crate::version::bsver::STARFIELD {
+            stream.read_string()?
+        } else {
+            None
+        };
         let texture_clamp_mode = stream.read_u32_le()?;
         let alpha = stream.read_f32_le()?;
         let refraction_strength = stream.read_f32_le()?;

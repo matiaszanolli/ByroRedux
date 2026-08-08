@@ -3,6 +3,100 @@
 
 use super::*;
 
+/// Regression: #2616 / SF-D6-01. Real block 6 (bsver 173, block_size 166,
+/// full `BSLightingShaderProperty` body) extracted verbatim from
+/// `Starfield - LODMeshes.ba2`'s
+/// `meshes\lod\generated\ships\discovery\shiplandingmarker_lod_3.nif` —
+/// not a synthetic builder (see SF-D6-03: editing a synthetic fixture to
+/// match wrong output proves nothing). Pre-fix (`shader_type` skipped,
+/// `root_material_path` read unconditionally) this decodes to a NaN
+/// emissive color, an unresolvable `texture_set_ref`, a zero U-scale, and
+/// an sf1 CRC that isn't a member of the known `BSShaderCRC32` set.
+#[test]
+fn parse_bs_lighting_real_starfield_block_is_semantically_valid() {
+    let header = NifHeader {
+        version: NifVersion::V20_2_0_7,
+        little_endian: true,
+        user_version: 12,
+        user_version_2: 173, // real file's bsver
+        num_blocks: 0,
+        block_types: Vec::new(),
+        block_type_indices: Vec::new(),
+        block_sizes: Vec::new(),
+        // Real block's NiObjectNETData.name is string-table index 6,
+        // resolving to "" (full-body path, not a material-reference stub).
+        strings: vec![Arc::from(""); 7],
+        max_string_length: 0,
+        num_groups: 0,
+    };
+    // Byte-for-byte block 6 payload (166 bytes), extracted with
+    // `cargo run -p byroredux-bsa --example ba2_extract_one` +
+    // `cargo run -p byroredux-nif --example trace_block` against the
+    // real archive — see this test's doc comment for the source path.
+    #[rustfmt::skip]
+    let data: [u8; 166] = [
+        0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+        0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0xad, 0xc2, 0xc5, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x3f, 0xff, 0xff, 0xff, 0xff,
+        0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x3f,
+        0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x3f,
+        0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0xbf,
+        0x00, 0x00, 0xc8, 0x42, 0x00, 0x00, 0x58, 0x41, 0x00, 0x00, 0x00, 0x40,
+        0x00, 0x00, 0x40, 0x40, 0xcd, 0xcc, 0xcc, 0x3d, 0x00, 0x00, 0x00, 0x00,
+        0x0a, 0xd7, 0xa3, 0x3c, 0xb1, 0xbf, 0xec, 0x3c, 0x55, 0xa4, 0xc2, 0x3d,
+        0x1b, 0x4c, 0x43, 0x3b, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00,
+    ];
+
+    let mut stream = NifStream::new(&data, &header);
+    let prop = BSLightingShaderProperty::parse_with_size(&mut stream, Some(data.len() as u32))
+        .expect("real Starfield BSLightingShaderProperty block must parse");
+
+    assert_eq!(
+        stream.position(),
+        data.len() as u64,
+        "must consume exactly the real block's byte count — no drift",
+    );
+    assert!(
+        !prop.material_reference,
+        "empty name (string idx 6 → \"\") must take the full-body path"
+    );
+
+    // Corrected alignment reads shader_type unconditionally.
+    assert_eq!(prop.shader_type, 0);
+
+    // Finite, non-negative emissive — pre-fix this was NaN (decoded from
+    // texture_set_ref's 0xFFFFFFFF NULL sentinel one word early).
+    for c in prop.emissive_color {
+        assert!(c.is_finite() && c >= 0.0, "emissive component {c} must be finite and non-negative");
+    }
+    assert_eq!(prop.emissive_color, [1.0, 1.0, 1.0]);
+
+    // A well-defined (NULL) texture_set_ref — pre-fix this decoded to an
+    // arbitrary non-null, unresolvable index (1065353216 on this exact
+    // block).
+    assert!(
+        prop.texture_set_ref.is_null(),
+        "texture_set_ref must resolve to a well-defined ref, got {:?}",
+        prop.texture_set_ref
+    );
+
+    // Non-zero U-scale — pre-fix this block's uv_scale.x decoded to 0.0.
+    assert!(prop.uv_scale[0] > 0.0, "uv_scale.x must be non-zero, got {}", prop.uv_scale[0]);
+    assert_eq!(prop.uv_scale, [1.0, 1.0]);
+
+    // sf1_crcs must be members of the known BSShaderCRC32 set — pre-fix
+    // this decoded to a value with no membership in that set.
+    assert_eq!(
+        prop.sf1_crcs,
+        vec![crate::shader_flags::bs_shader_crc32::VERTEX_COLORS],
+        "sf1 CRC must decode to the real, named VERTEX_COLORS flag",
+    );
+}
+
 /// #1510 / NIF-NEW-05 — nif.xml `#BS_F76# = (BSVER == 155)` ("Fallout 76
 /// stream 155 only"): the `BSShaderType155` field, WetnessParams
 /// `unknown_2`, and the Luminance / Translucency / texture-array tail are

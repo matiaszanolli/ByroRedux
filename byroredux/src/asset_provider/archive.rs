@@ -5,18 +5,31 @@ pub(crate) enum Archive {
     Ba2(byroredux_bsa::Ba2Archive),
 }
 
+/// Read exactly the 4 magic bytes from `r` — the testable core of
+/// [`Archive::open`]'s dispatch sniff. Split out so a byte-counting
+/// `Read` wrapper can prove the caller never reads past this fixed
+/// window, without needing a real (potentially multi-GB) file on disk.
+/// See #2615 / SF-D3-03.
+fn sniff_magic_from<R: std::io::Read>(mut r: R) -> std::io::Result<[u8; 4]> {
+    let mut m = [0u8; 4];
+    r.read_exact(&mut m)?;
+    Ok(m)
+}
+
 impl Archive {
     /// Open an archive file, auto-detecting BSA vs BA2 from the file magic.
     pub(crate) fn open(path: &str) -> Result<Self, String> {
-        let magic = std::fs::read(path)
-            .map_err(|e| format!("read '{}': {}", path, e))
-            .and_then(|data| {
-                if data.len() < 4 {
-                    Err(format!("'{}' too small", path))
-                } else {
-                    Ok([data[0], data[1], data[2], data[3]])
-                }
-            })?;
+        // #2615 / SF-D3-03 — sample just the magic bytes instead of
+        // `std::fs::read`ing the whole archive into a transient `Vec<u8>`.
+        // Starfield's mesh archives run multi-GB; the old sniff allocated
+        // and filled the entire file (twice per provider build, per
+        // `build_material_provider`'s own doc — the archive is re-opened
+        // for its file table via a second `Archive::open` call) purely to
+        // read 4 bytes. `BsaArchive::open`/`Ba2Archive::open` below do
+        // their own real (streamed) file-table read.
+        let magic = std::fs::File::open(path)
+            .and_then(sniff_magic_from)
+            .map_err(|e| format!("read '{}': {}", path, e))?;
         if &magic == b"BTDX" {
             byroredux_bsa::Ba2Archive::open(path)
                 .map(Archive::Ba2)
@@ -376,5 +389,60 @@ pub(crate) fn numeric_sibling_paths(path: &str) -> Vec<String> {
         Some(c) if c.is_ascii_digit() => Vec::new(),
         // No trailing digit (FNV `… Textures.bsa`): offer `…2`..`…9`.
         _ => (2..=9u32).map(|n| format!("{stem}{n}{ext}")).collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sniff_magic_from;
+    use std::io::Read;
+
+    /// Wraps a `Read` and counts every byte actually pulled through it —
+    /// the "byte-counting reader wrapper" from #2615's completeness
+    /// check. Lets the test prove the magic sniff never reads past its
+    /// fixed 4-byte window without needing a real multi-GB file on disk.
+    struct CountingReader<R> {
+        inner: R,
+        bytes_read: usize,
+    }
+
+    impl<R: Read> Read for CountingReader<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.bytes_read += n;
+            Ok(n)
+        }
+    }
+
+    /// Regression: #2615 / SF-D3-03 — pre-fix, `Archive::open` sniffed
+    /// the dispatch magic via `std::fs::read`, pulling the ENTIRE file
+    /// through before ever looking at the first 4 bytes. A 100 MB
+    /// in-memory stand-in (no real file needed — the point is proving
+    /// the *reader*, not exercising the filesystem) with a counting
+    /// wrapper confirms the fixed-size sniff reads exactly 4 bytes
+    /// regardless of how much data follows.
+    #[test]
+    fn magic_sniff_reads_at_most_four_bytes_from_a_huge_source() {
+        let mut source = vec![0x42u8; 100 * 1024 * 1024]; // 100 MB
+        source[0..4].copy_from_slice(b"BTDX");
+        let mut counting = CountingReader {
+            inner: std::io::Cursor::new(&source),
+            bytes_read: 0,
+        };
+        let magic = sniff_magic_from(&mut counting).expect("100 MB source has plenty of bytes");
+        assert_eq!(&magic, b"BTDX");
+        assert_eq!(
+            counting.bytes_read, 4,
+            "the magic sniff must read exactly 4 bytes, not the whole 100 MB source"
+        );
+    }
+
+    /// A source shorter than 4 bytes fails — same "too small" rejection
+    /// the pre-fix `data.len() < 4` check enforced, now surfaced as a
+    /// bounds-checked `UnexpectedEof` from `read_exact` instead.
+    #[test]
+    fn magic_sniff_errors_on_a_too_short_source() {
+        let source: &[u8] = b"ab";
+        assert!(sniff_magic_from(source).is_err());
     }
 }
