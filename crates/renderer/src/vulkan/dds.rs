@@ -28,8 +28,17 @@ const FOURCC_BC5S: u32 = u32::from_le_bytes(*b"BC5S");
 const FOURCC_DX10: u32 = u32::from_le_bytes(*b"DX10");
 
 // DXGI format codes (subset we care about)
+// #2619 / SF-D1-03 — 78 vanilla Starfield textures (12 interior ambient/
+// reflection-probe cubemaps + the LTC area-light LUT + 62 chargen head
+// normal maps + 2 gas-giant gradients; full-corpus DXGI histogram in
+// #2628 / SF-D1-02, the BA2-side sibling of this gap) ship these three
+// codes; all three are core Vulkan 1.0 uncompressed formats needing no
+// extra feature check.
+const DXGI_FORMAT_R16G16B16A16_FLOAT: u32 = 10; // 8 B/px — HDR cubemaps + LTC LUT
+const DXGI_FORMAT_R16G16B16A16_UNORM: u32 = 11; // 8 B/px — gas-giant gradients
 const DXGI_FORMAT_R8G8B8A8_UNORM: u32 = 28;
 const DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: u32 = 29;
+const DXGI_FORMAT_R8G8B8A8_SNORM: u32 = 31; // 4 B/px — chargen head normal maps
 // Single-channel uncompressed (#1074 / FO4-D2-008)
 const DXGI_FORMAT_R16_UNORM: u32 = 56; // 2 bytes/px — heightmaps, mono masks
 const DXGI_FORMAT_R8_UNORM: u32 = 61; // 1 byte/px  — single-channel masks
@@ -511,6 +520,16 @@ fn map_dxgi_format(dxgi: u32) -> Result<(vk::Format, u32, bool)> {
         DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB => {
             Ok((vk::Format::R8G8B8A8_SRGB, 4, false))
         }
+        // #2619 / SF-D1-03 — chargen head normal maps. SNORM (signed
+        // -1..1 per channel) is the correct storage for tangent-space
+        // normal data; core Vulkan 1.0, no feature check needed.
+        DXGI_FORMAT_R8G8B8A8_SNORM => Ok((vk::Format::R8G8B8A8_SNORM, 4, false)),
+        // #2619 / SF-D1-03 — interior ambient/reflection-probe cubemaps +
+        // the LTC area-light LUT (10, HDR half-float) and the gas-giant
+        // gradient textures (11, integer-normalized). Both are core
+        // Vulkan 1.0 uncompressed formats.
+        DXGI_FORMAT_R16G16B16A16_FLOAT => Ok((vk::Format::R16G16B16A16_SFLOAT, 8, false)),
+        DXGI_FORMAT_R16G16B16A16_UNORM => Ok((vk::Format::R16G16B16A16_UNORM, 8, false)),
         // FO4 normal maps ship as B8G8R8A8_UNORM (ba2.rs:808). No special
         // Vulkan feature required — universally supported on Vulkan 1.0 desktop.
         DXGI_FORMAT_B8G8R8A8_UNORM => Ok((vk::Format::B8G8R8A8_UNORM, 4, false)),
@@ -1030,6 +1049,48 @@ mod tests {
         assert_eq!(meta.format, vk::Format::BC6H_SFLOAT_BLOCK);
         assert_eq!(meta.block_size, 16);
         assert!(meta.compressed);
+    }
+
+    // ── #2619 / SF-D1-03 — DXGI 10/11/31, previously unmapped ──────────
+    //
+    // 78 vanilla Starfield textures (interior ambient/reflection-probe
+    // cubemaps, the LTC area-light LUT, chargen head normal maps, and
+    // gas-giant gradients) ship these three DXGI codes; pre-fix every
+    // one hard-failed `map_dxgi_format` and fell back to the placeholder
+    // texture. See #2628 / SF-D1-02 for the sibling BA2-side gap (same
+    // 78-record set, independent fix).
+
+    #[test]
+    fn dxgi_r16g16b16a16_float_maps_correctly() {
+        // Interior ambient/reflection-probe cubemaps + the LTC area-light LUT.
+        let data = make_dx10_header(64, 64, 1, DXGI_FORMAT_R16G16B16A16_FLOAT);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::R16G16B16A16_SFLOAT);
+        assert_eq!(meta.block_size, 8);
+        assert!(!meta.compressed);
+        // Uncompressed: 64×64 px × 8 B/px = 32768.
+        assert_eq!(mip_size(64, 64, 0, meta.block_size, meta.compressed), 32768);
+    }
+
+    #[test]
+    fn dxgi_r16g16b16a16_unorm_maps_correctly() {
+        // Gas-giant gradient textures.
+        let data = make_dx10_header(32, 4, 1, DXGI_FORMAT_R16G16B16A16_UNORM);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::R16G16B16A16_UNORM);
+        assert_eq!(meta.block_size, 8);
+        assert!(!meta.compressed);
+    }
+
+    #[test]
+    fn dxgi_r8g8b8a8_snorm_maps_correctly() {
+        // Chargen head normal maps — SNORM is the correct storage for
+        // signed tangent-space normal data.
+        let data = make_dx10_header(512, 512, 1, DXGI_FORMAT_R8G8B8A8_SNORM);
+        let meta = parse_dds(&data).unwrap();
+        assert_eq!(meta.format, vk::Format::R8G8B8A8_SNORM);
+        assert_eq!(meta.block_size, 4);
+        assert!(!meta.compressed);
     }
 
     fn approx(a: [f32; 3], b: [f32; 3]) {

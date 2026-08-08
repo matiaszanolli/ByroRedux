@@ -710,22 +710,26 @@ fn decompress_chunk(
             let mut buf = Vec::with_capacity(unpacked_size);
             decoder.read_to_end(&mut buf)?;
             if buf.len() != unpacked_size {
-                // #812 / FO4-D2-NEW-02 — the LZ4 branch hard-errors
-                // on the same condition (lz4_flex inherently size-
-                // checks); zlib's `read_to_end` honours deflate's
-                // self-terminating end-of-stream marker mid-buffer
-                // so a truncated archive returns a short blob.
-                // Promoted from `log::debug!` so operators see the
-                // mismatch in standard log output without changing
-                // the lenient semantics — a synthetic `unpacked_size
-                // = 100 / actual stream = 20` archive currently
-                // pivots into the NIF / DDS parser at the wrong
-                // size with no signalling above debug-log noise.
-                // Sibling of #622's BSA-side hardening
-                // (SK-D2-04). The optional `Strict` mode that
-                // would convert this to an `InvalidData` error is
-                // gated on #598's investigation of vanilla
-                // `Fallout4 - Meshes.ba2`'s `packed_size >
+                // #812 / FO4-D2-NEW-02 — `read_to_end` honours deflate's
+                // self-terminating end-of-stream marker mid-buffer so a
+                // truncated archive returns a short blob. #2618 / SF-D1-01
+                // corrected the LZ4 arm below to warn on the identical
+                // condition too — pre-#2618 this comment claimed LZ4
+                // "hard-errors on the same condition," which was
+                // factually wrong: `lz4_flex::block::decompress` only
+                // hard-errors when the block decodes to MORE than
+                // `unpacked_size` (an over-run); a short decode
+                // (under-run) silently truncates and returns `Ok`, same
+                // as this zlib branch. Promoted from `log::debug!` so
+                // operators see the mismatch in standard log output
+                // without changing the lenient semantics — a synthetic
+                // `unpacked_size = 100 / actual stream = 20` archive
+                // currently pivots into the NIF / DDS parser at the
+                // wrong size with no signalling above debug-log noise.
+                // Sibling of #622's BSA-side hardening (SK-D2-04). The
+                // optional `Strict` mode that would convert this to an
+                // `InvalidData` error is gated on #598's investigation of
+                // vanilla `Fallout4 - Meshes.ba2`'s `packed_size >
                 // unpacked_size` anomaly.
                 log::warn!(
                     "BA2 zlib decompressed {} bytes but record declared {}",
@@ -736,12 +740,35 @@ fn decompress_chunk(
             Ok(buf)
         }
         Ba2Compression::Lz4Block => {
-            lz4_flex::block::decompress(packed, unpacked_size).map_err(|e| {
+            let buf = lz4_flex::block::decompress(packed, unpacked_size).map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("BA2 LZ4 block decompression failed: {}", e),
                 )
-            })
+            })?;
+            // #2618 / SF-D1-01 — mirror the zlib arm's mismatch warning.
+            // `lz4_flex::block::decompress`'s `unpacked_size` parameter is
+            // only a capacity hint (`Vec::with_capacity`); when the block
+            // actually decodes to FEWER bytes (an under-run — declared
+            // size larger than actual), the function silently returns
+            // the shorter buffer with no error, unlike an over-run (more
+            // bytes than declared), which it DOES hard-error on. LZ4 is
+            // the only codec for every Starfield v3 texture archive, and
+            // a DX10 texture is a concatenation of per-mip chunks — a
+            // short decode on a non-final chunk shifts every subsequent
+            // mip, and the synthesized DDS header then misdescribes its
+            // own payload. Pre-#2618 there was no signal above
+            // debug-log noise; this promotes it to the same visibility
+            // level as the zlib arm above.
+            if buf.len() != unpacked_size {
+                log::warn!(
+                    "BA2 LZ4 decompressed {} bytes but record declared {} (under-run — \
+                     lz4_flex silently truncates rather than erroring in this direction)",
+                    buf.len(),
+                    unpacked_size
+                );
+            }
+            Ok(buf)
         }
     }
 }
@@ -1337,6 +1364,43 @@ mod tests {
         let garbage = [0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA];
         let result = decompress_chunk(&garbage, 1024, Ba2Compression::Lz4Block);
         assert!(result.is_err());
+    }
+
+    /// Regression for #2618 / SF-D1-01: an LZ4 block that decodes to
+    /// FEWER bytes than the record's declared `unpacked_size` (an
+    /// "under-run") is a distinct case from `decompress_chunk_lz4_corrupt_data_fails`'s
+    /// outright-garbage input — `lz4_flex::block::decompress`'s
+    /// `unpacked_size` parameter is only a capacity hint, not a strict
+    /// validator, so this still returns `Ok` with the shorter buffer
+    /// (mirrors `decompress_chunk_zlib_short_stream_returns_actual_length`'s
+    /// lenient-mode pin on the sibling zlib arm — this asymmetry with an
+    /// over-run, which DOES hard-error, is deliberate upstream behaviour
+    /// this function cannot and should not change).
+    ///
+    /// The warn-level log promoted by #2618 is the operator-visible
+    /// signal that this happened — not directly assertable here without
+    /// a test logger (same caveat as the zlib sibling test above);
+    /// pinned instead by the `log::warn!` call site at `decompress_chunk`'s
+    /// LZ4 arm. Pre-#2618 this condition was completely silent (no log
+    /// at any level) and the doc comment on the zlib arm actively
+    /// claimed LZ4 "hard-errors on the same condition," which was false.
+    #[test]
+    fn decompress_chunk_lz4_under_run_returns_actual_length_not_declared() {
+        let actual_payload = b"short lz4 payload, well under the declared size";
+        let compressed = lz4_flex::block::compress(actual_payload);
+
+        let result = decompress_chunk(
+            &compressed,
+            actual_payload.len() + 500,
+            Ba2Compression::Lz4Block,
+        )
+        .expect("lenient mode: an over-declared LZ4 unpacked_size must NOT error");
+        assert_eq!(
+            result.as_slice(),
+            actual_payload,
+            "buffer length is what LZ4 actually decoded, NOT the record-declared \
+             unpacked_size — downstream NIF/DDS parsers see the actual short payload"
+        );
     }
 
     /// Regression for #755 (SF-DIM2-02) — a v3 BA2 header with an
