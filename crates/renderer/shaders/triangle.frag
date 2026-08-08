@@ -2291,7 +2291,12 @@ void main() {
             // seams and the anisotropic lobe orientation drifts from
             // the bump-mapped normal frame.
             T = normalize(T - dot(T, N) * N);
-            vec3 B = normalize(cross(N, T)) * fragTangent.w;
+            // Clamp the interpolated handedness to ±1 (REN-D19-04 / #2512) —
+            // the per-vertex ±1 guarantee doesn't survive interpolation
+            // across a mixed-sign (UV-fold) triangle, and a raw fractional
+            // multiply here shortens B and skews the anisotropic lobe.
+            float tangentSign = fragTangent.w < 0.0 ? -1.0 : 1.0;
+            vec3 B = normalize(cross(N, T)) * tangentSign;
             float HdotX = dot(H, T);
             float HdotY = dot(H, B);
             float ax;
@@ -2919,6 +2924,10 @@ void main() {
                         rayDir = normalize(jitteredTarget - rayOrigin);
                         rayDist = length(jitteredTarget - rayOrigin) - 0.1;
                     } else {
+                        // Tangent-plane disk jitter, valid only for α < ~0.05
+                        // rad — same approximation as the legacy-WRS arm's
+                        // directional-shadow-jitter block below (see its
+                        // comment for the full derivation and tuning history).
                         float sunAngularRadius = skyTint.w;
                         vec3 jitteredDir =
                             L + (Tb * diskSample.x + Bb * diskSample.y) * sunAngularRadius;

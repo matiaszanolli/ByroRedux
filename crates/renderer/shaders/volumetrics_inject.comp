@@ -17,7 +17,14 @@
 // rendering in Frostbite," SIGGRAPH 2015. The injection step is
 // §5.2; phase function from §5.1 (Henyey-Greenstein, single-lobe);
 // shadow visibility is the standard "trace toward light, miss = lit"
-// test used by every modern RT volumetric path.
+// test used by every modern RT volumetric path — but per froxel this
+// is NOT a single ray. Worst case: 1 opaque sun ray, +1 glass-masked
+// sun ray for interiors (disambiguating a missing-ceiling no-hit from
+// a real window), then up to MAX_FROXEL_LIGHTS local lights x up to 2
+// rays each (opaque mask, then glass mask) = up to 10 ray-query
+// traversals per froxel. At the default 160x90x64 grid that is a
+// worst-case ~9.2M ray queries/frame from this pass alone. See
+// REN-D16-2026-08-07-02 / #2509.
 #version 460
 #extension GL_EXT_ray_query : require
 #extension GL_GOOGLE_include_directive : require

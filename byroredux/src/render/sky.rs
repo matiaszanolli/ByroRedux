@@ -102,9 +102,12 @@ pub(super) fn build_sky_params(world: &World) -> SkyParams {
         sun_size: sky_res.sun_size,
         sun_intensity: sky_res.sun_intensity,
         // Tangent-plane disk approximation valid only for α < ~0.05 rad
-        // (documented in triangle.frag:2418-2425). Debug-mode guard so a
-        // per-cell override above 0.1 rad fails loudly instead of silently
-        // producing biased penumbras. (#1109 / REN-D20-002)
+        // (derivation documented at the directional-shadow-jitter block in
+        // triangle.frag's legacy-WRS arm, next to `sunAngularRadius`; the
+        // ReSTIR arm's sampler carries a one-line back-reference to the same
+        // spot). Debug-mode guard so a per-cell override above 0.1 rad fails
+        // loudly instead of silently producing biased penumbras.
+        // (#1109 / REN-D20-002)
         sun_angular_radius: {
             debug_assert!(
                 sky_res.sun_angular_radius < 0.10,
