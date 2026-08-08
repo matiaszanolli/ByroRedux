@@ -549,6 +549,65 @@ fn validate_form_ids(world: &World) -> Vec<ValidationError> {
     errors
 }
 
+/// Binary-side supplement to [`validate_world`], mirroring
+/// [`validate_form_ids`]'s pattern: `validate_world`'s doc comment scopes
+/// `crates/save`'s checks to `byroredux-core` types only, deferring
+/// anything needing another crate's components to the binary — the same
+/// reason `FormId` resolution lives here instead of in `crates/save`.
+///
+/// #2535 / SAVE-D4-02 — `HorseTetherState.horse: EntityId` and
+/// `ActorCinematicState.vehicle: Option<EntityId>`
+/// (`byroredux_scripting::cinematic`) are both direct entity references,
+/// invisible to every one of `validate_world`'s four reference-class
+/// checks (`validate_hierarchy` only walks `Parent`/`Children`,
+/// `validate_equipment` only `EquipmentSlots`↔`Inventory`,
+/// `validate_animation` only `AnimationPlayer`,
+/// `validate_inventory_instances` only `Inventory.items[].instance`). A
+/// save with either field pointing at an id `>= next_entity` (e.g. a
+/// tethered horse that despawned mid-session while the tether component
+/// survived) previously passed `validate_world` cleanly with no
+/// diagnostic anywhere in the pipeline.
+fn validate_cinematic_entity_refs(world: &World) -> Vec<ValidationError> {
+    use byroredux_scripting::cinematic::{ActorCinematicState, HorseTetherState};
+
+    let mut errors = Vec::new();
+    let next_entity = world.next_entity_id();
+
+    if let Some(q) = world.query::<HorseTetherState>() {
+        for (entity, tether) in q.iter() {
+            if tether.horse >= next_entity {
+                errors.push(ValidationError {
+                    entity,
+                    kind: ValidationKind::DanglingEntity,
+                    detail: format!(
+                        "HorseTetherState.horse {} was never spawned (next_entity={next_entity})",
+                        tether.horse
+                    ),
+                });
+            }
+        }
+    }
+
+    if let Some(q) = world.query::<ActorCinematicState>() {
+        for (entity, state) in q.iter() {
+            if let Some(vehicle) = state.vehicle {
+                if vehicle >= next_entity {
+                    errors.push(ValidationError {
+                        entity,
+                        kind: ValidationKind::DanglingEntity,
+                        detail: format!(
+                            "ActorCinematicState.vehicle {vehicle} was never spawned \
+                             (next_entity={next_entity})"
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    errors
+}
+
 pub struct SaveCommand;
 
 impl ConsoleCommand for SaveCommand {
@@ -595,9 +654,12 @@ impl ConsoleCommand for SaveCommand {
 
         // Pre-save validation — refuse to persist a broken world. Core
         // referential-integrity gates plus the binary-only FormId-pool
-        // resolvability check (which needs the `FormIdPool` this crate owns).
+        // resolvability check (which needs the `FormIdPool` this crate owns)
+        // and the cinematic EntityId-reference check (#2535 — needs
+        // `byroredux-scripting` types `crates/save` doesn't depend on).
         let mut issues = validate_world(world);
         issues.extend(validate_form_ids(world));
+        issues.extend(validate_cinematic_entity_refs(world));
         if !issues.is_empty() {
             let mut lines = vec![format!(
                 "save ABORTED: {} referential-integrity issue(s) — refusing to write a poisoned save:",
@@ -942,6 +1004,7 @@ pub fn execute_pending_save_loads(
     // only — a load can't cleanly fall back to the previous cell.
     let mut issues = validate_world(world);
     issues.extend(validate_form_ids(world));
+    issues.extend(validate_cinematic_entity_refs(world));
     log_validation_warnings(
         &format!("save load: cell '{}'", cell_ctx.cell_editor_id),
         &issues,
@@ -1940,12 +2003,65 @@ mod tests {
             ("PhysicsWorld", "owns live Rapier handle sets, architecturally rebuilt from cell data (CollisionShape/RigidBodyData/Transform) every load, not snapshot-restored"),
             ("Ragdoll", "handle bookkeeping only, no live inserter exists yet (debug console command only) — same posture as Dead (#2293)"),
             ("RapierHandles", "self-healing generational index; its own doc states absence is the signal to re-derive it, and physics_sync_system does so automatically"),
+            // ── byroredux/src/ ────────────────────────────────────────────
+            // #2536 / SAVE-D1-18 — added alongside the new `SCAN_ROOTS`
+            // entry below; classifies every `impl Component`/`impl
+            // Resource` under the binary crate not already registered in
+            // `build_save_registry` (`ActorCinematicState`,
+            // `HorseTetherState`, `ActorControlState`, `RigidBodyData`,
+            // `Material`, `RumbleOnActivate`, `CurrentCellContext`,
+            // `PlayerPose`, `GameTimeRes` all already are). Verified
+            // 2026-08-08 against real (non-`#[cfg(test)]`) insertion sites
+            // for every entry, same bar as the rest of this list.
+            ("AlphaBlend", "spawn-time classification extracted from NiAlphaProperty flags at import, rederived identically every load"),
+            ("CellLightingRes", "WTHR ambient/directional CPU-side mirror, re-flowed from the plugin's parsed lighting record every cell load"),
+            ("CellRootIndex", "inverted CellRoot->owned-entities index, repopulated by cell_loader::stamp_cell_root every cell load (#791)"),
+            ("CloudSimState", "cloud-scroll accumulator, freshly seeded at [0,0] by every apply_worldspace_weather call (see its own #803 doc)"),
+            ("CurrentCellRoot", "tracks the interior placement-root entity, set fresh by load_cell_with_masters and cleared by execute_pending before each cell load"),
+            ("DebugLoadArchiveSet", "debug cell.load console-command bookkeeping (#2078), outside the normal single-launch CLI path"),
+            ("DoorTeleport", "XTEL destination data, rederived identically from the plugin's parsed REFR every cell load"),
+            ("FootstepConfig", "engine-wide footstep sound configuration loaded once at startup from a vanilla BSA"),
+            ("FootstepEmitter", "per-frame position/stride accumulator mutated by footstep_system every tick — ephemeral audio-cue bookkeeping, not gameplay state"),
+            ("FootstepScratch", "per-frame scratch buffer for footstep_system's two-phase collect/drain pattern (#932) — capacity-only persistence, no gameplay state"),
+            ("HavokAnimationTarget", "skeleton_root + consumed_idle_serial are both spawn-time-resolved (serial always starts at 0), rederived identically every load"),
+            ("HavokIdleCatalog", "process-lifetime IDLE FormID -> animation handle mapping, populated once and read-only afterward — same posture as AnimationClipRegistry"),
+            ("InputState", "live keyboard/mouse state for the fly camera, inherently process-session-local"),
+            ("IsDecalMesh", "spawn-time classification per FO4 BGSM decal semantics, rederived identically every load"),
+            ("IsFxMesh", "spawn-time classification lifted from a per-frame material-path scan (PERF-D3-NEW-02/#1136), rederived identically every load"),
+            ("IsLodTerrain", "spawn-time classification set only by terrain_lod::spawn_lod_block, rederived identically every load"),
+            ("LightTuning", "live-tuning resource mutated only by the light.atten debug console command, for A/B comparison — not gameplay state"),
+            ("LoadedCellIndex", "read-only parsed-ESM cell index, Arc-shared scene metadata rebuilt every cell load"),
+            ("LoadedPluginSet", "boot-time CLI --esm/--master capture, reused only to re-invoke load_cell_with_masters — not gameplay state"),
+            ("MaterialTextureHandles", "bindless GPU texture handle set, rebuilt by the texture-upload path every load — handles aren't stable across process restarts"),
+            ("MetricsState", "process-diagnostics sampler holding a live sysinfo::System handle, not gameplay state"),
+            ("NameIndex", "lazily-rebuilt Name->EntityId cache, invalidated by its own generation counter (#249)"),
+            ("NifImportRegistry", "process-lifetime parsed-NIF LRU cache, keyed by model path — re-populated on demand, never save-relevant"),
+            ("NormalMapHandle", "bindless GPU texture handle for the water normal-map path, rebuilt by the texture-upload path every load"),
+            ("PendingCellTransitionSlot", "one-shot queued-transition slot, always present but empty except mid-transition"),
+            ("PendingSaveLoadSlot", "one-shot queued-load slot (#1848/SAVE-05), empty except mid-drain — save/load plumbing itself, not save-worthy state"),
+            ("PlayerEntity", "set by scene::spawn_player_character and cleared by cell unload — always freshly re-set on load, not restore-worthy"),
+            ("PlayerMode", "engine-wide FlyCam/Character flag set at scene-setup from CLI flags + scene type, not gameplay state"),
+            ("RagdollActive", "marker for live ragdoll simulation, same physics-rebuild posture as PhysicsWorld above — not snapshot-restored"),
+            ("RagdollTemplate", "per-actor ragdoll blueprint resolved at spawn against the loaded skeleton, rederived identically every load — same posture as PhysicsWorld"),
+            ("SandboxSitClip", "resolved once at cell load from the archive provider, read-only afterward"),
+            ("SaveState", "save-slot directory + ring cursor, resumed from disk at startup (SaveState::new) — save/load plumbing itself, not part of the world snapshot"),
+            ("SceneImportCache", "process-lifetime parsed-scene cache wrapper around the same ParsedNifCache core as NifImportRegistry"),
+            ("SeatReservations", "cleared on cell load (entity ids reset on unload, so stale reservations would be meaningless) — see its own doc"),
+            ("SkyParamsRes", "WTHR sky rendering parameters, rebuilt from the parsed record every exterior cell load"),
+            ("Spinning", "demo-scene marker component, not present on any real gameplay content"),
+            ("SubtreeCache", "lazily-rebuilt animation subtree cache, invalidated alongside NameIndex (#278)"),
+            ("TerrainTileSlot", "index into the renderer's per-frame GpuTerrainTile SSBO, rebuilt by the terrain-spawn path every load (#470)"),
+            ("TwoSided", "marker for backface-culling state, rederived identically from NIF material data every load"),
+            ("VisibleWhenDistant", "spawn-time classification derived from the streaming-ring/LOD-radius relationship (#1889), rederived identically every load"),
+            ("WeatherDataRes", "WTHR NAM0 sky-color table, rebuilt from the parsed record whenever weather is (re)applied"),
+            ("WeatherTransitionRes", "one-shot weather-blend accumulator, present only mid-transition and removed on completion"),
         ];
 
         const SCAN_ROOTS: &[&str] = &[
             "../crates/core/src/ecs/components",
             "../crates/scripting/src",
             "../crates/physics/src",
+            "../byroredux/src",
         ];
 
         let manifest = env!("CARGO_MANIFEST_DIR");
@@ -2067,6 +2183,88 @@ mod tests {
         let e = world.spawn();
         world.insert(e, FormIdComponent(fid));
         assert!(validate_form_ids(&world).is_empty());
+    }
+
+    /// #2535 / SAVE-D4-02: a `HorseTetherState.horse` pointing at an id
+    /// past `next_entity` (the tethered horse despawned mid-session while
+    /// the tether component survived) is flagged, mirroring
+    /// `validate_form_ids`'s dangling-reference contract.
+    #[test]
+    fn dangling_horse_tether_reference_is_rejected() {
+        use byroredux_core::math::Quat;
+        use byroredux_scripting::cinematic::HorseTetherState;
+
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(
+            e,
+            HorseTetherState {
+                horse: 999, // never spawned
+                horse_local_translation: Vec3::ZERO,
+                horse_local_rotation: Quat::IDENTITY,
+            },
+        );
+
+        let errors = validate_cinematic_entity_refs(&world);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, ValidationKind::DanglingEntity);
+        assert_eq!(errors[0].entity, e);
+    }
+
+    /// Companion: a horse tether pointing at a live, actually-spawned
+    /// entity passes clean.
+    #[test]
+    fn live_horse_tether_reference_passes() {
+        use byroredux_core::math::Quat;
+        use byroredux_scripting::cinematic::HorseTetherState;
+
+        let mut world = World::new();
+        let horse = world.spawn();
+        let e = world.spawn();
+        world.insert(
+            e,
+            HorseTetherState {
+                horse,
+                horse_local_translation: Vec3::ZERO,
+                horse_local_rotation: Quat::IDENTITY,
+            },
+        );
+
+        assert!(validate_cinematic_entity_refs(&world).is_empty());
+    }
+
+    /// #2535 / SAVE-D4-02: same check for `ActorCinematicState.vehicle`.
+    #[test]
+    fn dangling_cinematic_vehicle_reference_is_rejected() {
+        use byroredux_scripting::cinematic::ActorCinematicState;
+
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(
+            e,
+            ActorCinematicState {
+                vehicle: Some(999), // never spawned
+                ..Default::default()
+            },
+        );
+
+        let errors = validate_cinematic_entity_refs(&world);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, ValidationKind::DanglingEntity);
+        assert_eq!(errors[0].entity, e);
+    }
+
+    /// Companion: `vehicle: None` (detached/never mounted) passes clean,
+    /// same as a live-vehicle reference.
+    #[test]
+    fn cinematic_state_without_vehicle_passes() {
+        use byroredux_scripting::cinematic::ActorCinematicState;
+
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, ActorCinematicState::default());
+
+        assert!(validate_cinematic_entity_refs(&world).is_empty());
     }
 
     /// `save` then `load` (commands) round-trip through disk: the save
@@ -2668,6 +2866,19 @@ mod tests {
         "../crates/core/src/ecs/components/guard.rs",  // GuardState (+ GuardBehavior)
         "../crates/core/src/ecs/components/patrol.rs", // PatrolState (+ PatrolBehavior)
         "../crates/core/src/ecs/components/sandbox.rs", // Seated (+ SandboxBehavior)
+        // #2537 / SAVE-D2-19 — six files carrying ~23 save-participating
+        // serde-derived types, wired into `build_save_registry` by the
+        // #2378/#2379/#2380/#2381/#2382/c5202627 commit sequence but never
+        // added here. Same failure class as #2015/SAVE-D2-03
+        // (actor_values.rs), now recurred once already — see this guard's
+        // own doc comment above for why a missing entry here is a silent
+        // blind spot, not a build error.
+        "../crates/core/src/ecs/components/material.rs", // Material, EffectFalloff, ShaderTypeFields, PbrMaterial, EmissiveSource
+        "../crates/core/src/ecs/components/collision.rs", // RigidBodyData (+ MotionType)
+        "../crates/scripting/src/papyrus_demo/mod.rs",   // RumbleOnActivate (+ RumbleState)
+        "../crates/scripting/src/cinematic.rs", // ActorCinematicState, HorseTetherState, CinematicPresentationState + nested types
+        "../crates/scripting/src/player_control.rs", // PlayerControlState, ActorControlState (+ PlayerControlSelection)
+        "../crates/scripting/src/fragment.rs",  // FragmentExecutionQueue (+ nested types)
     ];
 
     /// Does `line` carry a `#[serde(...)]` attribute that declares

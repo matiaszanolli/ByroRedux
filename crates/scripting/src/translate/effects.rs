@@ -213,6 +213,21 @@ struct Scope {
     object_locals: HashMap<String, ObjectRef>,
     player_locals: HashSet<String>,
     decl_locals: HashSet<String>,
+    /// #2538 / SCR-D5-NEW10-01 — lowercased names of the containing
+    /// script's `Quest Property` declarations (from VMAD-equivalent
+    /// property-type metadata, threaded in from `&Script` at
+    /// `lower_fragment_with_quest_properties`'s entry point). Nothing in
+    /// the AST shape alone distinguishes a bare `Quest Property`
+    /// reference from a bare scene-form property — `Quest.Start()` and
+    /// `Scene.Start()` produce the identical zero-arg method-call AST —
+    /// so `receiver_object` (the resolver `prim_start_scene`/
+    /// `prim_stop_scene` and friends share) declines any bare identifier
+    /// that appears here, rather than letting a name we *know* is a
+    /// `Quest` property fall through and get silently accepted as a
+    /// scene reference. Empty (via `lower_fragment`'s thin wrapper) for
+    /// every call site that doesn't have script-level property metadata
+    /// available — matches the pre-fix behavior for those.
+    known_quest_properties: HashSet<String>,
 }
 
 /// Lower a predominantly flat fragment body to its canonical effects, or
@@ -223,8 +238,27 @@ struct Scope {
 /// statement no effect primitive claims — never a partial lowering. An empty
 /// body lowers to an empty effect list (a no-op fragment is trivially
 /// understood).
+///
+/// Thin wrapper over [`lower_fragment_with_quest_properties`] with an
+/// empty quest-property set, for the many call sites (mostly tests) with
+/// no script-level property metadata available — preserves this
+/// function's pre-#2538 behavior exactly for those.
 pub fn lower_fragment(body: &[Spanned<Stmt>]) -> Option<Vec<Effect>> {
-    let mut scope = Scope::default();
+    lower_fragment_with_quest_properties(body, &HashSet::new())
+}
+
+/// [`lower_fragment`], with the containing script's `Quest Property`
+/// names (lowercased) made available to break the `Quest.Start()` vs
+/// `Scene.Start()` ambiguity — see [`Scope::known_quest_properties`].
+/// #2538 / SCR-D5-NEW10-01.
+pub fn lower_fragment_with_quest_properties(
+    body: &[Spanned<Stmt>],
+    quest_property_names: &HashSet<String>,
+) -> Option<Vec<Effect>> {
+    let mut scope = Scope {
+        known_quest_properties: quest_property_names.clone(),
+        ..Scope::default()
+    };
     let mut effects = Vec::new();
     for stmt in body {
         match &stmt.node {
@@ -1017,10 +1051,20 @@ fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
     // `Self` is never the object here (see `ObjectRef`'s doc) — decline
     // explicitly rather than relying on no VMAD ever naming a property
     // "self".
+    //
+    // #2538 / SCR-D5-NEW10-01 — a bare identifier known (from the
+    // containing script's own property declarations) to be `Quest`-typed
+    // must decline here too: `Quest.Start()`/`Scene.Start()` share the
+    // identical zero-arg AST shape, and without this check a Quest
+    // Property that `explicit_quest_receiver` correctly declined (not
+    // `Self`/`GetOwningQuest()`/a bound local) would fall through the
+    // primitive table and get silently misclassified as a scene
+    // reference instead of the whole statement declining.
     if key == "self"
         || scope.quest_locals.contains_key(&key)
         || scope.player_locals.contains(&key)
         || scope.decl_locals.contains(&key)
+        || scope.known_quest_properties.contains(&key)
     {
         return None;
     }
@@ -1375,6 +1419,75 @@ mod tests {
                     scene: ObjectRef::Property("OldScene".into()),
                 },
             ])
+        );
+    }
+
+    /// Regression for #2538 / SCR-D5-NEW10-01. `Quest Property
+    /// MQ101 Auto` called with `.Start()` shares the identical bare-
+    /// identifier `.Start()` AST shape `lowers_scene_start_and_stop_requests`
+    /// above pins for a genuine scene property — nothing in the AST
+    /// distinguishes them. `lower_fragment` (no property-type context —
+    /// the state every call site had pre-#2538) cannot tell them apart
+    /// and reproduces the original bug's exact symptom: this assertion
+    /// pins that documented limitation of the context-free path, not a
+    /// desired outcome — it's why `lower_fragment_with_quest_properties`
+    /// (below) exists. `populate_quest_fragments_from_script` (the real
+    /// production caller) always supplies context, so this path is
+    /// exercised by tests only.
+    #[test]
+    fn quest_start_on_a_direct_property_declines_rather_than_mislowering_to_scene() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Quest Property MQ101 Auto\n\
+             Function Fragment_99()\n\
+             MQ101.Start()\n EndFunction\n",
+        );
+        // Without quest-property context, the ambiguity genuinely can't
+        // be resolved from the AST alone — this is the same "silently
+        // becomes StartScene" outcome #2538 reported, still reachable
+        // whenever no context is available. Pinned here so a future
+        // change to the context-free fallback is a deliberate choice,
+        // not an accident.
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::StartScene {
+                scene: ObjectRef::Property("MQ101".into()),
+            }])
+        );
+
+        // With quest-property context (the real `populate_quest_fragments_
+        // from_script` call path — #2538's actual fix), the same
+        // statement correctly declines instead: `explicit_quest_receiver`
+        // refuses an unbound bare property, and `receiver_object` now
+        // also refuses it because it's a known Quest property, instead
+        // of accepting it as a scene.
+        let quest_properties: HashSet<String> = ["mq101".to_string()].into_iter().collect();
+        assert_eq!(
+            lower_fragment_with_quest_properties(&body, &quest_properties),
+            None,
+            "a Quest Property called with .Start() must decline, not silently \
+             mis-lower to StartScene"
+        );
+    }
+
+    /// Companion: a genuinely scene-typed property with the same context
+    /// present (but not naming the scene property) must still lower
+    /// correctly — the fix must not make `prim_start_scene` overly broad
+    /// in its refusal.
+    #[test]
+    fn scene_start_still_lowers_when_quest_property_context_is_present_but_unrelated() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Quest Property MQ101 Auto\n\
+             Function Fragment_99()\n\
+             IntroScene.Start()\n EndFunction\n",
+        );
+        let quest_properties: HashSet<String> = ["mq101".to_string()].into_iter().collect();
+        assert_eq!(
+            lower_fragment_with_quest_properties(&body, &quest_properties),
+            Some(vec![Effect::StartScene {
+                scene: ObjectRef::Property("IntroScene".into()),
+            }])
         );
     }
 

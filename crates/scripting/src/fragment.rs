@@ -47,11 +47,11 @@ use crate::quest_stages::{
     QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
     FRAGMENT_QUEST_EVENT_SUBSCRIBER,
 };
-use byroredux_papyrus::ast::{Script, ScriptItem, StateItem, Stmt};
+use byroredux_papyrus::ast::{Script, ScriptItem, StateItem, Stmt, Type};
 use byroredux_papyrus::span::Spanned;
 
 use crate::translate::compose::{ObjectRef, QuestRef};
-use crate::translate::effects::{lower_fragment, ActorRef, Effect};
+use crate::translate::effects::{lower_fragment_with_quest_properties, ActorRef, Effect};
 
 /// Lowered quest-stage fragments, keyed by `(quest, stage)`. Populated at
 /// cell load by [`populate_quest_fragments_from_pex`] from the QUST `VMAD`
@@ -1070,6 +1070,29 @@ pub fn register(world: &mut World) {
 /// (Papyrus identifiers are case-insensitive). Quest `Fragment_N`
 /// functions are top-level, but state functions are checked too so the
 /// lookup is robust.
+/// Lowercased names of `script`'s top-level `Quest Property` declarations.
+/// #2538 / SCR-D5-NEW10-01 — feeds `lower_fragment_with_quest_properties`
+/// so the effect-primitive chain can distinguish a bare `Quest.Start()`/
+/// `Stop()` receiver from an identically-shaped `Scene.Start()`/`Stop()`
+/// one, which the AST alone cannot. Properties are always top-level
+/// (never nested in a `State` block, unlike functions/events), so no
+/// `StateItem` walk is needed here.
+fn quest_property_names(script: &Script) -> std::collections::HashSet<String> {
+    script
+        .body
+        .iter()
+        .filter_map(|item| match &item.node {
+            ScriptItem::Property(p) => match &p.ty.node {
+                Type::Object(ty_name) if ty_name.0.eq_ignore_ascii_case("quest") => {
+                    Some(p.name.node.0.to_ascii_lowercase())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
 fn function_body<'a>(script: &'a Script, name: &str) -> Option<&'a [Spanned<Stmt>]> {
     for item in &script.body {
         match &item.node {
@@ -1160,6 +1183,10 @@ pub fn populate_quest_fragments_from_script(
     bindings: &[(u16, &str)],
 ) -> usize {
     let mut inserted = 0;
+    // #2538 / SCR-D5-NEW10-01 — computed once per script, not per
+    // fragment; every fragment in the same script shares the same
+    // property declarations.
+    let quest_properties = quest_property_names(script);
     for (stage, fragment_name) in bindings {
         let Some(body) = function_body(script, fragment_name) else {
             log::debug!(
@@ -1172,7 +1199,7 @@ pub fn populate_quest_fragments_from_script(
         // fully lower is skipped, not partially applied. An empty
         // fully-lowered fragment carries no effects, so it needn't occupy
         // the map (a lookup miss is equivalent to an empty entry).
-        if let Some(effects) = lower_fragment(body) {
+        if let Some(effects) = lower_fragment_with_quest_properties(body, &quest_properties) {
             if !effects.is_empty() {
                 frags.insert(quest, *stage, effects);
                 inserted += 1;
