@@ -977,9 +977,17 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                     // skinning resolves to the shared skeleton's
                     // entities, not the body/head's own orphaned
                     // local node copies.
+                    // #2458 — exact match first (fast path, the common
+                    // case), falling back to a case-insensitive scan so a
+                    // case-only divergence between this mesh's skin bone
+                    // list and the skeleton's node names doesn't silently
+                    // unresolve the bone. See `name_lookup` module doc.
                     let resolved = external_skeleton
-                        .and_then(|m| m.get(&bone.name).copied())
-                        .or_else(|| node_by_name.get(&bone.name).copied());
+                        .and_then(|m| crate::name_lookup::get_case_insensitive(m, &bone.name))
+                        .or_else(|| {
+                            crate::name_lookup::get_case_insensitive(&node_by_name, &bone.name)
+                        })
+                        .copied();
                     match resolved {
                         Some(e) => bones.push(Some(e)),
                         None => {
@@ -1006,9 +1014,12 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 // asymmetry is informative).
                 let global_skin_transform = Mat4::from_cols_array_2d(&skin.global_skin_transform);
                 let root_entity = skin.skeleton_root.as_ref().and_then(|n| {
+                    // #2458 — same case-insensitive fallback as the
+                    // per-bone resolution above.
                     external_skeleton
-                        .and_then(|m| m.get(n).copied())
-                        .or_else(|| node_by_name.get(n).copied())
+                        .and_then(|m| crate::name_lookup::get_case_insensitive(m, n))
+                        .or_else(|| crate::name_lookup::get_case_insensitive(&node_by_name, n))
+                        .copied()
                 });
                 world.insert(
                     entity,

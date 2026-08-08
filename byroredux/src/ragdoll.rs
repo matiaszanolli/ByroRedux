@@ -94,11 +94,16 @@ pub fn template_from_imported(
     let mut dropped_bones: Vec<&Arc<str>> = Vec::new();
     let mut dropped_rest_poses: Vec<&Arc<str>> = Vec::new();
     for (i, b) in imported.bodies.iter().enumerate() {
-        let Some(&bone) = skel_map.get(&b.bone_name) else {
+        // #2458 — exact match first, falling back to a case-insensitive
+        // scan so a case-only divergence between the ragdoll's authored
+        // bone names and the skeleton's node names doesn't silently drop
+        // the body. See `crate::name_lookup`'s module doc.
+        let Some(&bone) = crate::name_lookup::get_case_insensitive(skel_map, &b.bone_name) else {
             dropped_bones.push(&b.bone_name);
             continue;
         };
-        let Some(rest) = rest_pose_by_name.get(&b.bone_name) else {
+        let Some(rest) = crate::name_lookup::get_case_insensitive(rest_pose_by_name, &b.bone_name)
+        else {
             dropped_rest_poses.push(&b.bone_name);
             continue;
         };
@@ -1422,6 +1427,37 @@ mod tests {
         let template =
             template_from_imported(&imported, &skel_map, &rest_poses).expect("both bones resolve");
         assert_eq!(template.bodies.len(), 2);
+        assert_eq!(template.constraints.len(), 1);
+        assert_eq!(template.bodies[0].bone, spine);
+        assert_eq!(template.bodies[1].bone, head);
+    }
+
+    /// Regression: #2458 — a ragdoll authored with different letter-casing
+    /// than the bound skeleton's node names (e.g. an outfit's ragdoll data
+    /// says "Bip01 Spine" while the skeleton's node is "bip01 spine", or
+    /// vice versa — Bethesda's own tooling is case-insensitive, so modded
+    /// content has no incentive to be byte-exact) must still resolve via
+    /// the case-insensitive fallback in `crate::name_lookup`, instead of
+    /// being silently dropped like a genuinely-missing bone.
+    #[test]
+    fn case_mismatched_bone_name_still_resolves() {
+        let mut world = World::new();
+        let spine = world.spawn();
+        let head = world.spawn();
+        let mut skel_map = HashMap::new();
+        // Skeleton's own node names, lowercase (as StringPool would key them).
+        skel_map.insert(Arc::<str>::from("bip01 spine"), spine);
+        skel_map.insert(Arc::<str>::from("bip01 head"), head);
+
+        let imported = ImportedRagdoll {
+            // Ragdoll data authored with the mixed-case convention.
+            bodies: vec![body("Bip01 Spine"), body("Bip01 Head")],
+            constraints: vec![hinge_constraint(0, 1)],
+        };
+        let rest_poses = identity_rest_poses(&skel_map);
+        let template = template_from_imported(&imported, &skel_map, &rest_poses)
+            .expect("case-mismatched bone names must resolve via the case-insensitive fallback");
+        assert_eq!(template.bodies.len(), 2, "both bones must resolve");
         assert_eq!(template.constraints.len(), 1);
         assert_eq!(template.bodies[0].bone, spine);
         assert_eq!(template.bodies[1].bone, head);

@@ -12,6 +12,15 @@
 //! The fix gates the NVCP write on `!info.has_material_data`, mirroring
 //! the precedence pattern used by every other secondary-source consumer
 //! in the inherited-property loop.
+//!
+//! #2457 / SUBSYS-02 — that gate was itself over-broad: `has_material_data`
+//! is also set by the ordinary pre-Skyrim `NiMaterialProperty` arm, so a
+//! `[NiMaterialProperty, NiVertexColorProperty]` chain (the dominant
+//! Oblivion/FO3/FNV property order) latched the gate shut too, dropping
+//! every legacy vertex-color property regardless of direct-vs-inherited
+//! status. Re-gated on the narrower `has_bs_lighting_shader`, set only by
+//! the actual Skyrim+ arm #1208 meant to protect — see the
+//! `ni_material_property_does_not_suppress_following_nvcp*` tests below.
 
 use super::*;
 use crate::blocks::base::NiObjectNETData;
@@ -122,6 +131,96 @@ fn bsl_inhibits_inherited_nvcp_ignore() {
         VertexColorMode::AmbientDiffuse,
         "BSL Skyrim+ default must win over inherited NVCP(SRC_IGNORE)",
     );
+}
+
+/// Minimal `NiMaterialProperty` — enough to trip `has_material_data`
+/// without a real `NifStream` parse.
+fn material_property() -> crate::blocks::properties::NiMaterialProperty {
+    use crate::types::NiColor;
+    crate::blocks::properties::NiMaterialProperty {
+        net: empty_net(),
+        ambient: NiColor::default(),
+        diffuse: NiColor {
+            r: 0.5,
+            g: 0.6,
+            b: 0.7,
+        },
+        specular: NiColor::default(),
+        emissive: NiColor::default(),
+        shininess: 50.0,
+        alpha: 1.0,
+        emissive_mult: 1.0,
+    }
+}
+
+/// Regression: #2457 / SUBSYS-02 — the dominant legacy property order
+/// (Oblivion/FO3/FNV ship `[NiMaterialProperty, NiVertexColorProperty]`)
+/// must still honor the NiVertexColorProperty. Pre-fix the gate on
+/// `apply_vertex_color_property` was `!info.has_material_data`, and
+/// `NiMaterialProperty` — the ordinary pre-Skyrim arm, unrelated to the
+/// #1208 Skyrim+ intent — also sets `has_material_data`, so it latched
+/// the gate shut for every later vertex-color property in the same
+/// chain regardless of direct-vs-inherited status. No BSLightingShaderProperty
+/// is present at all here, so this is not a Skyrim+ mesh — the #1208 gate
+/// should never fire.
+#[test]
+fn ni_material_property_does_not_suppress_following_nvcp() {
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(material_property()),
+        Box::new(vcol_property(0, 1)), // SRC_IGNORE + LIGHTING_E_A_D
+    ];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut pool = StringPool::new();
+    // Property order intentionally mirrors Oblivion/FO3/FNV: NiMaterialProperty FIRST.
+    let info = walker::extract_material_info_from_refs(
+        &scene,
+        BlockRef::NULL, // no shader property — this is not a Skyrim+ mesh
+        BlockRef::NULL,
+        &[BlockRef(0), BlockRef(1)], // direct: [NiMaterialProperty, NVCP]
+        &[],
+        &mut pool,
+    );
+    assert!(
+        info.has_material_data,
+        "NiMaterialProperty must still set has_material_data = true"
+    );
+    assert!(
+        !info.has_bs_lighting_shader,
+        "no BSLightingShaderProperty is present"
+    );
+    assert_eq!(
+        info.vertex_color_mode,
+        VertexColorMode::Ignore,
+        "NiVertexColorProperty(SRC_IGNORE) must not be suppressed by a preceding NiMaterialProperty"
+    );
+}
+
+/// Same shape, Emissive routing — must also survive a preceding
+/// NiMaterialProperty (the #695 emissive-routing regression, upstream
+/// of the shader-end fix).
+#[test]
+fn ni_material_property_does_not_suppress_following_nvcp_emissive() {
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(material_property()),
+        Box::new(vcol_property(1, 1)), // SRC_EMISSIVE + LIGHTING_E_A_D
+    ];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut pool = StringPool::new();
+    let info = walker::extract_material_info_from_refs(
+        &scene,
+        BlockRef::NULL,
+        BlockRef::NULL,
+        &[BlockRef(0), BlockRef(1)],
+        &[],
+        &mut pool,
+    );
+    assert_eq!(info.vertex_color_mode, VertexColorMode::Emissive);
 }
 
 /// Same with the Emissive routing — BSL still wins.

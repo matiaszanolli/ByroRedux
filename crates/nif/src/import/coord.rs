@@ -45,6 +45,16 @@ pub(super) fn zup_matrix_to_yup_quat(m: &NiMatrix3) -> [f32; 4] {
     ];
 
     // Determinant — same formula as rotation::is_degenerate_rotation.
+    //
+    // #2456 SIBLING check: this determinant-only gate has the same blind
+    // spot `is_degenerate_rotation` does — a `det≈1`-but-non-orthonormal
+    // matrix (`diag(2, 0.5, 1)`) takes the Shepperd fast path below
+    // untouched. It does not get its own corpus-incidence warning here:
+    // every `m` reaching this function is a `NiTransform.rotation` field
+    // that already passed through `rotation::sanitize_rotation` at parse
+    // time (see that function's callers in `stream.rs`), which is where
+    // the #2456 warning fires — one warning per source matrix, not one
+    // per downstream consumer.
     let det = yup[0][0] * (yup[1][1] * yup[2][2] - yup[1][2] * yup[2][1])
         - yup[0][1] * (yup[1][0] * yup[2][2] - yup[1][2] * yup[2][0])
         + yup[0][2] * (yup[1][0] * yup[2][1] - yup[1][1] * yup[2][0]);

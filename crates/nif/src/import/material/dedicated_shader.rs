@@ -357,6 +357,11 @@ fn apply_bs_lighting_shader(
             info.z_write = false;
         }
         info.has_material_data = true;
+        // #2457 — narrow flag for the #1208 vertex-color precedence gate;
+        // see `MaterialInfo::has_bs_lighting_shader`'s doc for why
+        // `has_material_data` (also set by the unrelated legacy
+        // `NiMaterialProperty` arm) was the wrong thing to gate on.
+        info.has_bs_lighting_shader = true;
     }
 }
 

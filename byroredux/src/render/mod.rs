@@ -250,6 +250,14 @@ fn compute_directional_upload(
 /// to fold into single instanced draws. Owned here so the field order
 /// can't silently drift from an assert in a downstream crate.
 ///
+/// #2459 — `DrawCommand` has no per-draw "keep file order" hint. NIF's
+/// `NiAVObject::DISABLE_SORTING` bit (parsed into
+/// `byroredux_core::ecs::components::SceneFlags::DISABLE_SORTING`, see
+/// that constant's doc for the verified Gamebryo semantics) never
+/// reaches this key — every alpha-blended draw goes through the global
+/// back-to-front sort below regardless. Deliberately left unwired; see
+/// the `SceneFlags` doc for why.
+///
 /// All branches return the same 11-tuple shape so the compiler accepts
 /// a single key closure. Per-branch semantics:
 ///   Slot 0       = `!in_raster` priority bit — `0` for in-frustum
