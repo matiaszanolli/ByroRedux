@@ -317,6 +317,7 @@ fn placeholder_billboard_mesh(
         flags: 0,
         bs_lod_cutoffs: None,
         bs_sub_index: None,
+        bs_geometry_lod_slot: None,
         // Billboard mode for the .spt placeholder rides on the sibling
         // `ImportedNode` root (`CachedNifImport::placement_root_billboard`,
         // #994) — this is a different, per-mesh mechanism (#2206) for the

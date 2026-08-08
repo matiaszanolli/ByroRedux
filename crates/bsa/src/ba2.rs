@@ -429,46 +429,45 @@ impl Ba2Archive {
 }
 
 /// Defense-in-depth header sanity log for the Starfield v2 / v3 trailing
-/// 8 bytes (community-RE'd as `compressed_name_table_size: u32` +
-/// `reserved: u32`). Logs both fields at trace level so a malformed
-/// archive's failure surfaces here at the header boundary instead of
-/// 50 records deep inside `read_general_records` (where the symptom
-/// is the confusing `failed to fill whole buffer`).
-///
-/// Emits a debug-level warning when the size field claims more bytes
-/// before the name table than physically exist (`stream_pos + size >
-/// name_table_offset` — the gap can't be larger than the gap). The
-/// check is intentionally loose: well-formed archives commonly write a
-/// size smaller than the gap (the field is "compressed name-table
-/// size", not "remaining bytes"), so a true value-shape mismatch only
-/// fires when the field is wildly out of bounds.
+/// 8 bytes. Originally community-RE'd as `compressed_name_table_size: u32`
+/// + `reserved: u32`, but #2629 / SF-D1-04 found all 129 sampled vanilla
+/// archives byte-identical on this field (`0100000000000000` LE — i.e.
+/// `unknown_1 == 1`, `unknown_2 == 0`): a constant tag, not a size. The
+/// original "compressed name-table size" reading was never actually
+/// exercised — the `stream_pos + size > name_table_offset` malformed-
+/// header heuristic built on it was dead code (a constant `1` can never
+/// project past `name_table_offset`) and has been dropped. Logs both
+/// fields at trace level purely as a header-boundary sanity record, so a
+/// future archive that DOES vary here surfaces at the header boundary
+/// instead of 50 records deep inside `read_general_records` (where the
+/// symptom is the confusing `failed to fill whole buffer`).
 ///
 /// Models the `padding != 0xBAADF00D` debug-log inside
 /// [`read_general_records`] — cheap header-boundary sanity check.
-/// See #1186.
+/// See #1186, #2629.
 fn log_v2_v3_extra_bytes(label: &str, extra: &[u8; 8], name_table_offset: u64, stream_pos: u64) {
-    let size = u32::from_le_bytes(extra[0..4].try_into().unwrap());
-    let reserved = u32::from_le_bytes(extra[4..8].try_into().unwrap());
+    let unknown_1 = u32::from_le_bytes(extra[0..4].try_into().unwrap());
+    let unknown_2 = u32::from_le_bytes(extra[4..8].try_into().unwrap());
     log::trace!(
-        "BA2 {} extra header bytes: compressed_name_table_size={} \
-         reserved={:#x} (stream_pos={:#x}, name_table_offset={:#x})",
+        "BA2 {} extra header bytes: unknown_1={} unknown_2={:#x} \
+         (stream_pos={:#x}, name_table_offset={:#x})",
         label,
-        size,
-        reserved,
+        unknown_1,
+        unknown_2,
         stream_pos,
         name_table_offset,
     );
-    let projected_end = stream_pos.saturating_add(size as u64);
-    if projected_end > name_table_offset {
+    if unknown_1 != 1 || unknown_2 != 0 {
         log::debug!(
-            "BA2 {} compressed_name_table_size={} would project past \
-             name_table_offset={:#x} (stream_pos={:#x}, projected_end={:#x}); \
-             header likely malformed",
+            "BA2 {} extra header bytes deviate from the observed-constant \
+             {{unknown_1=1, unknown_2=0}}: unknown_1={} unknown_2={:#x} \
+             (stream_pos={:#x}, name_table_offset={:#x}); worth a closer \
+             look, though the format may simply vary here",
             label,
-            size,
-            name_table_offset,
+            unknown_1,
+            unknown_2,
             stream_pos,
-            projected_end,
+            name_table_offset,
         );
     }
 }
@@ -1378,6 +1377,137 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         let msg = format!("{err}");
         assert!(msg.contains("unsupported compression method"), "got: {msg}");
+    }
+
+    /// SF-D1-05 (#2630) — `compression_method == 0` (zlib) on a v3
+    /// archive has zero prior test coverage: every other v3 fixture in
+    /// this module exercises method 3 (LZ4) or an outright-rejected
+    /// unknown method. v3+zlib doesn't occur in vanilla Starfield
+    /// content (v3 is DX10-only there, and DX10 zlib is covered
+    /// elsewhere), but the reader accepts it (`0 => Ba2Compression::Zlib`
+    /// at the header-parse match), so a mod-authored or future-game v3
+    /// GNRL+zlib archive is a real reachable path that was silently
+    /// untested.
+    ///
+    /// Also serves as the "byte-literal fixture built from the
+    /// documented v3 header layout" the finding asked for: every offset
+    /// below is a literal constant annotated against the module's own
+    /// `# Version mapping` doc table (top of file) and the 36-byte GNRL
+    /// record layout in `read_general_records`, rather than being
+    /// generated through any of the parser's own encoding helpers (this
+    /// module doesn't have a BA2 *writer*, so there is no shared code
+    /// path that could drift in lockstep with a parser bug the way a
+    /// round-trip-through-the-same-helpers fixture would).
+    #[test]
+    fn v3_zlib_gnrl_header_literal_fixture_roundtrips() {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let payload = b"Starfield v3+zlib GNRL payload - SF-D1-05";
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(payload).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        // v3 header: 24-byte base + 8-byte v2/v3 extra + 4-byte
+        // compression_method = 36 bytes, immediately followed by one
+        // 36-byte GNRL record (72 bytes total), then the compressed
+        // payload, then the 1-entry name table.
+        const HEADER_LEN: u64 = 36;
+        const RECORD_LEN: u64 = 36;
+        let payload_offset = HEADER_LEN + RECORD_LEN; // 72
+        let name_table_offset = payload_offset + compressed.len() as u64;
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"BTDX"); // magic
+        buf.extend_from_slice(&3u32.to_le_bytes()); // version = 3 (Starfield)
+        buf.extend_from_slice(b"GNRL"); // type_tag
+        buf.extend_from_slice(&1u32.to_le_bytes()); // file_count = 1
+        buf.extend_from_slice(&name_table_offset.to_le_bytes());
+        // v2/v3 extra 8 bytes — observed-constant {unknown_1=1, unknown_2=0}
+        // per #2629 / SF-D1-04, NOT the size the field was originally
+        // (mis-)documented as.
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes()); // compression_method = 0 (zlib)
+        assert_eq!(buf.len() as u64, HEADER_LEN, "header layout drifted");
+
+        // GNRL record: name_hash/ext/dir_hash/flags (4×4=16, unused) +
+        // offset(8) + packed_size(4) + unpacked_size(4) + padding(4).
+        buf.extend_from_slice(&[0u8; 16]);
+        buf.extend_from_slice(&payload_offset.to_le_bytes());
+        buf.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&PADDING_BAADFOOD.to_le_bytes());
+        assert_eq!(buf.len() as u64, HEADER_LEN + RECORD_LEN, "record layout drifted");
+
+        buf.extend_from_slice(&compressed);
+        assert_eq!(buf.len() as u64, name_table_offset, "payload placement drifted");
+
+        // Name table: one 2-byte-length-prefixed name.
+        let name = b"meshes/sfd1_05.nif";
+        buf.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        buf.extend_from_slice(name);
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("byroredux_ba2_v3_zlib_literal_{}.ba2", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&path).expect("create temp BA2");
+            f.write_all(&buf).expect("write header");
+        }
+        let archive = Ba2Archive::open(&path);
+        let _ = std::fs::remove_file(&path);
+        let archive = archive.expect("byte-literal v3+zlib fixture must open cleanly");
+
+        assert_eq!(archive.version(), 3);
+        assert_eq!(archive.variant(), Ba2Variant::General);
+        assert_eq!(archive.file_count(), 1);
+        assert!(archive.contains("meshes/sfd1_05.nif"));
+        let extracted = archive
+            .extract("meshes/sfd1_05.nif")
+            .expect("v3+zlib GNRL entry must extract");
+        assert_eq!(
+            extracted, payload,
+            "v3+zlib decompression must round-trip the exact authored payload"
+        );
+    }
+
+    /// SF-D1-05 (#2630) — pins the CURRENT LZ4 "under-run" behaviour:
+    /// `unpacked_size` declared LARGER than what the block actually
+    /// decompresses to. Per #2618 (SF-D1-01)'s measurement against the
+    /// pinned `lz4_flex 0.11.6`, `decompress_chunk` does NOT error here
+    /// — `lz4_flex::block::decompress`'s `min_uncompressed_size` is only
+    /// a capacity hint (`Vec::with_capacity`), and the returned buffer is
+    /// silently truncated to the block's real decoded length. This is
+    /// the opposite of what the (stale, pre-#2618) comment on the LZ4
+    /// arm used to claim ("hard-errors on the same condition") and the
+    /// opposite of `decompress_chunk_lz4_corrupt_data_fails`'s outright-
+    /// garbage-input case, which DOES error.
+    ///
+    /// This test intentionally pins the CURRENT silent-truncation
+    /// behaviour as coverage, not a correctness claim — #2618 (MEDIUM,
+    /// open, separate from this LOW-severity test-coverage issue)
+    /// tracks making this warn/error like the zlib arm already does
+    /// (`decompress_chunk_zlib_short_stream_returns_actual_length`).
+    /// Once #2618 lands, this assertion should flip.
+    #[test]
+    fn decompress_chunk_lz4_undersized_declared_size_currently_truncates_silently() {
+        let actual_payload = b"short lz4 payload, well under the declared size";
+        let compressed = lz4_flex::block::compress(actual_payload);
+
+        // Declare an unpacked_size far larger than what the block
+        // actually decompresses to.
+        let result = decompress_chunk(
+            &compressed,
+            actual_payload.len() + 500,
+            Ba2Compression::Lz4Block,
+        )
+        .expect("current behaviour: an over-declared LZ4 unpacked_size does not error (#2618)");
+        assert_eq!(
+            result, actual_payload,
+            "current behaviour: the returned buffer is silently truncated to the block's \
+             real decoded length, not padded/erroring to match the declared unpacked_size"
+        );
     }
 
     /// Regression for #811 (FO4-D2-NEW-01) — a BA2 header with a

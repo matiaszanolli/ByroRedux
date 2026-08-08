@@ -25,9 +25,13 @@ pub fn extract_bs_geometry(
     // Try each LOD slot in order; use the first one that yields geometry.
     // Also carry the selected slot's `tri_size`/`num_verts` hints through so
     // they can be cross-checked against the resolved body below (SF2-03 /
-    // #1830) regardless of which stage resolved it.
+    // #1830) regardless of which stage resolved it, plus the slot's own
+    // authored index (#2631 / SF2D2-D2-03) — `meshes[0]`/the first entry
+    // that survives the sentinel-skip below is the first *present and
+    // non-sentinel* slot, not necessarily authored LOD 0.
     let mesh_data_owned: Option<BSGeometryMeshData>;
     let hint: (u32, u32); // (tri_size, num_verts)
+    let resolved_slot: u32;
     let mesh_data: &BSGeometryMeshData = if shape.has_internal_geom_data() {
         // Stage A: inline geometry embedded in the NIF. Iterate every LOD
         // slot — `meshes.first()` was a #982 short-circuit that silently
@@ -37,15 +41,16 @@ pub fn extract_bs_geometry(
         // SF2-02 / #1829: a slot's body can itself be the `scale<=0`
         // sentinel (empty `vertices`/`triangles`) — skip those so a
         // sentinel-first slot order doesn't hide a later populated slot.
-        let (tri_size, num_verts, data) = shape.meshes.iter().find_map(|m| match &m.kind {
+        let (tri_size, num_verts, slot, data) = shape.meshes.iter().find_map(|m| match &m.kind {
             BSGeometryMeshKind::Internal { mesh_data }
                 if !mesh_data.vertices.is_empty() && !mesh_data.triangles.is_empty() =>
             {
-                Some((m.tri_size, m.num_verts, mesh_data.as_ref()))
+                Some((m.tri_size, m.num_verts, m.lod_slot, mesh_data.as_ref()))
             }
             _ => None,
         })?;
         hint = (tri_size, num_verts);
+        resolved_slot = slot;
         data
     } else {
         // Stage B: external `.mesh` companion file. Try each LOD slot until
@@ -77,7 +82,7 @@ pub fn extract_bs_geometry(
                             // sentinel-first slot order doesn't hide a
                             // later populated slot.
                             if !data.vertices.is_empty() && !data.triangles.is_empty() {
-                                found = Some((m.tri_size, m.num_verts, data));
+                                found = Some((m.tri_size, m.num_verts, m.lod_slot, data));
                                 break;
                             }
                             log::debug!(
@@ -100,8 +105,9 @@ pub fn extract_bs_geometry(
                 }
             }
         }
-        let (tri_size, num_verts, data) = found?;
+        let (tri_size, num_verts, slot, data) = found?;
         hint = (tri_size, num_verts);
+        resolved_slot = slot;
         mesh_data_owned = Some(data);
         mesh_data_owned.as_ref().unwrap()
     };
@@ -319,6 +325,7 @@ pub fn extract_bs_geometry(
         flags: shape.av.flags,
         bs_lod_cutoffs: None,
         bs_sub_index: None,
+        bs_geometry_lod_slot: Some(resolved_slot),
         billboard_mode: None,
     })
 }

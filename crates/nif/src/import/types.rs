@@ -671,6 +671,17 @@ pub struct ImportedMesh {
     /// (deferred) has nothing to consume. `None` on every non-SubIndex
     /// BSTriShape and every NiTriShape / BSGeometry.
     pub bs_sub_index: Option<BsSubIndexTriShapeData>,
+    /// #2631 / SF2D2-D2-03 — which of the source `BSGeometry`'s 4 LOD
+    /// slots (0-3) this mesh was resolved from. `BSGeometry::meshes` only
+    /// contains *present* slots (absent test-byte slots are skipped, not
+    /// pushed as placeholders) and the importer additionally skips
+    /// `scale<=0` sentinel slots when picking the first populated one
+    /// (#1828/#1829), so `meshes[0]`/the resolved slot is the first
+    /// *present and non-sentinel* slot, not necessarily authored LOD 0.
+    /// Threaded through so a future LOD selector knows which level it
+    /// actually loaded. `None` on every non-`BSGeometry` mesh (the
+    /// concept doesn't exist for `NiTriShape`/`BSTriShape`).
+    pub bs_geometry_lod_slot: Option<u32>,
     /// #2206 / NIFAL-D4-02 — nearest-ancestor `NiBillboardNode` mode, set
     /// by `walk_node_flat` when this mesh sits anywhere beneath one.
     /// `ImportedNode::billboard_mode` (above) carries the same data on the
@@ -735,6 +746,7 @@ impl ImportedMesh {
             flags: 0,
             bs_lod_cutoffs: None,
             bs_sub_index: None,
+            bs_geometry_lod_slot: None,
             billboard_mode: None,
         }
     }
