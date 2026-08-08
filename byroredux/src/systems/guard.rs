@@ -51,31 +51,24 @@
 //! - **Ground-snapped, not physically simulated**, same as Wander/Travel.
 
 use super::locomotion::step_toward;
-use byroredux_core::ecs::components::{GlobalTransform, GuardBehavior, GuardState, Transform};
+use byroredux_core::ecs::components::{GuardBehavior, GuardState, Transform};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
-use byroredux_scripting::condition::resolve_entity_by_global_form_id;
 
 /// Fallback leash tolerance (world units) around a guard's anchor, used
 /// when `GuardBehavior.radius` is `None` (no PLDT / radius 0). Same scale
 /// as `travel.rs::TRAVEL_DEFAULT_RADIUS`/`wander.rs::WANDER_DEFAULT_RADIUS`.
 const GUARD_DEFAULT_RADIUS: f32 = 512.0;
 
-/// Resolve this actor's guard anchor once, on first sight: a
-/// `NearReference`-type PLDT FormID first (mirrors
-/// `travel_system`/`escort_system`'s `NearReference` resolution exactly),
-/// falling back to `home` — the actor's own spawn position — on any miss.
-/// See this module's doc for why the fallback is `home` rather than
-/// Travel's random-pick-within-radius.
+/// Resolve this actor's guard anchor once, on first sight: delegates the
+/// `NearReference`-type PLDT FormID resolve to
+/// `travel_system::resolve_near_reference_target` (shared with
+/// Travel/Escort — #2561, this module previously duplicated that logic
+/// inline), falling back to `home` — the actor's own spawn position — on
+/// any miss. See this module's doc for why the fallback is `home` rather
+/// than Travel's random-pick-within-radius.
 fn resolve_anchor(world: &World, behavior: &GuardBehavior, home: Vec3) -> Vec3 {
-    if let Some(fid) = behavior.anchor_form_id {
-        if let Some(target_entity) = resolve_entity_by_global_form_id(world, fid) {
-            if let Some(gt) = world.get::<GlobalTransform>(target_entity) {
-                return gt.translation;
-            }
-        }
-    }
-    home
+    super::travel::resolve_near_reference_target(world, behavior.anchor_form_id).unwrap_or(home)
 }
 
 /// One actor's staged move input, collected in Pass 1a — `resolve_anchor`

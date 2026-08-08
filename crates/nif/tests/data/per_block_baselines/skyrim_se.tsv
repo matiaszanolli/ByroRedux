@@ -70,7 +70,7 @@ bhkBallAndSocketConstraint	7	0
 bhkBoxShape	1507	0
 bhkBreakableConstraint	3	0
 bhkCapsuleShape	1605	0
-bhkCollisionObject	12996	0
+bhkCollisionObject	12866	0
 bhkCompressedMeshShape	7577	0
 bhkCompressedMeshShapeData	7577	0
 bhkConvexVerticesShape	3117	0
@@ -80,6 +80,7 @@ bhkLimitedHingeConstraint	769	0
 bhkListShape	260	0
 bhkMoppBvTreeShape	7680	0
 bhkNiTriStripsShape	25	0
+bhkPCollisionObject	130	0
 bhkRagdollConstraint	693	0
 bhkRigidBody	12866	0
 bhkSimpleShapePhantom	130	0

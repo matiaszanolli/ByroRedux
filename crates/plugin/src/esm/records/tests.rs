@@ -489,7 +489,7 @@ fn parse_real_fnv_esm_record_counts() {
     );
     assert_eq!(varmint.kind.label(), "WEAP");
 
-    // Spot-check that NCR faction exists (FNV form 0x0011E662 — name varies
+    // Spot-check that NCR faction exists (FNV form 0x000A46E7 — name varies
     // by patch; just check there is a faction with "NCR" in its full name).
     let has_ncr = index
         .factions
