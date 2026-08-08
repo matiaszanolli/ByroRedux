@@ -49,8 +49,10 @@ float distributionGGXAniso(float NdotH, float HdotX, float HdotY, float ax, floa
 // `ax` / `ay` directly (its formula squares them as `ax*ax` /
 // `ay*ay` so the final α² magnitude matches the isotropic NDF).
 //
-// 0.025 floor mirrors `specularAaRoughness`'s `filteredR² ≥ 0.025²`
-// clamp — preserves the BSLightingShader gloss-cap behaviour
+// 0.025² floor on `ax`/`ay` (α-units) mirrors `specularAaRoughness`'s
+// effective `roughness ≥ 0.025` floor (its clamp lives in α² units,
+// `0.025⁴`, since #2471 — same roughness floor, different stage of
+// the round trip) — preserves the BSLightingShader gloss-cap behaviour
 // documented at that helper. The audit's "drop to 0.001" suggestion
 // is deferred pending a RenderDoc bench on extreme-gloss materials
 // (see #1250 closeout).
@@ -196,24 +198,41 @@ DisneyDiffuseSplit disneyDiffuseSplit(
 // canonical regression).
 //
 // Estimate the per-fragment normal-vector variance from screen-space
-// derivatives, then widen `roughness²` by `2 × kernel_variance`. The
-// lobe smears the bright/dark across pixels at exactly the rate
-// the underlying normal aliases — converging back to the authored
-// roughness on smooth surfaces (small variance) so close-range
-// specular highlights stay sharp.
+// derivatives, then widen `α²` (NOT `α`, NOT `roughness²` — see #2471)
+// by `2 × kernel_variance`, per the published filter: `α²_filtered =
+// α² + 2σ²`. The lobe smears the bright/dark across pixels at exactly
+// the rate the underlying normal aliases — converging back to the
+// authored roughness on smooth surfaces (small variance) so
+// close-range specular highlights stay sharp.
 //
-// Returns the filtered roughness (already `sqrt`'d so the caller
-// can pass it straight to [`distributionGGX`] / [`geometrySmith`]).
-// `roughness` clamp at `0.025` mirrors what the BSLightingShader
-// gloss path reaches at maximum gloss; the `min(.., 1.0)` upper
-// bound is the GGX validity ceiling.
+// #2471 — this shader's convention is `α = roughness²` (see
+// `deriveAxAy` above / `distributionGGX`'s `a = roughness²`, `a2 =
+// a²`). The pre-fix code added the kernel variance to `roughness²`
+// (i.e. to `α`, not `α²`) and `sqrt`'d once; since callers square the
+// return value again to derive `α`, the effective result was
+// `α_filtered = α + 2σ²` — under-filtering low-roughness surfaces by
+// roughly 4× at `roughness = 0.1` relative to the Kaplanyan & Hoffman
+// 2016 / Filament `normalFiltering()` reference. Fixed by squaring
+// `α` once more before adding the variance and taking the matching
+// 4th root on the way out.
+//
+// Returns the filtered roughness (already round-tripped back to
+// `roughness` units so the caller can pass it straight to
+// [`distributionGGX`] / [`geometrySmith`] / [`deriveAxAy`], each of
+// which squares it to `α` again). The floor is `0.025⁴` — the α²
+// value that round-trips (via `sqrt(sqrt(..))`) back to the same
+// `roughness ≥ 0.025` floor the pre-fix `0.025²` clamp on `α`
+// enforced (mirrors what the BSLightingShader gloss path reaches at
+// maximum gloss); the `min(.., 1.0)` upper bound is the GGX validity
+// ceiling.
 float specularAaRoughness(vec3 N, float roughness) {
     vec3 dNdx = dFdx(N);
     vec3 dNdy = dFdy(N);
     float kernelVariance = 0.25 * (dot(dNdx, dNdx) + dot(dNdy, dNdy));
-    float roughness2 = roughness * roughness;
-    float filteredR2 = clamp(roughness2 + 2.0 * kernelVariance, 0.025 * 0.025, 1.0);
-    return sqrt(filteredR2);
+    float alpha = roughness * roughness; // α = roughness²
+    float alpha2 = alpha * alpha;        // α²
+    float filteredAlpha2 = clamp(alpha2 + 2.0 * kernelVariance, 0.025 * 0.025 * 0.025 * 0.025, 1.0);
+    return sqrt(sqrt(filteredAlpha2));
 }
 
 // Karis analytic split-sum environment BRDF (the Lazarov / Karis

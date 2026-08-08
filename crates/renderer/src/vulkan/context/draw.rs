@@ -524,6 +524,11 @@ struct CompositeParamsInputs<'a> {
     exposure_value: f32,
     frame_counter: u32,
     volume_far_distance: f32,
+    /// Froxel grid depth (slice count) — #2470, `volumetrics::extent().depth`.
+    /// Threaded into `sky_horizon.w` so the composite shader can remap
+    /// `hybridSliceCoordinate`'s normalized depth onto the `sampler3D`
+    /// texel-center grid before the `volumetricFroxel` tap.
+    froxel_slice_count: f32,
     camera_pos: [f32; 3],
     render_origin: byroredux_core::math::Vec3,
     inv_vp_arr: [[f32; 4]; 4],
@@ -551,6 +556,7 @@ fn build_composite_params(
         exposure_value,
         frame_counter,
         volume_far_distance,
+        froxel_slice_count,
         camera_pos,
         render_origin,
         inv_vp_arr,
@@ -619,7 +625,7 @@ fn build_composite_params(
             sky_params.horizon_color[0],
             sky_params.horizon_color[1],
             sky_params.horizon_color[2],
-            0.0,
+            froxel_slice_count,
         ],
         // #541 — WTHR `SKY_LOWER` group. Pre-fix the
         // shader faked this as `sky_horizon * 0.3`,
@@ -732,6 +738,7 @@ mod composite_params_tests {
             exposure_value: 1.5,
             frame_counter: 42,
             volume_far_distance: 4096.0,
+            froxel_slice_count: 64.0,
             camera_pos: [10.0, 20.0, 30.0],
             render_origin: byroredux_core::math::Vec3::new(1.0, 2.0, 3.0),
             inv_vp_arr: [[0.0; 4]; 4],
@@ -750,7 +757,7 @@ mod composite_params_tests {
         );
         assert_eq!(params.volume_params[0], 4096.0);
         assert_eq!(params.sky_zenith, [0.1, 0.2, 0.3, 0.9998]);
-        assert_eq!(params.sky_horizon[..3], [0.4, 0.5, 0.6]);
+        assert_eq!(params.sky_horizon, [0.4, 0.5, 0.6, 64.0]);
         // Camera position and height-fog reference must both be
         // render-origin-relative (#markarth-precision / #2225).
         assert_eq!(
@@ -2778,6 +2785,10 @@ impl VulkanContext {
                     .map_or(super::super::volumetrics::DEFAULT_VOLUME_FAR, |volume| {
                         volume.far_distance_world()
                     }),
+                froxel_slice_count: self
+                    .volumetrics
+                    .as_ref()
+                    .map_or(1.0, |volume| volume.extent().depth as f32),
                 camera_pos,
                 render_origin,
                 inv_vp_arr,

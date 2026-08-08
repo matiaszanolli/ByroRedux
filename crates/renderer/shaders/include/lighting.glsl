@@ -229,18 +229,28 @@ bool giLightSample(
 // cube; exteriors blend horizon ambient into the sky zenith along the actual
 // ray direction. The old path returned `sceneFlags.yzw * 0.5` everywhere,
 // which made an upward sky ray and a downward horizon ray indistinguishable.
+//
+// #2472 — `sceneFlags.yzw` (XCLL cell ambient) is `sampleDalcCube`'s
+// sibling everywhere else this shader treats them interchangeably (see
+// the `ambientFallback` ternary in `triangle.frag`): both are authored
+// irradiance. #2244 converted the DALC arm below to radiance (`* (1.0 /
+// PI)`) but left the sky-mix and interior-fallback arms in irradiance
+// units, so a Skyrim DALC cell's bounded-path escape came out ~π× dimmer
+// than an otherwise-identical FO3/FNV/Oblivion XCLL cell. `skyTint` is
+// already rendered sky radiance (see `triangle.frag`'s `skyColor =
+// skyTint.rgb` background write) and is untouched by the conversion.
 vec3 pathEnvironmentRadiance(vec3 direction) {
     vec3 rayDir = normalize(direction);
     if (jitter.w > 0.5) {
         float skyWeight = smoothstep(-0.2, 0.8, rayDir.y);
-        return mix(sceneFlags.yzw, skyTint.xyz, skyWeight);
+        return mix(sceneFlags.yzw * (1.0 / PI), skyTint.xyz, skyWeight);
     }
     if (dalcFlags.x > 0.5) {
         // DALC stores directional irradiance; an escaping path needs
         // environment radiance before multiplying by its throughput.
         return sampleDalcCube(rayDir) * (1.0 / PI);
     }
-    return sceneFlags.yzw * 0.5;
+    return sceneFlags.yzw * (1.0 / PI) * 0.5;
 }
 
 // Direct outgoing radiance at a bounded-path hit. Candidate selection remains

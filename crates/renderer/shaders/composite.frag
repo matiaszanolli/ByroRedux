@@ -38,7 +38,9 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 volume_params;  // x = grid far, y = linear floor, z = linear fraction, w = dither amplitude
     vec4 height_fog_params; // x = sigma_t0, y = scale height, z = albedo, w = fallback enabled
     vec4 sky_zenith;     // xyz = zenith color (linear RGB), w = sun_size (cos threshold)
-    vec4 sky_horizon;    // xyz = horizon color (linear RGB), w = unused
+    vec4 sky_horizon;    // xyz = horizon color (linear RGB), w = froxel grid
+                         // slice count (#2470 — texel-center correction for
+                         // the volumetricFroxel sampler3D tap below)
     vec4 sky_lower;      // xyz = below-horizon ground tint (WTHR SKY_LOWER), w = unused (#541)
     vec4 sun_dir;        // xyz = sun direction (world-space, normalized), w = sun_intensity
     vec4 sun_color;      // xyz = sun disc color (linear RGB), w = CLMT FNAM sun sprite idx (floatBitsToUint; 0 = procedural disc)
@@ -490,7 +492,17 @@ void main() {
         float worldDist = length(worldPos - params.camera_pos.xyz);
         float gridFar = params.volume_params.x;
         float slice = hybridSliceCoordinate(min(worldDist, gridFar));
-        vec4 vol = texture(volumetricFroxel, vec3(fragUV, slice));
+        // #2470 — `volumetrics_integrate.comp` writes the post-slab
+        // cumulative state into texel `i` at normalized depth
+        // `(i+1)/N` (the slab's BACK face), but `sampler3D` places
+        // texel `i`'s filtered center at `(i+0.5)/N`. Sampling
+        // `hybridSliceCoordinate`'s raw depth directly lands halfway
+        // into the NEXT slab, over-applying about half a slab of
+        // fog everywhere. Remap the back-face-convention depth onto
+        // the texel-center grid before the tap.
+        float sliceCount = max(params.sky_horizon.w, 1.0);
+        float sliceTexel = clamp((slice * sliceCount - 0.5) / sliceCount, 0.0, 1.0);
+        vec4 vol = texture(volumetricFroxel, vec3(fragUV, sliceTexel));
         // vol.rgb = ∫inscatter accumulated 0..slice (HDR-linear)
         // vol.a   = cumulative transmittance through 0..slice
         //
