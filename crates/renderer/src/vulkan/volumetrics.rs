@@ -418,6 +418,14 @@ fn build_fog_volume_clusters(
 ///
 /// Integration parameters are per-FIF; changing reach or slice distribution
 /// cannot race a prior frame's in-flight UBO read.
+///
+/// Per-froxel ray budget: despite `volumetrics_inject.comp`'s header
+/// describing shadow visibility as the standard single "trace toward
+/// light, miss = lit" test, the shader actually casts up to 10 ray-query
+/// traversals per froxel in the worst case (1 opaque + 1 glass-masked sun
+/// ray, plus up to `MAX_FROXEL_LIGHTS` local lights x up to 2 rays each) —
+/// ~9.2M ray queries/frame at the default 160x90x64 grid. See
+/// REN-D16-2026-08-07-02 / #2509.
 pub const VOLUMETRIC_OUTPUT_CONSUMED: bool = true;
 
 /// Integration shader uniform — slab thickness `dt` shared across all

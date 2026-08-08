@@ -265,6 +265,12 @@ pub(crate) fn apply_worldspace_weather(
     let prev_sky_textures = world
         .try_resource::<SkyParamsRes>()
         .map(|s| s.texture_indices());
+    // #2511 / REN-D18-NEW-02 — collapse any transition still in flight
+    // from a PRIOR worldspace change before this one installs a new
+    // transition (WTHR branch) or replaces `WeatherDataRes` outright
+    // (procedural-fallback branch). See the function doc for the two
+    // failure modes this prevents.
+    collapse_weather_transition(world);
     if let Some(ref wthr) = wctx.default_weather {
         let sun_dir = compute_sun_arc(bootstrap_hour, climate_tod_hours(wctx.climate.as_ref())).0;
         // Canonical day-slot lighting (EXAL boundary). The per-frame
@@ -387,6 +393,45 @@ pub(crate) fn apply_worldspace_weather(
             ctx.texture_registry.drop_texture(&ctx.device, handle);
         }
     }
+}
+
+/// Collapse any `WeatherTransitionRes` still in flight from a prior
+/// worldspace change. `WeatherTransitionRes` is a one-shot cross-fade —
+/// nothing removes it once installed; `weather_system` only latches
+/// `done = true` on completion (never `remove_resource`, since systems
+/// only get `&World`) and `cell_loader/unload.rs` deliberately leaves it
+/// worldspace-scoped (#1199). Without this collapse, a second worldspace
+/// transition landing inside the 8-second fade window hits one of two
+/// bugs:
+///
+/// - **WTHR branch retarget**: installing a fresh `WeatherTransitionRes`
+///   clobbers the in-flight one while the live `WeatherDataRes` is still
+///   the *original* pre-fade source (it's never progressively blended,
+///   only swapped on completion) — the rendered weather pops backward
+///   from `lerp(src, oldTarget, t)` to `src` on the switch frame.
+/// - **Procedural-fallback branch**: replacing `WeatherDataRes` with the
+///   procedural sky leaves the in-flight transition installed;
+///   `weather_system` keeps blending the procedural sky toward the
+///   *previous* worldspace's target and, on completion, permanently
+///   overwrites the procedural fallback with that stale target.
+///
+/// Called at the top of [`apply_worldspace_weather`], before either
+/// branch touches `WeatherDataRes` / `WeatherTransitionRes`. If a
+/// transition is genuinely in flight (`done == false`), finishes it
+/// early by promoting `target` into `WeatherDataRes` via the same field
+/// copy `weather_system` uses on natural completion — a same-frame snap
+/// rather than an indefinite stale blend — then removes the transition
+/// resource outright (a real `remove_resource`, not a `done` latch,
+/// since this call site holds `&mut World`). A no-op when no transition
+/// is present. See REN-D18-NEW-02 / #2511.
+fn collapse_weather_transition(world: &mut World) {
+    let in_flight = world
+        .try_resource::<WeatherTransitionRes>()
+        .is_some_and(|tr| !tr.done);
+    if in_flight {
+        crate::systems::weather::promote_weather_transition_target(world);
+    }
+    world.remove_resource::<WeatherTransitionRes>();
 }
 
 /// Resolve the CLMT FNAM sun-sprite path to a bindless handle. `0` = use
@@ -785,5 +830,103 @@ mod tests {
             world.try_resource::<GameTimeRes>().is_some(),
             "first entry into a climateless worldspace must still seed GameTimeRes"
         );
+    }
+
+    /// Minimal `WeatherDataRes` fixture for `collapse_weather_transition`
+    /// tests, distinguished by `fog[1]` (day-far) and `wind_speed` so a
+    /// wrongly-applied or wrongly-skipped promotion is easy to detect.
+    fn mk_weather(day_far: f32, wind_speed: u8) -> WeatherDataRes {
+        WeatherDataRes {
+            sky_colors: [[[0.0_f32; 3]; 6]; 10],
+            fog: [100.0, day_far, 200.0, 30000.0],
+            fog_media: [
+                crate::fog::FogMedium::from_legacy_ramp(100.0, day_far, None),
+                crate::fog::FogMedium::from_legacy_ramp(200.0, 30000.0, None),
+            ],
+            tod_hours: [6.0, 10.0, 18.0, 22.0],
+            skyrim_dalc_per_tod: None,
+            wind_speed,
+        }
+    }
+
+    /// #2511 / REN-D18-NEW-02 — a transition still in flight (`done ==
+    /// false`) when a second worldspace change lands must be finished
+    /// early: `target` promotes into the live `WeatherDataRes` and the
+    /// transition resource is fully removed (not just latched `done`),
+    /// so neither of the two documented failure modes (backward colour
+    /// pop, or blending toward a since-replaced target forever) can
+    /// occur.
+    #[test]
+    fn collapse_weather_transition_promotes_in_flight_target_and_removes_resource() {
+        let mut world = World::new();
+        world.insert_resource(mk_weather(60000.0, 0));
+        world.insert_resource(WeatherTransitionRes {
+            target: mk_weather(12345.0, 7),
+            elapsed_secs: 4.0, // mid-fade, well short of duration_secs
+            duration_secs: 8.0,
+            done: false,
+        });
+
+        collapse_weather_transition(&mut world);
+
+        let wd = world
+            .try_resource::<WeatherDataRes>()
+            .expect("WeatherDataRes must survive collapse");
+        assert_eq!(
+            wd.fog[1], 12345.0,
+            "in-flight target must be promoted into WeatherDataRes, not left at the stale source"
+        );
+        assert_eq!(wd.wind_speed, 7, "wind_speed must promote alongside fog");
+        assert!(
+            world.try_resource::<WeatherTransitionRes>().is_none(),
+            "an in-flight transition must be fully removed, not left resident as a dormant \
+             `done` latch — otherwise the NEXT worldspace change collapses this stale copy again"
+        );
+    }
+
+    /// A transition already latched `done == true` (a natural completion
+    /// that already promoted its target on a prior frame) must be
+    /// removed WITHOUT re-promoting — re-applying it would silently
+    /// clobber whatever the live `WeatherDataRes` has moved on to since.
+    #[test]
+    fn collapse_weather_transition_does_not_reapply_a_done_transition() {
+        let mut world = World::new();
+        world.insert_resource(mk_weather(60000.0, 0));
+        world.insert_resource(WeatherTransitionRes {
+            target: mk_weather(99999.0, 9), // stale target — must NOT reappear
+            elapsed_secs: 8.0,
+            duration_secs: 8.0,
+            done: true,
+        });
+
+        collapse_weather_transition(&mut world);
+
+        let wd = world
+            .try_resource::<WeatherDataRes>()
+            .expect("WeatherDataRes must survive collapse");
+        assert_eq!(
+            wd.fog[1], 60000.0,
+            "a dormant `done` transition must not be re-promoted over the live weather"
+        );
+        assert!(
+            world.try_resource::<WeatherTransitionRes>().is_none(),
+            "a dormant transition must still be removed so it can't be collapsed again later"
+        );
+    }
+
+    /// No transition present (the common case, or first-ever worldspace
+    /// load with no `WeatherDataRes` yet either) — collapse must be a
+    /// silent no-op, not a panic.
+    #[test]
+    fn collapse_weather_transition_is_a_noop_without_a_transition() {
+        let mut world = World::new();
+        collapse_weather_transition(&mut world);
+        assert!(world.try_resource::<WeatherDataRes>().is_none());
+        assert!(world.try_resource::<WeatherTransitionRes>().is_none());
+
+        world.insert_resource(mk_weather(60000.0, 0));
+        collapse_weather_transition(&mut world);
+        let wd = world.try_resource::<WeatherDataRes>().unwrap();
+        assert_eq!(wd.fog[1], 60000.0, "an untouched WeatherDataRes must be left as-is");
     }
 }

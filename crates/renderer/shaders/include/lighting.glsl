@@ -125,7 +125,12 @@ vec3 shadowableLightRadiance(
     {
         vec3 T = normalize(fragTangent.xyz);
         T = normalize(T - dot(T, N) * N);
-        vec3 B = normalize(cross(N, T)) * fragTangent.w;
+        // Clamp the interpolated handedness to ±1 (REN-D19-04 / #2512) —
+        // the per-vertex ±1 guarantee doesn't survive interpolation across
+        // a mixed-sign (UV-fold) triangle, and a raw fractional multiply
+        // here shortens B and skews the anisotropic lobe orientation.
+        float tangentSign = fragTangent.w < 0.0 ? -1.0 : 1.0;
+        vec3 B = normalize(cross(N, T)) * tangentSign;
         float HdotX = dot(H, T);
         float HdotY = dot(H, B);
         float ax;

@@ -167,7 +167,14 @@ vec3 perturbNormal(vec3 N, vec3 worldPos, vec2 uv, uint normalMapIdx, vec4 verte
         // smoothing groups) doesn't break the right-angle invariant
         // the bitangent sign was authored against.
         T = normalize(T - dot(T, N) * N);
-        vec3 B = vertexTangent.w * cross(N, T);
+        // The ±1 handedness guarantee is per-vertex (import-time clamp,
+        // #2246); the varying is linearly interpolated across the triangle,
+        // so a mixed-sign triangle (a UV-fold vertex disagreeing with its
+        // neighbours) yields w in (-1, 1) mid-triangle and shortens B —
+        // clamp back to ±1 like the POM sampler above and `ray_hit.glsl`.
+        // REN-D19-04 / #2512.
+        float tangentSign = vertexTangent.w < 0.0 ? -1.0 : 1.0;
+        vec3 B = tangentSign * cross(N, T);
         mat3 TBN = mat3(T, B, N);
         return normalize(TBN * tangentNormal);
     }
