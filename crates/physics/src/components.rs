@@ -65,8 +65,8 @@ pub struct CharacterController {
     /// Initial vertical velocity on jump trigger. BU/sec.
     pub jump_velocity: f32,
     /// Downward acceleration. BU/sec². Earth gravity ≈ -686.7 BU/sec²
-    /// (PhysicsWorld's `gravity.y`); doubled here for snappier
-    /// arcade-feel jumps (Bethesda-engine convention).
+    /// (PhysicsWorld's `gravity.y`); scaled here for arcade-feel jumps
+    /// (Bethesda-engine convention).
     pub gravity: f32,
     /// Cap on downward velocity so terminal-velocity falls don't
     /// tunnel through thin floors at high frame_dt. BU/sec.
@@ -126,8 +126,13 @@ impl CharacterController {
         radius: 18.0,
         eye_height: 52.0,
         move_speed: 220.0,
-        jump_velocity: 380.0,
-        gravity: -1373.4, // 2× PhysicsWorld earth gravity for snappier feel
+        // Jump apex height h = v0²/(2·|g|); hang time t = 2·v0/|g|.
+        // Tuned for 2× the original jump height (52.6 → 105.2 BU) and
+        // 1.5× the original hang time (0.55s → 0.83s) simultaneously:
+        // solving h_new/h_old=2, t_new/t_old=1.5 gives v0 ×= 4/3 and
+        // |g| ×= 8/9 relative to the original 380.0 / -1373.4 pair.
+        jump_velocity: 506.6667,
+        gravity: -1220.8,
         terminal_velocity: -2000.0,
         step_height: 32.0,
         step_min_width: 8.0,

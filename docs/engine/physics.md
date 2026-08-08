@@ -217,8 +217,8 @@ Fly → Character it snaps the body to the camera's position minus
 | `radius` | 18.0 BU | |
 | `eye_height` | 52.0 BU | camera mount above body centre |
 | `move_speed` | 220.0 BU/s | ~3.14 m/s; `ControlLeft` sprints ×2 |
-| `jump_velocity` | 380.0 BU/s | |
-| `gravity` | −1373.4 BU/s² | 2× `PhysicsWorld` gravity, for snappier arcade jumps |
+| `jump_velocity` | 506.6667 BU/s | tuned for 2× jump height + 1.5× hang time vs. the original 380.0/−1373.4 pair |
+| `gravity` | −1220.8 BU/s² | ~1.78× `PhysicsWorld` gravity (arcade jumps, floatier than the original 2×) |
 | `terminal_velocity` | −2000.0 BU/s | clamp so high-`dt` falls don't tunnel thin floors |
 | `step_height` | 32.0 BU | auto-step; covers canonical Bethesda stairs |
 | `max_slope_climb_deg` | 50° | matches Bethesda NavMesh slope limit |
