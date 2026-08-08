@@ -177,11 +177,14 @@ pub enum NifVariant {
 }
 ```
 
-`NifVariant::detect()` does the dispatch once at header read time and
-still drives a handful of genuinely variant-level decisions (which
-`ShaderFlags` vocabulary applies, which shader-property type a mesh
-uses) — but per-field version gating inside individual block parsers is
-**not** done through `NifVariant` helper predicates. The #1277 epic
+`NifVariant::detect()` does the dispatch once at header read time.
+Post-`#1897` (which deleted the `ShaderFlags<'a>` typed view), its only
+production consumer outside `version.rs`/tests is `havok_scale_for`
+(`lib.rs`), mapping variant → Havok-to-engine unit scale (7.0 pre-Skyrim,
+69.99125 Skyrim+) — `shader.rs` never references `NifVariant` at all;
+shader dispatch is purely raw-`bsver`-band based. Per-field version
+gating inside individual block parsers is **not** done through
+`NifVariant` helper predicates. The #1277 epic
 tried exactly that (migrating raw `bsver` comparisons onto
 `NifVariant`-keyed feature flags like `has_properties_list()` /
 `avobject_flags_u32()`), and #160/#1331/#1838/#1839 reverted it: a

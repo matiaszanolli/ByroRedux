@@ -166,6 +166,7 @@ fn import_nif_scene_impl(
         out: &mut imported,
         pool,
         resolver,
+        inherited_billboard: None,
     };
     walk::walk_node_hierarchical(&mut hier_ctx, root_idx, None, 0);
 

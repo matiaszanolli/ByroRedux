@@ -129,7 +129,9 @@ impl NiParticleRotation {
 // ── NiParticleBomb ────────────────────────────────────────────────────
 //
 // Adds Decay, Duration, DeltaV, Start, DecayType, SymmetryType (since
-// 4.1.0.12 — always present for Oblivion), Position, Direction.
+// 4.1.0.12, gated — see `NiParticleBomb::parse`; the type's own
+// `until="V10_0_1_0"` ceiling means Oblivion, v20.0.0.5, cannot author
+// one at all, #2526 / NIF-D1-NEW-01), Position, Direction.
 
 #[derive(Debug)]
 pub struct NiParticleBomb {
@@ -153,7 +155,19 @@ impl NiParticleBomb {
         let delta_v = stream.read_f32_le()?;
         let start = stream.read_f32_le()?;
         let decay_type = stream.read_u32_le()?;
-        let symmetry_type = stream.read_u32_le()?;
+        // Symmetry Type (`NiParticleBomb`, since="4.1.0.12"). #2526 /
+        // NIF-D1-NEW-01: `NiParticleBomb` itself is `until="V10_0_1_0"`
+        // per nif.xml (contrary to the previous "always present for
+        // Oblivion" comment — Oblivion's v20.0.0.5 is past this type's
+        // own ceiling, so it can never author one), giving a real,
+        // non-empty [4.1.0.12, 10.0.1.0] window — unlike Has Radii /
+        // Has Rotation Angles / Has Rotation Axes above, this field is
+        // gated, not dropped.
+        let symmetry_type = if stream.version() >= crate::version::NifVersion::V4_1_0_12 {
+            stream.read_u32_le()?
+        } else {
+            0
+        };
         let p = stream.read_ni_point3()?;
         let d = stream.read_ni_point3()?;
         Ok(Self {
@@ -530,9 +544,22 @@ impl NiLegacyParticles {
         let data_ref = stream.read_block_ref()?;
         let skin_instance_ref = stream.read_block_ref()?;
 
-        // NiGeometry has_shader chain (since 10.0.1.0, until 20.1.0.3).
-        // `bool` is 8-bit from 4.1.0.1 onward — every game Redux targets.
-        let has_shader = stream.read_byte_bool()?;
+        // NiGeometry has_shader chain (since 10.0.1.0, until 20.1.0.3) —
+        // gated exactly as the sibling NiTriShape::parse does
+        // (`tri_shape/ni_tri_shape.rs`). #2526 / NIF-D1-NEW-01: this field
+        // was previously read unconditionally, which is only byte-correct
+        // for the narrow window this parser's own object types
+        // (NiAutoNormalParticles / NiRotatingParticles, both
+        // `until="V10_0_1_0"` per nif.xml) can actually intersect with —
+        // i.e. version == V10_0_1_0 exactly. `bool` is 8-bit from
+        // 4.1.0.1 onward — every game Redux targets.
+        let has_shader = if stream.version() >= crate::version::NifVersion::V10_0_1_0
+            && stream.version() <= crate::version::NifVersion::V20_1_0_3
+        {
+            stream.read_byte_bool()?
+        } else {
+            false
+        };
         let (shader_name, shader_implementation) = if has_shader {
             let name = stream.read_sized_string()?;
             let impl_ = stream.read_u32_le()? as i32;
@@ -555,21 +582,33 @@ impl NiLegacyParticles {
 
 // ── NiAutoNormalParticlesData / NiRotatingParticlesData ───────────────
 //
-// Both inherit NiParticlesData → NiGeometryData. At v20.0.0.5:
+// Both inherit NiParticlesData → NiGeometryData, and both are themselves
+// `until="V10_0_1_0"` per nif.xml — NOT reachable by Oblivion (v20.0.0.5)
+// or any later-supported game; see the module doc for the
+// nif.xml-completeness rationale. #2526 / NIF-D1-NEW-01 corrected the
+// stale "at v20.0.0.5" framing this comment previously carried, which
+// was itself the wrong premise behind the missing version gates below:
 //
 //   NiGeometryData base (via parse_geometry_data_base)
 //   // NiParticlesData fields (no num_particles since 4.0.0.2, no
 //   //                          particle_radius since 10.0.1.0)
-//   has_radii:bool + radii:float[num_vertices]? (since 10.1.0.0)
+//   has_radii:bool + radii:float[num_vertices]? — (since 10.1.0.0, no
+//     until) is STRICTLY ABOVE this object's own 10.0.1.0 ceiling —
+//     structurally unreachable, never read
 //   num_active:u16
-//   has_sizes:bool + sizes:float[num_vertices]?
-//   has_rotations:bool + rotations:Quat[num_vertices]? (since 10.0.1.0)
-//   has_rotation_angles:bool + rotation_angles:f32[num_vertices]? (since 20.0.0.4)
-//   has_rotation_axes:bool + rotation_axes:Vec3[num_vertices]? (since 20.0.0.4)
+//   has_sizes:bool + sizes:float[num_vertices]? — no version gate on
+//     the field itself, always present
+//   has_rotations:bool + rotations:Quat[num_vertices]? — (since
+//     10.0.1.0, no until) valid only at exactly version == 10.0.1.0
+//   has_rotation_angles:bool + rotation_angles:f32[num_vertices]? —
+//     (since 20.0.0.4, no until) structurally unreachable, never read
+//   has_rotation_axes:bool + rotation_axes:Vec3[num_vertices]? — same
+//     as rotation_angles, never read
 //
 // NiRotatingParticlesData additionally carries `has_rotations_2` +
-// `rotations_2` — but only up to 4.2.2.0, so in Oblivion there is NO
-// extra tail. The Rotating and AutoNormal variants are byte-identical.
+// `rotations_2` — but only up to 4.2.2.0, so at this object's own
+// ceiling (10.0.1.0) there is NO extra tail. The Rotating and
+// AutoNormal variants are byte-identical.
 
 #[derive(Debug)]
 pub struct NiLegacyParticlesData {
@@ -603,14 +642,17 @@ impl NiLegacyParticlesData {
             parse_geometry_data_base(stream)?;
         let num_vertices = vertices.len() as u16;
 
-        // has_radii + radii (since 10.1.0.0 — always present for Oblivion).
-        // #981 — bulk-read f32 arrays via `read_f32_array`.
-        let has_radii = stream.read_byte_bool()?;
-        let radii = if has_radii {
-            stream.read_f32_array(num_vertices as usize)?
-        } else {
-            Vec::new()
-        };
+        // Has Radii (`NiParticlesData`, since="10.1.0.0", nif.xml has no
+        // `until` — open-ended) is structurally unreachable here: this
+        // parser's own object types (`NiAutoNormalParticlesData` /
+        // `NiRotatingParticlesData`, parents `until="V10_0_1_0"` per
+        // nif.xml) close out strictly *before* the field's own `since`
+        // ceiling opens (10.1.0.0 > 10.0.1.0) — the intersection is
+        // empty, so it can never legitimately be present. #2526 /
+        // NIF-D1-NEW-01: previously read unconditionally regardless,
+        // corrupting stream position for any genuine pre-Gamebryo
+        // instance. Never read; always absent.
+        let radii: Vec<f32> = Vec::new();
 
         let num_active = stream.read_u16_le()?;
 
@@ -621,7 +663,19 @@ impl NiLegacyParticlesData {
             Vec::new()
         };
 
-        let has_rotations = stream.read_byte_bool()?;
+        // Has Rotations (`NiParticlesData`, since="10.0.1.0", no `until`
+        // on the field itself) — same window shape as Has Shader above:
+        // this parser's own object types close out at exactly
+        // `until="V10_0_1_0"`, giving a single-point valid window of
+        // version == V10_0_1_0. #2526 / NIF-D1-NEW-01: same bug class as
+        // the issue's four named fields, caught by the SIBLING
+        // completeness check when auditing the rest of this parser —
+        // was read unconditionally regardless of version.
+        let has_rotations = if stream.version() >= crate::version::NifVersion::V10_0_1_0 {
+            stream.read_byte_bool()?
+        } else {
+            false
+        };
         let rotations = if has_rotations {
             let mut v = stream.allocate_vec(num_vertices as u32)?;
             for _ in 0..num_vertices {
@@ -637,24 +691,19 @@ impl NiLegacyParticlesData {
             Vec::new()
         };
 
-        // has_rotation_angles + has_rotation_axes since 20.0.0.4 — present
-        // in Oblivion v20.0.0.5. #981 — bulk reads via `read_f32_array` /
-        // `read_f32_triple_array`. NiPoint3 is `#[repr(C)]` with the
-        // same field layout as `[f32; 3]`, so the read-and-unpack
-        // pattern collapses into a direct triple read.
-        let has_rotation_angles = stream.read_byte_bool()?;
-        let rotation_angles = if has_rotation_angles {
-            stream.read_f32_array(num_vertices as usize)?
-        } else {
-            Vec::new()
-        };
-
-        let has_rotation_axes = stream.read_byte_bool()?;
-        let rotation_axes = if has_rotation_axes {
-            stream.read_f32_triple_array(num_vertices as usize)?
-        } else {
-            Vec::new()
-        };
+        // Has Rotation Angles / Has Rotation Axes (`NiRotatingParticlesData`,
+        // both since="20.0.0.4", nif.xml has no `until` — open-ended) are
+        // structurally unreachable for the same reason as Has Radii
+        // above: this parser's own object types close out at
+        // `until="V10_0_1_0"`, strictly below the fields' 20.0.0.4
+        // opening — the intersection is empty. #2526 / NIF-D1-NEW-01:
+        // previously read unconditionally regardless (the stale "present
+        // in Oblivion v20.0.0.5" comment reflected the same wrong
+        // premise this issue corrects — Oblivion cannot author this
+        // object type at all, its own version is past the type's
+        // ceiling). Never read; always absent.
+        let rotation_angles: Vec<f32> = Vec::new();
+        let rotation_axes: Vec<[f32; 3]> = Vec::new();
 
         // NiRotatingParticlesData `has_rotations_2` field is `until 4.2.2.0`
         // — absent in Oblivion, nothing further to consume.

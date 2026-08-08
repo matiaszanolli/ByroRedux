@@ -603,6 +603,7 @@ mod recursion_depth_tests {
             out: &mut imported,
             pool: &mut pool,
             resolver: None,
+            inherited_billboard: None,
         };
         walk_node_hierarchical(&mut ctx, 0, None, 0);
         // We imported some prefix of the chain but not the whole thing —
@@ -656,6 +657,7 @@ mod recursion_depth_tests {
             out: &mut imported,
             pool: &mut pool,
             resolver: None,
+            inherited_billboard: None,
         };
         walk_node_hierarchical(&mut ctx, 0, None, 0);
         assert_eq!(imported.nodes.len() as u32, chain_len);
@@ -778,6 +780,7 @@ mod particle_local_transform_tests {
             out: &mut imported,
             pool: &mut pool,
             resolver: None,
+            inherited_billboard: None,
         };
         walk_node_hierarchical(&mut ctx, 0, None, 0);
         assert_eq!(

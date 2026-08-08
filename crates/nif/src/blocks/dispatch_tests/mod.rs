@@ -11,6 +11,7 @@
 //! - [`extra_data`] — strings, bone-LOD ED, distant-object, eye-center, etc.
 //! - [`nodes`] — node subtypes, BSTreeNode, BSMultiBoundNode, groupID prefix
 //! - [`effects`] — lights, camera, texture, particle-modifier chain
+//! - [`legacy_particle`] — pre-Gamebryo NetImmerse particle stack version gating
 //! - [`starfield`] — BSGeometry external/internal + skin attach
 
 mod controllers;
@@ -18,6 +19,7 @@ mod effects;
 mod extra_data;
 mod havok;
 mod interpolators;
+mod legacy_particle;
 mod nodes;
 mod shader;
 mod starfield;

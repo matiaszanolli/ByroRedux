@@ -882,6 +882,20 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         if mesh.flags != 0 {
             world.insert(entity, SceneFlags::from_nif(mesh.flags));
         }
+        // #2527 / NIF-D4-2026-08-07-01 — mirror of
+        // `cell_loader/spawn.rs`'s per-mesh billboard attach (#2206).
+        // The `NiBillboardNode`'s own container entity (spawned above,
+        // ~line 469) is typically an empty node, a separate ECS entity
+        // from the actual geometry linked via Parent/Children —
+        // `make_billboard_system` writes `GlobalTransform.rotation`
+        // directly on that container, which `make_transform_propagation_
+        // system` never re-walks into (it reseeds from the
+        // `Transform`-dirty set, not the billboard write), so the
+        // rotation never reached the child mesh. Attach directly to the
+        // mesh entity instead of relying on parent→child propagation.
+        if let Some(raw) = mesh.billboard_mode {
+            world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
+        }
         // Canonical material translation — same single boundary the
         // cell-loader path uses, so loose-NIF materials are resolved
         // identically. No REFR overlay on the loose path → no extra

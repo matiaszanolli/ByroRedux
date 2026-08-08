@@ -204,6 +204,15 @@ pub(super) struct HierWalkCtx<'a> {
     pub out: &'a mut ImportedScene,
     pub pool: &'a mut StringPool,
     pub resolver: Option<&'a dyn MeshResolver>,
+    /// #2527 / NIF-D4-2026-08-07-01 — mirror of `FlatWalkCtx`'s field of
+    /// the same name. The flat walker (`walk_node_flat`) has threaded
+    /// this since #2206; the hierarchical walker never did, so a
+    /// `NiBillboardNode` wrapping child geometry imported through
+    /// `import_nif_scene` (the loose-NIF viewer AND the real object/
+    /// terrain LOD spawn paths) spawned but never rotated to face the
+    /// camera. Save/restore around recursion in the `as_ni_node` branch,
+    /// same stack discipline as `inherited_props`.
+    pub inherited_billboard: Option<u16>,
 }
 
 /// Recursively walk the scene graph, preserving hierarchy.
@@ -377,12 +386,23 @@ pub(super) fn walk_node_hierarchical(
         // are iterated before inherited props.
         let prev_len = ctx.inherited_props.len();
         ctx.inherited_props.extend_from_slice(&node.av.properties);
+        // #2527 / NIF-D4-2026-08-07-01 — same save/restore stack
+        // discipline as `inherited_props`, mirroring `walk_node_flat`'s
+        // pattern (#2206) so a billboard subtree's mode doesn't leak to
+        // its siblings. `billboard_mode` (computed above) already ran
+        // `extract_billboard_mode` for this node's own `ImportedNode`;
+        // reuse it here instead of re-downcasting.
+        let prev_billboard = ctx.inherited_billboard;
+        if let Some(mode) = billboard_mode {
+            ctx.inherited_billboard = Some(mode);
+        }
         for child_ref in &node.children {
             if let Some(idx) = child_ref.index() {
                 walk_node_hierarchical(ctx, idx, Some(this_node_idx), depth + 1);
             }
         }
         ctx.inherited_props.truncate(prev_len);
+        ctx.inherited_billboard = prev_billboard;
         return;
     }
 
@@ -426,6 +446,9 @@ pub(super) fn walk_node_hierarchical(
         if let Some(mesh) = extract_mesh_local(scene, shape, ctx.inherited_props, ctx.pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
+            // #2527 / NIF-D4-2026-08-07-01 — mirror of `walk_node_flat`'s
+            // per-mesh billboard-mode stamp (#2206).
+            mesh.billboard_mode = ctx.inherited_billboard;
             ctx.out.meshes.push(mesh);
         }
     }
@@ -463,6 +486,9 @@ pub(super) fn walk_node_hierarchical(
         if let Some(mesh) = extract_bs_tri_shape_local(scene, shape, ctx.pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
+            // #2527 / NIF-D4-2026-08-07-01 — mirror of `walk_node_flat`'s
+            // per-mesh billboard-mode stamp (#2206).
+            mesh.billboard_mode = ctx.inherited_billboard;
             ctx.out.meshes.push(mesh);
         }
     }
@@ -501,6 +527,9 @@ pub(super) fn walk_node_hierarchical(
             // classic-`NiTriShape` extractor and always hardcodes `None`,
             // so thread them through here instead.
             mesh.bs_lod_cutoffs = Some([lod.lod0_size, lod.lod1_size, lod.lod2_size]);
+            // #2527 / NIF-D4-2026-08-07-01 — mirror of `walk_node_flat`'s
+            // per-mesh billboard-mode stamp (#2206).
+            mesh.billboard_mode = ctx.inherited_billboard;
             ctx.out.meshes.push(mesh);
         }
     }
@@ -525,6 +554,9 @@ pub(super) fn walk_node_hierarchical(
         if let Some(mesh) = extract_bs_geometry_local(scene, shape, ctx.pool, resolver) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
+            // #2527 / NIF-D4-2026-08-07-01 — mirror of `walk_node_flat`'s
+            // per-mesh billboard-mode stamp (#2206).
+            mesh.billboard_mode = ctx.inherited_billboard;
             ctx.out.meshes.push(mesh);
         }
     }
