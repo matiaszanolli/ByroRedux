@@ -441,7 +441,16 @@ pub fn synthesize_tangents_yup(
 
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        let n_yup = normals_yup[i];
+        // #2632 / SF2D2-D2-04 — `normals_yup` is unit-length only to
+        // quantization for a UDEC3-decoded source (Starfield BSGeometry's
+        // `unpack_udec3_xyzw` performs no normalization); the Gram-Schmidt
+        // projection below (and the degenerate branch's permutation +
+        // cross product) is only correct for `|n| == 1`. Normalize the
+        // local copy once here rather than requiring every caller to
+        // pre-normalize — cheap, and a no-op for already-unit input
+        // (SSE-reconstructed BSTriShape normals).
+        let mut n_yup = normals_yup[i];
+        normalize_inplace(&mut n_yup);
         let tangent_in = tan_u[i];
         let bitangent_in = tan_v[i];
 
@@ -459,7 +468,23 @@ pub fn synthesize_tangents_yup(
                 // divergence (AUDIT_INCREMENTAL_2026-05-22 ID-4); both are
                 // acceptable since the degenerate case has no canonical
                 // tangent and any orthogonal-to-N direction is correct.
-                let t_y = [n_yup[1], n_yup[2], n_yup[0]];
+                //
+                // #2632 / SF2D2-D2-04 — a raw cyclic permutation of N's
+                // components is NOT generally orthogonal to N (e.g. any N
+                // with all-equal components permutes to itself), so
+                // `cross(N, t_y)` on the raw permutation could yield a
+                // non-orthogonal-to-N, non-unit bitangent. Gram-Schmidt
+                // the permuted vector against N and normalize before the
+                // cross product, matching the non-degenerate branch below.
+                let t_y_raw = [n_yup[1], n_yup[2], n_yup[0]];
+                let dot_nt =
+                    n_yup[0] * t_y_raw[0] + n_yup[1] * t_y_raw[1] + n_yup[2] * t_y_raw[2];
+                let mut t_y = [
+                    t_y_raw[0] - n_yup[0] * dot_nt,
+                    t_y_raw[1] - n_yup[1] * dot_nt,
+                    t_y_raw[2] - n_yup[2] * dot_nt,
+                ];
+                normalize_inplace(&mut t_y);
                 let b_y = [
                     n_yup[1] * t_y[2] - n_yup[2] * t_y[1],
                     n_yup[2] * t_y[0] - n_yup[0] * t_y[2],

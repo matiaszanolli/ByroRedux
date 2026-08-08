@@ -209,6 +209,7 @@ pub fn extract_bs_tri_shape(
             BsTriShapeKind::SubIndex(data) => Some((**data).clone()),
             _ => None,
         },
+        bs_geometry_lod_slot: None,
         billboard_mode: None,
     })
 }

@@ -116,6 +116,10 @@ fn stage_a_skips_sentinel_first_internal_slot_and_finds_populated_one() {
         FLAG_INTERNAL_GEOM_DATA,
         vec![
             BSGeometryMesh {
+                // #2631 / SF2D2-D2-03 — deliberately NOT the array position
+                // (0): stands in for an authored slot 1 whose slot-0
+                // sibling had an absent test-byte and was never pushed.
+                lod_slot: 1,
                 tri_size: 0,
                 num_verts: 0,
                 flags: 0,
@@ -124,6 +128,10 @@ fn stage_a_skips_sentinel_first_internal_slot_and_finds_populated_one() {
                 },
             },
             BSGeometryMesh {
+                // Array position 1, but authored slot 3 — proves the
+                // resolved mesh reports the TRUE authored index, not the
+                // post-skip array position (which would be 1 here).
+                lod_slot: 3,
                 tri_size: 0,
                 num_verts: 0,
                 flags: 0,
@@ -139,6 +147,12 @@ fn stage_a_skips_sentinel_first_internal_slot_and_finds_populated_one() {
         .expect("sentinel-first Internal slot order must not drop a later populated slot");
     assert_eq!(mesh.positions.len(), 3);
     assert_eq!(mesh.indices.len(), 3);
+    assert_eq!(
+        mesh.bs_geometry_lod_slot,
+        Some(3),
+        "resolved mesh must report the populated slot's authored index (3), \
+         not its array position (1) in the post-skip `meshes` vec"
+    );
 }
 
 #[test]
@@ -146,6 +160,7 @@ fn stage_a_all_sentinel_internal_slots_returns_none() {
     let shape = bs_geometry_with_meshes(
         FLAG_INTERNAL_GEOM_DATA,
         vec![BSGeometryMesh {
+            lod_slot: 0,
             tri_size: 0,
             num_verts: 0,
             flags: 0,
@@ -238,6 +253,9 @@ fn stage_b_skips_sentinel_first_external_slot_and_finds_populated_one() {
         0, // no FLAG_INTERNAL_GEOM_DATA — Stage B (external)
         vec![
             BSGeometryMesh {
+                // See the Stage-A sibling test above for why this is
+                // deliberately not the array position.
+                lod_slot: 1,
                 tri_size: 0,
                 num_verts: 0,
                 flags: 0,
@@ -246,6 +264,7 @@ fn stage_b_skips_sentinel_first_external_slot_and_finds_populated_one() {
                 },
             },
             BSGeometryMesh {
+                lod_slot: 3,
                 tri_size: 0,
                 num_verts: 0,
                 flags: 0,
@@ -267,6 +286,12 @@ fn stage_b_skips_sentinel_first_external_slot_and_finds_populated_one() {
     .expect("sentinel-first external slot order must not drop a later populated slot");
     assert_eq!(mesh.positions.len(), 3);
     assert_eq!(mesh.indices.len(), 3);
+    assert_eq!(
+        mesh.bs_geometry_lod_slot,
+        Some(3),
+        "resolved mesh must report the populated slot's authored index (3), \
+         not its array position (1) in the post-skip `meshes` vec"
+    );
 }
 
 #[test]
@@ -278,6 +303,7 @@ fn stage_b_all_sentinel_external_slots_returns_none() {
     let shape = bs_geometry_with_meshes(
         0,
         vec![BSGeometryMesh {
+            lod_slot: 0,
             tri_size: 0,
             num_verts: 0,
             flags: 0,

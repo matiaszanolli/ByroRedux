@@ -224,6 +224,63 @@ fn synthesize_tangents_yup_rejects_mismatched_inputs() {
     assert!(synthesize_tangents_yup(&positions, &normals, &uvs, &triangles).is_empty());
 }
 
+/// #2632 / SF2D2-D2-04 — the degenerate fallback (permute-N-components)
+/// branch must produce a UNIT tangent that is ORTHOGONAL to N, even when
+/// the input normal is non-unit-length (as a UDEC3-decoded Starfield
+/// `BSGeometry` normal is, to quantization) and not axis-aligned (so the
+/// permutation isn't already trivially orthogonal to N — this exercises
+/// the real Gram-Schmidt projection, not a no-op).
+///
+/// Degenerate branch trigger: every vertex shares the identical UV, so
+/// the per-triangle `sdir`/`tdir` UV-derivative accumulators are exactly
+/// zero for every vertex (`vec3_is_zero` fires), regardless of vertex
+/// positions.
+#[test]
+fn synthesize_tangents_yup_degenerate_fallback_normalizes_and_orthogonalizes_against_n() {
+    let positions: Vec<[f32; 3]> = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.3]];
+    // Non-unit (magnitude 5) and NOT axis-aligned, so a raw cyclic
+    // permutation of its components is not already orthogonal to it —
+    // pre-fix this would leave the tangent both non-unit AND
+    // non-orthogonal to N.
+    let raw_normal = [0.0f32, 4.0, 3.0];
+    let normals: Vec<[f32; 3]> = vec![raw_normal; 3];
+    // Identical UVs on every vertex → zero UV-derivative accumulation →
+    // every vertex takes the degenerate fallback branch.
+    let uvs = vec![[0.5, 0.5]; 3];
+    let triangles = vec![[0u16, 1u16, 2u16]];
+
+    let out = synthesize_tangents_yup(&positions, &normals, &uvs, &triangles);
+    assert_eq!(out.len(), 3);
+
+    // The same normalization the function must apply internally, computed
+    // independently here for the orthogonality check below.
+    let len = (raw_normal[0] * raw_normal[0]
+        + raw_normal[1] * raw_normal[1]
+        + raw_normal[2] * raw_normal[2])
+        .sqrt();
+    let n_unit = [raw_normal[0] / len, raw_normal[1] / len, raw_normal[2] / len];
+
+    for (i, t) in out.iter().enumerate() {
+        let tangent = [t[0], t[1], t[2]];
+        let mag2 = tangent[0] * tangent[0] + tangent[1] * tangent[1] + tangent[2] * tangent[2];
+        assert!(
+            (mag2 - 1.0).abs() < 1e-5,
+            "vertex {i} degenerate-fallback tangent must be unit length, got |T|^2={mag2}"
+        );
+        let dot_nt = n_unit[0] * tangent[0] + n_unit[1] * tangent[1] + n_unit[2] * tangent[2];
+        assert!(
+            dot_nt.abs() < 1e-5,
+            "vertex {i} degenerate-fallback tangent must be orthogonal to (normalized) N, \
+             got dot(N, T)={dot_nt}"
+        );
+        assert!(
+            (t[3].abs() - 1.0).abs() < 1e-5,
+            "vertex {i} bitangent_sign must be exactly +-1, got {}",
+            t[3]
+        );
+    }
+}
+
 #[test]
 fn synthesize_tangents_yup_empty_inputs_return_empty() {
     let empty_positions: Vec<[f32; 3]> = Vec::new();

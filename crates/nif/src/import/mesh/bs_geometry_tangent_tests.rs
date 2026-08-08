@@ -185,6 +185,7 @@ fn placeholder_normals_with_uvs_do_not_trigger_tangent_synthesis() {
         shader_property_ref: BlockRef::NULL,
         alpha_property_ref: BlockRef::NULL,
         meshes: vec![BSGeometryMesh {
+            lod_slot: 0,
             tri_size: 3 * std::mem::size_of::<u16>() as u32,
             num_verts: 3,
             flags: 0,
@@ -249,6 +250,7 @@ fn empty_tangents_raw_and_empty_geometry_yields_empty_vec() {
 
 fn make_internal(version: u32) -> BSGeometryMesh {
     BSGeometryMesh {
+        lod_slot: 0,
         tri_size: 0,
         num_verts: 0,
         flags: 0,
@@ -275,6 +277,7 @@ fn make_internal(version: u32) -> BSGeometryMesh {
 
 fn make_external(name: &str) -> BSGeometryMesh {
     BSGeometryMesh {
+        lod_slot: 0,
         tri_size: 0,
         num_verts: 0,
         flags: 0,

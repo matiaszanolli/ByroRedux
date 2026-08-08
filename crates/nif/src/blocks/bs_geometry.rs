@@ -104,10 +104,10 @@ impl BSGeometry {
         // boolean — present (1) or absent (0).
         let internal = (av.flags & FLAG_INTERNAL_GEOM_DATA) != 0;
         let mut meshes = Vec::new();
-        for _ in 0..4 {
+        for slot in 0..4u32 {
             let test_byte = stream.read_u8()?;
             if test_byte != 0 {
-                meshes.push(BSGeometryMesh::parse(stream, internal)?);
+                meshes.push(BSGeometryMesh::parse(stream, slot, internal)?);
             }
         }
 
@@ -185,6 +185,15 @@ impl traits::HasShaderRefs for BSGeometry {
 /// inline geometry body.
 #[derive(Debug)]
 pub struct BSGeometryMesh {
+    /// Which of the parent's 4 slot bytes this mesh occupied (0-3),
+    /// captured before `BSGeometry::parse`'s loop counter is discarded.
+    /// `meshes` only contains *present* slots (the `test_byte == 0` ones
+    /// are skipped, not pushed as placeholders), so a slot's position in
+    /// `BSGeometry::meshes` is NOT the same as its authored LOD index
+    /// once any earlier slot is absent or itself a sentinel — a future
+    /// LOD selector needs this to know which level it actually loaded.
+    /// See #2631 / SF2D2-D2-03.
+    pub lod_slot: u32,
     /// Triangle-index byte size hint (always present, regardless of
     /// internal/external).
     pub tri_size: u32,
@@ -213,9 +222,11 @@ pub enum BSGeometryMeshKind {
 }
 
 impl BSGeometryMesh {
-    /// Parse one mesh-LOD slot. `internal` is the parent's
-    /// `flags & 0x200`-derived gate.
-    pub fn parse(stream: &mut NifStream, internal: bool) -> io::Result<Self> {
+    /// Parse one mesh-LOD slot. `slot` is this slot's index (0-3) in the
+    /// parent's 4-byte test-byte array — the caller's own loop counter,
+    /// captured here so it survives the sentinel-slot skip (#2631). `internal`
+    /// is the parent's `flags & 0x200`-derived gate.
+    pub fn parse(stream: &mut NifStream, slot: u32, internal: bool) -> io::Result<Self> {
         let tri_size = stream.read_u32_le()?;
         let num_verts = stream.read_u32_le()?;
         let flags = stream.read_u32_le()?;
@@ -232,6 +243,7 @@ impl BSGeometryMesh {
         };
 
         Ok(Self {
+            lod_slot: slot,
             tri_size,
             num_verts,
             flags,

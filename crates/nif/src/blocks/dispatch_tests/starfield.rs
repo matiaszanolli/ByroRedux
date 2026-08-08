@@ -127,6 +127,84 @@ fn starfield_bs_geometry_external_mesh_dispatches() {
     );
 }
 
+/// Regression for #2631 / SF2D2-D2-03: `BSGeometry::parse`'s slot loop
+/// used to discard its own loop counter, so `meshes[i]`'s position in
+/// the post-skip Vec silently stood in for the authored LOD index.
+/// Builds a sparse layout — slot 0 ABSENT, slot 1 present, slot 2
+/// ABSENT, slot 3 present — so array position and authored slot index
+/// diverge (`meshes[0]` is array position 0 but authored slot 1;
+/// `meshes[1]` is array position 1 but authored slot 3) and pins that
+/// `BSGeometryMesh::lod_slot` reports the TRUE authored index.
+#[test]
+fn starfield_bs_geometry_lod_slot_survives_absent_earlier_slots() {
+    let header = starfield_header();
+    let mut d = starfield_av_prefix(0); // external-mesh branch
+    for v in [0.0f32, 0.0, 0.0, 1.0] {
+        d.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in [-1.0f32, -1.0, -1.0, 1.0, 1.0, 1.0] {
+        d.extend_from_slice(&v.to_le_bytes());
+    }
+    d.extend_from_slice(&(-1i32).to_le_bytes());
+    d.extend_from_slice(&(-1i32).to_le_bytes());
+    d.extend_from_slice(&(-1i32).to_le_bytes());
+    // Slot 0: absent.
+    d.push(0u8);
+    // Slot 1: present.
+    d.push(1u8);
+    d.extend_from_slice(&11u32.to_le_bytes()); // tri_size
+    d.extend_from_slice(&22u32.to_le_bytes()); // num_verts
+    d.extend_from_slice(&64u32.to_le_bytes()); // flags
+    let name1 = b"slot1.mesh";
+    d.extend_from_slice(&(name1.len() as u32).to_le_bytes());
+    d.extend_from_slice(name1);
+    // Slot 2: absent.
+    d.push(0u8);
+    // Slot 3: present.
+    d.push(1u8);
+    d.extend_from_slice(&33u32.to_le_bytes()); // tri_size
+    d.extend_from_slice(&44u32.to_le_bytes()); // num_verts
+    d.extend_from_slice(&64u32.to_le_bytes()); // flags
+    let name3 = b"slot3.mesh";
+    d.extend_from_slice(&(name3.len() as u32).to_le_bytes());
+    d.extend_from_slice(name3);
+
+    let mut stream = NifStream::new(&d, &header);
+    let block = parse_block("BSGeometry", &mut stream, Some(d.len() as u32))
+        .expect("BSGeometry must dispatch");
+    let geo = block
+        .as_any()
+        .downcast_ref::<bs_geometry::BSGeometry>()
+        .expect("BSGeometry downcast");
+
+    assert_eq!(geo.meshes.len(), 2, "only the 2 present slots are pushed");
+    assert_eq!(
+        geo.meshes[0].lod_slot, 1,
+        "array position 0 must report authored slot 1, not 0"
+    );
+    assert_eq!(
+        geo.meshes[1].lod_slot, 3,
+        "array position 1 must report authored slot 3, not 1"
+    );
+    match &geo.meshes[0].kind {
+        bs_geometry::BSGeometryMeshKind::External { mesh_name } => {
+            assert_eq!(mesh_name, "slot1.mesh")
+        }
+        _ => panic!("expected external mesh kind"),
+    }
+    match &geo.meshes[1].kind {
+        bs_geometry::BSGeometryMeshKind::External { mesh_name } => {
+            assert_eq!(mesh_name, "slot3.mesh")
+        }
+        _ => panic!("expected external mesh kind"),
+    }
+    assert_eq!(
+        stream.position() as usize,
+        d.len(),
+        "BSGeometry must consume the whole block exactly"
+    );
+}
+
 /// Internal-geom-data branch: bit 0x200 of NiAVObject flags switches
 /// the per-mesh slot from external-name to inline `BSGeometryMeshData`.
 /// Build a minimal-version body (`version > 2` early-out) so the test

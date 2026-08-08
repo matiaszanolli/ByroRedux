@@ -87,6 +87,7 @@ fn bs_geometry_with_skin(skin_idx: u32) -> BSGeometry {
         shader_property_ref: BlockRef::NULL,
         alpha_property_ref: BlockRef::NULL,
         meshes: vec![BSGeometryMesh {
+            lod_slot: 0,
             tri_size: 0,
             num_verts: 0,
             flags: 0,
