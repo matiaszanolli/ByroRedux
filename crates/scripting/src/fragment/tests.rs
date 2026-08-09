@@ -74,7 +74,7 @@ fn apply_effects_writes_stage_and_objectives() {
             stage: 30,
         },
     ];
-    let mut deferred = DeferredFragmentEffects::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
     let advances = apply_effects(
         &effects,
         Q,
@@ -134,7 +134,7 @@ fn apply_effects_runs_quest_lifecycle_and_resets_objectives() {
             quest: QuestRef::SelfRef,
         },
     ];
-    let mut deferred = DeferredFragmentEffects::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
     let advances = apply_effects(
         &effects,
         Q,
@@ -155,7 +155,7 @@ fn apply_effects_runs_quest_lifecycle_and_resets_objectives() {
     assert!(objectives.get(Q, 10).completed);
     assert!(objectives.get(Q, 20).completed);
 
-    let mut deferred = DeferredFragmentEffects::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
     apply_effects(
         &[Effect::ResetQuest {
             quest: QuestRef::SelfRef,
@@ -190,7 +190,7 @@ fn set_stage_honors_the_authored_allow_repeated_stages_flag() {
         let mut stages = QuestStageState::default();
         stages.set_stage(Q, 10);
         let mut objectives = QuestObjectiveState::default();
-        let mut deferred = DeferredFragmentEffects::default();
+        let mut deferred = DeferredFragmentEffects::new(&world);
         let advances = apply_effects(
             &[Effect::SetStage {
                 quest: QuestRef::SelfRef,
@@ -219,7 +219,7 @@ fn property_targeted_effect_skipped_without_vmad() {
         quest: QuestRef::Property("SomeOtherQuest".into()),
         stage: 99,
     }];
-    let mut deferred = DeferredFragmentEffects::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
     let advances = apply_effects(
         &effects,
         Q,
@@ -247,7 +247,7 @@ fn cinematic_presentation_effects_wait_for_quest_guards_to_drop() {
             event: CinematicAnimationEvent::IdleFurnitureExit,
         },
     ];
-    let mut deferred = DeferredFragmentEffects::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
 
     let advances = {
         let (mut stages, mut objectives) =
@@ -276,6 +276,106 @@ fn cinematic_presentation_effects_wait_for_quest_guards_to_drop() {
     assert_eq!(presentation.sitting_rotation_degrees, -55.0);
     assert!(presentation
         .is_player_animation_event_registered(CinematicAnimationEvent::IdleFurnitureExit));
+}
+
+/// Regression for #2539: lifecycle metadata must come from a snapshot captured
+/// before the paired quest-state guards, and alias invalidation must remain
+/// queued until those guards drop.
+#[test]
+fn quest_definition_reads_and_alias_dirtying_bracket_quest_guards() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    let mut world = fixture();
+    crate::install_start_game_quests(
+        &mut world,
+        [byroredux_plugin::esm::records::QustRecord {
+            form_id: Q.0,
+            start_up_stage: Some(5),
+            shut_down_stage: Some(90),
+            objectives: vec![
+                byroredux_plugin::esm::records::QuestObjective {
+                    index: 10,
+                    ..Default::default()
+                },
+                byroredux_plugin::esm::records::QuestObjective {
+                    index: 20,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+    );
+    crate::refresh_scene_actor_bindings(&world);
+    assert!(!world.resource::<crate::SceneActorBindings>().is_dirty());
+
+    let vmad = ScriptInstanceData {
+        scripts: vec![ScriptInstance {
+            name: "QF_LifecycleLockRegression".into(),
+            status: 0,
+            properties: vec![ScriptProperty {
+                name: "LifecycleQuest".into(),
+                status: 1,
+                value: PropertyValue::Object {
+                    form_id: Q.0,
+                    alias: -1,
+                },
+            }],
+        }],
+        ..Default::default()
+    };
+    let effects = [
+        Effect::StartScene {
+            scene: crate::translate::compose::ObjectRef::Property("LifecycleQuest".into()),
+        },
+        Effect::CompleteAllObjectives {
+            quest: QuestRef::SelfRef,
+        },
+        Effect::StopScene {
+            scene: crate::translate::compose::ObjectRef::Property("LifecycleQuest".into()),
+        },
+    ];
+
+    let mut deferred = DeferredFragmentEffects::new(&world);
+    *world.resource_mut::<crate::QuestDefinitionRegistry>() = Default::default();
+    assert!(!world
+        .resource::<crate::QuestDefinitionRegistry>()
+        .contains(Q));
+
+    let advances = {
+        let (mut stages, mut objectives) =
+            world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
+        apply_effects(
+            &effects,
+            Q,
+            Some(&vmad),
+            &world,
+            &mut stages,
+            &mut objectives,
+            &mut deferred,
+        )
+    };
+
+    assert_eq!(
+        advances
+            .iter()
+            .map(|advance| advance.new_stage)
+            .collect::<Vec<_>>(),
+        [5, 90]
+    );
+    {
+        let objectives = world.resource::<QuestObjectiveState>();
+        assert!(objectives.get(Q, 10).completed);
+        assert!(objectives.get(Q, 20).completed);
+    }
+    assert!(
+        !world.resource::<crate::SceneActorBindings>().is_dirty(),
+        "alias invalidation must remain queued until quest guards are released"
+    );
+
+    deferred.apply(&world);
+    assert!(world.resource::<crate::SceneActorBindings>().is_dirty());
 }
 
 #[test]

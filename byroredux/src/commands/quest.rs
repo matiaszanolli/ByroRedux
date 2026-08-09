@@ -209,7 +209,7 @@ fn apply_control_effect(
     {
         return Err(CommandOutput::error("quest runtime resources unavailable"));
     }
-    let mut deferred = DeferredFragmentEffects::default();
+    let mut deferred = DeferredFragmentEffects::new(world);
     let advances = {
         let (mut stages, mut objectives) =
             world.resource_2_mut::<QuestStageState, QuestObjectiveState>();

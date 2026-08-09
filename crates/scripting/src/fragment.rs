@@ -319,19 +319,37 @@ enum DeferredCinematicPresentationEffect {
     },
 }
 
-/// Side effects that must run after a fragment caller releases the canonical
-/// quest-stage/objective resource guards. Keeping this batch explicit prevents
-/// `QuestStageState -> CinematicPresentationState` nested acquisition (#2269).
-#[derive(Debug, Default)]
+/// Resource snapshots and side effects that bracket a fragment's canonical
+/// quest-stage/objective guard scope.
+///
+/// Construct the batch before taking those guards, then apply it after they
+/// drop. This prevents nested acquisitions of `QuestDefinitionRegistry` and
+/// the presentation/alias-binding resources (#2269, #2539).
+#[derive(Debug)]
 pub struct DeferredFragmentEffects {
+    quest_definitions: Option<crate::QuestDefinitionRegistry>,
     cinematic_presentation: Vec<DeferredCinematicPresentationEffect>,
+    scene_actor_bindings_dirty: bool,
 }
 
 impl DeferredFragmentEffects {
-    /// Apply the queued presentation mutations. Call only after releasing the
-    /// `QuestStageState` / `QuestObjectiveState` guards passed to
-    /// [`apply_effects`].
+    /// Snapshot fragment resources before acquiring the quest-state guards.
+    pub fn new(world: &World) -> Self {
+        Self {
+            quest_definitions: world
+                .try_resource::<crate::QuestDefinitionRegistry>()
+                .map(|definitions| definitions.clone()),
+            cinematic_presentation: Vec::new(),
+            scene_actor_bindings_dirty: false,
+        }
+    }
+
+    /// Apply queued mutations after releasing the `QuestStageState` /
+    /// `QuestObjectiveState` guards passed to [`apply_effects`].
     pub fn apply(self, world: &World) {
+        if self.scene_actor_bindings_dirty {
+            crate::scene::mark_scene_actor_bindings_dirty(world);
+        }
         if self.cinematic_presentation.is_empty() {
             return;
         }
@@ -373,9 +391,10 @@ impl DeferredFragmentEffects {
 /// (or any sibling quest-resource system) onto the parallel lane, needs the
 /// same analysis re-derived — see SCR-D6-NEW3-03 / #2126.
 ///
-/// Cinematic presentation resource mutations are deliberately appended to
-/// `deferred` instead of acquired here. Every production caller applies that
-/// batch only after its quest resource guards have dropped (#2269).
+/// Quest-definition reads use the snapshot in `deferred`, and presentation /
+/// alias-binding mutations are appended to it instead of acquired here. Every
+/// production caller constructs the batch before taking quest resource guards
+/// and applies it only after those guards have dropped (#2269, #2539).
 fn apply_effect(
     effect: &Effect,
     context: QuestFormId,
@@ -507,21 +526,24 @@ fn apply_effect(
             // the decompiled AST does not retain a property's declared type.
             // Resolve the FormID against installed definitions at dispatch.
             let quest = QuestFormId(scene_form_id);
-            let definitions = world.try_resource::<crate::QuestDefinitionRegistry>()?;
-            if !definitions.contains(quest) {
-                log::debug!(
-                    "fragment Start/Stop skipped: '{}' resolved to unknown form {scene_form_id:08X}",
-                    scene.property_name()
-                );
-                return None;
-            }
-            let start_up_stage = definitions.start_up_stage(quest);
-            let shut_down_stage = definitions.shut_down_stage(quest);
-            drop(definitions);
+            let (start_up_stage, shut_down_stage) = {
+                let definitions = deferred.quest_definitions.as_ref()?;
+                if !definitions.contains(quest) {
+                    log::debug!(
+                        "fragment Start/Stop skipped: '{}' resolved to unknown form {scene_form_id:08X}",
+                        scene.property_name()
+                    );
+                    return None;
+                }
+                (
+                    definitions.start_up_stage(quest),
+                    definitions.shut_down_stage(quest),
+                )
+            };
             if matches!(effect, Effect::StartScene { .. }) {
                 let event = stages.start_quest(quest, start_up_stage);
                 if event.is_some() {
-                    crate::scene::mark_scene_actor_bindings_dirty(world);
+                    deferred.scene_actor_bindings_dirty = true;
                 }
                 event
             } else {
@@ -539,7 +561,7 @@ fn apply_effect(
                     })
                     .flatten();
                 if stages.stop(quest) {
-                    crate::scene::mark_scene_actor_bindings_dirty(world);
+                    deferred.scene_actor_bindings_dirty = true;
                 }
                 event
             }
@@ -784,7 +806,7 @@ fn apply_effect(
             None
         }
         Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } => None,
-        _ => apply_quest_scoped_effect(effect, context, vmad, world, stages, objectives),
+        _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives, deferred),
     }
 }
 
@@ -795,15 +817,16 @@ fn apply_quest_scoped_effect(
     effect: &Effect,
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
-    world: &World,
     stages: &mut QuestStageState,
     objectives: &mut QuestObjectiveState,
+    deferred: &mut DeferredFragmentEffects,
 ) -> Option<QuestStageAdvanced> {
     match effect {
         Effect::SetStage { quest, stage } => {
             let quest = resolve_quest_logged(quest, context, vmad)?;
-            let allow_repeated = world
-                .try_resource::<crate::QuestDefinitionRegistry>()
+            let allow_repeated = deferred
+                .quest_definitions
+                .as_ref()
                 .is_some_and(|definitions| definitions.allows_repeated_stages(quest));
             if !allow_repeated && stages.get_stage_done(quest, *stage) {
                 return None;
@@ -811,7 +834,7 @@ fn apply_quest_scoped_effect(
             let was_started = stages.is_started(quest);
             let previous_stage = stages.set_stage(quest, *stage);
             if !was_started {
-                crate::scene::mark_scene_actor_bindings_dirty(world);
+                deferred.scene_actor_bindings_dirty = true;
             }
             Some(QuestStageAdvanced {
                 quest,
@@ -821,19 +844,21 @@ fn apply_quest_scoped_effect(
         }
         Effect::StartQuest { quest } => {
             let quest = resolve_quest_logged(quest, context, vmad)?;
-            let start_up_stage = world
-                .try_resource::<crate::QuestDefinitionRegistry>()
+            let start_up_stage = deferred
+                .quest_definitions
+                .as_ref()
                 .and_then(|definitions| definitions.start_up_stage(quest));
             let event = stages.start_quest(quest, start_up_stage);
             if event.is_some() {
-                crate::scene::mark_scene_actor_bindings_dirty(world);
+                deferred.scene_actor_bindings_dirty = true;
             }
             event
         }
         Effect::StopQuest { quest } => {
             let quest = resolve_quest_logged(quest, context, vmad)?;
-            let shut_down_stage = world
-                .try_resource::<crate::QuestDefinitionRegistry>()
+            let shut_down_stage = deferred
+                .quest_definitions
+                .as_ref()
                 .and_then(|definitions| definitions.shut_down_stage(quest));
             let event = stages
                 .is_running(quest)
@@ -849,14 +874,14 @@ fn apply_quest_scoped_effect(
                 })
                 .flatten();
             if stages.stop(quest) {
-                crate::scene::mark_scene_actor_bindings_dirty(world);
+                deferred.scene_actor_bindings_dirty = true;
             }
             event
         }
         Effect::CompleteQuest { quest } => {
             let quest = resolve_quest_logged(quest, context, vmad)?;
             if stages.complete(quest) {
-                crate::scene::mark_scene_actor_bindings_dirty(world);
+                deferred.scene_actor_bindings_dirty = true;
             }
             None
         }
@@ -864,7 +889,7 @@ fn apply_quest_scoped_effect(
             let quest = resolve_quest_logged(quest, context, vmad)?;
             stages.reset(quest);
             objectives.reset(quest);
-            crate::scene::mark_scene_actor_bindings_dirty(world);
+            deferred.scene_actor_bindings_dirty = true;
             None
         }
         Effect::SetQuestActive { quest, active } => {
@@ -901,8 +926,9 @@ fn apply_quest_scoped_effect(
         }
         Effect::CompleteAllObjectives { quest } => {
             let quest = resolve_quest_logged(quest, context, vmad)?;
-            let authored = world
-                .try_resource::<crate::QuestDefinitionRegistry>()
+            let authored = deferred
+                .quest_definitions
+                .as_ref()
                 .map(|definitions| definitions.objectives(quest).to_vec())
                 .unwrap_or_default();
             if authored.is_empty() {
@@ -914,8 +940,9 @@ fn apply_quest_scoped_effect(
         }
         Effect::FailAllObjectives { quest } => {
             let quest = resolve_quest_logged(quest, context, vmad)?;
-            let authored = world
-                .try_resource::<crate::QuestDefinitionRegistry>()
+            let authored = deferred
+                .quest_definitions
+                .as_ref()
                 .map(|definitions| definitions.objectives(quest).to_vec())
                 .unwrap_or_default();
             if authored.is_empty() {
@@ -952,9 +979,9 @@ fn apply_quest_scoped_effect(
 }
 
 /// Apply a whole fragment's effects, returning the chained
-/// [`QuestStageAdvanced`]s its `SetStage`s produced. Presentation mutations
-/// are queued in `deferred`; the caller must apply them only after releasing
-/// the quest-state guards passed here.
+/// [`QuestStageAdvanced`]s its `SetStage`s produced. Resource reads use the
+/// pre-lock snapshot in `deferred`; queued mutations must be applied only after
+/// releasing the quest-state guards passed here.
 pub fn apply_effects(
     effects: &[Effect],
     context: QuestFormId,
@@ -1073,7 +1100,7 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
     }
 
     let mut emitted = Vec::new();
-    let mut deferred = DeferredFragmentEffects::default();
+    let mut deferred = DeferredFragmentEffects::new(world);
     for pending in ready {
         let advances = {
             let (mut stages, mut objectives) =
@@ -1304,7 +1331,7 @@ pub fn quest_fragment_dispatch_system(world: &World) {
     let frags = world.resource::<QuestStageFragments>().clone();
 
     let mut chained: Vec<QuestStageAdvanced> = Vec::new();
-    let mut deferred = DeferredFragmentEffects::default();
+    let mut deferred = DeferredFragmentEffects::new(world);
     let mut steps = 0usize;
     {
         let (mut stages, mut objectives) =
