@@ -20,10 +20,6 @@ pub(crate) use byroredux_core::math::{Mat4, Quat, Vec3};
 pub(crate) use byroredux_core::string::StringPool;
 pub(crate) use std::collections::HashMap;
 
-pub(crate) use crate::cell_loader::{
-    LoadedCellIndex, LoadedPluginSet, PendingCellTransition, PendingCellTransitionSlot,
-    TransitionDestination,
-};
 pub(crate) use byroredux_core::ecs::SystemList;
 
 // ── Shared formatting / lookup helpers ────────────────────

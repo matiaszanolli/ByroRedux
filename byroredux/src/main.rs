@@ -24,6 +24,7 @@ mod env_translate;
 mod fog;
 mod game_profiles;
 mod helpers;
+mod interaction;
 mod material_translate;
 mod name_lookup;
 mod npc_spawn;
@@ -539,14 +540,16 @@ impl App {
         // egui::Context for the renderer to consume.
         //
         // #1376: build_debug_ui_snapshot deep-clones two BTreeMaps +
-        // a Vec of Strings every frame. Gate on `visible` so the clone
-        // is skipped when the overlay is hidden (boot default). The
-        // `ui.run` path below already early-returns on `!visible` and
-        // ignores the snapshot; returning a default here is safe.
+        // a Vec of Strings every frame. Gate those diagnostics on
+        // `visible`; the interaction prompt is the only snapshot field
+        // populated while the operator overlay is hidden.
         let snapshot = if self.debug_ui.as_ref().is_some_and(|ui| ui.visible) {
             build_debug_ui_snapshot(&self.world, self.debug_ui_refresh_entities)
         } else {
-            byroredux_debug_ui::PanelSnapshot::default()
+            byroredux_debug_ui::PanelSnapshot {
+                interaction_prompt: build_interaction_prompt(&self.world),
+                ..Default::default()
+            }
         };
         self.debug_ui_refresh_entities = false;
 
@@ -1819,10 +1822,17 @@ fn build_debug_ui_snapshot(
         .unwrap_or_default();
 
     byroredux_debug_ui::PanelSnapshot {
+        interaction_prompt: build_interaction_prompt(world),
         metrics,
         settings,
         entities,
     }
+}
+
+fn build_interaction_prompt(world: &World) -> Option<String> {
+    world
+        .try_resource::<crate::interaction::InteractionState>()
+        .and_then(|state| state.prompt())
 }
 
 /// Apply the [`PanelOutputs`] the overlay produced back to the world. Queued

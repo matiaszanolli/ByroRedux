@@ -55,8 +55,8 @@ impl Component for TwoSided {
 /// `EsmCellIndex::cell_for_refr_form_id` resolves `destination_form_id`
 /// back to the parent cell (interior editor-ID or exterior worldspace +
 /// grid). The `door.teleport` console command consumes both halves
-/// today; Stage 4 wires an `ActivateEvent`-driven system around the
-/// same lookup for F-key proximity activate.
+/// today; the gameplay interaction system now performs the same lookup
+/// from an E-key camera-forward activation.
 ///
 /// Sparse storage — Bethesda content ships ~0.1% of REFRs as doors
 /// (rough estimate from FNV Goodsprings exterior + Megaton interior).

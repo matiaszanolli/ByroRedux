@@ -241,8 +241,8 @@ pub(crate) fn setup_scene(
     let mut nif_root: Option<EntityId> = None;
 
     // Pending-cell-transition slot — pre-inserted so `&World`-only
-    // trigger sites (`door.teleport` console command, M40 Phase 2
-    // Stage 4 F-key activate) can write the queued transition via
+    // trigger sites (`door.teleport` console command, gameplay
+    // E-key activate) can write the queued transition via
     // `resource_mut` without structural insertion. The main loop's
     // per-frame `take_pending_transition` drains the slot back to
     // `None`. See cell_loader::transition.

@@ -16,6 +16,7 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use crate::cli_args::{parse_renderer_config, parse_string_arg, parse_vec3_arg};
 use crate::commands::build_command_registry;
 use crate::components::{CellRootIndex, FootstepConfig, InputState, NameIndex, SubtreeCache};
+use crate::interaction::{ActionBindings, ActionState, InteractionState};
 use crate::systems::{
     animate_lights_system, footstep_system, log_stats_system, make_animation_system,
     make_billboard_system, make_transform_propagation_system, make_world_bound_propagation_system,
@@ -342,6 +343,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::game_profiles::load_default());
     world.insert_resource(byroredux_core::ecs::SelectedRef::default());
     world.insert_resource(InputState::default());
+    world.insert_resource(ActionBindings::default());
+    world.insert_resource(ActionState::default());
+    world.insert_resource(InteractionState::default());
     world.insert_resource(StringPool::new());
     // #1212 / D1-NEW-01 — FormIdPool is the intern table backing
     // `FormIdComponent` and `World::find_by_form_id`. Every
@@ -651,6 +655,9 @@ pub(crate) fn build_scheduler() -> Scheduler {
     fn mg07_on_activate_dispatch(world: &World, _dt: f32) {
         byroredux_scripting::papyrus_demo::mg07_door::mg07_on_activate_system(world)
     }
+    // Canonical player interaction runs before every OnActivate consumer so
+    // a fresh E-key edge is visible to scripts in the same frame.
+    scheduler.add_exclusive(Stage::Update, crate::interaction::interaction_system);
     scheduler.add_exclusive(Stage::Update, rumble_on_activate_dispatch);
     scheduler.add_exclusive(
         Stage::Update,

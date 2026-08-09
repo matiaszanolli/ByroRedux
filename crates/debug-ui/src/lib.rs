@@ -2,7 +2,7 @@
 //!
 //! Phase 4a lands the minimum viable integration: an egui context
 //! that runs on every frame, an `egui-ash-renderer`-backed Vulkan
-//! pipeline that draws over the composite output, an F-key toggle,
+//! pipeline that draws over the composite output, an F3 toggle,
 //! and a stub panel that proves the round trip. Phase 4b fills in
 //! the actual Metrics / Loader / Entities / Console / Settings panels.
 //!
@@ -94,10 +94,10 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
 /// Persistent egui state shared between the App's event loop and
 /// the renderer's draw pass.
 ///
-/// `visible == false` is the steady state on engine boot. Toggled
-/// by F3 (or any other key the App wires). When `visible` is
-/// false, [`Self::run`] short-circuits — no UI work happens, no
-/// texture uploads queued, no GPU vertex/index data produced.
+/// `visible == false` is the debug-panel steady state on engine boot.
+/// Toggled by F3 (or any other key the App wires). A gameplay HUD prompt
+/// can still produce a lightweight egui frame while the debug panels are
+/// hidden; with neither surface active, [`Self::run`] short-circuits.
 pub struct DebugUiState {
     pub visible: bool,
     /// egui's central context — holds layout state, persisted
@@ -227,9 +227,10 @@ impl DebugUiState {
     /// the binary's `&self.world` (which would conflict with the
     /// `&mut self.debug_ui` borrow).
     ///
-    /// Returns an empty `PanelOutputs` when the overlay is hidden.
+    /// Returns an empty `PanelOutputs` when the debug overlay is hidden;
+    /// a supplied gameplay prompt can still produce render output.
     pub fn run(&mut self, window: &Window, snapshot: &PanelSnapshot) -> PanelOutputs {
-        if !self.visible {
+        if !self.visible && snapshot.interaction_prompt.is_none() {
             return PanelOutputs::default();
         }
         let raw_input = self.egui_winit.take_egui_input(window);
@@ -238,7 +239,10 @@ impl DebugUiState {
         // sugar fighting the borrow.
         self.egui_ctx.begin_pass(raw_input);
         let mut outputs = PanelOutputs::default();
-        panels::draw(&self.egui_ctx, snapshot, &mut self.panels, &mut outputs);
+        panels::draw_hud(&self.egui_ctx, snapshot);
+        if self.visible {
+            panels::draw(&self.egui_ctx, snapshot, &mut self.panels, &mut outputs);
+        }
         let output = self.egui_ctx.end_pass();
         // Hand the platform output back to egui-winit so OS-level
         // cursor / clipboard changes get applied. Done here (not

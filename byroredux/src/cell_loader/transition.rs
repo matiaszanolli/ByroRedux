@@ -1,11 +1,11 @@
 //! Cell-transition orchestrator (M40 Phase 2 Stage 3).
 //!
-//! Console commands and the future F-key activate system can't trigger
+//! Console commands and the gameplay E-key activate system can't trigger
 //! a cell swap directly — they take `&World` (read-only) while
 //! load/unload requires `&mut World + &mut VulkanContext + Provider`s.
 //! The deferred-execution shape solves this:
 //!
-//!   1. The trigger site (`door.teleport` console command, F-key
+//!   1. The trigger site (`door.teleport` console command, E-key
 //!      activate system) writes a [`PendingCellTransition`] resource
 //!      with the destination cell + camera position/rotation.
 //!   2. The next frame's main loop checks for the resource via
@@ -31,6 +31,8 @@
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::Resource;
 use byroredux_core::math::{Quat, Vec3};
+
+use crate::components::DoorTeleport;
 
 /// Plugin-load configuration captured at engine boot. The transition
 /// orchestrator re-uses this to call `load_cell_with_masters` for the
@@ -84,7 +86,7 @@ pub struct CurrentCellRoot(pub Option<EntityId>);
 impl Resource for CurrentCellRoot {}
 
 /// A queued cell transition. Set by trigger sites (`door.teleport`
-/// console command today; F-key activate system in Stage 4), consumed
+/// console command and E-key gameplay interaction), consumed
 /// by the main loop the next frame.
 ///
 /// The destination cell is identified by editor-ID + master list. The
@@ -147,6 +149,128 @@ pub enum TransitionDestination {
         masters: Vec<String>,
         esm_path: String,
     },
+}
+
+/// Successful result from resolving and queueing a door's XTEL payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedDoorTransition {
+    pub destination_label: String,
+    pub destination_form_id: u32,
+}
+
+/// Recoverable reasons a door activation cannot become a cell transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QueueDoorTransitionError {
+    MissingDoor(EntityId),
+    MissingCellIndex,
+    DestinationNotFound(u32),
+    MissingPluginSet,
+    MissingTransitionSlot,
+}
+
+impl std::fmt::Display for QueueDoorTransitionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingDoor(entity) => {
+                write!(formatter, "entity {entity} has no DoorTeleport component")
+            }
+            Self::MissingCellIndex => write!(
+                formatter,
+                "no LoadedCellIndex resource; an ESM-driven cell load is required"
+            ),
+            Self::DestinationNotFound(form_id) => write!(
+                formatter,
+                "destination FormID {form_id:08X} is absent from the loaded plugin set"
+            ),
+            Self::MissingPluginSet => write!(
+                formatter,
+                "no LoadedPluginSet resource; the engine was not booted with --esm"
+            ),
+            Self::MissingTransitionSlot => write!(
+                formatter,
+                "no PendingCellTransitionSlot resource; scene setup is incomplete"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for QueueDoorTransitionError {}
+
+/// Resolve a door's destination REFR to its parent cell and enqueue the
+/// existing deferred transition orchestrator.
+///
+/// This is the single producer used by both normal player interaction and the
+/// `door.teleport` diagnostic command, preventing the debug and gameplay paths
+/// from drifting apart.
+pub fn queue_door_transition(
+    world: &byroredux_core::ecs::World,
+    entity: EntityId,
+) -> Result<QueuedDoorTransition, QueueDoorTransitionError> {
+    let door = world
+        .query::<DoorTeleport>()
+        .and_then(|query| query.get(entity).copied())
+        .ok_or(QueueDoorTransitionError::MissingDoor(entity))?;
+
+    let index = world
+        .try_resource::<super::index::LoadedCellIndex>()
+        .ok_or(QueueDoorTransitionError::MissingCellIndex)?;
+    let owned_cell = index
+        .0
+        .cell_for_refr_form_id(door.destination_form_id)
+        .map(|cell| cell.to_owned())
+        .ok_or(QueueDoorTransitionError::DestinationNotFound(
+            door.destination_form_id,
+        ))?;
+    drop(index);
+
+    let plugin_set = world
+        .try_resource::<LoadedPluginSet>()
+        .ok_or(QueueDoorTransitionError::MissingPluginSet)?;
+    let masters = plugin_set.masters.clone();
+    let esm_path = plugin_set.esm_path.clone();
+    drop(plugin_set);
+
+    use byroredux_plugin::esm::cell::OwnedCellRef;
+    let (destination, destination_label) = match owned_cell {
+        OwnedCellRef::Interior { editor_id } => {
+            let destination_label = format!("interior '{editor_id}'");
+            (
+                TransitionDestination::Interior {
+                    editor_id,
+                    masters,
+                    esm_path,
+                },
+                destination_label,
+            )
+        }
+        OwnedCellRef::Exterior { worldspace, grid } => {
+            let destination_label = format!("exterior '{worldspace}' ({},{})", grid.0, grid.1);
+            (
+                TransitionDestination::Exterior {
+                    worldspace,
+                    grid,
+                    masters,
+                    esm_path,
+                },
+                destination_label,
+            )
+        }
+    };
+
+    let mut slot = world
+        .try_resource_mut::<PendingCellTransitionSlot>()
+        .ok_or(QueueDoorTransitionError::MissingTransitionSlot)?;
+    slot.0 = Some(PendingCellTransition {
+        destination,
+        source_refr_form_id: 0,
+        destination_position_zup: door.position_zup,
+        destination_rotation_zup: door.rotation_zup,
+    });
+
+    Ok(QueuedDoorTransition {
+        destination_label,
+        destination_form_id: door.destination_form_id,
+    })
 }
 
 /// Convert a Bethesda Z-up world-space position to engine Y-up.
@@ -430,6 +554,29 @@ mod tests {
         assert!(
             world.try_resource::<PendingCellTransitionSlot>().is_some(),
             "slot resource must stay present (not removed)"
+        );
+    }
+
+    #[test]
+    fn queue_door_transition_reports_missing_prerequisites() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        assert_eq!(
+            queue_door_transition(&world, entity),
+            Err(QueueDoorTransitionError::MissingDoor(entity))
+        );
+
+        world.insert(
+            entity,
+            DoorTeleport {
+                destination_form_id: 0x1234,
+                position_zup: [0.0; 3],
+                rotation_zup: [0.0; 3],
+            },
+        );
+        assert_eq!(
+            queue_door_transition(&world, entity),
+            Err(QueueDoorTransitionError::MissingCellIndex)
         );
     }
 

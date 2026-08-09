@@ -448,6 +448,23 @@ and the content pipeline parses recoverably across every target
 next bottlenecks are *consumers* — things that make what we
 parse actually do something on screen or at the speakers.
 
+### Playable vertical slice — active 2026-08-09
+
+The current execution plan is
+[`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md).
+Its mid-term gate is one console-free Skyrim route covering character control,
+E-key interaction and door traversal, a small authored objective, one complete
+combat/loot loop, inventory/equipment UI, and save → exit → reload continuity.
+Work is sequenced P0 input/interaction → P1 reliable traversal → P2 combat →
+P3 game UI/inventory → P4 authored objective/dialogue → P5 persistence/soak.
+Capability on that route takes precedence over additional renderer polish.
+
+**P0 status:** action edges, camera-forward door/script targeting, canonical
+`ActivateEvent` emission, shared XTEL transition queueing, and the native
+`[E] Open/Activate` prompt are implemented and unit-tested. The closure gate is
+a real-data Skyrim interior→exterior smoke plus any line-of-sight/collider
+ownership correction it exposes.
+
 **Two axes.** Milestones (`M…`) ship user-visible capability.
 Risk-reducers (`R…`) are structural fixes flagged in the 2026-04-22
 architectural review — not new features, but prevention work to stop

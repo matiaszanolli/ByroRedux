@@ -368,93 +368,18 @@ impl ConsoleCommand for DoorTeleportCommand {
             ),
         ];
 
-        // 2. Resolve destination FormID → parent cell. Requires
-        // LoadedCellIndex to be present (set by `load_cell_with_masters`
-        // for interior loads; exterior streaming wiring is Stage 3b).
-        let Some(index) = world.try_resource::<LoadedCellIndex>() else {
-            lines.push(
-                "  (no LoadedCellIndex resource — cannot resolve parent cell. \
-                 Interior cell load needed; exterior wiring is Stage 3b.)"
-                    .to_string(),
-            );
-            return CommandOutput::lines(lines);
-        };
-        // Materialise an owned variant so we can drop the index borrow
-        // before grabbing the LoadedPluginSet read below.
-        let owned_cell = match index.0.cell_for_refr_form_id(door.destination_form_id) {
-            Some(c) => c.to_owned(),
-            None => {
-                lines.push(format!(
-                    "  destination cell: NOT FOUND — destination FormID {:08X} \
-                     not in any cell loaded from the current plugin set. \
-                     Likely an unloaded DLC master (e.g. --master DeadMoney.esm) \
-                     or an XTEL pointing at a malformed REFR.",
-                    door.destination_form_id
-                ));
-                return CommandOutput::lines(lines);
+        // Resolve + queue through the same canonical path normal E-key
+        // interaction uses. The command remains a diagnostic frontend, not a
+        // second transition implementation that can drift from gameplay.
+        match crate::cell_loader::queue_door_transition(world, entity_id) {
+            Ok(queued) => {
+                lines.push(format!("  destination cell: {}", queued.destination_label));
+                lines.push(
+                    "  queued: transition will fire on the next frame's main loop tick".into(),
+                );
             }
-        };
-        drop(index);
-
-        // 3. Snapshot the CLI plugin config so the orchestrator can
-        // call `load_cell_with_masters` for the destination.
-        let Some(plugin_set) = world.try_resource::<LoadedPluginSet>() else {
-            lines.push(
-                "  (no LoadedPluginSet resource — engine was not booted with --esm, \
-                 so no cell-load context is available. door.teleport requires an \
-                 ESM-driven boot.)"
-                    .to_string(),
-            );
-            return CommandOutput::lines(lines);
-        };
-        let masters = plugin_set.masters.clone();
-        let esm_path = plugin_set.esm_path.clone();
-        drop(plugin_set);
-
-        // 4. Build the destination + queue the transition.
-        use byroredux_plugin::esm::cell::OwnedCellRef;
-        let (destination, dest_label) = match owned_cell {
-            OwnedCellRef::Interior { editor_id } => {
-                let label = format!("interior '{editor_id}'");
-                (
-                    TransitionDestination::Interior {
-                        editor_id,
-                        masters,
-                        esm_path,
-                    },
-                    label,
-                )
-            }
-            OwnedCellRef::Exterior { worldspace, grid } => {
-                let label = format!("exterior '{worldspace}' ({},{})", grid.0, grid.1);
-                (
-                    TransitionDestination::Exterior {
-                        worldspace,
-                        grid,
-                        masters,
-                        esm_path,
-                    },
-                    label,
-                )
-            }
-        };
-        lines.push(format!("  destination cell: {dest_label}"));
-
-        let Some(mut slot) = world.try_resource_mut::<PendingCellTransitionSlot>() else {
-            lines.push(
-                "  (no PendingCellTransitionSlot resource — engine boot did not \
-                 install the slot, the transition cannot be queued.)"
-                    .to_string(),
-            );
-            return CommandOutput::lines(lines);
-        };
-        slot.0 = Some(PendingCellTransition {
-            destination,
-            source_refr_form_id: 0, // Source REFR form-id discovery is Stage 4 work.
-            destination_position_zup: door.position_zup,
-            destination_rotation_zup: door.rotation_zup,
-        });
-        lines.push("  queued: transition will fire on the next frame's main loop tick".into());
+            Err(error) => lines.push(format!("  transition not queued: {error}")),
+        }
         CommandOutput::lines(lines)
     }
 }
@@ -467,14 +392,8 @@ impl ConsoleCommand for DoorTeleportCommand {
 /// is the canonical consumer, but downstream M47.0 demos
 /// (quest_advance, mg07_door, …) drain the same marker.
 ///
-/// **Why a console command instead of an input handler**: M47.0's
-/// scope is "the event-hooks runtime exists and works" — the
-/// canonical Bethesda use-key + raycast wiring touches M28.5 input
-/// architecture (per-frame input snapshot, camera-forward raycast,
-/// activation reticle UI) which is gameplay-UX scope. The console
-/// command demonstrates the e2e activation flow without the UX
-/// commitment; gameplay-driven activate lands as a follow-up to
-/// M28.5.
+/// This command is the diagnostic frontend for the same canonical
+/// `ActivateEvent` consumed by normal E-key interaction.
 ///
 /// Usage: `script.activate <entity_id>` — entity_id matches what
 /// `entities` / `prid` print.
@@ -503,25 +422,12 @@ impl ConsoleCommand for ScriptActivateCommand {
             ));
         };
 
-        // Resolve `activator` — prefer the canonical PlayerEntity
-        // resource when set, fall back to EntityId(0) for fixtures
-        // / pre-scene-setup activations.
-        let activator: byroredux_core::ecs::EntityId = world
-            .try_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
-            .map(|p| p.0)
-            .unwrap_or(0);
-
-        // Insert the marker. `query_mut` returns None if the storage
-        // was never registered — that would mean `scripting::register`
-        // didn't run, a programming error rather than a missing
-        // entity. The early-return is the same shape as `door.teleport`.
-        let Some(mut q) = world.query_mut::<byroredux_scripting::ActivateEvent>() else {
-            return CommandOutput::line(
-                "script.activate: ActivateEvent storage not registered — \
-                 scripting::register must run at engine init.",
-            );
+        let activator = match crate::interaction::emit_activate_event(world, entity_id) {
+            Ok(activator) => activator,
+            Err(error) => {
+                return CommandOutput::line(format!("script.activate: {error}"));
+            }
         };
-        q.insert(entity_id, byroredux_scripting::ActivateEvent { activator });
 
         CommandOutput::line(format!(
             "script.activate: ActivateEvent emitted on entity {entity_id} (activator = {activator})"

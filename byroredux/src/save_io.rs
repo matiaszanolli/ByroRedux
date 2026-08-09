@@ -2022,6 +2022,8 @@ mod tests {
             // `PlayerPose`, `GameTimeRes` all already are). Verified
             // 2026-08-08 against real (non-`#[cfg(test)]`) insertion sites
             // for every entry, same bar as the rest of this list.
+            ("ActionBindings", "boot-time input configuration; rebuilt from defaults/settings rather than persisted as gameplay state"),
+            ("ActionState", "per-frame held/pressed/released action edges derived entirely from InputState"),
             ("AlphaBlend", "spawn-time classification extracted from NiAlphaProperty flags at import, rederived identically every load"),
             ("AmbientPackageRuntime", "NPC_.PKID candidate state rebuilt at spawn and re-evaluated on the first tick against restored clock/CTDA resources"),
             ("CellLightingRes", "WTHR ambient/directional CPU-side mirror, re-flowed from the plugin's parsed lighting record every cell load"),
@@ -2036,6 +2038,7 @@ mod tests {
             ("HavokAnimationTarget", "skeleton_root + consumed_idle_serial are both spawn-time-resolved (serial always starts at 0), rederived identically every load"),
             ("HavokIdleCatalog", "process-lifetime IDLE FormID -> animation handle mapping, populated once and read-only afterward — same posture as AnimationClipRegistry"),
             ("InputState", "live keyboard/mouse state for the fly camera, inherently process-session-local"),
+            ("InteractionState", "camera-forward target derived from live transforms and interactable components every frame"),
             ("IsDecalMesh", "spawn-time classification per FO4 BGSM decal semantics, rederived identically every load"),
             ("IsFxMesh", "spawn-time classification lifted from a per-frame material-path scan (PERF-D3-NEW-02/#1136), rederived identically every load"),
             ("IsLodTerrain", "spawn-time classification set only by terrain_lod::spawn_lod_block, rederived identically every load"),

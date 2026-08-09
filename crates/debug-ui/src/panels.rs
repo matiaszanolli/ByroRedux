@@ -9,7 +9,7 @@
 //! `&mut DebugUiState` and the world references the panels would
 //! otherwise need.
 
-use egui::{Color32, Context, Window};
+use egui::{Align2, Color32, Context, CornerRadius, Frame, Id, Margin, RichText, Window};
 
 use byroredux_core::settings::{SettingChange, SettingControl, SettingEntry, SettingValue};
 
@@ -21,6 +21,9 @@ use crate::PanelState;
 /// is name-only.
 #[derive(Default, Clone)]
 pub struct PanelSnapshot {
+    /// Native in-world HUD prompt. Unlike the debug panels, this remains
+    /// visible when the F3 operator overlay is closed.
+    pub interaction_prompt: Option<String>,
     pub metrics: Option<MetricsSnapshotView>,
     /// Deterministically ordered clone of the universal settings registry.
     /// Settings are small and only cloned while the overlay is visible.
@@ -30,6 +33,31 @@ pub struct PanelSnapshot {
     /// be unnecessary work for an overlay that's hidden most of
     /// the time.
     pub entities: Option<Vec<(u32, String)>>,
+}
+
+/// Draw the small gameplay HUD layer shared with the debug renderer.
+pub fn draw_hud(ctx: &Context, snapshot: &PanelSnapshot) {
+    let Some(prompt) = snapshot.interaction_prompt.as_deref() else {
+        return;
+    };
+
+    egui::Area::new(Id::new("interaction_prompt"))
+        .anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -64.0))
+        .interactable(false)
+        .show(ctx, |ui| {
+            Frame::new()
+                .fill(Color32::from_black_alpha(190))
+                .corner_radius(CornerRadius::same(6))
+                .inner_margin(Margin::symmetric(14, 8))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(prompt)
+                            .size(20.0)
+                            .strong()
+                            .color(Color32::WHITE),
+                    );
+                });
+        });
 }
 
 /// Local twin of `byroredux_core::ecs::MetricsSnapshot` — the
@@ -565,6 +593,24 @@ fn ratio(used: u64, total: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interaction_prompt_produces_hud_shapes_without_debug_panels() {
+        let ctx = Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        draw_hud(
+            &ctx,
+            &PanelSnapshot {
+                interaction_prompt: Some("[E] Open".to_string()),
+                ..Default::default()
+            },
+        );
+        let output = ctx.end_pass();
+        assert!(
+            !output.shapes.is_empty(),
+            "a gameplay prompt must generate renderable HUD geometry"
+        );
+    }
 
     #[test]
     fn settings_filter_matches_metadata_case_insensitively() {

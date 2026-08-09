@@ -80,11 +80,13 @@ mod water;
 mod work_budget;
 
 pub use index::LoadedCellIndex;
+#[allow(unused_imports)]
 pub use transition::{
-    load_interior_cell, log_transition_header, position_zup_to_yup, reposition_camera,
-    rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior, CurrentCellContext,
-    CurrentCellRoot, InteriorCellRequest, LoadedPluginSet, PendingCellTransition,
-    PendingCellTransitionSlot, TransitionDestination,
+    load_interior_cell, log_transition_header, position_zup_to_yup, queue_door_transition,
+    reposition_camera, rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior,
+    CurrentCellContext, CurrentCellRoot, InteriorCellRequest, LoadedPluginSet,
+    PendingCellTransition, PendingCellTransitionSlot, QueueDoorTransitionError,
+    QueuedDoorTransition, TransitionDestination,
 };
 
 // Public re-exports — keep the existing `crate::cell_loader::FOO`
