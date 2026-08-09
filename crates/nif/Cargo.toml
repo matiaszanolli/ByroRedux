@@ -6,7 +6,6 @@ edition.workspace = true
 [dependencies]
 byroredux-core = { workspace = true }
 log = { workspace = true }
-thiserror = { workspace = true }
 nalgebra = { workspace = true }
 # Optional — pulled in only when the `dhat-heap` feature is enabled
 # (see [features] below). The crate has no non-test consumer of dhat,

@@ -514,7 +514,6 @@ dependencies = [
  "flate2",
  "log",
  "lz4_flex",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -563,11 +562,8 @@ dependencies = [
 name = "byroredux-debug-ui"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "byroredux-core",
- "byroredux-renderer",
  "egui",
- "egui-ash-renderer",
  "egui-winit",
  "winit",
 ]
@@ -616,7 +612,6 @@ dependencies = [
  "env_logger",
  "log",
  "nalgebra",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -626,7 +621,6 @@ dependencies = [
  "bitflags 2.11.0",
  "env_logger",
  "logos",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -655,7 +649,6 @@ name = "byroredux-platform"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "byroredux-core",
  "log",
  "raw-window-handle",
  "winit",
@@ -741,7 +734,6 @@ dependencies = [
  "byroredux-core",
  "byroredux-nif",
  "env_logger",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -751,12 +743,10 @@ dependencies = [
  "anyhow",
  "async-channel",
  "byroredux-bsa",
- "byroredux-core",
  "futures",
  "image 0.25.10",
  "log",
  "ruffle_core",
- "ruffle_render",
  "ruffle_render_wgpu",
  "ruffle_video_software",
  "swf",

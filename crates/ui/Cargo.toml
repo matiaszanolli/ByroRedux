@@ -5,12 +5,10 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
-byroredux-core = { workspace = true }
 byroredux-bsa = { workspace = true }
 
 # Ruffle — Rust Flash player (git, pinned to nightly-2026-03-28)
 ruffle_core = { git = "https://github.com/ruffle-rs/ruffle", rev = "0dde9813b47fa6b3a202dc497704009334677de1", default-features = false }
-ruffle_render = { git = "https://github.com/ruffle-rs/ruffle", rev = "0dde9813b47fa6b3a202dc497704009334677de1" }
 ruffle_render_wgpu = { git = "https://github.com/ruffle-rs/ruffle", rev = "0dde9813b47fa6b3a202dc497704009334677de1" }
 ruffle_video_software = { git = "https://github.com/ruffle-rs/ruffle", rev = "0dde9813b47fa6b3a202dc497704009334677de1" }
 swf = { git = "https://github.com/ruffle-rs/ruffle", rev = "0dde9813b47fa6b3a202dc497704009334677de1" }

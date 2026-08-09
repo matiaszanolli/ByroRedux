@@ -5,9 +5,6 @@ edition.workspace = true
 
 [dependencies]
 byroredux-core = { workspace = true }
-byroredux-renderer = { workspace = true }
 egui = { workspace = true }
 egui-winit = { workspace = true }
-egui-ash-renderer = { workspace = true }
 winit = { workspace = true }
-anyhow = { workspace = true }
