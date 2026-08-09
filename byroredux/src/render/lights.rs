@@ -13,7 +13,7 @@
 //! `feedback_format_translation.md`.
 
 use byroredux_core::ecs::{GlobalTransform, LightKind, LightSource, World};
-use byroredux_renderer::shader_constants::SHADOW_POLICY_FULL;
+use byroredux_renderer::shader_constants::{SHADOW_POLICY_FULL, SHADOW_POLICY_STRUCTURE};
 
 use crate::components::{CellLightingRes, SkyParamsRes};
 
@@ -185,6 +185,13 @@ pub(super) fn collect_lights(
                 // range` and `falloff_shape`.
                 let effective_range = light.radius * LIGHT_RANGE_EXTENSION;
                 let source_radius = emitter_radius(light.radius);
+                // The per-game loader has already translated the raw LIGH
+                // flags into this canonical field. A non-zero value means the
+                // source explicitly authored a shadow projection; zero marks
+                // one of the many interior fill/proxy lights that should be
+                // blocked by room structure without projecting every railing,
+                // prop and actor as a high-contrast full-scene shadow.
+                let casts_full_scene_shadows = light.shadow_flags != 0;
                 let falloff_shape = if light.falloff_exponent > 0.0 {
                     light.falloff_exponent
                 } else {
@@ -232,17 +239,22 @@ pub(super) fn collect_lights(
                     // emitter proxy used to stop shadow segments at the
                     // luminous shell instead of inside the fixture; z = the
                     // unified policy consumed by every visibility pass; w is
-                    // reserved. Every physical local light traces the full
-                    // scene (architecture, clutter, actors, alpha cutouts,
-                    // and glass). Legacy authored shadow bits described which
-                    // cubemap/shadow-map projection the original renderer was
-                    // allowed to allocate under its fixed shadow budget; they
-                    // are not a physical "this light passes through props"
-                    // signal for the modern one-ray ReSTIR/TLAS path. Keeping
-                    // non-authored lights on STRUCTURE-only visibility made
-                    // common Skyrim candle lights ignore their own table,
-                    // nearby pottery, and NPCs.
-                    params: [falloff_shape, source_radius, SHADOW_POLICY_FULL as f32, 0.0],
+                    // reserved. Authored shadow-projecting lights trace the
+                    // full scene. Legacy fill/proxy lights use structure-only
+                    // visibility: walls still stop leaks, while railings,
+                    // clutter and actors do not turn an intentionally broad
+                    // fill into the comb-like projections seen in dense
+                    // interiors such as the Bannered Mare.
+                    params: [
+                        falloff_shape,
+                        source_radius,
+                        if casts_full_scene_shadows {
+                            SHADOW_POLICY_FULL as f32
+                        } else {
+                            SHADOW_POLICY_STRUCTURE as f32
+                        },
+                        0.0,
+                    ],
                 });
             }
         }
@@ -662,14 +674,13 @@ mod gi_light_priority_tests {
         );
     }
 
-    /// Legacy authored shadow flags choose an old shadow-map projection,
-    /// not whether a physical light may pass through clutter. The modern
-    /// RT path must therefore upload full-scene visibility for both lights.
-    /// This pins the Bannered Mare candle case: raw Skyrim flags `0x2009`
-    /// carry no shadow-projection bit, but the candle must still be occluded
-    /// by its table, pottery, and nearby actors.
+    /// Legacy fill lights still need structural occlusion so they cannot leak
+    /// through walls, but only explicitly shadow-projecting sources may trace
+    /// clutter and actors. Dense interiors contain many broad fill proxies;
+    /// promoting them all to full-scene visibility produces stable comb-like
+    /// projections through railings that no amount of extra sampling fixes.
     #[test]
-    fn collect_lights_gives_every_local_light_full_scene_visibility() {
+    fn collect_lights_preserves_authored_local_shadow_classification() {
         let mut world = World::new();
         spawn_point_light_with_flags(
             &mut world,
@@ -697,7 +708,10 @@ mod gi_light_priority_tests {
             .iter()
             .find(|light| light.position_radius[0] == 20.0)
             .expect("fixture light with a legacy projection bit");
-        assert_eq!(no_projection_bit.params[2], SHADOW_POLICY_FULL as f32);
+        assert_eq!(
+            no_projection_bit.params[2],
+            SHADOW_POLICY_STRUCTURE as f32
+        );
         assert_eq!(no_projection_bit.params[3], 0.0);
         assert_eq!(authored_projection.params[2], SHADOW_POLICY_FULL as f32);
         assert_eq!(authored_projection.params[3], 0.0);

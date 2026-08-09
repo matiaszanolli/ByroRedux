@@ -1,4 +1,4 @@
-# Procedural volumetric fog
+# Procedural volumetric fog and emissive media
 
 ## Decision record
 
@@ -6,7 +6,9 @@
 spectral single scattering, temporal history, RT visibility, FSR contract,
 XCLL/WTHR → engine-native medium, smoke/fog particles → clustered local
 primitives, boot-generated tileable Perlin-Worley base/detail density,
-weather-classified coverage).
+weather-classified coverage). Emissive media (fire) landed as an emission
+source term on the same primitives plus derived light sources; a voxel fire
+simulation is the open follow-up.
 
 **Location:** `crates/renderer/src/vulkan/volumetrics.rs`,
 `crates/renderer/shaders/volumetrics_{inject,integrate}.comp`,
@@ -100,6 +102,75 @@ of them one physical and temporal contract.
   most eight near-sorted volume references per cluster. Each froxel evaluates
   only its cluster list. Their directional and local-light visibility uses the
   same scene TLAS/BLAS ray queries as atmospheric fog.
+
+## Emissive media (fire)
+
+Fire is not a separate subsystem. A flame and its smoke are one physical
+material — soot — distinguished only by temperature, so both are `FogVolume`
+primitives and differ only in their coefficients:
+
+| | extinction | single-scatter albedo | emission `L_e` |
+|---|---|---|---|
+| flame | high | **0.25** (soot absorbs) | blackbody at its temperature |
+| smoke | moderate | **0.9** (cooled soot scatters) | none |
+
+- The froxel emission source term is `sigma_a * L_e` with
+  `sigma_a = sigma_t * (1 - albedo)`, evaluated per channel against the
+  *locally sampled* density, so emission inherits the primitive's procedural
+  structure instead of filling it uniformly. It is added unconditionally —
+  independent of the phase function and of the shadow ray — because a flame
+  radiates from being hot, not from being lit.
+- No new render pass, buffer, or sort order. `volumetrics_integrate.comp`
+  already treats the injection buffer's rgb as radiance added per unit length
+  and multiplies by slab thickness and accumulated transmittance, which *is*
+  the emission integral. Fire therefore composites, denoises, reprojects, and
+  meets the FSR contract through the machinery fog already uses.
+- Emission colour and brightness both derive from one temperature via
+  `byroredux_core::radiometry`: chromaticity from Planck's law integrated
+  against the CIE 1931 observer, magnitude from the visible-band `Y` integral.
+  The magnitude law is deliberately **not** Stefan-Boltzmann `T^4`, which
+  describes total exitance — mostly infrared at flame temperatures — and would
+  understate how sharply a cooling flame dims. Note that across the whole
+  flame/ember range the blue primary is outside the sRGB gamut and clamps to
+  zero, so hue comparisons in that range must use green-over-red.
+- Temperatures are physical properties of the combustion regime, not look
+  development: 1850 K for a hydrocarbon diffusion flame's luminous zone,
+  1100 K for embers and charcoal. Optical depth is pinned across the primitive
+  width rather than inverted from authored alpha, because an additive
+  emitter's alpha encodes brightness, not opacity — this also keeps a bonfire
+  exactly as translucent as a candle.
+- Additive emitters named for flame/ember are replaced at the NIF→ECS
+  boundary, the same way alpha-over smoke already is. Magic sparkles stay
+  billboards: their colour comes from an authored palette, and inventing a
+  temperature for them would fabricate physics the content never described.
+  Set `BYRO_FIRE_VOLUMES=0` to keep thermal emitters on the billboard path for
+  an A/B.
+- An emissive volume also derives a point light, so it illuminates surfaces
+  rather than only glowing. Emergent radiance uses the exact slab solution
+  `L_e * (1 - exp(-tau_a))` (it saturates at `L_e` instead of growing with
+  size), radiant intensity is that times projected area, and reach is
+  inverse-square down to a cutoff irradiance. A fire whose extent already
+  contains an authored LIGH is suppressed, so derived lights are additive only
+  where the original engine had nothing — which is also what makes the
+  explosion path viable, since transient fireballs cannot have hand-placed
+  lights.
+- Emissive froxels use a shorter temporal history weight
+  (`DEFAULT_EMISSIVE_HISTORY_WEIGHT`, `fog_reference.y`) blended in by the
+  emissive fraction of the source term. This is deliberately not a rejection
+  on radiance delta: the sun visibility test is a single jittered *binary*
+  sample that legitimately flips at shadow boundaries, so rejecting on that
+  delta would suppress accumulation exactly at the god-ray edges M-LIGHT v2
+  added it to clean up.
+
+### Open calibration
+
+`FLAME_REFERENCE_RADIANCE` is the one exposure choice in the chain; everything
+else is physics. It is derived rather than eyeballed — the path integral
+reduces to `optical_depth * (1 - albedo) * L_e`, about `0.3 * L_e`,
+independent of flame size — and the resulting torch reach lands within a
+factor of two of vanilla authored torch LIGH radii, which is a cross-check on
+the whole chain rather than an input to it. It still wants a visual A/B
+against real content before being treated as final.
 
 ## Configuration
 

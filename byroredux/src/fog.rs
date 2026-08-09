@@ -449,11 +449,7 @@ pub(crate) fn fire_volume_from_particle(
     if !fire_volumes_enabled() {
         return None;
     }
-    let temperature = fire_temperature(
-        host_name,
-        emitter.texture_path.as_deref(),
-        emitter.dst_blend,
-    )?;
+    let temperature = fire_temperature(host_name, emitter.texture_path.as_deref())?;
 
     let PlumeBounds {
         center,
@@ -496,17 +492,33 @@ pub(crate) fn fire_volume_from_particle(
 
 /// Classify an emitter as a thermal source and return its temperature.
 ///
-/// Requires additive blending (Gamebryo destination factor `ONE == 0`), which
-/// is how every luminous Gamebryo effect is authored, plus a thermal token in
-/// the host node name or sprite path. Ember-family names resolve to the
-/// cooler [`EMBER_TEMPERATURE_K`]; they are checked first because vanilla
-/// content frequently hosts embers under a parent whose name also contains
-/// "fire", and the cooler, dimmer reading is the correct one there.
-fn fire_temperature(host_name: &str, texture_path: Option<&str>, dst_blend: u8) -> Option<f32> {
-    if dst_blend != 0 {
+/// Classification is by authored naming alone — deliberately **not** by blend
+/// mode. An earlier revision required additive blending (Gamebryo destination
+/// factor `ONE == 0`) on the theory that luminous effects are always authored
+/// additively. Real data says otherwise: every flame emitter in Skyrim's
+/// `WhiterunBanneredMare` (`FlamesSmall03-Emitter` / `fxfireatlas02.dds`,
+/// `Firearticles-Emitter` / `fxfirecolumnanimloop.dds`) is authored
+/// **alpha-over**, so that gate rejected the entire cell. `ParticleEmitter`'s
+/// heuristic presets do default to additive, which is what made the
+/// assumption look right in unit tests — but `apply_emitter_overlays`
+/// overwrites the preset with the authored NIF value before this runs.
+///
+/// Smoke is excluded explicitly rather than relying on
+/// [`medium_from_particle`]'s ordering, so the two classifiers are provably
+/// disjoint as standalone functions. This matters because smoke plumes are
+/// routinely named for the fire that produced them (`campfiresmoke01`), and
+/// the fog token describes what the emitter *emits* while a thermal token in
+/// the same string may only describe its parent.
+///
+/// Ember-family names resolve to the cooler [`EMBER_TEMPERATURE_K`] and are
+/// checked first, because vanilla content frequently hosts embers under a
+/// parent whose name also contains "fire" — there the cooler, dimmer reading
+/// is the correct one.
+fn fire_temperature(host_name: &str, texture_path: Option<&str>) -> Option<f32> {
+    let texture_path = texture_path.unwrap_or("");
+    if has_fog_token(host_name) || has_fog_token(texture_path) {
         return None;
     }
-    let texture_path = texture_path.unwrap_or("");
     if has_ember_token(host_name) || has_ember_token(texture_path) {
         return Some(EMBER_TEMPERATURE_K);
     }
@@ -726,13 +738,54 @@ mod tests {
     #[test]
     fn ember_naming_takes_precedence_over_a_fire_host() {
         assert_eq!(
-            fire_temperature("FireEmberSpray", Some("textures\\effects\\embers_d.dds"), 0),
+            fire_temperature("FireEmberSpray", Some("textures\\effects\\embers_d.dds")),
             Some(EMBER_TEMPERATURE_K)
         );
         assert_eq!(
-            fire_temperature("CampfireFlame", Some("textures\\effects\\flame.dds"), 0),
+            fire_temperature("CampfireFlame", Some("textures\\effects\\flame.dds")),
             Some(FLAME_TEMPERATURE_K)
         );
+    }
+
+    /// Regression for the classifier's original blend-mode gate, which
+    /// rejected every flame in Skyrim's `WhiterunBanneredMare` because
+    /// vanilla authors them ALPHA-OVER, not additive. These are the exact
+    /// host/texture pairs observed in that cell's engine log.
+    #[test]
+    fn vanilla_skyrim_alpha_over_flames_are_classified_as_fire() {
+        for (host, texture) in [
+            (
+                "FlamesSmall03-Emitter",
+                "textures\\effects\\fxfireatlas02.dds",
+            ),
+            (
+                "FlamesSmall01-Emitter",
+                "textures\\effects\\fxfireatlas02.dds",
+            ),
+            (
+                "Firearticles-Emitter",
+                "textures\\effects\\fxfirecolumnanimloop.dds",
+            ),
+        ] {
+            assert_eq!(
+                fire_temperature(host, Some(texture)),
+                Some(FLAME_TEMPERATURE_K),
+                "{host} / {texture} is a vanilla Skyrim flame emitter and must \
+                 classify as fire regardless of its alpha-over blend mode"
+            );
+        }
+    }
+
+    /// The sibling half of the same cell: its smoke emitters must stay smoke.
+    #[test]
+    fn vanilla_skyrim_smoke_emitters_stay_passive() {
+        for host in ["smoke02-Emitter", "smoke-Emitter"] {
+            assert_eq!(
+                fire_temperature(host, Some("textures\\effects\\smokeparticles01.dds")),
+                None,
+                "{host} emits smoke and must never be classified as fire"
+            );
+        }
     }
 
     /// Blue magic sparkles are not thermal. Inventing a temperature for them
@@ -742,8 +795,7 @@ mod tests {
         assert_eq!(
             fire_temperature(
                 "MagicSparkleEmitter",
-                Some("textures\\effects\\glowsoft01.dds"),
-                0
+                Some("textures\\effects\\glowsoft01.dds")
             ),
             None
         );
@@ -754,17 +806,37 @@ mod tests {
         .is_none());
     }
 
-    /// Alpha-over blending means smoke, never fire, regardless of naming —
-    /// a smoke plume rising off a fire is routinely named for the fire.
+    /// A fog token means smoke, never fire, regardless of what else the name
+    /// says — a plume rising off a fire is routinely named for the fire, and
+    /// the fog token describes what is actually emitted.
     #[test]
-    fn alpha_over_blending_is_never_classified_as_fire() {
-        assert_eq!(
-            fire_temperature("CampfireSmoke", Some("smoke.dds"), 7),
-            None
-        );
-        let mut alpha_over_flame = ParticleEmitter::torch_flame();
-        alpha_over_flame.dst_blend = 7;
-        assert!(fire_volume_from_particle("TorchFire01", &alpha_over_flame).is_none());
+    fn a_fog_token_always_wins_over_a_thermal_one() {
+        assert_eq!(fire_temperature("CampfireSmoke", Some("smoke.dds")), None);
+        assert_eq!(fire_temperature("TorchSteamVent", Some("steam.dds")), None);
+        let mut alpha_over_smoke = ParticleEmitter::smoke();
+        alpha_over_smoke.dst_blend = 7;
+        assert!(fire_volume_from_particle("CampfireSmoke01", &alpha_over_smoke).is_none());
+    }
+
+    /// Blend mode must not gate fire classification in either direction: the
+    /// same emitter authored additively or alpha-over is the same fire. This
+    /// is the invariant whose absence hid the Bannered Mare miss.
+    #[test]
+    fn blend_mode_does_not_gate_fire_classification() {
+        if !fire_path_active() {
+            return;
+        }
+        let mut additive = ParticleEmitter::torch_flame();
+        additive.dst_blend = 0;
+        let mut alpha_over = ParticleEmitter::torch_flame();
+        alpha_over.dst_blend = 7;
+
+        let a = fire_volume_from_particle("FlamesSmall03-Emitter", &additive)
+            .expect("additive flame is fire");
+        let b = fire_volume_from_particle("FlamesSmall03-Emitter", &alpha_over)
+            .expect("alpha-over flame is equally fire");
+        assert_eq!(a.emission_temperature_k, b.emission_temperature_k);
+        assert_eq!(a.emissive_radiance, b.emissive_radiance);
     }
 
     /// The two classifiers must partition emitters, never both claim one.

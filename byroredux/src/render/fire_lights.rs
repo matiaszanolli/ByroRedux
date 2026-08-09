@@ -33,17 +33,42 @@ use byroredux_renderer::{GpuFogVolume, GpuLight};
 
 use super::lights::{FALLOFF_EXPONENT_DEFAULT, LIGHT_RANGE_EXTENSION};
 
-/// Irradiance below which a derived light is treated as having no further
-/// visible effect, in the renderer's linear HDR units.
+/// Whether emissive media contribute derived light sources.
 ///
-/// This sets the derived light's reach through the inverse-square law, and it
-/// is the one free parameter in the derivation — so it is worth recording that
-/// it is not tuned to taste. Against the engine's `SUN_INTENSITY_PEAK = 4.0`
-/// daytime reference this threshold is roughly 0.025% of full daylight, and
-/// feeding a torch-sized flame through the derivation below lands its radius
-/// within a few percent of the ~512-unit radii Bethesda authors on vanilla
-/// torch LIGH records. That agreement is a cross-check on the whole chain
-/// (radiance anchor, optical depth, absorption fraction), not an input to it.
+/// **Default off, because the magnitude derivation below is known wrong.**
+///
+/// Measured on Skyrim `WhiterunBanneredMare`: each hearth flame derived a
+/// light of colour `[8.2, 1.9, 0.0]` — close to the `SUN_INTENSITY_PEAK = 4.0`
+/// daytime reference in luminance — with a ~1200-unit attenuation knee inside
+/// a room roughly 1500 units across. Four of those left the tavern flooded
+/// orange, and because `volumetrics_inject.comp`'s local-light loop scatters
+/// every clustered light through the medium, they washed out the volumetric
+/// pass as well.
+///
+/// The root cause is a unit mismatch in [`derive_fire_light`]: radiant
+/// intensity is formed as `L * A` with `A` in Bethesda units squared, then
+/// divided by a cutoff documented as being in linear HDR units. Those do not
+/// share a dimension, so the resulting `sqrt` is not a distance in world
+/// units at all. Fixing it needs the derivation restated in the units
+/// `GpuLight.color_type` and `pointSpotAtten` actually use, rather than a
+/// retuned constant.
+///
+/// Set `BYRO_FIRE_LIGHTS=1` to re-enable while working on that.
+fn fire_lights_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| matches!(std::env::var("BYRO_FIRE_LIGHTS").as_deref(), Ok("1")))
+}
+
+/// Cutoff used to size a derived light's reach.
+///
+/// **This value is not derived — it is fitted, and the fit is wrong.** It was
+/// chosen so that a torch-sized flame produced a radius near the ~512 units
+/// Bethesda authors on vanilla torch LIGH records. An earlier revision of this
+/// comment described that agreement as an independent cross-check on the
+/// radiance anchor, optical depth and absorption fraction. It was not: the
+/// constant was picked to produce it, so the check was circular and reported
+/// success while the real reach came out 2-3x too large (see
+/// [`fire_lights_enabled`]).
 const CUTOFF_IRRADIANCE: f32 = 1.0e-3;
 
 /// Upper bound on a derived light's influence radius, world units.
@@ -66,6 +91,18 @@ const MIN_DERIVED_RADIUS: f32 = 16.0;
 /// after the sort would strand them at the tail of the array regardless of how
 /// much they matter.
 pub(super) fn append_fire_lights(fog_volumes: &[GpuFogVolume], gpu_lights: &mut Vec<GpuLight>) {
+    if !fire_lights_enabled() {
+        return;
+    }
+    append_derived_lights(fog_volumes, gpu_lights);
+}
+
+/// The derivation and suppression algorithm, independent of the feature gate.
+///
+/// Split out so the suppression rules stay under test while
+/// [`fire_lights_enabled`] is off — otherwise disabling the feature would
+/// silently reduce those tests to asserting that nothing happens.
+fn append_derived_lights(fog_volumes: &[GpuFogVolume], gpu_lights: &mut Vec<GpuLight>) {
     let authored_count = gpu_lights.len();
     for volume in fog_volumes {
         let Some(light) = derive_fire_light(volume) else {
@@ -254,26 +291,48 @@ mod tests {
     fn passive_media_derive_no_light() {
         assert!(derive_fire_light(&passive_volume()).is_none());
         let mut lights = Vec::new();
-        append_fire_lights(&[passive_volume()], &mut lights);
+        append_derived_lights(&[passive_volume()], &mut lights);
         assert!(
             lights.is_empty(),
             "ordinary fog and smoke must not become light sources"
         );
     }
 
-    /// The cross-check quoted on `CUTOFF_IRRADIANCE`: a torch-sized flame
-    /// should derive a reach in the neighbourhood of the ~512-unit radii
-    /// vanilla content authors on torch LIGH records. This pins the whole
-    /// chain — radiance anchor, optical depth, absorption fraction, projected
-    /// area, inverse-square cutoff — against an external reference point.
+    /// Documents the KNOWN-BAD magnitude rather than asserting it is correct.
+    ///
+    /// The previous version of this test asserted the derived radius landed in
+    /// `256..=1024` and called that an independent cross-check against vanilla
+    /// torch LIGH radii. It was circular — `CUTOFF_IRRADIANCE` had been chosen
+    /// to produce exactly that — so it passed while the live result on
+    /// `WhiterunBanneredMare` was a ~1200-unit knee in a ~1500-unit room.
+    ///
+    /// Pinning the wrong number on purpose keeps the defect visible and makes
+    /// the fix show up as a deliberate test change instead of silently
+    /// flipping a green assertion to a different green assertion.
     #[test]
-    fn torch_flame_reach_matches_vanilla_authored_radius_scale() {
+    fn derived_reach_is_currently_oversized_pending_a_unit_correct_derivation() {
         let light = derive_fire_light(&torch_volume()).expect("torch flame is emissive");
         let radius = light.position_radius[3] / LIGHT_RANGE_EXTENSION;
         assert!(
-            (256.0..=1024.0).contains(&radius),
-            "derived torch radius {radius} should sit within a factor of two of \
-             the ~512-unit vanilla authored torch radius"
+            radius > 1024.0,
+            "expected the known-oversized reach (see `fire_lights_enabled`); \
+             got {radius}. If this now fails, the unit mismatch has been fixed \
+             — replace this test with a real assertion and flip the default on."
+        );
+    }
+
+    /// The feature must stay off until that derivation is corrected, so a
+    /// cell load cannot silently regain the orange flood.
+    #[test]
+    fn derived_lights_are_disabled_by_default() {
+        if fire_lights_enabled() {
+            return; // developer opted in via BYRO_FIRE_LIGHTS=1
+        }
+        let mut lights = Vec::new();
+        append_fire_lights(&[torch_volume()], &mut lights);
+        assert!(
+            lights.is_empty(),
+            "derived fire lights must stay gated off by default"
         );
     }
 
@@ -322,7 +381,7 @@ mod tests {
             params: [1.0, 1.0, SHADOW_POLICY_FULL as f32, 0.0],
         };
         let mut lights = vec![authored];
-        append_fire_lights(&[volume], &mut lights);
+        append_derived_lights(&[volume], &mut lights);
         assert_eq!(
             lights.len(),
             1,
@@ -341,7 +400,7 @@ mod tests {
             params: [1.0, 1.0, SHADOW_POLICY_FULL as f32, 0.0],
         };
         let mut lights = vec![distant];
-        append_fire_lights(&[volume], &mut lights);
+        append_derived_lights(&[volume], &mut lights);
         assert_eq!(
             lights.len(),
             2,
@@ -361,7 +420,7 @@ mod tests {
             params: [0.0, 0.0, SHADOW_POLICY_FULL as f32, 0.0],
         };
         let mut lights = vec![sun];
-        append_fire_lights(&[volume], &mut lights);
+        append_derived_lights(&[volume], &mut lights);
         assert_eq!(
             lights.len(),
             2,
@@ -376,7 +435,7 @@ mod tests {
     fn co_located_fires_do_not_suppress_each_other() {
         let volume = torch_volume();
         let mut lights = Vec::new();
-        append_fire_lights(&[volume, volume], &mut lights);
+        append_derived_lights(&[volume, volume], &mut lights);
         assert_eq!(
             lights.len(),
             2,
