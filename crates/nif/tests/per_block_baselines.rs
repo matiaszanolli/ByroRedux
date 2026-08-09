@@ -222,3 +222,40 @@ fn per_block_baseline_fallout_76() {
 fn per_block_baseline_starfield() {
     run_baseline(Game::Starfield);
 }
+
+/// #2354 / SF-D8-03 — the NIFAL particle slice
+/// (`extract_emitter_params`/`extract_emitter_rate` in
+/// `crates/nif/src/import/walk/mod.rs`) is structurally unreachable on
+/// Starfield: the 31,058-file Meshes01 corpus histogram (this test's
+/// sibling, `per_block_baseline_starfield`, captured it) contains zero
+/// `NiPSys*`/`NiParticleSystem*` blocks — Starfield authors particle
+/// systems entirely outside the NIF container. Unlike the sibling test
+/// above, this one needs no game data (it reads the already-checked-in
+/// baseline TSV) and is NOT `#[ignore]`d, so a future format discovery
+/// that starts shipping particle blocks in Starfield content flips this
+/// test red on every `cargo test`, instead of the NIFAL particle
+/// regression suite (#1411/#1434/#1445/#1771/#1775, all
+/// Oblivion/FO3/FNV/Skyrim-driven) silently saying nothing about
+/// Starfield coverage. See `docs/engine/nifal.md`'s Particles section.
+#[test]
+fn starfield_corpus_has_no_particle_blocks() {
+    let path = baseline_path(Game::Starfield);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read checked-in baseline {}: {e}", path.display()));
+    let hist = PerBlockHistogram::from_tsv(&text)
+        .unwrap_or_else(|e| panic!("parse checked-in baseline {}: {e}", path.display()));
+    let particle_types: Vec<&str> = hist
+        .counts
+        .keys()
+        .map(String::as_str)
+        .filter(|name| name.contains("PSys") || name.contains("Particle"))
+        .collect();
+    assert!(
+        particle_types.is_empty(),
+        "Starfield corpus baseline now contains particle block type(s) {particle_types:?} — \
+         the NIFAL particle slice is reachable on Starfield after all. Update \
+         `docs/engine/nifal.md`'s \"Starfield: particle slice N/A\" note and wire up \
+         Starfield particle-emitter translation instead of treating this as a bug in \
+         the test.",
+    );
+}

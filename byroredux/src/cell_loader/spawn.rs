@@ -44,6 +44,21 @@ pub(super) struct PlacementSpawnTimings {
     pub unresolved_packed_collision: u32,
 }
 
+/// #2355 / SF-D8-04 — before `PackedAabbProxy` existed, this function only
+/// ever returned `ArchitectureTriMesh` or `None`, so every Starfield
+/// Clutter/Actor placement whose collision routes through the undecoded
+/// `BhkSystemBinary` blob (see `crates/nif/src/import/collision/mod.rs`)
+/// spawned with **no collider at all** — not even an approximate one.
+/// `PackedAabbProxy` (below) closes that: any layer with
+/// `authoring.needs_packed_havok_fallback()` now gets a conservative
+/// AABB proxy instead of silently dropping collision. Bethesda containers
+/// built into the level (footlockers, vending machines) are classified
+/// `RenderLayer::Architecture` at spawn, so they already hit the more
+/// precise `ArchitectureTriMesh` arm — the "container" gap in #2355's
+/// title was Architecture-adjacent Clutter/Actor content, which this arm
+/// covers. See `references/mod.rs`'s `packed_collision_fallbacks` /
+/// `unresolved_packed_collision` per-cell log line for the measurable
+/// count of placements this fallback catches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MissingCollisionFallback {
     None,

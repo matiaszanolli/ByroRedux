@@ -42,6 +42,8 @@ mod bs_geometry_bounding_sphere_tests;
 #[cfg(test)]
 mod bs_geometry_hint_mismatch_tests;
 #[cfg(test)]
+mod bs_geometry_resolve_log_tests;
+#[cfg(test)]
 mod bs_geometry_sentinel_slot_tests;
 #[cfg(test)]
 mod bs_geometry_skin_tests;

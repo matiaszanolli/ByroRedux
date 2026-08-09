@@ -15,6 +15,20 @@
 # (RT-1 / #2215 sibling check) — both improved (3->9 batches is a small-N
 # artifact, 5->2 gpu_calls), unrelated to the alpha-over sort mechanism
 # fixed on fnv/oblivion/fo4 since this cell's regression didn't reproduce it.
+#
+# #2351 (filed 2026-08-03, against the pre-regen baseline of 3): reported
+# two independent runs both measuring 2304/8b/2c, asked whether this cell
+# shares #2215's `883f57cd` alpha-over-sort mechanism. It doesn't need to
+# — the 2026-08-03 measurement predates the 2026-08-06 regen above by
+# three days, so "3" was already stale at filing time; 8 sits inside the
+# same small-N noise band as the 9 this file already regenerated to
+# (both a step down from a much older 3, not a step up from 9). The
+# 2026-08-07 full runtime sweep (`docs/audits/AUDIT_RUNTIME_2026-08-07.md`)
+# independently re-measured this exact cell and reproduced 2342/9b/2c
+# **bit-for-bit** against this file's committed values, and no commit
+# between that sweep and the #2351 fix-issue pass touches
+# `draw_sort_key`/`group_state`/batch-merge logic. Closed as
+# non-reproducing at HEAD; no baseline change needed.
 entities_total	8126
 tex_missing_unique_paths	0
 mesh_cache_failed_count	9

@@ -262,6 +262,22 @@ a richer canonical size model), and per-emitter (vs scene-first) attribution for
 multi-emitter NIFs. Tooling: `crates/nif/examples/emitter_dump.rs`
 (`rate / radius / bscale / speed / declination / life / initColor`).
 
+**Starfield: particle slice N/A** (#2354 / SF-D8-03, 2026-08-03 audit). This
+whole slice — `extract_emitter_params`/`extract_emitter_rate` dispatching on
+`NiPSysEmitter`/`NiPSys*FieldModifier` — is structurally unreachable on
+Starfield content, not a silent leak: the full Meshes01 corpus (31,058 files,
+22 distinct block types) contains zero `NiPSys*`/`NiParticleSystem` blocks.
+Starfield authors particle systems entirely outside the NIF container (the
+BSGeometry-only import path, Dimension 2 of the same audit, has no
+NiNode/NiParticleSystem hierarchy for Starfield content at all). Pinned by
+`crates/nif/tests/per_block_baselines.rs::starfield_corpus_has_no_particle_blocks`
+(always-on, reads the checked-in corpus histogram — no game data needed) so a
+future format discovery flips a test red instead of the particle regression
+suite (#1411/#1434/#1445/#1771/#1775, all Oblivion/FO3/FNV/Skyrim-driven)
+silently saying nothing about Starfield coverage. FO76 (same BA2/BGSM/
+BSGeometry era) is unconfirmed either way — no FO76 audit has run this check
+yet.
+
 ### Collision — **audited (2026-05-28; remediation 2026-07-30)**
 
 Havok → engine transform + `havok_scale` are applied uniformly in
@@ -277,9 +293,24 @@ the "unsupported shape" fallback → the authored collision silently vanished):
 
 All 13 parsed `bhk*Shape` variants now translate. Remaining collision *non*-leaks are
 documented limitations, not gaps: `BhkNPCollisionObject` (FO4+ Havok-serialised
-blob — decoder is a separate project; cell loader falls back to synthesized static
-trimesh) and `BhkPCollisionObject` phantoms (need a `TriggerVolume` ECS path, not a
-rigid body) — see the table at the top of `import/collision/mod.rs`.
+blob — decoder is a separate project) and `BhkPCollisionObject` phantoms (need a
+`TriggerVolume` ECS path, not a rigid body) — see the table at the top of
+`import/collision/mod.rs`.
+
+**`BhkNPCollisionObject` fallback coverage** (#2355 / SF-D8-04, 2026-08-03 audit,
+closed by `8ee151e0`/`716b7ee9`/`8d67c700`): this is Starfield's *entire* collision
+authoring — the corpus census found zero `bhk*Shape` blocks and 100% `BhkSystemBinary`.
+`cell_loader/spawn.rs::missing_collision_fallback` picks the proxy by `RenderLayer`:
+`Architecture` (structural — walls/floors/built-in containers) gets a precise
+per-submesh synthesized trimesh; `Clutter`/`Actor` get a conservative placement-
+following AABB proxy (`PackedAabbProxy`, added specifically to close the "no collider
+at all" gap the audit found for non-Architecture content) gated on
+`CollisionAuthoringSummary::needs_packed_havok_fallback()`. Per-cell counts of
+approximated vs. unresolved placements log via `references/mod.rs`'s
+`packed_collision_fallbacks` / `unresolved_packed_collision` line. The real fix
+(decoding the `BhkSystemBinary` blob itself) remains future work tracked in the
+PHYSAL notes — this is a spawn-time compatibility proxy, not a NIFAL translation-
+boundary change.
 
 The 2026-07-30 playable-cell remediation corrected four canonical-boundary bugs
 found by the later real-data audit: compressed-mesh chunk indices are direct

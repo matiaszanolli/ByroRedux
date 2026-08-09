@@ -68,44 +68,75 @@ pub fn extract_bs_geometry(
         // attempt, 2026-05-28). Compose the canonical path here in
         // the importer rather than asking every resolver impl to
         // know about Starfield's hash-tree convention.
-        let resolver = resolver?;
+        // #2357 / SF2D2-03 — the three "no geometry found" exits below
+        // (no resolver, per-slot resolve miss, every slot exhausted) used
+        // to return `None` with no log signal at all. Only the rarer
+        // sub-failures *inside* a successful resolve (parse error,
+        // sentinel body) logged, and only at `debug!`. A future archive
+        // misconfiguration reproducing #1292's near-total mesh-spawn
+        // collapse would otherwise leave an empty log — recovering that
+        // diagnosis cost a dedicated investigation session last time.
+        let Some(resolver) = resolver else {
+            log::debug!(
+                "BSGeometry '{}' has no internal geometry and no mesh resolver was \
+                 supplied — external .mesh resolve skipped",
+                shape.av.net.name.as_deref().unwrap_or("<unnamed>"),
+            );
+            return None;
+        };
         let mut found = None;
         for m in &shape.meshes {
             if let BSGeometryMeshKind::External { mesh_name } = &m.kind {
                 let canonical = format!("geometries\\{mesh_name}.mesh");
-                if let Some(bytes) = resolver.resolve(&canonical) {
-                    match BSGeometryMeshData::parse_from_bytes(&bytes) {
-                        Ok(data) => {
-                            // SF2-01 / #1828: a slot can parse `Ok` yet be
-                            // the `scale<=0` sentinel (empty
-                            // vertices/triangles) — keep iterating so a
-                            // sentinel-first slot order doesn't hide a
-                            // later populated slot.
-                            if !data.vertices.is_empty() && !data.triangles.is_empty() {
-                                found = Some((m.tri_size, m.num_verts, m.lod_slot, data));
-                                break;
-                            }
-                            log::debug!(
-                                "BSGeometry external mesh '{}' (canonical '{}') \
-                                 parsed empty (sentinel slot); trying next LOD",
-                                mesh_name,
-                                canonical
-                            );
+                let Some(bytes) = resolver.resolve(&canonical) else {
+                    log::debug!(
+                        "BSGeometry external mesh '{}' (canonical '{}') not found by \
+                         resolver; trying next LOD",
+                        mesh_name,
+                        canonical
+                    );
+                    continue;
+                };
+                match BSGeometryMeshData::parse_from_bytes(&bytes) {
+                    Ok(data) => {
+                        // SF2-01 / #1828: a slot can parse `Ok` yet be
+                        // the `scale<=0` sentinel (empty
+                        // vertices/triangles) — keep iterating so a
+                        // sentinel-first slot order doesn't hide a
+                        // later populated slot.
+                        if !data.vertices.is_empty() && !data.triangles.is_empty() {
+                            found = Some((m.tri_size, m.num_verts, m.lod_slot, data));
+                            break;
                         }
-                        Err(e) => {
-                            log::debug!(
-                                "BSGeometry external mesh '{}' (canonical '{}') \
-                                 parse error: {}",
-                                mesh_name,
-                                canonical,
-                                e
-                            );
-                        }
+                        log::debug!(
+                            "BSGeometry external mesh '{}' (canonical '{}') \
+                             parsed empty (sentinel slot); trying next LOD",
+                            mesh_name,
+                            canonical
+                        );
+                    }
+                    Err(e) => {
+                        log::debug!(
+                            "BSGeometry external mesh '{}' (canonical '{}') \
+                             parse error: {}",
+                            mesh_name,
+                            canonical,
+                            e
+                        );
                     }
                 }
             }
         }
-        let (tri_size, num_verts, slot, data) = found?;
+        let Some((tri_size, num_verts, slot, data)) = found else {
+            log::warn!(
+                "BSGeometry '{}' exhausted all {} external LOD slot(s) with no \
+                 resolvable geometry — mesh will not spawn (#1292/#2357 symptom: \
+                 check archive set / path convention if this is unexpected)",
+                shape.av.net.name.as_deref().unwrap_or("<unnamed>"),
+                shape.meshes.len(),
+            );
+            return None;
+        };
         hint = (tri_size, num_verts);
         resolved_slot = slot;
         mesh_data_owned = Some(data);
