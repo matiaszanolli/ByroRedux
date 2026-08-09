@@ -35,50 +35,128 @@ fn empty_scene_produces_no_clips() {
     assert!(clips.is_empty());
 }
 
-#[test]
-fn euler_to_quat_identity() {
-    // All angles zero → identity quaternion (w=1, x=0, y=0, z=0)
-    let [w, x, y, z] = euler_to_quat_wxyz(0.0, 0.0, 0.0);
-    assert!((w - 1.0).abs() < 1e-6);
-    assert!(x.abs() < 1e-6);
-    assert!(y.abs() < 1e-6);
-    assert!(z.abs() < 1e-6);
-}
+// #2434 / COORD-1 — `euler_to_quat_wxyz` (the private, independently-signed
+// CCW-composed formula these tests used to exercise directly) is gone;
+// `convert_xyz_euler_keys` now routes through the core SoT
+// `byroredux_core::math::coord::euler_zup_to_quat_yup`, already covered by
+// that function's own test suite. The tests below exercise the
+// KF-specific plumbing (sampling + Z-up→Y-up handoff) and, critically,
+// PIN THE SIGN — the four tests removed here asserted only unit length
+// and axis dominance, which passes under either the correct CW-positive
+// convention or the (bug's) CCW-positive one. See
+// `convert_xyz_euler_keys_matches_core_sot_for_asymmetric_multi_axis`
+// below for the actual regression pin.
 
+/// Sign-discriminating regression for #2434 / COORD-1. A single-axis 90°
+/// rotation is directionally unambiguous: CW-positive (correct) and
+/// CCW-positive (the bug) place the swept quadrant on OPPOSITE sides,
+/// which shows up as an opposite-signed vector component — unlike the
+/// pre-fix tests, which only checked magnitude/dominance.
 #[test]
-fn euler_to_quat_90_deg_x() {
+fn convert_xyz_euler_keys_90_deg_x_matches_cw_positive_sign() {
     use std::f32::consts::FRAC_PI_2;
-    // 90° around X: quat = (cos(45°), sin(45°), 0, 0) = (~0.707, ~0.707, 0, 0)
-    let [w, x, y, z] = euler_to_quat_wxyz(FRAC_PI_2, 0.0, 0.0);
-    let _s = FRAC_PI_2.sin() * 0.5_f32.sqrt(); // sin(45°)
-    let _c = FRAC_PI_2.cos() * 0.5_f32.sqrt(); // cos(45°) — but let's just check magnitude
+    let x_keys = KeyGroup {
+        key_type: KeyType::Linear,
+        keys: vec![FloatKey {
+            time: 0.0,
+            value: FRAC_PI_2,
+            tangent_forward: 0.0,
+            tangent_backward: 0.0,
+            tbc: None,
+        }],
+    };
+    let empty_keys = KeyGroup {
+        key_type: KeyType::Linear,
+        keys: vec![FloatKey {
+            time: 0.0,
+            value: 0.0,
+            tangent_forward: 0.0,
+            tangent_backward: 0.0,
+            tbc: None,
+        }],
+    };
+    let data = NiTransformData {
+        rotation_type: Some(KeyType::XyzRotation),
+        rotation_keys: Vec::new(),
+        xyz_rotations: Some([x_keys, empty_keys.clone(), empty_keys]),
+        translations: KeyGroup {
+            key_type: KeyType::Linear,
+            keys: Vec::new(),
+        },
+        scales: KeyGroup {
+            key_type: KeyType::Linear,
+            keys: Vec::new(),
+        },
+    };
+    let (keys, _) = convert_xyz_euler_keys(&data);
+    assert_eq!(keys.len(), 1);
+
+    // Ground truth: the core SoT every other Gamebryo Euler consumer
+    // uses, applied to the same (rx=FRAC_PI_2, ry=0, rz=0) input.
+    let expected = byroredux_core::math::coord::euler_zup_to_quat_yup(FRAC_PI_2, 0.0, 0.0);
+    let got = keys[0].value; // [x, y, z, w], glam order
+    assert!((got[0] - expected.x).abs() < 1e-5, "x: got {got:?}, expected {expected:?}");
+    assert!((got[1] - expected.y).abs() < 1e-5, "y: got {got:?}, expected {expected:?}");
+    assert!((got[2] - expected.z).abs() < 1e-5, "z: got {got:?}, expected {expected:?}");
+    assert!((got[3] - expected.w).abs() < 1e-5, "w: got {got:?}, expected {expected:?}");
+
+    // X is invariant under the Z-up→Y-up swap (`zup_to_yup_pos([x,y,z])
+    // = (x,z,-y)`), so a pure-X-axis Gamebryo rotation stays on the
+    // glam X axis post-conversion — the sign is the whole story here.
+    // The pre-fix (CCW, un-negated) formula lands on `x = +0.707`; the
+    // correct CW-positive formula lands on `x = -0.707`. Pin the sign
+    // explicitly so a regression back to the CCW formula fails loudly
+    // rather than passing on the `expected`-comparison alone (which
+    // would also fail, but this makes the failure mode legible without
+    // cross-referencing `euler_zup_to_quat_yup`).
     assert!(
-        (w * w + x * x + y * y + z * z - 1.0).abs() < 1e-5,
-        "quaternion should be unit"
+        got[0] < -0.5,
+        "expected a negative (CW-positive) X component for a +90° \
+         X-axis Gamebryo rotation, got {got:?} — a positive value here \
+         means the CCW-positive bug (#2434) has regressed"
     );
-    assert!(x > 0.5, "x component should be dominant for X rotation");
-    assert!(y.abs() < 1e-5);
-    assert!(z.abs() < 1e-5);
 }
 
+/// Multi-axis regression: pins `convert_xyz_euler_keys`'s full output
+/// against `euler_zup_to_quat_yup` for an asymmetric (rx, ry, rz) triple
+/// where sign AND composition-order errors both produce a materially
+/// different quaternion — the strongest single check against a
+/// regression to either bug class.
 #[test]
-fn euler_to_quat_90_deg_y() {
-    use std::f32::consts::FRAC_PI_2;
-    let [w, x, y, z] = euler_to_quat_wxyz(0.0, FRAC_PI_2, 0.0);
-    assert!((w * w + x * x + y * y + z * z - 1.0).abs() < 1e-5);
-    assert!(x.abs() < 1e-5);
-    assert!(y > 0.5, "y component should be dominant for Y rotation");
-    assert!(z.abs() < 1e-5);
-}
+fn convert_xyz_euler_keys_matches_core_sot_for_asymmetric_multi_axis() {
+    let (rx, ry, rz) = (0.3_f32, 0.5_f32, 0.7_f32);
+    let one_key = |v: f32| KeyGroup {
+        key_type: KeyType::Linear,
+        keys: vec![FloatKey {
+            time: 0.0,
+            value: v,
+            tangent_forward: 0.0,
+            tangent_backward: 0.0,
+            tbc: None,
+        }],
+    };
+    let data = NiTransformData {
+        rotation_type: Some(KeyType::XyzRotation),
+        rotation_keys: Vec::new(),
+        xyz_rotations: Some([one_key(rx), one_key(ry), one_key(rz)]),
+        translations: KeyGroup {
+            key_type: KeyType::Linear,
+            keys: Vec::new(),
+        },
+        scales: KeyGroup {
+            key_type: KeyType::Linear,
+            keys: Vec::new(),
+        },
+    };
+    let (keys, _) = convert_xyz_euler_keys(&data);
+    assert_eq!(keys.len(), 1);
 
-#[test]
-fn euler_to_quat_90_deg_z() {
-    use std::f32::consts::FRAC_PI_2;
-    let [w, x, y, z] = euler_to_quat_wxyz(0.0, 0.0, FRAC_PI_2);
-    assert!((w * w + x * x + y * y + z * z - 1.0).abs() < 1e-5);
-    assert!(x.abs() < 1e-5);
-    assert!(y.abs() < 1e-5);
-    assert!(z > 0.5, "z component should be dominant for Z rotation");
+    let expected = byroredux_core::math::coord::euler_zup_to_quat_yup(rx, ry, rz);
+    let got = keys[0].value;
+    assert!((got[0] - expected.x).abs() < 1e-5, "x: got {got:?}, expected {expected:?}");
+    assert!((got[1] - expected.y).abs() < 1e-5, "y: got {got:?}, expected {expected:?}");
+    assert!((got[2] - expected.z).abs() < 1e-5, "z: got {got:?}, expected {expected:?}");
+    assert!((got[3] - expected.w).abs() < 1e-5, "w: got {got:?}, expected {expected:?}");
 }
 
 #[test]

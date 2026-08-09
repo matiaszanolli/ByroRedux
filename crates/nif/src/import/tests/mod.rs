@@ -17,6 +17,7 @@ use crate::types::{BlockRef, NiPoint3};
 
 mod billboard;
 mod bs_subclass;
+mod coord_cross_check;
 mod core;
 mod furniture;
 mod material_texture;

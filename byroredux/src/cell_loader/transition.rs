@@ -161,8 +161,17 @@ pub fn position_zup_to_yup(p: [f32; 3]) -> Vec3 {
 /// quaternion. Wrapper over [`super::euler_zup_to_quat_yup_refr`] —
 /// same convention REFR placements use, so the camera's orientation
 /// matches what the destination REFR would render at.
+///
+/// #2435 / COORD-2 — this used to call the plain (non-dispatcher)
+/// `euler_zup_to_quat_yup`, contradicting this doc comment. Zero
+/// effect at the shipping default (`--rotation-mode 1` ≡ the plain
+/// helper's formula), but under `--rotation-mode 0/2/3` the player
+/// would land at a door with an orientation from a DIFFERENT
+/// convention than the surrounding geometry — exactly the scenario
+/// the diagnostic flag exists to triage, and XTEL was the one REFR-
+/// family site that couldn't be triaged with it.
 pub fn rotation_zup_to_yup_quat(rot: [f32; 3]) -> Quat {
-    super::euler_zup_to_quat_yup(rot[0], rot[1], rot[2])
+    super::euler_zup_to_quat_yup_refr(rot[0], rot[1], rot[2])
 }
 
 /// Drain the pending transition from the slot resource. The main
@@ -341,6 +350,34 @@ mod tests {
         assert_eq!(
             position_zup_to_yup([10.0, 20.0, 30.0]),
             Vec3::new(10.0, 30.0, -20.0)
+        );
+    }
+
+    /// #2435 / COORD-2 regression — `rotation_zup_to_yup_quat`'s doc
+    /// comment promises it wraps `euler_zup_to_quat_yup_refr` (the
+    /// `--rotation-mode` dispatcher every other REFR-family site uses),
+    /// but it used to call the plain, non-dispatcher `euler_zup_to_quat_yup`
+    /// instead. A value-based test can't discriminate the two at the
+    /// shipping default (`--rotation-mode 1`'s formula is bit-identical
+    /// to the plain helper's), and mutating the dispatcher's shared
+    /// `AtomicU8` mode from a test would race every other test in this
+    /// crate that exercises REFR placement concurrently — so this is a
+    /// static source check, the same shape this codebase already uses
+    /// for logic a value-based unit test can't safely pin.
+    #[test]
+    fn rotation_zup_to_yup_quat_calls_the_refr_dispatcher_not_the_plain_helper() {
+        let src = include_str!("transition.rs");
+        let fn_start = src
+            .find("pub fn rotation_zup_to_yup_quat")
+            .expect("rotation_zup_to_yup_quat must still exist");
+        let fn_body = &src[fn_start..fn_start + 400.min(src.len() - fn_start)];
+        assert!(
+            fn_body.contains("euler_zup_to_quat_yup_refr("),
+            "rotation_zup_to_yup_quat must call the `--rotation-mode` \
+             dispatcher (euler_zup_to_quat_yup_refr), matching its own doc \
+             comment and every other REFR-family call site — calling the \
+             plain euler_zup_to_quat_yup instead silently opts XTEL \
+             transitions out of `--rotation-mode` triage (#2435)"
         );
     }
 

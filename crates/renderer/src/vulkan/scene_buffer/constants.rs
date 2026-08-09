@@ -349,7 +349,15 @@ pub const MATERIAL_KIND_FIRE_REFRACTION: u32 = 103;
 /// the rebased per-instance models and the uploaded matrices to line up.
 /// Pre-#1494 each site carried its own `4096.0` literal coupled only by a
 /// comment.
-pub const RENDER_ORIGIN_SNAP: f32 = 4096.0;
+///
+/// #2436 / COORD-3 — this was itself a second, bare `4096.0` literal
+/// coupled to the cell-loader's own `EXTERIOR_CELL_UNITS`
+/// (`crates/core/src/math/coord.rs`) only by this comment, the exact
+/// #1112 / TD3-202 pattern that session's literal collapse was meant to
+/// eliminate — `byroredux-renderer` already depends on `byroredux-core`,
+/// so there was no reason for the two to stay uncoupled. Bound directly
+/// to the SoT constant instead of merely re-stating its value.
+pub const RENDER_ORIGIN_SNAP: f32 = byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 
 /// Snap a camera position to the render origin (#1494 / #1588): the single
 /// source of truth for the `floor(pos / SNAP) * SNAP` expression that the
@@ -403,9 +411,15 @@ mod tests {
 
     #[test]
     fn render_origin_snap_is_exterior_cell_edge() {
+        // #2436 / COORD-3 — assert against the core SoT constant, not a
+        // bare `4096.0` restatement of it; the two must be the SAME
+        // constant now (see `RENDER_ORIGIN_SNAP`'s doc), not merely equal
+        // in value, so this test would fail to compile — not just fail
+        // at runtime — if a future edit re-decoupled them.
         assert_eq!(
-            RENDER_ORIGIN_SNAP, 4096.0,
-            "RENDER_ORIGIN_SNAP must equal the 4096-unit exterior cell edge \
+            RENDER_ORIGIN_SNAP,
+            byroredux_core::math::coord::EXTERIOR_CELL_UNITS,
+            "RENDER_ORIGIN_SNAP must equal the exterior cell edge length \
              — both the camera assembly and draw_frame snap the origin with \
              it, and the #1489 prev_view_proj origin correction assumes \
              grid-aligned jumps"

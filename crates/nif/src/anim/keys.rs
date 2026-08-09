@@ -106,11 +106,24 @@ pub fn convert_xyz_euler_keys(data: &NiTransformData) -> (Vec<RotationKey>, KeyT
             let y = sample_float_key_group(&xyz[1], time);
             let z = sample_float_key_group(&xyz[2], time);
 
-            // Gamebryo euler angles are in radians, Z-up coordinate system.
-            // Compose euler → quaternion in Gamebryo space, then convert to Y-up.
-            // Gamebryo uses XYZ intrinsic euler order.
-            let qw = euler_to_quat_wxyz(x, y, z);
-            let yup = zup_to_yup_quat(qw);
+            // #2434 / COORD-1 — Gamebryo euler angles are in radians,
+            // Z-up coordinate system, XYZ intrinsic order, and (per the
+            // vendor header `efd/Matrix3.h`: "positive angles are
+            // associated with clockwise rotations") CLOCKWISE-positive.
+            // Route through the same core SoT every other Gamebryo
+            // Euler consumer uses (REFR placement, XCLL directional
+            // lighting) instead of a second, independently-signed
+            // private formula: the prior `euler_to_quat_wxyz` composed
+            // the standard CCW-positive product with no negation,
+            // which — conjugated through the Z-up→Y-up swap — is
+            // exactly `--rotation-mode 3`
+            // (`byroredux/src/cell_loader/euler.rs`), a non-shipping
+            // diagnostic variant, not the canonical CW convention every
+            // other consumer honours. `euler_zup_to_quat_yup` composes
+            // AND axis-swaps in one step, so no separate
+            // `zup_to_yup_quat` call is needed here.
+            let q = byroredux_core::math::coord::euler_zup_to_quat_yup(x, y, z);
+            let yup = [q.x, q.y, q.z, q.w];
 
             // #1443 — a non-finite euler sample (NaN / ±inf) makes
             // `sin_cos` emit NaN and poisons the quaternion; drop the
@@ -182,21 +195,6 @@ pub fn sample_float_key_group(group: &KeyGroup<FloatKey>, time: f32) -> f32 {
             k0.value + (k1.value - k0.value) * t
         }
     }
-}
-
-/// Convert XYZ intrinsic euler angles (radians) to quaternion (w, x, y, z).
-pub fn euler_to_quat_wxyz(x: f32, y: f32, z: f32) -> [f32; 4] {
-    let (sx, cx) = (x * 0.5).sin_cos();
-    let (sy, cy) = (y * 0.5).sin_cos();
-    let (sz, cz) = (z * 0.5).sin_cos();
-
-    // XYZ intrinsic rotation composition
-    let w = cx * cy * cz - sx * sy * sz;
-    let qx = sx * cy * cz + cx * sy * sz;
-    let qy = cx * sy * cz - sx * cy * sz;
-    let qz = cx * cy * sz + sx * sy * cz;
-
-    [w, qx, qy, qz]
 }
 
 /// Wrapper for f32 that implements Ord for use in BTreeSet.
