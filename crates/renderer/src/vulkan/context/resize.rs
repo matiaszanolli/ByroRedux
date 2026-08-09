@@ -848,7 +848,9 @@ impl VulkanContext {
         // the new indirect + albedo + caustic + volumetric + bloom views.
         // #1257 / Phase E of #1210 — gather the resized water-caustic
         // sampled views. Same fall-back-to-existing-caustic shape as
-        // the init path in context::new.
+        // the init path in context::new — see that site's comment for why
+        // the alias isn't a zero source, and `caustic_flags.x` (#2508) for
+        // how `composite.frag` avoids double-counting it.
         let water_caustic_views: Vec<vk::ImageView> = match self.water_caustic_accum.as_ref() {
             Some(a) => (0..MAX_FRAMES_IN_FLIGHT)
                 .map(|i| a.sampled_view(i))
@@ -1016,6 +1018,9 @@ impl VulkanContext {
         self.taa_failed = false;
         self.svgf_failed = false;
         self.caustic_failed = false;
+        // #2507 — fresh slot images post-resize; a stale latch would skip
+        // the needed clear on the first post-resize frame that skips.
+        self.caustic_cleared_on_skip = [false; MAX_FRAMES_IN_FLIGHT];
 
         // Main framebuffers bind the new HDR + G-buffer views + depth.
         let gbuffer_ref = self

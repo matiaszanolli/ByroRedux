@@ -626,21 +626,26 @@ mod tests {
     /// both the pre- and post-fix binaries). #1926 then removed the
     /// aerial-perspective fog fallback branch entirely (dead since
     /// `VOLUMETRIC_OUTPUT_CONSUMED` pinned `depth_params.z` to 1.0),
-    /// dropping the count further to 12 (confirmed via `spirv-dis` before/
-    /// after that recompile too). Pins the current count so a future
-    /// stale-recompile of this file fails loudly instead of shipping
-    /// silently, the same failure mode #1447 fixed for `CameraUBO` size.
+    /// dropping the count further to 12 at that time (confirmed via
+    /// `spirv-dis` before/after that recompile). Subsequent features
+    /// (height fog, cloud layers, etc.) added their own conditionals
+    /// since, bringing the pinned count to 16 pre-#2508. #2508 added the
+    /// `caustic_flags.x > 0.5 ? … : 0u` gate on `waterCausticTex`, one
+    /// more `OpBranchConditional`, bumping the count to 17. Pins the
+    /// current count so a future stale-recompile of this file fails
+    /// loudly instead of shipping silently, the same failure mode #1447
+    /// fixed for `CameraUBO` size.
     #[test]
     fn composite_frag_spv_matches_recompiled_branch_count() {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 16,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 16 — \
+            count, 17,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 17 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The presentation-only underwater branch moved to \
-             presentation.frag with the output-resolution frame split. See #1917."
+             presentation.frag with the output-resolution frame split. See #1917 / #2508."
         );
     }
 

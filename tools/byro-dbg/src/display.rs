@@ -251,7 +251,13 @@ pub fn print_response(response: &DebugResponse) {
             } else {
                 println!("  GPU passes:");
                 for (name, ms) in gpu_pass_ms {
-                    println!("    {:<20} {:>6.3} ms", name, ms);
+                    match ms {
+                        // #2513 / REN-D20-NEW-03 — a bracket that didn't
+                        // run this cycle prints "n/a", not an
+                        // indistinguishable `0.000 ms`.
+                        Some(ms) => println!("    {:<20} {:>6.3} ms", name, ms),
+                        None => println!("    {:<20} {:>10}", name, "n/a"),
+                    }
                 }
             }
         }

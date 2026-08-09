@@ -608,8 +608,9 @@ impl ConsoleCommand for MatSetCommand {
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         const USAGE: &str = "usage: mat.set <entity_id> <field> <value...>\n  \
             fields: metalness|roughness|alpha|glossiness|emissive_mult|specular_strength|\
-            env_map_scale|ior (1 value), color|diffuse_color|emissive_color|specular_color \
-            (3 values), material_kind|material_flags (1 int)";
+            env_map_scale|ior|subsurface|sheen|sheen_tint|anisotropic (1 value), \
+            color|diffuse_color|emissive_color|specular_color (3 values), \
+            material_kind|material_flags (1 int)";
         let mut parts = args.split_whitespace();
         let Some(id_str) = parts.next() else {
             return CommandOutput::line(USAGE);
@@ -657,6 +658,16 @@ impl ConsoleCommand for MatSetCommand {
             // every fire-refraction gap this session had to be found by
             // static code reading instead of the harness.
             "ior" | "distortion_strength" => set_scalar(&mut m.ior, &vals),
+            // #2514 (REN-D21-2026-08-07-02) — the Cornell harness had no
+            // way to reach `subsurface`/`sheen`/`sheen_tint`/`anisotropic`
+            // (→ `GpuMaterial`'s Disney-BSDF-only params, gated by
+            // `MAT_FLAG_PBR_BSDF`) live; no source format authors these
+            // (unlike `subsurface_rolloff` etc. above, which have real
+            // Skyrim+/FO4 source data), so this is their only producer.
+            "subsurface" | "sss" => set_scalar(&mut m.subsurface, &vals),
+            "sheen" => set_scalar(&mut m.sheen, &vals),
+            "sheen_tint" => set_scalar(&mut m.sheen_tint, &vals),
+            "anisotropic" | "aniso" => set_scalar(&mut m.anisotropic, &vals),
             "color" | "diffuse_color" | "diffuse" => set_vec3(&mut m.diffuse_color, &vals),
             "emissive_color" => set_vec3(&mut m.emissive_color, &vals),
             "specular_color" => set_vec3(&mut m.specular_color, &vals),
@@ -777,5 +788,38 @@ mod mat_set_tests {
         let out = MatSetCommand.execute(&world, &format!("{e} material_flags not_a_number"));
         let joined = out.lines.join("\n");
         assert!(joined.contains("not an integer"), "got: {joined}");
+    }
+
+    /// Regression for #2514 (REN-D21-2026-08-07-02): `mat.set` had no arm
+    /// reaching `subsurface`/`sheen`/`sheen_tint`/`anisotropic` — no
+    /// source format authors these Disney-BSDF-only scalars, so `mat.set`
+    /// was their only possible producer and it didn't reach them either,
+    /// leaving the fields dead end-to-end.
+    #[test]
+    fn disney_lobe_arms_write_their_material_fields() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Material::default());
+
+        for (field, slot_check) in [
+            ("subsurface", "subsurface"),
+            ("sheen", "sheen"),
+            ("sheen_tint", "sheen_tint"),
+            ("anisotropic", "anisotropic"),
+        ] {
+            let out = MatSetCommand.execute(&world, &format!("{e} {field} 0.42"));
+            let joined = out.lines.join("\n");
+            assert!(
+                joined.contains(&format!("{field} = 0.4200")),
+                "field {slot_check}: got {joined}"
+            );
+        }
+
+        let q = world.query::<Material>().unwrap();
+        let m = q.get(e).unwrap();
+        assert_eq!(m.subsurface, 0.42);
+        assert_eq!(m.sheen, 0.42);
+        assert_eq!(m.sheen_tint, 0.42);
+        assert_eq!(m.anisotropic, 0.42);
     }
 }

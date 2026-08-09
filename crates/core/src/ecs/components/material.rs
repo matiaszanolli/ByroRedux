@@ -301,6 +301,28 @@ pub struct Material {
     /// maps remain independent overlays. Generic materials default to 1.5,
     /// while canonical glass uses [`GLASS_SURFACE_BEHAVIOR`]'s 1.45.
     pub ior: f32,
+    /// Disney/Burley fake-subsurface-scattering weight `[0, 1]`, consumed
+    /// by `disneyDiffuseSplit` (`include/pbr.glsl`) only when
+    /// `MAT_FLAG_PBR_BSDF` is set on `material_flags`. No source format
+    /// (BGSM/BGEM/inline-NIF) authors an equivalent concept — this is a
+    /// Disney-BSDF-only parameter, unlike `subsurface_rolloff` above
+    /// (Skyrim/FO4's own SSS-rolloff exponent, which DOES have real
+    /// source data). Reachable only via `mat.set` today; `0.0` = the
+    /// shader's Burley-only fallback. #2514 / REN-D21-2026-08-07-02.
+    pub subsurface: f32,
+    /// Disney sheen weight `[0, 1]` — cloth-like grazing-angle
+    /// retroreflection. Same no-source-format-equivalent caveat as
+    /// [`Self::subsurface`]; `mat.set`-only. #2514.
+    pub sheen: f32,
+    /// Disney sheen tint `[0, 1]` — how much the sheen term picks up the
+    /// surface's own hue vs. staying neutral white. Same caveat as
+    /// [`Self::subsurface`]; `mat.set`-only. #2514.
+    pub sheen_tint: f32,
+    /// Disney anisotropic GGX weight `[0, 1]` — elongates the specular
+    /// highlight along the tangent (hair, brushed metal). Same
+    /// no-source-format-equivalent caveat as [`Self::subsurface`] (BGSM
+    /// authors no anisotropy metadata either); `mat.set`-only. #2514.
+    pub anisotropic: f32,
 }
 
 /// View-angle + soft-depth falloff cone captured from
@@ -412,6 +434,13 @@ impl Default for Material {
             metalness: 0.0,
             roughness: 0.5,
             ior: DEFAULT_DIELECTRIC_IOR,
+            // #2514 — no source format authors these; zero = the
+            // shader's Burley/isotropic-only fallback (Lambert-adjacent
+            // behavior, matching pre-#2514 rendering exactly).
+            subsurface: 0.0,
+            sheen: 0.0,
+            sheen_tint: 0.0,
+            anisotropic: 0.0,
         }
     }
 }

@@ -256,8 +256,11 @@ pub enum DebugResponse {
         /// Per-pass GPU elapsed time in milliseconds, ordered by
         /// pass name. Surfaces `SkinCoverageStats::gpu_*_ms` today
         /// (`"skin"`, `"skin_blas_refit"`, `"taa"`); extensible
-        /// without a wire bump.
-        gpu_pass_ms: Vec<(String, f32)>,
+        /// without a wire bump. `None` means the bracket didn't run
+        /// this snapshot cycle — distinct from `Some(0.0)`, a
+        /// bracket that genuinely completed sub-microsecond.
+        /// #2513 / REN-D20-NEW-03.
+        gpu_pass_ms: Vec<(String, Option<f32>)>,
     },
     /// Configured game profiles — populated from
     /// `assets/debug_profiles.toml` (engine defaults) merged with

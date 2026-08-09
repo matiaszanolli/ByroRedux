@@ -61,6 +61,14 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     // (mix toward `underwater.xyz` by a depth-driven extinction when
     // `underwater.w > 0`) lives in presentation.frag now.
     vec4 underwater;
+    // x = water-side caustic accumulator (binding 8, waterCausticTex) is
+    // genuinely live this frame (1.0) vs. absent and fallback-bound to
+    // the glass/MultiLayerParallax accumulator's own view (0.0) — the
+    // real water_caustic_accum failed to allocate at init or a resize
+    // (VRAM pressure). In the fallback case binding 8 aliases binding 5
+    // (causticTex), so summing both would double-count the glass
+    // contribution instead of contributing zero. yzw reserved. #2508.
+    vec4 caustic_flags;
 } params;
 layout(set = 0, binding = 4) uniform sampler2D depthTex;     // depth buffer
 layout(set = 0, binding = 5) uniform usampler2D causticTex;  // R32_UINT caustic accumulator (#321)
@@ -444,7 +452,16 @@ void main() {
             causticSize - ivec2(1)
         );
         uint causticRaw = texelFetch(causticTex, causticPixel, 0).r;
-        uint waterCausticRaw = texelFetch(waterCausticTex, causticPixel, 0).r;
+        // #2508 — when the water-side accumulator isn't live this session,
+        // binding 8 (waterCausticTex) is fallback-bound to the SAME view as
+        // binding 5 (causticTex); sampling it would double-count the glass
+        // caustic contribution instead of contributing zero. Gate the read
+        // on the host-set flag rather than skip the fetch conditionally —
+        // texelFetch has no side effects, so a uniform branch here compiles
+        // to a select, not real divergence.
+        uint waterCausticRaw = params.caustic_flags.x > 0.5
+            ? texelFetch(waterCausticTex, causticPixel, 0).r
+            : 0u;
         // #1575 — promote each accumulator to float BEFORE the add so the sum
         // can't wrap u32. Each raw can independently climb toward the
         // 0xFFFFFFFF per-deposit ceiling (caustic_splat.comp clamps each

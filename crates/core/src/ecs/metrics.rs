@@ -53,8 +53,11 @@ pub struct MetricsSnapshot {
     /// Per-pass GPU elapsed time in milliseconds. Map keys are
     /// the pass-name strings (`"skin"`, `"skin_blas_refit"`,
     /// `"taa"` today; extensible without breaking the wire
-    /// protocol).
-    pub gpu_pass_ms: BTreeMap<String, f32>,
+    /// protocol). `None` means the bracket didn't run this
+    /// snapshot cycle (or GPU timestamps are unavailable at all) —
+    /// distinct from `Some(0.0)`, a bracket that genuinely
+    /// completed in under a microsecond. #2513 / REN-D20-NEW-03.
+    pub gpu_pass_ms: BTreeMap<String, Option<f32>>,
     /// CPU-side wall-clock breakdown of `draw_frame`, in
     /// milliseconds. Surfaces operations the GPU TIMESTAMP
     /// brackets in `gpu_pass_ms` can't see — the fence wait at

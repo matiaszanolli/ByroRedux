@@ -186,7 +186,9 @@ struct MetricsView {
     vram_used_mb: u64,
     vram_reserved_mb: u64,
     vram_budget_mb: u64,
-    gpu_pass_ms: Vec<(String, f32)>,
+    /// `None` per-entry means the bracket didn't run this snapshot
+    /// cycle. #2513 / REN-D20-NEW-03.
+    gpu_pass_ms: Vec<(String, Option<f32>)>,
 }
 
 impl App {
@@ -514,7 +516,13 @@ fn render_metrics(f: &mut ratatui::Frame, area: Rect, app: &App) {
     } else {
         lines.push(Line::from("GPU per-pass (ms):"));
         for (name, ms) in &m.gpu_pass_ms {
-            lines.push(Line::from(format!("  {:<20} {:>6.3}", name, ms)));
+            // #2513 / REN-D20-NEW-03 — a bracket that didn't run this
+            // cycle renders "n/a", not an indistinguishable `0.000`.
+            let value = match ms {
+                Some(ms) => format!("{ms:>6.3}"),
+                None => format!("{:>6}", "n/a"),
+            };
+            lines.push(Line::from(format!("  {name:<20} {value}")));
         }
     }
     let para =

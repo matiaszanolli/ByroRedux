@@ -61,6 +61,16 @@ impl Default for MetricsState {
     }
 }
 
+/// Gate a GPU bracket's millisecond reading on whether it actually ran
+/// this snapshot cycle — `None` when it didn't (or GPU timestamps are
+/// unavailable at all), distinct from `Some(0.0)`, a bracket that
+/// genuinely completed sub-microsecond. Pulled out of
+/// `metrics_sample_system`'s per-pass `gpu_pass_ms.insert` calls so the
+/// gating logic is unit-testable without a `World`. #2513 / REN-D20-NEW-03.
+fn gpu_bracket_ms(ms: f32, active: bool) -> Option<f32> {
+    active.then_some(ms)
+}
+
 /// Late-stage system: refresh the host/GPU metrics resources at the
 /// throttle cadence.
 pub fn metrics_sample_system(world: &World, _dt: f32) {
@@ -107,27 +117,76 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         .map(|b| b.total_vram_bytes)
         .unwrap_or(0);
 
-    let mut gpu_pass_ms: BTreeMap<String, f32> = BTreeMap::new();
+    let mut gpu_pass_ms: BTreeMap<String, Option<f32>> = BTreeMap::new();
     if let Some(cov) = world.try_resource::<SkinCoverageStats>() {
         // Order in the BTreeMap is alphabetical — the UI renders
         // the rows in that order, which roughly groups related
         // passes (e.g. `skin*` together). Adding the four
         // debug-UI-Phase-6 brackets surfaces the main-render
         // pathology the 540 ms / 1 FPS report flagged.
-        gpu_pass_ms.insert("bloom".to_string(), cov.gpu_bloom_ms);
-        gpu_pass_ms.insert("caustic_splat".to_string(), cov.gpu_caustic_splat_ms);
-        gpu_pass_ms.insert("cluster_cull".to_string(), cov.gpu_cluster_cull_ms);
-        gpu_pass_ms.insert("composite".to_string(), cov.gpu_composite_ms);
-        gpu_pass_ms.insert("main_render".to_string(), cov.gpu_main_render_ms);
-        gpu_pass_ms.insert("skin".to_string(), cov.gpu_skin_dispatch_ms);
-        gpu_pass_ms.insert("skin_blas_refit".to_string(), cov.gpu_skin_blas_refit_ms);
-        gpu_pass_ms.insert("ssao".to_string(), cov.gpu_ssao_ms);
-        gpu_pass_ms.insert("svgf".to_string(), cov.gpu_svgf_ms);
-        gpu_pass_ms.insert("taa".to_string(), cov.gpu_taa_ms);
-        gpu_pass_ms.insert("tlas_build".to_string(), cov.gpu_tlas_build_ms);
-        gpu_pass_ms.insert("presentation".to_string(), cov.gpu_presentation_ms);
-        gpu_pass_ms.insert("upscale".to_string(), cov.gpu_upscale_ms);
-        gpu_pass_ms.insert("volumetrics".to_string(), cov.gpu_volumetrics_ms);
+        //
+        // #2513 / REN-D20-NEW-03 — `None` when the bracket's own
+        // `*_active` flag says it didn't run this cycle, so the debug UI
+        // can render "n/a" instead of an indistinguishable `0.000 ms`.
+        gpu_pass_ms.insert(
+            "bloom".to_string(),
+            gpu_bracket_ms(cov.gpu_bloom_ms, cov.gpu_bloom_active),
+        );
+        gpu_pass_ms.insert(
+            "caustic_splat".to_string(),
+            gpu_bracket_ms(cov.gpu_caustic_splat_ms, cov.gpu_caustic_splat_active),
+        );
+        gpu_pass_ms.insert(
+            "cluster_cull".to_string(),
+            gpu_bracket_ms(cov.gpu_cluster_cull_ms, cov.gpu_cluster_cull_active),
+        );
+        gpu_pass_ms.insert(
+            "composite".to_string(),
+            gpu_bracket_ms(cov.gpu_composite_ms, cov.gpu_composite_active),
+        );
+        gpu_pass_ms.insert(
+            "main_render".to_string(),
+            gpu_bracket_ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
+        );
+        gpu_pass_ms.insert(
+            "skin".to_string(),
+            gpu_bracket_ms(cov.gpu_skin_dispatch_ms, cov.gpu_skin_dispatch_active),
+        );
+        gpu_pass_ms.insert(
+            "skin_blas_refit".to_string(),
+            gpu_bracket_ms(
+                cov.gpu_skin_blas_refit_ms,
+                cov.gpu_skin_blas_refit_active,
+            ),
+        );
+        gpu_pass_ms.insert(
+            "ssao".to_string(),
+            gpu_bracket_ms(cov.gpu_ssao_ms, cov.gpu_ssao_active),
+        );
+        gpu_pass_ms.insert(
+            "svgf".to_string(),
+            gpu_bracket_ms(cov.gpu_svgf_ms, cov.gpu_svgf_active),
+        );
+        gpu_pass_ms.insert(
+            "taa".to_string(),
+            gpu_bracket_ms(cov.gpu_taa_ms, cov.gpu_taa_active),
+        );
+        gpu_pass_ms.insert(
+            "tlas_build".to_string(),
+            gpu_bracket_ms(cov.gpu_tlas_build_ms, cov.gpu_tlas_build_active),
+        );
+        gpu_pass_ms.insert(
+            "presentation".to_string(),
+            gpu_bracket_ms(cov.gpu_presentation_ms, cov.gpu_presentation_active),
+        );
+        gpu_pass_ms.insert(
+            "upscale".to_string(),
+            gpu_bracket_ms(cov.gpu_upscale_ms, cov.gpu_upscale_active),
+        );
+        gpu_pass_ms.insert(
+            "volumetrics".to_string(),
+            gpu_bracket_ms(cov.gpu_volumetrics_ms, cov.gpu_volumetrics_active),
+        );
     }
 
     let mut cpu_pass_ms: BTreeMap<String, f32> = BTreeMap::new();
@@ -201,4 +260,25 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
     snap.gpu_pass_ms = gpu_pass_ms;
     snap.cpu_pass_ms = cpu_pass_ms;
     snap.top_systems_ms = top_systems_ms;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gpu_bracket_ms;
+
+    /// Regression for #2513 / REN-D20-NEW-03: an inactive bracket must
+    /// gate to `None`, not `Some(0.0)` — the two were indistinguishable
+    /// at every consumer before this fix, even though #2278 had already
+    /// landed the `*_active` flag needed to tell them apart.
+    #[test]
+    fn inactive_bracket_gates_to_none_not_zero() {
+        assert_eq!(gpu_bracket_ms(0.0, false), None);
+        assert_eq!(gpu_bracket_ms(1.184, false), None);
+    }
+
+    #[test]
+    fn active_bracket_passes_its_ms_through_even_when_zero() {
+        assert_eq!(gpu_bracket_ms(0.0, true), Some(0.0));
+        assert_eq!(gpu_bracket_ms(1.184, true), Some(1.184));
+    }
 }

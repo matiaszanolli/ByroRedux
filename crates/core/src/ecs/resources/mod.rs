@@ -570,6 +570,30 @@ pub struct SkinCoverageStats {
     /// Output-resolution presentation (exposure + ACES → swapchain). The part
     /// of the frame an FSR preset does *not* shrink.
     pub gpu_presentation_ms: f32,
+
+    // ── Per-bracket "ran this frame" flags (#2513 / REN-D20-NEW-03) ───
+    //
+    // One bool per `gpu_*_ms` field above, in the same order — mirrors
+    // `GpuTimerSnapshot`'s own `*_active` fields (#2278 / PERF-D9-01),
+    // which `fill_skin_coverage_stats` copies straight through. `false`
+    // means the bracket's `_ms` field reads `0.0` because the pass didn't
+    // run this snapshot cycle (or GPU timestamps are unavailable at all),
+    // not because it measured zero — the ambiguity #2278 fixed at the
+    // producer but that had no consumer until now.
+    pub gpu_skin_dispatch_active: bool,
+    pub gpu_skin_blas_refit_active: bool,
+    pub gpu_taa_active: bool,
+    pub gpu_main_render_active: bool,
+    pub gpu_tlas_build_active: bool,
+    pub gpu_cluster_cull_active: bool,
+    pub gpu_svgf_active: bool,
+    pub gpu_composite_active: bool,
+    pub gpu_ssao_active: bool,
+    pub gpu_bloom_active: bool,
+    pub gpu_caustic_splat_active: bool,
+    pub gpu_volumetrics_active: bool,
+    pub gpu_upscale_active: bool,
+    pub gpu_presentation_active: bool,
 }
 
 /// CPU-side per-frame wall-clock breakdown — populated by the

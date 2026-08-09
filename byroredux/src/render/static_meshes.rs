@@ -621,16 +621,16 @@ pub(super) fn collect_static_mesh_draws(
                     ior,
                     // #1249 — Disney diffuse defaults zero so the
                     // shader-side Lambert/Disney branch picks Lambert
-                    // (every NIF without MAT_FLAG_BGSM_PBR). BGSM v9+
-                    // sheen / subsurface fields can be plumbed through
-                    // Material when the importer surfaces them.
-                    subsurface: 0.0,
-                    sheen: 0.0,
-                    sheen_tint: 0.0,
-                    // #1250 — isotropic GGX. Hair / brushed-metal
-                    // anisotropy is BGSM-only metadata not yet
-                    // authored on the legacy NIF path.
-                    anisotropic: 0.0,
+                    // (every NIF without MAT_FLAG_BGSM_PBR). No source
+                    // format authors these — reachable only via `mat.set`
+                    // (Cornell harness). #2514 / REN-D21-2026-08-07-02.
+                    subsurface: mat.map(|m| m.subsurface).unwrap_or(0.0),
+                    sheen: mat.map(|m| m.sheen).unwrap_or(0.0),
+                    sheen_tint: mat.map(|m| m.sheen_tint).unwrap_or(0.0),
+                    // #1250 — isotropic GGX by default. Hair / brushed-metal
+                    // anisotropy has no source-format equivalent either
+                    // (BGSM authors no anisotropy metadata); `mat.set`-only.
+                    anisotropic: mat.map(|m| m.anisotropic).unwrap_or(0.0),
                     emissive_mult,
                     emissive_color,
                     specular_strength,

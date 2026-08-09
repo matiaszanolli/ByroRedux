@@ -45,7 +45,10 @@ pub struct MetricsSnapshotView {
     pub vram_used_mb: u64,
     pub vram_reserved_mb: u64,
     pub vram_budget_mb: u64,
-    pub gpu_pass_ms: Vec<(String, f32)>,
+    /// `None` per-entry means the bracket didn't run this snapshot
+    /// cycle — distinct from `Some(0.0)`, a bracket that genuinely
+    /// completed sub-microsecond. #2513 / REN-D20-NEW-03.
+    pub gpu_pass_ms: Vec<(String, Option<f32>)>,
     /// CPU-side per-frame wall-clock breakdown
     /// (`fence_wait` / `submit_present` / `cmd_record` / etc.).
     /// Surfaces operations the GPU TIMESTAMP brackets can't see —
@@ -182,13 +185,18 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
     // against 1:1.
     ui.add_space(6.0);
     ui.separator();
-    let gpu_total: f32 = m.gpu_pass_ms.iter().map(|(_, v)| *v).sum();
+    // #2513 / REN-D20-NEW-03 — sum only the brackets that actually ran
+    // this cycle. A `None` entry (skipped bracket) contributing a clean
+    // `0.0` made the sum look more complete/trustworthy than it was —
+    // the sibling gap REN-D20-NEW-02 flagged in the same report.
+    let gpu_total: f32 = m.gpu_pass_ms.iter().filter_map(|(_, v)| *v).sum();
     ui.label(egui::RichText::new(format!("GPU passes — Σ upper bound {:.3} ms", gpu_total)).strong())
         .on_hover_text(
             "Each bracket's START is stamped at TOP_OF_PIPE, so queue-drain \
              time from prior in-flight work can be absorbed into it. This sum \
              is a ceiling, not a precise attribution — overlapping queue-wait \
-             may be double-counted across adjacent brackets.",
+             may be double-counted across adjacent brackets. Brackets that \
+             didn't run this cycle (n/a) are excluded, not counted as zero.",
         );
     if m.gpu_pass_ms.is_empty() {
         ui.label("(none reported)");
@@ -199,7 +207,13 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
             .show(ui, |ui| {
                 for (name, ms) in &m.gpu_pass_ms {
                     ui.label(name);
-                    ui.monospace(format!("{:.3} ms", ms));
+                    let cell = ui.monospace(format_gpu_pass_ms(*ms));
+                    if ms.is_none() {
+                        cell.on_hover_text(
+                            "bracket did not run this snapshot cycle \
+                             (or GPU timestamps are unavailable)",
+                        );
+                    }
                     ui.end_row();
                 }
             });
@@ -528,6 +542,17 @@ fn setting_matches(entry: &SettingEntry, filter: &str) -> bool {
         || entry.description.to_lowercase().contains(filter)
 }
 
+/// Render one `gpu_pass_ms` grid cell's value text — the millisecond
+/// figure for a bracket that ran this cycle, or `"n/a"` for one that
+/// didn't (distinct from a bracket that genuinely completed at `0.000
+/// ms`). #2513 / REN-D20-NEW-03.
+fn format_gpu_pass_ms(ms: Option<f32>) -> String {
+    match ms {
+        Some(ms) => format!("{ms:.3} ms"),
+        None => "n/a".to_string(),
+    }
+}
+
 /// Safe `used / total` clamped to [0, 1]. Zero `total` collapses to
 /// zero so the progress bar doesn't NaN.
 fn ratio(used: u64, total: u64) -> f64 {
@@ -554,5 +579,16 @@ mod tests {
         assert!(setting_matches(&entry, "interface"));
         assert!(setting_matches(&entry, "frame rate"));
         assert!(!setting_matches(&entry, "audio"));
+    }
+
+    /// Regression for #2513 / REN-D20-NEW-03: an inactive bracket
+    /// (`None`) must render as "n/a", not an indistinguishable
+    /// `"0.000 ms"` — the exact ambiguity #2278 fixed at the producer
+    /// but that had no consumer until this fix.
+    #[test]
+    fn inactive_bracket_renders_as_na_not_zero() {
+        assert_eq!(format_gpu_pass_ms(None), "n/a");
+        assert_eq!(format_gpu_pass_ms(Some(0.0)), "0.000 ms");
+        assert_eq!(format_gpu_pass_ms(Some(1.184)), "1.184 ms");
     }
 }

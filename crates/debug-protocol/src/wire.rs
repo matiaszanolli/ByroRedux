@@ -178,9 +178,11 @@ mod tests {
                 vram_reserved_mb: 1536,
                 vram_budget_mb: 12_288,
                 gpu_pass_ms: vec![
-                    ("skin".to_string(), 0.42),
-                    ("skin_blas_refit".to_string(), 1.18),
-                    ("taa".to_string(), 0.31),
+                    ("skin".to_string(), Some(0.42)),
+                    ("skin_blas_refit".to_string(), Some(1.18)),
+                    // #2513 / REN-D20-NEW-03 — an inactive bracket
+                    // round-trips as `None`/JSON `null`, not `0.0`.
+                    ("taa".to_string(), None),
                 ],
             },
             DebugResponse::GameProfiles {

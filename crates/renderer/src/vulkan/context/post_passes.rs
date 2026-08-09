@@ -294,10 +294,13 @@ impl VulkanContext {
     /// caustic accumulator). Writes binding 5 of the composite descriptor
     /// set.
     ///
-    /// Caustic permanent-failure latch — same shape as SVGF. Composite's
-    /// `causticTex` sampler keeps reading the accumulator's last valid
-    /// contents, so at worst one stale caustic frame hangs around until
-    /// resize. See #479.
+    /// Caustic permanent-failure latch — same shape as SVGF, with one
+    /// difference: composite's `causticTex` sampler has no validity gate at
+    /// all, and the accumulator is screen-space (doesn't track camera
+    /// motion), so a skipped frame (this latch, or no TLAS yet) explicitly
+    /// clears the slot instead of leaving stale content to be re-composited
+    /// every subsequent frame — see [`super::VulkanContext::caustic_cleared_on_skip`]
+    /// and #2507. See #479 SIBLING.
     ///
     /// # Safety
     /// `cmd` is in the recording state — opened by `begin_command_buffer`
@@ -313,22 +316,24 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording outside a render pass, and the live
         // caustic/TLAS resources are indexed by the current in-flight `frame`.
         unsafe {
-            if !self.caustic_failed {
-                if let Some(ref mut caustic) = self.caustic {
-                    // Bind this frame's TLAS before dispatch — the AccelerationManager
-                    // rebuilds/refits per frame but the handle is stable across frames
-                    // once created, so we write it once and then again defensively.
-                    // Skip the dispatch entirely when no TLAS is available
-                    // for this frame (RT unsupported or scene-load not yet
-                    // settled). Mirrors the shader's `sceneFlags.x < 0.5`
-                    // early-out — pre-#640 the dispatch ran every frame
-                    // regardless and the shader paid full ray-query cost
-                    // against unwritten / stale TLAS state.
-                    let tlas_handle = self
-                        .accel_manager
-                        .as_ref()
-                        .and_then(|accel| accel.tlas_handle(frame));
-                    if let Some(tlas) = tlas_handle {
+            let Some(ref mut caustic) = self.caustic else {
+                return;
+            };
+            // Bind this frame's TLAS before dispatch — the AccelerationManager
+            // rebuilds/refits per frame but the handle is stable across frames
+            // once created, so we write it once and then again defensively.
+            // Skip the dispatch entirely when no TLAS is available for this
+            // frame (RT unsupported or scene-load not yet settled). Mirrors
+            // the shader's `sceneFlags.x < 0.5` early-out — pre-#640 the
+            // dispatch ran every frame regardless and the shader paid full
+            // ray-query cost against unwritten / stale TLAS state.
+            let ran = if !self.caustic_failed {
+                let tlas_handle = self
+                    .accel_manager
+                    .as_ref()
+                    .and_then(|accel| accel.tlas_handle(frame));
+                match tlas_handle {
+                    Some(tlas) => {
                         caustic.write_tlas(&self.device, frame, tlas);
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_caustic_splat_start(&self.device, cmd, frame);
@@ -338,14 +343,32 @@ impl VulkanContext {
                         if let Some(ref mut timers) = self.gpu_timers {
                             timers.cmd_caustic_splat_end(&self.device, cmd, frame);
                         }
-                        if let Err(e) = caustic_result {
-                            log::error!(
-                                "Caustic dispatch failed — pass disabled for the rest of the session: {e}"
-                            );
-                            self.caustic_failed = true;
+                        match caustic_result {
+                            Ok(()) => true,
+                            Err(e) => {
+                                log::error!(
+                                    "Caustic dispatch failed — pass disabled for the rest of the session: {e}"
+                                );
+                                self.caustic_failed = true;
+                                false
+                            }
                         }
                     }
+                    None => false,
                 }
+            } else {
+                false
+            };
+            // #2507 — skipped this frame (permanent failure latch, or no
+            // TLAS yet)? Clear once per frame-slot so composite's
+            // unconditional `causticTex` sample degrades to black instead
+            // of re-compositing a frozen, camera-motion-blind accumulator
+            // pattern every subsequent frame. See `caustic_skip_clear_decision`.
+            let (should_clear, next_latch) =
+                caustic_skip_clear_decision(ran, self.caustic_cleared_on_skip[frame]);
+            self.caustic_cleared_on_skip[frame] = next_latch;
+            if should_clear {
+                caustic.clear_for_skip(&self.device, cmd, frame);
             }
         }
     }
@@ -908,5 +931,64 @@ impl VulkanContext {
                 timers.cmd_presentation_end(&self.device, cmd, frame);
             }
         }
+    }
+}
+
+/// Pure decision for [`VulkanContext::record_caustic_splat_pass`]'s
+/// post-dispatch latch update — whether this frame's caustic accumulator
+/// slot needs a skip-clear, and the latch's value going into the next
+/// frame. Split out so the state machine is unit-testable without a live
+/// Vulkan device (#2507), matching the `acceleration::predicates`
+/// convention.
+///
+/// - `ran`: did a real caustic dispatch execute (and succeed) this frame?
+/// - `already_cleared`: was this frame-slot's latch already set from a
+///   prior skip earlier in the same streak?
+///
+/// Returns `(should_clear, next_latch)`.
+fn caustic_skip_clear_decision(ran: bool, already_cleared: bool) -> (bool, bool) {
+    if ran {
+        // Fresh content just landed — the next skip (if any) must clear
+        // again rather than trust a latch left over from before this
+        // dispatch ran.
+        (false, false)
+    } else if already_cleared {
+        // Already skip-cleared earlier in this streak; clearing an
+        // already-zero slot every frame is correct but wasteful.
+        (false, true)
+    } else {
+        // First skip of a new streak — clear once.
+        (true, true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::caustic_skip_clear_decision;
+
+    /// A real dispatch running must never trigger a clear, and must reset
+    /// the latch so a later skip streak clears fresh.
+    #[test]
+    fn dispatch_ran_never_clears_and_resets_latch() {
+        assert_eq!(caustic_skip_clear_decision(true, false), (false, false));
+        assert_eq!(
+            caustic_skip_clear_decision(true, true),
+            (false, false),
+            "a real dispatch must reset a stale latch from a prior streak"
+        );
+    }
+
+    /// The first skip of a new streak (latch not yet set) must clear.
+    #[test]
+    fn first_skip_of_a_streak_clears() {
+        assert_eq!(caustic_skip_clear_decision(false, false), (true, true));
+    }
+
+    /// A subsequent skip in the same streak (latch already set) must NOT
+    /// clear again — #2507's fix must not degrade into clearing every
+    /// frame while genuinely skipped.
+    #[test]
+    fn subsequent_skip_in_same_streak_does_not_reclear() {
+        assert_eq!(caustic_skip_clear_decision(false, true), (false, true));
     }
 }

@@ -1437,12 +1437,22 @@ pub struct VulkanContext {
     /// [`Self::signal_temporal_discontinuity`]. Schied 2017 §4 floor
     /// (0.2) takes over once the counter reaches 0. See #674 / DEN-4.
     pub svgf_recovery_frames: u32,
-    /// Same latch for the caustic scatter pass. Composite keeps
-    /// sampling the stale accumulator; on the failure mode the
-    /// caustic contribution is at most one frame stale for the rest
-    /// of the session — a visible-but-non-destructive degradation.
-    /// See #479 SIBLING.
+    /// Same latch for the caustic scatter pass. Unlike SVGF/TAA's
+    /// "keeps sampling stale content" degradation, the caustic skip path
+    /// (this latch, or a frame with no TLAS yet) explicitly clears its
+    /// accumulator slot instead — see [`Self::caustic_cleared_on_skip`]
+    /// and #2507. See #479 SIBLING.
     pub caustic_failed: bool,
+    /// Per-frame-in-flight latch: `true` once this slot's caustic
+    /// accumulator has been cleared for the current skip streak (#2507).
+    /// Composite samples `causticTex` with no validity gate, so a skipped
+    /// dispatch (TLAS absent, or `caustic_failed`) must clear the slot
+    /// rather than leave its last-written, camera-motion-blind contents
+    /// to be re-composited every subsequent frame. Reset to `false` the
+    /// moment a real dispatch runs (so the *next* skip streak clears
+    /// again) and on resize (fresh slot images, stale latch state would
+    /// otherwise skip the needed post-resize clear).
+    pub caustic_cleared_on_skip: [bool; MAX_FRAMES_IN_FLIGHT],
     pipeline_cache: vk::PipelineCache,
     /// Opaque pipeline (depth write on, no blend). Two-sided rendering
     /// uses dynamic `cmd_set_cull_mode` per draw, not a separate
@@ -2589,12 +2599,17 @@ impl VulkanContext {
             }
         };
         // #1257 / Phase E of #1210 — water-side caustic sampled views.
-        // None on init failure → use the existing causticAccum views
-        // as a degenerate fallback so binding 8 has a valid resource.
-        // This is safe: water.frag's writes go to a NEVER-bound image
-        // when the accumulator failed init, so composite at binding 8
-        // reads the same all-zero causticAccum (which is correct for
-        // "no water caustics this session").
+        // None on init failure → alias the existing glass-caustic
+        // (`caustic_views`) sampled views so binding 8 has a *valid*
+        // resource (the descriptor write itself would be undefined
+        // otherwise) — but this is NOT a zero source: `caustic_splat.comp`
+        // writes `caustic_views`' backing images every frame for glass/
+        // MultiLayerParallax refractors, so composite would otherwise
+        // double-count that contribution at binding 8. `caustic_flags.x`
+        // (set from `water_caustic_accum.is_some()` each frame, see
+        // `draw.rs::build_composite_params`) gates the read in
+        // `composite.frag` so the aliased view is never actually sampled
+        // on this fallback path. #2508.
         let water_caustic_views: Vec<vk::ImageView> = match water_caustic_accum {
             Some(ref a) => (0..super::sync::MAX_FRAMES_IN_FLIGHT)
                 .map(|i| a.sampled_view(i))
@@ -2823,6 +2838,7 @@ impl VulkanContext {
             svgf_failed: false,
             svgf_recovery_frames: 0,
             caustic_failed: false,
+            caustic_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
             depth_allocation: Some(depth_allocation),
             depth_image,
             depth_image_view,
@@ -3225,6 +3241,23 @@ impl VulkanContext {
             stats.gpu_volumetrics_ms = snap.volumetrics_ms;
             stats.gpu_upscale_ms = snap.upscale_ms;
             stats.gpu_presentation_ms = snap.presentation_ms;
+            // #2513 / REN-D20-NEW-03 — copy the "did this bracket actually
+            // run" flags too, closing the gap #2278 opened at the producer
+            // but nothing downstream ever read.
+            stats.gpu_skin_dispatch_active = snap.skin_dispatch_active;
+            stats.gpu_skin_blas_refit_active = snap.skin_blas_refit_active;
+            stats.gpu_taa_active = snap.taa_active;
+            stats.gpu_main_render_active = snap.main_render_active;
+            stats.gpu_tlas_build_active = snap.tlas_build_active;
+            stats.gpu_cluster_cull_active = snap.cluster_cull_active;
+            stats.gpu_svgf_active = snap.svgf_active;
+            stats.gpu_composite_active = snap.composite_active;
+            stats.gpu_ssao_active = snap.ssao_active;
+            stats.gpu_bloom_active = snap.bloom_active;
+            stats.gpu_caustic_splat_active = snap.caustic_splat_active;
+            stats.gpu_volumetrics_active = snap.volumetrics_active;
+            stats.gpu_upscale_active = snap.upscale_active;
+            stats.gpu_presentation_active = snap.presentation_active;
         } else {
             stats.gpu_skin_dispatch_ms = 0.0;
             stats.gpu_skin_blas_refit_ms = 0.0;
@@ -3240,6 +3273,22 @@ impl VulkanContext {
             stats.gpu_volumetrics_ms = 0.0;
             stats.gpu_upscale_ms = 0.0;
             stats.gpu_presentation_ms = 0.0;
+            // No `GpuPerFrameTimers` at all (driver lacks timestamp
+            // support) — every bracket is inactive, not just zero.
+            stats.gpu_skin_dispatch_active = false;
+            stats.gpu_skin_blas_refit_active = false;
+            stats.gpu_taa_active = false;
+            stats.gpu_main_render_active = false;
+            stats.gpu_tlas_build_active = false;
+            stats.gpu_cluster_cull_active = false;
+            stats.gpu_svgf_active = false;
+            stats.gpu_composite_active = false;
+            stats.gpu_ssao_active = false;
+            stats.gpu_bloom_active = false;
+            stats.gpu_caustic_splat_active = false;
+            stats.gpu_volumetrics_active = false;
+            stats.gpu_upscale_active = false;
+            stats.gpu_presentation_active = false;
         }
         stats.slots_active = self.skin_slots.len() as u32;
         stats.slot_pool_capacity = if self.skin_compute.is_some() {

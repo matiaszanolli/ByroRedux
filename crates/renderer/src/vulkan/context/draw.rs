@@ -533,6 +533,9 @@ struct CompositeParamsInputs<'a> {
     render_origin: byroredux_core::math::Vec3,
     inv_vp_arr: [[f32; 4]; 4],
     underwater: [f32; 4],
+    /// Whether `water_caustic_accum` is genuinely live this session — see
+    /// `CompositeParams::caustic_flags` (#2508).
+    water_caustic_active: bool,
 }
 
 /// Assemble this frame's `CompositeParams` (#2255 / TD1-NEW-02, extracted
@@ -561,6 +564,7 @@ fn build_composite_params(
         render_origin,
         inv_vp_arr,
         underwater,
+        water_caustic_active,
     } = inputs;
     super::super::composite::CompositeParams {
         fog_color: [
@@ -710,6 +714,12 @@ fn build_composite_params(
         ],
         inv_view_proj: inv_vp_arr,
         underwater,
+        caustic_flags: [
+            if water_caustic_active { 1.0 } else { 0.0 },
+            0.0,
+            0.0,
+            0.0,
+        ],
     }
 }
 
@@ -751,6 +761,7 @@ mod composite_params_tests {
             render_origin: byroredux_core::math::Vec3::new(1.0, 2.0, 3.0),
             inv_vp_arr: [[0.0; 4]; 4],
             underwater: [0.1, 0.2, 0.3, 0.4],
+            water_caustic_active: true,
         });
 
         // `fog_params` carries near/far/clip/power in that exact order —
@@ -773,6 +784,41 @@ mod composite_params_tests {
             [10.0 - 1.0, 20.0 - 2.0, 30.0 - 3.0, 50.0 - 2.0]
         );
         assert_eq!(params.underwater, [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(
+            params.caustic_flags[0], 1.0,
+            "water_caustic_active must map through to caustic_flags.x"
+        );
+    }
+
+    /// Regression for #2508: `water_caustic_active: false` must map to
+    /// `caustic_flags.x == 0.0` — the fallback state `composite.frag`
+    /// gates the water-caustic sum on, so it doesn't double-count the
+    /// glass caustic contribution when `waterCausticTex` is aliased to
+    /// `causticTex`.
+    #[test]
+    fn water_caustic_inactive_maps_to_zero_caustic_flag() {
+        let sky_params = SkyParams::default();
+        let params = build_composite_params(CompositeParamsInputs {
+            fog_color: [0.0; 3],
+            fog_near: 0.0,
+            fog_far: 0.0,
+            fog_extinction_per_meter: 0.0,
+            fog_single_scatter_albedo: 0.0,
+            fog_clip: 0.0,
+            fog_power: 0.0,
+            fog_height_reference: 0.0,
+            sky_params: &sky_params,
+            exposure_value: 0.0,
+            frame_counter: 0,
+            volume_far_distance: 0.0,
+            froxel_slice_count: 0.0,
+            camera_pos: [0.0; 3],
+            render_origin: byroredux_core::math::Vec3::ZERO,
+            inv_vp_arr: [[0.0; 4]; 4],
+            underwater: [0.0; 4],
+            water_caustic_active: false,
+        });
+        assert_eq!(params.caustic_flags[0], 0.0);
     }
 }
 
@@ -2801,6 +2847,7 @@ impl VulkanContext {
                 render_origin,
                 inv_vp_arr,
                 underwater,
+                water_caustic_active: self.water_caustic_accum.is_some(),
             });
             if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
                 log::warn!("composite upload_params failed: {e}");

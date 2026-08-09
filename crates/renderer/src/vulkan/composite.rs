@@ -134,6 +134,15 @@ pub struct CompositeParams {
     /// to `presentation.frag`'s `underwater` field (same packing),
     /// which owns the live `params.underwater.w > 0.0` mix branch.
     pub underwater: [f32; 4],
+    /// `x` = water-side caustic accumulator (binding 8, `waterCausticTex`)
+    /// is genuinely live this frame (`1.0`) vs. absent and fallback-bound
+    /// to the glass/MultiLayerParallax accumulator's own view (`0.0`) —
+    /// `water_caustic_accum` failed to allocate at init or a resize (VRAM
+    /// pressure). In the fallback case binding 8 aliases binding 5
+    /// (`causticTex`), so summing both would double-count the glass
+    /// contribution instead of contributing zero; `composite.frag` gates
+    /// the sum on this flag. `yzw` reserved. #2508.
+    pub caustic_flags: [f32; 4],
 }
 
 /// HDR color format. RGBA16F = 8 bytes/pixel, sufficient dynamic range
@@ -1696,10 +1705,15 @@ mod composite_params_layout_tests {
         // `composite.frag` UBO block. See `composite.frag` end-of-
         // shader underwater branch.
         assert_eq!(offset_of!(CompositeParams, underwater), 304);
+        // caustic_flags — appended after underwater (#2508). Same
+        // lockstep contract: adding a new vec4 here bumps the asserted
+        // total by 16 and adds a matching `vec4 caustic_flags;`
+        // declaration in the `composite.frag` UBO block.
+        assert_eq!(offset_of!(CompositeParams, caustic_flags), 320);
         assert_eq!(
             size_of::<CompositeParams>(),
-            304 + 16,
-            "CompositeParams must be 320 bytes (16 × vec4 + mat4)"
+            320 + 16,
+            "CompositeParams must be 336 bytes (17 × vec4 + mat4)"
         );
     }
 

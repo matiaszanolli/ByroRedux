@@ -318,6 +318,28 @@ pub(crate) fn setup_cornell_scene(
             &format!("metalness_bsdf_{i}"),
         );
     }
+    // #2514 / REN-D21-2026-08-07-02 — one row further back, sweeping
+    // subsurface/sheen/sheen_tint/anisotropic together from 0 → 1 at a
+    // fixed moderate metalness/roughness (same 0.35 as the row above, for
+    // the same "diffuse end doesn't get swamped by a sharp reflection"
+    // reason). Before this probe, no entity the harness could produce
+    // ever drove these four scalars off `Material::default()`'s zero —
+    // `disneyDiffuseSplit` always degenerated back to Burley-only even
+    // with `MAT_FLAG_PBR_BSDF` set. Sweep with `mat.set <id> subsurface
+    // <v>` / `sheen <v>` / `sheen_tint <v>` / `anisotropic <v>` to isolate
+    // one lobe at a time.
+    for (i, &x) in xs.iter().enumerate() {
+        let t = i as f32 / (xs.len() - 1) as f32;
+        spawn_object(
+            world,
+            probe,
+            neutral,
+            Vec3::new(x, 0.45, 5.7),
+            Quat::IDENTITY,
+            pbr_bsdf_lobes([0.9, 0.85, 0.55], 0.5, 0.35, t, t, t, t),
+            &format!("bsdf_lobes_{i}"),
+        );
+    }
 
     // ── Glass probes ────────────────────────────────────────────────
     // Glass is OPAQUE (no AlphaBlend): the IOR refraction ray IS the
@@ -500,6 +522,32 @@ fn pbr_bsdf(color: [f32; 3], metalness: f32, roughness: f32) -> Material {
     let mut material = pbr(color, metalness, roughness);
     material.effect_shader_flags |=
         byroredux_renderer::vulkan::material::material_flag::PBR_BSDF;
+    material
+}
+
+/// [`pbr_bsdf`] sibling that also drives the four Disney lobe scalars no
+/// source format authors — `subsurface`/`sheen`/`sheen_tint`/
+/// `anisotropic` — so a probe on this constructor actually exercises
+/// `disneyDiffuseSplit`'s distinguishing parameters instead of running it
+/// with all three pinned at zero (degenerating back toward Burley-only).
+/// #2514 / REN-D21-2026-08-07-02 — the enabling half of the
+/// REN-D21-2026-08-07-01 gap: even with `MAT_FLAG_PBR_BSDF` set, no CPU
+/// producer could reach these fields before this constructor + the
+/// matching `mat.set` arms.
+fn pbr_bsdf_lobes(
+    color: [f32; 3],
+    metalness: f32,
+    roughness: f32,
+    subsurface: f32,
+    sheen: f32,
+    sheen_tint: f32,
+    anisotropic: f32,
+) -> Material {
+    let mut material = pbr_bsdf(color, metalness, roughness);
+    material.subsurface = subsurface;
+    material.sheen = sheen;
+    material.sheen_tint = sheen_tint;
+    material.anisotropic = anisotropic;
     material
 }
 
@@ -947,5 +995,42 @@ mod tests {
         assert_eq!(bsdf.metalness, plain.metalness);
         assert_eq!(bsdf.roughness, plain.roughness);
         assert_eq!(bsdf.diffuse_color, plain.diffuse_color);
+    }
+
+    /// Regression for #2514 (REN-D21-2026-08-07-02): every OTHER Cornell
+    /// material constructor — including `pbr_bsdf` itself — leaves
+    /// `subsurface`/`sheen`/`sheen_tint`/`anisotropic` at
+    /// `Material::default()`'s zero, so `disneyDiffuseSplit` runs with all
+    /// three distinguishing parameters pinned off even when
+    /// `MAT_FLAG_PBR_BSDF` is set. `pbr_bsdf_lobes` must drive all four
+    /// non-zero while still setting the flag and preserving `pbr_bsdf`'s
+    /// metalness/roughness/color plumbing.
+    #[test]
+    fn pbr_bsdf_lobes_material_drives_all_four_disney_scalars() {
+        use byroredux_renderer::vulkan::material::material_flag::PBR_BSDF;
+
+        // Every other constructor, `pbr_bsdf` included: all four lobes
+        // stay at zero (the pre-#2514 state).
+        assert_eq!(matte(WHITE).subsurface, 0.0);
+        let plain_bsdf = pbr_bsdf([0.9, 0.85, 0.55], 0.5, 0.35);
+        assert_eq!(plain_bsdf.subsurface, 0.0);
+        assert_eq!(plain_bsdf.sheen, 0.0);
+        assert_eq!(plain_bsdf.sheen_tint, 0.0);
+        assert_eq!(plain_bsdf.anisotropic, 0.0);
+
+        let lobes = pbr_bsdf_lobes([0.9, 0.85, 0.55], 0.5, 0.35, 0.4, 0.3, 0.2, 0.1);
+        assert_eq!(lobes.subsurface, 0.4);
+        assert_eq!(lobes.sheen, 0.3);
+        assert_eq!(lobes.sheen_tint, 0.2);
+        assert_eq!(lobes.anisotropic, 0.1);
+        assert_ne!(
+            lobes.effect_shader_flags & PBR_BSDF,
+            0,
+            "pbr_bsdf_lobes must still set MAT_FLAG_PBR_BSDF — driving the \
+             lobe scalars without it would silently no-op (#2477)"
+        );
+        assert_eq!(lobes.metalness, plain_bsdf.metalness);
+        assert_eq!(lobes.roughness, plain_bsdf.roughness);
+        assert_eq!(lobes.diffuse_color, plain_bsdf.diffuse_color);
     }
 }

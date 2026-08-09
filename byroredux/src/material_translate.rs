@@ -212,6 +212,14 @@ pub(crate) fn translate_material(
         // Glass promotion below replaces the ordinary value with the shared
         // glass IOR while preserving source texture overlays.
         ior: material_optical_scalar(source.material_kind, source.refraction_strength),
+        // #2514 — Disney-BSDF-only parameters with no source-format
+        // equivalent (no BGSM/BGEM/inline-NIF field maps to them); zero
+        // matches `Material::default()`'s Burley/isotropic-only fallback.
+        // Reachable only via `mat.set` (Cornell harness).
+        subsurface: 0.0,
+        sheen: 0.0,
+        sheen_tint: 0.0,
+        anisotropic: 0.0,
     };
     material.resolve_pbr();
     crate::helpers::classify_glass_into_material(

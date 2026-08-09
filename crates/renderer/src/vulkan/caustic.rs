@@ -896,6 +896,80 @@ impl CausticPipeline {
         Ok(())
     }
 
+    /// One-shot clear of `slots[frame]` to zero for a frame where
+    /// [`Self::dispatch`] is skipped entirely (TLAS absent, or the pass has
+    /// permanently failed) — #2507. Composite unconditionally samples
+    /// `causticTex` with no validity gate, so without this the
+    /// accumulator's last-written contents (a screen-space pattern that
+    /// does NOT track camera motion, since it's built from a fixed
+    /// viewpoint) would be re-composited every subsequent frame instead of
+    /// degrading to "no caustics" (black). Callers should latch this to
+    /// once per skip streak per frame-slot — clearing an already-zero slot
+    /// every frame is correct but wasteful.
+    ///
+    /// Ends with the same GENERAL/`SHADER_READ` state [`Self::dispatch`]'s
+    /// final barrier leaves the slot in, so composite's subsequent sample
+    /// sees a consistent state either way.
+    ///
+    /// # Safety
+    /// `cmd` must be in the recording state (outside a render pass) at the
+    /// same command-buffer position `dispatch` would have run from — i.e.
+    /// after the main render pass ends and before composite reads the
+    /// accumulator.
+    pub unsafe fn clear_for_skip(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+        let slot_img = self.slots[frame].image;
+        let clear_range = super::descriptors::color_subresource_single_mip();
+        // Same over-specified wait stages `dispatch`'s moving-camera clear
+        // uses: the slot's prior use was either this pipeline's own
+        // compute-write + composite's fragment-read (steady state), or
+        // GENERAL-but-untouched from `initialize_layouts` (frame 0 / just
+        // after resize) — safe either way.
+        let pre_clear_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(slot_img)
+            .subresource_range(clear_range);
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[pre_clear_barrier],
+        );
+        let clear_value = vk::ClearColorValue {
+            uint32: [0, 0, 0, 0],
+        };
+        device.cmd_clear_color_image(
+            cmd,
+            slot_img,
+            vk::ImageLayout::GENERAL,
+            &clear_value,
+            &[clear_range],
+        );
+        // TRANSFER → FRAGMENT directly (no compute dispatch follows this
+        // clear, unlike `dispatch`'s TRANSFER → COMPUTE mid-barrier).
+        let post_clear_barrier = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .image(slot_img)
+            .subresource_range(clear_range);
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[post_clear_barrier],
+        );
+    }
+
     /// Recreate accumulator images and rewrite descriptor sets on resize.
     ///
     /// Self-contained per #1031 / REN-D10-NEW-11: fresh slot images
