@@ -211,12 +211,13 @@ fn multi_partition_remap_picks_correct_global_per_vertex() {
     );
 }
 
-/// Single-partition shapes still take the identity-widen fast
-/// path: partition-local indices coincide with global indices
-/// because the partition's `bones` palette is the full skin list.
-/// Locks the no-regression case.
+/// Regression for #2577 / SK-D1-02: a single partition can still use
+/// a non-identity subset of the global bone list. This mirrors the
+/// palette shape in `facegeom\\skyrim.esm\\00067667.nif`, where local
+/// slot 2 means global bone 3. The old partition-count shortcut widened
+/// slot 2 directly and bound the vertex to the wrong bone.
 #[test]
-fn single_partition_shape_widens_indices_directly() {
+fn single_partition_shape_remaps_non_identity_palette() {
     let bone_node = || -> Box<dyn crate::blocks::NiObject> {
         Box::new(NiNode {
             av: NiAVObjectData {
@@ -261,7 +262,7 @@ fn single_partition_shape_widens_indices_directly() {
         vertex_colors: Vec::new(),
         triangles: Vec::new(),
         bone_weights: vec![[1.0, 0.0, 0.0, 0.0]],
-        bone_indices: vec![[3, 0, 0, 0]],
+        bone_indices: vec![[2, 0, 0, 0]],
         tangents: Vec::new(),
         kind: BsTriShapeKind::Plain,
         data_size: 0,
@@ -271,12 +272,20 @@ fn single_partition_shape_widens_indices_directly() {
         data_ref: BlockRef(2),
         skin_partition_ref: BlockRef(3),
         skeleton_root_ref: BlockRef::NULL,
-        bone_refs: vec![BlockRef(5), BlockRef(6), BlockRef(7), BlockRef(8)],
+        bone_refs: vec![
+            BlockRef(4),
+            BlockRef(5),
+            BlockRef(6),
+            BlockRef(7),
+            BlockRef(8),
+            BlockRef(9),
+            BlockRef(10),
+        ],
     };
 
     let skin_data = NiSkinData {
         skin_transform: NiTransform::default(),
-        bones: (0..4)
+        bones: (0..7)
             .map(|_| crate::blocks::skin::BoneData {
                 skin_transform: NiTransform::default(),
                 bounding_sphere: [0.0; 4],
@@ -289,9 +298,9 @@ fn single_partition_shape_widens_indices_directly() {
         partitions: vec![SkinPartitionEntry {
             num_vertices: 1,
             num_triangles: 0,
-            // Single partition → bones palette is identity over
-            // the global bone list. Indices already match.
-            bones: vec![0, 1, 2, 3],
+            // Vanilla FaceGen-style subset: local slot 2 maps to
+            // global bone 3 rather than widening to global bone 2.
+            bones: vec![0, 1, 3, 4, 5, 6],
             num_weights_per_vertex: 4,
             vertex_map: vec![0],
             vertex_weights: Vec::new(),
@@ -311,11 +320,12 @@ fn single_partition_shape_widens_indices_directly() {
     scene.blocks.push(bone_node()); // 6
     scene.blocks.push(bone_node()); // 7
     scene.blocks.push(bone_node()); // 8
+    scene.blocks.push(bone_node()); // 9
+    scene.blocks.push(bone_node()); // 10
 
     let shape_ref = scene.get_as::<BsTriShape>(0).unwrap();
     let skin = extract_skin_bs_tri_shape(&scene, shape_ref).unwrap();
-    // [3, 0, 0, 0] u8 widens to [3, 0, 0, 0] u16 — single-partition
-    // identity. No remap surprise.
+    // Local slot 2 resolves through [0, 1, 3, 4, 5, 6].
     assert_eq!(skin.vertex_bone_indices[0], [3u16, 0, 0, 0]);
 }
 

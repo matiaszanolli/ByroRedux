@@ -349,9 +349,9 @@ pub fn extract_skin_bs_geometry(
 ///
 /// When the partition table is missing or the inverse map is
 /// incomplete (synthetic / mod content), fall back to widening the
-/// raw u8 to u16 — same behaviour as pre-#613 single-partition
-/// shapes, which were correct because partition-local and global
-/// indices coincide when there's only one partition with all bones.
+/// raw u8 to u16. Even a single partition must still consult its
+/// palette: vanilla SSE FaceGen meshes can use a non-identity subset
+/// of the global bone list (#2577).
 pub fn remap_bs_tri_shape_bone_indices(
     scene: &NifScene,
     shape: &BsTriShape,
@@ -362,9 +362,7 @@ pub fn remap_bs_tri_shape_bone_indices(
     }
 
     // Identity widen — the safe fallback used when no partition
-    // table is available. Single-partition shapes work fine here:
-    // partition-local indices already match the global palette
-    // because the partition's `bones` palette is the full bone list.
+    // table is available or a vertex is absent from every map.
     let widen = |slot: u8| slot as u16;
     let identity_remap = || -> Vec<[u16; 4]> {
         bone_indices
@@ -390,13 +388,6 @@ pub fn remap_bs_tri_shape_bone_indices(
     else {
         return identity_remap();
     };
-    if partition.partitions.len() <= 1 {
-        // Single-partition shapes don't need remapping: the
-        // partition's bones palette covers the full skin list and
-        // partition-local indices == global indices. Skip the work.
-        return identity_remap();
-    }
-
     // Build inverse map: global_vertex_idx → (partition_idx). Each
     // partition's `vertex_map[local_i] = global_v` describes which
     // BsTriShape vertex slot the partition-local position points at.
