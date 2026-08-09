@@ -24,6 +24,84 @@ Commits hold that record.
 
 ---
 
+## Session 64 — 13-dimension audit sweep + ~95-issue bug-bash across renderer/NIF/physics/save, three feature completions  (2026-08-07 → 2026-08-09, `626614a1..2e5912f5`, 41 commits)
+
+Session 64 opened by finishing three in-flight feature threads — Skyrim's
+day/night cycle, the quest lifecycle + alias runtime, and PHYSAL's
+packed-Havok collision compatibility — then ran a full 13-dimension
+`/audit-suite` sweep (2026-08-07: renderer, NIF, NIFAL, ECS, save,
+scripting, safety, concurrency, performance, audio, SpeedTree, tech-debt,
+per-game compat) that staged roughly a hundred findings as GitHub issues.
+The remainder of the session (2026-08-07 → 08-09) worked through ~95 of
+them via two dozen back-to-back four-issue `/fix-issue` batches — the
+largest single-session issue-closing sweep to date.
+
+- **Feature completions (pre-audit).** Skyrim's day/night cycle closed out
+  (`7a851ab9`); the quest lifecycle + alias runtime reached completion,
+  including `quest.show`/`quest.aliases` runtime observability
+  (`a844c26b`/`0775df28`); PHYSAL's packed-Havok compatibility layer
+  landed — `CollisionAuthoringSummary` census + a conservative
+  `PackedAabbProxy` fallback for Clutter/Actor content authored via
+  `BhkNPCollisionObject`/`BhkSystemBinary` (Starfield/FO4/FO76's entire
+  collision format), closing the "no collider at all" gap later confirmed
+  by #2355.
+- **Renderer bug-bash (~11 four-issue batches).** G-buffer color formats
+  now format-feature-queried like depth (#2502); `record_post_passes`
+  made structurally infallible, deleting a dead recovery branch that
+  contradicted the #2146 invariant (#2503); a failed indirect-draw upload
+  now forces the direct-draw fallback instead of risking a stale-buffer
+  GPU read (#2504); water/UI `expect()` panics inside the open render
+  pass replaced with graceful skips (#2505); the caustic EMA decay pass
+  gained the same stochastic rounding the deposit path already had
+  (#2506); water's textured-normal UV precision fixed against large-world
+  `freqScale` amplification (#2496); a BLAS-overwrite leak and an
+  FSR-failure TAA-promotion gap closed (#2478–#2481); Starfield shader
+  struct alignment and CDB safety hardened (#2613–#2616); plus a long
+  tail of doc-drift fixes (FSR-mask, material-hash, TBN sign, Disney BSDF
+  lobe plumbing) across #2469–#2472, #2474–#2477, #2491–#2501,
+  #2507–#2514, #2617–#2620.
+- **NIF/NIFAL correctness + doc sweep (7 batches).** KF Euler sign and
+  XTEL rotation-mode bypass fixed with a coordinate cross-check
+  (#2434–#2437); a clip-handle leak, NIF bulk-read idiom, and skinned
+  Havok proxy hardened (#2524–#2531); legacy-particle version gating and
+  hierarchical billboard propagation corrected (#2526–#2529); BA2 header
+  doc drift closed with new test coverage, plus BSGeometry LOD-slot and
+  tangent-normalization fixes (#2629–#2632); Starfield's NIFAL particle
+  and collision slices formally documented as N/A / already-closed
+  respectively, with a corpus-baseline test guarding the particle claim
+  (#2354, #2355); BSGeometry's silent external-`.mesh`-resolve failure
+  (the exact #1292 failure shape) now logs on all three exit paths
+  (#2357); and a `skyrim_se` `bench_draws_batches` regression report
+  (#2351) was investigated and confirmed non-reproducing against a
+  60-hour-old baseline regen and the 2026-08-07 runtime audit, not fixed.
+- **Physics/collision hardening.** `synthesize_packed_havok_proxy`'s
+  unclamped REFR scale could reach Rapier as an effectively-infinite
+  cuboid on a large-but-finite or overflowed scale; clamped to the
+  existing RT-precision ceiling with a real runtime check backing the
+  prior debug-only assert (#2543).
+- **Save/scripting/audio.** Save-side `EntityId`/type-coverage guards and
+  a `Quest.Start()` mis-lowering fixed (#2535–#2538); a skin-dispatch
+  rollback-on-`Err` bug and a size-aware `allocate_vec` closed (#2522,
+  #2523); a shared reverb-send gate helper extracted in audio dispatch
+  (#2405).
+- **Tech debt.** TD8 dead-code sweep removed four unused dependencies
+  (#2426–#2429); a further doc/baseline/tech-debt cleanup batch closed
+  (#2558–#2561).
+
+Net: tests 4372 → **4532** (+160, 132 ignored unchanged), full workspace
+green, zero new warnings; Rust total LOC ~353 415 → **~368 673** (+15 258);
+source files 793 → **859** (738 → 803 outside `tests/` dirs); workspace
+members unchanged at 27; ~95 issues closed. Bench-of-record (`28155b79`,
+2026-08-04) is now **79 commits stale** — folding Session 63's 37-commit
+drift (R6a-stale-19, filed but not re-run) with this session's 42 more.
+Unlike Session 63, this session landed real renderer-hot-path changes
+(fragment/compute shader edits, BLAS/TLAS acceleration-structure code,
+per-frame draw-recording changes) — R6a-stale-19 is amended in place
+(per its own fold-don't-duplicate instruction) rather than closed, now
+flagged higher-urgency for a re-run at the next opportunity.
+
+---
+
 ## Session 63 — Renderer audit bug-bash, exterior streaming resumability, save/load registry completeness, sandboxed mod runtime, and a 36-issue NIFAL dedup/doc sweep  (2026-08-01 → 2026-08-07, `b00a8902..03be068d`, 95 commits)
 
 A long, multi-threaded session with no single planned arc: a 2026-08-02
