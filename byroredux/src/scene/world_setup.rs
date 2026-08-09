@@ -927,6 +927,9 @@ mod tests {
         world.insert_resource(mk_weather(60000.0, 0));
         collapse_weather_transition(&mut world);
         let wd = world.try_resource::<WeatherDataRes>().unwrap();
-        assert_eq!(wd.fog[1], 60000.0, "an untouched WeatherDataRes must be left as-is");
+        assert_eq!(
+            wd.fog[1], 60000.0,
+            "an untouched WeatherDataRes must be left as-is"
+        );
     }
 }

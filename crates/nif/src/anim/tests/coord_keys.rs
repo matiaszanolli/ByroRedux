@@ -95,10 +95,22 @@ fn convert_xyz_euler_keys_90_deg_x_matches_cw_positive_sign() {
     // uses, applied to the same (rx=FRAC_PI_2, ry=0, rz=0) input.
     let expected = byroredux_core::math::coord::euler_zup_to_quat_yup(FRAC_PI_2, 0.0, 0.0);
     let got = keys[0].value; // [x, y, z, w], glam order
-    assert!((got[0] - expected.x).abs() < 1e-5, "x: got {got:?}, expected {expected:?}");
-    assert!((got[1] - expected.y).abs() < 1e-5, "y: got {got:?}, expected {expected:?}");
-    assert!((got[2] - expected.z).abs() < 1e-5, "z: got {got:?}, expected {expected:?}");
-    assert!((got[3] - expected.w).abs() < 1e-5, "w: got {got:?}, expected {expected:?}");
+    assert!(
+        (got[0] - expected.x).abs() < 1e-5,
+        "x: got {got:?}, expected {expected:?}"
+    );
+    assert!(
+        (got[1] - expected.y).abs() < 1e-5,
+        "y: got {got:?}, expected {expected:?}"
+    );
+    assert!(
+        (got[2] - expected.z).abs() < 1e-5,
+        "z: got {got:?}, expected {expected:?}"
+    );
+    assert!(
+        (got[3] - expected.w).abs() < 1e-5,
+        "w: got {got:?}, expected {expected:?}"
+    );
 
     // X is invariant under the Z-up→Y-up swap (`zup_to_yup_pos([x,y,z])
     // = (x,z,-y)`), so a pure-X-axis Gamebryo rotation stays on the
@@ -153,10 +165,22 @@ fn convert_xyz_euler_keys_matches_core_sot_for_asymmetric_multi_axis() {
 
     let expected = byroredux_core::math::coord::euler_zup_to_quat_yup(rx, ry, rz);
     let got = keys[0].value;
-    assert!((got[0] - expected.x).abs() < 1e-5, "x: got {got:?}, expected {expected:?}");
-    assert!((got[1] - expected.y).abs() < 1e-5, "y: got {got:?}, expected {expected:?}");
-    assert!((got[2] - expected.z).abs() < 1e-5, "z: got {got:?}, expected {expected:?}");
-    assert!((got[3] - expected.w).abs() < 1e-5, "w: got {got:?}, expected {expected:?}");
+    assert!(
+        (got[0] - expected.x).abs() < 1e-5,
+        "x: got {got:?}, expected {expected:?}"
+    );
+    assert!(
+        (got[1] - expected.y).abs() < 1e-5,
+        "y: got {got:?}, expected {expected:?}"
+    );
+    assert!(
+        (got[2] - expected.z).abs() < 1e-5,
+        "z: got {got:?}, expected {expected:?}"
+    );
+    assert!(
+        (got[3] - expected.w).abs() < 1e-5,
+        "w: got {got:?}, expected {expected:?}"
+    );
 }
 
 #[test]

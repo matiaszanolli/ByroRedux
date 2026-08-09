@@ -407,8 +407,7 @@ pub(crate) fn spawn_lod_water_plane(
     let outer = (super::terrain_lod::LOD_RADIUS_BLOCKS * super::terrain_lod::LOD_BLOCK_CELLS)
         as f32
         * EXTERIOR_CELL_UNITS;
-    let inner =
-        (radius_unload + LOD_WATER_HOLE_MARGIN_CELLS).max(0) as f32 * EXTERIOR_CELL_UNITS;
+    let inner = (radius_unload + LOD_WATER_HOLE_MARGIN_CELLS).max(0) as f32 * EXTERIOR_CELL_UNITS;
     // Cell-grid-index-based Z-up world coordinates (pre-conversion), same
     // convention `spawn_lod_block` uses for its block origin.
     let center_x_zup = player_grid.0 as f32 * EXTERIOR_CELL_UNITS;
@@ -611,7 +610,10 @@ mod tests {
         let (vertices, _) = build_lod_water_frame(2000.0, 500.0, 0.0, 0.0, -1234.5)
             .expect("outer > inner must build a frame");
         for v in &vertices {
-            assert_eq!(v.position[1], -1234.5, "vertex {v:?} must sit at lod_height");
+            assert_eq!(
+                v.position[1], -1234.5,
+                "vertex {v:?} must sit at lod_height"
+            );
         }
     }
 
@@ -654,7 +656,13 @@ mod tests {
     #[test]
     fn translate_lod_water_is_none_when_unauthored() {
         let wrld = byroredux_plugin::esm::cell::WorldspaceRecord::default();
-        assert_eq!(crate::env_translate::translate_lod_water(Some(&wrld)), (None, None));
-        assert_eq!(crate::env_translate::translate_lod_water(None), (None, None));
+        assert_eq!(
+            crate::env_translate::translate_lod_water(Some(&wrld)),
+            (None, None)
+        );
+        assert_eq!(
+            crate::env_translate::translate_lod_water(None),
+            (None, None)
+        );
     }
 }

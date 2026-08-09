@@ -1503,10 +1503,18 @@ mod tests {
         buf.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
         buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         buf.extend_from_slice(&PADDING_BAADFOOD.to_le_bytes());
-        assert_eq!(buf.len() as u64, HEADER_LEN + RECORD_LEN, "record layout drifted");
+        assert_eq!(
+            buf.len() as u64,
+            HEADER_LEN + RECORD_LEN,
+            "record layout drifted"
+        );
 
         buf.extend_from_slice(&compressed);
-        assert_eq!(buf.len() as u64, name_table_offset, "payload placement drifted");
+        assert_eq!(
+            buf.len() as u64,
+            name_table_offset,
+            "payload placement drifted"
+        );
 
         // Name table: one 2-byte-length-prefixed name.
         let name = b"meshes/sfd1_05.nif";
@@ -1514,7 +1522,10 @@ mod tests {
         buf.extend_from_slice(name);
 
         let mut path = std::env::temp_dir();
-        path.push(format!("byroredux_ba2_v3_zlib_literal_{}.ba2", std::process::id()));
+        path.push(format!(
+            "byroredux_ba2_v3_zlib_literal_{}.ba2",
+            std::process::id()
+        ));
         {
             let mut f = std::fs::File::create(&path).expect("create temp BA2");
             f.write_all(&buf).expect("write header");

@@ -755,10 +755,8 @@ fn stratified_sample_spans_multiple_top_level_directories() {
     let sampled = stratified_sample(files, 3);
     assert_eq!(sampled.len(), 3);
 
-    let buckets: std::collections::BTreeSet<String> = sampled
-        .iter()
-        .map(|p| stratification_bucket(p))
-        .collect();
+    let buckets: std::collections::BTreeSet<String> =
+        sampled.iter().map(|p| stratification_bucket(p)).collect();
     assert_eq!(
         buckets,
         std::collections::BTreeSet::from([
@@ -790,10 +788,8 @@ fn flat_truncate_would_have_collapsed_to_one_directory() {
     files.sort();
     files.truncate(3);
 
-    let buckets: std::collections::BTreeSet<String> = files
-        .iter()
-        .map(|p| stratification_bucket(p))
-        .collect();
+    let buckets: std::collections::BTreeSet<String> =
+        files.iter().map(|p| stratification_bucket(p)).collect();
     assert_eq!(
         buckets,
         std::collections::BTreeSet::from(["actors".to_string()]),
@@ -852,5 +848,8 @@ fn stratification_bucket_strips_shared_meshes_root() {
     );
     // A path not rooted under `meshes\` falls back to its own first
     // component instead of being merged into an unrelated bucket.
-    assert_eq!(stratification_bucket("textures\\actors\\dog.dds"), "textures");
+    assert_eq!(
+        stratification_bucket("textures\\actors\\dog.dds"),
+        "textures"
+    );
 }

@@ -37,10 +37,16 @@ fn main() {
     let mut prec_by_bsver: BTreeMap<(u32, bool), usize> = BTreeMap::new();
     let mut files = 0usize;
     let mut parse_fail = 0usize;
-    let limit: usize = std::env::var("LIMIT").ok().and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+    let limit: usize = std::env::var("LIMIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(usize::MAX);
 
     for path in std::env::args().skip(1) {
-        let Ok(arc) = Ba2Archive::open(&path) else { eprintln!("open fail {path}"); continue };
+        let Ok(arc) = Ba2Archive::open(&path) else {
+            eprintln!("open fail {path}");
+            continue;
+        };
         let names: Vec<String> = arc
             .list_files()
             .into_iter()
@@ -49,28 +55,47 @@ fn main() {
             .collect();
         eprintln!("{path}: {} nifs", names.len());
         for name in names.iter().take(limit) {
-            let Ok(bytes) = arc.extract(name) else { continue };
+            let Ok(bytes) = arc.extract(name) else {
+                continue;
+            };
             let scene = match parse_nif(&bytes) {
                 Ok(s) => s,
-                Err(_) => { parse_fail += 1; continue }
+                Err(_) => {
+                    parse_fail += 1;
+                    continue;
+                }
             };
             files += 1;
             recovered += scene.recovered_blocks;
-            if scene.truncated { truncated += 1; }
+            if scene.truncated {
+                truncated += 1;
+            }
             *bsvers.entry(scene.bsver).or_default() += 1;
             for block in scene.blocks.iter() {
                 let tn = block.block_type_name();
                 if tn.starts_with("bhk") || tn.starts_with("Bhk") || tn.starts_with("hk") {
                     *blocktypes.entry(tn.to_string()).or_default() += 1;
                 }
-                let Some(s) = block.as_any().downcast_ref::<BsTriShape>() else { continue };
+                let Some(s) = block.as_any().downcast_ref::<BsTriShape>() else {
+                    continue;
+                };
                 shapes += 1;
                 let attrs = ((s.vertex_desc >> 44) & 0xFFF) as u16;
-                if attrs & VF_VERTEX != 0 { has_vertex += 1; }
-                if attrs & VF_SKINNED != 0 { skinned += 1; }
-                if attrs & VF_TANGENTS != 0 { tangents_flag += 1; }
+                if attrs & VF_VERTEX != 0 {
+                    has_vertex += 1;
+                }
+                if attrs & VF_SKINNED != 0 {
+                    skinned += 1;
+                }
+                if attrs & VF_TANGENTS != 0 {
+                    tangents_flag += 1;
+                }
                 let fp = attrs & VF_FULL != 0;
-                if fp { full_prec += 1 } else { half_prec += 1 }
+                if fp {
+                    full_prec += 1
+                } else {
+                    half_prec += 1
+                }
                 *prec_by_bsver.entry((scene.bsver, fp)).or_default() += 1;
                 let k = match &s.kind {
                     BsTriShapeKind::Plain => "Plain",
@@ -84,12 +109,20 @@ fn main() {
                     if d.num_segments == 0 && d.segments.is_empty() && d.shared.is_none() {
                         si_empty += 1;
                     }
-                    if !d.segments.is_empty() { si_with_segments += 1; }
+                    if !d.segments.is_empty() {
+                        si_with_segments += 1;
+                    }
                     si_segments_total += d.segments.len();
-                    si_subsegments_total += d.segments.iter().map(|x| x.sub_segments.len()).sum::<usize>();
+                    si_subsegments_total += d
+                        .segments
+                        .iter()
+                        .map(|x| x.sub_segments.len())
+                        .sum::<usize>();
                     if let Some(sh) = &d.shared {
                         si_with_shared += 1;
-                        if !sh.ssf_filename.is_empty() { si_ssf_named += 1; }
+                        if !sh.ssf_filename.is_empty() {
+                            si_ssf_named += 1;
+                        }
                         for p in &sh.per_segment_data {
                             *cutoff_hist.entry(p.cut_offsets.len()).or_default() += 1;
                         }
@@ -114,5 +147,7 @@ fn main() {
     println!("--- cut_offsets len histogram: {cutoff_hist:?}");
     println!("--- recovered_blocks total = {recovered}, truncated files = {truncated}");
     println!("--- bhk block types:");
-    for (k, v) in &blocktypes { println!("    {k:45} {v}"); }
+    for (k, v) in &blocktypes {
+        println!("    {k:45} {v}");
+    }
 }

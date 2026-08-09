@@ -6,7 +6,11 @@ fn main() {
         .expect("usage: _tmp_fo3_deathclaw_skin <path.nif>");
     let bytes = std::fs::read(&path).expect("read");
     let scene = byroredux_nif::parse_nif(&bytes).expect("parse");
-    println!("parse OK: {} blocks, truncated={}", scene.blocks.len(), scene.truncated);
+    println!(
+        "parse OK: {} blocks, truncated={}",
+        scene.blocks.len(),
+        scene.truncated
+    );
 
     let mut pool = byroredux_core::string::StringPool::new();
     let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);

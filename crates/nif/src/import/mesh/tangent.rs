@@ -477,8 +477,7 @@ pub fn synthesize_tangents_yup(
                 // the permuted vector against N and normalize before the
                 // cross product, matching the non-degenerate branch below.
                 let t_y_raw = [n_yup[1], n_yup[2], n_yup[0]];
-                let dot_nt =
-                    n_yup[0] * t_y_raw[0] + n_yup[1] * t_y_raw[1] + n_yup[2] * t_y_raw[2];
+                let dot_nt = n_yup[0] * t_y_raw[0] + n_yup[1] * t_y_raw[1] + n_yup[2] * t_y_raw[2];
                 let mut t_y = [
                     t_y_raw[0] - n_yup[0] * dot_nt,
                     t_y_raw[1] - n_yup[1] * dot_nt,

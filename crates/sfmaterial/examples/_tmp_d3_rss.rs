@@ -8,6 +8,10 @@ fn main() {
     let n = bytes.len();
     let t = std::time::Instant::now();
     let cdb = ComponentDatabaseFile::parse(&bytes).unwrap();
-    eprintln!("parse-only: {n} bytes -> {} instances in {:?}", cdb.instances.len(), t.elapsed());
+    eprintln!(
+        "parse-only: {n} bytes -> {} instances in {:?}",
+        cdb.instances.len(),
+        t.elapsed()
+    );
     std::mem::forget(cdb);
 }

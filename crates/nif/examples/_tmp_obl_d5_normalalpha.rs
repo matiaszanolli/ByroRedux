@@ -15,10 +15,16 @@ fn main() {
     let mut n = 0u64;
     for f in &files {
         let Ok(b) = archive.extract(f) else { continue };
-        if b.len() < 92 { continue }
+        if b.len() < 92 {
+            continue;
+        }
         let flags = u32::from_le_bytes([b[80], b[81], b[82], b[83]]);
         let cc = String::from_utf8_lossy(&b[84..88]).to_string();
-        let key = if flags & 0x4 != 0 { cc } else { format!("RGB(flags={flags:#x})") };
+        let key = if flags & 0x4 != 0 {
+            cc
+        } else {
+            format!("RGB(flags={flags:#x})")
+        };
         *fourcc.entry(key).or_insert(0) += 1;
         n += 1;
     }

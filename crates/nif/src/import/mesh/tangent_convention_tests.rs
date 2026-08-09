@@ -258,7 +258,11 @@ fn synthesize_tangents_yup_degenerate_fallback_normalizes_and_orthogonalizes_aga
         + raw_normal[1] * raw_normal[1]
         + raw_normal[2] * raw_normal[2])
         .sqrt();
-    let n_unit = [raw_normal[0] / len, raw_normal[1] / len, raw_normal[2] / len];
+    let n_unit = [
+        raw_normal[0] / len,
+        raw_normal[1] / len,
+        raw_normal[2] / len,
+    ];
 
     for (i, t) in out.iter().enumerate() {
         let tangent = [t[0], t[1], t[2]];

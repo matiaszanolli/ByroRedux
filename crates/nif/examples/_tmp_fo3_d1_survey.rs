@@ -11,7 +11,8 @@ fn main() {
     let path = std::env::args().nth(1).expect("usage: <bsa>");
     let arc = BsaArchive::open(&path).expect("open bsa");
     let files: Vec<String> = arc
-        .list_files().into_iter()
+        .list_files()
+        .into_iter()
         .filter(|n| n.to_ascii_lowercase().ends_with(".nif"))
         .map(|s| s.to_string())
         .collect();
@@ -41,11 +42,15 @@ fn main() {
     let mut meshes = 0usize;
 
     for name in &files {
-        let Ok(bytes) = arc.extract(name) else { continue };
+        let Ok(bytes) = arc.extract(name) else {
+            continue;
+        };
         let bsver = byroredux_nif::header::NifHeader::parse(&bytes)
             .map(|(h, _)| h.user_version_2)
             .unwrap_or(0);
-        let Ok(scene) = parse_nif(&bytes) else { continue };
+        let Ok(scene) = parse_nif(&bytes) else {
+            continue;
+        };
         parsed += 1;
         *bsver_hist.entry(bsver).or_default() += 1;
         for block in scene.blocks.iter() {
@@ -55,43 +60,81 @@ fn main() {
                 let f1 = s.shader_flags_1();
                 let f2 = s.shader_flags_2();
                 for b in 0..32 {
-                    if f1 & (1 << b) != 0 { f1_bits[b] += 1; }
-                    if f2 & (1 << b) != 0 { f2_bits[b] += 1; }
+                    if f1 & (1 << b) != 0 {
+                        f1_bits[b] += 1;
+                    }
+                    if f2 & (1 << b) != 0 {
+                        f2_bits[b] += 1;
+                    }
                 }
-                if f1 & (1 << 17) != 0 && f1 & ((1 << 7) | (1 << 21)) == 0 { eye_only += 1; }
+                if f1 & (1 << 17) != 0 && f1 & ((1 << 7) | (1 << 21)) == 0 {
+                    eye_only += 1;
+                }
                 *shader_type_hist.entry(s.shader.shader_type).or_default() += 1;
-                *envmap_scale_hist.entry(format!("{:.2}", s.shader.env_map_scale)).or_default() += 1;
+                *envmap_scale_hist
+                    .entry(format!("{:.2}", s.shader.env_map_scale))
+                    .or_default() += 1;
             }
             if let Some(s) = a.downcast_ref::<BSShaderNoLightingProperty>() {
                 nl += 1;
                 let f1 = s.shader_flags_1();
                 let f2 = s.shader_flags_2();
-                if f1 & ((1 << 26) | (1 << 27)) == 0 && f2 & (1 << 21) != 0 { nl_flags2_decal_only += 1; }
-                *shader_type_hist.entry(1000 + s.shader.shader_type).or_default() += 1;
+                if f1 & ((1 << 26) | (1 << 27)) == 0 && f2 & (1 << 21) != 0 {
+                    nl_flags2_decal_only += 1;
+                }
+                *shader_type_hist
+                    .entry(1000 + s.shader.shader_type)
+                    .or_default() += 1;
             }
-            if a.downcast_ref::<TileShaderProperty>().is_some() { tile += 1; }
-            if a.downcast_ref::<SkyShaderProperty>().is_some() { sky += 1; }
-            if a.downcast_ref::<TallGrassShaderProperty>().is_some() { grass += 1; }
-            if a.downcast_ref::<WaterShaderProperty>().is_some() { water += 1; }
+            if a.downcast_ref::<TileShaderProperty>().is_some() {
+                tile += 1;
+            }
+            if a.downcast_ref::<SkyShaderProperty>().is_some() {
+                sky += 1;
+            }
+            if a.downcast_ref::<TallGrassShaderProperty>().is_some() {
+                grass += 1;
+            }
+            if a.downcast_ref::<WaterShaderProperty>().is_some() {
+                water += 1;
+            }
         }
         let mut pool = byroredux_core::string::StringPool::new();
         for m in byroredux_nif::import::import_nif(&scene, &mut pool) {
             meshes += 1;
             *kind_hist.entry(m.material.material_kind).or_default() += 1;
-            *emsrc_hist.entry(format!("{:?}", m.material.emissive_source)).or_default() += 1;
-            if m.material.is_pbr { pbr_true += 1; }
-            if m.material.two_sided { two_sided += 1; }
-            if m.material.is_decal { decal += 1; }
+            *emsrc_hist
+                .entry(format!("{:?}", m.material.emissive_source))
+                .or_default() += 1;
+            if m.material.is_pbr {
+                pbr_true += 1;
+            }
+            if m.material.two_sided {
+                two_sided += 1;
+            }
+            if m.material.is_decal {
+                decal += 1;
+            }
         }
     }
 
     println!("parsed nifs: {parsed}");
     println!("bsver hist: {bsver_hist:?}");
-    println!("PPLighting={pp} NoLighting={nl} Tile={tile} Sky={sky} TallGrass={grass} Water={water}");
+    println!(
+        "PPLighting={pp} NoLighting={nl} Tile={tile} Sky={sky} TallGrass={grass} Water={water}"
+    );
     println!("PP flags1 bit histogram:");
-    for b in 0..32 { if f1_bits[b] > 0 { println!("  f1 bit {b:2}: {}", f1_bits[b]); } }
+    for b in 0..32 {
+        if f1_bits[b] > 0 {
+            println!("  f1 bit {b:2}: {}", f1_bits[b]);
+        }
+    }
     println!("PP flags2 bit histogram:");
-    for b in 0..32 { if f2_bits[b] > 0 { println!("  f2 bit {b:2}: {}", f2_bits[b]); } }
+    for b in 0..32 {
+        if f2_bits[b] > 0 {
+            println!("  f2 bit {b:2}: {}", f2_bits[b]);
+        }
+    }
     println!("PP eye-env-only (bit17 w/o bit7|bit21): {eye_only}");
     println!("NoLighting decal-via-flags2-only: {nl_flags2_decal_only}");
     println!("shader_type hist (1000+ = NoLighting): {shader_type_hist:?}");

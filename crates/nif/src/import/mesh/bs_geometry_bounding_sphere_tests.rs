@@ -79,10 +79,7 @@ fn no_radius_or_no_vertices_is_never_flagged() {
         bs_geometry_bounding_sphere_mismatch(center, -1.0, &positions),
         None
     );
-    assert_eq!(
-        bs_geometry_bounding_sphere_mismatch(center, 1.0, &[]),
-        None
-    );
+    assert_eq!(bs_geometry_bounding_sphere_mismatch(center, 1.0, &[]), None);
 }
 
 /// A degenerate single-point mesh (every vertex sits exactly at `center`,

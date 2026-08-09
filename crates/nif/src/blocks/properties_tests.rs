@@ -903,14 +903,14 @@ fn parse_ni_texturing_property_at_v4_0_0_2_reads_32_bit_has_base_texture() {
     data.extend_from_slice(&0u32.to_le_bytes()); // name: empty inline (len = 0)
     data.extend_from_slice(&(-1i32).to_le_bytes()); // extra_data_ref = NULL
     data.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref = NULL
-                                                      // NiProperty.Flags: `until=10.0.1.2` — present at v4.0.0.2.
+                                                    // NiProperty.Flags: `until=10.0.1.2` — present at v4.0.0.2.
     data.extend_from_slice(&0u16.to_le_bytes()); // flags = 0
-                                                  // Apply Mode: `since=3.3.0.13, until=20.1.0.1` — present at v4.0.0.2.
+                                                 // Apply Mode: `since=3.3.0.13, until=20.1.0.1` — present at v4.0.0.2.
     data.extend_from_slice(&1u32.to_le_bytes()); // apply_mode = 1 (APPLY_MODULATE)
     data.extend_from_slice(&0u32.to_le_bytes()); // texture_count = 0
-                                                  // `Has Base Texture` — the version-dependent bool, 32-bit here.
+                                                 // `Has Base Texture` — the version-dependent bool, 32-bit here.
     data.extend_from_slice(&0u32.to_le_bytes()); // base_texture has = false (32-bit)
-                                                  // No shader-textures trailer: `since=10.0.1.0`, absent at v4.0.0.2.
+                                                 // No shader-textures trailer: `since=10.0.1.0`, absent at v4.0.0.2.
 
     let expected_len = data.len();
     let mut stream = NifStream::new(&data, &header);

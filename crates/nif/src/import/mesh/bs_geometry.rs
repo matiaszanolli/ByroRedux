@@ -41,14 +41,15 @@ pub fn extract_bs_geometry(
         // SF2-02 / #1829: a slot's body can itself be the `scale<=0`
         // sentinel (empty `vertices`/`triangles`) — skip those so a
         // sentinel-first slot order doesn't hide a later populated slot.
-        let (tri_size, num_verts, slot, data) = shape.meshes.iter().find_map(|m| match &m.kind {
-            BSGeometryMeshKind::Internal { mesh_data }
-                if !mesh_data.vertices.is_empty() && !mesh_data.triangles.is_empty() =>
-            {
-                Some((m.tri_size, m.num_verts, m.lod_slot, mesh_data.as_ref()))
-            }
-            _ => None,
-        })?;
+        let (tri_size, num_verts, slot, data) =
+            shape.meshes.iter().find_map(|m| match &m.kind {
+                BSGeometryMeshKind::Internal { mesh_data }
+                    if !mesh_data.vertices.is_empty() && !mesh_data.triangles.is_empty() =>
+                {
+                    Some((m.tri_size, m.num_verts, m.lod_slot, mesh_data.as_ref()))
+                }
+                _ => None,
+            })?;
         hint = (tri_size, num_verts);
         resolved_slot = slot;
         data

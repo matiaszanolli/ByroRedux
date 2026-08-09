@@ -154,10 +154,7 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
         );
         gpu_pass_ms.insert(
             "skin_blas_refit".to_string(),
-            gpu_bracket_ms(
-                cov.gpu_skin_blas_refit_ms,
-                cov.gpu_skin_blas_refit_active,
-            ),
+            gpu_bracket_ms(cov.gpu_skin_blas_refit_ms, cov.gpu_skin_blas_refit_active),
         );
         gpu_pass_ms.insert(
             "ssao".to_string(),

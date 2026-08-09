@@ -13,13 +13,7 @@ fn read_u32(data: &[u8], off: usize) -> u32 {
 fn fourcc_str(fourcc: u32) -> String {
     let b = fourcc.to_le_bytes();
     b.iter()
-        .map(|&c| {
-            if c.is_ascii_graphic() {
-                c as char
-            } else {
-                '?'
-            }
-        })
+        .map(|&c| if c.is_ascii_graphic() { c as char } else { '?' })
         .collect()
 }
 

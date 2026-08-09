@@ -916,7 +916,12 @@ impl CausticPipeline {
     /// same command-buffer position `dispatch` would have run from — i.e.
     /// after the main render pass ends and before composite reads the
     /// accumulator.
-    pub unsafe fn clear_for_skip(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
+    pub unsafe fn clear_for_skip(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+    ) {
         let slot_img = self.slots[frame].image;
         let clear_range = super::descriptors::color_subresource_single_mip();
         // Same over-specified wait stages `dispatch`'s moving-camera clear

@@ -11,7 +11,7 @@
 //! - [`assets`] — texture / mesh / skin diagnostics
 //!   (`tex.*`, `mesh.*`, `skin.*`)
 //! - [`view`] — camera + selection / picking
-//!   (`prid`, `cam.*`, `near`, `pick`)
+//!   (`prid`, `cam.*`, `near`, `pick`, `interaction.status`, `input.press`)
 //! - [`quest`] — quest lifecycle, objectives, targets, and alias diagnostics
 //!   (`quest.show`, `quest.aliases`, `quest.start`, `quest.stop`, `quest.setstage`)
 //! - [`time`] — persistent day/night clock inspection and controls
@@ -73,6 +73,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(PickCommand);
     registry.register(CamPosCommand);
     registry.register(CamTpCommand);
+    registry.register(InteractionStatusCommand);
+    registry.register(InputPressCommand);
     registry.register(DoorTeleportCommand);
     registry.register(SysAccessesCommand);
     registry.register(SkinListCommand);

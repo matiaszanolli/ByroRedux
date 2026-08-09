@@ -44,7 +44,7 @@ fn niavobject_bytes_pre_v10_0_1_0() -> Vec<u8> {
     d.extend_from_slice(&(-1i32).to_le_bytes()); // extra_data: single ref, null
     d.extend_from_slice(&(-1i32).to_le_bytes()); // controller_ref
     d.extend_from_slice(&0u16.to_le_bytes()); // flags (u16, bsver<=26)
-                                               // transform: translation(3f32) + rotation(9f32 identity) + scale(f32)
+                                              // transform: translation(3f32) + rotation(9f32 identity) + scale(f32)
     for _ in 0..3 {
         d.extend_from_slice(&0.0f32.to_le_bytes());
     }
@@ -80,7 +80,7 @@ fn niavobject_bytes_at_v10_0_1_0() -> Vec<u8> {
         }
     }
     d.extend_from_slice(&1.0f32.to_le_bytes()); // scale
-                                                 // no velocity — version > V4_2_2_0
+                                                // no velocity — version > V4_2_2_0
     d.extend_from_slice(&0u32.to_le_bytes()); // properties: empty list
     d.extend_from_slice(&(-1i32).to_le_bytes()); // collision_ref (dedicated, >= V10_0_1_0)
     d
@@ -96,10 +96,14 @@ fn ni_auto_normal_particles_below_v10_0_1_0_skips_has_shader_phantom_byte() {
     let mut data = niavobject_bytes_pre_v10_0_1_0();
     data.extend_from_slice(&(-1i32).to_le_bytes()); // data_ref
     data.extend_from_slice(&(-1i32).to_le_bytes()); // skin_instance_ref
-                                                      // NO has_shader byte — below the field's own `since` ceiling.
+                                                    // NO has_shader byte — below the field's own `since` ceiling.
     let mut stream = NifStream::new(&data, &header);
-    let block = parse_block("NiAutoNormalParticles", &mut stream, Some(data.len() as u32))
-        .expect("must parse cleanly with has_shader gated off below V10_0_1_0");
+    let block = parse_block(
+        "NiAutoNormalParticles",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("must parse cleanly with has_shader gated off below V10_0_1_0");
     assert_eq!(
         stream.position() as usize,
         data.len(),
@@ -131,8 +135,12 @@ fn ni_auto_normal_particles_at_exactly_v10_0_1_0_reads_has_shader() {
     data.extend_from_slice(&(-1i32).to_le_bytes()); // skin_instance_ref
     data.push(0u8); // has_shader = false (8-bit bool, >= V4_1_0_1)
     let mut stream = NifStream::new(&data, &header);
-    let block = parse_block("NiAutoNormalParticles", &mut stream, Some(data.len() as u32))
-        .expect("must parse cleanly with has_shader gated on at exactly V10_0_1_0");
+    let block = parse_block(
+        "NiAutoNormalParticles",
+        &mut stream,
+        Some(data.len() as u32),
+    )
+    .expect("must parse cleanly with has_shader gated on at exactly V10_0_1_0");
     assert_eq!(stream.position() as usize, data.len());
     let m = block
         .as_any()
@@ -165,11 +173,11 @@ fn ni_auto_normal_particles_data_at_v4_0_0_2_skips_all_structurally_unreachable_
     data.extend_from_slice(&0u32.to_le_bytes()); // has_vertex_colors = false (32-bit bool)
     data.extend_from_slice(&0u16.to_le_bytes()); // num_uv_sets (< V10_0_1_0 inline u16)
     data.extend_from_slice(&0u32.to_le_bytes()); // has_uv = false (32-bit bool, <= V4_0_0_2)
-                                                  // NO has_radii byte — structurally unreachable.
+                                                 // NO has_radii byte — structurally unreachable.
     data.extend_from_slice(&0u16.to_le_bytes()); // num_active
     data.push(0u8); // has_sizes = false (unconditional 1-byte bool, no version gate)
-                     // NO has_rotations byte — below V10_0_1_0.
-                     // NO has_rotation_angles / has_rotation_axes bytes — structurally unreachable.
+                    // NO has_rotations byte — below V10_0_1_0.
+                    // NO has_rotation_angles / has_rotation_axes bytes — structurally unreachable.
 
     let mut stream = NifStream::new(&data, &header);
     let block = parse_block(

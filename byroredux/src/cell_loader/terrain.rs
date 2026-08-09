@@ -641,6 +641,7 @@ pub(super) fn spawn_terrain_mesh(
         Vec3::ZERO,
         Quat::IDENTITY,
         1.0,
+        None,
     ) {
         log::warn!(
             "Terrain ({},{}): collider synthesis produced no triangles — \

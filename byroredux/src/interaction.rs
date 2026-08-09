@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use byroredux_core::ecs::components::{FormIdComponent, PhysicsSourceForm};
 use byroredux_core::ecs::{
     ActiveCamera, EntityId, GlobalTransform, Resource, Transform, World, WorldBound,
 };
@@ -21,6 +22,7 @@ use crate::components::{DoorTeleport, InputState};
 /// keeps the reticle from selecting objects through an entire room.
 pub(crate) const INTERACTION_REACH_BU: f32 = 192.0;
 const FALLBACK_INTERACTION_RADIUS_BU: f32 = 24.0;
+const OCCLUSION_EPSILON_BU: f32 = 1.0;
 
 /// Stable gameplay intents, independent of their current physical bindings.
 ///
@@ -91,6 +93,30 @@ impl ActionBindings {
             .filter_map(|key| self.keyboard.get(key))
             .fold(0, |mask, action| mask | action.bit())
     }
+
+    fn action_for_key(&self, key: KeyCode) -> Option<InputAction> {
+        self.keyboard.get(&key).copied()
+    }
+}
+
+/// One-frame physical-key pulse used by real-data smoke automation.
+///
+/// This is deliberately upstream of [`ActionState`]: `input.press activate`
+/// exercises the same E-key binding and edge detector as the window event
+/// path, while releasing automatically on the following frame.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct InjectedKeyPulse {
+    key: Option<KeyCode>,
+}
+
+impl Resource for InjectedKeyPulse {}
+
+pub(crate) fn queue_debug_activate_press(world: &World) -> Result<(), &'static str> {
+    let mut pulse = world
+        .try_resource_mut::<InjectedKeyPulse>()
+        .ok_or("InjectedKeyPulse resource is not installed")?;
+    pulse.key = Some(KeyCode::KeyE);
+    Ok(())
 }
 
 /// Derived per-frame action state with held/pressed/released semantics.
@@ -164,6 +190,24 @@ impl InteractionState {
     }
 }
 
+/// Last canonical activation retained past transient-event cleanup.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct InteractionTraceEntry {
+    pub(crate) target: InteractionTarget,
+    pub(crate) activator: Option<EntityId>,
+    pub(crate) event_emitted: bool,
+    pub(crate) outcome: String,
+}
+
+/// Lightweight runtime evidence for smoke tests and operator diagnostics.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct InteractionTrace {
+    pub(crate) activation_count: u64,
+    pub(crate) last: Option<InteractionTraceEntry>,
+}
+
+impl Resource for InteractionTrace {}
+
 /// First gameplay-facing interaction slice.
 ///
 /// Runs first in `Stage::Update`, before every `OnActivate` consumer. A fresh
@@ -190,10 +234,16 @@ fn refresh_action_state(world: &World) -> bool {
     };
     let keys_held = input.keys_held.clone();
     drop(input);
+    let injected_key = world
+        .try_resource_mut::<InjectedKeyPulse>()
+        .and_then(|mut pulse| pulse.key.take());
     let Some(bindings) = world.try_resource::<ActionBindings>() else {
         return false;
     };
-    let next_held = bindings.held_mask(&keys_held);
+    let mut next_held = bindings.held_mask(&keys_held);
+    if let Some(action) = injected_key.and_then(|key| bindings.action_for_key(key)) {
+        next_held |= action.bit();
+    }
     drop(bindings);
 
     let Some(mut state) = world.try_resource_mut::<ActionState>() else {
@@ -207,7 +257,7 @@ fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
     let (origin, direction) = camera_ray(world)?;
     let candidates = collect_candidates(world);
 
-    candidates
+    let mut targets: Vec<_> = candidates
         .into_iter()
         .filter(|(entity, _)| !activation_is_blocked(world, *entity))
         .filter_map(|(entity, kind)| {
@@ -219,7 +269,79 @@ fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
                 distance,
             })
         })
-        .min_by(|a, b| a.distance.total_cmp(&b.distance))
+        .collect();
+    targets.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+    targets
+        .into_iter()
+        .find(|target| target_has_line_of_sight(world, *target, origin, direction))
+}
+
+fn target_has_line_of_sight(
+    world: &World,
+    target: InteractionTarget,
+    origin: Vec3,
+    direction: Vec3,
+) -> bool {
+    let Some(_) = world.try_resource::<byroredux_physics::PhysicsWorld>() else {
+        return true;
+    };
+
+    // Resolve the player exclusion and body→ECS ownership before acquiring
+    // PhysicsWorld, keeping the resource/component lock order non-overlapping.
+    let player = world
+        .try_resource::<byroredux_scripting::papyrus_demo::PlayerEntity>()
+        .map(|player| player.0);
+    let (excluded_body, owners) = match world.query::<byroredux_physics::RapierHandles>() {
+        Some(handles) => {
+            let excluded = player.and_then(|entity| handles.get(entity).map(|h| h.body));
+            let owners = handles
+                .iter()
+                .map(|(entity, handles)| (entity, handles.body))
+                .collect::<Vec<_>>();
+            (excluded, owners)
+        }
+        None => (None, Vec::new()),
+    };
+
+    let hit = {
+        let physics = world.resource::<byroredux_physics::PhysicsWorld>();
+        physics.cast_ray(
+            origin,
+            direction,
+            target.distance + OCCLUSION_EPSILON_BU,
+            excluded_body,
+        )
+    };
+    let Some(hit) = hit else {
+        return true;
+    };
+    let Some(hit_body) = hit.body else {
+        return false;
+    };
+    let Some(hit_owner) = owners
+        .iter()
+        .find_map(|(entity, body)| (*body == hit_body).then_some(*entity))
+    else {
+        return false;
+    };
+
+    collider_belongs_to_target(world, hit_owner, target.entity)
+}
+
+fn collider_belongs_to_target(world: &World, collider_entity: EntityId, target: EntityId) -> bool {
+    if collider_entity == target {
+        return true;
+    }
+    let target_form = world.get::<FormIdComponent>(target).map(|form| form.0);
+    let collider_form = world
+        .get::<FormIdComponent>(collider_entity)
+        .map(|form| form.0)
+        .or_else(|| {
+            world
+                .get::<PhysicsSourceForm>(collider_entity)
+                .map(|form| form.0)
+        });
+    target_form.is_some() && target_form == collider_form
 }
 
 fn camera_ray(world: &World) -> Option<(Vec3, Vec3)> {
@@ -334,23 +456,46 @@ fn ray_sphere_distance(origin: Vec3, direction: Vec3, bound: WorldBound) -> Opti
 }
 
 fn activate_target(world: &World, target: InteractionTarget) {
-    if let Err(error) = emit_activate_event(world, target.entity) {
-        log::error!("interaction: {error}");
-    }
-
-    if target.kind == InteractionKind::Door {
-        match crate::cell_loader::queue_door_transition(world, target.entity) {
-            Ok(queued) => log::info!(
-                "interaction: entity {} activated; queued {}",
-                target.entity,
-                queued.destination_label
-            ),
-            Err(error) => log::warn!(
-                "interaction: entity {} activated, but its door transition was not queued: {}",
-                target.entity,
-                error
-            ),
+    let event = emit_activate_event(world, target.entity);
+    let (activator, event_emitted, event_outcome) = match event {
+        Ok(activator) => (Some(activator), true, "ActivateEvent emitted".to_string()),
+        Err(error) => {
+            log::error!("interaction: {error}");
+            (None, false, format!("ActivateEvent failed: {error}"))
         }
+    };
+
+    let outcome = if target.kind == InteractionKind::Door {
+        match crate::cell_loader::queue_door_transition(world, target.entity) {
+            Ok(queued) => {
+                log::info!(
+                    "interaction: entity {} activated; queued {}",
+                    target.entity,
+                    queued.destination_label
+                );
+                format!("{event_outcome}; queued {}", queued.destination_label)
+            }
+            Err(error) => {
+                log::warn!(
+                    "interaction: entity {} activated, but its door transition was not queued: {}",
+                    target.entity,
+                    error
+                );
+                format!("{event_outcome}; door queue failed: {error}")
+            }
+        }
+    } else {
+        event_outcome
+    };
+
+    if let Some(mut trace) = world.try_resource_mut::<InteractionTrace>() {
+        trace.activation_count = trace.activation_count.saturating_add(1);
+        trace.last = Some(InteractionTraceEntry {
+            target,
+            activator,
+            event_emitted,
+            outcome,
+        });
     }
 }
 
@@ -375,6 +520,8 @@ pub(crate) fn emit_activate_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_core::ecs::components::{CollisionShape, RigidBodyData};
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
     use byroredux_core::math::Quat;
 
     fn input_fixture() -> World {
@@ -382,7 +529,9 @@ mod tests {
         world.insert_resource(InputState::default());
         world.insert_resource(ActionBindings::default());
         world.insert_resource(ActionState::default());
+        world.insert_resource(InjectedKeyPulse::default());
         world.insert_resource(InteractionState::default());
+        world.insert_resource(InteractionTrace::default());
         world
     }
 
@@ -428,6 +577,21 @@ mod tests {
     }
 
     #[test]
+    fn injected_e_key_pulse_uses_binding_and_releases_next_frame() {
+        let world = input_fixture();
+        queue_debug_activate_press(&world).unwrap();
+
+        assert!(refresh_action_state(&world));
+        assert!(world
+            .resource::<ActionState>()
+            .is_held(InputAction::Activate));
+        assert!(!refresh_action_state(&world));
+        assert!(world
+            .resource::<ActionState>()
+            .was_released(InputAction::Activate));
+    }
+
+    #[test]
     fn ray_sphere_rejects_behind_and_returns_near_surface_distance() {
         let forward = WorldBound::new(Vec3::new(0.0, 0.0, -100.0), 10.0);
         assert_eq!(
@@ -463,6 +627,73 @@ mod tests {
         let events = world.query::<byroredux_scripting::ActivateEvent>().unwrap();
         assert!(events.get(near).is_some());
         assert!(events.get(far).is_none());
+        let trace = world.resource::<InteractionTrace>();
+        assert_eq!(trace.activation_count, 1);
+        assert!(trace.last.as_ref().unwrap().event_emitted);
+    }
+
+    #[test]
+    fn solid_collider_between_camera_and_door_blocks_selection() {
+        let mut world = physics_fixture();
+        spawn_camera(&mut world);
+        spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -100.0));
+        spawn_static_collider(&mut world, Vec3::new(0.0, 0.0, -50.0), None);
+        byroredux_physics::physics_sync_system(&world, 0.0);
+
+        assert_eq!(select_interaction_target(&world), None);
+    }
+
+    #[test]
+    fn physics_source_form_identifies_the_doors_own_collider() {
+        let mut world = physics_fixture();
+        spawn_camera(&mut world);
+        let door = spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -100.0));
+        let form_id = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(0x1234),
+        });
+        world.insert(door, FormIdComponent(form_id));
+        spawn_static_collider(&mut world, Vec3::new(0.0, 0.0, -80.0), Some(form_id));
+        byroredux_physics::physics_sync_system(&world, 0.0);
+
+        assert_eq!(select_interaction_target(&world).unwrap().entity, door);
+    }
+
+    fn physics_fixture() -> World {
+        let mut world = input_fixture();
+        world.insert_resource(FormIdPool::new());
+        world.insert_resource(byroredux_physics::PhysicsWorld::new());
+        world.register::<byroredux_physics::RapierHandles>();
+        world
+    }
+
+    fn spawn_camera(world: &mut World) -> EntityId {
+        let camera = world.spawn();
+        world.insert(camera, Transform::IDENTITY);
+        world.insert_resource(ActiveCamera(camera));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PlayerEntity(camera));
+        camera
+    }
+
+    fn spawn_static_collider(
+        world: &mut World,
+        center: Vec3,
+        source_form: Option<byroredux_core::form_id::FormId>,
+    ) -> EntityId {
+        let entity = world.spawn();
+        world.insert(entity, Transform::new(center, Quat::IDENTITY, 1.0));
+        world.insert(entity, GlobalTransform::new(center, Quat::IDENTITY, 1.0));
+        world.insert(
+            entity,
+            CollisionShape::Cuboid {
+                half_extents: Vec3::splat(5.0),
+            },
+        );
+        world.insert(entity, RigidBodyData::STATIC);
+        if let Some(form_id) = source_form {
+            world.insert(entity, PhysicsSourceForm(form_id));
+        }
+        entity
     }
 
     fn spawn_test_door(world: &mut World, center: Vec3) -> EntityId {

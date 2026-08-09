@@ -218,14 +218,16 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
     // `0.0` made the sum look more complete/trustworthy than it was —
     // the sibling gap REN-D20-NEW-02 flagged in the same report.
     let gpu_total: f32 = m.gpu_pass_ms.iter().filter_map(|(_, v)| *v).sum();
-    ui.label(egui::RichText::new(format!("GPU passes — Σ upper bound {:.3} ms", gpu_total)).strong())
-        .on_hover_text(
-            "Each bracket's START is stamped at TOP_OF_PIPE, so queue-drain \
+    ui.label(
+        egui::RichText::new(format!("GPU passes — Σ upper bound {:.3} ms", gpu_total)).strong(),
+    )
+    .on_hover_text(
+        "Each bracket's START is stamped at TOP_OF_PIPE, so queue-drain \
              time from prior in-flight work can be absorbed into it. This sum \
              is a ceiling, not a precise attribution — overlapping queue-wait \
              may be double-counted across adjacent brackets. Brackets that \
              didn't run this cycle (n/a) are excluded, not counted as zero.",
-        );
+    );
     if m.gpu_pass_ms.is_empty() {
         ui.label("(none reported)");
     } else {

@@ -4152,11 +4152,11 @@ mod fsr_startup_failure_promotes_to_taa_tests {
         let upscaler_built_pos = src
             .find("let frame_upscaler = FrameUpscaler::new(")
             .expect("VulkanContext::new must still construct the frame upscaler");
-        let struct_open_pos = src
-            .find("let mut context = Self {")
-            .expect("VulkanContext::new must bind the constructed context to a \
+        let struct_open_pos = src.find("let mut context = Self {").expect(
+            "VulkanContext::new must bind the constructed context to a \
                      mutable local so a post-construction promotion can run \
-                     before it is wrapped in Ok(..) (#2480)");
+                     before it is wrapped in Ok(..) (#2480)",
+        );
         let guard_pos = src
             .find("matches!(context.renderer_config.upscaler, UpscalerMode::Fsr3(_))")
             .expect("the promotion must be gated on the mode actually being FSR");
@@ -4178,7 +4178,10 @@ mod fsr_startup_failure_promotes_to_taa_tests {
             .expect("VulkanContext::new must return the (possibly promoted) context");
 
         assert!(upscaler_built_pos < struct_open_pos);
-        assert!(struct_open_pos < guard_pos, "the guard must run AFTER the struct exists");
+        assert!(
+            struct_open_pos < guard_pos,
+            "the guard must run AFTER the struct exists"
+        );
         assert!(guard_pos < dispatch_check_pos && dispatch_check_pos < switch_pos);
         assert!(
             switch_pos < return_pos,

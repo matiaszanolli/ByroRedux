@@ -767,7 +767,10 @@ mod ligh_dat2_tests {
         assert!((ld.color[2] - 100.0 / 255.0).abs() < 1e-6, "B at offset 10");
         assert_eq!(ld.flags, 0x0010, "Flags is a U16 at offset 12");
         assert_eq!(ld.falloff_exponent, 2.0, "Falloff Exponent at offset 16");
-        assert_eq!(ld.fov_degrees, 90.0, "FOV at DAT2 offset 20 (#2439 / NIFAL-D2-01)");
+        assert_eq!(
+            ld.fov_degrees, 90.0,
+            "FOV at DAT2 offset 20 (#2439 / NIFAL-D2-01)"
+        );
         assert_eq!(ld.period_secs, 1.5, "Flicker Period at offset 28");
         assert_eq!(
             ld.intensity_amplitude, 0.25,
@@ -814,7 +817,7 @@ mod ligh_dat2_tests {
         data[9] = 200;
         data[10] = 128;
         data[16..20].copy_from_slice(&2.0f32.to_le_bytes()); // falloff exponent
-        // Bytes 24-27: Value (u32) — an ordinary nonzero game-gold value.
+                                                             // Bytes 24-27: Value (u32) — an ordinary nonzero game-gold value.
         data[24..28].copy_from_slice(&50u32.to_le_bytes());
         // Bytes 28-31: Weight (f32) — an ordinary nonzero encumbrance
         // value. Pre-fix this was misread as `period_secs`.
@@ -857,8 +860,14 @@ mod ligh_dat2_tests {
             .expect("Skyrim+ LIGH DATA must produce a StaticObject");
         let ld = obj.light_data.expect("DATA must yield light_data");
         assert_eq!(ld.period_secs, 2.0, "flicker period at offset 28");
-        assert_eq!(ld.intensity_amplitude, 0.25, "intensity amplitude at offset 32");
-        assert_eq!(ld.movement_amplitude, 0.1, "movement amplitude at offset 36");
+        assert_eq!(
+            ld.intensity_amplitude, 0.25,
+            "intensity amplitude at offset 32"
+        );
+        assert_eq!(
+            ld.movement_amplitude, 0.1,
+            "movement amplitude at offset 36"
+        );
     }
 
     /// #2439 / NIFAL-D2-01 regression: FOV (bytes 20-23) sits in the

@@ -410,7 +410,7 @@ fn nigeometry_data_at_v4_0_0_2_reads_32_bit_bools() {
     // No group_id (since 10.1.0.114), no keep/compress (since 10.1.0.0).
     data.extend_from_slice(&0u16.to_le_bytes()); // num_vertices = 0
     data.extend_from_slice(&0u32.to_le_bytes()); // has_vertices = false (32-bit)
-                                                  // No data_flags (since 10.0.1.0).
+                                                 // No data_flags (since 10.0.1.0).
     data.extend_from_slice(&0u32.to_le_bytes()); // has_normals = false (32-bit)
     for _ in 0..4 {
         data.extend_from_slice(&0.0f32.to_le_bytes()); // bounding sphere
@@ -418,8 +418,8 @@ fn nigeometry_data_at_v4_0_0_2_reads_32_bit_bools() {
     data.extend_from_slice(&0u32.to_le_bytes()); // has_vertex_colors = false (32-bit)
     data.extend_from_slice(&0u16.to_le_bytes()); // num_uv_sets (pre-Gamebryo u16 field)
     data.extend_from_slice(&0u32.to_le_bytes()); // has_uv = false (32-bit, until 4.0.0.2)
-                                                  // No consistency_flags (since 10.0.1.0), no
-                                                  // additional_data_ref (since 20.0.0.4).
+                                                 // No consistency_flags (since 10.0.1.0), no
+                                                 // additional_data_ref (since 20.0.0.4).
 
     let mut stream = crate::stream::NifStream::new(&data, &header);
     let _ = parse_geometry_data_base(&mut stream)

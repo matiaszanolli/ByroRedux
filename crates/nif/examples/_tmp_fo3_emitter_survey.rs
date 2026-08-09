@@ -27,11 +27,15 @@ fn main() {
     let mut examples: Vec<String> = Vec::new();
 
     for name in &files {
-        let Ok(bytes) = archive.extract(name) else { continue };
+        let Ok(bytes) = archive.extract(name) else {
+            continue;
+        };
         let bsver = byroredux_nif::header::NifHeader::parse(&bytes)
             .map(|(h, _)| h.user_version_2)
             .unwrap_or(0);
-        let Ok(scene) = parse_nif(&bytes) else { continue };
+        let Ok(scene) = parse_nif(&bytes) else {
+            continue;
+        };
         let has_em = scene
             .blocks
             .iter()
@@ -49,25 +53,45 @@ fn main() {
             .iter()
             .filter_map(|b| b.as_any().downcast_ref::<NiPSysGrowFadeModifier>())
             .collect();
-        if has_ctlr { ctlr_blocks += 1; }
-        if has_ctlrdata { ctlrdata_blocks += 1; }
+        if has_ctlr {
+            ctlr_blocks += 1;
+        }
+        if has_ctlrdata {
+            ctlrdata_blocks += 1;
+        }
         if !gf.is_empty() {
             gf_blocks += 1;
-            if gf.iter().any(|m| m.base_scale.is_some()) { gf_scale_some += 1; }
+            if gf.iter().any(|m| m.base_scale.is_some()) {
+                gf_scale_some += 1;
+            }
         }
-        if !has_em && !has_ctlr { continue; }
+        if !has_em && !has_ctlr {
+            continue;
+        }
         if has_em {
             with_emitter += 1;
             *bsvers.entry(bsver).or_insert(0) += 1;
         }
         let mut pool = byroredux_core::string::StringPool::new();
         let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
-        let p = imported.particle_emitters.iter().find(|e| e.emitter_params.is_some());
-        if p.is_some() { params_some += 1; }
-        else if has_em && rejected.len() < 20 { rejected.push(name.clone()); }
-        let r = imported.particle_emitters.iter().find(|e| e.emitter_rate.is_some());
-        if r.is_some() { rate_some += 1; }
-        else if has_ctlr && rate_missing_with_ctlr.len() < 20 { rate_missing_with_ctlr.push(name.clone()); }
+        let p = imported
+            .particle_emitters
+            .iter()
+            .find(|e| e.emitter_params.is_some());
+        if p.is_some() {
+            params_some += 1;
+        } else if has_em && rejected.len() < 20 {
+            rejected.push(name.clone());
+        }
+        let r = imported
+            .particle_emitters
+            .iter()
+            .find(|e| e.emitter_rate.is_some());
+        if r.is_some() {
+            rate_some += 1;
+        } else if has_ctlr && rate_missing_with_ctlr.len() < 20 {
+            rate_missing_with_ctlr.push(name.clone());
+        }
         if examples.len() < 12 {
             if let Some(e) = imported.particle_emitters.first() {
                 if let Some(pp) = e.emitter_params {
@@ -80,13 +104,34 @@ fn main() {
             }
         }
     }
-    println!("files={} with_emitter={} params_some={} rate_some={}", files.len(), with_emitter, params_some, rate_some);
-    println!("ctlr_files={} ctlrdata_files={} growfade_files={} growfade_with_base_scale={}", ctlr_blocks, ctlrdata_blocks, gf_blocks, gf_scale_some);
+    println!(
+        "files={} with_emitter={} params_some={} rate_some={}",
+        files.len(),
+        with_emitter,
+        params_some,
+        rate_some
+    );
+    println!(
+        "ctlr_files={} ctlrdata_files={} growfade_files={} growfade_with_base_scale={}",
+        ctlr_blocks, ctlrdata_blocks, gf_blocks, gf_scale_some
+    );
     println!("bsver distribution among emitter NIFs: {:?}", bsvers);
-    println!("-- emitter present but params REJECTED ({}+ shown):", rejected.len());
-    for r in &rejected { println!("   {r}"); }
-    println!("-- ctlr present but rate None ({}+ shown):", rate_missing_with_ctlr.len());
-    for r in &rate_missing_with_ctlr { println!("   {r}"); }
+    println!(
+        "-- emitter present but params REJECTED ({}+ shown):",
+        rejected.len()
+    );
+    for r in &rejected {
+        println!("   {r}");
+    }
+    println!(
+        "-- ctlr present but rate None ({}+ shown):",
+        rate_missing_with_ctlr.len()
+    );
+    for r in &rate_missing_with_ctlr {
+        println!("   {r}");
+    }
     println!("-- samples:");
-    for e in &examples { println!("   {e}"); }
+    for e in &examples {
+        println!("   {e}");
+    }
 }

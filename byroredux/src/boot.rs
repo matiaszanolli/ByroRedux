@@ -16,7 +16,9 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use crate::cli_args::{parse_renderer_config, parse_string_arg, parse_vec3_arg};
 use crate::commands::build_command_registry;
 use crate::components::{CellRootIndex, FootstepConfig, InputState, NameIndex, SubtreeCache};
-use crate::interaction::{ActionBindings, ActionState, InteractionState};
+use crate::interaction::{
+    ActionBindings, ActionState, InjectedKeyPulse, InteractionState, InteractionTrace,
+};
 use crate::systems::{
     animate_lights_system, footstep_system, log_stats_system, make_animation_system,
     make_billboard_system, make_transform_propagation_system, make_world_bound_propagation_system,
@@ -345,7 +347,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(InputState::default());
     world.insert_resource(ActionBindings::default());
     world.insert_resource(ActionState::default());
+    world.insert_resource(InjectedKeyPulse::default());
     world.insert_resource(InteractionState::default());
+    world.insert_resource(InteractionTrace::default());
     world.insert_resource(StringPool::new());
     // #1212 / D1-NEW-01 — FormIdPool is the intern table backing
     // `FormIdComponent` and `World::find_by_form_id`. Every

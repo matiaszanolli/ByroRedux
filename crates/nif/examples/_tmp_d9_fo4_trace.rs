@@ -78,7 +78,10 @@ fn main() {
         ),
         ("creature/deathclaw", &["deathclaw"]),
         ("creature/supermutant", &["supermutant"]),
-        ("power armor frame", &["powerarmor\\frame", "armor\\powerarmor"]),
+        (
+            "power armor frame",
+            &["powerarmor\\frame", "armor\\powerarmor"],
+        ),
         ("modular weapon", &["weapons\\10mmpistol", "weapons\\1911"]),
     ];
 
@@ -105,7 +108,10 @@ fn main() {
                 })
                 .take(3)
                 .collect();
-            println!("--- category: {label} ({} matches shown, capped 3)", matches.len());
+            println!(
+                "--- category: {label} ({} matches shown, capped 3)",
+                matches.len()
+            );
             for m in matches {
                 trace_one(&arc, m, &mut pool);
             }

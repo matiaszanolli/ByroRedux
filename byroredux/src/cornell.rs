@@ -520,8 +520,7 @@ fn pbr(color: [f32; 3], metalness: f32, roughness: f32) -> Material {
 /// the sun path (#2477 / REN-D21-2026-08-07-01).
 fn pbr_bsdf(color: [f32; 3], metalness: f32, roughness: f32) -> Material {
     let mut material = pbr(color, metalness, roughness);
-    material.effect_shader_flags |=
-        byroredux_renderer::vulkan::material::material_flag::PBR_BSDF;
+    material.effect_shader_flags |= byroredux_renderer::vulkan::material::material_flag::PBR_BSDF;
     material
 }
 
@@ -980,7 +979,10 @@ mod tests {
         // Every other constructor: flag clear (the pre-fix, still-correct
         // state for the legacy-Lambert probes).
         assert_eq!(matte(WHITE).effect_shader_flags & PBR_BSDF, 0);
-        assert_eq!(pbr([0.9, 0.85, 0.55], 0.5, 0.35).effect_shader_flags & PBR_BSDF, 0);
+        assert_eq!(
+            pbr([0.9, 0.85, 0.55], 0.5, 0.35).effect_shader_flags & PBR_BSDF,
+            0
+        );
 
         // The Disney sibling must set it, and must otherwise match `pbr`'s
         // metalness/roughness/color plumbing exactly.

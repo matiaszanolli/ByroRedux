@@ -437,7 +437,7 @@ fn build_starfield_bs_lighting_minimal() -> Vec<u8> {
         data.extend_from_slice(&v.to_le_bytes()); // emissive_color
     }
     data.extend_from_slice(&1.5f32.to_le_bytes()); // emissive_multiple
-                                                    // NO root_material_path — Starfield doesn't carry it (#2616).
+                                                   // NO root_material_path — Starfield doesn't carry it (#2616).
     data.extend_from_slice(&3u32.to_le_bytes()); // texture_clamp_mode
     data.extend_from_slice(&0.9f32.to_le_bytes()); // alpha
     data.extend_from_slice(&0.0f32.to_le_bytes()); // refraction_strength

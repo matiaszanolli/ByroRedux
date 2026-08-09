@@ -17,10 +17,16 @@ fn main() {
     let mut hist: std::collections::BTreeMap<String, u32> = Default::default();
     let mut null_ref = 0u32;
     for name in &files {
-        let Ok(bytes) = archive.extract(name) else { continue };
-        let Ok(scene) = parse_nif(&bytes) else { continue };
+        let Ok(bytes) = archive.extract(name) else {
+            continue;
+        };
+        let Ok(scene) = parse_nif(&bytes) else {
+            continue;
+        };
         for b in scene.blocks.iter() {
-            let Some(c) = b.as_any().downcast_ref::<NiPSysEmitterCtlr>() else { continue };
+            let Some(c) = b.as_any().downcast_ref::<NiPSysEmitterCtlr>() else {
+                continue;
+            };
             match c.interpolator_ref.index() {
                 None => null_ref += 1,
                 Some(i) => {

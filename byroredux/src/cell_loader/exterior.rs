@@ -810,19 +810,19 @@ pub fn build_exterior_world_context(
     )
     .and_then(|fid| record_index.climates.get(&fid).cloned())
     .inspect(|climate| {
-            log::info!(
-                "Worldspace '{}' climate '{}' ({:08X}): {} weathers, \
+        log::info!(
+            "Worldspace '{}' climate '{}' ({:08X}): {} weathers, \
                  sunrise {:.2}–{:.2}h, sunset {:.2}–{:.2}h",
-                worldspace_key,
-                climate.editor_id,
-                climate.form_id,
-                climate.weathers.len(),
-                climate.sunrise_begin as f32 / 6.0,
-                climate.sunrise_end as f32 / 6.0,
-                climate.sunset_begin as f32 / 6.0,
-                climate.sunset_end as f32 / 6.0,
-            );
-        });
+            worldspace_key,
+            climate.editor_id,
+            climate.form_id,
+            climate.weathers.len(),
+            climate.sunrise_begin as f32 / 6.0,
+            climate.sunrise_end as f32 / 6.0,
+            climate.sunset_begin as f32 / 6.0,
+            climate.sunset_end as f32 / 6.0,
+        );
+    });
     let default_weather = climate.as_ref().and_then(|climate| {
         let best = climate
             .weathers

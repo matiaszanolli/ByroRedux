@@ -7,16 +7,36 @@ use byroredux_nif::header::NifHeader;
 
 fn main() {
     for path in std::env::args().skip(1) {
-        let Ok(archive) = BsaArchive::open(&path) else { continue };
+        let Ok(archive) = BsaArchive::open(&path) else {
+            continue;
+        };
         let short = path.rsplit('/').next().unwrap_or(&path).to_string();
-        for name in archive.list_files().into_iter().filter(|n| n.to_ascii_lowercase().ends_with(".nif")).map(|s| s.to_string()).collect::<Vec<_>>() {
-            let Ok(bytes) = archive.extract(&name) else { continue };
-            let Ok((h, _)) = NifHeader::parse(&bytes) else { continue };
-            if h.user_version_2 == 34 { continue; }
+        for name in archive
+            .list_files()
+            .into_iter()
+            .filter(|n| n.to_ascii_lowercase().ends_with(".nif"))
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+        {
+            let Ok(bytes) = archive.extract(&name) else {
+                continue;
+            };
+            let Ok((h, _)) = NifHeader::parse(&bytes) else {
+                continue;
+            };
+            if h.user_version_2 == 34 {
+                continue;
+            }
             let mut types: Vec<String> = h.block_types.iter().map(|s| s.to_string()).collect();
             types.sort();
             types.dedup();
-            println!("{short} | {name} | ver={} bsver={} uv={} | {}", h.version, h.user_version_2, h.user_version, types.join(","));
+            println!(
+                "{short} | {name} | ver={} bsver={} uv={} | {}",
+                h.version,
+                h.user_version_2,
+                h.user_version,
+                types.join(",")
+            );
         }
     }
 }

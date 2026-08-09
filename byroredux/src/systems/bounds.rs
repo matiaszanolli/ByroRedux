@@ -1,7 +1,51 @@
 //! World-bound propagation — bottom-up fold of `LocalBound` + child bounds.
 
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::{Children, GlobalTransform, LocalBound, Parent, World, WorldBound};
+use byroredux_core::ecs::{
+    Children, GlobalTransform, LocalBound, Parent, SkinnedMesh, World, WorldBound,
+};
+use byroredux_core::math::Mat4;
+
+fn transform_sphere(local: &LocalBound, transform: Mat4) -> WorldBound {
+    let max_scale = transform
+        .x_axis
+        .truncate()
+        .length()
+        .max(transform.y_axis.truncate().length())
+        .max(transform.z_axis.truncate().length());
+    WorldBound::new(
+        transform.transform_point3(local.center),
+        local.radius * max_scale,
+    )
+}
+
+/// Conservatively encloses a linearly-skinned local sphere in world space.
+///
+/// A skinned vertex is a convex combination of the same local point passed
+/// through its bone palettes. Enclosing the sphere transformed by every
+/// palette therefore also encloses every blended result. This matters for
+/// Skyrim's pre-baked FaceGen NIFs: most facial leaves have an identity node
+/// transform at the actor root while their skin palette places them roughly
+/// 120 units higher at `NPC Head`. Using the leaf `GlobalTransform` for those
+/// bounds culls mouth/eye/brow/hair pieces independently as the camera moves.
+fn skinned_world_bound(
+    local: &LocalBound,
+    skin: &SkinnedMesh,
+    mut bone_world: impl FnMut(EntityId) -> Option<Mat4>,
+) -> WorldBound {
+    let mut merged = WorldBound::ZERO;
+    for (bone, bind_inverse) in skin.bones.iter().zip(&skin.bind_inverses) {
+        // Mirror the renderer's unresolved-bone fallback exactly. Keeping the
+        // identity contribution is conservative for the triangle-ribbon error
+        // case and prevents culling from hiding a separate resolution bug.
+        let palette = bone
+            .and_then(&mut bone_world)
+            .map(|world| world * *bind_inverse)
+            .unwrap_or(Mat4::IDENTITY);
+        merged = merged.merge(&transform_sphere(local, palette));
+    }
+    merged
+}
 
 /// Compute each entity's world-space `WorldBound`.
 ///
@@ -37,14 +81,14 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
     let mut post_order: Vec<EntityId> = Vec::new();
     let mut stack: Vec<(EntityId, bool)> = Vec::new();
     // Structural-generation key over the BOUND-RELEVANT structure only:
-    // (LocalBound gen, Parent gen, Children gen). A move changes
+    // (LocalBound gen, Parent gen, Children gen, SkinnedMesh gen). A move changes
     // GlobalTransform *values* (caught by the dirty set), not these. Keyed on
     // these — not `next_entity_id` / `GlobalTransform::len` — so that
     // unbounded per-frame spawns (particles, transient event markers) don't
     // churn the key and defeat the fast path; only adding/removing a bounded
     // entity or reparenting forces a full rebuild. Requires
     // LocalBound/Parent/Children `TRACK_CHANGES`.
-    let mut last_key: Option<(u64, u64, u64)> = None;
+    let mut last_key: Option<(u64, u64, u64, u64)> = None;
     // Persistent scratch for the GlobalTransform dirty-entity list (#1371).
     // Reusing across frames avoids the 0→N re-growth that take_dirty causes.
     let mut g_dirty: Vec<EntityId> = Vec::new();
@@ -68,6 +112,7 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
         let local_q = world.query::<LocalBound>();
         let parent_q = world.query::<Parent>();
         let children_q = world.query::<Children>();
+        let skin_q = world.query::<SkinnedMesh>();
         let Some(g_q) = world.query::<GlobalTransform>() else {
             return;
         };
@@ -85,6 +130,10 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
                 .map(|q| q.storage().structural_generation())
                 .unwrap_or(0),
             children_q
+                .as_ref()
+                .map(|q| q.storage().structural_generation())
+                .unwrap_or(0),
+            skin_q
                 .as_ref()
                 .map(|q| q.storage().structural_generation())
                 .unwrap_or(0),
@@ -128,6 +177,27 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
                 let center = global.translation + global.rotation * (local.center * global.scale);
                 if let Some(wb) = wb_q.get_mut(entity) {
                     *wb = WorldBound::new(center, local.radius * global.scale);
+                }
+            }
+        }
+
+        // A mesh's own GlobalTransform does not describe its final skinned
+        // position. Recompute every skinned leaf whenever any world transform
+        // changed: the dirty entity may be one of its bones rather than the
+        // mesh entity itself. Actor counts are small, and this keeps the static
+        // world's incremental fast path intact.
+        if let Some(ref sq) = skin_q {
+            for (entity, skin) in sq.iter() {
+                let Some(local) = lb_q.get(entity) else {
+                    continue;
+                };
+                let bound = skinned_world_bound(local, skin, |bone| {
+                    g_q.get(bone).map(GlobalTransform::to_matrix)
+                });
+                if bound.radius > 0.0 {
+                    if let Some(wb) = wb_q.get_mut(entity) {
+                        *wb = bound;
+                    }
                 }
             }
         }
@@ -242,8 +312,10 @@ mod tests {
 
     use super::*;
     use byroredux_core::ecs::World;
-    use byroredux_core::ecs::{Children, GlobalTransform, LocalBound, Parent, WorldBound};
-    use byroredux_core::math::{Quat, Vec3};
+    use byroredux_core::ecs::{
+        Children, GlobalTransform, LocalBound, Parent, SkinnedMesh, WorldBound,
+    };
+    use byroredux_core::math::{Mat4, Quat, Vec3};
 
     /// Spawn an entity with a LocalBound + GlobalTransform + empty WorldBound.
     fn spawn_leaf(
@@ -301,6 +373,82 @@ mod tests {
         let wb = wb_q.get(e).unwrap();
         assert!((wb.center - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-5);
         assert!((wb.radius - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn skinned_leaf_bound_uses_bone_palette_instead_of_mesh_transform() {
+        let mut world = World::new();
+        let bone = world.spawn();
+        world.insert(
+            bone,
+            GlobalTransform::new(Vec3::new(5.0, 120.0, -3.0), Quat::IDENTITY, 1.0),
+        );
+        let mesh = spawn_leaf(&mut world, Vec3::ZERO, 1.0, Vec3::ZERO, 2.0);
+        world.insert(
+            mesh,
+            SkinnedMesh::new_with_global(
+                None,
+                vec![Some(bone)],
+                vec![Mat4::IDENTITY],
+                Mat4::IDENTITY,
+            ),
+        );
+
+        let mut sys = make_world_bound_propagation_system();
+        sys(&world, 0.016);
+
+        let bound = *world.query::<WorldBound>().unwrap().get(mesh).unwrap();
+        assert!((bound.center - Vec3::new(5.0, 120.0, -3.0)).length() < 1e-5);
+        assert!((bound.radius - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn skinned_leaf_bound_updates_when_only_its_bone_moves() {
+        let mut world = World::new();
+        let bone = world.spawn();
+        world.insert(bone, GlobalTransform::IDENTITY);
+        let mesh = spawn_leaf(&mut world, Vec3::ZERO, 1.0, Vec3::ZERO, 1.0);
+        world.insert(
+            mesh,
+            SkinnedMesh::new_with_global(
+                None,
+                vec![Some(bone)],
+                vec![Mat4::IDENTITY],
+                Mat4::IDENTITY,
+            ),
+        );
+
+        let mut sys = make_world_bound_propagation_system();
+        sys(&world, 0.016);
+        world
+            .query_mut::<GlobalTransform>()
+            .unwrap()
+            .get_mut(bone)
+            .unwrap()
+            .translation = Vec3::new(0.0, 120.0, 0.0);
+        sys(&world, 0.016);
+
+        let bound = *world.query::<WorldBound>().unwrap().get(mesh).unwrap();
+        assert!((bound.center - Vec3::new(0.0, 120.0, 0.0)).length() < 1e-5);
+    }
+
+    #[test]
+    fn skinned_leaf_bound_encloses_all_bone_palette_spheres() {
+        let local = LocalBound::new(Vec3::ZERO, 1.0);
+        let skin = SkinnedMesh::new_with_global(
+            None,
+            vec![Some(10), Some(20)],
+            vec![Mat4::IDENTITY, Mat4::IDENTITY],
+            Mat4::IDENTITY,
+        );
+        let bound = skinned_world_bound(&local, &skin, |bone| match bone {
+            10 => Some(Mat4::from_translation(Vec3::new(-10.0, 0.0, 0.0))),
+            20 => Some(Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0))),
+            _ => None,
+        });
+
+        assert!((bound.center - Vec3::ZERO).length() < 1e-5);
+        assert!((bound.radius - 11.0).abs() < 1e-5);
     }
 
     #[test]

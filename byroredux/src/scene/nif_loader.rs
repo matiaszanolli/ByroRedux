@@ -33,6 +33,30 @@ use crate::components::{
 };
 use crate::helpers::add_child;
 
+/// Legacy `BSLightingShaderType::SkinTint` value used by Skyrim/FO4 and by
+/// the renderer's skin-material branch. FO76's alternate value is normalized
+/// to this constant by the NIF material importer.
+const MATERIAL_KIND_SKIN_TINT: u32 = 5;
+
+/// Apply a per-NPC FaceGen tint texture only to the actual skin surface.
+///
+/// A FaceGeom NIF contains several independently-authored meshes (head,
+/// mouth, brows, eyes, hairline, and hair). The generated FaceTint DDS is the
+/// diffuse replacement for the SkinTint head mesh only; applying it to every
+/// submesh replaces the eyes/hair/mouth textures with pieces of the face atlas
+/// and produces the layered "mush" visible at close range.
+fn select_facegen_diffuse(
+    authored: Option<String>,
+    diffuse_override: Option<&str>,
+    material_kind: u32,
+) -> Option<String> {
+    if material_kind == MATERIAL_KIND_SKIN_TINT {
+        diffuse_override.map(str::to_owned).or(authored)
+    } else {
+        authored
+    }
+}
+
 /// Parse CLI arguments and load NIF data accordingly.
 ///
 /// Supported flags:
@@ -319,10 +343,10 @@ pub(crate) fn load_nif_bytes_with_skeleton(
     mat_provider: Option<&mut MaterialProvider>,
     external_skeleton: Option<&std::collections::HashMap<std::sync::Arc<str>, EntityId>>,
     // M41.0 Phase 4.x — per-call diffuse override (#2095 / SKY-D3-NEW-03).
-    // Wins over every submesh's NIF-authored diffuse when present. Used
-    // by the pre-baked FaceGen path to bind the per-NPC face-tint DDS in
-    // place of the FaceGeom NIF's baked-in head diffuse; `None` for every
-    // other caller (skeleton / body / armor loads keep their own texture).
+    // Wins over the SkinTint submesh's NIF-authored diffuse when present.
+    // Used by the pre-baked FaceGen path to bind the per-NPC face-tint DDS
+    // to the head while mouth / brows / eyes / hair retain their authored
+    // textures; `None` for every other caller.
     diffuse_override: Option<&str>,
     // M41.0 Phase 3b — optional callback invoked once after the
     // import returns and before the per-mesh GPU upload loop runs.
@@ -782,16 +806,20 @@ pub(crate) fn load_nif_bytes_with_skeleton(
                 .map(derive_normal_map_path)
         });
 
-        // #2095 / SKY-D3-NEW-03 — the per-call diffuse override (pre-baked
-        // FaceGen tint) wins over the NIF-authored diffuse. Applied after
-        // normal-map derivation so a missing normal slot still derives its
-        // `_n.dds` sibling from the head's own diffuse, not the tint DDS.
+        // #2095 / SKY-D3-NEW-03 — the per-call pre-baked FaceGen tint
+        // replaces only the SkinTint head diffuse. A FaceGeom NIF also
+        // contains mouth, brows, eyes, hairline, and hair meshes with their
+        // own authored textures; overriding those is what produced the
+        // close-range layered face "mush". Applied after normal-map
+        // derivation so a missing normal slot still derives its `_n.dds`
+        // sibling from the head's authored diffuse, not the tint DDS.
         // Flows into both the bound `TextureHandle` and the canonical
-        // `Material.texture_path` below, mirroring the REFR-overlay
-        // precedent in `cell_loader::spawn`.
-        owned_textures.base_color = diffuse_override
-            .map(|p| p.to_string())
-            .or(owned_textures.base_color);
+        // `Material.texture_path` below.
+        owned_textures.base_color = select_facegen_diffuse(
+            owned_textures.base_color,
+            diffuse_override,
+            mesh.material.material_kind,
+        );
 
         let tex_handle = resolve_texture_with_clamp(
             ctx,
@@ -1219,5 +1247,53 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         light_count,
         label
     );
-    (count + imported.nodes.len() + light_count, root, node_by_name)
+    (
+        count + imported.nodes.len() + light_count,
+        root,
+        node_by_name,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{select_facegen_diffuse, MATERIAL_KIND_SKIN_TINT};
+
+    const FACE_TINT: &str =
+        "textures\\actors\\character\\facegendata\\facetint\\skyrim.esm\\0001a670.dds";
+
+    #[test]
+    fn facegen_diffuse_override_targets_only_skin_tint_head() {
+        let cases = [
+            (MATERIAL_KIND_SKIN_TINT, "head.dds", FACE_TINT),
+            (0, "mouth.dds", "mouth.dds"),
+            (6, "brows-or-hair.dds", "brows-or-hair.dds"),
+            (16, "eyes.dds", "eyes.dds"),
+        ];
+
+        for (material_kind, authored, expected) in cases {
+            assert_eq!(
+                select_facegen_diffuse(Some(authored.to_owned()), Some(FACE_TINT), material_kind,)
+                    .as_deref(),
+                Some(expected),
+                "material kind {material_kind}",
+            );
+        }
+    }
+
+    #[test]
+    fn skin_tint_keeps_authored_diffuse_without_override() {
+        assert_eq!(
+            select_facegen_diffuse(Some("head.dds".to_owned()), None, MATERIAL_KIND_SKIN_TINT,)
+                .as_deref(),
+            Some("head.dds"),
+        );
+    }
+
+    #[test]
+    fn skin_tint_override_can_supply_missing_authored_diffuse() {
+        assert_eq!(
+            select_facegen_diffuse(None, Some(FACE_TINT), MATERIAL_KIND_SKIN_TINT).as_deref(),
+            Some(FACE_TINT),
+        );
+    }
 }

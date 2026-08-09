@@ -166,8 +166,7 @@ fn synthesize_packed_havok_proxy(
             mesh.skin.is_none()
                 && !mesh.material.is_decal
                 && !mesh.material.alpha_test
-                && mesh.material.material_kind
-                    != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
+                && mesh.material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
                 && !mesh.positions.is_empty()
         })
         .map(|mesh| ProxyMeshGeometry {
@@ -241,8 +240,9 @@ fn synthesize_packed_havok_proxy(
     if !half_extents.is_finite() {
         return None;
     }
-    let half_extents =
-        half_extents.min(Vec3::splat(super::references::RT_ABSOLUTE_PRECISION_CEILING));
+    let half_extents = half_extents.min(Vec3::splat(
+        super::references::RT_ABSOLUTE_PRECISION_CEILING,
+    ));
     Some((center, CollisionShape::Cuboid { half_extents }))
 }
 
@@ -385,6 +385,7 @@ pub(crate) fn spawn_trimesh_collider_ghost(
     pos: Vec3,
     rot: Quat,
     scale: f32,
+    source_form: Option<byroredux_core::form_id::FormId>,
 ) -> bool {
     let Some((shape, body)) = synthesize_static_trimesh(positions, mesh_indices, scale) else {
         return false;
@@ -394,6 +395,12 @@ pub(crate) fn spawn_trimesh_collider_ghost(
     world.insert(ghost, GlobalTransform::new(pos, rot, scale));
     world.insert(ghost, shape);
     world.insert(ghost, body);
+    if let Some(form_id) = source_form {
+        world.insert(
+            ghost,
+            byroredux_core::ecs::components::PhysicsSourceForm(form_id),
+        );
+    }
     true
 }
 
@@ -1807,6 +1814,9 @@ fn spawn_mesh_instance(
         // `spawn_trimesh_collider_ghost`. The render `entity` keeps its
         // MeshHandle and enters BLAS+TLAS normally (RT shadows/GI on
         // FO4/Starfield architecture); the ghost is physics-only.
+        let source_form = world
+            .get::<FormIdComponent>(placement_root)
+            .map(|form_id| form_id.0);
         *synthesized_collision_proxy |= spawn_trimesh_collider_ghost(
             world,
             &mesh.positions,
@@ -1814,6 +1824,7 @@ fn spawn_mesh_instance(
             final_pos,
             final_rot,
             final_scale,
+            source_form,
         );
     }
     // Attach ESM light_data ONLY if the NIF didn't actually spawn
@@ -1883,9 +1894,13 @@ mod synthesize_trimesh_tests {
     };
     use byroredux_core::{
         ecs::{
-            components::{CollisionShape, MeshHandle, MotionType, RenderLayer, RigidBodyData},
+            components::{
+                CollisionShape, MeshHandle, MotionType, PhysicsSourceForm, RenderLayer,
+                RigidBodyData,
+            },
             World,
         },
+        form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId},
         math::{Quat, Vec3},
     };
     use byroredux_nif::import::collision::CollisionAuthoringSummary;
@@ -1924,6 +1939,7 @@ mod synthesize_trimesh_tests {
             Vec3::ZERO,
             Quat::IDENTITY,
             1.0,
+            None,
         ));
 
         let shape_q = world
@@ -1948,6 +1964,33 @@ mod synthesize_trimesh_tests {
             mesh_q.as_ref().is_none_or(|q| !q.contains(entity)),
             "physics floor proxy must not create an extra raster/TLAS instance"
         );
+    }
+
+    #[test]
+    fn placement_trimesh_ghost_keeps_reference_ownership_backlink() {
+        let positions = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let indices = [0u32, 1, 2];
+        let mut world = World::new();
+        let mut pool = FormIdPool::new();
+        let source_form = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(0x1234),
+        });
+
+        assert!(spawn_trimesh_collider_ghost(
+            &mut world,
+            &positions,
+            &indices,
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1.0,
+            Some(source_form),
+        ));
+
+        let backlink = world
+            .query::<PhysicsSourceForm>()
+            .and_then(|query| query.iter().next().map(|(_, source)| *source));
+        assert_eq!(backlink, Some(PhysicsSourceForm(source_form)));
     }
 
     /// `world_scale` bakes into the vertex positions — the physics sync

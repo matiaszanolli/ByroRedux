@@ -54,8 +54,12 @@ fn main() {
             .take(limit)
             .collect();
         for name in names {
-            let Ok(bytes) = archive.extract(&name) else { continue };
-            let Ok(scene) = byroredux_nif::parse_nif(&bytes) else { continue };
+            let Ok(bytes) = archive.extract(&name) else {
+                continue;
+            };
+            let Ok(scene) = byroredux_nif::parse_nif(&bytes) else {
+                continue;
+            };
             n_files += 1;
             for i in 0..scene.blocks.len() {
                 if let Some(sp) = scene.get_as::<BSLightingShaderProperty>(i) {
@@ -110,9 +114,13 @@ fn main() {
     println!("BSLSP stub={lsp_stub} full={lsp_full}");
     println!("  stub suffix hist: {suffix_hist:?}");
     println!("  stub with NO material suffix (path lost): {lsp_stub_no_path}");
-    for s in &none_samples { println!("    none-sample {s}"); }
+    for s in &none_samples {
+        println!("    none-sample {s}");
+    }
     println!("  stub names w/ trailing NUL/ws: {trailing_junk} samples={junk_samples:?}");
     println!("  full w/ material path on name: {lsp_full_matpath}, via root_material_path: {root_fallback_used}");
     println!("  full w/ texture_set_ref: {lsp_full_texset}");
-    println!("BSESP total={esp_total} w/ material path={esp_matpath} w/ source_texture={esp_src_tex}");
+    println!(
+        "BSESP total={esp_total} w/ material path={esp_matpath} w/ source_texture={esp_src_tex}"
+    );
 }

@@ -671,10 +671,7 @@ mod mat_set_tests {
 
         let out = MatSetCommand.execute(&world, &format!("{e} material_flags 32"));
         let joined = out.lines.join("\n");
-        assert!(
-            joined.contains("material_flags = 32"),
-            "got: {joined}"
-        );
+        assert!(joined.contains("material_flags = 32"), "got: {joined}");
 
         let q = world.query::<Material>().unwrap();
         assert_eq!(

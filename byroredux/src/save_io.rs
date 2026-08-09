@@ -2895,7 +2895,7 @@ mod tests {
         "../crates/scripting/src/papyrus_demo/mod.rs",   // RumbleOnActivate (+ RumbleState)
         "../crates/scripting/src/cinematic.rs", // ActorCinematicState, HorseTetherState, CinematicPresentationState + nested types
         "../crates/scripting/src/player_control.rs", // PlayerControlState, ActorControlState (+ PlayerControlSelection)
-        "../crates/scripting/src/fragment.rs",  // FragmentExecutionQueue (+ nested types)
+        "../crates/scripting/src/fragment.rs",       // FragmentExecutionQueue (+ nested types)
     ];
 
     /// Does `line` carry a `#[serde(...)]` attribute that declares

@@ -37,8 +37,7 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
     // cell-load logs. Breakable constraints are included so their existing
     // unsupported-edge diagnostic still fires.
     let has_constraint_authoring = scene.blocks.iter().any(|block| {
-        block.as_any().is::<BhkConstraint>()
-            || block.as_any().is::<BhkBreakableConstraint>()
+        block.as_any().is::<BhkConstraint>() || block.as_any().is::<BhkBreakableConstraint>()
     });
     if !has_constraint_authoring {
         return None;

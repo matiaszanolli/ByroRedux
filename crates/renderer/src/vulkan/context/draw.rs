@@ -714,12 +714,7 @@ fn build_composite_params(
         ],
         inv_view_proj: inv_vp_arr,
         underwater,
-        caustic_flags: [
-            if water_caustic_active { 1.0 } else { 0.0 },
-            0.0,
-            0.0,
-            0.0,
-        ],
+        caustic_flags: [if water_caustic_active { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
     }
 }
 

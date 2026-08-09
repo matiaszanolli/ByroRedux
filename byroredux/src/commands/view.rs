@@ -1,8 +1,88 @@
 //! Camera + selection / picking commands.
 //!
-//! `prid`, `cam.where`, `near`, `pick`, `cam.pos`, `cam.tp`.
+//! `prid`, `cam.where`, `near`, `pick`, `cam.pos`, `cam.tp`,
+//! `interaction.status`, `input.press`.
 
 use super::shared::*;
+
+/// `interaction.status` — inspect the camera-forward target and the last
+/// canonical activation retained past transient event cleanup.
+pub(crate) struct InteractionStatusCommand;
+impl ConsoleCommand for InteractionStatusCommand {
+    fn name(&self) -> &str {
+        "interaction.status"
+    }
+
+    fn description(&self) -> &str {
+        "Show the current interaction prompt and last activation result"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let target = world
+            .try_resource::<crate::interaction::InteractionState>()
+            .and_then(|state| state.target);
+        let trace = world
+            .try_resource::<crate::interaction::InteractionTrace>()
+            .map(|trace| trace.clone())
+            .unwrap_or_default();
+
+        let mut lines = vec!["Interaction status:".to_string()];
+        match target {
+            Some(target) => {
+                lines.push(format!(
+                    "  target={} kind={:?} distance={:.2}",
+                    target.entity, target.kind, target.distance
+                ));
+                lines.push(format!("  prompt=[E] {}", target.kind.verb()));
+            }
+            None => lines.push("  target=none prompt=none".to_string()),
+        }
+        lines.push(format!("  activations={}", trace.activation_count));
+        if let Some(last) = trace.last {
+            lines.push(format!(
+                "  last_target={} kind={:?} activator={} event_emitted={}",
+                last.target.entity,
+                last.target.kind,
+                last.activator
+                    .map(|entity| entity.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                last.event_emitted,
+            ));
+            lines.push(format!("  outcome={}", last.outcome));
+        } else {
+            lines.push("  last_target=none".to_string());
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+/// `input.press activate` — queue one debug/smoke E-key pulse.
+///
+/// The next Update tick maps physical `KeyE` through `ActionBindings` and
+/// derives a normal pressed edge; this command does not call activation or
+/// door transition code directly.
+pub(crate) struct InputPressCommand;
+impl ConsoleCommand for InputPressCommand {
+    fn name(&self) -> &str {
+        "input.press"
+    }
+
+    fn description(&self) -> &str {
+        "Queue a one-frame gameplay input pulse (usage: input.press activate)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        match args.trim().to_ascii_lowercase().as_str() {
+            "activate" | "e" => match crate::interaction::queue_debug_activate_press(world) {
+                Ok(()) => CommandOutput::line(
+                    "input.press: queued KeyE through the normal Activate binding",
+                ),
+                Err(error) => CommandOutput::line(format!("input.press: {error}")),
+            },
+            _ => CommandOutput::line("usage: input.press activate"),
+        }
+    }
+}
 
 /// `prid <entity_id>` — pick a reference (Bethesda console heritage).
 ///

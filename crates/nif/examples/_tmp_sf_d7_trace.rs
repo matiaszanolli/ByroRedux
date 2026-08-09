@@ -24,7 +24,9 @@ impl MeshResolver for MultiArchiveResolver {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let target_path = args.next().expect("usage: <nif-path-in-archive> <archive1> [archive2 ...]");
+    let target_path = args
+        .next()
+        .expect("usage: <nif-path-in-archive> <archive1> [archive2 ...]");
     let archive_paths: Vec<String> = args.collect();
 
     let mut archives = Vec::new();
@@ -35,9 +37,7 @@ fn main() {
         }
     }
 
-    let raw = archives
-        .iter()
-        .find_map(|a| a.extract(&target_path).ok());
+    let raw = archives.iter().find_map(|a| a.extract(&target_path).ok());
     let Some(raw) = raw else {
         println!("NOT FOUND: {}", target_path);
         return;
@@ -68,7 +68,11 @@ fn main() {
         }
         *hist.entry(name).or_insert(0) += 1;
     }
-    println!("block histogram ({} distinct types, {} NiUnknown):", hist.len(), unknown_count);
+    println!(
+        "block histogram ({} distinct types, {} NiUnknown):",
+        hist.len(),
+        unknown_count
+    );
     for (k, v) in &hist {
         println!("  {:>5}  {}", v, k);
     }

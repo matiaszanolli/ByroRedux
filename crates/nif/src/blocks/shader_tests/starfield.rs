@@ -71,7 +71,10 @@ fn parse_bs_lighting_real_starfield_block_is_semantically_valid() {
     // Finite, non-negative emissive — pre-fix this was NaN (decoded from
     // texture_set_ref's 0xFFFFFFFF NULL sentinel one word early).
     for c in prop.emissive_color {
-        assert!(c.is_finite() && c >= 0.0, "emissive component {c} must be finite and non-negative");
+        assert!(
+            c.is_finite() && c >= 0.0,
+            "emissive component {c} must be finite and non-negative"
+        );
     }
     assert_eq!(prop.emissive_color, [1.0, 1.0, 1.0]);
 
@@ -85,7 +88,11 @@ fn parse_bs_lighting_real_starfield_block_is_semantically_valid() {
     );
 
     // Non-zero U-scale — pre-fix this block's uv_scale.x decoded to 0.0.
-    assert!(prop.uv_scale[0] > 0.0, "uv_scale.x must be non-zero, got {}", prop.uv_scale[0]);
+    assert!(
+        prop.uv_scale[0] > 0.0,
+        "uv_scale.x must be non-zero, got {}",
+        prop.uv_scale[0]
+    );
     assert_eq!(prop.uv_scale, [1.0, 1.0]);
 
     // sf1_crcs must be members of the known BSShaderCRC32 set — pre-fix

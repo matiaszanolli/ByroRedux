@@ -381,8 +381,7 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
         } => {
             let (a1, p1, pv1, a2, p2, pv2, amin, amax) = if !flip {
                 (
-                    *axis_a, *perp_a, *pivot_a, *axis_b, *perp_b, *pivot_b, *min_angle,
-                    *max_angle,
+                    *axis_a, *perp_a, *pivot_a, *axis_b, *perp_b, *pivot_b, *min_angle, *max_angle,
                 )
             } else {
                 (

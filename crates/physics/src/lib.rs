@@ -36,5 +36,6 @@ pub use sync::{
 };
 pub use water::{buoyancy_force, submerged_fraction, PhysicsWaterConstants};
 pub use world::{
-    CharacterMoveParams, CharacterMoveResult, NearbyCollider, PhysicsWorld, PHYSICS_DT,
+    CharacterMoveParams, CharacterMoveResult, NearbyCollider, PhysicsRayHit, PhysicsWorld,
+    PHYSICS_DT,
 };

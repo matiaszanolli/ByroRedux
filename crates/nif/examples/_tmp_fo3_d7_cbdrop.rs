@@ -1,8 +1,8 @@
 use byroredux_bsa::BsaArchive;
+use byroredux_nif::anim::import_kf;
 use byroredux_nif::blocks::controller::NiControllerSequence;
 use byroredux_nif::blocks::interpolator::NiTransformInterpolator;
 use byroredux_nif::parse_nif;
-use byroredux_nif::anim::import_kf;
 
 fn main() {
     let bsa = std::env::args().nth(1).unwrap();
@@ -21,11 +21,15 @@ fn main() {
     let mut sample = Vec::new();
     for p in &files {
         let Ok(bytes) = a.extract(p) else { continue };
-        let Ok(scene) = parse_nif(&bytes) else { continue };
+        let Ok(scene) = parse_nif(&bytes) else {
+            continue;
+        };
         let mut file_cb = 0usize;
         let mut file_null = 0usize;
         for b in &scene.blocks {
-            let Some(seq) = b.as_any().downcast_ref::<NiControllerSequence>() else { continue };
+            let Some(seq) = b.as_any().downcast_ref::<NiControllerSequence>() else {
+                continue;
+            };
             seq_total += 1;
             for cb in &seq.controlled_blocks {
                 // resolve controller type loosely: count all cbs
@@ -46,7 +50,9 @@ fn main() {
         ch_total += ch;
         if ch == 0 && file_cb > 0 {
             files_all_dropped += 1;
-            if sample.len() < 12 { sample.push(format!("{p} cb={file_cb} null={file_null}")); }
+            if sample.len() < 12 {
+                sample.push(format!("{p} cb={file_cb} null={file_null}"));
+            }
         }
     }
     println!("kf files: {}", files.len());
@@ -55,5 +61,7 @@ fn main() {
     println!("  cb -> NiTransformInterpolator with NULL data_ref: {nulldata_cb}");
     println!("imported transform channels: {ch_total}");
     println!("files where every channel dropped: {files_all_dropped}");
-    for s in sample { println!("  {s}"); }
+    for s in sample {
+        println!("  {s}");
+    }
 }

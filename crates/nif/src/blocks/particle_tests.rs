@@ -161,8 +161,7 @@ fn parse_particle_system_rejects_junk_num_modifiers() {
         .expect_err("junk num_modifiers must short-circuit");
     let msg = err.to_string();
     assert!(
-        msg.contains("exceeds hard cap")
-            || msg.contains("only") && msg.contains("bytes remain"),
+        msg.contains("exceeds hard cap") || msg.contains("only") && msg.contains("bytes remain"),
         "expected bound-check rejection, got: {msg}"
     );
 }

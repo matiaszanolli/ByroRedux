@@ -219,7 +219,8 @@ fn unresolvable_bone_ref_falls_back_to_synthetic_name() {
         ..NifScene::default()
     };
     let shape = bs_geometry_with_skin(2);
-    let skin = extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data()).expect("must still resolve");
+    let skin =
+        extract_skin_bs_geometry(&scene, &shape, &empty_mesh_data()).expect("must still resolve");
     assert_eq!(skin.bones.len(), 2);
     assert_eq!(skin.bones[0].name.as_ref(), "Spine");
     assert_eq!(
@@ -316,7 +317,10 @@ fn bs_geometry_skin_weights_plumbed_through_when_present() {
         skin.vertex_bone_weights[1][1]
     );
     let sum: f32 = skin.vertex_bone_weights[1].iter().sum();
-    assert!((sum - 1.0).abs() < 1e-4, "renormalized sum must be ~1.0, got {sum}");
+    assert!(
+        (sum - 1.0).abs() < 1e-4,
+        "renormalized sum must be ~1.0, got {sum}"
+    );
 }
 
 /// A vertex authoring more than 4 influences keeps only the top 4 by
@@ -346,9 +350,15 @@ fn bs_geometry_skin_weights_keeps_top_four_by_weight() {
         "must keep the 4 highest-weight bones (5,4,3,2), descending"
     );
     let w = skin.vertex_bone_weights[0];
-    assert!(w[0] > w[1] && w[1] > w[2] && w[2] > w[3], "weights must stay descending: {w:?}");
+    assert!(
+        w[0] > w[1] && w[1] > w[2] && w[2] > w[3],
+        "weights must stay descending: {w:?}"
+    );
     let sum: f32 = w.iter().sum();
-    assert!((sum - 1.0).abs() < 1e-4, "renormalized sum must be ~1.0, got {sum}");
+    assert!(
+        (sum - 1.0).abs() < 1e-4,
+        "renormalized sum must be ~1.0, got {sum}"
+    );
 }
 
 /// A vertex count mismatch between `skin_weights` and the mesh's own
@@ -360,8 +370,7 @@ fn bs_geometry_skin_weights_vertex_count_mismatch_falls_back_to_empty() {
     let scene = two_bone_skin_scene();
     let shape = bs_geometry_with_skin(3);
     // 1 skin_weights row but 2 vertices — mismatch.
-    let mesh_data =
-        mesh_data_with_weights(2, 1, vec![vec![bone_weight(0, 65535)]]);
+    let mesh_data = mesh_data_with_weights(2, 1, vec![vec![bone_weight(0, 65535)]]);
     let skin = extract_skin_bs_geometry(&scene, &shape, &mesh_data)
         .expect("bone resolution must still succeed despite the weight mismatch");
 

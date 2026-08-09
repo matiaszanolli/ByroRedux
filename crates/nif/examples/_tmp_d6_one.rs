@@ -12,13 +12,31 @@ fn main() {
     let clips = byroredux_nif::anim::import_kf(&scene);
     println!("clips imported: {}", clips.len());
     for c in &clips {
-        println!("  '{}' dur={} channels={} float={} bool={} textkeys={}", c.name, c.duration, c.channels.len(), c.float_channels.len(), c.bool_channels.len(), c.text_keys.len());
+        println!(
+            "  '{}' dur={} channels={} float={} bool={} textkeys={}",
+            c.name,
+            c.duration,
+            c.channels.len(),
+            c.float_channels.len(),
+            c.bool_channels.len(),
+            c.text_keys.len()
+        );
     }
     for b in &scene.blocks {
-        let Some(seq) = b.as_any().downcast_ref::<NiControllerSequence>() else { continue };
-        println!("seq '{}' start={} stop={} cb={}", seq.name.as_deref().unwrap_or("?"), seq.start_time, seq.stop_time, seq.controlled_blocks.len());
+        let Some(seq) = b.as_any().downcast_ref::<NiControllerSequence>() else {
+            continue;
+        };
+        println!(
+            "seq '{}' start={} stop={} cb={}",
+            seq.name.as_deref().unwrap_or("?"),
+            seq.start_time,
+            seq.stop_time,
+            seq.controlled_blocks.len()
+        );
         for (n, cb) in seq.controlled_blocks.iter().enumerate().take(6) {
-            let Some(idx) = cb.interpolator_ref.index() else { continue };
+            let Some(idx) = cb.interpolator_ref.index() else {
+                continue;
+            };
             if let Some(i) = scene.get_as::<NiTransformInterpolator>(idx) {
                 println!("   cb{n} node={:?} type={:?} data_null={} pose t=({:.3},{:.3},{:.3}) r=({:.3},{:.3},{:.3},{:.3}) s={:.3}",
                     cb.node_name.as_deref(), cb.controller_type.as_deref(),

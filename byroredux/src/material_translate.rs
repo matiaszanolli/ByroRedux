@@ -416,8 +416,8 @@ mod tests {
     fn non_fire_refraction_kinds_never_leak_refraction_strength_into_ior() {
         let default_ior = byroredux_core::ecs::components::material::DEFAULT_DIELECTRIC_IOR;
         for kind in [
-            0,                                             // ordinary lit material
-            byroredux_renderer::MATERIAL_KIND_GLASS,        // 100
+            0,                                               // ordinary lit material
+            byroredux_renderer::MATERIAL_KIND_GLASS,         // 100
             byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER, // 101
         ] {
             for strength in [0.0, 0.3, 1.0] {
@@ -699,10 +699,7 @@ mod canonical_completeness_harness {
         assert_eq!(material.z_function, 2);
         assert_eq!(material.metalness, 0.42);
         assert_eq!(material.roughness, 0.58);
-        assert_eq!(
-            material.translucency_subsurface_color,
-            [0.21, 0.22, 0.23]
-        );
+        assert_eq!(material.translucency_subsurface_color, [0.21, 0.22, 0.23]);
         assert_eq!(material.translucency_transmissive_scale, 0.31);
         assert_eq!(material.translucency_turbulence, 0.41);
         assert_eq!(material.lighting_effect_1, 0.51);
@@ -726,7 +723,10 @@ mod canonical_completeness_harness {
             material.detail_map.as_deref(),
             Some("Textures/Test/detail.dds")
         );
-        assert_eq!(material.gloss_map.as_deref(), Some("Textures/Test/gloss.dds"));
+        assert_eq!(
+            material.gloss_map.as_deref(),
+            Some("Textures/Test/gloss.dds")
+        );
         assert_eq!(material.dark_map.as_deref(), Some("Textures/Test/dark.dds"));
         assert_eq!(
             material.greyscale_texture.as_deref(),

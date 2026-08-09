@@ -21,7 +21,9 @@ fn main() {
     let mut sample: Vec<String> = Vec::new();
     for p in &files {
         let Ok(bytes) = a.extract(p) else { continue };
-        let Ok(scene) = parse_nif(&bytes) else { continue };
+        let Ok(scene) = parse_nif(&bytes) else {
+            continue;
+        };
         let mut any = false;
         for b in &scene.blocks {
             if let Some(i) = b.as_any().downcast_ref::<NiTransformInterpolator>() {

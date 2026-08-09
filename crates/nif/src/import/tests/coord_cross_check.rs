@@ -16,8 +16,8 @@
 //! — `C` transcribed directly from `zup_matrix_to_yup_quat`'s own doc
 //! comment, not re-derived.
 
-use super::super::coord::zup_matrix_to_yup_quat;
 use super::super::collision::{decompose_havok_matrix, havok_quat_to_engine};
+use super::super::coord::zup_matrix_to_yup_quat;
 use super::super::mesh::ni_transform_to_yup_matrix;
 use crate::types::{NiMatrix3, NiPoint3, NiTransform};
 use byroredux_core::math::{Mat3, Quat, Vec3};
@@ -72,7 +72,11 @@ fn all_four_zup_to_yup_rotation_paths_agree() {
     // column-major). Identity translation/scale isolates the rotation.
     let transform = NiTransform {
         rotation: ni_mat,
-        translation: NiPoint3 { x: 0.0, y: 0.0, z: 0.0 },
+        translation: NiPoint3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
         scale: 1.0,
     };
     let mat4 = ni_transform_to_yup_matrix(&transform);

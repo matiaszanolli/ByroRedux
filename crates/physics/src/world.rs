@@ -79,6 +79,19 @@ pub struct NearbyCollider {
     pub aabb_max: [f32; 3],
 }
 
+/// First solid collider hit by a gameplay ray query.
+///
+/// The parent body is intentionally exposed instead of a physics-internal
+/// user-data convention: engine callers can resolve it back to the owning ECS
+/// entity through [`crate::RapierHandles`]. Parentless colliders remain valid
+/// occluders and report `None`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PhysicsRayHit {
+    pub body: Option<rapier3d::prelude::RigidBodyHandle>,
+    /// Time of impact in world units along the normalized ray direction.
+    pub distance: f32,
+}
+
 /// Rapier simulation container + fixed-timestep accumulator.
 ///
 /// Held as an ECS resource. Query via `world.resource_mut::<PhysicsWorld>()`.
@@ -574,6 +587,51 @@ impl PhysicsWorld {
             .map(|(_handle, toi)| origin.y - toi)
     }
 
+    /// Cast a normalized gameplay ray against solid colliders.
+    ///
+    /// Sensors are excluded because trigger volumes do not obstruct sight.
+    /// `excluded_body` is normally the player capsule: a camera ray can begin
+    /// inside that body, which would otherwise return an immediate self-hit.
+    /// The query pipeline must have been refreshed after collider insertion,
+    /// matching [`cast_ray_down`](Self::cast_ray_down)'s contract.
+    pub fn cast_ray(
+        &self,
+        origin: byroredux_core::math::Vec3,
+        direction: byroredux_core::math::Vec3,
+        max_distance: f32,
+        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
+    ) -> Option<PhysicsRayHit> {
+        if max_distance <= 0.0 || !max_distance.is_finite() {
+            return None;
+        }
+        let direction = direction.normalize_or_zero();
+        if direction.length_squared() == 0.0 {
+            return None;
+        }
+
+        let ray = Ray::new(
+            point![origin.x, origin.y, origin.z],
+            vector![direction.x, direction.y, direction.z],
+        );
+        let mut filter = QueryFilter::default().exclude_sensors();
+        if let Some(body) = excluded_body {
+            filter = filter.exclude_rigid_body(body);
+        }
+        self.query_pipeline
+            .cast_ray(
+                &self.bodies,
+                &self.colliders,
+                &ray,
+                max_distance,
+                /* solid = */ true,
+                filter,
+            )
+            .map(|(collider, distance)| PhysicsRayHit {
+                body: self.colliders.get(collider).and_then(|hit| hit.parent()),
+                distance,
+            })
+    }
+
     /// Like [`cast_ray_down`](Self::cast_ray_down), but sweeps a capsule of
     /// the given dimensions instead of a zero-width ray. A bare ray can pass
     /// clean through a gap beside a sloped or narrow piece of architecture
@@ -881,6 +939,58 @@ mod tests {
             RigidBodyType::KinematicPositionBased
         );
         assert!(world.pending_wake());
+    }
+
+    #[test]
+    fn gameplay_ray_reports_owner_and_can_exclude_player_body() {
+        let mut world = PhysicsWorld::new();
+        let player = world.bodies.insert(RigidBodyBuilder::fixed().build());
+        world.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(5.0, 5.0, 5.0)
+                .translation(vector![0.0, 0.0, -10.0])
+                .build(),
+            player,
+            &mut world.bodies,
+        );
+        let wall = world.bodies.insert(RigidBodyBuilder::fixed().build());
+        world.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(20.0, 20.0, 2.0)
+                .translation(vector![0.0, 0.0, -100.0])
+                .build(),
+            wall,
+            &mut world.bodies,
+        );
+        world.update_query_pipeline();
+
+        let self_hit = world
+            .cast_ray(Vec3::ZERO, Vec3::NEG_Z, 200.0, None)
+            .expect("player collider is the first hit");
+        assert_eq!(self_hit.body, Some(player));
+
+        let wall_hit = world
+            .cast_ray(Vec3::ZERO, Vec3::NEG_Z, 200.0, Some(player))
+            .expect("excluding the player exposes the wall");
+        assert_eq!(wall_hit.body, Some(wall));
+        assert!((wall_hit.distance - 98.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn gameplay_ray_ignores_trigger_sensors() {
+        let mut world = PhysicsWorld::new();
+        let trigger = world.bodies.insert(RigidBodyBuilder::fixed().build());
+        world.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(20.0, 20.0, 2.0)
+                .translation(vector![0.0, 0.0, -20.0])
+                .sensor(true)
+                .build(),
+            trigger,
+            &mut world.bodies,
+        );
+        world.update_query_pipeline();
+
+        assert!(world
+            .cast_ray(Vec3::ZERO, Vec3::NEG_Z, 100.0, None)
+            .is_none());
     }
 
     /// Test helper: insert a 100×2×100 BU slab at `(x, y, z)` with the

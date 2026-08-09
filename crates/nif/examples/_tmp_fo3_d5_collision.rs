@@ -1,11 +1,11 @@
 //! TEMP scratch: FO3 dimension-5 (Havok collision import) survey.
 use byroredux_bsa::BsaArchive;
+use byroredux_core::ecs::components::collision::{CollisionShape, MotionType};
 use byroredux_nif::blocks::collision::*;
 use byroredux_nif::import::collision::{
     examine_collision_kind, extract_collision, summarize_collision_authoring, CollisionAuthoring,
 };
 use byroredux_nif::parse_nif;
-use byroredux_core::ecs::components::collision::{CollisionShape, MotionType};
 use std::collections::BTreeMap;
 
 fn shape_name(s: &CollisionShape) -> &'static str {
@@ -45,7 +45,10 @@ fn main() {
     let mut blend_extract_ok = 0usize;
 
     for path in std::env::args().skip(1) {
-        let Ok(arc) = BsaArchive::open(&path) else { eprintln!("skip {path}"); continue };
+        let Ok(arc) = BsaArchive::open(&path) else {
+            eprintln!("skip {path}");
+            continue;
+        };
         let files: Vec<String> = arc
             .list_files()
             .into_iter()
@@ -54,11 +57,17 @@ fn main() {
             .collect();
         eprintln!("{path}: {} nifs", files.len());
         for name in &files {
-            let Ok(bytes) = arc.extract(name) else { continue };
+            let Ok(bytes) = arc.extract(name) else {
+                continue;
+            };
             let hdr = byroredux_nif::header::NifHeader::parse(&bytes).ok();
-            let Ok(scene) = parse_nif(&bytes) else { continue };
+            let Ok(scene) = parse_nif(&bytes) else {
+                continue;
+            };
             nfiles += 1;
-            *havok_scale_hist.entry(format!("{:.4}", scene.havok_scale)).or_default() += 1;
+            *havok_scale_hist
+                .entry(format!("{:.4}", scene.havok_scale))
+                .or_default() += 1;
             let sum = summarize_collision_authoring(&scene);
             if sum.classic + sum.new_physics + sum.phantom > 0 {
                 files_with_coll += 1;
@@ -68,12 +77,20 @@ fn main() {
                 Some((h, _)) => h
                     .block_type_indices
                     .iter()
-                    .map(|&i| h.block_types.get(i as usize).map(|s| s.to_string()).unwrap_or_default())
+                    .map(|&i| {
+                        h.block_types
+                            .get(i as usize)
+                            .map(|s| s.to_string())
+                            .unwrap_or_default()
+                    })
                     .collect(),
                 None => Vec::new(),
             };
             for (i, block) in scene.blocks.iter().enumerate() {
-                let tn = names.get(i).cloned().unwrap_or_else(|| block.block_type_name().to_string());
+                let tn = names
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| block.block_type_name().to_string());
                 if tn.starts_with("bhk") || tn.starts_with("hk") {
                     *blocktype_hist.entry(tn.clone()).or_default() += 1;
                 }
@@ -87,14 +104,21 @@ fn main() {
                     for r in &cl.sub_shapes {
                         if let Some(ci) = r.index() {
                             if let Some(cb) = scene.get(ci) {
-                                let n = names.get(ci).cloned().unwrap_or_else(|| cb.block_type_name().to_string());
-                                if n != "NiUnknown" { ok += 1; }
+                                let n = names
+                                    .get(ci)
+                                    .cloned()
+                                    .unwrap_or_else(|| cb.block_type_name().to_string());
+                                if n != "NiUnknown" {
+                                    ok += 1;
+                                }
                             }
                         }
                     }
                     *cvxlist_resolved_children.entry(ok).or_default() += 1;
                 }
-                if block.as_any().is::<BhkMultiSphereShape>() { multisphere_count += 1; }
+                if block.as_any().is::<BhkMultiSphereShape>() {
+                    multisphere_count += 1;
+                }
                 if let Some(ls) = block.as_any().downcast_ref::<BhkListShape>() {
                     list_total_children += ls.sub_shape_refs.len();
                 }
@@ -104,7 +128,10 @@ fn main() {
                 // collision-object blocks (equivalently reachable via AVObject.collision_ref)
                 if !(block.as_any().is::<BhkCollisionObject>()
                     || block.as_any().is::<BhkNPCollisionObject>()
-                    || block.as_any().is::<BhkPCollisionObject>()) { continue; }
+                    || block.as_any().is::<BhkPCollisionObject>())
+                {
+                    continue;
+                }
                 let cref = byroredux_nif::types::BlockRef(i as u32);
                 let kind = examine_collision_kind(&scene, cref);
                 let kname = match kind {
@@ -128,7 +155,9 @@ fn main() {
                                 MotionType::CharacterKinematic => "CharKinematic",
                             };
                             *motion_hist.entry(m.to_string()).or_default() += 1;
-                            if names.get(cref.index().unwrap()).map(|s| s.as_str()) == Some("bhkBlendCollisionObject") {
+                            if names.get(cref.index().unwrap()).map(|s| s.as_str())
+                                == Some("bhkBlendCollisionObject")
+                            {
                                 blend_extract_ok += 1;
                             }
                         }
@@ -150,7 +179,8 @@ fn main() {
                                     .and_then(|rb| rb.shape_ref.index())
                                     .map(|si| names.get(si).cloned().unwrap_or_default())
                                     .unwrap_or_else(|| "<no shape>".into());
-                                classic_fail_files.push(format!("{name} coll@{coll_i} body={inner} shape={shp}"));
+                                classic_fail_files
+                                    .push(format!("{name} coll@{coll_i} body={inner} shape={shp}"));
                             }
                         }
                     }
@@ -173,5 +203,7 @@ fn main() {
     println!("list total children = {list_total_children}");
     println!("blend collision objects = {blend_objs}, extract ok = {blend_extract_ok}");
     println!("--- sample classic failures ---");
-    for f in &classic_fail_files { println!("{f}"); }
+    for f in &classic_fail_files {
+        println!("{f}");
+    }
 }

@@ -890,10 +890,10 @@ mod tests {
         let data: Vec<u8> = vec![0u8; 8];
         let stream = NifStream::new(&data, &header);
         let count = 8u32; // 8 * size_of::<[f32; 16]>() == 512 > 8 remaining
-        let err = stream
-            .allocate_vec_sized::<[f32; 16]>(count)
-            .expect_err("allocate_vec_sized must reject a count whose byte \
-                          product exceeds the bytes actually remaining");
+        let err = stream.allocate_vec_sized::<[f32; 16]>(count).expect_err(
+            "allocate_vec_sized must reject a count whose byte \
+                          product exceeds the bytes actually remaining",
+        );
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
 
@@ -927,9 +927,9 @@ mod tests {
         let count = (MAX_SINGLE_ALLOC_BYTES / 64 + 1) as u32;
         let data: Vec<u8> = vec![0u8; MAX_SINGLE_ALLOC_BYTES + 64];
         let stream = NifStream::new(&data, &header);
-        let err = stream
-            .allocate_vec_sized::<[f32; 16]>(count)
-            .expect_err("allocate_vec_sized must reject a byte product past MAX_SINGLE_ALLOC_BYTES");
+        let err = stream.allocate_vec_sized::<[f32; 16]>(count).expect_err(
+            "allocate_vec_sized must reject a byte product past MAX_SINGLE_ALLOC_BYTES",
+        );
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 

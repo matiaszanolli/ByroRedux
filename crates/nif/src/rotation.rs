@@ -152,7 +152,10 @@ pub fn sanitize_rotation(m: NiMatrix3) -> NiMatrix3 {
         repair_rotation_svd_or_identity(&m)
     } else {
         if is_non_orthonormal(&m) {
-            warn_scaled_rotation_discarded(&m, "determinant in valid-rotation window, passed through unchanged");
+            warn_scaled_rotation_discarded(
+                &m,
+                "determinant in valid-rotation window, passed through unchanged",
+            );
         }
         m
     }
@@ -200,7 +203,10 @@ mod tests {
             rows: [[2.0, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 1.0]],
         };
         assert!((det(&scaled) - 1.0).abs() < 1e-6, "fixture must have det=1");
-        assert!(!is_degenerate_rotation(&scaled), "det-only check must miss this");
+        assert!(
+            !is_degenerate_rotation(&scaled),
+            "det-only check must miss this"
+        );
         assert!(is_non_orthonormal(&scaled), "column check must catch it");
     }
 

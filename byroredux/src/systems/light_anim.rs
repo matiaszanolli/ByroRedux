@@ -178,7 +178,11 @@ pub(crate) fn translate_light(
     // carry a FOV at all (see `LightData::fov_degrees`), not an authored
     // zero-degree cone, so it falls back to xEdit's own default rather
     // than producing a degenerate zero-width cone.
-    let fov_degrees = if ld.fov_degrees > 0.0 { ld.fov_degrees } else { 90.0 };
+    let fov_degrees = if ld.fov_degrees > 0.0 {
+        ld.fov_degrees
+    } else {
+        90.0
+    };
     let outer_angle = (fov_degrees * 0.5).to_radians();
 
     LightGeometry {

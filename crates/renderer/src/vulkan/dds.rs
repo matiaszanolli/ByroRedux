@@ -39,7 +39,7 @@ const DXGI_FORMAT_R16G16B16A16_UNORM: u32 = 11; // 8 B/px — gas-giant gradient
 const DXGI_FORMAT_R8G8B8A8_UNORM: u32 = 28;
 const DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: u32 = 29;
 const DXGI_FORMAT_R8G8B8A8_SNORM: u32 = 31; // 4 B/px — chargen head normal maps
-// Single-channel uncompressed (#1074 / FO4-D2-008)
+                                            // Single-channel uncompressed (#1074 / FO4-D2-008)
 const DXGI_FORMAT_R16_UNORM: u32 = 56; // 2 bytes/px — heightmaps, mono masks
 const DXGI_FORMAT_R8_UNORM: u32 = 61; // 1 byte/px  — single-channel masks
 const DXGI_FORMAT_BC1_UNORM: u32 = 71;

@@ -22,15 +22,27 @@ fn main() {
     let n = imported.nodes.len();
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (i, nd) in imported.nodes.iter().enumerate() {
-        if let Some(p) = nd.parent_node { children[p].push(i); }
+        if let Some(p) = nd.parent_node {
+            children[p].push(i);
+        }
     }
-    let name_of = |i: usize| imported.nodes[i].name.as_deref().unwrap_or("<unnamed>").to_string();
+    let name_of = |i: usize| {
+        imported.nodes[i]
+            .name
+            .as_deref()
+            .unwrap_or("<unnamed>")
+            .to_string()
+    };
     let mut idx_by_name: HashMap<&str, usize> = HashMap::new();
     for (i, nd) in imported.nodes.iter().enumerate() {
-        if let Some(nm) = nd.name.as_ref() { idx_by_name.entry(nm.as_ref()).or_insert(i); }
+        if let Some(nm) = nd.name.as_ref() {
+            idx_by_name.entry(nm.as_ref()).or_insert(i);
+        }
     }
 
-    let bodies: HashSet<usize> = rag.bodies.iter()
+    let bodies: HashSet<usize> = rag
+        .bodies
+        .iter()
         .filter_map(|b| idx_by_name.get(b.bone_name.as_ref()).copied())
         .collect();
 
@@ -38,12 +50,25 @@ fn main() {
     let mut covered: HashSet<usize> = bodies.clone();
     let mut stack: Vec<usize> = bodies.iter().copied().collect();
     while let Some(p) = stack.pop() {
-        for &c in &children[p] { if covered.insert(c) { stack.push(c); } }
+        for &c in &children[p] {
+            if covered.insert(c) {
+                stack.push(c);
+            }
+        }
     }
     let uncovered: Vec<usize> = (0..n).filter(|i| !covered.contains(i)).collect();
-    println!("skeleton nodes={n} bodies={} covered={} uncovered={}", bodies.len(), covered.len(), uncovered.len());
+    println!(
+        "skeleton nodes={n} bodies={} covered={} uncovered={}",
+        bodies.len(),
+        covered.len(),
+        uncovered.len()
+    );
     for i in &uncovered {
-        println!("  UNCOVERED: {} (parent {:?})", name_of(*i), imported.nodes[*i].parent_node.map(name_of));
+        println!(
+            "  UNCOVERED: {} (parent {:?})",
+            name_of(*i),
+            imported.nodes[*i].parent_node.map(name_of)
+        );
     }
 
     // Now: the vanilla body meshes' skin bones.
@@ -53,8 +78,14 @@ fn main() {
         r"meshes\characters\_male\righthand.nif",
         r"meshes\characters\head\headhuman.nif",
     ] {
-        let Ok(mb) = arc.extract(mesh_path) else { println!("{mesh_path}: not found"); continue; };
-        let Ok(msc) = parse_nif(&mb) else { println!("{mesh_path}: parse fail"); continue; };
+        let Ok(mb) = arc.extract(mesh_path) else {
+            println!("{mesh_path}: not found");
+            continue;
+        };
+        let Ok(msc) = parse_nif(&mb) else {
+            println!("{mesh_path}: parse fail");
+            continue;
+        };
         let mut p2 = StringPool::new();
         let mi = import_nif_scene(&msc, &mut p2);
         let mut uncov_bones: HashSet<String> = HashSet::new();
@@ -65,15 +96,25 @@ fn main() {
                     total_bones.insert(b.name.to_string());
                     match idx_by_name.get(b.name.as_ref()) {
                         Some(i) if covered.contains(i) => {}
-                        Some(_) => { uncov_bones.insert(b.name.to_string()); }
-                        None => { uncov_bones.insert(format!("{} (NOT IN SKELETON)", b.name)); }
+                        Some(_) => {
+                            uncov_bones.insert(b.name.to_string());
+                        }
+                        None => {
+                            uncov_bones.insert(format!("{} (NOT IN SKELETON)", b.name));
+                        }
                     }
                 }
             }
         }
-        println!("{mesh_path}: {} skin bones, {} NOT covered by ragdoll writeback", total_bones.len(), uncov_bones.len());
+        println!(
+            "{mesh_path}: {} skin bones, {} NOT covered by ragdoll writeback",
+            total_bones.len(),
+            uncov_bones.len()
+        );
         let mut v: Vec<_> = uncov_bones.into_iter().collect();
         v.sort();
-        for b in v { println!("    uncovered skin bone: {b}"); }
+        for b in v {
+            println!("    uncovered skin bone: {b}");
+        }
     }
 }

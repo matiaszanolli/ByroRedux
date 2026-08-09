@@ -1586,14 +1586,12 @@ mod tests {
         let cheap_path_pos = src
             .find("pass.recreate_framebuffers(")
             .expect("the format-stable path must still exist");
-        let destroy_pos = src
-            .find("pass.destroy(&self.device);")
-            .expect(
-                "the format-changed arm must destroy the old render pass / \
+        let destroy_pos = src.find("pass.destroy(&self.device);").expect(
+            "the format-changed arm must destroy the old render pass / \
                  framebuffers before reconstructing — a bare reassignment would \
                  leak the raw vk::RenderPass / vk::Framebuffer handles, which \
                  have no Drop impl (#2475)",
-            );
+        );
         let rebuild_pos = src
             .find("super::super::egui_pass::EguiPass::new(")
             .expect("the format-changed arm must reconstruct via EguiPass::new");
