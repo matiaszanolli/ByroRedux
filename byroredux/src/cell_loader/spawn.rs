@@ -460,6 +460,14 @@ pub(super) fn spawn_placed_instances(
     // #2250 (REN-D22-01) — canonical shadow-projection type, decoded the
     // same way as `light_animation_flags` above (`canonical_light_shadow_flags`).
     light_shadow_flags: u32,
+    // #2439 (NIFAL-D2-01) — geometry half of the same translation
+    // boundary (`crate::systems::translate_light`), decoded by the
+    // caller (which has `game` and `ref_rot` both available) the same
+    // way `light_animation_flags`/`light_shadow_flags` above already are.
+    // `LightKind::Point` / `[0.0; 3]` / `0.0` when `light_data` is `None`.
+    light_kind: byroredux_core::ecs::LightKind,
+    light_direction: [f32; 3],
+    light_outer_angle: f32,
     refr_overlay: Option<&RefrTextureOverlay>,
     clip_handle: Option<u32>,
     // #renderlayer — base content-class derived from the REFR's base
@@ -581,6 +589,9 @@ pub(super) fn spawn_placed_instances(
         light_data,
         light_animation_flags,
         light_shadow_flags,
+        light_kind,
+        light_direction,
+        light_outer_angle,
         placement_root,
         collision_fallback,
         spawned_nif_lights,
@@ -1185,6 +1196,10 @@ struct PlacementCtx<'a> {
     light_data: Option<&'a esm::cell::LightData>,
     light_animation_flags: u32,
     light_shadow_flags: u32,
+    // #2439 (NIFAL-D2-01) — see `spawn_placed_instances`'s matching params.
+    light_kind: byroredux_core::ecs::LightKind,
+    light_direction: [f32; 3],
+    light_outer_angle: f32,
     placement_root: byroredux_core::ecs::EntityId,
     collision_fallback: MissingCollisionFallback,
     spawned_nif_lights: usize,
@@ -1294,6 +1309,9 @@ fn spawn_mesh_instance(
         light_data,
         light_animation_flags,
         light_shadow_flags,
+        light_kind,
+        light_direction,
+        light_outer_angle,
         placement_root,
         collision_fallback,
         spawned_nif_lights,
@@ -1804,6 +1822,13 @@ fn spawn_mesh_instance(
                     flags: ld.flags,
                     falloff_exponent: ld.falloff_exponent,
                     shadow_flags: light_shadow_flags,
+                    // #2439 (NIFAL-D2-01) — geometry half, decoded by the
+                    // caller via `crate::systems::translate_light` and
+                    // threaded through `PlacementCtx` alongside
+                    // `light_shadow_flags` above.
+                    kind: light_kind,
+                    direction: light_direction,
+                    outer_angle: light_outer_angle,
                     ..Default::default()
                 },
             );

@@ -124,6 +124,17 @@ pub(crate) fn build_static_object_from_subs(
                 } else {
                     0.0
                 };
+                // #2439 / NIFAL-D2-01 — FOV sits in the shared 24-byte
+                // prefix (bytes 20-23), present at the same offset in
+                // BOTH the pre-Skyrim 32-byte and Skyrim+ 48-byte
+                // layouts (unlike period/amplitude below, which are
+                // Skyrim+-only). Gate purely on length, not
+                // `is_skyrim_plus_layout`.
+                let fov_degrees = if sub.data.len() >= 24 {
+                    read_f32(20)
+                } else {
+                    0.0
+                };
                 let is_skyrim_plus_layout = sub.data.len() >= 48;
                 let period_secs = if is_skyrim_plus_layout {
                     read_f32(28)
@@ -148,6 +159,7 @@ pub(crate) fn build_static_object_from_subs(
                     period_secs,
                     intensity_amplitude,
                     movement_amplitude,
+                    fov_degrees,
                     xpwr_form_id: None,
                 });
             }
@@ -168,14 +180,17 @@ pub(crate) fn build_static_object_from_subs(
             //   { 8} ByteColors Color    (RGBA; RGB at 8/9/10)
             //   {12} UInt16     Flags    (Skyrim `DATA` stores u32)
             //   {16} Float      Falloff Exponent
+            //   {20} Float      FOV (#2439 / NIFAL-D2-01 — same relative
+            //                   position as the Skyrim/FO4 DATA arm above)
             //   {28} Float      Flicker Period
             //   {32} Float      Intensity Amplitude
             //   {36} Float      Movement Amplitude
-            // (FOV / near-clip / PBR temperature+lumens / adaptive-light
-            // tail at 20..76 are parsed by xEdit but not yet consumed by
-            // our `LightData`.) Gating on the `DAT2` signature is itself
-            // the Starfield discriminator — Skyrim/FO4 LIGH use `DATA`, so
-            // the `DATA` arm above stays the FO4/Skyrim path untouched.
+            // (Near-clip / PBR temperature+lumens / adaptive-light tail at
+            // 24..76, excluding 28-39 above, are parsed by xEdit but not yet
+            // consumed by our `LightData`.) Gating on the `DAT2` signature is
+            // itself the Starfield discriminator — Skyrim/FO4 LIGH use
+            // `DATA`, so the `DATA` arm above stays the FO4/Skyrim path
+            // untouched.
             b"DAT2" if is_ligh && sub.data.len() >= 11 => {
                 let read_f32 = |off: usize| -> f32 {
                     f32::from_le_bytes([
@@ -196,6 +211,12 @@ pub(crate) fn build_static_object_from_subs(
                 };
                 let falloff_exponent = if sub.data.len() >= 20 {
                     read_f32(16)
+                } else {
+                    0.0
+                };
+                // #2439 / NIFAL-D2-01 — same offset as the DATA arm above.
+                let fov_degrees = if sub.data.len() >= 24 {
+                    read_f32(20)
                 } else {
                     0.0
                 };
@@ -222,6 +243,7 @@ pub(crate) fn build_static_object_from_subs(
                     period_secs,
                     intensity_amplitude,
                     movement_amplitude,
+                    fov_degrees,
                     xpwr_form_id: None,
                 });
             }
@@ -745,6 +767,7 @@ mod ligh_dat2_tests {
         assert!((ld.color[2] - 100.0 / 255.0).abs() < 1e-6, "B at offset 10");
         assert_eq!(ld.flags, 0x0010, "Flags is a U16 at offset 12");
         assert_eq!(ld.falloff_exponent, 2.0, "Falloff Exponent at offset 16");
+        assert_eq!(ld.fov_degrees, 90.0, "FOV at DAT2 offset 20 (#2439 / NIFAL-D2-01)");
         assert_eq!(ld.period_secs, 1.5, "Flicker Period at offset 28");
         assert_eq!(
             ld.intensity_amplitude, 0.25,
@@ -836,6 +859,35 @@ mod ligh_dat2_tests {
         assert_eq!(ld.period_secs, 2.0, "flicker period at offset 28");
         assert_eq!(ld.intensity_amplitude, 0.25, "intensity amplitude at offset 32");
         assert_eq!(ld.movement_amplitude, 0.1, "movement amplitude at offset 36");
+    }
+
+    /// #2439 / NIFAL-D2-01 regression: FOV (bytes 20-23) sits in the
+    /// prefix SHARED by the pre-Skyrim 32-byte and Skyrim+ 48-byte `DATA`
+    /// layouts (unlike period/amplitude, which are Skyrim+-only) — must
+    /// decode at both lengths, not just the 48-byte one.
+    #[test]
+    fn fov_decodes_from_data_at_both_pre_skyrim_and_skyrim_plus_lengths() {
+        let mut pre_skyrim = vec![0u8; 32];
+        pre_skyrim[4..8].copy_from_slice(&300u32.to_le_bytes());
+        pre_skyrim[20..24].copy_from_slice(&35.0f32.to_le_bytes());
+        let obj = build_static_object_from_subs(0x5, b"LIGH", false, &[sub(b"DATA", pre_skyrim)])
+            .expect("pre-Skyrim LIGH DATA must produce a StaticObject");
+        assert_eq!(
+            obj.light_data.expect("must yield light_data").fov_degrees,
+            35.0,
+            "FOV at DATA offset 20, 32-byte pre-Skyrim layout"
+        );
+
+        let mut skyrim_plus = vec![0u8; 48];
+        skyrim_plus[4..8].copy_from_slice(&300u32.to_le_bytes());
+        skyrim_plus[20..24].copy_from_slice(&35.0f32.to_le_bytes());
+        let obj = build_static_object_from_subs(0x6, b"LIGH", false, &[sub(b"DATA", skyrim_plus)])
+            .expect("Skyrim+ LIGH DATA must produce a StaticObject");
+        assert_eq!(
+            obj.light_data.expect("must yield light_data").fov_degrees,
+            35.0,
+            "FOV at DATA offset 20, 48-byte Skyrim+ layout"
+        );
     }
 
     /// A non-LIGH record carrying a `DAT2` (e.g. FO3/FNV AMMO weapon data)

@@ -94,11 +94,48 @@ half / BSGeometry UDEC3) all converge to a single `Vec<[f32;3]>` + `Vec<u32>` in
 renderer space. This is the cleanest category — it is the model the others should
 match. No `Option` leaks; the consumer (`MeshRegistry::upload`) is format-agnostic.
 
-### Skinning — **converged**
+### Skinning — **half-stale (2026-08-07): loose-NIF path only**
 
 `ImportedSkin` emits **global** bone indices (#613 — partition-local remap done at
 extraction) and carries the global skin transform (M41 Phase 1b.x). Palette skinning
-is game-agnostic downstream.
+is game-agnostic downstream — but only for the entities that actually get a
+`SkinnedMesh` component, and until #2440 (NIFAL-D2-02) that was the loose-NIF
+path exclusively.
+
+`ImportedMesh.skin` is populated identically by the shared mesh extractors on
+BOTH load paths, but only `scene/nif_loader.rs` (the sole `SkinnedMesh::
+new_with_global` call site) translates it into the canonical component —
+resolving each bone name against a per-placement `node_by_name` map the
+loose-NIF loader builds while spawning the full NiNode hierarchy as entities.
+The cell loader (`cell_loader/spawn.rs`) has no equivalent per-placement node
+map at all — it flattens each NIF to a mesh list (see the "Nodes" entry above
+for the same structural split re: `billboard_mode`/#2206) and reads
+`mesh.skin` exactly once, as a boolean negative filter for the
+architecture-trimesh collider fallback. Any cell-placed REFR with skinned
+geometry (Skyrim/FO4 wind-animated cloth banners, chains, hanging/moveable
+statics using `NiSkinInstance`) spawns with skin data parsed and per-vertex
+weights uploaded, but no palette binding — it renders frozen in bind pose.
+NPC actors are unaffected; they always route through the loose-NIF path.
+
+Not fixed inline: building `SkinnedMesh` correctly on the cell-loader path
+needs bone nodes to exist as entities in the first place, which requires the
+cell loader to grow a per-placement node-entity map it does not have today —
+a materially larger, riskier change than collapsing an existing translation
+onto a shared boundary (contrast #2439's `translate_light`, three producers
+converging on data already flowing through each site). Recorded here per
+#2440's own suggested resolution rather than attempted as a rushed structural
+change to the cell loader's spawn architecture.
+
+**Residual note (#2441 / NIFAL-D2-03):** `SkinnedMesh.bones` /
+`skeleton_root` carry `Option`s past the translation boundary
+(`crates/core/src/ecs/components/skinned_mesh.rs`) rather than resolving
+before construction — `compute_palette_into` substitutes `Mat4::IDENTITY`
+for `None` entries. This is a terminal "bone-name lookup against the
+placement's node map failed" sentinel, logged at the producer
+(`scene/nif_loader.rs`'s unresolved-bone warning), not a resolve-later leak
+that some future pass is expected to close out. Recorded explicitly so a
+future audit reading this section doesn't have to rediscover that distinction
+from the code.
 
 ### Lights — **converged**
 
@@ -116,6 +153,26 @@ Fixed by adding the three fields to `LightSource` and wiring
 `GpuLight.color_type.w` / `direction_angle` from them at the render boundary
 (`byroredux/src/render/lights.rs`); the renderer-side point/spot/directional
 support this unblocks already existed (`lighting.glsl`).
+
+Was **half-stale, one tier up, 2026-08-02 → 2026-08-07** (NIFAL-D2-01 /
+#2439): #2205 fixed the field, but only the direct-`NiPointLight`/
+`NiSpotLight` NIF-import producer ever populated it — the three ESM-LIGH-
+sourced producers (`cell_loader/spawn.rs`, `cell_loader/references/mod.rs`
+×2) hand-copied radius/color/flags/falloff and hard-defaulted the rest, so
+every ESM-placed spotlight in every supported game still rendered as a full
+omnidirectional point light. `LightData` had no `fov_degrees` field (LIGH
+DATA/DAT2 byte 20-23, present but unread) and the codebase had no constant
+for xEdit's `'Spot Light'` shape bit (0x200) — only the DISTINCT `'Shadow
+Spotlight'` projection-technique bit (0x400, `LIGHT_FLAG_SHADOW_SPOTLIGHT`)
+existed, which the audit's own suggested fix would have conflated with the
+shape signal. Fixed by adding `LIGHT_FLAG_SPOT` (0x200) and a
+`translate_light(ld, game, ref_rot) -> LightGeometry` boundary
+(`byroredux/src/systems/light_anim.rs`, sibling to
+`canonical_light_shadow_flags`) that all three ESM producers now collapse
+onto; `direction` is `ref_rot` applied to Gamebryo's `(1, 0, 0)` `NiSpotLight`
+model direction (verified against `gamebryo-v32/Include/NiSpotLight.h`, NOT
+local -Z), the same convention already validated for `NiDirectionalLight` via
+`euler_zup_to_quat_yup_tests.rs`.
 
 ### Nodes — **triaged (2026-05-28)**
 
@@ -242,8 +299,23 @@ Both entry points — `anim::import_kf` (KF sequences) and `anim::import_embedde
 cores (the `extract_*` wrappers are ControlledBlock→block-index adapters, not
 duplicated logic), and `anim_convert::convert_nif_clip` is the single NIF→core
 `AnimationClip` boundary. The canonical type is the ECS `AnimationClip`
-(`crates/core/src/animation/`) — no parallel struct. Every per-game variation is
-resolved at import: B-spline compressed interpolators (FO3/FNV + Skyrim+) are
+(`crates/core/src/animation/`).
+
+Correction (#2442 / NIFAL-D2-04, 2026-08-07): "no parallel struct" above
+overstated it — `byroredux_nif::anim::AnimationClip` (`crates/nif/src/anim/
+types.rs`) is a distinct, identically-named raw-tier type the tier model
+explicitly permits (§1's canonical-type rule is about ECS components, not raw
+parse-tier structs). It's correctly type-qualified at every call site and
+never reaches the ECS unconverted — `anim_convert::convert_nif_clip` is still
+the one boundary that turns it into the canonical type. The defect was only
+doc precision: a grep-based "single producer" check for `AnimationClip` is
+ambiguous between the two same-named structs without reading this note.
+Reworded rather than renaming the raw type to `ImportedAnimationClip` (the
+`Imported*` convention every other raw-tier type in this doc follows) — a
+rename is still open as a low-risk future cleanup if the ambiguity proves
+costly in practice; not required to close this finding.
+
+Every per-game variation is resolved at import: B-spline compressed interpolators (FO3/FNV + Skyrim+) are
 sampled to linear keys, XYZ-Euler rotation keys are composed to quaternions,
 TBC/Hermite tangents are decoded, and Z-up→Y-up runs once — the player/stack
 consumers see only game-agnostic quaternion keys with no `Option`/era branches.

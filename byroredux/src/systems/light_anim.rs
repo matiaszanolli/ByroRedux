@@ -24,8 +24,9 @@
 // (see the note in `animate_lights_system`). Re-enabling it means adding
 // back the `Transform` write pass and its import.
 use byroredux_core::ecs::{
-    EntityId, LightFlicker, LightSource, World, LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW,
-    LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW, LIGHT_FLAG_SHADOW_MASK,
+    EntityId, LightFlicker, LightKind, LightSource, World, LIGHT_FLAG_FLICKER,
+    LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW, LIGHT_FLAG_SHADOW_MASK,
+    LIGHT_FLAG_SPOT,
 };
 use byroredux_plugin::esm::reader::GameKind;
 
@@ -102,6 +103,89 @@ pub(crate) fn canonical_light_shadow_flags(game: GameKind, source_flags: u32) ->
         _ => LIGHT_FLAG_SHADOW_MASK,
     };
     source_flags & source_shadow_mask
+}
+
+/// The geometry half of a canonical [`LightSource`] derived from an ESM
+/// LIGH `DATA`/`DAT2` record: [`LightSource::kind`], [`LightSource::
+/// direction`], [`LightSource::outer_angle`]. Sibling boundary to
+/// [`canonical_light_shadow_flags`] / [`canonical_light_animation_flags`]
+/// above — same "translate once at the game boundary, not per-producer"
+/// shape, closing the gap #2205 (NIFAL-D3-01) left for every ESM-sourced
+/// light: only the direct-`NiPointLight`/`NiSpotLight` NIF-import path
+/// populated these fields; every ESM-LIGH producer hand-copied
+/// radius/color/flags/falloff and hard-defaulted the rest, so no
+/// ESM-placed spotlight could ever render as anything but a full
+/// omnidirectional point light. #2439 / NIFAL-D2-01.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct LightGeometry {
+    pub kind: LightKind,
+    pub direction: [f32; 3],
+    pub outer_angle: f32,
+}
+
+/// See [`LightGeometry`]. `ref_rot` is the placing REFR's own rotation
+/// (already converted to the engine's Y-up quaternion convention via
+/// `euler_zup_to_quat_yup_refr`) — these ESM-sourced lights carry no
+/// per-light NIF node of their own, so the REFR's placement rotation is
+/// the only orientation signal available for the emitted cone.
+pub(crate) fn translate_light(
+    ld: &byroredux_plugin::esm::cell::LightData,
+    game: GameKind,
+    ref_rot: byroredux_core::math::Quat,
+) -> LightGeometry {
+    // `LIGHT_FLAG_SPOT` (bit 9, 0x200, xEdit's `'Spot Light'`) is the
+    // light-SHAPE signal — distinct from `LIGHT_FLAG_SHADOW_SPOTLIGHT`
+    // (bit 10, 0x400, `canonical_light_shadow_flags` above), which is a
+    // shadow-projection-TECHNIQUE choice. See `LIGHT_FLAG_SPOT`'s own doc
+    // for why conflating the two (as this boundary's absence previously
+    // let every producer implicitly do, by deriving no `kind` signal at
+    // all) is wrong.
+    //
+    // `GameKind::Starfield` excluded for the same reason
+    // `canonical_light_shadow_flags` excludes it: its DAT2 flags word is
+    // an undifferentiated `wbUnknown` block with no verified bit
+    // positions (see that function's doc) — no positive evidence to
+    // decode `LIGHT_FLAG_SPOT` from whatever our `DAT2` reader currently
+    // surfaces as `flags` either. `Point`, not a guess.
+    let is_spot = game != GameKind::Starfield && ld.flags & LIGHT_FLAG_SPOT != 0;
+    if !is_spot {
+        return LightGeometry {
+            kind: LightKind::Point,
+            direction: [0.0, 0.0, 0.0],
+            outer_angle: 0.0,
+        };
+    }
+
+    // Gamebryo's `NiSpotLight` model direction is `(1, 0, 0)` — the
+    // FIRST column of the world rotation matrix, NOT local -Z (verified
+    // directly against `gamebryo-v32/Include/NiSpotLight.h`: "The model
+    // location of the light is (0,0,0)... The model direction of the
+    // light is (1,0,0). The world direction is the first column of the
+    // world rotation matrix."). Identical convention to
+    // `NiDirectionalLight`, already validated for XCLL directional
+    // lighting (`euler_zup_to_quat_yup_tests.rs`,
+    // `matches_refr_placement_rotation_of_model_direction`) — `ref_rot`
+    // is the same Z-up-Euler→Y-up-quaternion conversion, confirmed there
+    // to reproduce the correct engine-space direction when applied to
+    // the `(1, 0, 0)` model direction.
+    let direction = (ref_rot * byroredux_core::math::Vec3::new(1.0, 0.0, 0.0)).to_array();
+
+    // xEdit's FOV field (`Core/wbDefinitionsTES5.pas`, dev-4.1.6:
+    // `wbFloat('FOV', ..., wbNormalizeToRange(0.001, 160), 90)`) is the
+    // FULL cone angle in degrees, default 90°. `LightSource.outer_angle`
+    // is documented as the outer cone HALF-angle in radians — halve
+    // before converting. `0.0` means the DATA subrecord was too short to
+    // carry a FOV at all (see `LightData::fov_degrees`), not an authored
+    // zero-degree cone, so it falls back to xEdit's own default rather
+    // than producing a degenerate zero-width cone.
+    let fov_degrees = if ld.fov_degrees > 0.0 { ld.fov_degrees } else { 90.0 };
+    let outer_angle = (fov_degrees * 0.5).to_radians();
+
+    LightGeometry {
+        kind: LightKind::Spot,
+        direction,
+        outer_angle,
+    }
 }
 
 /// Damping multiplier applied to the raw `intensity_amplitude`
@@ -232,6 +316,112 @@ pub(crate) fn animate_lights_system(world: &World, _dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_core::math::Quat;
+
+    fn light_data(flags: u32, fov_degrees: f32) -> byroredux_plugin::esm::cell::LightData {
+        byroredux_plugin::esm::cell::LightData {
+            radius: 512.0,
+            color: [1.0, 1.0, 1.0],
+            flags,
+            period_secs: 0.0,
+            intensity_amplitude: 0.0,
+            movement_amplitude: 0.0,
+            falloff_exponent: 0.0,
+            fov_degrees,
+            xpwr_form_id: None,
+        }
+    }
+
+    /// #2439 / NIFAL-D2-01 — the dominant case pre-fix: no `LIGHT_FLAG_SPOT`
+    /// bit means `Point`, with a genuinely zero (not authored-but-unread)
+    /// direction/outer_angle, matching `LightSource::default()`.
+    #[test]
+    fn translate_light_defaults_to_point_when_spot_flag_clear() {
+        let ld = light_data(0, 90.0);
+        let geom = translate_light(&ld, GameKind::Skyrim, Quat::IDENTITY);
+        assert_eq!(geom.kind, LightKind::Point);
+        assert_eq!(geom.direction, [0.0, 0.0, 0.0]);
+        assert_eq!(geom.outer_angle, 0.0);
+    }
+
+    /// The core regression: `LIGHT_FLAG_SPOT` set must produce
+    /// `LightKind::Spot` with the authored FOV halved into radians —
+    /// xEdit's FOV is the FULL cone angle in degrees
+    /// (`wbNormalizeToRange(0.001, 160)`, default 90), `outer_angle` is
+    /// documented as the outer cone HALF-angle in radians.
+    #[test]
+    fn translate_light_derives_spot_kind_and_half_angle_from_fov() {
+        let ld = light_data(LIGHT_FLAG_SPOT, 90.0);
+        let geom = translate_light(&ld, GameKind::Skyrim, Quat::IDENTITY);
+        assert_eq!(geom.kind, LightKind::Spot);
+        let expected_half_angle = std::f32::consts::FRAC_PI_4; // 90° / 2, in radians
+        assert!(
+            (geom.outer_angle - expected_half_angle).abs() < 1e-6,
+            "expected {expected_half_angle}, got {}",
+            geom.outer_angle
+        );
+    }
+
+    /// `fov_degrees == 0.0` means the DATA subrecord was too short to
+    /// carry a FOV at all (see `LightData::fov_degrees`'s doc) — must
+    /// fall back to xEdit's own 90° default, not produce a degenerate
+    /// zero-width cone.
+    #[test]
+    fn translate_light_falls_back_to_xedit_default_fov_when_unset() {
+        let ld = light_data(LIGHT_FLAG_SPOT, 0.0);
+        let geom = translate_light(&ld, GameKind::Skyrim, Quat::IDENTITY);
+        assert_eq!(geom.kind, LightKind::Spot);
+        let expected_half_angle = std::f32::consts::FRAC_PI_4; // 90° default / 2
+        assert!(
+            (geom.outer_angle - expected_half_angle).abs() < 1e-6,
+            "expected xEdit's 90° default halved, got {}",
+            geom.outer_angle
+        );
+    }
+
+    /// Direction must come from `ref_rot` applied to Gamebryo's `(1, 0, 0)`
+    /// `NiSpotLight` model direction (verified against
+    /// `gamebryo-v32/Include/NiSpotLight.h`), not local -Z. Identity
+    /// rotation is the trivial case: direction passes through unchanged.
+    #[test]
+    fn translate_light_direction_is_model_plus_x_through_ref_rot() {
+        let ld = light_data(LIGHT_FLAG_SPOT, 90.0);
+        let geom = translate_light(&ld, GameKind::Skyrim, Quat::IDENTITY);
+        assert!((geom.direction[0] - 1.0).abs() < 1e-6);
+        assert!(geom.direction[1].abs() < 1e-6);
+        assert!(geom.direction[2].abs() < 1e-6);
+    }
+
+    /// Parity with `euler_zup_to_quat_yup_tests.rs`'s own validated
+    /// convention (`xcll_dir_yup`/`matches_refr_placement_rotation_of_
+    /// model_direction`): a non-trivial `ref_rot` must rotate the
+    /// `(1, 0, 0)` model direction exactly like that test's XCLL path
+    /// does, since both derive from the same Gamebryo model-direction
+    /// contract.
+    #[test]
+    fn translate_light_direction_matches_refr_rotation_of_model_direction() {
+        let ld = light_data(LIGHT_FLAG_SPOT, 90.0);
+        let ref_rot = crate::cell_loader::euler_zup_to_quat_yup(0.25, 0.4, 0.0);
+        let geom = translate_light(&ld, GameKind::Skyrim, ref_rot);
+        let expected = ref_rot * byroredux_core::math::Vec3::new(1.0, 0.0, 0.0);
+        assert!((geom.direction[0] - expected.x).abs() < 1e-6);
+        assert!((geom.direction[1] - expected.y).abs() < 1e-6);
+        assert!((geom.direction[2] - expected.z).abs() < 1e-6);
+    }
+
+    /// Starfield's DAT2 flags word has no verified bit-9 equivalent (same
+    /// "undifferentiated wbUnknown block" gap `canonical_light_shadow_flags`
+    /// already excludes it for) — must stay `Point` even with the bit set,
+    /// matching the "0 is deliberate, not a guess" policy this file uses
+    /// consistently for every Starfield LIGH-flag boundary.
+    #[test]
+    fn translate_light_excludes_starfield_even_with_spot_bit_set() {
+        let ld = light_data(LIGHT_FLAG_SPOT, 90.0);
+        let geom = translate_light(&ld, GameKind::Starfield, Quat::IDENTITY);
+        assert_eq!(geom.kind, LightKind::Point);
+        assert_eq!(geom.direction, [0.0, 0.0, 0.0]);
+        assert_eq!(geom.outer_angle, 0.0);
+    }
 
     fn flicker(flags: u32, amplitude: f32, period: f32) -> LightFlicker {
         LightFlicker {

@@ -1219,6 +1219,10 @@ fn spawn_synth_child(
             let entity = world.spawn();
             world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
             world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
+            // #2439 / NIFAL-D2-01 — geometry half (kind/direction/
+            // outer_angle) of the same translation boundary the shadow
+            // flags below already route through.
+            let geometry = crate::systems::translate_light(ld, game, ref_rot);
             world.insert(
                 entity,
                 LightSource {
@@ -1227,6 +1231,9 @@ fn spawn_synth_child(
                     flags: ld.flags,
                     falloff_exponent: ld.falloff_exponent,
                     shadow_flags: crate::systems::canonical_light_shadow_flags(game, ld.flags),
+                    kind: geometry.kind,
+                    direction: geometry.direction,
+                    outer_angle: geometry.outer_angle,
                     ..Default::default()
                 },
             );
@@ -1305,6 +1312,13 @@ fn spawn_synth_child(
             let entity = world.spawn();
             world.insert(entity, Transform::from_translation(ref_pos));
             world.insert(entity, GlobalTransform::new(ref_pos, Quat::IDENTITY, 1.0));
+            // #2439 / NIFAL-D2-01 — geometry half of the translation
+            // boundary. Uses the REFR's OWN authored `ref_rot`, not the
+            // `Quat::IDENTITY` this fxlight sprite entity's own transform
+            // carries above — the light's cone direction follows the
+            // authored placement rotation regardless of how the visual
+            // effect sprite is oriented.
+            let geometry = crate::systems::translate_light(ld, game, ref_rot);
             world.insert(
                 entity,
                 LightSource {
@@ -1313,6 +1327,9 @@ fn spawn_synth_child(
                     flags: ld.flags,
                     falloff_exponent: ld.falloff_exponent,
                     shadow_flags: crate::systems::canonical_light_shadow_flags(game, ld.flags),
+                    kind: geometry.kind,
+                    direction: geometry.direction,
+                    outer_angle: geometry.outer_angle,
                     ..Default::default()
                 },
             );
@@ -1522,6 +1539,13 @@ fn spawn_synth_child(
             local: LocalFormId(placed_ref.form_id),
         }
     };
+    // #2439 (NIFAL-D2-01) — geometry half of the same translation
+    // boundary the animation/shadow flags below already route through.
+    let light_geometry = stat
+        .light_data
+        .as_ref()
+        .map(|ld| crate::systems::translate_light(ld, game, ref_rot))
+        .unwrap_or_default();
     let (placement_root, count, spawn_stats) = spawn_placed_instances(
         world,
         ctx,
@@ -1539,6 +1563,9 @@ fn spawn_synth_child(
             .as_ref()
             .map(|ld| crate::systems::canonical_light_shadow_flags(game, ld.flags))
             .unwrap_or(0),
+        light_geometry.kind,
+        light_geometry.direction,
+        light_geometry.outer_angle,
         refr_overlay.as_ref(),
         clip_handle,
         stat.record_type.render_layer(),

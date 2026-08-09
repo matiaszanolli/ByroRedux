@@ -359,6 +359,12 @@ impl PrecombinedSpawnJob {
                 None,
                 0,
                 0,
+                // #2439 (NIFAL-D2-01) — precombined architecture carries no
+                // LIGH data (`light_data: None` above), so these are unused
+                // defaults, matching the `0, 0` animation/shadow flags above.
+                byroredux_core::ecs::LightKind::Point,
+                [0.0, 0.0, 0.0],
+                0.0,
                 None,
                 None,
                 RenderLayer::Architecture,

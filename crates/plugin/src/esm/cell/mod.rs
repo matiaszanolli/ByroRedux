@@ -602,6 +602,19 @@ pub struct LightData {
     /// pre-Skyrim) so downstream consumers can pick a sensible fall-
     /// through without re-reading the LIGH bytes.
     pub falloff_exponent: f32,
+    /// #2439 (NIFAL-D2-01) — LIGH DATA bytes 20-23 (both the pre-Skyrim
+    /// 32-byte and Skyrim+ 48-byte layouts share this offset — see
+    /// `support.rs`'s DATA-arm layout comment) / DAT2 offset 20
+    /// (Starfield). The FULL spotlight cone angle in DEGREES — verified
+    /// against xEdit's `Core/wbDefinitionsTES5.pas` (dev-4.1.6):
+    /// `wbFloat('FOV', ..., wbNormalizeToRange(0.001, 160), 90)`, a
+    /// [0.001°, 160°] full-angle range with a 90° default. `0.0` means
+    /// "not present in this subrecord" (too-short DATA); the
+    /// translation boundary (`byroredux/src/systems/light_anim.rs::
+    /// translate_light`) falls back to the xEdit default (90°) rather
+    /// than treating `0.0` as an authored zero-degree cone. Meaningful
+    /// only when `LIGHT_FLAG_SPOT` is set in `flags` — otherwise unread.
+    pub fov_degrees: f32,
     /// FO4 `XPWR` powered-state FormID — references the circuit node
     /// this light connects to (Sanctuary fuse boxes, Vault 111
     /// breaker-panel switch). `None` on every non-FO4 record and on

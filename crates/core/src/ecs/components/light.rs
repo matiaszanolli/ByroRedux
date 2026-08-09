@@ -149,6 +149,21 @@ pub const LIGHT_FLAG_PULSE: u32 = 0x0000_0080;
 /// definitions — see `LightFlicker::animation_flags` below.)
 pub const LIGHT_FLAG_PULSE_SLOW: u32 = 0x0000_0100;
 
+/// #2439 (NIFAL-D2-01) — the light-SHAPE bit: this LIGH is authored as a
+/// cone-emitting spotlight, independent of whether it casts a shadow.
+/// Verified directly against xEdit's `Core/wbDefinitionsTES5.pas`
+/// (dev-4.1.6): bit 9 is named `'Spot Light'`, bit 10 (0x400,
+/// [`LIGHT_FLAG_SHADOW_SPOTLIGHT`] below) is the DISTINCT
+/// `'Shadow Spotlight'` bit — a shadow-projection-technique choice, not
+/// a light-shape signal. The two are easy to conflate (a shadow-casting
+/// spotlight sets both), but treating 0x400 as "is this a spotlight" —
+/// the mistake `translate_light`'s predecessor state made by never
+/// deriving `LightKind::Spot` at all — would also misclassify any
+/// non-cone light some content sets 0x400 on for shadow-technique
+/// reasons alone. `byroredux/src/systems/light_anim.rs::translate_light`
+/// is the sole consumer.
+pub const LIGHT_FLAG_SPOT: u32 = 0x0000_0200;
+
 // ── Skyrim/Fallout shadow behavior bits ─────────────────────────────
 //
 // These are raw LIGH DATA flags, not animation behaviors. xEdit's TES5
