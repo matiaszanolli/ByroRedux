@@ -73,7 +73,7 @@ layout(set = 0, binding = 4) uniform CameraUBO {
     vec4 skyTint;       // xyz = TOD/weather zenith colour, w = reserved. #1028.
     vec4 sunDirection;
     vec4 dofParams;      // x = aperture half-radius, y = focus_dist, zw = reserved. 0.0 = pinhole.
-    vec4 renderOrigin;   // #markarth-precision — camera-relative render origin (added to inv_view_proj world reconstruction below). Keeps CameraUBO == sizeof(GpuCamera).
+    vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin (added to inv_view_proj world reconstruction below). w = FSR one-frame-reset flag (NOT padding — #2164/L-10).
 };
 
 // R1 Phase 6 — `GpuInstance` collapsed to per-DRAW data only.
@@ -167,7 +167,32 @@ void main() {
     // accumulator must decay, not just caustic-source pixels.
     if (pc.decayOnly == 1u) {
         uint v = imageLoad(causticAccum, pixel).r;
-        imageStore(causticAccum, pixel, uvec4(uint(float(v) * pc.decayFactor), 0u, 0u, 0u));
+        float decayedF = float(v) * pc.decayFactor;
+        uint dv0 = uint(decayedF);
+        // #2506 — residual of #2239: that fix stochastic-rounded the
+        // DEPOSIT path's truncation but left this paired decay multiply
+        // flooring. A plain `uint()` here discards a mean 0.5 fixed-point
+        // ULP per texel per frame — a constant additive drain that pulls
+        // the EMA's steady state below its true value and, like #2239,
+        // can permanently zero any texel whose true per-frame deposit
+        // sits below one ULP. Same fix: hash a per-(texel, frame)
+        // threshold and round up when the truncated fraction exceeds it,
+        // so the multiply is unbiased in expectation. Distinct hash
+        // constants from the deposit-path dither below — the two run in
+        // mutually exclusive dispatches (`decayOnly` selects one or the
+        // other), so decorrelation isn't required for correctness, only
+        // for not reading as a copy-paste of the same call.
+        uint fcu = uint(cameraPos.w);
+        uvec2 dh = uvec2(pixel) ^ uvec2(fcu * 0x2545F491u, fcu * 0x9E3779B9u);
+        dh = dh * 1664525u + 1013904223u;
+        dh.x += dh.y * 1664525u; dh.y += dh.x * 1664525u;
+        dh.x ^= dh.x >> 16u;     dh.y ^= dh.y >> 16u;
+        float ditherThreshold = float(dh.x) * (1.0 / 4294967296.0);
+        float fracPart = decayedF - float(dv0);
+        if (fracPart > ditherThreshold) {
+            dv0 += 1u;
+        }
+        imageStore(causticAccum, pixel, uvec4(dv0, 0u, 0u, 0u));
         return;
     }
 

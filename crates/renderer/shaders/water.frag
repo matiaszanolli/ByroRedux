@@ -218,7 +218,22 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
                  + valueNoise(uv * 9.0 * freqScale + vec2(0.0, eps) + 17.0) * 0.35;
         return normalize(vec3((h - hx) * 0.12 * ampScale, (h - hy) * 0.12 * ampScale, 1.0));
     }
-    vec2 uv = uvBase * scale * freqScale + scroll * time;
+    // PRECISION BOUND (#2496, following #2240): this branch stays
+    // ABSOLUTE (not origin-relative like the procedural branch above)
+    // because the wrapping sampler needs a seamless UV at a render-origin
+    // crossing. #2240 folded the unclamped WATR `freqScale` into this
+    // product, scaling both the UV magnitude and its quantization step
+    // proportionally with no upper bound — at `uvBase` values up to
+    // ~176k (MarkarthWorld) and `freqScale` well above the 1.0 default,
+    // the f32 ULP can reach a meaningful fraction of a texel. Fix:
+    // subtract only the texel-*integral* part of the origin's own UV —
+    // `texture()`'s REPEAT wrap is invariant under subtracting an
+    // integer, so the sampled result is unchanged, but the magnitude fed
+    // into the texture lookup collapses to `uvBase`'s offset from
+    // `originOffset` (small, since fragments render near the camera)
+    // plus a bounded fractional remainder.
+    vec2 o = floor(originOffset * scale * freqScale);
+    vec2 uv = uvBase * scale * freqScale - o + scroll * time;
     vec3 n = texture(textures[nonuniformEXT(normalMapIndex)], uv).xyz;
     n = normalize(n * 2.0 - 1.0);
     // Scale the tangent-space tilt by the authored amplitude, keep the

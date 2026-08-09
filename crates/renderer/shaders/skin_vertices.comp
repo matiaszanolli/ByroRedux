@@ -138,8 +138,8 @@ void main() {
         // routinely ship 4-byte index payloads where only the low
         // byte is meaningful and the upper 3 bytes are zeroed; a few
         // modded NIFs ship with a corrupted index byte that —
-        // unclamped — would read past `bone_offset + 127` into the
-        // adjacent mesh's palette and produce gigantic vertex
+        // unclamped — would read past `bone_offset + MAX_BONES_PER_MESH - 1`
+        // into the adjacent mesh's palette and produce gigantic vertex
         // displacements. Phase 2's BLAS refit then writes those
         // displaced positions into the TLAS, breaking ray queries
         // cluster-wide for that frame.
