@@ -34,7 +34,12 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     // Runtime no longer evaluates this non-physical curve. It remains in the
     // contract until XCLL/WTHR values are fitted offline into sigma_t tables.
     vec4 fog_params;
-    vec4 depth_params;   // x = is_exterior, y = exposure, z = volumetric consumed, w = frame index
+    vec4 depth_params;   // x = is_exterior, y = exposure (vestigial — unread here,
+                         // live consumer is presentation.frag's exposure push
+                         // constant), z = volumetric consumed (vestigial — mirrors
+                         // the host const but #1926 removed the shader branch that
+                         // used to read it; vol.a/vol.rgb consumption below is now
+                         // unconditional), w = frame index
     vec4 volume_params;  // x = grid far, y = linear floor, z = linear fraction, w = dither amplitude
     vec4 height_fog_params; // x = sigma_t0, y = scale height, z = albedo, w = fallback enabled
     vec4 sky_zenith;     // xyz = zenith color (linear RGB), w = sun_size (cos threshold)
@@ -50,11 +55,11 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 cloud_params_3; // cloud layer 3 (WTHR BNAM) — same packing (M33.1)
     vec4 camera_pos;     // xyz = camera position in render-origin-RELATIVE space (matches inv_view_proj; the CPU subtracts render_origin at upload). Fog distance origin (#428) + ray origin for screen_to_world_dir (#1490). w = height-fog reference altitude (REN-D16-01 / #2225), same relative space as xyz — ground height near the camera, or camera Y as a fallback.
     mat4 inv_view_proj;  // inverse view-projection for ray reconstruction
-    // Underwater post-FX: xyz = water deep-color tint (linear RGB),
-    // w = camera depth below water surface (world units, >0 = under).
-    // The shader's final branch mixes `combined` toward `underwater.xyz`
-    // by a depth-driven extinction when `underwater.w > 0`. When `w == 0`
-    // the branch is a no-op.
+    // xyz = water deep-color tint (linear RGB), w = camera depth below
+    // water surface (world units, >0 = under). Vestigial here — kept for
+    // UBO layout parity but never read below. The underwater post-FX
+    // (mix toward `underwater.xyz` by a depth-driven extinction when
+    // `underwater.w > 0`) lives in presentation.frag now.
     vec4 underwater;
 } params;
 layout(set = 0, binding = 4) uniform sampler2D depthTex;     // depth buffer

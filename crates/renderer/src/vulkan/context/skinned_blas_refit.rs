@@ -585,68 +585,78 @@ impl VulkanContext {
                     self.skin_dispatches_scratch = dispatches;
                     self.skin_first_sight_builds_scratch = first_sight_builds;
                     self.skin_built_this_frame_scratch = built_this_frame;
+                }
 
-                    // #643 / MEM-2-1 — drop SkinSlots (and the matching
-                    // skinned BLAS) for entities whose `last_used_frame`
-                    // trails the current draw by more than
-                    // `MAX_FRAMES_IN_FLIGHT` frames. Mirrors
-                    // `evict_unused_blas`'s LRU pattern: the threshold
-                    // guarantees no in-flight command buffer still
-                    // references the descriptor sets / output buffer /
-                    // BLAS, so synchronous destroy is safe — no
-                    // deferred-destroy queue needed.
-                    //
-                    // Pre-fix the `skin_slots` HashMap and the
-                    // `skinned_blas` map only ever had entries
-                    // *inserted* (draw.rs first-sight loop) or *drained
-                    // wholesale on Drop* (context/mod.rs). On long
-                    // sessions that streamed through several
-                    // worldspaces, every NPC ever rendered stayed
-                    // resident; the FREE_DESCRIPTOR_SET pool would
-                    // exhaust well before the player's exterior
-                    // population caught up.
-                    let min_idle = MAX_FRAMES_IN_FLIGHT as u64 + 1;
-                    let now = self.frame_counter as u64;
-                    // #1003 — drain `pending_skin_unload_victims` populated by
-                    // `cell_loader::unload_cell`. These entities have been
-                    // despawned; their slots and per-skinned BLAS must be
-                    // released NOW (post-fence-wait, so no in-flight
-                    // command buffer still references the output buffer).
-                    let mut evictees: Vec<EntityId> =
-                        std::mem::take(&mut self.pending_skin_unload_victims);
-                    // Continue with the regular eviction filter for entries
-                    // that aged out via the idle policy (the original path
-                    // that protects against entity-still-alive-but-not-
-                    // drawn scenarios — camera moved off-screen, etc.).
-                    evictees.extend(self.skin_slots.iter().filter_map(|(&eid, slot)| {
-                        super::super::skin_compute::should_evict_skin_slot(
-                            slot.last_used_frame,
-                            now,
-                            min_idle,
-                        )
-                        .then_some(eid)
-                    }));
-                    if !evictees.is_empty() {
-                        log::debug!(
-                            "skin_slots eviction: dropping {} idle SkinSlot(s) and matching skinned BLAS",
-                            evictees.len()
-                        );
-                        for eid in evictees {
-                            if let Some(slot) = self.skin_slots.remove(&eid) {
-                                skin_pipeline.destroy_slot(&self.device, alloc, slot);
-                            }
-                            accel.drop_skinned_blas(eid);
+                // #2494 — hoisted out of the `(global_vert_buf, bone_buffer)`
+                // guard above. This eviction pass only needs `skin_pipeline`
+                // / `accel` / `alloc`, all already in scope from the outer
+                // guards; nesting it inside the dispatch-loop guard meant a
+                // frame with no global vertex buffer (before the first
+                // upload, or mid geometry-SSBO rebuild) or no bone buffer
+                // for this frame index dropped no SkinSlots and no skinned
+                // BLAS at all, even for entities the cell loader already
+                // despawned via `pending_skin_unload_victims`.
+                //
+                // #643 / MEM-2-1 — drop SkinSlots (and the matching
+                // skinned BLAS) for entities whose `last_used_frame`
+                // trails the current draw by more than
+                // `MAX_FRAMES_IN_FLIGHT` frames. Mirrors
+                // `evict_unused_blas`'s LRU pattern: the threshold
+                // guarantees no in-flight command buffer still
+                // references the descriptor sets / output buffer /
+                // BLAS, so synchronous destroy is safe — no
+                // deferred-destroy queue needed.
+                //
+                // Pre-fix the `skin_slots` HashMap and the
+                // `skinned_blas` map only ever had entries
+                // *inserted* (draw.rs first-sight loop) or *drained
+                // wholesale on Drop* (context/mod.rs). On long
+                // sessions that streamed through several
+                // worldspaces, every NPC ever rendered stayed
+                // resident; the FREE_DESCRIPTOR_SET pool would
+                // exhaust well before the player's exterior
+                // population caught up.
+                let min_idle = MAX_FRAMES_IN_FLIGHT as u64 + 1;
+                let now = self.frame_counter as u64;
+                // #1003 — drain `pending_skin_unload_victims` populated by
+                // `cell_loader::unload_cell`. These entities have been
+                // despawned; their slots and per-skinned BLAS must be
+                // released NOW (post-fence-wait, so no in-flight
+                // command buffer still references the output buffer).
+                let mut evictees: Vec<EntityId> =
+                    std::mem::take(&mut self.pending_skin_unload_victims);
+                // Continue with the regular eviction filter for entries
+                // that aged out via the idle policy (the original path
+                // that protects against entity-still-alive-but-not-
+                // drawn scenarios — camera moved off-screen, etc.).
+                evictees.extend(self.skin_slots.iter().filter_map(|(&eid, slot)| {
+                    super::super::skin_compute::should_evict_skin_slot(
+                        slot.last_used_frame,
+                        now,
+                        min_idle,
+                    )
+                    .then_some(eid)
+                }));
+                if !evictees.is_empty() {
+                    log::debug!(
+                        "skin_slots eviction: dropping {} idle SkinSlot(s) and matching skinned BLAS",
+                        evictees.len()
+                    );
+                    for eid in evictees {
+                        if let Some(slot) = self.skin_slots.remove(&eid) {
+                            skin_pipeline.destroy_slot(&self.device, alloc, slot);
                         }
-                        // Capacity opened up — un-suppress retry on every
-                        // entity that previously failed. Cheap (the set
-                        // caps at `skinned_count - SKIN_MAX_SLOTS`, zero
-                        // on healthy scenes) and correct: each cleared
-                        // entry will retry once next frame; if its
-                        // retry succeeds, it allocates a slot, otherwise
-                        // it re-enters the cache via the failure path.
-                        // See #900.
-                        self.failed_skin_slots.clear();
+                        accel.drop_skinned_blas(eid);
                     }
+                    // Capacity opened up — un-suppress retry on every
+                    // entity that previously failed. Cheap (the set
+                    // caps at `skinned_count - SKIN_MAX_SLOTS`, zero
+                    // on healthy scenes) and correct: each cleared
+                    // entry will retry once next frame; if its
+                    // retry succeeds, it allocates a slot, otherwise
+                    // it re-enters the cache via the failure path.
+                    // See #900.
+                    self.failed_skin_slots.clear();
                 }
             }
         }
@@ -697,6 +707,68 @@ mod skin_built_this_frame_skip_tests {
             "the built_this_frame gate must precede the refits_attempted counter \
              so a freshly-built entity's skip doesn't inflate spawn-frame \
              telemetry (#1812)"
+        );
+    }
+}
+
+// #2494 — the pending_skin_unload_victims drain and the SkinSlot LRU sweep
+// must run even on a frame where `global_vertex_buffer` / the per-frame
+// bone buffer is absent, or despawned entities' GPU memory and
+// descriptor-pool slots stay held across the whole cell-transition window.
+// Same source-position pinning approach as `skin_built_this_frame_skip_tests`
+// above — the eviction code lives deep inside `draw_frame`'s live-Vulkan-
+// device path, so structural position in the source is what's checkable
+// without a GPU.
+#[cfg(test)]
+mod skin_eviction_runs_without_global_vertex_buffer_tests {
+    #[test]
+    fn eviction_drain_sits_outside_the_input_buffer_bone_buffer_guard() {
+        let src = include_str!("skinned_blas_refit.rs");
+
+        let guard_open_pos = src
+            .find("if let (Some((input_buffer, input_size)), Some(bone_buf)) =")
+            .expect("the dispatch-loop guard on (global_vert_buf, bone_buffer) must exist");
+        // The guard's body ends right after the scratch-cluster restore;
+        // its closing brace must appear before the eviction drain starts.
+        let guard_close_pos = src
+            .find("self.skin_built_this_frame_scratch = built_this_frame;\n                }")
+            .expect(
+                "the (input_buffer, bone_buf) guard must close immediately after the \
+                 scratch-cluster restore, with no eviction code still nested inside it (#2494)",
+            );
+        let drain_pos = src
+            .find("let mut evictees: Vec<EntityId> =")
+            .expect("the pending_skin_unload_victims drain must exist");
+        let lru_sweep_pos = src
+            .find("evictees.extend(self.skin_slots.iter().filter_map(")
+            .expect("the SkinSlot LRU sweep must exist");
+        let skin_chain_ns_pos = src
+            .find("let _skin_chain_ns = skin_t0.elapsed()")
+            .expect("record_skinned_blas_refit must record its elapsed time");
+
+        assert!(
+            guard_open_pos < guard_close_pos,
+            "sanity: guard open must precede its own close"
+        );
+        assert!(
+            guard_close_pos < drain_pos,
+            "pending_skin_unload_victims must be drained OUTSIDE the \
+             (global_vert_buf, bone_buffer) guard — otherwise a frame with no \
+             global vertex buffer (before first upload, or mid geometry-SSBO \
+             rebuild) or no bone buffer for this frame index silently skips \
+             the drain and despawned entities' SkinSlots/BLAS/descriptor \
+             slots stay resident (#2494)"
+        );
+        assert!(
+            guard_close_pos < lru_sweep_pos,
+            "the SkinSlot LRU idle sweep must also sit outside the \
+             (global_vert_buf, bone_buffer) guard (#2494)"
+        );
+        assert!(
+            drain_pos < skin_chain_ns_pos && lru_sweep_pos < skin_chain_ns_pos,
+            "the eviction drain/sweep must still run before the function \
+             returns, inside the outer (skin_pipeline, accel, alloc) guards \
+             it actually depends on"
         );
     }
 }

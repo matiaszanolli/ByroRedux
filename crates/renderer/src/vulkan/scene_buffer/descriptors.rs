@@ -295,9 +295,9 @@ impl super::buffers::SceneBuffers {
 /// same-frame content gate.
 ///
 /// Routed through `GpuMaterial::as_bytes`-equivalent slice cast so
-/// the same byte view used by `GpuMaterial`'s `Hash`/`Eq` impls
-/// (`vulkan/material.rs:280-309`) drives the slice hash too —
-/// padding handling stays consistent.
+/// the same raw-byte view `GpuMaterial::as_bytes` gives its
+/// `PartialEq`/`Eq` impls drives the slice hash too — padding
+/// handling stays consistent.
 pub(super) fn hash_material_slice(materials: &[super::super::material::GpuMaterial]) -> u64 {
     use std::hash::Hasher;
     let mut hasher = rustc_hash::FxHasher::default();

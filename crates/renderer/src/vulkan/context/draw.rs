@@ -579,18 +579,26 @@ fn build_composite_params(
         fog_params: [fog_near, fog_far, fog_clip, fog_power],
         depth_params: [
             if sky_params.is_exterior { 1.0 } else { 0.0 },
-            // Exposure — sourced from the shared exposure producer so
-            // composite and the future FSR dispatch consume one value
-            // (default Bethesda-era HDR target; promote to WTHR field
-            // #743). Falls back to the const when the 1x1 resource
-            // failed to allocate.
+            // Exposure — vestigial in the composite UBO. `composite.frag`
+            // does not read `depth_params.y`; the live exposure consumer
+            // is `presentation.frag`'s `exposure` push constant, sourced
+            // from this same shared exposure producer separately in
+            // `record_presentation_pass`. Kept here for UBO layout
+            // parity (default Bethesda-era HDR target; promote to WTHR
+            // field #743). Falls back to the const when the 1x1
+            // resource failed to allocate.
             exposure_value,
-            // #1013 — host-side mirror of the volumetric-output
-            // gate. Composite reads this slot to decide whether
-            // to consume `vol.a` (transmittance) and `vol.rgb`
-            // (in-scattering). Pinned to the host const so a
-            // future flip of `VOLUMETRIC_OUTPUT_CONSUMED` is a
-            // single-line change.
+            // #1013 — host-side mirror of the volumetric-output gate.
+            // Vestigial: #1926 removed the `composite.frag` branch that
+            // used to read this slot, so `vol.a`/`vol.rgb` consumption
+            // there is now unconditional. The value is still pinned to
+            // the host const so a future flip of
+            // `VOLUMETRIC_OUTPUT_CONSUMED` stays a single-line change on
+            // the host side — but the shader-side off-path no longer
+            // exists; it now relies entirely on the neutral clear
+            // (`volumetrics.rs::initialize_layouts`, rgb=0/a=1) leaving
+            // `vol.a` == 1 and `vol.rgb` == 0 when the volumetric
+            // dispatches are skipped.
             if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
                 1.0
             } else {

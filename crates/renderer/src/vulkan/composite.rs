@@ -51,11 +51,17 @@ pub struct CompositeParams {
     /// Legacy XCLL curve inputs retained for the offline physical-fit
     /// conversion. Runtime fog does not evaluate this linear/cubic ramp.
     pub fog_params: [f32; 4],
-    /// x = is_exterior (1.0 = sky enabled), y = exposure (default 0.85),
-    /// z = volumetric_consumed flag (1.0 when host
-    /// `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED` is true, else 0.0 — gates
-    /// the composite shader's `combined * vol.a + vol.rgb` consumption,
-    /// see #1013), w = frame index for pre-resolve blue-noise dither.
+    /// x = is_exterior (1.0 = sky enabled), y = exposure — vestigial,
+    /// `composite.frag` does not read it; the live exposure consumer is
+    /// `presentation.frag`'s `exposure` push constant. z =
+    /// volumetric_consumed flag (1.0 when host
+    /// `volumetrics::VOLUMETRIC_OUTPUT_CONSUMED` is true, else 0.0) —
+    /// mirrors the host const but no longer gates anything in
+    /// `composite.frag`: #1926 removed that shader-side branch, so
+    /// `combined * vol.a + vol.rgb` runs unconditionally and this slot
+    /// is read nowhere (see #1013 for the original gate, #1926 / REN-D8-01
+    /// for the removal). w = frame index for pre-resolve blue-noise
+    /// dither.
     pub depth_params: [f32; 4],
     /// x = froxel grid far plane, y = linear-depth floor, z = linear
     /// slice fraction, w = pre-resolve dither amplitude.
@@ -123,11 +129,10 @@ pub struct CompositeParams {
     /// the camera is submerged; `w` = camera depth below the water
     /// surface in world units (>0 = underwater, 0 = above water).
     ///
-    /// Drives `composite.frag`'s underwater post-FX: at the end of
-    /// the shader, when `underwater.w > 0`, the final colour is
-    /// mixed toward `underwater.xyz` by a depth-extinction factor.
-    /// Above-water frames pass `[0, 0, 0, 0]` so the shader's branch
-    /// stays disabled.
+    /// Vestigial here — `composite.frag` declares this field for UBO
+    /// layout parity but never reads it. The underwater post-FX moved
+    /// to `presentation.frag`'s `underwater` field (same packing),
+    /// which owns the live `params.underwater.w > 0.0` mix branch.
     pub underwater: [f32; 4],
 }
 

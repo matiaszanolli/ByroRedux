@@ -163,9 +163,10 @@ pub struct GpuTimerSnapshot {
     /// caustic accumulator. Phase-7.
     pub caustic_splat_ms: f32,
     /// Volumetrics inject + integrate combined. Reads `0.0` when
-    /// `VOLUMETRIC_OUTPUT_CONSUMED` is false (the current default —
-    /// composite multiplies the result by 0). Phase-7 bracket
-    /// confirms the gate is actually holding.
+    /// `VOLUMETRIC_OUTPUT_CONSUMED` is false — the dispatches are
+    /// skipped entirely (`post_passes.rs`); the current default is
+    /// `true` (both dispatches run). Phase-7 bracket confirms the
+    /// gate is actually holding.
     pub volumetrics_ms: f32,
     /// Render-to-output reconstruction: the FSR 3.1 upscale dispatch, or
     /// the native blit that stands in for it under `--upscaler taa` and

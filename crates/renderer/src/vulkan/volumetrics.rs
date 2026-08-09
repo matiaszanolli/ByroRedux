@@ -1211,6 +1211,15 @@ impl VolumetricsPipeline {
     /// collapse the scene to black on the first frame volumetrics is
     /// enabled (#1082). Call once after `new()`.
     ///
+    /// This neutral value is also the entire safety net for
+    /// `VOLUMETRIC_OUTPUT_CONSUMED == false`: #1926 removed
+    /// `composite.frag`'s shader-side gate, so `combined * vol.a +
+    /// vol.rgb` runs unconditionally regardless of the const.
+    /// `post_passes.rs` skips both volumetric dispatches when the const
+    /// is false, which means composite reads whatever this clear left
+    /// behind — do not "optimize" it to a plain zero-fill, that would
+    /// make the off-path black out the scene.
+    ///
     /// # Safety
     ///
     /// Caller must ensure all passed Vulkan handles (`device`, `cmd`) are
