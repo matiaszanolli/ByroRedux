@@ -86,10 +86,11 @@ the "translate at the parser→Material boundary, never branch per-game in
 the shader" rule). Two constants in `render/lights.rs` capture engine
 policy:
 
-- `LIGHT_RANGE_EXTENSION = 2.5` — Bethesda's LIGH `radius` is a "design
+- `LIGHT_RANGE_EXTENSION = 2.0` — Bethesda's LIGH `radius` is a "design
   value"; the runtime contributes visible light past it. The translator
   multiplies authored `radius` by this to get the renderer-facing
-  `effective_range`. Tuned against densely-lit FO4 interiors.
+  `effective_range`; the physical falloff is keyed to the authored-radius
+  midpoint and the outer half is a smooth anti-pop cull window.
 - `FALLOFF_EXPONENT_DEFAULT` — used when a LIGH carries no positive
   `falloff_exponent`. The standardized attenuation-curve shape rides on
   `GpuLight.params.x`; the shader reads it verbatim with no sentinel
@@ -152,27 +153,29 @@ removed in lockstep with its shader-side consumer landing.
 
 Consumption status (Session 42):
 
-- `directional_color` / `directional_dir` / `is_interior` → directional
-  fill light (below).
+- `directional_color` / `directional_dir` / `directional_fade` /
+  `is_interior` → exterior sun or the discrete interior directional key
+  (below).
 - `fog_color` / `fog_near` / `fog_far` → linear depth fog.
 - `fog_clip` / `fog_power` → **consumed.** Plumbed to the composite
   shader as `fog_params.z` / `.w` for a non-linear `pow(distance /
   fog_clip, fog_power)` fog curve (#865 / FNV-D3-NEW-06), gated on
   `fog_clip > 0 && fog_power > 0` in
   [`crates/renderer/shaders/composite.frag`](../../crates/renderer/shaders/composite.frag).
-- `directional_ambient` (the XCLL ambient cube), `fog_far_color`,
-  `fog_max`, `light_fade_begin` / `_end`, `specular_color` /
-  `specular_alpha`, `fresnel_power`, `directional_fade` → **parsed and
-  carried, not yet pushed to the GPU.** Only a debug console query in
-  [`byroredux/src/commands.rs`](../../byroredux/src/commands.rs) reads the
-  XCLL ambient cube today. (Note: the *weather* ambient cube — WTHR.DALC,
-  below — *is* GPU-wired; the per-cell XCLL cube is the follow-up.)
+- `directional_ambient` (the XCLL ambient cube), `specular_color`, and
+  `fresnel_power` → **consumed.** Interior cubes are converted from Z-up
+  to Y-up in `render/sky.rs` and use the same GPU irradiance-cube contract
+  as weather DALC. Presence of the cube suppresses the legacy point-light
+  ambient fill; it does not replace XCLL's separately-authored directional
+  key.
+- `fog_far_color`, `fog_max`, `light_fade_begin` / `_end`,
+  and `specular_alpha` → parsed and carried but not yet consumed by a
+  shader.
 
-### `DalcCubeYup` + `GpuDalcCube` — the Skyrim WTHR.DALC ambient cube (shipped)
+### `DalcCubeYup` + `GpuDalcCube` — WTHR.DALC and interior XCLL cubes
 
-The first-order-SH ambient idea from "Tier 1" below has partially landed,
-sourced from Skyrim weather (`WTHR.DALC`) rather than the per-cell XCLL
-cube:
+The first-order-SH ambient idea from "Tier 1" below has landed for both
+Skyrim weather (`WTHR.DALC`) and per-cell interior XCLL cubes:
 
 - [`crates/plugin/src/esm/records/weather.rs`](../../crates/plugin/src/esm/records/weather.rs)
   parses `WTHR.DALC` into a `SkyrimAmbientCube` per TOD slot
@@ -236,18 +239,25 @@ with the engine default.
 ### How the directional reaches `GpuLight`
 
 `collect_lights` reads `CellLightingRes` and pushes one directional
-`GpuLight` (`color_type.w = 2.0` marks it directional).
+`GpuLight` (`color_type.w = 2.0` marks it directional) whenever the resolved
+source has positive strength. XCLL's six-face ambient cube and directional
+colour are separate controls: the cube supplies diffuse irradiance while the
+directional is a discrete key. Interior `directional_fade` scales that key;
+a zero fade suppresses it entirely, preventing an authored-disabled source
+from casting narrow parallel "sun" bars through railings and roof gaps.
 `compute_directional_upload` ([`byroredux/src/render/mod.rs`](../../byroredux/src/render/mod.rs))
 splits source selection between interior and exterior:
 
-- **Interior:** `0.6×` of `cell_lit.directional_color`, independent of
-  weather `sun_intensity` — XCLL is the authored cell source.
+- **Interior:** `cell_lit.directional_color` multiplied by non-negative
+  `directional_fade` (missing on older formats retains the established `0.6`
+  fallback), independent of weather `sun_intensity` — XCLL is the authored
+  cell source.
 - **Exterior:** ramp the contribution by
   `sun_intensity / SUN_INTENSITY_PEAK` (`SUN_INTENSITY_PEAK = 4.0`),
   so the directional tracks the TOD sun.
 
-After that source boundary, both upload the standard directional
-`radius = 0` contract and run through the same Lambert/GGX evaluation,
+After that source boundary, both emitted variants upload the standard
+directional `radius = 0` contract and run through the same Lambert/GGX evaluation,
 ReSTIR shadow reservoir, ray query, and distance fade. GI inputs remain
 a separate policy surface: sharing direct-light and shadow behavior does
 not require interiors and exteriors to share sky/weather bounce sources.
@@ -315,9 +325,9 @@ color, a surface facing east gets mostly X+, etc. This is essentially a
 **first-order spherical harmonics** approximation of ambient lighting — cheap
 but surprisingly effective for conveying directional ambient.
 
-> Implemented for the *weather* path (`WTHR.DALC`) as `GpuDalcCube` —
-> see above. The per-cell *XCLL* ambient cube is parsed
-> (`CellLighting.directional_ambient`) but not yet on the GPU.
+> Implemented for both the exterior weather path (`WTHR.DALC`) and the
+> interior per-cell path (`XCLL.directional_ambient`) through the shared
+> `GpuDalcCube` contract.
 
 ### Lighting Templates
 Cells reference a Lighting Template and selectively override individual fields.
@@ -399,13 +409,13 @@ sketched against flat `CellLighting`/`CellAmbientLight` components; in the
 shipped tree the state lives on the `CellLightingRes` resource plus the
 `GpuDalcCube` UBO (see "Where the cell-lighting data lives today"). The
 renderer picks behaviour from data availability (`dalcFlags.x`,
-`fog_clip`/`fog_power` activation, the interior `radius < 0` sentinel)
+`fog_clip`/`fog_power` activation, and interior `directional_fade`)
 rather than a hardware-tier switch:
 
 ```
-WTHR.DALC cube (Skyrim)            XCLL fog (all games)
+WTHR.DALC / XCLL cube              XCLL fog (all games)
         │                                  │
- DalcCubeYup (Y-up, TOD-lerped)     CellLightingRes.fog_*
+ DalcCubeYup (Y-up)                 CellLightingRes.fog_*
         │                                  │
  GpuDalcCube UBO (set 1, binding 14) composite fog_params.{x,y,z,w}
         │                                  │

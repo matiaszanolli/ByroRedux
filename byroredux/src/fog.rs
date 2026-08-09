@@ -207,24 +207,22 @@ fn weighted_fit_error(sigma: f32, near_m: f32, far_m: f32, max_opacity: f32) -> 
     weighted_squared_error / weight_sum.max(f32::MIN_POSITIVE)
 }
 
-/// Translate a legacy smoke/fog particle emitter into a physical local volume.
+/// The swept volume a particle emitter's plume occupies over one particle
+/// lifetime, in the emitter's local frame.
 ///
-/// Classification deliberately requires both authored fog semantics (host or
-/// texture naming) and alpha-over blending. Additive flame, ember, and magic
-/// emitters retain their billboard path: replacing luminous particles with a
-/// passive medium would discard their emissive intent.
-pub(crate) fn fog_volume_from_particle(
-    host_name: &str,
-    emitter: &ParticleEmitter,
-) -> Option<FogVolume> {
-    if !is_fog_particle(
-        host_name,
-        emitter.texture_path.as_deref(),
-        emitter.dst_blend,
-    ) {
-        return None;
-    }
+/// Derived from emitter shape, lifetime, launch speed, cone angle, gravity and
+/// particle size — i.e. from where the particles actually go, not from an
+/// authored bounding box. Shared by the smoke and fire translations so the two
+/// cannot drift into disagreeing about the same emitter's extent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PlumeBounds {
+    /// Offset from the emitter origin to the swept path's midpoint.
+    pub(crate) center: Vec3,
+    /// Half extents of the swept ellipsoid.
+    pub(crate) half_extents: Vec3,
+}
 
+pub(crate) fn plume_bounds(emitter: &ParticleEmitter) -> PlumeBounds {
     let life = emitter.life.max(0.0);
     let speed = (emitter.speed.abs() + emitter.speed_variation.abs() * 0.5).max(0.0);
     let cone_angle = (emitter.declination.abs() + emitter.declination_variation.abs() * 0.5)
@@ -251,6 +249,64 @@ pub(crate) fn fog_volume_from_particle(
     half_extents.x += lateral_distance;
     half_extents.z += lateral_distance;
     half_extents = half_extents.max(Vec3::splat(0.25));
+
+    PlumeBounds {
+        // Center the primitive on the swept particle path, not just the
+        // emitter origin. Curl/noise modulation happens in the shader.
+        center: displacement * 0.5,
+        half_extents,
+    }
+}
+
+/// Translate a particle emitter into whichever participating medium it
+/// describes, or `None` to leave it on the billboard path.
+///
+/// Smoke is tried first: the two classifiers key on disjoint blend modes
+/// (alpha-over versus additive) so they cannot both match, but ordering them
+/// explicitly keeps that a property of this function rather than an accident
+/// of the token lists.
+pub(crate) fn medium_from_particle(
+    host_name: &str,
+    emitter: &ParticleEmitter,
+) -> Option<FogVolume> {
+    fog_volume_from_particle(host_name, emitter)
+        .or_else(|| fire_volume_from_particle(host_name, emitter))
+}
+
+/// Whether additive thermal emitters are replaced by emissive media.
+///
+/// Set `BYRO_FIRE_VOLUMES=0` to keep them on the legacy billboard path — an
+/// A/B escape hatch for comparing the volumetric fire against the sprites it
+/// replaces without a rebuild.
+fn fire_volumes_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| !matches!(std::env::var("BYRO_FIRE_VOLUMES").as_deref(), Ok("0")))
+}
+
+/// Translate a legacy smoke/fog particle emitter into a physical local volume.
+///
+/// Classification deliberately requires both authored fog semantics (host or
+/// texture naming) and alpha-over blending. Additive magic emitters retain
+/// their billboard path; additive *thermal* emitters (flame, ember) are
+/// handled by [`fire_volume_from_particle`] instead, which gives them an
+/// emission source term rather than discarding their luminous intent.
+pub(crate) fn fog_volume_from_particle(
+    host_name: &str,
+    emitter: &ParticleEmitter,
+) -> Option<FogVolume> {
+    if !is_fog_particle(
+        host_name,
+        emitter.texture_path.as_deref(),
+        emitter.dst_blend,
+    ) {
+        return None;
+    }
+
+    let life = emitter.life.max(0.0);
+    let PlumeBounds {
+        center,
+        half_extents,
+    } = plume_bounds(emitter);
 
     // The legacy billboard alpha describes transmittance through the visible
     // particle footprint. Fold in expected live occupancy so a sparse emitter
@@ -301,9 +357,7 @@ pub(crate) fn fog_volume_from_particle(
 
     Some(FogVolume {
         bounds: Some(FogBounds {
-            // Center the primitive on the swept particle path, not just the
-            // emitter origin. Curl/noise modulation happens in the shader.
-            center: displacement * 0.5,
+            center,
             rotation: Quat::IDENTITY,
             half_extents,
             shape: FogShape::Ellipsoid,
@@ -311,8 +365,175 @@ pub(crate) fn fog_volume_from_particle(
         extinction_per_meter,
         single_scatter_albedo: single_scatter_albedo.to_array(),
         edge_softness: LOCAL_VOLUME_EDGE_SOFTNESS,
+        // Alpha-over smoke is passive: cooled soot scatters, it does not
+        // radiate. The emissive path belongs to `fire_volume_from_particle`.
+        emissive_radiance: [0.0; 3],
+        emission_temperature_k: 0.0,
         source: FogSource::ParticleEmitter,
     })
+}
+
+/// Luminous-zone temperature of a hydrocarbon diffusion flame, kelvin.
+///
+/// This is the soot-incandescence temperature that gives an ordinary open
+/// flame — candle, torch, campfire, oil lamp — its colour. It is a physical
+/// property of the combustion regime, not a look-development number: all the
+/// content this path sees burns wood, pitch, tallow or oil in open air, so
+/// they share it. Colour and relative brightness both follow from it through
+/// [`byroredux_core::radiometry`].
+const FLAME_TEMPERATURE_K: f32 = 1850.0;
+
+/// Temperature of glowing embers / charcoal, kelvin.
+///
+/// Well below the flame's luminous zone — embers are past the volatile-burning
+/// stage — which is exactly why they read as deep orange-red rather than
+/// yellow-white, and why they are dramatically dimmer despite often being
+/// authored at similar sprite brightness.
+const EMBER_TEMPERATURE_K: f32 = 1100.0;
+
+/// Single-scatter albedo of flame soot in the visible band.
+///
+/// Soot is strongly *absorbing*, not scattering. That is the whole reason a
+/// flame is an emitter: `sigma_a = sigma_t * (1 - albedo)` is the coefficient
+/// multiplying its emitted radiance, so a low albedo means nearly all of the
+/// extinction converts to emission. It is also what distinguishes fire from
+/// its own smoke, which is the same soot cooled — see
+/// [`LOCAL_VOLUME_ALBEDO_PEAK`], an order of magnitude higher.
+const FLAME_SINGLE_SCATTER_ALBEDO: f32 = 0.25;
+
+/// Optical depth across the width of a flame primitive.
+///
+/// Unlike smoke, an additive emitter's authored alpha encodes brightness, not
+/// opacity, so the Beer-Lambert inversion the smoke path uses has nothing
+/// meaningful to invert. Anchor on the directly observable fact instead: a
+/// flame is optically thin — you can see through one — which puts its optical
+/// depth well below 1. Deriving `sigma_t` from this keeps a small candle and a
+/// large bonfire equally translucent instead of making the bonfire opaque
+/// purely because it is bigger.
+const FLAME_OPTICAL_DEPTH: f32 = 0.4;
+
+/// Emitted radiance anchor for a primitive at [`FLAME_TEMPERATURE_K`], in the
+/// renderer's linear HDR units.
+///
+/// This is the one exposure choice in the fire path; everything else is
+/// physics. It is derived rather than eyeballed: the froxel integral
+/// accumulates `sigma_a * L_e` over the primitive's depth, and since
+/// `sigma_t` is pinned by [`FLAME_OPTICAL_DEPTH`] the path integral reduces to
+/// `FLAME_OPTICAL_DEPTH * (1 - FLAME_SINGLE_SCATTER_ALBEDO) * L_e` — about
+/// `0.3 * L_e` — *independent of the flame's size*. At this anchor a flame
+/// core therefore lands near `3.6`, comfortably into the ACES highlight
+/// roll-off, which is where a real flame sits relative to the `4.0` daytime
+/// `SUN_INTENSITY_PEAK` the rest of the engine is calibrated against.
+///
+/// Wants a visual A/B against real content before it is treated as final.
+const FLAME_REFERENCE_RADIANCE: f32 = 12.0;
+
+/// Translate an additive thermal particle emitter into an emissive medium.
+///
+/// This is the fire counterpart of [`fog_volume_from_particle`], and the two
+/// deliberately produce the *same kind of object*. A flame and its smoke are
+/// one physical material — soot — separated only by temperature: hot soot has
+/// low albedo and a large emission term, cooled soot has high albedo and none.
+/// Modelling them as one medium with temperature-dependent coefficients is
+/// what lets a fire, its plume, and (later) an explosion's fireball share a
+/// single render path instead of three bespoke effects.
+///
+/// Returns `None` for anything that is not an additive, thermally-named
+/// emitter — magic sparkles stay billboards, since their colour comes from an
+/// authored palette rather than a blackbody spectrum and inventing a
+/// temperature for them would be fabrication.
+pub(crate) fn fire_volume_from_particle(
+    host_name: &str,
+    emitter: &ParticleEmitter,
+) -> Option<FogVolume> {
+    if !fire_volumes_enabled() {
+        return None;
+    }
+    let temperature = fire_temperature(
+        host_name,
+        emitter.texture_path.as_deref(),
+        emitter.dst_blend,
+    )?;
+
+    let PlumeBounds {
+        center,
+        half_extents,
+    } = plume_bounds(emitter);
+
+    // Optical depth is defined across the primitive's narrowest horizontal
+    // span — the direction a viewer most often looks through a flame.
+    let representative_width_m =
+        (2.0 * half_extents.x.min(half_extents.z) / WORLD_UNITS_PER_METER).max(0.01);
+    let extinction_per_meter = (FLAME_OPTICAL_DEPTH / representative_width_m)
+        .clamp(MIN_SIGMA_PER_METER, MAX_SIGMA_PER_METER);
+
+    let emissive_radiance = byroredux_core::radiometry::blackbody_radiance_srgb(
+        temperature,
+        FLAME_TEMPERATURE_K,
+        FLAME_REFERENCE_RADIANCE,
+    )?;
+
+    Some(FogVolume {
+        bounds: Some(FogBounds {
+            center,
+            rotation: Quat::IDENTITY,
+            half_extents,
+            shape: FogShape::Ellipsoid,
+        }),
+        extinction_per_meter,
+        // Deliberately NOT the authored sprite tint. A flame's colour is a
+        // consequence of its temperature, and it already reaches the shader
+        // through `emissive_radiance`; tinting the scattering term with the
+        // same hue would double-count it. What little light a flame scatters,
+        // it scatters neutrally.
+        single_scatter_albedo: [FLAME_SINGLE_SCATTER_ALBEDO; 3],
+        edge_softness: LOCAL_VOLUME_EDGE_SOFTNESS,
+        emissive_radiance,
+        emission_temperature_k: temperature,
+        source: FogSource::ParticleEmitter,
+    })
+}
+
+/// Classify an emitter as a thermal source and return its temperature.
+///
+/// Requires additive blending (Gamebryo destination factor `ONE == 0`), which
+/// is how every luminous Gamebryo effect is authored, plus a thermal token in
+/// the host node name or sprite path. Ember-family names resolve to the
+/// cooler [`EMBER_TEMPERATURE_K`]; they are checked first because vanilla
+/// content frequently hosts embers under a parent whose name also contains
+/// "fire", and the cooler, dimmer reading is the correct one there.
+fn fire_temperature(host_name: &str, texture_path: Option<&str>, dst_blend: u8) -> Option<f32> {
+    if dst_blend != 0 {
+        return None;
+    }
+    let texture_path = texture_path.unwrap_or("");
+    if has_ember_token(host_name) || has_ember_token(texture_path) {
+        return Some(EMBER_TEMPERATURE_K);
+    }
+    if has_flame_token(host_name) || has_flame_token(texture_path) {
+        return Some(FLAME_TEMPERATURE_K);
+    }
+    None
+}
+
+/// Ember / spark / cinder naming. `spark` is matched as a whole-ish component
+/// prefix rather than a substring so `sparkle` — the blue magic preset, which
+/// is not thermal at all — does not get swept in.
+fn has_ember_token(value: &str) -> bool {
+    const EMBER_TOKENS: [&str; 3] = ["ember", "cinder", "coal"];
+    let value = value.to_ascii_lowercase();
+    if EMBER_TOKENS.iter().any(|token| value.contains(token)) {
+        return true;
+    }
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|component| component.starts_with("spark") && !component.starts_with("sparkle"))
+}
+
+fn has_flame_token(value: &str) -> bool {
+    const FLAME_TOKENS: [&str; 6] = ["fire", "flame", "torch", "candle", "blaze", "campfire"];
+    let value = value.to_ascii_lowercase();
+    FLAME_TOKENS.iter().any(|token| value.contains(token))
 }
 
 fn is_fog_particle(host_name: &str, texture_path: Option<&str>, dst_blend: u8) -> bool {
@@ -413,6 +634,8 @@ pub(crate) fn fog_volume_from_mesh(
         extinction_per_meter,
         single_scatter_albedo: single_scatter_albedo.to_array(),
         edge_softness: 0.35,
+        emissive_radiance: [0.0; 3],
+        emission_temperature_k: 0.0,
         source: FogSource::AuthoredMesh,
     })
 }
@@ -429,6 +652,190 @@ pub(crate) fn has_fog_token(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fire path is env-gated for A/B; every test below asserts the
+    /// enabled behaviour, so skip rather than fail if a developer has the
+    /// escape hatch set in their shell.
+    fn fire_path_active() -> bool {
+        fire_volumes_enabled()
+    }
+
+    #[test]
+    fn additive_flame_emitter_becomes_an_emissive_medium() {
+        if !fire_path_active() {
+            return;
+        }
+        let volume = fire_volume_from_particle("TorchFire01", &ParticleEmitter::torch_flame())
+            .expect("an additive flame emitter must become an emissive medium");
+        assert!(volume.is_emissive(), "a flame must carry an emission term");
+        assert!(volume.is_renderable());
+        assert_eq!(volume.emission_temperature_k, FLAME_TEMPERATURE_K);
+        // Blackbody hue at flame temperature: warm, red-dominant.
+        let [r, g, b] = volume.emissive_radiance;
+        assert!(
+            r > g && g > b,
+            "flame emission must be warm, got {:?}",
+            [r, g, b]
+        );
+        // Soot absorbs far more than it scatters — this is what makes the
+        // emission term dominant rather than decorative.
+        assert!(volume.single_scatter_albedo[0] < 0.5);
+    }
+
+    /// Embers are cooler than flame, so they must be both redder AND
+    /// dramatically dimmer. The second half is the part a hand-authored
+    /// colour ramp always gets wrong.
+    #[test]
+    fn embers_are_cooler_dimmer_and_redder_than_flame() {
+        if !fire_path_active() {
+            return;
+        }
+        let flame = fire_volume_from_particle("TorchFire01", &ParticleEmitter::torch_flame())
+            .expect("flame");
+        let embers =
+            fire_volume_from_particle("FireEmbers01", &ParticleEmitter::embers()).expect("embers");
+
+        assert!(embers.emission_temperature_k < flame.emission_temperature_k);
+
+        let flame_luma = byroredux_core::radiometry::linear_srgb_luminance(flame.emissive_radiance);
+        let ember_luma =
+            byroredux_core::radiometry::linear_srgb_luminance(embers.emissive_radiance);
+        assert!(
+            ember_luma < flame_luma * 0.25,
+            "embers ({ember_luma}) must be far dimmer than flame ({flame_luma}) — \
+             the T^4 plus spectral-shift coupling, not a small tint difference"
+        );
+
+        // Hue is compared on GREEN over red, not blue over red. Across the
+        // whole flame/ember range the blue primary is outside the sRGB gamut
+        // and clamps to exactly zero, so a blue-based ratio is 0 for both and
+        // discriminates nothing. Green is well inside the gamut and is what
+        // actually separates a deep-red ember from a yellow-orange flame.
+        let warmth = |c: [f32; 3]| c[1] / c[0].max(1.0e-6);
+        assert!(
+            warmth(embers.emissive_radiance) < warmth(flame.emissive_radiance),
+            "cooler embers must be relatively redder than the flame: \
+             embers {:?} vs flame {:?}",
+            embers.emissive_radiance,
+            flame.emissive_radiance
+        );
+    }
+
+    /// Ember naming wins over flame naming, because vanilla content hosts
+    /// ember emitters under parents whose names also say "fire".
+    #[test]
+    fn ember_naming_takes_precedence_over_a_fire_host() {
+        assert_eq!(
+            fire_temperature("FireEmberSpray", Some("textures\\effects\\embers_d.dds"), 0),
+            Some(EMBER_TEMPERATURE_K)
+        );
+        assert_eq!(
+            fire_temperature("CampfireFlame", Some("textures\\effects\\flame.dds"), 0),
+            Some(FLAME_TEMPERATURE_K)
+        );
+    }
+
+    /// Blue magic sparkles are not thermal. Inventing a temperature for them
+    /// would fabricate physics that the authored content never described.
+    #[test]
+    fn magic_sparkles_stay_on_the_billboard_path() {
+        assert_eq!(
+            fire_temperature(
+                "MagicSparkleEmitter",
+                Some("textures\\effects\\glowsoft01.dds"),
+                0
+            ),
+            None
+        );
+        assert!(fire_volume_from_particle(
+            "MagicSparkleEmitter",
+            &ParticleEmitter::magic_sparkles()
+        )
+        .is_none());
+    }
+
+    /// Alpha-over blending means smoke, never fire, regardless of naming —
+    /// a smoke plume rising off a fire is routinely named for the fire.
+    #[test]
+    fn alpha_over_blending_is_never_classified_as_fire() {
+        assert_eq!(
+            fire_temperature("CampfireSmoke", Some("smoke.dds"), 7),
+            None
+        );
+        let mut alpha_over_flame = ParticleEmitter::torch_flame();
+        alpha_over_flame.dst_blend = 7;
+        assert!(fire_volume_from_particle("TorchFire01", &alpha_over_flame).is_none());
+    }
+
+    /// The two classifiers must partition emitters, never both claim one.
+    #[test]
+    fn smoke_and_fire_classifiers_are_disjoint() {
+        let cases = [
+            ("CampfireSmoke01", ParticleEmitter::smoke()),
+            ("TorchFire01", ParticleEmitter::torch_flame()),
+            ("FireEmbers01", ParticleEmitter::embers()),
+            ("MagicSparkle", ParticleEmitter::magic_sparkles()),
+        ];
+        for (host, emitter) in cases {
+            let smoke = fog_volume_from_particle(host, &emitter).is_some();
+            let fire = fire_volume_from_particle(host, &emitter).is_some();
+            assert!(
+                !(smoke && fire),
+                "{host} was claimed by both the smoke and fire classifiers"
+            );
+        }
+    }
+
+    /// Smoke must stay passive — the emission field exists, so it would be
+    /// easy to accidentally leak a nonzero value into it.
+    #[test]
+    fn converted_smoke_remains_passive() {
+        let smoke = fog_volume_from_particle("CampfireSmoke01", &ParticleEmitter::smoke())
+            .expect("smoke converts");
+        assert!(!smoke.is_emissive());
+        assert_eq!(smoke.emission_temperature_k, 0.0);
+    }
+
+    /// Optical depth is pinned by construction, so a bonfire is exactly as
+    /// translucent as a candle rather than turning opaque with size.
+    #[test]
+    fn flame_optical_depth_is_size_invariant() {
+        if !fire_path_active() {
+            return;
+        }
+        let mut small = ParticleEmitter::torch_flame();
+        small.shape = EmitterShape::Sphere { radius: 1.0 };
+        let mut large = ParticleEmitter::torch_flame();
+        large.shape = EmitterShape::Sphere { radius: 40.0 };
+
+        for emitter in [small, large] {
+            let volume = fire_volume_from_particle("Fire", &emitter).expect("flame");
+            let half = volume.bounds.expect("bounded").half_extents;
+            let width_m = 2.0 * half.x.min(half.z) / WORLD_UNITS_PER_METER;
+            let optical_depth = volume.extinction_per_meter * width_m;
+            assert!(
+                (optical_depth - FLAME_OPTICAL_DEPTH).abs() < 1.0e-3,
+                "optical depth drifted to {optical_depth} for half extents {half:?}"
+            );
+        }
+    }
+
+    /// `medium_from_particle` is the single entry point both spawn paths use;
+    /// it must route each emitter family to the right medium.
+    #[test]
+    fn medium_entry_point_routes_both_families() {
+        assert!(
+            medium_from_particle("CampfireSmoke01", &ParticleEmitter::smoke())
+                .is_some_and(|v| !v.is_emissive())
+        );
+        if fire_path_active() {
+            assert!(
+                medium_from_particle("TorchFire01", &ParticleEmitter::torch_flame())
+                    .is_some_and(|v| v.is_emissive())
+            );
+        }
+        assert!(medium_from_particle("MagicSparkle", &ParticleEmitter::magic_sparkles()).is_none());
+    }
 
     #[test]
     fn invalid_or_disabled_ramps_produce_no_medium() {

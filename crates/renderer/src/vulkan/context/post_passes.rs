@@ -614,7 +614,12 @@ impl VulkanContext {
                                 // Filled by `dispatch` after it builds the
                                 // camera-centered local-volume cluster grid.
                                 local_volume_grid: [0.0; 4],
-                                fog_reference: [fog_height_reference, 0.0, 0.0, 0.0],
+                                fog_reference: [
+                                    fog_height_reference,
+                                    crate::vulkan::volumetrics::DEFAULT_EMISSIVE_HISTORY_WEIGHT,
+                                    0.0,
+                                    0.0,
+                                ],
                             };
                             if let Some(ref mut timers) = self.gpu_timers {
                                 timers.cmd_volumetrics_start(&self.device, cmd, frame);

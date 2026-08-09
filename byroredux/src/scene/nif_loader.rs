@@ -575,7 +575,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
             emitter.dst_blend,
         );
 
-        let fog_volume = crate::fog::fog_volume_from_particle(&host_name, &preset);
+        let fog_volume = crate::fog::medium_from_particle(&host_name, &preset);
         let texture_handle = if fog_volume.is_none() {
             let handle = resolve_texture(ctx, tex_provider, preset.texture_path.as_deref());
             if handle == ctx.texture_registry.fallback()

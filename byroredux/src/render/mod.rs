@@ -201,9 +201,10 @@ const SUN_INTENSITY_PEAK: f32 = 4.0;
 /// Project the cell's authored directional colour into the value the
 /// renderer pushes to the per-frame `GpuLight` SSBO.
 ///
-/// Interior arm: 0.6× constant source strength, independent of
-/// `sun_intensity` because interior XCLL is authored cell lighting rather
-/// than the exterior weather sun.
+/// Interior arm: authored `directional_fade` is the source-strength
+/// multiplier, independent of `sun_intensity` because interior XCLL is cell
+/// lighting rather than the exterior weather sun. Formats without that field
+/// retain the established 0.6 fallback.
 ///
 /// Exterior arm: ramp the contribution by `sun_intensity / SUN_INTENSITY_PEAK`
 /// so surfaces fade in lockstep with the composite sun disc
@@ -227,10 +228,14 @@ fn compute_directional_upload(
     directional_color: &[f32; 3],
     is_interior: bool,
     sun_intensity: f32,
+    directional_fade: Option<f32>,
 ) -> ([f32; 3], f32) {
     let source_scale = if is_interior {
-        const INTERIOR_DIRECTIONAL_SOURCE_SCALE: f32 = 0.6;
-        INTERIOR_DIRECTIONAL_SOURCE_SCALE
+        const LEGACY_INTERIOR_DIRECTIONAL_SOURCE_SCALE: f32 = 0.6;
+        directional_fade
+            .filter(|fade| fade.is_finite())
+            .unwrap_or(LEGACY_INTERIOR_DIRECTIONAL_SOURCE_SCALE)
+            .max(0.0)
     } else {
         (sun_intensity / SUN_INTENSITY_PEAK).clamp(0.0, 1.0)
     };
@@ -751,7 +756,7 @@ pub(crate) fn build_render_data(
     // Collect lights from ECS — cell directional + placed point lights.
     // See `render::lights::collect_lights`.
     let t_lights = mark(profile);
-    lights::collect_lights(world, gpu_lights, light_sort_scratch);
+    lights::collect_lights(world, gpu_lights, gpu_fog_volumes, light_sort_scratch);
     let ms_lights = took(t_lights);
     if profile {
         log::info!(
@@ -869,6 +874,7 @@ pub(crate) fn build_render_data(
 // orchestrator above acquires the World queries once and threads
 // references through.
 mod camera;
+mod fire_lights;
 mod fog_volumes;
 // `pub(crate)` so the `light.atten` console command (REND-#1451) can
 // read `LIGHT_RANGE_EXTENSION` to report the effective brightness at

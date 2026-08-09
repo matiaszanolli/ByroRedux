@@ -30,6 +30,33 @@ pub struct FogVolume {
     /// Fraction of the normalized primitive radius occupied by the soft edge.
     /// `0` is a hard boundary; `1` fades from the primitive center outward.
     pub edge_softness: f32,
+    /// Emitted radiance `L_e` in linear RGB (Rec. 709 primaries) — the
+    /// emission source term of the radiative transfer equation.
+    ///
+    /// The shader multiplies this by the *locally evaluated* absorption
+    /// coefficient `sigma_a = sigma_t * (1 - albedo)` rather than by a
+    /// constant, so emission follows the same procedural density profile as
+    /// extinction. That is both physically correct (hotter, denser soot
+    /// radiates more) and what makes a flame's interior structure visible
+    /// instead of reading as a uniform glowing blob.
+    ///
+    /// `[0.0; 3]` for passive media — fog, mist, and cooled smoke.
+    ///
+    /// The fire/smoke distinction is entirely a matter of these coefficients:
+    /// a flame is a **high** `sigma_t`, **low** albedo, high `L_e` medium
+    /// (soot hot enough to incandesce absorbs and emits, it barely scatters),
+    /// while smoke is the same soot after cooling — moderate `sigma_t`,
+    /// **high** albedo, zero `L_e`. There is no separate "fire system"; there
+    /// is one medium whose coefficients follow its temperature.
+    pub emissive_radiance: [f32; 3],
+    /// Blackbody temperature in kelvin that produced [`Self::emissive_radiance`].
+    ///
+    /// Retained rather than discarded after the colour conversion because the
+    /// cooling curve — not the colour — is the thing a fire simulation
+    /// integrates. `0.0` means either a passive medium or authored
+    /// non-thermal emission (magical fire, plasma) whose colour did not come
+    /// from a blackbody spectrum.
+    pub emission_temperature_k: f32,
     /// Provenance for diagnostics and future per-source tuning.
     pub source: FogSource,
 }
@@ -45,6 +72,17 @@ impl FogVolume {
                 .single_scatter_albedo
                 .iter()
                 .all(|component| component.is_finite())
+            && self.emissive_radiance.iter().all(|c| c.is_finite())
+    }
+
+    /// Whether this volume contributes an emission source term.
+    ///
+    /// Passive media skip the emission path entirely, so ordinary fog and
+    /// smoke cost nothing extra for the fire feature existing.
+    pub fn is_emissive(self) -> bool {
+        self.emissive_radiance
+            .iter()
+            .any(|component| component.is_finite() && *component > 0.0)
     }
 }
 
@@ -119,6 +157,8 @@ mod tests {
             extinction_per_meter: 0.4,
             single_scatter_albedo: [0.8, 0.75, 0.7],
             edge_softness: 0.35,
+            emissive_radiance: [0.0; 3],
+            emission_temperature_k: 0.0,
             source: FogSource::ParticleEmitter,
         };
         assert!(fog.is_renderable());
@@ -132,6 +172,8 @@ mod tests {
             extinction_per_meter: 0.1,
             single_scatter_albedo: [0.9; 3],
             edge_softness: 0.0,
+            emissive_radiance: [0.0; 3],
+            emission_temperature_k: 0.0,
             source: FogSource::Xcll,
         };
         assert!(!cell_scope.is_renderable());

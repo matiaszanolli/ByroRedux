@@ -6,7 +6,8 @@ use super::*;
 /// regress daytime surface lighting brightness.
 #[test]
 fn exterior_noon_preserves_pre_fix_brightness() {
-    let (color, radius) = compute_directional_upload(&[0.7, 0.65, 0.55], false, SUN_INTENSITY_PEAK);
+    let (color, radius) =
+        compute_directional_upload(&[0.7, 0.65, 0.55], false, SUN_INTENSITY_PEAK, None);
     assert_eq!(radius, 0.0, "exterior radius must be 0 (shadowed)");
     assert!((color[0] - 0.7).abs() < 1e-6);
     assert!((color[1] - 0.65).abs() < 1e-6);
@@ -24,6 +25,7 @@ fn exterior_midnight_zeroes_directional_contribution() {
         &[0.05, 0.07, 0.12], // typical TOD-NIGHT SKY_SUNLIGHT (dim blue)
         false,
         0.0,
+        None,
     );
     assert_eq!(radius, 0.0);
     assert_eq!(
@@ -41,7 +43,7 @@ fn exterior_midnight_zeroes_directional_contribution() {
 #[test]
 fn exterior_sunrise_half_intensity_half_contribution() {
     let (color, _) =
-        compute_directional_upload(&[0.6, 0.55, 0.40], false, SUN_INTENSITY_PEAK / 2.0);
+        compute_directional_upload(&[0.6, 0.55, 0.40], false, SUN_INTENSITY_PEAK / 2.0, None);
     assert!((color[0] - 0.30).abs() < 1e-6);
     assert!((color[1] - 0.275).abs() < 1e-6);
     assert!((color[2] - 0.20).abs() < 1e-6);
@@ -55,24 +57,25 @@ fn exterior_sunrise_half_intensity_half_contribution() {
 /// clamps to 1 → daytime equivalent.
 #[test]
 fn exterior_out_of_range_intensity_is_clamped() {
-    let (negative, _) = compute_directional_upload(&[1.0; 3], false, -10.0);
+    let (negative, _) = compute_directional_upload(&[1.0; 3], false, -10.0, None);
     assert_eq!(negative, [0.0; 3], "negative intensity must clamp to zero");
-    let (over_cap, _) = compute_directional_upload(&[1.0; 3], false, 100.0);
+    let (over_cap, _) = compute_directional_upload(&[1.0; 3], false, 100.0, None);
     assert_eq!(
         over_cap, [1.0; 3],
         "over-cap intensity must clamp to peak (1.0× ramp)"
     );
 }
 
-/// Interior source: 0.6× constant scale, independent of
-/// `sun_intensity` — XCLL is authored cell lighting, not a TOD-driven
-/// weather sun. Its renderer contract is nevertheless the same
-/// shadowed directional used outside (`radius == 0`).
+/// Interior fallback calibration: a missing Directional Fade keeps the
+/// established 0.6× scale, independent of `sun_intensity` — XCLL is authored
+/// cell lighting, not a TOD-driven weather sun. The emitted source uses the
+/// same standard directional contract as outside (`radius == 0`).
 #[test]
 fn interior_uses_fixed_source_with_standard_directional_contract() {
     let (noon_color, noon_radius) =
-        compute_directional_upload(&[0.5, 0.5, 0.5], true, SUN_INTENSITY_PEAK);
-    let (midnight_color, midnight_radius) = compute_directional_upload(&[0.5, 0.5, 0.5], true, 0.0);
+        compute_directional_upload(&[0.5, 0.5, 0.5], true, SUN_INTENSITY_PEAK, None);
+    let (midnight_color, midnight_radius) =
+        compute_directional_upload(&[0.5, 0.5, 0.5], true, 0.0, None);
     assert_eq!(
         noon_color, midnight_color,
         "interior XCLL source must NOT vary with sun_intensity"
@@ -84,6 +87,17 @@ fn interior_uses_fixed_source_with_standard_directional_contract() {
     assert_eq!(midnight_radius, 0.0);
     // 0.6× scale per the established convention.
     assert!((noon_color[0] - 0.30).abs() < 1e-6);
+}
+
+#[test]
+fn interior_authored_directional_fade_replaces_legacy_scale() {
+    let (full, _) = compute_directional_upload(&[0.5; 3], true, 0.0, Some(1.0));
+    let (quarter, _) = compute_directional_upload(&[0.5; 3], true, 0.0, Some(0.25));
+    let (disabled, _) = compute_directional_upload(&[0.5; 3], true, 0.0, Some(0.0));
+
+    assert_eq!(full, [0.5; 3]);
+    assert_eq!(quarter, [0.125; 3]);
+    assert_eq!(disabled, [0.0; 3]);
 }
 
 /// Sanity check that the constant matches `weather_system`'s

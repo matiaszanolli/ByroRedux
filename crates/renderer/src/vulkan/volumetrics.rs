@@ -120,7 +120,9 @@ pub struct VolumetricsParams {
     /// `proceduralDensityScale`'s `refHeight` parameter instead of
     /// `camera_pos.y`, which made froxel fog density peak at eye level and
     /// follow the player vertically instead of thinning with real
-    /// altitude. yzw reserved.
+    /// altitude. y = temporal history weight applied where the froxel's
+    /// source term is dominated by thermal emission (see
+    /// [`DEFAULT_EMISSIVE_HISTORY_WEIGHT`]). zw reserved.
     pub fog_reference: [f32; 4],
 }
 
@@ -155,6 +157,19 @@ pub struct GpuFogVolume {
     pub inverse_rotation: [f32; 4],
     /// rgb = single-scatter albedo; w = normalized edge softness.
     pub albedo_edge: [f32; 4],
+    /// rgb = emitted radiance `L_e` in linear RGB; w = source blackbody
+    /// temperature in kelvin (diagnostic / simulation state, not read by the
+    /// current inject pass).
+    ///
+    /// The shader multiplies `rgb` by the froxel's locally evaluated
+    /// absorption coefficient `sigma_a = sigma_t * (1 - albedo)` to form the
+    /// emission source term of the radiative transfer equation, so emission
+    /// inherits the same procedural density profile as extinction instead of
+    /// filling the primitive uniformly.
+    ///
+    /// All-zero for passive media (fog, mist, cooled smoke), which is the
+    /// overwhelming majority — the emission branch is skipped for them.
+    pub emission_temperature: [f32; 4],
 }
 
 #[repr(C)]
@@ -197,6 +212,19 @@ pub const DEFAULT_SINGLE_SCATTER_ALBEDO: f32 = 0.95;
 pub const DEFAULT_SCALE_HEIGHT_METERS: f32 = 30.0;
 pub const DEFAULT_TEMPORAL_HISTORY_WEIGHT: f32 = 0.92;
 pub const DEFAULT_DENSITY_REJECTION: f32 = 4.0;
+
+/// Temporal history weight for froxels whose source term is dominated by
+/// thermal emission, interpolated against [`DEFAULT_TEMPORAL_HISTORY_WEIGHT`]
+/// by the emissive fraction in `volumetrics_inject.comp`.
+///
+/// This is a filter time-constant choice, not a physical constant, so it is
+/// stated rather than derived. An exponential filter with weight `w` reaches
+/// ~86% of a step change in `-1/ln(w)` frames: the 0.92 steady-state weight
+/// is ~12 frames, which visibly smears flame flicker and turns an explosion's
+/// leading edge into a slow bloom. 0.5 is ~1.4 frames — fast enough that a
+/// 60 Hz observer reads a flash as instantaneous, while still suppressing
+/// the per-froxel jitter that a weight of 0 would expose.
+pub const DEFAULT_EMISSIVE_HISTORY_WEIGHT: f32 = 0.5;
 
 /// Convert authored fog colour into a finite, energy-neutral chromaticity.
 ///
@@ -2050,11 +2078,11 @@ mod unit_tests {
 
     #[test]
     fn gpu_fog_volume_layout_matches_std430_shader_contract() {
-        assert_eq!(std::mem::size_of::<GpuFogVolume>(), 64);
+        assert_eq!(std::mem::size_of::<GpuFogVolume>(), 80);
         assert_eq!(std::mem::align_of::<GpuFogVolume>(), 16);
         assert_eq!(
             std::mem::size_of::<GpuFogVolumeUpload>(),
-            16 + MAX_GPU_FOG_VOLUMES * 64
+            16 + MAX_GPU_FOG_VOLUMES * 80
         );
         assert_eq!(std::mem::size_of::<GpuFogClusterEntry>(), 8);
     }
@@ -2073,6 +2101,7 @@ mod unit_tests {
         assert_eq!(offset_of!(GpuFogVolume, half_extents_extinction), 16);
         assert_eq!(offset_of!(GpuFogVolume, inverse_rotation), 32);
         assert_eq!(offset_of!(GpuFogVolume, albedo_edge), 48);
+        assert_eq!(offset_of!(GpuFogVolume, emission_temperature), 64);
     }
 
     /// #2228 / REN-D3-01 — cross-checks `volumetrics_inject.comp`'s
@@ -2084,11 +2113,12 @@ mod unit_tests {
     /// does for `GpuMaterial` (scene_buffer/gpu_instance_layout_tests.rs).
     #[test]
     fn gpu_fog_volume_glsl_field_order_matches_rust_struct() {
-        const RUST_FIELD_ORDER: [&str; 4] = [
+        const RUST_FIELD_ORDER: [&str; 5] = [
             "center_shape",
             "half_extents_extinction",
             "inverse_rotation",
             "albedo_edge",
+            "emission_temperature",
         ];
 
         let glsl_src = include_str!("../../shaders/volumetrics_inject.comp");
@@ -2129,6 +2159,7 @@ mod unit_tests {
             half_extents_extinction: [10.0, 20.0, 10.0, 0.01],
             inverse_rotation: [0.0, 0.0, 0.0, 1.0],
             albedo_edge: [0.9, 0.9, 0.9, 0.4],
+            emission_temperature: [0.0; 4],
         };
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = Box::new([GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT]);
@@ -2159,6 +2190,7 @@ mod unit_tests {
             half_extents_extinction: [1.0, 1.0, 1.0, 0.01],
             inverse_rotation: [0.0, 0.0, 0.0, 1.0],
             albedo_edge: [0.9, 0.9, 0.9, 0.4],
+            emission_temperature: [0.0; 4],
         };
         let mut upload = GpuFogVolumeUpload::default();
         let mut entries = Box::new([GpuFogClusterEntry::default(); FOG_VOLUME_CLUSTER_COUNT]);

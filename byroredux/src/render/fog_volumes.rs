@@ -123,7 +123,30 @@ fn gpu_volume_from_ecs(volume: FogVolume, transform: GlobalTransform) -> Option<
             volume.single_scatter_albedo[2].clamp(0.0, 1.0),
             volume.edge_softness.clamp(0.0, 1.0),
         ],
+        // Emitted radiance passes through unscaled: unlike extinction it is a
+        // radiance, not a per-length coefficient, so it carries no world-unit
+        // conversion. The shader multiplies it by the locally evaluated
+        // `sigma_a` — which IS per world unit — to form the source term.
+        //
+        // Negative or non-finite emission is clamped away rather than
+        // rejected, so a bad authored value dims a flame instead of poisoning
+        // the froxel accumulation buffer with NaN.
+        emission_temperature: [
+            sanitize_emission(volume.emissive_radiance[0]),
+            sanitize_emission(volume.emissive_radiance[1]),
+            sanitize_emission(volume.emissive_radiance[2]),
+            volume.emission_temperature_k.max(0.0),
+        ],
     })
+}
+
+/// Clamp one emitted-radiance channel into a finite, non-negative value.
+fn sanitize_emission(radiance: f32) -> f32 {
+    if radiance.is_finite() {
+        radiance.max(0.0)
+    } else {
+        0.0
+    }
 }
 
 #[cfg(test)]
@@ -144,6 +167,8 @@ mod tests {
             extinction_per_meter: 0.7,
             single_scatter_albedo: [0.9, 0.8, 0.7],
             edge_softness: 0.4,
+            emissive_radiance: [0.0; 3],
+            emission_temperature_k: 0.0,
             source: FogSource::ParticleEmitter,
         };
         let transform = GlobalTransform::new(Vec3::new(10.0, 20.0, 30.0), Quat::IDENTITY, 2.0);
@@ -160,6 +185,8 @@ mod tests {
             extinction_per_meter: 0.5,
             single_scatter_albedo: [0.9; 3],
             edge_softness: 0.4,
+            emissive_radiance: [0.0; 3],
+            emission_temperature_k: 0.0,
             source: FogSource::Xcll,
         };
         assert!(gpu_volume_from_ecs(volume, GlobalTransform::IDENTITY).is_none());
@@ -183,6 +210,8 @@ mod tests {
             extinction_per_meter: 0.5,
             single_scatter_albedo: [0.9; 3],
             edge_softness: 0.4,
+            emissive_radiance: [0.0; 3],
+            emission_temperature_k: 0.0,
             source: FogSource::ParticleEmitter,
         };
         let far_translation =

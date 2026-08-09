@@ -976,17 +976,19 @@ fn spawn_particle_emitters(
             em.dst_blend,
         );
 
-        // Alpha-over fog/smoke is participating media, not transparent
-        // geometry. Replace the billboard system at the translation
-        // boundary so it cannot fight froxel history or FSR later. The local
-        // ellipsoid retains the authored emitter's swept extent and alpha-
-        // seeded optical density; lighting visibility remains the shared
+        // Alpha-over fog/smoke and additive flame/ember are both participating
+        // media, not transparent geometry. Replace the billboard system at the
+        // translation boundary so it cannot fight froxel history or FSR later.
+        // The local ellipsoid retains the authored emitter's swept extent;
+        // smoke seeds optical density from authored alpha, fire from its
+        // blackbody temperature. Lighting visibility remains the shared
         // BLAS-backed TLAS query in the volumetric inject pass.
-        if let Some(fog_volume) = crate::fog::fog_volume_from_particle(&host, &preset) {
+        if let Some(fog_volume) = crate::fog::medium_from_particle(&host, &preset) {
             log::debug!(
                 target: "byroredux::fog",
-                "replaced alpha-over particle emitter with local fog volume: \
+                "replaced particle emitter with local {} volume: \
                  type={:?} host={:?} texture={:?}",
+                if fog_volume.is_emissive() { "emissive" } else { "fog" },
                 em.original_type,
                 em.host_name,
                 preset.texture_path,

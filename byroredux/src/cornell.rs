@@ -714,6 +714,8 @@ fn spawn_fog_volume(world: &mut World, pos: Vec3, half_extents: Vec3, name: &str
             extinction_per_meter: 40.0,
             single_scatter_albedo: [0.92, 0.92, 0.97],
             edge_softness: 0.35,
+            emissive_radiance: [0.0; 3],
+            emission_temperature_k: 0.0,
             source: FogSource::AuthoredMesh,
         },
     );

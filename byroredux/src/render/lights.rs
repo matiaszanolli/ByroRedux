@@ -1,7 +1,7 @@
 //! Light collection — extracted from `build_render_data` per #1115.
 //!
 //! Appends to the caller-owned `gpu_lights` Vec in two passes:
-//!   1. Directional light (XCLL-authored, interior or exterior).
+//!   1. Directional light (XCLL-authored interior key or exterior sun).
 //!   2. Placed point lights (LIGH records, animated dimmer/intensity/radius).
 //!
 //! This module is the **translation layer** between game-format light
@@ -13,7 +13,7 @@
 //! `feedback_format_translation.md`.
 
 use byroredux_core::ecs::{GlobalTransform, LightKind, LightSource, World};
-use byroredux_renderer::shader_constants::{SHADOW_POLICY_FULL, SHADOW_POLICY_STRUCTURE};
+use byroredux_renderer::shader_constants::SHADOW_POLICY_FULL;
 
 use crate::components::{CellLightingRes, SkyParamsRes};
 
@@ -106,12 +106,13 @@ fn gi_priority_score(light: &byroredux_renderer::GpuLight) -> f32 {
 pub(super) fn collect_lights(
     world: &World,
     gpu_lights: &mut Vec<byroredux_renderer::GpuLight>,
+    fog_volumes: &[byroredux_renderer::GpuFogVolume],
     sort_scratch: &mut Vec<(f32, byroredux_renderer::GpuLight)>,
 ) {
-    // Cell directional light. Source selection remains environment-specific
-    // (`compute_directional_upload` uses authored XCLL strength indoors and
-    // the weather/TOD ramp outdoors), but both produce the same standard
-    // directional-light contract for BRDF evaluation and RT shadows.
+    // Cell directional light. Exterior cells emit the weather/TOD sun;
+    // interiors emit their separate XCLL key light after applying the authored
+    // Directional Fade scalar. The six-face XCLL cube is ambient irradiance and
+    // does not replace this source.
     // Snapshot `sun_intensity` BEFORE acquiring `CellLightingRes` so the
     // two resource locks are never held simultaneously. The weather path
     // touches the same pair in the opposite (Sky→Cell) order, so nesting
@@ -127,25 +128,28 @@ pub(super) fn collect_lights(
             &cell_lit.directional_color,
             cell_lit.is_interior,
             sun_intensity,
+            cell_lit.directional_fade,
         );
-        gpu_lights.push(byroredux_renderer::GpuLight {
-            position_radius: [0.0, 0.0, 0.0, dir_radius],
-            color_type: [dir_color[0], dir_color[1], dir_color[2], 2.0],
-            direction_angle: [
-                cell_lit.directional_dir[0],
-                cell_lit.directional_dir[1],
-                cell_lit.directional_dir[2],
-                0.0,
-            ],
-            // Directional lights aren't distance-attenuated; falloff
-            // is a no-op for them but the shader still reads `params.x`
-            // unconditionally — pass `0.0` (the "use default" sentinel)
-            // so the shader's directional branch ignores it cleanly.
-            // z = unified shadow policy. The cell directional always
-            // participates in visibility; a zero RGB source is rejected by
-            // the shader's contribution gate before reservoir streaming.
-            params: [0.0, 0.0, SHADOW_POLICY_FULL as f32, 0.0],
-        });
+        if dir_color.iter().any(|channel| *channel > 0.0) {
+            gpu_lights.push(byroredux_renderer::GpuLight {
+                position_radius: [0.0, 0.0, 0.0, dir_radius],
+                color_type: [dir_color[0], dir_color[1], dir_color[2], 2.0],
+                direction_angle: [
+                    cell_lit.directional_dir[0],
+                    cell_lit.directional_dir[1],
+                    cell_lit.directional_dir[2],
+                    0.0,
+                ],
+                // Directional lights aren't distance-attenuated; falloff
+                // is a no-op for them but the shader still reads `params.x`
+                // unconditionally — pass `0.0` (the "use default" sentinel)
+                // so the shader's directional branch ignores it cleanly.
+                // z = unified shadow policy. The cell directional always
+                // participates in visibility; a zero RGB source is rejected by
+                // the shader's contribution gate before reservoir streaming.
+                params: [0.0, 0.0, SHADOW_POLICY_FULL as f32, 0.0],
+            });
+        }
     }
 
     // PERF-D5-NEW-02 / #1800 — `giHitIrradiance` (lighting.glsl) only
@@ -181,12 +185,6 @@ pub(super) fn collect_lights(
                 // range` and `falloff_shape`.
                 let effective_range = light.radius * LIGHT_RANGE_EXTENSION;
                 let source_radius = emitter_radius(light.radius);
-                // #2250 (REN-D22-01) — `shadow_flags` is already decoded
-                // through the per-game boundary (`canonical_light_shadow_flags`)
-                // at spawn time; reading `light.flags` directly here would
-                // apply Skyrim's raw TES5 bit layout unconditionally to
-                // every game's LIGH DATA, verified or not.
-                let casts_shadows = light.shadow_flags != 0;
                 let falloff_shape = if light.falloff_exponent > 0.0 {
                     light.falloff_exponent
                 } else {
@@ -234,20 +232,17 @@ pub(super) fn collect_lights(
                     // emitter proxy used to stop shadow segments at the
                     // luminous shell instead of inside the fixture; z = the
                     // unified policy consumed by every visibility pass; w is
-                    // reserved. Every physical light is blocked by
-                    // Architecture geometry. Skyrim lights without authored
-                    // shadow bits use STRUCTURE, skipping clutter/actor prop
-                    // shadows but never walls.
-                    params: [
-                        falloff_shape,
-                        source_radius,
-                        if casts_shadows {
-                            SHADOW_POLICY_FULL as f32
-                        } else {
-                            SHADOW_POLICY_STRUCTURE as f32
-                        },
-                        0.0,
-                    ],
+                    // reserved. Every physical local light traces the full
+                    // scene (architecture, clutter, actors, alpha cutouts,
+                    // and glass). Legacy authored shadow bits described which
+                    // cubemap/shadow-map projection the original renderer was
+                    // allowed to allocate under its fixed shadow budget; they
+                    // are not a physical "this light passes through props"
+                    // signal for the modern one-ray ReSTIR/TLAS path. Keeping
+                    // non-authored lights on STRUCTURE-only visibility made
+                    // common Skyrim candle lights ignore their own table,
+                    // nearby pottery, and NPCs.
+                    params: [falloff_shape, source_radius, SHADOW_POLICY_FULL as f32, 0.0],
                 });
             }
         }
@@ -286,6 +281,12 @@ pub(super) fn collect_lights(
     // module family already amortizes away, so it costs nothing to be
     // consistent. `clear` + `extend` keeps the backing allocation and
     // only ever grows it to the high-water light count.
+    // Emissive participating media light the scene they are visible in.
+    // Must precede the GI-priority sort below so a fire competes for the
+    // shader's `GI_HIT_LIGHT_CAP` prefix on brightness like any other light,
+    // instead of being stranded at the tail by append order.
+    super::fire_lights::append_fire_lights(fog_volumes, gpu_lights);
+
     let suffix = &mut gpu_lights[directional_count..];
     sort_scratch.clear();
     sort_scratch.extend(suffix.iter().map(|l| (gi_priority_score(l), *l)));
@@ -314,7 +315,7 @@ pub(super) fn collect_lights(
 
 #[cfg(test)]
 mod directional_source_contract_tests {
-    //! Regression guards for source selection plus shared shading policy.
+    //! Regression guards for directional source selection.
     //!
     //! Interior and exterior cells intentionally differ only at the
     //! source-selection boundary:
@@ -322,10 +323,14 @@ mod directional_source_contract_tests {
     //!   1. Interior XCLL stays independent of the exterior weather
     //!      `sun_intensity` and retains its 0.6 source calibration.
     //!   2. Exterior directional colour continues to follow the TOD ramp.
-    //!   3. Both upload `radius = 0`, so the shader applies the identical
-    //!      Lambert/GGX, shadow-ray, and distance-fade paths.
+    //!   3. Interiors with a positive/missing fade keep the standard
+    //!      directional path.
+    //!   4. The six-face ambient cube and the discrete directional remain
+    //!      separate authored inputs.
+    //!   5. Interior Directional Fade scales (and at zero suppresses) the
+    //!      discrete directional source.
     //!
-    //! Plus a fourth gate at the resource level: `weather_system`
+    //! Plus a resource-level gate: `weather_system`
     //! mutations to `cell_lit.directional_color` are themselves gated
     //! on `!is_interior` (see `systems/weather.rs:561, 213`), so a
     //! prior exterior load's sun colour can't bleed into the next
@@ -412,7 +417,7 @@ mod directional_source_contract_tests {
         world.insert_resource(full_sun_sky_params());
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
 
         assert_eq!(
             lights.len(),
@@ -462,7 +467,7 @@ mod directional_source_contract_tests {
         world.insert_resource(full_sun_sky_params());
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         let l = &lights[0];
@@ -478,6 +483,55 @@ mod directional_source_contract_tests {
         assert!((l.color_type[2] - 0.5).abs() < 1e-5);
     }
 
+    /// Skyrim-era XCLL supplies both a six-face irradiance cube and a
+    /// directional key. They are distinct authoring controls, so presence of
+    /// the cube alone must not discard the directional light.
+    #[test]
+    fn interior_ambient_cube_does_not_replace_directional_light() {
+        let mut world = World::new();
+        let mut cell = interior_cell_lit([0.8, 0.7, 0.5]);
+        cell.directional_ambient = Some([[0.1, 0.1, 0.1]; 6]);
+        cell.directional_fade = Some(1.0);
+        world.insert_resource(cell);
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
+
+        assert_eq!(lights.len(), 1);
+        assert!((lights[0].color_type[0] - 0.8).abs() < 1e-5);
+    }
+
+    /// Bannered Mare authors Directional Fade = 0. Its ambient cube remains
+    /// active, but the discrete +X key must contribute no light and therefore
+    /// cannot project razor-thin parallel bars through the room geometry.
+    #[test]
+    fn zero_interior_directional_fade_suppresses_directional_light() {
+        let mut world = World::new();
+        let mut cell = interior_cell_lit([0.8, 0.7, 0.5]);
+        cell.directional_ambient = Some([[0.1, 0.1, 0.1]; 6]);
+        cell.directional_fade = Some(0.0);
+        world.insert_resource(cell);
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
+
+        assert!(lights.is_empty());
+    }
+
+    #[test]
+    fn interior_directional_fade_scales_key_light() {
+        let mut world = World::new();
+        let mut cell = interior_cell_lit([0.8, 0.7, 0.5]);
+        cell.directional_fade = Some(0.25);
+        world.insert_resource(cell);
+
+        let mut lights = Vec::new();
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
+
+        assert_eq!(lights.len(), 1);
+        assert!((lights[0].color_type[0] - 0.2).abs() < 1e-5);
+    }
+
     /// Interior without SkyParamsRes (no prior exterior load) keeps the
     /// same source calibration and standard directional contract.
     #[test]
@@ -487,7 +541,7 @@ mod directional_source_contract_tests {
         // No SkyParamsRes — fresh-boot or interior-only session.
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         let l = &lights[0];
@@ -507,7 +561,7 @@ mod directional_source_contract_tests {
         world.insert_resource(full_sun_sky_params());
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
 
         assert_eq!(
             lights.len(),
@@ -608,21 +662,21 @@ mod gi_light_priority_tests {
         );
     }
 
-    /// #2250 (REN-D22-01) — `collect_lights` must read the already-
-    /// canonicalized `LightSource::shadow_flags`, not decode raw LIGH
-    /// flags against a fixed bit layout itself. `shadow_flags` here
-    /// stands in for whatever `canonical_light_shadow_flags` would have
-    /// produced from the spawn-time cell loader — this test only cares
-    /// about the render-side consumption half of that boundary.
+    /// Legacy authored shadow flags choose an old shadow-map projection,
+    /// not whether a physical light may pass through clutter. The modern
+    /// RT path must therefore upload full-scene visibility for both lights.
+    /// This pins the Bannered Mare candle case: raw Skyrim flags `0x2009`
+    /// carry no shadow-projection bit, but the candle must still be occluded
+    /// by its table, pottery, and nearby actors.
     #[test]
-    fn collect_lights_uploads_authored_cast_shadow_bit() {
+    fn collect_lights_gives_every_local_light_full_scene_visibility() {
         let mut world = World::new();
         spawn_point_light_with_flags(
             &mut world,
             [10.0, 0.0, 0.0],
             [0.5; 3],
             256.0,
-            0, // No canonical shadow bits — deliberately unshadowed.
+            0, // No legacy shadow-map projection bit.
         );
         spawn_point_light_with_flags(
             &mut world,
@@ -633,20 +687,20 @@ mod gi_light_priority_tests {
         );
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
 
-        let unshadowed = lights
+        let no_projection_bit = lights
             .iter()
             .find(|light| light.position_radius[0] == 10.0)
-            .expect("unshadowed fixture light");
-        let shadowed = lights
+            .expect("fixture light without a legacy projection bit");
+        let authored_projection = lights
             .iter()
             .find(|light| light.position_radius[0] == 20.0)
-            .expect("shadowed fixture light");
-        assert_eq!(unshadowed.params[2], SHADOW_POLICY_STRUCTURE as f32);
-        assert_eq!(unshadowed.params[3], 0.0);
-        assert_eq!(shadowed.params[2], SHADOW_POLICY_FULL as f32);
-        assert_eq!(shadowed.params[3], 0.0);
+            .expect("fixture light with a legacy projection bit");
+        assert_eq!(no_projection_bit.params[2], SHADOW_POLICY_FULL as f32);
+        assert_eq!(no_projection_bit.params[3], 0.0);
+        assert_eq!(authored_projection.params[2], SHADOW_POLICY_FULL as f32);
+        assert_eq!(authored_projection.params[3], 0.0);
     }
 
     /// Integration-level regression: three point lights inserted in an
@@ -667,7 +721,7 @@ mod gi_light_priority_tests {
         spawn_point_light(&mut world, [20.0, 0.0, 0.0], [0.9, 0.9, 0.9], 900.0);
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
 
         assert_eq!(lights.len(), 3, "all three point lights must be collected");
         let scores: Vec<f32> = lights.iter().map(gi_priority_score).collect();
@@ -721,7 +775,7 @@ mod gi_light_priority_tests {
         spawn_point_light(&mut world, [5.0, 0.0, 0.0], [1.0, 1.0, 1.0], 5000.0);
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
 
         assert_eq!(lights.len(), 2);
         assert!(
@@ -773,7 +827,7 @@ mod light_kind_wiring_tests {
         );
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         assert!(
@@ -801,7 +855,7 @@ mod light_kind_wiring_tests {
         );
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         assert!(
@@ -831,7 +885,7 @@ mod light_kind_wiring_tests {
         );
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut Vec::new());
+        collect_lights(&world, &mut lights, &[], &mut Vec::new());
 
         assert_eq!(lights.len(), 1);
         assert_eq!(
@@ -888,7 +942,7 @@ mod sort_scratch_reuse_tests {
         let mut lights = Vec::new();
         let mut scratch = Vec::new();
 
-        collect_lights(&world, &mut lights, &mut scratch);
+        collect_lights(&world, &mut lights, &[], &mut scratch);
         let warm_capacity = scratch.capacity();
         assert!(
             warm_capacity >= 12,
@@ -896,7 +950,7 @@ mod sort_scratch_reuse_tests {
         );
 
         lights.clear();
-        collect_lights(&world, &mut lights, &mut scratch);
+        collect_lights(&world, &mut lights, &[], &mut scratch);
         assert_eq!(
             scratch.capacity(),
             warm_capacity,
@@ -927,7 +981,7 @@ mod sort_scratch_reuse_tests {
         )];
 
         let mut lights = Vec::new();
-        collect_lights(&world, &mut lights, &mut scratch);
+        collect_lights(&world, &mut lights, &[], &mut scratch);
 
         assert_eq!(lights.len(), 2, "only the two spawned lights may appear");
         assert!(
