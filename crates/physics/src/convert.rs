@@ -9,6 +9,16 @@ use byroredux_core::math::{Quat, Vec3};
 use nalgebra::{Isometry3, Point3, UnitQuaternion, Vector3};
 use rapier3d::prelude::SharedShape;
 
+/// Upper bound on a single shape-primitive extent/half-extent this crate
+/// will hand to Rapier. Mirrors the magnitude of
+/// `byroredux::cell_loader::references::RT_ABSOLUTE_PRECISION_CEILING`
+/// (2^20, #1495) — this crate can't depend on the binary crate that
+/// constant lives in, but the two exist for the same reason: a producer
+/// upstream (NIF import, ESM-driven proxy synthesis) can hand this crate a
+/// finite-but-corrupt magnitude, and nothing downstream should have to
+/// trust it. #2543.
+const MAX_SANE_SHAPE_EXTENT: f32 = 1_048_576.0;
+
 // ── glam ↔ nalgebra ─────────────────────────────────────────────────────
 
 #[inline]
@@ -123,12 +133,29 @@ fn flatten_to_parts(
                 "canonical Cuboid half-extents must be finite non-negative magnitudes, got \
                  {half_extents:?}"
             );
+            // #2543 — the debug_assert! above is compiled out of release
+            // builds, so it can't be the only guard: a producer that
+            // slips a non-finite or astronomically large half-extent
+            // through (e.g. an unclamped REFR scale feeding
+            // `synthesize_packed_havok_proxy`) would otherwise hand
+            // Rapier's broad-phase an effectively-infinite AABB that
+            // overlaps the entire scene. Replace non-finite lanes with
+            // the same degenerate-avoidance floor the other arms already
+            // use, and clamp the ceiling to Rapier's own extent limit so
+            // a corrupt-but-finite input can't do the same thing.
+            let clamp_lane = |v: f32| {
+                if v.is_finite() {
+                    v.clamp(1e-3, MAX_SANE_SHAPE_EXTENT)
+                } else {
+                    1e-3
+                }
+            };
             out.push((
                 parent_iso,
                 SharedShape::cuboid(
-                    half_extents.x.max(1e-3),
-                    half_extents.y.max(1e-3),
-                    half_extents.z.max(1e-3),
+                    clamp_lane(half_extents.x),
+                    clamp_lane(half_extents.y),
+                    clamp_lane(half_extents.z),
                 ),
             ));
         }
@@ -264,6 +291,46 @@ mod tests {
         let _ = parts(&CollisionShape::Cuboid {
             half_extents: Vec3::new(1.0, 2.0, -3.0),
         });
+    }
+
+    /// Regression for #2543: an astronomically large but finite
+    /// half-extent (e.g. from an unclamped upstream scale) must clamp to
+    /// `MAX_SANE_SHAPE_EXTENT` rather than reaching Rapier unbounded.
+    /// Non-negative and finite, so it passes the `debug_assert!` above and
+    /// exercises the same clamp path in every build profile.
+    #[test]
+    fn huge_finite_cuboid_extent_clamps_to_sane_ceiling() {
+        let parts = parts(&CollisionShape::Cuboid {
+            half_extents: Vec3::splat(1.0e30),
+        });
+        let he = parts[0].1.as_cuboid().unwrap().half_extents;
+        assert_eq!(
+            (he.x, he.y, he.z),
+            (
+                MAX_SANE_SHAPE_EXTENT,
+                MAX_SANE_SHAPE_EXTENT,
+                MAX_SANE_SHAPE_EXTENT,
+            )
+        );
+    }
+
+    /// Regression for #2543: the release-build backstop. With
+    /// `debug_assert!` compiled out, non-finite half-extents (`Infinity`/
+    /// `NaN`) must still be replaced with the degenerate-avoidance floor
+    /// instead of reaching Rapier's `cuboid` constructor as-is — this is
+    /// the exact scenario the bare `debug_assert!` alone couldn't guard in
+    /// release.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn non_finite_cuboid_extent_clamps_instead_of_reaching_rapier() {
+        let parts = parts(&CollisionShape::Cuboid {
+            half_extents: Vec3::new(f32::INFINITY, f32::NAN, f32::NEG_INFINITY),
+        });
+        let he = parts[0].1.as_cuboid().unwrap().half_extents;
+        assert!(
+            he.x.is_finite() && he.y.is_finite() && he.z.is_finite(),
+            "non-finite half-extents must not reach Rapier: {he:?}"
+        );
     }
 
     #[test]

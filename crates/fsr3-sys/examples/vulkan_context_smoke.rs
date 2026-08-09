@@ -47,6 +47,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// # Safety
+/// Must run before any other `ash`/FSR call in this process (it loads the
+/// Vulkan loader and owns the instance/device/context it creates), and
+/// nothing else may touch those handles concurrently — this example is
+/// single-threaded end to end, so that holds trivially.
 unsafe fn run() -> Result<(), Box<dyn Error>> {
     // SAFETY: dynamically loads the process Vulkan loader.
     let entry = unsafe { ash::Entry::load()? };
@@ -60,8 +65,12 @@ unsafe fn run() -> Result<(), Box<dyn Error>> {
     let mut extensions = Vec::new();
     let mut layers = Vec::new();
     if validation {
+        // SAFETY: `entry` was just successfully loaded above; the call has
+        // no other preconditions.
         let available = unsafe { entry.enumerate_instance_layer_properties()? };
         let has_validation = available.iter().any(|layer| unsafe {
+            // SAFETY: `layer_name` is a fixed-size, NUL-terminated array
+            // ash itself populated from the driver's layer enumeration.
             CStr::from_ptr(layer.layer_name.as_ptr()) == c"VK_LAYER_KHRONOS_validation"
         });
         if !has_validation {
@@ -83,6 +92,8 @@ unsafe fn run() -> Result<(), Box<dyn Error>> {
     if validation {
         instance_info = instance_info.push_next(&mut validation_features);
     }
+    // SAFETY: `instance_info` references `extensions`/`layers`/`app_info`,
+    // all live for this call; `entry` is a valid loaded Vulkan loader.
     let instance = unsafe { entry.create_instance(&instance_info, None)? };
 
     let debug = if validation {
@@ -98,29 +109,47 @@ unsafe fn run() -> Result<(), Box<dyn Error>> {
                     | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
             )
             .pfn_user_callback(Some(validation_callback));
+        // SAFETY: `instance` was just created above and outlives `loader`;
+        // `validation_callback` is a valid `extern "system"` fn pointer
+        // matching the expected ABI.
         let messenger = unsafe { loader.create_debug_utils_messenger(&info, None)? };
         Some((loader, messenger))
     } else {
         None
     };
 
+    // SAFETY: `instance` is live; `create_and_destroy_context` upholds the
+    // same single-threaded, nested-lifetime contract as `run` itself (see
+    // its own `# Safety` doc).
     let result = unsafe { create_and_destroy_context(&instance) };
 
     if let Some((loader, messenger)) = debug {
+        // SAFETY: `messenger` was created by this same `loader` above and
+        // has not yet been destroyed.
         unsafe { loader.destroy_debug_utils_messenger(messenger, None) };
     }
+    // SAFETY: `instance` was created above and every handle derived from it
+    // (device, messenger) has already been destroyed by this point.
     unsafe { instance.destroy_instance(None) };
     result
 }
 
+/// # Safety
+/// `instance` must be a valid, live `ash::Instance` for the duration of this
+/// call, with no other thread destroying it concurrently. Follows `run`'s
+/// same single-threaded, reverse-order-teardown contract.
 unsafe fn create_and_destroy_context(instance: &ash::Instance) -> Result<(), Box<dyn Error>> {
+    // SAFETY: `instance` is valid per this fn's own contract.
     let (physical_device, queue_family) = unsafe { instance.enumerate_physical_devices()? }
         .into_iter()
         .find_map(|physical_device| {
+            // SAFETY: `physical_device` came from the enumeration above,
+            // still valid.
             let properties = unsafe { instance.get_physical_device_properties(physical_device) };
             if properties.api_version < vk::API_VERSION_1_3 {
                 return None;
             }
+            // SAFETY: same `physical_device` precondition as above.
             let queue_family = unsafe {
                 instance
                     .get_physical_device_queue_family_properties(physical_device)
@@ -131,12 +160,16 @@ unsafe fn create_and_destroy_context(instance: &ash::Instance) -> Result<(), Box
         })
         .ok_or("no Vulkan 1.3 compute-capable physical device")?;
 
+    // SAFETY: `physical_device` was returned by `enumerate_physical_devices`
+    // above and is still owned by the still-live `instance`.
     let available_extensions =
         unsafe { instance.enumerate_device_extension_properties(physical_device)? };
     let supports_extension = |name: &CStr| {
-        available_extensions
-            .iter()
-            .any(|property| unsafe { CStr::from_ptr(property.extension_name.as_ptr()) == name })
+        available_extensions.iter().any(|property| unsafe {
+            // SAFETY: `extension_name` is a fixed-size, NUL-terminated
+            // array ash populated from the driver's extension enumeration.
+            CStr::from_ptr(property.extension_name.as_ptr()) == name
+        })
     };
     // v1.1.4 enumerates physical-device extension support, then assumes the
     // corresponding entry points/features were enabled on the logical device.
@@ -174,6 +207,8 @@ unsafe fn create_and_destroy_context(instance: &ash::Instance) -> Result<(), Box
     if coherent_memory_supported {
         features = features.push_next(&mut coherent_memory);
     }
+    // SAFETY: `physical_device` is owned by the still-live `instance`;
+    // `features`'s `push_next` chain points at locals that outlive this call.
     unsafe { instance.get_physical_device_features2(physical_device, &mut features) };
     let base_features = features.features;
     vulkan11.p_next = std::ptr::null_mut();
@@ -195,8 +230,18 @@ unsafe fn create_and_destroy_context(instance: &ash::Instance) -> Result<(), Box
     if coherent_memory_supported {
         device_info = device_info.push_next(&mut coherent_memory);
     }
+    // SAFETY: `physical_device` is owned by `instance`; `device_info`'s
+    // `push_next` chain points at the same locals `features` queried above,
+    // which now hold the driver-reported supported feature set (not
+    // caller-arbitrary values).
     let device = unsafe { instance.create_device(physical_device, &device_info, None)? };
 
+    // SAFETY: `device`/`physical_device` were just created/enumerated above
+    // and are still live; `get_device_proc_addr` is `instance`'s own
+    // function pointer, valid for `device`'s lifetime per the Vulkan spec.
+    // FSR does not take ownership of `device`/`physical_device` — both are
+    // destroyed by this function after the context is dropped, in reverse
+    // order.
     let create_result = unsafe {
         Context::create(VulkanCreateInfo {
             device: device.handle().as_raw() as usize,
@@ -212,12 +257,18 @@ unsafe fn create_and_destroy_context(instance: &ash::Instance) -> Result<(), Box
 
     let result = match create_result {
         Ok(context) => {
+            // SAFETY: `device` is live; no work has been submitted to it,
+            // so this idles trivially before `context` (which holds no
+            // separate GPU work of its own here) is dropped.
             let wait = unsafe { device.device_wait_idle() };
             drop(context);
             wait.map_err(|error| Box::new(error) as Box<dyn Error>)
         }
         Err(error) => Err(Box::new(error) as Box<dyn Error>),
     };
+    // SAFETY: `device` was created above; any FSR context built from it was
+    // already dropped (both branches above), and `device_wait_idle` ran on
+    // the success path — nothing GPU-side still references `device`.
     unsafe { device.destroy_device(None) };
     result?;
 

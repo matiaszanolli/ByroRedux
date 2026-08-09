@@ -271,9 +271,12 @@ fn finish_unload_batch(world: &mut World, ctx: &mut VulkanContext) -> Duration {
     world.shrink_storages();
 
     // #495 — shrink the shared BLAS scratch buffer against the final post-drop
-    // peak once per logical unload. Retiring the old scratch allocation is
-    // deferred for frames-in-flight by AccelerationManager (#1782), so this is
-    // safe from the about_to_wait streaming path.
+    // peak once per logical unload.
+    // SAFETY: `ctx.device`/`allocator` are the same pair that allocated the
+    // current scratch buffer (both come from this same `&mut VulkanContext`).
+    // Retiring the old scratch allocation is deferred for frames-in-flight by
+    // AccelerationManager (#1782), so this is safe from the about_to_wait
+    // streaming path.
     if let (Some(accel), Some(allocator)) = (ctx.accel_manager.as_mut(), ctx.allocator.as_ref()) {
         unsafe {
             accel.shrink_blas_scratch_to_fit(&ctx.device, allocator);

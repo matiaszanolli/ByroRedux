@@ -210,6 +210,24 @@ fn synthesize_packed_havok_proxy(
     // Gamebryo unit is small relative to clutter and actor bounds, while
     // avoiding a degenerate parry cuboid.
     let half_extents = ((max - min) * 0.5 * ref_scale.abs()).max(Vec3::splat(0.5));
+    // #2543 — `ref_scale` is an unclamped raw REFR `XSCL` off disk; the
+    // `ref_scale.is_finite()` check above runs on the *input*, not this
+    // product, so a large-but-finite scale (or an f32 overflow that still
+    // slipped past that check as literal `Infinity`) can reach here
+    // uncaught. Reject non-finite outright (mirrors the `finite_vec`
+    // pattern every other `CollisionShape` producer uses, e.g.
+    // `BhkBoxShape` at `crates/nif/src/import/collision/shape.rs`), then
+    // clamp to the same "corrupt content" ceiling the exterior-cell RT
+    // precision guard already treats as the hard upper bound for a sane
+    // spatial magnitude (`RT_ABSOLUTE_PRECISION_CEILING`, #1495) — a
+    // finite-but-extreme scale still shouldn't hand Rapier a collider
+    // that dwarfs the world and corrupts its broad-phase for every other
+    // body in the scene.
+    if !half_extents.is_finite() {
+        return None;
+    }
+    let half_extents =
+        half_extents.min(Vec3::splat(super::references::RT_ABSOLUTE_PRECISION_CEILING));
     Some((center, CollisionShape::Cuboid { half_extents }))
 }
 
@@ -2048,6 +2066,73 @@ mod synthesize_trimesh_tests {
             }
             other => panic!("expected Cuboid, got {other:?}"),
         }
+    }
+
+    /// Regression for #2543: an extreme-but-finite `ref_scale` (unclamped
+    /// REFR `XSCL` read straight off disk) must not hand back a
+    /// `Cuboid` whose half-extents dwarf the world — it must clamp to
+    /// `RT_ABSOLUTE_PRECISION_CEILING` instead of multiplying straight
+    /// through.
+    #[test]
+    fn packed_proxy_clamps_extreme_finite_scale() {
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            vec![[-1.0, -2.0, -3.0], [1.0, 2.0, 3.0]],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        mesh.translation = [4.0, 5.0, 6.0];
+
+        // Large enough to blow well past `RT_ABSOLUTE_PRECISION_CEILING`
+        // (~1e6) but nowhere near `f32::MAX` (~3.4e38), so the product
+        // stays finite — this is the "corrupt-but-finite" case the debug
+        // assert alone can't catch in release builds.
+        let (_, shape) = synthesize_packed_havok_proxy(&[mesh], 1.0e30)
+            .expect("a finite (if extreme) scale must still produce a clamped proxy");
+        match shape {
+            CollisionShape::Cuboid { half_extents } => {
+                assert!(
+                    half_extents.is_finite(),
+                    "clamped half_extents must stay finite: {half_extents:?}"
+                );
+                assert!(
+                    half_extents.x <= super::super::references::RT_ABSOLUTE_PRECISION_CEILING
+                        && half_extents.y
+                            <= super::super::references::RT_ABSOLUTE_PRECISION_CEILING
+                        && half_extents.z
+                            <= super::super::references::RT_ABSOLUTE_PRECISION_CEILING,
+                    "half_extents {half_extents:?} must be clamped to the sane-magnitude ceiling"
+                );
+            }
+            other => panic!("expected Cuboid, got {other:?}"),
+        }
+    }
+
+    /// Regression for #2543: a non-finite product (e.g. an `f32` overflow
+    /// during the scale multiply) must reject the proxy outright rather
+    /// than propagate `Infinity`/`NaN` half-extents into the ECS.
+    #[test]
+    fn packed_proxy_rejects_non_finite_half_extents() {
+        let mut mesh = byroredux_nif::import::ImportedMesh::from_geometry(
+            vec![[-1.0, -2.0, -3.0], [1.0, 2.0, 3.0]],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        mesh.translation = [4.0, 5.0, 6.0];
+        // Finite input scale, but `f32::MAX * f32::MAX` overflows to
+        // `Infinity` inside `synthesize_packed_havok_proxy`'s multiply —
+        // this must not slip through as a literal-infinite collider.
+        mesh.scale = f32::MAX;
+
+        assert!(
+            synthesize_packed_havok_proxy(&[mesh], f32::MAX).is_none(),
+            "an overflowing (non-finite) half-extents product must reject the proxy"
+        );
     }
 
     /// Regression for #2531 / NIFAL-D6-NEW-01: a skinned mesh's bind-pose

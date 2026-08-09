@@ -222,10 +222,14 @@ Vulkan-spec compliance, then the narrower regression-guard surfaces.
 
 ### 7. RT IOR-Refraction Safety (regression guards)
 
-- **Glass-passthrough loop guard (#789):** the texture-equality identity check at
-  the refraction hit prevents unbounded recursion when coincident glass surfaces
-  share an albedo/normal-map descriptor pair. A regression is a frame-time hang on
-  any paired-glass cell. Verify the check is present.
+- **Glass-passthrough loop guard (#789):** the passthrough check at the refraction
+  hit is keyed on `materialKind == MATERIAL_KIND_GLASS` (`triangle.frag`, since
+  `a09d2b76` — replaced the original texture-equality identity check, which
+  misfired whenever glass shared a texture with opaque geometry). The actual
+  unbounded-recursion guard is the fixed `REFRACT_PASSTHRU_BUDGET = 2` loop-
+  iteration cap, independent of which identity check gates continuation. A
+  regression is a frame-time hang on any paired-glass cell. Verify the budget
+  is enforced and the `materialKind` check is present.
 - **Glass ray budget** `GLASS_RAY_BUDGET`
   (`crates/renderer/src/shader_constants_data.rs`, mirrored in
   `crates/renderer/shaders/include/shader_constants.glsl` — verify the two stay
