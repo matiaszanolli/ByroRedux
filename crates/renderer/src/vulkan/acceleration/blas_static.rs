@@ -418,6 +418,17 @@ impl AccelerationManager {
         while self.blas_entries.len() <= handle {
             self.blas_entries.push(None);
         }
+        // #2481 / AS-D1-NEW-02 — release any BLAS already occupying this
+        // handle before overwriting it. A raw index assignment would drop
+        // a live `BlasEntry` as plain memory: `GpuBuffer`'s `Drop` reclaims
+        // the backing buffer (with a warn), but `BlasEntry::accel` is a raw
+        // `vk::AccelerationStructureKHR` with no `Drop` impl at all — it
+        // would leak for the process lifetime, and `total_blas_bytes` /
+        // `static_blas_bytes` would drift upward with no matching
+        // decrement. `drop_blas` is a no-op when the handle is unoccupied
+        // (the common, first-build case) and routes an occupied one through
+        // the same deferred-destroy queue every other eviction path uses.
+        self.drop_blas(mesh_handle);
         self.total_blas_bytes += blas_size;
         self.static_blas_bytes += blas_size;
         self.blas_entries[handle] = Some(BlasEntry {
@@ -1113,6 +1124,12 @@ impl AccelerationManager {
             while self.blas_entries.len() <= handle {
                 self.blas_entries.push(None);
             }
+            // #2481 / AS-D1-NEW-02 — see the matching guard in `build_blas`
+            // above: release any BLAS already occupying this handle through
+            // the deferred-destroy queue before overwriting it, instead of
+            // dropping a live `BlasEntry` (and leaking its raw
+            // `vk::AccelerationStructureKHR`) as plain memory.
+            self.drop_blas(mesh_handle);
             self.total_blas_bytes += blas_size;
             self.static_blas_bytes += blas_size;
             self.blas_entries[handle] = Some(BlasEntry {

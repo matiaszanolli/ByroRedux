@@ -2754,7 +2754,7 @@ impl VulkanContext {
 
         log::info!("Vulkan context fully initialized");
 
-        Ok(Self {
+        let mut context = Self {
             entry,
             instance: vk_instance,
             debug_messenger,
@@ -2872,7 +2872,46 @@ impl VulkanContext {
             screenshot_generation: Arc::new(AtomicU64::new(0)),
             screenshot_staging: None,
             screenshot_pending_readback: None,
-        })
+        };
+
+        // #2480 / REN-D23-2026-08-07-01 — `UpscalerMode::Taa` documents
+        // itself as "the compatibility fallback taken whenever FSR context
+        // creation ... fails", but nothing enforced that: on FSR context-
+        // creation failure `frame_upscaler` stays alive with `context: None`
+        // (native-blit degrade) while `renderer_config.upscaler` and
+        // `frame_extents.render` stayed pinned to the FSR preset's REDUCED
+        // extent and no TAA pipeline was ever built (it's only constructed
+        // above when the mode is already `Taa`). The user silently got a
+        // permanent, un-anti-aliased bilinear stretch of a sub-native
+        // render — FSR Quality is the default, so this was the landing
+        // state for every machine with a non-working FSR provider.
+        //
+        // Promote to native TAA using the same rollback-safe runtime
+        // switch `set_upscaler_mode` already provides for the user-facing
+        // `--upscaler` toggle, rather than duplicating its extent/resource
+        // rebuild here. Safe to call at this exact point: `context` is
+        // fully constructed and no frame has been submitted yet, so
+        // `set_upscaler_mode`'s `device_wait_idle` precondition holds
+        // trivially.
+        if matches!(context.renderer_config.upscaler, UpscalerMode::Fsr3(_))
+            && !context
+                .frame_upscaler
+                .as_ref()
+                .is_some_and(FrameUpscaler::is_fsr_dispatch_active)
+        {
+            log::error!(
+                "FSR context creation failed at startup; promoting to native-resolution \
+                 TAA instead of silently staying at the reduced FSR render extent"
+            );
+            if let Err(e) = context.set_upscaler_mode(UpscalerMode::Taa, window_size) {
+                log::error!(
+                    "Failed to promote to TAA after FSR startup failure; the reduced-extent \
+                     native-blit fallback stays active: {e:#}"
+                );
+            }
+        }
+
+        Ok(context)
     }
 
     /// Synchronously drain every deferred-destroy queue across the
@@ -4005,6 +4044,66 @@ mod rigid_history_hasher_tests {
             2,
             "expected exactly 2 FxHashMap constructions (the two rigid-history \
              maps) — a `HashMap::new()` crept back into one of them (#2174)",
+        );
+    }
+}
+
+// #2480 / REN-D23-2026-08-07-01 — FSR startup-failure must promote to TAA,
+// not silently stay at the reduced FSR render extent with no temporal AA.
+// `VulkanContext::new` needs a live Vulkan device + a forced FSR SDK
+// failure to exercise end-to-end, so (matching this file's
+// `rigid_history_hasher_tests` pattern above) this pins the fix at the
+// source level.
+#[cfg(test)]
+mod fsr_startup_failure_promotes_to_taa_tests {
+    const CONTEXT_MOD_RS: &str = include_str!("mod.rs");
+
+    fn production_src() -> &'static str {
+        CONTEXT_MOD_RS
+            .split_once("\n#[cfg(test)]")
+            .expect("context/mod.rs lost its test modules")
+            .0
+    }
+
+    #[test]
+    fn new_promotes_to_taa_when_fsr_context_creation_failed() {
+        let src = production_src();
+
+        let upscaler_built_pos = src
+            .find("let frame_upscaler = FrameUpscaler::new(")
+            .expect("VulkanContext::new must still construct the frame upscaler");
+        let struct_open_pos = src
+            .find("let mut context = Self {")
+            .expect("VulkanContext::new must bind the constructed context to a \
+                     mutable local so a post-construction promotion can run \
+                     before it is wrapped in Ok(..) (#2480)");
+        let guard_pos = src
+            .find("matches!(context.renderer_config.upscaler, UpscalerMode::Fsr3(_))")
+            .expect("the promotion must be gated on the mode actually being FSR");
+        let dispatch_check_pos = src
+            .find("is_some_and(FrameUpscaler::is_fsr_dispatch_active)")
+            .expect(
+                "the promotion must check is_fsr_dispatch_active() — `context: None` \
+                 after a failed FSR create is exactly what that reports",
+            );
+        let switch_pos = src
+            .find("context.set_upscaler_mode(UpscalerMode::Taa, window_size)")
+            .expect(
+                "startup FSR failure must promote via set_upscaler_mode(Taa, ..) — \
+                 the same rollback-safe runtime switch the --upscaler CLI flag uses, \
+                 not a bespoke construction-time TAA build (#2480)",
+            );
+        let return_pos = src
+            .find("Ok(context)")
+            .expect("VulkanContext::new must return the (possibly promoted) context");
+
+        assert!(upscaler_built_pos < struct_open_pos);
+        assert!(struct_open_pos < guard_pos, "the guard must run AFTER the struct exists");
+        assert!(guard_pos < dispatch_check_pos && dispatch_check_pos < switch_pos);
+        assert!(
+            switch_pos < return_pos,
+            "the promotion must run before the constructor returns — a caller \
+             must never observe the pre-promotion, reduced-extent state"
         );
     }
 }

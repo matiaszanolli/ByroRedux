@@ -338,6 +338,16 @@ impl AccelerationManager {
                 )
             };
             let blas_size = p.buffer.size;
+            // #2481 / AS-D1-NEW-02 — release any BLAS already registered
+            // for this entity before overwriting it. An unconditional
+            // `insert` would drop the previous live `BlasEntry` as plain
+            // memory: `GpuBuffer`'s `Drop` reclaims the backing buffer
+            // (with a warn), but `BlasEntry::accel` is a raw
+            // `vk::AccelerationStructureKHR` with no `Drop` impl — it
+            // would leak for the process lifetime. `drop_skinned_blas` is
+            // a no-op when the entity has no existing entry (the common,
+            // first-sight case).
+            self.drop_skinned_blas(p.entity_id);
             // Skinned BLAS are NOT eviction candidates — lifecycle is
             // tied to entity visibility, not the static budget. Total
             // counter bumps; `static_blas_bytes` stays untouched. See

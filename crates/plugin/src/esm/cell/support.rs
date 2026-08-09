@@ -83,17 +83,34 @@ pub(crate) fn build_static_object_from_subs(
                 } else {
                     0
                 };
-                // Layout per UESP / xEdit `wbDefinitionsSkyrim`,
-                // identical in the relevant prefix to FO3/FNV/FO4:
-                //   bytes 16-19: falloff exponent (drives shader
-                //     attenuation curve — see `LightData.falloff_exponent`)
-                //   20-23: FOV (spot light)
-                //   24-27: near clip (Skyrim+) / value (pre-Skyrim)
-                //   28-31: flicker period (Skyrim+)
-                //   32-35: intensity amplitude (Skyrim+)
-                //   36-39: movement amplitude (Skyrim+)
-                // The earlier parse stopped at byte 15 and dropped
-                // the falloff + flicker fields entirely.
+                // Layout per UESP / xEdit `wbDefinitionsSkyrim`, identical
+                // in the falloff/FOV prefix to FO3/FNV/FO4, but the two
+                // families DIVERGE from byte 24 on and end at different
+                // total lengths — this is NOT one struct truncated to
+                // different points, it is two different structs that
+                // happen to share a 24-byte prefix:
+                //   Skyrim+ (48 bytes total):
+                //     16-19 falloff exponent (see `LightData.falloff_exponent`)
+                //     20-23 FOV (spot light)
+                //     24-27 near clip
+                //     28-31 flicker period
+                //     32-35 intensity amplitude
+                //     36-39 movement amplitude
+                //     40-43 value, 44-47 weight
+                //   Oblivion/FO3/FNV (32 bytes total):
+                //     16-19 falloff exponent, 20-23 FOV (same prefix)
+                //     24-27 value, 28-31 weight  ← NOT flicker period
+                // #2478 / REN-D22-03 — a 32-byte pre-Skyrim record passes
+                // `len >= 32` just as validly as a full Skyrim record does,
+                // so gating flicker-period/amplitude reads on `len >= 32`
+                // (their Skyrim-layout byte offset) read the pre-Skyrim
+                // record's Value/Weight fields as flicker data. Bethesda's
+                // own tooling always emits the FULL fixed-size struct for
+                // whichever layout a game uses (no partial-length Skyrim
+                // records exist in the wild), so gate on the complete
+                // Skyrim-layout length (48) instead of the byte offset
+                // alone — anything shorter is the pre-Skyrim struct, which
+                // authors no flicker parameters at all.
                 let read_f32 = |off: usize| -> f32 {
                     f32::from_le_bytes([
                         sub.data[off],
@@ -107,17 +124,18 @@ pub(crate) fn build_static_object_from_subs(
                 } else {
                     0.0
                 };
-                let period_secs = if sub.data.len() >= 32 {
+                let is_skyrim_plus_layout = sub.data.len() >= 48;
+                let period_secs = if is_skyrim_plus_layout {
                     read_f32(28)
                 } else {
                     0.0
                 };
-                let intensity_amplitude = if sub.data.len() >= 36 {
+                let intensity_amplitude = if is_skyrim_plus_layout {
                     read_f32(32)
                 } else {
                     0.0
                 };
-                let movement_amplitude = if sub.data.len() >= 40 {
+                let movement_amplitude = if is_skyrim_plus_layout {
                     read_f32(36)
                 } else {
                     0.0
@@ -755,6 +773,69 @@ mod ligh_dat2_tests {
             .expect("Skyrim LIGH DATA must still produce a StaticObject");
         let ld = obj.light_data.expect("DATA must yield light_data");
         assert_eq!(ld.radius, 300.0, "Skyrim radius is a u32 cast to f32");
+    }
+
+    /// #2478 / REN-D22-03 regression: a pre-Skyrim (Oblivion/FO3/FNV)
+    /// 32-byte `DATA` layout has Value at bytes 24-27 and Weight at
+    /// 28-31 — NOT near-clip/flicker-period. Pre-fix, `len >= 32` alone
+    /// gated the flicker-period read at offset 28, so a light with a
+    /// nonzero Weight (a completely ordinary, expected value — every
+    /// real LIGH has one) decoded that Weight as `period_secs`. Pin
+    /// that a 32-byte record decodes NO flicker parameters at all,
+    /// regardless of what garbage-if-misread values sit at those bytes.
+    #[test]
+    fn pre_skyrim_32_byte_data_never_reads_value_weight_as_flicker() {
+        let mut data = vec![0u8; 32];
+        data[4..8].copy_from_slice(&300u32.to_le_bytes()); // radius
+        data[8] = 255;
+        data[9] = 200;
+        data[10] = 128;
+        data[16..20].copy_from_slice(&2.0f32.to_le_bytes()); // falloff exponent
+        // Bytes 24-27: Value (u32) — an ordinary nonzero game-gold value.
+        data[24..28].copy_from_slice(&50u32.to_le_bytes());
+        // Bytes 28-31: Weight (f32) — an ordinary nonzero encumbrance
+        // value. Pre-fix this was misread as `period_secs`.
+        data[28..32].copy_from_slice(&1.5f32.to_le_bytes());
+        let subs = vec![sub(b"DATA", data)];
+        let obj = build_static_object_from_subs(0x3, b"LIGH", false, &subs)
+            .expect("pre-Skyrim LIGH DATA must still produce a StaticObject");
+        let ld = obj.light_data.expect("DATA must yield light_data");
+        assert_eq!(ld.falloff_exponent, 2.0, "falloff exponent is still read");
+        assert_eq!(
+            ld.period_secs, 0.0,
+            "32-byte pre-Skyrim DATA authors no flicker period — must not \
+             read the record's Weight field as one"
+        );
+        assert_eq!(
+            ld.intensity_amplitude, 0.0,
+            "32-byte pre-Skyrim DATA authors no intensity amplitude"
+        );
+        assert_eq!(
+            ld.movement_amplitude, 0.0,
+            "32-byte pre-Skyrim DATA authors no movement amplitude"
+        );
+    }
+
+    /// Sibling of the above: the full 48-byte Skyrim+ `DATA` layout must
+    /// still decode its flicker period / intensity / movement amplitude
+    /// correctly — the #2478 fix narrows the gate, it must not zero out
+    /// the legitimate Skyrim+ path.
+    #[test]
+    fn skyrim_plus_48_byte_data_still_decodes_flicker_parameters() {
+        let mut data = vec![0u8; 48];
+        data[4..8].copy_from_slice(&300u32.to_le_bytes()); // radius
+        data[16..20].copy_from_slice(&1.0f32.to_le_bytes()); // falloff exponent
+        data[24..28].copy_from_slice(&512.0f32.to_le_bytes()); // near clip
+        data[28..32].copy_from_slice(&2.0f32.to_le_bytes()); // flicker period
+        data[32..36].copy_from_slice(&0.25f32.to_le_bytes()); // intensity amplitude
+        data[36..40].copy_from_slice(&0.1f32.to_le_bytes()); // movement amplitude
+        let subs = vec![sub(b"DATA", data)];
+        let obj = build_static_object_from_subs(0x4, b"LIGH", false, &subs)
+            .expect("Skyrim+ LIGH DATA must produce a StaticObject");
+        let ld = obj.light_data.expect("DATA must yield light_data");
+        assert_eq!(ld.period_secs, 2.0, "flicker period at offset 28");
+        assert_eq!(ld.intensity_amplitude, 0.25, "intensity amplitude at offset 32");
+        assert_eq!(ld.movement_amplitude, 0.1, "movement amplitude at offset 36");
     }
 
     /// A non-LIGH record carrying a `DAT2` (e.g. FO3/FNV AMMO weapon data)

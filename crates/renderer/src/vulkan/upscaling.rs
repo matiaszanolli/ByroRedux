@@ -57,8 +57,15 @@ impl FromStr for FsrQuality {
 /// Temporal reconstruction path selected for the renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpscalerMode {
-    /// Native-resolution TAA path, and the compatibility fallback taken
-    /// whenever FSR context creation or dispatch fails.
+    /// Native-resolution TAA path. `VulkanContext::new` promotes to this
+    /// mode automatically (via `set_upscaler_mode`) when the FSR context
+    /// fails to construct at startup — see #2480 / REN-D23-2026-08-07-01.
+    /// A LATER dispatch failure (mid-session, after FSR was constructed
+    /// successfully) does NOT trigger this promotion: `FrameUpscaler`
+    /// just latches `dispatch_failure` and degrades to a native blit at
+    /// the still-reduced FSR render extent for the rest of the session —
+    /// that path fires mid-frame and re-evaluating the mode there is
+    /// unsolved (see the frame_upscaler.rs doc on `dispatch_failure`).
     Taa,
     /// FSR 3.1 upscaler-only path. Frame generation is not represented here.
     Fsr3(FsrQuality),

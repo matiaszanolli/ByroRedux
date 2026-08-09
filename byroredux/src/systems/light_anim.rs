@@ -157,9 +157,20 @@ fn flicker_intensity(entity: EntityId, flicker: &LightFlicker, total_time: f32) 
     //     gentle dance, surfaced by the user reporting "shadows jump
     //     all over the place" in Phase 19 readings.
     let modulation = if flags & (LIGHT_FLAG_PULSE | LIGHT_FLAG_PULSE_SLOW) != 0 {
-        let phase_secs = (total_time + flicker.phase_offset_secs).rem_euclid(flicker.period_secs);
-        let phase = phase_secs / flicker.period_secs;
-        (phase * speed_scale * std::f32::consts::TAU).sin()
+        // Scale the PERIOD, not the phase — `speed_scale` must lengthen
+        // the wrap interval so the phase still sweeps the full [0, 1)
+        // range once per (slower) cycle. Multiplying the already-wrapped
+        // phase by `speed_scale` instead (the pre-fix form) truncates the
+        // sine to its positive half and repeats it at the ORIGINAL rate:
+        // `sin(TAU * phase * speed_scale)` never exceeds `sin(TAU * 0.5 *
+        // speed_scale)` in phase argument before `phase` itself wraps back
+        // to 0, so for `speed_scale = 0.5` the argument only ever spans
+        // `[0, pi)` — always non-negative, at the same cadence as
+        // full-speed PULSE (#2479 / REN-D22-04).
+        let effective_period = flicker.period_secs / speed_scale;
+        let phase_secs = (total_time + flicker.phase_offset_secs).rem_euclid(effective_period);
+        let phase = phase_secs / effective_period;
+        (phase * std::f32::consts::TAU).sin()
     } else if flags & (LIGHT_FLAG_FLICKER | LIGHT_FLAG_FLICKER_SLOW) != 0 {
         let raw = (total_time + flicker.phase_offset_secs) * 12.0 * speed_scale;
         let bucket = raw.floor() as u32;
@@ -264,6 +275,31 @@ mod tests {
         let expected_slow = 1.0 + std::f32::consts::FRAC_1_SQRT_2 * 0.4 * FLICKER_INTENSITY_DAMPING;
         assert!((slow - expected_slow).abs() < 1e-6, "slow={slow}");
         assert!(slow < fast);
+    }
+
+    #[test]
+    fn pulse_slow_diverges_in_sign_from_pulse_past_one_period() {
+        // #2479 / REN-D22-04 — a half-wave-rectified-at-original-rate bug
+        // is invisible at t = period/4 (both waveforms agree there); it
+        // only shows up once the true half-rate wave has entered its
+        // second half-cycle. At t = 1.5 * period: PULSE (full rate) has
+        // completed 1.5 cycles and sits at its zero-crossing
+        // (sin(TAU*0.5) = 0), while true half-rate PULSE_SLOW is only
+        // 0.75 of the way through its one (period-doubled) cycle —
+        // sin(TAU*0.75) = -1, strictly negative. The pre-fix formula
+        // produced +1 here instead (rectified, same rate as PULSE).
+        let fast_flicker = flicker(LIGHT_FLAG_PULSE, 0.4, 1.0);
+        let slow_flicker = flicker(LIGHT_FLAG_PULSE_SLOW, 0.4, 1.0);
+        let fast = flicker_intensity(1, &fast_flicker, 1.5);
+        let slow = flicker_intensity(1, &slow_flicker, 1.5);
+        assert!((fast - 1.0).abs() < 1e-6, "fast={fast}");
+        let expected_slow = 1.0 - 0.4 * FLICKER_INTENSITY_DAMPING;
+        assert!((slow - expected_slow).abs() < 1e-6, "slow={slow}");
+        assert!(
+            slow < 1.0,
+            "true half-rate PULSE_SLOW must trough below the authored \
+             intensity at t = 1.5 * period, not just brighten it: slow={slow}"
+        );
     }
 
     #[test]

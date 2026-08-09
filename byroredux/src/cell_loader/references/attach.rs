@@ -424,14 +424,24 @@ pub(crate) fn attach_light_flicker_if_needed(
     if animation_flags == 0 {
         return;
     }
-    // Pre-Skyrim LIGH records truncate after byte 16 — `period_secs`
-    // reads as 0.0 then. Fall back to 0.5 s (the Skyrim vanilla
-    // default for candle FNAM authoring) so flicker still
-    // visibly fires on those records.
+    // Pre-Skyrim (Oblivion/FO3/FNV) LIGH DATA is a distinct 32-byte
+    // layout that authors no flicker parameters at all (#2478 /
+    // REN-D22-03) — `period_secs`/`intensity_amplitude` read as 0.0
+    // for those records. Fall back to Skyrim's vanilla candle FNAM
+    // defaults (0.5 s period, ±25% intensity swing — see
+    // `light_anim::FLICKER_INTENSITY_DAMPING`'s doc) so an authored
+    // Flicker/Pulse *bit* still visibly animates on those games
+    // instead of attaching a `LightFlicker` that can never produce
+    // any modulation.
     let period_secs = if ld.period_secs > 0.0 {
         ld.period_secs
     } else {
         0.5
+    };
+    let intensity_amplitude = if ld.intensity_amplitude > 0.0 {
+        ld.intensity_amplitude
+    } else {
+        0.25
     };
     // EntityId-derived phase offset in [0, period). The wrap-around
     // is automatic because the animator computes `phase = (t +
@@ -443,7 +453,7 @@ pub(crate) fn attach_light_flicker_if_needed(
         LightFlicker {
             animation_flags,
             period_secs,
-            intensity_amplitude: ld.intensity_amplitude,
+            intensity_amplitude,
             movement_amplitude: ld.movement_amplitude,
             base_translation: [base_translation.x, base_translation.y, base_translation.z],
             phase_offset_secs,

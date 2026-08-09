@@ -570,13 +570,16 @@ pub struct LightData {
     /// vanilla Skyrim candles + chandeliers; combined with the
     /// `Flicker` / `Pulse` (Slow) bits in `flags` and
     /// `intensity_amplitude` / `movement_amplitude` to drive the
-    /// per-frame light animation. Zero when the LIGH record's
-    /// DATA subrecord is truncated (pre-Skyrim / loose LIGH
-    /// records that ship only the 16-byte header). Phase 17a.
+    /// per-frame light animation. Zero when the LIGH record's DATA
+    /// subrecord uses the pre-Skyrim (Oblivion/FO3/FNV) 32-byte
+    /// layout, which authors no flicker parameters at all — bytes
+    /// 24-31 there hold Value/Weight, not near-clip/flicker-period
+    /// (#2478 / REN-D22-03). Phase 17a.
     pub period_secs: f32,
     /// Percent intensity variation (e.g. 0.25 = ±25% around the
     /// authored intensity). Read straight from bytes 32-35 of the
-    /// DATA subrecord. Phase 17a.
+    /// DATA subrecord — Skyrim+ (48-byte) layout only, zero on the
+    /// pre-Skyrim 32-byte layout (#2478 / REN-D22-03). Phase 17a.
     pub intensity_amplitude: f32,
     /// Position jitter amplitude in Bethesda units (BU). The
     /// flicker system offsets the light's local translation by a

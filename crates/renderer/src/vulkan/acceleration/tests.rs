@@ -1594,3 +1594,75 @@ fn shadow_mask_bucket_selection_is_pinned() {
         );
     }
 }
+
+// #2481 / AS-D1-NEW-02 — BLAS registration must release any BLAS already
+// occupying the target slot/key before overwriting it, or the previous
+// `vk::AccelerationStructureKHR` leaks (no `Drop` impl) and the byte
+// budget counters drift upward. Building a real BLAS needs a live Vulkan
+// device, so — matching this crate's convention for logic that can only
+// be exercised end-to-end with a GPU (e.g. `context/mod.rs`'s
+// `rigid_history_hasher_tests`, `context/skinned_blas_refit.rs`'s
+// `skin_built_this_frame_skip_tests`) — this pins the fix at the source
+// level: the release call must appear, and must appear strictly before
+// the registration it guards, at all three sites.
+#[cfg(test)]
+mod blas_registration_releases_occupied_slot_tests {
+    const BLAS_STATIC_RS: &str = include_str!("blas_static.rs");
+    const BLAS_SKINNED_RS: &str = include_str!("blas_skinned.rs");
+
+    #[test]
+    fn build_blas_releases_before_overwriting() {
+        let guard_pos = BLAS_STATIC_RS
+            .find("self.drop_blas(mesh_handle);")
+            .expect("build_blas must release any occupied handle before overwriting it (#2481)");
+        let assign_pos = BLAS_STATIC_RS
+            .find("self.blas_entries[handle] = Some(BlasEntry {\n                accel,")
+            .expect("build_blas's registration assignment must still exist");
+        assert!(
+            guard_pos < assign_pos,
+            "the release must run BEFORE the overwrite, or the entry being \
+             replaced is still live when it's dropped as plain memory"
+        );
+    }
+
+    #[test]
+    fn build_blas_batched_releases_before_overwriting() {
+        let guard_pos = BLAS_STATIC_RS
+            .find("self.drop_blas(mesh_handle);")
+            .expect("a drop_blas guard must exist");
+        // Two call sites share the same needle text (`build_blas` and
+        // `build_blas_batched`'s Phase 7); confirm a SECOND occurrence
+        // exists for the batched path specifically.
+        let second_guard_pos = BLAS_STATIC_RS[guard_pos + 1..]
+            .find("self.drop_blas(mesh_handle);")
+            .map(|p| p + guard_pos + 1)
+            .expect(
+                "build_blas_batched's Phase 7 registration must ALSO release \
+                 any occupied handle before overwriting it (#2481) — the two \
+                 static registration sites must both carry the guard",
+            );
+        let assign_pos = BLAS_STATIC_RS[second_guard_pos..]
+            .find("self.blas_entries[handle] = Some(BlasEntry {")
+            .map(|p| p + second_guard_pos)
+            .expect("build_blas_batched's registration assignment must still exist");
+        assert!(second_guard_pos < assign_pos);
+    }
+
+    #[test]
+    fn skinned_blas_batch_releases_before_overwriting() {
+        let guard_pos = BLAS_SKINNED_RS
+            .find("self.drop_skinned_blas(p.entity_id);")
+            .expect(
+                "build_skinned_blas_batched_on_cmd's Phase 4 registration must \
+                 release any existing entity entry before overwriting it (#2481)",
+            );
+        let assign_pos = BLAS_SKINNED_RS
+            .find("self.skinned_blas.insert(")
+            .expect("the skinned_blas registration insert must still exist");
+        assert!(
+            guard_pos < assign_pos,
+            "the release must run BEFORE the insert, or the entry being \
+             replaced is still live when it's dropped as plain memory"
+        );
+    }
+}
