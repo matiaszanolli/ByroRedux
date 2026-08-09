@@ -42,7 +42,7 @@
 //! disambiguation needs the marker's furniture-type resolved and is visually
 //! validated on-device (Phase C), not decodable from the marker alone.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
@@ -117,13 +117,13 @@ fn seat_world_transform(furn: &GlobalTransform, m: &FurnitureMarker) -> GlobalTr
 fn pick_nearest_seat<K: Copy + Eq + std::hash::Hash>(
     actor_pos: Vec3,
     seats: &[(K, GlobalTransform)],
-    reserved: &HashSet<K>,
+    reserved: &HashMap<K, EntityId>,
     radius: f32,
 ) -> Option<(K, GlobalTransform)> {
     let r2 = radius * radius;
     seats
         .iter()
-        .filter(|(e, _)| !reserved.contains(e))
+        .filter(|(e, _)| !reserved.contains_key(e))
         .map(|(e, seat)| (*e, *seat, (seat.translation - actor_pos).length_squared()))
         .filter(|(_, _, d2)| *d2 <= r2)
         .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
@@ -139,7 +139,7 @@ fn pick_nearest_seat<K: Copy + Eq + std::hash::Hash>(
 struct SandboxScratch {
     assignments: Vec<(EntityId, EntityId, GlobalTransform)>,
     seats: Vec<((EntityId, u32), GlobalTransform)>,
-    seat_meta: std::collections::HashMap<(EntityId, u32), ([f32; 3], Vec3)>,
+    seat_meta: HashMap<(EntityId, u32), ([f32; 3], Vec3)>,
 }
 
 /// Seat sandboxing actors in nearby furniture. Registered
@@ -215,7 +215,11 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
             if let Some((seat_id, seat)) =
                 pick_nearest_seat(npc_g.translation, &scratch.seats, &reservations.0, radius)
             {
-                reservations.0.insert(seat_id); // claim this marker so no two share it
+                // Record the claimant as well as the seat. Exterior streaming
+                // may despawn the actor while leaving cross-cell furniture
+                // resident; claimant ownership lets the next cell-load prune
+                // release that otherwise-stranded seat (#2392).
+                reservations.0.insert(seat_id, npc);
                 let (furn_e, marker_idx) = seat_id;
                 // One-shot per NPC (Seated is tagged in pass 2, skipping it
                 // next frame) — safe to log at info without spamming.
@@ -453,20 +457,20 @@ mod tests {
                 GlobalTransform::new(Vec3::new(5000.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
             ),
         ];
-        let mut reserved = HashSet::new();
+        let mut reserved = HashMap::new();
         // Nearest free is entity 2.
         assert_eq!(
             pick_nearest_seat(Vec3::ZERO, &seats, &reserved, SEAT_SEARCH_RADIUS).map(|(e, _)| e),
             Some(2)
         );
         // Reserve 2 → next nearest is 1 (3 is out of radius).
-        reserved.insert(2);
+        reserved.insert(2, 100);
         assert_eq!(
             pick_nearest_seat(Vec3::ZERO, &seats, &reserved, SEAT_SEARCH_RADIUS).map(|(e, _)| e),
             Some(1)
         );
         // Reserve 1 too → only the out-of-range seat 3 remains → None.
-        reserved.insert(1);
+        reserved.insert(1, 101);
         assert!(pick_nearest_seat(Vec3::ZERO, &seats, &reserved, SEAT_SEARCH_RADIUS).is_none());
     }
 
@@ -476,7 +480,7 @@ mod tests {
             1,
             GlobalTransform::new(Vec3::new(300.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
         )];
-        let reserved = HashSet::new();
+        let reserved = HashMap::new();
         // A small authored radius excludes a seat the default 512 would include.
         assert!(pick_nearest_seat(Vec3::ZERO, &seats, &reserved, 128.0).is_none());
         assert_eq!(
@@ -490,7 +494,7 @@ mod tests {
         assert!(pick_nearest_seat(
             Vec3::ZERO,
             &[] as &[((EntityId, u32), GlobalTransform)],
-            &HashSet::new(),
+            &HashMap::new(),
             SEAT_SEARCH_RADIUS
         )
         .is_none());
@@ -512,16 +516,16 @@ mod tests {
                 GlobalTransform::new(Vec3::new(20.0, 0.0, 0.0), Quat::IDENTITY, 1.0),
             ),
         ];
-        let mut reserved: HashSet<(EntityId, u32)> = HashSet::new();
+        let mut reserved: HashMap<(EntityId, u32), EntityId> = HashMap::new();
         // Actor A near marker 0 claims it.
         let a = pick_nearest_seat(Vec3::ZERO, &seats, &reserved, SEAT_SEARCH_RADIUS);
         assert_eq!(a.map(|(id, _)| id), Some((furn, 0)));
-        reserved.insert((furn, 0));
+        reserved.insert((furn, 0), 100);
         // Actor B still finds marker 1 of the *same* furniture — pre-fix this
         // returned None because the whole furniture was reserved.
         let b = pick_nearest_seat(Vec3::ZERO, &seats, &reserved, SEAT_SEARCH_RADIUS);
         assert_eq!(b.map(|(id, _)| id), Some((furn, 1)));
-        reserved.insert((furn, 1));
+        reserved.insert((furn, 1), 101);
         // Both markers taken → the furniture is full.
         assert!(pick_nearest_seat(Vec3::ZERO, &seats, &reserved, SEAT_SEARCH_RADIUS).is_none());
     }

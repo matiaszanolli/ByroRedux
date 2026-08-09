@@ -1192,19 +1192,21 @@ impl Default for LightTuning {
 }
 
 /// M42 — furniture seats currently occupied (or claimed this frame) by a
-/// sandboxing actor, keyed by `(furniture entity, sit-marker index)` so a
+/// sandboxing actor. Each `(furniture entity, sit-marker index)` key maps to
+/// its claimant so streaming cleanup can release a seat when either side
+/// despawns. The per-marker key means a
 /// single multi-seat furniture (bar counter, bench, table with several
 /// chair markers — one FURN, many `BSFurnitureMarker` positions) can seat
 /// one actor *per marker* rather than one actor for the whole piece (M42.2
 /// seat-polish; before this the key was the furniture entity alone and a
 /// six-stool counter seated exactly one NPC). `sandbox_seat_system` checks
 /// this before assigning a seat so two NPCs never share one marker, and
-/// inserts on assignment. Cleared on cell load (entity ids reset on unload,
-/// so stale reservations would be meaningless). The companion
+/// inserts on assignment. Pruned on each cell-reference load against both
+/// live furniture and the claimant's [`Seated`] component. The companion
 /// [`Seated`](byroredux_core::ecs::components::Seated) component on the
 /// actor is the per-actor one-shot guard.
 #[derive(Default)]
-pub(crate) struct SeatReservations(pub(crate) HashSet<(EntityId, u32)>);
+pub(crate) struct SeatReservations(pub(crate) HashMap<(EntityId, u32), EntityId>);
 impl Resource for SeatReservations {}
 
 /// M42.1 — the per-cell sit-**enter** clip `(handle, hold_time)`

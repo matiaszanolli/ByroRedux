@@ -1652,24 +1652,37 @@ fn refr_script_instance_for_synth_child(
     }
 }
 
-/// #2147 / ECS-2507-01 — drop seat reservations whose furniture entity is
-/// gone, keeping every claim whose furniture is still loaded.
+/// #2147 / #2392 — drop seat reservations whose furniture or claiming actor
+/// is gone, keeping claims only while the actor remains seated on that same
+/// furniture.
 ///
 /// Called once per `load_references`, i.e. once per cell. Extracted so the
 /// cross-cell survival property is testable without the archive providers and
 /// ESM index the full load path needs.
 ///
-/// Query `Furniture` first, then take the resource write: that is the order
-/// `sandbox_seat_system` uses (`systems/sandbox.rs` queries `Furniture` before
-/// `resource_mut::<SeatReservations>()`), so the pair cannot form an ABBA
-/// cycle under the parallel scheduler.
+/// Snapshot `Furniture` and `Seated` before taking the resource write. This
+/// matches `sandbox_seat_system`'s component-before-resource order, so the
+/// pairs cannot form an ABBA cycle under the parallel scheduler.
 fn prune_seat_reservations(world: &byroredux_core::ecs::World) {
     let live_furniture: std::collections::HashSet<byroredux_core::ecs::storage::EntityId> = world
         .query::<byroredux_core::ecs::components::Furniture>()
         .map(|q| q.iter().map(|(entity, _)| entity).collect())
         .unwrap_or_default();
+    let seated_claimants: std::collections::HashMap<
+        byroredux_core::ecs::storage::EntityId,
+        byroredux_core::ecs::storage::EntityId,
+    > = world
+        .query::<byroredux_core::ecs::components::Seated>()
+        .map(|q| {
+            q.iter()
+                .map(|(actor, seated)| (actor, seated.furniture))
+                .collect()
+        })
+        .unwrap_or_default();
     if let Some(mut r) = world.try_resource_mut::<crate::components::SeatReservations>() {
-        r.0.retain(|(furniture, _)| live_furniture.contains(furniture));
+        r.0.retain(|(furniture, _), claimant| {
+            live_furniture.contains(furniture) && seated_claimants.get(claimant) == Some(furniture)
+        });
     }
 }
 
@@ -2082,13 +2095,14 @@ mod tests {
 mod seat_reservation_prune_tests {
     use super::prune_seat_reservations;
     use crate::components::SeatReservations;
-    use byroredux_core::ecs::components::Furniture;
+    use byroredux_core::ecs::components::{Furniture, Seated};
     use byroredux_core::ecs::storage::EntityId;
     use byroredux_core::ecs::World;
 
     fn world_with_furniture(count: usize) -> (World, Vec<EntityId>) {
         let mut world = World::new();
         world.register::<Furniture>();
+        world.register::<Seated>();
         world.insert_resource(SeatReservations::default());
         let ids = (0..count)
             .map(|_| {
@@ -2100,6 +2114,12 @@ mod seat_reservation_prune_tests {
         (world, ids)
     }
 
+    fn seat_actor(world: &mut World, furniture: EntityId) -> EntityId {
+        let actor = world.spawn();
+        world.insert(actor, Seated { furniture });
+        actor
+    }
+
     /// The bug. Cell A's furniture is seated and still resident; loading cell
     /// B must not release A's claim.
     ///
@@ -2109,25 +2129,26 @@ mod seat_reservation_prune_tests {
     /// its claim: the seat stayed physically occupied but was free to claim.
     #[test]
     fn sibling_cell_load_keeps_claims_on_still_loaded_furniture() {
-        let (world, furniture) = world_with_furniture(2);
+        let (mut world, furniture) = world_with_furniture(2);
         let (cell_a_chair, cell_b_chair) = (furniture[0], furniture[1]);
+        let actor = seat_actor(&mut world, cell_a_chair);
 
         world
             .resource_mut::<SeatReservations>()
             .0
-            .insert((cell_a_chair, 0));
+            .insert((cell_a_chair, 0), actor);
 
         // Cell B loads. Both cells' furniture is resident.
         prune_seat_reservations(&world);
 
         let reservations = world.resource::<SeatReservations>();
         assert!(
-            reservations.0.contains(&(cell_a_chair, 0)),
+            reservations.0.contains_key(&(cell_a_chair, 0)),
             "cell A's seat is still occupied and its furniture still loaded — \
              the claim must survive cell B's load (#2147)",
         );
         assert_eq!(reservations.0.len(), 1);
-        assert!(!reservations.0.contains(&(cell_b_chair, 0)));
+        assert!(!reservations.0.contains_key(&(cell_b_chair, 0)));
     }
 
     /// The prune must still do its job: a claim whose furniture was unloaded
@@ -2136,20 +2157,57 @@ mod seat_reservation_prune_tests {
     fn claims_on_despawned_furniture_are_dropped() {
         let (mut world, furniture) = world_with_furniture(2);
         let (kept, unloaded) = (furniture[0], furniture[1]);
+        let kept_actor = seat_actor(&mut world, kept);
+        let unloaded_actor = seat_actor(&mut world, unloaded);
         {
             let mut r = world.resource_mut::<SeatReservations>();
-            r.0.insert((kept, 0));
-            r.0.insert((unloaded, 3));
+            r.0.insert((kept, 0), kept_actor);
+            r.0.insert((unloaded, 3), unloaded_actor);
         }
 
         world.despawn(unloaded);
         prune_seat_reservations(&world);
 
         let reservations = world.resource::<SeatReservations>();
-        assert!(reservations.0.contains(&(kept, 0)));
+        assert!(reservations.0.contains_key(&(kept, 0)));
         assert!(
-            !reservations.0.contains(&(unloaded, 3)),
+            !reservations.0.contains_key(&(unloaded, 3)),
             "a claim on despawned furniture must not accumulate",
+        );
+    }
+
+    /// #2392 — an actor can stream out while cross-cell furniture remains.
+    /// Its claim must be released so a replacement actor can reserve the
+    /// still-live marker.
+    #[test]
+    fn claim_is_released_when_seated_actor_despawns() {
+        let (mut world, furniture) = world_with_furniture(1);
+        let chair = furniture[0];
+        let departed = seat_actor(&mut world, chair);
+        world
+            .resource_mut::<SeatReservations>()
+            .0
+            .insert((chair, 0), departed);
+
+        world.despawn(departed);
+        prune_seat_reservations(&world);
+
+        assert!(
+            !world
+                .resource::<SeatReservations>()
+                .0
+                .contains_key(&(chair, 0)),
+            "a live furniture marker must become claimable after its actor despawns",
+        );
+
+        let replacement = seat_actor(&mut world, chair);
+        assert_eq!(
+            world
+                .resource_mut::<SeatReservations>()
+                .0
+                .insert((chair, 0), replacement),
+            None,
+            "the replacement actor must acquire the released marker",
         );
     }
 
@@ -2159,13 +2217,18 @@ mod seat_reservation_prune_tests {
     /// independently.
     #[test]
     fn distinct_markers_on_one_furniture_are_preserved_independently() {
-        let (world, furniture) = world_with_furniture(1);
+        let (mut world, furniture) = world_with_furniture(1);
         let bench = furniture[0];
+        let actors = [
+            seat_actor(&mut world, bench),
+            seat_actor(&mut world, bench),
+            seat_actor(&mut world, bench),
+        ];
         {
             let mut r = world.resource_mut::<SeatReservations>();
-            r.0.insert((bench, 0));
-            r.0.insert((bench, 1));
-            r.0.insert((bench, 2));
+            r.0.insert((bench, 0), actors[0]);
+            r.0.insert((bench, 1), actors[1]);
+            r.0.insert((bench, 2), actors[2]);
         }
 
         prune_seat_reservations(&world);
@@ -2179,7 +2242,7 @@ mod seat_reservation_prune_tests {
     fn missing_furniture_storage_is_not_a_panic() {
         let mut world = World::new();
         world.insert_resource(SeatReservations::default());
-        world.resource_mut::<SeatReservations>().0.insert((7, 0));
+        world.resource_mut::<SeatReservations>().0.insert((7, 0), 8);
 
         prune_seat_reservations(&world);
 

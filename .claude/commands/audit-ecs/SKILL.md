@@ -248,12 +248,15 @@ not a stage. Exclusive systems run serially after the stage's parallel batch.
     fallback is deliberately the actor's own position, NOT Travel's
     hash-picked point — reusing Travel's fallback here was tried and reverted
     because it trivially satisfies Guard's own leash check on the first tick).
-  - Seat claims are per-`(furniture entity, marker index)`
-  in the `SeatReservations` resource, wholesale-cleared on every cell load
-  (`cell_loader/references/mod.rs`, since entity ids reset on unload) rather than
-  released per-entity — verify this doesn't wrongly free seats still held by an
-  actor in a *different, still-loaded* cell under exterior multi-cell grid
-  streaming (radius > 0), which would let two NPCs claim the same marker.
+  - Seat claims in `SeatReservations` map each `(furniture entity, marker
+    index)` to its claimant actor. `prune_seat_reservations`
+    (`cell_loader/references/mod.rs`) runs per cell-reference load and keeps a
+    claim only while the furniture is live and the claimant still carries a
+    `Seated` component naming that furniture. Verify both liveness halves stay
+    intact: dropping the furniture check leaks unloaded seats; dropping the
+    claimant/`Seated` check strands a live cross-cell seat after its actor
+    despawns. Entity IDs are monotonic and never recycled, so do not justify
+    cleanup with an ID-reset premise.
   - All seven systems are opt-in and NOT in the default scheduler — gated by
     `BYRO_SANDBOX_SIT`/`BYRO_WANDER`/`BYRO_TRAVEL`/`BYRO_FOLLOW`/`BYRO_ESCORT`/
     `BYRO_GUARD`/`BYRO_PATROL` respectively (`boot.rs`). A regression that

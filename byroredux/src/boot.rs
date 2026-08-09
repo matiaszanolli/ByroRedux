@@ -438,8 +438,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // actor spawns (the seat guard depends on `Seated` inserts landing).
     world.register::<byroredux_core::ecs::components::SandboxBehavior>();
     world.register::<byroredux_core::ecs::components::Seated>();
-    // Seat reservations (cleared per cell load) + the per-cell sit clip
-    // handle (set at cell load where the archive provider lives).
+    // Claimant-owned seat reservations (pruned per cell-reference load) + the
+    // per-cell sit clip handle (set at cell load where the archive provider
+    // lives).
     world.insert_resource(crate::components::SeatReservations::default());
     world.insert_resource(crate::components::SandboxSitClip::default());
 
