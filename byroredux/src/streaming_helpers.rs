@@ -215,6 +215,12 @@ pub fn drain_streaming_state(
     for block in &placement_lod_blocks {
         cell_loader::unload_placement_lod_block(world, ctx, block);
     }
+    // #2449 / EXAL-01 — the worldspace-wide LOD water quad carries no
+    // `CellRoot` either (same reclaim gap `lod_blocks` had pre-#1536); its
+    // only teardown path is here.
+    if let Some(plane) = state.lod_water.take() {
+        cell_loader::unload_lod_water_plane(world, ctx, &plane);
+    }
     // Mirrors the CloseRequested path — release per-queue Arc
     // clones explicitly before tearing down the rest of the
     // streaming state.

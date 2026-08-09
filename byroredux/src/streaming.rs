@@ -21,7 +21,9 @@
 //! a second synchronous loader.
 
 use byroredux_core::ecs::storage::EntityId;
+use byroredux_core::ecs::World;
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+use byroredux_renderer::VulkanContext;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
@@ -325,6 +327,39 @@ pub struct LodBlock {
     pub hole_mask: u16,
 }
 
+/// Distant, worldspace-wide LOD water quad (#2449 / EXAL-01) — the `NAM3`/
+/// `NAM4` counterpart of a cell's full-detail `spawn_water_plane`. Unlike
+/// [`LodBlock`], this is a SINGLE entity per worldspace, not a
+/// per-ring-block streaming set: spawned once at worldspace entry
+/// (`cell_loader::water::spawn_lod_water_plane`) and reclaimed once on
+/// worldspace exit (`streaming_helpers::drain_streaming_state`).
+///
+/// Its hole (cut out around the full-detail streamed area, so it doesn't
+/// double-blend against the near per-cell water) is a snapshot centered on
+/// the player's worldspace-entry grid position — it does NOT re-center
+/// continuously as the player walks, the way [`LodBlock`]'s hole mask
+/// tracks the moving full-detail boundary every reconcile. Continuous
+/// per-block water LOD (mirroring `LodBlock` exactly) was assessed
+/// too high-risk for this pass: `LodBlock`'s global-pool-only mesh upload
+/// makes it eligible for the renderer's shadow-caster-range auto-BLAS-build
+/// path (`build_global_blas_for_draws`), which would make a water quad
+/// RT-hittable — breaking the water pipeline's terminate-on-hit ray
+/// policy — and that interaction can't be verified without a live/RenderDoc
+/// pass. This entity instead uses the SAME safe per-mesh-buffer upload path
+/// (`rt_enabled: false`) every full-detail `WaterPlane` already uses, which
+/// is proven never to reach the TLAS regardless of `in_tlas`'s computed
+/// value (see `cell_loader::water`'s module doc).
+#[derive(Debug, Clone, Copy)]
+pub struct LodWaterPlane {
+    pub entity: EntityId,
+    pub mesh_handle: u32,
+    /// Normal-map `TextureHandle` acquired via `resolve_texture` at spawn,
+    /// mirroring `spawn_water_plane`'s `NormalMapHandle` refcount contract
+    /// (#1338). `None` when the procedural-fallback normal is used (no
+    /// texture acquired, nothing to release).
+    pub normal_map_handle: Option<u32>,
+}
+
 /// Worker request — main thread asks the worker to pre-parse a cell.
 /// Carries everything the worker needs to extract NIF bytes from BSA
 /// and run the pool-free portion of the import pipeline.
@@ -501,6 +536,12 @@ pub struct WorldStreamingState {
     /// only one of the two ever populates per game (the gate is by
     /// `GameKind`). Cells load only outside the full-detail ring.
     pub placement_lod_blocks: HashMap<(i32, i32), crate::cell_loader::PlacementLodBlock>,
+    /// Distant worldspace-wide LOD water quad (`NAM3`/`NAM4`, #2449 /
+    /// EXAL-01). `None` when the worldspace authors no LOD water, or the
+    /// mesh upload failed at spawn. Set once at worldspace entry (see
+    /// [`LodWaterPlane`]'s doc for why this isn't reconciled per-block like
+    /// `lod_blocks`), reclaimed once in `drain_streaming_state`.
+    pub lod_water: Option<crate::streaming::LodWaterPlane>,
     /// Cells whose load request is in flight on the worker. Maps
     /// `(gx, gy)` to the generation of the outstanding request.
     /// Drain compares the payload's generation against this map's
@@ -597,6 +638,7 @@ impl WorldStreamingState {
             lod_missing_blocks: HashMap::new(),
             object_lod_blocks: HashMap::new(),
             placement_lod_blocks: HashMap::new(),
+            lod_water: None,
             pending: HashMap::new(),
             next_generation: 0,
             radius_load,
@@ -609,6 +651,39 @@ impl WorldStreamingState {
             payload_rx,
             active_apply: None,
         }
+    }
+
+    /// Spawn the worldspace-wide distant LOD water quad for this streaming
+    /// state's worldspace, if it authors one (`NAM3`/`NAM4`) and a player
+    /// grid position has already been set (#2449 / EXAL-01). Leaves
+    /// `lod_water` untouched (stays `None`) if either precondition isn't
+    /// met, so callers can invoke this unconditionally right after
+    /// `last_player_grid` is set, mirroring how `apply_worldspace_weather`
+    /// is called unconditionally at every worldspace-entry call site.
+    pub fn spawn_lod_water(&mut self, world: &mut World, ctx: &mut VulkanContext) {
+        let Some(player_grid) = self.last_player_grid else {
+            return;
+        };
+        let worldspace = self
+            .wctx
+            .record_index
+            .cells
+            .worldspaces
+            .get(&self.wctx.worldspace_key);
+        let (Some(height), lod_water_form) = crate::env_translate::translate_lod_water(worldspace)
+        else {
+            return;
+        };
+        self.lod_water = crate::cell_loader::spawn_lod_water_plane(
+            world,
+            ctx,
+            &self.tex_provider,
+            &self.wctx.record_index.waters,
+            height,
+            lod_water_form,
+            player_grid,
+            self.radius_unload,
+        );
     }
 
     /// Send a load request to the worker. Returns `Err` if the worker

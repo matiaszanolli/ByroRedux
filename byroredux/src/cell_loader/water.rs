@@ -28,6 +28,7 @@
 //! Returns the number of water-plane entities spawned (0 or 1 today).
 
 use byroredux_core::ecs::components::water::{WaterPlane, WaterVolume};
+use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{GlobalTransform, MeshHandle, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
@@ -37,7 +38,8 @@ use std::collections::HashMap;
 
 use crate::asset_provider::{resolve_texture, TextureProvider};
 use crate::components::NormalMapHandle;
-use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+use crate::streaming::LodWaterPlane;
+use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
 
 /// Default interior water-plane half-extent in Bethesda units when
 /// the cell loader has not yet computed the cell's reference bounds.
@@ -287,6 +289,207 @@ pub(super) fn spawn_water_plane(
     Some(1)
 }
 
+/// Extra cushion (in cells) beyond `radius_unload` the LOD-water hole cuts
+/// out, so the annulus doesn't touch right at the streaming boundary —
+/// mirrors the conservative-by-one-cell margin the terrain LOD ring's own
+/// `radius_unload` gate already relies on (#1871 / LC0703-02).
+const LOD_WATER_HOLE_MARGIN_CELLS: i32 = 1;
+
+/// Spawn the worldspace-wide distant LOD water quad (#2449 / EXAL-01) — the
+/// `NAM3`/`NAM4` counterpart of [`spawn_water_plane`]'s per-cell `XCLW`/
+/// `XCWT`. A single square annulus ("picture frame"): its outer edge
+/// matches the distant-terrain LOD ring's total radius
+/// (`LOD_RADIUS_BLOCKS × LOD_BLOCK_CELLS`, `super::terrain_lod`) for visual
+/// consistency, and its inner edge is a hole cut out around
+/// `player_grid` sized to `radius_unload` (+ a one-cell margin) so it
+/// doesn't overlap/double-blend against the near, full-detail per-cell
+/// water. Called once at worldspace entry — see [`LodWaterPlane`]'s doc for
+/// why the hole is a fixed snapshot rather than continuously re-centered.
+///
+/// Built as a 4×4 vertex grid (3×3 quads), holing out only the center quad
+/// — the same row-major `tl/tr/bl/br` two-triangle-per-quad topology
+/// `terrain_lod::spawn_lod_block` uses, so the winding convention is
+/// reused rather than re-derived. Uses the SAME safe upload path
+/// [`spawn_water_plane`] does (`rt_enabled: false`, per-mesh buffer) — see
+/// [`LodWaterPlane`]'s doc for why that matters.
+///
+/// Returns `None` when the worldspace has no LOD water, the requested
+/// radius leaves no annulus to draw (a huge streaming radius relative to
+/// the LOD ring — degenerate on real content), or the mesh upload fails.
+/// Pure geometry builder for [`spawn_lod_water_plane`]'s annulus mesh —
+/// split out so the degenerate-guard and hole-cutout/winding logic is
+/// unit-testable without a `VulkanContext`. `center_x_zup`/`center_y_zup`
+/// are cell-grid-index-based Z-up world coordinates (pre-conversion), the
+/// same convention `spawn_lod_block` uses for its block origin. Returns
+/// `None` when `inner >= outer` (degenerate — see the call site's doc).
+fn build_lod_water_frame(
+    outer: f32,
+    inner: f32,
+    center_x_zup: f32,
+    center_y_zup: f32,
+    lod_height: f32,
+) -> Option<(Vec<Vertex>, Vec<u32>)> {
+    if inner >= outer {
+        return None;
+    }
+
+    let cols = [
+        center_x_zup - outer,
+        center_x_zup - inner,
+        center_x_zup + inner,
+        center_x_zup + outer,
+    ];
+    let rows = [
+        center_y_zup - outer,
+        center_y_zup - inner,
+        center_y_zup + inner,
+        center_y_zup + outer,
+    ];
+    let n = 4usize;
+
+    let mut vertices: Vec<Vertex> = Vec::with_capacity(n * n);
+    for &world_y_zup in &rows {
+        for &world_x in &cols {
+            vertices.push(Vertex {
+                position: zup_to_yup_pos([world_x, world_y_zup, lod_height]),
+                color: [1.0, 1.0, 1.0, 1.0],
+                normal: [0.0, 1.0, 0.0],
+                // World-space UV, matching `spawn_water_plane`'s "UVs don't
+                // matter visually, only their derivative magnitude"
+                // rationale for the normal-map perturb blend.
+                uv: [world_x - center_x_zup, world_y_zup - center_y_zup],
+                bone_indices: [0, 0, 0, 0],
+                bone_weights: [0.0, 0.0, 0.0, 0.0],
+                splat_weights_0: [0, 0, 0, 0],
+                splat_weights_1: [0, 0, 0, 0],
+                // Non-degenerate placeholder — water.frag re-orthogonalises
+                // against the world normal (matches `spawn_water_plane`).
+                tangent: [1.0, 0.0, 0.0, 1.0],
+            });
+        }
+    }
+
+    // 3×3 quads; (r=1, c=1) is the hole cut out for the full-detail
+    // streamed area. Same tl/tr/bl/br two-triangle winding as
+    // `spawn_lod_block`.
+    let mut indices: Vec<u32> = Vec::with_capacity(8 * 6);
+    for r in 0..(n - 1) {
+        for c in 0..(n - 1) {
+            if r == 1 && c == 1 {
+                continue; // the hole
+            }
+            let tl = (r * n + c) as u32;
+            let tr = tl + 1;
+            let bl = ((r + 1) * n + c) as u32;
+            let br = bl + 1;
+            indices.extend_from_slice(&[tl, tr, bl, tr, br, bl]);
+        }
+    }
+
+    Some((vertices, indices))
+}
+
+pub(crate) fn spawn_lod_water_plane(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    waters: &HashMap<u32, esm::records::misc::WatrRecord>,
+    lod_height: f32,
+    lod_water_form: Option<u32>,
+    player_grid: (i32, i32),
+    radius_unload: i32,
+) -> Option<LodWaterPlane> {
+    let (material, kind, flow, normal_texture_path) =
+        crate::env_translate::resolve_water_material(waters, lod_water_form);
+
+    let allocator = ctx.allocator.as_ref()?;
+
+    let outer = (super::terrain_lod::LOD_RADIUS_BLOCKS * super::terrain_lod::LOD_BLOCK_CELLS)
+        as f32
+        * EXTERIOR_CELL_UNITS;
+    let inner =
+        (radius_unload + LOD_WATER_HOLE_MARGIN_CELLS).max(0) as f32 * EXTERIOR_CELL_UNITS;
+    // Cell-grid-index-based Z-up world coordinates (pre-conversion), same
+    // convention `spawn_lod_block` uses for its block origin.
+    let center_x_zup = player_grid.0 as f32 * EXTERIOR_CELL_UNITS;
+    let center_y_zup = player_grid.1 as f32 * EXTERIOR_CELL_UNITS;
+    // Degenerate: the streamed area already covers (or exceeds) the LOD
+    // ring's own radius — no annulus left to draw. Not expected on real
+    // content (the LOD ring is sized far larger than any sane streaming
+    // radius), but a corrupt/extreme config must not build an inverted or
+    // zero-area mesh.
+    let (vertices, indices) =
+        build_lod_water_frame(outer, inner, center_x_zup, center_y_zup, lod_height)?;
+
+    let upload_ctx = GpuUploadCtx {
+        device: &ctx.device,
+        allocator,
+        queue: &ctx.graphics_queue,
+        command_pool: ctx.transfer_pool,
+    };
+    let mesh_handle = match ctx
+        .mesh_registry
+        .upload_scene_mesh(upload_ctx, &vertices, &indices, false, None)
+    {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!("LOD water plane mesh upload failed: {e}");
+            return None;
+        }
+    };
+
+    let resolved_normal_idx = if let Some(path) = normal_texture_path {
+        resolve_texture(ctx, tex_provider, Some(path.as_str()))
+    } else {
+        0
+    };
+    let mut material = material;
+    if resolved_normal_idx != 0 {
+        material.normal_map_index = resolved_normal_idx;
+    }
+
+    let entity = world.spawn();
+    world.insert(entity, Transform::IDENTITY);
+    world.insert(entity, GlobalTransform::IDENTITY);
+    world.insert(entity, MeshHandle(mesh_handle));
+    world.insert(entity, WaterPlane { kind, material });
+    if resolved_normal_idx != 0 {
+        world.insert(entity, NormalMapHandle(resolved_normal_idx));
+    }
+    if let Some(flow) = flow {
+        world.insert(entity, flow);
+    }
+    world.insert(entity, RenderLayer::Decal);
+
+    log::info!(
+        "LOD water plane spawned: height={lod_height}, outer={outer:.0} BU, inner_hole={inner:.0} \
+         BU @ grid {player_grid:?}, kind={kind:?}",
+    );
+
+    Some(LodWaterPlane {
+        entity,
+        mesh_handle,
+        normal_map_handle: (resolved_normal_idx != 0).then_some(resolved_normal_idx),
+    })
+}
+
+/// Tear down the worldspace-wide LOD water quad (#2449 / EXAL-01): release
+/// its normal-map texture refcount (mirrors `NormalMapHandle`'s contract —
+/// `World::despawn` has no GPU side effects), free its mesh, and despawn
+/// the entity. The only reclaim path — like `LodBlock`, this entity carries
+/// no `CellRoot`, so `unload_cell`'s victim walk can't reach it.
+pub(crate) fn unload_lod_water_plane(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    plane: &LodWaterPlane,
+) {
+    if let Some(normal_idx) = plane.normal_map_handle {
+        ctx.texture_registry.drop_texture(&ctx.device, normal_idx);
+    }
+    ctx.mesh_registry.drop_mesh(plane.mesh_handle);
+    world.despawn(plane.entity);
+}
+
 /// Convenience for the interior path — picks a default half-extent
 /// when the cell-load step doesn't yet know the actual reference
 /// bounds (most interior cells with water are small pools or
@@ -361,5 +564,97 @@ mod tests {
             "water entity's normal-map handle must be reachable by the unload \
              walk's NormalMapHandle query so the texture refcount is released"
         );
+    }
+
+    // ── build_lod_water_frame (#2449 / EXAL-01) ─────────────────────
+
+    /// A degenerate request (inner hole at or beyond the outer edge) must
+    /// build nothing rather than an inverted/zero-area mesh.
+    #[test]
+    fn degenerate_inner_not_less_than_outer_builds_nothing() {
+        assert!(build_lod_water_frame(1000.0, 1000.0, 0.0, 0.0, 0.0).is_none());
+        assert!(build_lod_water_frame(1000.0, 2000.0, 0.0, 0.0, 0.0).is_none());
+    }
+
+    /// A valid annulus request produces the expected vertex/triangle
+    /// counts: 16 vertices (4×4 grid), 16 triangles (8 of the 9 quads —
+    /// the center one is the hole, per `build_lod_water_frame`'s doc).
+    #[test]
+    fn valid_annulus_has_expected_vertex_and_triangle_counts() {
+        let (vertices, indices) = build_lod_water_frame(2000.0, 500.0, 0.0, 0.0, 100.0)
+            .expect("outer > inner must build a frame");
+        assert_eq!(vertices.len(), 16);
+        assert_eq!(indices.len(), 8 * 6, "8 quads × 2 triangles × 3 indices");
+    }
+
+    /// The center quad (the hole) must never appear as a triangle — its
+    /// four corner indices (5, 6, 9, 10 in the row-major 4×4 grid) must
+    /// never all-three appear together as one emitted triangle.
+    #[test]
+    fn center_quad_is_never_emitted() {
+        let (_, indices) = build_lod_water_frame(2000.0, 500.0, 0.0, 0.0, 100.0)
+            .expect("outer > inner must build a frame");
+        let hole_corners: std::collections::HashSet<u32> = [5, 6, 9, 10].into_iter().collect();
+        for tri in indices.chunks_exact(3) {
+            let all_in_hole = tri.iter().all(|i| hole_corners.contains(i));
+            assert!(
+                !all_in_hole,
+                "triangle {tri:?} must not be built entirely from the hole's own corners"
+            );
+        }
+    }
+
+    /// Every emitted vertex's Y (the engine's up axis after the Z-up→Y-up
+    /// swap) must equal the authored LOD water height — a flat plane.
+    #[test]
+    fn every_vertex_sits_at_the_authored_height() {
+        let (vertices, _) = build_lod_water_frame(2000.0, 500.0, 0.0, 0.0, -1234.5)
+            .expect("outer > inner must build a frame");
+        for v in &vertices {
+            assert_eq!(v.position[1], -1234.5, "vertex {v:?} must sit at lod_height");
+        }
+    }
+
+    /// The outermost corner vertex's world position and UV must both
+    /// reflect the requested `outer` extent, offset by the requested
+    /// center — pins the coordinate convention (`center ± outer`) against
+    /// a future refactor silently swapping outer/inner or dropping the
+    /// center offset.
+    #[test]
+    fn outer_corner_position_and_uv_match_requested_extent() {
+        let (vertices, _) = build_lod_water_frame(2000.0, 500.0, 100.0, 200.0, 0.0)
+            .expect("outer > inner must build a frame");
+        // Row 0, col 0 = the (-outer, -outer) corner relative to center,
+        // i.e. world (100 - 2000, 200 - 2000) = (-1900, -1800) in Z-up X/Y.
+        let corner = vertices[0];
+        // Z-up→Y-up: (x, height, -y_zup).
+        assert_eq!(corner.position[0], -1900.0);
+        assert_eq!(corner.position[2], 1800.0);
+        // UV is center-relative, matching `spawn_water_plane`'s convention.
+        assert_eq!(corner.uv, [-2000.0, -2000.0]);
+    }
+
+    // ── translate_lod_water (#2449 / EXAL-01) ────────────────────────
+
+    #[test]
+    fn translate_lod_water_passes_through_authored_fields() {
+        let wrld = byroredux_plugin::esm::cell::WorldspaceRecord {
+            lod_water_height: Some(-500.0),
+            lod_water_form: Some(0x0001_2345),
+            ..Default::default()
+        };
+        assert_eq!(
+            crate::env_translate::translate_lod_water(Some(&wrld)),
+            (Some(-500.0), Some(0x0001_2345))
+        );
+    }
+
+    /// Oblivion WRLD authors no NAM3/NAM4 — the record's fields are
+    /// already `None` at parse time, so no per-game branch is needed here.
+    #[test]
+    fn translate_lod_water_is_none_when_unauthored() {
+        let wrld = byroredux_plugin::esm::cell::WorldspaceRecord::default();
+        assert_eq!(crate::env_translate::translate_lod_water(Some(&wrld)), (None, None));
+        assert_eq!(crate::env_translate::translate_lod_water(None), (None, None));
     }
 }

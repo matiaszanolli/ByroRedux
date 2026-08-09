@@ -78,6 +78,101 @@ pub(crate) fn default_water_for_worldspace(
     }
 }
 
+/// Resolve a worldspace's LOD-ring water (`NAM3`/`NAM4`) — the distant
+/// counterpart of [`default_water_for_worldspace`]'s `NAM2`/`DNAM`.
+/// Returns `(LOD water height, LOD water type form)`.
+///
+/// Unlike `default_water_for_worldspace`, no per-game branch is needed:
+/// `NAM3`/`NAM4` are simply absent from Oblivion's WRLD sub-record set
+/// (FO3-and-later only — disk-sampled across Oblivion.esm / Fallout3.esm /
+/// FalloutNV.esm / Skyrim.esm / Fallout4.esm), so `lod_water_form` /
+/// `lod_water_height` are already `None` on that era's parsed records — the
+/// "Oblivion has neither" sentinel lives at the parse boundary, not here.
+/// Both `None` when the worldspace authors no LOD water at all. Genuinely
+/// independent of the full-detail pair on real content — NAM3≠NAM2 on 18 of
+/// 28 `Fallout3.esm` worldspaces, NAM4≠DNAM on 22 of 30 `Skyrim.esm`
+/// worldspaces — so a consumer must not substitute one pair for the other.
+/// #2449 / EXAL-01.
+pub(crate) fn translate_lod_water(wrld: Option<&WorldspaceRecord>) -> (Option<f32>, Option<u32>) {
+    let Some(w) = wrld else {
+        return (None, None);
+    };
+    (w.lod_water_height, w.lod_water_form)
+}
+
+/// `PNAM` parent-use-flags bit: this worldspace inherits its climate from
+/// [`WorldspaceRecord::parent_worldspace`] when it has no own `CNAM`. See
+/// the full bit layout at `crates/plugin/src/esm/cell/mod.rs`'s
+/// `WorldspaceRecord` doc (`WNAM`/`PNAM`).
+const PNAM_INHERIT_CLIMATE: u16 = 0x10;
+
+/// Resolve a worldspace's climate FormID (the `CLMT` a `CNAM` sub-record
+/// authors), chasing the `WNAM` parent-worldspace chain when the
+/// worldspace has no own `CNAM` and its `PNAM` flags opt into climate
+/// inheritance (#2450 / EXAL-02).
+///
+/// Before this, climate resolution was a single flat
+/// `worldspace_climates.get(&worldspace_key)` lookup — a child worldspace
+/// that relies on parent inheritance (Skyrim's DLC/holdout worlds, FO4
+/// sub-worlds, Oblivion-plane worlds) always missed, silently falling back
+/// to the procedural-fallback sky at the call site instead of its parent's
+/// actual climate.
+///
+/// `worldspaces` and `worldspace_climates` are both keyed by the same
+/// lowercased-editor-id string (`worldspace_key` in the cell loader);
+/// `parent_worldspace` is a raw FormID, so each hop needs a reverse lookup
+/// by `WorldspaceRecord::form_id` — worldspace counts are small (tens),
+/// so a linear scan per hop is fine; this runs once per worldspace entry,
+/// not per frame. Guards against a cyclic `WNAM` chain (corrupt/adversarial
+/// plugin data) via `visited`. Logs at `warn` when the chain terminates
+/// unresolved so a real inheritance gap is diagnosable instead of reading
+/// as an unrelated weather bug.
+pub(crate) fn resolve_worldspace_climate(
+    worldspaces: &HashMap<String, WorldspaceRecord>,
+    worldspace_climates: &HashMap<String, u32>,
+    start_key: &str,
+) -> Option<u32> {
+    let mut current_key = start_key;
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        if let Some(&clmt_fid) = worldspace_climates.get(current_key) {
+            return Some(clmt_fid);
+        }
+        if !visited.insert(current_key) {
+            log::warn!(
+                "resolve_worldspace_climate: cyclic WNAM parent chain detected starting from \
+                 '{start_key}' (revisited '{current_key}') — treating as unresolved",
+            );
+            return None;
+        }
+        let record = worldspaces.get(current_key)?;
+        if record.parent_flags & PNAM_INHERIT_CLIMATE == 0 {
+            // No own CNAM, and not flagged to inherit one — this
+            // worldspace is genuinely climate-less (falls back to the
+            // engine's procedural default), not an inheritance gap.
+            return None;
+        }
+        let Some(parent_fid) = record.parent_worldspace else {
+            log::warn!(
+                "resolve_worldspace_climate: '{current_key}' sets the PNAM climate-inherit bit \
+                 but authors no WNAM parent — chain terminates unresolved (starting from \
+                 '{start_key}')",
+            );
+            return None;
+        };
+        let Some((parent_key, _)) = worldspaces.iter().find(|(_, w)| w.form_id == parent_fid)
+        else {
+            log::warn!(
+                "resolve_worldspace_climate: '{current_key}'s WNAM parent {parent_fid:08X} was \
+                 not found among parsed worldspaces — chain terminates unresolved (starting \
+                 from '{start_key}')",
+            );
+            return None;
+        };
+        current_key = parent_key.as_str();
+    }
+}
+
 /// Resolve a cell's `XCWT` FormID to an engine [`WaterMaterial`]
 /// plus a [`WaterKind`] (currently always `Calm`) plus an optional
 /// [`WaterFlow`] and an optional normal-texture path the cell loader
@@ -566,6 +661,190 @@ mod tests {
         assert_eq!(
             default_water_for_worldspace(Some(&wrld), GameKind::Oblivion),
             (Some(0.0), Some(0x0000_00AB))
+        );
+    }
+
+    // ── resolve_worldspace_climate ────────────────────────────────
+
+    /// A worldspace with its own CNAM resolves to that climate directly —
+    /// no parent chase needed even if a (bogus) parent chain exists.
+    #[test]
+    fn own_cnam_resolves_directly() {
+        let worldspaces = HashMap::from([(
+            "tamriel".to_string(),
+            WorldspaceRecord {
+                form_id: 0x0000_003C,
+                editor_id: "Tamriel".to_string(),
+                ..Default::default()
+            },
+        )]);
+        let climates = HashMap::from([("tamriel".to_string(), 0x0000_1234)]);
+        assert_eq!(
+            resolve_worldspace_climate(&worldspaces, &climates, "tamriel"),
+            Some(0x0000_1234)
+        );
+    }
+
+    /// Regression for #2450 / EXAL-02: a childless-CNAM worldspace with a
+    /// valid WNAM chain and the PNAM climate-inherit bit set must resolve
+    /// to its parent's climate, not `None` (the pre-fix flat-lookup miss
+    /// that fell through to the procedural fallback sky).
+    #[test]
+    fn child_with_no_cnam_inherits_parent_climate_when_flagged() {
+        let worldspaces = HashMap::from([
+            (
+                "tamriel".to_string(),
+                WorldspaceRecord {
+                    form_id: 0x0000_003C,
+                    editor_id: "Tamriel".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "solstheim".to_string(),
+                WorldspaceRecord {
+                    form_id: 0x0000_0042,
+                    editor_id: "Solstheim".to_string(),
+                    parent_worldspace: Some(0x0000_003C),
+                    parent_flags: PNAM_INHERIT_CLIMATE,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        // Only the parent authors a CNAM.
+        let climates = HashMap::from([("tamriel".to_string(), 0x0000_1234)]);
+        assert_eq!(
+            resolve_worldspace_climate(&worldspaces, &climates, "solstheim"),
+            Some(0x0000_1234),
+            "child must inherit the parent's climate via the WNAM chain"
+        );
+    }
+
+    /// A childless-CNAM worldspace whose PNAM does NOT set the
+    /// climate-inherit bit must NOT chase its parent — it's genuinely
+    /// climate-less, not an inheritance gap.
+    #[test]
+    fn child_with_no_cnam_and_no_inherit_flag_stays_unresolved() {
+        let worldspaces = HashMap::from([
+            (
+                "tamriel".to_string(),
+                WorldspaceRecord {
+                    form_id: 0x0000_003C,
+                    editor_id: "Tamriel".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "child".to_string(),
+                WorldspaceRecord {
+                    form_id: 0x0000_0099,
+                    editor_id: "Child".to_string(),
+                    parent_worldspace: Some(0x0000_003C),
+                    parent_flags: 0, // no PNAM bits set
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let climates = HashMap::from([("tamriel".to_string(), 0x0000_1234)]);
+        assert_eq!(
+            resolve_worldspace_climate(&worldspaces, &climates, "child"),
+            None
+        );
+    }
+
+    /// A multi-hop chain (grandchild → child → root) resolves all the way
+    /// up when every intermediate level is flagged to inherit and none
+    /// authors its own CNAM.
+    #[test]
+    fn multi_hop_parent_chain_resolves() {
+        let worldspaces = HashMap::from([
+            (
+                "root".to_string(),
+                WorldspaceRecord {
+                    form_id: 1,
+                    editor_id: "Root".to_string(),
+                    ..Default::default()
+                },
+            ),
+            (
+                "mid".to_string(),
+                WorldspaceRecord {
+                    form_id: 2,
+                    editor_id: "Mid".to_string(),
+                    parent_worldspace: Some(1),
+                    parent_flags: PNAM_INHERIT_CLIMATE,
+                    ..Default::default()
+                },
+            ),
+            (
+                "leaf".to_string(),
+                WorldspaceRecord {
+                    form_id: 3,
+                    editor_id: "Leaf".to_string(),
+                    parent_worldspace: Some(2),
+                    parent_flags: PNAM_INHERIT_CLIMATE,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let climates = HashMap::from([("root".to_string(), 0xAAAA_AAAA)]);
+        assert_eq!(
+            resolve_worldspace_climate(&worldspaces, &climates, "leaf"),
+            Some(0xAAAA_AAAA)
+        );
+    }
+
+    /// A cyclic WNAM chain (corrupt/adversarial plugin data) must not
+    /// infinite-loop — resolves to `None` instead.
+    #[test]
+    fn cyclic_parent_chain_terminates() {
+        let worldspaces = HashMap::from([
+            (
+                "a".to_string(),
+                WorldspaceRecord {
+                    form_id: 1,
+                    editor_id: "A".to_string(),
+                    parent_worldspace: Some(2),
+                    parent_flags: PNAM_INHERIT_CLIMATE,
+                    ..Default::default()
+                },
+            ),
+            (
+                "b".to_string(),
+                WorldspaceRecord {
+                    form_id: 2,
+                    editor_id: "B".to_string(),
+                    parent_worldspace: Some(1),
+                    parent_flags: PNAM_INHERIT_CLIMATE,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        assert_eq!(
+            resolve_worldspace_climate(&worldspaces, &HashMap::new(), "a"),
+            None,
+            "a cyclic WNAM chain must terminate, not infinite-loop"
+        );
+    }
+
+    /// A WNAM parent FormID that doesn't resolve to any parsed worldspace
+    /// (dangling / cross-plugin-missing-master reference) terminates
+    /// unresolved rather than panicking.
+    #[test]
+    fn dangling_parent_form_id_terminates_unresolved() {
+        let worldspaces = HashMap::from([(
+            "child".to_string(),
+            WorldspaceRecord {
+                form_id: 1,
+                editor_id: "Child".to_string(),
+                parent_worldspace: Some(0xDEAD_BEEF),
+                parent_flags: PNAM_INHERIT_CLIMATE,
+                ..Default::default()
+            },
+        )]);
+        assert_eq!(
+            resolve_worldspace_climate(&worldspaces, &HashMap::new(), "child"),
+            None
         );
     }
 

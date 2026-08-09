@@ -110,10 +110,15 @@ duplication.
 
 The whole per-game seam is the typed decode of two constraint CInfos
 (`crates/nif/src/blocks/collision/constraints.rs`). The importer
-(`ragdoll_joint` / `limited_hinge_joint`) reads only the **common subset** of
-fields (twist/plane/pivot + angle limits for ragdoll; axis/pivot + limits for
-hinge), so era-only fields (FO3+ motors, FO3+ `Perp Axis In B1`) are decoded-or-
-zeroed and never reach the canonical spec. One `RagdollCInfo` /
+(`ragdoll_joint` / `limited_hinge_joint`) reads the **common subset** of
+fields (twist/plane/pivot + angle limits for ragdoll; axis/perp/pivot +
+limits for hinge — the LimitedHinge perp-axis zero-reference threads through
+to the canonical spec as of #2448 / PHYS-02), so only genuinely era-only
+fields (FO3+ motors) are decoded-and-discarded. `Perp Axis In B1` is zeroed
+by the parser on Oblivion/Morrowind content (not authored in that era's
+layout) rather than discarded by the importer — the solver boundary's
+`frame_rot` falls back to a synthesized perpendicular for that degenerate
+input, so behavior on that era is unchanged. One `RagdollCInfo` /
 `LimitedHingeCInfo` therefore feeds every game:
 
 | Game | Discriminator | Constraint layout | State |

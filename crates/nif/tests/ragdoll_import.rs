@@ -218,6 +218,7 @@ fn synthetic_ragdoll(n_bodies: usize, n_joints: usize) -> ImportedRagdoll {
             shape: CollisionShape::Ball { radius: 1.0 },
             translation: Vec3::ZERO,
             rotation: Quat::IDENTITY,
+            is_t: true,
         })
         .collect();
     let constraints = (0..n_joints)
@@ -226,8 +227,10 @@ fn synthetic_ragdoll(n_bodies: usize, n_joints: usize) -> ImportedRagdoll {
             body_b: i + 1,
             kind: ImportedJointKind::LimitedHinge {
                 axis_a: Vec3::ZERO,
+                perp_a: Vec3::ZERO,
                 pivot_a: Vec3::ZERO,
                 axis_b: Vec3::ZERO,
+                perp_b: Vec3::ZERO,
                 pivot_b: Vec3::ZERO,
                 min_angle: 0.0,
                 max_angle: 0.0,

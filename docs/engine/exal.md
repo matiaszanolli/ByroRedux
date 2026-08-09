@@ -378,11 +378,19 @@ What runtime LOD **does** need that we don't parse yet (new, small parser work):
 the **VWD / "Has Distant LOD" record-header flag** (§5.2, tracked by #1731).
 The WRLD `NAM3`/`NAM4` LOD-water fields + `OFST` cell-offset table **are now
 parsed** (#1849) onto `WorldspaceRecord::lod_water_form` / `lod_water_height` /
-`cell_offsets` — captured but not yet consumed, since they feed the LOD ring
-rather than the full-detail scene. The LOD-water fields are genuinely distinct
-from their full-detail NAM2 / DNAM siblings on real content (NAM3 ≠ NAM2 on
-18/28 Fallout3.esm worldspaces; NAM4 ≠ DNAM water on 22/30 Skyrim.esm), so the
-LOD-water consumer must read them rather than reuse the full-detail values.
+`cell_offsets`. `OFST` stays captured-but-unconsumed (its per-cell offset
+grid interpretation is unsettled — #1849). `NAM3`/`NAM4` are consumed as of
+#2449 / EXAL-01: `env_translate::translate_lod_water` reads them, and
+`cell_loader::water::spawn_lod_water_plane` spawns a single worldspace-wide
+LOD water quad (a hole-cut annulus excluding the full-detail streamed area)
+at worldspace entry — see that fn's doc for why it's a fixed entry-time
+snapshot rather than a `LodBlock`-style continuously-reconciled ring (a
+renderer TLAS/BLAS interaction ruled out mirroring `LodBlock`'s per-block
+streaming exactly for this pass). The LOD-water fields are genuinely
+distinct from their full-detail NAM2 / DNAM siblings on real content
+(NAM3 ≠ NAM2 on 18/28 Fallout3.esm worldspaces; NAM4 ≠ DNAM water on 22/30
+Skyrim.esm), which is why the consumer reads them directly rather than
+reusing the full-detail values.
 
 ---
 

@@ -552,6 +552,7 @@ impl App {
                             DEFAULT_TRANSITION_RADIUS,
                         );
                         state.last_player_grid = Some(grid);
+                        state.spawn_lod_water(&mut self.world, ctx);
                         let _ = crate::scene::stream_initial_radius(
                             &mut self.world,
                             ctx,

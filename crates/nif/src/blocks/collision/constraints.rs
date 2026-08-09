@@ -191,8 +191,9 @@ impl LimitedHingeCInfo {
     /// Oblivion / Morrowind (`#NI_BS_LTE_16#`) layout from nif.xml:
     /// 7 × Vec4 + 3 × f32 = 124 bytes. No Perp Axis In B1 (an FO3+
     /// addition) and a pivots-first order. The absent perp axis is zeroed;
-    /// the PHYSAL translate boundary reads only axis/pivot + angle limits,
-    /// so it's invisible downstream.
+    /// the PHYSAL translate boundary DOES read it (#2448 / PHYS-02), but
+    /// the solver's `frame_rot` falls back to a synthesized perpendicular
+    /// for a degenerate (zero) input, so the zeroed value is still safe.
     fn parse_oblivion(stream: &mut NifStream) -> io::Result<Self> {
         let pivot_a = super::read_vec4(stream)?;
         let axis_a = super::read_vec4(stream)?;

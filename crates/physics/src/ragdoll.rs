@@ -74,8 +74,19 @@ pub enum RagdollJointSpec {
     },
     LimitedHinge {
         axis_a: Vec3,
+        /// Authored zero-angle reference direction for side A — the plane
+        /// `min_angle`/`max_angle` are measured from. Threaded straight
+        /// through from the NIF importer's `ImportedJointKind::LimitedHinge`
+        /// (this crate never depends on `byroredux-nif`, so no re-derivation
+        /// happens here). #2448 / PHYS-02.
+        perp_a: Vec3,
         pivot_a: Vec3,
         axis_b: Vec3,
+        /// Authored zero-angle reference direction for side B — may be a
+        /// zero vector on Oblivion/Morrowind content (not authored in that
+        /// era's layout); [`frame_rot`] falls back to a synthesized
+        /// perpendicular for a degenerate input.
+        perp_b: Vec3,
         pivot_b: Vec3,
         min_angle: f32,
         max_angle: f32,
@@ -360,30 +371,39 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
         }
         RagdollJointSpec::LimitedHinge {
             axis_a,
+            perp_a,
             pivot_a,
             axis_b,
+            perp_b,
             pivot_b,
             min_angle,
             max_angle,
         } => {
-            let (a1, pv1, a2, pv2, amin, amax) = if !flip {
-                (*axis_a, *pivot_a, *axis_b, *pivot_b, *min_angle, *max_angle)
+            let (a1, p1, pv1, a2, p2, pv2, amin, amax) = if !flip {
+                (
+                    *axis_a, *perp_a, *pivot_a, *axis_b, *perp_b, *pivot_b, *min_angle,
+                    *max_angle,
+                )
             } else {
                 (
                     *axis_b,
+                    *perp_b,
                     *pivot_b,
                     *axis_a,
+                    *perp_a,
                     *pivot_a,
                     -*max_angle,
                     -*min_angle,
                 )
             };
-            // No authored perp on the hinge spec (slice 1) — synthesize one
-            // orthogonal to the axis. The hinge still rotates about the
-            // correct axis; only the limit's zero-reference is offset.
+            // #2448 / PHYS-02 — the authored perp axis IS the zero-angle
+            // reference `min_angle`/`max_angle` are measured from.
+            // `frame_rot` orthogonalises it against the axis and falls back
+            // to a synthesized perpendicular only for a degenerate (zero /
+            // parallel) input — e.g. Oblivion's zeroed `perp_axis_in_b1`.
             GenericJointBuilder::new(lin_locked() | JointAxesMask::ANG_Y | JointAxesMask::ANG_Z)
-                .local_frame1(iso_from_trs(pv1, frame_rot(a1, any_perp(a1))))
-                .local_frame2(iso_from_trs(pv2, frame_rot(a2, any_perp(a2))))
+                .local_frame1(iso_from_trs(pv1, frame_rot(a1, p1)))
+                .local_frame2(iso_from_trs(pv2, frame_rot(a2, p2)))
                 .limits(JointAxis::AngX, [amin, amax])
                 .build()
         }
@@ -806,6 +826,57 @@ mod tests {
         assert!(
             pi.x > 0.0 && pi.y > 0.0 && pi.z > 0.0,
             "principal inertia must be non-degenerate: {pi:?}"
+        );
+    }
+
+    /// Regression for #2448 / PHYS-02: `build_joint`'s `LimitedHinge` arm
+    /// must build its angle-limit frame from the authored `perp_a`/`perp_b`
+    /// zero-reference, not a synthesized-arbitrary one. Picks a perp
+    /// deliberately different from what `any_perp` would choose for the
+    /// same axis, so a regression back to the old `any_perp(axis)` call
+    /// would produce a visibly different frame and fail this assertion.
+    #[test]
+    fn limited_hinge_frame_uses_authored_perp_not_synthesized() {
+        let axis = Vec3::X;
+        // `any_perp(X)`: `a.x.abs() = 1.0 >= 0.9` ⇒ seed = Y ⇒ picks ~Y.
+        // Author a perp that's ~Z instead — orthogonal to both X and the
+        // `any_perp` fallback, so the two frames are unambiguously distinct.
+        let authored_perp = Vec3::Z;
+
+        let joint = build_joint(
+            &RagdollJointSpec::LimitedHinge {
+                axis_a: axis,
+                perp_a: authored_perp,
+                pivot_a: Vec3::ZERO,
+                axis_b: axis,
+                perp_b: authored_perp,
+                pivot_b: Vec3::ZERO,
+                min_angle: -1.0,
+                max_angle: 1.0,
+            },
+            false,
+        );
+
+        let built_rotation = quat_from_na(joint.local_frame1.rotation);
+        let expected = frame_rot(axis, authored_perp);
+        let synthesized = frame_rot(axis, any_perp(axis));
+
+        // Same-or-flipped-sign match against the authored frame (quaternion
+        // double-cover — same rotation can have either sign).
+        let matches_expected = built_rotation.dot(expected).abs() > 1.0 - 1e-5;
+        assert!(
+            matches_expected,
+            "local_frame1 must be built from the authored perp: {built_rotation:?} vs \
+             {expected:?}"
+        );
+        // And it must NOT match the arbitrary synthesized fallback — proves
+        // the authored perp is actually reaching `build_joint`, not silently
+        // falling through to `any_perp` regardless of input.
+        let matches_synthesized = built_rotation.dot(synthesized).abs() > 1.0 - 1e-5;
+        assert!(
+            !matches_synthesized,
+            "local_frame1 must NOT match the any_perp-synthesized frame — the authored perp \
+             isn't reaching build_joint: {built_rotation:?}"
         );
     }
 }

@@ -121,6 +121,7 @@ pub fn extract_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
             shape,
             translation,
             rotation,
+            is_t: body.is_t,
         });
     }
     if bodies.len() < 2 {
@@ -321,11 +322,24 @@ fn ragdoll_joint(r: &RagdollCInfo, scale: f32) -> Option<ImportedJointKind> {
 }
 
 /// `LimitedHinge` sibling of [`ragdoll_joint`] — same non-finite drop (#1534).
+///
+/// #2448 / PHYS-02 — threads the authored perp-axis zero-reference
+/// (`Perp Axis In A1`/`Perp Axis In B1`) through so the solver boundary
+/// (`crates/physics/src/ragdoll.rs::build_joint`) can build the hinge's
+/// angle-limit frame from the content author's own reference instead of
+/// synthesizing an arbitrary one. `perp_axis_in_b1` is zeroed by
+/// `LimitedHingeCInfo::parse_oblivion` on Oblivion/Morrowind content — a
+/// zero vector is still finite, so it round-trips through `finite_vec`
+/// unchanged; `build_joint`'s `frame_rot` falls back to a synthesized
+/// perpendicular for a degenerate secondary axis, matching this function's
+/// pre-fix behavior exactly for that era.
 fn limited_hinge_joint(h: &LimitedHingeCInfo, scale: f32) -> Option<ImportedJointKind> {
     Some(ImportedJointKind::LimitedHinge {
         axis_a: finite_vec(havok_dir_to_engine(h.axis_a))?,
+        perp_a: finite_vec(havok_dir_to_engine(h.perp_axis_in_a1))?,
         pivot_a: finite_vec(havok_to_engine(h.pivot_a[0], h.pivot_a[1], h.pivot_a[2]) * scale)?,
         axis_b: finite_vec(havok_dir_to_engine(h.axis_b))?,
+        perp_b: finite_vec(havok_dir_to_engine(h.perp_axis_in_b1))?,
         pivot_b: finite_vec(havok_to_engine(h.pivot_b[0], h.pivot_b[1], h.pivot_b[2]) * scale)?,
         min_angle: finite(h.min_angle)?,
         max_angle: finite(h.max_angle)?,
@@ -348,7 +362,7 @@ mod ragdoll_extract_tests {
     use crate::blocks::base::{NiAVObjectData, NiObjectNETData};
     use crate::blocks::collision::{
         BhkBreakableConstraint, BhkCollisionObject, BhkConstraint, BhkConstraintData, BhkRigidBody,
-        BhkSphereShape, RagdollCInfo,
+        BhkSphereShape, LimitedHingeCInfo, RagdollCInfo,
     };
     use crate::blocks::node::NiNode;
     use crate::blocks::NiObject;
@@ -475,6 +489,88 @@ mod ragdoll_extract_tests {
                 assert_eq!(*pivot_a, Vec3::new(10.0, 0.0, 0.0));
             }
             other => panic!("expected Ragdoll joint, got {other:?}"),
+        }
+    }
+
+    /// #2447 / PHYS-01 — `extract_ragdoll` must propagate each body's
+    /// source-block `is_t` flag onto `ImportedRagdollBody::is_t` verbatim
+    /// (mirroring `extract_from_classic`'s `is_t` gate for architecture
+    /// colliders, #2316), so the NIF→ECS boundary downstream
+    /// (`template_from_imported`) knows whether the body's CInfo
+    /// translation/rotation are real or must be treated as identity.
+    #[test]
+    fn extract_ragdoll_propagates_is_t_per_body() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(bone("Bip01 Pelvis", 1)); // [0]
+        scene.blocks.push(coll_obj(2)); // [1]
+        scene
+            .blocks
+            .push(rigid_body_at(3, [1.0, 2.0, 3.0, 1.0], true)); // [2] bhkRigidBodyT
+        scene.blocks.push(sphere(1.0)); // [3]
+        scene.blocks.push(bone("Bip01 Spine", 5)); // [4]
+        scene.blocks.push(coll_obj(6)); // [5]
+        scene
+            .blocks
+            .push(rigid_body_at(7, [4.0, 5.0, 6.0, 1.0], false)); // [6] plain bhkRigidBody
+        scene.blocks.push(sphere(1.0)); // [7]
+        scene.blocks.push(ragdoll_constraint(2, 6, 10.0)); // [8]
+
+        let r = extract_ragdoll(&scene).expect("two bodies + one joint must yield a ragdoll");
+        assert!(r.bodies[0].is_t, "block 2 was bhkRigidBodyT");
+        assert!(!r.bodies[1].is_t, "block 6 was plain bhkRigidBody");
+    }
+
+    fn limited_hinge_constraint(entity_a: usize, entity_b: usize) -> Box<dyn NiObject> {
+        Box::new(BhkConstraint {
+            type_name: "bhkLimitedHingeConstraint",
+            entity_a: BlockRef(entity_a as u32),
+            entity_b: BlockRef(entity_b as u32),
+            priority: 1,
+            data: BhkConstraintData::LimitedHinge(LimitedHingeCInfo {
+                axis_a: [0.0, 0.0, 1.0, 0.0],
+                // Havok Y (0,1,0) → engine (x,z,-y) = (0,0,-1).
+                perp_axis_in_a1: [0.0, 1.0, 0.0, 0.0],
+                perp_axis_in_a2: [1.0, 0.0, 0.0, 0.0],
+                pivot_a: [10.0, 0.0, 0.0, 1.0],
+                axis_b: [0.0, 0.0, 1.0, 0.0],
+                // Havok X (1,0,0) → engine (x,z,-y) = (1,0,0).
+                perp_axis_in_b1: [1.0, 0.0, 0.0, 0.0],
+                perp_axis_in_b2: [0.0, 1.0, 0.0, 0.0],
+                pivot_b: [-10.0, 0.0, 0.0, 1.0],
+                min_angle: -0.5,
+                max_angle: 0.5,
+                max_friction: 0.0,
+            }),
+        })
+    }
+
+    /// #2448 / PHYS-02 — `extract_ragdoll` must thread the authored
+    /// `Perp Axis In A1`/`Perp Axis In B1` zero-reference vectors through to
+    /// `ImportedJointKind::LimitedHinge::perp_a`/`perp_b`, converted Z-up →
+    /// Y-up like every other direction in this module (not silently
+    /// discarded, the pre-fix behavior this regresses).
+    #[test]
+    fn limited_hinge_perp_axis_survives_extraction() {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene.blocks.push(bone("Bip01 LUpperArm", 1)); // [0]
+        scene.blocks.push(coll_obj(2)); // [1]
+        scene.blocks.push(rigid_body(3)); // [2]
+        scene.blocks.push(sphere(1.0)); // [3]
+        scene.blocks.push(bone("Bip01 LForearm", 5)); // [4]
+        scene.blocks.push(coll_obj(6)); // [5]
+        scene.blocks.push(rigid_body(7)); // [6]
+        scene.blocks.push(sphere(1.0)); // [7]
+        scene.blocks.push(limited_hinge_constraint(2, 6)); // [8]
+
+        let r = extract_ragdoll(&scene).expect("two bodies + one joint must yield a ragdoll");
+        match &r.constraints[0].kind {
+            ImportedJointKind::LimitedHinge { perp_a, perp_b, .. } => {
+                assert_eq!(*perp_a, Vec3::new(0.0, 0.0, -1.0));
+                assert_eq!(*perp_b, Vec3::new(1.0, 0.0, 0.0));
+            }
+            other => panic!("expected LimitedHinge joint, got {other:?}"),
         }
     }
 
@@ -667,6 +763,7 @@ mod ragdoll_extract_tests {
             shape: CollisionShape::Ball { radius: 1.0 },
             translation: Vec3::ZERO,
             rotation: byroredux_core::math::Quat::IDENTITY,
+            is_t: true,
         }
     }
 

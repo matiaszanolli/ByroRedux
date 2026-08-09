@@ -796,12 +796,20 @@ pub fn build_exterior_world_context(
     // runs on the right clock (#463). Default weather is the
     // highest-chance entry; mods use -1 as a sentinel / subtractive
     // weight (#476).
-    let climate = record_index
-        .cells
-        .worldspace_climates
-        .get(&worldspace_key)
-        .and_then(|fid| record_index.climates.get(fid).cloned())
-        .inspect(|climate| {
+    //
+    // #2450 / EXAL-02 — chases the WNAM parent-worldspace chain (gated on
+    // the PNAM climate-inherit bit) when this worldspace authors no own
+    // CNAM, instead of a flat lookup that always misses on inheriting
+    // child worldspaces (Skyrim DLC/holdout worlds, FO4 sub-worlds,
+    // Oblivion-plane worlds) and silently falls back to the procedural
+    // default sky.
+    let climate = crate::env_translate::resolve_worldspace_climate(
+        &record_index.cells.worldspaces,
+        &record_index.cells.worldspace_climates,
+        &worldspace_key,
+    )
+    .and_then(|fid| record_index.climates.get(&fid).cloned())
+    .inspect(|climate| {
             log::info!(
                 "Worldspace '{}' climate '{}' ({:08X}): {} weathers, \
                  sunrise {:.2}–{:.2}h, sunset {:.2}–{:.2}h",

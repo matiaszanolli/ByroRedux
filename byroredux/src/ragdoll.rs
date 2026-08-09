@@ -122,10 +122,25 @@ pub fn template_from_imported(
         // then compose the resulting body-local offset with the bone's live
         // animated GlobalTransform without double-applying the rest pose
         // (#2336).
-        let inverse_bone_rotation = rest.rotation.inverse();
-        let local_translation =
-            inverse_bone_rotation * (b.translation - rest.translation) / rest.scale;
-        let local_rotation = inverse_bone_rotation * b.rotation;
+        //
+        // #2447 / PHYS-01 — `b.translation`/`b.rotation` are only meaningful
+        // when `b.is_t` (the source block was `bhkRigidBodyT`). Plain
+        // `bhkRigidBody` carries the same wire-format CInfo bytes, but
+        // Gamebryo treats them as identity (#2316, already handled for
+        // architecture colliders in `extract_from_classic`) — resolving
+        // stale/garbage bytes against the bone rest pose here would displace
+        // the body from its bone by whatever leftover offset survived in the
+        // authoring tool's export. Fall back to zero local offset (body
+        // exactly coincident with the bone's own rest transform) instead.
+        let (local_translation, local_rotation) = if b.is_t {
+            let inverse_bone_rotation = rest.rotation.inverse();
+            (
+                inverse_bone_rotation * (b.translation - rest.translation) / rest.scale,
+                inverse_bone_rotation * b.rotation,
+            )
+        } else {
+            (Vec3::ZERO, Quat::IDENTITY)
+        };
         old_to_new[i] = Some(bodies.len());
         bodies.push(RagdollTemplateBody {
             bone,
@@ -236,15 +251,19 @@ fn joint_from_imported(k: &ImportedJointKind) -> RagdollJointSpec {
         },
         ImportedJointKind::LimitedHinge {
             axis_a,
+            perp_a,
             pivot_a,
             axis_b,
+            perp_b,
             pivot_b,
             min_angle,
             max_angle,
         } => RagdollJointSpec::LimitedHinge {
             axis_a: *axis_a,
+            perp_a: *perp_a,
             pivot_a: *pivot_a,
             axis_b: *axis_b,
+            perp_b: *perp_b,
             pivot_b: *pivot_b,
             min_angle: *min_angle,
             max_angle: *max_angle,
@@ -1382,6 +1401,7 @@ mod tests {
             shape: CollisionShape::Ball { radius: 5.0 },
             translation: Vec3::ZERO,
             rotation: Quat::IDENTITY,
+            is_t: true,
         }
     }
 
@@ -1391,8 +1411,10 @@ mod tests {
             body_b,
             kind: ImportedJointKind::LimitedHinge {
                 axis_a: Vec3::X,
+                perp_a: Vec3::Y,
                 pivot_a: Vec3::ZERO,
                 axis_b: Vec3::X,
+                perp_b: Vec3::Y,
                 pivot_b: Vec3::ZERO,
                 min_angle: -1.0,
                 max_angle: 1.0,
@@ -1586,5 +1608,64 @@ mod tests {
                 > 1.0 - 1e-4
         );
         assert!((template.bodies[1].local_translation - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-4);
+    }
+
+    /// Regression for #2447 / PHYS-01: a plain (non-T) `bhkRigidBody`
+    /// ragdoll bone carrying stale, non-identity CInfo translation/rotation
+    /// bytes — the exact pattern #2316 fixed for architecture colliders —
+    /// must resolve to zero local offset (coincident with the bone's own
+    /// rest transform), not the garbage bytes.
+    #[test]
+    fn non_t_ragdoll_body_ignores_stale_cinfo_offset() {
+        let mut world = World::new();
+        let spine = world.spawn();
+        let head = world.spawn();
+        let spine_name = Arc::<str>::from("Spine");
+        let head_name = Arc::<str>::from("Head");
+        let skel_map = HashMap::from([(spine_name.clone(), spine), (head_name.clone(), head)]);
+
+        let spine_rest = GlobalTransform {
+            translation: Vec3::new(100.0, 0.0, 0.0),
+            rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            scale: 2.0,
+        };
+        let head_rest = GlobalTransform {
+            translation: Vec3::new(100.0, 30.0, 0.0),
+            rotation: Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            scale: 2.0,
+        };
+        let rest_poses = HashMap::from([(spine_name, spine_rest), (head_name, head_rest)]);
+
+        let mut spine_body = body("Spine");
+        // Stale non-identity bytes surviving in a plain bhkRigidBody's CInfo
+        // — exactly the #2316 pattern, just on a ragdoll bone instead of
+        // architecture. `is_t: false` (the default from `body()` is
+        // overridden below) means these must be ignored entirely.
+        spine_body.translation = Vec3::new(9999.0, -500.0, 42.0);
+        spine_body.rotation = Quat::from_rotation_z(1.23);
+        spine_body.is_t = false;
+        let mut head_body = body("Head");
+        head_body.translation = Vec3::new(-1234.0, 77.0, 3.0);
+        head_body.rotation = Quat::from_rotation_x(0.7);
+        head_body.is_t = false;
+        let imported = ImportedRagdoll {
+            bodies: vec![spine_body, head_body],
+            constraints: vec![hinge_constraint(0, 1)],
+        };
+
+        let template = template_from_imported(&imported, &skel_map, &rest_poses)
+            .expect("both non-T bodies still resolve");
+        assert_eq!(
+            template.bodies[0].local_translation,
+            Vec3::ZERO,
+            "non-T body must ignore its stale CInfo translation"
+        );
+        assert_eq!(
+            template.bodies[0].local_rotation,
+            Quat::IDENTITY,
+            "non-T body must ignore its stale CInfo rotation"
+        );
+        assert_eq!(template.bodies[1].local_translation, Vec3::ZERO);
+        assert_eq!(template.bodies[1].local_rotation, Quat::IDENTITY);
     }
 }

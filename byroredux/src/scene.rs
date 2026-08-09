@@ -415,6 +415,7 @@ pub(crate) fn setup_scene(
                     let mut state =
                         WorldStreamingState::new(wctx, tex_provider, mat_provider, radius);
                     state.last_player_grid = Some((cx, cy));
+                    state.spawn_lod_water(world, ctx);
                     let bootstrap_mode = ExteriorBootstrapMode::from_cli_args(&args);
                     cam_center =
                         stream_initial_radius(world, ctx, &mut state, cx, cy, bootstrap_mode);

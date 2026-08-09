@@ -1012,10 +1012,20 @@ pub struct ImportedRagdollBody {
     pub shape: CollisionShape,
     /// Rigid-body origin in skeleton-root/rest space (Y-up, scaled).
     /// The engine resolves this against the host bone's rest transform once
-    /// when building its runtime ragdoll template (#2336).
+    /// when building its runtime ragdoll template (#2336). Only meaningful
+    /// when [`Self::is_t`] is `true` — see that field.
     pub translation: Vec3,
-    /// Rigid-body orientation in skeleton-root/rest space (Y-up).
+    /// Rigid-body orientation in skeleton-root/rest space (Y-up). Only
+    /// meaningful when [`Self::is_t`] is `true` — see that field.
     pub rotation: Quat,
+    /// `true` only if the source block was `bhkRigidBodyT`. Mirrors
+    /// `BhkRigidBody::is_t` (#2316): plain `bhkRigidBody` carries the same
+    /// wire-format `translation`/`rotation` fields, but Gamebryo treats them
+    /// as identity — the engine must not resolve [`Self::translation`] /
+    /// [`Self::rotation`] against the bone rest pose when this is `false`,
+    /// instead treating the body as coincident with its host bone's own
+    /// rest transform (zero local offset). #2447 / PHYS-01.
+    pub is_t: bool,
 }
 
 /// One joint linking two ragdoll bodies (indices into
@@ -1049,8 +1059,22 @@ pub enum ImportedJointKind {
     /// 1-DOF angle-limited hinge (`bhkLimitedHingeConstraint`).
     LimitedHinge {
         axis_a: Vec3,
+        /// Authored zero-angle reference direction for side A
+        /// (`Perp Axis In A1`), orthogonalised against `axis_a` at the
+        /// solver boundary. Defines the plane `min_angle`/`max_angle` are
+        /// measured from — without it the solver must synthesize an
+        /// arbitrary reference frame, rotating the enforced angle window
+        /// by an uncontrolled amount from what the content author
+        /// intended (#2448 / PHYS-02).
+        perp_a: Vec3,
         pivot_a: Vec3,
         axis_b: Vec3,
+        /// Authored zero-angle reference direction for side B
+        /// (`Perp Axis In B1`). Zeroed (not authored) on Oblivion/
+        /// Morrowind content — the solver boundary's `frame_rot` falls
+        /// back to a synthesized perpendicular for a degenerate/zero
+        /// input, so this stays safe either way.
+        perp_b: Vec3,
         pivot_b: Vec3,
         min_angle: f32,
         max_angle: f32,

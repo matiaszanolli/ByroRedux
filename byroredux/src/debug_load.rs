@@ -395,6 +395,7 @@ fn exec_load_exterior(
     let mut state =
         streaming::WorldStreamingState::new(wctx, tex_provider, mat_provider, clamped_radius);
     state.last_player_grid = Some((grid_x, grid_y));
+    state.spawn_lod_water(world, ctx);
     let _ = crate::scene::stream_initial_radius(
         world,
         ctx,
