@@ -875,17 +875,56 @@ impl VulkanContext {
             )?;
         }
 
-        // Phase 4 — recreate the egui overlay's framebuffers
-        // against the fresh swapchain image views. The render pass
-        // itself is preserved (swapchain format doesn't change on
-        // resize); only the framebuffer attachments + extent need
-        // to track the new images.
-        if let Some(ref mut pass) = self.egui_pass {
-            pass.recreate_framebuffers(
-                &self.device,
-                &self.swapchain_state.image_views,
-                self.swapchain_state.extent,
-            )?;
+        // Phase 4 — recreate the egui overlay for the new swapchain.
+        // #2475 / REN-D20-NEW-01 — a swapchain surface-format change
+        // (HDR toggle, monitor move, driver format renegotiation) is
+        // reachable (the main render pass above is explicitly
+        // format-gated for exactly this), but egui previously only
+        // ever rebuilt its framebuffers, never its render pass or the
+        // egui-ash-renderer `Renderer`'s `srgb_framebuffer` option —
+        // both derived from the format at construction time. On a
+        // format-STABLE resize (the common per-drag-resize case) only
+        // framebuffers + extent refresh, same as before. On a format
+        // CHANGE, tear down and reconstruct the whole pass, mirroring
+        // how `presentation` below is handled unconditionally — a
+        // format change is rare enough that always paying the
+        // teardown/rebuild cost there was never worth guarding.
+        if let Some(mut pass) = self.egui_pass.take() {
+            if pass.format() == self.swapchain_state.format.format {
+                pass.recreate_framebuffers(
+                    &self.device,
+                    &self.swapchain_state.image_views,
+                    self.swapchain_state.extent,
+                )?;
+                self.egui_pass = Some(pass);
+            } else {
+                // SAFETY: `device_wait_idle` at the top of
+                // `recreate_swapchain_core` guarantees no in-flight command
+                // buffer references the old render pass or framebuffers
+                // `destroy` tears down here.
+                pass.destroy(&self.device);
+                let in_flight_frames = pass.in_flight_frames();
+                match self.allocator.clone() {
+                    Some(allocator) => match super::super::egui_pass::EguiPass::new(
+                        self.device.clone(),
+                        allocator,
+                        self.swapchain_state.format.format,
+                        &self.swapchain_state.image_views,
+                        self.swapchain_state.extent,
+                        in_flight_frames,
+                    ) {
+                        Ok(rebuilt) => self.egui_pass = Some(rebuilt),
+                        Err(e) => log::warn!(
+                            "egui overlay rebuild after swapchain format change \
+                             failed: {e:#} — overlay disabled for this session"
+                        ),
+                    },
+                    None => log::warn!(
+                        "egui overlay rebuild after swapchain format change \
+                         skipped: allocator missing — overlay disabled"
+                    ),
+                }
+            }
         }
 
         // Snapshot composite's HDR views (owned Vec) so subsequent &mut
@@ -1516,6 +1555,52 @@ mod tests {
             "when the accumulator fails to create, init must still write set 2 — \
              leaving it unwritten is an atomic write to an uninitialised \
              descriptor once the water draw runs (#2142)"
+        );
+    }
+
+    /// #2475 / REN-D20-NEW-01 — a swapchain surface-format change must
+    /// rebuild the WHOLE egui pass (render pass + `Renderer`), not just
+    /// its framebuffers: attaching new image views to a render pass
+    /// built against a different format is
+    /// VUID-VkFramebufferCreateInfo-pAttachments-00880, and
+    /// `srgb_framebuffer` (derived from the format) never gets
+    /// re-evaluated by a framebuffers-only refresh either. Static
+    /// source check — exercising an actual format change needs a real
+    /// swapchain / HDR toggle, unavailable to `cargo test`.
+    #[test]
+    fn egui_pass_rebuilds_fully_on_swapchain_format_change() {
+        let src = production_src();
+
+        let format_check_pos = src
+            .find("pass.format() == self.swapchain_state.format.format")
+            .expect(
+                "the egui resize path must compare the pass's own build format \
+                 against the live swapchain format before choosing the cheap \
+                 framebuffers-only path (#2475)",
+            );
+        let cheap_path_pos = src
+            .find("pass.recreate_framebuffers(")
+            .expect("the format-stable path must still exist");
+        let destroy_pos = src
+            .find("pass.destroy(&self.device);")
+            .expect(
+                "the format-changed arm must destroy the old render pass / \
+                 framebuffers before reconstructing — a bare reassignment would \
+                 leak the raw vk::RenderPass / vk::Framebuffer handles, which \
+                 have no Drop impl (#2475)",
+            );
+        let rebuild_pos = src
+            .find("super::super::egui_pass::EguiPass::new(")
+            .expect("the format-changed arm must reconstruct via EguiPass::new");
+
+        assert!(
+            format_check_pos < cheap_path_pos,
+            "the format comparison must gate the cheap framebuffers-only path"
+        );
+        assert!(
+            format_check_pos < destroy_pos && destroy_pos < rebuild_pos,
+            "the format-changed arm must destroy the old pass BEFORE \
+             reconstructing a new one (#2475)"
         );
     }
 }

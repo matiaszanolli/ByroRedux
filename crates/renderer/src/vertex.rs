@@ -145,6 +145,17 @@ impl Vertex {
     /// `splat_0` carries layers 0–3, `splat_1` carries layers 4–7 (each
     /// as 0–255 unorm bytes). The renderer's `TERRAIN_SPLAT_FLAG` bit on
     /// `GpuInstance.flags` tells the fragment shader to consume them.
+    ///
+    /// `tangent` is the world +X direction (`[1, 0, 0, 1]`), NOT zero
+    /// (#2474 / REN-D19-03). LAND UVs are a regular axis-aligned grid, so
+    /// world +X is always a valid (if not per-vertex-orthogonal) tangent
+    /// direction; `perturbNormal`'s Gram-Schmidt step re-orthogonalizes it
+    /// against the interpolated normal per-fragment, exactly like
+    /// `cell_loader/water.rs`'s flat quad already does. A zero tangent
+    /// here fails `perturbNormal`'s `dot(T, T) > 1e-4` Path-1 gate and
+    /// silently downgrades every TX01 normal-mapped splat layer to the
+    /// screen-space-derivative Path 2, meant for tangent-less synthetic
+    /// geometry — terrain is neither synthetic nor tangent-less.
     pub const fn new_terrain(
         position: [f32; 3],
         color: [f32; 3],
@@ -162,7 +173,7 @@ impl Vertex {
             bone_weights: [0.0, 0.0, 0.0, 0.0],
             splat_weights_0: splat_0,
             splat_weights_1: splat_1,
-            tangent: [0.0, 0.0, 0.0, 0.0],
+            tangent: [1.0, 0.0, 0.0, 1.0],
         }
     }
 
@@ -361,5 +372,34 @@ mod tests {
     fn ui_vertex_offsets_match_struct_layout() {
         assert_eq!(offset_of!(UiVertex, position), 0);
         assert_eq!(offset_of!(UiVertex, uv), 12);
+    }
+
+    /// #2474 / REN-D19-03 — near-field LAND terrain must carry a non-zero
+    /// tangent so `perturbNormal`'s Path-1 gate
+    /// (`dot(vertexTangent.xyz, vertexTangent.xyz) > 1e-4` in
+    /// `include/material_sampling.glsl`) takes the authored-tangent path
+    /// instead of falling through to the screen-space-derivative fallback
+    /// meant for tangent-less synthetic geometry.
+    #[test]
+    fn terrain_vertex_carries_a_nonzero_tangent() {
+        let v = Vertex::new_terrain(
+            [0.0; 3],
+            [1.0; 3],
+            [0.0, 1.0, 0.0],
+            [0.0; 2],
+            [0, 0, 0, 0],
+            [0, 0, 0, 0],
+        );
+        let len_sq: f32 = v.tangent[..3].iter().map(|c| c * c).sum();
+        assert!(
+            len_sq > 1e-4,
+            "terrain tangent must clear the shader's Path-1 gate: len_sq={len_sq}"
+        );
+        assert_eq!(
+            v.tangent,
+            [1.0, 0.0, 0.0, 1.0],
+            "world +X tangent, w=1 — perturbNormal Gram-Schmidt-corrects it \
+             against the per-fragment normal, same construction water.rs uses"
+        );
     }
 }

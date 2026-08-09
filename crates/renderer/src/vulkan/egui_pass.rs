@@ -60,6 +60,19 @@ pub struct EguiPass {
     /// attachment, `loadOp = LOAD` so composite's swapchain write is
     /// preserved.
     render_pass: vk::RenderPass,
+    /// The swapchain surface format `render_pass` (and `renderer`'s
+    /// `srgb_framebuffer` option) were built against. Compared against
+    /// the live swapchain format on resize (#2475 / REN-D20-NEW-01) —
+    /// `recreate_framebuffers` alone is only valid when this still
+    /// matches; a changed format needs the whole pass rebuilt, since
+    /// the render pass's attachment `format` and the gamma-curve
+    /// option are both derived from it.
+    format: vk::Format,
+    /// `in_flight_frames` this pass was constructed with — retained so
+    /// a format-change rebuild (see `format` above) can reconstruct
+    /// with the same value without threading it through the resize
+    /// call chain.
+    in_flight_frames: usize,
     /// One framebuffer per swapchain image, each attaching that
     /// image's view to this render pass.
     framebuffers: Vec<vk::Framebuffer>,
@@ -112,15 +125,40 @@ impl EguiPass {
         Ok(Self {
             renderer,
             render_pass,
+            format: swapchain_format,
+            in_flight_frames,
             framebuffers,
             extent: swapchain_extent,
             pending_free: Vec::new(),
         })
     }
 
+    /// The swapchain surface format this pass's render pass was built
+    /// against. Callers must compare this to the live swapchain format
+    /// before calling [`Self::recreate_framebuffers`] — see that
+    /// method's doc.
+    pub fn format(&self) -> vk::Format {
+        self.format
+    }
+
+    /// `in_flight_frames` this pass was constructed with (see the field
+    /// doc) — needed to reconstruct with [`Self::new`] on a format
+    /// change without threading the value through the resize call chain.
+    pub fn in_flight_frames(&self) -> usize {
+        self.in_flight_frames
+    }
+
     /// Recreate framebuffers + extent for a new swapchain (resize /
-    /// recreate). The render pass itself stays — the swapchain
-    /// format is the same after resize.
+    /// recreate) whose surface FORMAT is unchanged. The render pass
+    /// itself stays, since its attachment format still matches.
+    ///
+    /// Callers must check `format() == <new swapchain format>` first
+    /// (#2475 / REN-D20-NEW-01) — attaching new image views to a
+    /// render pass built against a different format is
+    /// VUID-VkFramebufferCreateInfo-pAttachments-00880, and this
+    /// method does not (cannot, without tearing down `renderer`)
+    /// re-evaluate `srgb_framebuffer`. On a format change, destroy
+    /// this pass and reconstruct with [`Self::new`] instead.
     pub fn recreate_framebuffers(
         &mut self,
         device: &ash::Device,

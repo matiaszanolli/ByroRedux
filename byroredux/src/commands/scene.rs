@@ -609,7 +609,7 @@ impl ConsoleCommand for MatSetCommand {
         const USAGE: &str = "usage: mat.set <entity_id> <field> <value...>\n  \
             fields: metalness|roughness|alpha|glossiness|emissive_mult|specular_strength|\
             env_map_scale|ior (1 value), color|diffuse_color|emissive_color|specular_color \
-            (3 values), material_kind (1 int)";
+            (3 values), material_kind|material_flags (1 int)";
         let mut parts = args.split_whitespace();
         let Some(id_str) = parts.next() else {
             return CommandOutput::line(USAGE);
@@ -673,6 +673,30 @@ impl ConsoleCommand for MatSetCommand {
                     }
                 }
             }
+            // #2477 (REN-D21-2026-08-07-01) — the Cornell harness had no
+            // way to reach `effect_shader_flags` (→ `GpuMaterial.
+            // material_flags`) live, so `MAT_FLAG_PBR_BSDF` and every
+            // other `material_flag::*` bit (translucency, model-space
+            // normals, …) could only be probed by rebuilding a scene
+            // constructor, not swept from the console like every other
+            // field. Raw `u32` — same convention as `material_kind`
+            // above — so any bit combination in
+            // `byroredux_renderer::vulkan::material::material_flag` is
+            // reachable, e.g. `mat.set <id> material_flags 32` sets
+            // MAT_FLAG_PBR_BSDF (1 << 5).
+            "material_flags" | "flags" => {
+                if vals.len() != 1 {
+                    Err(format!("expected 1 value, got {}", vals.len()))
+                } else {
+                    match vals[0].parse::<u32>() {
+                        Ok(f) => {
+                            m.effect_shader_flags = f;
+                            Ok(f.to_string())
+                        }
+                        Err(_) => Err(format!("`{}` is not an integer", vals[0])),
+                    }
+                }
+            }
             other => Err(format!("unknown field `{other}`")),
         };
 
@@ -709,5 +733,49 @@ impl ConsoleCommand for RagdollCommand {
             )),
             Err(e) => CommandOutput::line(format!("ragdoll: {e}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod mat_set_tests {
+    use super::*;
+
+    /// Regression for #2477 (REN-D21-2026-08-07-01): `mat.set` had no arm
+    /// reaching `Material::effect_shader_flags`, so `MAT_FLAG_PBR_BSDF`
+    /// (and every other `material_flag::*` bit) could only be probed by
+    /// rebuilding a scene constructor, not swept live like every other
+    /// field. `material_flags` (raw `u32`, same convention as
+    /// `material_kind`) must write straight through.
+    #[test]
+    fn material_flags_arm_writes_effect_shader_flags() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Material::default());
+
+        let out = MatSetCommand.execute(&world, &format!("{e} material_flags 32"));
+        let joined = out.lines.join("\n");
+        assert!(
+            joined.contains("material_flags = 32"),
+            "got: {joined}"
+        );
+
+        let q = world.query::<Material>().unwrap();
+        assert_eq!(
+            q.get(e).unwrap().effect_shader_flags,
+            32,
+            "mat.set material_flags must write straight into \
+             Material::effect_shader_flags (#2477)"
+        );
+    }
+
+    #[test]
+    fn material_flags_arm_rejects_non_integer() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, Material::default());
+
+        let out = MatSetCommand.execute(&world, &format!("{e} material_flags not_a_number"));
+        let joined = out.lines.join("\n");
+        assert!(joined.contains("not an integer"), "got: {joined}");
     }
 }

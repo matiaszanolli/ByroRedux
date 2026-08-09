@@ -298,6 +298,26 @@ pub(crate) fn setup_cornell_scene(
             &format!("metalness_{i}"),
         );
     }
+    // #2477 / REN-D21-2026-08-07-01 — same metalness sweep, one row
+    // further back, but with `MAT_FLAG_PBR_BSDF` set so it renders
+    // through `disneyDiffuseSplit` instead of legacy Lambert. Side by
+    // side with `metalness_*` above, the two rows should read as
+    // subtly different (Burley vs. Lambert diffuse falloff) rather
+    // than identical — identical would mean the Disney branch is
+    // silently not engaging. `mat.set <id> material_flags <bits>`
+    // clears/re-sets the bit live for direct comparison.
+    for (i, &x) in xs.iter().enumerate() {
+        let m = i as f32 / (xs.len() - 1) as f32;
+        spawn_object(
+            world,
+            probe,
+            neutral,
+            Vec3::new(x, 0.45, 4.3),
+            Quat::IDENTITY,
+            pbr_bsdf([0.9, 0.85, 0.55], m, 0.35),
+            &format!("metalness_bsdf_{i}"),
+        );
+    }
 
     // ── Glass probes ────────────────────────────────────────────────
     // Glass is OPAQUE (no AlphaBlend): the IOR refraction ray IS the
@@ -451,6 +471,14 @@ fn matte(color: [f32; 3]) -> Material {
 }
 
 /// Explicit PBR probe with caller-chosen metalness/roughness.
+///
+/// #2477 / REN-D21-2026-08-07-01 — this constructor, like every other
+/// probe in the harness, leaves `effect_shader_flags` at
+/// `Material::default()`'s `0`, so `MAT_FLAG_PBR_BSDF` is clear and the
+/// shared direct-lighting BRDF (`include/lighting.glsl`,
+/// `triangle.frag`) takes the legacy Lambert diffuse branch, not the
+/// Disney (`disneyDiffuseSplit`) branch every BGSM/BGEM-sourced game
+/// surface takes. See [`pbr_bsdf`] for the Disney-branch sibling.
 fn pbr(color: [f32; 3], metalness: f32, roughness: f32) -> Material {
     Material {
         diffuse_color: color,
@@ -458,6 +486,21 @@ fn pbr(color: [f32; 3], metalness: f32, roughness: f32) -> Material {
         roughness,
         ..Default::default()
     }
+}
+
+/// Disney-BSDF sibling of [`pbr`] — sets `MAT_FLAG_PBR_BSDF` so the
+/// shared direct-lighting BRDF takes the `disneyDiffuseSplit` branch
+/// instead of legacy Lambert, matching every real BGSM/BGEM-sourced
+/// surface (#1352 sets this bit for all `is_pbr` content). Without a
+/// probe on this branch, a regression isolated to `disneyDiffuseSplit`
+/// (or its sheen/subsurface lobe) bisects clean against Cornell and only
+/// reproduces in-game — the false-all-clear failure mode #1942 fixed for
+/// the sun path (#2477 / REN-D21-2026-08-07-01).
+fn pbr_bsdf(color: [f32; 3], metalness: f32, roughness: f32) -> Material {
+    let mut material = pbr(color, metalness, roughness);
+    material.effect_shader_flags |=
+        byroredux_renderer::vulkan::material::material_flag::PBR_BSDF;
+    material
 }
 
 /// `MATERIAL_KIND_GLASS` probe — forces the glass-smooth roughness so the
@@ -873,5 +916,36 @@ mod tests {
         let material = fire_refraction(0.6);
         assert_eq!(material.material_kind, MATERIAL_KIND_FIRE_REFRACTION);
         assert_eq!(material.ior, 0.6);
+    }
+
+    /// Regression for #2477 (REN-D21-2026-08-07-01): every OTHER Cornell
+    /// material constructor leaves `effect_shader_flags` at
+    /// `Material::default()`'s `0`, so `MAT_FLAG_PBR_BSDF` stays clear and
+    /// the shared direct-lighting BRDF takes the legacy Lambert branch —
+    /// never the Disney (`disneyDiffuseSplit`) branch every real
+    /// BGSM/BGEM-sourced surface takes. `pbr_bsdf` must set the bit so at
+    /// least one probe row exercises that branch.
+    #[test]
+    fn pbr_bsdf_material_sets_the_disney_bsdf_flag() {
+        use byroredux_renderer::vulkan::material::material_flag::PBR_BSDF;
+
+        // Every other constructor: flag clear (the pre-fix, still-correct
+        // state for the legacy-Lambert probes).
+        assert_eq!(matte(WHITE).effect_shader_flags & PBR_BSDF, 0);
+        assert_eq!(pbr([0.9, 0.85, 0.55], 0.5, 0.35).effect_shader_flags & PBR_BSDF, 0);
+
+        // The Disney sibling must set it, and must otherwise match `pbr`'s
+        // metalness/roughness/color plumbing exactly.
+        let plain = pbr([0.9, 0.85, 0.55], 0.5, 0.35);
+        let bsdf = pbr_bsdf([0.9, 0.85, 0.55], 0.5, 0.35);
+        assert_ne!(
+            bsdf.effect_shader_flags & PBR_BSDF,
+            0,
+            "pbr_bsdf must set MAT_FLAG_PBR_BSDF so the Cornell harness can \
+             reach the Disney diffuse branch at all (#2477)"
+        );
+        assert_eq!(bsdf.metalness, plain.metalness);
+        assert_eq!(bsdf.roughness, plain.roughness);
+        assert_eq!(bsdf.diffuse_color, plain.diffuse_color);
     }
 }

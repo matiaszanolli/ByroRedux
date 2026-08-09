@@ -170,10 +170,26 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&MetricsSnapshotView>) {
     ui.add(egui::ProgressBar::new(vram_ratio as f32));
 
     // GPU passes
+    //
+    // #2476 / REN-D20-NEW-02 — `GpuTimerSnapshot`'s own doc forbids
+    // summing its fields into an unqualified "total GPU ms": every
+    // bracket's START is stamped at TOP_OF_PIPE, so queue-drain time
+    // from prior in-flight work is absorbed into whichever bracket
+    // happens to be starting when it drains, and that overlapping
+    // wait can double-count across adjacent brackets. The label below
+    // carries that caveat instead of presenting the sum as a precise
+    // wall-GPU-time figure the adjacent CPU Σ could be compared
+    // against 1:1.
     ui.add_space(6.0);
     ui.separator();
     let gpu_total: f32 = m.gpu_pass_ms.iter().map(|(_, v)| *v).sum();
-    ui.label(egui::RichText::new(format!("GPU passes — Σ {:.3} ms", gpu_total)).strong());
+    ui.label(egui::RichText::new(format!("GPU passes — Σ upper bound {:.3} ms", gpu_total)).strong())
+        .on_hover_text(
+            "Each bracket's START is stamped at TOP_OF_PIPE, so queue-drain \
+             time from prior in-flight work can be absorbed into it. This sum \
+             is a ceiling, not a precise attribution — overlapping queue-wait \
+             may be double-counted across adjacent brackets.",
+        );
     if m.gpu_pass_ms.is_empty() {
         ui.label("(none reported)");
     } else {
