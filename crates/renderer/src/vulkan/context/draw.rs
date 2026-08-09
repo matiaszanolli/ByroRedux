@@ -1126,6 +1126,28 @@ pub(super) fn needs_two_sided_blend_split(b: &DrawBatch) -> bool {
     is_blend && b.two_sided && b.order_dependent_glass
 }
 
+/// Whether the geometry pass should dispatch via `cmd_draw_indexed_indirect`
+/// this frame, or fall back to direct `cmd_draw_indexed` per batch.
+///
+/// All three inputs must hold: the global vertex/index buffer must be bound
+/// (`global_bound` — indirect groups index into it by offset, so there's no
+/// per-mesh fallback for it), the device must support multi-draw-indirect,
+/// and this frame's indirect-buffer upload must have actually succeeded
+/// (`indirect_upload_ok`). The third condition is #2504 /
+/// D12-2026-08-07-02: without it, a failed `upload_indirect_draws` (rare —
+/// requires a mapped-slice or flush failure) still left the draw loop
+/// issuing `cmd_draw_indexed_indirect` over a buffer holding a stale or
+/// (on a slot's first use) uninitialized command list — the GPU fetches
+/// and executes `index_count`/`vertex_offset` from it, so that's a
+/// page-fault/TDR risk, not a misrender.
+pub(super) fn should_use_indirect_draws(
+    global_bound: bool,
+    multi_draw_indirect_supported: bool,
+    indirect_upload_ok: bool,
+) -> bool {
+    global_bound && multi_draw_indirect_supported && indirect_upload_ok
+}
+
 /// All per-frame inputs consumed by [`VulkanContext::draw_frame`].
 ///
 /// Groups the (formerly 22) loose `draw_frame` arguments into one struct so
@@ -2740,9 +2762,22 @@ impl VulkanContext {
                 vertex_offset: b.global_vertex_offset,
                 first_instance: b.first_instance,
             }));
-            self.scene_buffers
+            // #2504 / D12-2026-08-07-02 — unlike the neighbouring data-SSBO
+            // uploads above (stale content there only misrenders), the
+            // indirect buffer's contents are fetched and executed by the
+            // GPU. A failed upload must force the direct-draw fallback for
+            // this frame in `record_geometry_pass` (`use_indirect` reads
+            // `indirect_upload_ok`) rather than let `cmd_draw_indexed_
+            // indirect` read stale or uninitialized commands.
+            self.indirect_upload_ok = self
+                .scene_buffers
                 .upload_indirect_draws(&self.device, frame, indirect_scratch)
-                .unwrap_or_else(|e| log::warn!("Failed to upload indirect draws: {e}"));
+                .map_err(|e| {
+                    log::warn!(
+                        "Failed to upload indirect draws: {e} — falling back to direct draws this frame"
+                    )
+                })
+                .is_ok();
         }
         t.ssbo_build_ns = ssbo_t0.elapsed().as_nanos() as u64;
 
@@ -2977,7 +3012,7 @@ impl VulkanContext {
             // sync for color-attachment writes; descriptor-image
             // atomic writes need an explicit barrier. Skipped when
             // the accumulator failed init.
-            if let Err(e) = self.record_post_passes(
+            self.record_post_passes(
                 cmd,
                 frame,
                 img,
@@ -3001,12 +3036,7 @@ impl VulkanContext {
                 fsr_frame,
                 underwater,
                 image_space_modifier,
-            ) {
-                let _ = self
-                    .frame_sync
-                    .recreate_image_available_for_frame(&self.device, frame);
-                return Err(e);
-            }
+            );
 
             // Debug-UI overlay (Phase 4 of the debug-UI plan).
             // The presentation pass (FSR 3.1 tail, `presentation.rs`) —
@@ -4089,5 +4119,37 @@ mod needs_two_sided_blend_split_tests {
             "identical pipeline + depth state, differing only in glass-ness — \
              the merge key must still split them"
         );
+    }
+}
+
+#[cfg(test)]
+mod should_use_indirect_draws_tests {
+    //! #2504 / D12-2026-08-07-02 — a failed indirect-buffer upload must
+    //! force the direct-draw fallback for that frame, not leave
+    //! `cmd_draw_indexed_indirect` reading a stale/uninitialized buffer.
+    use super::*;
+
+    /// All three prerequisites hold — the happy path that actually reaches
+    /// `cmd_draw_indexed_indirect`.
+    #[test]
+    fn true_when_bound_supported_and_upload_succeeded() {
+        assert!(should_use_indirect_draws(true, true, true));
+    }
+
+    /// The regression case: everything else says "go indirect" but this
+    /// frame's upload failed. Must fall back to direct draws.
+    #[test]
+    fn false_when_upload_failed_even_if_otherwise_eligible() {
+        assert!(!should_use_indirect_draws(true, true, false));
+    }
+
+    #[test]
+    fn false_when_global_buffer_not_bound() {
+        assert!(!should_use_indirect_draws(false, true, true));
+    }
+
+    #[test]
+    fn false_when_device_lacks_multi_draw_indirect() {
+        assert!(!should_use_indirect_draws(true, false, true));
     }
 }

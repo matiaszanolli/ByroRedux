@@ -6,7 +6,7 @@
 
 use super::super::pipeline::{gamebryo_to_vk_compare_op, PipelineKey};
 use super::super::water::WaterDrawCommand;
-use super::draw::{group_state, needs_two_sided_blend_split, DrawBatch};
+use super::draw::{group_state, needs_two_sided_blend_split, should_use_indirect_draws, DrawBatch};
 use super::{DrawCommand, VulkanContext};
 use ash::vk;
 
@@ -198,7 +198,16 @@ impl VulkanContext {
                 false
             };
 
-            let use_indirect = global_bound && self.device_caps.multi_draw_indirect_supported;
+            // #2504 / D12-2026-08-07-02 — `indirect_upload_ok` is set fresh
+            // each frame right after `upload_indirect_draws` in `draw.rs`;
+            // `false` means this frame's upload failed, so fall back to
+            // direct draws rather than issue `cmd_draw_indexed_indirect`
+            // over a stale/uninitialized buffer.
+            let use_indirect = should_use_indirect_draws(
+                global_bound,
+                self.device_caps.multi_draw_indirect_supported,
+                self.indirect_upload_ok,
+            );
             let indirect_buffer = self.scene_buffers.indirect_buffer(frame);
             let indirect_stride = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32;
 
@@ -526,14 +535,27 @@ impl VulkanContext {
                     );
                     for wc in water_commands {
                         if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
-                            let vb = mesh
-                                .vertex_buffer
-                                .as_ref()
-                                .expect("water mesh requires a per-mesh vertex buffer");
-                            let ib = mesh
-                                .index_buffer
-                                .as_ref()
-                                .expect("water mesh requires a per-mesh index buffer");
+                            // #2505 / D12-2026-08-07-03 — no live path
+                            // registers a water plane global-only today
+                            // (mirrors the `dispatch_direct` closure above,
+                            // #956 / REN-D5-NEW-05), but the precondition
+                            // is a call-site convention, not a type-level
+                            // guarantee. A future WATAL water-LOD tier that
+                            // did would otherwise panic mid-render-pass
+                            // with `cmd` still open — skip gracefully
+                            // instead.
+                            let (Some(vb), Some(ib)) =
+                                (mesh.vertex_buffer.as_ref(), mesh.index_buffer.as_ref())
+                            else {
+                                static ONCE: std::sync::Once = std::sync::Once::new();
+                                ONCE.call_once(|| {
+                                    log::warn!(
+                                        "Water mesh has no per-mesh vertex/index buffer \
+                                         (global-only) — skipping water draw. #2505"
+                                    );
+                                });
+                                continue;
+                            };
                             self.device
                                 .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
                             self.device.cmd_bind_index_buffer(
@@ -570,67 +592,83 @@ impl VulkanContext {
             // before the draw.
             if let (Some(idx), Some(ui_quad)) = (ui_instance_idx, self.ui_quad_handle) {
                 if let Some(mesh) = self.mesh_registry.get(ui_quad) {
-                    use super::super::pipeline::UI_PIPELINE_DYNAMIC_STATES;
-                    const _UI_OVERLAY_DEFENSIVE_STATE_INVARIANT: () = {
-                        // Update the explicit cmd_set_* calls below to cover
-                        // every state in this list when the count changes.
-                        assert!(
-                            UI_PIPELINE_DYNAMIC_STATES.len() == 2,
-                            "UI overlay path covers VIEWPORT + SCISSOR only — \
-                             extend it before growing UI_PIPELINE_DYNAMIC_STATES",
+                    // #2505 / D12-2026-08-07-03 — checked before any
+                    // pipeline/dynamic-state commands are recorded; see the
+                    // `else` arm below for why.
+                    if let Some((vb, ib)) =
+                        mesh.vertex_buffer.as_ref().zip(mesh.index_buffer.as_ref())
+                    {
+                        use super::super::pipeline::UI_PIPELINE_DYNAMIC_STATES;
+                        const _UI_OVERLAY_DEFENSIVE_STATE_INVARIANT: () = {
+                            // Update the explicit cmd_set_* calls below to cover
+                            // every state in this list when the count changes.
+                            assert!(
+                                UI_PIPELINE_DYNAMIC_STATES.len() == 2,
+                                "UI overlay path covers VIEWPORT + SCISSOR only — \
+                                 extend it before growing UI_PIPELINE_DYNAMIC_STATES",
+                            );
+                        };
+                        self.device.cmd_bind_pipeline(
+                            cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            self.pipeline_ui,
                         );
-                    };
-                    self.device.cmd_bind_pipeline(
-                        cmd,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        self.pipeline_ui,
-                    );
-                    // Defensive re-set of dynamic viewport/scissor after the
-                    // UI pipeline bind (#133). The opaque/blend pipelines
-                    // all declare both as VK_DYNAMIC_STATE, so the state set
-                    // at the start of the render pass is inherited —
-                    // today. A future UI variant that rendered at a
-                    // different extent (e.g. scaled Scaleform overlay on
-                    // a non-native resolution) would silently use the
-                    // inherited values. Cheap two-command insurance.
-                    //
-                    // REN-D5-NEW-04 (audit 2026-05-09) flagged this as
-                    // "redundant" because the values match the
-                    // inherited ones every frame today. Keeping the
-                    // re-set is intentional — the alternative is to
-                    // gate it on "does this UI variant change extent"
-                    // which moves a one-liner of pre-bind state into
-                    // a per-variant capability check, more code than
-                    // the two `cmd_set_*` calls cost. The audit
-                    // recommendation is acknowledged + declined.
-                    let viewports = [vk::Viewport {
-                        x: 0.0,
-                        y: 0.0,
-                        width: self.frame_extents.render.width as f32,
-                        height: self.frame_extents.render.height as f32,
-                        min_depth: 0.0,
-                        max_depth: 1.0,
-                    }];
-                    self.device.cmd_set_viewport(cmd, 0, &viewports);
-                    let scissors = [vk::Rect2D {
-                        offset: vk::Offset2D { x: 0, y: 0 },
-                        extent: self.frame_extents.render,
-                    }];
-                    self.device.cmd_set_scissor(cmd, 0, &scissors);
-                    let vb = mesh
-                        .vertex_buffer
-                        .as_ref()
-                        .expect("UI mesh requires a per-mesh vertex buffer");
-                    let ib = mesh
-                        .index_buffer
-                        .as_ref()
-                        .expect("UI mesh requires a per-mesh index buffer");
-                    self.device
-                        .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
-                    self.device
-                        .cmd_bind_index_buffer(cmd, ib.buffer, 0, vk::IndexType::UINT32);
-                    self.device
-                        .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, idx);
+                        // Defensive re-set of dynamic viewport/scissor after the
+                        // UI pipeline bind (#133). The opaque/blend pipelines
+                        // all declare both as VK_DYNAMIC_STATE, so the state set
+                        // at the start of the render pass is inherited —
+                        // today. A future UI variant that rendered at a
+                        // different extent (e.g. scaled Scaleform overlay on
+                        // a non-native resolution) would silently use the
+                        // inherited values. Cheap two-command insurance.
+                        //
+                        // REN-D5-NEW-04 (audit 2026-05-09) flagged this as
+                        // "redundant" because the values match the
+                        // inherited ones every frame today. Keeping the
+                        // re-set is intentional — the alternative is to
+                        // gate it on "does this UI variant change extent"
+                        // which moves a one-liner of pre-bind state into
+                        // a per-variant capability check, more code than
+                        // the two `cmd_set_*` calls cost. The audit
+                        // recommendation is acknowledged + declined.
+                        let viewports = [vk::Viewport {
+                            x: 0.0,
+                            y: 0.0,
+                            width: self.frame_extents.render.width as f32,
+                            height: self.frame_extents.render.height as f32,
+                            min_depth: 0.0,
+                            max_depth: 1.0,
+                        }];
+                        self.device.cmd_set_viewport(cmd, 0, &viewports);
+                        let scissors = [vk::Rect2D {
+                            offset: vk::Offset2D { x: 0, y: 0 },
+                            extent: self.frame_extents.render,
+                        }];
+                        self.device.cmd_set_scissor(cmd, 0, &scissors);
+                        self.device
+                            .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
+                        self.device
+                            .cmd_bind_index_buffer(cmd, ib.buffer, 0, vk::IndexType::UINT32);
+                        self.device
+                            .cmd_draw_indexed(cmd, mesh.index_count, 1, 0, 0, idx);
+                    } else {
+                        // #2505 / D12-2026-08-07-03 — no live path registers
+                        // the UI quad global-only today (mirrors the
+                        // water-loop guard above and `dispatch_direct`'s
+                        // existing skip, #956 / REN-D5-NEW-05), but the
+                        // precondition is a call-site convention, not a
+                        // type-level guarantee. Checked before any
+                        // pipeline/dynamic-state commands are recorded, so
+                        // a missing buffer skips the whole overlay cleanly
+                        // instead of panicking mid-render-pass.
+                        static ONCE: std::sync::Once = std::sync::Once::new();
+                        ONCE.call_once(|| {
+                            log::warn!(
+                                "UI overlay mesh has no per-mesh vertex/index buffer \
+                                 (global-only) — skipping UI draw. #2505"
+                            );
+                        });
+                    }
                 }
             }
 

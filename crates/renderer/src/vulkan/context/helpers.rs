@@ -45,6 +45,67 @@ pub(super) fn find_depth_format(
     anyhow::bail!("No supported depth format found (tried D32_SFLOAT, D16_UNORM)")
 }
 
+/// Assert every G-buffer color attachment format supports `COLOR_ATTACHMENT`
+/// in `optimal_tiling_features` on this device (plus `COLOR_ATTACHMENT_BLEND`
+/// for the four formats the transparent/water blend pipeline writes with
+/// blending enabled — HDR color, raw_indirect, albedo, and the FSR masks;
+/// see `pipeline.rs`'s `attachments` array in the blend-pipeline builder).
+///
+/// Every format here carries mandatory `COLOR_ATTACHMENT` support per the
+/// Vulkan mandatory-format table *except* `NORMAL_FORMAT` (`R16G16_SNORM`,
+/// #275): 16-bit SNORM formats are mandated only for `SAMPLED_IMAGE` /
+/// `SAMPLED_IMAGE_FILTER_LINEAR` / `BLIT_SRC` / `VERTEX_BUFFER`, not
+/// `COLOR_ATTACHMENT`. `find_depth_format` above already queries before
+/// committing to a depth format (#948 / REN-D4-NEW-02); this applies the
+/// same discipline to the color side instead of discovering a missing
+/// feature as a generic `VK_ERROR_FORMAT_NOT_SUPPORTED` deep inside
+/// `GBuffer::new`. REN-D11-2026-08-07-05 / #2502.
+pub(super) fn check_gbuffer_color_formats(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    formats: GBufferFormats,
+) -> Result<()> {
+    // (format, name, needs COLOR_ATTACHMENT_BLEND)
+    let checks = [
+        (formats.color_format, "color (HDR)", true),
+        (formats.normal_format, "normal", false),
+        (formats.motion_format, "motion", false),
+        (formats.mesh_id_format, "mesh_id", false),
+        (formats.raw_indirect_format, "raw_indirect", true),
+        (formats.albedo_format, "albedo", true),
+        (
+            formats.fsr_mask_format,
+            "fsr mask (reactive/transparency)",
+            true,
+        ),
+    ];
+
+    for (format, name, needs_blend) in checks {
+        let features = unsafe {
+            // SAFETY: pure format-capability query on the live `instance`;
+            // `physical_device` was enumerated from that instance and
+            // outlives this call.
+            instance.get_physical_device_format_properties(physical_device, format)
+        }
+        .optimal_tiling_features;
+
+        if !features.contains(vk::FormatFeatureFlags::COLOR_ATTACHMENT) {
+            anyhow::bail!(
+                "G-buffer '{name}' format {format:?} does not support \
+                 COLOR_ATTACHMENT on this device"
+            );
+        }
+        if needs_blend && !features.contains(vk::FormatFeatureFlags::COLOR_ATTACHMENT_BLEND) {
+            anyhow::bail!(
+                "G-buffer '{name}' format {format:?} does not support \
+                 COLOR_ATTACHMENT_BLEND on this device"
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// The nine attachment formats the main render pass writes — eight
 /// G-buffer color targets (the two FSR masks share one format) plus
 /// depth. Groups the formats that travel together into

@@ -11,7 +11,6 @@ use super::super::descriptors::memory_barrier;
 use super::super::frame_upscaler::{FsrFrameParameters, UpscaleDispatchInputs};
 use super::super::presentation::{ImageSpaceModifierView, PresentationFrame};
 use super::{SkyParams, VulkanContext};
-use anyhow::Result;
 use ash::vk;
 
 /// Inputs for [`VulkanContext::record_volumetrics_pass`] (#2258 / TD1-080).
@@ -164,6 +163,18 @@ impl VulkanContext {
     /// `unsafe` scope and `# Safety` doc comment instead of one covering
     /// the whole function, since that's the granularity the underlying
     /// `*.dispatch()` / `*.record()` calls are actually unsafe at.
+    ///
+    /// Deliberately infallible (`()`, not `Result<()>` — #2503 /
+    /// D12-2026-08-07-01): every one of the eight `record_*_pass` helpers
+    /// below returns `()`, and `record_upscale_pass` in particular *must*
+    /// stay that way. It runs after `svgf.dispatch`/`taa.dispatch` have
+    /// latched `dispatched_this_frame`, so an error escaping from here to
+    /// `draw_frame` would skip `queue_submit` *and* `mark_frame_completed`,
+    /// leaving those latches set for a dispatch that never reached the GPU
+    /// — stale-history / ghosting on the next frame (#2146). Keeping this
+    /// signature infallible turns any future `?` added inside one of the
+    /// eight helpers into a compile error at the point of introduction,
+    /// rather than a silent reopening of that hazard.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_post_passes(
         &mut self,
@@ -190,7 +201,7 @@ impl VulkanContext {
         fsr_frame: Option<FsrFrameParameters>,
         underwater: [f32; 4],
         image_space_modifier: ImageSpaceModifierView,
-    ) -> Result<()> {
+    ) {
         self.record_svgf_pass(cmd, frame);
         self.record_caustic_splat_pass(cmd, frame, camera_static);
         self.record_volumetrics_pass(
@@ -220,7 +231,6 @@ impl VulkanContext {
         self.record_composite_pass(cmd, frame);
         self.record_upscale_pass(cmd, frame, fsr_frame);
         self.record_presentation_pass(cmd, frame, img, underwater, image_space_modifier);
-        Ok(())
     }
 
     /// Water-caustic barrier + SVGF temporal accumulation (#2258 /

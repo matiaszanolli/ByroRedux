@@ -1128,6 +1128,15 @@ pub struct VulkanContext {
     /// per-frame `Vec::collect()` allocation that was untracked by the
     /// scratch-buffer pattern.
     indirect_draws_scratch: Vec<ash::vk::DrawIndexedIndirectCommand>,
+    /// Set each frame right after `upload_indirect_draws` (`true` on
+    /// success or a hash-matched skip, `false` on upload failure).
+    /// `record_geometry_pass` ANDs this into `use_indirect` so a failed
+    /// upload forces the direct-draw fallback for the whole frame instead
+    /// of issuing `cmd_draw_indexed_indirect` over a buffer that still
+    /// holds a stale or (on a slot's first use) uninitialized layout —
+    /// GPU page-fault / TDR class, not a misrender. #2504 /
+    /// D12-2026-08-07-02.
+    indirect_upload_ok: bool,
     /// Per-frame scratch for the skin-compute dispatch walker
     /// (#1133 / PERF-D7-NEW-01). Pre-fix the skinned hot path
     /// allocated 3 fresh containers per frame; on Prospector that's
@@ -1625,6 +1634,27 @@ impl VulkanContext {
 
         // 6. Query supported depth format
         let depth_format = find_depth_format(&vk_instance, physical_device)?;
+
+        // 6b. Every G-buffer color format is a hard-coded const (unlike
+        // depth, which is queried above); assert up front that this device
+        // actually supports COLOR_ATTACHMENT (+ COLOR_ATTACHMENT_BLEND
+        // where blended) for all of them instead of failing later with a
+        // generic "Failed to create gb_normal image" deep inside
+        // `GBuffer::new`. #2502 / REN-D11-2026-08-07-05.
+        check_gbuffer_color_formats(
+            &vk_instance,
+            physical_device,
+            helpers::GBufferFormats {
+                color_format: HDR_FORMAT,
+                normal_format: NORMAL_FORMAT,
+                motion_format: MOTION_FORMAT,
+                mesh_id_format: MESH_ID_FORMAT,
+                raw_indirect_format: RAW_INDIRECT_FORMAT,
+                albedo_format: ALBEDO_FORMAT,
+                fsr_mask_format: FSR_MASK_FORMAT,
+                depth_format,
+            },
+        )?;
 
         // 7. Logical device + queues (enables RT extensions when available)
         let (device, raw_graphics_queue, raw_present_queue) = device::create_logical_device(
@@ -2879,6 +2909,7 @@ impl VulkanContext {
             previous_models_scratch: Vec::new(),
             batches_scratch: Vec::new(),
             indirect_draws_scratch: Vec::new(),
+            indirect_upload_ok: true,
             skin_dispatch_seen_scratch: std::collections::HashSet::new(),
             skin_dispatches_scratch: Vec::new(),
             skin_first_sight_builds_scratch: Vec::new(),
@@ -3795,11 +3826,11 @@ impl Drop for VulkanContext {
 
 // Helper functions are in helpers.rs — use helpers:: prefix.
 use helpers::{
-    allocate_command_buffers, create_command_pool, create_depth_history_sampler,
-    create_depth_resources, create_main_framebuffers, create_render_pass, create_transfer_pool,
-    destroy_depth_resources, destroy_main_framebuffers, destroy_render_pass_pipelines,
-    find_depth_format, init_depth_history_layout, load_or_create_pipeline_cache,
-    save_pipeline_cache,
+    allocate_command_buffers, check_gbuffer_color_formats, create_command_pool,
+    create_depth_history_sampler, create_depth_resources, create_main_framebuffers,
+    create_render_pass, create_transfer_pool, destroy_depth_resources, destroy_main_framebuffers,
+    destroy_render_pass_pipelines, find_depth_format, init_depth_history_layout,
+    load_or_create_pipeline_cache, save_pipeline_cache,
 };
 
 #[cfg(test)]
