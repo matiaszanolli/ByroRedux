@@ -622,10 +622,11 @@ fn build_pipeline(
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
     // SRC_ALPHA / ONE_MINUS_SRC_ALPHA blend on HDR (attachment 0).
-    // Attachments 1..6 are write-masked off: water never updates
+    // Attachments 1..=5 are write-masked off: water never updates
     // the G-buffer (normal / motion / mesh_id / raw_indirect /
-    // albedo / reservoir) so SVGF and motion-vector reprojection see
-    // only the opaque pass behind the water.
+    // albedo) so SVGF and motion-vector reprojection see only the
+    // opaque pass behind the water. Attachments 6 and 7 (the FSR
+    // masks) are written — see below.
     let hdr_blend = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
         .blend_enable(true)

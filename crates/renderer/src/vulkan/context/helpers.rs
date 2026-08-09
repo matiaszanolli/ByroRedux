@@ -42,12 +42,13 @@ pub(super) fn find_depth_format(
         }
     }
 
-    anyhow::bail!("No supported depth format found (tried D32, D32S8, D24S8, D16)")
+    anyhow::bail!("No supported depth format found (tried D32_SFLOAT, D16_UNORM)")
 }
 
-/// The seven attachment formats the main render pass writes — the six
-/// G-buffer color targets plus depth. Groups the formats that travel
-/// together into [`create_render_pass`].
+/// The nine attachment formats the main render pass writes — eight
+/// G-buffer color targets (the two FSR masks share one format) plus
+/// depth. Groups the formats that travel together into
+/// [`create_render_pass`].
 #[derive(Clone, Copy)]
 pub(super) struct GBufferFormats {
     /// HDR color (attachment 0).
@@ -281,7 +282,7 @@ pub(super) fn create_render_pass(
 
 /// Create one main framebuffer per frame-in-flight slot. Each framebuffer
 /// binds that slot's HDR + normal + motion + mesh_id + raw_indirect +
-/// albedo views, plus the shared depth view.
+/// albedo views + the two FSR masks, plus the shared depth view.
 ///
 /// All the color view slices must have the same length (MAX_FRAMES_IN_FLIGHT).
 /// The per-frame G-buffer color views (parallel slices, each of length
