@@ -15,7 +15,6 @@ use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3, NiTransform};
 
 use super::super::{ImportedBone, ImportedSkin};
-use super::*;
 
 pub fn extract_skin_ni_tri_shape(
     scene: &NifScene,
@@ -451,7 +450,11 @@ pub fn decode_sse_skin_payload(scene: &NifScene, shape: &BsTriShape) -> Option<S
     let partition_idx = partition_ref.index()?;
     let partition = scene.get_as::<crate::blocks::skin::NiSkinPartition>(partition_idx)?;
     let buffer = partition.global_vertex_data.as_ref()?;
-    let decoded = decode_sse_packed_buffer(buffer)?;
+    // BSDynamicTriShape keeps positions outside the partition buffer,
+    // so its descriptor legitimately has VF_VERTEX clear even though
+    // the packed skin lanes are present (#2576). Use the same
+    // shape-aware decoder as geometry reconstruction.
+    let decoded = super::sse_recon::decode_sse_shape_buffer(buffer, shape)?;
     if decoded.bone_weights.is_empty() {
         // Buffer was decoded but VF_SKINNED was clear — nothing to
         // hand back. The caller treats this the same as "no payload"

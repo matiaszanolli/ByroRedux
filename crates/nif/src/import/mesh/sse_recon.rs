@@ -83,22 +83,9 @@ pub fn try_reconstruct_sse_geometry(
     let buffer = partition.global_vertex_data.as_ref()?;
 
     // Decode the global buffer into Y-up positions / normals / UVs /
-    // colors. Per-vertex skin payload is also captured by the inline
-    // parser at `tri_shape.rs`, but reconstructing the skin palette
-    // from the partition's own bone_indices/vertex_weights is a
-    // follow-up — see commit message.
-    let external_positions = (!shape.vertices.is_empty()).then_some(shape.vertices.as_slice());
-    let external_bitangent_x = match &shape.kind {
-        BsTriShapeKind::Dynamic { bitangent_x } if !bitangent_x.is_empty() => {
-            Some(bitangent_x.as_slice())
-        }
-        _ => None,
-    };
-    let decoded = decode_sse_packed_buffer_with_external_positions(
-        buffer,
-        external_positions,
-        external_bitangent_x,
-    )?;
+    // colors, combining BSDynamicTriShape's external position lanes
+    // with packed attributes when needed.
+    let decoded = decode_sse_shape_buffer(buffer, shape)?;
 
     // Concatenate partition triangles, remapping each partition-local
     // index through the partition's vertex_map.
@@ -210,6 +197,32 @@ pub struct DecodedPackedBuffer {
 /// (the common case) would silently mis-decode every packed position.
 pub fn decode_sse_packed_buffer(buffer: &SseSkinGlobalBuffer) -> Option<DecodedPackedBuffer> {
     decode_sse_packed_buffer_with_external_positions(buffer, None, None)
+}
+
+/// Decode an SSE partition buffer using any external position and
+/// bitangent-X lanes carried by its owning `BsTriShape`. Skyrim SE
+/// `BSDynamicTriShape` clears `VF_VERTEX` in the packed descriptor and
+/// stores those lanes on the shape, while skin/normal/UV attributes stay
+/// in the partition buffer (#2318, #2576).
+pub(super) fn decode_sse_shape_buffer(
+    buffer: &SseSkinGlobalBuffer,
+    shape: &BsTriShape,
+) -> Option<DecodedPackedBuffer> {
+    let external_positions = (!shape.vertices.is_empty()).then_some(shape.vertices.as_slice());
+    let external_bitangent_x = match &shape.kind {
+        BsTriShapeKind::Dynamic { bitangent_x } if !bitangent_x.is_empty() => {
+            Some(bitangent_x.as_slice())
+        }
+        _ => None,
+    };
+    if external_positions.is_none() && external_bitangent_x.is_none() {
+        return decode_sse_packed_buffer(buffer);
+    }
+    decode_sse_packed_buffer_with_external_positions(
+        buffer,
+        external_positions,
+        external_bitangent_x,
+    )
 }
 
 /// Decode an SSE partition buffer whose positions may live in a linked
