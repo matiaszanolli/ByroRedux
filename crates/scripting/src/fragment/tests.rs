@@ -74,7 +74,17 @@ fn apply_effects_writes_stage_and_objectives() {
             stage: 30,
         },
     ];
-    let advances = apply_effects(&effects, Q, None, &world, &mut stages, &mut objectives);
+    let mut deferred = DeferredFragmentEffects::default();
+    let advances = apply_effects(
+        &effects,
+        Q,
+        None,
+        &world,
+        &mut stages,
+        &mut objectives,
+        &mut deferred,
+    );
+    deferred.apply(&world);
 
     assert_eq!(stages.get_stage(Q), 30);
     assert!(objectives.get(Q, 10).completed);
@@ -124,7 +134,17 @@ fn apply_effects_runs_quest_lifecycle_and_resets_objectives() {
             quest: QuestRef::SelfRef,
         },
     ];
-    let advances = apply_effects(&effects, Q, None, &world, &mut stages, &mut objectives);
+    let mut deferred = DeferredFragmentEffects::default();
+    let advances = apply_effects(
+        &effects,
+        Q,
+        None,
+        &world,
+        &mut stages,
+        &mut objectives,
+        &mut deferred,
+    );
+    deferred.apply(&world);
     assert_eq!(advances.len(), 2);
     assert_eq!(advances[0].new_stage, 5);
     assert_eq!(advances[1].new_stage, 90);
@@ -135,6 +155,7 @@ fn apply_effects_runs_quest_lifecycle_and_resets_objectives() {
     assert!(objectives.get(Q, 10).completed);
     assert!(objectives.get(Q, 20).completed);
 
+    let mut deferred = DeferredFragmentEffects::default();
     apply_effects(
         &[Effect::ResetQuest {
             quest: QuestRef::SelfRef,
@@ -144,7 +165,9 @@ fn apply_effects_runs_quest_lifecycle_and_resets_objectives() {
         &world,
         &mut stages,
         &mut objectives,
+        &mut deferred,
     );
+    deferred.apply(&world);
     assert!(!stages.is_started(Q));
     assert_eq!(objectives.get(Q, 10), Default::default());
 }
@@ -167,6 +190,7 @@ fn set_stage_honors_the_authored_allow_repeated_stages_flag() {
         let mut stages = QuestStageState::default();
         stages.set_stage(Q, 10);
         let mut objectives = QuestObjectiveState::default();
+        let mut deferred = DeferredFragmentEffects::default();
         let advances = apply_effects(
             &[Effect::SetStage {
                 quest: QuestRef::SelfRef,
@@ -177,7 +201,9 @@ fn set_stage_honors_the_authored_allow_repeated_stages_flag() {
             &world,
             &mut stages,
             &mut objectives,
+            &mut deferred,
         );
+        deferred.apply(&world);
         assert_eq!(advances.len(), expected_advances);
     }
 }
@@ -193,9 +219,63 @@ fn property_targeted_effect_skipped_without_vmad() {
         quest: QuestRef::Property("SomeOtherQuest".into()),
         stage: 99,
     }];
-    let advances = apply_effects(&effects, Q, None, &world, &mut stages, &mut objectives);
+    let mut deferred = DeferredFragmentEffects::default();
+    let advances = apply_effects(
+        &effects,
+        Q,
+        None,
+        &world,
+        &mut stages,
+        &mut objectives,
+        &mut deferred,
+    );
+    deferred.apply(&world);
     assert!(advances.is_empty());
     assert_eq!(stages.get_stage(Q), 0, "no quest was touched");
+}
+
+/// Regression for #2269: quest fragment dispatch must not acquire
+/// `CinematicPresentationState` while the paired quest-state guards are held.
+/// Both affected presentation operations stay queued until the guard scope
+/// ends, then apply in authored order.
+#[test]
+fn cinematic_presentation_effects_wait_for_quest_guards_to_drop() {
+    let world = fixture();
+    let effects = [
+        Effect::SetSittingRotation { degrees: -55.0 },
+        Effect::RegisterPlayerAnimationEvent {
+            event: CinematicAnimationEvent::IdleFurnitureExit,
+        },
+    ];
+    let mut deferred = DeferredFragmentEffects::default();
+
+    let advances = {
+        let (mut stages, mut objectives) =
+            world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
+        apply_effects(
+            &effects,
+            Q,
+            None,
+            &world,
+            &mut stages,
+            &mut objectives,
+            &mut deferred,
+        )
+    };
+    assert!(advances.is_empty());
+
+    {
+        let presentation = world.resource::<crate::CinematicPresentationState>();
+        assert_eq!(presentation.sitting_rotation_degrees, 0.0);
+        assert!(!presentation
+            .is_player_animation_event_registered(CinematicAnimationEvent::IdleFurnitureExit));
+    }
+
+    deferred.apply(&world);
+    let presentation = world.resource::<crate::CinematicPresentationState>();
+    assert_eq!(presentation.sitting_rotation_degrees, -55.0);
+    assert!(presentation
+        .is_player_animation_event_registered(CinematicAnimationEvent::IdleFurnitureExit));
 }
 
 #[test]

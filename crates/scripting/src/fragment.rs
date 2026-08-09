@@ -309,6 +309,52 @@ fn exit_cart_idle_property(seat: u8) -> Option<&'static str> {
     }
 }
 
+#[derive(Debug)]
+enum DeferredCinematicPresentationEffect {
+    SetSittingRotation(f32),
+    RegisterPlayerAnimationEvent {
+        event: crate::CinematicAnimationEvent,
+        quest: QuestFormId,
+        image_space_modifiers: Vec<crate::ImageSpaceModifierApplication>,
+    },
+}
+
+/// Side effects that must run after a fragment caller releases the canonical
+/// quest-stage/objective resource guards. Keeping this batch explicit prevents
+/// `QuestStageState -> CinematicPresentationState` nested acquisition (#2269).
+#[derive(Debug, Default)]
+pub struct DeferredFragmentEffects {
+    cinematic_presentation: Vec<DeferredCinematicPresentationEffect>,
+}
+
+impl DeferredFragmentEffects {
+    /// Apply the queued presentation mutations. Call only after releasing the
+    /// `QuestStageState` / `QuestObjectiveState` guards passed to
+    /// [`apply_effects`].
+    pub fn apply(self, world: &World) {
+        if self.cinematic_presentation.is_empty() {
+            return;
+        }
+        let Some(mut state) = world.try_resource_mut::<crate::CinematicPresentationState>() else {
+            return;
+        };
+        for effect in self.cinematic_presentation {
+            match effect {
+                DeferredCinematicPresentationEffect::SetSittingRotation(degrees) => {
+                    state.sitting_rotation_degrees = degrees;
+                }
+                DeferredCinematicPresentationEffect::RegisterPlayerAnimationEvent {
+                    event,
+                    quest,
+                    image_space_modifiers,
+                } => {
+                    state.register_player_animation_event(event, quest, image_space_modifiers);
+                }
+            }
+        }
+    }
+}
+
 /// Apply one effect to the canonical stage/objective state (or, for the
 /// object-targeting variants, to the live ECS world). Returns a
 /// [`QuestStageAdvanced`] when the effect was a `SetStage` (so the caller
@@ -326,13 +372,18 @@ fn exit_cart_idle_property(seat: u8) -> Option<&'static str> {
 /// component/resource lock here, or moving `quest_fragment_dispatch_system`
 /// (or any sibling quest-resource system) onto the parallel lane, needs the
 /// same analysis re-derived — see SCR-D6-NEW3-03 / #2126.
-pub fn apply_effect(
+///
+/// Cinematic presentation resource mutations are deliberately appended to
+/// `deferred` instead of acquired here. Every production caller applies that
+/// batch only after its quest resource guards have dropped (#2269).
+fn apply_effect(
     effect: &Effect,
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
     world: &World,
     stages: &mut QuestStageState,
     objectives: &mut QuestObjectiveState,
+    deferred: &mut DeferredFragmentEffects,
 ) -> Option<QuestStageAdvanced> {
     match effect {
         Effect::AddItem {
@@ -665,9 +716,9 @@ pub fn apply_effect(
             None
         }
         Effect::SetSittingRotation { degrees } => {
-            if let Some(mut state) = world.try_resource_mut::<crate::CinematicPresentationState>() {
-                state.sitting_rotation_degrees = *degrees;
-            }
+            deferred.cinematic_presentation.push(
+                DeferredCinematicPresentationEffect::SetSittingRotation(*degrees),
+            );
             None
         }
         Effect::ExitCart { actor, seat } => {
@@ -702,23 +753,27 @@ pub fn apply_effect(
             None
         }
         Effect::RegisterPlayerAnimationEvent { event } => {
-            if let Some(mut state) = world.try_resource_mut::<crate::CinematicPresentationState>() {
-                let image_space_modifiers = match event {
-                    crate::CinematicAnimationEvent::PlayImod => {
-                        ["PlayerAlduinIMOD", "CGDragonAttackBlurLong"]
-                            .into_iter()
-                            .filter_map(|property| resolve_property_form_id(vmad, property))
-                            .map(|form_id| crate::ImageSpaceModifierApplication {
-                                form_id,
-                                strength: 1.0,
-                            })
-                            .collect()
-                    }
-                    crate::CinematicAnimationEvent::IdleFurnitureExit
-                    | crate::CinematicAnimationEvent::ExitCartEnd => Vec::new(),
-                };
-                state.register_player_animation_event(*event, context, image_space_modifiers);
-            }
+            let image_space_modifiers = match event {
+                crate::CinematicAnimationEvent::PlayImod => {
+                    ["PlayerAlduinIMOD", "CGDragonAttackBlurLong"]
+                        .into_iter()
+                        .filter_map(|property| resolve_property_form_id(vmad, property))
+                        .map(|form_id| crate::ImageSpaceModifierApplication {
+                            form_id,
+                            strength: 1.0,
+                        })
+                        .collect()
+                }
+                crate::CinematicAnimationEvent::IdleFurnitureExit
+                | crate::CinematicAnimationEvent::ExitCartEnd => Vec::new(),
+            };
+            deferred.cinematic_presentation.push(
+                DeferredCinematicPresentationEffect::RegisterPlayerAnimationEvent {
+                    event: *event,
+                    quest: context,
+                    image_space_modifiers,
+                },
+            );
             None
         }
         Effect::EvaluatePackage { actor } => {
@@ -897,7 +952,9 @@ fn apply_quest_scoped_effect(
 }
 
 /// Apply a whole fragment's effects, returning the chained
-/// [`QuestStageAdvanced`]s its `SetStage`s produced.
+/// [`QuestStageAdvanced`]s its `SetStage`s produced. Presentation mutations
+/// are queued in `deferred`; the caller must apply them only after releasing
+/// the quest-state guards passed here.
 pub fn apply_effects(
     effects: &[Effect],
     context: QuestFormId,
@@ -905,6 +962,7 @@ pub fn apply_effects(
     world: &World,
     stages: &mut QuestStageState,
     objectives: &mut QuestObjectiveState,
+    deferred: &mut DeferredFragmentEffects,
 ) -> Vec<QuestStageAdvanced> {
     let mut advances = Vec::new();
     for (index, effect) in effects.iter().enumerate() {
@@ -946,7 +1004,9 @@ pub fn apply_effects(
         if matches!(effect, Effect::WaitForActors3DLoaded { .. }) {
             continue;
         }
-        if let Some(advance) = apply_effect(effect, context, vmad, world, stages, objectives) {
+        if let Some(advance) =
+            apply_effect(effect, context, vmad, world, stages, objectives, deferred)
+        {
             advances.push(advance);
         }
     }
@@ -1013,6 +1073,7 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
     }
 
     let mut emitted = Vec::new();
+    let mut deferred = DeferredFragmentEffects::default();
     for pending in ready {
         let advances = {
             let (mut stages, mut objectives) =
@@ -1024,10 +1085,12 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
                 world,
                 &mut stages,
                 &mut objectives,
+                &mut deferred,
             )
         };
         emitted.extend(advances);
     }
+    deferred.apply(world);
 
     if emitted.is_empty() {
         return;
@@ -1241,6 +1304,7 @@ pub fn quest_fragment_dispatch_system(world: &World) {
     let frags = world.resource::<QuestStageFragments>().clone();
 
     let mut chained: Vec<QuestStageAdvanced> = Vec::new();
+    let mut deferred = DeferredFragmentEffects::default();
     let mut steps = 0usize;
     {
         let (mut stages, mut objectives) =
@@ -1302,6 +1366,7 @@ pub fn quest_fragment_dispatch_system(world: &World) {
                 world,
                 &mut stages,
                 &mut objectives,
+                &mut deferred,
             );
             for adv in advances {
                 // Only cascade genuine transitions (skip a no-op re-set of
@@ -1326,6 +1391,8 @@ pub fn quest_fragment_dispatch_system(world: &World) {
         // subscriber retains its independent position.
         stages.acknowledge_quest_events(FRAGMENT_QUEST_EVENT_SUBSCRIBER);
     }
+
+    deferred.apply(world);
 
     // Emit markers for the chained advances so other consumers (journal
     // UI, further-frame dispatch) observe them. Co-opts the same

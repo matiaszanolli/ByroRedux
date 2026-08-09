@@ -52,7 +52,8 @@ pub use events::{
 };
 pub use fragment::{
     apply_effects, fragment_continuation_system, populate_quest_fragments_from_pex,
-    quest_fragment_dispatch_system, FragmentExecutionQueue, QuestStageFragments,
+    quest_fragment_dispatch_system, DeferredFragmentEffects, FragmentExecutionQueue,
+    QuestStageFragments,
 };
 pub use globals::Globals;
 pub use package::{

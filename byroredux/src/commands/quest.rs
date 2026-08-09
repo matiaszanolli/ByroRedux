@@ -17,8 +17,9 @@ use byroredux_scripting::translate::compose::QuestRef;
 use byroredux_scripting::translate::effects::Effect;
 use byroredux_scripting::{
     apply_effects, quest_alias_diagnostics, refresh_scene_actor_bindings,
-    resolve_quest_objective_targets, resolve_quest_targets, QuestAliasDiagnostic,
-    QuestAliasResolutionState, QuestFormId, QuestStatus, SceneActorBindings, SceneAliasCandidate,
+    resolve_quest_objective_targets, resolve_quest_targets, DeferredFragmentEffects,
+    QuestAliasDiagnostic, QuestAliasResolutionState, QuestFormId, QuestStatus, SceneActorBindings,
+    SceneAliasCandidate,
 };
 
 #[derive(Default)]
@@ -208,11 +209,21 @@ fn apply_control_effect(
     {
         return Err(CommandOutput::error("quest runtime resources unavailable"));
     }
+    let mut deferred = DeferredFragmentEffects::default();
     let advances = {
         let (mut stages, mut objectives) =
             world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
-        apply_effects(&[effect], quest, None, world, &mut stages, &mut objectives)
+        apply_effects(
+            &[effect],
+            quest,
+            None,
+            world,
+            &mut stages,
+            &mut objectives,
+            &mut deferred,
+        )
     };
+    deferred.apply(world);
     // A control command is an explicit mutation, so make the corresponding
     // derived alias lifetime visible immediately to the next debug request.
     refresh_scene_actor_bindings(world);
