@@ -1209,6 +1209,24 @@ impl Default for LightTuning {
 pub(crate) struct SeatReservations(pub(crate) HashMap<(EntityId, u32), EntityId>);
 impl Resource for SeatReservations {}
 
+/// M42.9 / #2652 — actor-owned ambient PACK selection state.
+///
+/// Candidate and winner IDs live in global load-order FormID space, so this
+/// component never retains a borrow into the plugin index. The minute marker
+/// bounds schedule checks to once per game minute; `None` forces a first-tick
+/// confirmation after cell loading has installed scripting resources.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AmbientPackageRuntime {
+    pub(crate) package_candidates: Vec<u32>,
+    pub(crate) active_package_form_id: Option<u32>,
+    pub(crate) actor_form_id: u32,
+    pub(crate) last_evaluated_game_minute: Option<u16>,
+}
+
+impl Component for AmbientPackageRuntime {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// M42.1 — the per-cell sit-**enter** clip `(handle, hold_time)`
 /// (`meshes\characters\_male\idleanims\chairskirt_leftenter.kf`), resolved once
 /// at cell load where the archive provider is available and read by

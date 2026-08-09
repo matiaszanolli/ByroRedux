@@ -204,6 +204,16 @@ pub(crate) fn populate_scene_runtime(
     if quest_aliases > 0 {
         log::info!("Installed alias definitions for {quest_aliases} quests");
     }
+    // M42.9 / #2652 — ambient NPC package stacks must remain resolvable after
+    // spawn so schedule boundaries and Papyrus EvaluatePackage can select a
+    // new winner. Previously this registry received only SCEN-referenced PACK
+    // records, leaving ordinary NPC_.PKID candidates available solely through
+    // the short-lived EsmIndex borrow at spawn time.
+    let package_count =
+        byroredux_scripting::install_package_records(world, index.packages.values().cloned());
+    if package_count > 0 {
+        log::info!("Installed {package_count} PACK definitions into the live package runtime");
+    }
     if !index.scenes.is_empty() {
         // The current runtime consumes dialogue only through SCEN actions.
         // Keep the registry proportional to that live surface instead of
@@ -241,13 +251,6 @@ pub(crate) fn populate_scene_runtime(
             .filter_map(|package| package.package_template_form_id)
             .collect();
         package_ids.extend(template_ids);
-        let package_count = byroredux_scripting::install_package_records(
-            world,
-            package_ids
-                .iter()
-                .filter_map(|form_id| index.packages.get(form_id).cloned()),
-        );
-
         // Scene Travel/Patrol/Escort packages overwhelmingly target invisible
         // XMarkers. Those references are intentionally not render-spawned, so
         // retain their authored coordinates as a lightweight movement target
@@ -303,9 +306,10 @@ pub(crate) fn populate_scene_runtime(
         }
         let package_target_count =
             byroredux_scripting::install_package_target_positions(world, package_target_positions);
-        if package_count > 0 {
+        if !package_ids.is_empty() {
             log::info!(
-                "Installed {package_count} scene PACK definitions and {package_target_count}/{} authored movement targets",
+                "Prepared {} scene PACK references and {package_target_count}/{} authored movement targets",
+                package_ids.len(),
                 package_target_ids.len()
             );
         }
@@ -339,4 +343,33 @@ pub(crate) fn build_script_provider(args: &[String]) -> ScriptProvider {
         i += 1;
     }
     provider
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn populate_scene_runtime_installs_ambient_packages_without_scenes() {
+        let mut world = byroredux_core::ecs::World::new();
+        byroredux_scripting::register(&mut world);
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.packages.insert(
+            0x1234,
+            byroredux_plugin::esm::records::PackRecord {
+                form_id: 0x1234,
+                ..Default::default()
+            },
+        );
+
+        populate_scene_runtime(&mut world, &index);
+
+        assert!(
+            world
+                .resource::<byroredux_scripting::PackageRegistry>()
+                .package(0x1234)
+                .is_some(),
+            "NPC_.PKID packages must remain available even when no SCEN references them"
+        );
+    }
 }

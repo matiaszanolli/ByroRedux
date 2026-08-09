@@ -489,6 +489,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // first patrolling actor spawns.
     world.register::<byroredux_core::ecs::components::PatrolBehavior>();
     world.register::<byroredux_core::ecs::components::PatrolState>();
+    world.register::<crate::components::AmbientPackageRuntime>();
 
     // Register scripting component storages.
     byroredux_scripting::register(&mut world);
@@ -676,6 +677,10 @@ pub(crate) fn build_scheduler() -> Scheduler {
     // advances. Phase conditions affected by those fragments are retried on
     // the following tick.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::scene_playback_system);
+    // M42.9 / #2652 — ambient packages observe EvaluatePackageRequest before
+    // the SCEN package system drains the transient marker. Time-driven checks
+    // are bounded to one pass per in-game minute inside the system.
+    scheduler.add_exclusive(Stage::Update, crate::npc_spawn::ambient_ai_package_system);
     // PACK actions resolve their Skyrim PKCU template/data inputs, move actors
     // toward authored invisible-marker coordinates for Travel-family leaves,
     // and queue Done completions for scene playback's next tick.

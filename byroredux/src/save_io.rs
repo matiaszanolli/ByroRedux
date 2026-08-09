@@ -1771,13 +1771,21 @@ mod tests {
             "CharacterLevel",
             "Background",
             "Perks",
+            "AmbientPackageRuntime",
         ];
-        // Write-once from static ESM `NPC_` data — no runtime mutator exists,
-        // so a save/load re-derives byte-identical values on respawn and NOT
-        // saving them is a correct no-op (#1835). Register + remove from here
-        // the moment a mutator lands.
-        const REDERIVED_NOT_SAVED: &[&str] =
-            &["FactionRanks", "CharacterLevel", "Background", "Perks"];
+        // Re-derived from static ESM `NPC_` data. Most entries are write-once;
+        // AmbientPackageRuntime is the deliberate exception: its first
+        // post-load tick recomputes the winner from PKID plus restored
+        // clock/CTDA state, so persisting its cached winner is unnecessary.
+        const REDERIVED_NOT_SAVED: &[&str] = &[
+            "FactionRanks",
+            "CharacterLevel",
+            "Background",
+            "Perks",
+            // M42.9 — rebuilt from NPC_.PKID plus the restored clock/CTDA
+            // state on the first ambient-package tick after a cell reload.
+            "AmbientPackageRuntime",
+        ];
 
         let registered: std::collections::HashSet<&str> =
             build_save_registry().component_names().collect();
@@ -1790,8 +1798,9 @@ mod tests {
                 "NPC-spawn-stamped {name:?}: must be EITHER registered in \
                  build_save_registry (saved={saved}) OR in REDERIVED_NOT_SAVED \
                  (rederived={rederived}) — never both/neither. If it gained a \
-                 runtime mutator, register it (#1834); if it stays write-once \
-                 from ESM, allowlist it (#1835).",
+                 runtime mutator without deterministic reload re-derivation, \
+                 register it (#1834); otherwise document that re-derivation \
+                 here (#1835).",
             );
         }
     }
@@ -1906,31 +1915,31 @@ mod tests {
             ("ChildAttachConnections", "write-once NIF-import data, no runtime mutator, same file/pattern as AttachPoints"),
             ("CollisionShape", "NIF/Havok-derived static geometry, only read by physics sync to register Rapier colliders"),
             ("Dead", "forward-latent — no live inserter exists yet outside tests (#2293); register the moment a death-resolution system lands"),
-            ("EscortBehavior", "write-once AI-package config at NPC spawn; mutable companion EscortState is already registered"),
+            ("EscortBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion EscortState is registered"),
             ("FactionRanks", "already covered by the NPC-spawn-stamped guard's own REDERIVED_NOT_SAVED list above (#1835)"),
             ("FogVolume", "converted once at cell/scene load from static XCLL/WTHR/NiFogProperty data, only read by the froxel injector"),
-            ("FollowBehavior", "write-once AI-package config at NPC spawn; mutable companion FollowState is already registered"),
+            ("FollowBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion FollowState is registered"),
             ("Furniture", "write-once at NIF import (BSFurnitureMarker), only ever read, never query_mut'd"),
             ("GlobalTransform", "recomputed every frame from saved Transform + Parent by transform_propagation_system; its own doc says \"never written by user code\""),
-            ("GuardBehavior", "write-once AI-package config at NPC spawn; mutable companion GuardState is already registered"),
+            ("GuardBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion GuardState is registered"),
             ("LocalBound", "write-once at NIF import/mesh spawn, read-only thereafter to derive WorldBound"),
             // Material: FIXED — registered (#2378 / SAVE-D1-13), no longer
             // allowlisted here.
             ("MeshHandle", "GPU MeshRegistry index, explicitly named in this file's own exclusion doc, rebuilt from the mesh path every reload"),
             ("ParticleEmitter", "per-particle simulation state (positions/velocities/ages) is purely cosmetic VFX with no gameplay/script hooks; re-seeds from static rate/shape config within under a second of reload"),
-            ("PatrolBehavior", "write-once AI-package config at NPC spawn; mutable companion PatrolState is already registered"),
+            ("PatrolBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion PatrolState is registered"),
             ("PerkList", "zero production write sites exist anywhere (only #[cfg(test)]); do not confuse with the unrelated, already-tracked Perks character component"),
             ("PhysicsSourceForm", "write-once at bhk-shape spawn; its own doc says \"read only by diagnostics\", never mutated"),
             ("RenderLayer", "every insert site is one-shot at cell-load/NPC-spawn via pure classifier functions, no runtime mutator"),
             // RigidBodyData: FIXED — registered (#2379 / SAVE-D1-14), no
             // longer allowlisted here.
-            ("SandboxBehavior", "write-once AI-package config at NPC spawn, only ever read by sandbox_seat_system"),
+            ("SandboxBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; only read by sandbox_seat_system"),
             ("SceneFlags", "write-once at NIF import/cell spawn; its one mutator method (set_culled) is unused in production"),
             ("SkinnedMesh", "GPU skeleton-binding handle, same exclusion class as MeshHandle, rebuilt from skeleton resolution every import"),
             ("SubmersionState", "fully recomputed every frame from saved Transform + WaterPlane/WaterVolume by submersion_system"),
             ("TextureHandle", "GPU TextureRegistry index, explicitly named in this file's own exclusion doc, re-resolved by path every load"),
-            ("TravelBehavior", "write-once AI-package config at NPC spawn; mutable companion TravelState is already registered"),
-            ("WanderBehavior", "write-once AI-package config at NPC spawn; mutable companion WanderState is already registered"),
+            ("TravelBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion TravelState is registered"),
+            ("WanderBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; mutable companion WanderState is registered"),
             ("WaterContact", "per-tick physics-derived output recomputed from body pose + WaterVolume; drowning accumulation is not yet wired"),
             ("WaterFlow", "static per-cell flow vector set once from WATR wind_direction at cell load, no runtime mutator"),
             ("WaterPlane", "static per-cell water geometry+material set once from XCWT/WATR at cell load, no runtime mutator"),
@@ -2014,6 +2023,7 @@ mod tests {
             // 2026-08-08 against real (non-`#[cfg(test)]`) insertion sites
             // for every entry, same bar as the rest of this list.
             ("AlphaBlend", "spawn-time classification extracted from NiAlphaProperty flags at import, rederived identically every load"),
+            ("AmbientPackageRuntime", "NPC_.PKID candidate state rebuilt at spawn and re-evaluated on the first tick against restored clock/CTDA resources"),
             ("CellLightingRes", "WTHR ambient/directional CPU-side mirror, re-flowed from the plugin's parsed lighting record every cell load"),
             ("CellRootIndex", "inverted CellRoot->owned-entities index, repopulated by cell_loader::stamp_cell_root every cell load (#791)"),
             ("CloudSimState", "cloud-scroll accumulator, freshly seeded at [0,0] by every apply_worldspace_weather call (see its own #803 doc)"),
@@ -2745,10 +2755,10 @@ mod tests {
     }
 
     /// QUST alias CNTO entries are permanent grants. The alias resolver's
-    /// ledger must survive a resource restore or its first dirty refresh
-    /// would append the same authored item stack again.
+    /// ledger must survive a live resource restore where the reloaded actor's
+    /// session-local entity ID differs from the one present at save time.
     #[test]
-    fn quest_alias_inventory_grant_ledger_survives_snapshot_round_trip() {
+    fn quest_alias_inventory_grant_ledger_survives_live_reload_with_new_entity_id() {
         use byroredux_plugin::esm::records::{
             AliasFillType, AliasInjectedData, QuestAlias, QustRecord,
         };
@@ -2795,8 +2805,12 @@ mod tests {
         let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
         let mut restored = World::new();
         byroredux_scripting::register(&mut restored);
+        let _unrelated = restored.spawn();
         let restored_actor = restored.spawn();
-        assert_eq!(restored_actor, actor, "full reload preserves entity ids");
+        assert_ne!(
+            restored_actor, actor,
+            "live reload advances allocation and must not preserve entity ids"
+        );
         restored.insert(
             restored_actor,
             SceneAliasCandidate {

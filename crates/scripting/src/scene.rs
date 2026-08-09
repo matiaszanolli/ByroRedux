@@ -157,8 +157,9 @@ impl Component for QuestAliasRuntimeOverlays {
 /// Bookkeeping for QUST alias injections.
 ///
 /// Faction overlays are reconstructed from the immutable alias definitions on
-/// load. Permanent CNTO grants are retained so the first post-load alias
-/// refresh cannot grant the same authored inventory entry a second time.
+/// load. Permanent CNTO grants are retained by stable reference FormID so the
+/// first post-load alias refresh cannot grant the same authored inventory
+/// entry a second time even when the live entity has a new [`EntityId`].
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuestAliasInjectionState {
@@ -166,9 +167,10 @@ pub struct QuestAliasInjectionState {
     /// base membership when the last alias source releases its overlay.
     #[cfg_attr(feature = "save", serde(skip, default))]
     factions: HashMap<(EntityId, u32), InjectedFactionMembership>,
-    /// CNTO grants are permanent, but must still be idempotent across dirty
-    /// refreshes. Refilling the alias onto another entity grants it there too.
-    inventory_grants: HashSet<(QuestFormId, i32, EntityId, u32, u32)>,
+    /// `(quest, alias, reference, item, count)` entries are deliberately free
+    /// of session-local entity IDs. Refilling the alias onto another authored
+    /// reference still grants there because its reference FormID differs.
+    inventory_grants: HashSet<(QuestFormId, i32, u32, u32, u32)>,
 }
 
 impl Resource for QuestAliasInjectionState {}
@@ -571,6 +573,7 @@ fn apply_alias_injections(
     world: &World,
     quests: &[(QuestFormId, Vec<QuestAlias>)],
     resolved: &HashMap<(QuestFormId, i32), EntityId>,
+    candidates: &[(EntityId, SceneAliasCandidate)],
 ) {
     let mut desired_factions: HashMap<(EntityId, u32), HashSet<(QuestFormId, i32)>> =
         HashMap::new();
@@ -581,6 +584,10 @@ fn apply_alias_injections(
     let mut desired_runtime_overlays: HashMap<EntityId, HashMap<(QuestFormId, i32), QuestAlias>> =
         HashMap::new();
     let mut desired_inventory = Vec::new();
+    let reference_form_ids: HashMap<EntityId, u32> = candidates
+        .iter()
+        .map(|(entity, candidate)| (*entity, candidate.reference_form_id))
+        .collect();
 
     for (quest, aliases) in quests {
         for alias in aliases {
@@ -606,7 +613,16 @@ fn apply_alias_injections(
             }
             for &(item, count) in &alias.injected.inventory {
                 if count > 0 {
-                    desired_inventory.push((source.0, source.1, entity, item, count));
+                    if let Some(&reference_form_id) = reference_form_ids.get(&entity) {
+                        desired_inventory.push((
+                            source.0,
+                            source.1,
+                            entity,
+                            reference_form_id,
+                            item,
+                            count,
+                        ));
+                    }
                 }
             }
         }
@@ -674,8 +690,8 @@ fn apply_alias_injections(
         let mut inventories = world
             .query_mut::<Inventory>()
             .expect("Inventory storage registered");
-        for (quest, alias, entity, item, count) in desired_inventory {
-            if !next_grants.insert((quest, alias, entity, item, count)) {
+        for (quest, alias, entity, reference_form_id, item, count) in desired_inventory {
+            if !next_grants.insert((quest, alias, reference_form_id, item, count)) {
                 continue;
             }
             if let Some(inventory) = inventories.get_mut(entity) {
@@ -877,7 +893,7 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
         }
     }
 
-    apply_alias_injections(world, &quests, &resolved);
+    apply_alias_injections(world, &quests, &resolved, &candidates);
 
     let count = resolved
         .keys()
