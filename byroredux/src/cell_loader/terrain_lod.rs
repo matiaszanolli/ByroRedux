@@ -116,6 +116,22 @@ fn chebyshev(a: (i32, i32), b: (i32, i32)) -> i32 {
     (a.0 - b.0).abs().max((a.1 - b.1).abs())
 }
 
+/// Relative block index containing `cell` on a worldspace-aligned LOD grid.
+fn block_index(cell: (i32, i32), grid_origin: (i32, i32)) -> (i32, i32) {
+    (
+        (cell.0 - grid_origin.0).div_euclid(LOD_BLOCK_CELLS),
+        (cell.1 - grid_origin.1).div_euclid(LOD_BLOCK_CELLS),
+    )
+}
+
+/// Authored SW cell coordinate for relative block `(bi, bj)`.
+fn block_cell_origin(bi: i32, bj: i32, grid_origin: (i32, i32)) -> (i32, i32) {
+    (
+        grid_origin.0 + bi * LOD_BLOCK_CELLS,
+        grid_origin.1 + bj * LOD_BLOCK_CELLS,
+    )
+}
+
 /// Whether cell `(gx, gy)` sits inside the full-detail region and should be
 /// holed out of the LOD mesh (left for the streamed near terrain to cover).
 ///
@@ -181,10 +197,14 @@ const _: () = assert!(
 /// OR a hole bit for every cell `(bx0+dx, by0+dy)` in block `(bi, bj)` for
 /// which `holed(gx, gy)` is true. Pure (no `CellData` map) so the
 /// player-tracking regen logic is unit-testable in isolation.
-fn assemble_hole_mask(bi: i32, bj: i32, holed: impl Fn(i32, i32) -> bool) -> u16 {
+fn assemble_hole_mask(
+    bi: i32,
+    bj: i32,
+    grid_origin: (i32, i32),
+    holed: impl Fn(i32, i32) -> bool,
+) -> u16 {
     let k = LOD_BLOCK_CELLS;
-    let bx0 = bi * k;
-    let by0 = bj * k;
+    let (bx0, by0) = block_cell_origin(bi, bj, grid_origin);
     let mut mask: u16 = 0;
     for dy in 0..k {
         for dx in 0..k {
@@ -213,10 +233,11 @@ fn block_hole_mask(
     cells_map: &HashMap<(i32, i32), CellData>,
     bi: i32,
     bj: i32,
+    grid_origin: (i32, i32),
     player_grid: (i32, i32),
     max_full_cell_radius: i32,
 ) -> u16 {
-    assemble_hole_mask(bi, bj, |gx, gy| {
+    assemble_hole_mask(bi, bj, grid_origin, |gx, gy| {
         cell_is_full_detail(gx, gy, player_grid, max_full_cell_radius)
             || cells_map
                 .get(&(gx, gy))
@@ -271,10 +292,10 @@ pub(crate) fn stream_lod_blocks(
         .map(|w| w.form_id)
         .unwrap_or(0);
     let k = LOD_BLOCK_CELLS;
-    // Block containing the player. `div_euclid` floors toward negative
-    // infinity so blocks tile consistently across the origin.
-    let pbi = player_grid.0.div_euclid(k);
-    let pbj = player_grid.1.div_euclid(k);
+    // Block containing the player, relative to this WRLD's authored LOD grid
+    // origin. `div_euclid` floors consistently across negative coordinates.
+    let grid_origin = input.lod_grid_origin;
+    let (pbi, pbj) = block_index(player_grid, grid_origin);
 
     // Desired ring: closest-first so a budgeted initialization grows outward
     // deterministically instead of following HashMap random iteration order.
@@ -311,7 +332,14 @@ pub(crate) fn stream_lod_blocks(
     // This prevents old hole masks from overlapping full-detail terrain while
     // replacement geometry waits for an idle frame.
     for &(bi, bj) in &desired {
-        let mask = block_hole_mask(cells_map, bi, bj, player_grid, max_full_cell_radius);
+        let mask = block_hole_mask(
+            cells_map,
+            bi,
+            bj,
+            grid_origin,
+            player_grid,
+            max_full_cell_radius,
+        );
         // Copy the prior mask out before mutating the map (no borrow held).
         let prev_mask = lod_blocks.get(&(bi, bj)).map(|b| b.hole_mask);
 
@@ -365,14 +393,15 @@ pub(crate) fn stream_lod_blocks(
         // synth path handles all of those. Exactly one block per coordinate,
         // so the textured LOD never double-draws the synth LOD (EXAL §5).
         let btr_block = if mask == 0 && matches!(game, GameKind::Skyrim | GameKind::Fallout4) {
+            let (qx, qy) = block_cell_origin(bi, bj, grid_origin);
             super::terrain_lod_btr::spawn_btr_block(
                 world,
                 ctx,
                 tex_provider,
                 worldspace_key,
                 k,
-                bi * k,
-                bj * k,
+                qx,
+                qy,
                 mask,
             )
         } else {
@@ -388,6 +417,7 @@ pub(crate) fn stream_lod_blocks(
                 cells_map,
                 bi,
                 bj,
+                grid_origin,
                 player_grid,
                 max_full_cell_radius,
                 world_form_id,
@@ -465,13 +495,13 @@ fn spawn_lod_block(
     cells_map: &HashMap<(i32, i32), CellData>,
     bi: i32,
     bj: i32,
+    grid_origin: (i32, i32),
     player_grid: (i32, i32),
     max_full_cell_radius: i32,
     world_form_id: u32,
 ) -> Option<LodBlock> {
     let k = LOD_BLOCK_CELLS;
-    let bx0 = bi * k; // SW cell column of the block
-    let by0 = bj * k; // SW cell row of the block
+    let (bx0, by0) = block_cell_origin(bi, bj, grid_origin);
     let origin_x = bx0 as f32 * EXTERIOR_CELL_UNITS;
     let origin_y = by0 as f32 * EXTERIOR_CELL_UNITS;
 
@@ -683,7 +713,14 @@ fn spawn_lod_block(
     // and is skipped by any TLAS-membership logic.
     world.insert(entity, IsLodTerrain);
 
-    let hole_mask = block_hole_mask(cells_map, bi, bj, player_grid, max_full_cell_radius);
+    let hole_mask = block_hole_mask(
+        cells_map,
+        bi,
+        bj,
+        grid_origin,
+        player_grid,
+        max_full_cell_radius,
+    );
     Some(LodBlock {
         entity,
         mesh_handle,
@@ -838,23 +875,23 @@ mod tests {
         // Block (0,0) covers cells (0,0)..=(3,3). Player at (0,0) holes its
         // SW corner; moving the player east to (4,0) (into block (1,0))
         // clears those holes — the mask must change (→ regenerate).
-        let blk0_at_origin = assemble_hole_mask(0, 0, holed((0, 0)));
-        let blk0_at_east = assemble_hole_mask(0, 0, holed((4, 0)));
+        let blk0_at_origin = assemble_hole_mask(0, 0, (0, 0), holed((0, 0)));
+        let blk0_at_east = assemble_hole_mask(0, 0, (0, 0), holed((4, 0)));
         assert_ne!(
             blk0_at_origin, blk0_at_east,
             "boundary block mask must change as the player crosses cells"
         );
 
         // The block the player moved INTO gains the full-detail holes.
-        let blk1_at_origin = assemble_hole_mask(1, 0, holed((0, 0)));
-        let blk1_at_east = assemble_hole_mask(1, 0, holed((4, 0)));
+        let blk1_at_origin = assemble_hole_mask(1, 0, (0, 0), holed((0, 0)));
+        let blk1_at_east = assemble_hole_mask(1, 0, (0, 0), holed((4, 0)));
         assert_ne!(blk1_at_origin, blk1_at_east);
 
         // A far block (outside the full-detail radius from both positions)
         // keeps mask 0 — never regenerates from player motion (the common
         // case: most of the ring is stable).
-        assert_eq!(assemble_hole_mask(5, 5, holed((0, 0))), 0);
-        assert_eq!(assemble_hole_mask(5, 5, holed((4, 0))), 0);
+        assert_eq!(assemble_hole_mask(5, 5, (0, 0), holed((0, 0))), 0);
+        assert_eq!(assemble_hole_mask(5, 5, (0, 0), holed((4, 0))), 0);
     }
 
     /// `all_holed_mask` has exactly the low `LOD_BLOCK_CELLS²` bits set —
@@ -863,7 +900,20 @@ mod tests {
     #[test]
     fn all_holed_mask_is_full_block() {
         let always = |_: i32, _: i32| true;
-        assert_eq!(all_holed_mask(), assemble_hole_mask(0, 0, always));
+        assert_eq!(all_holed_mask(), assemble_hole_mask(0, 0, (0, 0), always));
         assert_eq!(all_holed_mask(), 0xFFFF); // 4×4 = 16 bits
+    }
+
+    #[test]
+    fn terrain_block_indices_preserve_nonzero_worldspace_phase() {
+        let apocrypha = (-50, -50);
+        assert_eq!(block_index((-49, -49), apocrypha), (0, 0));
+        assert_eq!(block_cell_origin(0, 0, apocrypha), apocrypha);
+        assert_eq!(block_cell_origin(1, 1, apocrypha), (-46, -46));
+
+        let soul_cairn = (-52, -51);
+        assert_eq!(block_index((-50, -49), soul_cairn), (0, 0));
+        assert_eq!(block_cell_origin(0, 0, soul_cairn), soul_cairn);
+        assert_eq!(block_cell_origin(1, 1, soul_cairn), (-48, -47));
     }
 }

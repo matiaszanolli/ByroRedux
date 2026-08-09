@@ -116,7 +116,7 @@ pub(crate) use load::apply_interior_cell_lighting;
 pub(crate) use load::resolve_cell_lighting;
 #[allow(unused_imports)]
 pub use load::{load_cell_with_masters, validate_cell_loadable, CellLoadResult};
-pub(crate) use lod_support::{LodReconcileInput, LodWorkBudget};
+pub(crate) use lod_support::{worldspace_lod_grid_origin, LodReconcileInput, LodWorkBudget};
 #[allow(unused_imports)]
 pub(crate) use object_lod::{stream_object_lod_blocks, unload_object_lod_block, ObjectLodBlock};
 pub(crate) use partial::finish_partial_import;

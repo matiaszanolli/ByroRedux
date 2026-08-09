@@ -43,7 +43,7 @@ use crate::asset_provider::{resolve_texture, TextureProvider};
 use crate::components::IsLodTerrain;
 
 use super::exterior::ExteriorWorldContext;
-use super::lod_support::{sort_lod_coords_nearest, LodReconcileInput, LodWorkBudget};
+use super::lod_support::{quad_origin, sort_lod_coords_nearest, LodReconcileInput, LodWorkBudget};
 
 /// Object-LOD quad level streamed by the first cut — level 4 (4×4-cell
 /// quads), the closest / highest-detail band. Coarser bands (8/16/32) for
@@ -108,10 +108,11 @@ fn object_lod_quads_in_radius(
     player: (i32, i32),
     max_full_cell_radius: i32,
     level: i32,
+    grid_origin: (i32, i32),
 ) -> Vec<(i32, i32)> {
     let mut quads = Vec::new();
     let rq = OBJECT_LOD_RADIUS_CELLS / level + 1;
-    let (pqx, pqy) = quad_origin(player.0, player.1, level);
+    let (pqx, pqy) = quad_origin(player.0, player.1, level, grid_origin);
     for dj in -rq..=rq {
         for di in -rq..=rq {
             let qx = pqx + di * level;
@@ -168,7 +169,12 @@ pub(crate) fn stream_object_lod_blocks(
         return true;
     }
     let level = OBJECT_LOD_LEVEL;
-    let mut desired = object_lod_quads_in_radius(player_grid, max_full_cell_radius, level);
+    let mut desired = object_lod_quads_in_radius(
+        player_grid,
+        max_full_cell_radius,
+        level,
+        input.lod_grid_origin,
+    );
     sort_lod_coords_nearest(&mut desired, |(qx, qy)| {
         quad_min_chebyshev(qx, qy, level, player_grid)
     });
@@ -374,17 +380,8 @@ pub(crate) fn unload_object_lod_block(
 // detail (4×4 cells), then 8, 16, 32 (lowest; level 32 also makes the world
 // map). Matches `LODSettings\<World>.lod`'s level-min 4 / level-max 32 (EXAL
 // Q2). The first cut loads only level 4 ([`OBJECT_LOD_LEVEL`]); coarser bands
-// are a follow-up. `quad_origin` works for any of them.
-
-/// SW-corner cell of the level-`level` quad containing cell `(gx, gy)`.
-///
-/// Quad SW coords are integer multiples of `level` (verified against real
-/// filenames: `tamriel.4.88.8`, `tamriel.8.-72.-8`, `tamriel.16.0.0`). Uses
-/// Euclidean floor so quads tile consistently across the worldspace origin
-/// (the same `div_euclid` convention `terrain_lod` blocks use).
-pub(crate) fn quad_origin(gx: i32, gy: i32, level: i32) -> (i32, i32) {
-    (gx.div_euclid(level) * level, gy.div_euclid(level) * level)
-}
+// are a follow-up. `lod_support::quad_origin` works for any of them and keeps
+// the worldspace-relative grid shared with terrain LOD (#2586).
 
 /// Archive-relative path of the object-LOD `.bto` for a worldspace quad:
 /// `meshes\terrain\<world>\objects\<world>.<level>.<x>.<y>.bto`.
@@ -419,14 +416,14 @@ mod tests {
 
         // Buggy pre-fix behaviour: gating on radius_load includes the
         // hysteresis-band cell (distance == radius_unload == 6).
-        let buggy = object_lod_quads_in_radius(player, radius_load, level);
+        let buggy = object_lod_quads_in_radius(player, radius_load, level, (0, 0));
         assert!(
             buggy.contains(&(6, 0)),
             "sanity: radius_load gating must reproduce the pre-fix bug"
         );
 
         // Fixed behaviour: gating on radius_unload excludes it.
-        let fixed = object_lod_quads_in_radius(player, radius_unload, level);
+        let fixed = object_lod_quads_in_radius(player, radius_unload, level, (0, 0));
         assert!(
             !fixed.contains(&(6, 0)),
             "a cell at exactly radius_load+1 can still hold a resident full \
@@ -437,20 +434,30 @@ mod tests {
     }
 
     #[test]
-    fn quad_origin_snaps_to_level_multiples() {
+    fn tamriel_quad_origin_snaps_to_level_multiples() {
         // Positive: cell (89, 9) at level 4 → SW corner (88, 8) — the quad
         // `tamriel.4.88.8.bto` covers cells [88,92)×[8,12).
-        assert_eq!(quad_origin(89, 9, 4), (88, 8));
-        assert_eq!(quad_origin(88, 8, 4), (88, 8)); // corner maps to itself
-        assert_eq!(quad_origin(91, 11, 4), (88, 8)); // last cell in the quad
-                                                     // Negative: Euclidean floor — cell (-5, -13) at level 4 → (-8, -16),
-                                                     // the quad `tamriel.4.-8.-16.bto` covers [-8,-4)×[-16,-12).
-        assert_eq!(quad_origin(-5, -13, 4), (-8, -16));
-        assert_eq!(quad_origin(-8, -16, 4), (-8, -16));
+        assert_eq!(quad_origin(89, 9, 4, (0, 0)), (88, 8));
+        assert_eq!(quad_origin(88, 8, 4, (0, 0)), (88, 8)); // corner maps to itself
+        assert_eq!(quad_origin(91, 11, 4, (0, 0)), (88, 8)); // last cell in the quad
+                                                             // Negative: Euclidean floor — cell (-5, -13) at level 4 → (-8, -16),
+                                                             // the quad `tamriel.4.-8.-16.bto` covers [-8,-4)×[-16,-12).
+        assert_eq!(quad_origin(-5, -13, 4, (0, 0)), (-8, -16));
+        assert_eq!(quad_origin(-8, -16, 4, (0, 0)), (-8, -16));
         // Coarser levels snap to their own multiples.
-        assert_eq!(quad_origin(-70, -3, 8), (-72, -8)); // → tamriel.8.-72.-8
-        assert_eq!(quad_origin(5, 5, 16), (0, 0)); // → tamriel.16.0.0
-        assert_eq!(quad_origin(33, -1, 32), (32, -32));
+        assert_eq!(quad_origin(-70, -3, 8, (0, 0)), (-72, -8)); // → tamriel.8.-72.-8
+        assert_eq!(quad_origin(5, 5, 16, (0, 0)), (0, 0)); // → tamriel.16.0.0
+        assert_eq!(quad_origin(33, -1, 32, (0, 0)), (32, -32));
+    }
+
+    #[test]
+    fn object_lod_ring_keeps_nonzero_worldspace_phase() {
+        let origin = (-50, -50);
+        let quads = object_lod_quads_in_radius((-49, -49), 0, 4, origin);
+        assert!(!quads.is_empty());
+        assert!(quads.iter().all(|&(qx, qy)| {
+            (qx - origin.0).rem_euclid(4) == 0 && (qy - origin.1).rem_euclid(4) == 0
+        }));
     }
 
     #[test]

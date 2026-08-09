@@ -29,7 +29,7 @@
 //! pipeline (verified: vanilla Skyrim `tamriel.4.*.btr`, BSVER 100 /
 //! v20.2.0.7, → 1 mesh). Naming is **level-first**:
 //! `meshes\terrain\<world>\<world>.<level>.<x>.<y>.btr` with `(x, y)` the
-//! quad's SW-corner cell (a multiple of `level`). Diffuse sibling:
+//! quad's SW-corner cell on that worldspace's own level-aligned grid. Diffuse sibling:
 //! `textures\terrain\<world>\<world>.<level>.<x>.<y>.dds` (`_n.dds` normal is
 //! a follow-up — the LOD entity carries the mesh's own per-vertex normals,
 //! matching the synth path's capability).
@@ -250,6 +250,7 @@ fn world_bound(vertices: &[Vertex]) -> WorldBound {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cell_loader::lod_support::quad_origin;
 
     #[test]
     fn btr_path_is_level_first_under_world_folder() {
@@ -267,6 +268,25 @@ mod tests {
         assert_eq!(
             btr_archive_path("DLC2SolstheimWorld", 8, 0, 8),
             "meshes\\terrain\\dlc2solstheimworld\\dlc2solstheimworld.8.0.8.btr"
+        );
+    }
+
+    /// #2586 — real DLC worldspaces do not share Tamriel's zero-aligned grid.
+    /// These filenames are present verbatim in Skyrim - Meshes1.bsa.
+    #[test]
+    fn btr_paths_follow_nonzero_worldspace_origins() {
+        let apocrypha = quad_origin(-49, -49, 4, (-50, -50));
+        assert_eq!(apocrypha, (-50, -50));
+        assert_eq!(
+            btr_archive_path("DLC2ApocryphaWorld", 4, apocrypha.0, apocrypha.1),
+            "meshes\\terrain\\dlc2apocryphaworld\\dlc2apocryphaworld.4.-50.-50.btr"
+        );
+
+        let soul_cairn = quad_origin(-50, -49, 4, (-52, -51));
+        assert_eq!(soul_cairn, (-52, -51));
+        assert_eq!(
+            btr_archive_path("DLC01SoulCairn", 4, soul_cairn.0, soul_cairn.1),
+            "meshes\\terrain\\dlc01soulcairn\\dlc01soulcairn.4.-52.-51.btr"
         );
     }
 

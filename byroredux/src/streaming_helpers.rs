@@ -68,10 +68,12 @@ pub(crate) fn reconcile_lod_rings(
 ) -> LodReconcileProgress {
     let tex_provider = state.tex_provider.clone();
     let wctx = state.wctx.clone();
+    let lod_grid_origin = cell_loader::worldspace_lod_grid_origin(wctx.as_ref());
     let input = LodReconcileInput {
         tex_provider: tex_provider.as_ref(),
         wctx: wctx.as_ref(),
         player_grid,
+        lod_grid_origin,
         max_full_cell_radius: state.radius_unload,
     };
     let make_budget = || {
