@@ -25,6 +25,7 @@ mod fog;
 mod game_profiles;
 mod helpers;
 mod interaction;
+mod list_cells;
 mod material_translate;
 mod name_lookup;
 mod npc_spawn;

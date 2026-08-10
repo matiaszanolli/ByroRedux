@@ -118,6 +118,10 @@ pub(crate) use load::apply_interior_cell_lighting;
 pub(crate) use load::resolve_cell_lighting;
 #[allow(unused_imports)]
 pub use load::{load_cell_with_masters, validate_cell_loadable, CellLoadResult};
+// Re-exported for the headless `--list-cells` catalogue, which needs the
+// same masters-first merged index the cell loader builds but stops after
+// the parse phase.
+pub(crate) use load_order::parse_record_indexes_in_load_order;
 pub(crate) use lod_support::{worldspace_lod_grid_origin, LodReconcileInput, LodWorkBudget};
 #[allow(unused_imports)]
 pub(crate) use object_lod::{stream_object_lod_blocks, unload_object_lod_block, ObjectLodBlock};

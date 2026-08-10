@@ -126,7 +126,7 @@ fn install_strings_guard(
 /// was removed in SK-D6-02 / #566 once interior cell loads switched to
 /// the full record walker so the LGTM lighting-template fallback can
 /// resolve through `EsmIndex.lighting_templates`.
-pub(super) fn parse_record_indexes_in_load_order(
+pub(crate) fn parse_record_indexes_in_load_order(
     plugin_paths: &[&str],
 ) -> anyhow::Result<(esm::records::EsmIndex, Vec<String>)> {
     let load_order: Vec<String> = plugin_paths.iter().map(|p| plugin_basename_lc(p)).collect();

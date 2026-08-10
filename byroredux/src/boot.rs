@@ -189,6 +189,37 @@ pub(crate) fn run() -> Result<()> {
         return crate::sf_smoke::run(std::path::Path::new(&esm_path), &cell_edid);
     }
 
+    // --list-cells [FILTER]: print every interior cell (`--cell`) and
+    // worldspace (`--wrld`) in the current plugin set, then exit. No
+    // window, no Vulkan — just the ESM parse the cell loader would do
+    // anyway. `--game <key>` expansion above already supplied `--esm`,
+    // and repeatable `--master <path>` is honoured, so DLC interiors
+    // list under the same load order that would load them. The
+    // optional positional FILTER is a case-insensitive substring
+    // matched against editor ID and display name. See `list_cells`.
+    if let Some(idx) = args.iter().position(|a| a == "--list-cells") {
+        let esm_path = parse_string_arg(&args, "--esm").ok_or_else(|| {
+            anyhow::anyhow!("--list-cells requires --esm <PATH> or --game <KEY> to name a plugin")
+        })?;
+        // The value after the flag is a filter only when it isn't the
+        // next flag (`--list-cells` on its own lists everything).
+        let filter = args
+            .get(idx + 1)
+            .filter(|v| !v.starts_with("--"))
+            .map(|s| s.as_str());
+        let masters: Vec<&str> = args
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| (a == "--master").then(|| args.get(i + 1)).flatten())
+            .map(|s| s.as_str())
+            .collect();
+        let plugin_paths: Vec<&str> = masters
+            .into_iter()
+            .chain(std::iter::once(esm_path.as_str()))
+            .collect();
+        return crate::list_cells::run(&plugin_paths, filter);
+    }
+
     // Headless --cmd mode: execute command and exit without creating a window.
     if let Some(cmd_idx) = args.iter().position(|a| a == "--cmd") {
         // #637 / FNV-D5-03 — the headless path builds an empty World

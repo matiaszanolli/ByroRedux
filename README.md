@@ -164,6 +164,13 @@ cargo run -- --esm Skyrim.esm --cell <editor_id> \
              --textures-bsa "Skyrim - Textures0.bsa" \
              --scripts-bsa "Skyrim - Misc.bsa"
 
+# What can I load? Headless catalogue of every interior cell (--cell) and
+# worldspace (--wrld) in the plugin set — no window, no Vulkan. The optional
+# trailing word filters case-insensitively on editor ID and display name.
+cargo run --release -- --game skyrim_se --list-cells dragonsreach
+cargo run --release -- --game fnv --list-cells                  # all of them
+cargo run --release -- --esm Skyrim.esm --master Update.esm --list-cells whiterun
+
 # Loose NIF + optional animation
 cargo run -- path/to/mesh.nif [--kf path/to/anim.kf]
 
