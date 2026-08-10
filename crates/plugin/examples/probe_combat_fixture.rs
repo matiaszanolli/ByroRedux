@@ -81,7 +81,7 @@ fn main() -> anyhow::Result<()> {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            let mut weapons = Vec::new();
+            let mut weapons = std::collections::BTreeMap::<String, usize>::new();
             for entry in inventory {
                 let mut resolved = Vec::new();
                 expand_leveled_form_id(entry.item_form_id, actor_level, &index, &mut resolved);
@@ -90,15 +90,20 @@ fn main() -> anyhow::Result<()> {
                         continue;
                     };
                     if let ItemKind::Weapon { damage, .. } = item.kind {
-                        weapons.push(format!(
-                            "{:08X}:{}:damage={}:model={}",
-                            form_id, item.common.editor_id, damage, item.common.model_path
-                        ));
+                        *weapons
+                            .entry(format!(
+                                "{:08X}:{}:damage={}:model={}",
+                                form_id, item.common.editor_id, damage, item.common.model_path
+                            ))
+                            .or_default() += 1;
                     }
                 }
             }
-            weapons.sort();
-            weapons.dedup();
+            let weapons = weapons
+                .into_iter()
+                .map(|(weapon, copies)| format!("{weapon}:copies={copies}"))
+                .collect::<Vec<_>>()
+                .join(", ");
 
             println!(
                 "  NPC ref={:08X} base={:08X} edid={} level={} pos=({:.1},{:.1},{:.1}) \
@@ -120,7 +125,7 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     format!("{:08X}", npc.death_item_form_id)
                 },
-                weapons.join(", ")
+                weapons
             );
         }
 

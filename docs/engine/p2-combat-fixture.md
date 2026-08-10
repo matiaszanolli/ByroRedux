@@ -41,13 +41,21 @@ cargo run -p byroredux-plugin --example probe_combat_fixture -- \
 The probe must report CELL `000371DE`, direct NPC reference `000380B4`, both
 factions, death item `0003AD7F`, and the two concrete weapon leaves above.
 
+A release-build live preflight on 2026-08-10 also resolved the actor by its
+editor ID after the full cell load. Its root landed at renderer Y-up position
+`(9015.58, -2053.70, 4724.62)`, matching the authored transform. Inspection
+showed ten inventory rows, including four copies each of the Battleaxe and
+Greatsword leaves, while all 32 `EquipmentSlots` occupants were empty. That
+confirms the production spawn path and makes the current leveled expansion /
+weapon-selection ambiguity observable rather than hypothetical.
+
 ## Existing runtime surface
 
 | Surface | Ready now | P2 gap exposed by the fixture |
 |---|---|---|
 | Actor identity | Direct `NPC_` placement creates a root with `Name`, `FactionRanks`, `CharacterLevel`, and `Background`; cell finalization adds the placed reference's `FormIdComponent` and `SceneAliasCandidate`. | No hostile-target or combat-state consumer exists. Current PACK behavior is ambient only: sandbox, wander, travel, follow, escort, guard, or patrol. |
 | Health | `ActorValues` has composed values plus `apply_damage`/restore APIs. | `derive_npc_actor_values` returns an empty set for Skyrim, so this actor currently receives no `ActorValues`. Skyrim ACBS health/stat offsets need a typed parse and a deliberate base-value policy before damage can be real. |
-| Inventory/equipment | Outfit and inherited inventory resolve through leveled lists into concrete `Inventory` rows. Armor occupies `EquipmentSlots` and attaches a skinned mesh. | Weapons remain inventory-only: no hand slot, chosen weapon state, weapon mesh attachment, or attack timing consumes them. Current leveled expansion also exposes both two-handed leaves; P2 must freeze one deterministic selection rule. |
+| Inventory/equipment | Outfit and inherited inventory resolve through leveled lists into concrete `Inventory` rows; the generic armor path can occupy `EquipmentSlots` and attach skinned meshes. The live fixture contains both expected weapon leaves. | The fixture's live root has empty `EquipmentSlots`, and each weapon leaf is duplicated four times by current expansion. Weapons have no hand slot, chosen state, mesh attachment, or attack timing. P2 must freeze one deterministic selection rule and remove the multi-pick duplication from the equipped result. |
 | Animation | The Skyrim skeleton and skin are attached, ragdoll bones are keyframed, and the actor root receives a `HavokAnimationTarget`. | General Skyrim NPC idle/locomotion/attack/hit/death playback is absent. The installed HKX catalog is intentionally limited to MQ101 cart idles; Skyrim actors do not receive the KF idle pool. |
 | Physics/hit ownership | `PhysicsWorld::cast_ray` returns the hit rigid body and can exclude the player. Skeleton collision bodies and a parsed `RagdollTemplate` already exist. | Ray hits identify a bone body, while canonical reference identity lives on the placement root. `PhysicsSourceForm` covers static placement colliders, not actor bones. P2 needs one bone/descendant-to-actor-root ownership path. The `RagdollTemplate` is attached to the skeleton root, but `activate_ragdoll` expects the entity passed to it to own the template. |
 | Hit/damage/death | Canonical `HitEvent` is registered as a transient ECS marker; end-of-frame cleanup handles it. | There is no production `HitEvent` producer or consumer, no health-to-death transition, and no combat-AI disable step. Existing `apply_damage` uses positive accumulated damage, so the consumer contract is already clear once Health exists. |
