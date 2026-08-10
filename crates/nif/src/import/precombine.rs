@@ -208,9 +208,24 @@ pub struct PrecombineGeomRef {
     pub lod_counts: [u32; 3],
     /// Triangle index-unit offset per LOD level within the block.
     pub lod_offsets: [u32; 3],
-    /// Per-`BSPackedGeomDataCombined` placement transforms (raw Z-up).
-    pub instances: Vec<NiTransform>,
+    /// Per-`BSPackedGeomDataCombined` placements (raw Z-up), including
+    /// the authored bound used to validate transform interpretation.
+    pub instances: Vec<PrecombineInstance>,
     pub material: ImportedMaterial,
+}
+
+/// One placement from `BSPackedGeomDataCombined`.
+///
+/// Keeping the authored sphere alongside the transform is important: it
+/// gives importers and diagnostics a geometry-independent ground truth for
+/// validating matrix layout and transform composition. Previously this was
+/// discarded at the NIF-to-runtime boundary.
+#[derive(Debug, Clone, Copy)]
+pub struct PrecombineInstance {
+    pub grayscale_to_palette_scale: f32,
+    pub transform: NiTransform,
+    /// Raw Gamebryo Z-up `[center.x, center.y, center.z, radius]`.
+    pub bounding_sphere: [f32; 4],
 }
 
 /// Walk an `_oc.nif` scene and collect every shared-geometry object with
@@ -250,7 +265,15 @@ pub fn collect_precombine_geom_refs(
                     hdr.tri_offset_lod1,
                     hdr.tri_offset_lod2,
                 ],
-                instances: hdr.combined.iter().map(|c| c.transform).collect(),
+                instances: hdr
+                    .combined
+                    .iter()
+                    .map(|c| PrecombineInstance {
+                        grayscale_to_palette_scale: c.grayscale_to_palette_scale,
+                        transform: c.transform,
+                        bounding_sphere: c.bounding_sphere,
+                    })
+                    .collect(),
                 material: material.clone(),
             });
         }

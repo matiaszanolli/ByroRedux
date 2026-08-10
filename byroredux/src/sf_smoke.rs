@@ -96,6 +96,19 @@ fn print_cell_report(cell: &CellData, cells_index: &byroredux_plugin::esm::cell:
     );
     println!("interior   : {}", cell.is_interior);
     println!("references : {} REFRs", total);
+    if !cell.precombined_mesh_hashes.is_empty() {
+        let hashes = cell
+            .precombined_mesh_hashes
+            .iter()
+            .map(|hash| format!("{hash:08x}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "precombine : {} hash(es): {}",
+            cell.precombined_mesh_hashes.len(),
+            hashes
+        );
+    }
 
     if total == 0 {
         println!("(cell has no REFRs — nothing to measure)");
@@ -113,12 +126,20 @@ fn print_cell_report(cell: &CellData, cells_index: &byroredux_plugin::esm::cell:
     let mut resolved_by_type: HashMap<String, usize> = HashMap::new();
     let mut unresolved_high_byte: HashMap<u8, usize> = HashMap::new();
     let mut unresolved_sample: Vec<u32> = Vec::new();
+    let mut absorbed_by_type: HashMap<String, usize> = HashMap::new();
+    let mut absorbed_total = 0usize;
     let mut resolved = 0usize;
     for r in &cell.references {
         if let Some(obj) = cells_index.statics.get(&r.base_form_id) {
             *resolved_by_type
                 .entry(obj.record_type.as_str().to_string())
                 .or_default() += 1;
+            if cell.absorbed_refs.contains(&r.form_id) {
+                *absorbed_by_type
+                    .entry(obj.record_type.as_str().to_string())
+                    .or_default() += 1;
+                absorbed_total += 1;
+            }
             resolved += 1;
         } else {
             // The high byte of a FormID is the master file slot (load
@@ -149,6 +170,16 @@ fn print_cell_report(cell: &CellData, cells_index: &byroredux_plugin::esm::cell:
         for (ty, count) in &by_type {
             let pct_t = 100.0 * *count as f32 / total as f32;
             println!("  {:>4}  {:>5}  ({:>5.1}%)", ty, count, pct_t);
+        }
+    }
+
+    if absorbed_total > 0 {
+        println!("─── precombined absorption by base record type ─────────────");
+        println!("absorbed   : {} REFRs", absorbed_total);
+        let mut by_type: Vec<(String, usize)> = absorbed_by_type.into_iter().collect();
+        by_type.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        for (ty, count) in by_type {
+            println!("  {:>4}  {:>5}", ty, count);
         }
     }
 

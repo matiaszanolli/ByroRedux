@@ -629,7 +629,7 @@ pub(super) fn build_precombine_meshes(
         for inst in &geom.instances {
             let mesh = decoded
                 .clone()
-                .into_imported_mesh(inst, geom.material.clone());
+                .into_imported_mesh(&inst.transform, geom.material.clone());
             meshes.push(mesh);
         }
     }
@@ -795,6 +795,172 @@ mod tests {
         eprintln!(
             "build_precombine_meshes: decoded {} mesh(es), {textured} textured",
             meshes.len()
+        );
+    }
+
+    /// Switchboard transform diagnostic. The packed record's authored
+    /// bounding sphere lets us compare matrix interpretations without a
+    /// renderer or a subjective screenshot. Kept ignored because it needs
+    /// the installed FO4 archives.
+    #[test]
+    #[ignore]
+    fn switchboard_precombine_transforms_match_authored_bounds() {
+        let Some(data) = fo4_data_dir() else {
+            eprintln!("Skipping: no FO4 data dir");
+            return;
+        };
+        let ba2 = Ba2Archive::open(data.join("Fallout4 - MeshesExtra.ba2"))
+            .expect("open MeshesExtra.ba2");
+        let csg =
+            CsgArchive::open(data.join("Fallout4 - Geometry.csg")).expect("open Geometry.csg");
+        let paths: Vec<_> = ba2
+            .list_files()
+            .into_iter()
+            .filter(|name| {
+                name.starts_with("meshes\\precombined\\000b42e4_") && name.ends_with("_oc.nif")
+            })
+            .collect();
+        assert!(!paths.is_empty(), "Switchboard precombine NIFs present");
+
+        fn transpose(t: &byroredux_nif::types::NiTransform) -> byroredux_nif::types::NiTransform {
+            let mut out = *t;
+            for row in 0..3 {
+                for col in 0..3 {
+                    out.rotation.rows[row][col] = t.rotation.rows[col][row];
+                }
+            }
+            out
+        }
+
+        fn bound_error(mesh: &ImportedMesh, authored: [f32; 4]) -> (f32, f32) {
+            let q = Quat::from_xyzw(
+                mesh.rotation[0],
+                mesh.rotation[1],
+                mesh.rotation[2],
+                mesh.rotation[3],
+            );
+            let local = Vec3::from_array(mesh.local_bound_center) * mesh.scale;
+            let placed = Vec3::from_array(mesh.translation) + q * local;
+            let authored_center = Vec3::new(authored[0], authored[2], -authored[1]);
+            let center_error = placed.distance(authored_center);
+            let radius_error = (mesh.local_bound_radius * mesh.scale.abs() - authored[3]).abs();
+            (center_error, radius_error)
+        }
+
+        fn sphere_overrun(mesh: &ImportedMesh, authored: [f32; 4]) -> f32 {
+            let q = Quat::from_xyzw(
+                mesh.rotation[0],
+                mesh.rotation[1],
+                mesh.rotation[2],
+                mesh.rotation[3],
+            );
+            let translation = Vec3::from_array(mesh.translation);
+            let center = Vec3::new(authored[0], authored[2], -authored[1]);
+            let furthest = mesh
+                .positions
+                .iter()
+                .map(|&p| {
+                    let placed = translation + q * (Vec3::from_array(p) * mesh.scale);
+                    placed.distance(center)
+                })
+                .fold(0.0f32, f32::max);
+            (furthest - authored[3]).max(0.0)
+        }
+
+        let mut current = Vec::new();
+        let mut transposed = Vec::new();
+        let mut radius = Vec::new();
+        let mut current_overrun = Vec::new();
+        let mut transposed_overrun = Vec::new();
+        let mut objects = 0usize;
+        let mut instances = 0usize;
+        let mut pool = StringPool::new();
+        for path in &paths {
+            let bytes = ba2.extract(path).expect("extract Switchboard _oc.nif");
+            let scene = byroredux_nif::parse_nif(&bytes).expect("parse Switchboard _oc.nif");
+            for geom in
+                byroredux_nif::import::precombine::collect_precombine_geom_refs(&scene, &mut pool)
+            {
+                objects += 1;
+                if geom.num_verts == 0 {
+                    continue;
+                }
+                let (lod_count, lod_off_idx) = (0..3)
+                    .map(|i| (geom.lod_counts[i], geom.lod_offsets[i]))
+                    .max_by_key(|&(count, _)| count)
+                    .unwrap();
+                if lod_count == 0 {
+                    continue;
+                }
+                let stride = psg_vertex_stride(geom.vertex_desc);
+                let tri_start = (lod_off_idx / 3) as usize;
+                let need = geom.num_verts * stride + (tri_start + lod_count as usize) * 6;
+                let psg = csg
+                    .read_psg(geom.data_offset as u64, need)
+                    .expect("read Switchboard PSG");
+                let decoded = decode_shared_geom_object(
+                    &psg,
+                    geom.vertex_desc,
+                    geom.num_verts,
+                    tri_start,
+                    lod_count as usize,
+                )
+                .expect("decode Switchboard PSG");
+                for inst in &geom.instances {
+                    instances += 1;
+                    let regular = decoded
+                        .clone()
+                        .into_imported_mesh(&inst.transform, geom.material.clone());
+                    let flipped = decoded
+                        .clone()
+                        .into_imported_mesh(&transpose(&inst.transform), geom.material.clone());
+                    let (ce, re) = bound_error(&regular, inst.bounding_sphere);
+                    current.push(ce);
+                    radius.push(re);
+                    transposed.push(bound_error(&flipped, inst.bounding_sphere).0);
+                    current_overrun.push(sphere_overrun(&regular, inst.bounding_sphere));
+                    transposed_overrun.push(sphere_overrun(&flipped, inst.bounding_sphere));
+                }
+            }
+        }
+        current.sort_by(f32::total_cmp);
+        transposed.sort_by(f32::total_cmp);
+        radius.sort_by(f32::total_cmp);
+        current_overrun.sort_by(f32::total_cmp);
+        transposed_overrun.sort_by(f32::total_cmp);
+        let percentile =
+            |values: &[f32], p: f32| values[((values.len() - 1) as f32 * p).round() as usize];
+        eprintln!(
+            "Switchboard: {} NIFs, {objects} objects, {instances} instances; \
+             center error current p50={:.3} p90={:.3} max={:.3}; \
+             transpose p50={:.3} p90={:.3} max={:.3}; \
+             radius error p50={:.3} p90={:.3} max={:.3}; \
+             sphere overrun current p50={:.3} p90={:.3} max={:.3}; \
+             transpose p50={:.3} p90={:.3} max={:.3}",
+            paths.len(),
+            percentile(&current, 0.5),
+            percentile(&current, 0.9),
+            current.last().copied().unwrap_or_default(),
+            percentile(&transposed, 0.5),
+            percentile(&transposed, 0.9),
+            transposed.last().copied().unwrap_or_default(),
+            percentile(&radius, 0.5),
+            percentile(&radius, 0.9),
+            radius.last().copied().unwrap_or_default(),
+            percentile(&current_overrun, 0.5),
+            percentile(&current_overrun, 0.9),
+            current_overrun.last().copied().unwrap_or_default(),
+            percentile(&transposed_overrun, 0.5),
+            percentile(&transposed_overrun, 0.9),
+            transposed_overrun.last().copied().unwrap_or_default(),
+        );
+        assert!(
+            percentile(&current_overrun, 0.9) < 0.05,
+            "current packed transforms must keep decoded geometry within authored spheres"
+        );
+        assert!(
+            percentile(&transposed_overrun, 0.9) > 50.0,
+            "regression fixture must distinguish the incorrect matrix transpose"
         );
     }
 

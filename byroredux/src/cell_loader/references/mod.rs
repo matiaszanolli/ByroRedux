@@ -76,6 +76,7 @@ pub(super) struct ReferenceLoadJob {
     door_pos: Option<Vec3>,
     enable_skipped: u32,
     absorbed_skipped: u32,
+    absorbed_interactive_retained: u32,
     npc_pending: u32,
     npc_pending_sample: Vec<u32>,
     idle_pool: Vec<u32>,
@@ -116,6 +117,50 @@ impl ReferenceLoadJob {
 /// silently degrade RT. See docs/engine/shader-pipeline.md "Coordinate
 /// Spaces & Precision".
 pub(crate) const RT_ABSOLUTE_PRECISION_CEILING: f32 = 1_048_576.0; // 2^20
+
+/// Whether a precombined CSG bake may replace this REFR entirely.
+///
+/// Only render-only static geometry is safe to erase from the ECS. FURN,
+/// CONT, ACTI, TERM, and MSTT records carry interaction, inventory, scripts,
+/// furniture markers, or runtime motion that the flattened CSG cannot
+/// preserve. XPRI can list those records (Switchboard has 141 of them), so
+/// treating every XPRI entry as disposable drops both their visuals and their
+/// gameplay identity. SCOL is also render-only once expanded into its baked
+/// static geometry.
+fn precombine_can_replace_record(record_type: Option<byroredux_plugin::RecordType>) -> bool {
+    matches!(
+        record_type,
+        Some(byroredux_plugin::RecordType::STAT | byroredux_plugin::RecordType::SCOL)
+    )
+}
+
+#[cfg(test)]
+mod precombine_absorption_tests {
+    use super::precombine_can_replace_record;
+    use byroredux_plugin::RecordType;
+
+    #[test]
+    fn only_render_only_records_are_fully_replaced_by_csg() {
+        assert!(precombine_can_replace_record(Some(RecordType::STAT)));
+        assert!(precombine_can_replace_record(Some(RecordType::SCOL)));
+
+        for interactive in [
+            RecordType::MSTT,
+            RecordType::FURN,
+            RecordType::CONT,
+            RecordType::ACTI,
+            RecordType::TERM,
+            RecordType::DOOR,
+        ] {
+            assert!(
+                !precombine_can_replace_record(Some(interactive)),
+                "{} must retain its individual runtime identity",
+                interactive.as_str(),
+            );
+        }
+        assert!(!precombine_can_replace_record(None));
+    }
+}
 
 /// Returns the cell's largest absolute world-coordinate magnitude when
 /// it reaches [`RT_ABSOLUTE_PRECISION_CEILING`], else `None`. `None` for
@@ -258,6 +303,7 @@ pub(super) fn load_references_budgeted(
         // operator can spot a missing precombined-spawn step (would manifest
         // as "absorbed=N but precombined_spawned=0" pair below).
         let absorbed_skipped = 0u32;
+        let absorbed_interactive_retained = 0u32;
         // `npc_pending` was the Phase 0/2 telemetry for pre-baked-FaceGen
         // games waiting on Phase 4's spawn path — kept (unused after
         // Phase 4 wired) so the cell summary's "0 ACHR refs ... pending"
@@ -327,6 +373,7 @@ pub(super) fn load_references_budgeted(
             door_pos,
             enable_skipped,
             absorbed_skipped,
+            absorbed_interactive_retained,
             npc_pending,
             npc_pending_sample,
             idle_pool,
@@ -373,10 +420,17 @@ pub(super) fn load_references_budgeted(
         // precombined-spawn pass will bring those in as single
         // entities. Filtering here prevents double geometry.
         if absorbed_refs.contains(&placed_ref.form_id) {
-            job.absorbed_skipped += 1;
-            job.next_ref += 1;
-            budget.complete_unit();
-            continue;
+            let record_type = index
+                .statics
+                .get(&placed_ref.base_form_id)
+                .map(|object| object.record_type);
+            if precombine_can_replace_record(record_type) {
+                job.absorbed_skipped += 1;
+                job.next_ref += 1;
+                budget.complete_unit();
+                continue;
+            }
+            job.absorbed_interactive_retained += 1;
         }
 
         // Convert the outer REFR's placement (Z-up Bethesda → Y-up
@@ -588,6 +642,7 @@ pub(super) fn load_references_budgeted(
         door_pos,
         enable_skipped,
         absorbed_skipped,
+        absorbed_interactive_retained,
         npc_pending,
         npc_pending_sample,
         accum,
@@ -884,6 +939,13 @@ pub(super) fn load_references_budgeted(
             "  {} REFRs skipped via FO4 PreCombined absorption — geometry \
              served by precombined-spawn pass (#1188)",
             absorbed_skipped,
+        );
+    }
+    if absorbed_interactive_retained > 0 {
+        log::info!(
+            "  {} XPRI REFRs retained individually because their record type \
+             carries gameplay/runtime identity that CSG cannot preserve",
+            absorbed_interactive_retained,
         );
     }
     if nif_not_found > 0 {
