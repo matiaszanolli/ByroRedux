@@ -12,11 +12,9 @@
 //! by every game; the per-game translate-up cost for water physics is zero.
 //!
 //! The force *application* path lives on [`crate::world::PhysicsWorld`]
-//! (`add_force` / `apply_impulse` / `reset_forces`); this module supplies the
-//! *magnitudes*. Wiring a live `buoyancy_system` into the frame schedule is
-//! sequenced with the exterior-reroute physics-freeze fix (shared Rapier
-//! wake/sleep discipline — WATAL §7 Phase 2), so it is intentionally absent
-//! here; the math below is validated against the real solver in the tests.
+//! (`add_force` / `apply_impulse` / `reset_forces`). [`apply_buoyancy`] runs
+//! from the live physics-sync pre-step, combines lift with current drag, and
+//! preserves the exterior-reroute wake/sleep discipline (WATAL §7 Phase 2).
 
 use byroredux_core::ecs::components::collision::{MotionType, RigidBodyData};
 use byroredux_core::ecs::components::water::{
@@ -51,6 +49,12 @@ pub struct PhysicsWaterConstants {
     pub linear_damping_in: f32,
     /// Angular damping (1/s) while submerged — water resists tumbling.
     pub angular_damping_in: f32,
+    /// First-order response rate (1/s) that pulls the body's velocity along
+    /// a [`WaterFlow`] axis toward the authored current speed. This is an
+    /// engine constant, not WATR data; the WATR supplies direction + speed.
+    /// A response force (instead of a constant acceleration) converges on a
+    /// bounded terminal speed and cannot accelerate clutter without limit.
+    pub current_drag: f32,
 }
 
 impl Default for PhysicsWaterConstants {
@@ -59,6 +63,7 @@ impl Default for PhysicsWaterConstants {
             buoyancy_density_ratio: 1.67,
             linear_damping_in: 1.5,
             angular_damping_in: 1.5,
+            current_drag: 4.0,
         }
     }
 }
@@ -95,6 +100,53 @@ pub fn buoyancy_force(
 ) -> Vec3 {
     let f = submerged_fraction.clamp(0.0, 1.0) * density_ratio * mass * gravity_y.abs();
     Vec3::new(0.0, f, 0.0)
+}
+
+/// Force that makes a submerged body converge on a water current's velocity.
+///
+/// Only velocity **along the current axis** is matched. Ordinary submerged
+/// linear damping already resists cross-current and vertical motion; applying
+/// a second full-vector drag here would double-damp bobbing and player-thrown
+/// lateral motion. The mass term makes bodies of different mass acquire the
+/// same current-driven acceleration:
+///
+/// ```text
+/// F_current = unit(flow.direction)
+///           · (flow.speed - dot(body_velocity, unit_direction))
+///           · mass · current_drag · submerged_fraction
+/// ```
+///
+/// Invalid/zero directions and non-positive tuning resolve to zero force at
+/// this final safety boundary. Valid canonical [`WaterFlow`] values are
+/// finite, unit-length, and carry a non-negative speed.
+#[inline]
+pub fn current_force(
+    flow: WaterFlow,
+    body_velocity: Vec3,
+    mass: f32,
+    submerged_fraction: f32,
+    current_drag: f32,
+) -> Vec3 {
+    let direction = Vec3::from_array(flow.direction);
+    if !direction.is_finite()
+        || !body_velocity.is_finite()
+        || !mass.is_finite()
+        || !flow.speed.is_finite()
+        || !current_drag.is_finite()
+    {
+        return Vec3::ZERO;
+    }
+
+    let direction = direction.normalize_or_zero();
+    if direction == Vec3::ZERO {
+        return Vec3::ZERO;
+    }
+
+    let fraction = submerged_fraction.clamp(0.0, 1.0);
+    let response = current_drag.max(0.0);
+    let target_speed = flow.speed.max(0.0);
+    let speed_error = target_speed - body_velocity.dot(direction);
+    direction * (speed_error * mass.max(0.0) * response * fraction)
 }
 
 /// Fraction (0..1) of a body's vertical span below the water surface,
@@ -169,9 +221,10 @@ fn collect_water_surfaces(world: &World) -> Vec<WaterSurface> {
 ///
 /// For every **dynamic** body whose representative collider AABB overlaps a
 /// [`WaterVolume`], it writes a [`WaterContact`] and applies Archimedes
-/// buoyancy ([`buoyancy_force`]) + submerged viscous damping so dropped
-/// clutter rises and *settles* at the surface instead of sinking. Bodies
-/// that have never touched water carry no component and cost one AABB test.
+/// buoyancy ([`buoyancy_force`]), [`WaterFlow`] current force
+/// ([`current_force`]), and submerged viscous damping so dropped clutter
+/// rises, drifts, and settles instead of sinking. Bodies that have never
+/// touched water carry no component and cost one AABB test.
 ///
 /// # Wake discipline (shared with the exterior-freeze fix — `watal.md` §0)
 ///
@@ -349,19 +402,32 @@ pub(crate) fn apply_buoyancy(world: &World, had_newcomers: bool) {
                                 b.wake_up(true);
                                 woke_any = true;
                             }
-                            // Apply lift only while awake — a settled, sleeping
-                            // float is left at rest (gravity is also not
-                            // integrated while asleep, so equilibrium holds).
+                            // Apply lift + current only while awake — a settled,
+                            // sleeping float is left at rest (gravity is also
+                            // not integrated while asleep, so equilibrium
+                            // holds). Entry wakes the body once above; a real
+                            // current then keeps it moving naturally, while a
+                            // body pinned against a bank may sleep again.
                             if !b.is_sleeping() {
                                 let mass = b.mass();
-                                let f = buoyancy_force(
+                                let mut f = buoyancy_force(
                                     mass,
                                     frac,
                                     gravity_y,
                                     consts.buoyancy_density_ratio,
                                 );
+                                if let Some(flow) = s.flow {
+                                    let velocity = b.linvel();
+                                    f += current_force(
+                                        flow,
+                                        Vec3::new(velocity.x, velocity.y, velocity.z),
+                                        mass,
+                                        frac,
+                                        consts.current_drag,
+                                    );
+                                }
                                 b.reset_forces(false);
-                                b.add_force(vector![0.0, f.y, 0.0], false);
+                                b.add_force(vector![f.x, f.y, f.z], false);
                             }
                         }
                     }
@@ -490,6 +556,61 @@ mod tests {
         );
     }
 
+    #[test]
+    fn current_force_matches_velocity_along_normalized_flow_axis() {
+        let flow = WaterFlow {
+            // Deliberately non-unit: the helper owns the final normalization.
+            direction: [2.0, 0.0, 0.0],
+            speed: 8.0,
+        };
+        let mass = 10.0;
+        let drag = 4.0;
+
+        let from_rest = current_force(flow, Vec3::ZERO, mass, 0.5, drag);
+        assert_eq!(from_rest, Vec3::new(160.0, 0.0, 0.0));
+
+        let at_target = current_force(flow, Vec3::new(8.0, 20.0, -3.0), mass, 1.0, drag);
+        assert_eq!(at_target, Vec3::ZERO);
+
+        let faster_than_current = current_force(flow, Vec3::new(10.0, 0.0, 0.0), mass, 1.0, drag);
+        assert_eq!(faster_than_current, Vec3::new(-80.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn current_force_is_zero_when_dry_or_flow_is_invalid() {
+        let flow = WaterFlow {
+            direction: [1.0, 0.0, 0.0],
+            speed: 8.0,
+        };
+        assert_eq!(current_force(flow, Vec3::ZERO, 10.0, 0.0, 4.0), Vec3::ZERO);
+        assert_eq!(
+            current_force(
+                WaterFlow {
+                    direction: [0.0; 3],
+                    speed: 8.0,
+                },
+                Vec3::ZERO,
+                10.0,
+                1.0,
+                4.0,
+            ),
+            Vec3::ZERO
+        );
+        assert_eq!(
+            current_force(
+                WaterFlow {
+                    direction: [f32::NAN, 0.0, 0.0],
+                    speed: 8.0,
+                },
+                Vec3::ZERO,
+                10.0,
+                1.0,
+                4.0,
+            ),
+            Vec3::ZERO
+        );
+    }
+
     /// End-to-end against the real Rapier solver: a dense-clutter-shaped
     /// body released deep below a water surface must rise under buoyancy and
     /// settle near the surface (not sink, not launch into orbit). This
@@ -566,13 +687,13 @@ mod tests {
     /// proves the whole chain — register → wake-on-entry → buoyancy +
     /// submerged damping → step → pull → WaterContact — not just the math.
     #[test]
-    fn body_in_water_volume_floats_via_physics_sync() {
+    fn body_in_water_volume_floats_and_drifts_via_physics_sync() {
         use crate::{physics_sync_system, RapierHandles};
         use byroredux_core::ecs::components::collision::{
             CollisionShape, MotionType, RigidBodyData,
         };
         use byroredux_core::ecs::components::water::{
-            WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+            WaterContact, WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
         };
         use byroredux_core::ecs::components::{GlobalTransform, Transform};
         use byroredux_core::ecs::World;
@@ -598,6 +719,13 @@ mod tests {
             WaterVolume {
                 min: [-500.0, -200.0, -500.0],
                 max: [500.0, surface_y, 500.0],
+            },
+        );
+        world.insert(
+            water,
+            WaterFlow {
+                direction: [1.0, 0.0, 0.0],
+                speed: 8.0,
             },
         );
 
@@ -632,11 +760,11 @@ mod tests {
             physics_sync_system(&world, PHYSICS_DT);
         }
 
-        let y = world
+        let position = world
             .get::<Transform>(body)
             .expect("transform present")
-            .translation
-            .y;
+            .translation;
+        let y = position.y;
         assert!(
             y > start_y,
             "buoyant body must rise from its release depth {start_y}; y={y}"
@@ -648,6 +776,11 @@ mod tests {
         assert!(
             (surface_y - 6.0..surface_y + radius).contains(&y),
             "must settle near the surface; y={y}"
+        );
+        assert!(
+            position.x > 5.0,
+            "flowing water must carry the body downstream; x={}",
+            position.x
         );
 
         let contact = world
@@ -661,6 +794,11 @@ mod tests {
         assert!(
             contact.material.is_some(),
             "contact carries the plane material"
+        );
+        assert_eq!(
+            contact.flow.map(|flow| flow.direction),
+            Some([1.0, 0.0, 0.0]),
+            "contact carries the same current consumed by the solver"
         );
     }
 

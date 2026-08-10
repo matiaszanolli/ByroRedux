@@ -161,6 +161,8 @@ run_profile () {
     env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" > "$debug_log" 2>&1 <<'EOF' || true
 stats
 light.dump
+water.dump
+water.contacts
 tex.missing
 mesh.cache
 mesh.cache failed

@@ -15,11 +15,12 @@ the renderer *and* the physics solver consume identically for every game.
 `Imported*` → one resolved, game-agnostic representation). The verbs stay
 `translate` / `canonical` / `resolve`; **WATAL** names the layer as a whole.
 
-**Status**: PROPOSED (design, 2026-06-19). Carves the water concern out of EXAL §2
-(which covered water *rendering* only) into a first-class **double-ended** layer —
-render **and** physics — modelled on Skyrim, with Oblivion/FO3/FNV translating up.
-Implementation rolls out per §7. The crash-fix (§0) is the precondition and folds
-into the exterior reroute.
+**Status**: ACTIVE (design 2026-06-19; implementation checkpoint 2026-08-10).
+The layer is now double-ended in production: canonical WATR/XCLW/XCWT state feeds
+the renderer, while dynamic Rapier bodies receive `WaterContact`, buoyancy,
+submerged damping, and bounded current drag from the same `WaterFlow`. Phase 0 is
+closed; Phase 1 and Phase 2 are partial. Character swimming/drowning, exact tail
+decode, disturbance events, and the cross-game visual smoke matrix remain open.
 
 **Goal**: every supported engine version (Oblivion / FO3 / FNV / Skyrim LE/SE /
 FO4 / FO76 / Starfield) translates its native, per-game water authoring into **one
@@ -191,28 +192,28 @@ Skyrim-authored *render* fields onto `WaterMaterial`, **(b)** adding the missing
 *physics* state (the one place no component exists), and **(c)** routing every
 per-game decision through the single `resolve_water_material` site.
 
-The genuinely **new** canonical types (no existing ECS role) are: `WaterLod`
-(distant water — the same LOD gap EXAL §5 flags), `PhysicsWaterConstants`
-(engine-defined buoyancy params — *no game authors these*), `WaterContact`
-(generalises camera-only `SubmersionState` to all bodies), and the transient
-`SplashEvent` / `RippleEvent` markers.
+The genuinely **new** canonical types (no prior ECS role) are: shipped
+`PhysicsWaterConstants` (engine-defined buoyancy/current params — *no game authors
+these*) and `WaterContact` (generalises camera-only `SubmersionState` to all
+dynamic bodies); the LOD translation/spawn path is live without a standalone
+`WaterLod` ECS component. Transient `SplashEvent` / `RippleEvent` markers remain
+planned.
 
 ---
 
-## 2. Per-category maturity inventory (2026-06-19)
+## 2. Per-category maturity inventory (updated 2026-08-10)
 
 How close each water concern is to the canonical contract today.
 
-### Components — **mostly canonical (render), nonexistent (physics)**
+### Components — **canonical render core + live body-physics core**
 
 `crates/core/src/ecs/components/water.rs` is well-designed and *richer than
 Oblivion/FO3/FNV already* on the render side — exactly the "Skyrim as canonical
 base" target. `WaterMaterial` carries 24+ shading fields; `WaterFlow`,
-`WaterVolume`, `SubmersionState` are clean. **Missing:** every physics field
-(density/drag/buoyancy), `submerged_fraction` (only a scalar `depth` exists —
-insufficient for Archimedes), and the Skyrim-authored render fields dropped at the
-boundary (`sun_power`, scatter, `wave_amplitude/frequency`, GNAM noise layers,
-below-water fog).
+`WaterVolume`, `SubmersionState`, `WaterContact`, and `PhysicsWaterConstants` are
+live canonical inputs/state. Wave amplitude/frequency and worldspace LOD water
+have reached the canonical tier. **Missing:** promoted sun/scatter/GNAM noise and
+below-water-tail fields, plus character swim/drown state and disturbance events.
 
 ### Decode + translate — **good (render), drops Skyrim-only fields**
 
@@ -220,8 +221,9 @@ below-water fog).
 best-effort Skyrim DNAM prefix; `NNAM`/`TNAM` texture and `GNAM` noise FormIDs are
 parsed; `raw_data`/`raw_dnam` tails preserved. `resolve_water_material`
 (`env_translate.rs:89-176`) captures colors/fog/fresnel/reflectivity/flow.
-**Dropped at the boundary:** `wave_amplitude`/`wave_frequency` (parsed, never
-copied), `GNAM` noise refs (parsed, never consumed), `sun_power` (skipped). The
+Wave amplitude/frequency and reflection tint now cross the boundary. **Still
+dropped:** `GNAM` noise refs and `sun_power`; exact below-water tail decode remains
+unverified. The
 `WaterKind` classification is a fragile EDID-substring heuristic
 (`rapid`/`waterfall`/`falls`/`river`/`stream`), English-only, with `waterfall`
 deliberately demoted to `River` for cell planes.
@@ -232,8 +234,8 @@ deliberately demoted to `River` for cell planes.
 `HALF_EXTENT = 256`; exterior: full 4096-unit tile). Per-game default height via
 `default_water_for_worldspace`. **Gaps:** no shoreline-fit mesh, one plane per
 cell (can't represent multiple bodies at different heights, or rivers spanning
-cells), and — critically — **no Rapier collider** (the `WaterVolume` AABB is
-ECS-only; the solver never learns water exists).
+cells). The `WaterVolume` AABB now feeds body physics directly; there is still no
+shoreline-fit volume or character-controller water-contact path.
 
 ### Render — **mature, with documented fragilities**
 
@@ -243,18 +245,20 @@ fallback, underwater fog, water-side caustic splat. Battle-tested across many
 closed bug IDs, correctly RT-gated. **Fragilities (all in-code):** `WaterPush` is
 at the exact 128-byte Vulkan 1.1 max (no headroom — adding canonical fields forces
 a UBO move); procedural-noise hash bands past ~176k world units (#1502, visual
-only); reflection ray returns a per-WATR tint constant, not real hit albedo; waves
-are normal-perturbation only (no displacement; `wave_amplitude/frequency` unused).
+only); waves are normal-perturbation only (no displacement). Reflection rays now
+shade their material-aware hit and apply the per-WATR tint.
 
-### Physics / gameplay — **stub (detection only) / nonexistent (everything else)**
+### Physics / gameplay — **dynamic bodies live; character gameplay open**
 
-`systems/water.rs` writes `SubmersionState` onto the **active camera only**
-(actors explicitly deferred). That is the *entire* gameplay surface.
-`crates/physics` has **zero** water code, exposes **no** force API beyond
-`set_linvel` (no `add_force`/`apply_impulse`/`reset`), and `CharacterController`
-has **zero** `SubmersionState` references. `WaterFlow` is decoded, rendered, and
-**never reaches the solver**. No buoyancy, no currents, no swimming, no drowning,
-no splashes, no water-walking, no freezing.
+`systems/water.rs` writes camera `SubmersionState` with waterline hysteresis and
+drives underwater presentation. `crates/physics/src/water.rs` runs before the
+Rapier step: dynamic bodies overlapping a `WaterVolume` receive `WaterContact`,
+Archimedes lift, submerged damping, and a mass-correct velocity-matching force
+toward `WaterFlow`. Dry→wet wake and settled-body sleep are regression-tested so
+water does not reintroduce the exterior physics freeze. The kinematic
+`CharacterController` still has no swim mode, so player movement ignores water;
+drowning, splash/ripple events, water-walking, freezing, and underwater audio
+remain open.
 
 ---
 
@@ -404,41 +408,30 @@ Each phase ships independently behind `cargo test` (pure translate + system unit
 tests); the render/physics-device parts are validated by the smoke-test pattern
 (`docs/smoke-tests/README.md`) since they need a Vulkan device + game data.
 
-1. **Phase 0 — CRASH-FIX FIRST** (§0). Blocks all exterior water testing; folds
-   into the exterior reroute. Confirm via the §0.1 A/B repro (zero code), then ship
-   the view-context RT gate + GPU-time circuit breaker + graceful device-lost
-   handling. Test gate: validation-clean exterior fly at grid 8,-10 holding under
-   the watchdog. **Shared with the exterior-reroute view-distance work.**
+1. **Phase 0 — CRASH-FIX FIRST — CLOSED 2026-06-20** (§0). Folded into the
+   exterior reroute. The test gate was a validation-clean exterior fly through
+   the water-adjacent grid `(2,-10)` under the watchdog.
 
-2. **Phase 1 — CANONICAL TYPE + TRANSLATE** (pure, fully cargo-testable, no
-   device). Promote the §5.1 `WaterMaterial` fields; add `WaterLod`; extend
-   `resolve_water_material`; decode the FO3/FNV DATA 136-byte tail + Skyrim DNAM
-   tail into `below_water_fog` + noise layers; generalise
-   `default_water_for_worldspace` into the §4 `GameKind` arm. Add the per-game
-   translate-up regression test: feed a representative Oblivion / FNV / Skyrim WATR
-   and assert the canonical `WaterMaterial` differs **only in AUTHORED fields**,
-   all SENTINELs identical. **`WaterLod` sequences after the exterior-reroute
-   terrain work exposes worldspace bounds.**
+2. **Phase 1 — CANONICAL TYPE + TRANSLATE — PARTIAL.** Wave amplitude/frequency,
+   reflection tint, per-game default-water height, and authored worldspace LOD
+   water are live. Remaining work is exact FO3/FNV DATA-tail + Skyrim DNAM-tail
+   decode, GNAM noise layers, sun/scatter/below-water fog promotion, and a
+   cross-game fixture asserting that canonical sentinels stay identical while
+   only authored fields differ.
 
-3. **Phase 2 — PHYSICS FORCE API + BUOYANCY / FLOW.** Add
-   `add_force`/`apply_impulse`/`reset_external_forces` + a **pre-substep hook**
-   (`world.rs:189`, immediately before the `while accumulator >= PHYSICS_DT` loop)
-   to `crates/physics`; register a Rapier static water-plane collider from
-   `WaterVolume`/`WaterPlane`; generalise submersion to `WaterContact` for all
-   bodies (swim-level `= waterLevel − halfExtentsZ·fSwimHeightScale`, reuse the
-   proven `WATERLINE_HYSTERESIS = 4` band, #1450); implement buoyancy
-   (`F_up = density·g·displaced_volume`) + flow (`F = flow.dir·speed·current_drag·
-   submerged_fraction`, finally consuming `WaterFlow`) + drowning (ECS timer on
-   `head_submerged`). **Critical shared dependency:** buoyancy needs the *same*
-   Rapier wake/sleep discipline as the exterior-reroute physics-freeze fix
-   (`world.rs:182` step-skip fast path, `:225-244` kill-plane). A buoyant body
-   must wake the sim and must **not** free-fall past the kill plane; buoyancy is
-   what lets dropped clutter *rest* on water instead of being frozen by the
-   kill-plane as the only sink. **Co-design the force hook with the freeze fix.**
-   Test gate: drop a body into a `WaterVolume`, assert it rises and settles; apply
-   `WaterFlow`, assert downstream drift; + an m41-style smoke test.
+3. **Phase 2 — PHYSICS FORCE API + BUOYANCY / FLOW — BODY CORE LIVE
+   2026-08-10.** Force/reset APIs, pre-step application, `WaterContact`, buoyancy,
+   submerged damping, and bounded current drift are live with real-solver tests.
+   Current force matches velocity along the canonical flow axis instead of adding
+   an unbounded constant acceleration. Water remains a trigger volume, not a
+   solid Rapier plane, so entering it cannot block bodies or the character.
+   Remaining Phase 2 scope is kinematic-character swim contact, drowning, and a
+   real-data GPU smoke. The existing dry→wet one-shot wake and settled-float sleep
+   discipline remains load-bearing: water must never pin the exterior physics
+   world awake. Test gate for body physics is closed (rise, settle, downstream
+   drift, calm-water quiescence); player traversal and real-data gates are open.
 
-4. **Phase 3 — RENDER-FIDELITY + GAMEPLAY POLISH.** Move water params to a UBO
+4. **Phase 3 — RENDER-FIDELITY + GAMEPLAY POLISH — OPEN.** Move water params to a UBO
    (prerequisite for the richer material on GPU; keep the shader-struct lockstep
    per `feedback_shader_struct_sync`); wire swimming into `CharacterController`
    (OpenMW swimlevel model — gravity off below swimlevel, clamp to waterline,
@@ -449,12 +442,17 @@ tests); the render/physics-device parts are validated by the smoke-test pattern
 
 ---
 
-## 8. Tooling (proposed)
+## 8. Tooling
 
-- `water.dump` debug-server command — print the live `WaterMaterial`/`WaterFlow`/
-  `WaterLod` resolved for the cell the camera is in.
-- `water.contacts` — list every body with a `WaterContact` (depth,
-  submerged_fraction, swim state) — the physics analog of `tex.missing`.
+- **Shipped 2026-08-10:** `water.dump` prints every live canonical
+  `WaterMaterial`/`WaterFlow`/`WaterVolume`, identifies the plane containing the
+  active camera, and reports camera submersion.
+- **Shipped 2026-08-10:** `water.contacts` lists every body with a
+  `WaterContact` (depth, submerged fraction, full-submersion flag, flow, and
+  source material). `m-exteriors.sh` captures both commands in its retained
+  per-game debug artifact.
+- Still open: include the worldspace-level `WaterLod` translation explicitly in
+  `water.dump`, and add swim/drown state once those components exist.
 - A per-game translate-up unit harness (Phase 1) asserting SENTINEL-identity across
   Oblivion / FNV / Skyrim WATR inputs.
 

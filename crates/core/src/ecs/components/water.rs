@@ -202,8 +202,7 @@ impl Component for WaterPlane {
 /// - shader UV scroll bias (the dominant wave layer travels along
 ///   [`Self::direction`] at [`Self::speed`]);
 /// - foam-streak orientation in `Rapids` mode;
-/// - swim resistance for actors caught in the current (gameplay
-///   layer — not wired in this initial cut).
+/// - current drag on dynamic bodies and swim resistance for actors.
 ///
 /// `Calm` waters do not carry this component.
 #[derive(Debug, Clone, Copy)]
@@ -297,8 +296,8 @@ pub struct WaterContact {
     pub head_submerged: bool,
     /// The current acting on this body, when it sits in flowing water
     /// (river / rapids / waterfall). `None` for calm water. Carried here
-    /// so the flow-drift force (a follow-up) and gameplay can consume it
-    /// without re-querying the plane.
+    /// so the physics current force and gameplay can consume it without
+    /// re-querying the plane.
     pub flow: Option<WaterFlow>,
     /// The water material driving this body's underwater FX / surface
     /// interaction. `None` when the body is out of all water volumes.

@@ -16,6 +16,8 @@
 //!   (`quest.show`, `quest.aliases`, `quest.start`, `quest.stop`, `quest.setstage`)
 //! - [`time`] — persistent day/night clock inspection and controls
 //!   (`time.show`, `time.set`, `time.scale`, `time.pause`, `time.resume`, `time.advance`)
+//! - [`water`] — canonical water render/physics diagnostics
+//!   (`water.dump`, `water.contacts`)
 //! - [`scene`] — scene / lighting / material / script state
 //!   (`light.*`, `door.teleport`, `script.activate`, `mat.*`, `ragdoll`)
 
@@ -27,6 +29,7 @@ mod scene;
 mod shared;
 mod time;
 mod view;
+mod water;
 mod world_info;
 
 use actor_value::*;
@@ -37,6 +40,7 @@ use scene::*;
 use shared::*;
 use time::*;
 use view::*;
+use water::*;
 use world_info::*;
 
 pub(crate) fn build_command_registry() -> CommandRegistry {
@@ -75,6 +79,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(CamTpCommand);
     registry.register(InteractionStatusCommand);
     registry.register(InputPressCommand);
+    registry.register(WaterDumpCommand);
+    registry.register(WaterContactsCommand);
     registry.register(DoorTeleportCommand);
     registry.register(SysAccessesCommand);
     registry.register(SkinListCommand);

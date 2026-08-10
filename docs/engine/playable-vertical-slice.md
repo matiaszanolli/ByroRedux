@@ -81,6 +81,50 @@ Regression tests pin remapped movement actions and focused-UI transfer clearing
 world keys/cursor capture into release-only action edges. Mouse/gamepad sources
 and the deterministic character traversal smoke remain open.
 
+### Water focus — playable traversal + EX-13 visual closure
+
+**Active next push (2026-08-10).** Water temporarily leads the queue by explicit
+project direction. “Right” means one coherent surface/volume contract survives
+authoring, rendering, physics, player traversal, and cell/LOD boundaries; it does
+not mean adding another isolated shader effect.
+
+The reference fixture starts with Skyrim Tamriel grid `(2,-10)`
+(`BleakfallsBarrowPath`, the proven water-adjacent streaming repro), then adds one
+older-generation profile to catch false Skyrim-only assumptions. Closure gates:
+
+1. `water.dump` proves the intended worldspace default/CELL override, WATR source,
+   plane height, volume, material, and flow; `water.contacts` proves the same flow
+   reaches dynamic-body physics.
+2. A character can enter, swim horizontally and vertically, float/clamp at the
+   surface, exit onto land, and cross a water-adjacent cell boundary without
+   falling, sticking, or losing input. Camera waterline hysteresis must not strobe.
+3. Fixed above-surface, grazing-angle, underwater, shoreline, and full-detail↔LOD
+   captures show finite reflection/refraction, readable depth absorption, moving
+   normals, bounded foam, no dry ocean tiles, and no visible water seam.
+4. Dynamic clutter rises, settles, and drifts downstream without pinning the
+   physics world awake. Calm water must still reach the static-scene fast path.
+5. One scripted GPU smoke retains screenshots plus `water.dump`,
+   `water.contacts`, `tex.missing`, frame/streaming telemetry, and fails on Vulkan
+   validation errors or non-finite output. A short manual swim/shoreline checklist
+   covers input and perceptual judgments that image-health statistics cannot.
+
+Order within the push:
+
+- W0: freeze camera/player poses and baseline artifacts on the two real-data
+  profiles; use the new diagnostics before changing visuals.
+- W1: make kinematic character contact/swimming consume the canonical water
+  volume/flow; add enter/surface/exit and boundary regressions.
+- W2: close default-water, CELL override, shoreline, and LOD coverage/seam gaps.
+- W3: tune reflection/refraction/absorption/normals/foam against the frozen
+  captures, finishing only WATR fields whose real bytes are verified.
+- W4: add underwater audio, breath/drowning, and splash/ripple feedback after the
+  traversal and visual gates are stable.
+
+**Bootstrap landed 2026-08-10:** live dynamic-body current drag now consumes
+`WaterFlow` in the same pre-step as buoyancy, with bounded velocity matching and
+real Rapier coverage. `water.dump` and `water.contacts` are registered and the
+cross-game exterior smoke records both.
+
 ### P2 — Minimal combat and actor response
 
 Goal: one hostile encounter has a complete cause-and-effect loop.
@@ -159,10 +203,12 @@ Goal: the complete slice survives ordinary play behavior.
 
 ## Immediate queue
 
-1. Pin P1 character-mode spawn, floor recovery, door-threshold placement, and
-   return traversal across the Bannered Mare/WhiterunWorld reference pair.
-2. Add mouse-button and gamepad physical sources to the action layer without
-   changing gameplay consumers.
-3. Start P2 actor readiness against the frozen Bleak Falls fixture: Skyrim
-   Health derivation, actor-root hit ownership, and deterministic two-handed
-   weapon selection/attachment.
+1. Run W0 on Skyrim `(2,-10)`, freeze the waterline/shore/underwater/LOD poses,
+   and turn the retained diagnostics into hard assertions where the authored
+   values are stable.
+2. Implement W1 character swimming and current response through the canonical
+   action + water-contact boundaries; close enter → swim → surface → exit first.
+3. Use those captures to choose the first W2/W3 defect by evidence (coverage/seam
+   before local shading polish), then re-run the same fixture.
+4. Resume P1 door-return traversal and P2 combat readiness after the water gate,
+   carrying the water-adjacent boundary through the eventual 30-minute soak.

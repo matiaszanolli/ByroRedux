@@ -58,6 +58,17 @@ cutoffs were unreachable on every real parse) and a collision-import
 hardening fix (#2285, cross-buffer index splicing on corrupt NIFs).
 Session narratives: [HISTORY.md](HISTORY.md) Sessions 60–63.
 
+**Active execution focus (2026-08-10): water correctness.** The playable-slice
+queue is temporarily water-led: first freeze a real-data Skyrim water-adjacent
+fixture and diagnostics, then close character swimming/current response,
+coverage + full-detail/LOD seams, and finally reflection/refraction/absorption/
+foam against fixed captures. The closure contract and W0–W4 order live in
+[`docs/engine/playable-vertical-slice.md`](docs/engine/playable-vertical-slice.md#water-focus--playable-traversal--ex-13-visual-closure);
+the double-ended render/physics design and implementation checkpoint live in
+[`docs/engine/watal.md`](docs/engine/watal.md). Bootstrap: dynamic-body current
+drag plus `water.dump` / `water.contacts` diagnostics landed in the active push;
+the cross-game exterior smoke now retains both command outputs.
+
 **Superseded bench-of-record** (R6a-stale-15 refresh, HEAD `8a668eff`,
 2026-07-18, wall-clock bench, 300 frames × 3 runs/scene averaged, RTX 4070 Ti,
 run from each game's `Data/` directory — see Repro-command CWD note below).
