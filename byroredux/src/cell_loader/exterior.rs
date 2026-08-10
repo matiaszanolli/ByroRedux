@@ -61,6 +61,44 @@ pub struct ExteriorWorldContext {
     pub default_water_type_form: Option<u32>,
 }
 
+fn resolved_exterior_water_height(
+    water_height_is_explicit: bool,
+    water_height: Option<f32>,
+    default_water_height: Option<f32>,
+) -> Option<f32> {
+    if water_height_is_explicit {
+        water_height
+    } else {
+        default_water_height
+    }
+}
+
+#[cfg(test)]
+mod exterior_water_height_tests {
+    use super::resolved_exterior_water_height;
+
+    #[test]
+    fn absent_xclw_inherits_worldspace_water() {
+        assert_eq!(
+            resolved_exterior_water_height(false, None, Some(-14_000.0)),
+            Some(-14_000.0)
+        );
+    }
+
+    #[test]
+    fn explicit_xclw_overrides_or_suppresses_worldspace_water() {
+        assert_eq!(
+            resolved_exterior_water_height(true, Some(-250.0), Some(-14_000.0)),
+            Some(-250.0)
+        );
+        assert_eq!(
+            resolved_exterior_water_height(true, None, Some(-14_000.0)),
+            None,
+            "an authored no-water sentinel must keep the cell dry"
+        );
+    }
+}
+
 /// Authored content signals for one exterior CELL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExteriorCellContent {
@@ -1010,14 +1048,18 @@ impl ExteriorCellApplyJob {
             }
         }
         // Water plane. A cell's explicit XCLW height wins; cells without one
-        // inherit the worldspace default (Tamriel sea level Z=0, resolved into
-        // `wctx.default_water_height` when the worldspace has a NAM2 water
-        // form). 98% of Oblivion exterior cells have no XCLW and relied on
-        // this fallback — without it every coastal/sea cell rendered dry
-        // seabed (#1305 / OBL-D6-NEW-02). The XCLW "no water" sentinel is
-        // already filtered to None at parse time (#1305 sentinel fix), so it
-        // does not reach here as a spurious height.
-        if let Some(water_height) = cell.water_height.or(wctx.default_water_height) {
+        // inherit the resolved worldspace default (Oblivion Tamriel uses sea
+        // level Z=0; FO3+ worlds use their DNAM water height). 98% of Oblivion
+        // exterior cells have no XCLW and relied on this fallback — without it
+        // every coastal/sea cell rendered dry
+        // seabed (#1305 / OBL-D6-NEW-02). An authored XCLW no-water sentinel
+        // suppresses that fallback; `water_height_is_explicit` preserves the
+        // distinction between "no XCLW" and "explicitly dry".
+        if let Some(water_height) = resolved_exterior_water_height(
+            cell.water_height_is_explicit,
+            cell.water_height,
+            wctx.default_water_height,
+        ) {
             // Exterior cell origin in Y-up world coords. The helper composes
             // grid-scale and the Z-up→Y-up flip; see TD3-202 / #1112.
             let origin = cell_grid_to_world_yup(gx, gy);

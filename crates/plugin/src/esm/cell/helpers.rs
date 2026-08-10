@@ -32,24 +32,24 @@ pub(super) fn read_form_id_array(data: &[u8]) -> Vec<u32> {
 }
 
 /// Parse an `XCLW` water-plane height (f32, Z-up world units). Returns
-/// `None` for the Bethesda "no water" sentinel `#INT_MIN#`
-/// (-2147483648.0, nif.xml line 59), which marks a cell that explicitly
-/// has no water surface. Without this, such a cell spawns a water plane
-/// ~2.1e9 units below everything — a wasted BLAS entry + RT-reflection
-/// cost (~170 vanilla Oblivion cells). Also `None` when the payload is
-/// too short. Same XCLW layout across Oblivion / FO3 / FNV / Skyrim, so
-/// shared by both the interior and exterior walkers. #1305 / OBL-D6-NEW-02.
+/// `None` for Bethesda's "no water" sentinels: `#INT_MIN#`
+/// (-2147483648.0, nif.xml line 59) and `f32::MAX` (observed in Skyrim
+/// exterior CELL records). Without this, sentinel cells spawn planes at
+/// impossible heights, poisoning water bounds and render work. Also
+/// `None` when the payload is too short. Same XCLW layout across
+/// Oblivion / FO3 / FNV / Skyrim, so shared by both the interior and
+/// exterior walkers. #1305 / OBL-D6-NEW-02.
 pub(super) fn xclw_water_height(data: &[u8]) -> Option<f32> {
     if data.len() < 4 {
         return None;
     }
     let h = f32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-    // The sentinel is `#INT_MIN#` (-2.147e9). Use a magnitude threshold
-    // rather than exact float-equality: lint-clean and robust to any
-    // writer emitting a near-INT_MIN value, and no real Oblivion water
-    // plane sits anywhere near -1e9 (vanilla XCLW spans roughly
-    // -4000..7000). Non-finite values are likewise treated as absent.
-    if h.is_finite() && h > -1.0e9 {
+    // Use a symmetric magnitude threshold rather than exact sentinel
+    // equality: it covers both legacy #INT_MIN# and Skyrim's FLT_MAX,
+    // is robust to near-sentinel writers, and no authored water plane
+    // sits anywhere near +/-1e9 world units. Non-finite values are also
+    // treated as absent.
+    if h.is_finite() && h.abs() < 1.0e9 {
         Some(h)
     } else {
         None
@@ -77,6 +77,12 @@ mod tests {
             xclw_water_height(&(-2_147_483_648.0f32).to_le_bytes()),
             None
         );
+    }
+
+    #[test]
+    fn xclw_float_max_sentinel_is_no_water() {
+        // Skyrim exterior CELLs use FLT_MAX for an explicitly dry tile.
+        assert_eq!(xclw_water_height(&f32::MAX.to_le_bytes()), None);
     }
 
     #[test]

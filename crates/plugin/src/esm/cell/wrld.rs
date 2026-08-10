@@ -295,6 +295,7 @@ pub(crate) fn parse_wrld_children(
                 let mut display_name: Option<String> = None;
                 let mut grid = None;
                 let mut water_height: Option<f32> = None;
+                let mut water_height_is_explicit = false;
                 let mut image_space_form: Option<u32> = None;
                 let mut water_type_form: Option<u32> = None;
                 let mut acoustic_space_form: Option<u32> = None;
@@ -362,9 +363,12 @@ pub(crate) fn parse_wrld_children(
                             grid = Some((grid_x, grid_y));
                         }
                         // XCLW water-plane height. `xclw_water_height`
-                        // returns None for the `#INT_MIN#` "no water"
-                        // sentinel (#1305 / OBL-D6-NEW-02).
+                        // returns None for the `#INT_MIN#` / FLT_MAX
+                        // "no water" sentinels; the explicit bit stops
+                        // those dry cells inheriting WRLD water (#1305 /
+                        // OBL-D6-NEW-02).
                         b"XCLW" => {
+                            water_height_is_explicit = true;
                             water_height = super::helpers::xclw_water_height(&sub.data);
                         }
                         // Skyrim extended sub-records — see the interior
@@ -479,6 +483,7 @@ pub(crate) fn parse_wrld_children(
                     lighting: None,
                     landscape: None,
                     water_height,
+                    water_height_is_explicit,
                     image_space_form,
                     water_type_form,
                     acoustic_space_form,

@@ -123,7 +123,14 @@ Order within the push:
 **Bootstrap landed 2026-08-10:** live dynamic-body current drag now consumes
 `WaterFlow` in the same pre-step as buoyancy, with bounded velocity matching and
 real Rapier coverage. `water.dump` and `water.contacts` are registered and the
-cross-game exterior smoke records both.
+cross-game exterior smoke records both and fails if an XCLW no-water sentinel
+escapes into live bounds. A real Skyrim `(2,-10)` probe exposed the second
+sentinel spelling (`FLT_MAX`) and the missing tri-state at the CELL→WRLD fallback:
+the fix preserves absent XCLW as “inherit” while an authored sentinel stays dry.
+The rebuilt probe reduced the fixture from 16 water planes to the expected two
+(one LOD plane plus the authored `RiverWater` tile), retained flow
+`[0.878, 0, 0.479] @ 90`, and resolved every texture. W0's fixed above/underwater
+capture set is still open.
 
 ### P2 — Minimal combat and actor response
 

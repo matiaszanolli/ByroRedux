@@ -67,7 +67,10 @@ foam against fixed captures. The closure contract and W0–W4 order live in
 the double-ended render/physics design and implementation checkpoint live in
 [`docs/engine/watal.md`](docs/engine/watal.md). Bootstrap: dynamic-body current
 drag plus `water.dump` / `water.contacts` diagnostics landed in the active push;
-the cross-game exterior smoke now retains both command outputs.
+the cross-game exterior smoke now retains both command outputs and rejects leaked
+XCLW no-water sentinels. The real Skyrim `(2,-10)` probe also closed the missing
+CELL tri-state: absent XCLW inherits WRLD water, while authored `#INT_MIN#` or
+FLT_MAX keeps the cell dry.
 
 **Superseded bench-of-record** (R6a-stale-15 refresh, HEAD `8a668eff`,
 2026-07-18, wall-clock bench, 300 frames × 3 runs/scene averaged, RTX 4070 Ti,

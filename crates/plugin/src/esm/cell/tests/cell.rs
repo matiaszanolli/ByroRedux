@@ -64,6 +64,7 @@ fn parse_cell_xclw_populates_water_height() {
         Some(10.0),
         "XCLW water height must flow through to CellData"
     );
+    assert!(cell.water_height_is_explicit);
 }
 
 /// Regression: #970 / OBL-D3-NEW-06 — Oblivion CELL RCLR
@@ -1143,4 +1144,5 @@ fn parse_cell_without_xclw_leaves_water_height_none() {
 
     let cell = cells.get("dryroom").expect("interior CELL present");
     assert_eq!(cell.water_height, None);
+    assert!(!cell.water_height_is_explicit);
 }

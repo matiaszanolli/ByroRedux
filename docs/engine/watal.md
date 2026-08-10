@@ -21,6 +21,9 @@ the renderer, while dynamic Rapier bodies receive `WaterContact`, buoyancy,
 submerged damping, and bounded current drag from the same `WaterFlow`. Phase 0 is
 closed; Phase 1 and Phase 2 are partial. Character swimming/drowning, exact tail
 decode, disturbance events, and the cross-game visual smoke matrix remain open.
+The CELL boundary now preserves XCLW as a tri-state: absent means inherit the
+WRLD default, a finite authored height overrides it, and either Bethesda no-water
+sentinel (`#INT_MIN#` or Skyrim's FLT_MAX) explicitly suppresses a plane.
 
 **Goal**: every supported engine version (Oblivion / FO3 / FNV / Skyrim LE/SE /
 FO4 / FO76 / Starfield) translates its native, per-game water authoring into **one

@@ -199,12 +199,19 @@ pub struct CellData {
     /// Landscape terrain data (from LAND record, exterior cells only).
     pub landscape: Option<LandscapeData>,
     /// Water plane height in Bethesda world units (Z-up), from the
-    /// CELL record's XCLW sub-record. `None` when the cell has no
-    /// water plane. Critical for flooded Ayleid ruins, sewer interiors,
-    /// coastal exterior cells — omitting it makes water geometry either
-    /// not render at all or clamp to Y/Z=0. Same f32 semantics across
-    /// Oblivion / FO3 / FNV / Skyrim. See #397.
+    /// CELL record's XCLW sub-record. `None` when XCLW is absent or
+    /// carries an explicit no-water sentinel; use
+    /// [`water_height_is_explicit`](Self::water_height_is_explicit) to
+    /// distinguish those cases before applying a worldspace fallback.
+    /// Critical for flooded Ayleid ruins, sewer interiors, and coastal
+    /// exterior cells. Same f32 semantics across Oblivion / FO3 / FNV /
+    /// Skyrim. See #397.
     pub water_height: Option<f32>,
+    /// Whether the CELL authored an XCLW sub-record, including an explicit
+    /// no-water sentinel. This preserves the third state that `Option<f32>`
+    /// alone cannot represent: absent XCLW inherits WRLD water, while an
+    /// authored sentinel keeps the tile dry.
+    pub water_height_is_explicit: bool,
 
     // ── Skyrim+ extended sub-records (#356). FormIDs are stored raw —
     // resolution against the records index happens at the consumer.

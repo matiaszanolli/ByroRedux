@@ -230,6 +230,13 @@ EOF
         echo "exterior-smoke[$label]: HARD FAIL - light.dump did not report exterior state"
         hard_fail=1
     fi
+    if ! grep -Fq 'Water dump: planes=' "$debug_log"; then
+        echo "exterior-smoke[$label]: HARD FAIL - water.dump did not report canonical water state"
+        hard_fail=1
+    elif grep -Eq '3402823[0-9]+|(^|[^0-9])[-]?2147483648([.]0)?([^0-9]|$)' "$debug_log"; then
+        echo "exterior-smoke[$label]: HARD FAIL - water.dump exposed an unfiltered no-water sentinel"
+        hard_fail=1
+    fi
     if grep -Eiq 'panicked at|VUID-|validation error|ERROR.*Vulkan|Vulkan.*ERROR' "$stdout_log" "$stderr_log"; then
         echo "exterior-smoke[$label]: HARD FAIL - panic or Vulkan validation error in engine logs"
         hard_fail=1

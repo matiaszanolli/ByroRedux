@@ -158,6 +158,7 @@ pub(crate) fn parse_cell_group(
                 let mut is_interior = false;
                 let mut lighting = None;
                 let mut water_height: Option<f32> = None;
+                let mut water_height_is_explicit = false;
                 let mut image_space_form: Option<u32> = None;
                 let mut water_type_form: Option<u32> = None;
                 let mut acoustic_space_form: Option<u32> = None;
@@ -223,8 +224,11 @@ pub(crate) fn parse_cell_group(
                             // / Skyrim — the cell's water surface sits at
                             // this Z (interior) or Z-in-worldspace (exterior).
                             // `xclw_water_height` returns None for the
-                            // `#INT_MIN#` "no water" sentinel. See #397 /
+                            // `#INT_MIN#` / FLT_MAX "no water" sentinels.
+                            // `water_height_is_explicit` keeps that None
+                            // distinct from an absent XCLW. See #397 /
                             // #356 / #1305.
+                            water_height_is_explicit = true;
                             water_height = super::helpers::xclw_water_height(&sub.data);
                         }
                         // Skyrim extended CELL sub-records (#356). Each is
@@ -560,6 +564,7 @@ pub(crate) fn parse_cell_group(
                             lighting: lighting.clone(),
                             landscape: None,
                             water_height,
+                            water_height_is_explicit,
                             image_space_form,
                             water_type_form,
                             acoustic_space_form,
