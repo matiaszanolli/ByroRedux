@@ -25,6 +25,7 @@ use byroredux_core::ecs::{ActiveCamera, GlobalTransform, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 
 use crate::components::InputState;
+use crate::interaction::{ActionState, InputAction};
 
 /// Resource pointing at the player character entity, so other systems
 /// (camera follow, audio listener attach, future quest-marker
@@ -75,6 +76,8 @@ impl Resource for PlayerMode {}
 /// union of the two inner systems' accesses. The `PlayerMode` read
 /// here is itself part of that union.
 pub(crate) fn player_controller_system(world: &World, dt: f32) {
+    crate::interaction::refresh_action_state(world);
+
     let mode = world
         .try_resource::<PlayerMode>()
         .map(|r| *r)
@@ -101,7 +104,8 @@ fn player_accepts_movement_input(world: &World, player: EntityId) -> bool {
 /// Reads:
 ///   - [`PlayerEntity`] resource (target body entity)
 ///   - [`PlayerMode`] resource (early-return on FlyCam)
-///   - [`InputState`] (WASD, jump key, yaw for movement alignment)
+///   - [`InputState`] (yaw for movement alignment)
+///   - [`ActionState`] (movement, jump, and sprint gameplay intents)
 ///   - The body's `Transform` (current world position)
 ///   - The body's `byroredux_physics::CharacterController` (state + params)
 ///   - The body's `byroredux_physics::RapierHandles` (collider id to exclude)
@@ -153,30 +157,29 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // all three cases; only suppress user-authored horizontal/jump intent.
     let accepts_movement_input = player_accepts_movement_input(world, player_entity);
 
-    let Some(input) = world.try_resource::<InputState>() else {
+    let yaw = world
+        .try_resource::<InputState>()
+        .map(|input| input.yaw)
+        .unwrap_or_default();
+    let Some(actions) = world.try_resource::<ActionState>() else {
         return;
     };
-    let yaw = input.yaw;
     let mut move_dir = Vec3::ZERO;
-    if accepts_movement_input && input.keys_held.contains(&winit::keyboard::KeyCode::KeyW) {
+    if accepts_movement_input && actions.is_held(InputAction::MoveForward) {
         move_dir.z += 1.0;
     }
-    if accepts_movement_input && input.keys_held.contains(&winit::keyboard::KeyCode::KeyS) {
+    if accepts_movement_input && actions.is_held(InputAction::MoveBackward) {
         move_dir.z -= 1.0;
     }
-    if accepts_movement_input && input.keys_held.contains(&winit::keyboard::KeyCode::KeyA) {
+    if accepts_movement_input && actions.is_held(InputAction::StrafeLeft) {
         move_dir.x -= 1.0;
     }
-    if accepts_movement_input && input.keys_held.contains(&winit::keyboard::KeyCode::KeyD) {
+    if accepts_movement_input && actions.is_held(InputAction::StrafeRight) {
         move_dir.x += 1.0;
     }
-    let want_jump_now =
-        accepts_movement_input && input.keys_held.contains(&winit::keyboard::KeyCode::Space);
-    let want_sprint = accepts_movement_input
-        && input
-            .keys_held
-            .contains(&winit::keyboard::KeyCode::ControlLeft);
-    drop(input);
+    let want_jump_now = accepts_movement_input && actions.is_held(InputAction::Jump);
+    let want_sprint = accepts_movement_input && actions.is_held(InputAction::Sprint);
+    drop(actions);
 
     // Snapshot character params + current state.
     let (controller, current_pos, collider_handle, body_handle) = {

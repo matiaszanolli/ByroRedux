@@ -49,10 +49,15 @@ console command.
 - Add occlusion and collider-to-reference resolution once the first real-data
   smoke identifies the required collision ownership mapping.
 
-**Current state (2026-08-09):** keyboard action edges, E-key target selection,
-script activation, shared door queueing, and the HUD prompt are implemented and
-unit-tested. A Skyrim interior→exterior real-data smoke is the remaining P0
-closure gate.
+**Closed 2026-08-10:** [`p0-door-interaction.sh`](../smoke-tests/p0-door-interaction.sh)
+passes the production Bannered Mare exit route: camera-forward XTEL target →
+native `[E] Open` prompt → one bound E-key edge → canonical `ActivateEvent` →
+deferred arrival in `WhiterunWorld (6,-2)`. The smoke exposed one real-data
+lookup gap: exterior destination doors stored in worldspace persistent CELLs
+were absent from `cell_for_refr_form_id`; persistent references now map to
+their authored exterior grid, including floor-correct negative coordinates.
+The existing `PhysicsSourceForm` collider ownership path passed the fixture's
+line-of-sight gate without further correction.
 
 ### P1 — Reliable character control
 
@@ -68,6 +73,14 @@ Goal: walking around the reference route is boringly reliable.
 - Record a deterministic traversal smoke: spawn → walk route → cross door →
   cross exterior cell boundary → return.
 
+**Current state (2026-08-10):** character and fly-camera WASD, jump/ascent, and
+sprint/boost consumers read `ActionState`; fly-camera Shift descend remains a
+debug-only physical axis. The action snapshot refreshes once in `Stage::Early`
+and is shared with `Stage::Update` interaction, preserving one-frame edges.
+Regression tests pin remapped movement actions and focused-UI transfer clearing
+world keys/cursor capture into release-only action edges. Mouse/gamepad sources
+and the deterministic character traversal smoke remain open.
+
 ### P2 — Minimal combat and actor response
 
 Goal: one hostile encounter has a complete cause-and-effect loop.
@@ -81,6 +94,16 @@ Goal: one hostile encounter has a complete cause-and-effect loop.
 
 Defer weapon-family breadth, advanced perks, dismemberment, and generalized
 behavior-graph parity until the one-family closure gate passes.
+
+**Fixture frozen 2026-08-10:**
+[`p2-combat-fixture.md`](p2-combat-fixture.md) pins direct NPC reference
+`000380B4` in `BleakFallsBarrow01`, a level-1 Draugr with explicit creature /
+Draugr factions, a death-item list, and one two-handed weapon family. The
+surface trace found the first implementation blockers: Skyrim NPCs currently
+receive no `ActorValues`; weapon records stay inventory-only; actor ray hits
+end at bone bodies without canonical placement-root ownership; the ragdoll
+template lives on the skeleton root; and `HitEvent` has cleanup but no
+production producer or damage consumer.
 
 ### P3 — Inventory and native game UI
 
@@ -136,11 +159,10 @@ Goal: the complete slice survives ordinary play behavior.
 
 ## Immediate queue
 
-1. Add the P0 Skyrim door-interaction smoke and verify prompt → E →
-   `ActivateEvent` → transition on real data.
-2. Resolve line-of-sight occlusion/collider ownership found by that smoke.
-3. Migrate movement/jump/sprint consumers to `ActionState` and add input-focus
-   regression tests.
-4. Freeze the P2 hostile/weapon fixture and trace its existing actor, animation,
-   equipment, and physics surfaces before implementing combat.
-
+1. Pin P1 character-mode spawn, floor recovery, door-threshold placement, and
+   return traversal across the Bannered Mare/WhiterunWorld reference pair.
+2. Add mouse-button and gamepad physical sources to the action layer without
+   changing gameplay consumers.
+3. Start P2 actor readiness against the frozen Bleak Falls fixture: Skyrim
+   Health derivation, actor-root hit ownership, and deterministic two-handed
+   weapon selection/attachment.

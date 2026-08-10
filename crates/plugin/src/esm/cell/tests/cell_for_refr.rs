@@ -3,10 +3,12 @@
 //! M40 Phase 2 Stage 1 — the door-teleport plumbing reads an XTEL's
 //! destination FormID and asks the cell index which cell contains a
 //! REFR with that FormID. These tests pin the helper's behaviour on
-//! four shapes:
+//! six shapes:
 //!
 //!   * interior cell hit
 //!   * exterior cell hit (with worldspace + grid resolution)
+//!   * persistent-worldspace hit (grid derived from authored position)
+//!   * negative persistent-worldspace coordinates use floor, not truncation
 //!   * miss when the FormID isn't placed anywhere in the index
 //!   * owned variant via `CellRef::to_owned` survives index drop
 
@@ -34,6 +36,13 @@ fn placed_ref(form_id: u32) -> PlacedRef {
         material_swap_ref: None,
         ownership: None,
         script_instance: None,
+    }
+}
+
+fn placed_ref_at(form_id: u32, position: [f32; 3]) -> PlacedRef {
+    PlacedRef {
+        position,
+        ..placed_ref(form_id)
     }
 }
 
@@ -114,6 +123,60 @@ fn cell_for_refr_form_id_hits_exterior_cell_with_worldspace_and_grid() {
             grid: (-2, 5),
         }),
         "FormID 0x2002 must resolve to the exterior cell at (-2, 5) in wastelandnv"
+    );
+}
+
+#[test]
+fn cell_for_refr_form_id_maps_worldspace_persistent_ref_to_authored_grid() {
+    let mut index = EsmCellIndex::default();
+    let mut persistent = exterior_cell(0, 0, &[]);
+    persistent.grid = None;
+    persistent.references.push(placed_ref_at(
+        0x1A6F4,
+        [
+            2.25 * EXTERIOR_CELL_UNITS,
+            4.75 * EXTERIOR_CELL_UNITS,
+            123.0,
+        ],
+    ));
+    index
+        .worldspace_persistent_cells
+        .insert("tamriel".to_string(), persistent);
+
+    assert_eq!(
+        index.cell_for_refr_form_id(0x1A6F4),
+        Some(CellRef::Exterior {
+            worldspace: "tamriel",
+            grid: (2, 4),
+        }),
+        "A persistent XTEL destination must resolve to the exterior tile that contains it"
+    );
+}
+
+#[test]
+fn cell_for_refr_form_id_floors_negative_persistent_ref_coordinates() {
+    let mut index = EsmCellIndex::default();
+    let mut persistent = exterior_cell(0, 0, &[]);
+    persistent.grid = None;
+    persistent.references.push(placed_ref_at(
+        0x2003,
+        [
+            -0.25 * EXTERIOR_CELL_UNITS,
+            -3.01 * EXTERIOR_CELL_UNITS,
+            0.0,
+        ],
+    ));
+    index
+        .worldspace_persistent_cells
+        .insert("wastelandnv".to_string(), persistent);
+
+    assert_eq!(
+        index.cell_for_refr_form_id(0x2003),
+        Some(CellRef::Exterior {
+            worldspace: "wastelandnv",
+            grid: (-1, -4),
+        }),
+        "Negative world coordinates must use floor so the destination tile is not shifted toward zero"
     );
 }
 

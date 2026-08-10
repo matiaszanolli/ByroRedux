@@ -479,11 +479,7 @@ impl App {
     /// pressed before the transfer cannot leave the camera moving underneath
     /// the menu.
     fn release_world_input_for_ui(&mut self) {
-        let had_mouse_capture = {
-            let mut input = self.world.resource_mut::<InputState>();
-            input.keys_held.clear();
-            std::mem::replace(&mut input.mouse_captured, false)
-        };
+        let had_mouse_capture = ui_input::release_world_input(&self.world);
 
         if had_mouse_capture {
             if let Some(window) = self.window.as_ref() {

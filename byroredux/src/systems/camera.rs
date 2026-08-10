@@ -4,6 +4,7 @@ use byroredux_core::ecs::{ActiveCamera, Transform, World};
 use byroredux_core::math::{Quat, Vec3};
 
 use crate::components::InputState;
+use crate::interaction::{ActionState, InputAction};
 use crate::systems::character::PlayerMode;
 
 /// Fly camera system: WASD + mouse look. Updates the active camera's Transform.
@@ -39,41 +40,44 @@ pub(crate) fn fly_camera_system(world: &World, dt: f32) {
     let speed = input.move_speed * dt;
     let yaw = input.yaw;
     let pitch = input.pitch;
+    let descend = input
+        .keys_held
+        .contains(&winit::keyboard::KeyCode::ShiftLeft);
+    drop(input);
 
-    // Build movement vector from held keys.
+    let Some(actions) = world.try_resource::<ActionState>() else {
+        return;
+    };
+
+    // Build movement from gameplay actions. Shift remains a raw debug-camera
+    // descend axis; it has no on-foot gameplay intent to expose.
     let mut move_dir = Vec3::ZERO;
-    if input.keys_held.contains(&winit::keyboard::KeyCode::KeyW) {
+    if actions.is_held(InputAction::MoveForward) {
         move_dir.z += 1.0;
     }
-    if input.keys_held.contains(&winit::keyboard::KeyCode::KeyS) {
+    if actions.is_held(InputAction::MoveBackward) {
         move_dir.z -= 1.0;
     }
-    if input.keys_held.contains(&winit::keyboard::KeyCode::KeyA) {
+    if actions.is_held(InputAction::StrafeLeft) {
         move_dir.x -= 1.0;
     }
-    if input.keys_held.contains(&winit::keyboard::KeyCode::KeyD) {
+    if actions.is_held(InputAction::StrafeRight) {
         move_dir.x += 1.0;
     }
-    if input.keys_held.contains(&winit::keyboard::KeyCode::Space) {
+    if actions.is_held(InputAction::Jump) {
         move_dir.y += 1.0;
     }
-    if input
-        .keys_held
-        .contains(&winit::keyboard::KeyCode::ShiftLeft)
-    {
+    if descend {
         move_dir.y -= 1.0;
     }
 
-    // Speed boost with Ctrl.
-    let boost = if input
-        .keys_held
-        .contains(&winit::keyboard::KeyCode::ControlLeft)
-    {
+    // Speed boost uses the same Sprint action as on-foot movement.
+    let boost = if actions.is_held(InputAction::Sprint) {
         3.0
     } else {
         1.0
     };
-    drop(input);
+    drop(actions);
 
     // Build rotation from yaw/pitch.
     let rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);

@@ -3,6 +3,7 @@
 //! The key mapping follows the pinned Ruffle desktop frontend. Keeping it at
 //! this boundary prevents `byroredux-ui` from depending on a window system.
 
+use byroredux_core::ecs::World;
 use byroredux_ui::{
     UiImeEvent, UiInputEvent, UiKeyDescriptor, UiKeyLocation, UiLogicalKey, UiMouseButton,
     UiMouseWheelDelta, UiNamedKey, UiPhysicalKey, UiTextControlCode,
@@ -10,6 +11,8 @@ use byroredux_ui::{
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+
+use crate::components::InputState;
 
 #[derive(Debug, Default)]
 pub(crate) struct UiInputState {
@@ -21,6 +24,16 @@ pub(crate) struct UiInputState {
 pub(crate) struct UiWindowDispatch {
     pub(crate) captured: bool,
     pub(crate) mouse_in_stage: Option<bool>,
+}
+
+/// Release platform-facing world input when a modal UI owns the event.
+///
+/// Returns whether the cursor was captured so the window layer can mirror the
+/// state change with the corresponding native cursor-grab operation.
+pub(crate) fn release_world_input(world: &World) -> bool {
+    let mut input = world.resource_mut::<InputState>();
+    input.keys_held.clear();
+    std::mem::replace(&mut input.mouse_captured, false)
 }
 
 /// Translate and dispatch one winit event.
@@ -429,6 +442,20 @@ fn key_location(location: KeyLocation) -> UiKeyLocation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modal_focus_transfer_clears_world_keys_and_mouse_capture() {
+        let mut world = World::new();
+        let mut input = InputState::default();
+        input.keys_held.extend([KeyCode::KeyW, KeyCode::KeyE]);
+        input.mouse_captured = true;
+        world.insert_resource(input);
+
+        assert!(release_world_input(&world));
+        let input = world.resource::<InputState>();
+        assert!(input.keys_held.is_empty());
+        assert!(!input.mouse_captured);
+    }
 
     #[test]
     fn cursor_coordinates_scale_to_the_persistent_movie_viewport() {

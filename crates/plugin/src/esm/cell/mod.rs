@@ -1114,15 +1114,19 @@ impl EsmCellIndex {
     }
 
     /// Locate the parent cell of a placed REFR by its placement-level
-    /// FormID. Returns `None` when no loaded cell contains a REFR with
+    /// FormID. Persistent-worldspace REFRs are assigned to the exterior
+    /// grid containing their authored world position because their owning
+    /// persistent CELL has no `(x, y)` tile of its own. Returns `None` when
+    /// no loaded cell contains a REFR with
     /// that FormID — typically because the destination lives in an
     /// unloaded master plugin, a DLC that wasn't passed on the CLI, or
     /// the FormID is malformed.
     ///
     /// M40 Phase 2 Stage 1 (door-teleport plumbing): the `door.teleport`
-    /// console command and the upcoming F-key activate system feed an
+    /// console command and gameplay activate system feed an
     /// XTEL destination FormID through this helper to decide which
-    /// cell to load. Today it scans interior + exterior maps linearly
+    /// cell to load. Today it scans interior, exterior, and worldspace-
+    /// persistent maps linearly
     /// — vanilla `Skyrim.esm` carries ~63 k REFRs across ~3 k cells,
     /// so the worst-case lookup is ~63 k comparisons. That's fine for
     /// console-driven testing; Phase 2 Stage 2 will materialise a
@@ -1144,6 +1148,19 @@ impl EsmCellIndex {
                         grid: (*gx, *gy),
                     });
                 }
+            }
+        }
+        for (worldspace, cell) in &self.worldspace_persistent_cells {
+            if let Some(reference) = cell
+                .references
+                .iter()
+                .find(|reference| reference.form_id == refr_form_id)
+            {
+                let grid = (
+                    (reference.position[0] / EXTERIOR_CELL_UNITS).floor() as i32,
+                    (reference.position[1] / EXTERIOR_CELL_UNITS).floor() as i32,
+                );
+                return Some(CellRef::Exterior { worldspace, grid });
             }
         }
         None

@@ -459,11 +459,23 @@ Work is sequenced P0 input/interaction → P1 reliable traversal → P2 combat �
 P3 game UI/inventory → P4 authored objective/dialogue → P5 persistence/soak.
 Capability on that route takes precedence over additional renderer polish.
 
-**P0 status:** action edges, camera-forward door/script targeting, canonical
-`ActivateEvent` emission, shared XTEL transition queueing, and the native
-`[E] Open/Activate` prompt are implemented and unit-tested. The closure gate is
-a real-data Skyrim interior→exterior smoke plus any line-of-sight/collider
-ownership correction it exposes.
+**P0 closed 2026-08-10:**
+[`docs/smoke-tests/p0-door-interaction.sh`](docs/smoke-tests/p0-door-interaction.sh)
+passes the real Bannered Mare XTEL exit: native `[E] Open` prompt → one bound
+E-key edge → canonical `ActivateEvent` → deferred `WhiterunWorld (6,-2)`
+arrival. The smoke exposed and closed persistent-worldspace destination lookup
+(including negative-grid flooring); its `PhysicsSourceForm` line-of-sight
+ownership path passed unchanged. P1 action migration is underway: character
+and fly-camera movement/jump/sprint consumers now share the once-per-frame
+`ActionState` snapshot, with modal-focus release regressions pinned.
+
+**P2 fixture frozen 2026-08-10:**
+[`docs/engine/p2-combat-fixture.md`](docs/engine/p2-combat-fixture.md) pins
+`BleakFallsBarrow01` reference `000380B4`, a direct level-1 Draugr with one
+two-handed weapon family. The pre-implementation trace made the dependency
+order concrete: add Skyrim Health derivation first, then actor-root ownership
+for bone-body ray hits/ragdoll activation and deterministic weapon selection;
+only then connect Attack → `HitEvent` → damage/death/loot.
 
 **Two axes.** Milestones (`M…`) ship user-visible capability.
 Risk-reducers (`R…`) are structural fixes flagged in the 2026-04-22

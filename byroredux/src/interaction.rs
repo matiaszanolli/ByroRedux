@@ -26,9 +26,9 @@ const OCCLUSION_EPSILON_BU: f32 = 1.0;
 
 /// Stable gameplay intents, independent of their current physical bindings.
 ///
-/// Only [`Self::Activate`] has a gameplay consumer in this first playable
-/// slice. The remaining actions establish the binding/state seam that
-/// movement, combat, inventory, and pause migrate onto incrementally.
+/// Movement, jump, sprint, and activation are the first gameplay consumers.
+/// The remaining actions establish the same seam for combat, inventory, and
+/// pause to migrate onto incrementally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 #[allow(dead_code)] // Mouse/gamepad sources for these declared actions land next.
@@ -214,7 +214,9 @@ impl Resource for InteractionTrace {}
 /// E press therefore emits an event and lets scripts observe it in the same
 /// frame; end-of-frame event cleanup remains unchanged.
 pub(crate) fn interaction_system(world: &World, _dt: f32) {
-    let activate_pressed = refresh_action_state(world);
+    let activate_pressed = world
+        .try_resource::<ActionState>()
+        .is_some_and(|state| state.was_pressed(InputAction::Activate));
     let target = select_interaction_target(world);
 
     if let Some(mut state) = world.try_resource_mut::<InteractionState>() {
@@ -228,9 +230,15 @@ pub(crate) fn interaction_system(world: &World, _dt: f32) {
     }
 }
 
-fn refresh_action_state(world: &World) -> bool {
+/// Refresh the physical-input → gameplay-action snapshot once per frame.
+///
+/// [`crate::systems::player_controller_system`] calls this in `Stage::Early`
+/// before either movement mode reads actions. [`interaction_system`] then
+/// observes the same edge snapshot later in `Stage::Update`, preventing a
+/// second refresh from consuming one-frame presses before activation runs.
+pub(crate) fn refresh_action_state(world: &World) {
     let Some(input) = world.try_resource::<InputState>() else {
-        return false;
+        return;
     };
     let keys_held = input.keys_held.clone();
     drop(input);
@@ -238,7 +246,7 @@ fn refresh_action_state(world: &World) -> bool {
         .try_resource_mut::<InjectedKeyPulse>()
         .and_then(|mut pulse| pulse.key.take());
     let Some(bindings) = world.try_resource::<ActionBindings>() else {
-        return false;
+        return;
     };
     let mut next_held = bindings.held_mask(&keys_held);
     if let Some(action) = injected_key.and_then(|key| bindings.action_for_key(key)) {
@@ -247,10 +255,9 @@ fn refresh_action_state(world: &World) -> bool {
     drop(bindings);
 
     let Some(mut state) = world.try_resource_mut::<ActionState>() else {
-        return false;
+        return;
     };
     state.refresh(next_held);
-    state.was_pressed(InputAction::Activate)
 }
 
 fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
@@ -543,12 +550,17 @@ mod tests {
             .keys_held
             .insert(KeyCode::KeyE);
 
-        assert!(refresh_action_state(&world));
-        assert!(world
-            .resource::<ActionState>()
-            .is_held(InputAction::Activate));
+        refresh_action_state(&world);
+        {
+            let actions = world.resource::<ActionState>();
+            assert!(actions.is_held(InputAction::Activate));
+            assert!(actions.was_pressed(InputAction::Activate));
+        }
+        refresh_action_state(&world);
         assert!(
-            !refresh_action_state(&world),
+            !world
+                .resource::<ActionState>()
+                .was_pressed(InputAction::Activate),
             "held key must not auto-repeat"
         );
 
@@ -556,7 +568,7 @@ mod tests {
             .resource_mut::<InputState>()
             .keys_held
             .remove(&KeyCode::KeyE);
-        assert!(!refresh_action_state(&world));
+        refresh_action_state(&world);
         assert!(world
             .resource::<ActionState>()
             .was_released(InputAction::Activate));
@@ -573,7 +585,10 @@ mod tests {
             .keys_held
             .insert(KeyCode::KeyR);
 
-        assert!(refresh_action_state(&world));
+        refresh_action_state(&world);
+        assert!(world
+            .resource::<ActionState>()
+            .was_pressed(InputAction::Activate));
     }
 
     #[test]
@@ -581,14 +596,59 @@ mod tests {
         let world = input_fixture();
         queue_debug_activate_press(&world).unwrap();
 
-        assert!(refresh_action_state(&world));
+        refresh_action_state(&world);
         assert!(world
             .resource::<ActionState>()
             .is_held(InputAction::Activate));
-        assert!(!refresh_action_state(&world));
+        refresh_action_state(&world);
         assert!(world
             .resource::<ActionState>()
             .was_released(InputAction::Activate));
+    }
+
+    #[test]
+    fn movement_jump_and_sprint_follow_remappable_actions() {
+        let world = input_fixture();
+        world
+            .resource_mut::<ActionBindings>()
+            .bind_key(KeyCode::KeyR, InputAction::MoveForward);
+        world.resource_mut::<InputState>().keys_held.extend([
+            KeyCode::KeyR,
+            KeyCode::KeyD,
+            KeyCode::Space,
+            KeyCode::ControlLeft,
+        ]);
+
+        refresh_action_state(&world);
+        let actions = world.resource::<ActionState>();
+        for action in [
+            InputAction::MoveForward,
+            InputAction::StrafeRight,
+            InputAction::Jump,
+            InputAction::Sprint,
+        ] {
+            assert!(actions.is_held(action), "{action:?} binding was ignored");
+        }
+    }
+
+    #[test]
+    fn modal_input_focus_releases_actions_without_retriggering_them() {
+        let world = input_fixture();
+        world
+            .resource_mut::<InputState>()
+            .keys_held
+            .extend([KeyCode::KeyW, KeyCode::KeyE]);
+        refresh_action_state(&world);
+
+        assert!(!crate::ui_input::release_world_input(&world));
+        refresh_action_state(&world);
+
+        let actions = world.resource::<ActionState>();
+        for action in [InputAction::MoveForward, InputAction::Activate] {
+            assert!(!actions.is_held(action));
+            assert!(actions.was_released(action));
+            assert!(!actions.was_pressed(action));
+        }
     }
 
     #[test]
@@ -619,6 +679,7 @@ mod tests {
             .keys_held
             .insert(KeyCode::KeyE);
 
+        refresh_action_state(&world);
         interaction_system(&world, 0.0);
 
         let selected = world.resource::<InteractionState>().target.unwrap();
