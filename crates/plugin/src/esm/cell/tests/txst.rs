@@ -3,7 +3,7 @@
 //! All 8 texture slots, partial slot fills, MNAM material path, DODT decal
 //! data, DNAM flags (FO4 + Skyrim single-byte).
 
-use super::super::super::reader::EsmReader;
+use super::super::super::reader::{EsmReader, GameKind};
 use super::super::support::parse_txst_group;
 use super::super::*;
 
@@ -91,21 +91,19 @@ fn dodt_payload(
     p
 }
 
-/// Regression: #357 — TXST parser must extract all 8 texture slots
-/// (TX00..TX07) into a `TextureSet`, not just the diffuse path.
-/// Pre-fix every Skyrim TXST-driven REFR override silently dropped
-/// 7 of 8 channels.
+/// TXST stores the middle four roles in CK/xEdit order, not NIF
+/// `BSShaderTextureSet` order. This pins the full Skyrim translation.
 #[test]
-fn parse_txst_extracts_all_eight_texture_slots() {
+fn parse_txst_resolves_skyrim_ck_roles() {
     let txst = build_txst_record(
         0xCAFE,
         &[
             (b"TX00", "textures/diffuse.dds"),
             (b"TX01", "textures/normal.dds"),
-            (b"TX02", "textures/glow.dds"),
-            (b"TX03", "textures/height.dds"),
-            (b"TX04", "textures/env.dds"),
-            (b"TX05", "textures/env_mask.dds"),
+            (b"TX02", "textures/env_mask.dds"),
+            (b"TX03", "textures/glow.dds"),
+            (b"TX04", "textures/height.dds"),
+            (b"TX05", "textures/env.dds"),
             (b"TX06", "textures/inner.dds"),
             (b"TX07", "textures/specular.dds"),
         ],
@@ -117,7 +115,14 @@ fn parse_txst_extracts_all_eight_texture_slots() {
     let end = reader.group_content_end(&header);
     let mut diffuse_only: HashMap<u32, String> = HashMap::new();
     let mut sets: HashMap<u32, TextureSet> = HashMap::new();
-    parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Skyrim,
+    )
+    .expect("parse");
 
     // Backward-compat diffuse-only map still populated.
     assert_eq!(
@@ -136,6 +141,44 @@ fn parse_txst_extracts_all_eight_texture_slots() {
     assert_eq!(set.env_mask.as_deref(), Some("textures/env_mask.dds"));
     assert_eq!(set.inner.as_deref(), Some("textures/inner.dds"));
     assert_eq!(set.specular.as_deref(), Some("textures/specular.dds"));
+    assert!(set.wrinkle.is_none());
+}
+
+/// FO4/FO76 reuse TX02 for wrinkles. It must never reach the environment
+/// mask sampler, while TX03..TX05 retain their named CK roles.
+#[test]
+fn parse_txst_resolves_fo4_wrinkle_role_without_env_mask_alias() {
+    let txst = build_txst_record(
+        0xF042,
+        &[
+            (b"TX02", "textures/face_wrinkles.dds"),
+            (b"TX03", "textures/glow.dds"),
+            (b"TX04", "textures/height.dds"),
+            (b"TX05", "textures/env.dds"),
+        ],
+    );
+    let group = wrap_in_txst_group(&[txst]);
+    let mut reader = EsmReader::new(&group);
+    let header = reader.read_group_header().expect("group header");
+    let end = reader.group_content_end(&header);
+    let mut diffuse_only = HashMap::new();
+    let mut sets = HashMap::new();
+
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Fallout4,
+    )
+    .expect("parse");
+
+    let set = sets.get(&0xF042).expect("FO4 TextureSet");
+    assert_eq!(set.wrinkle.as_deref(), Some("textures/face_wrinkles.dds"));
+    assert!(set.env_mask.is_none());
+    assert_eq!(set.glow.as_deref(), Some("textures/glow.dds"));
+    assert_eq!(set.height.as_deref(), Some("textures/height.dds"));
+    assert_eq!(set.env.as_deref(), Some("textures/env.dds"));
 }
 
 /// Regression: #357 — partial TXST (e.g. FO3/FNV which only authors
@@ -151,7 +194,14 @@ fn parse_txst_diffuse_only_leaves_other_slots_none() {
     let end = reader.group_content_end(&header);
     let mut diffuse_only: HashMap<u32, String> = HashMap::new();
     let mut sets: HashMap<u32, TextureSet> = HashMap::new();
-    parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Fallout3NV,
+    )
+    .expect("parse");
 
     let set = sets
         .get(&0xBEEF)
@@ -179,7 +229,14 @@ fn parse_txst_extracts_mnam_material_path() {
     let end = reader.group_content_end(&header);
     let mut diffuse_only: HashMap<u32, String> = HashMap::new();
     let mut sets: HashMap<u32, TextureSet> = HashMap::new();
-    parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Fallout4,
+    )
+    .expect("parse");
 
     let set = sets
         .get(&0xF047)
@@ -221,7 +278,14 @@ fn parse_txst_extracts_mnam_alongside_tx_slots() {
     let end = reader.group_content_end(&header);
     let mut diffuse_only: HashMap<u32, String> = HashMap::new();
     let mut sets: HashMap<u32, TextureSet> = HashMap::new();
-    parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Fallout4,
+    )
+    .expect("parse");
 
     let set = sets.get(&0xF048).expect("set missing");
     assert_eq!(
@@ -252,7 +316,14 @@ fn parse_txst_empty_string_slot_collapses_to_none() {
     let end = reader.group_content_end(&header);
     let mut diffuse_only: HashMap<u32, String> = HashMap::new();
     let mut sets: HashMap<u32, TextureSet> = HashMap::new();
-    parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Skyrim,
+    )
+    .expect("parse");
 
     let set = sets.get(&0xDEAD).expect("set missing");
     assert_eq!(set.diffuse.as_deref(), Some("textures/diffuse.dds"));
@@ -295,7 +366,14 @@ fn parse_txst_extracts_dodt_decal_data() {
     let end = reader.group_content_end(&header);
     let mut diffuse_only: HashMap<u32, String> = HashMap::new();
     let mut sets: HashMap<u32, TextureSet> = HashMap::new();
-    parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Fallout4,
+    )
+    .expect("parse");
 
     let set = sets.get(&0xD0D7).expect("set missing for DODT TXST");
     let dd = set.decal_data.expect("DODT must populate decal_data");
@@ -329,7 +407,14 @@ fn parse_txst_extracts_dnam_flags_fo4() {
     let end = reader.group_content_end(&header);
     let mut diffuse_only: HashMap<u32, String> = HashMap::new();
     let mut sets: HashMap<u32, TextureSet> = HashMap::new();
-    parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Fallout4,
+    )
+    .expect("parse");
 
     let set = sets.get(&0xDDA4).expect("set missing for DNAM TXST");
     assert_eq!(set.flags, 0x05);
@@ -353,7 +438,14 @@ fn parse_txst_extracts_dnam_flags_skyrim_single_byte() {
     let end = reader.group_content_end(&header);
     let mut diffuse_only: HashMap<u32, String> = HashMap::new();
     let mut sets: HashMap<u32, TextureSet> = HashMap::new();
-    parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Skyrim,
+    )
+    .expect("parse");
 
     let set = sets.get(&0x5DA4).expect("set missing for Skyrim DNAM TXST");
     assert_eq!(set.flags, 0x02);
@@ -393,7 +485,14 @@ fn parse_txst_extracts_all_fields_together() {
     let end = reader.group_content_end(&header);
     let mut diffuse_only: HashMap<u32, String> = HashMap::new();
     let mut sets: HashMap<u32, TextureSet> = HashMap::new();
-    parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Fallout4,
+    )
+    .expect("parse");
 
     let set = sets.get(&0xFA110).expect("set missing");
     assert_eq!(set.diffuse.as_deref(), Some("textures/diff.dds"));
@@ -432,7 +531,14 @@ fn parse_txst_dodt_only_record_is_preserved() {
     let end = reader.group_content_end(&header);
     let mut diffuse_only: HashMap<u32, String> = HashMap::new();
     let mut sets: HashMap<u32, TextureSet> = HashMap::new();
-    parse_txst_group(&mut reader, end, &mut diffuse_only, &mut sets).expect("parse");
+    parse_txst_group(
+        &mut reader,
+        end,
+        &mut diffuse_only,
+        &mut sets,
+        GameKind::Fallout4,
+    )
+    .expect("parse");
 
     assert!(
         sets.contains_key(&0xD0D7_0017),

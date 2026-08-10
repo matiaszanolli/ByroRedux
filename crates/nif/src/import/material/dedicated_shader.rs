@@ -86,6 +86,14 @@ fn apply_bs_lighting_shader(
         if shader.material_reference {
             return;
         }
+        use crate::shader_flags::bs_shader_crc32::{contains_any, MODELSPACENORMALS};
+        let model_space_normals =
+            shader.shader_flags_1 & crate::shader_flags::skyrim_slsf1::MODEL_SPACE_NORMALS != 0
+                || contains_any(&shader.sf1_crcs, &[MODELSPACENORMALS])
+                || contains_any(&shader.sf2_crcs, &[MODELSPACENORMALS]);
+        if model_space_normals {
+            info.model_space_normals = true;
+        }
         if let Some(ts_idx) = shader.texture_set_ref.index() {
             if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                 if let Some(path) = tex_set.textures.first() {
@@ -95,8 +103,22 @@ fn apply_bs_lighting_shader(
                 if let Some(normal) = tex_set.textures.get(1) {
                     info.normal_map = intern_texture_path(pool, normal);
                 }
-                // Glow / emissive map is textures[2].
-                if info.glow_map.is_none() {
+                // Slot 2 is polymorphic. SkinTint uses it as the skin /
+                // subsurface tint texture; the other legacy lighting paths
+                // use it as glow. Resolve the role here so downstream code
+                // never has to reinterpret the raw index.
+                let skin_tint_slot = shader.shader_type == 5
+                    || matches!(
+                        &shader.shader_type_data,
+                        ShaderTypeData::SkinTint { .. } | ShaderTypeData::Fo76SkinTint { .. }
+                    );
+                if skin_tint_slot {
+                    if info.tint_map.is_none() {
+                        if let Some(tint) = tex_set.textures.get(2) {
+                            info.tint_map = intern_texture_path(pool, tint);
+                        }
+                    }
+                } else if info.glow_map.is_none() {
                     if let Some(glow) = tex_set.textures.get(2) {
                         info.glow_map = intern_texture_path(pool, glow);
                     }
@@ -202,6 +224,15 @@ fn apply_bs_lighting_shader(
                                 info.env_mask = intern_texture_path(pool, mask);
                             }
                         }
+                        // With model-space normals, slot 7 is the alternate
+                        // specular/smoothness texture rather than the normal
+                        // backlight role. Keep that semantic named at the
+                        // import boundary and out of the tangent basis path.
+                        if model_space_normals && info.gloss_map.is_none() {
+                            if let Some(spec) = tex_set.textures.get(7).filter(|s| !s.is_empty()) {
+                                info.gloss_map = intern_texture_path(pool, spec);
+                            }
+                        }
                     }
                 }
             }
@@ -251,17 +282,6 @@ fn apply_bs_lighting_shader(
         // `.bgsm` (authoritative); `asset_provider`'s BGSM merge
         // OR-upgrades, so vanilla content is unchanged. See FO4-D5-MEDIUM-01.
         if scene.bsver >= crate::version::bsver::FALLOUT4 {
-            use crate::shader_flags::bs_shader_crc32::{contains_any, MODELSPACENORMALS};
-            // Model-space normals — F4SF1 bit 12 (same position on
-            // Skyrim, but kept FO4-gated to leave the validated Skyrim
-            // path untouched) OR the FO76/Starfield CRC. Drives the MSN
-            // normal-decode branch via `ImportedMesh::model_space_normals`.
-            if shader.shader_flags_1 & crate::shader_flags::fo4_slsf1::MODEL_SPACE_NORMALS != 0
-                || contains_any(&shader.sf1_crcs, &[MODELSPACENORMALS])
-                || contains_any(&shader.sf2_crcs, &[MODELSPACENORMALS])
-            {
-                info.model_space_normals = true;
-            }
             // Alpha-test cutout — F4SF2 bit 25 (FO4-only; nif.xml lists
             // no CRC identifier, and the typed field is zero on
             // BSVER >= 132, so this is a no-op for FO76+). The

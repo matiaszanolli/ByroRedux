@@ -92,6 +92,10 @@ fn build_overlay_full_txst_fills_every_authored_slot() {
             normal: Some(r"textures\a\nrm.dds".to_string()),
             glow: Some(r"textures\a\glow.dds".to_string()),
             specular: Some(r"textures\a\spec.dds".to_string()),
+            height: Some(r"textures\a\height.dds".to_string()),
+            env: Some(r"textures\a\env.dds".to_string()),
+            env_mask: Some(r"textures\a\env_mask.dds".to_string()),
+            wrinkle: Some(r"textures\a\wrinkle.dds".to_string()),
             ..TextureSet::default()
         },
     );
@@ -105,8 +109,13 @@ fn build_overlay_full_txst_fills_every_authored_slot() {
     assert_eq!(resolved(&pool, ov.normal), Some(r"textures\a\nrm.dds"));
     assert_eq!(resolved(&pool, ov.glow), Some(r"textures\a\glow.dds"));
     assert_eq!(resolved(&pool, ov.specular), Some(r"textures\a\spec.dds"));
-    // Unauthored slots stay None so the base mesh's textures ride through.
-    assert!(ov.env.is_none());
+    assert_eq!(resolved(&pool, ov.height), Some(r"textures\a\height.dds"));
+    assert_eq!(resolved(&pool, ov.env), Some(r"textures\a\env.dds"));
+    assert_eq!(
+        resolved(&pool, ov.env_mask),
+        Some(r"textures\a\env_mask.dds")
+    );
+    assert_eq!(resolved(&pool, ov.wrinkle), Some(r"textures\a\wrinkle.dds"));
     assert!(ov.material_path.is_none());
 }
 

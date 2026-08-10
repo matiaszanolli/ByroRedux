@@ -731,15 +731,18 @@ pub struct StaticObject {
 /// XTNM/XPRD overrides referencing a TXST silently degraded normal /
 /// glow / parallax / env / specular back to the host mesh's textures.
 ///
-/// Slot meanings per `docs/legacy/nif.xml` and the Skyrim Creation Kit:
+/// This is a canonical, named-role view of an ESM `TXST` record.  The
+/// on-disk TXnn order is deliberately resolved by `parse_txst_group`; it is
+/// *not* the `BSShaderTextureSet` order used by NIFs:
 /// - **TX00** — diffuse / albedo
-/// - **TX01** — normal / tangent space
-/// - **TX02** — glow / skin / detail (Skyrim shader-type-dependent)
-/// - **TX03** — height / parallax
-/// - **TX04** — environment cubemap
-/// - **TX05** — environment mask
+/// - **TX01** — normal / gloss
+/// - **TX02** — environment mask / subsurface tint through Skyrim;
+///   wrinkles in FO4/FO76
+/// - **TX03** — glow
+/// - **TX04** — height / parallax
+/// - **TX05** — environment cubemap
 /// - **TX06** — multi-layer parallax inner layer
-/// - **TX07** — specular / back-lighting
+/// - **TX07** — back-lighting / smooth specular
 ///
 /// FO4+ TXST records often use `MNAM` (a path to a BGSM material file)
 /// instead of populating the TXnn slots directly. 37 % of vanilla
@@ -760,6 +763,10 @@ pub struct TextureSet {
     pub env_mask: Option<String>,
     pub inner: Option<String>,
     pub specular: Option<String>,
+    /// FO4/FO76 TX02. Kept separate from the pre-FO4 environment-mask role
+    /// so a shared parser cannot silently bind a wrinkle texture as an
+    /// environment mask.
+    pub wrinkle: Option<String>,
     /// FO4+ MNAM sub-record — path to a BGSM material file whose
     /// embedded TX00..TX07 override the direct-slot path. When present
     /// it typically replaces TX00 entirely (the 140 MNAM-only vanilla

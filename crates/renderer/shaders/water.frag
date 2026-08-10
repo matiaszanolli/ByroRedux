@@ -314,7 +314,8 @@ vec3 traceWaterRay(
             instIdx, primIdx, bary, direction, mat);
         vec4 baseSample;
 
-        if (rayHitHasCoverage(inst, mat, uv, baseSample)) {
+        if (rayHitHasCoverage(
+                instIdx, primIdx, bary, inst, mat, uv, baseSample)) {
             hit = true;
             hitDist = travelled + localT;
 
@@ -699,7 +700,7 @@ void main() {
         // 1. Use the same material-aware full policy as surface lighting:
         // opaque structure/props block, while glass transmits tinted energy.
         vec3 sunTransmission = traceShadowTransmittance(
-            vWorldPos + Nsurface * 0.05,
+            offsetRayOrigin(vWorldPos, Nsurface),
             sunDir,
             DIRECTIONAL_SHADOW_TRACE_DISTANCE,
             0.0,

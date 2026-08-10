@@ -265,7 +265,13 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"LTEX" => {
                 parse_ltex_group(&mut reader, end, &mut ltex_to_txst, &mut landscape_textures)?
             }
-            b"TXST" => parse_txst_group(&mut reader, end, &mut txst_textures, &mut texture_sets)?,
+            b"TXST" => parse_txst_group(
+                &mut reader,
+                end,
+                &mut txst_textures,
+                &mut texture_sets,
+                game,
+            )?,
             // FO3/FNV + FO4+ — see is_scol_era rationale above. Skipped only
             // for the eras that genuinely lack SCOL (Oblivion, Skyrim).
             b"SCOL" if is_scol_era => parse_scol_group(&mut reader, end, &mut statics, &mut scols)?,

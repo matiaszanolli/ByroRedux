@@ -4,7 +4,7 @@
 
 use super::helpers::{read_mesh_path, read_zstring};
 use super::*;
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{GameKind, SubRecord};
 
 /// Build a [`StaticObject`] from a record's already-decoded sub-records.
 ///
@@ -386,8 +386,8 @@ pub(crate) fn parse_ltex_group(
     Ok(())
 }
 
-/// Parse TXST (Texture Set) records. Extracts all 8 texture slots
-/// (TX00..TX07) into a [`TextureSet`] entry, plus the legacy
+/// Parse TXST (Texture Set) records. Resolves TX00..TX07 into named
+/// [`TextureSet`] roles, plus the legacy
 /// `txst_textures: form_id → diffuse_path` map kept for the LTEX
 /// resolver downstream. Pre-#357 only TX00 was retained — REFR
 /// XTNM/XPRD overrides referencing a TXST silently dropped 7 of 8
@@ -398,12 +398,13 @@ pub(crate) fn parse_txst_group(
     end: usize,
     txst_textures: &mut HashMap<u32, String>,
     texture_sets: &mut HashMap<u32, TextureSet>,
+    game: GameKind,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let sub = reader.read_group_header()?;
             let sub_end = reader.group_content_end(&sub);
-            parse_txst_group(reader, sub_end, txst_textures, texture_sets)?;
+            parse_txst_group(reader, sub_end, txst_textures, texture_sets, game)?;
             continue;
         }
 
@@ -424,10 +425,27 @@ pub(crate) fn parse_txst_group(
                 match sub.sub_type.as_slice() {
                     b"TX00" => set.diffuse = extract(&sub.data),
                     b"TX01" => set.normal = extract(&sub.data),
-                    b"TX02" => set.glow = extract(&sub.data),
-                    b"TX03" => set.height = extract(&sub.data),
-                    b"TX04" => set.env = extract(&sub.data),
-                    b"TX05" => set.env_mask = extract(&sub.data),
+                    // TXST is *not* stored in BSShaderTextureSet order.
+                    // FO3/FNV + Skyrim: TX02 is environment mask /
+                    // subsurface tint. FO4/FO76 renamed that lane to
+                    // wrinkles. Starfield's xEdit definition has not seen
+                    // TX02 in shipped content; retain the FO4-era meaning
+                    // if mod content authors one rather than fabricating an
+                    // environment mask.
+                    b"TX02" => {
+                        let path = extract(&sub.data);
+                        if matches!(
+                            game,
+                            GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
+                        ) {
+                            set.wrinkle = path;
+                        } else {
+                            set.env_mask = path;
+                        }
+                    }
+                    b"TX03" => set.glow = extract(&sub.data),
+                    b"TX04" => set.height = extract(&sub.data),
+                    b"TX05" => set.env = extract(&sub.data),
                     b"TX06" => set.inner = extract(&sub.data),
                     b"TX07" => set.specular = extract(&sub.data),
                     // FO4+ BGSM material path. 37 % of vanilla

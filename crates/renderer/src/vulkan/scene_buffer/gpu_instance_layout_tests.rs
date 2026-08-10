@@ -420,7 +420,7 @@ fn water_fragment_uses_shared_material_aware_ray_hits() {
     for needle in [
         "materials[inst.materialId]",
         "instIdx, primIdx, bary, direction, mat",
-        "rayHitHasCoverage(inst, mat, uv, baseSample)",
+        "instIdx, primIdx, bary, inst, mat, uv, baseSample",
         "rayHitAlbedo(mat, baseSample.rgb)",
         "rayHitEmission(mat, uv, baseSample.rgb, 0.0)",
     ] {
@@ -432,6 +432,7 @@ fn water_fragment_uses_shared_material_aware_ray_hits() {
     for helper in [
         "vec2 getHitUV(",
         "vec2 resolveRayHitUV(",
+        "float getHitVertexAlpha(",
         "bool rayHitHasCoverage(",
         "vec3 rayHitAlbedo(",
         "vec3 rayHitEmission(",
@@ -447,6 +448,84 @@ fn water_fragment_uses_shared_material_aware_ray_hits() {
             && !frag.contains("avgAlbedoB"),
         "water rays must not regress to the flat instance-average shortcut."
     );
+}
+
+/// Raster and every material-aware ray must agree on the complete authored
+/// alpha expression. In particular, NiAlphaProperty makes vertex alpha
+/// authoritative even when the shader's vertex-colour flags are clear.
+#[test]
+fn secondary_ray_coverage_includes_barycentric_vertex_alpha() {
+    let hit = include_str!("../../../shaders/include/ray_hit.glsl");
+    let shadow = include_str!("../../../shaders/include/shadow_transport.glsl");
+
+    for needle in [
+        "float getHitVertexAlpha(",
+        "VERTEX_COLOR_OFFSET_FLOATS + 3u",
+        "getHitVertexAlpha(instanceIdx, primitiveIdx, barycentrics)",
+    ] {
+        assert!(
+            hit.contains(needle),
+            "secondary-ray coverage is missing `{needle}`"
+        );
+    }
+    assert!(
+        shadow.contains("uint(hitIdx), uint(hitPrim), hitBary,"),
+        "shadow traversal must pass committed-hit barycentrics into coverage"
+    );
+}
+
+/// Pin the scale-aware offset and its zero-tMin shadow traversal together.
+/// Reintroducing a fixed world epsilon at either layer recreates acne at
+/// large coordinates and light leaks at small/detail scale.
+#[test]
+fn shadow_transport_uses_scale_aware_ray_origin_offset() {
+    let hit = include_str!("../../../shaders/include/ray_hit.glsl");
+    let shadow = include_str!("../../../shaders/include/shadow_transport.glsl");
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+
+    for needle in [
+        "vec3 offsetRayOrigin(vec3 p, vec3 n)",
+        "intBitsToFloat(floatBitsToInt(p.x)",
+        "const float INT_SCALE = 256.0",
+    ] {
+        assert!(hit.contains(needle), "robust offset is missing `{needle}`");
+    }
+    assert!(
+        shadow.contains("opaqueOrigin, 0.0, direction, opaqueRemaining")
+            && shadow.contains("rayOrigin, 0.0, direction, remaining")
+            && shadow.contains("advanceShadowRayPastHit("),
+        "shadow transport must start at robustly offset origins and advance \
+         past transparent hits without a fixed epsilon"
+    );
+    assert!(
+        lighting.contains("offsetRayOrigin(p, n)"),
+        "secondary-hit direct-light shadows must share the robust offset"
+    );
+}
+
+/// The legacy normal-map alpha lane is authored as specular intensity. It
+/// must gate local-light specular and serve as the environment-reflection
+/// fallback only when no dedicated environment mask is present. It must not
+/// change roughness; dedicated gloss textures retain the roughness path.
+#[test]
+fn normal_alpha_masks_specular_intensity_not_roughness() {
+    let triangle = include_str!("../../../shaders/triangle.frag");
+    let branch_start = triangle
+        .find("if (normalAlphaSpec) {")
+        .expect("normal-alpha specular branch");
+    let branch_end = triangle[branch_start..]
+        .find("} else {")
+        .map(|offset| branch_start + offset)
+        .expect("dedicated-gloss sibling branch");
+    let normal_alpha_branch = &triangle[branch_start..branch_end];
+
+    assert!(normal_alpha_branch.contains("specStrength *= normalAlphaSpecMask"));
+    assert!(
+        !normal_alpha_branch.contains("roughness"),
+        "normal alpha must not be reinterpreted as gloss/roughness"
+    );
+    assert!(triangle.contains("mat.envMaskIndex != 0u\n            ? environmentMask\n            : normalAlphaSpecMask"));
+    assert!(triangle.contains("* environmentReflectionMask * environmentStrength"));
 }
 
 /// Every secondary path that samples a committed material hit must resolve

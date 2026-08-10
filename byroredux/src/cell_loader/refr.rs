@@ -64,6 +64,10 @@ pub(crate) struct RefrTextureOverlay {
     /// XTXR swap round-trips.
     pub(crate) inner: Option<FixedString>,
     pub(crate) specular: Option<FixedString>,
+    /// FO4/FO76 TX02 wrinkle texture. This is a distinct canonical role;
+    /// aliasing it to `env_mask` is the TXST/NIF ordering regression this
+    /// overlay boundary is responsible for preventing.
+    pub(crate) wrinkle: Option<FixedString>,
     pub(crate) material_path: Option<FixedString>,
     /// Resolved MSWP entries from the REFR's `XMSP` sub-record (#971).
     /// Each pair substitutes a BGSM/BGEM material path on the base
@@ -115,6 +119,7 @@ impl RefrTextureOverlay {
         Self::fill(&mut self.env_mask, ts.env_mask.as_deref(), pool);
         Self::fill(&mut self.inner, ts.inner.as_deref(), pool);
         Self::fill(&mut self.specular, ts.specular.as_deref(), pool);
+        Self::fill(&mut self.wrinkle, ts.wrinkle.as_deref(), pool);
         Self::fill(&mut self.material_path, ts.material_path.as_deref(), pool);
         // #972 / FO4-D4-NEW-09 — propagate `HasModelSpaceNormals` (bit 2
         // of `TextureSet.flags`) only when this TXST actually contributed
@@ -131,9 +136,11 @@ impl RefrTextureOverlay {
         }
     }
 
-    /// Apply a single XTXR slot swap. `slot_index` picks one of TX00..TX07
-    /// on the host mesh; the source path comes from the swap TXST's
-    /// same-index slot. Later XTXR for the same slot overwrites.
+    /// Apply a single XTXR slot swap. `slot_index` selects a NIF texture-set
+    /// role on the host mesh. The source TXST has already been translated
+    /// from its different TXnn ordering into named roles, so this match is
+    /// intentionally NIF-role order rather than raw ESM index order. Later
+    /// XTXR for the same role overwrites.
     fn apply_slot_swap(
         &mut self,
         ts: &esm::cell::TextureSet,
@@ -208,6 +215,7 @@ impl RefrTextureOverlay {
                     pool,
                 );
                 Self::fill(&mut self.env, Some(f.envmap_texture.as_str()), pool);
+                Self::fill(&mut self.wrinkle, Some(f.wrinkles_texture.as_str()), pool);
                 Self::fill(
                     &mut self.height,
                     Some(f.displacement_texture.as_str()),

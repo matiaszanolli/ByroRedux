@@ -5,6 +5,19 @@
 // alpha-aware binary blocker; glass accumulates tint, absorption and Fresnel
 // loss interface by interface.  Callers must include bindings.glsl and
 // ray_hit.glsl and shadow_common.glsl before this file.
+bool advanceShadowRayPastHit(
+    inout vec3 origin,
+    inout float remaining,
+    vec3 direction,
+    float hitT
+) {
+    vec3 hitPoint = origin + direction * hitT;
+    vec3 nextOrigin = offsetRayOrigin(hitPoint, direction);
+    remaining -= length(nextOrigin - origin);
+    origin = nextOrigin;
+    return remaining > 0.0;
+}
+
 vec3 traceShadowTransmittance(
     vec3 origin, vec3 direction, float maxDist, float emitterRadius,
     uint visibilityMask
@@ -19,7 +32,7 @@ vec3 traceShadowTransmittance(
         rayQueryInitializeEXT(
             opaqueRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
             opaqueMask,
-            opaqueOrigin, 0.05, direction, opaqueRemaining);
+            opaqueOrigin, 0.0, direction, opaqueRemaining);
         while (rayQueryProceedEXT(opaqueRQ)) {}
         if (rayQueryGetIntersectionTypeEXT(opaqueRQ, true)
             == gl_RayQueryCommittedIntersectionNoneEXT) break;
@@ -36,10 +49,8 @@ vec3 traceShadowTransmittance(
         bool effectCard = hitMat.materialKind == MATERIAL_KIND_EFFECT_SHADER
             || hitMat.materialKind == MATERIAL_KIND_FIRE_REFRACTION;
         if (effectCard) {
-            float advance = hitT + 0.1;
-            opaqueRemaining -= advance;
-            if (opaqueRemaining <= 0.05) break;
-            opaqueOrigin += direction * advance;
+            if (!advanceShadowRayPastHit(
+                    opaqueOrigin, opaqueRemaining, direction, hitT)) break;
             continue;
         }
 
@@ -54,16 +65,16 @@ vec3 traceShadowTransmittance(
         vec2 hitUV = resolveRayHitUV(
             uint(hitIdx), uint(hitPrim), hitBary, direction, hitMat);
         vec4 hitBase;
-        bool covered = rayHitHasCoverage(hitInst, hitMat, hitUV, hitBase);
+        bool covered = rayHitHasCoverage(
+            uint(hitIdx), uint(hitPrim), hitBary,
+            hitInst, hitMat, hitUV, hitBase);
         vec3 hitEmission = rayHitEmission(hitMat, hitUV, hitBase.rgb, 0.0);
         bool sourceShell = nearEmitter
             && max(max(hitEmission.r, hitEmission.g), hitEmission.b) > 0.01;
         if (covered && !sourceShell) return vec3(0.0);
 
-        float advance = hitT + 0.1;
-        opaqueRemaining -= advance;
-        if (opaqueRemaining <= 0.05) break;
-        opaqueOrigin += direction * advance;
+        if (!advanceShadowRayPastHit(
+                opaqueOrigin, opaqueRemaining, direction, hitT)) break;
     }
 
     const int MAX_GLASS_INTERFACES = 4;
@@ -77,7 +88,7 @@ vec3 traceShadowTransmittance(
         rayQueryInitializeEXT(
             glassRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
             VISIBILITY_LAYER_GLASS,
-            rayOrigin, 0.05, direction, remaining);
+            rayOrigin, 0.0, direction, remaining);
         while (rayQueryProceedEXT(glassRQ)) {}
         if (rayQueryGetIntersectionTypeEXT(glassRQ, true)
             == gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -93,12 +104,12 @@ vec3 traceShadowTransmittance(
         vec2 hitUV = resolveRayHitUV(
             uint(hitIdx), uint(hitPrim), hitBary, direction, hitMat);
         vec4 glassTex;
-        bool covered = rayHitHasCoverage(hitInst, hitMat, hitUV, glassTex);
+        bool covered = rayHitHasCoverage(
+            uint(hitIdx), uint(hitPrim), hitBary,
+            hitInst, hitMat, hitUV, glassTex);
         if (!covered) {
-            float advance = hitT + 0.1;
-            remaining -= advance;
-            if (remaining <= 0.05) break;
-            rayOrigin += direction * advance;
+            if (!advanceShadowRayPastHit(
+                    rayOrigin, remaining, direction, hitT)) break;
             continue;
         }
         vec3 tint = clamp(
@@ -119,10 +130,8 @@ vec3 traceShadowTransmittance(
             return vec3(0.0);
         }
 
-        float advance = hitT + 0.1;
-        remaining -= advance;
-        if (remaining <= 0.05) break;
-        rayOrigin += direction * advance;
+        if (!advanceShadowRayPastHit(
+                rayOrigin, remaining, direction, hitT)) break;
     }
     return transmission;
 }

@@ -86,6 +86,34 @@ mod tests {
             std::mem::size_of::<crate::Vertex>(),
             "VERTEX_STRIDE_FLOATS ({VERTEX_STRIDE_FLOATS}) × 4 must equal size_of::<Vertex>()"
         );
+        for (name, shader_offset, rust_offset) in [
+            (
+                "color",
+                VERTEX_COLOR_OFFSET_FLOATS,
+                std::mem::offset_of!(crate::Vertex, color),
+            ),
+            (
+                "normal",
+                VERTEX_NORMAL_OFFSET_FLOATS,
+                std::mem::offset_of!(crate::Vertex, normal),
+            ),
+            (
+                "uv",
+                VERTEX_UV_OFFSET_FLOATS,
+                std::mem::offset_of!(crate::Vertex, uv),
+            ),
+            (
+                "tangent",
+                VERTEX_TANGENT_OFFSET_FLOATS,
+                std::mem::offset_of!(crate::Vertex, tangent),
+            ),
+        ] {
+            assert_eq!(
+                (shader_offset * 4) as usize,
+                rust_offset,
+                "VERTEX_{name}_OFFSET_FLOATS must match Vertex::{name}"
+            );
+        }
     }
 
     /// Verify the generated GLSL header contains the expected #define lines.
@@ -132,6 +160,7 @@ mod tests {
             ("CLUSTER_NEAR", format!("#define CLUSTER_NEAR {CLUSTER_NEAR:?}")),
             ("CLUSTER_FAR_FLOOR", format!("#define CLUSTER_FAR_FLOOR {CLUSTER_FAR_FLOOR:?}")),
             ("CLUSTER_FAR_FALLBACK", format!("#define CLUSTER_FAR_FALLBACK {CLUSTER_FAR_FALLBACK:?}")),
+            ("VERTEX_COLOR_OFFSET_FLOATS", format!("#define VERTEX_COLOR_OFFSET_FLOATS {VERTEX_COLOR_OFFSET_FLOATS}u")),
             ("VERTEX_NORMAL_OFFSET_FLOATS", format!("#define VERTEX_NORMAL_OFFSET_FLOATS {VERTEX_NORMAL_OFFSET_FLOATS}u")),
             ("VERTEX_UV_OFFSET_FLOATS", format!("#define VERTEX_UV_OFFSET_FLOATS {VERTEX_UV_OFFSET_FLOATS}u")),
             ("VERTEX_TANGENT_OFFSET_FLOATS", format!("#define VERTEX_TANGENT_OFFSET_FLOATS {VERTEX_TANGENT_OFFSET_FLOATS}u")),

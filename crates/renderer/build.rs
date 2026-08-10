@@ -82,6 +82,11 @@ fn main() {
     .unwrap();
     writeln!(
         out,
+        "#define VERTEX_COLOR_OFFSET_FLOATS {VERTEX_COLOR_OFFSET_FLOATS}u"
+    )
+    .unwrap();
+    writeln!(
+        out,
         "#define VERTEX_NORMAL_OFFSET_FLOATS {VERTEX_NORMAL_OFFSET_FLOATS}u"
     )
     .unwrap();

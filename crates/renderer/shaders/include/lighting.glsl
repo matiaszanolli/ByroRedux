@@ -343,7 +343,7 @@ vec3 pathHitRadiance(
             diffusePdf, specularPdf);
         if (pathLuminance(bsdf) <= 1e-6) continue;
         vec3 visibility = traceLightTransmittance(
-            i, p + n * 0.1, L, max(dist - 0.2, 0.05));
+            i, offsetRayOrigin(p, n), L, max(dist, 0.05));
         if (max(max(visibility.r, visibility.g), visibility.b) <= 0.001) continue;
         radiance += lights[i].color_type.rgb
             * contribution * bsdf * visibility;
@@ -403,7 +403,7 @@ vec3 reflectionHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
         float contrib;
         if (!giLightSample(i, p, n, dbgFlags, L, dist, contrib)) continue;
         vec3 visibility = traceLightTransmittance(
-            i, p + n * 0.1, L, max(dist - 0.2, 0.05));
+            i, offsetRayOrigin(p, n), L, max(dist, 0.05));
         if (max(max(visibility.r, visibility.g), visibility.b) <= 0.001) continue;
         return lights[i].color_type.rgb * contrib * visibility;
     }
@@ -459,7 +459,7 @@ vec3 giHitIrradiance(vec3 p, vec3 n, uint dbgFlags) {
         float contrib;
         if (!giLightSample(i, p, n, dbgFlags, L, dist, contrib)) continue;
         vec3 visibility = traceLightTransmittance(
-            i, p + n * 0.1, L, max(dist - 0.2, 0.05));
+            i, offsetRayOrigin(p, n), L, max(dist, 0.05));
         if (max(max(visibility.r, visibility.g), visibility.b) <= 0.001) continue;
         e += lights[i].color_type.rgb * contrib * visibility;
         visibleCount++;

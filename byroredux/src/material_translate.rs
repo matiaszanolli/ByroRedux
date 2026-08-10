@@ -255,42 +255,36 @@ pub(crate) const NORMAL_ALPHA_SPEC_BIT: u32 =
     byroredux_renderer::shader_constants::NORMAL_ALPHA_SPEC_BIT;
 
 /// The normal-alpha-as-spec population gate (Skyrim/Gamebryo era): a lit
-/// surface (`material_kind < 100`, low metalness, ~zero env-map scale) that
-/// ships a normal map but no dedicated gloss map. Excludes glass/effect
-/// kinds (>= 100, own roughness) and the FNV/FO4 env-mapped population. The
+/// surface (`material_kind < 100`) that ships a normal map but no dedicated
+/// gloss/specular texture. Environment-mapped materials remain eligible:
+/// when no environment mask is authored, normal alpha is also the fallback
+/// reflection mask. Excludes glass/effect kinds (>= 100, own optics). The
 /// inputs are the exact values both the spawn write-back and the render
 /// path read from the `Material` / [`MaterialTextureHandles`] components,
 /// so the gate cannot diverge between the two call sites.
 pub(crate) fn normal_alpha_spec_applies(
     material_kind: u32,
-    metalness: f32,
-    env_map_scale: f32,
+    _metalness: f32,
+    _env_map_scale: f32,
     normal_map_index: u32,
     gloss_map_index: u32,
 ) -> bool {
-    material_kind < 100
-        && metalness < 0.3
-        && env_map_scale <= 0.3
-        && normal_map_index != 0
-        && gloss_map_index == 0
+    material_kind < 100 && normal_map_index != 0 && gloss_map_index == 0
 }
 
 /// Canonical roughness for the normal-alpha-as-spec population, or `None`
 /// when the gate does not apply (caller keeps the `resolve_pbr`-resolved
-/// roughness). With an alpha-bearing normal, the normal's alpha is the
-/// per-pixel smoothness mask and the base roughness is seeded SMOOTH from
-/// the authored glossiness; an alpha-less normal with an authored
-/// above-neutral specular strength roughens from that instead. Both
-/// formulas mirror the legacy per-draw derivation verbatim, so relocating
-/// them to spawn is value-identical (#1480 / REN-D22-NEW-01). Idempotent —
-/// it derives from `glossiness` / `specular_strength`, never from the
-/// current `roughness`, so re-running it never drifts.
+/// roughness). An alpha-bearing normal is deliberately a no-op here: its
+/// alpha is the per-pixel specular-intensity mask consumed in the shader,
+/// never a smoothness signal. The legacy alpha-less/high-specular fallback
+/// remains restricted to matte, non-env-mapped materials and derives from
+/// `specular_strength`, never from current roughness, so reruns cannot drift.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn normal_alpha_spec_roughness(
     material_kind: u32,
     metalness: f32,
     env_map_scale: f32,
-    glossiness: f32,
+    _glossiness: f32,
     specular_strength: f32,
     normal_map_index: u32,
     gloss_map_index: u32,
@@ -306,20 +300,8 @@ pub(crate) fn normal_alpha_spec_roughness(
         return None;
     }
     if normal_has_alpha {
-        // #1535 — `glossiness` is a raw NIF binary float with no finite
-        // guard on its path, and `f32::clamp` PROPAGATES NaN
-        // (`NaN.clamp(a, b) == NaN`). A non-finite glossiness would otherwise
-        // ship `roughness = NaN` into the GpuMaterial SSBO past the only NaN
-        // gate (`resolve_pbr`, which already ran), where NaN GGX terms poison
-        // the lit color and stick in SVGF/TAA history. Drop to `None` so the
-        // resolve_pbr-resolved (finite) canonical roughness is kept. The
-        // `specular_strength` arm below self-blocks on NaN (`NaN > 1.2` is
-        // false), so no sibling guard is needed there.
-        if !glossiness.is_finite() {
-            return None;
-        }
-        Some((1.0 - glossiness / 100.0).clamp(0.05, 0.95))
-    } else if specular_strength > 1.2 {
+        None
+    } else if metalness < 0.3 && env_map_scale <= 0.3 && specular_strength > 1.2 {
         Some((0.85 - (specular_strength - 1.0) * 0.1).clamp(0.4, 0.85))
     } else {
         None
@@ -432,11 +414,11 @@ mod tests {
     }
 
     #[test]
-    fn alpha_normal_seeds_smooth_roughness_from_glossiness() {
-        // glossiness 80 → 1.0 - 0.80 = 0.20 (f32: ~0.19999999).
+    fn alpha_normal_preserves_translate_resolved_roughness() {
+        // Normal alpha is specular intensity, never gloss/roughness.
         let r =
             normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 1.0, PASS.3, PASS.4, true);
-        assert!((r.unwrap() - 0.20).abs() < 1e-5, "{r:?}");
+        assert_eq!(r, None);
     }
 
     #[test]
@@ -457,13 +439,13 @@ mod tests {
     }
 
     #[test]
-    fn gate_excludes_glass_metal_envmapped_glossmapped_and_normalless() {
+    fn gate_excludes_glass_glossmapped_and_normalless_but_keeps_envmapped() {
         // material_kind >= 100 (glass/effect — own roughness).
         assert!(!normal_alpha_spec_applies(100, 0.0, 0.0, 7, 0));
-        // metalness >= 0.3 (metal — Disney/legacy own path).
-        assert!(!normal_alpha_spec_applies(0, 0.3, 0.0, 7, 0));
-        // env_map_scale > 0.3 (FNV/FO4 env-mapped population).
-        assert!(!normal_alpha_spec_applies(0, 0.0, 0.31, 7, 0));
+        // Metals and environment-mapped materials still need the authored
+        // black=zero / white=full reflection mask.
+        assert!(normal_alpha_spec_applies(0, 0.3, 0.0, 7, 0));
+        assert!(normal_alpha_spec_applies(0, 0.0, 0.31, 7, 0));
         // no normal map.
         assert!(!normal_alpha_spec_applies(0, 0.0, 0.0, 0, 0));
         // dedicated gloss map present.
@@ -474,11 +456,6 @@ mod tests {
 
     #[test]
     fn roughness_clamps_to_renderer_ranges() {
-        // glossiness 100 → 0.0, clamped up to 0.05 floor.
-        assert_eq!(
-            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 100.0, 1.0, PASS.3, PASS.4, true),
-            Some(0.05)
-        );
         // huge specular_strength → 0.85 - big, clamped to 0.4 floor.
         assert_eq!(
             normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 80.0, 99.0, PASS.3, PASS.4, false),
@@ -487,36 +464,29 @@ mod tests {
     }
 
     #[test]
-    fn non_finite_glossiness_keeps_resolved_roughness() {
-        // #1535 — a NaN/Inf glossiness must NOT survive the clamp into
-        // canonical roughness (`f32::clamp` propagates NaN). The gate-passing
-        // alpha-normal arm drops to None so the resolve_pbr roughness stays.
+    fn alpha_normal_ignores_even_non_finite_glossiness() {
         for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             let r =
                 normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, bad, 1.0, PASS.3, PASS.4, true);
             assert_eq!(
                 r, None,
-                "glossiness {bad} must yield None, not a NaN/Inf roughness"
+                "normal-alpha spec intensity must not derive roughness from {bad}"
             );
         }
-        // And the value that DOES come back for a finite glossiness is finite.
-        let ok =
-            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 50.0, 1.0, PASS.3, PASS.4, true);
-        assert!(ok.unwrap().is_finite());
     }
 
     #[test]
     fn derivation_is_idempotent_over_roughness() {
-        // The formula ignores the current roughness (derives from glossiness /
-        // specular_strength), so re-deriving after a prior write is a no-op —
+        // The fallback derives from specular_strength, so re-deriving after a
+        // prior write is a no-op —
         // the property that makes the resolve-at-spawn relocation safe to run
         // more than once (#1480).
         let first =
-            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 65.0, 1.0, PASS.3, PASS.4, true);
+            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 65.0, 2.0, PASS.3, PASS.4, false);
         let second =
-            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 65.0, 1.0, PASS.3, PASS.4, true);
+            normal_alpha_spec_roughness(PASS.0, PASS.1, PASS.2, 65.0, 2.0, PASS.3, PASS.4, false);
         assert_eq!(first, second);
-        assert!((first.unwrap() - 0.35).abs() < 1e-5, "{first:?}");
+        assert!((first.unwrap() - 0.75).abs() < 1e-5, "{first:?}");
     }
 
     /// Regression: #2284 (MAT-D1-NEW-04) — the 6 `BSLightingShaderProperty`

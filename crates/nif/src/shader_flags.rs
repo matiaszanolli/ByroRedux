@@ -83,6 +83,10 @@ pub mod fo3nv_f2 {
 /// Skyrim `SkyrimShaderPropertyFlags1` — first flag word of
 /// `BSLightingShaderProperty` / `BSEffectShaderProperty`.
 pub mod skyrim_slsf1 {
+    /// Bit 12 — `Model_Space_Normals`. BSLighting normal textures carrying
+    /// this flag are already in object space and slot 7 is the alternate
+    /// specular map; neither may be routed through the tangent-space path.
+    pub const MODEL_SPACE_NORMALS: u32 = 0x0000_1000;
     /// Bit 4 — `Greyscale_To_PaletteColor`. Sample the
     /// `BSEffectShaderProperty.greyscale_texture` as a colour palette LUT
     /// indexed by the source-texture luminance. nif.xml: "in
@@ -414,6 +418,14 @@ mod tests {
     #[test]
     fn fo4_shares_double_sided_bit_with_skyrim() {
         assert_eq!(fo4_slsf2::DOUBLE_SIDED, skyrim_slsf2::DOUBLE_SIDED);
+    }
+
+    #[test]
+    fn fo4_shares_model_space_normals_bit_with_skyrim() {
+        assert_eq!(
+            fo4_slsf1::MODEL_SPACE_NORMALS,
+            skyrim_slsf1::MODEL_SPACE_NORMALS
+        );
     }
 
     /// #890 — the four `BSEffectShaderProperty`-relevant flag bits share

@@ -1193,6 +1193,11 @@ fn resolve_mesh_paths(
                 ov.and_then(|o| o.env_mask)
                     .or(mesh.material.textures.environment_mask),
             );
+            textures.wrinkle = resolve_to_owned(
+                &pool,
+                ov.and_then(|o| o.wrinkle)
+                    .or(mesh.material.textures.wrinkle),
+            );
             let material_path = resolve_to_owned(
                 &pool,
                 ov.and_then(|o| o.material_path)

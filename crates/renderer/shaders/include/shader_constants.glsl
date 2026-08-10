@@ -20,6 +20,7 @@
 #define VERTEX_STRIDE_FLOATS 26u
 // Skinned-vertex output stride — position only (#2170).
 #define SKIN_OUTPUT_STRIDE_FLOATS 3u
+#define VERTEX_COLOR_OFFSET_FLOATS 3u
 #define VERTEX_NORMAL_OFFSET_FLOATS 7u
 #define VERTEX_UV_OFFSET_FLOATS 10u
 #define VERTEX_TANGENT_OFFSET_FLOATS 22u
@@ -137,6 +138,8 @@
 #define DBG_VIZ_GI_BOUNCE 2097152u
 #define DBG_VIZ_FSR_TEMPORAL 4194304u
 #define DBG_VIZ_NONFINITE 8388608u
+#define DBG_VIZ_SHADOW_OFFSET 16777216u
+#define DBG_VIZ_NORMAL_DIVERGENCE 33554432u
 
 // #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot
 // WRS reservoir arrays. 0 (default): preprocessed out of

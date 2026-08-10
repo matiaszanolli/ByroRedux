@@ -397,16 +397,14 @@ pub(super) fn collect_static_mesh_draws(
                 // Gamebryo convention). When a lit Skyrim-era surface
                 // (env_map_scale ~ 0 — the matte-default population) ships no
                 // dedicated gloss map but its normal carries an alpha channel,
-                // that alpha IS the per-pixel specular/smoothness mask: point
+                // that alpha IS the per-pixel specular-intensity mask: point
                 // the gloss slot at the normal with the high-bit "sample .a"
-                // flag so the in-shader gloss modulation roughens per-pixel —
-                // a dark-spec stone floor reads matte, a polished trim glossy.
+                // flag so black suppresses the specular/environment response
+                // and white retains the authored intensity.
                 //
-                // #1480 / REN-D22-NEW-01 — the matching *roughness scalar* is
-                // resolved ONCE at spawn into Material.roughness (read above as
-                // `roughness`) by `material_translate::
-                // resolve_normal_alpha_spec_roughness`; the render path no
-                // longer recomputes it. What stays here is only the per-draw
+                // The alpha-less high-specular fallback roughness is resolved
+                // once at spawn; alpha-bearing normals leave canonical
+                // roughness untouched. What stays here is only the per-draw
                 // texture binding (transient, not canonical state), gated by
                 // the SAME shared predicate the spawn write-back uses so the
                 // two cannot diverge.

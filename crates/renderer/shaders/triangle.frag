@@ -151,6 +151,19 @@ void main() {
     vec3 fragNormalEffective = ((inst.flags & INSTANCE_FLAG_FLAT_SHADING) != 0u)
         ? normalize(cross(dFdx(fragWorldPosRel), dFdy(fragWorldPosRel)))  // #1496 — derivative on relative pos
         : fragNormal;
+    // Actual triangle-plane normal, distinct from both the interpolated
+    // vertex normal above and the normal-mapped shading normal below. RT
+    // visibility intersects the triangle plane, so ray-origin offsets and
+    // shadow-terminator diagnostics must use this normal. Orient it into the
+    // same hemisphere as the authored vertex normal for double-sided draws.
+    vec3 geometricCross = cross(
+        dFdx(fragWorldPosRel), dFdy(fragWorldPosRel));
+    vec3 geometricNormal = dot(geometricCross, geometricCross) > 1e-12
+        ? normalize(geometricCross)
+        : normalize(fragNormalEffective);
+    if (dot(geometricNormal, fragNormalEffective) < 0.0) {
+        geometricNormal = -geometricNormal;
+    }
 
     // R1 Phase 5 — deduplicated material payload. Single SSBO load per
     // fragment; downstream reads use `mat.<field>` instead of
@@ -337,6 +350,11 @@ void main() {
     // (`vertexColorEmissive`) skips its `albedo *= fragColor` modulation
     // so the texture sample stays at full diffuse intensity.
     float specStrength = mat.specularStrength;
+    // Legacy NIF normal-map alpha is a specular INTENSITY mask, not a
+    // gloss/roughness channel. It is populated below when the gloss binding's
+    // high bit selects the normal texture, then also gates the explicit
+    // environment-reflection term (black = no reflection, white = full).
+    float normalAlphaSpecMask = 1.0;
     vec3 specColor = vec3(mat.specularR, mat.specularG, mat.specularB);
     if (mat.specularMapIndex != 0u) {
         specColor *= texture(
@@ -517,6 +535,37 @@ void main() {
         outAlbedo = vec4(nViz, 1.0);
         return;
     }
+    if ((dbgFlags & DBG_VIZ_SHADOW_OFFSET) != 0u) {
+        vec3 offsetNormal = dot(
+            geometricNormal, cameraPos.xyz - fragWorldPos) < 0.0
+            ? -geometricNormal : geometricNormal;
+        float offsetMagnitude = length(
+            offsetRayOrigin(fragWorldPos, offsetNormal) - fragWorldPos);
+        float encoded = clamp(
+            (log2(max(offsetMagnitude, exp2(-16.0))) + 16.0) / 17.0,
+            0.0,
+            1.0);
+        vec3 viz = vec3(
+            encoded,
+            1.0 - abs(encoded * 2.0 - 1.0),
+            1.0 - encoded);
+        outColor = vec4(viz, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(viz, 1.0);
+        return;
+    }
+    if ((dbgFlags & DBG_VIZ_NORMAL_DIVERGENCE) != 0u) {
+        float divergence = acos(clamp(
+            abs(dot(normalize(geometricNormal), normalize(N))),
+            0.0,
+            1.0));
+        float severity = clamp(divergence / (0.5 * PI), 0.0, 1.0);
+        vec3 viz = vec3(severity, 1.0 - severity, 0.0);
+        outColor = vec4(viz, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(viz, 1.0);
+        return;
+    }
     if ((dbgFlags & DBG_VIZ_TANGENT) != 0u) {
         // Green = authored tangent present (Path 1 fires).
         // Red = zero tangent → screen-space derivative fallback (Path 2).
@@ -598,20 +647,19 @@ void main() {
 
     // ── RT ray-origin bias normal ───────────────────────────────────────
     //
-    // Every RT ray that fires from this fragment biases its origin
-    // along the surface normal to escape the macro-surface
-    // self-intersect. The bump map at line 689 can perturb `N` such
-    // that `dot(N, V) < 0` on grazing views or noisy normal maps; the
-    // raw `N` would then bias the origin BEHIND the macro surface and
-    // the ray either self-hits or punches through.
+    // The reflection and GI paths below still use this V-aligned shading
+    // normal for their legacy fixed origin bias. Direct-shadow rays do not:
+    // they use the actual triangle-plane normal plus the scale-aware
+    // `offsetRayOrigin` helper from ray_hit.glsl. Keeping the two contracts
+    // explicit prevents the normal map from driving a shadow ray underneath
+    // the macro surface.
     //
     // `#668` (RT-3) introduced this V-aligned normal flip on the metal
     // reflection (line 1331) and glass IOR (line 1134) paths. RT-11
-    // (#733) hoisted it once here so the per-light reservoir shadow
-    // ray (line 1543) and the GI hemisphere ray (line 1621) — both
-    // sibling sites that originally inherited the pre-#668 raw-`N`
-    // bias — fire from the same V-aligned origin. Self-shadow acne
-    // on bump-mapped grazing geometry was the visible symptom.
+    // (#733) hoisted it once here for the then-shared shadow/reflection/GI
+    // policy. The shadow path has since moved to the robust geometric-normal
+    // policy above; reflection and GI retain `N_bias` pending their own
+    // transport-specific conversion.
     //
     // Intentional asymmetry: the window-portal escape ray (#421 / line
     // ~1318) does NOT use `N_bias`. Its contract requires starting
@@ -1066,13 +1114,10 @@ void main() {
     // wired. White (1.0) → keep authored shininess (smooth, sharp
     // highlight). Black (0.0) → fully dull (broad / diffuse specular).
     //
-    // In our PBR pipeline glossiness is already converted to roughness
-    // upstream (inst.roughness), so the modulation lerps from the
-    // authored roughness toward 1.0 (fully rough) as gloss → 0. Pre-fix
-    // gloss-masked surfaces (polished metal trim on dull leather straps)
-    // got the right ON/OFF mask but a constant roughness profile, so
-    // both regions shared the same specular lobe shape — only the
-    // intensity differed.
+    // In our PBR pipeline a dedicated gloss map modulates lobe width, while
+    // the separately encoded normal-alpha role modulates lobe intensity.
+    // Keeping those branches explicit prevents a texture-slot unification
+    // from silently turning black specular texels into broad reflections.
     if (mat.glossMapIndex != 0u) {
         // High bit (0x80000000) = "the gloss/smoothness mask lives in the
         // NORMAL map's ALPHA channel" (Skyrim/Gamebryo normal-alpha-as-spec),
@@ -1081,10 +1126,15 @@ void main() {
         // and sample `.a`. Plain gloss maps (Oblivion slot 3 / FO4 BGSM smooth-
         // spec) keep bit 31 clear and sample `.r` exactly as before.
         uint glossIdx = mat.glossMapIndex & ~NORMAL_ALPHA_SPEC_BIT;
-        bool glossInAlpha = (mat.glossMapIndex & NORMAL_ALPHA_SPEC_BIT) != 0u;
+        bool normalAlphaSpec =
+            (mat.glossMapIndex & NORMAL_ALPHA_SPEC_BIT) != 0u;
         vec4 glossTexel = texture(textures[nonuniformEXT(glossIdx)], sampleUV);
-        float glossSample = glossInAlpha ? glossTexel.a : glossTexel.r;
-        roughness = mix(1.0, roughness, glossSample);
+        if (normalAlphaSpec) {
+            normalAlphaSpecMask = glossTexel.a;
+            specStrength *= normalAlphaSpecMask;
+        } else {
+            roughness = mix(1.0, roughness, glossTexel.r);
+        }
     }
 
     // #399 — NiTexturingProperty slot 4 glow / self-illumination map.
@@ -2180,6 +2230,14 @@ void main() {
                 sampleUV
             ).r
             : 1.0;
+        // FO3/FNV environment lighting falls back to the normal-alpha
+        // specular mask only when no dedicated environment mask is authored.
+        // An explicit env mask replaces that fallback; multiplying both would
+        // darken content that deliberately supplies separate local-specular
+        // and reflection masks.
+        float environmentReflectionMask = mat.envMaskIndex != 0u
+            ? environmentMask
+            : normalAlphaSpecMask;
         float environmentStrength = hasExplicitEnvironment
             ? max(mat.multiLayerEnvmapStrength, 0.0)
             : 1.0;
@@ -2252,7 +2310,7 @@ void main() {
         // specular lobe spreads — and thus dims per-direction — as roughness
         // rises; this is the cheap energy stand-in for that.
         Lo += envColor * F * (1.0 - roughness)
-            * environmentMask * environmentStrength;
+            * environmentReflectionMask * environmentStrength;
     }
 
     // World-space distance from camera for cluster depth slicing.
@@ -2903,7 +2961,10 @@ void main() {
                     : normalize(lights[i].direction_angle.xyz);
                 vec3 Tb, Bb;
                 buildOrthoBasis(L, Tb, Bb);
-                vec3 rayOrigin = fragWorldPos + N_bias * 0.05;
+                vec3 shadowOffsetNormal = dot(geometricNormal, V) < 0.0
+                    ? -geometricNormal : geometricNormal;
+                vec3 rayOrigin = offsetRayOrigin(
+                    fragWorldPos, shadowOffsetNormal);
                 // K shadow rays per frame, each with a FRESH decorrelated disk
                 // sample (PCG hash, not IGN — IGN's per-frame offset crawls;
                 // white noise decorrelates so the EMA converges). Averaging K
@@ -3030,7 +3091,10 @@ void main() {
             buildOrthoBasis(L, T, B);
             vec2 diskSample = concentricDiskSample(noise1, noise2);
 
-            vec3 rayOrigin = fragWorldPos + N_bias * 0.05;
+            vec3 shadowOffsetNormal = dot(geometricNormal, V) < 0.0
+                ? -geometricNormal : geometricNormal;
+            vec3 rayOrigin = offsetRayOrigin(
+                fragWorldPos, shadowOffsetNormal);
             vec3 rayDir;
             float rayDist;
 
@@ -3237,7 +3301,9 @@ void main() {
                 vec2 hitUV = resolveRayHitUV(
                     uint(hitIdx), uint(hitPrim), hitBary, pathDir, hitMat);
                 vec4 hitBase;
-                if (!rayHitHasCoverage(hitInst, hitMat, hitUV, hitBase)) {
+                if (!rayHitHasCoverage(
+                        uint(hitIdx), uint(hitPrim), hitBary,
+                        hitInst, hitMat, hitUV, hitBase)) {
                     pathOrigin = hitPos + pathDir * 0.1;
                     continue;
                 }

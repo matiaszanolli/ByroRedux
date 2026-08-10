@@ -5,6 +5,33 @@
 // GpuMaterial tables, global vertex/index buffers, bindless textures, and
 // generated material/instance flag constants.
 
+// Scale-aware floating-point ray-origin offset from Wächter & Binder,
+// Ray Tracing Gems ch. 6 (2019). Moving by a fixed world-space epsilon is
+// not stable across Bethesda's interior, exterior, and Starfield coordinate
+// ranges: the epsilon either rounds away or skips nearby geometry. This
+// advances the point by a bounded number of representable floats instead,
+// with a small additive fallback around the origin.
+vec3 offsetRayOrigin(vec3 p, vec3 n) {
+    const float ORIGIN = 1.0 / 32.0;
+    const float FLOAT_SCALE = 1.0 / 65536.0;
+    const float INT_SCALE = 256.0;
+
+    ivec3 normalOffset = ivec3(INT_SCALE * n);
+    vec3 stepped = vec3(
+        intBitsToFloat(floatBitsToInt(p.x)
+            + (p.x < 0.0 ? -normalOffset.x : normalOffset.x)),
+        intBitsToFloat(floatBitsToInt(p.y)
+            + (p.y < 0.0 ? -normalOffset.y : normalOffset.y)),
+        intBitsToFloat(floatBitsToInt(p.z)
+            + (p.z < 0.0 ? -normalOffset.z : normalOffset.z))
+    );
+    return vec3(
+        abs(p.x) < ORIGIN ? p.x + FLOAT_SCALE * n.x : stepped.x,
+        abs(p.y) < ORIGIN ? p.y + FLOAT_SCALE * n.y : stepped.y,
+        abs(p.z) < ORIGIN ? p.z + FLOAT_SCALE * n.z : stepped.z
+    );
+}
+
 // Look up UV coordinates at a ray hit point using barycentrics + vertex data.
 vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
     GpuInstance hitInst = instances[instanceIdx];
@@ -30,6 +57,30 @@ vec2 getHitUV(uint instanceIdx, uint primitiveIdx, vec2 barycentrics) {
     // (vertex 2), w = 1-u-v (vertex 0).
     float w = 1.0 - barycentrics.x - barycentrics.y;
     return w * uv0 + barycentrics.x * uv1 + barycentrics.y * uv2;
+}
+
+// Vertex alpha is coverage whenever NiAlphaProperty is present, regardless
+// of the shader's Vertex Colors / Vertex Alpha bits. The primary raster path
+// therefore always multiplies `fragColor.a`; secondary rays must reconstruct
+// the same barycentric value or alpha-tested leaves/grates cast a different
+// silhouette from the visible surface.
+float getHitVertexAlpha(
+    uint instanceIdx, uint primitiveIdx, vec2 barycentrics
+) {
+    GpuInstance hitInst = instances[instanceIdx];
+    uint vOff = hitInst.vertexOffset;
+    uint iOff = hitInst.indexOffset;
+    uint i0 = indexData[iOff + primitiveIdx * 3 + 0];
+    uint i1 = indexData[iOff + primitiveIdx * 3 + 1];
+    uint i2 = indexData[iOff + primitiveIdx * 3 + 2];
+    float a0 = vertexData[(vOff + i0) * VERTEX_STRIDE_FLOATS
+        + VERTEX_COLOR_OFFSET_FLOATS + 3u];
+    float a1 = vertexData[(vOff + i1) * VERTEX_STRIDE_FLOATS
+        + VERTEX_COLOR_OFFSET_FLOATS + 3u];
+    float a2 = vertexData[(vOff + i2) * VERTEX_STRIDE_FLOATS
+        + VERTEX_COLOR_OFFSET_FLOATS + 3u];
+    float w = 1.0 - barycentrics.x - barycentrics.y;
+    return w * a0 + barycentrics.x * a1 + barycentrics.y * a2;
 }
 
 // World-space positions of a ray-query hit triangle's three vertices.
@@ -327,7 +378,13 @@ bool alphaComparePass(float alpha, float threshold, uint func) {
 }
 
 bool rayHitHasCoverage(
-    GpuInstance inst, GpuMaterial mat, vec2 uv, out vec4 baseSample
+    uint instanceIdx,
+    uint primitiveIdx,
+    vec2 barycentrics,
+    GpuInstance inst,
+    GpuMaterial mat,
+    vec2 uv,
+    out vec4 baseSample
 ) {
     baseSample = sampleRayHitBase(inst, mat, uv, 0.0);
     float alpha = baseSample.a;
@@ -338,7 +395,8 @@ bool rayHitHasCoverage(
         && mat.alphaThreshold == 0.0) {
         alpha = 1.0;
     }
-    alpha *= mat.materialAlpha;
+    alpha *= mat.materialAlpha
+        * getHitVertexAlpha(instanceIdx, primitiveIdx, barycentrics);
     if (!alphaComparePass(alpha, mat.alphaThreshold, mat.alphaTestFunc)) {
         return false;
     }

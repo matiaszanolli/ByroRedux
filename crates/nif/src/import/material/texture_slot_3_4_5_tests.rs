@@ -1207,6 +1207,69 @@ fn skin_tint_and_hair_tint_do_not_bind_slots_4_5_as_envmap() {
     }
 }
 
+#[test]
+fn skin_tint_routes_slot_2_to_tint_not_glow() {
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(lighting_shader_with_type_and_texset(5, 1)),
+        Box::new(full_8_slot_tex_set("skin")),
+    ];
+    let scene = NifScene {
+        blocks,
+        ..NifScene::default()
+    };
+    let mut shape = make_tri_shape_with_props(Vec::new());
+    shape.shader_property_ref = BlockRef(0);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_path(&pool, info.tint_map, "skin_g.dds");
+    assert!(
+        info.glow_map.is_none(),
+        "SkinTint slot 2 must not make skin emissive"
+    );
+}
+
+#[test]
+fn fo76_skin_tint_routes_slot_2_to_tint_not_glow() {
+    let mut shader = lighting_shader_with_type_and_texset(4, 1);
+    shader.shader_type_data = ShaderTypeData::Fo76SkinTint {
+        skin_tint_color: [1.0; 4],
+    };
+    let blocks: Vec<Box<dyn NiObject>> =
+        vec![Box::new(shader), Box::new(full_8_slot_tex_set("fo76_skin"))];
+    let scene = NifScene {
+        blocks,
+        bsver: crate::version::bsver::FO76,
+        ..NifScene::default()
+    };
+    let mut shape = make_tri_shape_with_props(Vec::new());
+    shape.shader_property_ref = BlockRef(0);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert_path(&pool, info.tint_map, "fo76_skin_g.dds");
+    assert!(info.glow_map.is_none());
+}
+
+#[test]
+fn model_space_normals_route_slot_7_to_alternate_specular() {
+    let mut shader = lighting_shader_with_type_and_texset(0, 1);
+    shader.shader_flags_1 = crate::shader_flags::skyrim_slsf1::MODEL_SPACE_NORMALS;
+    let blocks: Vec<Box<dyn NiObject>> = vec![
+        Box::new(shader),
+        Box::new(full_8_slot_tex_set("modelspace")),
+    ];
+    let scene = NifScene {
+        blocks,
+        bsver: crate::version::bsver::SKYRIM_SE,
+        ..NifScene::default()
+    };
+    let mut shape = make_tri_shape_with_props(Vec::new());
+    shape.shader_property_ref = BlockRef(0);
+    let (info, pool) = extract_with_pool(&scene, &shape, &[]);
+
+    assert!(info.model_space_normals);
+    assert_path(&pool, info.gloss_map, "modelspace_7.dds");
+}
+
 /// Regression for #725 / NIF-D4-06: when the legacy
 /// `NiTexturingProperty.parallax_texture` slot is bound WITHOUT a
 /// co-bound `BSShaderPPLightingProperty` (rare on FO3/FNV with an

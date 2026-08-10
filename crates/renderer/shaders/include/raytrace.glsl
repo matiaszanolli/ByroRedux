@@ -95,6 +95,7 @@ vec4 traceReflection(vec3 origin, vec3 direction, float maxDist, float mipBias,
             candidateMat);
         vec4 candidateBase;
         bool covered = rayHitHasCoverage(
+            uint(candidateIdx), uint(candidatePrim), candidateBary,
             candidateInst, candidateMat, candidateUV, candidateBase);
 
         if (candidateIdx != selfInstance && covered) {

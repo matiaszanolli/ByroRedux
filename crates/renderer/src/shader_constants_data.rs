@@ -55,6 +55,7 @@ pub const VERTEX_STRIDE_FLOATS: u32 = 26;
 pub const SKIN_OUTPUT_STRIDE_FLOATS: u32 = 3;
 // position(0..3) color RGBA(3..7) normal(7..10) uv(10..12) — see
 // crates/renderer/src/vertex.rs.
+pub const VERTEX_COLOR_OFFSET_FLOATS: u32 = 3;
 pub const VERTEX_NORMAL_OFFSET_FLOATS: u32 = 7;
 pub const VERTEX_UV_OFFSET_FLOATS: u32 = 10;
 pub const VERTEX_TANGENT_OFFSET_FLOATS: u32 = 22;
@@ -540,6 +541,19 @@ pub const DBG_VIZ_FSR_TEMPORAL: u32 = 0x400000;
 ///   green   = every checked term finite at this fragment
 pub const DBG_VIZ_NONFINITE: u32 = 0x800000;
 
+/// 0x1000000 — display the scale-aware RT ray-origin offset magnitude as
+/// false colour. Blue is approximately 2^-16 world units (the near-origin
+/// additive fallback); red is approximately 2^1 world units at large float
+/// exponents. A surface that still shows uniform speckle while this view is
+/// warm-coloured is not suffering from an undersized self-hit epsilon.
+pub const DBG_VIZ_SHADOW_OFFSET: u32 = 0x1000000;
+
+/// 0x2000000 — display the angle between the actual triangle-plane normal
+/// used by RT visibility and the fully resolved shading normal. Green is
+/// aligned; red is 90 degrees apart. A band localised to warm/red geometry
+/// is the shadow-terminator class, not floating-point self-intersection.
+pub const DBG_VIZ_NORMAL_DIVERGENCE: u32 = 0x2000000;
+
 /// Single source of truth for every `DBG_*` debug-viz bit, in emit order.
 /// Both `build.rs` (GLSL header emit) and `shader_constants.rs`'s test
 /// module (`generated_header_contains_all_defines` value-pin,
@@ -578,6 +592,8 @@ pub const DBG_BITS: &[(&str, u32)] = &[
     ("DBG_VIZ_GI_BOUNCE", DBG_VIZ_GI_BOUNCE),
     ("DBG_VIZ_FSR_TEMPORAL", DBG_VIZ_FSR_TEMPORAL),
     ("DBG_VIZ_NONFINITE", DBG_VIZ_NONFINITE),
+    ("DBG_VIZ_SHADOW_OFFSET", DBG_VIZ_SHADOW_OFFSET),
+    ("DBG_VIZ_NORMAL_DIVERGENCE", DBG_VIZ_NORMAL_DIVERGENCE),
 ];
 
 /// #1799 / PERF-D5-NEW-01 — compile-time gate for the legacy 16-slot WRS
