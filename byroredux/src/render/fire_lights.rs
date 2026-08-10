@@ -27,8 +27,8 @@
 //! explosion path lands) transient fireballs, which by their nature cannot
 //! have hand-placed lights.
 
+use byroredux_core::lighting::{AttenuationModel, VisibilityMask};
 use byroredux_core::radiometry::linear_srgb_luminance;
-use byroredux_renderer::shader_constants::SHADOW_POLICY_FULL;
 use byroredux_renderer::{GpuFogVolume, GpuLight};
 
 use super::lights::{FALLOFF_EXPONENT_DEFAULT, LIGHT_RANGE_EXTENSION};
@@ -253,8 +253,8 @@ fn derive_fire_light(volume: &GpuFogVolume) -> Option<GpuLight> {
         params: [
             FALLOFF_EXPONENT_DEFAULT,
             mean_half_extent.max(1.0),
-            SHADOW_POLICY_FULL as f32,
-            0.0,
+            VisibilityMask::FULL.bits() as f32,
+            AttenuationModel::InverseSquare as u8 as f32,
         ],
     })
 }
@@ -378,7 +378,12 @@ mod tests {
             position_radius: [1.0, 1.0, 1.0, 512.0],
             color_type: [1.0, 0.8, 0.6, 0.0],
             direction_angle: [0.0; 4],
-            params: [1.0, 1.0, SHADOW_POLICY_FULL as f32, 0.0],
+            params: [
+                1.0,
+                1.0,
+                VisibilityMask::FULL.bits() as f32,
+                AttenuationModel::LegacySoftRange as u8 as f32,
+            ],
         };
         let mut lights = vec![authored];
         append_derived_lights(&[volume], &mut lights);
@@ -397,7 +402,12 @@ mod tests {
             position_radius: [500.0, 0.0, 0.0, 512.0],
             color_type: [1.0, 0.8, 0.6, 0.0],
             direction_angle: [0.0; 4],
-            params: [1.0, 1.0, SHADOW_POLICY_FULL as f32, 0.0],
+            params: [
+                1.0,
+                1.0,
+                VisibilityMask::FULL.bits() as f32,
+                AttenuationModel::LegacySoftRange as u8 as f32,
+            ],
         };
         let mut lights = vec![distant];
         append_derived_lights(&[volume], &mut lights);
@@ -417,7 +427,12 @@ mod tests {
             position_radius: [0.0, 0.0, 0.0, -1.0],
             color_type: [1.0, 1.0, 1.0, 2.0],
             direction_angle: [0.0, -1.0, 0.0, 0.0],
-            params: [0.0, 0.0, SHADOW_POLICY_FULL as f32, 0.0],
+            params: [
+                0.0,
+                0.0,
+                VisibilityMask::FULL.bits() as f32,
+                AttenuationModel::LegacySoftRange as u8 as f32,
+            ],
         };
         let mut lights = vec![sun];
         append_derived_lights(&[volume], &mut lights);

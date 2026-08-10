@@ -702,7 +702,8 @@ void main() {
             vWorldPos + Nsurface * 0.05,
             sunDir,
             DIRECTIONAL_SHADOW_TRACE_DISTANCE,
-            0.0
+            0.0,
+            VISIBILITY_MASK_FULL
         );
         float sunVisibility = dot(
             sunTransmission, vec3(0.2126, 0.7152, 0.0722));

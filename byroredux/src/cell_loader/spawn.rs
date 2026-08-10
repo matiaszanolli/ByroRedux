@@ -894,26 +894,18 @@ pub(crate) fn spawn_nif_lights(
         world.insert(entity, GlobalTransform::new(final_pos, Quat::IDENTITY, 1.0));
         world.insert(
             entity,
-            LightSource {
+            LightSource::from_legacy_world_units(
                 radius,
-                color: light.color,
-                // A direct NiPointLight has no ESM LIGH DATA flags. Preserve
-                // its pre-authored-shadow behavior explicitly instead of
-                // letting raw `flags == 0` masquerade as an unshadowed LIGH.
-                flags: byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
-                // #2250 — same explicit preservation for the canonical
-                // field `render/lights.rs` actually reads; not game-format
-                // derived, so no `canonical_light_shadow_flags` call needed.
-                shadow_flags: byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
-                // #2205 — kind/direction/outer_angle were resolved at NIF
-                // import (`imported_light_from_base`) and previously had
-                // nowhere to go; carry them through to the canonical
-                // component instead of dropping them here.
-                kind: light.kind,
-                direction: light.direction,
-                outer_angle: light.outer_angle,
-                ..Default::default()
-            },
+                light.color,
+                // A direct NiLight has no ESM LIGH DATA flags. Preserve its
+                // authored physical visibility explicitly at this boundary.
+                byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+                0.0,
+                light.kind,
+                light.direction,
+                light.outer_angle,
+                byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+            ),
         );
         // #983 — attach the NIF light's own block name so the
         // animation system can resolve `NiLight*Controller` channels
@@ -1862,21 +1854,16 @@ fn spawn_mesh_instance(
 
             world.insert(
                 entity,
-                LightSource {
-                    radius: light_radius_or_default(ld.radius),
-                    color: ld.color,
-                    flags: ld.flags,
-                    falloff_exponent: ld.falloff_exponent,
-                    shadow_flags: light_shadow_flags,
-                    // #2439 (NIFAL-D2-01) — geometry half, decoded by the
-                    // caller via `crate::systems::translate_light` and
-                    // threaded through `PlacementCtx` alongside
-                    // `light_shadow_flags` above.
-                    kind: light_kind,
-                    direction: light_direction,
-                    outer_angle: light_outer_angle,
-                    ..Default::default()
-                },
+                LightSource::from_legacy_world_units(
+                    light_radius_or_default(ld.radius),
+                    ld.color,
+                    ld.flags,
+                    ld.falloff_exponent,
+                    light_kind,
+                    light_direction,
+                    light_outer_angle,
+                    light_shadow_flags,
+                ),
             );
             // Phase 17 — animation companion at the placement root,
             // same position as the mesh entity. The caller has already

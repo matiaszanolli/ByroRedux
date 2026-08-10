@@ -78,7 +78,8 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     vec4 local_volume_grid;
     // x = height-fog reference altitude (REN-D16-01 / #2225), absolute
     // world space matching camera_pos/render_origin — ground height near
-    // the camera, or camera Y as a fallback. yzw reserved.
+    // the camera, or camera Y as a fallback. y = emissive history weight,
+    // z = adaptive local-light cap, w reserved.
     vec4 fog_reference;
 } params;
 
@@ -102,7 +103,7 @@ struct GpuLight {
     vec4 position_radius; // xyz = position, w = radius
     vec4 color_type;       // rgb = color, w = type (0=point, 1=spot, 2=directional)
     vec4 direction_angle;  // xyz = direction, w = spot angle cosine
-    vec4 params;           // x = falloff, y = emitter radius, z = SHADOW_POLICY_*, w = reserved
+    vec4 params;           // x = falloff, y = source radius, z = visibility bits, w = attenuation model
 };
 
 layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
@@ -194,6 +195,21 @@ LocalMedium emptyLocalMedium() {
     return LocalMedium(vec3(0.0), 0.0, vec3(0.0));
 }
 
+// Local smoke/fire structure is source-relative and deliberately independent
+// of weather coverage. Slow vertical advection plus two incommensurate noise
+// scales prevents the previous rapid, cloud-shaped boil on candle flames.
+float sampleLocalTurbulence(vec3 normalizedOffset, float timeSeconds) {
+    vec3 slowCoords = normalizedOffset * 0.31
+        + vec3(0.013, -0.037, 0.009) * timeSeconds;
+    vec3 detailCoords = rotateByQuaternion(
+        normalizedOffset * 0.83,
+        vec4(0.0, 0.258819, 0.0, 0.965926)
+    ) + vec3(-0.021, -0.071, 0.017) * timeSeconds;
+    float base = texture(baseDensityNoise, slowCoords).r;
+    float detail = texture(detailDensityNoise, detailCoords).r;
+    return clamp(base * 0.72 + detail * 0.28, 0.0, 1.0);
+}
+
 // Returns the local media coefficients at worldPos.
 LocalMedium sampleLocalMedium(vec3 worldPos) {
     LocalMedium medium = emptyLocalMedium();
@@ -244,14 +260,11 @@ LocalMedium sampleLocalMedium(vec3 worldPos) {
 
         float edge = clamp(volume.albedo_edge.w, 1.0e-3, 1.0);
         float densityProfile = 1.0 - smoothstep(1.0 - edge, 1.0, normalizedRadius);
-        // NOTE: this reuses the atmospheric domain warp and the weather-driven
-        // coverage threshold inside `sampledDensity`. That is defensible for
-        // smoke, which really is advected by the same air, but a flame's
-        // turbulent structure has nothing to do with cloud cover. The voxel
-        // fire simulation replaces this sampling entirely for emissive media;
-        // until then emissive volumes share the fog field.
-        vec3 metres = warpFogDomain(worldPos / 70.0, params.temporal_params.z);
-        densityProfile *= mix(0.35, 1.25, sampledDensity(metres, 24.0, 5.5));
+        float localTurbulence = sampleLocalTurbulence(
+            normalizedOffset,
+            params.temporal_params.z * 0.35
+        );
+        densityProfile *= mix(0.55, 1.15, localTurbulence);
         float sigmaT = max(volume.half_extents_extinction.w, 0.0) * densityProfile;
         vec3 albedo = clamp(volume.albedo_edge.rgb, vec3(0.0), vec3(1.0));
         medium.extinction += sigmaT;
@@ -282,7 +295,23 @@ LocalMedium sampleLocalMedium(vec3 worldPos) {
 // this compute shader has none of that function's dependencies
 // (`dofParams.z` knee-frac override, `dbgFlags` legacy A/B branch)
 // bound, and doesn't need them for an ambient-style fog glow.
-float froxelLightAtten(float dist, float R, float shape) {
+float froxelLightAtten(
+    float dist, float R, float shape, float sourceRadius, float encodedModel
+) {
+    uint model = uint(clamp(floor(encodedModel + 0.5),
+        float(ATTENUATION_MODEL_LEGACY_SOFT_RANGE),
+        float(ATTENUATION_MODEL_INVERSE_SQUARE)));
+    if (model == ATTENUATION_MODEL_INVERSE_SQUARE) {
+        float distanceMeters = dist / WORLD_UNITS_PER_METER;
+        float sourceMeters = max(sourceRadius / WORLD_UNITS_PER_METER, 0.001);
+        float inverseSquare = 1.0 / max(
+            distanceMeters * distanceMeters,
+            sourceMeters * sourceMeters
+        );
+        float authoredRange = max(R * 0.5, sourceRadius);
+        float cullWindow = 1.0 - smoothstep(authoredRange, max(R, authoredRange + 1.0), dist);
+        return inverseSquare * cullWindow;
+    }
     float knee = max(R * 0.5, 1.0);
     float dn = dist / knee;
     float phys = 1.0 / (1.0 + shape * dn * dn);
@@ -339,11 +368,10 @@ float sampledDensity(vec3 metres, float baseScale, float detailScale) {
 }
 
 float proceduralDensityScale(vec3 worldPos, float refHeight) {
-    const float WORLD_UNITS_PER_METRE = 70.0;
     float heightAbove = max(worldPos.y - refHeight, 0.0);
     float heightTerm = exp(-heightAbove / max(params.medium_params.w, 1.0));
     vec3 metres = warpFogDomain(
-        worldPos / WORLD_UNITS_PER_METRE,
+        worldPos / WORLD_UNITS_PER_METER,
         params.temporal_params.z
     );
     float density = sampledDensity(metres, 96.0, 23.0);
@@ -555,7 +583,7 @@ void main() {
         ray_dir,
         0.05,
         DIRECTIONAL_SHADOW_TRACE_DISTANCE,
-        SHADOW_MASK_OPAQUE
+        VISIBILITY_MASK_ALL_OPAQUE
     );
     if (opaqueHit) {
         visibility = 0.0;
@@ -563,7 +591,7 @@ void main() {
         visibility = 1.0;
     } else {
         bool sawGlass = traceShadowBinary(
-            ray_origin, ray_dir, 0.05, params.volume_params.x, SHADOW_MASK_GLASS
+            ray_origin, ray_dir, 0.05, params.volume_params.x, VISIBILITY_LAYER_GLASS
         );
         visibility = sawGlass ? 1.0 : 0.0;
     }
@@ -605,9 +633,11 @@ void main() {
             tileX + tileY * CLUSTER_TILES_X + sliceZ * CLUSTER_TILES_X * CLUSTER_TILES_Y;
 
         const float ISOTROPIC_PHASE = 1.0 / (4.0 * PI);
-        const uint MAX_FROXEL_LIGHTS = 4u;
+        const uint MAX_FROXEL_LIGHTS = 8u;
         ClusterEntry cluster = clusters[clusterIdx];
-        uint lightLoopCount = min(cluster.count, MAX_FROXEL_LIGHTS);
+        uint adaptiveLightCap = uint(clamp(
+            floor(params.fog_reference.z + 0.5), 1.0, float(MAX_FROXEL_LIGHTS)));
+        uint lightLoopCount = min(cluster.count, adaptiveLightCap);
         for (uint ci = 0u; ci < lightLoopCount; ++ci) {
             uint li = clusterLightIndices[cluster.offset + ci];
             float radius = lights[li].position_radius.w;
@@ -620,7 +650,13 @@ void main() {
             vec3 toLight = lights[li].position_radius.xyz - world_pos;
             float dist = length(toLight);
             float shape = lights[li].params.x;
-            float atten = froxelLightAtten(dist, radius, shape > 0.0 ? shape : 1.0);
+            float atten = froxelLightAtten(
+                dist,
+                radius,
+                shape > 0.0 ? shape : 1.0,
+                lights[li].params.y,
+                lights[li].params.w
+            );
             if (lightType > 0.5) {
                 // Spot — same cone factor as the fragment-shader loop.
                 vec3 spotDir = normalize(lights[li].direction_angle.xyz);
@@ -635,21 +671,21 @@ void main() {
                 atten *= clamp((spotFactor - spotAngle) / max(1.0 - spotAngle, 1e-4), 0.0, 1.0);
             }
             float localVisibility = 1.0;
-            bool needsVisibility = shadowPolicyNeedsVisibility(lights[li].params.z);
+            bool needsVisibility = visibilityMaskNeedsTrace(lights[li].params.z);
             if (needsVisibility && atten > 1.0e-4) {
                 vec3 toLightDir = toLight / max(dist, 0.001);
                 // Stop at the finite luminous shell (`params.y`) instead of
                 // tracing into the middle of a bulb/flame and letting the
                 // fixture nullify its own volumetric glow.
                 float shadowDist = max(dist - lights[li].params.y, 0.05);
-                uint opaqueMask = shadowPolicyOpaqueMask(lights[li].params.z);
+                uint opaqueMask = visibilityOpaqueMask(lights[li].params.z);
                 if (traceShadowBinary(
                         world_pos, toLightDir, 0.05, shadowDist, opaqueMask)) {
                     localVisibility = 0.0;
-                } else if (shadowPolicyUsesGlass(lights[li].params.z)
+                } else if (visibilityMaskUsesGlass(lights[li].params.z)
                     && traceShadowBinary(
                         world_pos, toLightDir, 0.05, shadowDist,
-                        SHADOW_MASK_GLASS)) {
+                        VISIBILITY_LAYER_GLASS)) {
                     // This pass does not bind the material/texture tables;
                     // use a conservative neutral interface transmission.
                     // Surface lighting performs full RGB glass transport.
@@ -666,6 +702,33 @@ void main() {
         vec3 previousUvw;
         if (reprojectHistory(world_pos, previousUvw)) {
             vec4 history = texture(previousFroxel, previousUvw);
+            ivec3 historySize = textureSize(previousFroxel, 0);
+            vec3 texel = 1.0 / vec3(historySize);
+            vec3 historyMean = vec3(0.0);
+            vec3 historySecondMoment = vec3(0.0);
+            for (int y = -1; y <= 1; ++y) {
+                for (int x = -1; x <= 1; ++x) {
+                    vec3 sampleUvw = clamp(
+                        previousUvw + vec3(float(x), float(y), 0.0) * texel,
+                        texel * 0.5,
+                        vec3(1.0) - texel * 0.5
+                    );
+                    vec3 neighborhood = texture(previousFroxel, sampleUvw).rgb;
+                    historyMean += neighborhood;
+                    historySecondMoment += neighborhood * neighborhood;
+                }
+            }
+            historyMean *= 1.0 / 9.0;
+            historySecondMoment *= 1.0 / 9.0;
+            vec3 historySigma = sqrt(max(
+                historySecondMoment - historyMean * historyMean,
+                vec3(0.0)
+            ));
+            history.rgb = clamp(
+                history.rgb,
+                historyMean - historySigma * 1.75,
+                historyMean + historySigma * 1.75
+            );
             float relativeDensityDelta = abs(history.a - current.a)
                 / max(max(history.a, current.a), 1.0e-6);
 
@@ -690,9 +753,14 @@ void main() {
                 clamp(emissionLuma / max(sourceLuma, 1.0e-6), 0.0, 1.0);
             float steadyWeight = clamp(params.temporal_params.x, 0.0, 0.98);
             float emissiveWeight = clamp(params.fog_reference.y, 0.0, 0.98);
+            float relativeRadianceDelta = dot(abs(history.rgb - current.rgb), LUMA_REC709)
+                / max(max(dot(history.rgb, LUMA_REC709), sourceLuma), 1.0e-5);
+            float emissionAgreement = exp(
+                -2.5 * relativeRadianceDelta * emissionFraction);
             float historyWeight =
                 mix(steadyWeight, emissiveWeight, emissionFraction)
-                * exp(-params.temporal_params.y * relativeDensityDelta);
+                * exp(-params.temporal_params.y * relativeDensityDelta)
+                * emissionAgreement;
             current = mix(current, history, historyWeight);
         }
     }

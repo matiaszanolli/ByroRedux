@@ -27,3 +27,6 @@ rustc-hash = { workspace = true }
 # same blocks as everything else in the renderer.
 egui = { workspace = true }
 egui-ash-renderer = { workspace = true }
+
+[build-dependencies]
+byroredux-core = { workspace = true }

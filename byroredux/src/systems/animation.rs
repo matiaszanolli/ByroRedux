@@ -146,7 +146,7 @@ pub(crate) fn apply_color_channels(
     let mut emissive_q = None;
     let mut shader_q = None;
     // #983 — NiLightColorController sink. The animated colour writes
-    // straight into `LightSource.color`; the renderer's light-buffer
+    // straight into `LightSource.emitter.radiant_intensity`; the light-buffer
     // build then multiplies by `dimmer * intensity` to produce the
     // final per-light radiance.
     let mut light_q = None;
@@ -200,7 +200,10 @@ pub(crate) fn apply_color_channels(
                     .get_or_insert_with(|| world.query_mut::<byroredux_core::ecs::LightSource>());
                 if let Some(q) = q.as_mut() {
                     if let Some(ls) = q.get_mut(target_entity) {
-                        ls.color = [value.x, value.y, value.z];
+                        ls.emitter.radiant_intensity =
+                            byroredux_core::lighting::RadiantIntensityRgb::new([
+                                value.x, value.y, value.z,
+                            ]);
                     }
                 }
             }
@@ -311,7 +314,10 @@ pub(crate) fn apply_float_channels(
                         match channel.target {
                             FloatTarget::LightDimmer => ls.dimmer = value,
                             FloatTarget::LightIntensity => ls.intensity = value,
-                            FloatTarget::LightRadius => ls.radius = value,
+                            FloatTarget::LightRadius => {
+                                ls.emitter.range =
+                                    byroredux_core::lighting::Meters::from_bethesda_units(value)
+                            }
                             _ => unreachable!(),
                         }
                     }

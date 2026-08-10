@@ -43,7 +43,7 @@ pub const SUBSTEP_TIME_BUDGET: f32 = PHYSICS_DT;
 /// `IntegrationParameters::length_unit`, or they stay at their metre-scale
 /// defaults (≈70× too small) and clutter micro-jitters forever instead of
 /// sleeping. Also the scalar behind the ×70 gravity (-9.81 m/s² × 70).
-pub const BU_PER_METER: f32 = 70.0;
+pub const BU_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 /// Y (Bethesda units, renderer-space) below which a free-falling dynamic
 /// body is considered "lost out of the world" and frozen. The kill-plane
 /// only ever inspects *actively-falling* (awake) bodies — anything resting

@@ -127,20 +127,25 @@ mod tests {
             ("FOG_VOLUME_CLUSTER_DIM", format!("#define FOG_VOLUME_CLUSTER_DIM {FOG_VOLUME_CLUSTER_DIM}u")),
             ("MAX_FOG_VOLUMES_PER_CLUSTER", format!("#define MAX_FOG_VOLUMES_PER_CLUSTER {MAX_FOG_VOLUMES_PER_CLUSTER}u")),
             // #1920 — 10 defines `build.rs` emits that this value-pin had
-            // never covered (found by an audit sweep alongside the
-            // 2-day-old SHADOW_MASK_* pair, which shipped without a pin).
+            // never covered (found by an audit sweep alongside the former
+            // shadow-mask constants, which shipped without a pin).
             ("CLUSTER_NEAR", format!("#define CLUSTER_NEAR {CLUSTER_NEAR:?}")),
             ("CLUSTER_FAR_FLOOR", format!("#define CLUSTER_FAR_FLOOR {CLUSTER_FAR_FLOOR:?}")),
             ("CLUSTER_FAR_FALLBACK", format!("#define CLUSTER_FAR_FALLBACK {CLUSTER_FAR_FALLBACK:?}")),
             ("VERTEX_NORMAL_OFFSET_FLOATS", format!("#define VERTEX_NORMAL_OFFSET_FLOATS {VERTEX_NORMAL_OFFSET_FLOATS}u")),
             ("VERTEX_UV_OFFSET_FLOATS", format!("#define VERTEX_UV_OFFSET_FLOATS {VERTEX_UV_OFFSET_FLOATS}u")),
             ("VERTEX_TANGENT_OFFSET_FLOATS", format!("#define VERTEX_TANGENT_OFFSET_FLOATS {VERTEX_TANGENT_OFFSET_FLOATS}u")),
-            ("SHADOW_MASK_OPAQUE", format!("#define SHADOW_MASK_OPAQUE {SHADOW_MASK_OPAQUE}u")),
-            ("SHADOW_MASK_GLASS", format!("#define SHADOW_MASK_GLASS {SHADOW_MASK_GLASS}u")),
-            ("SHADOW_MASK_STRUCTURE", format!("#define SHADOW_MASK_STRUCTURE {SHADOW_MASK_STRUCTURE}u")),
-            ("SHADOW_POLICY_NONE", format!("#define SHADOW_POLICY_NONE {SHADOW_POLICY_NONE}u")),
-            ("SHADOW_POLICY_STRUCTURE", format!("#define SHADOW_POLICY_STRUCTURE {SHADOW_POLICY_STRUCTURE}u")),
-            ("SHADOW_POLICY_FULL", format!("#define SHADOW_POLICY_FULL {SHADOW_POLICY_FULL}u")),
+            ("VISIBILITY_LAYER_ARCHITECTURE", format!("#define VISIBILITY_LAYER_ARCHITECTURE {VISIBILITY_LAYER_ARCHITECTURE}u")),
+            ("VISIBILITY_LAYER_STATIC_PROP", format!("#define VISIBILITY_LAYER_STATIC_PROP {VISIBILITY_LAYER_STATIC_PROP}u")),
+            ("VISIBILITY_LAYER_DYNAMIC_ACTOR", format!("#define VISIBILITY_LAYER_DYNAMIC_ACTOR {VISIBILITY_LAYER_DYNAMIC_ACTOR}u")),
+            ("VISIBILITY_LAYER_FOLIAGE", format!("#define VISIBILITY_LAYER_FOLIAGE {VISIBILITY_LAYER_FOLIAGE}u")),
+            ("VISIBILITY_LAYER_GLASS", format!("#define VISIBILITY_LAYER_GLASS {VISIBILITY_LAYER_GLASS}u")),
+            ("VISIBILITY_LAYER_EFFECT", format!("#define VISIBILITY_LAYER_EFFECT {VISIBILITY_LAYER_EFFECT}u")),
+            ("VISIBILITY_MASK_ALL_OPAQUE", format!("#define VISIBILITY_MASK_ALL_OPAQUE {VISIBILITY_MASK_ALL_OPAQUE}u")),
+            ("VISIBILITY_MASK_FULL", format!("#define VISIBILITY_MASK_FULL {VISIBILITY_MASK_FULL}u")),
+            ("ATTENUATION_MODEL_LEGACY_SOFT_RANGE", format!("#define ATTENUATION_MODEL_LEGACY_SOFT_RANGE {ATTENUATION_MODEL_LEGACY_SOFT_RANGE}u")),
+            ("ATTENUATION_MODEL_INVERSE_SQUARE", format!("#define ATTENUATION_MODEL_INVERSE_SQUARE {ATTENUATION_MODEL_INVERSE_SQUARE}u")),
+            ("WORLD_UNITS_PER_METER", format!("#define WORLD_UNITS_PER_METER {WORLD_UNITS_PER_METER:?}")),
             ("SHADOW_FADE_START", format!("#define SHADOW_FADE_START {SHADOW_FADE_START:?}")),
             ("SHADOW_FADE_END", format!("#define SHADOW_FADE_END {SHADOW_FADE_END:?}")),
             ("DIRECTIONAL_SHADOW_TRACE_DISTANCE", format!("#define DIRECTIONAL_SHADOW_TRACE_DISTANCE {DIRECTIONAL_SHADOW_TRACE_DISTANCE:?}")),

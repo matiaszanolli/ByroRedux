@@ -39,7 +39,7 @@ struct GpuLight {
     vec4 position_radius;
     vec4 color_type;
     vec4 direction_angle;
-    vec4 params;  // x = falloff, y = emitter radius, z = full shadows, w = structure visibility
+    vec4 params;  // x = falloff, y = source radius, z = visibility bits, w = attenuation model
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer LightBuffer {

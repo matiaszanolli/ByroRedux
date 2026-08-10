@@ -35,7 +35,28 @@
 // shadowableLightRadiance() so the WRS unshadowed accumulation cancels
 // bit-for-bit against the shadowed subtraction (#1369). Spot lights
 // call this for the distance term, then multiply the cone factor.
-float pointSpotAtten(float dist, float R, float shape, uint dbgFlags) {
+float pointSpotAtten(
+    float dist,
+    float R,
+    float shape,
+    float sourceRadius,
+    float encodedModel,
+    uint dbgFlags
+) {
+    uint model = uint(clamp(floor(encodedModel + 0.5),
+        float(ATTENUATION_MODEL_LEGACY_SOFT_RANGE),
+        float(ATTENUATION_MODEL_INVERSE_SQUARE)));
+    if (model == ATTENUATION_MODEL_INVERSE_SQUARE) {
+        float distanceMeters = dist / WORLD_UNITS_PER_METER;
+        float sourceMeters = max(sourceRadius / WORLD_UNITS_PER_METER, 0.001);
+        float inverseSquare = 1.0 / max(
+            distanceMeters * distanceMeters,
+            sourceMeters * sourceMeters
+        );
+        float authoredRange = max(R * 0.5, sourceRadius);
+        float cullWindow = 1.0 - smoothstep(authoredRange, max(R, authoredRange + 1.0), dist);
+        return inverseSquare * cullWindow;
+    }
     if ((dbgFlags & DBG_LEGACY_LIGHT_ATTEN) != 0u) {
         float ratio = dist / max(R, 1.0);
         float window = clamp(1.0 - ratio * ratio, 0.0, 1.0);
@@ -88,7 +109,8 @@ vec3 shadowableLightRadiance(
         vec3 toLight = lightPos - fragWorldPos;
         dist = length(toLight);
         L = toLight / max(dist, 0.001);
-        atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
+        atten = pointSpotAtten(
+            dist, radius, falloffShape, lights[i].params.y, lights[i].params.w, dbgFlags);
     } else if (lightType < 1.5) {
         // Spot light.
         vec3 toLight = lightPos - fragWorldPos;
@@ -96,7 +118,8 @@ vec3 shadowableLightRadiance(
         L = toLight / max(dist, 0.001);
         vec3 spotDir = normalize(lights[i].direction_angle.xyz);
         float spotAngle = lights[i].direction_angle.w;
-        atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
+        atten = pointSpotAtten(
+            dist, radius, falloffShape, lights[i].params.y, lights[i].params.w, dbgFlags);
         float spotFactor = dot(-L, spotDir);
         // #2205 — guard against a degenerate near-zero authored outer
         // angle (cos ≈ 1.0), matching giLightSample's guard below now
@@ -174,26 +197,22 @@ vec3 shadowableLightRadiance(
     return brdfResult * unshadowedRadiance;
 }
 
-// Per-light visibility policy shared by direct, reflected and GI paths.
+// Per-emitter visibility mask shared by direct, reflected and GI paths.
 vec3 traceLightTransmittance(
     uint lightIndex,
     vec3 origin,
     vec3 direction,
     float maxDist
 ) {
-    float policy = lights[lightIndex].params.z;
-    if (decodeShadowPolicy(policy) == SHADOW_POLICY_FULL) {
-        return traceShadowTransmittance(
-            origin,
-            direction,
-            maxDist,
-            lights[lightIndex].params.y
-        );
-    }
-    if (decodeShadowPolicy(policy) == SHADOW_POLICY_STRUCTURE) {
-        return traceStructureVisibility(origin, direction, maxDist);
-    }
-    return vec3(1.0);
+    uint visibilityMask = decodeVisibilityMask(lights[lightIndex].params.z);
+    if (!visibilityMaskNeedsTrace(lights[lightIndex].params.z)) return vec3(1.0);
+    return traceShadowTransmittance(
+        origin,
+        direction,
+        maxDist,
+        lights[lightIndex].params.y,
+        visibilityMask
+    );
 }
 
 // ── Indirect-hit lighting ───────────────────────────────────────────
@@ -211,7 +230,8 @@ bool giLightSample(
         dist = length(toLight);
         if (dist > radius) return false;
         L = toLight / max(dist, 1e-3);
-        atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
+        atten = pointSpotAtten(
+            dist, radius, falloffShape, lights[i].params.y, lights[i].params.w, dbgFlags);
         if (lightType >= 0.5) {
             vec3 spotDir = normalize(lights[i].direction_angle.xyz);
             float spotAngle = lights[i].direction_angle.w;

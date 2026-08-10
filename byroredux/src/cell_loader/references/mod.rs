@@ -1225,17 +1225,16 @@ fn spawn_synth_child(
             let geometry = crate::systems::translate_light(ld, game, ref_rot);
             world.insert(
                 entity,
-                LightSource {
-                    radius: light_radius_or_default(ld.radius),
-                    color: ld.color,
-                    flags: ld.flags,
-                    falloff_exponent: ld.falloff_exponent,
-                    shadow_flags: crate::systems::canonical_light_shadow_flags(game, ld.flags),
-                    kind: geometry.kind,
-                    direction: geometry.direction,
-                    outer_angle: geometry.outer_angle,
-                    ..Default::default()
-                },
+                LightSource::from_legacy_world_units(
+                    light_radius_or_default(ld.radius),
+                    ld.color,
+                    ld.flags,
+                    ld.falloff_exponent,
+                    geometry.kind,
+                    geometry.direction,
+                    geometry.outer_angle,
+                    crate::systems::canonical_light_shadow_flags(game, ld.flags),
+                ),
             );
             let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
             attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
@@ -1321,17 +1320,16 @@ fn spawn_synth_child(
             let geometry = crate::systems::translate_light(ld, game, ref_rot);
             world.insert(
                 entity,
-                LightSource {
-                    radius: light_radius_or_default(ld.radius),
-                    color: ld.color,
-                    flags: ld.flags,
-                    falloff_exponent: ld.falloff_exponent,
-                    shadow_flags: crate::systems::canonical_light_shadow_flags(game, ld.flags),
-                    kind: geometry.kind,
-                    direction: geometry.direction,
-                    outer_angle: geometry.outer_angle,
-                    ..Default::default()
-                },
+                LightSource::from_legacy_world_units(
+                    light_radius_or_default(ld.radius),
+                    ld.color,
+                    ld.flags,
+                    ld.falloff_exponent,
+                    geometry.kind,
+                    geometry.direction,
+                    geometry.outer_angle,
+                    crate::systems::canonical_light_shadow_flags(game, ld.flags),
+                ),
             );
             let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
             attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);

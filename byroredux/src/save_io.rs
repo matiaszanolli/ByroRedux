@@ -1144,18 +1144,19 @@ mod tests {
                 remaining: 0.25,
             },
         );
-        src.insert(
-            e,
-            LightSource {
-                radius: 512.0,
-                color: [0.9, 0.6, 0.2],
-                flags: 0x0000_0008, // LIGHT_FLAG_FLICKER
-                dimmer: 0.75,
-                intensity: 1.25,
-                falloff_exponent: 2.0,
-                ..Default::default()
-            },
+        let mut saved_light = LightSource::from_legacy_world_units(
+            512.0,
+            [0.9, 0.6, 0.2],
+            0x0000_0008, // LIGHT_FLAG_FLICKER
+            2.0,
+            byroredux_core::ecs::LightKind::Point,
+            [0.0; 3],
+            0.0,
+            0,
         );
+        saved_light.dimmer = 0.75;
+        saved_light.intensity = 1.25;
+        src.insert(e, saved_light);
         src.insert(
             e,
             LightFlicker {
@@ -1190,12 +1191,12 @@ mod tests {
         );
 
         let light = dst.query::<LightSource>().unwrap().get(0).copied().unwrap();
-        assert_eq!(light.radius, 512.0);
-        assert_eq!(light.color, [0.9, 0.6, 0.2]);
+        assert_eq!(light.emitter.range.to_bethesda_units(), 512.0);
+        assert_eq!(light.emitter.radiant_intensity.get(), [0.9, 0.6, 0.2]);
         assert_eq!(light.flags, 0x0000_0008);
         assert_eq!(light.dimmer, 0.75);
         assert_eq!(light.intensity, 1.25);
-        assert_eq!(light.falloff_exponent, 2.0);
+        assert_eq!(light.emitter.falloff_exponent, 2.0);
 
         let flicker = dst
             .query::<LightFlicker>()

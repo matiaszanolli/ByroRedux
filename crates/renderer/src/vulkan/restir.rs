@@ -195,23 +195,23 @@ mod tests {
         let lighting = include_str!("../../shaders/include/lighting.glsl");
         let common = include_str!("../../shaders/include/shadow_common.glsl");
         assert!(
-            src.contains("bool needsVisibility = shadowPolicyNeedsVisibility(")
+            src.contains("bool needsVisibility = visibilityMaskNeedsTrace(")
                 && src.contains("if (!useRestir || !needsVisibility)")
                 && src.contains("if (rtEnabled && needsVisibility && shadowFade > 0.01)"),
             "no-prop-shadow LIGH sources must retain structural ReSTIR visibility"
         );
         assert!(
-            src.contains("shadowPolicyNeedsVisibility(lights[rpLightIndex].params.z)")
-                && src.contains("shadowPolicyNeedsVisibility(lights[rnLightIndex].params.z)")
-                && src.contains("shadowPolicyNeedsVisibility(lights[restirY].params.z)")
+            src.contains("visibilityMaskNeedsTrace(lights[rpLightIndex].params.z)")
+                && src.contains("visibilityMaskNeedsTrace(lights[rnLightIndex].params.z)")
+                && src.contains("visibilityMaskNeedsTrace(lights[restirY].params.z)")
                 && src.contains("traceLightTransmittance("),
             "temporal, spatial, and final ReSTIR stages must preserve structural selections"
         );
         assert!(
-            common.contains("vec3 traceStructureVisibility(")
-                && common.contains("SHADOW_MASK_STRUCTURE")
+            common.contains("uint visibilityOpaqueMask(")
+                && common.contains("VISIBILITY_MASK_ALL_OPAQUE")
                 && lighting.contains("vec3 traceLightTransmittance("),
-            "direct-light visibility must provide an Architecture-only TLAS path"
+            "direct-light visibility must preserve the explicit layer mask"
         );
     }
 

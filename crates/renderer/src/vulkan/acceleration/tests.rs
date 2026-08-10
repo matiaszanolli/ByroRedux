@@ -1488,15 +1488,18 @@ fn static_blas_flags_is_fast_trace_plus_allow_compaction() {
 }
 
 /// #1913 — pin the shadow-mask bucket assignment fed into the TLAS
-/// instance's 8-bit `Packed24_8` mask. Glass geometry must land in
-/// `SHADOW_MASK_GLASS`, everything else in `SHADOW_MASK_OPAQUE`, and the two
-/// buckets must be nonzero + distinct + 8-bit (the const-assert in
+/// instance's 8-bit `Packed24_8` mask. Every geometry family must land in its
+/// explicit visibility layer, and the complete mask must remain 8-bit (the const-assert in
 /// `shader_constants_data.rs` enforces the ceiling at build time; this pins
 /// the runtime selection + invariant so a value edit or an inverted branch
 /// is caught by `cargo test`, not by a silent RT dropout in-engine).
 #[test]
 fn shadow_mask_bucket_selection_is_pinned() {
-    use crate::shader_constants::{SHADOW_MASK_GLASS, SHADOW_MASK_OPAQUE, SHADOW_MASK_STRUCTURE};
+    use crate::shader_constants::{
+        VISIBILITY_LAYER_ARCHITECTURE, VISIBILITY_LAYER_DYNAMIC_ACTOR, VISIBILITY_LAYER_EFFECT,
+        VISIBILITY_LAYER_FOLIAGE, VISIBILITY_LAYER_GLASS, VISIBILITY_LAYER_STATIC_PROP,
+        VISIBILITY_MASK_FULL,
+    };
     use crate::vulkan::scene_buffer::{
         MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION, MATERIAL_KIND_GLASS,
         MATERIAL_KIND_NO_LIGHTING,
@@ -1506,7 +1509,7 @@ fn shadow_mask_bucket_selection_is_pinned() {
     // Glass → glass bucket regardless of layer.
     assert_eq!(
         shadow_mask_for_instance(MATERIAL_KIND_GLASS, RenderLayer::Architecture, true, 0.0),
-        SHADOW_MASK_GLASS as u8,
+        VISIBILITY_LAYER_GLASS as u8,
         "glass material must select the glass shadow bucket",
     );
 
@@ -1522,7 +1525,7 @@ fn shadow_mask_bucket_selection_is_pinned() {
             false,
             0.3,
         ),
-        SHADOW_MASK_GLASS as u8,
+        VISIBILITY_LAYER_GLASS as u8,
         "refractive MultiLayerParallax must select the glass shadow bucket",
     );
 
@@ -1536,35 +1539,38 @@ fn shadow_mask_bucket_selection_is_pinned() {
             false,
             0.0,
         ),
-        (SHADOW_MASK_OPAQUE | SHADOW_MASK_STRUCTURE) as u8,
+        VISIBILITY_LAYER_ARCHITECTURE as u8,
     );
 
-    // Solid architecture participates in both the complete opaque set and
-    // structure-only visibility.
+    // Solid architecture has exactly the architecture category.
     assert_eq!(
         shadow_mask_for_instance(0, RenderLayer::Architecture, false, 0.0),
-        (SHADOW_MASK_OPAQUE | SHADOW_MASK_STRUCTURE) as u8,
+        VISIBILITY_LAYER_ARCHITECTURE as u8,
     );
 
-    // Clutter/actors remain ordinary opaque occluders for authored full
-    // shadows but are absent from structure-only visibility.
-    for layer in [RenderLayer::Clutter, RenderLayer::Actor, RenderLayer::Decal] {
-        assert_eq!(
-            shadow_mask_for_instance(0, layer, false, 0.0),
-            SHADOW_MASK_OPAQUE as u8,
-        );
-    }
+    assert_eq!(
+        shadow_mask_for_instance(0, RenderLayer::Clutter, false, 0.0),
+        VISIBILITY_LAYER_STATIC_PROP as u8,
+    );
+    assert_eq!(
+        shadow_mask_for_instance(0, RenderLayer::Actor, false, 0.0),
+        VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
+    );
+    assert_eq!(
+        shadow_mask_for_instance(0, RenderLayer::Decal, false, 0.0),
+        VISIBILITY_LAYER_FOLIAGE as u8,
+    );
 
     // Alpha/effect proxy geometry must not become a structural wall.
     assert_eq!(
         shadow_mask_for_instance(0, RenderLayer::Architecture, true, 0.0),
-        SHADOW_MASK_OPAQUE as u8,
+        VISIBILITY_LAYER_EFFECT as u8,
     );
     for kind in [MATERIAL_KIND_EFFECT_SHADER, MATERIAL_KIND_FIRE_REFRACTION] {
         assert_eq!(
             shadow_mask_for_instance(kind, RenderLayer::Architecture, false, 0.0),
-            SHADOW_MASK_OPAQUE as u8,
-            "effect proxy kind {kind} must not select the structure bucket",
+            VISIBILITY_LAYER_EFFECT as u8,
+            "effect proxy kind {kind} must select the effect layer",
         );
     }
     assert_eq!(
@@ -1574,24 +1580,11 @@ fn shadow_mask_bucket_selection_is_pinned() {
             false,
             0.0,
         ),
-        (SHADOW_MASK_OPAQUE | SHADOW_MASK_STRUCTURE) as u8,
+        VISIBILITY_LAYER_ARCHITECTURE as u8,
     );
 
-    // The buckets must stay nonzero, distinct, and 8-bit: a bucket of 0 is
-    // culled by every ray query (silent total RT dropout); a collision
-    // collapses the godray two-pass narrowing; > 0xFF truncates under `as u8`.
-    assert_ne!(SHADOW_MASK_OPAQUE, 0);
-    assert_ne!(SHADOW_MASK_GLASS, 0);
-    assert_ne!(SHADOW_MASK_STRUCTURE, 0);
-    assert_ne!(SHADOW_MASK_OPAQUE, SHADOW_MASK_GLASS);
-    assert_ne!(SHADOW_MASK_OPAQUE, SHADOW_MASK_STRUCTURE);
-    assert_ne!(SHADOW_MASK_GLASS, SHADOW_MASK_STRUCTURE);
     const {
-        assert!(
-            SHADOW_MASK_OPAQUE <= 0xFF
-                && SHADOW_MASK_GLASS <= 0xFF
-                && SHADOW_MASK_STRUCTURE <= 0xFF
-        );
+        assert!(VISIBILITY_MASK_FULL <= 0xFF);
     }
 }
 

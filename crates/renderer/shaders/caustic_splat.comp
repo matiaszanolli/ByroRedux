@@ -46,7 +46,7 @@ struct GpuLight {
     vec4 position_radius;
     vec4 color_type;
     vec4 direction_angle;
-    vec4 params;  // x = falloff, y = emitter radius, z = SHADOW_POLICY_*, w = reserved
+    vec4 params;  // x = falloff, y = source radius, z = visibility bits, w = attenuation model
 };
 
 layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
@@ -382,9 +382,9 @@ void main() {
         // hits the back of the surface, flip the normal.
         vec3 ns = (dot(N, -LtoG) > 0.0) ? N : -N;
         float sourceVisibility = 1.0;
-        bool needsVisibility = shadowPolicyNeedsVisibility(L.params.z);
+        bool needsVisibility = visibilityMaskNeedsTrace(L.params.z);
         if (needsVisibility) {
-            uint sourceMask = shadowPolicyOpaqueMask(L.params.z);
+            uint sourceMask = visibilityOpaqueMask(L.params.z);
             // Verify that radiance reaches the refractor before generating a
             // caustic. Pre-fix the pass checked only radius/N·L, so glass
             // behind a dungeon wall projected a bright pool into the room.
@@ -396,13 +396,13 @@ void main() {
                     sourceMask)) {
                 continue;
             }
-            if (shadowPolicyUsesGlass(L.params.z)
+            if (visibilityMaskUsesGlass(L.params.z)
                 && traceShadowBinary(
                     G + ns * 0.1,
                     -LtoG,
                     0.05,
                     sourceVisibilityDist,
-                    SHADOW_MASK_GLASS)) {
+                    VISIBILITY_LAYER_GLASS)) {
                 // Material tables are intentionally absent from this compact
                 // pass. Match volumetric injection's conservative neutral
                 // dielectric interface transmission.
@@ -441,7 +441,7 @@ void main() {
         rayQueryEXT exitRQ;
         rayQueryInitializeEXT(
             exitRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
-            SHADOW_MASK_GLASS,
+            VISIBILITY_LAYER_GLASS,
             receiverOrigin, 0.05, receiverDir, 1000.0);
         while (rayQueryProceedEXT(exitRQ)) {}
         if (rayQueryGetIntersectionTypeEXT(exitRQ, true)
@@ -460,7 +460,7 @@ void main() {
         rayQueryEXT rq;
         rayQueryInitializeEXT(
             rq, topLevelAS, gl_RayFlagsOpaqueEXT,
-            SHADOW_MASK_OPAQUE,
+            VISIBILITY_MASK_ALL_OPAQUE,
             receiverOrigin, 0.05, receiverDir, 1000.0);
         while (rayQueryProceedEXT(rq)) {}
         if (rayQueryGetIntersectionTypeEXT(rq, true)

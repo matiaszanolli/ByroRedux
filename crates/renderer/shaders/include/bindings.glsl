@@ -203,7 +203,7 @@ struct GpuLight {
     vec4 position_radius;  // xyz = position, w = radius
     vec4 color_type;       // rgb = color, w = type (0=point, 1=spot, 2=directional)
     vec4 direction_angle;  // xyz = direction, w = spot angle cosine
-    vec4 params;           // x = falloff, y = emitter radius, z = SHADOW_POLICY_*, w = reserved
+    vec4 params;           // x = falloff, y = source radius, z = visibility bits, w = attenuation model
 };
 
 layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {
@@ -330,6 +330,13 @@ struct GpuTerrainTile {
 // the cheaper Fresnel-highlight path for the rest of that frame.
 layout(std430, set = 1, binding = 11) coherent buffer RayBudgetBuffer {
     uint rayBudgetCount;
+    uint glassRayLimit;
+    uint directShadowSamples;
+    uint maxPathSegments;
+    uint maxShadedHits;
+    uint volumetricLightCap;
+    uint qualityTier;
+    uint _rayBudgetReserved;
 } rayBudget;
 
 layout(std430, set = 1, binding = 10) readonly buffer TerrainTileBuffer {

@@ -677,16 +677,16 @@ fn spawn_point_light(world: &mut World, pos: Vec3, radius: f32, color: [f32; 3],
     world.insert(light, GlobalTransform::new(pos, Quat::IDENTITY, 1.0));
     world.insert(
         light,
-        LightSource {
+        LightSource::from_legacy_world_units(
             radius,
             color,
-            flags: byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
-            // #2250 — Cornell probes aren't ESM/LIGH-derived; author the
-            // canonical field `render/lights.rs` actually reads directly,
-            // matching `flags` above.
-            shadow_flags: byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
-            ..Default::default()
-        },
+            byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+            1.0,
+            byroredux_core::ecs::LightKind::Point,
+            [0.0; 3],
+            0.0,
+            byroredux_core::ecs::LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL,
+        ),
     );
     name_entity(world, light, name);
 }

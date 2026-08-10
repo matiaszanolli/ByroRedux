@@ -21,6 +21,7 @@ mod buffers;
 mod constants;
 mod descriptors;
 mod gpu_types;
+mod ray_budget;
 mod upload;
 
 pub use buffers::SceneBuffers;
@@ -28,6 +29,7 @@ pub use constants::*;
 pub use gpu_types::{
     GpuCamera, GpuDalcCube, GpuInstance, GpuLight, GpuPreviousModel, GpuTerrainTile,
 };
+pub use ray_budget::GpuRayBudget;
 
 #[cfg(test)]
 mod gpu_instance_layout_tests;

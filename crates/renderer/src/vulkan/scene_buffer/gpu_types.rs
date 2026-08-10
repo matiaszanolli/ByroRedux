@@ -222,10 +222,9 @@ pub struct GpuLight {
     pub color_type: [f32; 4],
     /// xyz = direction (spot/directional), w = spot outer angle cosine.
     pub direction_angle: [f32; 4],
-    /// x = attenuation exponent; y = finite luminous-source radius used by
-    /// shadow segments; z = `SHADOW_POLICY_*` encoded as f32; w = reserved.
-    /// Structure-policy lights are blocked by Architecture TLAS instances but
-    /// do not make clutter or actors cast authored prop shadows.
+    /// x = legacy attenuation exponent; y = finite luminous-source radius;
+    /// z = explicit `VisibilityMask` bits encoded as an exact f32 integer;
+    /// w = `AttenuationModel` discriminant encoded as f32.
     pub params: [f32; 4],
 }
 

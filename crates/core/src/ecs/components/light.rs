@@ -2,6 +2,10 @@
 
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
+use crate::lighting::{Emitter, EmitterKind, VisibilityMask};
+
+/// Backward-compatible name for the canonical emitter kind.
+pub type LightKind = EmitterKind;
 
 /// A point/spot/directional light source placed in the world.
 ///
@@ -17,10 +21,9 @@ use crate::ecs::storage::Component;
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct LightSource {
-    /// Light radius in Bethesda units.
-    pub radius: f32,
-    /// Light color (RGB, normalized 0..1).
-    pub color: [f32; 3],
+    /// Unit-explicit emitter state. Legacy radius, colour, cone, attenuation,
+    /// and shadow-map flags are resolved into this value at import time.
+    pub emitter: Emitter,
     /// LIGH flags (dynamic, can be carried, flicker, etc.).
     pub flags: u32,
     /// `NiLightBase.dimmer` — multiplicative scalar applied to
@@ -35,93 +38,59 @@ pub struct LightSource {
     /// while the steady `dimmer` stays constant). Renderer
     /// composes `color * dimmer * intensity`.
     pub intensity: f32,
-    /// Bethesda's per-light attenuation curve exponent from the LIGH
-    /// DATA subrecord (bytes 16-19). Shader formula:
-    /// `atten = clamp(1 - (d/r)^k, 0, 1)` where `k = falloff_exponent`.
-    /// Skyrim authors `k ≈ 1.0` (near-linear); FO3/FNV often author
-    /// `k ≈ 2.0` (sharper edge). `0.0` means "use engine default" —
-    /// the shader picks a sensible per-game fall-through (1.0). NIF-
-    /// direct lights and procedural defaults (interior fill, sun
-    /// proxies) leave the field at `0.0`.
-    pub falloff_exponent: f32,
-    /// #2205 — kind tag driving `GpuLight.color_type.w` (point / spot /
-    /// directional). Pre-fix this field didn't exist: every producer
-    /// emitted a point light regardless of the source NIF block, so
-    /// e.g. Oblivion's `NiDirectionalLight` fixtures (vines, statues,
-    /// hair/ear meshes) rendered as full-white omni lights over an
-    /// 8,192-unit sphere instead of a directional contribution.
-    /// Defaults to [`LightKind::Point`] — every producer that has no
-    /// kind signal (ESM LIGH REFRs, procedural fill, sun proxies)
-    /// keeps exactly the prior implicit behaviour.
-    pub kind: LightKind,
-    /// #2205 — unit direction (Y-up), meaningful only for `Directional`
-    /// and `Spot`. Zero for `Point`/`Ambient`.
-    pub direction: [f32; 3],
-    /// #2205 — outer cone half-angle **in radians** for `Spot` (`0.0`
-    /// for every other kind). The renderer boundary
-    /// (`byroredux/src/render/lights.rs`) converts this to the cosine
-    /// `GpuLight.direction_angle.w` expects — the shader never sees a
-    /// raw angle, matching the file's existing LIGH-translation
-    /// convention for `radius`/`falloff_exponent`.
-    pub outer_angle: f32,
-    /// #2250 (REN-D22-01) — canonical shadow-projection type, already
-    /// decoded through the per-game boundary
-    /// (`canonical_light_shadow_flags` in
-    /// `byroredux/src/systems/light_anim.rs`) at spawn time. Bit layout
-    /// matches [`LIGHT_FLAG_SHADOW_SPOTLIGHT`] /
-    /// [`LIGHT_FLAG_SHADOW_HEMISPHERE`] / [`LIGHT_FLAG_SHADOW_OMNIDIRECTIONAL`]
-    /// for readability, but unlike [`Self::flags`] (which intentionally
-    /// keeps every other bit raw and game-native) this field is never
-    /// re-interpreted per game again downstream — `render/lights.rs`
-    /// reads it directly (`!= 0` ⇒ casts shadows) instead of decoding
-    /// [`Self::flags`] against a fixed TES5 bit layout unconditionally,
-    /// which is what #2250 fixed. `0` for producers with no ESM LIGH
-    /// DATA at all (NIF-direct lights, procedural fill) that instead
-    /// author their shadow behavior explicitly at spawn time.
+    /// Canonicalized legacy projection bits retained only for diagnostics and
+    /// round-trip tooling. Rendering consumes `emitter.visibility` and never
+    /// interprets this field.
     pub shadow_flags: u32,
 }
 
 impl Default for LightSource {
     fn default() -> Self {
         Self {
-            radius: 0.0,
-            color: [1.0, 1.0, 1.0],
+            emitter: Emitter::default(),
             flags: 0,
             dimmer: 1.0,
             intensity: 1.0,
-            falloff_exponent: 0.0,
-            kind: LightKind::Point,
-            direction: [0.0, 0.0, 0.0],
-            outer_angle: 0.0,
             shadow_flags: 0,
+        }
+    }
+}
+
+impl LightSource {
+    /// Legacy-format constructor. Call this at an ESM/NIF boundary; runtime
+    /// systems and the renderer should only inspect [`Self::emitter`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_legacy_world_units(
+        radius: f32,
+        color: [f32; 3],
+        flags: u32,
+        falloff_exponent: f32,
+        kind: LightKind,
+        direction: [f32; 3],
+        outer_angle: f32,
+        shadow_flags: u32,
+    ) -> Self {
+        let visibility = VisibilityMask::for_legacy_projection(shadow_flags != 0);
+        Self {
+            emitter: Emitter::from_legacy_world_units(
+                radius,
+                color,
+                kind,
+                direction,
+                outer_angle,
+                falloff_exponent,
+                visibility,
+            ),
+            flags,
+            dimmer: 1.0,
+            intensity: 1.0,
+            shadow_flags,
         }
     }
 }
 
 impl Component for LightSource {
     type Storage = SparseSetStorage<Self>;
-}
-
-/// Kind of a placed [`LightSource`], driving both shadow-projection
-/// defaults and the `GpuLight.color_type.w` renderer contract
-/// (0=point, 1=spot, 2=directional — see `GpuLight` doc comment;
-/// `Ambient` has no radiating representation there and falls back to
-/// the point code, a pre-existing gap tracked separately as
-/// NIFAL-D3-02, not this field's concern).
-///
-/// #2205 — moved here (was NIF-import-local `LightKind`) so the
-/// canonical ECS component can carry it without `crates/core`
-/// depending on `crates/nif`; `byroredux_nif::import::LightKind` is a
-/// re-export of this type, so every existing NIF-side call site is
-/// source-compatible unchanged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
-pub enum LightKind {
-    #[default]
-    Point,
-    Spot,
-    Directional,
-    Ambient,
 }
 
 // ── Shared flicker / pulse behavior bits ─────────────────────────────

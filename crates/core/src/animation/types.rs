@@ -105,7 +105,8 @@ pub enum ColorTarget {
     ShaderColor,
     /// NiLight diffuse color slot — animated by
     /// `NiLightColorController` with `target_color == 0`. Replaces
-    /// `LightSource.color` for the duration of the clip. See #983.
+    /// `LightSource.emitter.radiant_intensity` for the duration of the clip.
+    /// See #983.
     LightDiffuse,
     /// NiLight ambient color slot — animated by
     /// `NiLightColorController` with `target_color == 1`. The

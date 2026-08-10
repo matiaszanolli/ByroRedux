@@ -40,6 +40,7 @@ a working checkout and want to understand or change engine internals.
 | [Animation](animation.md) | core, nif | Keyframe pipeline, controllers, blending stack, GPU skinning |
 | [Physics](physics.md) | physics | Rapier3D integration, NIF collision → ECS → stepper, player body |
 | [Cell Lighting](lighting-from-cells.md) | byroredux | XCLL extraction, RT integration |
+| [Physical Lighting Backbone](physical-lighting-backbone.md) | core, byroredux, renderer | Canonical units/emitters, explicit visibility layers, shared transport, adaptive ray allocation, temporal reconstruction, reference tests |
 | [Material Abstraction](material-abstraction.md) | byroredux, nif | Per-game material translation to canonical `Material`; glass/PBR classify |
 | [Per-game Translation Survey](per-game-translation-survey.md) | nif, byroredux | Game-specific quirks, shader variant coverage, known gaps per title |
 | [UI System](ui.md) | ui | Scaleform/SWF via Ruffle, deferred texture upload |

@@ -17,6 +17,7 @@ pub mod combat;
 pub mod console;
 pub mod ecs;
 pub mod form_id;
+pub mod lighting;
 pub mod math;
 pub mod radiometry;
 pub mod settings;

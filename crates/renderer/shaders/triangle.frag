@@ -1519,13 +1519,13 @@ void main() {
         // cost more contention than it saves for a counter that is zeroed
         // every frame (reset_ray_budget, scene_buffer/descriptors.rs). The
         // gate stays correct — rejected fragments fall to the Fresnel path —
-        // but `rayBudgetCount` overshoots GLASS_RAY_BUDGET by up to
+        // but `rayBudgetCount` overshoots `glassRayLimit` by up to
         // (in-flight rejected threads × GLASS_RAY_COST). The overshoot has no
         // render effect; it only matters if a future telemetry/tuning overlay
         // reads the counter back, in which case the CPU reader MUST clamp the
-        // displayed value to GLASS_RAY_BUDGET. No CPU code reads it today.
+        // displayed value to `glassRayLimit`. No CPU code reads it today.
         uint old = atomicAdd(rayBudget.rayBudgetCount, GLASS_RAY_COST);
-        glassIORAllowed = (old + GLASS_RAY_COST <= GLASS_RAY_BUDGET);
+        glassIORAllowed = (old + GLASS_RAY_COST <= rayBudget.glassRayLimit);
     }
     if (glassIORAllowed) {
         // ── RT glass (Phase 3) ────────────────────────────────────────
@@ -2491,7 +2491,8 @@ void main() {
                 vec3 toLight = lightPos - fragWorldPos;
                 dist = length(toLight);
                 L = toLight / max(dist, 0.001);
-                atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
+                atten = pointSpotAtten(
+                    dist, radius, falloffShape, lights[i].params.y, lights[i].params.w, dbgFlags);
             } else if (lightType < 1.5) {
                 // Spot light — same curve as point arm plus the
                 // inner / outer cone factor.
@@ -2500,7 +2501,8 @@ void main() {
                 L = toLight / max(dist, 0.001);
                 vec3 spotDir = normalize(lights[i].direction_angle.xyz);
                 float spotAngle = lights[i].direction_angle.w;
-                atten = pointSpotAtten(dist, radius, falloffShape, dbgFlags);
+                atten = pointSpotAtten(
+                    dist, radius, falloffShape, lights[i].params.y, lights[i].params.w, dbgFlags);
                 float spotFactor = dot(-L, spotDir);
                 // #2205 — guard against a degenerate near-zero authored
                 // outer angle (cos ≈ 1.0), matching giLightSample's
@@ -2583,7 +2585,7 @@ void main() {
             vec3 shadowableRadiance = shadowableLightRadiance(
                 i, N, V, NdotV, F0, albedo, roughness, metalness,
                 specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
-            bool needsVisibility = shadowPolicyNeedsVisibility(lights[i].params.z);
+            bool needsVisibility = visibilityMaskNeedsTrace(lights[i].params.z);
 
             // Accumulate as if unshadowed (legacy subtractive estimator
             // only — ReSTIR adds the single shadowed sample after the loop).
@@ -2765,7 +2767,7 @@ void main() {
                 // in range + finite-positive weight). The final visibility ray
                 // re-validates the selected light at the current surface.
                 if (sameSurface && rpLightIndex < lightCount
-                    && shadowPolicyNeedsVisibility(lights[rpLightIndex].params.z)
+                    && visibilityMaskNeedsTrace(lights[rpLightIndex].params.z)
                     && rp.M > 0.0
                     && rp.W > 0.0 && !isnan(rp.W) && !isinf(rp.W)) {
                     vec3 rpRad = shadowableLightRadiance(
@@ -2859,7 +2861,7 @@ void main() {
                     // Re-evaluate the neighbour's pick at THIS surface, gated on
                     // geometric-normal similarity (skip cross-edge neighbours).
                     if (rnLightIndex < lightCount
-                        && shadowPolicyNeedsVisibility(lights[rnLightIndex].params.z)
+                        && visibilityMaskNeedsTrace(lights[rnLightIndex].params.z)
                         && rn.M > 0.0
                         && rn.W > 0.0 && !isnan(rn.W) && !isinf(rn.W)
                         && dot(geomN, nGeomN) >= SPATIAL_NORMAL_COS) {
@@ -2890,7 +2892,7 @@ void main() {
             }
             vec3 frameContribution = vec3(0.0); // this frame's rad·W·V estimate
             if (restirY != 0xFFFFFFFFu && restirW > 0.0
-                && shadowPolicyNeedsVisibility(lights[restirY].params.z)
+                && visibilityMaskNeedsTrace(lights[restirY].params.z)
                 && shadowFade > 0.01) {
                 uint i = restirY;
                 vec3 lightPos = lights[i].position_radius.xyz;
@@ -2909,11 +2911,13 @@ void main() {
                 // penumbra converges K× faster — the cheap way to fix "a bit
                 // slow", spending the 4070 Ti's 300+ fps headroom. (The EMA
                 // below still refines further over parked frames via 1/N.)
-                const int SHADOW_RAYS = 4;
+                const int MAX_SHADOW_RAYS = 8;
+                int shadowRayCount = int(clamp(rayBudget.directShadowSamples, 1u, 8u));
                 vec3 transmissionSum = vec3(0.0);
-                for (int sr = 0; sr < SHADOW_RAYS; sr++) {
+                for (int sr = 0; sr < MAX_SHADOW_RAYS; sr++) {
+                    if (sr >= shadowRayCount) break;
                     vec2 dRand = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
-                        (uint(frameCount) * uint(SHADOW_RAYS) + uint(sr)) * 9u + i);
+                        (uint(frameCount) * uint(shadowRayCount) + uint(sr)) * 9u + i);
                     vec2 diskSample = concentricDiskSample(dRand.x, dRand.y);
                     vec3 rayDir;
                     float rayDist;
@@ -2937,7 +2941,7 @@ void main() {
                     transmissionSum += traceLightTransmittance(
                         i, rayOrigin, rayDir, max(rayDist, 0.01));
                 }
-                vec3 transmissionFrame = transmissionSum / float(SHADOW_RAYS);
+                vec3 transmissionFrame = transmissionSum / float(shadowRayCount);
                 vec3 rad = shadowableLightRadiance(
                     i, N, V, NdotV, F0, albedo, roughness, metalness,
                     specStrength, specColor, mat, fragTangent, fragWorldPos, dbgFlags);
@@ -3003,7 +3007,7 @@ void main() {
         for (uint s = 0; s < NUM_RESERVOIRS; s++) {
             if (resLight[s] == 0xFFFFFFFFu) continue;
             uint i = resLight[s];
-            if (!shadowPolicyNeedsVisibility(lights[i].params.z)) continue;
+            if (!visibilityMaskNeedsTrace(lights[i].params.z)) continue;
             float W = min((resWSum / max(resWSel[s], 1e-6)) * invK, RESERVOIR_W_CLAMP);
             vec3 lightPos = lights[i].position_radius.xyz;
             float radius = lights[i].position_radius.w;
@@ -3193,6 +3197,8 @@ void main() {
             const int MAX_PATH_SEGMENTS = 6;
             const int MAX_DIFFUSE_BOUNCES = 2;
             const int MAX_SHADED_HITS = 2;
+            int pathSegmentLimit = int(clamp(rayBudget.maxPathSegments, 1u, 6u));
+            int shadedHitLimit = int(clamp(rayBudget.maxShadedHits, 1u, 2u));
             vec3 pathOrigin = giOrigin;
             vec3 pathDir = giDir;
             vec3 throughput = primaryDiffuseWeight;
@@ -3203,6 +3209,7 @@ void main() {
             bool measuredAo = false;
 
             for (int segment = 0; segment < MAX_PATH_SEGMENTS; ++segment) {
+                if (segment >= pathSegmentLimit) break;
                 rayQueryEXT giRQ;
                 rayQueryInitializeEXT(
                     giRQ, topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF,
@@ -3283,7 +3290,7 @@ void main() {
                 // lights. Later specular hits still carry environment and
                 // emission, but cannot expand the accepted shadow-query cap.
                 vec3 hitDirect = vec3(0.0);
-                if (shadedHits < MAX_SHADED_HITS) {
+                if (shadedHits < min(MAX_SHADED_HITS, shadedHitLimit)) {
                     uint visibleLightLimit = shadedHits == 0 ? 2u : 1u;
                     hitDirect = pathHitRadiance(
                         hitPos, hitN, viewDir,

@@ -1234,11 +1234,13 @@ fn bounded_path_preserves_the_accepted_segment_and_diffuse_budgets() {
     );
     assert!(
         frag.contains("const int MAX_SHADED_HITS = 2;")
-            && frag.contains("if (shadedHits < MAX_SHADED_HITS)"),
+            && frag.contains("int shadedHitLimit = int(clamp(rayBudget.maxShadedHits, 1u, 2u));")
+            && frag.contains("if (shadedHits < min(MAX_SHADED_HITS, shadedHitLimit))"),
         "glossy chains must not expand the accepted local-light shadow-query ceiling"
     );
     assert!(
-        frag.contains("for (int segment = 0; segment < MAX_PATH_SEGMENTS; ++segment)"),
-        "bounded path must enforce MAX_PATH_SEGMENTS in its traversal loop"
+        frag.contains("for (int segment = 0; segment < MAX_PATH_SEGMENTS; ++segment)")
+            && frag.contains("if (segment >= pathSegmentLimit) break;"),
+        "bounded path must enforce both the hard and adaptive segment ceilings"
     );
 }

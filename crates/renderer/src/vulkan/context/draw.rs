@@ -2711,11 +2711,21 @@ impl VulkanContext {
                 .unwrap_or_else(|e| log::warn!("Failed to upload materials: {e}"));
         }
 
-        // Zero the ray budget counter so the fragment shader starts each
-        // frame with a fresh allowance of Phase-3 IOR glass rays.
+        // Feed the last retired main-pass timestamp into the hysteretic ray
+        // allocator, then upload a fresh per-frame counter + loop limits.
+        // Timer brackets are conservative upper bounds and cannot safely be
+        // summed; use the slower controlled pass as the quality signal.
+        let measured_lighting_ms = self
+            .gpu_timers
+            .as_ref()
+            .map(|timers| {
+                let snapshot = timers.last_snapshot();
+                snapshot.main_render_ms.max(snapshot.volumetrics_ms)
+            })
+            .filter(|ms| *ms > 0.0);
         self.scene_buffers
-            .reset_ray_budget(&self.device, frame)
-            .unwrap_or_else(|e| log::warn!("Failed to reset ray budget: {e}"));
+            .reset_ray_budget(&self.device, frame, measured_lighting_ms)
+            .unwrap_or_else(|e| log::warn!("Failed to upload adaptive ray budget: {e}"));
 
         // Reupload the terrain tile SSBO when cell load mutated it.
         // The slab is static until the next cell transition — #497

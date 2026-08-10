@@ -617,7 +617,8 @@ impl VulkanContext {
                                 fog_reference: [
                                     fog_height_reference,
                                     crate::vulkan::volumetrics::DEFAULT_EMISSIVE_HISTORY_WEIGHT,
-                                    0.0,
+                                    self.scene_buffers.current_ray_budget().volumetric_light_cap
+                                        as f32,
                                     0.0,
                                 ],
                             };

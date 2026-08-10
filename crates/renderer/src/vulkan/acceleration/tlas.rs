@@ -595,8 +595,8 @@ impl AccelerationManager {
             // behavior change for RT reflections / GI / the existing
             // shadow rays. Only the new interior-godray two-pass shadow
             // ray in `volumetrics_inject.comp` narrows cullMask, querying
-            // `SHADOW_MASK_OPAQUE` alone first and, only if that misses,
-            // `SHADOW_MASK_GLASS` alone with a bounded tMax — the
+            // `VISIBILITY_MASK_ALL_OPAQUE` first and, only if that misses,
+            // `VISIBILITY_LAYER_GLASS` with a bounded tMax — the
             // distinguishing signal between "a real window let light
             // through" and "the ray escaped through a geometry gap with
             // no glass in the way" (e.g. an interior cell with no

@@ -12,6 +12,7 @@ use super::super::descriptors::{
     write_storage_buffer, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
+use super::ray_budget::AdaptiveRayBudget;
 use super::*;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -153,10 +154,10 @@ pub struct SceneBuffers {
     /// counter slots, one per frame-in-flight, each [`RAY_BUDGET_STRIDE`]
     /// bytes apart so they satisfy `minStorageBufferOffsetAlignment` on
     /// every common device. Each frame's descriptor set writes binding 11
-    /// at `offset = frame * RAY_BUDGET_STRIDE, range = 4`. The CPU zeroes
-    /// the active frame's slot before each render pass; the fragment
-    /// shader atomically increments it per IOR ray pair fired and skips
-    /// Phase-3 glass once the budget is exhausted.
+    /// at `offset = frame * RAY_BUDGET_STRIDE`. The CPU uploads a
+    /// [`GpuRayBudget`] before each render pass; the fragment shader
+    /// atomically increments its first word per IOR ray pair and consumes
+    /// the remaining words as adaptive direct/GI loop limits.
     ///
     /// Pre-fix this was `Vec<GpuBuffer>` with one allocation per frame
     /// for a single u32 — `gpu-allocator` rounded each up to the
@@ -165,6 +166,7 @@ pub struct SceneBuffers {
     /// buffer collapses both frames into one ~512 B sub-allocation.
     /// See #683 / MEM-2-8.
     pub(super) ray_budget_buffer: GpuBuffer,
+    pub(super) ray_budget_controller: AdaptiveRayBudget,
     /// Size of the terrain tile buffer in bytes — stashed so upload
     /// paths don't have to recompute it from `MAX_TERRAIN_TILES`.
     pub(super) terrain_tile_buf_size: vk::DeviceSize,
@@ -784,7 +786,7 @@ fn create_scene_descriptors(
         let ray_budget_buf_info = [vk::DescriptorBufferInfo {
             buffer: bufs.ray_budget_buffer.buffer,
             offset: (i as vk::DeviceSize) * RAY_BUDGET_STRIDE,
-            range: std::mem::size_of::<u32>() as vk::DeviceSize,
+            range: std::mem::size_of::<GpuRayBudget>() as vk::DeviceSize,
         }];
         let material_buf_info = [vk::DescriptorBufferInfo {
             buffer: bufs.material_buffers[i].buffer,
@@ -900,6 +902,7 @@ impl SceneBuffers {
             terrain_tile_buffer: bufs.terrain_tile_buffer,
             terrain_tile_buf_size: bufs.terrain_tile_buf_size,
             ray_budget_buffer: bufs.ray_budget_buffer,
+            ray_budget_controller: AdaptiveRayBudget::default(),
             descriptor_pool,
             descriptor_set_layout,
             descriptor_sets,

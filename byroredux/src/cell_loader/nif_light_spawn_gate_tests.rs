@@ -63,9 +63,13 @@ fn spawn_nif_lights_attaches_light_source_for_spawnable_light() {
         "spawn_nif_lights must attach exactly one LightSource for the one spawnable light"
     );
     let (_, light_source) = spawned[0];
-    assert_eq!(light_source.color, [0.8, 0.2, 0.1]);
     assert_eq!(
-        light_source.radius, 512.0,
+        light_source.emitter.radiant_intensity.get(),
+        [0.8, 0.2, 0.1]
+    );
+    assert_eq!(
+        light_source.emitter.range.to_bethesda_units(),
+        512.0,
         "authored radius (no ESM override) must survive"
     );
 }

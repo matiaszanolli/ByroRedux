@@ -125,20 +125,37 @@ fn main() {
         "#define MATERIAL_KIND_FIRE_REFRACTION {MATERIAL_KIND_FIRE_REFRACTION}u"
     )
     .unwrap();
-    writeln!(out, "#define SHADOW_MASK_OPAQUE {SHADOW_MASK_OPAQUE}u").unwrap();
-    writeln!(out, "#define SHADOW_MASK_GLASS {SHADOW_MASK_GLASS}u").unwrap();
+    for (name, value) in [
+        (
+            "VISIBILITY_LAYER_ARCHITECTURE",
+            VISIBILITY_LAYER_ARCHITECTURE,
+        ),
+        ("VISIBILITY_LAYER_STATIC_PROP", VISIBILITY_LAYER_STATIC_PROP),
+        (
+            "VISIBILITY_LAYER_DYNAMIC_ACTOR",
+            VISIBILITY_LAYER_DYNAMIC_ACTOR,
+        ),
+        ("VISIBILITY_LAYER_FOLIAGE", VISIBILITY_LAYER_FOLIAGE),
+        ("VISIBILITY_LAYER_GLASS", VISIBILITY_LAYER_GLASS),
+        ("VISIBILITY_LAYER_EFFECT", VISIBILITY_LAYER_EFFECT),
+        ("VISIBILITY_MASK_ALL_OPAQUE", VISIBILITY_MASK_ALL_OPAQUE),
+        ("VISIBILITY_MASK_FULL", VISIBILITY_MASK_FULL),
+        (
+            "ATTENUATION_MODEL_LEGACY_SOFT_RANGE",
+            ATTENUATION_MODEL_LEGACY_SOFT_RANGE,
+        ),
+        (
+            "ATTENUATION_MODEL_INVERSE_SQUARE",
+            ATTENUATION_MODEL_INVERSE_SQUARE,
+        ),
+    ] {
+        writeln!(out, "#define {name} {value}u").unwrap();
+    }
     writeln!(
         out,
-        "#define SHADOW_MASK_STRUCTURE {SHADOW_MASK_STRUCTURE}u"
+        "#define WORLD_UNITS_PER_METER {WORLD_UNITS_PER_METER:?}"
     )
     .unwrap();
-    writeln!(out, "#define SHADOW_POLICY_NONE {SHADOW_POLICY_NONE}u").unwrap();
-    writeln!(
-        out,
-        "#define SHADOW_POLICY_STRUCTURE {SHADOW_POLICY_STRUCTURE}u"
-    )
-    .unwrap();
-    writeln!(out, "#define SHADOW_POLICY_FULL {SHADOW_POLICY_FULL}u").unwrap();
     writeln!(out, "#define SHADOW_FADE_START {SHADOW_FADE_START:?}").unwrap();
     writeln!(out, "#define SHADOW_FADE_END {SHADOW_FADE_END:?}").unwrap();
     writeln!(

@@ -13,7 +13,7 @@
 //! `feedback_format_translation.md`.
 
 use byroredux_core::ecs::{GlobalTransform, LightKind, LightSource, World};
-use byroredux_renderer::shader_constants::{SHADOW_POLICY_FULL, SHADOW_POLICY_STRUCTURE};
+use byroredux_core::lighting::{AttenuationModel, VisibilityMask};
 
 use crate::components::{CellLightingRes, SkyParamsRes};
 
@@ -52,7 +52,7 @@ use super::{compute_directional_upload, SUN_INTENSITY_PEAK};
 /// (REND-#1452). Keeping `2.0` also preserves RT-GI reach — bounce
 /// paths need light to survive to ~2× the authored radius, which the
 /// cull window now provides smoothly instead of a hard cutoff.
-pub const LIGHT_RANGE_EXTENSION: f32 = 2.0;
+pub const LIGHT_RANGE_EXTENSION: f32 = byroredux_core::lighting::LEGACY_LIGHT_CULL_RANGE_MULTIPLIER;
 
 /// LIGH `falloff_exponent` default applied when the source field is
 /// `0.0` (the engine sentinel for "unset" — pre-Skyrim LIGH records
@@ -61,16 +61,6 @@ pub const LIGHT_RANGE_EXTENSION: f32 = 2.0;
 /// principle: defaults applied CPU-side so the shader never sees a
 /// sentinel value.
 pub const FALLOFF_EXPONENT_DEFAULT: f32 = 1.0;
-
-/// Approximate radius of the luminous source represented by a point/spot
-/// light. Bethesda stores an influence radius but no emitter geometry size;
-/// using five percent of the authored radius (bounded for tiny/huge lights)
-/// gives shadow rays a finite endpoint instead of tracing into the middle of
-/// a bulb, flame card, or glowing fixture and declaring the source itself an
-/// occluder. Uploaded in `GpuLight::params.y`.
-fn emitter_radius(authored_radius: f32) -> f32 {
-    (authored_radius * 0.05).clamp(1.0, 32.0)
-}
 
 /// PERF-D5-NEW-02 / #1800 — cheap CPU-side "how much does this light
 /// matter for one-bounce GI" proxy: sum of the light's RGB channels
@@ -147,7 +137,12 @@ pub(super) fn collect_lights(
                 // z = unified shadow policy. The cell directional always
                 // participates in visibility; a zero RGB source is rejected by
                 // the shader's contribution gate before reservoir streaming.
-                params: [0.0, 0.0, SHADOW_POLICY_FULL as f32, 0.0],
+                params: [
+                    0.0,
+                    0.0,
+                    VisibilityMask::FULL.bits() as f32,
+                    AttenuationModel::LegacySoftRange as u8 as f32,
+                ],
             });
         }
     }
@@ -174,35 +169,25 @@ pub(super) fn collect_lights(
                 // diffuse color; the renderer doesn't see the curves
                 // directly, just the resolved factor here. `radius`
                 // is similarly animated by `NiLightRadiusController`
-                // and the value already sits on `light.radius` from
-                // the same code path.
+                // and the value already sits on `light.emitter.range`
+                // from the same code path.
                 let scale = light.dimmer * light.intensity;
                 // ── LIGH → standard light translation ──────────────
                 // Pre-compute the renderer-standard fields here so the
                 // shader consumes ready-to-use values. Raw LIGH inputs
-                // (`light.radius`, `light.falloff_exponent`) never
+                // (`emitter.range`, `emitter.falloff_exponent`) never
                 // reach GLSL — only the post-translation `effective_
                 // range` and `falloff_shape`.
-                let effective_range = light.radius * LIGHT_RANGE_EXTENSION;
-                let source_radius = emitter_radius(light.radius);
-                // The per-game loader has already translated the raw LIGH
-                // flags into this canonical field. A non-zero value means the
-                // source explicitly authored a shadow projection; zero marks
-                // one of the many interior fill/proxy lights that should be
-                // blocked by room structure without projecting every railing,
-                // prop and actor as a high-contrast full-scene shadow.
-                let casts_full_scene_shadows = light.shadow_flags != 0;
-                let falloff_shape = if light.falloff_exponent > 0.0 {
-                    light.falloff_exponent
-                } else {
-                    FALLOFF_EXPONENT_DEFAULT
-                };
+                let effective_range =
+                    light.emitter.range.to_bethesda_units() * LIGHT_RANGE_EXTENSION;
+                let source_radius = light.emitter.source_radius.to_bethesda_units();
+                let falloff_shape = light.emitter.falloff_exponent;
                 // #2205 — `GpuLight.color_type.w` type code (see its doc
                 // comment: 0=point, 1=spot, 2=directional). `Ambient` has
                 // no radiating representation in that contract and falls
                 // back to the point code — a pre-existing gap tracked
                 // separately as NIFAL-D3-02, not this fix's concern.
-                let light_type = match light.kind {
+                let light_type = match light.emitter.kind {
                     LightKind::Point | LightKind::Ambient => 0.0,
                     LightKind::Spot => 1.0,
                     LightKind::Directional => 2.0,
@@ -211,11 +196,12 @@ pub(super) fn collect_lights(
                 // the authored radians — the shader never sees a raw
                 // angle (same translation-layer convention as `radius` /
                 // `falloff_exponent` above).
-                let outer_angle_cos = if light.kind == LightKind::Spot {
-                    light.outer_angle.cos()
+                let outer_angle_cos = if light.emitter.kind == LightKind::Spot {
+                    light.emitter.outer_cone_cos
                 } else {
                     0.0
                 };
+                let radiant_intensity = light.emitter.radiant_intensity.scaled(scale);
                 gpu_lights.push(byroredux_renderer::GpuLight {
                     position_radius: [
                         t.translation.x,
@@ -224,36 +210,29 @@ pub(super) fn collect_lights(
                         effective_range,
                     ],
                     color_type: [
-                        light.color[0] * scale,
-                        light.color[1] * scale,
-                        light.color[2] * scale,
+                        radiant_intensity[0],
+                        radiant_intensity[1],
+                        radiant_intensity[2],
                         light_type,
                     ],
                     direction_angle: [
-                        light.direction[0],
-                        light.direction[1],
-                        light.direction[2],
+                        light.emitter.direction[0],
+                        light.emitter.direction[1],
+                        light.emitter.direction[2],
                         outer_angle_cos,
                     ],
                     // x = standardized attenuation curve shape; y = finite
                     // emitter proxy used to stop shadow segments at the
                     // luminous shell instead of inside the fixture; z = the
                     // unified policy consumed by every visibility pass; w is
-                    // reserved. Authored shadow-projecting lights trace the
-                    // full scene. Legacy fill/proxy lights use structure-only
-                    // visibility: walls still stop leaks, while railings,
-                    // clutter and actors do not turn an intentionally broad
-                    // fill into the comb-like projections seen in dense
-                    // interiors such as the Bannered Mare.
+                    // z = explicit VisibilityMask bits; w = attenuation model.
+                    // Both were resolved before this render boundary, so no
+                    // game-format radius/flag interpretation reaches GLSL.
                     params: [
                         falloff_shape,
                         source_radius,
-                        if casts_full_scene_shadows {
-                            SHADOW_POLICY_FULL as f32
-                        } else {
-                            SHADOW_POLICY_STRUCTURE as f32
-                        },
-                        0.0,
+                        light.emitter.visibility.bits() as f32,
+                        light.emitter.attenuation as u8 as f32,
                     ],
                 });
             }
@@ -596,10 +575,25 @@ mod gi_light_priority_tests {
     use byroredux_core::ecs::LightSource;
 
     #[test]
-    fn emitter_radius_is_finite_and_bounded() {
-        assert_eq!(emitter_radius(0.0), 1.0);
-        assert!((emitter_radius(200.0) - 10.0).abs() < f32::EPSILON);
-        assert_eq!(emitter_radius(10_000.0), 32.0);
+    fn legacy_translation_derives_a_finite_bounded_source_radius() {
+        let translate = |range| {
+            LightSource::from_legacy_world_units(
+                range,
+                [1.0; 3],
+                0,
+                1.0,
+                byroredux_core::ecs::LightKind::Point,
+                [0.0; 3],
+                0.0,
+                0,
+            )
+            .emitter
+            .source_radius
+            .to_bethesda_units()
+        };
+        assert_eq!(translate(0.0), 1.0);
+        assert!((translate(200.0) - 10.0).abs() < f32::EPSILON);
+        assert_eq!(translate(10_000.0), 32.0);
     }
 
     #[test]
@@ -665,12 +659,16 @@ mod gi_light_priority_tests {
         );
         world.insert(
             e,
-            LightSource {
+            LightSource::from_legacy_world_units(
                 radius,
                 color,
+                0,
+                1.0,
+                byroredux_core::ecs::LightKind::Point,
+                [0.0; 3],
+                0.0,
                 shadow_flags,
-                ..Default::default()
-            },
+            ),
         );
     }
 
@@ -710,10 +708,13 @@ mod gi_light_priority_tests {
             .expect("fixture light with a legacy projection bit");
         assert_eq!(
             no_projection_bit.params[2],
-            SHADOW_POLICY_STRUCTURE as f32
+            VisibilityMask::ARCHITECTURE.bits() as f32
         );
         assert_eq!(no_projection_bit.params[3], 0.0);
-        assert_eq!(authored_projection.params[2], SHADOW_POLICY_FULL as f32);
+        assert_eq!(
+            authored_projection.params[2],
+            VisibilityMask::FULL.bits() as f32
+        );
         assert_eq!(authored_projection.params[3], 0.0);
     }
 
@@ -831,13 +832,16 @@ mod light_kind_wiring_tests {
         let mut world = World::new();
         spawn_light(
             &mut world,
-            LightSource {
-                color: [1.0, 1.0, 1.0],
-                radius: 0.0,
-                kind: LightKind::Directional,
-                direction: [0.0, -1.0, 0.0],
-                ..Default::default()
-            },
+            LightSource::from_legacy_world_units(
+                0.0,
+                [1.0, 1.0, 1.0],
+                0,
+                1.0,
+                LightKind::Directional,
+                [0.0, -1.0, 0.0],
+                0.0,
+                0,
+            ),
         );
 
         let mut lights = Vec::new();
@@ -858,14 +862,16 @@ mod light_kind_wiring_tests {
         let outer_angle = std::f32::consts::FRAC_PI_4; // 45 degrees, radians
         spawn_light(
             &mut world,
-            LightSource {
-                color: [1.0, 1.0, 1.0],
-                radius: 500.0,
-                kind: LightKind::Spot,
-                direction: [1.0, 0.0, 0.0],
+            LightSource::from_legacy_world_units(
+                500.0,
+                [1.0, 1.0, 1.0],
+                0,
+                1.0,
+                LightKind::Spot,
+                [1.0, 0.0, 0.0],
                 outer_angle,
-                ..Default::default()
-            },
+                0,
+            ),
         );
 
         let mut lights = Vec::new();
@@ -891,11 +897,16 @@ mod light_kind_wiring_tests {
         let mut world = World::new();
         spawn_light(
             &mut world,
-            LightSource {
-                color: [1.0, 1.0, 1.0],
-                radius: 500.0,
-                ..Default::default()
-            },
+            LightSource::from_legacy_world_units(
+                500.0,
+                [1.0, 1.0, 1.0],
+                0,
+                1.0,
+                LightKind::Point,
+                [0.0; 3],
+                0.0,
+                0,
+            ),
         );
 
         let mut lights = Vec::new();
@@ -930,11 +941,16 @@ mod sort_scratch_reuse_tests {
         );
         world.insert(
             e,
-            LightSource {
+            LightSource::from_legacy_world_units(
                 radius,
-                color: [brightness; 3],
-                ..Default::default()
-            },
+                [brightness; 3],
+                0,
+                1.0,
+                byroredux_core::ecs::LightKind::Point,
+                [0.0; 3],
+                0.0,
+                0,
+            ),
         );
     }
 

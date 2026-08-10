@@ -586,22 +586,16 @@ pub(super) fn compute_blas_budget(
 
 /// Build the 8-bit ray-query mask for one TLAS instance.
 ///
-/// Glass occupies its transmission bucket only. Every other material is
-/// opaque; opaque, non-blended Architecture geometry additionally carries the
-/// STRUCTURE bit so a light may respect walls without making clutter/actors
-/// cast authored object shadows.
-///
-/// `SHADOW_MASK_OPAQUE` and `SHADOW_MASK_GLASS` are disjoint — no instance
-/// ever carries both (see #2227). A ray query that wants to treat glass as an
-/// occluder too must pass `SHADOW_MASK_OPAQUE | SHADOW_MASK_GLASS`, not
-/// `OPAQUE` alone.
+/// Every instance occupies one explicit visibility category. Emitters select
+/// arbitrary unions of the same bits, so a legacy architecture-only source,
+/// a full physical emitter, and a gameplay query all use one vocabulary.
 ///
 /// #2238 — a real two-layer-refractive `MultiLayerParallax` surface (kind
 /// 11, non-zero `multi_layer_refraction_scale`) is also a caustic-refraction
 /// SOURCE per the CPU gate (`draw::is_refractive_glass`, shared by
 /// `is_caustic_source` and `needs_two_sided_blend_split`), so it needs the
-/// same `SHADOW_MASK_GLASS` bucket as literal glass. Left in the OPAQUE
-/// else-branch, an MLP refractor is shadow-masked as opaque while still
+/// same glass layer as literal glass. Left in an opaque layer, an MLP
+/// refractor is shadow-masked as opaque while still
 /// depositing its own caustic — the shadow ray traceShadowTransmittance
 /// issues against its own instance for that caustic never treats it as
 /// non-occluding, so the surface can self-illuminate its own back face.
@@ -619,18 +613,24 @@ pub(super) fn shadow_mask_for_instance(
         || (material_kind == MATERIAL_KIND_MULTI_LAYER_PARALLAX
             && multi_layer_refraction_scale > 0.0);
     if is_refractive_glass {
-        crate::shader_constants::SHADOW_MASK_GLASS as u8
+        crate::shader_constants::VISIBILITY_LAYER_GLASS as u8
+    } else if alpha_blend
+        || material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_EFFECT_SHADER
+        || material_kind == crate::vulkan::scene_buffer::MATERIAL_KIND_FIRE_REFRACTION
+    {
+        crate::shader_constants::VISIBILITY_LAYER_EFFECT as u8
     } else {
-        let mut mask = crate::shader_constants::SHADOW_MASK_OPAQUE;
-        let structural_material = material_kind
-            != crate::vulkan::scene_buffer::MATERIAL_KIND_EFFECT_SHADER
-            && material_kind != crate::vulkan::scene_buffer::MATERIAL_KIND_FIRE_REFRACTION;
-        if render_layer == byroredux_core::ecs::components::RenderLayer::Architecture
-            && !alpha_blend
-            && structural_material
-        {
-            mask |= crate::shader_constants::SHADOW_MASK_STRUCTURE;
+        use byroredux_core::ecs::components::RenderLayer;
+        match render_layer {
+            RenderLayer::Architecture => {
+                crate::shader_constants::VISIBILITY_LAYER_ARCHITECTURE as u8
+            }
+            RenderLayer::Clutter => crate::shader_constants::VISIBILITY_LAYER_STATIC_PROP as u8,
+            RenderLayer::Actor => crate::shader_constants::VISIBILITY_LAYER_DYNAMIC_ACTOR as u8,
+            // RenderLayer currently combines cutout foliage/fences with true
+            // decals. The dedicated layer preserves that distinction in the
+            // visibility contract until material import splits the producer.
+            RenderLayer::Decal => crate::shader_constants::VISIBILITY_LAYER_FOLIAGE as u8,
         }
-        mask as u8
     }
 }

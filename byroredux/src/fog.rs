@@ -12,7 +12,7 @@ use byroredux_core::math::{Quat, Vec3};
 
 /// Bethesda world units per metre. Positions remain in Bethesda units in the
 /// renderer and TLAS; physical medium coefficients are stored per metre.
-pub(crate) const WORLD_UNITS_PER_METER: f32 = 70.0;
+pub(crate) const WORLD_UNITS_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 
 const FIT_SAMPLES: usize = 256;
 const FIT_ITERATIONS: usize = 80;

@@ -6,16 +6,19 @@
 // loss interface by interface.  Callers must include bindings.glsl and
 // ray_hit.glsl and shadow_common.glsl before this file.
 vec3 traceShadowTransmittance(
-    vec3 origin, vec3 direction, float maxDist, float emitterRadius
+    vec3 origin, vec3 direction, float maxDist, float emitterRadius,
+    uint visibilityMask
 ) {
     const int MAX_OPAQUE_LAYERS = 8;
     vec3 opaqueOrigin = origin;
     float opaqueRemaining = maxDist;
+    uint opaqueMask = visibilityMask & VISIBILITY_MASK_ALL_OPAQUE;
     for (int layer = 0; layer < MAX_OPAQUE_LAYERS; ++layer) {
+        if (opaqueMask == 0u) break;
         rayQueryEXT opaqueRQ;
         rayQueryInitializeEXT(
             opaqueRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
-            SHADOW_MASK_OPAQUE,
+            opaqueMask,
             opaqueOrigin, 0.05, direction, opaqueRemaining);
         while (rayQueryProceedEXT(opaqueRQ)) {}
         if (rayQueryGetIntersectionTypeEXT(opaqueRQ, true)
@@ -27,12 +30,9 @@ vec3 traceShadowTransmittance(
         float hitT = rayQueryGetIntersectionTEXT(opaqueRQ, true);
         GpuInstance hitInst = instances[hitIdx];
         GpuMaterial hitMat = materials[hitInst.materialId];
-        // REN-D2-01 — fire-refraction proxies are distortion overlays, not
-        // shadow casters (matching MATERIAL_KIND_EFFECT_SHADER's treatment
-        // below): they carry SHADOW_MASK_OPAQUE for the ordinary opaque
-        // ray-query mask, so without this skip they occlude every shadow
-        // ray from every other surface even though the proxy itself is
-        // meant to be shadow-transparent.
+        // Effects have their own non-opaque visibility layer and therefore
+        // cannot arrive through `opaqueMask`; keep this defensive skip for
+        // stale TLAS content during a hot reload.
         bool effectCard = hitMat.materialKind == MATERIAL_KIND_EFFECT_SHADER
             || hitMat.materialKind == MATERIAL_KIND_FIRE_REFRACTION;
         if (effectCard) {
@@ -68,6 +68,7 @@ vec3 traceShadowTransmittance(
 
     const int MAX_GLASS_INTERFACES = 4;
     vec3 transmission = vec3(1.0);
+    if ((visibilityMask & VISIBILITY_LAYER_GLASS) == 0u) return transmission;
     vec3 rayOrigin = origin;
     float remaining = maxDist;
 
@@ -75,7 +76,7 @@ vec3 traceShadowTransmittance(
         rayQueryEXT glassRQ;
         rayQueryInitializeEXT(
             glassRQ, topLevelAS, gl_RayFlagsOpaqueEXT,
-            SHADOW_MASK_GLASS,
+            VISIBILITY_LAYER_GLASS,
             rayOrigin, 0.05, direction, remaining);
         while (rayQueryProceedEXT(glassRQ)) {}
         if (rayQueryGetIntersectionTypeEXT(glassRQ, true)

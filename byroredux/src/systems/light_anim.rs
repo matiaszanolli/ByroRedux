@@ -172,8 +172,8 @@ pub(crate) fn translate_light(
 
     // xEdit's FOV field (`Core/wbDefinitionsTES5.pas`, dev-4.1.6:
     // `wbFloat('FOV', ..., wbNormalizeToRange(0.001, 160), 90)`) is the
-    // FULL cone angle in degrees, default 90°. `LightSource.outer_angle`
-    // is documented as the outer cone HALF-angle in radians — halve
+    // FULL cone angle in degrees, default 90°. The legacy constructor
+    // accepts the outer cone HALF-angle in radians — halve
     // before converting. `0.0` means the DATA subrecord was too short to
     // carry a FOV at all (see `LightData::fov_degrees`), not an authored
     // zero-degree cone, so it falls back to xEdit's own default rather

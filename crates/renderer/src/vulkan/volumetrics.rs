@@ -122,7 +122,8 @@ pub struct VolumetricsParams {
     /// follow the player vertically instead of thinning with real
     /// altitude. y = temporal history weight applied where the froxel's
     /// source term is dominated by thermal emission (see
-    /// [`DEFAULT_EMISSIVE_HISTORY_WEIGHT`]). zw reserved.
+    /// [`DEFAULT_EMISSIVE_HISTORY_WEIGHT`]). z = adaptive maximum local
+    /// lights evaluated per froxel. w reserved.
     pub fog_reference: [f32; 4],
 }
 
@@ -197,7 +198,7 @@ struct GpuFogClusterEntry {
 
 /// Gamebryo/Fallout world-coordinate scale. The renderer keeps positions in
 /// Bethesda units all the way through TLAS and shader reconstruction.
-pub const WORLD_UNITS_PER_METER: f32 = 70.0;
+pub const WORLD_UNITS_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 pub const DEFAULT_GRID_FAR_METERS: f32 = 128.0;
 pub const DEFAULT_VOLUME_FAR: f32 = DEFAULT_GRID_FAR_METERS * WORLD_UNITS_PER_METER;
 pub const LINEAR_DEPTH_METERS: f32 = 5.0;
@@ -219,12 +220,10 @@ pub const DEFAULT_DENSITY_REJECTION: f32 = 4.0;
 ///
 /// This is a filter time-constant choice, not a physical constant, so it is
 /// stated rather than derived. An exponential filter with weight `w` reaches
-/// ~86% of a step change in `-1/ln(w)` frames: the 0.92 steady-state weight
-/// is ~12 frames, which visibly smears flame flicker and turns an explosion's
-/// leading edge into a slow bloom. 0.5 is ~1.4 frames — fast enough that a
-/// 60 Hz observer reads a flash as instantaneous, while still suppressing
-/// the per-froxel jitter that a weight of 0 would expose.
-pub const DEFAULT_EMISSIVE_HISTORY_WEIGHT: f32 = 0.5;
+/// ~86% of a step change in `-1/ln(w)` frames. A 0.75 base is deliberately
+/// calmer than the old 0.5 response; emission-weighted disagreement rejection
+/// in the shader still cuts history quickly at a flash/explosion edge.
+pub const DEFAULT_EMISSIVE_HISTORY_WEIGHT: f32 = 0.75;
 
 /// Convert authored fog colour into a finite, energy-neutral chromaticity.
 ///
@@ -2013,9 +2012,9 @@ mod unit_tests {
     fn every_contributing_local_fog_light_obeys_structural_visibility() {
         let shader = include_str!("../../shaders/volumetrics_inject.comp");
         for contract in [
-            "shadowPolicyNeedsVisibility(lights[li].params.z)",
-            "shadowPolicyOpaqueMask(lights[li].params.z)",
-            "shadowPolicyUsesGlass(lights[li].params.z)",
+            "visibilityMaskNeedsTrace(lights[li].params.z)",
+            "visibilityOpaqueMask(lights[li].params.z)",
+            "visibilityMaskUsesGlass(lights[li].params.z)",
             "world_pos, toLightDir, 0.05, shadowDist, opaqueMask",
         ] {
             assert!(
@@ -2073,7 +2072,7 @@ mod unit_tests {
             },
             VolumetricsConfig::default(),
         );
-        assert_eq!([extent.width, extent.height, extent.depth], [107, 60, 64]);
+        assert_eq!([extent.width, extent.height, extent.depth], [160, 90, 64]);
     }
 
     #[test]

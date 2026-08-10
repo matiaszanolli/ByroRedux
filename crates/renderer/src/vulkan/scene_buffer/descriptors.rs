@@ -188,27 +188,37 @@ impl super::buffers::SceneBuffers {
         }
     }
 
-    /// Zero the ray budget counter for the given frame before the render pass.
+    /// Update adaptive quality from the last completed GPU sample and upload
+    /// the complete ray allocation for this frame.
     ///
     /// Called from `draw_frame` after uploading instances and before
     /// `cmd_begin_render_pass`. The fragment shader atomically increments this
-    /// counter for each Phase-3 IOR glass ray pair it fires; once the count
-    /// exceeds `GLASS_RAY_BUDGET` (declared in `triangle.frag`) all further
-    /// glass fragments degrade to the tier-1 cheaper path for that frame.
-    pub fn reset_ray_budget(&mut self, device: &ash::Device, frame: usize) -> Result<()> {
-        // #683 / MEM-2-8 — write the u32 zero at this frame's stride
-        // offset within the shared buffer, then flush only that slot's
-        // range on non-coherent memory. Mapped slice access bypasses
-        // the from-byte-0-only `write_mapped` helper.
+    /// counter for each Phase-3 IOR glass ray pair it fires. Other words bound
+    /// direct shadows and indirect path work without recompiling shaders.
+    pub fn reset_ray_budget(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+        measured_lighting_ms: Option<f32>,
+    ) -> Result<()> {
+        self.ray_budget_controller.observe(measured_lighting_ms);
+        let budget = self.ray_budget_controller.settings();
         let offset = (frame as vk::DeviceSize) * RAY_BUDGET_STRIDE;
         let off_usize = offset as usize;
         let mapped = self.ray_budget_buffer.mapped_slice_mut()?;
-        mapped[off_usize..off_usize + 4].copy_from_slice(&0u32.to_le_bytes());
+        for (word_index, word) in budget.words().into_iter().enumerate() {
+            let start = off_usize + word_index * std::mem::size_of::<u32>();
+            mapped[start..start + 4].copy_from_slice(&word.to_le_bytes());
+        }
         self.ray_budget_buffer.flush_range(
             device,
             offset,
-            std::mem::size_of::<u32>() as vk::DeviceSize,
+            std::mem::size_of::<GpuRayBudget>() as vk::DeviceSize,
         )
+    }
+
+    pub fn current_ray_budget(&self) -> GpuRayBudget {
+        self.ray_budget_controller.settings()
     }
 
     /// Destroy all resources.

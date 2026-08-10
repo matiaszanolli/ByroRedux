@@ -112,7 +112,7 @@ pub struct VolumetricsConfig {
 impl Default for VolumetricsConfig {
     fn default() -> Self {
         Self {
-            froxel_xy_divisor: 12,
+            froxel_xy_divisor: 8,
             froxel_z_slices: 64,
             grid_far_meters: 128,
         }
@@ -393,6 +393,13 @@ mod tests {
             UpscalerMode::default(),
             UpscalerMode::Fsr3(FsrQuality::Quality)
         );
+    }
+
+    #[test]
+    fn default_volumetrics_resolve_one_froxel_per_eight_pixels() {
+        let config = VolumetricsConfig::default();
+        assert_eq!(config.froxel_xy_divisor, 8);
+        assert_eq!(config.froxel_z_slices, 64);
     }
 
     #[test]

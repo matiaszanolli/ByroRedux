@@ -80,35 +80,31 @@ pub const MATERIAL_KIND_EFFECT_SHADER: u32 = 101;
 pub const MATERIAL_KIND_NO_LIGHTING: u32 = 102;
 pub const MATERIAL_KIND_FIRE_REFRACTION: u32 = 103;
 
-// TLAS instance shadow-ray mask buckets (the 8-bit mask AND'd against a
-// ray query's cullMask — see the extension-point comment at
-// `acceleration/tlas.rs`'s `instance_custom_index_and_mask` site). Instances
-// may carry more than one bit: opaque Architecture-layer geometry carries
-// both OPAQUE and STRUCTURE so portal-strict/no-prop-shadow lights can still
-// be blocked by walls while authored shadow lights query every opaque
-// object. Glass stays in its own bucket for RGB transmission.
-//
-// #2227 — OPAQUE and GLASS are DISJOINT: no instance ever carries both, and
-// a ray query given only one bit as its `cullMask` will pass straight
-// through every instance in the other bucket without registering a hit. Both
-// of today's ray-query consumers (`caustic_splat.comp`, `volumetrics_inject.comp`)
-// deliberately query ONE bucket at a time (they trace glass and opaque
-// separately to distinguish "occluded" from "occluded by transparent
-// media"), so this is not a live bug — but a future single-mask consumer
-// that wants full-scene occlusion (treat glass as opaque for its purposes)
-// MUST query `SHADOW_MASK_OPAQUE | SHADOW_MASK_GLASS`, not `OPAQUE` alone.
-pub const SHADOW_MASK_OPAQUE: u32 = 0x01;
-pub const SHADOW_MASK_GLASS: u32 = 0x02;
-pub const SHADOW_MASK_STRUCTURE: u32 = 0x04;
+// Explicit geometry visibility layers shared with the ECS emitter contract.
+// Each TLAS instance carries exactly one category bit. `GpuLight.params.z`
+// stores any union of these bits as an exactly representable f32 integer.
+pub const VISIBILITY_LAYER_ARCHITECTURE: u32 =
+    byroredux_core::lighting::VisibilityMask::ARCHITECTURE.bits() as u32;
+pub const VISIBILITY_LAYER_STATIC_PROP: u32 =
+    byroredux_core::lighting::VisibilityMask::STATIC_PROP.bits() as u32;
+pub const VISIBILITY_LAYER_DYNAMIC_ACTOR: u32 =
+    byroredux_core::lighting::VisibilityMask::DYNAMIC_ACTOR.bits() as u32;
+pub const VISIBILITY_LAYER_FOLIAGE: u32 =
+    byroredux_core::lighting::VisibilityMask::FOLIAGE.bits() as u32;
+pub const VISIBILITY_LAYER_GLASS: u32 =
+    byroredux_core::lighting::VisibilityMask::GLASS.bits() as u32;
+pub const VISIBILITY_LAYER_EFFECT: u32 =
+    byroredux_core::lighting::VisibilityMask::EFFECT.bits() as u32;
+pub const VISIBILITY_MASK_ALL_OPAQUE: u32 =
+    byroredux_core::lighting::VisibilityMask::ALL_OPAQUE.bits() as u32;
+pub const VISIBILITY_MASK_FULL: u32 =
+    byroredux_core::lighting::VisibilityMask::FULL.bits() as u32;
 
-// Per-light shadow policy encoded in `GpuLight.params.z`.  Every renderer
-// pass decodes this same value rather than maintaining pass-local boolean
-// combinations.  NONE is useful for synthetic/debug lights, STRUCTURE keeps
-// unshadowed Bethesda fixtures from leaking through Architecture geometry,
-// and FULL enables opaque prop/actor blockers plus dielectric transmission.
-pub const SHADOW_POLICY_NONE: u32 = 0;
-pub const SHADOW_POLICY_STRUCTURE: u32 = 1;
-pub const SHADOW_POLICY_FULL: u32 = 2;
+pub const ATTENUATION_MODEL_LEGACY_SOFT_RANGE: u32 =
+    byroredux_core::lighting::AttenuationModel::LegacySoftRange as u32;
+pub const ATTENUATION_MODEL_INVERSE_SQUARE: u32 =
+    byroredux_core::lighting::AttenuationModel::InverseSquare as u32;
+pub const WORLD_UNITS_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 
 // Shared direct-shadow distance contract. These values apply to every
 // environment; cell kind may change light sources and GI inputs, never the
@@ -124,39 +120,15 @@ const _: () = {
     assert!(DIRECTIONAL_SHADOW_TRACE_DISTANCE >= SHADOW_FADE_END);
 };
 
+// Vulkan's instance mask is eight bits. Pin the complete cross-CPU/GPU
+// contract and make accidental layer collisions a compile-time failure.
 const _: () = {
-    assert!(SHADOW_POLICY_NONE < SHADOW_POLICY_STRUCTURE);
-    assert!(SHADOW_POLICY_STRUCTURE < SHADOW_POLICY_FULL);
-};
-
-// #1913 — these buckets are declared `u32` here but packed into the 8-bit
-// `mask` field of `Packed24_8` at the TLAS instance build
-// (`acceleration/tlas.rs`) via `as u8`, which silently truncates anything
-// ≥ 0x100. A bucket that truncates to 0 is skipped by EVERY ray query
-// regardless of `cullMask` — silent, total RT dropout (no shadows /
-// reflections / GI) for that geometry, invisible to `cargo test` and to
-// validation layers. Pin the 8-bit ceiling + nonzero + distinctness at the
-// definition site so a future `SHADOW_MASK_FOLIAGE = 0x100` fails the build
-// here instead of vanishing at runtime. Mirrors the 24-bit `ssbo_idx`
-// guard in the same TLAS build (#957).
-const _: () = {
+    assert!(VISIBILITY_MASK_FULL <= 0xFF);
+    assert!(VISIBILITY_MASK_FULL.count_ones() == 6);
+    assert!(VISIBILITY_MASK_ALL_OPAQUE & VISIBILITY_LAYER_GLASS == 0);
     assert!(
-        SHADOW_MASK_OPAQUE != 0 && SHADOW_MASK_OPAQUE <= 0xFF,
-        "SHADOW_MASK_OPAQUE must be a nonzero 8-bit value (packed as u8 into Packed24_8)"
-    );
-    assert!(
-        SHADOW_MASK_GLASS != 0 && SHADOW_MASK_GLASS <= 0xFF,
-        "SHADOW_MASK_GLASS must be a nonzero 8-bit value (packed as u8 into Packed24_8)"
-    );
-    assert!(
-        SHADOW_MASK_STRUCTURE != 0 && SHADOW_MASK_STRUCTURE <= 0xFF,
-        "SHADOW_MASK_STRUCTURE must be a nonzero 8-bit value (packed as u8 into Packed24_8)"
-    );
-    assert!(
-        SHADOW_MASK_OPAQUE != SHADOW_MASK_GLASS
-            && SHADOW_MASK_OPAQUE != SHADOW_MASK_STRUCTURE
-            && SHADOW_MASK_GLASS != SHADOW_MASK_STRUCTURE,
-        "SHADOW_MASK buckets must be distinct or ray-query narrowing collapses"
+        VISIBILITY_MASK_FULL
+            == VISIBILITY_MASK_ALL_OPAQUE | VISIBILITY_LAYER_GLASS | VISIBILITY_LAYER_EFFECT
     );
 };
 
