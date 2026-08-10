@@ -410,6 +410,10 @@ pub(super) struct MaterialInfo {
     /// Per-texel specular strength; enables armor highlights masked
     /// by leather/fabric regions.
     pub gloss_map: Option<FixedString>,
+    /// Standalone specular-colour/intensity texture. Skyrim model-space
+    /// normal materials reuse `BSShaderTextureSet` slot 7 for this role;
+    /// unlike `gloss_map`, it must not alter roughness.
+    pub specular_map: Option<FixedString>,
     /// Dark / multiplicative lightmap texture (NiTexturingProperty slot 1).
     /// Baked shadow/grime modulation on Oblivion interior architecture.
     /// Applied as `albedo.rgb *= dark_sample.rgb`. See #264.
@@ -1004,6 +1008,7 @@ impl Default for MaterialInfo {
             glow_map: None,
             detail_map: None,
             gloss_map: None,
+            specular_map: None,
             dark_map: None,
             decal_maps: [None; 4],
             parallax_map: None,
@@ -1122,7 +1127,7 @@ impl MaterialInfo {
             inner_layer: self.inner_layer_map,
             // Standalone BGSM/BGEM roles are populated by the downstream
             // material-file translator; inline NIF shaders do not expose them.
-            specular: None,
+            specular: self.specular_map,
             lighting: intern_effect_path(
                 pool,
                 effect.and_then(|data| data.lighting_texture.as_deref()),

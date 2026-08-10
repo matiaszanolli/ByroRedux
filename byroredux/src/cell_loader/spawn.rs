@@ -1174,11 +1174,25 @@ fn resolve_mesh_paths(
                 &pool,
                 ov.and_then(|o| o.glow).or(mesh.material.textures.emissive),
             );
-            textures.smooth_spec = resolve_to_owned(
-                &pool,
-                ov.and_then(|o| o.specular)
-                    .or(mesh.material.textures.smooth_spec),
-            );
+            let effective_model_space_normals =
+                mesh.material.model_space_normals || ov.is_some_and(|o| o.model_space_normals);
+            if effective_model_space_normals {
+                // Slot 7 changes role on model-space-normal materials: it is
+                // alternate specular intensity/colour, not smoothness. Keep
+                // the REFR override in the canonical standalone-specular
+                // lane so it cannot change roughness downstream.
+                textures.specular = resolve_to_owned(
+                    &pool,
+                    ov.and_then(|o| o.specular)
+                        .or(mesh.material.textures.specular),
+                );
+            } else {
+                textures.smooth_spec = resolve_to_owned(
+                    &pool,
+                    ov.and_then(|o| o.specular)
+                        .or(mesh.material.textures.smooth_spec),
+                );
+            }
             textures.height = resolve_to_owned(
                 &pool,
                 ov.and_then(|o| o.height).or(mesh.material.textures.height),

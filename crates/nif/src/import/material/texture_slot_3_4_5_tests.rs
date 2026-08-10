@@ -1267,7 +1267,8 @@ fn model_space_normals_route_slot_7_to_alternate_specular() {
     let (info, pool) = extract_with_pool(&scene, &shape, &[]);
 
     assert!(info.model_space_normals);
-    assert_path(&pool, info.gloss_map, "modelspace_7.dds");
+    assert_path(&pool, info.specular_map, "modelspace_7.dds");
+    assert!(info.gloss_map.is_none());
 }
 
 /// Regression for #725 / NIF-D4-06: when the legacy

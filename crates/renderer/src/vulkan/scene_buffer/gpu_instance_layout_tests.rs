@@ -524,7 +524,9 @@ fn normal_alpha_masks_specular_intensity_not_roughness() {
         !normal_alpha_branch.contains("roughness"),
         "normal alpha must not be reinterpreted as gloss/roughness"
     );
-    assert!(triangle.contains("mat.envMaskIndex != 0u\n            ? environmentMask\n            : normalAlphaSpecMask"));
+    assert!(triangle.contains(
+        "mat.envMaskIndex != 0u\n            ? environmentMask\n            : normalAlphaSpecMask"
+    ));
     assert!(triangle.contains("* environmentReflectionMask * environmentStrength"));
 }
 

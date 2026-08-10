@@ -225,12 +225,13 @@ fn apply_bs_lighting_shader(
                             }
                         }
                         // With model-space normals, slot 7 is the alternate
-                        // specular/smoothness texture rather than the normal
-                        // backlight role. Keep that semantic named at the
-                        // import boundary and out of the tangent basis path.
-                        if model_space_normals && info.gloss_map.is_none() {
+                        // specular intensity/colour texture rather than the
+                        // normal backlight role. Keep that semantic named at
+                        // the import boundary and out of the tangent basis and
+                        // roughness paths.
+                        if model_space_normals && info.specular_map.is_none() {
                             if let Some(spec) = tex_set.textures.get(7).filter(|s| !s.is_empty()) {
-                                info.gloss_map = intern_texture_path(pool, spec);
+                                info.specular_map = intern_texture_path(pool, spec);
                             }
                         }
                     }
